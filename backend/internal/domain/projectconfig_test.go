@@ -65,6 +65,16 @@ func TestProjectConfigValidate(t *testing.T) {
 		{"tracker intake assignee with whitespace", ProjectConfig{TrackerIntake: TrackerIntakeConfig{Enabled: true, Assignee: " alice"}}, true},
 		{"auto review enabled", ProjectConfig{AutoReview: true}, false},
 		{"auto review disabled", ProjectConfig{AutoReview: false}, false},
+
+		// Per-role environment profile (#2195): systemPrompt, env, mcp, pluginDirs.
+		{"worker mcp strict isolation ok", ProjectConfig{Worker: RoleOverride{AgentConfig: AgentConfig{MCP: &MCPConfig{Strict: true}}}}, false},
+		{"worker mcp configs ok", ProjectConfig{Worker: RoleOverride{AgentConfig: AgentConfig{MCP: &MCPConfig{Configs: []string{"{\"a\":1}"}}}}}, false},
+		{"worker mcp empty config entry", ProjectConfig{Worker: RoleOverride{AgentConfig: AgentConfig{MCP: &MCPConfig{Configs: []string{""}}}}}, true},
+		{"worker plugin dirs ok", ProjectConfig{Worker: RoleOverride{AgentConfig: AgentConfig{PluginDirs: []string{"/p", "https://x/y.zip"}}}}, false},
+		{"worker plugin empty entry", ProjectConfig{Worker: RoleOverride{AgentConfig: AgentConfig{PluginDirs: []string{" "}}}}, true},
+		{"orchestrator system prompt ok", ProjectConfig{Orchestrator: RoleOverride{AgentConfig: AgentConfig{SystemPrompt: "be terse"}}}, false},
+		{"worker env ok", ProjectConfig{Worker: RoleOverride{AgentConfig: AgentConfig{Env: map[string]string{"NODE_ENV": "test"}}}}, false},
+		{"orchestrator bad mcp", ProjectConfig{Orchestrator: RoleOverride{AgentConfig: AgentConfig{MCP: &MCPConfig{Configs: []string{"  "}}}}}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

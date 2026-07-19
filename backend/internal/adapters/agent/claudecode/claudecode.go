@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -173,7 +174,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	if permissions == "" {
 		permissions = cfg.Config.Permissions
 	}
-	return agentruntime.BuildLaunchCommand(agentruntime.LaunchConfig{
+	cmd, err = agentruntime.BuildLaunchCommand(agentruntime.LaunchConfig{
 		Harness:          agentruntime.HarnessClaudeCode,
 		Binary:           binary,
 		SessionID:        cfg.SessionID,
@@ -186,6 +187,12 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		AllowedTools:     cfg.AllowedTools,
 		DisallowedTools:  cfg.DisallowedTools,
 	})
+	if err != nil {
+		return nil, err
+	}
+	appendMCPFlags(&cmd, cfg.Config.MCP)
+	appendPluginFlags(&cmd, cfg.Config.PluginDirs)
+	return cmd, nil
 }
 
 // PreLaunch is an optional capability the spawn engine invokes (via type
@@ -225,6 +232,13 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
+	// Defense-in-depth, symmetric with GetLaunchCommand: the config was
+	// validated on write, but re-check here so a config mutated later (by a
+	// bug or a different code path) is caught at restore too, not only launch.
+	if err := cfg.Config.Validate(); err != nil {
+		return nil, false, fmt.Errorf("claude-code: %w", err)
+	}
+
 	if _, ok := agentruntime.RestoreIdentity(
 		agentruntime.HarnessClaudeCode,
 		cfg.Session.ID,
@@ -237,7 +251,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	if err != nil {
 		return nil, false, err
 	}
-	return agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
+	cmd, ok, err = agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
 		Harness:          agentruntime.HarnessClaudeCode,
 		Binary:           binary,
 		SessionID:        cfg.Session.ID,
@@ -249,6 +263,18 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		AllowedTools:     cfg.AllowedTools,
 		DisallowedTools:  cfg.DisallowedTools,
 	})
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	// MCP/plugin flags are also rebuilt from flags on resume (they are not part
+	// of the transcript), so re-apply them or a restored worker loses its scoped
+	// MCP set and plugins.
+	appendMCPFlags(&cmd, cfg.Config.MCP)
+	appendPluginFlags(&cmd, cfg.Config.PluginDirs)
+	return cmd, true, nil
 }
 
 // SessionInfo surfaces the normalized session metadata that the Claude Code
@@ -475,6 +501,55 @@ func SessionUUID(aoSessionID string) string {
 	return claudeSessionUUID(aoSessionID)
 }
 
+// appendMCPFlags emits claude-code's per-session MCP flags. Each MCPConfig
+// entry is passed to the repeatable --mcp-config as-is (a JSON string or a path
+// to a JSON file — both accepted by the CLI). Strict adds --strict-mcp-config
+// so the session ignores every other MCP source, isolating the worker. A nil
+// MCPConfig emits nothing, so an unset config inherits the global MCP set as
+// before. Strict alone (empty Configs) is valid: it means "no MCP at all".
+func appendMCPFlags(cmd *[]string, mcp *domain.MCPConfig) {
+	if mcp == nil {
+		return
+	}
+	for _, c := range mcp.Configs {
+		if c = strings.TrimSpace(c); c != "" {
+			*cmd = append(*cmd, "--mcp-config", c)
+		}
+	}
+	if mcp.Strict {
+		*cmd = append(*cmd, "--strict-mcp-config")
+	}
+}
+
+// appendPluginFlags emits --plugin-dir / --plugin-url for each entry. An
+// http(s):// entry maps to --plugin-url (a fetched zip); any other value is
+// treated as a local path and mapped to --plugin-dir. Both flags are repeatable,
+// so one is emitted per entry. Empty/whitespace entries are skipped.
+func appendPluginFlags(cmd *[]string, dirs []string) {
+	for _, d := range dirs {
+		if d = strings.TrimSpace(d); d == "" {
+			continue
+		}
+		if isPluginURL(d) {
+			*cmd = append(*cmd, "--plugin-url", d)
+		} else {
+			*cmd = append(*cmd, "--plugin-dir", d)
+		}
+	}
+}
+
+// isPluginURL reports whether s is an http(s) plugin URL rather than a local
+// path, deciding --plugin-url vs --plugin-dir.
+func isPluginURL(s string) bool {
+	// URL schemes are case-insensitive (RFC 3986): HTTPS://example.com/p.zip is
+	// a valid plugin URL, so parse and compare the scheme rather than matching a
+	// lowercase prefix (which would route it to --plugin-dir as a local path).
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https")
+}
 // claudeBinarySpec locates the claude binary: PATH first, then the native
 // installer's locations, npm global, Homebrew, and the claude-managed dir.
 var claudeBinarySpec = binaryutil.BinarySpec{
