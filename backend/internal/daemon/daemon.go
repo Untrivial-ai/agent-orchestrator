@@ -45,6 +45,7 @@ import (
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
+	userconfigsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/userconfig"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
@@ -287,6 +288,11 @@ func Run() error {
 	mc := &controllers.MobileController{Bridge: bs}
 	browserService := browsersvc.New(sessionSvc, browserBroker, browserAuthority)
 
+	// User-scope agent config: the lowest-precedence scope above projects. Backed
+	// by the singleton user_config row; has no effect on workers until the merge
+	// layer (#2999) wires it into effectiveAgentConfig.
+	userConfigSvc := userconfigsvc.New(store)
+
 	// Standalone shell terminals: user-opened shells with no agent session
 	// behind them. They reuse the same runtime adapter (and therefore the same
 	// terminal mux) as session panes, but keep their own ids, storage, and
@@ -399,6 +405,7 @@ func Run() error {
 
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Projects:           projectSvc,
+		UserConfig:         userConfigSvc,
 		Agents:             agentSvc,
 		Sessions:           sessionSvc,
 		PRs:                prActions,

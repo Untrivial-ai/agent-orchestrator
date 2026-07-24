@@ -511,6 +511,11 @@ type UsageSource struct {
 	UpdatedAt       time.Time
 }
 
+type UserConfig struct {
+	ID     int64
+	Config sql.NullString
+}
+
 type WorkspaceRepo struct {
 	ProjectID     domain.ProjectID
 	Name          string

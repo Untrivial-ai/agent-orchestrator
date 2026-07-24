@@ -18,6 +18,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	userconfigsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/userconfig"
 )
 
 // Build reflects the Go contract types and the operation registry below into
@@ -353,6 +354,9 @@ var schemaNames = map[string]string{
 	"ProjectUpdateSettingsInput":        "UpdateProjectSettingsInput",
 	"ProjectWorkspaceRepo":              "WorkspaceRepo",
 	"SessionWorkspaceFileStatus":        "WorkspaceFileStatus",
+	// service/userconfig + controller wire envelopes
+	"UserconfigSetUserConfigInput":  "SetUserConfigInput",
+	"ControllersUserConfigResponse": "UserConfigResponse",
 }
 
 // markRequestBodyRequired sets requestBody.required: true on the operation's
@@ -432,6 +436,7 @@ func operations() []operation {
 	ops := append([]operation{}, eventOperations()...)
 	ops = append(ops, agentOperations()...)
 	ops = append(ops, projectOperations()...)
+	ops = append(ops, userConfigOperations()...)
 	ops = append(ops, sessionOperations()...)
 	ops = append(ops, prOperations()...)
 	ops = append(ops, reviewOperations()...)
@@ -1214,6 +1219,32 @@ func eventOperations() []operation {
 				{status: http.StatusNotImplemented, body: envelope.APIError{}},
 			},
 			contentTypes: map[int]string{http.StatusOK: "text/event-stream"},
+		},
+	}
+}
+
+// userConfigOperations declares the singleton /user-config surface. The set must
+// stay 1:1 with the routes UserConfigController.Register mounts —
+// TestRouteSpecParity fails the build otherwise.
+func userConfigOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/user-config", id: "getUserConfig", tag: "config",
+			summary: "Get the user-scoped agent config (the lowest-precedence scope above projects)",
+			resps: []respUnit{
+				{http.StatusOK, controllers.UserConfigResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPut, path: "/api/v1/user-config", id: "setUserConfig", tag: "config",
+			summary: "Replace the user-scoped agent config wholesale (a zero agentConfig clears it)",
+			reqBody: userconfigsvc.SetUserConfigInput{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.UserConfigResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
 		},
 	}
 }
