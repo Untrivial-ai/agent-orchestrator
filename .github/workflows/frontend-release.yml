@@ -402,8 +402,15 @@ jobs:
           tag="v$(node -p "require('./package.json').version")"
           mkdir -p dist
           gh release download "$tag" --dir dist --clobber
+          # Stable releases also publish the nightly feed so nightly-channel
+          # clients can update to a newer stable release when no newer nightly
+          # exists, avoiding missing nightly-*.yml assets.
           node scripts/feed.mjs dist "${tag#v}" latest
+          node scripts/feed.mjs dist "${tag#v}" nightly
           shopt -s nullglob
-          assets=(dist/latest*.yml dist/*.blockmap)
+          assets=(
+            dist/latest*.yml
+            dist/nightly*.yml
+            dist/*.blockmap)
           if [ ${#assets[@]} -eq 0 ]; then echo "no feed assets generated" >&2; exit 1; fi
           gh release upload "$tag" "${assets[@]}" --clobber
