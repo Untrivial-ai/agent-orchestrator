@@ -1235,17 +1235,18 @@ func TestSCMObservation_ReviewFeedbackUsesObservationSnapshot(t *testing.T) {
 		rec.AutoInjectReview = true
 		st.sessions[rec.ID] = rec
 		o := ports.SCMObservation{
-			Fetched: true,
-			PR:      ports.SCMPRObservation{URL: "pr1", Number: 1},
+			Fetched:          true,
+			AutoInjectReview: false,
+			PR:               ports.SCMPRObservation{URL: "pr1", Number: 1},
 			Review: ports.SCMReviewObservation{
 				Decision: string(domain.ReviewChangesRequest),
 				Reviews: []ports.SCMReviewSummaryObservation{{
-					ID: "r1", State: string(domain.ReviewChangesRequest), AutoInjectReview: false, AutoInjectReviewSet: true,
+					ID: "r1", State: string(domain.ReviewChangesRequest), AutoInjectReview: false,
 				}},
 				Threads: []ports.SCMReviewThreadObservation{{
 					ID: "T1",
 					Comments: []ports.SCMReviewCommentObservation{{
-						ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: false, AutoInjectReviewSet: true,
+						ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: false,
 					}},
 				}},
 			},
@@ -1264,17 +1265,18 @@ func TestSCMObservation_ReviewFeedbackUsesObservationSnapshot(t *testing.T) {
 		rec.AutoInjectReview = false
 		st.sessions[rec.ID] = rec
 		o := ports.SCMObservation{
-			Fetched: true,
-			PR:      ports.SCMPRObservation{URL: "pr1", Number: 1},
+			Fetched:          true,
+			AutoInjectReview: true,
+			PR:               ports.SCMPRObservation{URL: "pr1", Number: 1},
 			Review: ports.SCMReviewObservation{
 				Decision: string(domain.ReviewChangesRequest),
 				Reviews: []ports.SCMReviewSummaryObservation{{
-					ID: "r1", State: string(domain.ReviewChangesRequest), AutoInjectReview: true, AutoInjectReviewSet: true,
+					ID: "r1", State: string(domain.ReviewChangesRequest), AutoInjectReview: true,
 				}},
 				Threads: []ports.SCMReviewThreadObservation{{
 					ID: "T1",
 					Comments: []ports.SCMReviewCommentObservation{{
-						ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: true, AutoInjectReviewSet: true,
+						ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: true,
 					}},
 				}},
 			},
@@ -1287,34 +1289,6 @@ func TestSCMObservation_ReviewFeedbackUsesObservationSnapshot(t *testing.T) {
 		}
 	})
 
-	t.Run("snapshot enabled review includes unresolved comments from the same observation", func(t *testing.T) {
-		m, st, msg := newManager()
-		rec := working("mer-1")
-		rec.AutoInjectReview = true
-		st.sessions[rec.ID] = rec
-		o := ports.SCMObservation{
-			Fetched: true,
-			PR:      ports.SCMPRObservation{URL: "pr1", Number: 1},
-			Review: ports.SCMReviewObservation{
-				Decision: string(domain.ReviewChangesRequest),
-				Reviews: []ports.SCMReviewSummaryObservation{{
-					ID: "r1", State: string(domain.ReviewChangesRequest), AutoInjectReview: true, AutoInjectReviewSet: true,
-				}},
-				Threads: []ports.SCMReviewThreadObservation{{
-					ID: "T1", Path: "main.go", Line: 7,
-					Comments: []ports.SCMReviewCommentObservation{{
-						ID: "1", Author: "alice", Body: "include this detail", AutoInjectReview: false, AutoInjectReviewSet: true,
-					}},
-				}},
-			},
-		}
-		if err := m.ApplySCMObservation(ctx, rec.ID, o); err != nil {
-			t.Fatal(err)
-		}
-		if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "include this detail") {
-			t.Fatalf("review nudge did not include current observation comment details: %v", msg.msgs)
-		}
-	})
 }
 
 func TestPRObservation_CIFailingAndReviewBothNudge(t *testing.T) {

@@ -72,6 +72,8 @@ type SCMObservation struct {
 	CI SCMCIObservation
 	// Review contains review decision plus normalized review threads/comments.
 	Review SCMReviewObservation
+	// AutoInjectReview snapshots whether this observation's review feedback should be sent to the agent.
+	AutoInjectReview bool
 	// Mergeability contains AO's mergeability verdict and blockers.
 	Mergeability SCMMergeabilityObservation
 
@@ -228,8 +230,6 @@ type SCMReviewSummaryObservation struct {
 	SubmittedAt time.Time
 	// AutoInjectReview snapshots whether this observed review should be sent to the agent.
 	AutoInjectReview bool
-	// AutoInjectReviewSet is true when AutoInjectReview was explicitly snapshotted.
-	AutoInjectReviewSet bool
 }
 
 // SCMReviewThreadObservation is a normalized review thread with comments.
@@ -262,8 +262,6 @@ type SCMReviewCommentObservation struct {
 	IsBot bool
 	// AutoInjectReview snapshots whether this observed comment should be sent to the agent.
 	AutoInjectReview bool
-	// AutoInjectReviewSet is true when AutoInjectReview was explicitly snapshotted.
-	AutoInjectReviewSet bool
 }
 
 // SCMMergeabilityObservation is the normalized mergeability verdict.

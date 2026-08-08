@@ -371,7 +371,7 @@ func (o *Observer) Poll(ctx context.Context) error {
 			prRefreshOK[key] = true
 			continue
 		}
-		finalPR, finalChecks, finalReviews, finalThreads, finalComments := domainFromObservation(subj.session.ID, subj.session, prepared, local, opts, now)
+		finalPR, finalChecks, finalReviews, finalThreads, finalComments := domainFromObservation(subj.session.ID, prepared, local, opts, now)
 		pr, checks, reviews, threads, comments := finalPR, finalChecks, finalReviews, finalThreads, finalComments
 		// Lifecycle is allowed to run only after the observed facts are durable,
 		// but semantic hashes are the observer's acknowledgement cursor. Keep
@@ -389,7 +389,7 @@ func (o *Observer) Poll(ctx context.Context) error {
 			if prepared.Changed.Review {
 				pendingOpts.preserveLocalReviewHash = true
 			}
-			pr, checks, reviews, threads, comments = domainFromObservation(subj.session.ID, subj.session, prepared, local, pendingOpts, now)
+			pr, checks, reviews, threads, comments = domainFromObservation(subj.session.ID, prepared, local, pendingOpts, now)
 		}
 		if err := o.store.WriteSCMObservation(ctx, pr, checks, reviews, threads, comments, reviewMode); err != nil {
 			o.logger.Error("scm observer: DB write failed", "session", subj.session.ID, "pr", pr.URL, "err", err)
@@ -1107,26 +1107,18 @@ func (o *Observer) prepareForPersistence(obs ports.SCMObservation, local domain.
 }
 
 func snapshotReviewInjectionPolicy(obs *ports.SCMObservation, autoInjectReview bool) {
+	obs.AutoInjectReview = autoInjectReview
 	for i := range obs.Review.Reviews {
 		obs.Review.Reviews[i].AutoInjectReview = autoInjectReview
-		obs.Review.Reviews[i].AutoInjectReviewSet = true
 	}
 	for i := range obs.Review.Threads {
 		for j := range obs.Review.Threads[i].Comments {
 			obs.Review.Threads[i].Comments[j].AutoInjectReview = autoInjectReview
-			obs.Review.Threads[i].Comments[j].AutoInjectReviewSet = true
 		}
 	}
 }
 
-func reviewInjectionPolicySnapshot(autoInjectReview, set, fallback bool) bool {
-	if set {
-		return autoInjectReview
-	}
-	return fallback
-}
-
-func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.SessionRecord, obs ports.SCMObservation, local domain.PullRequest, opts persistenceOptions, now time.Time) (domain.PullRequest, []domain.PullRequestCheck, []domain.PullRequestReview, []domain.PullRequestReviewThread, []domain.PullRequestComment) {
+func domainFromObservation(sessionID domain.SessionID, obs ports.SCMObservation, local domain.PullRequest, opts persistenceOptions, now time.Time) (domain.PullRequest, []domain.PullRequestCheck, []domain.PullRequestReview, []domain.PullRequestReviewThread, []domain.PullRequestComment) {
 	metadataHash := metadataSemanticHash(obs)
 	if opts.preserveLocalMetadataHash {
 		metadataHash = local.MetadataHash
@@ -1210,7 +1202,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 			Body:             review.Body,
 			IsBot:            review.IsBot,
 			SubmittedAt:      firstTime(review.SubmittedAt, now),
-			AutoInjectReview: reviewInjectionPolicySnapshot(review.AutoInjectReview, review.AutoInjectReviewSet, sessionRecord.AutoInjectReview),
+			AutoInjectReview: review.AutoInjectReview,
 		})
 	}
 	threads := make([]domain.PullRequestReviewThread, 0, len(obs.Review.Threads))
@@ -1222,7 +1214,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 	for _, th := range obs.Review.Threads {
 		threads = append(threads, domain.PullRequestReviewThread{ThreadID: th.ID, Path: th.Path, Line: th.Line, Resolved: th.Resolved, IsBot: th.IsBot, SemanticHash: threadSemanticHash(th), UpdatedAt: now})
 		for _, c := range th.Comments {
-			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot || th.IsBot, CreatedAt: now, AutoInjectReview: reviewInjectionPolicySnapshot(c.AutoInjectReview, c.AutoInjectReviewSet, sessionRecord.AutoInjectReview)})
+			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot || th.IsBot, CreatedAt: now, AutoInjectReview: c.AutoInjectReview})
 		}
 	}
 	return pr, checks, reviews, threads, comments

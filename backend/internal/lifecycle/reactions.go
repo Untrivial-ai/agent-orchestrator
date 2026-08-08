@@ -140,6 +140,10 @@ type pendingNudge struct {
 // and sends actionable agent nudges such as rebase, fix-CI, and
 // address-review-feedback prompts.
 func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o ports.PRObservation) error {
+	return m.applyPRObservation(ctx, id, o, nil)
+}
+
+func (m *Manager) applyPRObservation(ctx context.Context, id domain.SessionID, o ports.PRObservation, reviewPolicy *bool) error {
 	if !o.Fetched {
 		return nil
 	}
@@ -196,8 +200,12 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 		}
 	}
 
-	if reviewFeedbackShouldInject(o, rec.AutoInjectReview) {
-		comments := injectableUnresolvedReviewComments(o.Comments, rec.AutoInjectReview, reviewDecisionShouldInject(o, rec.AutoInjectReview))
+	autoInjectReview := rec.AutoInjectReview
+	if reviewPolicy != nil {
+		autoInjectReview = *reviewPolicy
+	}
+	if reviewFeedbackShouldInject(o, autoInjectReview) {
+		comments := injectableUnresolvedReviewComments(o.Comments, autoInjectReview)
 		if o.Review == domain.ReviewChangesRequest || len(comments) > 0 {
 			msg := formatReviewCommentsMessage(comments)
 			if ident != "your PR" {
@@ -315,7 +323,7 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 	if !o.Fetched {
 		return nil
 	}
-	if err := m.ApplyPRObservation(ctx, id, scmToPRObservation(o)); err != nil {
+	if err := m.applyPRObservation(ctx, id, scmToPRObservation(o), &o.AutoInjectReview); err != nil {
 		return err
 	}
 	intent, err := m.notificationIntentForCurrentSCM(ctx, id, o)
@@ -442,13 +450,6 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 	if pr.Mergeability == "" {
 		pr.Mergeability = domain.MergeUnknown
 	}
-	for _, review := range o.Review.Reviews {
-		if domain.ReviewDecision(review.State) == domain.ReviewChangesRequest {
-			pr.ReviewAutoInjectReview = review.AutoInjectReview
-			pr.ReviewAutoInjectReviewSet = review.AutoInjectReviewSet
-			break
-		}
-	}
 	checkCommit := firstSCMNonEmpty(o.CI.HeadSHA, o.PR.HeadSHA)
 	for _, ch := range o.CI.FailedChecks {
 		status := domain.PRCheckStatus(ch.Status)
@@ -476,16 +477,14 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 				continue
 			}
 			pr.Comments = append(pr.Comments, ports.PRCommentObservation{
-				ID:                  c.ID,
-				ThreadID:            th.ID,
-				Author:              c.Author,
-				File:                th.Path,
-				Line:                th.Line,
-				Body:                c.Body,
-				URL:                 c.URL,
-				Resolved:            th.Resolved,
-				AutoInjectReview:    c.AutoInjectReview,
-				AutoInjectReviewSet: c.AutoInjectReviewSet,
+				ID:       c.ID,
+				ThreadID: th.ID,
+				Author:   c.Author,
+				File:     th.Path,
+				Line:     th.Line,
+				Body:     c.Body,
+				URL:      c.URL,
+				Resolved: th.Resolved,
 			})
 		}
 	}
@@ -656,49 +655,33 @@ func formatCIFailureMessage(checks []ports.PRCheckObservation) string {
 	return msg.String()
 }
 
-func reviewFeedbackShouldInject(o ports.PRObservation, fallback bool) bool {
-	if hasInjectableUnresolvedReviewComments(o.Comments, fallback) {
+func reviewFeedbackShouldInject(o ports.PRObservation, autoInjectReview bool) bool {
+	if hasInjectableUnresolvedReviewComments(o.Comments, autoInjectReview) {
 		return true
 	}
-	return reviewDecisionShouldInject(o, fallback)
+	return autoInjectReview && o.Review == domain.ReviewChangesRequest
 }
 
-func reviewDecisionShouldInject(o ports.PRObservation, fallback bool) bool {
-	if o.Review != domain.ReviewChangesRequest {
+func hasInjectableUnresolvedReviewComments(comments []ports.PRCommentObservation, autoInjectReview bool) bool {
+	if !autoInjectReview {
 		return false
 	}
-	if o.ReviewAutoInjectReviewSet {
-		return o.ReviewAutoInjectReview
-	}
-	return fallback
-}
-
-func hasInjectableUnresolvedReviewComments(comments []ports.PRCommentObservation, fallback bool) bool {
 	for _, c := range comments {
 		if c.Resolved {
 			continue
 		}
-		if reviewCommentShouldInject(c, fallback) {
-			return true
-		}
+		return true
 	}
 	return false
 }
 
-func reviewCommentShouldInject(c ports.PRCommentObservation, fallback bool) bool {
-	if c.AutoInjectReviewSet {
-		return c.AutoInjectReview
-	}
-	return fallback
-}
-
-func injectableUnresolvedReviewComments(comments []ports.PRCommentObservation, fallback, includeAll bool) []ports.PRCommentObservation {
+func injectableUnresolvedReviewComments(comments []ports.PRCommentObservation, autoInjectReview bool) []ports.PRCommentObservation {
 	unresolved := make([]ports.PRCommentObservation, 0, len(comments))
 	for _, c := range comments {
 		if c.Resolved {
 			continue
 		}
-		if !includeAll && !reviewCommentShouldInject(c, fallback) {
+		if !autoInjectReview {
 			continue
 		}
 		unresolved = append(unresolved, c)
