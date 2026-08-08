@@ -159,6 +159,11 @@ type SpawnSessionRequest struct {
 	Kind      domain.SessionKind  `json:"kind,omitempty" enum:"worker,orchestrator"`
 	Harness   domain.AgentHarness `json:"harness,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,autohand"`
 	Branch    string              `json:"branch,omitempty"`
+	Prompt    string              `json:"prompt,omitempty" maxLength:"4096"`
+	// Model is a per-session model override scoped to this spawn only. It wins
+	// over the project's resolved agent config model and has no effect on the
+	// project config.
+	Model string `json:"model,omitempty" maxLength:"256"`
 	// Mode picks the conversation controller: chat talks to the agent over a
 	// structured connection, tui opens the agent's native terminal interface.
 	// Omitted resolves to the daemon default (tui), which is why an upgrade
@@ -166,8 +171,7 @@ type SpawnSessionRequest struct {
 	// interface-transition endpoint; the default never mutates existing sessions
 	// automatically. An unsupported explicit request fails rather than quietly
 	// producing the other kind of session.
-	Mode   domain.SessionMode `json:"mode,omitempty" enum:"chat,tui"`
-	Prompt string             `json:"prompt,omitempty" maxLength:"4096"`
+	Mode domain.SessionMode `json:"mode,omitempty" enum:"chat,tui"`
 	// DisplayName is the sidebar label for the session, capped at 20 characters.
 	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task
 	// dialog) may omit it and fall back to the session id in the read model.

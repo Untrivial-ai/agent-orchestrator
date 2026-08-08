@@ -117,6 +117,16 @@ func reqPathCookie(method, path, auth, cookie string) *http.Request {
 	return r
 }
 
+// previewCookie returns the response's auth cookie, if present.
+func previewCookie(resp *http.Response) (*http.Cookie, bool) {
+	for _, ck := range resp.Cookies() {
+		if ck.Name == authCookieName {
+			return ck, true
+		}
+	}
+	return nil, false
+}
+
 // A preview subresource (image/CSS/JS) is fetched by the WebView WITHOUT our
 // Authorization header, carrying only the cookie the top-level load set. It must
 // authenticate on the preview-files path.
@@ -138,13 +148,8 @@ func TestPreviewFileSetsScopedCookie(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("preview index with bearer: got %d want 200", w.Code)
 	}
-	var c *http.Cookie
-	for _, ck := range w.Result().Cookies() {
-		if ck.Name == authCookieName {
-			c = ck
-		}
-	}
-	if c == nil {
+	c, ok := previewCookie(w.Result())
+	if !ok {
 		t.Fatal("expected auth cookie on preview file response")
 		return
 	}
@@ -168,13 +173,8 @@ func TestPreviewCookieRefreshedAfterPasswordChange(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("preview index with new bearer + stale cookie: got %d want 200", w.Code)
 	}
-	var c *http.Cookie
-	for _, ck := range w.Result().Cookies() {
-		if ck.Name == authCookieName {
-			c = ck
-		}
-	}
-	if c == nil {
+	c, ok := previewCookie(w.Result())
+	if !ok {
 		t.Fatal("expected stale auth cookie to be refreshed")
 		return
 	}

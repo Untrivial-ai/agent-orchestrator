@@ -795,6 +795,20 @@ func TestSpawnCommand_RejectsInvalidKind(t *testing.T) {
 	}
 }
 
+func TestSpawnCommand_RejectsModelWithSpacesOrQuotes(t *testing.T) {
+	// --model must be a single token so it cannot smuggle extra launch args
+	// through the harness adapter. A quoted/spacey value is rejected before any
+	// project resolution happens.
+	_, _, err := executeCLI(t, Deps{}, "spawn", "--project", "demo", "--name", "w", "--model", "claude opus")
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--model must be a single model id") {
+		t.Fatalf("err=%v exit=%d, want --model whitespace validation error", err, ExitCode(err))
+	}
+	_, _, err = executeCLI(t, Deps{}, "spawn", "--project", "demo", "--name", "w", "--model", `foo"bar`)
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--model must be a single model id") {
+		t.Fatalf("err=%v exit=%d, want --model quote validation error", err, ExitCode(err))
+	}
+}
+
 // TestResolveSpawnHarness_OrchestratorDefault asserts the orchestrator role falls
 // back to the project's orchestrator agent (and worker to the worker agent), while
 // an explicit --agent always wins.

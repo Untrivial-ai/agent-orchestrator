@@ -139,13 +139,20 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 	}
 
 	// Role override merges over the base agent config (set fields win; unset keep base).
-	got := effectiveAgentConfig(domain.KindWorker, cfg)
+	got := effectiveAgentConfig(domain.KindWorker, cfg, "")
 	if got.Model != "worker" || got.Mode != "high" || got.Permissions != domain.PermissionModeAuto {
 		t.Fatalf("merged worker config = %#v, want model=worker mode=high permissions=auto", got)
 	}
 	// Orchestrator has no agent-config override, so the base config is used as-is.
-	if got := effectiveAgentConfig(domain.KindOrchestrator, cfg); got.Model != "base" {
+	if got := effectiveAgentConfig(domain.KindOrchestrator, cfg, ""); got.Model != "base" {
 		t.Fatalf("orchestrator config = %#v, want base", got)
+	}
+	// A per-session spawn model wins over both the role override and base config.
+	if got := effectiveAgentConfig(domain.KindWorker, cfg, "spawn-model"); got.Model != "spawn-model" {
+		t.Fatalf("worker config with spawn model = %#v, want spawn-model", got)
+	}
+	if got := effectiveAgentConfig(domain.KindOrchestrator, cfg, "spawn-model"); got.Model != "spawn-model" {
+		t.Fatalf("orchestrator config with spawn model = %#v, want spawn-model", got)
 	}
 }
 

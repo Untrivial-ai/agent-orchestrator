@@ -109,6 +109,38 @@ func TestSessionPersistsDiffBaseMetadata(t *testing.T) {
 	}
 }
 
+func TestSessionPersistsModelRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec := sampleRecord("mer")
+	rec.Model = "claude-opus-4-5"
+
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	got, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session: ok=%v err=%v", ok, err)
+	}
+	if got.Model != "claude-opus-4-5" {
+		t.Fatalf("created model = %q, want claude-opus-4-5", got.Model)
+	}
+
+	got.Model = "claude-haiku-4-5"
+	if err := s.UpdateSession(ctx, got); err != nil {
+		t.Fatalf("update session: %v", err)
+	}
+	updated, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get updated session: ok=%v err=%v", ok, err)
+	}
+	if updated.Model != "claude-haiku-4-5" {
+		t.Fatalf("updated model = %q, want claude-haiku-4-5", updated.Model)
+	}
+}
+
 func TestProjectCRUDAndArchive(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

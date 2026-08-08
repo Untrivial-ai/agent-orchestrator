@@ -9,8 +9,8 @@ INSERT INTO sessions (
     runtime_launch_id, agent_session_id, prompt,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation,
     session_mode, provider_conversation_id, controller_generation,
-    created_at, updated_at, is_pinned, pinned_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    model, created_at, updated_at, is_pinned, pinned_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateSession :exec
 UPDATE sessions SET
@@ -20,7 +20,7 @@ UPDATE sessions SET
     runtime_launch_id = ?, agent_session_id = ?, prompt = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?,
-    provider_conversation_id = ?, controller_generation = ?, updated_at = ?,
+    provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
     is_pinned = ?, pinned_at = ?
 WHERE id = ?;
 
@@ -57,6 +57,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, is_pinned, pinned_at,
+    model,
     session_mode, provider_conversation_id, controller_generation
 FROM sessions WHERE id = ?;
 
@@ -68,6 +69,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, is_pinned, pinned_at,
+    model,
     session_mode, provider_conversation_id, controller_generation
 FROM sessions WHERE project_id = ? ORDER BY num;
 
@@ -79,9 +81,9 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, is_pinned, pinned_at,
+    model,
     session_mode, provider_conversation_id, controller_generation
 FROM sessions ORDER BY project_id, num;
-
 
 -- name: RenameSession :execrows
 UPDATE sessions SET display_name = ?, updated_at = ? WHERE id = ?;

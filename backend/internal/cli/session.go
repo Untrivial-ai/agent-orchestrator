@@ -47,6 +47,7 @@ type sessionDTO struct {
 	Kind         string          `json:"kind"`
 	Harness      string          `json:"harness,omitempty"`
 	DisplayName  string          `json:"displayName,omitempty"`
+	Model        string          `json:"model,omitempty"`
 	Activity     sessionActivity `json:"activity"`
 	IsTerminated bool            `json:"isTerminated"`
 	CreatedAt    time.Time       `json:"createdAt"`
@@ -746,6 +747,7 @@ func writeSessionDetails(cmd *cobra.Command, sess sessionDTO) error {
 		{"status", sess.Status},
 		{"activity", sess.Activity.State},
 		{"harness", sess.Harness},
+		{"model", sess.Model},
 		{"issue", sess.IssueID},
 		{"terminated", fmt.Sprintf("%t", sess.IsTerminated)},
 	}

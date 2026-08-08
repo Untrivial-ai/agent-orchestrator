@@ -578,6 +578,9 @@ BEGIN
         NEW.updated_at);
 END`,
 		}},
+	// 0081_add_session_model.sql
+	{version: 81, table: "sessions", column: "model",
+		addDDL: `ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`},
 	// A pre-renumbered chat-mode branch created conversations before the
 	// current_session_id controller binding existed, then later builds recorded
 	// 0052 as applied. Generated chat queries require the column on startup.

@@ -83,6 +83,7 @@ var shippedMigrations = map[int64]string{
 	78: "0078_session_interface_transitions.sql",
 	79: "0079_session_interface_transition_delivery.sql",
 	80: "0080_review_per_harness.sql",
+	81: "0081_add_session_model.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

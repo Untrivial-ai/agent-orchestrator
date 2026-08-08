@@ -1513,6 +1513,7 @@ export interface components {
             kind: string;
             /** @enum {string} */
             mode: "chat" | "tui";
+            model?: string;
             /** Format: date-time */
             pinnedAt?: null | string;
             /** Format: int64 */
@@ -2409,6 +2410,7 @@ export interface components {
             kind?: "worker" | "orchestrator";
             /** @enum {string} */
             mode?: "chat" | "tui";
+            model?: string;
             projectId: string;
             prompt?: string;
         };
