@@ -98,11 +98,46 @@ func TestGetLaunchCommandBuildsCrossPlatformArgv(t *testing.T) {
 	}
 	want = append(want,
 		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
-		"-c", "developer_instructions="+codexTOMLConfigString("inline wins"),
+		"-c", "model_instructions_file="+codexTOMLConfigString(filepath.Join("tmp", "prompt with spaces.md")),
 		"--", "-fix this",
 	)
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("unexpected command\nwant: %#v\n got: %#v", want, cmd)
+	}
+}
+
+// TestGetLaunchCommandEmitsWindowsSystemPromptFileAsTOMLLiteral proves the
+// staged system-prompt file path survives the `-c model_instructions_file=`
+// override on Windows: codexTOMLConfigString must render a backslash path as a
+// TOML literal string ('...') so backslashes are preserved verbatim rather than
+// escaped to '\\' (which would corrupt the path when Codex parses the override).
+// The reporter in #3326 is on Windows, so this closes the platform gap left open
+// by the Linux-only downstream canary.
+func TestGetLaunchCommandEmitsWindowsSystemPromptFileAsTOMLLiteral(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	winPath := `C:\Users\anmol\.ao\prompts\s-1\system.md`
+
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		SystemPrompt:     "inline fallback must not be used",
+		SystemPromptFile: winPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Emitted as a TOML literal string with backslashes intact:
+	// model_instructions_file='C:\Users\...\system.md'.
+	wantFlag := []string{"-c", "model_instructions_file='" + winPath + "'"}
+	if !containsSubsequence(cmd, wantFlag) {
+		t.Fatalf("Windows system-prompt file not emitted as TOML literal with intact backslashes\ncmd: %#v", cmd)
+	}
+	for _, arg := range cmd {
+		if strings.HasPrefix(arg, "developer_instructions=") {
+			t.Fatalf("inline developer_instructions present despite staged file: %#v", cmd)
+		}
+		if strings.HasPrefix(arg, "model_instructions_file=") && strings.Contains(arg, `\\`) {
+			t.Fatalf("Windows path backslashes were escaped; path would corrupt on parse: %q", arg)
+		}
 	}
 }
 
@@ -569,11 +604,47 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	}
 	want = append(want,
 		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
-		"-c", "developer_instructions="+codexTOMLConfigString("restore inline wins"),
+		"-c", "model_instructions_file="+codexTOMLConfigString(filepath.Join("tmp", "restore-system.md")),
 		"thread-123",
 	)
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
+	}
+}
+
+// TestGetRestoreCommandEmitsWindowsSystemPromptFileAsTOMLLiteral mirrors the
+// launch-path assertion for resume: the staged system-prompt file path is
+// emitted as a TOML literal string with backslashes intact ahead of the native
+// session id. See #3326.
+func TestGetRestoreCommandEmitsWindowsSystemPromptFileAsTOMLLiteral(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	winPath := `C:\Users\anmol\.ao\prompts\s-1\system.md`
+
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		SystemPrompt:     "inline fallback must not be used",
+		SystemPromptFile: winPath,
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "thread-9z"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+
+	wantFlag := []string{"-c", "model_instructions_file='" + winPath + "'"}
+	if !containsSubsequence(cmd, wantFlag) {
+		t.Fatalf("Windows system-prompt file not emitted as TOML literal with intact backslashes\ncmd: %#v", cmd)
+	}
+	for _, arg := range cmd {
+		if strings.HasPrefix(arg, "developer_instructions=") {
+			t.Fatalf("inline developer_instructions present despite staged file: %#v", cmd)
+		}
+		if strings.HasPrefix(arg, "model_instructions_file=") && strings.Contains(arg, `\\`) {
+			t.Fatalf("Windows path backslashes were escaped; path would corrupt on parse: %q", arg)
+		}
 	}
 }
 
