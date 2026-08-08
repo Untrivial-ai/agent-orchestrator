@@ -1119,7 +1119,7 @@ func snapshotReviewInjectionPolicy(obs *ports.SCMObservation, autoInjectReview b
 	}
 }
 
-func reviewInjectionPolicySnapshot(autoInjectReview bool, set bool, fallback bool) bool {
+func reviewInjectionPolicySnapshot(autoInjectReview, set, fallback bool) bool {
 	if set {
 		return autoInjectReview
 	}
