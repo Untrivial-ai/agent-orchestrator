@@ -108,6 +108,10 @@ func (f *fakeSessionService) SetTerminateOnPRMerge(context.Context, domain.Sessi
 	return domain.Session{}, nil
 }
 
+func (f *fakeSessionService) SetAutoInjectReview(context.Context, domain.SessionID, bool) (domain.Session, error) {
+	return domain.Session{}, nil
+}
+
 func (f *fakeSessionService) Pin(context.Context, domain.SessionID) (domain.Session, error) {
 	return domain.Session{}, nil
 }
