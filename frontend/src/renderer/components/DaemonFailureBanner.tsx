@@ -24,6 +24,7 @@ function DaemonFailureContent({ status }: { status: DaemonStatus }) {
 		status.code === "not_ready" ||
 		status.code === "spawn_failed" ||
 		status.code === "exited" ||
+		status.code === "identity_mismatch" ||
 		status.code === "daemon_unreachable";
 	useEffect(() => {
 		setCopied(false);

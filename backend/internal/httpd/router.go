@@ -308,5 +308,12 @@ func daemonProbePayload(status string, cfg config.Config) map[string]any {
 	if cfg.StartupWorkingDirectory != "" {
 		payload["startupWorkingDirectory"] = cfg.StartupWorkingDirectory
 	}
+	// AO_APPIMAGE is set by the Electron app at spawn time when it runs from an
+	// AppImage. The value is the stable outer .AppImage file path, which the
+	// app's daemon identity check compares instead of the transient
+	// /tmp/.mount_* executable path (regenerated on every AppImage launch).
+	if appImage := os.Getenv("AO_APPIMAGE"); appImage != "" {
+		payload["appImagePath"] = appImage
+	}
 	return payload
 }

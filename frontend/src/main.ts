@@ -37,7 +37,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { type DaemonLaunchSpec, resolveDaemonLaunch } from "./shared/daemon-launch";
+import { type DaemonLaunchSpec, bundledDaemonIdentityError, resolveDaemonLaunch } from "./shared/daemon-launch";
 import { createListenPortScanner, defaultRunFilePath, parseRunFile } from "./shared/daemon-discovery";
 import type { DaemonStatus } from "./shared/daemon-status";
 import { attachAppShortcuts } from "./main/app-shortcuts";
@@ -530,6 +530,11 @@ function daemonEnv(): NodeJS.ProcessEnv {
 		AO_OWNER,
 		AO_APP_RUN_ID: appRunId,
 		AO_BROWSER_RUNTIME_TOKEN: browserRuntimeToken,
+		// Under AppImage, APPIMAGE is the stable outer .AppImage file path (the
+		// FUSE mount in executablePath is random per launch). The daemon echoes
+		// it as appImagePath in /healthz|/readyz so the identity check can
+		// recognise its own daemon across a relaunch-to-update.
+		...(process.env.APPIMAGE ? { AO_APPIMAGE: process.env.APPIMAGE } : {}),
 		// Claude Code Chat uses AO's packaged ACP adapter + Node runtime. The
 		// provider executable itself is resolved by the daemon from the user's PATH
 		// and passed through CLAUDE_CODE_EXECUTABLE; it is not part of this resource.
@@ -612,12 +617,7 @@ function daemonIdentityError(launch: DaemonLaunchSpec, probe: DaemonProbe): stri
 	}
 
 	if (launch.source === "bundled") {
-		if (!probe.executablePath) {
-			return "An older AO daemon is already running, but it does not report its binary path. Stop it and restart this app.";
-		}
-		if (!samePath(probe.executablePath, launch.command)) {
-			return `Another AO daemon is already running from ${probe.executablePath}; expected ${launch.command}. Stop the other daemon before using this app.`;
-		}
+		return bundledDaemonIdentityError(probe, launch.command, process.env.APPIMAGE, samePath);
 	}
 	return null;
 }
