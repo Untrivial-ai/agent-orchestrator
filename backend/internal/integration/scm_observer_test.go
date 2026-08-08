@@ -399,6 +399,61 @@ func TestSCMObserverEndToEnd(t *testing.T) {
 		}
 	})
 
+	t.Run("GitHub review comment nudges when automatic review feedback is enabled", func(t *testing.T) {
+		ctx := context.Background()
+		f := newSCMFixture(t, "feat/x")
+		ok, err := f.store.SetSessionAutoInjectReview(ctx, f.session.ID, true, f.now)
+		if err != nil || !ok {
+			t.Fatalf("enable auto review injection: ok=%v err=%v", ok, err)
+		}
+		f.session.AutoInjectReview = true
+		const (
+			prURL   = "https://github.com/octocat/hello/pull/45"
+			headSHA = "feedface"
+		)
+		f.provider.detected["feat/x"] = ports.SCMPRObservation{
+			URL: prURL, Number: 45, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: headSHA,
+		}
+		f.provider.observations[45] = ports.SCMObservation{
+			Fetched:  true,
+			Provider: "github", Host: "github.com", Repo: "octocat/hello",
+			PR: ports.SCMPRObservation{
+				URL: prURL, HTMLURL: prURL, Number: 45, State: string(domain.PRStateOpen),
+				SourceBranch: "feat/x", TargetBranch: "main", HeadSHA: headSHA, Title: "Needs review fix",
+			},
+			CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing), HeadSHA: headSHA},
+			Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewChangesRequest)},
+			Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeBlocked), Blockers: []string{"changes_requested"}},
+		}
+		f.provider.reviews[45] = ports.SCMReviewObservation{
+			Decision: string(domain.ReviewChangesRequest),
+			Reviews: []ports.SCMReviewSummaryObservation{{
+				ID: "review-1", Author: "ann", State: string(domain.ReviewChangesRequest), URL: prURL + "#pullrequestreview-1",
+			}},
+			Threads: []ports.SCMReviewThreadObservation{{
+				ID: "thread-1", Path: "main.go", Line: 12,
+				Comments: []ports.SCMReviewCommentObservation{{
+					ID: "comment-1", Author: "ann", Body: "fix this nil check", URL: prURL + "#discussion_r1",
+				}},
+			}},
+		}
+
+		if err := f.observer.Poll(ctx); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+
+		msgs := f.spy.snapshot()
+		if len(msgs) != 1 {
+			t.Fatalf("messenger captured %d nudges, want 1: %+v", len(msgs), msgs)
+		}
+		body := msgs[0].body
+		for _, want := range []string{"unresolved review comment", "main.go:12 (@ann):", "fix this nil check", "Thread ID: thread-1"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("review nudge missing %q:\n%s", want, body)
+			}
+		}
+	})
+
 	t.Run("Merged observation terminates the session and sends no nudge", func(t *testing.T) {
 		ctx := context.Background()
 		f := newSCMFixture(t, "feat/x")

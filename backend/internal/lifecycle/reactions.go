@@ -197,7 +197,7 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	}
 
 	if reviewFeedbackShouldInject(o, rec.AutoInjectReview) {
-		comments := injectableUnresolvedReviewComments(o.Comments, rec.AutoInjectReview)
+		comments := injectableUnresolvedReviewComments(o.Comments, rec.AutoInjectReview, reviewDecisionShouldInject(o, rec.AutoInjectReview))
 		if o.Review == domain.ReviewChangesRequest || len(comments) > 0 {
 			msg := formatReviewCommentsMessage(comments)
 			if ident != "your PR" {
@@ -660,6 +660,10 @@ func reviewFeedbackShouldInject(o ports.PRObservation, fallback bool) bool {
 	if hasInjectableUnresolvedReviewComments(o.Comments, fallback) {
 		return true
 	}
+	return reviewDecisionShouldInject(o, fallback)
+}
+
+func reviewDecisionShouldInject(o ports.PRObservation, fallback bool) bool {
 	if o.Review != domain.ReviewChangesRequest {
 		return false
 	}
@@ -688,13 +692,13 @@ func reviewCommentShouldInject(c ports.PRCommentObservation, fallback bool) bool
 	return fallback
 }
 
-func injectableUnresolvedReviewComments(comments []ports.PRCommentObservation, fallback bool) []ports.PRCommentObservation {
+func injectableUnresolvedReviewComments(comments []ports.PRCommentObservation, fallback, includeAll bool) []ports.PRCommentObservation {
 	unresolved := make([]ports.PRCommentObservation, 0, len(comments))
 	for _, c := range comments {
 		if c.Resolved {
 			continue
 		}
-		if !reviewCommentShouldInject(c, fallback) {
+		if !includeAll && !reviewCommentShouldInject(c, fallback) {
 			continue
 		}
 		unresolved = append(unresolved, c)
