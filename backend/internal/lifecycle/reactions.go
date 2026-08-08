@@ -140,10 +140,6 @@ type pendingNudge struct {
 // and sends actionable agent nudges such as rebase, fix-CI, and
 // address-review-feedback prompts.
 func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o ports.PRObservation) error {
-	return m.applyPRObservation(ctx, id, o, nil)
-}
-
-func (m *Manager) applyPRObservation(ctx context.Context, id domain.SessionID, o ports.PRObservation, reviewPolicy *bool) error {
 	if !o.Fetched {
 		return nil
 	}
@@ -200,13 +196,9 @@ func (m *Manager) applyPRObservation(ctx context.Context, id domain.SessionID, o
 		}
 	}
 
-	autoInjectReview := rec.AutoInjectReview
-	if reviewPolicy != nil {
-		autoInjectReview = *reviewPolicy
-	}
-	if reviewFeedbackShouldInject(o, autoInjectReview) {
-		comments := injectableUnresolvedReviewComments(o.Comments, autoInjectReview)
-		if o.Review == domain.ReviewChangesRequest || len(comments) > 0 {
+	if rec.AutoInjectReview {
+		if o.Review == domain.ReviewChangesRequest || hasUnresolvedComments(o.Comments) {
+			comments := unresolvedReviewComments(o.Comments)
 			msg := formatReviewCommentsMessage(comments)
 			if ident != "your PR" {
 				msg = strings.Replace(msg, "your PR", ident, 1)
@@ -323,7 +315,7 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 	if !o.Fetched {
 		return nil
 	}
-	if err := m.applyPRObservation(ctx, id, scmToPRObservation(o), &o.AutoInjectReview); err != nil {
+	if err := m.ApplyPRObservation(ctx, id, scmToPRObservation(o)); err != nil {
 		return err
 	}
 	intent, err := m.notificationIntentForCurrentSCM(ctx, id, o)
@@ -601,6 +593,15 @@ func prIdentity(o ports.PRObservation) string {
 	return id
 }
 
+func hasUnresolvedComments(comments []ports.PRCommentObservation) bool {
+	for _, c := range comments {
+		if !c.Resolved {
+			return true
+		}
+	}
+	return false
+}
+
 func failedPRChecks(checks []ports.PRCheckObservation) []ports.PRCheckObservation {
 	failed := make([]ports.PRCheckObservation, 0, len(checks))
 	for _, ch := range checks {
@@ -655,33 +656,10 @@ func formatCIFailureMessage(checks []ports.PRCheckObservation) string {
 	return msg.String()
 }
 
-func reviewFeedbackShouldInject(o ports.PRObservation, autoInjectReview bool) bool {
-	if hasInjectableUnresolvedReviewComments(o.Comments, autoInjectReview) {
-		return true
-	}
-	return autoInjectReview && o.Review == domain.ReviewChangesRequest
-}
-
-func hasInjectableUnresolvedReviewComments(comments []ports.PRCommentObservation, autoInjectReview bool) bool {
-	if !autoInjectReview {
-		return false
-	}
-	for _, c := range comments {
-		if c.Resolved {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-func injectableUnresolvedReviewComments(comments []ports.PRCommentObservation, autoInjectReview bool) []ports.PRCommentObservation {
+func unresolvedReviewComments(comments []ports.PRCommentObservation) []ports.PRCommentObservation {
 	unresolved := make([]ports.PRCommentObservation, 0, len(comments))
 	for _, c := range comments {
 		if c.Resolved {
-			continue
-		}
-		if !autoInjectReview {
 			continue
 		}
 		unresolved = append(unresolved, c)

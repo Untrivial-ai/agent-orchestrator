@@ -196,7 +196,7 @@
 	"inspector.returnToPanel": "Return to panel",
 	"inspector.review.approved": "Approved",
 	"inspector.review.autoInject": "Automatically send review feedback",
-	"inspector.review.autoInjectDescription": "When disabled, reviews remain visible here but are not sent to the agent.",
+	"inspector.review.autoInjectDescription": "When disabled, SCM and AO reviews remain visible here but are not sent to the agent.",
 	"inspector.review.autoInjectError": "Unable to update automatic review injection",
 	"inspector.review.cancel": "Stop review",
 	"inspector.review.cancelled": "Cancelled",

@@ -197,7 +197,7 @@
 	"inspector.returnToPanel": "Zurück zum Panel",
 	"inspector.review.approved": "Genehmigt",
 	"inspector.review.autoInject": "Review-Feedback automatisch senden",
-	"inspector.review.autoInjectDescription": "Wenn deaktiviert, bleiben Reviews hier sichtbar, werden aber nicht an den Agenten gesendet.",
+	"inspector.review.autoInjectDescription": "Wenn deaktiviert, bleiben SCM- und AO-Reviews hier sichtbar, werden aber nicht an den Agenten gesendet.",
 	"inspector.review.autoInjectError": "Die automatische Review-Einspeisung konnte nicht aktualisiert werden",
 	"inspector.review.cancel": "Review stoppen",
 	"inspector.review.cancelled": "Abgebrochen",

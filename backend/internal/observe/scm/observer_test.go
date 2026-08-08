@@ -311,7 +311,7 @@ func testObs(num int) ports.SCMObservation {
 
 func knownPR(num int) domain.PullRequest {
 	obs := testObs(num)
-	pr, _, _, _, _ := domainFromObservation("p-1", obs, domain.PullRequest{}, persistenceOptions{}, time.Unix(1, 0).UTC())
+	pr, _, _, _, _ := domainFromObservation("p-1", domain.SessionRecord{AutoInjectReview: true}, obs, domain.PullRequest{}, persistenceOptions{}, time.Unix(1, 0).UTC())
 	return pr
 }
 
@@ -326,6 +326,7 @@ func TestDomainFromObservationSnapshotsReviewInjectionPolicy(t *testing.T) {
 	}
 	_, _, reviews, _, comments := domainFromObservation(
 		"p-1",
+		domain.SessionRecord{AutoInjectReview: false},
 		obs,
 		domain.PullRequest{},
 		persistenceOptions{},

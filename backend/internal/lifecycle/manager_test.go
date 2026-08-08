@@ -1228,69 +1228,6 @@ func TestPRObservation_ReviewFeedbackNotInjectedWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestSCMObservation_ReviewFeedbackUsesObservationSnapshot(t *testing.T) {
-	t.Run("snapshot disabled suppresses review nudge even when session is enabled", func(t *testing.T) {
-		m, st, msg := newManager()
-		rec := working("mer-1")
-		rec.AutoInjectReview = true
-		st.sessions[rec.ID] = rec
-		o := ports.SCMObservation{
-			Fetched:          true,
-			AutoInjectReview: false,
-			PR:               ports.SCMPRObservation{URL: "pr1", Number: 1},
-			Review: ports.SCMReviewObservation{
-				Decision: string(domain.ReviewChangesRequest),
-				Reviews: []ports.SCMReviewSummaryObservation{{
-					ID: "r1", State: string(domain.ReviewChangesRequest), AutoInjectReview: false,
-				}},
-				Threads: []ports.SCMReviewThreadObservation{{
-					ID: "T1",
-					Comments: []ports.SCMReviewCommentObservation{{
-						ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: false,
-					}},
-				}},
-			},
-		}
-		if err := m.ApplySCMObservation(ctx, rec.ID, o); err != nil {
-			t.Fatal(err)
-		}
-		if len(msg.msgs) != 0 {
-			t.Fatalf("review nudge used live enabled policy instead of disabled snapshot: %v", msg.msgs)
-		}
-	})
-
-	t.Run("snapshot enabled sends review nudge even when session is disabled", func(t *testing.T) {
-		m, st, msg := newManager()
-		rec := working("mer-1")
-		rec.AutoInjectReview = false
-		st.sessions[rec.ID] = rec
-		o := ports.SCMObservation{
-			Fetched:          true,
-			AutoInjectReview: true,
-			PR:               ports.SCMPRObservation{URL: "pr1", Number: 1},
-			Review: ports.SCMReviewObservation{
-				Decision: string(domain.ReviewChangesRequest),
-				Reviews: []ports.SCMReviewSummaryObservation{{
-					ID: "r1", State: string(domain.ReviewChangesRequest), AutoInjectReview: true,
-				}},
-				Threads: []ports.SCMReviewThreadObservation{{
-					ID: "T1",
-					Comments: []ports.SCMReviewCommentObservation{{
-						ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: true,
-					}},
-				}},
-			},
-		}
-		if err := m.ApplySCMObservation(ctx, rec.ID, o); err != nil {
-			t.Fatal(err)
-		}
-		if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "fix this") {
-			t.Fatalf("review nudge did not use enabled snapshot: %v", msg.msgs)
-		}
-	})
-
-}
-
 func TestPRObservation_CIFailingAndReviewBothNudge(t *testing.T) {
 	m, st, msg := newManager()
 	st.sessions["mer-1"] = working("mer-1")
