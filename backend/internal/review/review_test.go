@@ -130,7 +130,7 @@ func (f *fakeStore) InsertReviewRun(_ context.Context, r domain.ReviewRun) error
 	f.runs = append(f.runs, r)
 	return nil
 }
-func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string) (bool, error) {
+func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error) {
 	for i := range f.runs {
 		if f.runs[i].ID == id {
 			if f.runs[i].Status != domain.ReviewRunRunning {
@@ -140,6 +140,7 @@ func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status d
 			f.runs[i].Verdict = verdict
 			f.runs[i].Body = body
 			f.runs[i].GithubReviewID = githubReviewID
+			f.runs[i].AutoInjectReview = autoInjectReview
 			return true, nil
 		}
 	}
@@ -333,10 +334,11 @@ func (f *fakeLauncher) Preflight(_ context.Context, _ domain.ReviewerHarness, _ 
 
 func liveWorker() domain.SessionRecord {
 	return domain.SessionRecord{
-		ID:        "mer-1",
-		ProjectID: "mer",
-		Harness:   domain.HarnessClaudeCode,
-		Metadata:  domain.SessionMetadata{WorkspacePath: "/ws/mer-1"},
+		ID:               "mer-1",
+		ProjectID:        "mer",
+		Harness:          domain.HarnessClaudeCode,
+		Metadata:         domain.SessionMetadata{WorkspacePath: "/ws/mer-1"},
+		AutoInjectReview: true,
 	}
 }
 
@@ -771,6 +773,23 @@ func TestTriggerConcurrentSameWorkerSpawnsOnce(t *testing.T) {
 	}
 	if len(store.runs) != 1 {
 		t.Errorf("recorded review runs = %d, want 1", len(store.runs))
+	} else if !store.runs[0].AutoInjectReview {
+		t.Error("review run did not snapshot the enabled session injection policy")
+	}
+}
+
+func TestTriggerSnapshotsDisabledInjectionPolicy(t *testing.T) {
+	store := &fakeStore{}
+	worker := liveWorker()
+	worker.AutoInjectReview = false
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{handle: "review-mer-1"})
+
+	result, err := eng.Trigger(context.Background(), worker.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Run.AutoInjectReview || len(store.runs) != 1 || store.runs[0].AutoInjectReview {
+		t.Fatalf("review run injection snapshot = result:%v stored:%+v, want disabled", result.Run.AutoInjectReview, store.runs)
 	}
 }
 

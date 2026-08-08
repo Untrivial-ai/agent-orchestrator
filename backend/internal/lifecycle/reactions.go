@@ -195,20 +195,23 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			nudges = append(nudges, pendingNudge{key: "ci:" + o.URL, sig: ciFailureSignature(checks), msg: msg, maxAttempts: 0})
 		}
 	}
-	if o.Review == domain.ReviewChangesRequest || hasUnresolvedComments(o.Comments) {
-		comments := unresolvedReviewComments(o.Comments)
-		msg := formatReviewCommentsMessage(comments)
-		if ident != "your PR" {
-			msg = strings.Replace(msg, "your PR", ident, 1)
+
+	if rec.AutoInjectReview {
+		if o.Review == domain.ReviewChangesRequest || hasUnresolvedComments(o.Comments) {
+			comments := unresolvedReviewComments(o.Comments)
+			msg := formatReviewCommentsMessage(comments)
+			if ident != "your PR" {
+				msg = strings.Replace(msg, "your PR", ident, 1)
+			}
+			if o.URL != "" {
+				msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
+			}
+			sig := reviewCommentsSignature(comments)
+			if sig == "" {
+				sig = string(o.Review)
+			}
+			nudges = append(nudges, pendingNudge{key: "review:" + o.URL, sig: sig, msg: msg, maxAttempts: reviewMaxNudge})
 		}
-		if o.URL != "" {
-			msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
-		}
-		sig := reviewCommentsSignature(comments)
-		if sig == "" {
-			sig = string(o.Review)
-		}
-		nudges = append(nudges, pendingNudge{key: "review:" + o.URL, sig: sig, msg: msg, maxAttempts: reviewMaxNudge})
 	}
 	// Only the merge-conflict nudge needs a store read (the parent-stack check).
 	// A read error there must NOT discard the CI/review nudges already queued

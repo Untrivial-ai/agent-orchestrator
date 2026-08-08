@@ -2719,6 +2719,9 @@ func TestSpawn_DefaultsBranchFromSessionID(t *testing.T) {
 	if got := st.sessions[s.ID].Metadata.Branch; got != "ao/mer-1/root" {
 		t.Fatalf("default branch = %q, want ao/mer-1/root", got)
 	}
+	if !st.sessions[s.ID].AutoInjectReview {
+		t.Fatal("automatic review injection must default to enabled")
+	}
 }
 
 func TestSpawn_DefaultsBranchUnderDevNamespaceForDevDataDir(t *testing.T) {

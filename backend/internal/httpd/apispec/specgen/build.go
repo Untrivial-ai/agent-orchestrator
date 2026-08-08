@@ -211,6 +211,8 @@ var schemaNames = map[string]string{
 	"ControllersBrowserCommandResponse":                   "BrowserCommandResponse",
 	"ControllersSetSessionMergePolicyRequest":             "SetSessionMergePolicyRequest",
 	"ControllersSetSessionMergePolicyResponse":            "SetSessionMergePolicyResponse",
+	"ControllersSetSessionAutoInjectReviewRequest":        "SetSessionAutoInjectReviewRequest",
+	"ControllersSetSessionAutoInjectReviewResponse":       "SetSessionAutoInjectReviewResponse",
 	"ControllersRenameSessionRequest":                     "RenameSessionRequest",
 	"ControllersSetSessionReviewerRequest":                "SetSessionReviewerRequest",
 	"ControllersRenameSessionResponse":                    "RenameSessionResponse",
@@ -1418,6 +1420,18 @@ func sessionOperations() []operation {
 			resps: []respUnit{
 				{http.StatusOK, controllers.SetSessionMergePolicyResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/sessions/{sessionId}/auto-inject-review", id: "setSessionAutoInjectReview", tag: "sessions",
+			summary:    "Set the auto-inject review setting for a session",
+			pathParams: []any{controllers.SessionIDParam{}},
+			reqBody:    controllers.SetSessionAutoInjectReviewRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SetSessionAutoInjectReviewResponse{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},

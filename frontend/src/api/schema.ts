@@ -589,6 +589,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/auto-inject-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set the auto-inject review setting for a session */
+        patch: operations["setSessionAutoInjectReview"];
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/conversation": {
         parameters: {
             query?: never;
@@ -1501,6 +1518,7 @@ export interface components {
         };
         ControllersSessionView: {
             activity: components["schemas"]["DomainActivity"];
+            autoInjectReview: boolean;
             branch?: string;
             /** Format: date-time */
             createdAt: string;
@@ -2104,6 +2122,7 @@ export interface components {
             sessionId: string;
         };
         ReviewRun: {
+            autoInjectReview: boolean;
             batchId: string;
             body: string;
             /** Format: date-time */
@@ -2226,11 +2245,13 @@ export interface components {
             state: "unknown" | "mergeable" | "conflicting" | "blocked" | "unstable";
         };
         SessionPRReviewCommentLink: {
+            autoInjectReview: boolean;
             file?: string;
             line?: number;
             url?: string;
         };
         SessionPRReviewEntry: {
+            autoInjectReview: boolean;
             body?: string;
             isBot?: boolean;
             reviewUrl?: string;
@@ -2354,6 +2375,15 @@ export interface components {
         SetReviewActivityResponse: {
             ok: boolean;
             reviewSessionId: string;
+        };
+        SetSessionAutoInjectReviewRequest: {
+            autoInjectReview: boolean;
+        };
+        SetSessionAutoInjectReviewResponse: {
+            autoInjectReview: boolean;
+            ok: boolean;
+            session: components["schemas"]["ControllersSessionView"];
+            sessionId: string;
         };
         SetSessionMergePolicyRequest: {
             terminateOnPrMerge: boolean;
@@ -4637,6 +4667,60 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    setSessionAutoInjectReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetSessionAutoInjectReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetSessionAutoInjectReviewResponse"];
                 };
             };
             /** @description Not Found */

@@ -1642,6 +1642,51 @@ paths:
       summary: Write images into a running session's worktree and return their paths
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/auto-inject-review:
+    patch:
+      operationId: setSessionAutoInjectReview
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetSessionAutoInjectReviewRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetSessionAutoInjectReviewResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Set the auto-inject review setting for a session
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/conversation:
     get:
       operationId: getSessionConversation
@@ -4493,6 +4538,8 @@ components:
       properties:
         activity:
           $ref: '#/components/schemas/DomainActivity'
+        autoInjectReview:
+          type: boolean
         branch:
           type: string
         createdAt:
@@ -4603,6 +4650,7 @@ components:
       - activity
       - isTerminated
       - terminateOnPrMerge
+      - autoInjectReview
       - createdAt
       - updatedAt
       - isPinned
@@ -6107,6 +6155,8 @@ components:
       type: object
     ReviewRun:
       properties:
+        autoInjectReview:
+          type: boolean
         batchId:
           type: string
         body:
@@ -6150,6 +6200,7 @@ components:
       - body
       - githubReviewId
       - createdAt
+      - autoInjectReview
       type: object
     ReviewRunResponse:
       properties:
@@ -6452,15 +6503,21 @@ components:
       type: object
     SessionPRReviewCommentLink:
       properties:
+        autoInjectReview:
+          type: boolean
         file:
           type: string
         line:
           type: integer
         url:
           type: string
+      required:
+      - autoInjectReview
       type: object
     SessionPRReviewEntry:
       properties:
+        autoInjectReview:
+          type: boolean
         body:
           type: string
         isBot:
@@ -6483,6 +6540,7 @@ components:
       - reviewerId
       - verdict
       - submittedAt
+      - autoInjectReview
       type: object
     SessionPRReviewSummary:
       properties:
@@ -6752,6 +6810,29 @@ components:
       required:
       - ok
       - reviewSessionId
+      type: object
+    SetSessionAutoInjectReviewRequest:
+      properties:
+        autoInjectReview:
+          type: boolean
+      required:
+      - autoInjectReview
+      type: object
+    SetSessionAutoInjectReviewResponse:
+      properties:
+        autoInjectReview:
+          type: boolean
+        ok:
+          type: boolean
+        session:
+          $ref: '#/components/schemas/ControllersSessionView'
+        sessionId:
+          type: string
+      required:
+      - ok
+      - sessionId
+      - autoInjectReview
+      - session
       type: object
     SetSessionMergePolicyRequest:
       properties:

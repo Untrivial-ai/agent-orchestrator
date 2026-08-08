@@ -15,12 +15,13 @@ import (
 )
 
 type fakeStore struct {
-	run       domain.ReviewRun
-	ok        bool
-	review    domain.Review
-	reviewOK  bool
-	batchRuns []domain.ReviewRun
-	prs       []domain.PullRequest
+	run                     domain.ReviewRun
+	ok                      bool
+	review                  domain.Review
+	reviewOK                bool
+	batchRuns               []domain.ReviewRun
+	prs                     []domain.PullRequest
+	sessionAutoInjectReview *bool
 
 	updateCalls        int
 	agentSessionUpdate int
@@ -56,7 +57,15 @@ func (f *fakeStore) GetReviewRun(_ context.Context, id string) (domain.ReviewRun
 	return domain.ReviewRun{}, false, nil
 }
 
-func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string) (bool, error) {
+func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
+	enabled := true
+	if f.sessionAutoInjectReview != nil {
+		enabled = *f.sessionAutoInjectReview
+	}
+	return domain.SessionRecord{ID: id, AutoInjectReview: enabled}, true, nil
+}
+
+func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error) {
 	for i := range f.batchRuns {
 		if f.batchRuns[i].ID == id {
 			if f.batchRuns[i].Status != domain.ReviewRunRunning {
@@ -67,6 +76,7 @@ func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status d
 			f.batchRuns[i].Verdict = verdict
 			f.batchRuns[i].Body = body
 			f.batchRuns[i].GithubReviewID = githubReviewID
+			f.batchRuns[i].AutoInjectReview = autoInjectReview
 			if f.run.ID == id {
 				f.run = f.batchRuns[i]
 			}
@@ -81,6 +91,7 @@ func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status d
 	f.run.Verdict = verdict
 	f.run.Body = body
 	f.run.GithubReviewID = githubReviewID
+	f.run.AutoInjectReview = autoInjectReview
 	return true, nil
 }
 
@@ -181,6 +192,38 @@ func TestApplyReviewActivitySignalRequiresExistingReviewSession(t *testing.T) {
 	err := svc.ApplyReviewActivitySignal(context.Background(), "missing-review", ActivitySignal{AgentSessionID: "native-1"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSubmitSnapshotsDisabledPolicyAndNeverDeliversOnRetry(t *testing.T) {
+	disabled := false
+	st := &fakeStore{
+		ok:                      true,
+		sessionAutoInjectReview: &disabled,
+		run: domain.ReviewRun{
+			ID: "run-1", SessionID: "mer-1", BatchID: "batch-1", PRURL: "pr1", TargetSHA: "sha1", Status: domain.ReviewRunRunning,
+		},
+		prs: []domain.PullRequest{{URL: "pr1", HeadSHA: "sha1"}},
+	}
+	reducer := &fakeReducer{outcome: lifecycle.ReviewDeliverySent}
+	svc := New(nil, st, WithLifecycleReducer(reducer))
+
+	run, err := svc.Submit(context.Background(), "mer-1", "run-1", domain.VerdictChangesRequested, "fix it", "987")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.ReviewRunComplete || run.AutoInjectReview || reducer.batchCalls != 0 || st.markCalls != 0 {
+		t.Fatalf("disabled review = %+v reducerCalls=%d markCalls=%d", run, reducer.batchCalls, st.markCalls)
+	}
+
+	enabled := true
+	st.sessionAutoInjectReview = &enabled
+	run, err = svc.Submit(context.Background(), "mer-1", "run-1", domain.VerdictChangesRequested, "fix it", "987")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.ReviewRunComplete || run.AutoInjectReview || reducer.batchCalls != 0 || st.markCalls != 0 {
+		t.Fatalf("retry rewrote or delivered disabled review = %+v reducerCalls=%d markCalls=%d", run, reducer.batchCalls, st.markCalls)
 	}
 }
 

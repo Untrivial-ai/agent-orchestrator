@@ -77,7 +77,8 @@ type Store interface {
 	GetReviewByID(ctx context.Context, id string) (domain.Review, bool, error)
 	UpdateReviewAgentSessionID(ctx context.Context, id, agentSessionID string) (bool, error)
 	GetReviewRun(ctx context.Context, id string) (domain.ReviewRun, bool, error)
-	UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string) (bool, error)
+	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
+	UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error)
 	MarkReviewRunDelivered(ctx context.Context, id string, deliveredAt time.Time) (bool, error)
 	ListPRsBySession(ctx context.Context, id domain.SessionID) ([]domain.PullRequest, error)
 }
@@ -334,7 +335,14 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 
 	switch run.Status {
 	case domain.ReviewRunRunning:
-		updated, err := s.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunComplete, verdict, body, githubReviewID)
+		session, found, err := s.store.GetSession(ctx, workerID)
+		if err != nil {
+			return domain.ReviewRun{}, err
+		}
+		if !found {
+			return domain.ReviewRun{}, fmt.Errorf("%w: worker session %q", ErrNotFound, workerID)
+		}
+		updated, err := s.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunComplete, verdict, body, githubReviewID, session.AutoInjectReview)
 		if err != nil {
 			return domain.ReviewRun{}, err
 		}
@@ -345,6 +353,7 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 		run.Verdict = verdict
 		run.Body = body
 		run.GithubReviewID = githubReviewID
+		run.AutoInjectReview = session.AutoInjectReview
 		// Only on the real running -> complete transition. Re-submitting an
 		// already-complete run returns early below, so telemetry stays idempotent
 		// the same way the store does.
@@ -411,7 +420,7 @@ func (s *Service) deliverableRuns(ctx context.Context, workerID domain.SessionID
 	}
 	deliverable := make([]domain.ReviewRun, 0, len(runs))
 	for _, run := range runs {
-		if run.Status != domain.ReviewRunComplete || run.Verdict != domain.VerdictChangesRequested || run.DeliveredAt != nil {
+		if run.Status != domain.ReviewRunComplete || run.Verdict != domain.VerdictChangesRequested || run.DeliveredAt != nil || !run.AutoInjectReview {
 			continue
 		}
 		if currentHeads[run.PRURL] != run.TargetSHA {

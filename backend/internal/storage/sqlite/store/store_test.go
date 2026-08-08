@@ -32,13 +32,14 @@ func seedProject(t *testing.T, s *sqlite.Store, id string) {
 func sampleRecord(project string) domain.SessionRecord {
 	now := time.Now().UTC().Truncate(time.Second)
 	return domain.SessionRecord{
-		ProjectID: domain.ProjectID(project),
-		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessClaudeCode,
-		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: now},
-		Metadata:  domain.SessionMetadata{Branch: "feat/x", WorkspacePath: "/ws"},
-		CreatedAt: now,
-		UpdatedAt: now,
+		ProjectID:        domain.ProjectID(project),
+		Kind:             domain.KindWorker,
+		Harness:          domain.HarnessClaudeCode,
+		Activity:         domain.Activity{State: domain.ActivityActive, LastActivityAt: now},
+		Metadata:         domain.SessionMetadata{Branch: "feat/x", WorkspacePath: "/ws"},
+		AutoInjectReview: true,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 }
 
@@ -473,6 +474,47 @@ func TestSessionTerminateOnPRMergePolicyRoundTripAndCDC(t *testing.T) {
 	}
 }
 
+func TestSessionAutoInjectReviewPolicyRoundTripAndCDC(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
+
+	base, _ := s.LatestSeq(ctx)
+	updatedAt := r.UpdatedAt.Add(time.Minute)
+	ok, err := s.SetSessionAutoInjectReview(ctx, r.ID, false, updatedAt)
+	if err != nil || !ok {
+		t.Fatalf("disable automatic review injection: ok=%v err=%v", ok, err)
+	}
+	got, found, err := s.GetSession(ctx, r.ID)
+	if err != nil || !found {
+		t.Fatalf("get session: found=%v err=%v", found, err)
+	}
+	if got.AutoInjectReview || !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("policy not persisted: %+v", got)
+	}
+
+	evs, err := s.EventsAfter(ctx, base, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || string(evs[0].Type) != "session_updated" {
+		t.Fatalf("policy change events = %+v, want one session_updated", evs)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evs[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, ok := payload["autoInjectReview"].(bool); !ok || enabled {
+		t.Fatalf("autoInjectReview payload = %#v, want false", payload["autoInjectReview"])
+	}
+
+	ok, err = s.SetSessionAutoInjectReview(ctx, "mer-missing", false, updatedAt)
+	if err != nil || ok {
+		t.Fatalf("missing policy update: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestSessionRuntimeLaunchIDRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -673,9 +715,9 @@ func TestWriteSCMObservationPersistsMetadataChecksReviewsAndComments(t *testing.
 		UpdatedAt: now, ObservedAt: now, CIObservedAt: now, ReviewObservedAt: now,
 	}
 	checks := []domain.PullRequestCheck{{Name: "build", CommitHash: "h1", Status: domain.PRCheckFailed, Conclusion: "failure", URL: "ci", Details: "99", LogTail: "boom", CreatedAt: now}}
-	reviews := []domain.PullRequestReview{{ID: "review-1", Author: "reviewer", State: domain.ReviewChangesRequest, URL: "https://github.com/o/r/pull/1#pullrequestreview-1", Body: "please fix the nil check", SubmittedAt: now}}
+	reviews := []domain.PullRequestReview{{ID: "review-1", Author: "reviewer", State: domain.ReviewChangesRequest, URL: "https://github.com/o/r/pull/1#pullrequestreview-1", Body: "please fix the nil check", SubmittedAt: now, AutoInjectReview: false}}
 	threads := []domain.PullRequestReviewThread{{ThreadID: "t1", Path: "main.go", Line: 7, SemanticHash: "th", UpdatedAt: now}}
-	comments := []domain.PullRequestComment{{ThreadID: "t1", ID: "c1", Author: "reviewer", File: "main.go", Line: 7, Body: "fix", URL: "comment", CreatedAt: now}}
+	comments := []domain.PullRequestComment{{ThreadID: "t1", ID: "c1", Author: "reviewer", File: "main.go", Line: 7, Body: "fix", URL: "comment", CreatedAt: now, AutoInjectReview: false}}
 
 	if err := s.WriteSCMObservation(ctx, pr, checks, reviews, threads, comments, ports.ReviewWriteReplace); err != nil {
 		t.Fatal(err)
@@ -696,11 +738,11 @@ func TestWriteSCMObservationPersistsMetadataChecksReviewsAndComments(t *testing.
 		t.Fatalf("threads not persisted: %+v", gotThreads)
 	}
 	gotReviews, _ := s.ListPRReviews(ctx, pr.URL)
-	if len(gotReviews) != 1 || gotReviews[0].ID != "review-1" || gotReviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || gotReviews[0].Body != "please fix the nil check" {
+	if len(gotReviews) != 1 || gotReviews[0].ID != "review-1" || gotReviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || gotReviews[0].Body != "please fix the nil check" || gotReviews[0].AutoInjectReview {
 		t.Fatalf("reviews not persisted: %+v", gotReviews)
 	}
 	gotComments, _ := s.ListPRComments(ctx, pr.URL)
-	if len(gotComments) != 1 || gotComments[0].ThreadID != "t1" || gotComments[0].URL != "comment" {
+	if len(gotComments) != 1 || gotComments[0].ThreadID != "t1" || gotComments[0].URL != "comment" || gotComments[0].AutoInjectReview {
 		t.Fatalf("comments not persisted: %+v", gotComments)
 	}
 }
@@ -718,7 +760,7 @@ func TestUpsertPRReviewUpdatesBody(t *testing.T) {
 		SourceBranch: "feat/body", TargetBranch: "main", HeadSHA: "h1",
 		Title: "review body", UpdatedAt: now, ObservedAt: now,
 	}
-	review := domain.PullRequestReview{ID: "review-1", Author: "reviewer", State: domain.ReviewChangesRequest, URL: "https://github.com/o/r/pull/9#pullrequestreview-1", Body: "first pass", SubmittedAt: now}
+	review := domain.PullRequestReview{ID: "review-1", Author: "reviewer", State: domain.ReviewChangesRequest, URL: "https://github.com/o/r/pull/9#pullrequestreview-1", Body: "first pass", SubmittedAt: now, AutoInjectReview: false}
 
 	if err := s.WriteSCMObservation(ctx, pr, nil, []domain.PullRequestReview{review}, nil, nil, ports.ReviewWriteReplace); err != nil {
 		t.Fatal(err)
@@ -730,12 +772,50 @@ func TestUpsertPRReviewUpdatesBody(t *testing.T) {
 	// A re-observation of the same review id must overwrite the stored body.
 	review.State = domain.ReviewApproved
 	review.Body = "resolved, approving"
+	review.AutoInjectReview = true
 	if err := s.WriteSCMObservation(ctx, pr, nil, []domain.PullRequestReview{review}, nil, nil, ports.ReviewWriteReplace); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.ListPRReviews(ctx, pr.URL)
-	if len(got) != 1 || got[0].Body != "resolved, approving" || got[0].State != domain.ReviewApproved {
+	if len(got) != 1 || got[0].Body != "resolved, approving" || got[0].State != domain.ReviewApproved || got[0].AutoInjectReview {
 		t.Fatalf("body/state not updated on upsert: %+v", got)
+	}
+}
+
+func TestUpsertPRCommentPreservesOriginalInjectionDecisionPerComment(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	now := time.Now().UTC().Truncate(time.Second)
+	pr := domain.PullRequest{URL: "https://github.com/o/r/pull/10", SessionID: r.ID, Number: 10, UpdatedAt: now}
+	threads := []domain.PullRequestReviewThread{{ThreadID: "t1", UpdatedAt: now}}
+
+	first := domain.PullRequestComment{ThreadID: "t1", ID: "c1", Author: "alice", Body: "first", CreatedAt: now, AutoInjectReview: false}
+	if err := s.WriteSCMObservation(ctx, pr, nil, nil, threads, []domain.PullRequestComment{first}, ports.ReviewWriteReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	first.Body = "edited"
+	first.AutoInjectReview = true
+	second := domain.PullRequestComment{ThreadID: "t1", ID: "c2", Author: "alice", Body: "second", CreatedAt: now.Add(time.Second), AutoInjectReview: true}
+	if err := s.WriteSCMObservation(ctx, pr, nil, nil, threads, []domain.PullRequestComment{first, second}, ports.ReviewWriteReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	comments, err := s.ListPRComments(ctx, pr.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]domain.PullRequestComment{}
+	for _, comment := range comments {
+		byID[comment.ID] = comment
+	}
+	if len(comments) != 2 || byID["c1"].AutoInjectReview || !byID["c2"].AutoInjectReview {
+		t.Fatalf("comments = %+v, want c1=false preserved and c2=true", comments)
+	}
+	if byID["c1"].Body != "edited" {
+		t.Fatalf("existing comment body was not refreshed: %+v", byID["c1"])
 	}
 }
 

@@ -311,8 +311,33 @@ func testObs(num int) ports.SCMObservation {
 
 func knownPR(num int) domain.PullRequest {
 	obs := testObs(num)
-	pr, _, _, _, _ := domainFromObservation("p-1", obs, domain.PullRequest{}, persistenceOptions{}, time.Unix(1, 0).UTC())
+	pr, _, _, _, _ := domainFromObservation("p-1", domain.SessionRecord{AutoInjectReview: true}, obs, domain.PullRequest{}, persistenceOptions{}, time.Unix(1, 0).UTC())
 	return pr
+}
+
+func TestDomainFromObservationSnapshotsReviewInjectionPolicy(t *testing.T) {
+	obs := testObs(1)
+	obs.Review = ports.SCMReviewObservation{
+		Decision: string(domain.ReviewChangesRequest),
+		Reviews:  []ports.SCMReviewSummaryObservation{{ID: "r1", Author: "alice", State: string(domain.ReviewChangesRequest)}},
+		Threads: []ports.SCMReviewThreadObservation{{
+			ID: "t1", Comments: []ports.SCMReviewCommentObservation{{ID: "c1", Author: "alice", Body: "fix"}},
+		}},
+	}
+	_, _, reviews, _, comments := domainFromObservation(
+		"p-1",
+		domain.SessionRecord{AutoInjectReview: false},
+		obs,
+		domain.PullRequest{},
+		persistenceOptions{},
+		time.Unix(1, 0).UTC(),
+	)
+	if len(reviews) != 1 || reviews[0].AutoInjectReview {
+		t.Fatalf("reviews = %+v, want one review snapshotted as not injected", reviews)
+	}
+	if len(comments) != 1 || comments[0].AutoInjectReview {
+		t.Fatalf("comments = %+v, want one comment snapshotted as not injected", comments)
+	}
 }
 
 func TestRepoForTrackedPRMatchesLegacyRepoOnlyRows(t *testing.T) {

@@ -89,16 +89,17 @@ type PullRequestCheck struct {
 
 // PullRequestComment is one normalized review comment for a pull request.
 type PullRequestComment struct {
-	ThreadID  string
-	ID        string
-	Author    string
-	File      string
-	Line      int
-	Body      string
-	URL       string
-	Resolved  bool
-	IsBot     bool
-	CreatedAt time.Time
+	ThreadID         string
+	ID               string
+	Author           string
+	File             string
+	Line             int
+	Body             string
+	URL              string
+	Resolved         bool
+	IsBot            bool
+	CreatedAt        time.Time
+	AutoInjectReview bool
 }
 
 // PullRequestReviewThread is one normalized review thread for a pull request.
@@ -114,13 +115,14 @@ type PullRequestReviewThread struct {
 
 // PullRequestReview is one submitted provider review for a pull request.
 type PullRequestReview struct {
-	ID          string
-	Author      string
-	State       ReviewDecision
-	URL         string
-	Body        string
-	IsBot       bool
-	SubmittedAt time.Time
+	ID               string
+	Author           string
+	State            ReviewDecision
+	URL              string
+	Body             string
+	IsBot            bool
+	SubmittedAt      time.Time
+	AutoInjectReview bool
 }
 
 // CIState is the aggregate CI status of a PR.

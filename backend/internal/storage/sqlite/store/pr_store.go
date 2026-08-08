@@ -111,14 +111,7 @@ func writePRRows(ctx context.Context, q *gen.Queries, pr domain.PullRequest, che
 			return err
 		}
 	}
-	if reviewMode == ports.ReviewWriteReplace {
-		if err := q.DeletePRComments(ctx, pr.URL); err != nil {
-			return err
-		}
-		if err := q.DeletePRReviews(ctx, pr.URL); err != nil {
-			return err
-		}
-	} else if replaceLegacyComments {
+	if replaceLegacyComments {
 		if err := q.DeleteLegacyPRComments(ctx, pr.URL); err != nil {
 			return err
 		}
@@ -127,6 +120,27 @@ func writePRRows(ctx context.Context, q *gen.Queries, pr domain.PullRequest, che
 		for _, review := range reviews {
 			if err := q.UpsertPRReview(ctx, genReviewParams(pr.URL, review)); err != nil {
 				return fmt.Errorf("review %q: %w", review.ID, err)
+			}
+		}
+	}
+	// Preserve reviews that are still present so their original injection
+	// decision survives the upsert. Only reviews no longer returned by the SCM
+	// are removed in replace mode.
+	if reviewMode == ports.ReviewWriteReplace {
+		observed := make(map[string]struct{}, len(reviews))
+		for _, review := range reviews {
+			observed[review.ID] = struct{}{}
+		}
+		existing, err := q.ListPRReviews(ctx, pr.URL)
+		if err != nil {
+			return fmt.Errorf("list reviews for prune %s: %w", pr.URL, err)
+		}
+		for _, row := range existing {
+			if _, ok := observed[row.ReviewID]; ok {
+				continue
+			}
+			if err := q.DeletePRReview(ctx, gen.DeletePRReviewParams{PRURL: pr.URL, ReviewID: row.ReviewID}); err != nil {
+				return fmt.Errorf("prune review %q: %w", row.ReviewID, err)
 			}
 		}
 	}
@@ -161,17 +175,37 @@ func writePRRows(ctx context.Context, q *gen.Queries, pr domain.PullRequest, che
 			}
 		}
 	}
-	if reviewMode == ports.ReviewWriteMerge {
-		for _, threadID := range reviewThreadIDs(threads, comments) {
-			if err := q.DeletePRCommentsByThread(ctx, gen.DeletePRCommentsByThreadParams{PRURL: pr.URL, ThreadID: threadID}); err != nil {
-				return fmt.Errorf("delete comments for review thread %q: %w", threadID, err)
-			}
-		}
-	}
 	if reviewMode == ports.ReviewWriteReplace || reviewMode == ports.ReviewWriteMerge {
 		for _, c := range comments {
-			if err := q.InsertPRComment(ctx, genCommentParams(pr.URL, c)); err != nil {
+			if err := q.UpsertPRComment(ctx, genCommentParams(pr.URL, c)); err != nil {
 				return fmt.Errorf("comment %q: %w", c.ID, err)
+			}
+		}
+		observed := make(map[string]struct{}, len(comments))
+		for _, c := range comments {
+			observed[c.ID] = struct{}{}
+		}
+		touchedThreads := map[string]struct{}{}
+		if reviewMode == ports.ReviewWriteMerge {
+			for _, threadID := range reviewThreadIDs(threads, comments) {
+				touchedThreads[threadID] = struct{}{}
+			}
+		}
+		existing, err := q.ListPRComments(ctx, pr.URL)
+		if err != nil {
+			return fmt.Errorf("list comments for prune %s: %w", pr.URL, err)
+		}
+		for _, row := range existing {
+			if _, ok := observed[row.CommentID]; ok {
+				continue
+			}
+			if reviewMode == ports.ReviewWriteMerge {
+				if _, touched := touchedThreads[row.ThreadID]; !touched {
+					continue
+				}
+			}
+			if err := q.DeletePRComment(ctx, gen.DeletePRCommentParams{PRURL: pr.URL, CommentID: row.CommentID}); err != nil {
+				return fmt.Errorf("prune comment %q: %w", row.CommentID, err)
 			}
 		}
 	} else if replaceLegacyComments {
@@ -483,11 +517,11 @@ func checkRowFromGen(c gen.PRCheck) domain.PullRequestCheck {
 	}
 }
 
-func genCommentParams(prURL string, c domain.PullRequestComment) gen.InsertPRCommentParams {
-	return gen.InsertPRCommentParams{
+func genCommentParams(prURL string, c domain.PullRequestComment) gen.UpsertPRCommentParams {
+	return gen.UpsertPRCommentParams{
 		PRURL: prURL, CommentID: c.ID, Author: c.Author, File: c.File,
 		Line: int64(c.Line), Body: c.Body, Resolved: c.Resolved, CreatedAt: c.CreatedAt,
-		ThreadID: c.ThreadID, URL: c.URL, IsBot: boolInt(c.IsBot),
+		ThreadID: c.ThreadID, URL: c.URL, IsBot: boolInt(c.IsBot), AutoInjectReview: c.AutoInjectReview,
 	}
 }
 
@@ -504,6 +538,7 @@ func commentFromGen(c gen.PRComment) domain.PullRequestComment {
 		ThreadID: c.ThreadID, ID: c.CommentID, Author: c.Author,
 		File: c.File, Line: int(c.Line), Body: c.Body, URL: c.URL,
 		Resolved: c.Resolved, IsBot: c.IsBot != 0, CreatedAt: c.CreatedAt,
+		AutoInjectReview: c.AutoInjectReview,
 	}
 }
 
@@ -530,26 +565,28 @@ func genReviewParams(prURL string, review domain.PullRequestReview) gen.UpsertPR
 		id = review.URL
 	}
 	return gen.UpsertPRReviewParams{
-		PRURL:       prURL,
-		ReviewID:    id,
-		Author:      review.Author,
-		State:       string(reviewOrDefault(review.State)),
-		URL:         review.URL,
-		IsBot:       boolInt(review.IsBot),
-		SubmittedAt: review.SubmittedAt,
-		Body:        review.Body,
+		PRURL:            prURL,
+		ReviewID:         id,
+		Author:           review.Author,
+		State:            string(reviewOrDefault(review.State)),
+		URL:              review.URL,
+		IsBot:            boolInt(review.IsBot),
+		SubmittedAt:      review.SubmittedAt,
+		Body:             review.Body,
+		AutoInjectReview: bool(review.AutoInjectReview),
 	}
 }
 
 func reviewFromGen(review gen.PRReview) domain.PullRequestReview {
 	return domain.PullRequestReview{
-		ID:          review.ReviewID,
-		Author:      review.Author,
-		State:       domain.ReviewDecision(review.State),
-		URL:         review.URL,
-		Body:        review.Body,
-		IsBot:       review.IsBot != 0,
-		SubmittedAt: review.SubmittedAt,
+		ID:               review.ReviewID,
+		Author:           review.Author,
+		State:            domain.ReviewDecision(review.State),
+		URL:              review.URL,
+		Body:             review.Body,
+		IsBot:            review.IsBot != 0,
+		SubmittedAt:      review.SubmittedAt,
+		AutoInjectReview: review.AutoInjectReview,
 	}
 }
 
