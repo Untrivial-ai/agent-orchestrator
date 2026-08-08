@@ -17,6 +17,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
+// errRunSuperseded marks a run that is no longer in a submittable state — it was
+// superseded or terminated (e.g. a new commit fired SupersedeStaleRunningReviewRuns
+// and moved it to failed) before its result arrived. It is an internal sentinel:
+// SubmitMany skips such a run so it cannot strand the valid sibling results in the
+// same submission, per SubmitMany's documented delivery-scoping guarantee.
+var errRunSuperseded = errors.New("review: run is no longer running")
+
 // ErrInvalid and ErrNotFound re-export the engine sentinels so the HTTP
 // controller maps service failures to 422/404 without importing the core.
 var (
@@ -284,9 +291,18 @@ func (s *Service) SubmitMany(ctx context.Context, workerID domain.SessionID, rev
 	for _, review := range reviews {
 		run, err := s.submitOne(ctx, workerID, review)
 		if err != nil {
+			// A run superseded/terminated by a newer trigger is not submittable, but
+			// it must not strand the valid sibling results in this submission — skip
+			// it and keep delivering the rest. Genuine input errors still abort.
+			if errors.Is(err, errRunSuperseded) {
+				continue
+			}
 			return nil, err
 		}
 		runs = append(runs, run)
+	}
+	if len(runs) == 0 {
+		return nil, fmt.Errorf("%w: no submittable review runs in submission", ErrInvalid)
 	}
 	if s.lifecycle == nil {
 		return runs, nil
@@ -339,7 +355,7 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 			return domain.ReviewRun{}, err
 		}
 		if !updated {
-			return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", ErrInvalid, runID)
+			return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", errRunSuperseded, runID)
 		}
 		run.Status = domain.ReviewRunComplete
 		run.Verdict = verdict
@@ -367,7 +383,7 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 	case domain.ReviewRunDelivered:
 		return run, nil
 	default:
-		return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", ErrInvalid, runID)
+		return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", errRunSuperseded, runID)
 	}
 	return run, nil
 }
