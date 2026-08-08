@@ -15,13 +15,19 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 		URL: "https://github.com/o/r/pull/7",
 		Review: sessionsvc.PRReviewSummary{
 			Decision: domain.ReviewChangesRequest,
+			UnresolvedBy: []sessionsvc.PRUnresolvedReviewer{{
+				ReviewerID: "bob",
+				Count:      1,
+				Links:      []sessionsvc.PRReviewCommentLink{{URL: "comment-url", AutoInjectReview: false}},
+			}},
 			Reviews: []sessionsvc.PRReviewEntry{{
-				Reviewer:    "alice",
-				Verdict:     domain.ReviewApproved,
-				Body:        "looks good to me",
-				URL:         "https://github.com/o/r/pull/7#pullrequestreview-1",
-				SubmittedAt: submitted,
-				IsBot:       true,
+				Reviewer:         "alice",
+				Verdict:          domain.ReviewApproved,
+				Body:             "looks good to me",
+				URL:              "https://github.com/o/r/pull/7#pullrequestreview-1",
+				SubmittedAt:      submitted,
+				IsBot:            true,
+				AutoInjectReview: false,
 			}},
 		},
 	}
@@ -48,5 +54,11 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 	}
 	if !entry.IsBot {
 		t.Fatalf("isBot = false, want true")
+	}
+	if entry.AutoInjectReview {
+		t.Fatal("autoInjectReview = true, want false")
+	}
+	if len(got.Review.UnresolvedBy) != 1 || len(got.Review.UnresolvedBy[0].Links) != 1 || got.Review.UnresolvedBy[0].Links[0].AutoInjectReview {
+		t.Fatalf("unresolved comment links = %+v, want one not-injected link", got.Review.UnresolvedBy)
 	}
 }

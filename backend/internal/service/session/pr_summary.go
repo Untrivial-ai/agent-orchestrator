@@ -69,12 +69,13 @@ type PRReviewSummary struct {
 // PRReviewEntry is one submitted provider review summary: a reviewer's decisive
 // verdict and the body they submitted with it.
 type PRReviewEntry struct {
-	Reviewer    string
-	Verdict     domain.ReviewDecision
-	Body        string
-	URL         string
-	SubmittedAt time.Time
-	IsBot       bool
+	Reviewer         string
+	Verdict          domain.ReviewDecision
+	Body             string
+	URL              string
+	SubmittedAt      time.Time
+	IsBot            bool
+	AutoInjectReview bool
 }
 
 // PRUnresolvedReviewer groups unresolved human comments by reviewer.
@@ -88,9 +89,10 @@ type PRUnresolvedReviewer struct {
 
 // PRReviewCommentLink points to one unresolved review comment.
 type PRReviewCommentLink struct {
-	URL  string
-	File string
-	Line int
+	URL              string
+	File             string
+	Line             int
+	AutoInjectReview bool
 }
 
 // PRMergeabilitySummary describes whether a PR can be merged and why.
@@ -244,9 +246,10 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 		byReviewer[reviewer]++
 		isBot[reviewer] = c.IsBot
 		links[reviewer] = append(links[reviewer], PRReviewCommentLink{
-			URL:  c.URL,
-			File: c.File,
-			Line: c.Line,
+			URL:              c.URL,
+			File:             c.File,
+			Line:             c.Line,
+			AutoInjectReview: c.AutoInjectReview,
 		})
 	}
 	latestReviews := latestChangesRequestedReviews(reviews)
@@ -264,12 +267,13 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 	// body is surfaced too.
 	for reviewer, review := range latestDecisiveReviews(reviews) {
 		out.Reviews = append(out.Reviews, PRReviewEntry{
-			Reviewer:    reviewer,
-			Verdict:     reviewOrNone(review.State),
-			Body:        review.Body,
-			URL:         review.URL,
-			SubmittedAt: review.SubmittedAt,
-			IsBot:       review.IsBot,
+			Reviewer:         reviewer,
+			Verdict:          reviewOrNone(review.State),
+			Body:             review.Body,
+			URL:              review.URL,
+			SubmittedAt:      review.SubmittedAt,
+			IsBot:            review.IsBot,
+			AutoInjectReview: review.AutoInjectReview,
 		})
 	}
 	sort.Slice(out.Reviews, func(i, j int) bool { return out.Reviews[i].Reviewer < out.Reviews[j].Reviewer })

@@ -133,6 +133,21 @@ func (s *Store) SetSessionTerminateOnPRMerge(ctx context.Context, id domain.Sess
 	return rows > 0, nil
 }
 
+// SetSessionAutoInjectReview persists a session's automatic review-injection policy.
+func (s *Store) SetSessionAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionAutoInjectReview(ctx, gen.SetSessionAutoInjectReviewParams{
+		ID:               id,
+		AutoInjectReview: autoInject,
+		UpdatedAt:        updatedAt,
+	})
+	if err != nil {
+		return false, fmt.Errorf("set auto-inject review for session %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // SetSessionReviewerHarness persists the reviewer preference for one session.
 func (s *Store) SetSessionReviewerHarness(ctx context.Context, id domain.SessionID, harness domain.ReviewerHarness, updatedAt time.Time) (bool, error) {
 	s.writeMu.Lock()
@@ -252,7 +267,7 @@ func (s *Store) ListAllSessions(ctx context.Context) ([]domain.SessionRecord, er
 	return mapListAllSessionsRows(rows), nil
 }
 
-func mapListSessionsByProjectRows(rows []gen.Session) []domain.SessionRecord {
+func mapListSessionsByProjectRows(rows []gen.ListSessionsByProjectRow) []domain.SessionRecord {
 	out := make([]domain.SessionRecord, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, listSessionsByProjectRowToRecord(r))
@@ -260,7 +275,7 @@ func mapListSessionsByProjectRows(rows []gen.Session) []domain.SessionRecord {
 	return out
 }
 
-func mapListAllSessionsRows(rows []gen.Session) []domain.SessionRecord {
+func mapListAllSessionsRows(rows []gen.ListAllSessionsRow) []domain.SessionRecord {
 	out := make([]domain.SessionRecord, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, listAllSessionsRowToRecord(r))
@@ -268,7 +283,7 @@ func mapListAllSessionsRows(rows []gen.Session) []domain.SessionRecord {
 	return out
 }
 
-func rowToRecord(row gen.Session) domain.SessionRecord {
+func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 	return domain.SessionRecord{
 		ID:              row.ID,
 		ProjectID:       row.ProjectID,
@@ -287,6 +302,7 @@ func rowToRecord(row gen.Session) domain.SessionRecord {
 		IsPinned:           row.IsPinned,
 		PinnedAt:           nullTimeToTimePtr(row.PinnedAt),
 		TerminateOnPRMerge: row.TerminateOnPRMerge,
+		AutoInjectReview:   row.AutoInjectReview,
 		Metadata: domain.SessionMetadata{
 			Branch:                    row.Branch,
 			WorkspacePath:             row.WorkspacePath,
@@ -309,16 +325,16 @@ func rowToRecord(row gen.Session) domain.SessionRecord {
 	}
 }
 
-func getSessionRowToRecord(row gen.Session) domain.SessionRecord {
+func getSessionRowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 	return rowToRecord(row)
 }
 
-func listSessionsByProjectRowToRecord(row gen.Session) domain.SessionRecord {
-	return rowToRecord(row)
+func listSessionsByProjectRowToRecord(row gen.ListSessionsByProjectRow) domain.SessionRecord {
+	return rowToRecord(gen.GetSessionRow(row))
 }
 
-func listAllSessionsRowToRecord(row gen.Session) domain.SessionRecord {
-	return rowToRecord(row)
+func listAllSessionsRowToRecord(row gen.ListAllSessionsRow) domain.SessionRecord {
+	return rowToRecord(gen.GetSessionRow(row))
 }
 
 func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams {
@@ -350,6 +366,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		PreviewURL:                rec.Metadata.PreviewURL,
 		PreviewRevision:           rec.Metadata.PreviewRevision,
 		TerminateOnPRMerge:        rec.TerminateOnPRMerge,
+		AutoInjectReview:          rec.AutoInjectReview,
 		CleanupGeneration:         rec.CleanupGeneration,
 		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
 		SessionMode:               domain.NormalizeSessionMode(rec.Mode),
@@ -387,6 +404,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		PreviewURL:                rec.Metadata.PreviewURL,
 		PreviewRevision:           rec.Metadata.PreviewRevision,
 		TerminateOnPRMerge:        rec.TerminateOnPRMerge,
+		AutoInjectReview:          rec.AutoInjectReview,
 		CleanupGeneration:         rec.CleanupGeneration,
 		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,

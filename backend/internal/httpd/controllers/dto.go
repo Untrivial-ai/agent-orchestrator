@@ -363,6 +363,19 @@ type SetSessionMergePolicyResponse struct {
 	Session            SessionView      `json:"session"`
 }
 
+// SetSessionAutoInjectReviewRequest is the body of PATCH /api/v1/sessions/{sessionId}/auto-inject-review.
+type SetSessionAutoInjectReviewRequest struct {
+	AutoInjectReview bool `json:"autoInjectReview"`
+}
+
+// SetSessionAutoInjectReviewResponse is the response from updating a session's automatic review-injection policy.
+type SetSessionAutoInjectReviewResponse struct {
+	OK               bool             `json:"ok"`
+	SessionID        domain.SessionID `json:"sessionId"`
+	AutoInjectReview bool             `json:"autoInjectReview"`
+	Session          SessionView      `json:"session"`
+}
+
 // RestoreSessionResponse is the body of POST /api/v1/sessions/{sessionId}/restore.
 type RestoreSessionResponse struct {
 	OK          bool                       `json:"ok"`
@@ -561,12 +574,13 @@ type SessionPRReviewSummary struct {
 // SessionPRReviewEntry is one submitted provider review summary: a reviewer's
 // decisive verdict and the summary body they submitted with it.
 type SessionPRReviewEntry struct {
-	ReviewerID  string                `json:"reviewerId"`
-	Verdict     domain.ReviewDecision `json:"verdict" enum:"none,approved,changes_requested,review_required"`
-	Body        string                `json:"body,omitempty"`
-	ReviewURL   string                `json:"reviewUrl,omitempty"`
-	SubmittedAt time.Time             `json:"submittedAt"`
-	IsBot       bool                  `json:"isBot,omitempty"`
+	ReviewerID       string                `json:"reviewerId"`
+	Verdict          domain.ReviewDecision `json:"verdict" enum:"none,approved,changes_requested,review_required"`
+	Body             string                `json:"body,omitempty"`
+	ReviewURL        string                `json:"reviewUrl,omitempty"`
+	SubmittedAt      time.Time             `json:"submittedAt"`
+	IsBot            bool                  `json:"isBot,omitempty"`
+	AutoInjectReview bool                  `json:"autoInjectReview"`
 }
 
 // SessionPRUnresolvedReviewer groups unresolved human comments by reviewer.
@@ -580,9 +594,10 @@ type SessionPRUnresolvedReviewer struct {
 
 // SessionPRReviewCommentLink points to one unresolved review comment.
 type SessionPRReviewCommentLink struct {
-	URL  string `json:"url,omitempty"`
-	File string `json:"file,omitempty"`
-	Line int    `json:"line,omitempty"`
+	URL              string `json:"url,omitempty"`
+	File             string `json:"file,omitempty"`
+	Line             int    `json:"line,omitempty"`
+	AutoInjectReview bool   `json:"autoInjectReview"`
 }
 
 // SessionPRMergeabilitySummary is the mergeability block for a session PR summary.
@@ -654,19 +669,20 @@ func newSessionPRReviewSummary(in sessionsvc.PRReviewSummary) SessionPRReviewSum
 	for _, reviewer := range in.UnresolvedBy {
 		links := make([]SessionPRReviewCommentLink, 0, len(reviewer.Links))
 		for _, link := range reviewer.Links {
-			links = append(links, SessionPRReviewCommentLink{URL: link.URL, File: link.File, Line: link.Line})
+			links = append(links, SessionPRReviewCommentLink{URL: link.URL, File: link.File, Line: link.Line, AutoInjectReview: link.AutoInjectReview})
 		}
 		reviewers = append(reviewers, SessionPRUnresolvedReviewer{ReviewerID: reviewer.ReviewerID, Count: reviewer.Count, Links: links, ReviewURL: reviewer.ReviewURL, IsBot: reviewer.IsBot})
 	}
 	entries := make([]SessionPRReviewEntry, 0, len(in.Reviews))
 	for _, review := range in.Reviews {
 		entries = append(entries, SessionPRReviewEntry{
-			ReviewerID:  review.Reviewer,
-			Verdict:     review.Verdict,
-			Body:        review.Body,
-			ReviewURL:   review.URL,
-			SubmittedAt: review.SubmittedAt,
-			IsBot:       review.IsBot,
+			ReviewerID:       review.Reviewer,
+			Verdict:          review.Verdict,
+			Body:             review.Body,
+			ReviewURL:        review.URL,
+			SubmittedAt:      review.SubmittedAt,
+			IsBot:            review.IsBot,
+			AutoInjectReview: review.AutoInjectReview,
 		})
 	}
 	return SessionPRReviewSummary{Decision: in.Decision, HasUnresolvedHumanComments: in.HasUnresolvedHumanComments, UnresolvedBy: reviewers, Reviews: entries}

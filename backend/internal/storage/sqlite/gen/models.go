@@ -216,28 +216,30 @@ type PRCheck struct {
 }
 
 type PRComment struct {
-	PRURL     string
-	CommentID string
-	Author    string
-	File      string
-	Line      int64
-	Body      string
-	Resolved  bool
-	CreatedAt time.Time
-	ThreadID  string
-	URL       string
-	IsBot     int64
+	PRURL            string
+	CommentID        string
+	Author           string
+	File             string
+	Line             int64
+	Body             string
+	Resolved         bool
+	CreatedAt        time.Time
+	ThreadID         string
+	URL              string
+	IsBot            int64
+	AutoInjectReview bool
 }
 
 type PRReview struct {
-	PRURL       string
-	ReviewID    string
-	Author      string
-	State       string
-	URL         string
-	IsBot       int64
-	SubmittedAt time.Time
-	Body        string
+	PRURL            string
+	ReviewID         string
+	Author           string
+	State            string
+	URL              string
+	IsBot            int64
+	SubmittedAt      time.Time
+	Body             string
+	AutoInjectReview bool
 }
 
 type PRReviewThread struct {
@@ -275,19 +277,20 @@ type Review struct {
 }
 
 type ReviewRun struct {
-	ID             string
-	ReviewID       string
-	SessionID      domain.SessionID
-	Harness        domain.ReviewerHarness
-	PRURL          string
-	TargetSha      string
-	Status         domain.ReviewRunStatus
-	Verdict        domain.ReviewVerdict
-	Body           string
-	CreatedAt      time.Time
-	GithubReviewID string
-	DeliveredAt    sql.NullTime
-	BatchID        string
+	ID               string
+	ReviewID         string
+	SessionID        domain.SessionID
+	Harness          domain.ReviewerHarness
+	PRURL            string
+	TargetSha        string
+	Status           domain.ReviewRunStatus
+	Verdict          domain.ReviewVerdict
+	Body             string
+	CreatedAt        time.Time
+	GithubReviewID   string
+	DeliveredAt      sql.NullTime
+	BatchID          string
+	AutoInjectReview bool
 }
 
 type Session struct {
@@ -320,10 +323,11 @@ type Session struct {
 	ReviewerHarness           domain.ReviewerHarness
 	IsPinned                  bool
 	PinnedAt                  sql.NullTime
-	BrowserCapabilityVerifier string
 	SessionMode               domain.SessionMode
 	ProviderConversationID    string
 	ControllerGeneration      string
+	BrowserCapabilityVerifier string
+	AutoInjectReview          bool
 }
 
 type SessionCleanupFact struct {

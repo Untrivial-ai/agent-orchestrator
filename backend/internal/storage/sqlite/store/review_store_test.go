@@ -48,7 +48,7 @@ func TestInsertReviewRunDuplicatePRSHAMapsToSentinel(t *testing.T) {
 		t.Fatalf("same sha on different PR should insert: %v", err)
 	}
 
-	if ok, err := s.UpdateReviewRunResult(ctx, "run-1", domain.ReviewRunFailed, domain.VerdictNone, "claude: not found", ""); err != nil {
+	if ok, err := s.UpdateReviewRunResult(ctx, "run-1", domain.ReviewRunFailed, domain.VerdictNone, "claude: not found", "", true); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	} else if !ok {
 		t.Fatal("mark failed: got ok=false")
@@ -130,7 +130,7 @@ func TestInsertReviewRunAllowsRerunAfterChangesRequested(t *testing.T) {
 	if err := s.InsertReviewRun(ctx, run); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
-	if ok, err := s.UpdateReviewRunResult(ctx, "run-1", domain.ReviewRunComplete, domain.VerdictChangesRequested, "please fix", "rev-1"); err != nil {
+	if ok, err := s.UpdateReviewRunResult(ctx, "run-1", domain.ReviewRunComplete, domain.VerdictChangesRequested, "please fix", "rev-1", true); err != nil {
 		t.Fatalf("mark changes requested: %v", err)
 	} else if !ok {
 		t.Fatal("mark changes requested: got ok=false")
@@ -278,7 +278,7 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
-	if ok, err := s.UpdateReviewRunResult(ctx, "run-1", domain.ReviewRunComplete, domain.VerdictChangesRequested, "please fix", "rev-987"); err != nil {
+	if ok, err := s.UpdateReviewRunResult(ctx, "run-1", domain.ReviewRunComplete, domain.VerdictChangesRequested, "please fix", "rev-987", false); err != nil {
 		t.Fatalf("update run: %v", err)
 	} else if !ok {
 		t.Fatal("update run: got ok=false")
@@ -317,7 +317,7 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list runs: %v", err)
 	}
-	if len(runs) != 1 || runs[0].ID != "run-1" {
+	if len(runs) != 1 || runs[0].ID != "run-1" || runs[0].AutoInjectReview {
 		t.Fatalf("list runs = %+v", runs)
 	}
 	batchRuns, err := s.ListReviewRunsByBatch(ctx, rec.ID, "batch-1")
@@ -328,7 +328,7 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 		t.Fatalf("batch runs = %+v", batchRuns)
 	}
 
-	if ok, err := s.UpdateReviewRunResult(ctx, "run-1", domain.ReviewRunComplete, domain.VerdictApproved, "again", ""); err != nil {
+	if ok, err := s.UpdateReviewRunResult(ctx, "run-1", domain.ReviewRunComplete, domain.VerdictApproved, "again", "", true); err != nil {
 		t.Fatalf("second update: %v", err)
 	} else if ok {
 		t.Fatal("second update completed an already-complete run")

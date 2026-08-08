@@ -137,7 +137,7 @@ func newManager() (*Manager, *fakeStore, *fakeMessenger) {
 }
 
 func working(id domain.SessionID) domain.SessionRecord {
-	return domain.SessionRecord{ID: id, ProjectID: "mer", Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Now()}}
+	return domain.SessionRecord{ID: id, ProjectID: "mer", Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Now()}, AutoInjectReview: true}
 }
 
 func TestRuntimeObservation_ConfirmedRuntimeDeathTerminates(t *testing.T) {
@@ -1207,6 +1207,27 @@ func TestPRObservation_ReviewCommentsNudgeAgent(t *testing.T) {
 	}
 }
 
+func TestPRObservation_ReviewFeedbackNotInjectedWhenDisabled(t *testing.T) {
+	m, st, msg := newManager()
+	rec := working("mer-1")
+	rec.AutoInjectReview = false
+	st.sessions[rec.ID] = rec
+	o := ports.PRObservation{
+		Fetched:  true,
+		URL:      "pr1",
+		CI:       domain.CIFailing,
+		Checks:   []ports.PRCheckObservation{{Name: "build", Status: domain.PRCheckFailed, LogTail: "boom"}},
+		Review:   domain.ReviewChangesRequest,
+		Comments: []ports.PRCommentObservation{{ID: "1", Author: "alice", Body: "fix this"}},
+	}
+	if err := m.ApplyPRObservation(ctx, rec.ID, o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "boom") || strings.Contains(msg.msgs[0], "fix this") {
+		t.Fatalf("messages = %v, want CI only while review feedback is not injected", msg.msgs)
+	}
+}
+
 func TestPRObservation_CIFailingAndReviewBothNudge(t *testing.T) {
 	m, st, msg := newManager()
 	st.sessions["mer-1"] = working("mer-1")
@@ -1797,12 +1818,16 @@ func TestApplyReviewBatchNoopsWhenWorkerCannotBeNudged(t *testing.T) {
 		{
 			name:   "worker waiting input",
 			result: ReviewResult{RunID: "run-1", PRURL: "pr1", Verdict: domain.VerdictChangesRequested},
-			rec:    domain.SessionRecord{ID: "mer-1", Activity: domain.Activity{State: domain.ActivityWaitingInput}},
+			rec: func() domain.SessionRecord {
+				r := working("mer-1")
+				r.Activity.State = domain.ActivityWaitingInput
+				return r
+			}(),
 		},
 		{
 			name:   "worker agent exited",
 			result: ReviewResult{RunID: "run-1", PRURL: "pr1", Verdict: domain.VerdictChangesRequested},
-			rec:    domain.SessionRecord{ID: "mer-1", Activity: domain.Activity{State: domain.ActivityExited}},
+			rec:    func() domain.SessionRecord { r := working("mer-1"); r.Activity.State = domain.ActivityExited; return r }(),
 		},
 	}
 	for _, tt := range tests {

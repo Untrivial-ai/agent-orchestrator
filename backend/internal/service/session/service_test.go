@@ -177,6 +177,17 @@ func (f *fakeStore) SetSessionTerminateOnPRMerge(_ context.Context, id domain.Se
 	return true, nil
 }
 
+func (f *fakeStore) SetSessionAutoInjectReview(_ context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error) {
+	r, ok := f.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	r.AutoInjectReview = autoInject
+	r.UpdatedAt = updatedAt
+	f.sessions[id] = r
+	return true, nil
+}
+
 func (f *fakeStore) SetSessionReviewerHarness(_ context.Context, id domain.SessionID, harness domain.ReviewerHarness, updatedAt time.Time) (bool, error) {
 	r, ok := f.sessions[id]
 	if !ok {
@@ -352,6 +363,25 @@ func TestSessionSetTerminateOnPRMergePersistsPolicy(t *testing.T) {
 
 func TestSessionSetTerminateOnPRMergeUnknownSession(t *testing.T) {
 	if _, err := (&Service{store: newFakeStore()}).SetTerminateOnPRMerge(context.Background(), "ghost-1", true); err == nil {
+		t.Fatal("expected missing session error")
+	}
+}
+
+func TestSessionSetAutoInjectReviewPersistsPolicy(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, AutoInjectReview: true}
+
+	sess, err := (&Service{store: st}).SetAutoInjectReview(context.Background(), "mer-1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.AutoInjectReview || st.sessions["mer-1"].AutoInjectReview {
+		t.Fatalf("auto-inject policy was not disabled: session=%+v stored=%+v", sess, st.sessions["mer-1"])
+	}
+}
+
+func TestSessionSetAutoInjectReviewUnknownSession(t *testing.T) {
+	if _, err := (&Service{store: newFakeStore()}).SetAutoInjectReview(context.Background(), "ghost-1", false); err == nil {
 		t.Fatal("expected missing session error")
 	}
 }
@@ -2201,12 +2231,12 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 		{Name: "lint", Status: domain.PRCheckPassed, Conclusion: "success", URL: "https://github.com/acme/repo/actions/runs/2"},
 	}
 	stList.reviews[prURL] = []domain.PullRequestReview{
-		{ID: "review-1", Author: "reviewer-a", State: domain.ReviewChangesRequest, URL: "https://github.com/acme/repo/pull/7#pullrequestreview-1", Body: "summary: please fix the failing unit test", SubmittedAt: now.Add(-30 * time.Second)},
+		{ID: "review-1", Author: "reviewer-a", State: domain.ReviewChangesRequest, URL: "https://github.com/acme/repo/pull/7#pullrequestreview-1", Body: "summary: please fix the failing unit test", SubmittedAt: now.Add(-30 * time.Second), AutoInjectReview: false},
 	}
 	stList.comments[prURL] = []domain.PullRequestComment{
-		{Author: "reviewer-a", File: "main.go", Line: 12, Body: "raw body must stay private", URL: "https://github.com/acme/repo/pull/7#discussion_r1"},
+		{Author: "reviewer-a", File: "main.go", Line: 12, Body: "raw body must stay private", URL: "https://github.com/acme/repo/pull/7#discussion_r1", AutoInjectReview: false},
 		{Author: "ci-bot", File: "main.go", Line: 13, Body: "bot body", URL: "https://github.com/acme/repo/pull/7#discussion_r2", IsBot: true},
-		{Author: "reviewer-a", File: "test.go", Line: 22, Body: "another raw body", URL: "https://github.com/acme/repo/pull/7#discussion_r3"},
+		{Author: "reviewer-a", File: "test.go", Line: 22, Body: "another raw body", URL: "https://github.com/acme/repo/pull/7#discussion_r3", AutoInjectReview: true},
 	}
 
 	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
@@ -2230,6 +2260,8 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 		t.Fatalf("reviewer = %+v", reviewer)
 	} else if reviewer.ReviewURL != "https://github.com/acme/repo/pull/7#pullrequestreview-1" {
 		t.Fatalf("review url = %q", reviewer.ReviewURL)
+	} else if reviewer.Links[0].AutoInjectReview || !reviewer.Links[1].AutoInjectReview {
+		t.Fatalf("comment injection decisions = %+v, want false then true", reviewer.Links)
 	}
 	if pr.Mergeability.State != domain.MergeConflicting || len(pr.Mergeability.ConflictFiles) != 0 || !containsString(pr.Mergeability.Reasons, "conflicts") {
 		t.Fatalf("mergeability = %+v", pr.Mergeability)
@@ -2239,7 +2271,7 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	}
 	if entry := pr.Review.Reviews[0]; entry.Reviewer != "reviewer-a" || entry.Verdict != domain.ReviewChangesRequest ||
 		entry.Body != "summary: please fix the failing unit test" ||
-		entry.URL != "https://github.com/acme/repo/pull/7#pullrequestreview-1" {
+		entry.URL != "https://github.com/acme/repo/pull/7#pullrequestreview-1" || entry.AutoInjectReview {
 		t.Fatalf("review summary entry = %+v", entry)
 	}
 	// The review summary body is surfaced, but inline comment bodies and CI log

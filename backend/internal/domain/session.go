@@ -92,6 +92,7 @@ type SessionRecord struct {
 	// TerminateOnPRMerge is a user-controlled lifecycle policy. When enabled,
 	// completing the session's PR set through a merge tears down the session.
 	TerminateOnPRMerge bool            `json:"terminateOnPrMerge"`
+	AutoInjectReview   bool            `json:"autoInjectReview"`
 	Metadata           SessionMetadata `json:"-"`
 	// CleanupGeneration is a monotonic counter bumped each time the session is
 	// un-terminated (spawn/restore). The terminal-resource reconciler stamps its

@@ -82,6 +82,7 @@ describe("useWorkspaceQuery", () => {
 							status: "mergeable",
 							scmStatus: "review_pending",
 							isTerminated: false,
+							autoInjectReview: false,
 							activity: { state: "idle", lastActivityAt: "2026-06-10T15:30:00Z" },
 							updatedAt: "2026-06-10T16:15:04Z",
 						},
@@ -126,6 +127,7 @@ describe("useWorkspaceQuery", () => {
 			status: "mergeable",
 			scmStatus: "review_pending",
 			activity: { state: "idle", lastActivityAt: "2026-06-10T15:30:00Z" },
+			autoInjectReview: false,
 		});
 		expect(workspace.sessions[1]).toMatchObject({
 			id: "sess-2",
@@ -134,6 +136,7 @@ describe("useWorkspaceQuery", () => {
 			reviewerHarness: undefined,
 			status: "unknown",
 			branch: undefined,
+			autoInjectReview: true,
 		});
 		expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.session_state_unknown", {
 			field: "status",
