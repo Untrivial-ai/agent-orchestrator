@@ -505,7 +505,7 @@ function UsageDisclosureRow({
 	const exactTotal = totalTokens?.toLocaleString("en-US");
 
 	return (
-		<div>
+		<div className="p-2">
 			<button
 				aria-controls={detailID}
 				aria-expanded={open}
@@ -1274,22 +1274,7 @@ function ReviewsSection({
 	);
 
 	return (
-		<div>
-			<div className="mb-2.5 flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
-				<div className="min-w-0">
-					<p className="text-xs font-medium text-foreground">{t("inspector.review.autoInject")}</p>
-					<p className="text-2xs text-muted-foreground">{t("inspector.review.autoInjectDescription")}</p>
-				</div>
-				<Switch
-					aria-label={t("inspector.review.autoInject")}
-					checked={autoInjectReview}
-					disabled={saveAutoInjectReview.isPending}
-					onCheckedChange={(enabled) => {
-						setAutoInjectReview(enabled);
-						saveAutoInjectReview.mutate(enabled);
-					}}
-				/>
-			</div>
+		<div className="p-2">
 			{/* Running a review is an action; reading them is a list. The action stays
 			    on top, then one list carrying both sources keyed by PR. */}
 			<ReviewPanel
@@ -1329,6 +1314,36 @@ function ReviewsSection({
 				runs={reviewsQuery.data?.runs ?? []}
 				session={session}
 			/>
+			<div className="mt-2.5 flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
+				<div className="min-w-0">
+					<div className="flex min-w-0 items-center gap-1.5">
+						<p className="truncate text-xs font-medium text-foreground">{t("inspector.review.autoInject")}</p>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<button
+									type="button"
+									className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+									aria-label={t("inspector.review.autoInjectDescription")}
+								>
+									<Info aria-hidden="true" className="size-icon-2xs" />
+								</button>
+							</TooltipTrigger>
+							<TooltipContent className="max-w-60 leading-normal">
+								{t("inspector.review.autoInjectDescription")}
+							</TooltipContent>
+						</Tooltip>
+					</div>
+				</div>
+				<Switch
+					aria-label={t("inspector.review.autoInject")}
+					checked={autoInjectReview}
+					disabled={saveAutoInjectReview.isPending}
+					onCheckedChange={(enabled) => {
+						setAutoInjectReview(enabled);
+						saveAutoInjectReview.mutate(enabled);
+					}}
+				/>
+			</div>
 		</div>
 	);
 }

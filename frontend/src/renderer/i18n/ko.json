@@ -197,7 +197,7 @@
 	"inspector.returnToPanel": "패널로 돌아가기",
 	"inspector.review.approved": "승인됨",
 	"inspector.review.autoInject": "리뷰 피드백 자동 전송",
-	"inspector.review.autoInjectDescription": "비활성화하면 SCM 및 AO 리뷰는 여기에 계속 표시되지만 에이전트에게 전송되지 않습니다.",
+	"inspector.review.autoInjectDescription": "비활성화하면 리뷰는 여기에 계속 표시되지만 에이전트에게 전송되지 않습니다.",
 	"inspector.review.autoInjectError": "리뷰 자동 전송 설정을 업데이트할 수 없습니다",
 	"inspector.review.cancel": "리뷰 중지",
 	"inspector.review.cancelled": "취소됨",

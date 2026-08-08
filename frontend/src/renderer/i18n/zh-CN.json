@@ -196,7 +196,7 @@
 	"inspector.returnToPanel": "返回面板",
 	"inspector.review.approved": "已批准",
 	"inspector.review.autoInject": "自动发送评审反馈",
-	"inspector.review.autoInjectDescription": "禁用后，SCM 和 AO 评审仍会显示在此处，但不会发送给智能体。",
+	"inspector.review.autoInjectDescription": "禁用后，评审仍会显示在此处，但不会发送给智能体。",
 	"inspector.review.autoInjectError": "无法更新评审自动注入设置",
 	"inspector.review.cancel": "停止评审",
 	"inspector.review.cancelled": "已取消",

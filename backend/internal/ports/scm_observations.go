@@ -226,6 +226,10 @@ type SCMReviewSummaryObservation struct {
 	IsBot bool
 	// SubmittedAt is the provider's review submission timestamp.
 	SubmittedAt time.Time
+	// AutoInjectReview snapshots whether this observed review should be sent to the agent.
+	AutoInjectReview bool
+	// AutoInjectReviewSet is true when AutoInjectReview was explicitly snapshotted.
+	AutoInjectReviewSet bool
 }
 
 // SCMReviewThreadObservation is a normalized review thread with comments.
@@ -256,6 +260,10 @@ type SCMReviewCommentObservation struct {
 	URL string
 	// IsBot is true when the provider identifies the author as a bot.
 	IsBot bool
+	// AutoInjectReview snapshots whether this observed comment should be sent to the agent.
+	AutoInjectReview bool
+	// AutoInjectReviewSet is true when AutoInjectReview was explicitly snapshotted.
+	AutoInjectReviewSet bool
 }
 
 // SCMMergeabilityObservation is the normalized mergeability verdict.

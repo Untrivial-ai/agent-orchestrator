@@ -196,9 +196,9 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 		}
 	}
 
-	if rec.AutoInjectReview {
-		if o.Review == domain.ReviewChangesRequest || hasUnresolvedComments(o.Comments) {
-			comments := unresolvedReviewComments(o.Comments)
+	if reviewFeedbackShouldInject(o, rec.AutoInjectReview) {
+		comments := injectableUnresolvedReviewComments(o.Comments, rec.AutoInjectReview)
+		if o.Review == domain.ReviewChangesRequest || len(comments) > 0 {
 			msg := formatReviewCommentsMessage(comments)
 			if ident != "your PR" {
 				msg = strings.Replace(msg, "your PR", ident, 1)
@@ -442,6 +442,13 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 	if pr.Mergeability == "" {
 		pr.Mergeability = domain.MergeUnknown
 	}
+	for _, review := range o.Review.Reviews {
+		if domain.ReviewDecision(review.State) == domain.ReviewChangesRequest {
+			pr.ReviewAutoInjectReview = review.AutoInjectReview
+			pr.ReviewAutoInjectReviewSet = review.AutoInjectReviewSet
+			break
+		}
+	}
 	checkCommit := firstSCMNonEmpty(o.CI.HeadSHA, o.PR.HeadSHA)
 	for _, ch := range o.CI.FailedChecks {
 		status := domain.PRCheckStatus(ch.Status)
@@ -469,14 +476,16 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 				continue
 			}
 			pr.Comments = append(pr.Comments, ports.PRCommentObservation{
-				ID:       c.ID,
-				ThreadID: th.ID,
-				Author:   c.Author,
-				File:     th.Path,
-				Line:     th.Line,
-				Body:     c.Body,
-				URL:      c.URL,
-				Resolved: th.Resolved,
+				ID:                  c.ID,
+				ThreadID:            th.ID,
+				Author:              c.Author,
+				File:                th.Path,
+				Line:                th.Line,
+				Body:                c.Body,
+				URL:                 c.URL,
+				Resolved:            th.Resolved,
+				AutoInjectReview:    c.AutoInjectReview,
+				AutoInjectReviewSet: c.AutoInjectReviewSet,
 			})
 		}
 	}
@@ -593,15 +602,6 @@ func prIdentity(o ports.PRObservation) string {
 	return id
 }
 
-func hasUnresolvedComments(comments []ports.PRCommentObservation) bool {
-	for _, c := range comments {
-		if !c.Resolved {
-			return true
-		}
-	}
-	return false
-}
-
 func failedPRChecks(checks []ports.PRCheckObservation) []ports.PRCheckObservation {
 	failed := make([]ports.PRCheckObservation, 0, len(checks))
 	for _, ch := range checks {
@@ -656,10 +656,45 @@ func formatCIFailureMessage(checks []ports.PRCheckObservation) string {
 	return msg.String()
 }
 
-func unresolvedReviewComments(comments []ports.PRCommentObservation) []ports.PRCommentObservation {
+func reviewFeedbackShouldInject(o ports.PRObservation, fallback bool) bool {
+	if hasInjectableUnresolvedReviewComments(o.Comments, fallback) {
+		return true
+	}
+	if o.Review != domain.ReviewChangesRequest {
+		return false
+	}
+	if o.ReviewAutoInjectReviewSet {
+		return o.ReviewAutoInjectReview
+	}
+	return fallback
+}
+
+func hasInjectableUnresolvedReviewComments(comments []ports.PRCommentObservation, fallback bool) bool {
+	for _, c := range comments {
+		if c.Resolved {
+			continue
+		}
+		if reviewCommentShouldInject(c, fallback) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewCommentShouldInject(c ports.PRCommentObservation, fallback bool) bool {
+	if c.AutoInjectReviewSet {
+		return c.AutoInjectReview
+	}
+	return fallback
+}
+
+func injectableUnresolvedReviewComments(comments []ports.PRCommentObservation, fallback bool) []ports.PRCommentObservation {
 	unresolved := make([]ports.PRCommentObservation, 0, len(comments))
 	for _, c := range comments {
 		if c.Resolved {
+			continue
+		}
+		if !reviewCommentShouldInject(c, fallback) {
 			continue
 		}
 		unresolved = append(unresolved, c)

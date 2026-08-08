@@ -199,7 +199,7 @@
 	"inspector.returnToPanel": "Retour au panneau",
 	"inspector.review.approved": "Approuvé",
 	"inspector.review.autoInject": "Envoyer automatiquement les retours de revue",
-	"inspector.review.autoInjectDescription": "Lorsque cette option est désactivée, les revues SCM et AO restent visibles ici, mais ne sont pas envoyées à l’agent.",
+	"inspector.review.autoInjectDescription": "Lorsque cette option est désactivée, les revues restent visibles ici, mais ne sont pas envoyées à l’agent.",
 	"inspector.review.autoInjectError": "Impossible de mettre à jour l’injection automatique des revues",
 	"inspector.review.cancel": "Arrêter la revue",
 	"inspector.review.cancelled": "Annulé",

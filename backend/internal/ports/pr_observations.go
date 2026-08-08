@@ -21,20 +21,22 @@ type PRObserver interface {
 // read it as "PR closed". Checks/Comments are observation DTOs, not persistence
 // rows; the PR Manager owns mapping them into stored domain.PullRequest rows.
 type PRObservation struct {
-	Fetched      bool
-	URL          string
-	Number       int
-	Title        string
-	SourceBranch string
-	TargetBranch string
-	Draft        bool
-	Merged       bool
-	Closed       bool
-	CI           domain.CIState
-	Review       domain.ReviewDecision
-	Mergeability domain.Mergeability
-	Checks       []PRCheckObservation
-	Comments     []PRCommentObservation
+	Fetched                   bool
+	URL                       string
+	Number                    int
+	Title                     string
+	SourceBranch              string
+	TargetBranch              string
+	Draft                     bool
+	Merged                    bool
+	Closed                    bool
+	CI                        domain.CIState
+	Review                    domain.ReviewDecision
+	ReviewAutoInjectReview    bool
+	ReviewAutoInjectReviewSet bool
+	Mergeability              domain.Mergeability
+	Checks                    []PRCheckObservation
+	Comments                  []PRCommentObservation
 }
 
 // PRCheckObservation is one SCM check result on the observed PR.
@@ -48,12 +50,14 @@ type PRCheckObservation struct {
 
 // PRCommentObservation is one review comment observed on the PR.
 type PRCommentObservation struct {
-	ID       string
-	ThreadID string
-	Author   string
-	File     string
-	Line     int
-	Body     string
-	URL      string
-	Resolved bool
+	ID                  string
+	ThreadID            string
+	Author              string
+	File                string
+	Line                int
+	Body                string
+	URL                 string
+	Resolved            bool
+	AutoInjectReview    bool
+	AutoInjectReviewSet bool
 }

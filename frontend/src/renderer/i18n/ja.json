@@ -197,7 +197,7 @@
 	"inspector.returnToPanel": "パネルに戻る",
 	"inspector.review.approved": "承認済み",
 	"inspector.review.autoInject": "レビューフィードバックを自動送信",
-	"inspector.review.autoInjectDescription": "無効にすると、SCM と AO のレビューはここに表示されたままになりますが、エージェントには送信されません。",
+	"inspector.review.autoInjectDescription": "無効にすると、レビューはここに表示されたままになりますが、エージェントには送信されません。",
 	"inspector.review.autoInjectError": "レビューの自動送信設定を更新できません",
 	"inspector.review.cancel": "レビューを停止",
 	"inspector.review.cancelled": "キャンセル済み",
