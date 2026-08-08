@@ -363,10 +363,12 @@ type SetSessionMergePolicyResponse struct {
 	Session            SessionView      `json:"session"`
 }
 
+// SetSessionAutoInjectReviewRequest is the body of PATCH /api/v1/sessions/{sessionId}/auto-inject-review.
 type SetSessionAutoInjectReviewRequest struct {
 	AutoInjectReview bool `json:"autoInjectReview"`
 }
 
+// SetSessionAutoInjectReviewResponse is the response from updating a session's automatic review-injection policy.
 type SetSessionAutoInjectReviewResponse struct {
 	OK               bool             `json:"ok"`
 	SessionID        domain.SessionID `json:"sessionId"`

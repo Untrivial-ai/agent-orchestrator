@@ -573,7 +573,7 @@ func genReviewParams(prURL string, review domain.PullRequestReview) gen.UpsertPR
 		IsBot:            boolInt(review.IsBot),
 		SubmittedAt:      review.SubmittedAt,
 		Body:             review.Body,
-		AutoInjectReview: bool(review.AutoInjectReview),
+		AutoInjectReview: review.AutoInjectReview,
 	}
 }
 
