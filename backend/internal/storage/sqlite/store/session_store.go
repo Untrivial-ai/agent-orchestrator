@@ -40,6 +40,49 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
 }
 
+// UpdateSessionFromActivitySignal projects activity-derived session metadata
+// only when the signal still belongs to the session's active harness launch.
+func (s *Store) UpdateSessionFromActivitySignal(ctx context.Context, rec domain.SessionRecord) (bool, error) {
+	activity := normalActivity(rec.Activity, rec.UpdatedAt)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.UpdateSessionFromActivitySignal(ctx, gen.UpdateSessionFromActivitySignalParams{
+		ActivityState:                activity.State,
+		ActivityLastAt:               activity.LastActivityAt,
+		FirstSignalAt:                timeToNullTime(rec.FirstSignalAt),
+		AgentSessionID:               rec.Metadata.AgentSessionID,
+		LatestUserPrompt:             rec.Metadata.LatestUserPrompt,
+		LatestAssistantUpdate:        rec.Metadata.LatestAssistantUpdate,
+		NativeTranscriptPath:         rec.Metadata.NativeTranscriptPath,
+		UpdatedAt:                    rec.UpdatedAt,
+		ID:                           rec.ID,
+		ExpectedHarness:              rec.Harness,
+		ExpectedSessionMode:          domain.NormalizeSessionMode(rec.Mode),
+		ExpectedRuntimeLaunchID:      rec.Metadata.RuntimeLaunchID,
+		ExpectedControllerGeneration: rec.Metadata.ControllerGeneration,
+	})
+	if err != nil {
+		return false, fmt.Errorf("update session %s from activity signal: %w", rec.ID, err)
+	}
+	return rows > 0, nil
+}
+
+// RecordSessionLatestUserPrompt persists the latest real user direction without
+// rewriting lifecycle state that another goroutine may have advanced.
+func (s *Store) RecordSessionLatestUserPrompt(ctx context.Context, id domain.SessionID, prompt string, updatedAt time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.RecordSessionLatestUserPrompt(ctx, gen.RecordSessionLatestUserPromptParams{
+		LatestUserPrompt: prompt,
+		UpdatedAt:        updatedAt,
+		ID:               id,
+	})
+	if err != nil {
+		return false, fmt.Errorf("record latest user prompt for session %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // ClaimChatControllerGeneration makes generation the only Chat controller that
 // may project provider events for this session. The narrow update avoids writing
 // a stale full SessionRecord over lifecycle facts changed by another goroutine.
@@ -149,8 +192,8 @@ func (s *Store) SetSessionReviewerHarness(ctx context.Context, id domain.Session
 }
 
 // DeleteSession removes a session row, but only if it is still in seed state
-// (no workspace, no runtime handle, no agent session id, no prompt, and not
-// already terminated). Rows that have observable spawn output are immutable
+// (no workspace, no runtime handle, no agent session id, no prompt, no handoff
+// metadata, and not already terminated). Rows that have observable spawn output are immutable
 // to preserve the no-resurrection guarantee — for those, callers fall back to
 // MarkTerminated (lifecycle.Manager) instead.
 //
@@ -208,7 +251,10 @@ WHERE id = ?
   AND workspace_path = ''
   AND runtime_handle_id = ''
   AND agent_session_id = ''
-  AND prompt = ''`, id)
+  AND prompt = ''
+  AND latest_user_prompt = ''
+  AND latest_assistant_update = ''
+  AND native_transcript_path = ''`, id)
 	if err != nil {
 		return false, fmt.Errorf("delete seed session %s: %w", id, err)
 	}
@@ -297,6 +343,9 @@ func rowToRecord(row gen.Session) domain.SessionRecord {
 			RuntimeLaunchID:           row.RuntimeLaunchID,
 			AgentSessionID:            row.AgentSessionID,
 			Prompt:                    row.Prompt,
+			LatestUserPrompt:          row.LatestUserPrompt,
+			LatestAssistantUpdate:     row.LatestAssistantUpdate,
+			NativeTranscriptPath:      row.NativeTranscriptPath,
 			PreviewURL:                row.PreviewURL,
 			PreviewRevision:           row.PreviewRevision,
 			BrowserCapabilityVerifier: row.BrowserCapabilityVerifier,
@@ -347,6 +396,9 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		RuntimeLaunchID:           rec.Metadata.RuntimeLaunchID,
 		AgentSessionID:            rec.Metadata.AgentSessionID,
 		Prompt:                    rec.Metadata.Prompt,
+		LatestUserPrompt:          rec.Metadata.LatestUserPrompt,
+		LatestAssistantUpdate:     rec.Metadata.LatestAssistantUpdate,
+		NativeTranscriptPath:      rec.Metadata.NativeTranscriptPath,
 		PreviewURL:                rec.Metadata.PreviewURL,
 		PreviewRevision:           rec.Metadata.PreviewRevision,
 		TerminateOnPRMerge:        rec.TerminateOnPRMerge,
@@ -384,6 +436,9 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		RuntimeLaunchID:           rec.Metadata.RuntimeLaunchID,
 		AgentSessionID:            rec.Metadata.AgentSessionID,
 		Prompt:                    rec.Metadata.Prompt,
+		LatestUserPrompt:          rec.Metadata.LatestUserPrompt,
+		LatestAssistantUpdate:     rec.Metadata.LatestAssistantUpdate,
+		NativeTranscriptPath:      rec.Metadata.NativeTranscriptPath,
 		PreviewURL:                rec.Metadata.PreviewURL,
 		PreviewRevision:           rec.Metadata.PreviewRevision,
 		TerminateOnPRMerge:        rec.TerminateOnPRMerge,

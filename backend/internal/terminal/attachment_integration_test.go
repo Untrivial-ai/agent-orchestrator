@@ -45,7 +45,7 @@ func TestAttachmentStreamsRealTmuxPane(t *testing.T) {
 	go a.run(ctx)
 
 	// Type a unique marker and expect it echoed back through the PTY.
-	eventually(t, 3*time.Second, func() bool { return a.write([]byte("echo AO_MARKER_42\n")) == nil })
+	eventually(t, 3*time.Second, func() bool { return a.writeLeased([]byte("echo AO_MARKER_42\n"), nil) == nil })
 	eventually(t, 5*time.Second, func() bool { return strings.Contains(got.string(), "AO_MARKER_42") })
 
 	// Kill the session: the attachment must observe it as gone and not re-attach.
@@ -125,7 +125,7 @@ func TestAttachmentReattachAdoptsNewSize(t *testing.T) {
 	gotWidth := false
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		_ = b.write([]byte("echo SIZE:$(stty size)\n"))
+		_ = b.writeLeased([]byte("echo SIZE:$(stty size)\n"), nil)
 		time.Sleep(250 * time.Millisecond)
 		captured = gotB.string()
 		i := strings.LastIndex(captured, "SIZE:")

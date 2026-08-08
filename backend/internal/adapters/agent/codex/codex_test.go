@@ -35,6 +35,27 @@ func TestNativeConversationIDRequiresCapturedCodexThreadForTUI(t *testing.T) {
 	}
 }
 
+func TestCodexAuthStatusFromOutputRequiresAffirmativeEvidence(t *testing.T) {
+	tests := []struct {
+		name       string
+		output     string
+		wantStatus ports.AgentAuthStatus
+		wantKnown  bool
+	}{
+		{name: "authorized", output: "Logged in using ChatGPT", wantStatus: ports.AgentAuthStatusAuthorized, wantKnown: true},
+		{name: "unauthorized", output: "Not logged in", wantStatus: ports.AgentAuthStatusUnauthorized, wantKnown: true},
+		{name: "unknown error", output: "unsupported subcommand on this version", wantStatus: ports.AgentAuthStatusUnknown, wantKnown: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, known := codexAuthStatusFromOutput([]byte(tt.output))
+			if status != tt.wantStatus || known != tt.wantKnown {
+				t.Fatalf("auth output = (%q, %v), want (%q, %v)", status, known, tt.wantStatus, tt.wantKnown)
+			}
+		})
+	}
+}
+
 // canonicalTempDir returns a t.TempDir() with symlinks resolved so the
 // workspace trust flag collapses to a single predictable entry (macOS TempDir
 // lives under a /var -> /private/var symlink).
@@ -70,15 +91,151 @@ func TestExitDetectionUsesAOProcessSupervisor(t *testing.T) {
 	}
 }
 
+func TestDetectTerminalActivityWaitsForIdleComposerFooter(t *testing.T) {
+	startup := `
+╭─────────────────────╮
+│ >_ OpenAI Codex  │
+│ model: gpt-5.6-sol low /model to change │
+╭─────────────────────╯
+⚠ MCP startup incomplete (failed: example)
+`
+	idle := startup + `
+› Explain this codebase
+
+gpt-5.6-sol low · ~/project
+`
+	if state, ok := (&Plugin{}).DetectTerminalActivity(startup); ok {
+		t.Fatalf("startup activity = %q, want no prompt-readiness detection", state)
+	}
+	if state, ok := (&Plugin{}).DetectTerminalActivity(idle); !ok || state != domain.ActivityIdle {
+		t.Fatalf("idle activity = (%q, %v), want (%q, true)", state, ok, domain.ActivityIdle)
+	}
+}
+
+func TestComposerIsEmptyUsesCodexPromptMarker(t *testing.T) {
+	if !(&Plugin{}).ComposerIsEmpty("› \x1b[2mExplain this codebase\x1b[0m\n\x1b[2mmodel · workspace\x1b[0m") {
+		t.Fatal("dim placeholder should prove an empty Codex composer")
+	}
+}
+
+func TestContinuationCapabilities(t *testing.T) {
+	got := (&Plugin{}).ContinuationCapabilities()
+	want := ports.ContinuationCapabilities{
+		StandingInstructions: ports.StandingInstructionsCommand,
+		FreshNativeSessionID: ports.FreshNativeSessionIDProviderAssigned,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("capabilities = %#v, want %#v", got, want)
+	}
+}
+
+func TestNativeSessionConfigDirUsesRuntimeOverride(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "codex-home")
+	got, err := (&Plugin{}).NativeSessionConfigDir(context.Background(), map[string]string{
+		codexHomeEnv: dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dir {
+		t.Fatalf("config dir = %q, want %q", got, dir)
+	}
+}
+
+func TestNativeSessionConfigDirExplicitEmptyIgnoresDaemonOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(codexHomeEnv, filepath.Join(t.TempDir(), "daemon-codex-home"))
+
+	got, err := (&Plugin{}).NativeSessionConfigDir(context.Background(), map[string]string{
+		codexHomeEnv: "",
+		"HOME":       home,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".codex"); got != want {
+		t.Fatalf("config dir = %q, want provider default %q", got, want)
+	}
+}
+
+func TestLocateAndProbeNativeSessionTranscript(t *testing.T) {
+	configDir := t.TempDir()
+	sessionID := "019f9f7c-53c0-7f10-8d56-a8a979dd7001"
+	transcript := filepath.Join(configDir, "sessions", "2026", "08", "04", "rollout-2026-08-04T00-00-00-"+sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := ports.NativeSessionRef{NativeSessionID: sessionID, ConfigDir: configDir}
+	p := &Plugin{}
+	path, ok, err := p.LocateTranscript(context.Background(), ref)
+	if err != nil || !ok {
+		t.Fatalf("LocateTranscript = (%q, %v, %v), want transcript", path, ok, err)
+	}
+	if path != transcript {
+		t.Fatalf("path = %q, want %q", path, transcript)
+	}
+	availability, err := p.ProbeNativeSession(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if availability != ports.NativeSessionAvailabilityAvailable {
+		t.Fatalf("availability = %q, want available", availability)
+	}
+}
+
+func TestArchivedTranscriptIsDiscoverableButNotResumable(t *testing.T) {
+	configDir := t.TempDir()
+	sessionID := "019f9f7c-53c0-7f10-8d56-a8a979dd7001"
+	transcript := filepath.Join(configDir, "archived_sessions", "rollout-2026-08-04T00-00-00-"+sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := ports.NativeSessionRef{NativeSessionID: sessionID, ConfigDir: configDir}
+	p := &Plugin{}
+	path, ok, err := p.LocateTranscript(context.Background(), ref)
+	if err != nil || !ok || path != transcript {
+		t.Fatalf("LocateTranscript = (%q, %v, %v), want archived transcript", path, ok, err)
+	}
+	availability, err := p.ProbeNativeSession(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if availability != ports.NativeSessionAvailabilityUnavailable {
+		t.Fatalf("availability = %q, want unavailable for archived session", availability)
+	}
+}
+
+func TestProbeNativeSessionUnknownWithoutConfigDir(t *testing.T) {
+	availability, err := (&Plugin{}).ProbeNativeSession(context.Background(), ports.NativeSessionRef{
+		NativeSessionID: "019f9f7c-53c0-7f10-8d56-a8a979dd7001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if availability != ports.NativeSessionAvailabilityUnknown {
+		t.Fatalf("availability = %q, want unknown", availability)
+	}
+}
+
 func TestGetLaunchCommandBuildsCrossPlatformArgv(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "codex"}
 	workspace := canonicalTempDir(t)
+	systemFile := filepath.Join("tmp", "prompt with spaces.md")
 
 	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 		Permissions:      ports.PermissionModeBypassPermissions,
 		Prompt:           "-fix this",
-		SystemPromptFile: filepath.Join("tmp", "prompt with spaces.md"),
-		SystemPrompt:     "inline wins",
+		SessionID:        "session-123",
+		SystemPromptFile: systemFile,
+		SystemPrompt:     "inline fallback",
 		WorkspacePath:    workspace,
 	})
 	if err != nil {
@@ -98,11 +255,40 @@ func TestGetLaunchCommandBuildsCrossPlatformArgv(t *testing.T) {
 	}
 	want = append(want,
 		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
-		"-c", "developer_instructions="+codexTOMLConfigString("inline wins"),
+		"-c", "model_instructions_file="+systemFile,
 		"--", "-fix this",
 	)
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("unexpected command\nwant: %#v\n got: %#v", want, cmd)
+	}
+}
+
+func TestGetLaunchCommandUsesSystemPromptFile(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	promptFile := filepath.Join(t.TempDir(), "system.md")
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		SystemPromptFile: promptFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"-c", "model_instructions_file=" + promptFile}) {
+		t.Fatalf("command %#v missing system prompt file fallback", cmd)
+	}
+}
+
+func TestGetLaunchCommandWithoutAODataRootFallsBackToInlineSystemPrompt(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		SessionID:    "review-session",
+		SystemPrompt: "inline instructions",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "developer_instructions=" + codexTOMLConfigString("inline instructions")
+	if !containsSubsequence(cmd, []string{"-c", want}) {
+		t.Fatalf("command %#v missing inline system prompt fallback", cmd)
 	}
 }
 
@@ -538,12 +724,15 @@ func TestUninstallHooksRemovesLegacyCodexHooks(t *testing.T) {
 func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "codex"}
 	workspace := canonicalTempDir(t)
+	systemFile := filepath.Join("tmp", "restore system.md")
 
 	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
 		Permissions:      ports.PermissionModeAuto,
-		SystemPrompt:     "restore inline wins",
-		SystemPromptFile: filepath.Join("tmp", "restore-system.md"),
+		Prompt:           "continue from AO",
+		SystemPrompt:     "restore inline fallback",
+		SystemPromptFile: systemFile,
 		Session: ports.SessionRef{
+			ID:            "session-123",
 			Metadata:      map[string]string{ports.MetadataKeyAgentSessionID: "thread-123"},
 			WorkspacePath: workspace,
 		},
@@ -569,11 +758,47 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	}
 	want = append(want,
 		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
-		"-c", "developer_instructions="+codexTOMLConfigString("restore inline wins"),
+		"-c", "model_instructions_file="+systemFile,
 		"thread-123",
+		"--", "continue from AO",
 	)
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
+	}
+}
+
+func TestGetRestoreCommandUsesSystemPromptFile(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	promptFile := filepath.Join(t.TempDir(), "system.md")
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		SystemPromptFile: promptFile,
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "thread-123"},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
+	}
+	if !containsSubsequence(cmd, []string{"-c", "model_instructions_file=" + promptFile, "thread-123"}) {
+		t.Fatalf("restore command %#v missing system prompt file fallback", cmd)
+	}
+}
+
+func TestGetRestoreCommandWithoutAODataRootFallsBackToInlineSystemPrompt(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		SystemPrompt: "restore inline instructions",
+		Session: ports.SessionRef{
+			ID:       "review-session",
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "thread-123"},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
+	}
+	want := "developer_instructions=" + codexTOMLConfigString("restore inline instructions")
+	if !containsSubsequence(cmd, []string{"-c", want, "thread-123"}) {
+		t.Fatalf("restore command %#v missing ordered inline system prompt fallback", cmd)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -142,7 +143,7 @@ func TestGetLaunchCommandAppendsSystemPromptFromFile(t *testing.T) {
 
 	want := []string{
 		"claude",
-		"--append-system-prompt", "You are an orchestrator.",
+		"--append-system-prompt-file", promptFile,
 		"--", "do the thing",
 	}
 	if !reflect.DeepEqual(cmd, want) {
@@ -150,9 +151,9 @@ func TestGetLaunchCommandAppendsSystemPromptFromFile(t *testing.T) {
 	}
 }
 
-func TestGetLaunchCommandInlineSystemPrompt(t *testing.T) {
+func TestGetLaunchCommandSystemPromptFileTakesPrecedenceOverInline(t *testing.T) {
 	promptFile := filepath.Join(t.TempDir(), "system.md")
-	if err := os.WriteFile(promptFile, []byte("file ignored\n"), 0600); err != nil {
+	if err := os.WriteFile(promptFile, []byte("file instructions\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -164,12 +165,28 @@ func TestGetLaunchCommandInlineSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsSubsequence(cmd, []string{"--append-system-prompt", "inline instructions"}) {
-		t.Fatalf("command %#v does not append inline system prompt", cmd)
+	if !containsSubsequence(cmd, []string{"--append-system-prompt-file", promptFile}) {
+		t.Fatalf("command %#v does not use the system prompt file", cmd)
+	}
+	if contains(cmd, "inline instructions") {
+		t.Fatalf("command %#v unexpectedly embeds the inline system prompt", cmd)
 	}
 }
 
-func TestGetLaunchCommandMissingSystemPromptFileErrors(t *testing.T) {
+func TestGetLaunchCommandInlineSystemPromptFallback(t *testing.T) {
+	p := &Plugin{resolvedBinary: "claude"}
+	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		SystemPrompt: "inline instructions",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"--append-system-prompt", "inline instructions"}) {
+		t.Fatalf("command %#v does not append the inline system prompt fallback", cmd)
+	}
+}
+
+func TestGetLaunchCommandRejectsMissingSystemPromptFile(t *testing.T) {
 	p := &Plugin{resolvedBinary: "claude"}
 	_, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 		SystemPromptFile: filepath.Join(t.TempDir(), "does-not-exist.md"),
@@ -200,6 +217,139 @@ func TestGetLaunchCommandInjectsSessionID(t *testing.T) {
 	}
 	if contains(cmd, "--session-id") {
 		t.Fatalf("command %#v unexpectedly contains --session-id", cmd)
+	}
+}
+
+func TestGetLaunchCommandUsesRequestedNativeSessionID(t *testing.T) {
+	p := &Plugin{resolvedBinary: "claude"}
+	requested := "019f9f7c-53c0-7f10-8d56-a8a979dd7001"
+	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		SessionID:       "stable-ao-session",
+		NativeSessionID: requested,
+		Prompt:          "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"--session-id", requested}) {
+		t.Fatalf("command %#v missing requested native session id", cmd)
+	}
+	if contains(cmd, claudeSessionUUID("stable-ao-session")) {
+		t.Fatalf("command %#v used AO-derived id despite explicit native id", cmd)
+	}
+}
+
+func TestGetLaunchCommandRejectsInvalidRequestedNativeSessionID(t *testing.T) {
+	p := &Plugin{resolvedBinary: "claude"}
+	if _, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		NativeSessionID: "not-a-uuid",
+	}); err == nil {
+		t.Fatal("expected invalid native session id error")
+	}
+}
+
+func TestContinuationCapabilities(t *testing.T) {
+	got := (&Plugin{}).ContinuationCapabilities()
+	want := ports.ContinuationCapabilities{
+		StandingInstructions: ports.StandingInstructionsCommand,
+		FreshNativeSessionID: ports.FreshNativeSessionIDCallerAssigned,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("capabilities = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewNativeSessionIDReturnsDistinctClaudeUUIDs(t *testing.T) {
+	p := &Plugin{}
+	first := p.NewNativeSessionID()
+	second := p.NewNativeSessionID()
+	if first == second {
+		t.Fatalf("fresh native ids collided: %q", first)
+	}
+	if _, err := uuid.Parse(first); err != nil {
+		t.Fatalf("first native id %q is not a UUID: %v", first, err)
+	}
+	if _, err := uuid.Parse(second); err != nil {
+		t.Fatalf("second native id %q is not a UUID: %v", second, err)
+	}
+}
+
+func TestNativeSessionConfigDirUsesRuntimeOverride(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claude-profile")
+	got, err := (&Plugin{}).NativeSessionConfigDir(context.Background(), map[string]string{
+		claudeConfigDirEnv: dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dir {
+		t.Fatalf("config dir = %q, want %q", got, dir)
+	}
+}
+
+func TestNativeSessionConfigDirExplicitEmptyIgnoresDaemonOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(claudeConfigDirEnv, filepath.Join(t.TempDir(), "daemon-claude-profile"))
+
+	got, err := (&Plugin{}).NativeSessionConfigDir(context.Background(), map[string]string{
+		claudeConfigDirEnv: "",
+		"HOME":             home,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".claude"); got != want {
+		t.Fatalf("config dir = %q, want provider default %q", got, want)
+	}
+}
+
+func TestLocateAndProbeNativeSessionTranscript(t *testing.T) {
+	configDir := t.TempDir()
+	sessionID := "019f9f7c-53c0-7f10-8d56-a8a979dd7001"
+	transcript := filepath.Join(configDir, "projects", "encoded-workspace", sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := ports.NativeSessionRef{NativeSessionID: sessionID, ConfigDir: configDir}
+	p := &Plugin{}
+	path, ok, err := p.LocateTranscript(context.Background(), ref)
+	if err != nil || !ok {
+		t.Fatalf("LocateTranscript = (%q, %v, %v), want transcript", path, ok, err)
+	}
+	if path != transcript {
+		t.Fatalf("path = %q, want %q", path, transcript)
+	}
+	availability, err := p.ProbeNativeSession(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if availability != ports.NativeSessionAvailabilityAvailable {
+		t.Fatalf("availability = %q, want available", availability)
+	}
+
+	ref.NativeSessionID = "019f9f7c-53c0-7f10-8d56-a8a979dd7002"
+	availability, err = p.ProbeNativeSession(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if availability != ports.NativeSessionAvailabilityUnavailable {
+		t.Fatalf("missing availability = %q, want unavailable", availability)
+	}
+}
+
+func TestProbeNativeSessionUnknownWithoutConfigDir(t *testing.T) {
+	availability, err := (&Plugin{}).ProbeNativeSession(context.Background(), ports.NativeSessionRef{
+		NativeSessionID: "019f9f7c-53c0-7f10-8d56-a8a979dd7001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if availability != ports.NativeSessionAvailabilityUnknown {
+		t.Fatalf("availability = %q, want unknown", availability)
 	}
 }
 
@@ -434,6 +584,7 @@ func matcherForCommand(groups []hooksjson.MatcherGroup, command string) *string 
 func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	cmd, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
 		Permissions: ports.PermissionModeBypassPermissions,
+		Prompt:      "continue from AO",
 		Session: ports.SessionRef{
 			ID:       "sess-r",
 			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "claude-native-1"},
@@ -443,7 +594,7 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
 	}
 	// The hook-captured native id wins over the derived fallback.
-	want := []string{"claude", "--permission-mode", "bypassPermissions", "--resume", "claude-native-1"}
+	want := []string{"claude", "--permission-mode", "bypassPermissions", "--resume", "claude-native-1", "--", "continue from AO"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
 	}
@@ -477,7 +628,8 @@ func TestGetRestoreCommandReappendsSystemPromptFromFile(t *testing.T) {
 
 	cmd, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
 		Permissions:      ports.PermissionModeBypassPermissions,
-		SystemPrompt:     "inline wins",
+		Prompt:           "continue from AO",
+		SystemPrompt:     "inline fallback",
 		SystemPromptFile: promptFile,
 		Session: ports.SessionRef{
 			ID:       "sess-r",
@@ -487,9 +639,26 @@ func TestGetRestoreCommandReappendsSystemPromptFromFile(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
 	}
-	want := []string{"claude", "--permission-mode", "bypassPermissions", "--append-system-prompt", "inline wins", "--resume", "claude-native-1"}
+	want := []string{
+		"claude", "--permission-mode", "bypassPermissions",
+		"--append-system-prompt-file", promptFile,
+		"--resume", "claude-native-1",
+		"--", "continue from AO",
+	}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
+	}
+}
+
+func TestGetRestoreCommandRejectsNonRegularSystemPromptFile(t *testing.T) {
+	_, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		SystemPromptFile: t.TempDir(),
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "claude-native-1"},
+		},
+	})
+	if err == nil || ok {
+		t.Fatalf("restore = (ok=%v, err=%v), want non-regular-file error", ok, err)
 	}
 }
 
@@ -668,6 +837,13 @@ func TestClaudeAuthStatusFromOutputUnauthorized(t *testing.T) {
 	}
 }
 
+func TestClaudeAuthStatusFromOutputUnknownForUnrecognizedFailure(t *testing.T) {
+	status, ok := claudeAuthStatusFromOutput([]byte("unsupported subcommand on this version"))
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestEnsureWorkspaceTrustedCreatesEntry(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ".claude.json")
@@ -787,6 +963,18 @@ func TestGetLaunchCommandOmitsToolFlagsWhenUnset(t *testing.T) {
 	}
 	if contains(cmd, "--allowedTools") || contains(cmd, "--disallowedTools") {
 		t.Fatalf("unrestricted launch should emit no tool flags; got %#v", cmd)
+	}
+}
+
+func TestComposerIsEmptyUsesClaudePromptMarker(t *testing.T) {
+	plugin := &Plugin{}
+	if !plugin.ComposerIsEmpty("\x1b[39m❯\u00a0") {
+		t.Fatal("blank Claude composer was not recognized")
+	}
+	rule := "\x1b[38;5;244m" + strings.Repeat("─", 48) + "\x1b[39m"
+	footer := "\x1b[38;5;220mUpdate available!\x1b[39m\n\x1b[38;5;211m⏵⏵ bypass permissions on\x1b[39m"
+	if !plugin.ComposerIsEmpty(rule + "\n\x1b[39m❯\u00a0\x1b[7m \x1b[0m\n" + rule + "\n" + footer) {
+		t.Fatal("blank bordered Claude composer above status footer was not recognized")
 	}
 }
 

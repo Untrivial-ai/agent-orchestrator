@@ -205,8 +205,9 @@ func TestGetPromptDeliveryStrategyIsInCommand(t *testing.T) {
 }
 
 // lifecycleStore is a minimal in-memory implementation of the store the
-// lifecycle reducer writes. Only GetSession/UpdateSession carry the activity
-// path; the PR methods are inert stubs (the fake never opens a PR row).
+// lifecycle reducer writes. Only the session read/activity-write methods carry
+// the activity path; the PR methods are inert stubs (the fake never opens a PR
+// row).
 type lifecycleStore struct {
 	sessions map[domain.SessionID]domain.SessionRecord
 }
@@ -219,6 +220,11 @@ func (s *lifecycleStore) GetSession(_ context.Context, id domain.SessionID) (dom
 func (s *lifecycleStore) UpdateSession(_ context.Context, rec domain.SessionRecord) error {
 	s.sessions[rec.ID] = rec
 	return nil
+}
+
+func (s *lifecycleStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord) (bool, error) {
+	s.sessions[rec.ID] = rec
+	return true, nil
 }
 
 func (s *lifecycleStore) ListPRsBySession(_ context.Context, _ domain.SessionID) ([]domain.PullRequest, error) {

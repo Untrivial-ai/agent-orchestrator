@@ -86,6 +86,14 @@ type Runtime interface {
 	IsAlive(ctx context.Context, handle RuntimeHandle) (bool, error)
 }
 
+// StyledTerminalOutputReader is an optional runtime capability for safety
+// checks that must distinguish dim placeholder text from a human-authored
+// draft. Implementations return the same bounded pane excerpt as GetOutput but
+// preserve ANSI style sequences. Callers must fail closed when unavailable.
+type StyledTerminalOutputReader interface {
+	GetStyledOutput(ctx context.Context, handle RuntimeHandle, lines int) (string, error)
+}
+
 // RuntimeRestarter is an optional runtime capability for replacing the process
 // inside an existing terminal session. Implementations should preserve the
 // handle when possible so attached clients do not need a new terminal identity.
@@ -125,6 +133,15 @@ type SupervisedProcessRef struct {
 // as exit.
 type SupervisedProcessInspector interface {
 	IsSupervisedProcessAlive(ctx context.Context, handle RuntimeHandle, ref SupervisedProcessRef) (bool, error)
+}
+
+// ExactSupervisedProcessInspector is the strict launch-generation probe used
+// at agent-switch ownership boundaries. Unlike SupervisedProcessInspector it
+// must never treat an arbitrary child of a preserved shell as the requested
+// AO supervisor. A true result proves the exact session/launch pair and the
+// supervisor's managed agent child are both alive.
+type ExactSupervisedProcessInspector interface {
+	IsExactSupervisedProcessAlive(ctx context.Context, handle RuntimeHandle, ref SupervisedProcessRef) (bool, error)
 }
 
 // ContainerReaper removes Docker containers a worker session owns, identified
@@ -187,6 +204,44 @@ type Workspace interface {
 	// present are skipped. Owning this here keeps git/process execution inside the
 	// workspace adapter rather than leaking into callers.
 	AddExclude(ctx context.Context, info WorkspaceInfo, patterns ...string) error
+}
+
+// WorkspaceObserver is an optional read-only capability implemented by
+// workspace adapters that can describe the durable state an agent handoff
+// must treat as authoritative. The session manager consumes it before and
+// after replacing an agent process; it never infers Git state from terminal
+// prose supplied by a model.
+type WorkspaceObserver interface {
+	ObserveWorkspace(ctx context.Context, info WorkspaceInfo) (WorkspaceObservation, error)
+}
+
+// WorkspaceObservation is a bounded, provider-neutral snapshot of one
+// materialized workspace. Git-backed adapters populate repository facts;
+// scratch adapters return the path with Git fields empty.
+type WorkspaceObservation struct {
+	Path      string
+	Branch    string
+	HeadSHA   string
+	Dirty     bool
+	Staged    bool
+	Untracked bool
+	Changes   []WorkspaceChange
+	Commits   []WorkspaceCommit
+}
+
+// WorkspaceChange is one changed path reported by the workspace adapter.
+// Status is Git's two-column porcelain status (for example " M", "A ", or
+// "??") so callers retain staged/worktree provenance without reparsing prose.
+type WorkspaceChange struct {
+	Path   string `json:"path"`
+	Status string `json:"status"`
+}
+
+// WorkspaceCommit is one recent commit reachable from the workspace HEAD.
+type WorkspaceCommit struct {
+	SHA        string `json:"sha"`
+	Subject    string `json:"subject"`
+	AuthoredAt string `json:"authoredAt"`
 }
 
 // WorkspaceProject is an optional extension for projects composed from a

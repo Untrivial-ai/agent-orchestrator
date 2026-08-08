@@ -5,6 +5,7 @@ package conpty
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+const runtimeLaunchIDEnv = "AO_RUNTIME_LAUNCH_ID"
+
 // Ensure Runtime satisfies the port at compile time (Attach in attach.go).
 var _ ports.Runtime = (*Runtime)(nil)
 
@@ -22,8 +25,9 @@ var validSessionID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // hostSession is the in-memory state for a live pty-host connection.
 type hostSession struct {
-	addr string
-	pid  int
+	addr     string
+	pid      int
+	launchID string
 }
 
 // Options configures the Runtime. All fields are optional; zero values use
@@ -36,7 +40,12 @@ type Options struct {
 
 // Runtime is the conpty runtime adapter.
 type Runtime struct {
-	spawner hostSpawner
+	spawner       hostSpawner
+	killHost      func(string) error
+	pidIsAlive    func(int) bool
+	processFinder func(int) (processKiller, error)
+	destroyWait   time.Duration
+	destroyPoll   time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*hostSession // sessionID -> live session
@@ -49,8 +58,13 @@ func New(opts Options) *Runtime {
 		sp = defaultSpawnHost
 	}
 	return &Runtime{
-		spawner:  sp,
-		sessions: make(map[string]*hostSession),
+		spawner:       sp,
+		killHost:      clientKill,
+		pidIsAlive:    pidAlive,
+		processFinder: findProcess,
+		destroyWait:   500 * time.Millisecond,
+		destroyPoll:   25 * time.Millisecond,
+		sessions:      make(map[string]*hostSession),
 	}
 }
 
@@ -87,7 +101,7 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		return ports.RuntimeHandle{}, fmt.Errorf("conpty: spawn pty-host for %q: %w", id, err)
 	}
 
-	sess := &hostSession{addr: addr, pid: pid}
+	sess := &hostSession{addr: addr, pid: pid, launchID: cfg.Env[runtimeLaunchIDEnv]}
 
 	r.mu.Lock()
 	r.sessions[id] = sess
@@ -98,15 +112,17 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		SessionID:    id,
 		PtyHostPID:   pid,
 		PipePath:     addr, // ponytail: reuse PipePath field for loopback addr
+		LaunchID:     sess.launchID,
 		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
 	})
 
 	return ports.RuntimeHandle{ID: id}, nil
 }
 
-// Destroy gracefully kills the pty-host, waits up to ~500ms for the pid to
-// exit, then force-kills it. Removes the session from the map and the registry.
-// Idempotent: unknown/already-gone session returns nil.
+// Destroy gracefully kills the pty-host, then force-kills it when necessary.
+// The session remains registered until its PID is confirmed gone so callers
+// never receive a false-success teardown while a provider may still be alive.
+// Unknown/already-gone sessions remain idempotent.
 func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {
 	sess := r.resolve(handle.ID)
 	if sess == nil {
@@ -114,31 +130,67 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 	}
 
 	// Ask host to shut down gracefully (triggers shutdown() in Serve).
-	_ = clientKill(sess.addr)
-
-	// Poll up to ~500ms (20 x 25ms) for the pty-host pid to exit.
-	// ponytail: signal-0 probe; upgrade to process-tree kill if orphan ConPTY
-	// helpers appear.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if !pidAlive(sess.pid) {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
+	gracefulErr := r.killHost(sess.addr)
+	exited, waitErr := r.waitForPIDExit(ctx, sess.pid)
+	if waitErr != nil {
+		return errors.Join(gracefulErr, waitErr)
 	}
 
-	// Best-effort force-kill (the host's graceful shutdown already disposed
-	// the ConPTY child; killing the host process is sufficient).
-	if p, err := findProcess(sess.pid); err == nil {
-		_ = p.Kill()
+	var forceErr error
+	if !exited {
+		process, findErr := r.processFinder(sess.pid)
+		if findErr != nil {
+			forceErr = fmt.Errorf("find pty-host pid %d: %w", sess.pid, findErr)
+		} else if err := process.Kill(); err != nil {
+			forceErr = fmt.Errorf("force-kill pty-host pid %d: %w", sess.pid, err)
+		}
+		exited, waitErr = r.waitForPIDExit(ctx, sess.pid)
+		if waitErr != nil {
+			return errors.Join(gracefulErr, forceErr, waitErr)
+		}
+	}
+	if !exited {
+		return errors.Join(gracefulErr, forceErr, fmt.Errorf("conpty: pty-host pid %d is still alive after teardown", sess.pid))
 	}
 
 	r.mu.Lock()
 	delete(r.sessions, handle.ID)
 	r.mu.Unlock()
 
-	_ = ptyregistry.Unregister(handle.ID)
+	if err := ptyregistry.Unregister(handle.ID); err != nil {
+		return fmt.Errorf("conpty: unregister destroyed session %q: %w", handle.ID, err)
+	}
 	return nil
+}
+
+func (r *Runtime) waitForPIDExit(ctx context.Context, pid int) (bool, error) {
+	if !r.pidIsAlive(pid) {
+		return true, nil
+	}
+	wait := r.destroyWait
+	if wait <= 0 {
+		return false, nil
+	}
+	poll := r.destroyPoll
+	if poll <= 0 {
+		poll = 25 * time.Millisecond
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-timer.C:
+			return !r.pidIsAlive(pid), nil
+		case <-ticker.C:
+			if !r.pidIsAlive(pid) {
+				return true, nil
+			}
+		}
+	}
 }
 
 // IsAlive distinguishes three outcomes so the reaper never spuriously reaps a
@@ -164,10 +216,17 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 
 // IsSupervisedProcessAlive uses the pty-host's child status. For a supervised
 // launch that child is the AO supervisor, whose lifetime matches the managed
-// agent process.
-func (r *Runtime) IsSupervisedProcessAlive(ctx context.Context, handle ports.RuntimeHandle, _ ports.SupervisedProcessRef) (bool, error) {
+// agent process. When a generation ref is supplied, the launch id captured at
+// Create (and persisted in the recovery registry) must match exactly.
+func (r *Runtime) IsSupervisedProcessAlive(ctx context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
 	sess := r.resolve(handle.ID)
 	if sess == nil {
+		return false, nil
+	}
+	if ref.SessionID != "" && string(ref.SessionID) != handle.ID {
+		return false, nil
+	}
+	if ref.LaunchID != "" && (sess.launchID == "" || sess.launchID != ref.LaunchID) {
 		return false, nil
 	}
 	status, hostAlive, err := clientStatus(sess.addr)
@@ -178,6 +237,15 @@ func (r *Runtime) IsSupervisedProcessAlive(ctx context.Context, handle ports.Run
 		return false, nil
 	}
 	return status.Alive, nil
+}
+
+// IsExactSupervisedProcessAlive has the same implementation on ConPTY because
+// the pty-host registry already fences its one child by the exact launch id.
+func (r *Runtime) IsExactSupervisedProcessAlive(ctx context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
+	if ref.SessionID == "" || ref.LaunchID == "" {
+		return false, errors.New("conpty: exact supervisor session and launch are required")
+	}
+	return r.IsSupervisedProcessAlive(ctx, handle, ref)
 }
 
 // SendMessage chunks message and writes it to the pty-host followed by Enter.
@@ -240,7 +308,7 @@ func (r *Runtime) resolve(id string) *hostSession {
 			continue
 		}
 		// Re-populate the map so subsequent calls skip the file scan.
-		recovered := &hostSession{addr: e.PipePath, pid: e.PtyHostPID}
+		recovered := &hostSession{addr: e.PipePath, pid: e.PtyHostPID, launchID: e.LaunchID}
 		r.mu.Lock()
 		// Only store if another goroutine hasn't beaten us.
 		if r.sessions[id] == nil {

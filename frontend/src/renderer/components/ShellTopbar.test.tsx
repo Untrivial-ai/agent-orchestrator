@@ -6,7 +6,8 @@ import { useUiStore } from "../stores/ui-store";
 import type { SessionActivityState, WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { ShellTopbar, TopbarKillButton } from "./ShellTopbar";
 
-const { navigateMock, onKilledMock, paramsMock, postMock, spawnMock, useWorkspaceQueryMock } = vi.hoisted(() => ({
+const { getMock, navigateMock, onKilledMock, paramsMock, postMock, spawnMock, useWorkspaceQueryMock } = vi.hoisted(() => ({
+	getMock: vi.fn(),
 	navigateMock: vi.fn(),
 	onKilledMock: vi.fn(),
 	paramsMock: { projectId: undefined as string | undefined, sessionId: undefined as string | undefined },
@@ -31,6 +32,7 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
+		GET: getMock,
 		POST: postMock,
 	},
 	apiErrorMessage: (error: unknown, fallback = "Request failed") => {
@@ -150,6 +152,8 @@ async function clickKillDialogConfirm() {
 }
 
 beforeEach(() => {
+	getMock.mockReset();
+	getMock.mockResolvedValue({ data: { switches: [] }, error: undefined, response: { status: 200 } });
 	navigateMock.mockReset();
 	onKilledMock.mockReset();
 	paramsMock.projectId = undefined;
@@ -167,6 +171,7 @@ describe("ShellTopbar status pill", () => {
 
 		expect(screen.queryByText("ao/sess-1")).not.toBeInTheDocument();
 		expect(screen.queryByText("Working")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Switch agent" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Kill session" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Open orchestrator" })).toBeInTheDocument();
 	});

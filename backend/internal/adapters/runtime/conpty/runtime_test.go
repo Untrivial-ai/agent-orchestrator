@@ -3,6 +3,7 @@ package conpty
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,6 +27,13 @@ func livePID() int { return os.Getpid() }
 // used in Destroy tests so the force-kill step is a safe no-op.
 // ponytail: PID 2147483647 (MaxInt32) is never a real process; signal-0 returns ESRCH.
 func deadPID() int { return 2147483647 }
+
+func TestRuntimeDoesNotAdvertiseStyledRenderedTerminalOutput(t *testing.T) {
+	var runtime any = New(Options{})
+	if _, ok := runtime.(ports.StyledTerminalOutputReader); ok {
+		t.Fatal("raw ConPTY history must not be used as rendered composer state")
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Test harness: in-process pty-host backed by a fakePTY.
@@ -439,6 +447,7 @@ func TestSupervisedProcessExitKeepsHostAlive(t *testing.T) {
 		SessionID:     "sess-supervised",
 		WorkspacePath: "/tmp/w",
 		Argv:          []string{"ao", "agent-process", "supervise"},
+		Env:           map[string]string{runtimeLaunchIDEnv: "launch-current"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -448,6 +457,18 @@ func TestSupervisedProcessExitKeepsHostAlive(t *testing.T) {
 
 	if alive, err := rt.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{}); err != nil || !alive {
 		t.Fatalf("supervised process before exit = (%v, %v), want (true, nil)", alive, err)
+	}
+	if alive, err := rt.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-stale"}); err != nil || alive {
+		t.Fatalf("stale supervised generation = (%v, %v), want (false, nil)", alive, err)
+	}
+	if alive, err := rt.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-current"}); err != nil || !alive {
+		t.Fatalf("current supervised generation = (%v, %v), want (true, nil)", alive, err)
+	}
+	if alive, err := rt.IsExactSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-current"}); err != nil || !alive {
+		t.Fatalf("exact current supervised generation = (%v, %v), want (true, nil)", alive, err)
+	}
+	if alive, err := rt.IsExactSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-stale"}); err != nil || alive {
+		t.Fatalf("exact stale supervised generation = (%v, %v), want (false, nil)", alive, err)
 	}
 	h.pty.signalExit(42)
 
@@ -545,6 +566,33 @@ func TestDestroy_KillsHostAndCleansUp(t *testing.T) {
 	// Second Destroy must be idempotent (returns nil).
 	if err := rt.Destroy(ctx, handle); err != nil {
 		t.Fatalf("second Destroy: expected nil, got %v", err)
+	}
+}
+
+type processKillerFunc func() error
+
+func (f processKillerFunc) Kill() error { return f() }
+
+func TestDestroyRetainsSessionWhenPIDCannotBeStopped(t *testing.T) {
+	isolateRegistry(t)
+	rt := New(Options{})
+	rt.sessions["sess-stuck"] = &hostSession{addr: "127.0.0.1:1", pid: 424242}
+	rt.killHost = func(string) error { return errors.New("graceful transport failed") }
+	rt.pidIsAlive = func(int) bool { return true }
+	rt.processFinder = func(int) (processKiller, error) {
+		return processKillerFunc(func() error { return errors.New("access denied") }), nil
+	}
+	rt.destroyWait = 0
+
+	err := rt.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-stuck"})
+	if err == nil || !strings.Contains(err.Error(), "still alive") || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("Destroy error = %v, want force-kill and final-liveness evidence", err)
+	}
+	rt.mu.Lock()
+	_, retained := rt.sessions["sess-stuck"]
+	rt.mu.Unlock()
+	if !retained {
+		t.Fatal("Destroy removed a session whose PID may still be alive")
 	}
 }
 

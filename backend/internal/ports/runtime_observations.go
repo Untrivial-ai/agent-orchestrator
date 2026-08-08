@@ -47,6 +47,15 @@ type ActivitySignal struct {
 	ToolName          string
 	ToolUseID         string
 	AgentSessionID    string
+	// LatestUserPrompt and LatestAssistantUpdate are provider hook facts used
+	// to build a deterministic handoff. They are never promoted to system
+	// instructions and internal <ao-...> coordination turns are filtered by
+	// the hook client before submission.
+	LatestUserPrompt      string
+	LatestAssistantUpdate string
+	// TranscriptPath is a read-only provider-native transcript reference when
+	// the hook exposes one. AO stores the path, never rewrites the transcript.
+	TranscriptPath string
 	// LaunchID is set by AO's process supervisor. Lifecycle rejects a signal
 	// from an older process generation of the same session.
 	LaunchID string

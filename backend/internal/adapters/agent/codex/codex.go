@@ -20,6 +20,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/terminalui"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
@@ -67,6 +68,14 @@ var _ ports.ActiveTurnSteerer = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentInterfaceHandoff = (*Plugin)(nil)
 var _ ports.TerminalActivityDetector = (*Plugin)(nil)
+var _ ports.EmptyComposerDetector = (*Plugin)(nil)
+
+// ComposerIsEmpty recognizes Codex's blank composer or its dim placeholder.
+// Normal text after the prompt marker is treated as a human draft and causes
+// optional semantic handoff collection to fail closed.
+func (p *Plugin) ComposerIsEmpty(output string) bool {
+	return terminalui.LastPromptIsEmptyOrDimPlaceholder(output, "›")
+}
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -118,10 +127,10 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	appendWorkspaceTrustFlag(&cmd, cfg.WorkspacePath)
 	appendModelFlag(&cmd, cfg.Config)
 
-	if cfg.SystemPrompt != "" {
-		cmd = append(cmd, "-c", "developer_instructions="+codexTOMLConfigString(cfg.SystemPrompt))
-	} else if cfg.SystemPromptFile != "" {
+	if cfg.SystemPromptFile != "" {
 		cmd = append(cmd, "-c", "model_instructions_file="+cfg.SystemPromptFile)
+	} else if cfg.SystemPrompt != "" {
+		cmd = append(cmd, "-c", "developer_instructions="+codexTOMLConfigString(cfg.SystemPrompt))
 	}
 
 	if cfg.Prompt != "" {
@@ -159,12 +168,15 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	appendTerminalCompatibilityFlags(&cmd)
 	appendWorkspaceTrustFlag(&cmd, cfg.Session.WorkspacePath)
 	appendModelFlag(&cmd, cfg.Config)
-	if cfg.SystemPrompt != "" {
-		cmd = append(cmd, "-c", "developer_instructions="+codexTOMLConfigString(cfg.SystemPrompt))
-	} else if cfg.SystemPromptFile != "" {
+	if cfg.SystemPromptFile != "" {
 		cmd = append(cmd, "-c", "model_instructions_file="+cfg.SystemPromptFile)
+	} else if cfg.SystemPrompt != "" {
+		cmd = append(cmd, "-c", "developer_instructions="+codexTOMLConfigString(cfg.SystemPrompt))
 	}
 	cmd = append(cmd, agentSessionID)
+	if cfg.Prompt != "" {
+		cmd = append(cmd, "--", cfg.Prompt)
+	}
 	return cmd, true, nil
 }
 
@@ -211,17 +223,25 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	if probeCtx.Err() != nil {
 		return ports.AgentAuthStatusUnknown, probeCtx.Err()
 	}
+	if status, ok := codexAuthStatusFromOutput(out); ok {
+		return status, nil
+	}
+	// The probe is advisory. Version skew, transient startup failures, and
+	// unfamiliar output are not proof that credentials are invalid; the actual
+	// launch remains the authoritative check.
+	_ = err
+	return ports.AgentAuthStatusUnknown, nil
+}
+
+func codexAuthStatusFromOutput(out []byte) (ports.AgentAuthStatus, bool) {
 	text := strings.ToLower(string(out))
 	if strings.Contains(text, "not logged in") || strings.Contains(text, "logged out") {
-		return ports.AgentAuthStatusUnauthorized, nil
+		return ports.AgentAuthStatusUnauthorized, true
 	}
 	if strings.Contains(text, "logged in") {
-		return ports.AgentAuthStatusAuthorized, nil
+		return ports.AgentAuthStatusAuthorized, true
 	}
-	if err != nil {
-		return ports.AgentAuthStatusUnauthorized, nil
-	}
-	return ports.AgentAuthStatusUnknown, nil
+	return ports.AgentAuthStatusUnknown, false
 }
 
 // ResolveCodexBinary returns the path to the codex binary on this machine,

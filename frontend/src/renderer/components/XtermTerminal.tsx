@@ -66,6 +66,8 @@ export type XtermTerminalProps = {
 	onVisibleSize?: (cols: number, rows: number) => void;
 	/** Hidden retained terminals keep parsing output but expose no UI overlays. */
 	isVisible?: boolean;
+	/** Move keyboard focus into xterm when a controller needs human input. */
+	focusRequested?: boolean;
 	/**
 	 * The terminal is open in the DOM and ready to be attached to a PTY. The
 	 * handle stays valid until unmount; cols/rows are live getters.
@@ -908,6 +910,16 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			}
 		};
 	}, []);
+
+	useEffect(() => {
+		if (!props.focusRequested || props.isVisible === false) return undefined;
+		try {
+			termRef.current?.focus();
+		} catch {
+			// The retained terminal may have been parked during this effect.
+		}
+		return undefined;
+	}, [props.focusRequested, props.isVisible]);
 
 	useLayoutEffect(() => {
 		if (props.isVisible === false) setContextMenuOpen(false);

@@ -41,13 +41,16 @@ const (
 // native payload when present. All four are optional: an old daemon decodes
 // the body leniently and simply ignores them.
 type setActivityAPIRequest struct {
-	State          string             `json:"state,omitempty"`
-	Event          string             `json:"event,omitempty"`
-	ToolName       string             `json:"toolName,omitempty"`
-	ToolUseID      string             `json:"toolUseId,omitempty"`
-	AgentSessionID string             `json:"agentSessionId,omitempty"`
-	LaunchID       string             `json:"launchId,omitempty"`
-	Usage          *usageHookMetadata `json:"usage,omitempty"`
+	State                 string             `json:"state,omitempty"`
+	Event                 string             `json:"event,omitempty"`
+	ToolName              string             `json:"toolName,omitempty"`
+	ToolUseID             string             `json:"toolUseId,omitempty"`
+	AgentSessionID        string             `json:"agentSessionId,omitempty"`
+	LatestUserPrompt      string             `json:"latestUserPrompt,omitempty"`
+	LatestAssistantUpdate string             `json:"latestAssistantUpdate,omitempty"`
+	TranscriptPath        string             `json:"transcriptPath,omitempty"`
+	LaunchID              string             `json:"launchId,omitempty"`
+	Usage                 *usageHookMetadata `json:"usage,omitempty"`
 }
 
 type usageHookMetadata struct {
@@ -73,6 +76,11 @@ type setReviewActivityAPIRequest struct {
 // garbage and gets dropped rather than truncated (a truncated id would never
 // match its pre/post counterpart).
 const maxActivityMetaLen = 256
+
+const (
+	maxHookInteractionLen = 16 << 10
+	maxHookTranscriptPath = 4096
+)
 
 // activityMeta extracts the tool-use correlation facts from a native hook
 // payload. The field names are shared vocabulary across agent CLIs that emit
@@ -149,6 +157,81 @@ func hookUsageMetadata(agent string, payload []byte) *usageHookMetadata {
 	return meta
 }
 
+type hookConversationSnapshot struct {
+	LatestUserPrompt      string
+	LatestAssistantUpdate string
+	TranscriptPath        string
+}
+
+// hookConversationFacts extracts the deliberately small shared subset exposed
+// by the Claude Code and Codex hooks. Unknown fields are ignored, and the
+// aliases keep the daemon contract independent of either provider's raw schema.
+func hookConversationFacts(payload []byte) hookConversationSnapshot {
+	var p struct {
+		Prompt                    string `json:"prompt"`
+		UserPrompt                string `json:"user_prompt"`
+		UserPromptCamel           string `json:"userPrompt"`
+		LastAssistantMessage      string `json:"last_assistant_message"`
+		LastAssistantMessageCamel string `json:"lastAssistantMessage"`
+		AssistantMessage          string `json:"assistant_message"`
+		AssistantMessageCamel     string `json:"assistantMessage"`
+		TranscriptPath            string `json:"transcript_path"`
+		TranscriptPathCamel       string `json:"transcriptPath"`
+	}
+	_ = json.Unmarshal(payload, &p)
+	userPrompt := firstHookValue(p.Prompt, p.UserPrompt, p.UserPromptCamel)
+	assistant := firstHookValue(p.LastAssistantMessage, p.LastAssistantMessageCamel, p.AssistantMessage, p.AssistantMessageCamel)
+	// AO's own handoff request and continuation kickoff are coordination turns,
+	// not the latest real user instruction. They remain in provider history but
+	// must not overwrite deterministic user intent.
+	if isAOHandoffRequest(userPrompt) {
+		assistant = ""
+	}
+	if isAOCoordinationMessage(userPrompt) {
+		userPrompt = ""
+	}
+	return hookConversationSnapshot{
+		LatestUserPrompt:      capHookText(userPrompt, maxHookInteractionLen),
+		LatestAssistantUpdate: capHookText(assistant, maxHookInteractionLen),
+		TranscriptPath:        capHookText(firstHookValue(p.TranscriptPath, p.TranscriptPathCamel), maxHookTranscriptPath),
+	}
+}
+
+func firstHookValue(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func isAOCoordinationMessage(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "<ao-handoff-request") ||
+		strings.HasPrefix(value, "<ao-continuation") ||
+		strings.HasPrefix(value, "AO transferred the previous agent's context in hidden system instructions.")
+}
+
+func isAOHandoffRequest(value string) bool {
+	return strings.HasPrefix(strings.TrimSpace(value), "<ao-handoff-request")
+}
+
+func capHookText(value string, limit int) string {
+	value = domain.SanitizeControlChars(strings.TrimSpace(value))
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	const marker = "\n[... truncated by AO ...]\n"
+	budget := limit - len(marker)
+	if budget <= 0 {
+		return ""
+	}
+	head := budget / 2
+	tail := budget - head
+	return strings.ToValidUTF8(string([]byte(value)[:head])+marker+string([]byte(value)[len(value)-tail:]), "?")
+}
+
 type sessionStartHookOutput struct {
 	HookSpecificOutput struct {
 		HookEventName     string `json:"hookEventName"`
@@ -215,14 +298,22 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	}
 
 	toolName, toolUseID := activityMeta(payload)
+	conversation := hookConversationSnapshot{}
+	switch domain.AgentHarness(agent) {
+	case domain.HarnessClaudeCode, domain.HarnessCodex:
+		conversation = hookConversationFacts(payload)
+	}
 	path := "sessions/" + url.PathEscape(sessionID) + "/activity"
 	req := setActivityAPIRequest{
-		Event:          event,
-		ToolName:       toolName,
-		ToolUseID:      toolUseID,
-		AgentSessionID: agentSessionID,
-		LaunchID:       validLaunchID(os.Getenv("AO_RUNTIME_LAUNCH_ID")),
-		Usage:          usage,
+		Event:                 event,
+		ToolName:              toolName,
+		ToolUseID:             toolUseID,
+		AgentSessionID:        agentSessionID,
+		LatestUserPrompt:      conversation.LatestUserPrompt,
+		LatestAssistantUpdate: conversation.LatestAssistantUpdate,
+		TranscriptPath:        conversation.TranscriptPath,
+		LaunchID:              validLaunchID(os.Getenv("AO_RUNTIME_LAUNCH_ID")),
+		Usage:                 usage,
 	}
 	if hasActivity {
 		req.State = string(state)

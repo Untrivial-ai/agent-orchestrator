@@ -134,6 +134,9 @@ func migrate(db *sql.DB) error {
 	if err := repairRenumberedChatMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered chat migration history: %w", err)
 	}
+	if err := repairRenumberedAgentSwitchMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered agent-switch migration history: %w", err)
+	}
 	if err := prepareBurnedSchemaRepairs(db); err != nil {
 		return fmt.Errorf("prepare burned schema repairs: %w", err)
 	}
@@ -525,6 +528,97 @@ SELECT COALESCE((
 	}
 	if modelUsageTable == 0 {
 		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 52`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// repairRenumberedAgentSwitchMigrationHistory preserves databases opened by
+// earlier revisions of this feature branch. Agent switching first occupied
+// 0080/0081 and later 0081/0082; main now owns 0080 through 0082. Remap the
+// physically present switching schema to 0083/0084 and release only the main
+// migration numbers whose schema effects are still absent.
+func repairRenumberedAgentSwitchMigrationHistory(db *sql.DB) error {
+	var gooseTable, agentSwitchTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_switches'`,
+	).Scan(&agentSwitchTable); err != nil {
+		return err
+	}
+	if agentSwitchTable == 0 {
+		return nil
+	}
+
+	reviewUpgraded, err := reviewHasSessionHarnessUnique(db)
+	if err != nil {
+		return err
+	}
+
+	var browserVerifierColumn, finalHandoffColumn, primeHarnessShape int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'browser_capability_verifier'`,
+	).Scan(&browserVerifierColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_switches') WHERE name = 'final_handoff_path'`,
+	).Scan(&finalHandoffColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`
+SELECT COUNT(*)
+FROM sqlite_master
+WHERE type = 'table'
+  AND name = 'sessions'
+  AND instr(COALESCE(sql, ''), '''prime-agent''') > 0`).Scan(&primeHarnessShape); err != nil {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for version, physicallyApplied := range map[int64]bool{
+		83: true,
+		84: finalHandoffColumn != 0,
+	} {
+		if !physicallyApplied {
+			continue
+		}
+		var applied int
+		if err := tx.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = ? ORDER BY id DESC LIMIT 1
+), 0)`, version).Scan(&applied); err != nil {
+			return err
+		}
+		if applied == 0 {
+			if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, version); err != nil {
+				return err
+			}
+		}
+	}
+
+	for version, mainEffectPresent := range map[int64]bool{
+		80: reviewUpgraded,
+		81: browserVerifierColumn != 0,
+		82: primeHarnessShape != 0,
+	} {
+		if mainEffectPresent {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = ?`, version); err != nil {
 			return err
 		}
 	}

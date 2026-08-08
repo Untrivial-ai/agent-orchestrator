@@ -161,7 +161,7 @@ func (m *Manager) StartInterfaceTransition(
 		return domain.SessionInterfaceTransition{}, err
 	}
 	if !created {
-		return transition, ErrSwitchInProgress
+		return transition, ErrInterfaceTransitionInProgress
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())

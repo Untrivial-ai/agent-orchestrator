@@ -136,6 +136,67 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "UsageSourceState"
+          - column: "agent_native_sessions.id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentNativeSessionID"
+          - column: "agent_native_sessions.ao_session_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionID"
+          - column: "agent_native_sessions.harness"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentHarness"
+          - column: "agent_native_sessions.last_generation_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentGenerationID"
+          - column: "agent_switches.id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentSwitchID"
+          - column: "agent_switches.session_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionID"
+          - column: "agent_switches.request_fingerprint"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentSwitchRequestFingerprint"
+          - column: "agent_switches.from_harness"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentHarness"
+          - column: "agent_switches.target_harness"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentHarness"
+          - column: "agent_switches.target_native_session_ref"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentNativeSessionID"
+              pointer: true
+          - column: "agent_switches.target_start_mode"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentSwitchTargetStartMode"
+          - column: "agent_switches.state"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentSwitchState"
+          - column: "agent_switches.agent_handoff_status"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentHandoffStatus"
+          - column: "agent_switches.source_generation_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentGenerationID"
+          - column: "agent_switches.target_generation_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "AgentGenerationID"
           - column: "review.session_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

@@ -15,6 +15,8 @@ func TestIsRoutineInternalCLICommandNormalizesLegacyShapes(t *testing.T) {
 		"AO HOOKS",
 		"ao hooks claude-code post-tool-use",
 		"ao session get sess-123",
+		"ao session agent-switch ls sess-123",
+		"ao session handoff submit --switch switch-1",
 		"ao project ls",
 		"ao pty-host session-1",
 	} {
@@ -28,6 +30,9 @@ func TestCLIActorTypeKeepsKnownLegacyUserCommands(t *testing.T) {
 	for _, commandPath := range []string{
 		"ao agent ls",
 		"ao session claim-pr",
+		"ao session switch-agent",
+		"ao session agent-switch",
+		"ao session agent-switch ls",
 		"ao dev import-projects",
 		"ao project orchestration get",
 		"ao project orchestration set",
@@ -37,6 +42,17 @@ func TestCLIActorTypeKeepsKnownLegacyUserCommands(t *testing.T) {
 	} {
 		if got := CLIActorType("", commandPath); got != "user" {
 			t.Errorf("CLIActorType(%q) = %q, want user", commandPath, got)
+		}
+	}
+}
+
+func TestCLIActorTypeTreatsInternalAgentHandoffAsSystemByDefault(t *testing.T) {
+	for _, commandPath := range []string{
+		"ao session handoff",
+		"ao session handoff submit",
+	} {
+		if got := CLIActorType("", commandPath); got != "system" {
+			t.Errorf("CLIActorType(%q) = %q, want system", commandPath, got)
 		}
 	}
 }

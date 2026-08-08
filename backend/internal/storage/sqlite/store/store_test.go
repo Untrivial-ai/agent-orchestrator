@@ -120,6 +120,101 @@ func TestSessionPersistsDiffBaseMetadata(t *testing.T) {
 	}
 }
 
+func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "handoff-inputs")
+	rec := sampleRecord("handoff-inputs")
+	rec.Metadata.LatestUserPrompt = "Please finish the duplicate-listener test."
+	rec.Metadata.LatestAssistantUpdate = "The generation fence is implemented; the test is unfinished."
+	rec.Metadata.NativeTranscriptPath = "/ao/transcripts/claude/session.jsonl"
+
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	got, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session: ok=%v err=%v", ok, err)
+	}
+	if got.Metadata.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
+		got.Metadata.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
+		got.Metadata.NativeTranscriptPath != rec.Metadata.NativeTranscriptPath {
+		t.Fatalf("handoff inputs after create = %+v", got.Metadata)
+	}
+
+	got.Metadata.LatestUserPrompt = "Now run the focused tests."
+	got.Metadata.LatestAssistantUpdate = "The regression test has been added."
+	got.Metadata.NativeTranscriptPath = "/ao/transcripts/codex/session.jsonl"
+	got.UpdatedAt = got.UpdatedAt.Add(time.Second)
+	if err := s.UpdateSession(ctx, got); err != nil {
+		t.Fatalf("update session: %v", err)
+	}
+	updated, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get updated session: ok=%v err=%v", ok, err)
+	}
+	if updated.Metadata.LatestUserPrompt != got.Metadata.LatestUserPrompt ||
+		updated.Metadata.LatestAssistantUpdate != got.Metadata.LatestAssistantUpdate ||
+		updated.Metadata.NativeTranscriptPath != got.Metadata.NativeTranscriptPath {
+		t.Fatalf("handoff inputs after update = %+v", updated.Metadata)
+	}
+	listed, err := s.ListSessions(ctx, created.ProjectID)
+	if err != nil || len(listed) != 1 || listed[0].Metadata.LatestUserPrompt != got.Metadata.LatestUserPrompt {
+		t.Fatalf("listed handoff inputs = %+v err=%v", listed, err)
+	}
+}
+
+func TestRecordSessionLatestUserPromptIsNarrowAndMonotonic(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "prompt-fence")
+	created, err := s.CreateSession(ctx, sampleRecord("prompt-fence"))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	ownerAt := created.UpdatedAt.Add(2 * time.Second)
+	created.Harness = domain.HarnessCodex
+	created.Metadata.RuntimeLaunchID = "target-generation"
+	created.Metadata.LatestAssistantUpdate = "target already owns this row"
+	created.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: ownerAt}
+	created.UpdatedAt = ownerAt
+	if err := s.UpdateSession(ctx, created); err != nil {
+		t.Fatalf("record newer target owner: %v", err)
+	}
+
+	if changed, err := s.RecordSessionLatestUserPrompt(ctx, created.ID, "stale source prompt", ownerAt.Add(-time.Second)); err != nil || changed {
+		t.Fatalf("stale prompt write = changed %v, err %v", changed, err)
+	}
+	current, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get after stale write: ok=%v err=%v", ok, err)
+	}
+	if current.Harness != domain.HarnessCodex || current.Metadata.RuntimeLaunchID != "target-generation" || current.Metadata.LatestUserPrompt != "" {
+		t.Fatalf("stale prompt changed durable owner: %+v", current)
+	}
+
+	promptAt := ownerAt.Add(time.Second)
+	if changed, err := s.RecordSessionLatestUserPrompt(ctx, created.ID, "continue the target work", promptAt); err != nil || !changed {
+		t.Fatalf("fresh prompt write = changed %v, err %v", changed, err)
+	}
+	current, _, _ = s.GetSession(ctx, created.ID)
+	if current.Metadata.LatestUserPrompt != "continue the target work" || current.Harness != domain.HarnessCodex ||
+		current.Metadata.RuntimeLaunchID != "target-generation" || current.Metadata.LatestAssistantUpdate != "target already owns this row" {
+		t.Fatalf("narrow prompt write changed unrelated facts: %+v", current)
+	}
+
+	current.IsTerminated = true
+	current.UpdatedAt = promptAt.Add(time.Second)
+	if err := s.UpdateSession(ctx, current); err != nil {
+		t.Fatalf("terminate session: %v", err)
+	}
+	if changed, err := s.RecordSessionLatestUserPrompt(ctx, created.ID, "must not resurrect", promptAt.Add(2*time.Second)); err != nil || changed {
+		t.Fatalf("terminated prompt write = changed %v, err %v", changed, err)
+	}
+}
+
 func TestSessionPersistsBrowserCapabilityVerifier(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -404,6 +499,31 @@ func TestDeleteSessionOnlyRemovesSeedRows(t *testing.T) {
 	}
 	if deleted {
 		t.Fatal("DeleteSession must be a no-op for terminated rows")
+	}
+}
+
+func TestDeleteSessionPreservesRowsWithRecordedInteraction(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "delete-interaction")
+	rec := sampleRecord("delete-interaction")
+	// Keep the legacy seed predicates empty; the durable interaction fact alone
+	// is observable progress and must prevent rollback deletion.
+	rec.Metadata.WorkspacePath = ""
+	rec.Metadata.LatestUserPrompt = "Continue the task."
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	deleted, err := s.DeleteSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if deleted {
+		t.Fatal("DeleteSession removed a row with recorded user interaction")
+	}
+	if _, ok, err := s.GetSession(ctx, created.ID); err != nil || !ok {
+		t.Fatalf("recorded-interaction row was not preserved: ok=%v err=%v", ok, err)
 	}
 }
 

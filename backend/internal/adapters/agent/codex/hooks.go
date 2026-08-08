@@ -152,11 +152,11 @@ func containsTOMLControl(s string) bool {
 	return false
 }
 
-// GetAgentHooks no longer installs workspace files — Codex never loads them
-// from AO's worktrees (see the package comment above); the hooks ride the
-// launch command instead. It still strips hook entries that older AO versions
-// wrote into the worktree-local .codex/hooks.json so reused or restored
-// worktrees don't keep dead AO config, preserving user-defined hooks.
+// GetAgentHooks installs no active workspace files — Codex never loads them
+// from AO's worktrees (see the package comment above); activity hooks ride the
+// launch command instead. It strips hook entries that older AO versions wrote
+// into the worktree-local .codex/hooks.json so reused or restored worktrees
+// don't keep dead AO config, preserving user-defined hooks.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err

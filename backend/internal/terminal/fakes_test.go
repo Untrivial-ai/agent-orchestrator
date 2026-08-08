@@ -61,9 +61,11 @@ type fakePTY struct {
 	closed chan struct{}
 	once   sync.Once
 
-	mu      sync.Mutex
-	written []byte
-	resizes [][2]uint16
+	mu           sync.Mutex
+	written      []byte
+	resizes      [][2]uint16
+	writeStarted chan struct{}
+	writeUnblock chan struct{}
 }
 
 func newFakePTY() *fakePTY {
@@ -84,6 +86,12 @@ func (p *fakePTY) Read(b []byte) (int, error) {
 func (p *fakePTY) Write(b []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.writeStarted != nil {
+		p.writeStarted <- struct{}{}
+	}
+	if p.writeUnblock != nil {
+		<-p.writeUnblock
+	}
 	p.written = append(p.written, b...)
 	return len(b), nil
 }

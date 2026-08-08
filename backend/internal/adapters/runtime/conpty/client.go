@@ -6,6 +6,7 @@ package conpty
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"syscall"
 	"time"
@@ -255,16 +256,22 @@ func isConnRefused(err error) bool {
 	return errors.Is(err, wsaeconnrefused)
 }
 
-// clientKill sends MsgKillReq best-effort. Connect failure is a no-op
-// (host already dead). Mirrors ptyHostKill from pty-client.ts.
+// clientKill sends MsgKillReq. Connection refused is idempotent success because
+// the host is already absent; other transport failures are preserved so
+// Destroy can combine them with its final PID evidence.
 func clientKill(addr string) error {
 	conn, err := dialHost(addr, isAliveTimeout)
 	if err != nil {
-		return nil // already dead
+		if isConnRefused(err) {
+			return nil
+		}
+		return fmt.Errorf("dial pty-host for kill: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(isAliveTimeout))
 	killFrame, _ := EncodeMessage(MsgKillReq, nil) // nil payload, never overflows
-	_, _ = conn.Write(killFrame)
+	if _, err := conn.Write(killFrame); err != nil {
+		return fmt.Errorf("write pty-host kill request: %w", err)
+	}
 	return nil
 }

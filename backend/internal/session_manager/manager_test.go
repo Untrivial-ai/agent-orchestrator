@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/scratch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -30,6 +32,10 @@ type fakeStore struct {
 	num           int
 	deleteErr     error
 	upsertWTErr   error
+	listAllErr    error
+	// agentSwitchStore is wired only by agent-switch tests so fakeLCM can model
+	// Lifecycle Manager's atomic ownership-boundary commands.
+	agentSwitchStore any
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
 	worktrees map[domain.SessionID][]domain.SessionWorktreeRecord
 	// sharedLog, when non-nil, receives an ordered call entry for each
@@ -63,6 +69,16 @@ func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) e
 	f.sessions[rec.ID] = rec
 	return nil
 }
+func (f *fakeStore) RecordSessionLatestUserPrompt(_ context.Context, id domain.SessionID, prompt string, updatedAt time.Time) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok || rec.IsTerminated || rec.UpdatedAt.After(updatedAt) {
+		return false, nil
+	}
+	rec.Metadata.LatestUserPrompt = prompt
+	rec.UpdatedAt = updatedAt
+	f.sessions[id] = rec
+	return true, nil
+}
 func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
 	r, ok := f.sessions[id]
 	return r, ok, nil
@@ -77,6 +93,9 @@ func (f *fakeStore) ListSessions(_ context.Context, p domain.ProjectID) ([]domai
 	return out, nil
 }
 func (f *fakeStore) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
+	if f.listAllErr != nil {
+		return nil, f.listAllErr
+	}
 	var out []domain.SessionRecord
 	for _, r := range f.sessions {
 		out = append(out, r)
@@ -92,7 +111,8 @@ func (f *fakeStore) DeleteSession(_ context.Context, id domain.SessionID) (bool,
 		return false, nil
 	}
 	// Mirror the sqlite gate: only delete rows still in seed state.
-	if rec.IsTerminated || rec.Metadata.WorkspacePath != "" || rec.Metadata.RuntimeHandleID != "" || rec.Metadata.AgentSessionID != "" || rec.Metadata.Prompt != "" {
+	if rec.IsTerminated || rec.Metadata.WorkspacePath != "" || rec.Metadata.RuntimeHandleID != "" || rec.Metadata.AgentSessionID != "" || rec.Metadata.Prompt != "" ||
+		rec.Metadata.LatestUserPrompt != "" || rec.Metadata.LatestAssistantUpdate != "" || rec.Metadata.NativeTranscriptPath != "" {
 		return false, nil
 	}
 	delete(f.sessions, id)
@@ -149,6 +169,9 @@ func (l *fakeLCM) PrepareLaunch(id domain.SessionID, launchID string) error {
 func (l *fakeLCM) CancelLaunch(id domain.SessionID, launchID string) {
 	l.cancelled = append(l.cancelled, string(id)+":"+launchID)
 }
+func (l *fakeLCM) ReleaseLaunch(id domain.SessionID, launchID string) {
+	l.cancelled = append(l.cancelled, string(id)+":"+launchID)
+}
 func (l *fakeLCM) MarkSpawned(_ context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
 	l.completed++
 	rec := l.store.sessions[id]
@@ -181,6 +204,24 @@ func (l *fakeLCM) CommitControllerEpoch(
 	l.store.sessions[id] = rec
 	return true, nil
 }
+func (l *fakeLCM) ConfirmAgentSwitchSourceStopped(ctx context.Context, confirmation domain.AgentSwitchSourceStopConfirmation) (bool, error) {
+	store, ok := l.store.agentSwitchStore.(interface {
+		ConfirmAgentSwitchSourceStopped(context.Context, domain.AgentSwitchSourceStopConfirmation) (bool, error)
+	})
+	if !ok {
+		return false, errors.New("fake lifecycle: agent-switch source-stop persistence unavailable")
+	}
+	return store.ConfirmAgentSwitchSourceStopped(ctx, confirmation)
+}
+func (l *fakeLCM) ActivateAgentSwitchTarget(ctx context.Context, activation domain.AgentSwitchTargetActivation) (bool, error) {
+	store, ok := l.store.agentSwitchStore.(interface {
+		ActivateAgentSwitchTarget(context.Context, domain.AgentSwitchTargetActivation) (bool, error)
+	})
+	if !ok {
+		return false, errors.New("fake lifecycle: agent-switch target activation persistence unavailable")
+	}
+	return store.ActivateAgentSwitchTarget(ctx, activation)
+}
 func (l *fakeLCM) MarkTerminated(_ context.Context, id domain.SessionID) error {
 	if l.terminated == nil {
 		l.terminated = map[domain.SessionID]int{}
@@ -196,15 +237,31 @@ func (l *fakeLCM) MarkTerminated(_ context.Context, id domain.SessionID) error {
 type fakeRuntime struct {
 	createErr          error
 	destroyErr         error
+	destroyErrSequence []error
+	onDestroy          func(call int, handle ports.RuntimeHandle)
 	created, destroyed int
 	lastCfg            ports.RuntimeConfig
 	outputs            []string
 	outputCalls        int
 	outputErr          error
+	interruptErr       error
+	interrupts         []string
+	onInterrupt        func(ports.RuntimeHandle)
 	// aliveByHandle maps a RuntimeHandle.ID to its liveness; missing = false.
-	aliveByHandle map[string]bool
-	aliveErr      error
-	destroyedIDs  []string
+	aliveByHandle           map[string]bool
+	aliveErr                error
+	supervisedErr           error
+	supervisedAliveOverride *bool
+	supervisedSequence      []bool
+	destroyedIDs            []string
+}
+
+func (r *fakeRuntime) Interrupt(_ context.Context, handle ports.RuntimeHandle) error {
+	r.interrupts = append(r.interrupts, handle.ID)
+	if r.onInterrupt != nil {
+		r.onInterrupt(handle)
+	}
+	return r.interruptErr
 }
 
 type fakePreviewLifecycle struct {
@@ -248,6 +305,13 @@ func (r *fakeRestartRuntime) Restart(_ context.Context, handle ports.RuntimeHand
 	return handle, nil
 }
 
+func (r *fakeRestartRuntime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {
+	if r.onRestart != nil {
+		r.onRestart()
+	}
+	return r.fakeRuntime.Destroy(ctx, handle)
+}
+
 type blockingRestartRuntime struct {
 	*fakeRuntime
 	entered chan struct{}
@@ -261,24 +325,66 @@ func (r *blockingRestartRuntime) Restart(_ context.Context, handle ports.Runtime
 	return handle, nil
 }
 
+func (r *blockingRestartRuntime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {
+	close(r.entered)
+	<-r.release
+	return r.fakeRuntime.Destroy(ctx, handle)
+}
+
 func (r *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	if r.createErr != nil {
 		return ports.RuntimeHandle{}, r.createErr
 	}
 	r.lastCfg = cfg
 	r.created++
-	return ports.RuntimeHandle{ID: "h1"}, nil
+	handle := ports.RuntimeHandle{ID: "h1"}
+	if r.aliveByHandle == nil {
+		r.aliveByHandle = map[string]bool{}
+	}
+	r.aliveByHandle[handle.ID] = true
+	return handle, nil
 }
 func (r *fakeRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle) error {
+	call := r.destroyed
 	r.destroyed++
 	r.destroyedIDs = append(r.destroyedIDs, handle.ID)
-	return r.destroyErr
+	if r.onDestroy != nil {
+		r.onDestroy(call, handle)
+	}
+	destroyErr := r.destroyErr
+	if call < len(r.destroyErrSequence) {
+		destroyErr = r.destroyErrSequence[call]
+	}
+	if destroyErr != nil {
+		return destroyErr
+	}
+	if r.aliveByHandle != nil {
+		r.aliveByHandle[handle.ID] = false
+	}
+	return nil
 }
 func (r *fakeRuntime) IsAlive(_ context.Context, handle ports.RuntimeHandle) (bool, error) {
 	if r.aliveErr != nil {
 		return false, r.aliveErr
 	}
 	return r.aliveByHandle[handle.ID], nil
+}
+func (r *fakeRuntime) IsSupervisedProcessAlive(_ context.Context, handle ports.RuntimeHandle, _ ports.SupervisedProcessRef) (bool, error) {
+	if r.supervisedErr != nil {
+		return false, r.supervisedErr
+	}
+	if r.supervisedAliveOverride != nil {
+		return *r.supervisedAliveOverride, nil
+	}
+	return r.aliveByHandle[handle.ID], nil
+}
+func (r *fakeRuntime) IsExactSupervisedProcessAlive(ctx context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
+	if len(r.supervisedSequence) > 0 {
+		alive := r.supervisedSequence[0]
+		r.supervisedSequence = r.supervisedSequence[1:]
+		return alive, nil
+	}
+	return r.IsSupervisedProcessAlive(ctx, handle, ref)
 }
 func (r *fakeRuntime) GetOutput(_ context.Context, _ ports.RuntimeHandle, _ int) (string, error) {
 	r.outputCalls++
@@ -293,6 +399,12 @@ func (r *fakeRuntime) GetOutput(_ context.Context, _ ports.RuntimeHandle, _ int)
 		r.outputs = r.outputs[1:]
 	}
 	return out, nil
+}
+func (r *fakeRuntime) GetStyledOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error) {
+	if r.outputErr != nil {
+		return "", r.outputErr
+	}
+	return "", nil
 }
 
 type fakeAgent struct{}
@@ -712,12 +824,20 @@ func fakeWorkspaceRepoName(info ports.WorkspaceInfo) string {
 }
 
 type fakeMessenger struct {
-	msgs []string
-	err  error
+	msgs   []string
+	err    error
+	errFor func(domain.SessionID, string) error
+	onSend func(domain.SessionID, string)
 }
 
-func (m *fakeMessenger) Send(_ context.Context, _ domain.SessionID, msg string) error {
+func (m *fakeMessenger) Send(_ context.Context, id domain.SessionID, msg string) error {
 	m.msgs = append(m.msgs, msg)
+	if m.onSend != nil {
+		m.onSend(id, msg)
+	}
+	if m.errFor != nil {
+		return m.errFor(id, msg)
+	}
 	return m.err
 }
 
@@ -6509,6 +6629,29 @@ func TestHarnessNudgeSafe(t *testing.T) {
 	m4 := New(Deps{Agents: missingAgents{}})
 	if m4.harnessNudgeSafe("claude-code") {
 		t.Fatalf("unresolved harness reported as nudge-safe")
+	}
+}
+
+func TestSwitchTargetsOnlyRetryEnterWhenActivitySignalsMakeItSafe(t *testing.T) {
+	agents := switchTestAgents{
+		domain.HarnessClaudeCode: claudecode.New(),
+		domain.HarnessCodex:      codex.New(),
+	}
+	m := New(Deps{Agents: agents})
+
+	cases := []struct {
+		harness domain.AgentHarness
+		want    bool
+	}{
+		{domain.HarnessClaudeCode, true},
+		{domain.HarnessCodex, false},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.harness), func(t *testing.T) {
+			if got := m.harnessNudgeSafe(tc.harness); got != tc.want {
+				t.Fatalf("harnessNudgeSafe(%q) = %v, want %v", tc.harness, got, tc.want)
+			}
+		})
 	}
 }
 

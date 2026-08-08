@@ -6,6 +6,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -20,6 +21,10 @@ import (
 type sessionStore interface {
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	UpdateSession(ctx context.Context, rec domain.SessionRecord) error
+	// UpdateSessionFromActivitySignal is a narrow, owner-generation-fenced
+	// write. It returns false when a concurrent lifecycle/agent-switch boundary
+	// made the reducer's previously read session stale.
+	UpdateSessionFromActivitySignal(ctx context.Context, rec domain.SessionRecord) (bool, error)
 	// ListSessions returns every session in a project. The dispatcher reads it
 	// to resolve the current orchestrator at delivery time.
 	ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error)
@@ -47,6 +52,18 @@ type controllerEpochStore interface {
 		string,
 		time.Time,
 	) (bool, error)
+}
+
+// agentSwitchSourceStopStore and agentSwitchTargetActivationStore are the
+// atomic persistence primitives used at the two agent-switch ownership
+// boundaries. They remain optional so focused lifecycle reducer fakes do not
+// need to implement the agent-switch saga; production SQLite implements both.
+type agentSwitchSourceStopStore interface {
+	ConfirmAgentSwitchSourceStopped(context.Context, domain.AgentSwitchSourceStopConfirmation) (bool, error)
+}
+
+type agentSwitchTargetActivationStore interface {
+	ActivateAgentSwitchTarget(context.Context, domain.AgentSwitchTargetActivation) (bool, error)
 }
 
 // notificationSink is the optional lifecycle-to-notification-producer boundary.
@@ -80,6 +97,10 @@ type sessionUsageFinalizer interface {
 
 type sessionUsageReactivator interface {
 	ReactivateSession(ctx context.Context, id domain.SessionID, expectedRuntimeLaunchID string) error
+}
+
+type sessionOperationGate interface {
+	SessionMutationInProgress(id domain.SessionID) bool
 }
 
 type pendingLaunch struct {
@@ -140,6 +161,8 @@ type Manager struct {
 	usageReactivator sessionUsageReactivator
 	containers       ports.ContainerReaper
 	projects         projectConfigLoader
+	operationGateMu  sync.RWMutex
+	operationGate    sessionOperationGate
 
 	mu        sync.Mutex
 	window    time.Duration
@@ -204,6 +227,30 @@ func (m *Manager) SetUsageFinalizer(finalizer sessionUsageFinalizer) {
 	m.usageReactivator, _ = finalizer.(sessionUsageReactivator)
 }
 
+// SetSessionInputLease late-binds Session Manager's pane-input authority into
+// lifecycle's guarded reaction writes. Lifecycle is constructed first during
+// daemon boot, so constructor injection would create a dependency cycle.
+func (m *Manager) SetSessionInputLease(lease sessionguard.InputLease) {
+	if m.guard != nil {
+		m.guard.SetInputLease(lease)
+	}
+}
+
+// SetSessionOperationGate prevents observation-driven terminal facts from
+// racing AO's deliberate provider replacement/relaunch operations.
+func (m *Manager) SetSessionOperationGate(gate sessionOperationGate) {
+	m.operationGateMu.Lock()
+	m.operationGate = gate
+	m.operationGateMu.Unlock()
+}
+
+func (m *Manager) sessionMutationInProgress(id domain.SessionID) bool {
+	m.operationGateMu.RLock()
+	gate := m.operationGate
+	m.operationGateMu.RUnlock()
+	return gate != nil && gate.SessionMutationInProgress(id)
+}
+
 // PrepareLaunch registers a supervised generation before the runtime starts.
 // Hooks from that exact generation wait until MarkSpawned commits the generation
 // instead of racing the old durable generation and being discarded as stale.
@@ -227,6 +274,17 @@ func (m *Manager) PrepareLaunch(id domain.SessionID, launchID string) error {
 // CancelLaunch releases hooks waiting on a generation whose runtime failed to
 // start. Once released, normal generation fencing discards those signals.
 func (m *Manager) CancelLaunch(id domain.SessionID, launchID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.finishLaunchLocked(id, strings.TrimSpace(launchID))
+}
+
+// ReleaseLaunch publishes that the caller has durably committed the prepared
+// generation. Hooks waiting behind PrepareLaunch may now re-read the session
+// row and pass normal generation fencing. Unlike MarkSpawned, this does not
+// rewrite session ownership; agent switching commits that ownership together
+// with its saga state in the AgentSwitchStore transaction.
+func (m *Manager) ReleaseLaunch(id domain.SessionID, launchID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.finishLaunchLocked(id, strings.TrimSpace(launchID))
@@ -318,6 +376,9 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		if !runtimeClearlyDead(f, cur.Activity, now, m.window) {
 			return cur, false
 		}
+		if m.sessionMutationInProgress(id) {
+			return cur, false
+		}
 		finalizer = m.usageFinalizer
 		terminationLaunch = currentLaunch
 		terminationRevision = cur.UpdatedAt
@@ -333,7 +394,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 	err := m.mutate(ctx, id, func(cur domain.SessionRecord, now time.Time) (domain.SessionRecord, bool) {
 		if cur.IsTerminated || !cur.UpdatedAt.Equal(terminationRevision) ||
 			cur.Metadata.RuntimeLaunchID != terminationLaunch || !matchesLaunch(cur) ||
-			!runtimeClearlyDead(f, cur.Activity, now, m.window) {
+			!runtimeClearlyDead(f, cur.Activity, now, m.window) || m.sessionMutationInProgress(id) {
 			return cur, false
 		}
 		next := cur
@@ -366,10 +427,44 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 // existing activity and first-signal facts untouched.
 func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, s ports.ActivitySignal) error {
 	s.AgentSessionID = strings.TrimSpace(s.AgentSessionID)
+	s.LatestUserPrompt = strings.TrimSpace(s.LatestUserPrompt)
+	s.LatestAssistantUpdate = strings.TrimSpace(s.LatestAssistantUpdate)
+	s.TranscriptPath = strings.TrimSpace(s.TranscriptPath)
 	s.LaunchID = strings.TrimSpace(s.LaunchID)
 	s.ControllerGeneration = strings.TrimSpace(s.ControllerGeneration)
-	if !s.Valid && s.AgentSessionID == "" {
+	// A response or Stop hook produced by AO's optional source handoff request
+	// may contain last_assistant_message without echoing the internal prompt.
+	// From collection through source teardown, do not let that coordination
+	// response replace the latest user-facing assistant update used by the
+	// target continuation. The semantic outcome may already be received,
+	// rejected, timed out, or failed before the provider emits its final Stop
+	// hook. not_attempted/unavailable do not prove an internal request landed,
+	// so a legitimate source update remains user-facing in those states.
+	if s.LatestAssistantUpdate != "" {
+		if switchStore, ok := m.store.(ports.AgentSwitchStore); ok {
+			if active, found, err := switchStore.GetActiveAgentSwitch(ctx, id); err == nil && found {
+				internalRequestMayHaveLanded := false
+				switch active.AgentHandoffStatus {
+				case domain.AgentHandoffRequested, domain.AgentHandoffReceived, domain.AgentHandoffTimedOut,
+					domain.AgentHandoffFailed, domain.AgentHandoffRejected:
+					internalRequestMayHaveLanded = true
+				}
+				if internalRequestMayHaveLanded {
+					switch active.State {
+					case domain.AgentSwitchPreparingHandoff, domain.AgentSwitchStoppingSource:
+						s.LatestAssistantUpdate = ""
+					}
+				}
+			}
+		}
+	}
+	if !s.Valid && s.AgentSessionID == "" && s.LatestUserPrompt == "" && s.LatestAssistantUpdate == "" && s.TranscriptPath == "" {
 		return nil
+	}
+	if s.LaunchID != "" {
+		if err := m.stagePendingAgentSwitchNativeMetadata(ctx, id, s); err != nil {
+			return err
+		}
 	}
 	var intent *ports.NotificationIntent
 	m.mu.Lock()
@@ -402,7 +497,7 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		m.mu.Unlock()
 		return nil
 	}
-	if s.LaunchID != "" && s.LaunchID != rec.Metadata.RuntimeLaunchID {
+	if rec.Metadata.RuntimeLaunchID != "" && s.LaunchID != rec.Metadata.RuntimeLaunchID {
 		m.mu.Unlock()
 		return nil
 	}
@@ -430,7 +525,10 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	// rule, while their tracking side effects still land. Untagged signals
 	// (old CLIs, adapters without tool identity) pass through untouched —
 	// last-writer-wins, exactly as before.
-	metadataChanged := s.AgentSessionID != "" && rec.Metadata.AgentSessionID != s.AgentSessionID
+	metadataChanged := (s.AgentSessionID != "" && rec.Metadata.AgentSessionID != s.AgentSessionID) ||
+		(s.LatestUserPrompt != "" && rec.Metadata.LatestUserPrompt != s.LatestUserPrompt) ||
+		(s.LatestAssistantUpdate != "" && rec.Metadata.LatestAssistantUpdate != s.LatestAssistantUpdate) ||
+		(s.TranscriptPath != "" && rec.Metadata.NativeTranscriptPath != s.TranscriptPath)
 	if s.Valid {
 		s = m.applyToolPrecedenceLocked(id, rec.Activity.State, s)
 	}
@@ -439,16 +537,16 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		return nil
 	}
 	if !s.Valid {
-		rec.Metadata.AgentSessionID = s.AgentSessionID
+		applyActivityMetadata(&rec.Metadata, s)
 		rec.UpdatedAt = now
-		err := m.store.UpdateSession(ctx, rec)
+		_, err := m.store.UpdateSessionFromActivitySignal(ctx, rec)
 		m.mu.Unlock()
 		return err
 	}
 	if metadataChanged {
 		// Fold metadata into rec before copying it into next below, so the
 		// activity and resume handle land in one store update.
-		rec.Metadata.AgentSessionID = s.AgentSessionID
+		applyActivityMetadata(&rec.Metadata, s)
 	}
 	prevState := rec.Activity.State
 	prevAt := rec.Activity.LastActivityAt
@@ -462,9 +560,15 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	if sameState && !rec.FirstSignalAt.IsZero() {
 		if metadataChanged || s.Event == "user-prompt-submit" {
 			rec.UpdatedAt = now
-			err := m.store.UpdateSession(ctx, rec)
+			applied, err := m.store.UpdateSessionFromActivitySignal(ctx, rec)
 			m.mu.Unlock()
-			return err
+			if err != nil {
+				return err
+			}
+			if !applied {
+				return nil
+			}
+			return m.acknowledgeAgentSwitchTarget(ctx, id, s, now)
 		}
 		m.mu.Unlock()
 		return nil
@@ -482,9 +586,14 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		delete(m.flights, id)
 	}
 	next.UpdatedAt = now
-	if err := m.store.UpdateSession(ctx, next); err != nil {
+	applied, err := m.store.UpdateSessionFromActivitySignal(ctx, next)
+	if err != nil {
 		m.mu.Unlock()
 		return err
+	}
+	if !applied {
+		m.mu.Unlock()
+		return nil
 	}
 	// Transition into the needs-input family (waiting_input or blocked) pings
 	// the user; an in-family escalation (waiting_input -> blocked) does not
@@ -503,11 +612,89 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	resolutions := needsInputResolutions(rec, next, now)
 	waitingEvents := m.waitingInputEvents(next, prevState, prevAt, now)
 	m.mu.Unlock()
+	if err := m.acknowledgeAgentSwitchTarget(ctx, id, s, now); err != nil {
+		return err
+	}
 	for _, ev := range waitingEvents {
 		m.emitTelemetry(ctx, ev)
 	}
 	m.emitNotification(ctx, intent)
 	m.resolveNotifications(ctx, resolutions...)
+	return nil
+}
+
+// stagePendingAgentSwitchNativeMetadata persists provider-assigned startup
+// identity while a target hook is waiting behind PrepareLaunch. It deliberately
+// updates only the switch's retained native-session row, never the source-owned
+// session row. Once ownership transfers, ReleaseLaunch lets the same hook apply
+// its normal activity/metadata update. If the daemon crashes first, recovery
+// can still prove the target conversation is resumable.
+func (m *Manager) stagePendingAgentSwitchNativeMetadata(ctx context.Context, id domain.SessionID, s ports.ActivitySignal) error {
+	if s.AgentSessionID == "" && s.TranscriptPath == "" {
+		return nil
+	}
+	store, ok := m.store.(ports.AgentSwitchStore)
+	if !ok {
+		return nil
+	}
+	sw, found, err := store.GetActiveAgentSwitch(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !found || sw.State != domain.AgentSwitchStartingTarget || string(sw.TargetGenerationID) != s.LaunchID || sw.TargetNativeSessionRef == nil {
+		return nil
+	}
+	native, found, err := store.GetAgentNativeSession(ctx, *sw.TargetNativeSessionRef)
+	if err != nil {
+		return err
+	}
+	if !found || native.AOSessionID != id || native.Harness != sw.TargetHarness || native.LastGenerationID != sw.TargetGenerationID {
+		return nil
+	}
+	changed := false
+	if s.AgentSessionID != "" && native.NativeSessionID != s.AgentSessionID {
+		if native.NativeSessionID != "" {
+			return fmt.Errorf("lifecycle: target native session identity changed from %q to %q", native.NativeSessionID, s.AgentSessionID)
+		}
+		native.NativeSessionID = s.AgentSessionID
+		changed = true
+	}
+	if s.TranscriptPath != "" && native.TranscriptPath != s.TranscriptPath {
+		native.TranscriptPath = s.TranscriptPath
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	updated, err := store.UpdateAgentNativeSession(ctx, native, sw.TargetGenerationID)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return errors.New("lifecycle: target native session metadata changed concurrently")
+	}
+	return nil
+}
+
+func (m *Manager) acknowledgeAgentSwitchTarget(ctx context.Context, id domain.SessionID, signal ports.ActivitySignal, at time.Time) error {
+	if !signal.Valid || signal.State != domain.ActivityActive || signal.Event != "user-prompt-submit" || signal.LaunchID == "" {
+		return nil
+	}
+	store, ok := m.store.(ports.AgentSwitchStore)
+	if !ok {
+		return nil
+	}
+	sw, found, err := store.GetActiveAgentSwitch(ctx, id)
+	if err != nil {
+		return fmt.Errorf("lifecycle: read active agent switch acknowledgement for %s: %w", id, err)
+	}
+	if !found || sw.State != domain.AgentSwitchDelivering {
+		return nil
+	}
+	_, err = store.AcknowledgeAgentSwitchTarget(ctx, sw.ID, id, domain.AgentGenerationID(signal.LaunchID), at)
+	if err != nil {
+		return fmt.Errorf("lifecycle: acknowledge agent switch %s target: %w", sw.ID, err)
+	}
 	return nil
 }
 
@@ -851,6 +1038,40 @@ func (m *Manager) CommitControllerEpoch(
 	return true, nil
 }
 
+// ConfirmAgentSwitchSourceStopped records that the source process is gone and
+// moves the switch saga across the source-stop boundary in the same store
+// transaction. Session Manager coordinates the process; Lifecycle Manager owns
+// the durable activity-state write.
+func (m *Manager) ConfirmAgentSwitchSourceStopped(
+	ctx context.Context,
+	confirmation domain.AgentSwitchSourceStopConfirmation,
+) (bool, error) {
+	writer, ok := m.store.(agentSwitchSourceStopStore)
+	if !ok {
+		return false, fmt.Errorf("lifecycle: agent-switch source-stop persistence is unavailable")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return writer.ConfirmAgentSwitchSourceStopped(ctx, confirmation)
+}
+
+// ActivateAgentSwitchTarget atomically transfers the session owner to the
+// target process and advances the switch saga. Keeping this command on
+// Lifecycle Manager preserves the canonical write boundary without splitting
+// the store's all-or-nothing transaction.
+func (m *Manager) ActivateAgentSwitchTarget(
+	ctx context.Context,
+	activation domain.AgentSwitchTargetActivation,
+) (bool, error) {
+	writer, ok := m.store.(agentSwitchTargetActivationStore)
+	if !ok {
+		return false, fmt.Errorf("lifecycle: agent-switch target activation persistence is unavailable")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return writer.ActivateAgentSwitchTarget(ctx, activation)
+}
+
 // MarkTerminated marks a session terminated. Runtime/workspace teardown is the
 // caller's responsibility (see session_manager.Manager.Kill); this also reaps the
 // session's Docker containers via the optional ContainerReaper (#2652) as its one
@@ -1008,6 +1229,9 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	base.RuntimeLaunchID = in.RuntimeLaunchID
 	set(&base.AgentSessionID, in.AgentSessionID)
 	set(&base.Prompt, in.Prompt)
+	set(&base.LatestUserPrompt, in.LatestUserPrompt)
+	set(&base.LatestAssistantUpdate, in.LatestAssistantUpdate)
+	set(&base.NativeTranscriptPath, in.NativeTranscriptPath)
 	set(&base.BrowserCapabilityVerifier, in.BrowserCapabilityVerifier)
 	// The chat controller's resume handle. Without this a restart has no thread to
 	// resume and the conversation is stranded — the provider still holds it, but
@@ -1018,4 +1242,19 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	// controller this one superseded can be told apart.
 	base.ControllerGeneration = in.ControllerGeneration
 	return base
+}
+
+func applyActivityMetadata(meta *domain.SessionMetadata, signal ports.ActivitySignal) {
+	if signal.AgentSessionID != "" {
+		meta.AgentSessionID = signal.AgentSessionID
+	}
+	if signal.LatestUserPrompt != "" {
+		meta.LatestUserPrompt = signal.LatestUserPrompt
+	}
+	if signal.LatestAssistantUpdate != "" {
+		meta.LatestAssistantUpdate = signal.LatestAssistantUpdate
+	}
+	if signal.TranscriptPath != "" {
+		meta.NativeTranscriptPath = signal.TranscriptPath
+	}
 }

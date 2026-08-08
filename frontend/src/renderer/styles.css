@@ -1357,6 +1357,35 @@ textarea,
 	}
 }
 
+.agent-switch-transfer-pulse {
+	animation: agent-switch-transfer 1.35s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes agent-switch-transfer {
+	0% {
+		left: -2.5rem;
+		opacity: 0;
+	}
+	18% {
+		opacity: 1;
+	}
+	82% {
+		opacity: 1;
+	}
+	100% {
+		left: 100%;
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.agent-switch-transfer-pulse {
+		left: calc(50% - 1.25rem);
+		opacity: 0.85;
+		animation: none;
+	}
+}
+
 @keyframes ao-startup-logo-breathe {
 	0%,
 	100% {

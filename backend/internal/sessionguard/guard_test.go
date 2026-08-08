@@ -28,6 +28,36 @@ func (m *fakeMessenger) Send(_ context.Context, _ domain.SessionID, msg string) 
 	return m.err
 }
 
+type fixedInputLease bool
+
+func (l fixedInputLease) AcquireSessionInput(domain.SessionID) (func(), bool) {
+	if !l {
+		return nil, false
+	}
+	return func() {}, true
+}
+
+type observedInputLease struct {
+	acquired chan struct{}
+	released chan struct{}
+}
+
+func (l *observedInputLease) AcquireSessionInput(domain.SessionID) (func(), bool) {
+	close(l.acquired)
+	return func() { close(l.released) }, true
+}
+
+type blockingMessenger struct {
+	started chan struct{}
+	unblock chan struct{}
+}
+
+func (m *blockingMessenger) Send(context.Context, domain.SessionID, string) error {
+	close(m.started)
+	<-m.unblock
+	return nil
+}
+
 func record(state domain.ActivityState, terminated bool) domain.SessionRecord {
 	return domain.SessionRecord{ID: "s1", IsTerminated: terminated, Activity: domain.Activity{State: state}}
 }
@@ -108,6 +138,186 @@ func TestGuard_MessengerErrorIsSentPlusError(t *testing.T) {
 	}
 	if got != Sent {
 		t.Errorf("outcome = %v, want Sent (the write was attempted)", got)
+	}
+}
+
+func TestGuard_InputLeaseCoversActualPaneWrite(t *testing.T) {
+	lease := &observedInputLease{acquired: make(chan struct{}), released: make(chan struct{})}
+	messenger := &blockingMessenger{started: make(chan struct{}), unblock: make(chan struct{})}
+	g := New(&fakeStore{rec: record(domain.ActivityActive, false), ok: true}, messenger, nil)
+	g.SetInputLease(lease)
+
+	done := make(chan struct{})
+	var got Outcome
+	var gotErr error
+	go func() {
+		got, gotErr = g.Deliver(context.Background(), "s1", "x")
+		close(done)
+	}()
+
+	<-lease.acquired
+	<-messenger.started
+	select {
+	case <-lease.released:
+		t.Fatal("input lease released before pane write returned")
+	default:
+	}
+	close(messenger.unblock)
+	<-done
+	if gotErr != nil || got != Sent {
+		t.Fatalf("Deliver = (%v, %v), want (Sent, nil)", got, gotErr)
+	}
+	select {
+	case <-lease.released:
+	default:
+		t.Fatal("input lease was not released after pane write")
+	}
+}
+
+func TestGuard_DeliverPostWriteRunsBeforeInputLeaseRelease(t *testing.T) {
+	lease := &observedInputLease{acquired: make(chan struct{}), released: make(chan struct{})}
+	g := New(&fakeStore{rec: record(domain.ActivityActive, false), ok: true}, &fakeMessenger{}, nil)
+	g.SetInputLease(lease)
+	callbackRan := false
+	outcome, err := g.DeliverWithPostWrite(context.Background(), "s1", "hello", func(context.Context) error {
+		select {
+		case <-lease.released:
+			t.Fatal("input lease released before post-write callback")
+		default:
+		}
+		callbackRan = true
+		return nil
+	})
+	if err != nil || outcome != Sent || !callbackRan {
+		t.Fatalf("DeliverWithPostWrite = (%v, %v), callback=%v", outcome, err, callbackRan)
+	}
+	select {
+	case <-lease.released:
+	default:
+		t.Fatal("input lease remained held after callback")
+	}
+}
+
+func TestGuard_ClosedInputGateSuppressesBeforePaneWrite(t *testing.T) {
+	messenger := &fakeMessenger{}
+	g := New(&fakeStore{rec: record(domain.ActivityActive, false), ok: true}, messenger, nil)
+	g.SetInputLease(fixedInputLease(false))
+
+	got, err := g.Deliver(context.Background(), "s1", "x")
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if got != SuppressedInputGated {
+		t.Fatalf("outcome = %v, want SuppressedInputGated", got)
+	}
+	if len(messenger.sent) != 0 {
+		t.Fatalf("messenger sends = %d, want 0", len(messenger.sent))
+	}
+}
+
+func TestGuard_DeliverUnderMutationBypassesInputGateButKeepsSafetyChecks(t *testing.T) {
+	messenger := &fakeMessenger{}
+	g := New(&fakeStore{rec: record(domain.ActivityActive, false), ok: true}, messenger, nil)
+	g.SetInputLease(fixedInputLease(false))
+
+	got, err := g.DeliverUnderMutation(context.Background(), "s1", "handoff")
+	if err != nil || got != Sent {
+		t.Fatalf("DeliverUnderMutation = (%v, %v), want (Sent, nil)", got, err)
+	}
+	if len(messenger.sent) != 1 {
+		t.Fatalf("messenger sends = %d, want 1", len(messenger.sent))
+	}
+
+	g.store = &fakeStore{rec: record(domain.ActivityBlocked, false), ok: true}
+	got, err = g.DeliverUnderMutation(context.Background(), "s1", "unsafe")
+	if err != nil || got != SuppressedAwaitingUser {
+		t.Fatalf("blocked DeliverUnderMutation = (%v, %v), want (SuppressedAwaitingUser, nil)", got, err)
+	}
+	if len(messenger.sent) != 1 {
+		t.Fatalf("blocked write reached messenger; sends = %d", len(messenger.sent))
+	}
+}
+
+func TestGuard_CoordinationUnderMutationRechecksActivityAndBypassesInputGate(t *testing.T) {
+	steersCodex := func(h domain.AgentHarness) bool { return h == domain.HarnessCodex }
+	acceptsClaudeWaiting := func(h domain.AgentHarness) bool { return h == domain.HarnessClaudeCode }
+	cases := []struct {
+		name           string
+		state          domain.ActivityState
+		harness        domain.AgentHarness
+		acceptsWaiting func(domain.AgentHarness) bool
+		steers         func(domain.AgentHarness) bool
+		want           Outcome
+	}{
+		{"idle delivers", domain.ActivityIdle, domain.HarnessClaudeCode, nil, steersCodex, Sent},
+		{"capability-safe waiting_input delivers", domain.ActivityWaitingInput, domain.HarnessClaudeCode, acceptsClaudeWaiting, steersCodex, Sent},
+		{"ambiguous waiting_input suppressed", domain.ActivityWaitingInput, domain.HarnessCodex, acceptsClaudeWaiting, steersCodex, SuppressedAwaitingUser},
+		{"waiting_input nil predicate suppressed", domain.ActivityWaitingInput, domain.HarnessClaudeCode, nil, steersCodex, SuppressedAwaitingUser},
+		{"blocked suppressed", domain.ActivityBlocked, domain.HarnessCodex, acceptsClaudeWaiting, steersCodex, SuppressedAwaitingUser},
+		{"active non-steering suppressed", domain.ActivityActive, domain.HarnessClaudeCode, acceptsClaudeWaiting, steersCodex, SuppressedBusy},
+		{"active steering delivers", domain.ActivityActive, domain.HarnessCodex, acceptsClaudeWaiting, steersCodex, Sent},
+		{"active nil predicate suppressed", domain.ActivityActive, domain.HarnessCodex, acceptsClaudeWaiting, nil, SuppressedBusy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := record(tc.state, false)
+			rec.Harness = tc.harness
+			msg := &fakeMessenger{}
+			g := New(&fakeStore{rec: rec, ok: true}, msg, nil)
+			g.SetInputLease(fixedInputLease(false))
+
+			got, err := g.CoordinationUnderMutation(context.Background(), "s1", "handoff", tc.acceptsWaiting, tc.steers)
+			if err != nil {
+				t.Fatalf("CoordinationUnderMutation: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("outcome = %v, want %v", got, tc.want)
+			}
+			wantSends := 0
+			if tc.want == Sent {
+				wantSends = 1
+			}
+			if len(msg.sent) != wantSends {
+				t.Fatalf("sends = %d, want %d", len(msg.sent), wantSends)
+			}
+		})
+	}
+}
+
+func TestGuard_CoordinationUnderMutationCheckedRejectsBeforeRuntimeWrite(t *testing.T) {
+	rec := record(domain.ActivityIdle, false)
+	rec.Harness = domain.HarnessKimi
+	messenger := &fakeMessenger{}
+	g := New(&fakeStore{rec: rec, ok: true}, messenger, nil)
+	g.SetInputLease(fixedInputLease(false))
+	proofErr := errors.New("generation changed")
+	proofCalls := 0
+
+	got, err := g.CoordinationUnderMutationChecked(
+		context.Background(),
+		"s1",
+		"continuation",
+		func(domain.AgentHarness) bool { return false },
+		func(domain.AgentHarness) bool { return false },
+		func(_ context.Context, current domain.SessionRecord) error {
+			proofCalls++
+			if current.ID != rec.ID {
+				t.Fatalf("pre-write record ID = %q, want %q", current.ID, rec.ID)
+			}
+			return proofErr
+		},
+	)
+	if got != SuppressedUnknown {
+		t.Fatalf("outcome = %v, want %v", got, SuppressedUnknown)
+	}
+	if !errors.Is(err, proofErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, proofErr)
+	}
+	if proofCalls != 1 {
+		t.Fatalf("pre-write calls = %d, want 1", proofCalls)
+	}
+	if len(messenger.sent) != 0 {
+		t.Fatalf("runtime writes = %d, want 0", len(messenger.sent))
 	}
 }
 

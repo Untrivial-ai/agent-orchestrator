@@ -1591,6 +1591,109 @@ paths:
       summary: Report an agent activity-state signal for a session
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/agent-switches:
+    get:
+      operationId: listSessionAgentSwitches
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAgentSwitchesResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List a session's durable agent-switch history
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/agent-switches/{switchId}/handoff:
+    post:
+      operationId: submitSessionAgentHandoff
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Durable agent-switch identifier.
+        in: path
+        name: switchId
+        required: true
+        schema:
+          description: Durable agent-switch identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitAgentHandoffRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSwitchResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Submit a generation-fenced source-agent handoff
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/attachments:
     post:
       operationId: stageSessionAttachments
@@ -3757,6 +3860,63 @@ paths:
       summary: Send a message to a running session's agent
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/switch-agent:
+    post:
+      operationId: switchSessionAgent
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwitchAgentRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSwitchResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Switch a logical AO session to another agent harness
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/workspace/events:
     get:
       operationId: streamSessionWorkspaceChanges
@@ -4331,6 +4491,67 @@ components:
       - source
       - fetchedAt
       - stale
+      type: object
+    AgentSwitch:
+      properties:
+        agentHandoffStatus:
+          enum:
+          - not_attempted
+          - requested
+          - received
+          - unavailable
+          - timed_out
+          - failed
+          - rejected
+          type: string
+        errorCode:
+          type: string
+        fromHarness:
+          type: string
+        id:
+          type: string
+        requestedAt:
+          format: date-time
+          type: string
+        sessionId:
+          type: string
+        state:
+          enum:
+          - preparing_handoff
+          - stopping_source
+          - source_stopped
+          - starting_target
+          - target_ready
+          - delivering_context
+          - completed
+          - failed
+          type: string
+        targetHarness:
+          type: string
+        targetStartMode:
+          enum:
+          - fresh
+          - resumed
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - sessionId
+      - fromHarness
+      - targetHarness
+      - state
+      - agentHandoffStatus
+      - requestedAt
+      - updatedAt
+      type: object
+    AgentSwitchResponse:
+      properties:
+        switch:
+          $ref: '#/components/schemas/AgentSwitch'
+      required:
+      - switch
       type: object
     BrowserCommandRequest:
       properties:
@@ -5419,6 +5640,15 @@ components:
       required:
       - ok
       - sessionId
+      type: object
+    ListAgentSwitchesResponse:
+      properties:
+        switches:
+          items:
+            $ref: '#/components/schemas/AgentSwitch'
+          type: array
+      required:
+      - switches
       type: object
     ListAgentsResponse:
       properties:
@@ -6655,6 +6885,14 @@ components:
         event:
           description: AO hook sub-command that produced this state (e.g. post-tool-use).
           type: string
+        latestAssistantUpdate:
+          description: Latest assistant update exposed by the provider hook.
+          maxLength: 16384
+          type: string
+        latestUserPrompt:
+          description: Latest real user prompt exposed by the provider hook.
+          maxLength: 16384
+          type: string
         launchId:
           description: AO process generation that produced the signal.
           type: string
@@ -6673,6 +6911,10 @@ components:
           type: string
         toolUseId:
           description: Native tool-use id, for tool-use hook events.
+          type: string
+        transcriptPath:
+          description: Read-only provider-native transcript path exposed by the hook.
+          maxLength: 4096
           type: string
         usage:
           $ref: '#/components/schemas/UsageHookMetadata'
@@ -7024,6 +7266,17 @@ components:
       required:
       - providerTurnId
       type: object
+    SubmitAgentHandoffRequest:
+      properties:
+        handoff:
+          description: Structured, source-agent-authored handoff enrichment.
+        sourceGenerationId:
+          description: Source invocation generation that authored this handoff.
+          type: string
+      required:
+      - sourceGenerationId
+      - handoff
+      type: object
     SubmitReviewInput:
       properties:
         body:
@@ -7061,6 +7314,26 @@ components:
       required:
       - runId
       - verdict
+      type: object
+    SwitchAgentRequest:
+      properties:
+        idempotencyKey:
+          description: Optional retry key. Reusing it with a different request is
+            rejected.
+          maxLength: 128
+          type: string
+        note:
+          description: Optional user guidance included in the bounded handoff context.
+          maxLength: 4096
+          type: string
+        targetHarness:
+          description: Agent harness to continue the logical AO session with.
+          enum:
+          - claude-code
+          - codex
+          type: string
+      required:
+      - targetHarness
       type: object
     TrackerIntakeConfig:
       properties:

@@ -64,7 +64,12 @@ type attachment struct {
 	exited       bool
 	opened       bool
 	inputReady   bool
-	pendingInput [][]byte
+	pendingInput []pendingInput
+}
+
+type pendingInput struct {
+	data    []byte
+	release func()
 }
 
 func newAttachment(id string, handle ports.RuntimeHandle, src Source, onOpen func(), onData func([]byte), onExit func(), log *slog.Logger) *attachment {
@@ -96,6 +101,7 @@ func (a *attachment) run(ctx context.Context) {
 		return
 	}
 	defer a.clearRunCancel(cancel)
+	defer a.releasePendingInput()
 
 	failures := 0
 	for {
@@ -218,11 +224,13 @@ func reattachBackoff(failures int) time.Duration {
 	return d
 }
 
-// write sends client keystrokes to the PTY. Input that arrives after open but
-// before the attach PTY is published is buffered and flushed as soon as setPTY
-// runs, so a fast user cannot type into the attach race and lose bytes.
-func (a *attachment) write(p []byte) error {
+// writeLeased takes ownership of release and calls it only after the bytes
+// reach the PTY or are conclusively discarded. In particular, input buffered
+// during attach keeps its session-input lease until setPTY flushes it, so an
+// exclusive provider mutation cannot overtake queued keystrokes.
+func (a *attachment) writeLeased(p []byte, release func()) error {
 	if len(p) == 0 {
+		releaseInput(release)
 		return nil
 	}
 	chunk := append([]byte(nil), p...)
@@ -230,16 +238,18 @@ func (a *attachment) write(p []byte) error {
 	a.mu.Lock()
 	if a.closed || a.exited {
 		a.mu.Unlock()
+		releaseInput(release)
 		return errors.New("terminal: attachment closed")
 	}
 	pty := a.pty
 	if pty == nil || !a.inputReady {
-		a.pendingInput = append(a.pendingInput, chunk)
+		a.pendingInput = append(a.pendingInput, pendingInput{data: chunk, release: release})
 		a.mu.Unlock()
 		return nil
 	}
 	a.mu.Unlock()
 	_, err := pty.Write(chunk)
+	releaseInput(release)
 	return err
 }
 
@@ -295,7 +305,7 @@ func (a *attachment) setPTY(p ports.Stream) bool {
 
 	for {
 		a.mu.Lock()
-		pending := append([][]byte(nil), a.pendingInput...)
+		pending := append([]pendingInput(nil), a.pendingInput...)
 		a.pendingInput = nil
 		if len(pending) == 0 {
 			a.inputReady = true
@@ -304,8 +314,11 @@ func (a *attachment) setPTY(p ports.Stream) bool {
 		}
 		a.mu.Unlock()
 
-		for _, chunk := range pending {
-			if _, err := p.Write(chunk); err != nil {
+		for i, input := range pending {
+			_, err := p.Write(input.data)
+			releaseInput(input.release)
+			if err != nil {
+				releasePendingInput(pending[i+1:])
 				a.fail("flush pending input: " + err.Error())
 				return false
 			}
@@ -335,9 +348,11 @@ func (a *attachment) close() {
 	pty := a.pty
 	a.pty = nil
 	a.inputReady = false
+	pending := a.pendingInput
 	a.pendingInput = nil
 	cancel := a.cancel
 	a.mu.Unlock()
+	releasePendingInput(pending)
 	if pty != nil {
 		_ = pty.Close()
 	}
@@ -387,7 +402,10 @@ func (a *attachment) markExited() {
 		return
 	}
 	a.exited = true
+	pending := a.pendingInput
+	a.pendingInput = nil
 	a.mu.Unlock()
+	releasePendingInput(pending)
 	if a.onExit != nil {
 		a.onExit()
 	}
@@ -397,4 +415,24 @@ func (a *attachment) markExited() {
 func (a *attachment) fail(reason string) {
 	a.log.Warn("terminal attachment failed", "id", a.id, "reason", reason)
 	a.markExited()
+}
+
+func (a *attachment) releasePendingInput() {
+	a.mu.Lock()
+	pending := a.pendingInput
+	a.pendingInput = nil
+	a.mu.Unlock()
+	releasePendingInput(pending)
+}
+
+func releasePendingInput(pending []pendingInput) {
+	for _, input := range pending {
+		releaseInput(input.release)
+	}
+}
+
+func releaseInput(release func()) {
+	if release != nil {
+		release()
+	}
 }

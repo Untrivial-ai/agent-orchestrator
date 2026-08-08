@@ -21,6 +21,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -82,6 +83,18 @@ func (f *fakeSessionService) Restore(context.Context, domain.SessionID) (session
 
 func (f *fakeSessionService) ResumeAgent(context.Context, domain.SessionID) (sessionsvc.ResumeAgentOutcome, error) {
 	return sessionsvc.ResumeAgentOutcome{}, nil
+}
+
+func (f *fakeSessionService) SwitchAgent(context.Context, domain.SessionID, sessionsvc.SwitchAgentInput) (domain.AgentSwitch, error) {
+	return domain.AgentSwitch{}, nil
+}
+
+func (f *fakeSessionService) ListAgentSwitches(context.Context, domain.SessionID) ([]domain.AgentSwitch, error) {
+	return nil, nil
+}
+
+func (f *fakeSessionService) SubmitAgentHandoff(context.Context, domain.SessionID, domain.AgentSwitchID, domain.AgentGenerationID, json.RawMessage) (domain.AgentSwitch, error) {
+	return domain.AgentSwitch{}, nil
 }
 
 func (f *fakeSessionService) Kill(context.Context, domain.SessionID) (bool, error) {

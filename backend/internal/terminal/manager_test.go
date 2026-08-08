@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -100,6 +101,93 @@ func TestServeOpenStreamsAndWritesTerminal(t *testing.T) {
 	})
 }
 
+type fixedSessionInputLease bool
+
+func (l fixedSessionInputLease) AcquireSessionInput(domain.SessionID) (func(), bool) {
+	if !l {
+		return nil, false
+	}
+	return func() {}, true
+}
+
+type observedTerminalInputLease struct {
+	acquired chan struct{}
+	released chan struct{}
+}
+
+func (l *observedTerminalInputLease) AcquireSessionInput(domain.SessionID) (func(), bool) {
+	close(l.acquired)
+	return func() { close(l.released) }, true
+}
+
+func TestServeRejectsTerminalInputWhileSessionGateIsClosed(t *testing.T) {
+	pty := newFakePTY()
+	src := &fakeSource{alive: true, spawner: &fakeSpawner{ptys: []*fakePTY{pty}}}
+	mgr := NewManager(src, nil, testLogger(), WithHeartbeat(0))
+	mgr.SetSessionInputLease(fixedSessionInputLease(false))
+	defer mgr.Close()
+
+	conn := newFakeConn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go mgr.Serve(ctx, conn)
+
+	conn.in <- clientMsg{Ch: chTerminal, ID: "worker-1", Type: msgOpen}
+	recv(t, conn, chTerminal, msgOpened, time.Second)
+	conn.in <- clientMsg{Ch: chTerminal, ID: "worker-1", Type: msgData, Data: base64.StdEncoding.EncodeToString([]byte("unsafe\n"))}
+	errFrame := recv(t, conn, chTerminal, msgError, time.Second)
+	if errFrame.ID != "worker-1" || errFrame.Error == "" {
+		t.Fatalf("error frame = %#v", errFrame)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := string(pty.writtenBytes()); got != "" {
+		t.Fatalf("blocked input reached PTY: %q", got)
+	}
+}
+
+func TestServeHoldsSessionInputLeaseThroughPTYWrite(t *testing.T) {
+	pty := newFakePTY()
+	pty.writeStarted = make(chan struct{}, 1)
+	pty.writeUnblock = make(chan struct{})
+	src := &fakeSource{alive: true, spawner: &fakeSpawner{ptys: []*fakePTY{pty}}}
+	mgr := NewManager(src, nil, testLogger(), WithHeartbeat(0))
+	lease := &observedTerminalInputLease{acquired: make(chan struct{}), released: make(chan struct{})}
+	mgr.SetSessionInputLease(lease)
+	defer mgr.Close()
+
+	conn := newFakeConn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go mgr.Serve(ctx, conn)
+
+	conn.in <- clientMsg{Ch: chTerminal, ID: "worker-1", Type: msgOpen}
+	recv(t, conn, chTerminal, msgOpened, time.Second)
+	conn.in <- clientMsg{Ch: chTerminal, ID: "worker-1", Type: msgData, Data: base64.StdEncoding.EncodeToString([]byte("status\n"))}
+
+	select {
+	case <-lease.acquired:
+	case <-time.After(time.Second):
+		t.Fatal("input lease was not acquired")
+	}
+	select {
+	case <-pty.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("PTY write did not start")
+	}
+	select {
+	case <-lease.released:
+		t.Fatal("input lease released before PTY write returned")
+	default:
+	}
+	close(pty.writeUnblock)
+	select {
+	case <-lease.released:
+	case <-time.After(time.Second):
+		t.Fatal("input lease was not released after PTY write")
+	}
+	eventually(t, time.Second, func() bool { return string(pty.writtenBytes()) == "status\n" })
+}
+
 func TestServeBuffersInputUntilAttachReady(t *testing.T) {
 	pty := newFakePTY()
 	spawnStarted := make(chan struct{})
@@ -110,6 +198,8 @@ func TestServeBuffersInputUntilAttachReady(t *testing.T) {
 		return pty, nil
 	}}
 	mgr := NewManager(src, nil, testLogger(), WithHeartbeat(0))
+	lease := &observedTerminalInputLease{acquired: make(chan struct{}), released: make(chan struct{})}
+	mgr.SetSessionInputLease(lease)
 	defer mgr.Close()
 
 	conn := newFakeConn()
@@ -124,10 +214,25 @@ func TestServeBuffersInputUntilAttachReady(t *testing.T) {
 		t.Fatal("spawn was not reached")
 	}
 	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgData, Data: base64.StdEncoding.EncodeToString([]byte("status\n"))}
+	select {
+	case <-lease.acquired:
+	case <-time.After(time.Second):
+		t.Fatal("buffered input did not acquire a lease")
+	}
+	select {
+	case <-lease.released:
+		t.Fatal("buffered input released its lease before the pending PTY write")
+	default:
+	}
 	close(releaseSpawn)
 
 	recv(t, conn, chTerminal, msgOpened, time.Second)
 	eventually(t, time.Second, func() bool { return string(pty.writtenBytes()) == "status\n" })
+	select {
+	case <-lease.released:
+	case <-time.After(time.Second):
+		t.Fatal("buffered input lease was not released after PTY write")
+	}
 }
 
 func TestBeginInputDrainBlocksMuxWritesUntilReleased(t *testing.T) {

@@ -123,3 +123,9 @@ func sendInterruptArgs(id string) []string {
 func capturePaneArgs(id string, lines int) []string {
 	return []string{"capture-pane", "-t", id, "-p", "-S", fmt.Sprintf("-%d", lines)}
 }
+
+// capturePaneStyledArgs preserves SGR sequences so callers can distinguish a
+// dim TUI placeholder from normal human-authored composer text.
+func capturePaneStyledArgs(id string, lines int) []string {
+	return []string{"capture-pane", "-e", "-t", id, "-p", "-S", fmt.Sprintf("-%d", lines)}
+}

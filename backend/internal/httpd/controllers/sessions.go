@@ -1,8 +1,10 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -35,6 +37,14 @@ const (
 	maxMessageLen     = 4096
 	maxModelLen       = 256
 	maxDisplayNameLen = 20
+	maxSwitchNoteLen  = 4096
+	maxIdempotencyKey = 128
+
+	// Agent-authored handoffs are deliberately bounded. Deterministic AO
+	// context is stored separately and does not need to be repeated here.
+	maxAgentHandoffBodyBytes = 256 << 10
+	maxAgentHandoffBytes     = 64 << 10
+
 	// Attachment limits guard the daemon against oversized spawn bodies. Files
 	// are pasted/dropped into the task brief and inlined as base64 in the JSON
 	// body, so the caps are deliberately conservative.
@@ -69,6 +79,9 @@ type SessionService interface {
 	Get(ctx context.Context, id domain.SessionID) (domain.Session, error)
 	Restore(ctx context.Context, id domain.SessionID) (sessionsvc.RestoreOutcome, error)
 	ResumeAgent(ctx context.Context, id domain.SessionID) (sessionsvc.ResumeAgentOutcome, error)
+	SwitchAgent(ctx context.Context, id domain.SessionID, in sessionsvc.SwitchAgentInput) (domain.AgentSwitch, error)
+	ListAgentSwitches(ctx context.Context, id domain.SessionID) ([]domain.AgentSwitch, error)
+	SubmitAgentHandoff(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID, sourceGenerationID domain.AgentGenerationID, handoff json.RawMessage) (domain.AgentSwitch, error)
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	RollbackSpawn(ctx context.Context, id domain.SessionID) (sessionsvc.RollbackOutcome, error)
 	Cleanup(ctx context.Context, project domain.ProjectID) (sessionsvc.CleanupOutcome, error)
@@ -151,6 +164,8 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Put("/sessions/{sessionId}/reviewer", c.setReviewer)
 	r.Post("/sessions/{sessionId}/restore", c.restore)
 	r.Post("/sessions/{sessionId}/resume-agent", c.resumeAgent)
+	r.Get("/sessions/{sessionId}/agent-switches", c.listAgentSwitches)
+	r.Post("/sessions/{sessionId}/agent-switches/{switchId}/handoff", c.submitAgentHandoff)
 	r.Get("/sessions/{sessionId}/interface-transition", c.interfaceTransitionStatus)
 	r.Post("/sessions/{sessionId}/interface-transition", c.startInterfaceTransition)
 	r.Delete("/sessions/{sessionId}/interface-transition", c.cancelInterfaceTransition)
@@ -164,6 +179,12 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/orchestrators", c.spawnOrchestrator)
 	r.Post("/orchestrators/delegate", c.delegateTask)
 	r.Get("/orchestrators/{id}", c.getOrchestrator)
+}
+
+// RegisterSwitchAgent mounts the synchronous switch workflow separately so
+// the API layer can give it a larger bounded timeout than ordinary REST calls.
+func (c *SessionsController) RegisterSwitchAgent(r chi.Router) {
+	r.Post("/sessions/{sessionId}/switch-agent", c.switchAgent)
 }
 
 // RegisterStreams mounts long-lived session streams outside the REST timeout
@@ -983,6 +1004,90 @@ func (c *SessionsController) resumeAgent(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (c *SessionsController) switchAgent(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/switch-agent")
+		return
+	}
+	var in SwitchAgentRequest
+	if err := decodeJSON(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	targetHarness := domain.AgentHarness(strings.TrimSpace(string(in.TargetHarness)))
+	if targetHarness == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "TARGET_HARNESS_REQUIRED", "targetHarness is required", nil)
+		return
+	}
+	note := domain.SanitizeControlChars(strings.TrimSpace(in.Note))
+	if len(note) > maxSwitchNoteLen {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "SWITCH_NOTE_TOO_LONG", "note is too long", nil)
+		return
+	}
+	idempotencyKey := strings.TrimSpace(in.IdempotencyKey)
+	if len(idempotencyKey) > maxIdempotencyKey {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "IDEMPOTENCY_KEY_TOO_LONG", "idempotencyKey is too long", nil)
+		return
+	}
+	switchRecord, err := c.Svc.SwitchAgent(r.Context(), sessionID(r), sessionsvc.SwitchAgentInput{
+		TargetHarness:  targetHarness,
+		Note:           note,
+		IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, AgentSwitchResponse{Switch: agentSwitchView(switchRecord)})
+}
+
+func (c *SessionsController) listAgentSwitches(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/agent-switches")
+		return
+	}
+	switches, err := c.Svc.ListAgentSwitches(r.Context(), sessionID(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, ListAgentSwitchesResponse{Switches: agentSwitchViews(switches)})
+}
+
+func (c *SessionsController) submitAgentHandoff(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/agent-switches/{switchId}/handoff")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentHandoffBodyBytes)
+	var in SubmitAgentHandoffRequest
+	if err := decodeJSON(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	sourceGenerationID := domain.AgentGenerationID(strings.TrimSpace(string(in.SourceGenerationID)))
+	if sourceGenerationID == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "SOURCE_GENERATION_REQUIRED", "sourceGenerationId is required", nil)
+		return
+	}
+	if len(bytes.TrimSpace(in.Handoff)) == 0 {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "HANDOFF_REQUIRED", "handoff is required", nil)
+		return
+	}
+	if len(in.Handoff) > maxAgentHandoffBytes {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "HANDOFF_TOO_LARGE", "handoff must be no larger than 64 KiB", nil)
+		return
+	}
+	switchRecord, err := c.Svc.SubmitAgentHandoff(
+		r.Context(), sessionID(r), agentSwitchID(r), sourceGenerationID, in.Handoff,
+	)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, AgentSwitchResponse{Switch: agentSwitchView(switchRecord)})
+}
+
 func (c *SessionsController) kill(w http.ResponseWriter, r *http.Request) {
 	if c.Svc == nil {
 		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/kill")
@@ -1144,13 +1249,16 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 	// never match its pre/post counterpart, so overlong values are dropped by
 	// the CLI; the cap here is defense against non-AO callers).
 	sig := ports.ActivitySignal{
-		Valid:          state != "",
-		State:          state,
-		Event:          capActivityMeta(domain.SanitizeControlChars(in.Event)),
-		ToolName:       capActivityMeta(domain.SanitizeControlChars(in.ToolName)),
-		ToolUseID:      capActivityMeta(domain.SanitizeControlChars(in.ToolUseID)),
-		AgentSessionID: agentSessionID,
-		LaunchID:       capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.LaunchID))),
+		Valid:                 state != "",
+		State:                 state,
+		Event:                 capActivityMeta(domain.SanitizeControlChars(in.Event)),
+		ToolName:              capActivityMeta(domain.SanitizeControlChars(in.ToolName)),
+		ToolUseID:             capActivityMeta(domain.SanitizeControlChars(in.ToolUseID)),
+		AgentSessionID:        agentSessionID,
+		LatestUserPrompt:      capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestUserPrompt)), 16<<10),
+		LatestAssistantUpdate: capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.LatestAssistantUpdate)), 16<<10),
+		TranscriptPath:        capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.TranscriptPath)), 4096),
+		LaunchID:              capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.LaunchID))),
 	}
 	if c.Activity != nil && (sig.Valid || sig.AgentSessionID != "") {
 		if err := c.Activity.ApplyActivitySignal(r.Context(), sessionID(r), sig); err != nil {
@@ -1207,6 +1315,20 @@ func capUsagePath(v string) string {
 		return ""
 	}
 	return v
+}
+
+func capActivityText(v string, maxLen int) string {
+	if maxLen <= 0 || len(v) <= maxLen {
+		return v
+	}
+	const marker = "\n[... truncated by AO ...]\n"
+	budget := maxLen - len(marker)
+	if budget <= 0 {
+		return ""
+	}
+	head := budget / 2
+	tail := budget - head
+	return strings.ToValidUTF8(string([]byte(v)[:head])+marker+string([]byte(v)[len(v)-tail:]), "?")
 }
 
 func (c *SessionsController) spawnOrchestrator(w http.ResponseWriter, r *http.Request) {
@@ -1271,6 +1393,10 @@ func (c *SessionsController) getOrchestrator(w http.ResponseWriter, r *http.Requ
 
 func sessionID(r *http.Request) domain.SessionID {
 	return domain.SessionID(chi.URLParam(r, "sessionId"))
+}
+
+func agentSwitchID(r *http.Request) domain.AgentSwitchID {
+	return domain.AgentSwitchID(chi.URLParam(r, "switchId"))
 }
 
 func orchestratorID(r *http.Request) domain.SessionID {
@@ -1477,6 +1603,29 @@ func sessionView(s domain.Session) SessionView {
 		PreviewRevision: s.Metadata.PreviewRevision,
 		PRs:             sessionPRFacts(s.PRs),
 	}
+}
+
+func agentSwitchView(s domain.AgentSwitch) AgentSwitchView {
+	return AgentSwitchView{
+		ID:                 s.ID,
+		SessionID:          s.SessionID,
+		FromHarness:        s.FromHarness,
+		TargetHarness:      s.TargetHarness,
+		TargetStartMode:    s.TargetStartMode,
+		State:              s.State,
+		AgentHandoffStatus: s.AgentHandoffStatus,
+		ErrorCode:          string(s.ErrorCode),
+		RequestedAt:        s.RequestedAt,
+		UpdatedAt:          s.UpdatedAt,
+	}
+}
+
+func agentSwitchViews(switches []domain.AgentSwitch) []AgentSwitchView {
+	out := make([]AgentSwitchView, 0, len(switches))
+	for _, agentSwitch := range switches {
+		out = append(out, agentSwitchView(agentSwitch))
+	}
+	return out
 }
 
 func sessionViews(sessions []domain.Session) []SessionView {

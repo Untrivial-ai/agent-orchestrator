@@ -46,6 +46,8 @@ type TerminalPaneProps = {
 	fontSize: number;
 	/** Refuse agent PTY input while a controller transition owns the source. */
 	inputDisabled?: boolean;
+	/** Focus the terminal when an in-flight controller asks for human input. */
+	focusRequested?: boolean;
 	/** Provider-owned shared transport lease factory. */
 	createMux?: () => TerminalMux;
 };
@@ -105,6 +107,7 @@ function terminalPropsMatch(left: TerminalPaneProps, right: TerminalPaneProps): 
 		left.daemonReady === right.daemonReady &&
 		left.fontSize === right.fontSize &&
 		left.inputDisabled === right.inputDisabled &&
+		left.focusRequested === right.focusRequested &&
 		left.createMux === right.createMux &&
 		terminalTargetMatches(left.terminalTarget, right.terminalTarget)
 	);
@@ -639,6 +642,7 @@ export function TerminalPane({
 	terminalTarget: requestedTerminalTarget,
 	fontSize,
 	inputDisabled,
+	focusRequested,
 }: TerminalPaneProps) {
 	const terminalTarget =
 		requestedTerminalTarget &&
@@ -702,7 +706,7 @@ export function TerminalPane({
 		);
 	}
 
-	const props = { session, theme, daemonReady, terminalTarget, fontSize, inputDisabled };
+	const props = { session, theme, daemonReady, terminalTarget, fontSize, inputDisabled, focusRequested };
 	const descriptor = cacheDescriptor(session, terminalTarget);
 	if (cache && descriptor) {
 		return <CachedTerminalSlot descriptor={descriptor} props={props} />;
@@ -716,6 +720,7 @@ export function TerminalPane({
 			daemonReady={daemonReady}
 			fontSize={fontSize}
 			inputDisabled={inputDisabled}
+			focusRequested={focusRequested}
 			terminalTarget={terminalTarget}
 		/>
 	);
@@ -858,6 +863,7 @@ function AttachedTerminal({
 	terminalTarget,
 	fontSize,
 	inputDisabled,
+	focusRequested,
 	createMux,
 	isVisible = true,
 	onFatal,
@@ -1031,6 +1037,7 @@ function AttachedTerminal({
 				<XtermTerminal
 					ariaLabel={terminalTarget?.kind === "shell" ? t("terminal.shellAria") : t("terminal.sessionAria")}
 					fontSize={fontSize}
+					focusRequested={focusRequested}
 					isVisible={isVisible}
 					onError={handleInitError}
 					onLinkOpen={handleLinkOpen}

@@ -88,6 +88,7 @@ type commandRunner func(ctx context.Context, binary string, args ...string) ([]b
 
 var _ ports.Workspace = (*Workspace)(nil)
 var _ ports.WorkspaceProject = (*Workspace)(nil)
+var _ ports.WorkspaceObserver = (*Workspace)(nil)
 
 // New builds a gitworktree Workspace, validating that ManagedRoot and
 // RepoResolver are set and resolving the root to an absolute, symlink-free path.
@@ -588,6 +589,106 @@ func (w *Workspace) AddExclude(ctx context.Context, info ports.WorkspaceInfo, pa
 		return fmt.Errorf("gitworktree: AddExclude write exclude: %w", err)
 	}
 	return nil
+}
+
+const (
+	maxObservedWorkspaceChanges = 500
+	maxObservedWorkspaceCommits = 20
+)
+
+// ObserveWorkspace returns a bounded, read-only Git snapshot for handoff and
+// recovery. It deliberately lives in the workspace adapter so the session
+// manager does not grow an out-of-band dependency on the git executable.
+func (w *Workspace) ObserveWorkspace(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceObservation, error) {
+	path := strings.TrimSpace(info.Path)
+	if path == "" {
+		return ports.WorkspaceObservation{}, errors.New("gitworktree: observe workspace path is required")
+	}
+	validated, err := w.validateManagedPath(path)
+	if err != nil {
+		return ports.WorkspaceObservation{}, err
+	}
+	path = validated
+
+	head, err := w.run(ctx, w.binary, "-C", path, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return ports.WorkspaceObservation{}, fmt.Errorf("gitworktree: observe HEAD: %w", err)
+	}
+	branch := strings.TrimSpace(info.Branch)
+	if out, branchErr := w.run(ctx, w.binary, "-C", path, "branch", "--show-current"); branchErr == nil {
+		if current := strings.TrimSpace(string(out)); current != "" {
+			branch = current
+		}
+	}
+	statusOut, err := w.run(ctx, w.binary, "-C", path, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return ports.WorkspaceObservation{}, fmt.Errorf("gitworktree: observe status: %w", err)
+	}
+	changes, staged, untracked := parseObservedWorkspaceChanges(string(statusOut), maxObservedWorkspaceChanges)
+
+	// Unit and record separators avoid ambiguity from spaces in subjects. Git
+	// subjects cannot contain a newline, and the bounded output is local-only.
+	logFormat := "%H%x1f%s%x1f%aI%x1e"
+	logOut, err := w.run(ctx, w.binary, "-C", path, "log", "-n", fmt.Sprintf("%d", maxObservedWorkspaceCommits), "--pretty=format:"+logFormat)
+	if err != nil {
+		return ports.WorkspaceObservation{}, fmt.Errorf("gitworktree: observe log: %w", err)
+	}
+	return ports.WorkspaceObservation{
+		Path:      path,
+		Branch:    branch,
+		HeadSHA:   strings.TrimSpace(string(head)),
+		Dirty:     len(changes) > 0,
+		Staged:    staged,
+		Untracked: untracked,
+		Changes:   changes,
+		Commits:   parseObservedWorkspaceCommits(string(logOut)),
+	}, nil
+}
+
+func parseObservedWorkspaceChanges(output string, limit int) ([]ports.WorkspaceChange, bool, bool) {
+	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+	changes := make([]ports.WorkspaceChange, 0, min(len(lines), limit))
+	var staged, untracked bool
+	for _, line := range lines {
+		if len(line) < 3 {
+			continue
+		}
+		status := line[:2]
+		path := strings.TrimSpace(line[3:])
+		if path == "" {
+			continue
+		}
+		if status == "??" {
+			untracked = true
+		} else if status[0] != ' ' && status[0] != '?' {
+			staged = true
+		}
+		if len(changes) < limit {
+			changes = append(changes, ports.WorkspaceChange{Path: path, Status: status})
+		}
+	}
+	return changes, staged, untracked
+}
+
+func parseObservedWorkspaceCommits(output string) []ports.WorkspaceCommit {
+	records := strings.Split(output, "\x1e")
+	commits := make([]ports.WorkspaceCommit, 0, len(records))
+	for _, record := range records {
+		record = strings.TrimSpace(record)
+		if record == "" {
+			continue
+		}
+		fields := strings.SplitN(record, "\x1f", 3)
+		if len(fields) != 3 {
+			continue
+		}
+		commits = append(commits, ports.WorkspaceCommit{
+			SHA:        strings.TrimSpace(fields[0]),
+			Subject:    strings.TrimSpace(fields[1]),
+			AuthoredAt: strings.TrimSpace(fields[2]),
+		})
+	}
+	return commits
 }
 
 // runCherryPickNoCommit runs "git -C <worktree> cherry-pick --no-commit <sha>"

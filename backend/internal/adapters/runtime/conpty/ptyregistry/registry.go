@@ -15,6 +15,7 @@ type Entry struct {
 	SessionID    string `json:"sessionId"`
 	PtyHostPID   int    `json:"ptyHostPid"`
 	PipePath     string `json:"pipePath"`
+	LaunchID     string `json:"launchId,omitempty"`
 	RegisteredAt string `json:"registeredAt"` // RFC3339; set by caller
 }
 

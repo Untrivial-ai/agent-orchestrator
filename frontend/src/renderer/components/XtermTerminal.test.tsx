@@ -190,6 +190,14 @@ describe("XtermTerminal", () => {
 		expect(state.lastTerminal!.options.minimumContrastRatio).toBe(1);
 	});
 
+	it("focuses the terminal when human input is requested", async () => {
+		const { rerender } = render(<XtermTerminal theme="dark" />);
+
+		rerender(<XtermTerminal focusRequested theme="dark" />);
+
+		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
+	});
+
 	it("updates the live terminal palette when the named color theme changes", () => {
 		const style = document.createElement("style");
 		style.textContent = `

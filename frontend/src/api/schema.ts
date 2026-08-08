@@ -572,6 +572,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/agent-switches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a session's durable agent-switch history */
+        get: operations["listSessionAgentSwitches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/agent-switches/{switchId}/handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit a generation-fenced source-agent handoff */
+        post: operations["submitSessionAgentHandoff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/attachments": {
         parameters: {
             query?: never;
@@ -1208,6 +1242,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/switch-agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Switch a logical AO session to another agent harness */
+        post: operations["switchSessionAgent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/workspace/events": {
         parameters: {
             query?: never;
@@ -1435,6 +1486,26 @@ export interface components {
             /** Format: date-time */
             validatedAt?: string;
             warning?: string;
+        };
+        AgentSwitch: {
+            /** @enum {string} */
+            agentHandoffStatus: "not_attempted" | "requested" | "received" | "unavailable" | "timed_out" | "failed" | "rejected";
+            errorCode?: string;
+            fromHarness: string;
+            id: string;
+            /** Format: date-time */
+            requestedAt: string;
+            sessionId: string;
+            /** @enum {string} */
+            state: "preparing_handoff" | "stopping_source" | "source_stopped" | "starting_target" | "target_ready" | "delivering_context" | "completed" | "failed";
+            targetHarness: string;
+            /** @enum {string} */
+            targetStartMode?: "fresh" | "resumed";
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AgentSwitchResponse: {
+            switch: components["schemas"]["AgentSwitch"];
         };
         BrowserCommandRequest: {
             action: string;
@@ -1831,6 +1902,9 @@ export interface components {
             freed?: boolean;
             ok: boolean;
             sessionId: string;
+        };
+        ListAgentSwitchesResponse: {
+            switches: components["schemas"]["AgentSwitch"][];
         };
         ListAgentsResponse: {
             /** @description Compatibility list of installed agents whose local auth probe recently returned authorized. Advisory and stale-prone; spawn may still fail. */
@@ -2306,6 +2380,10 @@ export interface components {
             agentSessionId?: string;
             /** @description AO hook sub-command that produced this state (e.g. post-tool-use). */
             event?: string;
+            /** @description Latest assistant update exposed by the provider hook. */
+            latestAssistantUpdate?: string;
+            /** @description Latest real user prompt exposed by the provider hook. */
+            latestUserPrompt?: string;
             /** @description AO process generation that produced the signal. */
             launchId?: string;
             /**
@@ -2317,6 +2395,8 @@ export interface components {
             toolName?: string;
             /** @description Native tool-use id, for tool-use hook events. */
             toolUseId?: string;
+            /** @description Read-only provider-native transcript path exposed by the hook. */
+            transcriptPath?: string;
             /** @description Provider transcript metadata used by the local usage pipeline. */
             usage?: components["schemas"]["UsageHookMetadata"];
         };
@@ -2447,6 +2527,12 @@ export interface components {
             activityId?: string;
             providerTurnId: string;
         };
+        SubmitAgentHandoffRequest: {
+            /** @description Structured, source-agent-authored handoff enrichment. */
+            handoff: unknown;
+            /** @description Source invocation generation that authored this handoff. */
+            sourceGenerationId: string;
+        };
         SubmitReviewInput: {
             /** @description Review body recorded by AO. Required for changes_requested. */
             body?: string;
@@ -2468,6 +2554,17 @@ export interface components {
             runId: string;
             /** @description Review verdict: approved or changes_requested. */
             verdict: string;
+        };
+        SwitchAgentRequest: {
+            /** @description Optional retry key. Reusing it with a different request is rejected. */
+            idempotencyKey?: string;
+            /** @description Optional user guidance included in the bounded handoff context. */
+            note?: string;
+            /**
+             * @description Agent harness to continue the logical AO session with.
+             * @enum {string}
+             */
+            targetHarness: "claude-code" | "codex";
         };
         TrackerIntakeConfig: {
             assignee?: string;
@@ -4578,6 +4675,130 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listSessionAgentSwitches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListAgentSwitchesResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    submitSessionAgentHandoff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                /** @description Durable agent-switch identifier. */
+                switchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitAgentHandoffRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSwitchResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7316,6 +7537,78 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    switchSessionAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SwitchAgentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSwitchResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

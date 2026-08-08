@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,6 +52,9 @@ type ListFilter struct {
 // *sessionmanager.Manager in production, a fake in tests.
 type commander interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error)
+	SwitchAgent(ctx context.Context, id domain.SessionID, cfg sessionmanager.SwitchAgentConfig) (domain.AgentSwitch, error)
+	ListAgentSwitches(ctx context.Context, id domain.SessionID) ([]domain.AgentSwitch, error)
+	SubmitAgentHandoff(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID, sourceGenerationID domain.AgentGenerationID, handoff json.RawMessage) (domain.AgentSwitch, error)
 	RestoreWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
 	ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
@@ -822,7 +826,7 @@ func toAPIError(err error) error {
 	case errors.Is(err, sessionmanager.ErrResumeInProgress):
 		return apierr.Conflict("AGENT_RESUME_IN_PROGRESS",
 			"The agent is already being resumed", nil)
-	case errors.Is(err, sessionmanager.ErrSwitchInProgress):
+	case errors.Is(err, sessionmanager.ErrInterfaceTransitionInProgress):
 		return apierr.Conflict("INTERFACE_TRANSITION_IN_PROGRESS",
 			"This session is already switching interfaces", nil)
 	case errors.Is(err, sessionmanager.ErrInterfaceHandoffUnsupported):
@@ -852,6 +856,38 @@ func toAPIError(err error) error {
 		return apierr.Invalid("UNKNOWN_HARNESS", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrMissingHarness):
 		return apierr.Invalid("AGENT_REQUIRED", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrTargetAgentUnauthorized):
+		return apierr.Invalid("TARGET_AGENT_UNAUTHORIZED",
+			"The target agent is not authenticated; authenticate it before switching", nil)
+	case errors.Is(err, sessionmanager.ErrUnsupportedSwitchKind):
+		return apierr.Invalid("WORKER_SESSION_REQUIRED",
+			"Only worker sessions support agent switching", nil)
+	case errors.Is(err, sessionmanager.ErrUnsupportedSwitchHarness):
+		return apierr.Invalid("UNSUPPORTED_SWITCH_HARNESS",
+			"Agent switching is not supported for the requested harness", nil)
+	case errors.Is(err, sessionmanager.ErrAlreadyUsingHarness):
+		return apierr.Conflict("ALREADY_USING_HARNESS",
+			"The session is already using the requested harness", nil)
+	case errors.Is(err, sessionmanager.ErrSwitchNotFound):
+		return apierr.NotFound("AGENT_SWITCH_NOT_FOUND", "Unknown agent switch")
+	case errors.Is(err, sessionmanager.ErrStaleHandoff):
+		return apierr.Conflict("STALE_AGENT_HANDOFF",
+			"The handoff is stale or its collection window has closed", nil)
+	case errors.Is(err, sessionmanager.ErrInvalidAgentHandoff):
+		return apierr.Invalid("INVALID_AGENT_HANDOFF",
+			"The handoff does not satisfy AO's semantic handoff schema", nil)
+	case errors.Is(err, sessionmanager.ErrSwitchDeliveryUnconfirmed):
+		return apierr.Conflict("AGENT_SWITCH_DELIVERY_UNCONFIRMED",
+			"The target agent started, but AO could not confirm that it accepted the continuation", nil)
+	case errors.Is(err, sessionmanager.ErrSwitchInProgress):
+		return apierr.Conflict("AGENT_SWITCH_IN_PROGRESS",
+			"This session already has an agent switch in progress", nil)
+	case errors.Is(err, domain.ErrAgentSwitchIdempotencyConflict):
+		return apierr.Conflict("AGENT_SWITCH_IDEMPOTENCY_CONFLICT",
+			"The idempotency key is already associated with a different agent switch", nil)
+	case errors.Is(err, domain.ErrAgentSwitchInProgress):
+		return apierr.Conflict("AGENT_SWITCH_IN_PROGRESS",
+			"This session already has an agent switch in progress", nil)
 	case errors.Is(err, sessionmanager.ErrScratchBranchUnsupported):
 		return apierr.Invalid("SCRATCH_BRANCH_UNSUPPORTED", err.Error(), nil)
 	case errors.Is(err, ports.ErrWorkspaceBranchCheckedOutElsewhere):

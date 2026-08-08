@@ -53,7 +53,7 @@ func TestAttachmentWriteAndResizeReachPTY(t *testing.T) {
 	defer cancel()
 	go a.run(ctx)
 
-	eventually(t, time.Second, func() bool { return a.write([]byte("ls\n")) == nil })
+	eventually(t, time.Second, func() bool { return a.writeLeased([]byte("ls\n"), nil) == nil })
 	eventually(t, time.Second, func() bool { return string(pty.writtenBytes()) == "ls\n" })
 
 	if err := a.resize(24, 80); err != nil {
@@ -110,12 +110,32 @@ func TestAttachmentBuffersInputUntilPTYReady(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("spawn was not reached")
 	}
-	if err := a.write([]byte("hello\n")); err != nil {
+	if err := a.writeLeased([]byte("hello\n"), nil); err != nil {
 		t.Fatalf("write before PTY ready: %v", err)
 	}
 	close(releaseSpawn)
 
 	eventually(t, time.Second, func() bool { return string(pty.writtenBytes()) == "hello\n" })
+}
+
+func TestAttachmentReleasesBufferedInputLeaseWhenClosedBeforePTYReady(t *testing.T) {
+	a := newTestAttachment(&fakeSource{alive: true}, nil, nil)
+	released := make(chan struct{})
+	if err := a.writeLeased([]byte("hello\n"), func() { close(released) }); err != nil {
+		t.Fatalf("write before PTY ready: %v", err)
+	}
+	select {
+	case <-released:
+		t.Fatal("buffered input lease released before write or discard")
+	default:
+	}
+
+	a.close()
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("closing attachment did not release buffered input lease")
+	}
 }
 
 // A size requested before the PTY exists (the open frame's cols/rows, or a

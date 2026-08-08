@@ -247,6 +247,9 @@ func Run() error {
 	sessMgr.SetTerminalInputGate(termMgr)
 	lifecycleMessenger.Bind(sessMgr)
 	lcStack.LCM.SetCompletionTerminator(sessMgr)
+	lcStack.LCM.SetSessionInputLease(sessMgr)
+	lcStack.LCM.SetSessionOperationGate(sessMgr)
+	termMgr.SetSessionInputLease(sessMgr)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink})
 	if err := seedScratchProjectOnBoot(ctx, cfg, projectSvc); err != nil {
 		stop()
@@ -325,6 +328,24 @@ func Run() error {
 		logSCMProviderDisabled(log, mergeErr)
 	} else {
 		prActions = prsvc.NewActionService(prsvc.ActionDeps{Store: store, Merger: mergeProvider, Reader: mergeProvider})
+	}
+
+	// Durable agent-switch reconciliation is a startup safety boundary. The
+	// in-memory input fence disappeared with the previous daemon; if AO cannot
+	// prove and recover every active saga, do not bind a usable API with user
+	// input accidentally reopened. This runs after session-scoped shell wiring
+	// (ordinary recovery may tear down a worktree) but before HTTP is bound.
+	if reconcileErr := sessMgr.Reconcile(ctx); reconcileErr != nil {
+		stop()
+		managedPreview.Close()
+		lcStack.Stop()
+		if cdcErr := cdcPipe.Stop(); cdcErr != nil {
+			log.Error("cdc pipeline shutdown", "err", cdcErr)
+		}
+		return fmt.Errorf("reconcile sessions on boot: %w", reconcileErr)
+	}
+	if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
+		log.Error("reconcile agent processes on boot failed", "err", reconcileErr)
 	}
 	// Push-device registry: persisted phones that receive OS push notifications.
 	// A load failure must not block boot — degrade to no push rather than refusing
@@ -422,20 +443,9 @@ func Run() error {
 		log.Warn("restore mobile bridge on boot failed", "err", err)
 	}
 
-	// Reconcile sessions on boot: adopt crash-surviving runtimes, capture and
-	// terminate dead ones, reap leaked tmux, then restore shutdown-saved
-	// sessions. Best-effort: a failure is logged but never blocks boot. Placed
-	// before srv.Run so sessions are consistent before the server serves.
-	if reconcileErr := sessMgr.Reconcile(ctx); reconcileErr != nil {
-		log.Error("reconcile sessions on boot failed", "err", reconcileErr)
-	}
-	if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
-		log.Error("reconcile agent processes on boot failed", "err", reconcileErr)
-	}
 	if usagePipeline != nil {
 		usageDone = usagePipeline.Start(ctx)
 	}
-
 	// ponytail: 5s tolerates a brief frontend restart; tune if dev hot-reload trips it.
 	const supervisorGrace = 5 * time.Second
 

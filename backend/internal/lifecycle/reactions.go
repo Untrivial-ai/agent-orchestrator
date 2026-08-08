@@ -248,6 +248,9 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 }
 
 func (m *Manager) terminateCompletedSession(ctx context.Context, id domain.SessionID) error {
+	if m.sessionMutationInProgress(id) {
+		return nil
+	}
 	m.mu.Lock()
 	terminator := m.completionTerminator
 	m.mu.Unlock()
@@ -501,6 +504,9 @@ func (m *Manager) ApplyTrackerFacts(ctx context.Context, id domain.SessionID, o 
 		return nil
 	}
 	if isTerminalTrackerState(o.Issue.State) {
+		if m.sessionMutationInProgress(id) {
+			return nil
+		}
 		return m.MarkTerminated(ctx, id)
 	}
 	rec, ok, err := m.store.GetSession(ctx, id)

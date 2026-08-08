@@ -32,6 +32,7 @@ type Workspace struct {
 
 var _ ports.Workspace = (*Workspace)(nil)
 var _ ports.WorkspaceProject = (*Workspace)(nil)
+var _ ports.WorkspaceObserver = (*Workspace)(nil)
 
 // New returns a router over git and scratch workspace implementations.
 func New(deps Deps) *Workspace {
@@ -110,6 +111,21 @@ func (w *Workspace) AddExclude(ctx context.Context, info ports.WorkspaceInfo, pa
 		return err
 	}
 	return adapter.AddExclude(ctx, info, patterns...)
+}
+
+// ObserveWorkspace delegates the read-only handoff snapshot to the selected
+// project adapter. Adapters that cannot observe state return a clear error
+// instead of fabricating repository facts.
+func (w *Workspace) ObserveWorkspace(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceObservation, error) {
+	adapter, err := w.adapterForProject(ctx, info.ProjectID)
+	if err != nil {
+		return ports.WorkspaceObservation{}, err
+	}
+	observer, ok := adapter.(ports.WorkspaceObserver)
+	if !ok {
+		return ports.WorkspaceObservation{}, errors.New("workspace router: selected workspace does not support observation")
+	}
+	return observer.ObserveWorkspace(ctx, info)
 }
 
 // CreateWorkspaceProject delegates root-as-repo workspace project creation to
