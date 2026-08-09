@@ -173,6 +173,8 @@ Download the latest desktop build for your platform:
 | Linux (Debian/Ubuntu) | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
 | Linux (Fedora/RHEL)   | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
+On macOS, if the app will not open and says the developer cannot be verified, right-click it and choose **Open**, then **Open** again. Double-clicking only offers Move to Trash. Every macOS build is signed with our Apple Developer ID and notarized, so this is not a sign the download is unsafe. If right-click and Open does not work either, please [open an issue](https://github.com/AgentWrapper/agent-orchestrator/issues/new) with `sw_vers`, `codesign -dvvv`, `spctl -a -t exec -vvv`, and `log show --last 10m --predicate 'subsystem == "com.apple.syspolicy"'` from the affected machine.
+
 After installing, open Agent Orchestrator and point it at the repository you want AO to manage. The desktop app runs the daemon for you, so no CLI is required. Installed desktop builds check for updates on launch and periodically while the app is running. See the [installation guide](https://aoagents.dev/docs/installation) for agent CLI setup and troubleshooting.
 
 <details>
