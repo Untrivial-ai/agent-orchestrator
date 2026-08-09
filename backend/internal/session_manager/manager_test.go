@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/scratch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -6490,6 +6491,25 @@ func TestSend_SkipsConfirmForSubmitOnlyHarness(t *testing.T) {
 	}
 	if len(msg.msgs) != 1 {
 		t.Fatalf("Send calls = %d, want 1 (submit-only harness must not be nudged)", len(msg.msgs))
+	}
+}
+
+func TestSend_SkipsConfirmForCodexAdapter(t *testing.T) {
+	// Codex reports request_user_input as a blocked tool flight, but its
+	// separate permission-request hook remains waiting_input. The real adapter
+	// must therefore stay out of Enter-only confirmation so a delayed submit
+	// signal can never cause AO to answer a permission dialog.
+	st := newFakeStore()
+	st.sessions["s1"] = domain.SessionRecord{ID: "s1", Harness: domain.HarnessCodex,
+		Activity: domain.Activity{State: domain.ActivityIdle}}
+	msg := &fakeMessenger{}
+	m := newSendTestManager(t, codex.New(), msg, st)
+
+	if err := m.Send(context.Background(), "s1", "do the thing"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("Send calls = %d, want 1 (Codex adapter must not be nudged)", len(msg.msgs))
 	}
 }
 

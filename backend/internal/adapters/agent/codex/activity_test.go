@@ -6,6 +6,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+func TestEmitsBlockedActivity(t *testing.T) {
+	if New().EmitsBlockedActivity() {
+		t.Fatal("Codex must remain ineligible for automated Enter confirmation")
+	}
+}
+
 func TestDeriveActivityState(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -13,9 +19,11 @@ func TestDeriveActivityState(t *testing.T) {
 		want   domain.ActivityState
 		wantOK bool
 	}{
-		{"user prompt -> active", "user-prompt-submit", domain.ActivityActive, true},
+		{"user prompt clears stale wait -> active", "user-prompt-submit", domain.ActivityActive, true},
+		{"request user input start -> blocked", "pre-tool-use", domain.ActivityBlocked, true},
+		{"request user input completion -> active", "post-tool-use", domain.ActivityActive, true},
 		{"permission request -> waiting_input", "permission-request", domain.ActivityWaitingInput, true},
-		{"stop -> idle", "stop", domain.ActivityIdle, true},
+		{"turn stop clears interrupted wait -> idle", "stop", domain.ActivityIdle, true},
 		{"session start -> no signal", "session-start", "", false},
 		{"unknown event -> no signal", "frobnicate", "", false},
 	}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -138,6 +139,8 @@ func sessionHookFlags(t *testing.T) []string {
 		"-c", `hooks.SessionStart=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"session-start") + `,timeout=5}]}]`,
 		"-c", `hooks.UserPromptSubmit=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"user-prompt-submit") + `,timeout=5}]}]`,
 		"-c", `hooks.PermissionRequest=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"permission-request") + `,timeout=5}]}]`,
+		"-c", `hooks.PreToolUse=[{matcher="^request_user_input$",hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"pre-tool-use") + `,timeout=5}]}]`,
+		"-c", `hooks.PostToolUse=[{matcher="^request_user_input$",hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"post-tool-use") + `,timeout=5}]}]`,
 		"-c", `hooks.Stop=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"stop") + `,timeout=5}]}]`,
 	}
 }
@@ -168,6 +171,7 @@ func TestGetLaunchCommandBuildsCrossPlatformArgv(t *testing.T) {
 		"codex",
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
+		"-c", "features.default_mode_request_user_input=true",
 		"--dangerously-bypass-hook-trust",
 		"--dangerously-bypass-approvals-and-sandbox",
 	}
@@ -638,6 +642,7 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 		"resume",
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
+		"-c", "features.default_mode_request_user_input=true",
 		"--dangerously-bypass-hook-trust",
 		"--ask-for-approval", "on-request",
 		"-c", `approvals_reviewer="auto_review"`,
@@ -816,12 +821,47 @@ func TestDoctorLaunchProbesMirrorLaunchFlags(t *testing.T) {
 	}
 	joined := strings.Join(override, " ")
 	for _, want := range []string{
-		"hooks.SessionStart=", "hooks.UserPromptSubmit=", "hooks.PermissionRequest=", "hooks.Stop=",
+		"features.default_mode_request_user_input=true",
+		"hooks.SessionStart=", "hooks.UserPromptSubmit=", "hooks.PermissionRequest=",
+		"hooks.PreToolUse=", "hooks.PostToolUse=", "hooks.Stop=",
 		"notice.hide_rate_limit_model_nudge=true",
 		`projects={`,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("override probe missing %q in %s", want, joined)
+		}
+	}
+}
+
+func TestRequestUserInputHooksUseExactMatcher(t *testing.T) {
+	wantCommands := map[string]string{
+		"PreToolUse":  codexHookCommandPrefix + "pre-tool-use",
+		"PostToolUse": codexHookCommandPrefix + "post-tool-use",
+	}
+	for event, wantCommand := range wantCommands {
+		var matcher string
+		var command string
+		for _, spec := range codexManagedHooks {
+			if spec.Event == event {
+				matcher = spec.Matcher
+				command = spec.Command
+				break
+			}
+		}
+		if matcher != `^request_user_input$` {
+			t.Fatalf("%s matcher = %q, want exact request_user_input matcher", event, matcher)
+		}
+		for _, tool := range []string{"request_user_input", "shell", "mcp__request_user_input", "request_user_input_extra"} {
+			matched, err := regexp.MatchString(matcher, tool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if matched != (tool == "request_user_input") {
+				t.Fatalf("%s matcher against %q = %v", event, tool, matched)
+			}
+		}
+		if command != wantCommand {
+			t.Fatalf("%s command = %q, want lifecycle event %q", event, command, wantCommand)
 		}
 	}
 }

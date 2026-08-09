@@ -36,6 +36,21 @@ func stateOf(st *fakeStore, id domain.SessionID) domain.ActivityState {
 	return st.sessions[id].Activity.State
 }
 
+func TestToolPrecedence_CodexRequestUserInputPrePostClearsBlocked(t *testing.T) {
+	m, st, _ := newManager()
+	seedSignaled(st, "mer-1", domain.ActivityActive)
+
+	mustApply(t, m, "mer-1", sig(domain.ActivityBlocked, "pre-tool-use", "request_user_input", "toolu_input"))
+	if got := stateOf(st, "mer-1"); got != domain.ActivityBlocked {
+		t.Fatalf("state while request_user_input is pending = %q, want blocked", got)
+	}
+
+	mustApply(t, m, "mer-1", sig(domain.ActivityActive, "post-tool-use", "request_user_input", "toolu_input"))
+	if got := stateOf(st, "mer-1"); got != domain.ActivityActive {
+		t.Fatalf("state after request_user_input completion = %q, want active", got)
+	}
+}
+
 // blockOnDialog drives a session into blocked through the real signal path:
 // the blocking tool's pre-tool-use, then permission-request naming that tool.
 func blockOnDialog(t *testing.T, m *Manager, st *fakeStore, id domain.SessionID, toolName, toolUseID string) {
