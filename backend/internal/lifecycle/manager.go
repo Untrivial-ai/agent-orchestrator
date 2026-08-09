@@ -778,6 +778,14 @@ func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata
 		}
 		now := m.clock()
 		rec.IsTerminated = false
+		// Bump the cleanup generation in the same UPDATE that un-terminates the
+		// session. The terminal-resource reconciler stamps each cleanup-facts row
+		// with the generation it observed; comparing that against this authoritative
+		// counter is what stops a finalize begun under an earlier terminal episode
+		// from satisfying a later Restore→Terminate cycle. Keeping the bump inline
+		// here (rather than in a shared UpdateSession) keeps it atomic-with the
+		// un-terminate and ensures only spawn/restore advances it.
+		rec.CleanupGeneration++
 		rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
 		// Each spawn/restore must re-prove its hook pipeline: clear the receipt so
 		// a relaunch with broken hooks degrades to no_signal instead of inheriting

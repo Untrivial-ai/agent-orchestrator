@@ -32,6 +32,8 @@ type fakeStore struct {
 	upsertWTErr   error
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
 	worktrees map[domain.SessionID][]domain.SessionWorktreeRecord
+	// cleanup maps session ID to its persisted terminal-resource cleanup facts.
+	cleanup map[domain.SessionID]domain.SessionCleanupRecord
 	// sharedLog, when non-nil, receives an ordered call entry for each
 	// UpsertSessionWorktree invocation so ordering tests can compare across fakes.
 	sharedLog *[]string
@@ -44,6 +46,7 @@ func newFakeStore() *fakeStore {
 		projects:      map[string]domain.ProjectRecord{},
 		workspaceRepo: map[string][]domain.WorkspaceRepoRecord{},
 		worktrees:     map[domain.SessionID][]domain.SessionWorktreeRecord{},
+		cleanup:       map[domain.SessionID]domain.SessionCleanupRecord{},
 	}
 }
 func (f *fakeStore) GetProject(_ context.Context, id string) (domain.ProjectRecord, bool, error) {
@@ -132,6 +135,17 @@ func (f *fakeStore) DeleteSessionWorktrees(_ context.Context, id domain.SessionI
 	delete(f.worktrees, id)
 	return nil
 }
+func (f *fakeStore) UpsertSessionCleanupFacts(_ context.Context, rec domain.SessionCleanupRecord) error {
+	if f.cleanup == nil {
+		f.cleanup = map[domain.SessionID]domain.SessionCleanupRecord{}
+	}
+	f.cleanup[rec.SessionID] = rec
+	return nil
+}
+func (f *fakeStore) GetSessionCleanupFacts(_ context.Context, id domain.SessionID) (domain.SessionCleanupRecord, bool, error) {
+	rec, ok := f.cleanup[id]
+	return rec, ok, nil
+}
 
 type fakeLCM struct {
 	store     *fakeStore
@@ -205,6 +219,10 @@ type fakeRuntime struct {
 	aliveByHandle map[string]bool
 	aliveErr      error
 	destroyedIDs  []string
+	// destroyHook, when set, runs at the start of Destroy. Tests use it to
+	// simulate a concurrent mutation (e.g. a Restore→Terminate cycle advancing
+	// cleanup_generation) racing an in-flight finalize.
+	destroyHook func()
 }
 
 type fakePreviewLifecycle struct {
@@ -270,6 +288,9 @@ func (r *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.
 	return ports.RuntimeHandle{ID: "h1"}, nil
 }
 func (r *fakeRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle) error {
+	if r.destroyHook != nil {
+		r.destroyHook()
+	}
 	r.destroyed++
 	r.destroyedIDs = append(r.destroyedIDs, handle.ID)
 	return r.destroyErr
@@ -537,7 +558,11 @@ func (missingAgents) Agent(domain.AgentHarness) (ports.Agent, bool) { return nil
 type fakeWorkspace struct {
 	createErr  error
 	destroyErr error
-	destroyed  int
+	// destroyErrByRepo overrides destroyErr for a specific repo name (keyed by
+	// fakeWorkspaceRepoName), so a mixed clean+dirty workspace-project teardown is
+	// representable — the single destroyErr applies one error to every Destroy.
+	destroyErrByRepo map[string]error
+	destroyed        int
 	// createRepoPath, when set, is returned as the RepoPath of a single-repo
 	// Create so tests can assert it survives the spawn->teardown metadata round
 	// trip (production Create resolves this path; the zero default keeps every
@@ -565,6 +590,10 @@ type fakeWorkspace struct {
 	// set, is returned so best-effort handling can be exercised.
 	excludePatterns []string
 	addExcludeErr   error
+	// opHook, when set, runs at the start of Destroy and Restore with the op name.
+	// Serialization tests use it to detect whether two disk-touching ops overlap
+	// for the same session (they must not, under the per-session lock).
+	opHook func(op string)
 	// calls records the sequence of workspace method calls for ordering assertions.
 	calls []string
 	// sharedLog, when non-nil, receives entries alongside calls so ordering
@@ -625,6 +654,9 @@ func (w *fakeWorkspace) CreateWorkspaceProject(_ context.Context, cfg ports.Work
 }
 func (w *fakeWorkspace) Destroy(_ context.Context, info ports.WorkspaceInfo) error {
 	w.lastDestroyInfo = info
+	if w.opHook != nil {
+		w.opHook("Destroy")
+	}
 	if info.RepoPath != "" {
 		entry := "Destroy:" + fakeWorkspaceRepoName(info)
 		w.calls = append(w.calls, entry)
@@ -633,6 +665,11 @@ func (w *fakeWorkspace) Destroy(_ context.Context, info ports.WorkspaceInfo) err
 		}
 	}
 	w.destroyed++
+	if w.destroyErrByRepo != nil {
+		if err, ok := w.destroyErrByRepo[fakeWorkspaceRepoName(info)]; ok {
+			return err
+		}
+	}
 	return w.destroyErr
 }
 func (w *fakeWorkspace) DestroyWorkspaceProject(context.Context, ports.WorkspaceProjectInfo) error {
@@ -640,6 +677,9 @@ func (w *fakeWorkspace) DestroyWorkspaceProject(context.Context, ports.Workspace
 	return w.destroyErr
 }
 func (w *fakeWorkspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	if w.opHook != nil {
+		w.opHook("Restore")
+	}
 	if cfg.RepoPath != "" {
 		entry := "Restore:" + fakeWorkspaceRepoName(ports.WorkspaceInfo{
 			Path:      cfg.Path,
@@ -2321,7 +2361,11 @@ func TestKill_WorkspaceProjectDirtyRowRefusesRemoval(t *testing.T) {
 	if err != nil || freed {
 		t.Fatalf("freed=%v err=%v, want dirty row to preserve workspace", freed, err)
 	}
-	want := []string{"Destroy:api"}
+	// Continue-past-dirty (#16): a dirty child no longer aborts teardown of its
+	// siblings — every child is attempted child-first. Here both children are
+	// dirty (the fake applies one dirty error to every Destroy), so both are
+	// attempted and both preserved; the session is still terminated, freed=false.
+	want := []string{"Destroy:api", "Destroy:__root__"}
 	if got := ws.calls; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("calls = %v, want %v", got, want)
 	}
@@ -2534,7 +2578,7 @@ func TestRestore_RefusesLiveSession(t *testing.T) {
 }
 func TestCleanup_ReclaimsTerminalWorkspaces(t *testing.T) {
 	m, st, _, ws := newManager()
-	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", RuntimeHandleID: "h1"})
 	st.sessions["mer-2"] = mkLive("mer-2")
 	res, err := m.Cleanup(ctx, "mer")
 	if err != nil {
@@ -2551,6 +2595,37 @@ func TestCleanup_ReclaimsTerminalWorkspaces(t *testing.T) {
 	}
 }
 
+// TestCleanup_FinalizeOneReReadsUnderLock pins review gap #3 on #2931:
+// cleanupRecords takes its snapshot before finalizeOne acquires the
+// per-session lock, so a concurrent Restore can finish in that window.
+// finalizeOne must re-read the session under the lock rather than trust the
+// caller's stale terminated snapshot, or it would destroy the runtime/
+// workspace of a session that has already been relaunched.
+func TestCleanup_FinalizeOneReReadsUnderLock(t *testing.T) {
+	m, st, rt, ws := newManager()
+	// The store's CURRENT state: mer-1 was restored (live again) after
+	// cleanupRecords took its snapshot below.
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", IsTerminated: false,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1", RuntimeHandleID: "h1"},
+	}
+	// The stale pre-lock snapshot finalizeOne is called with, as cleanupRecords
+	// would have read it before the restore completed.
+	staleRec := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", IsTerminated: true,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1", RuntimeHandleID: "h1"},
+	}
+
+	facts := m.finalizeOne(ctx, staleRec)
+
+	if rt.destroyed != 0 || ws.destroyed != 0 {
+		t.Fatalf("finalizeOne must not release a session the fresh read shows is live: runtime destroyed=%d workspace destroyed=%d", rt.destroyed, ws.destroyed)
+	}
+	if facts.WorkspaceDisposition != domain.DispositionNotApplicable {
+		t.Fatalf("disposition = %q, want not_applicable (nothing to clean under the fresh live state)", facts.WorkspaceDisposition)
+	}
+}
+
 // TestCleanup_ClosesScopedShellTerminalsBeforeWorkspaceTeardown mirrors the
 // Kill regression: Cleanup must also gate shut a session's scoped shell
 // terminals before reclaiming its worktree, and release the gate afterward.
@@ -2560,7 +2635,7 @@ func TestCleanup_ClosesScopedShellTerminalsBeforeWorkspaceTeardown(t *testing.T)
 	ws.sharedLog = &calls
 	closer := &fakeShellTerminalCloser{sharedLog: &calls}
 	m.SetShellTerminalCloser(closer)
-	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", WorkspaceRepoPath: "/ws/mer-1"})
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", WorkspaceRepoPath: "/ws/mer-1", RuntimeHandleID: "h1"})
 
 	if _, err := m.Cleanup(ctx, "mer"); err != nil {
 		t.Fatal(err)
@@ -2620,51 +2695,64 @@ func TestCleanup_SkipsWorkspaceReleaseWhenShellTerminalsWontClose(t *testing.T) 
 // the result with a reason — a silent skip leaves users staring at
 // "Would clean N … 0 sessions cleaned" with no explanation.
 func TestCleanup_ReportsSkippedWorkspaces(t *testing.T) {
-	m, st, _, ws := newManager()
-	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
-	ws.destroyErr = fmt.Errorf("gitworktree: refusing to remove: %w", ports.ErrWorkspaceDirty)
-	res, err := m.Cleanup(ctx, "mer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Cleaned) != 0 {
-		t.Fatalf("cleaned = %v, want none", res.Cleaned)
-	}
-	if len(res.Skipped) != 1 || res.Skipped[0].SessionID != "mer-1" {
-		t.Fatalf("skipped = %v, want mer-1", res.Skipped)
-	}
-	if res.Skipped[0].Reason != "workspace has uncommitted changes" {
-		t.Fatalf("reason = %q", res.Skipped[0].Reason)
+	// A dirty worktree is preserved and reported with the uncommitted-changes reason.
+	// (Independent setups per case: re-running Cleanup on the same already-finalized
+	// session is now correctly an idempotent no-op, so each reason needs its own.)
+	{
+		m, st, _, ws := newManager()
+		seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", RuntimeHandleID: "h1"})
+		ws.destroyErr = fmt.Errorf("gitworktree: refusing to remove: %w", ports.ErrWorkspaceDirty)
+		res, err := m.Cleanup(ctx, "mer")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Cleaned) != 0 {
+			t.Fatalf("cleaned = %v, want none", res.Cleaned)
+		}
+		if len(res.Skipped) != 1 || res.Skipped[0].SessionID != "mer-1" {
+			t.Fatalf("skipped = %v, want mer-1", res.Skipped)
+		}
+		if res.Skipped[0].Reason != "workspace has uncommitted changes" {
+			t.Fatalf("reason = %q", res.Skipped[0].Reason)
+		}
 	}
 
 	// A non-dirty teardown failure is reported too — but with a fixed public
 	// reason: the raw cause carries internal filesystem paths and belongs in
 	// the server log, not the API response.
-	ws.destroyErr = errors.New("disk on fire")
-	res, err = m.Cleanup(ctx, "mer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Skipped) != 1 || res.Skipped[0].Reason != "workspace teardown failed" {
-		t.Fatalf("skipped = %v, want fixed teardown-failed reason", res.Skipped)
-	}
-	if strings.Contains(res.Skipped[0].Reason, "disk on fire") {
-		t.Fatalf("raw internal error leaked into public reason: %q", res.Skipped[0].Reason)
+	{
+		m, st, _, ws := newManager()
+		seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", RuntimeHandleID: "h1"})
+		ws.destroyErr = errors.New("disk on fire")
+		res, err := m.Cleanup(ctx, "mer")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Skipped) != 1 || res.Skipped[0].Reason != "workspace teardown failed" {
+			t.Fatalf("skipped = %v, want fixed teardown-failed reason", res.Skipped)
+		}
+		if strings.Contains(res.Skipped[0].Reason, "disk on fire") {
+			t.Fatalf("raw internal error leaked into public reason: %q", res.Skipped[0].Reason)
+		}
 	}
 
 	// A teardown that fails because the session's project is archived or
 	// unregistered (its repo can no longer be resolved) is reported with a
 	// distinct reason telling the user the worktree must be removed by hand.
-	ws.destroyErr = fmt.Errorf("resolve project repo: %w", ErrProjectNotResolvable)
-	res, err = m.Cleanup(ctx, "mer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Skipped) != 1 || res.Skipped[0].SessionID != "mer-1" {
-		t.Fatalf("skipped = %v, want mer-1", res.Skipped)
-	}
-	if res.Skipped[0].Reason != "project is archived or unregistered — remove worktree manually" {
-		t.Fatalf("reason = %q, want archived-project reason", res.Skipped[0].Reason)
+	{
+		m, st, _, ws := newManager()
+		seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", RuntimeHandleID: "h1"})
+		ws.destroyErr = fmt.Errorf("resolve project repo: %w", ErrProjectNotResolvable)
+		res, err := m.Cleanup(ctx, "mer")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Skipped) != 1 || res.Skipped[0].SessionID != "mer-1" {
+			t.Fatalf("skipped = %v, want mer-1", res.Skipped)
+		}
+		if res.Skipped[0].Reason != "project is archived or unregistered — remove worktree manually" {
+			t.Fatalf("reason = %q, want archived-project reason", res.Skipped[0].Reason)
+		}
 	}
 }
 
@@ -2728,7 +2816,7 @@ func TestCleanup_WorkspaceProjectDestroysChildrenBeforeRoot(t *testing.T) {
 	m, st, _, ws := newManager()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
 	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
-	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1"})
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1", RuntimeHandleID: "h1"})
 	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
 		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", WorktreePath: "/ws/mer-1"},
 		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api"},
@@ -2752,7 +2840,7 @@ func TestCleanup_WorkspaceProjectMarksRetryRemoveAfterTeardownFailure(t *testing
 	ws.destroyErr = errors.New("locked")
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
 	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
-	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1"})
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1", RuntimeHandleID: "h1"})
 	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
 		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", WorktreePath: "/ws/mer-1"},
 		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api"},
@@ -5681,6 +5769,47 @@ func TestRestoreAll_RestoresLegacyShutdownMarkerWithoutState(t *testing.T) {
 	}
 }
 
+// TestRestoreAll_ReleasesSurvivingRuntimeBeforeRelaunch pins review gap #4 on
+// #2931: reconcileReap used to kill a leaked-but-alive runtime for a
+// terminated, restore-marked session before RestoreAll ran. Since it was
+// removed (subsumed by the finalizer for every OTHER terminal path, but the
+// finalizer deliberately skips restore-pending rows), restoreSavedSession must
+// do this release itself — otherwise relaunching collides with the old
+// deterministic pane that survived a prior shutdown whose own best-effort
+// runtime.Destroy failed (or never ran, e.g. a crash).
+func TestRestoreAll_ReleasesSurvivingRuntimeBeforeRelaunch(t *testing.T) {
+	m, st, rt, _ := newLifecycleManager()
+	rt.aliveByHandle = map[string]bool{"mer-1": true}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:           "mer-1",
+		ProjectID:    "mer",
+		Kind:         domain.KindWorker,
+		Harness:      domain.HarnessClaudeCode,
+		IsTerminated: true,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root", AgentSessionID: "agent-w",
+			RuntimeHandleID: "mer-1", // the old, still-alive pane from before shutdown
+		},
+		Activity: domain.Activity{State: domain.ActivityExited},
+	}
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, WorktreePath: "/ws/mer-1"},
+	}
+
+	if err := m.RestoreAll(ctx); err != nil {
+		t.Fatalf("RestoreAll err = %v", err)
+	}
+	if len(rt.destroyedIDs) != 1 || rt.destroyedIDs[0] != "mer-1" {
+		t.Fatalf("destroyedIDs = %v, want the surviving old handle released before relaunch", rt.destroyedIDs)
+	}
+	if rt.created != 1 {
+		t.Fatalf("RestoreAll must still relaunch after releasing the old runtime, runtime.Create called %d times", rt.created)
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session must be live after RestoreAll releases the stale runtime and relaunches")
+	}
+}
+
 // TestRestoreAll_SkipsSessionsKilledBeforeShutdown verifies (c): a session
 // the user killed BEFORE shutdown has no session_worktrees row and must NOT
 // be resurrected.
@@ -6282,46 +6411,11 @@ func TestReconcile_AdoptAcrossDaemonRestart(t *testing.T) {
 	}
 }
 
-func TestReconcileReap_TerminatedButAliveTmuxDestroyed(t *testing.T) {
-	st := newFakeStore()
-	rt := &fakeRuntime{aliveByHandle: map[string]bool{"t1": true}}
-	ws := &fakeWorkspace{}
-	lcm := &fakeLCM{store: st}
-	lookPath := func(string) (string, error) { return "/bin/true", nil }
-	m := New(Deps{Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st, Messenger: &fakeMessenger{}, Lifecycle: lcm, LookPath: lookPath})
-
-	rec := domain.SessionRecord{
-		ID: "t1", ProjectID: "p1", IsTerminated: true,
-		Metadata: domain.SessionMetadata{RuntimeHandleID: "t1"},
-	}
-
-	if err := m.reconcileReap(context.Background(), rec); err != nil {
-		t.Fatalf("reconcileReap: %v", err)
-	}
-	if len(rt.destroyedIDs) != 1 || rt.destroyedIDs[0] != "t1" {
-		t.Fatalf("destroyedIDs = %v, want [t1]", rt.destroyedIDs)
-	}
-}
-
-func TestReconcileReap_TerminatedAndDeadTmuxLeftAlone(t *testing.T) {
-	st := newFakeStore()
-	rt := &fakeRuntime{aliveByHandle: map[string]bool{}} // t2 not alive
-	ws := &fakeWorkspace{}
-	lcm := &fakeLCM{store: st}
-	lookPath := func(string) (string, error) { return "/bin/true", nil }
-	m := New(Deps{Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st, Messenger: &fakeMessenger{}, Lifecycle: lcm, LookPath: lookPath})
-
-	rec := domain.SessionRecord{
-		ID: "t2", ProjectID: "p1", IsTerminated: true,
-		Metadata: domain.SessionMetadata{RuntimeHandleID: "t2"},
-	}
-	if err := m.reconcileReap(context.Background(), rec); err != nil {
-		t.Fatalf("reconcileReap: %v", err)
-	}
-	if rt.destroyed != 0 {
-		t.Fatalf("Destroy calls = %d, want 0", rt.destroyed)
-	}
-}
+// The former TestReconcileReap_* tests were removed with reconcileReap: the
+// boot reap pass (runtime-Destroy every terminated-but-alive session) is now a
+// strict subset of FinalizeTerminalSession's runtime-first release, which the
+// terminal-resource reconciler owns. Runtime reclaim of a terminated session is
+// covered by TestFinalize_* below.
 
 // --- Send activity-confirmation tests (issue #2342) ---
 

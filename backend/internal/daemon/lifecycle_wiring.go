@@ -47,6 +47,11 @@ type lifecycleStack struct {
 	activityDone  <-chan struct{}
 	scmDone       <-chan struct{}
 	trackerDone   <-chan struct{}
+	// reconcilerDone is the terminal-resource reconciler's drain channel. Assigned
+	// after boot Reconcile completes (daemon.go); nil until then, so Stop must
+	// nil-guard it. It is drained BEFORE the CDC pipe stops so the reconciler
+	// unsubscribes before a late Publish could send on its closed queue.
+	reconcilerDone <-chan struct{}
 }
 
 // startLifecycle constructs the Lifecycle Manager over the store and starts the
@@ -109,6 +114,11 @@ func (l *lifecycleStack) Stop() {
 	if l.trackerDone != nil {
 		<-l.trackerDone
 	}
+	// Drained before the CDC pipe stops (daemon shutdown order) so the reconciler
+	// unsubscribes before a late Publish could send on its closed queue.
+	if l.reconcilerDone != nil {
+		<-l.reconcilerDone
+	}
 }
 
 // sessionLifecycle is the narrow surface of sessionmanager.Manager used for
@@ -134,6 +144,10 @@ type sessionLifecycle interface {
 	// SetReviewerTerminator late-binds worker lifecycle teardown to the review
 	// service, which is built alongside the controller-facing service below.
 	SetReviewerTerminator(terminator sessionmanager.ReviewerTerminator)
+	// FinalizeTerminalSession is the terminal-resource reconciler's per-session
+	// unit of work (release a terminated session's runtime + workspace). Exposed
+	// here so the daemon can hand the manager to the reconciler runner.
+	FinalizeTerminalSession(ctx context.Context, id domain.SessionID) error
 }
 
 // sessionLifecycleMessenger adapts sessionLifecycle to ports.AgentMessenger so

@@ -261,7 +261,7 @@ func TestRestoreRoundTripPreservesMetadata(t *testing.T) {
 //     is_terminated=true, runtime.Create count stays 0.
 //   - Session B: is_terminated=1 but its runtime is still ALIVE (leaked teardown)
 //     => Reconcile must call Destroy on its handle.
-func TestReconcile_TerminatesDeadLiveSessionAndReapsLeakedTmux(t *testing.T) {
+func TestReconcile_TerminatesDeadLiveSession_FinalizerReapsLeakedRuntime(t *testing.T) {
 	ctx := context.Background()
 	st := newStack(t)
 
@@ -342,9 +342,22 @@ func TestReconcile_TerminatesDeadLiveSessionAndReapsLeakedTmux(t *testing.T) {
 		t.Fatalf("want 0 runtime Creates (promptless worker must not relaunch), got %d", st.rt.created)
 	}
 
-	// Session B's leaked runtime must have been destroyed.
+	// Reconcile no longer reaps a terminated session's leaked runtime: the old
+	// reconcileReap pass was deleted because it is a strict subset of the
+	// terminal-resource reconciler's runtime-first release. So session B's leaked
+	// runtime is still alive right after Reconcile.
+	if st.rt.wasDestroyed("hdl-B") {
+		t.Fatalf("session B: Reconcile must NOT reap the leaked runtime (that is now the finalizer's job); destroyed handles: %v", st.rt.destroyedHandles)
+	}
+
+	// FinalizeTerminalSession (the reconciler's per-session unit of work, driven at
+	// boot by the sessions-driven candidate scan) now owns reclaiming the leaked
+	// runtime — runtime-first, so hdl-B is destroyed before any workspace teardown.
+	if err := st.mgr.FinalizeTerminalSession(ctx, recB.ID); err != nil {
+		t.Fatalf("FinalizeTerminalSession(B): %v", err)
+	}
 	if !st.rt.wasDestroyed("hdl-B") {
-		t.Fatalf("session B: want Destroy called for handle hdl-B; destroyed handles: %v", st.rt.destroyedHandles)
+		t.Fatalf("session B: want the finalizer to Destroy leaked handle hdl-B; destroyed handles: %v", st.rt.destroyedHandles)
 	}
 }
 

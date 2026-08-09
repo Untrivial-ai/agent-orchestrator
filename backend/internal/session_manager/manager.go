@@ -224,6 +224,13 @@ type Store interface {
 	// Kill and successful RestoreAll must remove these rows to prevent
 	// resurrecting sessions the user intentionally terminated.
 	DeleteSessionWorktrees(ctx context.Context, id domain.SessionID) error
+	// UpsertSessionCleanupFacts records the durable runtime/workspace teardown
+	// facts for a terminated session (disposition rollup + retry bookkeeping).
+	// The reconciler and the per-session cleanup API render from these.
+	UpsertSessionCleanupFacts(ctx context.Context, rec domain.SessionCleanupRecord) error
+	// GetSessionCleanupFacts returns a session's cleanup facts, ok=false when it
+	// has none yet.
+	GetSessionCleanupFacts(ctx context.Context, id domain.SessionID) (domain.SessionCleanupRecord, bool, error)
 }
 
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
@@ -251,8 +258,17 @@ type Manager struct {
 	preview             PreviewLifecycle
 	browser             BrowserLifecycle
 	browserCapabilities BrowserCapabilityIssuer
-	dataDir             string
-	clock               func() time.Time
+	// sessionLocks serialises every disk-touching lifecycle op for a session —
+	// Spawn, RestoreWithMode, RestoreAll (per session), Kill, bulk Cleanup, and
+	// FinalizeTerminalSession — so a reconciler finalize can't git-worktree-remove
+	// out from under a concurrent Kill or Restore over the same runtime/workspace.
+	// The mutex is non-reentrant: the finalizer must never run synchronously inside
+	// the CDC callback (the reconciler enqueues-and-returns), and locked ops must
+	// not call each other (Spawn's rollback helpers never re-enter; RollbackSpawn→
+	// Kill is a separate top-level call). Refcounted so entries don't accumulate.
+	sessionLocks *keyedMutex
+	dataDir      string
+	clock        func() time.Time
 	// lookPath is exec.LookPath in production; tests substitute a stub so
 	// they don't need real binaries on PATH. Returns ports.ErrAgentBinaryNotFound
 	// when the binary is missing so the sentinel propagates through toAPIError.
@@ -491,6 +507,7 @@ func New(d Deps) *Manager {
 		preview:                d.Preview,
 		browser:                d.Browser,
 		browserCapabilities:    d.BrowserCapabilities,
+		sessionLocks:           newKeyedMutex(),
 		dataDir:                d.DataDir,
 		clock:                  d.Clock,
 		lookPath:               d.LookPath,
@@ -598,6 +615,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: create: %w", err)
 	}
 	id := rec.ID
+	// Serialise this session's disk-touching lifecycle against a concurrent Kill
+	// or reconciler finalize (shared per-session lock). A brand-new id is never
+	// terminal so nothing targets it yet, but holding the lock keeps the
+	// one-writer-per-session invariant uniform across Spawn/Restore/Kill/finalize.
+	// Deadlock-safe: Spawn's rollback helpers never re-enter the lock (the public
+	// RollbackSpawn→Kill path is a separate top-level call).
+	unlock := m.sessionLocks.lock(id)
+	defer unlock()
 	systemPromptFile, err := m.prepareSystemPromptFile(id, cfg.Harness, systemPrompt)
 	if err != nil {
 		m.rollbackSpawnSeedRow(ctx, id)
@@ -1114,6 +1139,9 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	} else if active {
 		return false, fmt.Errorf("kill %s: %w", id, ErrSwitchInProgress)
 	}
+	unlock := m.sessionLocks.lock(id)
+	defer unlock()
+
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		return false, fmt.Errorf("kill %s: %w", id, err)
@@ -1121,107 +1149,30 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	if !ok {
 		return false, nil // already gone: benign race
 	}
-	m.stopPreviewBestEffort(ctx, id)
-	m.destroyBrowserBestEffort(ctx, id)
-	handle := runtimeHandle(rec.Metadata)
-	ws := workspaceInfo(rec)
+	generation := rec.CleanupGeneration
 
-	var workspaceProjectRows []ports.WorkspaceRepoInfo
-	workspaceProject := false
-	if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {
-		return false, fmt.Errorf("kill %s: workspace rows: %w", id, rowErr)
-	} else if ok {
-		workspaceProjectRows = rows
-		workspaceProject = true
+	res, releaseErr := m.releaseTerminalResources(ctx, rec)
+	if releaseErr != nil {
+		// Fail closed: a runtime or non-dirty workspace teardown failure leaves the
+		// session live (never marked terminated) so the user can retry — the same
+		// contract Kill has always had. A dirty worktree is NOT an error: the core
+		// reports it as preserved_dirty below.
+		return false, fmt.Errorf("kill %s: %w", id, releaseErr)
 	}
 
-	// Exactly one controller exists, so exactly one gets torn down. A chat
-	// session has no runtime handle; its controller owns an app-server child
-	// process, and closing it also settles any turn left in flight so a later
-	// read does not show work that is no longer running.
-	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-		m.stopChatBestEffort(ctx, id)
-	} else if handle.ID != "" {
-		if err := m.runtime.Destroy(ctx, handle); err != nil {
-			return false, fmt.Errorf("kill %s: runtime: %w", id, err)
-		}
-	}
-	if err := m.terminateReviewer(ctx, id, "cancelled by worker session termination"); err != nil {
-		return false, fmt.Errorf("kill %s: reviewer: %w", id, err)
-	}
-	// Gate shut any shell terminal scoped to this session BEFORE the worktree
-	// goes away: an open shell whose cwd is that directory can otherwise
-	// survive the removal (and on Windows can even block it — an open handle
-	// on a directory refuses deletion), or a concurrent Open could land a new
-	// one in the same race window. A runtime that cannot be confirmed dead
-	// stops Kill here — same shape as a dirty-workspace refusal — rather than
-	// letting the worktree disappear out from under it.
-	if ws.Path != "" {
-		release, err := m.beginShellTerminalTeardown(ctx, id)
-		if err != nil {
-			// Same shape as the dirty-workspace refusal below: the worktree is
-			// left alone, but the restore marker still must not survive a user
-			// kill, or the next boot's RestoreAll could resurrect a session the
-			// user explicitly terminated (#2319).
-			if err := m.store.DeleteSessionWorktrees(ctx, id); err != nil {
-				m.logger.Warn("kill: delete restore marker failed", "sessionID", id, "error", err)
-			}
-			if err := m.lcm.MarkTerminated(ctx, id); err != nil {
-				return false, fmt.Errorf("kill %s: %w", id, err)
-			}
-			m.cleanupSystemPromptDir(id)
-			return false, nil
-		}
-		if release != nil {
-			defer release()
-		}
-	}
-	freed := false
-	if workspaceProject {
-		cleaned, err := m.destroyWorkspaceProjectRows(ctx, workspaceProjectRows)
-		if err != nil {
-			if errors.Is(err, ports.ErrWorkspaceDirty) {
-				if err := m.lcm.MarkTerminated(ctx, id); err != nil {
-					return false, fmt.Errorf("kill %s: %w", id, err)
-				}
-				m.cleanupSystemPromptDir(id)
-				return false, nil
-			}
-			return false, fmt.Errorf("kill %s: workspace: %w", id, err)
-		}
-		freed = cleaned
-		if cleaned {
-			m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-		}
-	} else if ws.Path != "" {
-		if err := m.workspace.Destroy(ctx, ws); err != nil {
-			if errors.Is(err, ports.ErrWorkspaceDirty) {
-				if err := m.store.DeleteSessionWorktrees(ctx, id); err != nil {
-					m.logger.Warn("kill: delete restore marker failed", "sessionID", id, "error", err)
-				}
-				if err := m.lcm.MarkTerminated(ctx, id); err != nil {
-					return false, fmt.Errorf("kill %s: %w", id, err)
-				}
-				m.cleanupSystemPromptDir(id)
-				return false, nil
-			}
-			return false, fmt.Errorf("kill %s: workspace: %w", id, err)
-		}
-		freed = true
-		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-	}
-	// Clear the restore marker so the next boot's RestoreAll cannot resurrect a
-	// killed session (#2319). For workspace projects this must happen after
-	// teardown reads the rows; dirty-preserved rows return above and are left as
-	// non-restorable inventory.
-	if err := m.store.DeleteSessionWorktrees(ctx, id); err != nil {
-		m.logger.Warn("kill: delete restore marker failed", "sessionID", id, "error", err)
-	}
 	if err := m.lcm.MarkTerminated(ctx, id); err != nil {
 		return false, fmt.Errorf("kill %s: %w", id, err)
 	}
-	m.cleanupSystemPromptDir(id)
-	return freed, nil
+	// Persist facts so a user-Kill exits the reconciler's boot scan and the UI can
+	// render its disposition. Best-effort: a facts-write hiccup must not fail the
+	// Kill (the session is already torn down and terminated).
+	if err := m.persistCleanupFacts(ctx, rec, generation, res); err != nil {
+		m.logger.Warn("kill: persist cleanup facts failed", "sessionID", id, "error", err)
+	}
+	// freed reports that the workspace was actually released. A preserved-dirty or
+	// not_applicable outcome frees nothing (any preserved/failed child on a
+	// workspace project → not freed).
+	return res.disposition == domain.DispositionRemoved, nil
 }
 
 // RetireForReplacement terminates a live orchestrator and releases its branch
@@ -1372,6 +1323,14 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (Res
 	} else if active {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, ErrSwitchInProgress)
 	}
+	// Held across the re-read, workspace.Restore, runtime.Create and the
+	// un-terminate/generation-bump so a concurrent reconciler finalize can't
+	// git-worktree-remove out from under the session being relaunched. The
+	// finalizer re-checks cleanup_generation under this same lock and aborts once
+	// the un-terminate has advanced it.
+	unlock := m.sessionLocks.lock(id)
+	defer unlock()
+
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, err)
@@ -1838,41 +1797,18 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 	return nil
 }
 
-// reconcileReap kills the leaked tmux session of a session the DB already marks
-// terminated. This covers the teardown that marked the row terminated but failed
-// to kill the runtime (e.g. ForceDestroy/Destroy errored after MarkTerminated).
-// Destroy is idempotent, so an already-gone session is a no-op.
-func (m *Manager) reconcileReap(ctx context.Context, rec domain.SessionRecord) error {
-	handle := runtimeHandle(rec.Metadata)
-	if handle.ID == "" {
-		return nil
-	}
-	alive, err := m.runtime.IsAlive(ctx, handle)
-	if err != nil {
-		if errors.Is(err, ports.ErrRuntimeUnavailable) {
-			return nil // no server means no leaked session to reap
-		}
-		return fmt.Errorf("reconcile reap %s: probe: %w", rec.ID, err)
-	}
-	if !alive {
-		return nil
-	}
-	if err := m.runtime.Destroy(ctx, handle); err != nil {
-		return fmt.Errorf("reconcile reap %s: destroy: %w", rec.ID, err)
-	}
-	return nil
-}
-
 // Reconcile is the boot-time consistency pass. It replaces the bare RestoreAll
 // call so that however the previous daemon died (clean shutdown, SIGKILL, or
 // crash), live reality matches the DB:
 //
 //  1. Live pass: for each non-terminated session, adopt it if its runtime
 //     survived, else capture work and mark terminated (reconcileLive).
-//  2. Reap pass: for each terminated session whose runtime leaked, kill it
-//     (reconcileReap). Runs before restore so a restored session does not
-//     collide with a leaked tmux of the same name.
-//  3. Restore pass: relaunch shutdown-saved sessions (existing RestoreAll).
+//  2. Restore pass: relaunch shutdown-saved sessions (existing RestoreAll).
+//
+// The old reap pass (runtime-Destroy every terminated-but-alive session) is
+// gone: it is a strict subset of the terminal-resource reconciler's runtime-first
+// release, which now owns reclaiming leaked runtimes for every terminal session
+// via its boot scan. Keeping both would double-destroy and drift.
 //
 // Best-effort throughout: a per-session failure is logged and never aborts the
 // pass or blocks boot.
@@ -1892,14 +1828,6 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 		if err := m.reconcileLive(ctx, rec); err != nil {
 			m.logger.Error("reconcile: live pass failed, skipping", "sessionID", rec.ID, "error", err)
-		}
-	}
-	for _, rec := range recs {
-		if !rec.IsTerminated {
-			continue
-		}
-		if err := m.reconcileReap(ctx, rec); err != nil {
-			m.logger.Error("reconcile: reap pass failed, skipping", "sessionID", rec.ID, "error", err)
 		}
 	}
 	if err := m.RestoreAll(ctx); err != nil {
@@ -1933,123 +1861,157 @@ func (m *Manager) RestoreAll(ctx context.Context) error {
 		if !rec.IsTerminated {
 			continue
 		}
-		// Check the shutdown-saved marker: is there a session_worktrees row?
-		rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
-		if err != nil {
-			m.logger.Error("restore-all: list worktrees failed", "sessionID", rec.ID, "error", err)
-			continue
-		}
-		if len(rows) == 0 {
-			// No marker: this session was killed by the user before shutdown.
-			continue
-		}
-		rows = restorableWorktreeRows(rows)
-		if len(rows) == 0 {
-			continue
-		}
+		m.restoreSavedSession(ctx, rec)
+	}
+	return nil
+}
 
-		// Step 1: ensure the worktree exists. workspace.Restore re-creates it
-		// if it was removed by SaveAndTeardownAll.
-		project, err := m.loadProject(ctx, rec.ProjectID)
-		if err != nil {
-			m.logger.Error("restore-all: load project failed", "sessionID", rec.ID, "error", err)
-			continue
-		}
-		var ws ports.WorkspaceInfo
-		restoredWorkspaceProject := project.Kind.WithDefault() == domain.ProjectKindWorkspace
-		var projectRows []ports.WorkspaceRepoInfo
-		if restoredWorkspaceProject {
-			var rowErr error
-			projectRows, rowErr = m.workspaceProjectRestoreRowsFromMarkers(ctx, project, rec, rows)
-			if rowErr != nil {
-				m.logger.Error("restore-all: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
-				continue
-			}
-			root, restoreErr := m.restoreWorkspaceProjectRows(ctx, projectRows)
-			if restoreErr != nil {
-				m.logger.Error("restore-all: workspace project restore failed", "sessionID", rec.ID, "error", restoreErr)
-				continue
-			}
-			ws = workspaceInfoFromRepoInfo(root)
-		} else {
-			var restoreErr error
-			ws, restoreErr = m.workspace.Restore(ctx, ports.WorkspaceConfig{
-				ProjectID:     rec.ProjectID,
-				SessionID:     rec.ID,
-				Kind:          rec.Kind,
-				SessionPrefix: sessionPrefix(project),
-				Branch:        rec.Metadata.Branch,
-				Path:          rec.Metadata.WorkspacePath,
-			})
-			if restoreErr != nil {
-				m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", restoreErr)
-				continue
-			}
-		}
-		if ws.Path == "" {
-			m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", "empty restored root path")
-			continue
-		}
+// restoreSavedSession relaunches one shutdown-saved terminated session under the
+// shared per-session lock, so a concurrent reconciler finalize can't remove the
+// worktree it is restoring. Per-session failures are logged, never fatal.
+func (m *Manager) restoreSavedSession(ctx context.Context, rec domain.SessionRecord) {
+	unlock := m.sessionLocks.lock(rec.ID)
+	defer unlock()
 
-		// Step 2: replay preserve ref when one was recorded.
-		if restoredWorkspaceProject {
-			m.applyWorkspaceProjectPreserved(ctx, projectRows)
-		} else {
-			var preserveRef string
-			for _, r := range rows {
-				if r.PreservedRef != "" {
-					preserveRef = r.PreservedRef
-					break
-				}
-			}
-			if preserveRef != "" {
-				if applyErr := m.workspace.ApplyPreserved(ctx, ws, preserveRef); applyErr != nil {
-					if errors.Is(applyErr, ports.ErrPreservedConflict) {
-						m.logger.Warn("restore-all: apply preserved produced conflicts; agent relaunched with conflict markers in place",
-							"sessionID", rec.ID, "ref", preserveRef, "error", applyErr)
-					} else {
-						m.logger.Error("restore-all: apply preserved failed", "sessionID", rec.ID, "error", applyErr)
-					}
-					// Continue: always relaunch even on conflict (never delete the ref here).
-				}
-			}
-		}
+	// Check the shutdown-saved marker: is there a session_worktrees row?
+	rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
+	if err != nil {
+		m.logger.Error("restore-all: list worktrees failed", "sessionID", rec.ID, "error", err)
+		return
+	}
+	if len(rows) == 0 {
+		// No marker: this session was killed by the user before shutdown.
+		return
+	}
+	rows = restorableWorktreeRows(rows)
+	if len(rows) == 0 {
+		return
+	}
 
-		// Step 3: relaunch the agent in the restored workspace.
-		if _, err := m.relaunchRestoredSession(ctx, rec, project, ws); err != nil {
-			switch {
-			case errors.Is(err, ErrNotResumable):
-				// A promptless, unresumable worker is intentionally left terminated:
-				// expected, not an operational failure, so log it quietly.
-				m.logger.Warn("restore-all: session left terminated (nothing to resume)", "sessionID", rec.ID)
-			case errors.Is(err, ErrNotFound):
-				// The row was reaped between listing and relaunch (a stale id during
-				// reconciliation): skip it and keep restoring the rest.
-				m.logger.Warn("restore-all: session vanished before relaunch, skipping", "sessionID", rec.ID)
-			default:
-				m.logger.Error("restore-all: relaunch failed", "sessionID", rec.ID, "error", err)
+	// Release any runtime that survived a prior shutdown before relaunching.
+	// SaveAndTeardownAll's own runtime.Destroy is best-effort (a failure there
+	// only logs a warning); if it didn't actually land, or the daemon crashed
+	// before running it, the old deterministic pane can still be alive here,
+	// and Step 3 creating a new one under the same name would collide with it.
+	// Probe first (rather than an unconditional Destroy) so a handle that is
+	// already gone — the common case, and also true of a session captured and
+	// relaunched within this same boot pass — is left alone rather than
+	// recorded as an extra teardown. reconcileReap used to cover this as a
+	// pre-restore pass; it was removed once the finalizer subsumed runtime
+	// reclaim for every OTHER terminal path, but restore-pending rows are the
+	// one class the finalizer deliberately skips — RestoreAll owns those.
+	if handle := runtimeHandle(rec.Metadata); handle.ID != "" {
+		if alive, err := m.runtime.IsAlive(ctx, handle); err != nil {
+			if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+				m.logger.Warn("restore-all: pre-restore runtime probe failed", "sessionID", rec.ID, "error", err)
 			}
-			continue
-		}
-
-		// One-shot: drop the consumed marker so it never outlives one restart
-		// (#2319). A still-live session re-acquires it at the next quit.
-		if restoredWorkspaceProject {
-			for _, row := range projectRows {
-				if err := m.upsertWorkspaceProjectRowState(ctx, row, "active"); err != nil {
-					m.logger.Warn("restore-all: marking workspace repo active failed", "sessionID", rec.ID, "repo", row.RepoName, "error", err)
-				}
-			}
-		} else {
-			if err := m.markSessionWorktreesActive(ctx, rows); err != nil {
-				m.logger.Warn("restore-all: marking worktrees active failed", "sessionID", rec.ID, "error", err)
-			}
-			if err := m.store.DeleteSessionWorktrees(ctx, rec.ID); err != nil {
-				m.logger.Warn("restore-all: delete restore marker failed", "sessionID", rec.ID, "error", err)
+		} else if alive {
+			if err := m.runtime.Destroy(ctx, handle); err != nil {
+				m.logger.Warn("restore-all: pre-restore runtime release failed", "sessionID", rec.ID, "error", err)
 			}
 		}
 	}
-	return nil
+
+	// Step 1: ensure the worktree exists. workspace.Restore re-creates it
+	// if it was removed by SaveAndTeardownAll.
+	project, err := m.loadProject(ctx, rec.ProjectID)
+	if err != nil {
+		m.logger.Error("restore-all: load project failed", "sessionID", rec.ID, "error", err)
+		return
+	}
+	var ws ports.WorkspaceInfo
+	restoredWorkspaceProject := project.Kind.WithDefault() == domain.ProjectKindWorkspace
+	var projectRows []ports.WorkspaceRepoInfo
+	if restoredWorkspaceProject {
+		var rowErr error
+		projectRows, rowErr = m.workspaceProjectRestoreRowsFromMarkers(ctx, project, rec, rows)
+		if rowErr != nil {
+			m.logger.Error("restore-all: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
+			return
+		}
+		root, restoreErr := m.restoreWorkspaceProjectRows(ctx, projectRows)
+		if restoreErr != nil {
+			m.logger.Error("restore-all: workspace project restore failed", "sessionID", rec.ID, "error", restoreErr)
+			return
+		}
+		ws = workspaceInfoFromRepoInfo(root)
+	} else {
+		var restoreErr error
+		ws, restoreErr = m.workspace.Restore(ctx, ports.WorkspaceConfig{
+			ProjectID:     rec.ProjectID,
+			SessionID:     rec.ID,
+			Kind:          rec.Kind,
+			SessionPrefix: sessionPrefix(project),
+			Branch:        rec.Metadata.Branch,
+			Path:          rec.Metadata.WorkspacePath,
+		})
+		if restoreErr != nil {
+			m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", restoreErr)
+			return
+		}
+	}
+	if ws.Path == "" {
+		m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", "empty restored root path")
+		return
+	}
+
+	// Step 2: replay preserve ref when one was recorded.
+	if restoredWorkspaceProject {
+		m.applyWorkspaceProjectPreserved(ctx, projectRows)
+	} else {
+		var preserveRef string
+		for _, r := range rows {
+			if r.PreservedRef != "" {
+				preserveRef = r.PreservedRef
+				break
+			}
+		}
+		if preserveRef != "" {
+			if applyErr := m.workspace.ApplyPreserved(ctx, ws, preserveRef); applyErr != nil {
+				if errors.Is(applyErr, ports.ErrPreservedConflict) {
+					m.logger.Warn("restore-all: apply preserved produced conflicts; agent relaunched with conflict markers in place",
+						"sessionID", rec.ID, "ref", preserveRef, "error", applyErr)
+				} else {
+					m.logger.Error("restore-all: apply preserved failed", "sessionID", rec.ID, "error", applyErr)
+				}
+				// Continue: always relaunch even on conflict (never delete the ref here).
+			}
+		}
+	}
+
+	// Step 3: relaunch the agent in the restored workspace.
+	if _, err := m.relaunchRestoredSession(ctx, rec, project, ws); err != nil {
+		switch {
+		case errors.Is(err, ErrNotResumable):
+			// A promptless, unresumable worker is intentionally left terminated:
+			// expected, not an operational failure, so log it quietly.
+			m.logger.Warn("restore-all: session left terminated (nothing to resume)", "sessionID", rec.ID)
+		case errors.Is(err, ErrNotFound):
+			// The row was reaped between listing and relaunch (a stale id during
+			// reconciliation): skip it and keep restoring the rest.
+			m.logger.Warn("restore-all: session vanished before relaunch, skipping", "sessionID", rec.ID)
+		default:
+			m.logger.Error("restore-all: relaunch failed", "sessionID", rec.ID, "error", err)
+		}
+		return
+	}
+
+	// One-shot: drop the consumed marker so it never outlives one restart
+	// (#2319). A still-live session re-acquires it at the next quit.
+	if restoredWorkspaceProject {
+		for _, row := range projectRows {
+			if err := m.upsertWorkspaceProjectRowState(ctx, row, "active"); err != nil {
+				m.logger.Warn("restore-all: marking workspace repo active failed", "sessionID", rec.ID, "repo", row.RepoName, "error", err)
+			}
+		}
+	} else {
+		if err := m.markSessionWorktreesActive(ctx, rows); err != nil {
+			m.logger.Warn("restore-all: marking worktrees active failed", "sessionID", rec.ID, "error", err)
+		}
+		if err := m.store.DeleteSessionWorktrees(ctx, rec.ID); err != nil {
+			m.logger.Warn("restore-all: delete restore marker failed", "sessionID", rec.ID, "error", err)
+		}
+	}
 }
 
 func restorableWorktreeRows(rows []domain.SessionWorktreeRecord) []domain.SessionWorktreeRecord {
@@ -2247,34 +2209,6 @@ func (m *Manager) saveAndTeardownWorkspaceProject(ctx context.Context, rec domai
 		m.cleanupAgentWorkspace(ctx, rec, rec.Metadata.WorkspacePath)
 	}
 	return nil
-}
-
-func (m *Manager) destroyWorkspaceProjectRows(ctx context.Context, rows []ports.WorkspaceRepoInfo) (bool, error) {
-	cleaned := false
-	var firstErr error
-	for i := len(rows) - 1; i >= 0; i-- {
-		if rows[i].Path == "" {
-			continue
-		}
-		info := workspaceInfoFromRepoInfo(rows[i])
-		if err := m.workspace.Destroy(ctx, info); err != nil {
-			if errors.Is(err, ports.ErrWorkspaceDirty) {
-				return cleaned, err
-			}
-			if stateErr := m.upsertWorkspaceProjectRowState(ctx, rows[i], "retry_remove"); stateErr != nil && firstErr == nil {
-				firstErr = stateErr
-			}
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		if err := m.upsertWorkspaceProjectRowState(ctx, rows[i], "unavailable"); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		cleaned = true
-	}
-	return cleaned, firstErr
 }
 
 func (m *Manager) upsertWorkspaceProjectRowState(ctx context.Context, row ports.WorkspaceRepoInfo, state string) error {
@@ -2614,76 +2548,87 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 		if !rec.IsTerminated {
 			continue
 		}
-		ws := workspaceInfo(rec)
-		if ws.Path == "" {
-			m.cleanupSystemPromptDir(rec.ID)
-			continue
+		facts := m.finalizeOne(ctx, rec)
+		switch facts.WorkspaceDisposition {
+		case domain.DispositionRemoved:
+			result.Cleaned = append(result.Cleaned, rec.ID)
+		case domain.DispositionNotApplicable:
+			// Nothing to reclaim (no workspace): neither cleaned nor skipped,
+			// matching the historical silent-skip for handle-less sessions.
+		default:
+			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: cleanupSkipReason(facts)})
 		}
-		if h := runtimeHandle(rec.Metadata); h.ID != "" {
-			_ = m.runtime.Destroy(ctx, h) // best effort; usually already gone
-		}
-		if reason := m.cleanupOne(ctx, rec, ws); reason != "" {
-			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: reason})
-			continue
-		}
-		m.cleanupSystemPromptDir(rec.ID)
-		result.Cleaned = append(result.Cleaned, rec.ID)
 	}
 	return result, nil
 }
 
-// cleanupOne reclaims one terminated session's workspace, gating shut any
-// shell terminal scoped to it first (same ordering as Kill). Split out of
-// Cleanup's loop so the release function's defer is scoped to one session's
-// call, not deferred across every iteration until Cleanup itself returns.
-// Returns "" when the workspace was reclaimed; a non-empty reason means it was
-// left alone this run (Cleanup records it in Skipped and can retry on a later
-// call) — most commonly because a scoped shell terminal could not be
-// confirmed closed, so reclaiming would pull the ground out from under it.
-func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo) (skipReason string) {
-	release, closeErr := m.beginShellTerminalTeardown(ctx, rec.ID)
-	if closeErr != nil {
-		m.logger.Warn("cleanup: shell terminal still open", "sessionID", rec.ID, "error", closeErr)
-		return "shell terminal still open"
-	}
-	if release != nil {
-		defer release()
+// finalizeOne runs the shared release core for one already-terminated session
+// under the per-session lock and returns the resulting disposition. Bulk Cleanup
+// uses it rather than FinalizeTerminalSession because Cleanup is an explicit user
+// request to reclaim — it deliberately does NOT skip restore-pending sessions
+// (an unresumable shutdown-saved leftover should still be cleanable). It shares
+// the same idempotent-skip guard (isTerminalDisposition) so an already-finalized
+// session isn't needlessly re-released.
+func (m *Manager) finalizeOne(ctx context.Context, rec domain.SessionRecord) domain.SessionCleanupRecord {
+	unlock := m.sessionLocks.lock(rec.ID)
+	defer unlock()
+
+	// Re-read under the lock: cleanupRecords took its snapshot before any lock
+	// was held, so a concurrent Restore can finish between that read and this
+	// lock acquisition. Without this, Cleanup would release the runtime/workspace
+	// of a session that has already been relaunched, using the stale terminated
+	// record instead of the current live one.
+	if cur, ok, err := m.store.GetSession(ctx, rec.ID); err != nil {
+		m.logger.Warn("cleanup: re-read session failed; proceeding on stale record", "sessionID", rec.ID, "error", err)
+	} else if !ok || !cur.IsTerminated {
+		// Gone, or restored since the caller's snapshot: nothing to clean now.
+		return domain.SessionCleanupRecord{
+			SessionID:            rec.ID,
+			SessionGeneration:    rec.CleanupGeneration,
+			WorkspaceDisposition: domain.DispositionNotApplicable,
+		}
+	} else {
+		rec = cur
 	}
 
-	if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {
-		m.logger.Warn("cleanup: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
-		return "workspace teardown failed"
-	} else if ok {
-		if _, err := m.destroyWorkspaceProjectRows(ctx, rows); err != nil {
-			if !errors.Is(err, ports.ErrWorkspaceDirty) {
-				m.logger.Warn("cleanup: workspace teardown failed", "sessionID", rec.ID, "path", ws.Path, "error", err)
-			}
-			return cleanupSkipReason(err)
-		}
-		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-		return ""
+	generation := rec.CleanupGeneration
+	if facts, ok, err := m.store.GetSessionCleanupFacts(ctx, rec.ID); err == nil && ok &&
+		facts.SessionGeneration == generation && isTerminalDisposition(facts.WorkspaceDisposition) {
+		return facts
 	}
-	if err := m.workspace.Destroy(ctx, ws); err != nil {
-		if !errors.Is(err, ports.ErrWorkspaceDirty) {
-			// The public reason stays a fixed string (the raw error carries
-			// internal filesystem paths); the full cause lands here.
-			m.logger.Warn("cleanup: workspace teardown failed", "sessionID", rec.ID, "path", ws.Path, "error", err)
+
+	res, releaseErr := m.releaseTerminalResources(ctx, rec)
+	if releaseErr != nil {
+		res.disposition = domain.DispositionPending
+		if res.failureCode == "" {
+			res.failureCode = failTeardown
 		}
-		return cleanupSkipReason(err)
 	}
-	m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-	return ""
+	if err := m.persistCleanupFacts(ctx, rec, generation, res); err != nil {
+		m.logger.Warn("cleanup: persist facts failed", "sessionID", rec.ID, "error", err)
+	}
+	// Re-read so a transient failure that just exhausted its attempt cap reports
+	// its terminal `failed` disposition rather than the in-memory `pending`.
+	if stored, ok, err := m.store.GetSessionCleanupFacts(ctx, rec.ID); err == nil && ok && stored.SessionGeneration == generation {
+		return stored
+	}
+	return domain.SessionCleanupRecord{
+		SessionID:            rec.ID,
+		SessionGeneration:    generation,
+		WorkspaceDisposition: res.disposition,
+		FailureCode:          res.failureCode,
+	}
 }
 
-// cleanupSkipReason renders a workspace teardown refusal as a short
-// user-facing reason for the cleanup report. Deliberately not the raw error:
-// it flows to the API response and CLI output, and teardown errors embed
-// internal filesystem paths.
-func cleanupSkipReason(err error) string {
-	if errors.Is(err, ports.ErrWorkspaceDirty) {
+// cleanupSkipReason renders a non-removed disposition as a short user-facing
+// reason for the cleanup report. Deliberately not the raw error: it flows to the
+// API response and CLI output, and teardown errors embed internal filesystem
+// paths.
+func cleanupSkipReason(facts domain.SessionCleanupRecord) string {
+	if facts.WorkspaceDisposition == domain.DispositionPreservedDirty {
 		return "workspace has uncommitted changes"
 	}
-	if errors.Is(err, ErrProjectNotResolvable) {
+	if facts.FailureCode == failProjectUnresolvable {
 		return "project is archived or unregistered — remove worktree manually"
 	}
 	return "workspace teardown failed"
