@@ -3,9 +3,12 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -816,4 +819,186 @@ func containsSubsequence(values, needle []string) bool {
 		}
 	}
 	return false
+}
+
+func TestRemoveWorkspaceTrustEntryRemovesTrackedEntry(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	// Seed an existing config with an unrelated project, a top-level key, and
+	// the entry we expect to remove -- proves the cleanup preserves everything
+	// else.
+	seed := `{"userID":"abc","projects":{"/existing/proj":{"hasTrustDialogAccepted":true,"lastCost":1.5},"/w":{"hasTrustDialogAccepted":true,"history":[]}}}`
+	if err := os.WriteFile(cfgPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeWorkspaceTrustEntry(cfgPath, "/w"); err != nil {
+		t.Fatalf("removeWorkspaceTrustEntry: %v", err)
+	}
+
+	root := readJSON(t, cfgPath)
+	projects := root["projects"].(map[string]any)
+
+	// The tracked entry is gone.
+	if _, present := projects["/w"]; present {
+		t.Fatalf("expected /w entry removed; projects = %#v", projects)
+	}
+	// Unrelated project preserved with its other fields.
+	existing := projects["/existing/proj"].(map[string]any)
+	if existing["hasTrustDialogAccepted"] != true || existing["lastCost"].(float64) != 1.5 {
+		t.Fatalf("unrelated project clobbered: %#v", existing)
+	}
+	// Top-level key preserved.
+	if root["userID"] != "abc" {
+		t.Fatalf("top-level key clobbered: %#v", root["userID"])
+	}
+}
+
+func TestRemoveWorkspaceTrustEntryAbsentEntryIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"projects":{"/existing":{"hasTrustDialogAccepted":true}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info1, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Cleanup for an entry that was never registered.
+	if err := removeWorkspaceTrustEntry(cfgPath, "/never-tracked"); err != nil {
+		t.Fatalf("removeWorkspaceTrustEntry: %v", err)
+	}
+
+	// No-op confirmed by unchanged mtime (no atomic-rename rewrite).
+	info2, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info1.ModTime().Equal(info2.ModTime()) {
+		t.Fatal("expected no rewrite when entry absent")
+	}
+	root := readJSON(t, cfgPath)
+	projects := root["projects"].(map[string]any)
+	if _, present := projects["/existing"]; !present {
+		t.Fatalf("unrelated entry removed: %#v", projects)
+	}
+}
+
+func TestRemoveWorkspaceTrustEntryMissingConfigIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json") // does not exist
+
+	// Cleanup against a never-written config: nothing to remove, no error.
+	if err := removeWorkspaceTrustEntry(cfgPath, "/w"); err != nil {
+		t.Fatalf("removeWorkspaceTrustEntry: %v", err)
+	}
+
+	// The missing config stays missing -- we deliberately do not create it
+	// just to write an empty projects map.
+	if _, err := os.Stat(cfgPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no config file created; stat = %v", err)
+	}
+}
+
+func TestRemoveWorkspaceTrustEntryEmptyConfigIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	if err := os.WriteFile(cfgPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info1, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeWorkspaceTrustEntry(cfgPath, "/w"); err != nil {
+		t.Fatalf("removeWorkspaceTrustEntry: %v", err)
+	}
+
+	info2, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info1.ModTime().Equal(info2.ModTime()) {
+		t.Fatal("expected no rewrite on empty config")
+	}
+}
+
+func TestRemoveWorkspaceTrustEntryConcurrencySafety(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	work := "/w"
+
+	// Seed: register the workspace, then race many cleanup callers against it.
+	if err := ensureWorkspaceTrusted(cfgPath, work); err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if err := removeWorkspaceTrustEntry(cfgPath, work); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent removeWorkspaceTrustEntry error: %v", err)
+	}
+
+	// The file must remain valid JSON after the race and the entry must be
+	// gone: a torn write would either fail to parse or leave the entry behind.
+	root := readJSON(t, cfgPath)
+	projects, ok := root["projects"].(map[string]any)
+	if !ok {
+		t.Fatalf("projects not a map after concurrent cleanup: %#v", root["projects"])
+	}
+	if _, present := projects[work]; present {
+		t.Fatalf("entry not removed under concurrency: %#v", projects)
+	}
+}
+
+// TestTrustEntryRegisterCleanupCycleIsBalanced is the adversarial proof that
+// a full trust-register/cleanup cycle does not leak entries into
+// ~/.claude.json's projects map: after each cycle the projects map size
+// returns to its pre-cycle size, not just stays bounded. A
+// bounded-but-growing map would still be detected by the live daemon's E2BIG
+// failure mode.
+func TestTrustEntryRegisterCleanupCycleIsBalanced(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".claude.json")
+	pre := map[string]bool{"/keep/me": true}
+	seed := `{"projects":{"/keep/me":{"hasTrustDialogAccepted":true}}}`
+	if err := os.WriteFile(cfgPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const cycles = 25
+	for i := 0; i < cycles; i++ {
+		work := filepath.Join("/cycle", filepath.Base(dir), "iter-"+strconv.Itoa(i))
+		if err := ensureWorkspaceTrusted(cfgPath, work); err != nil {
+			t.Fatalf("iter %d trust: %v", i, err)
+		}
+		if err := removeWorkspaceTrustEntry(cfgPath, work); err != nil {
+			t.Fatalf("iter %d cleanup: %v", i, err)
+		}
+
+		root := readJSON(t, cfgPath)
+		projects := root["projects"].(map[string]any)
+		for key := range projects {
+			if !pre[key] {
+				t.Fatalf("iter %d: leaked entry %q in projects map; got %#v", i, key, projects)
+			}
+		}
+		if len(projects) != len(pre) {
+			t.Fatalf("iter %d: projects size = %d, want %d; got %#v", i, len(projects), len(pre), projects)
+		}
+	}
 }

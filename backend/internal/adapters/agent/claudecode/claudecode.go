@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -216,6 +217,41 @@ func (p *Plugin) PreLaunch(ctx context.Context, cfg ports.LaunchConfig) error {
 		return err
 	}
 	return ensureWorkspaceTrusted(cfgPath, cfg.WorkspacePath)
+}
+
+// CleanupWorkspace removes the durable trust entry AO recorded for a session
+// workspace. It is the symmetric counterpart of PreLaunch: PreLaunch adds
+// projects[cfg.WorkspacePath] to ~/.claude.json so Claude Code's trust
+// dialog does not block the headless spawn, and CleanupWorkspace removes it
+// once the workspace is actually torn down.
+//
+// Without this, every spawned worktree leaves a permanent entry behind and
+// ~/.claude.json accumulates indefinitely. Claude Code's sandbox profile
+// builder derives one deny-path per known project dir from this file, so
+// unbounded growth eventually pushes the profile past ARG_MAX and every
+// subsequent Bash spawn fails with E2BIG.
+//
+// The manager invokes CleanupWorkspace only after the workspace Destroy
+// succeeds — its ErrWorkspaceDirty branch returns early without calling it,
+// so a workspace that still has dirty state on disk is never silently
+// removed from the trust list. A missing config or a missing entry is a
+// no-op, not an error, so a torn-down workspace that was never trusted (or
+// was already cleaned up) does not surface a spurious failure.
+func (p *Plugin) CleanupWorkspace(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.WorkspacePath) == "" {
+		return errors.New("claudecode.CleanupWorkspace: WorkspacePath is required")
+	}
+	cfgPath, err := claudeConfigPath()
+	if err != nil {
+		return err
+	}
+	if err := removeWorkspaceTrustEntry(cfgPath, cfg.WorkspacePath); err != nil {
+		return fmt.Errorf("claudecode.CleanupWorkspace: %w", err)
+	}
+	return nil
 }
 
 // GetRestoreCommand rebuilds the argv that continues an existing Claude Code
@@ -658,6 +694,74 @@ func ensureWorkspaceTrusted(configPath, workspacePath string) error {
 
 	// Atomic write: temp file in the same directory, then rename. Matches
 	// how Claude Code itself updates this file, so concurrent updates are
+	// last-writer-wins rather than corrupting.
+	dir := filepath.Dir(configPath)
+	tmp, err := os.CreateTemp(dir, ".claude.json.tmp-*")
+	if err != nil {
+		return fmt.Errorf("claude-code: create temp config: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
+
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("claude-code: write temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("claude-code: close temp config: %w", err)
+	}
+	if err := os.Rename(tmpName, configPath); err != nil {
+		return fmt.Errorf("claude-code: replace config: %w", err)
+	}
+	return nil
+}
+
+// removeWorkspaceTrustEntry deletes projects[workspacePath] from the Claude
+// Code config, preserving every other key. It mirrors ensureWorkspaceTrusted's
+// atomic temp-file + rename write so concurrent updates remain last-writer-wins
+// instead of corrupting, and reuses claudeTrustMu so a concurrent trust
+// registration cannot race the removal.
+//
+// A missing config file or missing entry is a no-op: nothing was ever trusted
+// under that path, so there is nothing to remove. The no-op is implemented
+// without a rewrite so a no-op cleanup does not touch the file's mtime.
+func removeWorkspaceTrustEntry(configPath, workspacePath string) error {
+	claudeTrustMu.Lock()
+	defer claudeTrustMu.Unlock()
+
+	data, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
+		// No config: nothing was ever trusted, nothing to remove.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("claude-code: read %s: %w", configPath, err)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+
+	root := map[string]any{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("claude-code: parse %s: %w", configPath, err)
+	}
+
+	projects, _ := root["projects"].(map[string]any)
+	if projects == nil {
+		return nil
+	}
+	if _, present := projects[workspacePath]; !present {
+		// Never registered: no write, no rename, no race window.
+		return nil
+	}
+	delete(projects, workspacePath)
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return fmt.Errorf("claude-code: encode %s: %w", configPath, err)
+	}
+
+	// Atomic write mirrors ensureWorkspaceTrusted so concurrent updates are
 	// last-writer-wins rather than corrupting.
 	dir := filepath.Dir(configPath)
 	tmp, err := os.CreateTemp(dir, ".claude.json.tmp-*")
