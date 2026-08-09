@@ -111,15 +111,21 @@ func (g *Guard) Send(ctx context.Context, id domain.SessionID, msg string) error
 	return err
 }
 
+// refuseWhenBlocked is the shared policy for writes that are safe to submit
+// at an idle needs-input prompt but not while the session is blocked on a
+// pending decision: pasting there risks answering the dialog on the user's
+// behalf, the unrecoverable-write hazard this package exists to prevent.
+func refuseWhenBlocked(rec domain.SessionRecord) (Outcome, bool) {
+	return SuppressedAwaitingUser, rec.Activity.State == domain.ActivityBlocked
+}
+
 // Deliver writes a user-initiated message (or its Enter-only re-submit: an
 // empty msg) into a live agent. Its activity-specific policy refuses when the
 // session is blocked on a pending decision — waiting_input does NOT suppress, because an agent
 // sitting at an idle prompt is exactly where a user message (or the Enter that
 // submits its unsent draft) belongs.
 func (g *Guard) Deliver(ctx context.Context, id domain.SessionID, msg string) (Outcome, error) {
-	return g.send(ctx, id, msg, func(rec domain.SessionRecord) (Outcome, bool) {
-		return SuppressedAwaitingUser, rec.Activity.State == domain.ActivityBlocked
-	})
+	return g.send(ctx, id, msg, refuseWhenBlocked)
 }
 
 // Nudge writes an AO-initiated (unsolicited) message into a live agent. Its
@@ -130,6 +136,18 @@ func (g *Guard) Nudge(ctx context.Context, id domain.SessionID, msg string) (Out
 	return g.send(ctx, id, msg, func(rec domain.SessionRecord) (Outcome, bool) {
 		return SuppressedAwaitingUser, rec.Activity.State.NeedsInput()
 	})
+}
+
+// NudgeUrgent writes an AO-initiated message that must reach the agent even
+// while the session sits idle at a needs-input prompt (waiting_input) —
+// reserved for alerts where a human parked at that prompt may be exactly who
+// needs to act (e.g. a merge conflict needing a rebase or a redirected
+// agent), unlike a routine reaction nudge that can simply wait for the agent
+// to resume on its own. It still refuses while the session is blocked on a
+// live permission decision, the same as Deliver: an unsolicited write there
+// risks answering the dialog rather than merely being read late.
+func (g *Guard) NudgeUrgent(ctx context.Context, id domain.SessionID, msg string) (Outcome, error) {
+	return g.send(ctx, id, msg, refuseWhenBlocked)
 }
 
 // NudgeCoordination writes an AO-initiated coordination message under the full

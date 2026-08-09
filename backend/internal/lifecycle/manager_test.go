@@ -1504,6 +1504,114 @@ func TestPRObservation_ExitedAgentIsNotNudged(t *testing.T) {
 	}
 }
 
+// TestPRObservation_MergeConflictReachesNeedsInputSession is the regression
+// test for #2173: a session parked awaiting the human (waiting_input) must
+// still receive a merge-conflict nudge, because the human sitting at that
+// prompt may be exactly who needs to act (rebase it themselves, or redirect
+// the agent) — unlike CI-failure/review-feedback nudges, which only the agent
+// can act on and which correctly wait for it to resume (see the sibling test
+// below). A session blocked on a live permission dialog is a different,
+// narrower hazard (an unsolicited paste there risks answering the dialog) and
+// must still be refused.
+func TestPRObservation_MergeConflictReachesNeedsInputSession(t *testing.T) {
+	cases := []struct {
+		name      string
+		state     domain.ActivityState
+		wantNudge bool
+	}{
+		{"waiting_input reaches the agent", domain.ActivityWaitingInput, true},
+		{"blocked stays suppressed", domain.ActivityBlocked, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, msg := newManager()
+			rec := working("mer-1")
+			rec.Activity.State = tc.state
+			st.sessions["mer-1"] = rec
+
+			o := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeConflicting}
+			if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+				t.Fatal(err)
+			}
+			gotNudge := len(msg.msgs) == 1
+			if gotNudge != tc.wantNudge {
+				t.Fatalf("nudge sent = %v (msgs=%v), want %v", gotNudge, msg.msgs, tc.wantNudge)
+			}
+			if gotNudge && !strings.Contains(msg.msgs[0], "merge conflicts") {
+				t.Fatalf("want merge-conflict nudge, got %q", msg.msgs[0])
+			}
+		})
+	}
+}
+
+// TestPRObservation_NeedsInputSessionStillWithholdsOtherNudges is the
+// regression guard: the needs-input gate must keep suppressing CI-failure and
+// review-feedback nudges exactly as before. Only the merge-conflict nudge
+// gets the carve-out in TestPRObservation_MergeConflictReachesNeedsInputSession.
+func TestPRObservation_NeedsInputSessionStillWithholdsOtherNudges(t *testing.T) {
+	for _, state := range []domain.ActivityState{domain.ActivityWaitingInput, domain.ActivityBlocked} {
+		t.Run(string(state), func(t *testing.T) {
+			m, st, msg := newManager()
+			rec := working("mer-1")
+			rec.Activity.State = state
+			st.sessions["mer-1"] = rec
+			st.comments["pr1"] = []domain.PullRequestComment{{ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: true}}
+
+			o := ports.PRObservation{
+				Fetched: true,
+				URL:     "pr1",
+				CI:      domain.CIFailing,
+				Checks:  []ports.PRCheckObservation{{Name: "build", CommitHash: "c1", Status: domain.PRCheckFailed, LogTail: "boom"}},
+				Review:  domain.ReviewChangesRequest,
+			}
+			if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+				t.Fatal(err)
+			}
+			if len(msg.msgs) != 0 {
+				t.Fatalf("needs-input session should not receive CI/review nudges, got %v", msg.msgs)
+			}
+		})
+	}
+}
+
+// TestPRObservation_DeadSessionGetsNoNudgesOfAnyKind sanity-checks that the
+// merge-conflict carve-out did not overreach: a genuinely dead session
+// (terminated, or its pane already exited to a shell) still gets nothing at
+// all, conflict included, since there is nowhere to deliver it.
+func TestPRObservation_DeadSessionGetsNoNudgesOfAnyKind(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*domain.SessionRecord)
+	}{
+		{"terminated", func(r *domain.SessionRecord) { r.IsTerminated = true }},
+		{"exited", func(r *domain.SessionRecord) { r.Activity.State = domain.ActivityExited }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, msg := newManager()
+			rec := working("mer-1")
+			tc.mut(&rec)
+			st.sessions["mer-1"] = rec
+			st.comments["pr1"] = []domain.PullRequestComment{{ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: true}}
+
+			o := ports.PRObservation{
+				Fetched:      true,
+				URL:          "pr1",
+				CI:           domain.CIFailing,
+				Checks:       []ports.PRCheckObservation{{Name: "build", CommitHash: "c1", Status: domain.PRCheckFailed, LogTail: "boom"}},
+				Review:       domain.ReviewChangesRequest,
+				Mergeability: domain.MergeConflicting,
+			}
+			if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+				t.Fatal(err)
+			}
+			if len(msg.msgs) != 0 {
+				t.Fatalf("%s session should receive no nudges at all, including for a conflict, got %v", tc.name, msg.msgs)
+			}
+		})
+	}
+}
+
 func TestPRObservation_NudgeIncludesPRIdentity(t *testing.T) {
 	m, st, msg := newManager()
 	st.sessions["mer-1"] = working("mer-1")

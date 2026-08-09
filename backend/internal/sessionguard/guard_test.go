@@ -79,6 +79,45 @@ func TestGuard_OutcomeByState(t *testing.T) {
 	}
 }
 
+// TestGuard_NudgeUrgentReachesNeedsInputButNotBlocked pins NudgeUrgent's
+// policy: unlike Nudge, an idle needs-input prompt (waiting_input) does not
+// suppress the write, because some automated nudges (a merge conflict, for
+// instance) must reach a session parked there. A live permission dialog
+// (blocked) still refuses, matching Deliver: pasting there risks answering
+// the dialog on the user's behalf.
+func TestGuard_NudgeUrgentReachesNeedsInputButNotBlocked(t *testing.T) {
+	cases := []struct {
+		name string
+		rec  domain.SessionRecord
+		ok   bool
+		want Outcome
+	}{
+		{"active", record(domain.ActivityActive, false), true, Sent},
+		{"idle", record(domain.ActivityIdle, false), true, Sent},
+		{"waiting_input", record(domain.ActivityWaitingInput, false), true, Sent},
+		{"blocked", record(domain.ActivityBlocked, false), true, SuppressedAwaitingUser},
+		{"exited", record(domain.ActivityExited, false), true, SuppressedExited},
+		{"terminated", record(domain.ActivityIdle, true), true, SuppressedTerminated},
+		{"missing", domain.SessionRecord{}, false, SuppressedNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgr := &fakeMessenger{}
+			g := New(&fakeStore{rec: tc.rec, ok: tc.ok}, msgr, nil)
+			got, err := g.NudgeUrgent(context.Background(), "s1", "hello")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("outcome = %v, want %v", got, tc.want)
+			}
+			if wantSent := tc.want == Sent; (len(msgr.sent) == 1) != wantSent {
+				t.Errorf("messenger sends = %d, want sent=%v", len(msgr.sent), wantSent)
+			}
+		})
+	}
+}
+
 func TestGuard_StoreErrorFailsClosed(t *testing.T) {
 	msgr := &fakeMessenger{}
 	g := New(&fakeStore{err: errors.New("db locked")}, msgr, nil)

@@ -89,7 +89,7 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 	anchorPR := results[0].PRURL
 	key := "review-batch:" + anchorPR + ":" + batchID
 	sig := strings.Join(sigParts, "\x01")
-	outcome, err := m.sendOnce(ctx, workerID, anchorPR, key, sig, msg.String(), reviewMaxNudge)
+	outcome, err := m.sendOnce(ctx, workerID, anchorPR, key, sig, msg.String(), reviewMaxNudge, false)
 	if err != nil {
 		return ReviewDeliveryNoop, err
 	}
@@ -133,6 +133,12 @@ type pendingNudge struct {
 	sig         string
 	msg         string
 	maxAttempts int
+	// urgent routes the send through sessionguard.NudgeUrgent instead of
+	// Nudge: it still reaches a session idle at a needs-input prompt instead
+	// of being suppressed until the agent resumes. Reserved for the
+	// merge-conflict nudge (see ApplyPRObservation) — every other nudge type
+	// keeps the ordinary Nudge gate.
+	urgent bool
 }
 
 // ApplyPRObservation reacts to a fetched PR observation after the PR service has
@@ -169,18 +175,23 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	if err != nil || !ok {
 		return err
 	}
-	if cannotNudge(rec) {
+	// A genuinely dead session — terminated, or its pane already exited to a
+	// shell — has nowhere to deliver any nudge, merge-conflict included.
+	if rec.IsTerminated || rec.Activity.State == domain.ActivityExited {
 		return nil
 	}
-	reviews, err := m.store.ListPRReviews(ctx, o.URL)
-	if err != nil {
-		return fmt.Errorf("list persisted reviews for %s: %w", o.URL, err)
-	}
-	comments, err := m.store.ListPRComments(ctx, o.URL)
-	if err != nil {
-		return fmt.Errorf("list persisted comments for %s: %w", o.URL, err)
-	}
-	o.Comments = prCommentObservations(comments)
+	// cannotNudge's remaining condition, needs-input, defers CI-failure and
+	// review-feedback nudges until the agent is active again: both are
+	// actionable only by the agent, so re-surfacing them once it resumes loses
+	// nothing. A merge conflict is different — the human parked at the
+	// needs-input prompt may be exactly who needs to act (rebase it
+	// themselves, or redirect the agent), so the merge-conflict nudge below is
+	// deliberately exempted from this gate instead of loosening it for every
+	// nudge type. It still funnels through sendOnce's urgent path
+	// (sessionguard.NudgeUrgent), which continues to refuse a write while the
+	// session is blocked on a live permission dialog — only an idle
+	// needs-input prompt is safe to paste into unsolicited.
+	needsInput := rec.Activity.State.NeedsInput()
 	// A single PR can trip several actionable conditions at once (failing CI,
 	// unresolved review comments, a merge conflict). Queue every applicable nudge
 	// and send them together, so each surfaces independently instead of one
@@ -191,55 +202,67 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	ident := prIdentity(o)
 	var nudges []pendingNudge
 
-	if o.CI == domain.CIFailing {
-		checks := failedPRChecks(o.Checks)
-		if len(checks) > 0 {
-			msg := formatCIFailureMessage(checks)
-			if ident != "your PR" {
-				msg = strings.Replace(msg, "your PR", ident, 1)
-			}
-			if o.URL != "" {
-				msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
-			}
-			nudges = append(nudges, pendingNudge{key: "ci:" + o.URL, sig: ciFailureSignature(checks), msg: msg, maxAttempts: 0})
+	if !needsInput {
+		reviews, err := m.store.ListPRReviews(ctx, o.URL)
+		if err != nil {
+			return fmt.Errorf("list persisted reviews for %s: %w", o.URL, err)
 		}
-	}
-
-	if hasUnresolvedComments(o.Comments) {
-		comments := unresolvedReviewComments(o.Comments)
-		for _, comment := range comments {
-			if !comment.AutoInjectReview {
-				continue
-			}
-			commentSlice := []ports.PRCommentObservation{comment}
-			msg := formatReviewCommentsMessage(commentSlice)
-			if ident != "your PR" {
-				msg = strings.Replace(msg, "your PR", ident, 1)
-			}
-			if o.URL != "" {
-				msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
-			}
-			sig := reviewCommentsSignature(commentSlice)
-			if sig == "" {
-				sig = string(o.Review)
-			}
-			nudges = append(nudges, pendingNudge{key: "comment:" + o.URL, sig: sig, msg: msg, maxAttempts: reviewMaxNudge})
+		comments, err := m.store.ListPRComments(ctx, o.URL)
+		if err != nil {
+			return fmt.Errorf("list persisted comments for %s: %w", o.URL, err)
 		}
-	}
+		o.Comments = prCommentObservations(comments)
 
-	if o.Review == domain.ReviewChangesRequest {
-		for _, review := range reviews {
-			if review.State != domain.ReviewChangesRequest || !review.AutoInjectReview {
-				continue
+		if o.CI == domain.CIFailing {
+			checks := failedPRChecks(o.Checks)
+			if len(checks) > 0 {
+				msg := formatCIFailureMessage(checks)
+				if ident != "your PR" {
+					msg = strings.Replace(msg, "your PR", ident, 1)
+				}
+				if o.URL != "" {
+					msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
+				}
+				nudges = append(nudges, pendingNudge{key: "ci:" + o.URL, sig: ciFailureSignature(checks), msg: msg, maxAttempts: 0})
 			}
-			msg := formatReviewChangesRequestedMessage(review)
-			if ident != "your PR" {
-				msg = strings.Replace(msg, "your PR", ident, 1)
+		}
+
+		if hasUnresolvedComments(o.Comments) {
+			comments := unresolvedReviewComments(o.Comments)
+			for _, comment := range comments {
+				if !comment.AutoInjectReview {
+					continue
+				}
+				commentSlice := []ports.PRCommentObservation{comment}
+				msg := formatReviewCommentsMessage(commentSlice)
+				if ident != "your PR" {
+					msg = strings.Replace(msg, "your PR", ident, 1)
+				}
+				if o.URL != "" {
+					msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
+				}
+				sig := reviewCommentsSignature(commentSlice)
+				if sig == "" {
+					sig = string(o.Review)
+				}
+				nudges = append(nudges, pendingNudge{key: "comment:" + o.URL, sig: sig, msg: msg, maxAttempts: reviewMaxNudge})
 			}
-			if o.URL != "" && review.URL == "" {
-				msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
+		}
+
+		if o.Review == domain.ReviewChangesRequest {
+			for _, review := range reviews {
+				if review.State != domain.ReviewChangesRequest || !review.AutoInjectReview {
+					continue
+				}
+				msg := formatReviewChangesRequestedMessage(review)
+				if ident != "your PR" {
+					msg = strings.Replace(msg, "your PR", ident, 1)
+				}
+				if o.URL != "" && review.URL == "" {
+					msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
+				}
+				nudges = append(nudges, pendingNudge{key: "review:" + o.URL + ":" + review.ID, sig: string(review.State), msg: msg, maxAttempts: reviewMaxNudge})
 			}
-			nudges = append(nudges, pendingNudge{key: "review:" + o.URL + ":" + review.ID, sig: string(review.State), msg: msg, maxAttempts: reviewMaxNudge})
 		}
 	}
 
@@ -266,12 +289,12 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			if o.URL != "" {
 				msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
 			}
-			nudges = append(nudges, pendingNudge{key: "merge-conflict:" + o.URL, sig: string(o.Mergeability), msg: msg, maxAttempts: 0})
+			nudges = append(nudges, pendingNudge{key: "merge-conflict:" + o.URL, sig: string(o.Mergeability), msg: msg, maxAttempts: 0, urgent: true})
 		}
 	}
 
 	for _, n := range nudges {
-		if _, err := m.sendOnce(ctx, id, o.URL, n.key, n.sig, n.msg, n.maxAttempts); err != nil {
+		if _, err := m.sendOnce(ctx, id, o.URL, n.key, n.sig, n.msg, n.maxAttempts, n.urgent); err != nil {
 			return err
 		}
 	}
@@ -560,7 +583,7 @@ func (m *Manager) ApplyTrackerFacts(ctx context.Context, id domain.SessionID, o 
 			// the PR-row signature load/persist is skipped, so the dedup
 			// survives only for the lifetime of this Manager. Cross-restart
 			// persistence ships with #35.
-			_, err := m.sendOnce(ctx, id, "", "tracker-bot:"+o.Issue.URL, strings.Join(ids, ","), msg, 0)
+			_, err := m.sendOnce(ctx, id, "", "tracker-bot:"+o.Issue.URL, strings.Join(ids, ","), msg, 0, false)
 			return err
 		}
 	}
@@ -570,6 +593,13 @@ func (m *Manager) ApplyTrackerFacts(ctx context.Context, id domain.SessionID, o 
 // cannotNudge is the lifecycle entry guard for automated pane delivery. The
 // just-in-time sessionguard remains authoritative, but refusing exited agents
 // here avoids repeated dedup/store work for a pane that now contains a shell.
+//
+// ApplyPRObservation does NOT call this helper directly: it needs a narrower
+// carve-out so the merge-conflict nudge alone can bypass the needs-input
+// condition below (see its needsInput comment), so it inlines the
+// terminated/exited half of this check and evaluates needs-input separately.
+// Every other nudge path in this package (ApplyReviewBatch, ApplyTrackerFacts)
+// still gates on the full condition here, unchanged.
 func cannotNudge(rec domain.SessionRecord) bool {
 	return rec.IsTerminated || rec.Activity.State.NeedsInput() || rec.Activity.State == domain.ActivityExited
 }
@@ -805,7 +835,7 @@ const (
 	sendOnceSuppressed
 )
 
-func (m *Manager) sendOnce(ctx context.Context, id domain.SessionID, prURL, key, sig, msg string, maxAttempts int) (sendOnceOutcome, error) {
+func (m *Manager) sendOnce(ctx context.Context, id domain.SessionID, prURL, key, sig, msg string, maxAttempts int, urgent bool) (sendOnceOutcome, error) {
 	if m.guard == nil {
 		return sendOnceAccounted, nil
 	}
@@ -835,7 +865,15 @@ func (m *Manager) sendOnce(ctx context.Context, id domain.SessionID, prURL, key,
 	// suppresses (fail closed, nothing was written); a messenger failure means
 	// the write was attempted and stays accounted, matching the pre-guard
 	// behavior.
-	outcome, err := m.guard.Nudge(ctx, id, msg)
+	nudge := m.guard.Nudge
+	if urgent {
+		// Merge-conflict nudges (the only urgent nudge today) must still reach
+		// a session idle at a needs-input prompt; NudgeUrgent keeps refusing
+		// only while a live permission dialog is on screen. See
+		// ApplyPRObservation's needsInput carve-out for the reasoning.
+		nudge = m.guard.NudgeUrgent
+	}
+	outcome, err := nudge(ctx, id, msg)
 	if err != nil {
 		if outcome != sessionguard.Sent {
 			return sendOnceSuppressed, err
