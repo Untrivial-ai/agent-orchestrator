@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/google/uuid"
@@ -615,7 +616,9 @@ func TestClaudeConfigAuthStatusAuthorizedWithOAuthAccount(t *testing.T) {
 	}
 }
 
-func TestClaudeConfigAuthStatusAuthorizedWithUserID(t *testing.T) {
+func TestClaudeConfigAuthStatusUnknownWithStaleUserIDOnly(t *testing.T) {
+	// A bare userID persists after logout, so it must not by itself report
+	// Authorized; the config check yields to the auth-status probe.
 	path := filepath.Join(t.TempDir(), ".claude.json")
 	if err := os.WriteFile(path, []byte(`{"userID":"user-1"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -625,8 +628,25 @@ func TestClaudeConfigAuthStatusAuthorizedWithUserID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestClaudeConfigAuthStatusUnknownWithStaleUserIDAndEmptyOAuth(t *testing.T) {
+	// Matches a genuinely logged-out machine: userID lingers but oauthAccount
+	// is empty.
+	path := filepath.Join(t.TempDir(), ".claude.json")
+	if err := os.WriteFile(path, []byte(`{"userID":"user-1","oauthAccount":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, ok, err := claudeConfigAuthStatus(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
 
@@ -665,6 +685,60 @@ func TestClaudeAuthStatusFromOutputUnauthorized(t *testing.T) {
 	status, ok := claudeAuthStatusFromOutput([]byte(`{"loggedIn":false}`))
 	if !ok || status != ports.AgentAuthStatusUnauthorized {
 		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnauthorized)
+	}
+}
+
+// writeFakeClaude writes an executable stub that echoes probeOutput for any
+// args, so AuthStatus's `claude auth status` probe reads a controlled result.
+func writeFakeClaude(t *testing.T, probeOutput string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell-script binary is not executable on windows")
+	}
+	path := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\ncat <<'EOF'\n" + probeOutput + "\nEOF\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAuthStatusProbeWinsOverStaleConfig(t *testing.T) {
+	// Reproduces the reported false positive: a stale userID lingers in
+	// ~/.claude.json but `claude auth status` reports loggedIn:false. The probe
+	// is authoritative, so the result must be Unauthorized, not Authorized.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"userID":"user-1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Plugin{resolvedBinary: writeFakeClaude(t, `{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}`)}
+	status, err := p.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("AuthStatus = %q, want %q", status, ports.AgentAuthStatusUnauthorized)
+	}
+}
+
+func TestAuthStatusProbeReportsAuthorized(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"userID":"user-1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Plugin{resolvedBinary: writeFakeClaude(t, `{"loggedIn":true,"authMethod":"oauth_token"}`)}
+	status, err := p.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("AuthStatus = %q, want %q", status, ports.AgentAuthStatusAuthorized)
 	}
 }
 

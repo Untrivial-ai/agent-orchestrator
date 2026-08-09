@@ -447,13 +447,15 @@ func claudeConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 	if raw := root["hasAvailableSubscription"]; len(raw) > 0 {
 		_ = json.Unmarshal(raw, &hasSubscription)
 	}
-	var userID string
-	if raw := root["userID"]; len(raw) > 0 {
-		_ = json.Unmarshal(raw, &userID)
-	}
-	if strings.TrimSpace(userID) != "" {
+	if hasSubscription {
 		return ports.AgentAuthStatusAuthorized, true, nil
 	}
+	// A populated oauthAccount is the config's real evidence of a logged-in
+	// session. A bare userID is not: it persists in ~/.claude.json after a
+	// logout (and is present on a machine that never finished login), so
+	// treating it as proof reports a logged-out machine as Authorized. When the
+	// only signal is that stale field, return Unknown and let the authoritative
+	// `claude auth status` probe decide.
 	var oauthAccount map[string]any
 	if raw := root["oauthAccount"]; len(raw) > 0 {
 		if err := json.Unmarshal(raw, &oauthAccount); err != nil {
@@ -462,9 +464,6 @@ func claudeConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 	}
 	if len(oauthAccount) == 0 {
 		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if hasSubscription {
-		return ports.AgentAuthStatusAuthorized, true, nil
 	}
 	if accountUUID, ok := oauthAccount["accountUuid"].(string); ok && strings.TrimSpace(accountUUID) != "" {
 		return ports.AgentAuthStatusAuthorized, true, nil
