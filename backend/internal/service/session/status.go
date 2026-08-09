@@ -26,7 +26,11 @@ const noSignalGrace = 90 * time.Second
 // until the parent does. Merged/closed PRs only matter once no open PR remains.
 func deriveStatus(rec domain.SessionRecord, prs []domain.PRFacts, now time.Time, signalCapable bool) domain.SessionStatus {
 	if rec.IsTerminated {
-		if anyMerged(prs) {
+		// Merged only wins once no open PR remains: a session killed while it
+		// still owns an open PR (e.g. only the bottom of a stack merged) did not
+		// complete, and reporting it as merged would hide the abandoned open PR.
+		// The non-terminated branch below enforces the same ordering.
+		if len(openPRs(prs)) == 0 && anyMerged(prs) {
 			return domain.StatusMerged
 		}
 		return domain.StatusTerminated
