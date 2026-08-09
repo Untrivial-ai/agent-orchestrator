@@ -30,6 +30,7 @@ import { listFeatureBuilds, getActiveFeatureBuild } from "./main/feature-builds"
 import { readUpdateSettings, type UpdateSettings, type UpdateStatus } from "./main/update-settings";
 import { readKeybindingOverrides, writeKeybindingOverrides } from "./main/keybinding-settings";
 import { coerceUiSettings, readUiSettings, writeUiSettings, type UiSettings } from "./main/ui-settings";
+import { THEME_CHANGED_CHANNEL } from "./shared/ui-locale";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
@@ -43,6 +44,7 @@ import type { DaemonStatus } from "./shared/daemon-status";
 import { attachAppShortcuts } from "./main/app-shortcuts";
 import {
 	KEYBOARD_SHORTCUTS_HELP_CHANNEL,
+	OPEN_SETTINGS_SHORTCUT_CHANNEL,
 	SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL,
 	type KeybindingOverrides,
 } from "./shared/shortcuts";
@@ -1457,10 +1459,16 @@ ipcMain.handle("window:isFullScreen", () => mainWindow?.isFullScreen() ?? false)
 // preview WebContentsViews (which follow prefers-color-scheme) flip in step with
 // the shell. The three preference values map 1:1 onto themeSource; "system" keeps
 // both the preview and the shell's own matchMedia following the OS.
-ipcMain.handle("theme:set", (_event, preference: "light" | "dark" | "system") => {
-	if (preference === "light" || preference === "dark" || preference === "system") {
-		nativeTheme.themeSource = preference;
+ipcMain.handle("theme:set", async (_event, preference: "light" | "dark" | "system") => {
+	if (preference !== "light" && preference !== "dark" && preference !== "system") return;
+	nativeTheme.themeSource = preference;
+	const runFile = runFilePath();
+	if (runFile) {
+		const dir = path.dirname(runFile);
+		const current = await readUiSettings(dir);
+		await writeUiSettings(dir, { ...current, themePreference: preference });
 	}
+	trayController?.setThemePreference(preference);
 });
 
 // Renderer calls this when focus lands on real shell UI (not the titlebar menu), so menu:action's panel fallback below doesn't go stale.
@@ -1601,17 +1609,21 @@ ipcMain.handle("updateSettings:set", async (_event, settings: UpdateSettings) =>
 	const runFile = runFilePath();
 	if (!runFile) return;
 	await setUpdateSettings(path.dirname(runFile), settings);
+	trayController?.setUpdateSettings(settings);
 });
 
 ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
 	const runFile = runFilePath();
-	if (!runFile) return { locale: "en" };
+	if (!runFile) return { locale: "en", themePreference: "system" };
 	return readUiSettings(path.dirname(runFile));
 });
-	ipcMain.handle("uiSettings:set", async (_event, settings: UiSettings): Promise<UiSettings> => {
+	ipcMain.handle("uiSettings:set", async (_event, settings: Partial<UiSettings>): Promise<UiSettings> => {
 		const runFile = runFilePath();
-	const result = !runFile ? coerceUiSettings(settings) : await writeUiSettings(path.dirname(runFile), settings);
+	const current = runFile ? await readUiSettings(path.dirname(runFile)) : coerceUiSettings({});
+	const merged = coerceUiSettings({ ...current, ...settings });
+	const result = !runFile ? merged : await writeUiSettings(path.dirname(runFile), merged);
 	trayController?.setLocale(result.locale);
+	trayController?.setThemePreference(result.themePreference);
 	return result;
 	});
 
@@ -1851,11 +1863,60 @@ app.whenReady().then(async () => {
 	registerRendererProtocol();
 	applyRuntimeAppIcon();
 	if (isTrayEnabled(process.platform, app.isPackaged, app.getVersion())) {
-		const initialUiSettings = keybindingRunFile ? await readUiSettings(path.dirname(keybindingRunFile)) : { locale: "en" as const };
+		const initialUiSettings = keybindingRunFile ? await readUiSettings(path.dirname(keybindingRunFile)) : coerceUiSettings({});
+		const initialUpdateSettings = keybindingRunFile
+			? await readUpdateSettings(path.dirname(keybindingRunFile))
+			: { enabled: false, channel: "latest" as const, nightlyAck: false, feature: null };
 		trayController = createTrayController({
 			focusWindow: focusMainWindow,
 			openSession: trayLifecycle.openSession,
+			openSettings: () => {
+				focusMainWindow();
+				mainWindow?.webContents.send(OPEN_SETTINGS_SHORTCUT_CHANNEL);
+			},
 			locale: initialUiSettings.locale,
+			themePreference: initialUiSettings.themePreference,
+			onThemeSelect: (preference) => {
+				void (async () => {
+					nativeTheme.themeSource = preference;
+					const runFile = runFilePath();
+					if (runFile) {
+						const dir = path.dirname(runFile);
+						const current = await readUiSettings(dir);
+						await writeUiSettings(dir, { ...current, themePreference: preference });
+					}
+					trayController?.setThemePreference(preference);
+					mainWindow?.webContents.send(THEME_CHANGED_CHANNEL, preference);
+				})();
+			},
+			updateSettings: initialUpdateSettings,
+			onUpdateChannelSelect: (channel) => {
+				void (async () => {
+					const runFile = runFilePath();
+					if (!runFile) return;
+					const dir = path.dirname(runFile);
+					const current = await readUpdateSettings(dir);
+					const next: UpdateSettings = { ...current, channel };
+					await setUpdateSettings(dir, next);
+					trayController?.setUpdateSettings(next);
+				})();
+			},
+			onUpdateEnabledToggle: (enabled) => {
+				void (async () => {
+					const runFile = runFilePath();
+					if (!runFile) return;
+					const dir = path.dirname(runFile);
+					const current = await readUpdateSettings(dir);
+					const next: UpdateSettings = { ...current, enabled };
+					await setUpdateSettings(dir, next);
+					trayController?.setUpdateSettings(next);
+				})();
+			},
+			onCheckForUpdates: () => {
+				const runFile = runFilePath();
+				if (!runFile) return;
+				void checkForUpdatesNow(path.dirname(runFile), {});
+			},
 		});
 	}
 	await createWindow();

@@ -84,6 +84,7 @@ if (typeof window !== "undefined") {
 		},
 		theme: {
 			set: async () => undefined,
+			onChanged: () => () => undefined,
 		},
 		menu: {
 			action: async () => undefined,
@@ -199,9 +200,10 @@ if (typeof window !== "undefined") {
 			set: async () => undefined,
 		},
 		uiSettings: {
-			get: async () => ({ locale: "en" as const }),
-			set: async (settings: { locale: string }) => ({
-				locale: settings.locale as "en",
+			get: async () => ({ locale: "en" as const, themePreference: "system" as const }),
+			set: async (settings: { locale?: string; themePreference?: string }) => ({
+				locale: (settings.locale as "en") ?? "en",
+				themePreference: (settings.themePreference as "system") ?? "system",
 			}),
 		},
 		keybindings: {

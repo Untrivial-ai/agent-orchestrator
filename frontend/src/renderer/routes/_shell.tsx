@@ -100,6 +100,7 @@ function ShellLayout() {
 	const workspaceStartupBaselineRef = useRef(0);
 	const agentCatalogPortRef = useRef<number | undefined>(undefined);
 	const { themePreference, resolvedTheme, themeStyle, isSidebarOpen, toggleSidebar } = useUiStore();
+	const setThemePreference = useUiStore((state) => state.setThemePreference);
 	const syncSystemTheme = useUiStore((state) => state.syncSystemTheme);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const requestCreateProject = useUiStore((state) => state.requestCreateProject);
@@ -454,6 +455,10 @@ function ShellLayout() {
 	useEffect(() => {
 		void aoBridge.theme?.set(themePreference);
 	}, [themePreference]);
+
+	// The tray can change the theme while the window is open; mirror that back
+	// into the renderer's own store so the shell updates without a restart.
+	useEffect(() => aoBridge.theme?.onChanged?.((preference) => setThemePreference(preference)), [setThemePreference]);
 
 	useEffect(() => {
 		if (!isSidebarOpen) return;

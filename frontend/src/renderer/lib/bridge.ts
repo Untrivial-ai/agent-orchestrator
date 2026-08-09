@@ -1,5 +1,5 @@
 import type { AoBridge } from "../../preload";
-import { coerceLocale } from "../../shared/ui-locale";
+import { coerceUiSettings } from "../../shared/ui-locale";
 export type { FeatureBuild } from "../../main/feature-builds";
 
 export const aoBridge: AoBridge =
@@ -35,6 +35,7 @@ export const aoBridge: AoBridge =
 		},
 		theme: {
 			set: async () => undefined,
+			onChanged: () => () => undefined,
 		},
 		menu: {
 			action: async () => undefined,
@@ -157,8 +158,8 @@ export const aoBridge: AoBridge =
 			set: async () => undefined,
 		},
 		uiSettings: {
-			get: async () => ({ locale: "en" as const }),
-			set: async (settings) => ({ locale: coerceLocale(settings.locale) }),
+			get: async () => coerceUiSettings({}),
+			set: async (settings) => coerceUiSettings(settings),
 		},
 		keybindings: {
 			get: async () => ({}),

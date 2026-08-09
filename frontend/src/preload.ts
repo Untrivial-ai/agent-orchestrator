@@ -22,6 +22,7 @@ import type { MigrationState } from "./main/app-state";
 import type { UpdateSettings, UpdateStatus } from "./main/update-settings";
 import type { UpdateOutcome } from "./shared/update-telemetry";
 import type { UiSettings } from "./main/ui-settings";
+import { THEME_CHANGED_CHANNEL } from "./shared/ui-locale";
 import type { UpdateCheckOptions } from "./main/auto-updater";
 import type { FeatureBuild } from "./main/feature-builds";
 import type {
@@ -169,6 +170,15 @@ const api = {
 		// WebContentsView previews (which follow prefers-color-scheme) stay in sync
 		// with the shell. "system" lets both follow the OS.
 		set: (preference: "light" | "dark" | "system") => ipcRenderer.invoke("theme:set", preference) as Promise<void>,
+		// Fired when the theme changes from outside the renderer (e.g. the tray).
+		onChanged: (listener: (preference: "light" | "dark" | "system") => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, preference: "light" | "dark" | "system") =>
+				listener(preference);
+			ipcRenderer.on(THEME_CHANGED_CHANNEL, wrapped);
+			return () => {
+				ipcRenderer.off(THEME_CHANGED_CHANNEL, wrapped);
+			};
+		},
 	},
 	menu: {
 		action: (action: string) => ipcRenderer.invoke("menu:action", action) as Promise<void>,
@@ -294,7 +304,7 @@ const api = {
 	},
 	uiSettings: {
 		get: () => ipcRenderer.invoke("uiSettings:get") as Promise<UiSettings>,
-		set: (settings: UiSettings) => ipcRenderer.invoke("uiSettings:set", settings) as Promise<UiSettings>,
+		set: (settings: Partial<UiSettings>) => ipcRenderer.invoke("uiSettings:set", settings) as Promise<UiSettings>,
 	},
 	keybindings: {
 		get: () => ipcRenderer.invoke("keybindings:get") as Promise<KeybindingOverrides>,

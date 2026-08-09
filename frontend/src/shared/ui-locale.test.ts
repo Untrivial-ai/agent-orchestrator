@@ -24,10 +24,17 @@ describe("shared UI locale schema", () => {
 	});
 
 	it("normalizes persisted settings through the shared locale validator", () => {
-		expect(coerceUiSettings({ locale: "zh-CN" })).toEqual({ locale: "zh-CN" });
-		expect(coerceUiSettings({ locale: "ja" })).toEqual({ locale: "ja" });
-		expect(coerceUiSettings({ locale: "pt-BR" })).toEqual({ locale: "pt-BR" });
+		expect(coerceUiSettings({ locale: "zh-CN" })).toEqual({ locale: "zh-CN", themePreference: "system" });
+		expect(coerceUiSettings({ locale: "ja" })).toEqual({ locale: "ja", themePreference: "system" });
+		expect(coerceUiSettings({ locale: "pt-BR" })).toEqual({ locale: "pt-BR", themePreference: "system" });
 		expect(coerceUiSettings({ locale: "pt" })).toEqual(DEFAULT_UI_SETTINGS);
 		expect(coerceUiSettings(null)).toEqual(DEFAULT_UI_SETTINGS);
+	});
+
+	it("normalizes theme preference through the shared validator", () => {
+		expect(coerceUiSettings({ themePreference: "light" })).toEqual({ locale: "en", themePreference: "light" });
+		expect(coerceUiSettings({ themePreference: "dark" })).toEqual({ locale: "en", themePreference: "dark" });
+		expect(coerceUiSettings({ themePreference: "system" })).toEqual({ locale: "en", themePreference: "system" });
+		expect(coerceUiSettings({ themePreference: "blue" })).toEqual(DEFAULT_UI_SETTINGS);
 	});
 });

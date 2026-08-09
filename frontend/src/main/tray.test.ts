@@ -5,6 +5,7 @@ type MenuItem = {
 	label?: string;
 	sublabel?: string;
 	enabled?: boolean;
+	checked?: boolean;
 	type?: string;
 	role?: string;
 	click?: () => void;
@@ -60,14 +61,42 @@ function entry(overrides: Partial<TraySessionEntry> & { sessionId: string }): Tr
 function setup() {
 	const openSession = vi.fn();
 	const focusWindow = vi.fn();
-	const controller = createTrayController({ focusWindow, openSession, locale: "en" });
+	const openSettings = vi.fn();
+	const onThemeSelect = vi.fn();
+	const onUpdateChannelSelect = vi.fn();
+	const onUpdateEnabledToggle = vi.fn();
+	const onCheckForUpdates = vi.fn();
+	const controller = createTrayController({
+		focusWindow,
+		openSession,
+		openSettings,
+		locale: "en",
+		themePreference: "system",
+		onThemeSelect,
+		updateSettings: { enabled: false, channel: "latest", nightlyAck: false, feature: null },
+		onUpdateChannelSelect,
+		onUpdateEnabledToggle,
+		onCheckForUpdates,
+	});
 	if (!controller) throw new Error("expected a tray controller");
 	const tray = trayInstances[trayInstances.length - 1];
-	return { controller, tray, openSession, focusWindow };
+	return {
+		controller,
+		tray,
+		openSession,
+		focusWindow,
+		openSettings,
+		onThemeSelect,
+		onUpdateChannelSelect,
+		onUpdateEnabledToggle,
+		onCheckForUpdates,
+	};
 }
 
+const CHROME_LABELS = new Set(["Show Agent Orchestrator", "Settings…"]);
+
 const sessionItems = (tray: { template: MenuItem[] }) =>
-	tray.template.filter((item) => typeof item.click === "function" && item.label !== "Show Agent Orchestrator");
+	tray.template.filter((item) => typeof item.click === "function" && !CHROME_LABELS.has(item.label ?? ""));
 
 afterEach(() => {
 	trayInstances.length = 0;
@@ -88,7 +117,7 @@ describe("createTrayController", () => {
 		expect(tray.tooltip).toBe("1 session needs attention");
 	});
 
-	it("shows the count and orders merge-ready sessions above needs-you", () => {
+	it("orders merge-ready sessions above needs-you without a title badge", () => {
 		const { controller, tray } = setup();
 		controller.setState({
 			sessions: [
@@ -96,7 +125,7 @@ describe("createTrayController", () => {
 				entry({ sessionId: "ready", title: "ready", zone: "merge" }),
 			],
 		});
-		expect(tray.title).toBe("2");
+		expect(tray.title).toBe("");
 		expect(tray.tooltip).toBe("2 sessions need attention");
 		const labels = tray.template.map((i) => i.label);
 		expect(labels).toContain("Ready to merge");
@@ -129,7 +158,7 @@ describe("createTrayController", () => {
 	it("clears back to the empty state", () => {
 		const { controller, tray } = setup();
 		controller.setState({ sessions: [entry({ sessionId: "s1" })] });
-		expect(tray.title).toBe("1");
+		expect(tray.template.some((i) => i.label === "No sessions need attention")).toBe(false);
 		controller.clear();
 		expect(tray.title).toBe("");
 		expect(tray.template.some((i) => i.label === "No sessions need attention")).toBe(true);
@@ -150,5 +179,48 @@ describe("createTrayController", () => {
 		expect(tray.tooltip).toBe("1 个会话需要关注");
 		expect(tray.template.some((i) => i.label === "需要你处理")).toBe(true);
 		expect(tray.template.some((i) => i.label === "显示 Agent Orchestrator")).toBe(true);
+	});
+
+	it("opens settings through the openSettings delegate", () => {
+		const { tray, openSettings } = setup();
+		tray.template.find((i) => i.label === "Settings…")?.click?.();
+		expect(openSettings).toHaveBeenCalledTimes(1);
+	});
+
+	it("marks the active theme and delegates a selection to onThemeSelect", () => {
+		const { tray, onThemeSelect } = setup();
+		const themeSubmenu = tray.template.find((i) => i.label === "Theme")?.submenu ?? [];
+		expect(themeSubmenu.find((i) => i.label === "System")?.checked).toBe(true);
+
+		themeSubmenu.find((i) => i.label === "Dark")?.click?.();
+		expect(onThemeSelect).toHaveBeenCalledWith("dark");
+	});
+
+	it("marks the active update channel and delegates changes to the update callbacks", () => {
+		const { tray, onUpdateChannelSelect, onUpdateEnabledToggle, onCheckForUpdates } = setup();
+		const updatesSubmenu = tray.template.find((i) => i.label === "Updates")?.submenu ?? [];
+		expect(updatesSubmenu.find((i) => i.label === "Stable Channel")?.checked).toBe(true);
+		expect(updatesSubmenu.find((i) => i.label === "Automatically Check for Updates")?.checked).toBe(false);
+
+		updatesSubmenu.find((i) => i.label === "Nightly Channel")?.click?.();
+		expect(onUpdateChannelSelect).toHaveBeenCalledWith("nightly");
+
+		updatesSubmenu.find((i) => i.label === "Automatically Check for Updates")?.click?.();
+		expect(onUpdateEnabledToggle).toHaveBeenCalledWith(true);
+
+		updatesSubmenu.find((i) => i.label === "Check for Updates Now")?.click?.();
+		expect(onCheckForUpdates).toHaveBeenCalledTimes(1);
+	});
+
+	it("reflects updated theme and update settings after setThemePreference/setUpdateSettings", () => {
+		const { controller, tray } = setup();
+		controller.setThemePreference("dark");
+		const themeSubmenu = tray.template.find((i) => i.label === "Theme")?.submenu ?? [];
+		expect(themeSubmenu.find((i) => i.label === "Dark")?.checked).toBe(true);
+
+		controller.setUpdateSettings({ enabled: true, channel: "nightly", nightlyAck: true, feature: null });
+		const updatesSubmenu = tray.template.find((i) => i.label === "Updates")?.submenu ?? [];
+		expect(updatesSubmenu.find((i) => i.label === "Nightly Channel")?.checked).toBe(true);
+		expect(updatesSubmenu.find((i) => i.label === "Automatically Check for Updates")?.checked).toBe(true);
 	});
 });

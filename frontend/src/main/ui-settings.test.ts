@@ -24,11 +24,11 @@ describe("ui-settings", () => {
 		expect(await readUiSettings(dir)).toEqual(DEFAULT_UI_SETTINGS);
 	});
 
-	it("round-trips written locale", async () => {
-		await writeUiSettings(dir, { locale: "zh-CN" });
-		expect(await readUiSettings(dir)).toEqual({ locale: "zh-CN" });
-		await writeUiSettings(dir, { locale: "en" });
-		expect(await readUiSettings(dir)).toEqual({ locale: "en" });
+	it("round-trips written locale and theme preference", async () => {
+		await writeUiSettings(dir, { locale: "zh-CN", themePreference: "dark" });
+		expect(await readUiSettings(dir)).toEqual({ locale: "zh-CN", themePreference: "dark" });
+		await writeUiSettings(dir, { locale: "en", themePreference: "light" });
+		expect(await readUiSettings(dir)).toEqual({ locale: "en", themePreference: "light" });
 	});
 
 	it("falls back to defaults on garbage", async () => {
@@ -37,17 +37,23 @@ describe("ui-settings", () => {
 	});
 
 	it("coerces unknown locale to en and accepts supported locales", () => {
-		expect(coerceUiSettings({ locale: "xx" })).toEqual({ locale: "en" });
-		expect(coerceUiSettings({ locale: "zh" })).toEqual({ locale: "en" });
-		expect(coerceUiSettings({})).toEqual({ locale: "en" });
-		expect(coerceUiSettings(null)).toEqual({ locale: "en" });
-		expect(coerceUiSettings({ locale: "zh-CN" })).toEqual({ locale: "zh-CN" });
-		expect(coerceUiSettings({ locale: "fr" })).toEqual({ locale: "fr" });
-		expect(coerceUiSettings({ locale: "pt-BR" })).toEqual({ locale: "pt-BR" });
+		expect(coerceUiSettings({ locale: "xx" })).toEqual({ locale: "en", themePreference: "system" });
+		expect(coerceUiSettings({ locale: "zh" })).toEqual({ locale: "en", themePreference: "system" });
+		expect(coerceUiSettings({})).toEqual({ locale: "en", themePreference: "system" });
+		expect(coerceUiSettings(null)).toEqual({ locale: "en", themePreference: "system" });
+		expect(coerceUiSettings({ locale: "zh-CN" })).toEqual({ locale: "zh-CN", themePreference: "system" });
+		expect(coerceUiSettings({ locale: "fr" })).toEqual({ locale: "fr", themePreference: "system" });
+		expect(coerceUiSettings({ locale: "pt-BR" })).toEqual({ locale: "pt-BR", themePreference: "system" });
+	});
+
+	it("coerces unknown theme preference to system and accepts supported preferences", () => {
+		expect(coerceUiSettings({ themePreference: "blue" })).toEqual({ locale: "en", themePreference: "system" });
+		expect(coerceUiSettings({ themePreference: "light" })).toEqual({ locale: "en", themePreference: "light" });
+		expect(coerceUiSettings({ themePreference: "dark" })).toEqual({ locale: "en", themePreference: "dark" });
 	});
 
 	it("atomic write leaves no temp file behind", async () => {
-		await writeUiSettings(dir, { locale: "zh-CN" });
+		await writeUiSettings(dir, { locale: "zh-CN", themePreference: "system" });
 		const entries = await readdir(dir);
 		expect(entries).toEqual([UI_SETTINGS_FILE_NAME]);
 	});
