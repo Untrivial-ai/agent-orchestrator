@@ -116,6 +116,36 @@ type claimPRResponse struct {
 	TakenOverFrom []string       `json:"takenOverFrom"`
 }
 
+// sessionPRSummaryDTO is the concise GET /sessions/{id}/pr summary shape used
+// by desktop V1. It intentionally omits CI log tails and review comment bodies.
+type sessionPRSummaryDTO struct {
+	URL          string    `json:"url"`
+	HTMLURL      string    `json:"htmlUrl,omitempty"`
+	Number       int       `json:"number"`
+	Title        string    `json:"title"`
+	State        string    `json:"state"`
+	Repo         string    `json:"repo,omitempty"`
+	SourceBranch string    `json:"sourceBranch,omitempty"`
+	TargetBranch string    `json:"targetBranch,omitempty"`
+	CI           struct {
+		State string `json:"state"`
+	} `json:"ci"`
+	Review struct {
+		Decision                   string `json:"decision"`
+		HasUnresolvedHumanComments bool   `json:"hasUnresolvedHumanComments"`
+	} `json:"review"`
+	Mergeability struct {
+		State   string   `json:"state"`
+		Reasons []string `json:"reasons"`
+	} `json:"mergeability"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type listSessionPRsResponse struct {
+	SessionID string                `json:"sessionId"`
+	PRs       []sessionPRSummaryDTO `json:"prs"`
+}
+
 type sessionListEntry struct {
 	ID             string     `json:"id"`
 	ProjectID      string     `json:"projectId"`
@@ -149,6 +179,7 @@ func newSessionCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newSessionRenameCommand(ctx))
 	cmd.AddCommand(newSessionCleanupCommand(ctx))
 	cmd.AddCommand(newSessionClaimPRCommand(ctx))
+	cmd.AddCommand(newSessionPRsCommand(ctx))
 	return cmd
 }
 
@@ -289,6 +320,27 @@ func newSessionClaimPRCommand(ctx *commandContext) *cobra.Command {
 	return cmd
 }
 
+func newSessionPRsCommand(ctx *commandContext) *cobra.Command {
+	var opts sessionOptions
+	cmd := &cobra.Command{
+		Use:   "prs <id>",
+		Short: "List concise PR summaries for a session",
+		Long:  "List the concise desktop V1 PR summaries for a session (identity, CI state, review decision, mergeability). Does not include raw CI logs or review comment bodies.",
+		Args:  oneSessionIDArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := normalizeSessionID(args[0])
+			if err != nil {
+				return err
+			}
+			return ctx.listSessionPRs(cmd.Context(), cmd, id, opts)
+		},
+	}
+	f := cmd.Flags()
+	addSessionProjectFlag(f, &opts.project, "Project id to scope the lookup")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
+	return cmd
+}
+
 func addSessionProjectFlag(flags interface {
 	StringVarP(*string, string, string, string, string)
 }, target *string, usage string) {
@@ -373,6 +425,58 @@ func writeClaimPRResult(cmd *cobra.Command, res claimPRResponse) error {
 	for _, owner := range res.TakenOverFrom {
 		if _, err := fmt.Fprintf(out, "  taking over from %s\n", owner); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (c *commandContext) listSessionPRs(ctx context.Context, cmd *cobra.Command, id string, opts sessionOptions) error {
+	if opts.project != "" {
+		if _, err := c.fetchScopedSession(ctx, id, opts.project); err != nil {
+			return err
+		}
+	}
+	var res listSessionPRsResponse
+	if err := c.getJSON(ctx, "sessions/"+url.PathEscape(id)+"/pr", &res); err != nil {
+		return err
+	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), res)
+	}
+	return writeSessionPRList(cmd, res)
+}
+
+func writeSessionPRList(cmd *cobra.Command, res listSessionPRsResponse) error {
+	out := cmd.OutOrStdout()
+	if len(res.PRs) == 0 {
+		_, err := fmt.Fprintf(out, "session %s has no claimed PRs\n", res.SessionID)
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "session %s (%d PR%s):\n", res.SessionID, len(res.PRs), pluralS(len(res.PRs))); err != nil {
+		return err
+	}
+	for _, pr := range res.PRs {
+		title := pr.Title
+		if title == "" {
+			title = "(no title)"
+		}
+		review := pr.Review.Decision
+		if pr.Review.HasUnresolvedHumanComments {
+			review += "+comments"
+		}
+		line := fmt.Sprintf("  #%d  %s  ci=%s  review=%s  merge=%s  %s",
+			pr.Number, pr.State, pr.CI.State, review, pr.Mergeability.State, title)
+		if _, err := fmt.Fprintln(out, line); err != nil {
+			return err
+		}
+		url := pr.HTMLURL
+		if url == "" {
+			url = pr.URL
+		}
+		if url != "" {
+			if _, err := fmt.Fprintf(out, "    %s\n", url); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

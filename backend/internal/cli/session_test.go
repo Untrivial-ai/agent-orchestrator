@@ -82,6 +82,8 @@ func sessionCommandServer(t *testing.T) (*httptest.Server, *sessionRequestLog) {
 				return
 			}
 			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","prs":[{"url":`+jsonQuote(req.PR)+`,"number":142,"state":"open","ci":"passing","review":"review_required","mergeability":"mergeable","reviewComments":false,"updatedAt":"2026-06-04T12:00:00Z"}],"branchChanged":true,"takenOverFrom":["demo-0"]}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/pr":
+			_, _ = io.WriteString(w, `{"sessionId":"demo-1","prs":[{"url":"https://github.com/aoagents/agent-orchestrator/pull/142","htmlUrl":"https://github.com/aoagents/agent-orchestrator/pull/142","number":142,"title":"Fix the bug","state":"open","repo":"aoagents/agent-orchestrator","sourceBranch":"fix/bug","targetBranch":"main","ci":{"state":"passing","failingChecks":[]},"review":{"decision":"review_required","hasUnresolvedHumanComments":false,"unresolvedBy":[]},"mergeability":{"state":"mergeable","reasons":[],"prUrl":"https://github.com/aoagents/agent-orchestrator/pull/142"},"updatedAt":"2026-06-04T12:00:00Z"}]}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/cleanup":
 			_, _ = io.WriteString(w, `{"ok":true,"cleaned":["demo-old","demo-orch"],"skipped":[]}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/kill":
@@ -554,6 +556,52 @@ func TestSessionRename_ProjectMismatchDoesNotPatch(t *testing.T) {
 	want := []string{"GET /api/v1/sessions/demo-1"}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionPRs_SuccessWithProjectScope(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, log := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "prs", "demo-1", "-p", "demo")
+	if err != nil {
+		t.Fatalf("session prs failed: %v\nstderr=%s", err, errOut)
+	}
+	for _, want := range []string{
+		"session demo-1 (1 PR):",
+		"#142  open  ci=passing  review=review_required  merge=mergeable  Fix the bug",
+		"https://github.com/aoagents/agent-orchestrator/pull/142",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("prs output missing %q:\n%s", want, out)
+		}
+	}
+	want := []string{"GET /api/v1/sessions/demo-1", "GET /api/v1/sessions/demo-1/pr"}
+	if got := log.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionPRs_JSONOutputDecodes(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "prs", "demo-1", "--json")
+	if err != nil {
+		t.Fatalf("session prs --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got listSessionPRsResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("prs --json decode failed: %v\n%s", err, out)
+	}
+	if got.SessionID != "demo-1" || len(got.PRs) != 1 || got.PRs[0].Number != 142 {
+		t.Fatalf("unexpected prs JSON: %#v", got)
 	}
 }
 
