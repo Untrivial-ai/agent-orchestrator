@@ -88,6 +88,8 @@ func sessionCommandServer(t *testing.T) (*httptest.Server, *sessionRequestLog) {
 			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","freed":true}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/restore":
 			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","session":`+sessionJSON("demo-1", "demo", "worker", "idle", false)+`}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/resume-agent":
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","resumeMode":"native","session":`+sessionJSON("demo-1", "demo", "worker", "working", false)+`}`)
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/sessions/demo-1":
 			var req sessionRenameRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -339,6 +341,48 @@ func TestSessionRestore_SuccessWithProjectScope(t *testing.T) {
 	want := []string{"GET /api/v1/sessions/demo-1", "POST /api/v1/sessions/demo-1/restore"}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionResume_SuccessWithProjectScope(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, log := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "resume", "demo-1", "-p", "demo")
+	if err != nil {
+		t.Fatalf("session resume failed: %v\nstderr=%s", err, errOut)
+	}
+	for _, want := range []string{"session demo-1 agent resumed", "mode: native", "project: demo", "status: working"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("resume output missing %q:\n%s", want, out)
+		}
+	}
+	want := []string{"GET /api/v1/sessions/demo-1", "POST /api/v1/sessions/demo-1/resume-agent"}
+	if got := log.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionResume_JSONOutputDecodes(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "resume", "demo-1", "--json")
+	if err != nil {
+		t.Fatalf("session resume --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got resumeAgentResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("session resume --json output is not decodable: %v\noutput=%s", err, out)
+	}
+	if !got.OK || got.SessionID != "demo-1" || got.ResumeMode != "native" {
+		t.Fatalf("unexpected resume JSON: %#v", got)
 	}
 }
 

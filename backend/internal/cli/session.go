@@ -77,6 +77,13 @@ type restoreSessionResponse struct {
 	Session   sessionDTO `json:"session"`
 }
 
+type resumeAgentResponse struct {
+	OK         bool       `json:"ok"`
+	SessionID  string     `json:"sessionId"`
+	ResumeMode string     `json:"resumeMode,omitempty"`
+	Session    sessionDTO `json:"session"`
+}
+
 type renameSessionResponse struct {
 	SessionID   string `json:"sessionId"`
 	DisplayName string `json:"displayName"`
@@ -146,6 +153,7 @@ func newSessionCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newSessionGetCommand(ctx))
 	cmd.AddCommand(newSessionKillCommand(ctx))
 	cmd.AddCommand(newSessionRestoreCommand(ctx))
+	cmd.AddCommand(newSessionResumeCommand(ctx))
 	cmd.AddCommand(newSessionRenameCommand(ctx))
 	cmd.AddCommand(newSessionCleanupCommand(ctx))
 	cmd.AddCommand(newSessionClaimPRCommand(ctx))
@@ -223,6 +231,27 @@ func newSessionRestoreCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	return cmd
+}
+
+func newSessionResumeCommand(ctx *commandContext) *cobra.Command {
+	var opts sessionOptions
+	cmd := &cobra.Command{
+		Use:   "resume <id>",
+		Short: "Resume the agent in an existing session",
+		Long:  "Resume the coding agent for a live session (native resume, saved prompt, or fresh start depending on harness support).",
+		Args:  oneSessionIDArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := normalizeSessionID(args[0])
+			if err != nil {
+				return err
+			}
+			return ctx.resumeSessionAgent(cmd.Context(), cmd, id, opts)
+		},
+	}
+	f := cmd.Flags()
+	addSessionProjectFlag(f, &opts.project, "Project id to scope the lookup")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -485,6 +514,45 @@ func (c *commandContext) restoreSession(ctx context.Context, cmd *cobra.Command,
 	}
 	if res.Session.ProjectID != "" {
 		if _, err := fmt.Fprintf(out, "  project: %s\n", res.Session.ProjectID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *commandContext) resumeSessionAgent(ctx context.Context, cmd *cobra.Command, id string, opts sessionOptions) error {
+	if opts.project != "" {
+		if _, err := c.fetchScopedSession(ctx, id, opts.project); err != nil {
+			return err
+		}
+	}
+	var res resumeAgentResponse
+	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/resume-agent", struct{}{}, &res); err != nil {
+		return err
+	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), res)
+	}
+	out := cmd.OutOrStdout()
+	sessionID := res.SessionID
+	if sessionID == "" {
+		sessionID = id
+	}
+	if _, err := fmt.Fprintf(out, "session %s agent resumed\n", sessionID); err != nil {
+		return err
+	}
+	if res.ResumeMode != "" {
+		if _, err := fmt.Fprintf(out, "  mode: %s\n", res.ResumeMode); err != nil {
+			return err
+		}
+	}
+	if res.Session.ProjectID != "" {
+		if _, err := fmt.Fprintf(out, "  project: %s\n", res.Session.ProjectID); err != nil {
+			return err
+		}
+	}
+	if res.Session.Status != "" {
+		if _, err := fmt.Fprintf(out, "  status: %s\n", res.Session.Status); err != nil {
 			return err
 		}
 	}
