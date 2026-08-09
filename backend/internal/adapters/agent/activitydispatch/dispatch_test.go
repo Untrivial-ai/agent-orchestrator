@@ -22,17 +22,52 @@ func TestDeriverTokensAreKnownHarnesses(t *testing.T) {
 }
 
 func TestSupportsHarness(t *testing.T) {
-	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent} {
+	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent, domain.HarnessContinue, domain.HarnessAider} {
 		if !SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = false, want true", h)
 		}
 	}
-	// Harnesses whose adapters install no hooks must read as unsupported so
-	// their silence never derives no_signal.
-	for _, h := range []domain.AgentHarness{domain.HarnessAmp, domain.HarnessAider, domain.HarnessCrush, domain.AgentHarness("")} {
+	// Harnesses with no callback pipeline must read as unsupported.
+	for _, h := range []domain.AgentHarness{domain.HarnessAmp, domain.HarnessCrush, domain.AgentHarness("")} {
 		if SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = true, want false", h)
 		}
+	}
+}
+
+func TestSignalCoverageForHarness(t *testing.T) {
+	tests := []struct {
+		harness domain.AgentHarness
+		want    SignalCoverage
+	}{
+		{domain.HarnessClaudeCode, SignalCoverageComplete},
+		{domain.HarnessContinue, SignalCoverageComplete},
+		{domain.HarnessAider, SignalCoveragePartial},
+		{domain.HarnessCrush, SignalCoverageNone},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.harness), func(t *testing.T) {
+			if got := CoverageForHarness(tt.harness); got != tt.want {
+				t.Fatalf("CoverageForHarness(%q) = %v, want %v", tt.harness, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFullySupportsHarnessRequiresCompleteCoverage(t *testing.T) {
+	if !FullySupportsHarness(domain.HarnessContinue) {
+		t.Fatal("FullySupportsHarness(continue) = false, want true")
+	}
+	if FullySupportsHarness(domain.HarnessAider) {
+		t.Fatal("FullySupportsHarness(aider) = true, want false for completion-only signals")
+	}
+}
+
+func TestAiderDerivesCompletionNotification(t *testing.T) {
+	got, ok := Derive("aider", "notification", nil)
+	if !ok || got != domain.ActivityWaitingInput {
+		t.Fatalf("Derive(aider, notification) = (%q, %v), want (%q, true)", got, ok, domain.ActivityWaitingInput)
 	}
 }
 
