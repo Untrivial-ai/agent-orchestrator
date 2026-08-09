@@ -162,6 +162,30 @@ func TestExecRunnerFallsBackWhenTempDirMissing(t *testing.T) {
 
 // -- command builder tests --
 
+func TestLauncherShellFallsBackForNonPOSIXShells(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"/usr/bin/fish", "/bin/sh"},
+		{"/usr/bin/nu", "/bin/sh"},
+		{"/usr/bin/nushell", "/bin/sh"},
+		{"/bin/tcsh", "/bin/sh"},
+		{"/bin/csh", "/bin/sh"},
+		{"/bin/elvish", "/bin/sh"},
+		{"/bin/xonsh", "/bin/sh"},
+		{"/bin/zsh", "/bin/zsh"},
+		{"/bin/bash", "/bin/bash"},
+		{"/bin/sh", "/bin/sh"},
+		{"", "/bin/sh"},
+	}
+	for _, tt := range tests {
+		if got := launcherShell(tt.input); got != tt.want {
+			t.Errorf("launcherShell(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestCommandBuilders(t *testing.T) {
 	if got, want := newSessionArgs("sess-1", "/tmp/ws", "/bin/sh", `echo hi; exec "${SHELL:-/bin/sh}" -i`),
 		[]string{"new-session", "-d", "-s", "sess-1", "-x", "220", "-y", "50", "-c", "/tmp/ws", "/bin/sh", "-c", `echo hi; exec "${SHELL:-/bin/sh}" -i`}; !reflect.DeepEqual(got, want) {
