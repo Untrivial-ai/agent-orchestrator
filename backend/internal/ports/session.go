@@ -21,6 +21,13 @@ type SpawnConfig struct {
 	Harness      domain.AgentHarness
 	Branch       string
 	Prompt       string
+	// ParentOrchestratorID is the caller-supplied orchestrator session id, sent
+	// when the spawn request came from an orchestrator's own agent process (via
+	// its AO_SESSION_ID). The session service verifies it names a real,
+	// currently known orchestrator session before persisting it onto the new
+	// session's ParentOrchestratorID; an absent, unknown, or non-orchestrator id
+	// is silently dropped rather than failing the spawn.
+	ParentOrchestratorID domain.SessionID
 	// AgentConfig overrides the resolved project/role agent config for this
 	// single spawn. Empty fields keep the project defaults.
 	AgentConfig AgentConfig

@@ -88,6 +88,7 @@ var shippedMigrations = map[int64]string{
 	82: "0082_allow_prime_agent_harness.sql",
 	83: "0083_reconcile_kimchi_prime_agent_harnesses.sql",
 	84: "0084_add_session_auto_inject_review.sql",
+	85: "0085_add_session_parent_orchestrator_id.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

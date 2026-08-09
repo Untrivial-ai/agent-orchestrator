@@ -81,7 +81,7 @@ func (q *Queries) CommitSessionControllerEpoch(ctx context.Context, arg CommitSe
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_orchestrator_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, prompt,
     created_at, updated_at, display_name, first_signal_at, preview_url,
@@ -97,6 +97,7 @@ type GetSessionRow struct {
 	ProjectID                 domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
+	ParentOrchestratorID      domain.SessionID
 	Kind                      domain.SessionKind
 	Harness                   domain.AgentHarness
 	ActivityState             domain.ActivityState
@@ -137,6 +138,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.ProjectID,
 		&i.Num,
 		&i.IssueID,
+		&i.ParentOrchestratorID,
 		&i.Kind,
 		&i.Harness,
 		&i.ActivityState,
@@ -173,7 +175,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 
 const insertSession = `-- name: InsertSession :exec
 INSERT INTO sessions (
-    id, project_id, num, issue_id, kind, harness, reviewer_harness, display_name,
+    id, project_id, num, issue_id, parent_orchestrator_id, kind, harness, reviewer_harness, display_name,
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
     runtime_launch_id, agent_session_id, prompt,
@@ -184,7 +186,7 @@ INSERT INTO sessions (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?
+    ?, ?, ?, ?, ?
 )
 `
 
@@ -193,6 +195,7 @@ type InsertSessionParams struct {
 	ProjectID                 domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
+	ParentOrchestratorID      domain.SessionID
 	Kind                      domain.SessionKind
 	Harness                   domain.AgentHarness
 	ReviewerHarness           domain.ReviewerHarness
@@ -231,6 +234,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.ProjectID,
 		arg.Num,
 		arg.IssueID,
+		arg.ParentOrchestratorID,
 		arg.Kind,
 		arg.Harness,
 		arg.ReviewerHarness,
@@ -266,7 +270,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 }
 
 const listAllSessions = `-- name: ListAllSessions :many
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_orchestrator_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, prompt,
     created_at, updated_at, display_name, first_signal_at, preview_url,
@@ -282,6 +286,7 @@ type ListAllSessionsRow struct {
 	ProjectID                 domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
+	ParentOrchestratorID      domain.SessionID
 	Kind                      domain.SessionKind
 	Harness                   domain.AgentHarness
 	ActivityState             domain.ActivityState
@@ -328,6 +333,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.ProjectID,
 			&i.Num,
 			&i.IssueID,
+			&i.ParentOrchestratorID,
 			&i.Kind,
 			&i.Harness,
 			&i.ActivityState,
@@ -373,7 +379,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 }
 
 const listSessionsByProject = `-- name: ListSessionsByProject :many
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_orchestrator_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, prompt,
     created_at, updated_at, display_name, first_signal_at, preview_url,
@@ -389,6 +395,7 @@ type ListSessionsByProjectRow struct {
 	ProjectID                 domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
+	ParentOrchestratorID      domain.SessionID
 	Kind                      domain.SessionKind
 	Harness                   domain.AgentHarness
 	ActivityState             domain.ActivityState
@@ -435,6 +442,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.ProjectID,
 			&i.Num,
 			&i.IssueID,
+			&i.ParentOrchestratorID,
 			&i.Kind,
 			&i.Harness,
 			&i.ActivityState,

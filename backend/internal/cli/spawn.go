@@ -45,6 +45,12 @@ type spawnRequest struct {
 	Branch      string `json:"branch,omitempty"`
 	Prompt      string `json:"prompt,omitempty"`
 	DisplayName string `json:"displayName"`
+	// ParentOrchestratorID carries the caller's own AO_SESSION_ID so the daemon
+	// can attribute this spawn to its orchestrator when `ao spawn` runs from
+	// inside an orchestrator's own agent process. The daemon verifies the id
+	// actually names a live orchestrator session before recording it; it is
+	// empty (and ignored) for a plain user/CLI spawn run outside any session.
+	ParentOrchestratorID string `json:"parentOrchestratorId,omitempty"`
 }
 
 type spawnResult struct {
@@ -126,14 +132,15 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				}
 			}
 			req := spawnRequest{
-				ProjectID:   opts.project,
-				IssueID:     opts.issue,
-				Kind:        opts.kind,
-				Harness:     opts.harness,
-				Mode:        opts.mode,
-				Branch:      opts.branch,
-				Prompt:      opts.prompt,
-				DisplayName: name,
+				ProjectID:            opts.project,
+				IssueID:              opts.issue,
+				Kind:                 opts.kind,
+				Harness:              opts.harness,
+				Mode:                 opts.mode,
+				Branch:               opts.branch,
+				Prompt:               opts.prompt,
+				DisplayName:          name,
+				ParentOrchestratorID: strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
 			}
 			var res spawnResult
 			if err := ctx.postJSON(cmd.Context(), "sessions", req, &res); err != nil {

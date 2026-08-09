@@ -5,6 +5,7 @@ import {
 	findProjectOrchestrator,
 	newestActiveOrchestrator,
 	orchestratorHealth,
+	resolveSessionOrchestrator,
 	sessionIsActive,
 	sessionNeedsAttention,
 	toAgentProvider,
@@ -189,6 +190,56 @@ describe("findProjectOrchestrator", () => {
 		});
 		expect(newestActiveOrchestrator([oldUpdate, newUpdate])).toBe(newUpdate);
 		expect(newestActiveOrchestrator([newUpdate, sameTimesHigherID])).toBe(sameTimesHigherID);
+	});
+});
+
+describe("resolveSessionOrchestrator", () => {
+	function workspaceWith(sessions: WorkspaceSession[]): WorkspaceSummary {
+		return { id: "skills", name: "skills", path: "/tmp/skills", sessions };
+	}
+
+	// Regression for #1211: with 2+ concurrent orchestrators, the newest active
+	// one is not necessarily the one that spawned a given worker. The button
+	// must follow the worker's recorded parent, not just "most recent."
+	it("prefers the worker's recorded parent over the newest active orchestrator", () => {
+		const older = sessionWith({ id: "skills-1", kind: "orchestrator", status: "working" });
+		const newer = sessionWith({ id: "skills-2", kind: "orchestrator", status: "working" });
+		const worker = sessionWith({ id: "skills-3", kind: "worker", status: "working", parentOrchestratorId: "skills-1" });
+		const workspaces = [workspaceWith([older, newer, worker])];
+
+		// The recency fallback alone would pick the newer orchestrator...
+		expect(findProjectOrchestrator(workspaces, "skills")).toBe(newer);
+		// ...but the worker actually belongs to the older one.
+		expect(resolveSessionOrchestrator(workspaces, "skills", worker)).toBe(older);
+	});
+
+	it("falls back to the recency heuristic when parentOrchestratorId is absent", () => {
+		const older = sessionWith({ id: "skills-1", kind: "orchestrator", status: "working" });
+		const newer = sessionWith({ id: "skills-2", kind: "orchestrator", status: "working" });
+		const worker = sessionWith({ id: "skills-3", kind: "worker", status: "working" });
+		const workspaces = [workspaceWith([older, newer, worker])];
+
+		expect(resolveSessionOrchestrator(workspaces, "skills", worker)).toBe(newer);
+	});
+
+	it("falls back to the recency heuristic when the recorded parent can't be found", () => {
+		const live = sessionWith({ id: "skills-2", kind: "orchestrator", status: "working" });
+		const worker = sessionWith({
+			id: "skills-3",
+			kind: "worker",
+			status: "working",
+			parentOrchestratorId: "skills-99",
+		});
+		const workspaces = [workspaceWith([live, worker])];
+
+		expect(resolveSessionOrchestrator(workspaces, "skills", worker)).toBe(live);
+	});
+
+	it("resolves without a session (e.g. board view) the same way findProjectOrchestrator does", () => {
+		const live = sessionWith({ id: "skills-2", kind: "orchestrator", status: "working" });
+		const workspaces = [workspaceWith([live])];
+
+		expect(resolveSessionOrchestrator(workspaces, "skills", undefined)).toBe(live);
 	});
 });
 

@@ -66,11 +66,19 @@ type SessionMetadata struct {
 // facts: identity, agent harness, activity_state, is_terminated, and operational
 // metadata. The user-facing Status is derived from these facts plus PR facts.
 type SessionRecord struct {
-	ID        SessionID    `json:"id"`
-	ProjectID ProjectID    `json:"projectId"`
-	IssueID   IssueID      `json:"issueId,omitempty"`
-	Kind      SessionKind  `json:"kind"`
-	Harness   AgentHarness `json:"harness,omitempty"`
+	ID        SessionID `json:"id"`
+	ProjectID ProjectID `json:"projectId"`
+	IssueID   IssueID   `json:"issueId,omitempty"`
+	// ParentOrchestratorID is the orchestrator session that spawned this
+	// session, captured at spawn time. It is set only when the spawn request
+	// came from an orchestrator's own agent process (identified via the
+	// caller's AO_SESSION_ID) that the session service verified was an active
+	// orchestrator session at spawn time; empty for sessions spawned directly
+	// by the user/CLI outside any orchestrator context, or spawned before this
+	// field existed. Immutable after creation: no UPDATE statement changes it.
+	ParentOrchestratorID SessionID    `json:"parentOrchestratorId,omitempty"`
+	Kind                 SessionKind  `json:"kind"`
+	Harness              AgentHarness `json:"harness,omitempty"`
 	// ReviewerHarness is this session's preferred reviewer. Empty delegates to
 	// the project configuration.
 	ReviewerHarness ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`

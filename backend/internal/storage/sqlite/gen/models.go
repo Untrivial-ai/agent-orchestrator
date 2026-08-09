@@ -328,6 +328,7 @@ type Session struct {
 	ControllerGeneration      string
 	BrowserCapabilityVerifier string
 	AutoInjectReview          bool
+	ParentOrchestratorID      domain.SessionID
 }
 
 type SessionCleanupFact struct {

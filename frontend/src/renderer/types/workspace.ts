@@ -132,6 +132,16 @@ export type WorkspaceSession = {
 	title: string;
 	/** Raw issue/task identifier from the daemon. Intake ids are provider-prefixed. */
 	issueId?: string;
+	/**
+	 * The orchestrator session that spawned this session, when known. Set by the
+	 * daemon at spawn time only when the spawn request came from an
+	 * orchestrator's own agent process; absent for sessions spawned directly by
+	 * the user/CLI, or spawned before this field existed. Prefer this over
+	 * {@link findProjectOrchestrator}'s recency heuristic when resolving which
+	 * orchestrator a worker's "Orchestrator" button should link to — see
+	 * {@link resolveSessionOrchestrator}.
+	 */
+	parentOrchestratorId?: string;
 	provider: AgentProvider;
 	/** Reviewer selected for this session; absent means use the project default. */
 	reviewerHarness?: ReviewerHarnessId;
@@ -253,6 +263,31 @@ export function findProjectOrchestrator(
 ): WorkspaceSession | undefined {
 	const workspace = workspaces.find((w) => w.id === projectId);
 	return newestActiveOrchestrator(workspace?.sessions ?? []);
+}
+
+/**
+ * The orchestrator a worker session's "Orchestrator" button should link to.
+ * Prefers the session's recorded {@link WorkspaceSession.parentOrchestratorId}
+ * — the orchestrator that actually spawned it — resolved against the
+ * project's current session list. Falls back to
+ * {@link findProjectOrchestrator}'s recency heuristic when no parent is
+ * recorded (workers spawned before this field existed, or spawned directly
+ * without an orchestrator parent) or the recorded parent can no longer be
+ * found (e.g. cleaned up). This is what makes the button correct with 2+
+ * concurrent orchestrators in one project: the newest active orchestrator is
+ * not necessarily the one that spawned this particular worker.
+ */
+export function resolveSessionOrchestrator(
+	workspaces: WorkspaceSummary[],
+	projectId: string,
+	session?: WorkspaceSession,
+): WorkspaceSession | undefined {
+	if (session?.parentOrchestratorId) {
+		const workspace = workspaces.find((w) => w.id === projectId);
+		const parent = workspace?.sessions.find((s) => s.id === session.parentOrchestratorId);
+		if (parent) return parent;
+	}
+	return findProjectOrchestrator(workspaces, projectId);
 }
 
 export function newestActiveOrchestrator(sessions: WorkspaceSession[]): WorkspaceSession | undefined {

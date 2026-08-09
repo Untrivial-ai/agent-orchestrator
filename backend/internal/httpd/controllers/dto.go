@@ -172,6 +172,13 @@ type SpawnSessionRequest struct {
 	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task
 	// dialog) may omit it and fall back to the session id in the read model.
 	DisplayName string `json:"displayName,omitempty" maxLength:"20"`
+	// ParentOrchestratorID is the orchestrator session id that requested this
+	// spawn, when known. `ao spawn` sends the caller's AO_SESSION_ID here, which
+	// only names an orchestrator when the spawn was run from inside that
+	// orchestrator's own agent process. The daemon verifies this actually names
+	// a live orchestrator session before persisting it as the new session's
+	// parent; an absent, unknown, or non-orchestrator id is silently ignored.
+	ParentOrchestratorID domain.SessionID `json:"parentOrchestratorId,omitempty"`
 	// Attachments are files pasted or dropped into the task brief. Each carries
 	// its bytes as standard base64 (no data: URL prefix). The daemon writes them
 	// into the session worktree and appends path references to the prompt.

@@ -1535,6 +1535,73 @@ func TestSpawnIssueContextSkipsUnresolvableIssueRef(t *testing.T) {
 	}
 }
 
+// TestSpawnParentOrchestratorIDAttribution is the service-layer half of the
+// #1211 fix: cfg.ParentOrchestratorID (the caller's AO_SESSION_ID, sent by
+// `ao spawn` when it runs from inside an orchestrator's own agent process)
+// must only reach the write path when it actually names a live orchestrator
+// session in the store — never for a worker's own AO_SESSION_ID, an unknown
+// id, or a plain user/CLI spawn that supplied none at all.
+func TestSpawnParentOrchestratorIDAttribution(t *testing.T) {
+	newSvc := func() (*Service, *fakeStore, *fakeCommander) {
+		st := newFakeStore()
+		st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+		fc := &fakeCommander{}
+		return &Service{manager: fc, store: st}, st, fc
+	}
+
+	t.Run("attributes the orchestrator that requested the spawn", func(t *testing.T) {
+		svc, st, fc := newSvc()
+		st.sessions["mer-orch"] = domain.SessionRecord{ID: "mer-orch", ProjectID: "mer", Kind: domain.KindOrchestrator}
+
+		if _, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
+			ProjectID: "mer", Kind: domain.KindWorker, ParentOrchestratorID: "mer-orch",
+		}); err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		if fc.spawnedCfg.ParentOrchestratorID != "mer-orch" {
+			t.Fatalf("spawnedCfg.ParentOrchestratorID = %q, want mer-orch", fc.spawnedCfg.ParentOrchestratorID)
+		}
+	})
+
+	t.Run("drops a candidate that is not an orchestrator session", func(t *testing.T) {
+		svc, st, fc := newSvc()
+		st.sessions["mer-worker"] = domain.SessionRecord{ID: "mer-worker", ProjectID: "mer", Kind: domain.KindWorker}
+
+		if _, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
+			ProjectID: "mer", Kind: domain.KindWorker, ParentOrchestratorID: "mer-worker",
+		}); err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		if fc.spawnedCfg.ParentOrchestratorID != "" {
+			t.Fatalf("spawnedCfg.ParentOrchestratorID = %q, want empty for a non-orchestrator candidate", fc.spawnedCfg.ParentOrchestratorID)
+		}
+	})
+
+	t.Run("drops an unknown candidate id", func(t *testing.T) {
+		svc, _, fc := newSvc()
+
+		if _, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
+			ProjectID: "mer", Kind: domain.KindWorker, ParentOrchestratorID: "ghost",
+		}); err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		if fc.spawnedCfg.ParentOrchestratorID != "" {
+			t.Fatalf("spawnedCfg.ParentOrchestratorID = %q, want empty for an unknown candidate", fc.spawnedCfg.ParentOrchestratorID)
+		}
+	})
+
+	t.Run("leaves it empty for a direct user/CLI spawn", func(t *testing.T) {
+		svc, _, fc := newSvc()
+
+		if _, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		if fc.spawnedCfg.ParentOrchestratorID != "" {
+			t.Fatalf("spawnedCfg.ParentOrchestratorID = %q, want empty when the spawn request supplied none", fc.spawnedCfg.ParentOrchestratorID)
+		}
+	})
+}
+
 func TestSpawnFailedEmitsDuration(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}

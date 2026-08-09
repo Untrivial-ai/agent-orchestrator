@@ -88,6 +88,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 						workspaceName: project.name,
 						title: session.displayName ?? session.issueId ?? session.id,
 						issueId: session.issueId,
+						parentOrchestratorId: session.parentOrchestratorId || undefined,
 						provider: toAgentProvider(session.harness),
 						reviewerHarness: toReviewerHarnessId(session.reviewerHarness),
 						kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,

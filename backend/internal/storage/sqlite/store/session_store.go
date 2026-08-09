@@ -285,14 +285,15 @@ func mapListAllSessionsRows(rows []gen.ListAllSessionsRow) []domain.SessionRecor
 
 func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 	return domain.SessionRecord{
-		ID:              row.ID,
-		ProjectID:       row.ProjectID,
-		IssueID:         row.IssueID,
-		Kind:            row.Kind,
-		Harness:         row.Harness,
-		ReviewerHarness: row.ReviewerHarness,
-		DisplayName:     row.DisplayName,
-		Mode:            domain.NormalizeSessionMode(row.SessionMode),
+		ID:                   row.ID,
+		ProjectID:            row.ProjectID,
+		IssueID:              row.IssueID,
+		ParentOrchestratorID: row.ParentOrchestratorID,
+		Kind:                 row.Kind,
+		Harness:              row.Harness,
+		ReviewerHarness:      row.ReviewerHarness,
+		DisplayName:          row.DisplayName,
+		Mode:                 domain.NormalizeSessionMode(row.SessionMode),
 		Activity: domain.Activity{
 			State:          row.ActivityState,
 			LastActivityAt: row.ActivityLastAt,
@@ -344,6 +345,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProjectID:                 rec.ProjectID,
 		Num:                       num,
 		IssueID:                   rec.IssueID,
+		ParentOrchestratorID:      rec.ParentOrchestratorID,
 		Kind:                      rec.Kind,
 		Harness:                   rec.Harness,
 		ReviewerHarness:           rec.ReviewerHarness,

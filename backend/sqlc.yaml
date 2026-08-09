@@ -100,6 +100,10 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "IssueID"
+          - column: "sessions.parent_orchestrator_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionID"
           - column: "sessions.kind"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

@@ -6,9 +6,9 @@ import { useEffect, useState } from "react";
 import { animate, LayoutGroup, motion, useMotionValue, useReducedMotion } from "motion/react";
 import { NotificationCenter } from "./NotificationCenter";
 import {
-	findProjectOrchestrator,
 	hasConfiguredOrchestratorAgent,
 	isOrchestratorSession,
+	resolveSessionOrchestrator,
 	sessionIsActive,
 	type WorkspaceSession,
 } from "../types/workspace";
@@ -109,7 +109,10 @@ export function ShellTopbar({ embedded = false }: { embedded?: boolean } = {}) {
 	const isRootBoardRoute = !isSessionRoute && !isProjectBoardRoute;
 	const project = projectId ? all.find((workspace) => workspace.id === projectId) : undefined;
 	const projectLabel = project?.name ?? session?.workspaceName ?? (projectId ? "" : t("shell.board"));
-	const orchestrator = projectId ? findProjectOrchestrator(all, projectId) : undefined;
+	// Prefer this worker's recorded parent orchestrator over the project-wide
+	// recency heuristic: with 2+ concurrent orchestrators, the newest active one
+	// is not necessarily the one that spawned this session (issue #1211).
+	const orchestrator = projectId ? resolveSessionOrchestrator(all, projectId, session) : undefined;
 	const orchestratorActivityLabel = orchestrator ? getAgentActivityView(orchestrator.activity, t).label : undefined;
 	const isProjectRestarting = projectId ? restartingProjectIds.has(projectId) : false;
 

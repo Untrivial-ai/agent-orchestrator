@@ -166,6 +166,72 @@ func TestSessionPersistsBrowserCapabilityVerifier(t *testing.T) {
 	}
 }
 
+// TestSessionPersistsParentOrchestratorID is the storage-layer half of the
+// #1211 fix: a worker session created with ParentOrchestratorID set must
+// persist and read back that id, a directly-spawned session must read back
+// empty, and an unrelated later UpdateSession must not touch the column
+// (mirrors session_mode's immutable-after-spawn treatment, added in the same
+// migration's Down/Up pair).
+func TestSessionPersistsParentOrchestratorID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+
+	orchestratorRec := sampleRecord("mer")
+	orchestratorRec.Kind = domain.KindOrchestrator
+	orchestrator, err := s.CreateSession(ctx, orchestratorRec)
+	if err != nil {
+		t.Fatalf("create orchestrator session: %v", err)
+	}
+
+	worker := sampleRecord("mer")
+	worker.ParentOrchestratorID = orchestrator.ID
+	created, err := s.CreateSession(ctx, worker)
+	if err != nil {
+		t.Fatalf("create worker session: %v", err)
+	}
+	if created.ParentOrchestratorID != orchestrator.ID {
+		t.Fatalf("created worker parentOrchestratorID = %q, want %q", created.ParentOrchestratorID, orchestrator.ID)
+	}
+
+	got, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get worker session: ok=%v err=%v", ok, err)
+	}
+	if got.ParentOrchestratorID != orchestrator.ID {
+		t.Fatalf("read-back worker parentOrchestratorID = %q, want %q", got.ParentOrchestratorID, orchestrator.ID)
+	}
+
+	// A directly-spawned session (no orchestrator parent) must not get one.
+	createdDirect, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("create direct session: %v", err)
+	}
+	if createdDirect.ParentOrchestratorID != "" {
+		t.Fatalf("directly-spawned session parentOrchestratorID = %q, want empty", createdDirect.ParentOrchestratorID)
+	}
+	gotDirect, ok, err := s.GetSession(ctx, createdDirect.ID)
+	if err != nil || !ok {
+		t.Fatalf("get direct session: ok=%v err=%v", ok, err)
+	}
+	if gotDirect.ParentOrchestratorID != "" {
+		t.Fatalf("read-back direct session parentOrchestratorID = %q, want empty", gotDirect.ParentOrchestratorID)
+	}
+
+	// Immutable after creation: an unrelated UpdateSession must not clear it.
+	got.DisplayName = "renamed"
+	if err := s.UpdateSession(ctx, got); err != nil {
+		t.Fatalf("update worker session: %v", err)
+	}
+	afterUpdate, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get worker session after update: ok=%v err=%v", ok, err)
+	}
+	if afterUpdate.ParentOrchestratorID != orchestrator.ID {
+		t.Fatalf("parentOrchestratorID after unrelated update = %q, want %q", afterUpdate.ParentOrchestratorID, orchestrator.ID)
+	}
+}
+
 func TestProjectCRUDAndArchive(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

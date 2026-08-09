@@ -239,6 +239,7 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.Session{}, 0, 0, fmt.Errorf("count sessions: %w", err)
 	}
 	cfg = s.withIssueContext(ctx, cfg, project)
+	cfg.ParentOrchestratorID = s.resolveParentOrchestratorID(ctx, cfg.ParentOrchestratorID)
 	rec, promptBytes, systemPromptBytes, err := s.manager.Spawn(ctx, cfg)
 	if err != nil {
 		s.emitSpawnFailed(cfg, err, s.now().Sub(start).Milliseconds())
@@ -253,6 +254,27 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.Session{}, 0, 0, err
 	}
 	return sess, promptBytes, systemPromptBytes, nil
+}
+
+// resolveParentOrchestratorID verifies a caller-supplied parent-orchestrator
+// candidate before it can be persisted onto a spawned session's
+// ParentOrchestratorID. `ao spawn` sends the caller's AO_SESSION_ID, which is
+// only ever an orchestrator's id when the spawn request originated from that
+// orchestrator's own agent process (running `ao spawn` from inside its own
+// session) — see issue #1211's "no parent tracking" gap. A blank candidate, an
+// unknown session, or a session that is not an orchestrator all resolve to "",
+// so a worker spawned directly by the user/CLI never gets a parent attributed
+// to it.
+func (s *Service) resolveParentOrchestratorID(ctx context.Context, candidate domain.SessionID) domain.SessionID {
+	candidate = domain.SessionID(strings.TrimSpace(string(candidate)))
+	if candidate == "" || s.store == nil {
+		return ""
+	}
+	rec, ok, err := s.store.GetSession(ctx, candidate)
+	if err != nil || !ok || rec.Kind != domain.KindOrchestrator {
+		return ""
+	}
+	return candidate
 }
 
 // requireProject verifies the project is registered before any spawn write

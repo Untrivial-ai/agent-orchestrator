@@ -4564,6 +4564,8 @@ components:
           - chat
           - tui
           type: string
+        parentOrchestratorId:
+          type: string
         pinnedAt:
           format: date-time
           type:
@@ -7012,6 +7014,8 @@ components:
           enum:
           - chat
           - tui
+          type: string
+        parentOrchestratorId:
           type: string
         projectId:
           type: string
