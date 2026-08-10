@@ -223,6 +223,9 @@ vi.mock("./BrowserPanel", () => ({
 		retryQueued: vi.fn(),
 	}),
 }));
+vi.mock("./PendingReviewCommentsContext", () => ({
+	PendingReviewCommentsProvider: ({ children }: { children: ReactNode }) => children,
+}));
 vi.mock("./SessionFilesView", () => ({
 	SessionFilesView: ({
 		isMaximized,

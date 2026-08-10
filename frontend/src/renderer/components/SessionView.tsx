@@ -7,6 +7,7 @@ import type { components } from "../../api/schema";
 import { BrowserPanelView, useBrowserAnnotationQueue } from "./BrowserPanel";
 import { CenterPane } from "./CenterPane";
 import { SessionChatSurface } from "./chat/SessionChatSurface";
+import { PendingReviewCommentsProvider } from "./PendingReviewCommentsContext";
 import { SessionFilesView } from "./SessionFilesView";
 import { SessionInspector } from "./SessionInspector";
 import {
@@ -629,6 +630,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	return (
 		<div className="relative flex h-full min-h-0 flex-col bg-background text-foreground" data-testid="session-detail">
+			<PendingReviewCommentsProvider sessionId={sessionId}>
 			<ResizablePanelGroup className="session-split min-h-0 flex-1" id="session-workspace" orientation="horizontal">
 				{/* react-resizable-panels v4: bare numbers are PIXELS; percentages must
             be strings. Numeric sizes here once clamped the inspector to 45px. */}
@@ -771,6 +773,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						document.body,
 					)
 				: null}
+			</PendingReviewCommentsProvider>
 		</div>
 	);
 }
