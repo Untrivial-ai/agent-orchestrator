@@ -187,6 +187,7 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 			"--prompt", "hi",
 			"--issue", "ISS-1",
 			"--name", "my worker",
+			"--model", "codex-cheap",
 		})
 		if err := root.Execute(); err != nil {
 			t.Fatalf("spawn execute: %v\noutput: %s", err, out.String())
@@ -210,6 +211,9 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 		}
 		if got.DisplayName != "my worker" {
 			t.Errorf("DisplayName = %q, want %q (CLI json:\"displayName\" vs SpawnSessionRequest)", got.DisplayName, "my worker")
+		}
+		if got.Model != "codex-cheap" {
+			t.Errorf("Model = %q, want %q (CLI json:\"model\" vs SpawnSessionRequest)", got.Model, "codex-cheap")
 		}
 		if !bytes.Contains(out.Bytes(), []byte("spawned session")) {
 			t.Errorf("output missing %q; got: %s", "spawned session", out.String())

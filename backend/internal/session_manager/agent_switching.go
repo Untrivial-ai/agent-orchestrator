@@ -738,7 +738,7 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("system prompt file: %w", err)
 	}
-	config := effectiveAgentConfig(rec.Kind, project.Config)
+	config := effectiveAgentConfig(rec.Kind, project.Config, rec.Model)
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
 	m.augmentAgentRuntimeEnv(agent, env)
 	configDir, err := nativeConfigDir(ctx, agent, env)

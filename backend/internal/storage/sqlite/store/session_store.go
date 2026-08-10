@@ -313,7 +313,7 @@ func (s *Store) ListAllSessions(ctx context.Context) ([]domain.SessionRecord, er
 	return mapListAllSessionsRows(rows), nil
 }
 
-func mapListSessionsByProjectRows(rows []gen.ListSessionsByProjectRow) []domain.SessionRecord {
+func mapListSessionsByProjectRows(rows []gen.Session) []domain.SessionRecord {
 	out := make([]domain.SessionRecord, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, listSessionsByProjectRowToRecord(r))
@@ -321,7 +321,7 @@ func mapListSessionsByProjectRows(rows []gen.ListSessionsByProjectRow) []domain.
 	return out
 }
 
-func mapListAllSessionsRows(rows []gen.ListAllSessionsRow) []domain.SessionRecord {
+func mapListAllSessionsRows(rows []gen.Session) []domain.SessionRecord {
 	out := make([]domain.SessionRecord, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, listAllSessionsRowToRecord(r))
@@ -329,13 +329,14 @@ func mapListAllSessionsRows(rows []gen.ListAllSessionsRow) []domain.SessionRecor
 	return out
 }
 
-func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
+func rowToRecord(row gen.Session) domain.SessionRecord {
 	return domain.SessionRecord{
 		ID:              row.ID,
 		ProjectID:       row.ProjectID,
 		IssueID:         row.IssueID,
 		Kind:            row.Kind,
 		Harness:         row.Harness,
+		Model:           row.Model,
 		ReviewerHarness: row.ReviewerHarness,
 		DisplayName:     row.DisplayName,
 		Mode:            domain.NormalizeSessionMode(row.SessionMode),
@@ -374,16 +375,16 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 	}
 }
 
-func getSessionRowToRecord(row gen.GetSessionRow) domain.SessionRecord {
+func getSessionRowToRecord(row gen.Session) domain.SessionRecord {
 	return rowToRecord(row)
 }
 
-func listSessionsByProjectRowToRecord(row gen.ListSessionsByProjectRow) domain.SessionRecord {
-	return rowToRecord(gen.GetSessionRow(row))
+func listSessionsByProjectRowToRecord(row gen.Session) domain.SessionRecord {
+	return rowToRecord(row)
 }
 
-func listAllSessionsRowToRecord(row gen.ListAllSessionsRow) domain.SessionRecord {
-	return rowToRecord(gen.GetSessionRow(row))
+func listAllSessionsRowToRecord(row gen.Session) domain.SessionRecord {
+	return rowToRecord(row)
 }
 
 func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams {
@@ -397,6 +398,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		Harness:                   rec.Harness,
 		ReviewerHarness:           rec.ReviewerHarness,
 		DisplayName:               rec.DisplayName,
+		Model:                     rec.Model,
 		ActivityState:             activity.State,
 		ActivityLastAt:            activity.LastActivityAt,
 		FirstSignalAt:             timeToNullTime(rec.FirstSignalAt),
@@ -438,6 +440,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		Harness:                   rec.Harness,
 		ReviewerHarness:           rec.ReviewerHarness,
 		DisplayName:               rec.DisplayName,
+		Model:                     rec.Model,
 		ActivityState:             activity.State,
 		ActivityLastAt:            activity.LastActivityAt,
 		FirstSignalAt:             timeToNullTime(rec.FirstSignalAt),

@@ -442,7 +442,7 @@ func (m *Manager) preflightInterfaceTarget(
 	if err != nil {
 		return err
 	}
-	config := effectiveAgentConfig(rec.Kind, project.Config)
+	config := effectiveAgentConfig(rec.Kind, project.Config, "")
 	var cmd []string
 	if transition.NativeConversationID == "" {
 		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,

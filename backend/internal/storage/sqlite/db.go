@@ -745,6 +745,9 @@ BEGIN
         NEW.updated_at);
 			END`,
 		}},
+	// 0086_add_session_model.sql
+	{version: 86, table: "sessions", column: "model",
+		addDDL: `ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`},
 	// 0081_browser_capability_verifier.sql. Keep the generated session queries
 	// healthy even if a field database has already burned this migration number.
 	{version: 81, table: "sessions", column: "browser_capability_verifier",

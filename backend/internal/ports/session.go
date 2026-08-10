@@ -21,6 +21,10 @@ type SpawnConfig struct {
 	Harness      domain.AgentHarness
 	Branch       string
 	Prompt       string
+	// Model is a per-session model override scoped to this spawn only. It wins
+	// over the project's resolved agent config model and has no effect on the
+	// project config. Empty means fall back to the project's resolved model.
+	Model string
 	// AgentConfig overrides the resolved project/role agent config for this
 	// single spawn. Empty fields keep the project defaults.
 	AgentConfig AgentConfig

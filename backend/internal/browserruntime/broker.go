@@ -326,11 +326,15 @@ func (b *Broker) write(ctx context.Context, conn net.Conn, msg wireMessage) erro
 		return ctx.Err()
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if requested, ok := ctx.Deadline(); ok && !time.Now().Before(requested) {
 			return context.DeadlineExceeded
 		}
+		return err
 	}
-	return err
+	return nil
 }
 
 func validRuntimeToken(expected, actual string) bool {

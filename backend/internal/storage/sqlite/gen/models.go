@@ -369,6 +369,7 @@ type Session struct {
 	LatestUserPrompt          string
 	LatestAssistantUpdate     string
 	NativeTranscriptPath      string
+	Model                     string
 }
 
 type SessionCleanupFact struct {

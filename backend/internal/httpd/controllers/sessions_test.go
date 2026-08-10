@@ -146,7 +146,7 @@ func (f *fakeSessionService) Spawn(_ context.Context, cfg ports.SpawnConfig) (do
 		return domain.Session{}, 0, 0, f.spawnErr
 	}
 	now := time.Now().UTC()
-	s := domain.Session{SessionRecord: domain.SessionRecord{ID: domain.SessionID(string(cfg.ProjectID) + "-2"), ProjectID: cfg.ProjectID, IssueID: cfg.IssueID, Kind: cfg.Kind, Harness: cfg.Harness, DisplayName: cfg.DisplayName, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, AutoInjectReview: true, CreatedAt: now, UpdatedAt: now}, Status: domain.StatusIdle}
+	s := domain.Session{SessionRecord: domain.SessionRecord{ID: domain.SessionID(string(cfg.ProjectID) + "-2"), ProjectID: cfg.ProjectID, IssueID: cfg.IssueID, Kind: cfg.Kind, Harness: cfg.Harness, DisplayName: cfg.DisplayName, Model: cfg.Model, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, AutoInjectReview: true, CreatedAt: now, UpdatedAt: now}, Status: domain.StatusIdle}
 	f.sessions[s.ID] = s
 	return s, len(cfg.Prompt), 0, nil
 }
@@ -737,7 +737,7 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 		t.Fatalf("list leaked prompt: %s", body)
 	}
 
-	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","issueId":"ISS-1","kind":"worker","harness":"codex","prompt":"fix","displayName":"my worker"}`)
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","issueId":"ISS-1","kind":"worker","harness":"codex","prompt":"fix","displayName":"my worker","model":"codex-cheap"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
 	}
@@ -752,6 +752,9 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	}
 	if spawned.Session.DisplayName != "my worker" {
 		t.Fatalf("spawned displayName = %q, want %q", spawned.Session.DisplayName, "my worker")
+	}
+	if spawned.Session.Model != "codex-cheap" {
+		t.Fatalf("spawned model = %q, want %q", spawned.Session.Model, "codex-cheap")
 	}
 	if spawned.PromptBytes == nil || *spawned.PromptBytes != len("fix") {
 		t.Fatalf("spawned promptBytes = %v, want %d", spawned.PromptBytes, len("fix"))
@@ -2237,6 +2240,7 @@ type sessionBody struct {
 	Kind             string `json:"kind"`
 	Harness          string `json:"harness"`
 	DisplayName      string `json:"displayName"`
+	Model            string `json:"model"`
 	Branch           string `json:"branch"`
 	Status           string `json:"status"`
 	SCMStatus        string `json:"scmStatus"`

@@ -29,6 +29,7 @@ type spawnOptions struct {
 	prompt         string
 	issue          string
 	name           string
+	model          string
 	claimPR        string
 	noTakeover     bool
 	skipAgentCheck bool
@@ -44,6 +45,7 @@ type spawnRequest struct {
 	Harness     string `json:"harness,omitempty"`
 	Branch      string `json:"branch,omitempty"`
 	Prompt      string `json:"prompt,omitempty"`
+	Model       string `json:"model,omitempty"`
 	DisplayName string `json:"displayName"`
 }
 
@@ -81,6 +83,13 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			}
 			if utf8.RuneCountInString(name) > maxDisplayNameLen {
 				return usageError{fmt.Errorf("--name must be %d characters or fewer", maxDisplayNameLen)}
+			}
+
+			// Model is scoped to this spawn only; it must be a single token so it
+			// cannot smuggle extra launch args through the harness adapter.
+			model := strings.TrimSpace(opts.model)
+			if model != "" && strings.ContainsAny(model, " \t\n\r\"'") {
+				return usageError{fmt.Errorf("--model must be a single model id without spaces or quotes")}
 			}
 
 			// Rejected here rather than forwarded, so a typo exits 2 as a usage
@@ -133,6 +142,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				Mode:        opts.mode,
 				Branch:      opts.branch,
 				Prompt:      opts.prompt,
+				Model:       model,
 				DisplayName: name,
 			}
 			var res spawnResult
@@ -182,6 +192,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")
 	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 20 characters)")
+	f.StringVar(&opts.model, "model", "", "Model override for this session only (e.g. claude-opus-4-5); overrides the project config without changing it")
 	f.StringVar(&opts.claimPR, "claim-pr", "", "Immediately claim an existing PR for the spawned session")
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")
 	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip advisory agent catalog install/auth preflight before spawning")
