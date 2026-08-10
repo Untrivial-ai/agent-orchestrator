@@ -19,9 +19,9 @@ import (
 )
 
 // HostTrustWarning describes the security boundary operators accept by using
-// this experimental reviewer. Plan mode constrains model tool calls, but is not
-// OS isolation: a terminal user can still invoke Qwen's ! shell or change mode.
-const HostTrustWarning = "experimental host-trusted reviewer: Qwen has no OS isolation; terminal users can invoke the ! shell or change approval mode"
+// this experimental reviewer. Yolo mode bypasses approval prompts and is not OS
+// isolation; a terminal user can still invoke Qwen's ! shell or change mode.
+const HostTrustWarning = "experimental host-trusted reviewer: Qwen yolo mode bypasses approval prompts and has no OS isolation; terminal users can invoke the ! shell"
 
 type binaryResolver func(context.Context) (string, error)
 
@@ -78,7 +78,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 	}
 	envVars["AO_DATA_DIR"] = env.DataDir
 	return ports.ReviewCommandSpec{
-		Argv:             []string{binary, "--bare", "--approval-mode", "plan"},
+		Argv:             []string{binary, "--bare", "--approval-mode", "yolo"},
 		Env:              envVars,
 		InitialMessage:   inv.Prompt,
 		WorkingDirectory: env.WorkingDirectory,

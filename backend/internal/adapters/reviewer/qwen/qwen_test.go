@@ -41,7 +41,7 @@ func TestReviewCommandIsExactPermanentTUIWithPostReadinessReference(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/opt/qwen/bin/qwen", "--bare", "--approval-mode", "plan"}
+	want := []string{"/opt/qwen/bin/qwen", "--bare", "--approval-mode", "yolo"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv = %#v, want %#v", spec.Argv, want)
 	}
@@ -52,7 +52,7 @@ func TestReviewCommandIsExactPermanentTUIWithPostReadinessReference(t *testing.T
 	for _, forbidden := range []string{
 		inv.Prompt, inv.SystemPrompt, inv.TaskPromptFile, "secret task contents",
 		"--prompt", "--prompt-interactive", " -p ", " -i ", "--output-format",
-		"--json", "--json-schema", "--acp", "serve", "--yolo", "--resume",
+		"--json", "--json-schema", "--acp", "serve", "--resume",
 		"--continue", "--worktree",
 	} {
 		if strings.Contains(" "+joined+" ", forbidden) {

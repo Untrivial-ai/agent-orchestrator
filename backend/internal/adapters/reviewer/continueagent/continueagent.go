@@ -27,8 +27,8 @@ const (
 // HarnessID identifies the Continue reviewer adapter.
 const HarnessID domain.ReviewerHarness = "continue"
 
-// HostTrustWarning documents that Continue readonly mode is advisory.
-const HostTrustWarning = "experimental host-trusted reviewer: Continue readonly mode is not OS isolation and can be changed from the interactive TUI"
+// HostTrustWarning documents the authority granted to Continue's interactive TUI.
+const HostTrustWarning = "experimental host-trusted reviewer: Continue auto mode bypasses approval prompts without OS isolation"
 
 // Reviewer runs Continue's long-lived host-trusted TUI.
 type Reviewer struct {
@@ -44,7 +44,7 @@ func (*Reviewer) Harness() domain.ReviewerHarness { return HarnessID }
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 
-// ReviewCommand launches Continue in readonly mode and injects the task after
+// ReviewCommand launches Continue in auto mode and injects the task after
 // readiness. CLI discovery and state are redirected to an AO-owned profile.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	if err := ctx.Err(); err != nil {
@@ -74,7 +74,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 		envVars["CONTINUE_API_KEY"] = key
 	}
 	return ports.ReviewCommandSpec{
-		Argv:             []string{binary, "--readonly"},
+		Argv:             []string{binary, "--auto"},
 		Env:              envVars,
 		InitialMessage:   inv.Prompt,
 		WorkingDirectory: inv.WorkspacePath,
