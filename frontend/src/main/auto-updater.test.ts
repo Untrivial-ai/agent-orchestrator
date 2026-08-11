@@ -1231,3 +1231,130 @@ describe("returnToHome", () => {
     expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
   });
 });
+
+// #3527: on macOS, Squirrel.Mac cannot replace a translocated or otherwise
+// read-only .app bundle, so quitAndInstall() used to silently no-op with no
+// restart and no error. These cover the guard added in front of it.
+describe("macOS translocation/writability guard", () => {
+  const installedExecPath =
+    "/Applications/Agent Orchestrator.app/Contents/MacOS/Agent Orchestrator";
+  const translocatedExecPath =
+    "/private/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/AppTranslocation/1234-5678-ABCD/d/Agent Orchestrator.app/Contents/MacOS/Agent Orchestrator";
+
+  describe("isTranslocatedPath", () => {
+    it("flags a path running out of the App Translocation mirror", async () => {
+      const { module } = await importAutoUpdater();
+      expect(module.isTranslocatedPath(translocatedExecPath)).toBe(true);
+    });
+
+    it("does not flag a normal /Applications install path", async () => {
+      const { module } = await importAutoUpdater();
+      expect(module.isTranslocatedPath(installedExecPath)).toBe(false);
+    });
+  });
+
+  describe("resolveMacBundleRoot", () => {
+    it("walks up from Contents/MacOS/<exe> to the .app bundle root", async () => {
+      const { module } = await importAutoUpdater();
+      expect(module.resolveMacBundleRoot(installedExecPath)).toBe(
+        "/Applications/Agent Orchestrator.app",
+      );
+    });
+
+    it("resolves the .app root even from inside the translocation mirror", async () => {
+      const { module } = await importAutoUpdater();
+      expect(module.resolveMacBundleRoot(translocatedExecPath)).toBe(
+        "/private/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/AppTranslocation/1234-5678-ABCD/d/Agent Orchestrator.app",
+      );
+    });
+  });
+
+  describe("isBundleWritable", () => {
+    it("is true when the access check does not throw", async () => {
+      const { module } = await importAutoUpdater();
+      expect(
+        module.isBundleWritable(
+          "/Applications/Agent Orchestrator.app",
+          () => undefined,
+        ),
+      ).toBe(true);
+    });
+
+    it("is false when the access check throws (read-only volume/permission)", async () => {
+      const { module } = await importAutoUpdater();
+      expect(
+        module.isBundleWritable(
+          "/Volumes/ReadOnlyDMG/Agent Orchestrator.app",
+          () => {
+            throw new Error("EACCES: permission denied");
+          },
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe("quitAndInstallUpdate", () => {
+    it("installs normally on macOS when the bundle is a real, writable install", async () => {
+      const { module, autoUpdater, dialog } = await importAutoUpdater();
+
+      module.quitAndInstallUpdate(true, installedExecPath, () => undefined);
+
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    });
+
+    it("blocks and shows a dialog instead of installing when translocated", async () => {
+      const { module, autoUpdater, dialog } = await importAutoUpdater();
+
+      module.quitAndInstallUpdate(
+        true,
+        translocatedExecPath,
+        () => undefined, // bundle would actually be writable here; translocation alone must block
+      );
+
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(dialog.showMessageBox).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "warning",
+          buttons: ["OK"],
+          message: expect.stringMatching(/install/i),
+          detail: expect.stringMatching(/Applications/),
+        }),
+      );
+    });
+
+    it("blocks and shows a dialog instead of installing when the bundle is not writable", async () => {
+      const { module, autoUpdater, dialog } = await importAutoUpdater();
+
+      module.quitAndInstallUpdate(true, installedExecPath, () => {
+        throw new Error("EACCES: permission denied");
+      });
+
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    });
+
+    it("is a no-op guard on non-darwin platforms even for a translocated-looking, non-writable path", async () => {
+      const { module, autoUpdater, dialog } = await importAutoUpdater();
+
+      module.quitAndInstallUpdate(false, translocatedExecPath, () => {
+        throw new Error("EACCES: permission denied");
+      });
+
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    });
+
+    it("does nothing at all in dev (unpackaged), before the platform guard even runs", async () => {
+      const { module, autoUpdater, dialog } = await importAutoUpdater(
+        undefined,
+        { isPackaged: false },
+      );
+
+      module.quitAndInstallUpdate(true, translocatedExecPath, () => undefined);
+
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    });
+  });
+});

@@ -1,6 +1,6 @@
 import { autoUpdater } from "electron-updater";
 import { app, BrowserWindow, dialog } from "electron";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -774,10 +774,96 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
   }
 }
 
+// --- macOS App Translocation / read-only bundle guard ---------------------
+// Squirrel.Mac (electron-updater's macOS install backend) replaces the running
+// .app bundle in place, so it needs write access to the bundle's real,
+// installed location. Two situations break that silently: the app running
+// translocated (macOS "App Translocation" runs an unmoved, freshly-downloaded
+// .app from a randomized read-only mirror under
+// /private/var/folders/.../AppTranslocation/<uuid>/d/ instead of its real
+// path) or a bundle that is otherwise non-writable (read-only volume, missing
+// permission bit). In either case quitAndInstall() silently no-ops: no
+// restart, no error, no feedback (#3527). quitAndInstallUpdate() below checks
+// both before installing.
+//
+// Kept as small, pure functions that take the path as a parameter instead of
+// reading process.execPath internally, so they're unit-testable with
+// fabricated path strings without a real macOS bundle -- the same
+// dependency-injection convention keybinding-settings.ts's
+// coerceKeybindingOverrides(raw, isMac) and daemon-launch.ts's
+// resolveDaemonLaunch(...) already use in this directory.
+
+/** True when execPath is running out of macOS's App Translocation mirror. */
+export function isTranslocatedPath(execPath: string): boolean {
+  return execPath.includes("/AppTranslocation/");
+}
+
+// Walk up from the executable to the enclosing `.app` bundle root:
+// .../Agent Orchestrator.app/Contents/MacOS/<exe> -> .../Agent Orchestrator.app.
+// Same three-level walk as resolveBundlePath() in main.ts, for the same
+// reason (app.getAppPath() would return the app.asar path inside the bundle,
+// not the bundle directory itself) -- but done via "/"-delimited string
+// splitting rather than node:path, since macOS bundle paths are always POSIX
+// and path.resolve/path.join follow the *host* OS's separator rules, which
+// would make this non-deterministic under test on a non-POSIX host. Same
+// reasoning as daemon-launch.ts's joinPath in this repo.
+export function resolveMacBundleRoot(execPath: string): string {
+  const segments = execPath.split("/");
+  return segments.slice(0, Math.max(segments.length - 3, 0)).join("/");
+}
+
+// True unless the bundle root cannot be written to (read-only volume, missing
+// permission bit) -- the other way Squirrel.Mac silently fails besides
+// translocation. checkAccess is injected (defaulting to a real fs.accessSync
+// check) so tests can fabricate both outcomes without a real filesystem.
+export function isBundleWritable(
+  bundleRoot: string,
+  checkAccess: (targetPath: string) => void = (p) =>
+    accessSync(p, constants.W_OK),
+): boolean {
+  try {
+    checkAccess(bundleRoot);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // quitAndInstallUpdate installs a downloaded update and relaunches. isSilent
 // false keeps the installer UI on Windows; isForceRunAfter relaunches the app.
-export function quitAndInstallUpdate(): void {
+//
+// On macOS specifically, guard against the silent-no-op cases above: if the
+// bundle is translocated or otherwise non-writable, show an actionable dialog
+// instead of calling quitAndInstall(). The staged update and update settings
+// are left untouched (nothing here writes state), so the install can simply
+// be retried once the user has moved the app to /Applications and relaunched.
+//
+// isMac/execPath/checkAccess default to the real process so the existing call
+// site (main.ts's "updates:install" IPC handler, invoked with no arguments)
+// behaves exactly as before; tests override them to exercise the guard
+// without a real macOS bundle.
+export function quitAndInstallUpdate(
+  isMac: boolean = process.platform === "darwin",
+  execPath: string = process.execPath,
+  checkAccess?: (targetPath: string) => void,
+): void {
   if (!app.isPackaged) return;
+  if (isMac) {
+    const bundleRoot = resolveMacBundleRoot(execPath);
+    if (
+      isTranslocatedPath(execPath) ||
+      !isBundleWritable(bundleRoot, checkAccess)
+    ) {
+      void dialog.showMessageBox({
+        type: "warning",
+        buttons: ["OK"],
+        message: "Can't install this update yet",
+        detail:
+          "Agent Orchestrator is running from a read-only location -- this usually means it launched straight from a DMG or Downloads without being moved to Applications. Move Agent Orchestrator.app to your Applications folder, relaunch it, and Restart to update again.",
+      });
+      return;
+    }
+  }
   autoUpdater.quitAndInstall(false, true);
 }
 
