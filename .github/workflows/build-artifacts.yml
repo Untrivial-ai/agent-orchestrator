@@ -78,6 +78,11 @@ jobs:
           node -e "const v=process.env.BUILD_VERSION.split('+')[0]; const fs=require('fs'); const p=require('./package.json'); p.version=v; fs.writeFileSync('./package.json', JSON.stringify(p,null,'\t')+'\n');"
       - name: Build (unsigned, no publish)
         shell: bash
+        env:
+          # forge.config.ts bakes app-update.yml's owner/repo from this at make
+          # time even though this workflow never publishes; unset, it falls back
+          # to forge.config.ts's production default (#3523).
+          AO_RELEASE_REPO: ${{ github.repository }}
         run: npm run make
       - name: Collect artifact and compute digest
         shell: bash
