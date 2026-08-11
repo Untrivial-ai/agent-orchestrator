@@ -120,6 +120,24 @@ func TestGetLaunchCommandPermissionModesEmitNoFlag(t *testing.T) {
 	}
 }
 
+func TestGetLaunchCommandIgnoresModelConfig(t *testing.T) {
+	// Amp has no CLI/config surface for model selection (see amp.go's
+	// GetLaunchCommand doc comment and issue #2902), so a configured model
+	// must never appear in the launch argv.
+	p := &Plugin{resolvedBinary: "amp"}
+	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{Model: "claude-opus-4-5"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"amp"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %#v, want %#v (model must not be forwarded)", cmd, want)
+	}
+}
+
 func TestGetLaunchCommandUsesPluginForSystemPrompt(t *testing.T) {
 	p := &Plugin{resolvedBinary: "amp"}
 	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
@@ -229,6 +247,30 @@ func TestGetRestoreCommand(t *testing.T) {
 	want := []string{"amp", "--resume", "T-abc123"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("cmd = %#v, want %#v", cmd, want)
+	}
+}
+
+func TestGetRestoreCommandIgnoresModelConfig(t *testing.T) {
+	// Same rationale as TestGetLaunchCommandIgnoresModelConfig: Amp has no
+	// per-model override surface, so a configured model must never appear
+	// in the resume argv either.
+	p := &Plugin{resolvedBinary: "amp"}
+	cmd, ok, err := p.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Config: ports.AgentConfig{Model: "claude-opus-4-5"},
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "T-abc123"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("ok=false, want true")
+	}
+
+	want := []string{"amp", "--resume", "T-abc123"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %#v, want %#v (model must not be forwarded)", cmd, want)
 	}
 }
 

@@ -135,6 +135,7 @@ AO records a `role` field in each session's metadata file with the value `orches
 - **Missing agent binary.** If you set `defaults.worker.agent: codex` but Codex is not installed, `ao spawn` will fail when a worker session starts. Run `ao doctor` to verify all configured agents are available before starting a run.
 - **Inheritance order.** Workers inherit the top-level `defaults` unless overridden at the project level. A project-level `worker` block fully replaces the default — it is not merged field-by-field, so specify every field you need.
 - **Separate rule sets.** `orchestratorRules` and `agentRules` in the project config apply independently to orchestrator and worker sessions respectively. See the [Projects configuration reference](/docs/configuration/projects) for details.
+- **Not every agent honors `agentConfig.model`.** Model override requires the underlying CLI to expose a model-selection flag or config key. Amp (`agent: amp`) currently has none — it only exposes an interactive mode switcher (`Ctrl+O` in the TUI), not a specific model string — so `agentConfig.model` is silently ignored for Amp sessions. Check the agent's [plugin docs](/docs/plugins/agents) if a model override doesn't seem to take effect.
 
 ## Next steps
 
