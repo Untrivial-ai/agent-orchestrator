@@ -1194,6 +1194,12 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// Forward xterm's write callback: it fires once THIS chunk has been
 			// parsed into the buffer, which is what lets the attachment reveal the
 			// pane at the replay's settled scroll position (issue #3160).
+			//
+			// The caller decrements its outstanding-write count inside `done`, so a
+			// throw on the way in must not swallow it: losing the callback strands
+			// that count above zero, which queues every later frame away from xterm
+			// and leaves the reveal cover up for good. Call `done` exactly once —
+			// xterm may also invoke it for a chunk it accepted before throwing.
 			write: (data, done) => {
 				let hasEsc = false;
 				for (let i = 0; i < data.length; i++) {
@@ -1212,10 +1218,27 @@ export function XtermTerminal(props: XtermTerminalProps) {
 						notifyCursorScheme(callbacksRef.current.theme, true, true);
 					}
 				}
-				term.write(data, () => {
+				if (!done) {
+					try {
+						term.write(data);
+					} catch {
+						// The chunk is lost either way; a dropped repaint beats a
+						// dead pane.
+					}
+					return;
+				}
+				let settled = false;
+				const settle = () => {
+					if (settled) return;
+					settled = true;
 					scheduleScrollbarUpdate();
-					done?.();
-				});
+					done();
+				};
+				try {
+					term.write(data, settle);
+				} catch {
+					settle();
+				}
 			},
 			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
 			showLatestOutput,
