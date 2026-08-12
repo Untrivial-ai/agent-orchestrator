@@ -1282,12 +1282,20 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			notifyCursorSchemeRef.current = () => {};
 			announcedCursorSchemeRef.current = null;
 			userInputListeners.clear();
-			try {
-				term.dispose();
-			} catch {
-				// Some renderer addons can throw during dispose in certain GPU
-				// environments; the terminal is being torn down regardless.
-			}
+			// xterm 5.5 schedules Viewport.syncScrollArea with a zero-delay timer
+			// during open(). Disposing in this same task clears RenderService's
+			// renderer first, so that pending callback throws while reading its
+			// dimensions. Handle replacement can hit exactly that window. Queue our
+			// disposal behind xterm's callback; all AO listeners and attachments are
+			// already detached above, so the terminal is inert during this one tick.
+			window.setTimeout(() => {
+				try {
+					term.dispose();
+				} catch {
+					// Some renderer addons can throw during dispose in certain GPU
+					// environments; the terminal is being torn down regardless.
+				}
+			}, 0);
 		};
 	}, []);
 
