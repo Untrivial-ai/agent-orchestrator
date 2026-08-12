@@ -29,6 +29,23 @@ var (
 	_ ports.PRClaimer = (*Store)(nil)
 )
 
+// DetachPR removes a PR only while its session and attachment provenance still
+// match the observer's snapshot. The source guard prevents a concurrent
+// explicit claim from being undone by attribution reconciliation.
+func (s *Store) DetachPR(ctx context.Context, url string, sessionID domain.SessionID, source domain.PRAttachmentSource) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.DetachPR(ctx, gen.DetachPRParams{
+		URL:              url,
+		SessionID:        sessionID,
+		AttachmentSource: string(source.WithDefault()),
+	})
+	if err != nil {
+		return false, fmt.Errorf("detach pr %s: %w", url, err)
+	}
+	return rows > 0, nil
+}
+
 // WritePR persists a legacy PR observation — scalar facts, check runs, and the
 // replacement comment set — in one write transaction, so the rows and the
 // change_log events their triggers emit are committed all-or-nothing. The scalar
@@ -591,6 +608,7 @@ func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 		ReviewObservedAt:         nullTime(r.ReviewObservedAt),
 		ReviewPartial:            r.ReviewPartial,
 		ID:                       r.SessionID,
+		AttachmentSource:         string(r.AttachmentSource.WithDefault()),
 	}
 }
 
@@ -611,6 +629,7 @@ func genLegacyPRParams(r domain.PullRequest) gen.UpsertLegacyPRParams {
 		ReviewObservedAt: nullTime(r.ReviewObservedAt),
 		ReviewPartial:    r.ReviewPartial,
 		ID:               r.SessionID,
+		AttachmentSource: string(r.AttachmentSource.WithDefault()),
 	}
 }
 
@@ -695,6 +714,7 @@ func prRowFromGen(p gen.PR) domain.PullRequest {
 		ReviewObservedAt:         timeFromNull(p.ReviewObservedAt),
 		ReviewPartial:            p.ReviewPartial,
 		AutoInjectCI:             p.AutoInjectCI,
+		AttachmentSource:         domain.PRAttachmentSource(p.AttachmentSource),
 	}
 }
 
