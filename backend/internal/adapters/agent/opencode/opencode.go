@@ -74,7 +74,9 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.AgentTranscriptReader = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
+var _ ports.AgentNativeSessionConfigProvider = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -171,6 +173,153 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 	}
 	info, ok := agentbase.StandardSessionInfo(session)
 	return info, ok, nil
+}
+
+// Transcript reads the agent's native transcript and returns a normalized
+// list of user/assistant turns. It queries opencode's SQLite database for the
+// session's messages and their text parts.
+func (p *Plugin) Transcript(ctx context.Context, session ports.SessionRef) ([]ports.TranscriptMessage, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	agentSessionID := strings.TrimSpace(session.Metadata[opencodeAgentSessionIDMetadataKey])
+	if agentSessionID == "" {
+		return nil, false, nil
+	}
+	dataDir := strings.TrimSpace(session.Metadata["opencodeDataDir"])
+	if dataDir == "" {
+		var ok bool
+		dataDir, ok = opencodeDataDir()
+		if !ok {
+			return nil, false, nil
+		}
+	}
+	dbPath := filepath.Join(dataDir, "opencode.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, fmt.Errorf("opencode: stat transcript db: %w", err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?mode=ro&_pragma=busy_timeout(1000)")
+	if err != nil {
+		return nil, false, fmt.Errorf("opencode: open transcript db: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	return p.readOpencodeTranscript(ctx, db, agentSessionID)
+}
+
+// NativeSessionConfigDir resolves opencode's data directory for a launch. It
+// honors OPENCODE_DATA_DIR / XDG_DATA_HOME from the session env (matching the
+// env the runtime was launched with) before falling back to the daemon
+// environment and the default ~/.local/share/opencode location.
+func (p *Plugin) NativeSessionConfigDir(ctx context.Context, env map[string]string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if dataDir := strings.TrimSpace(env["OPENCODE_DATA_DIR"]); dataDir != "" {
+		return filepath.Clean(dataDir), nil
+	}
+	if dataHome := strings.TrimSpace(env["XDG_DATA_HOME"]); dataHome != "" {
+		return filepath.Join(dataHome, "opencode"), nil
+	}
+	if dir, ok := opencodeDataDir(); ok {
+		return filepath.Clean(dir), nil
+	}
+	return "", fmt.Errorf("opencode: cannot resolve data dir")
+}
+
+func (p *Plugin) readOpencodeTranscript(ctx context.Context, db *sql.DB, agentSessionID string) ([]ports.TranscriptMessage, bool, error) {
+	// opencode's message table keeps the role inside the data JSON, not as a
+	// column. Parts carry the texts (type "text"), keyed by message_id.
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, data, time_created FROM message WHERE session_id = ? ORDER BY time_created, id`,
+		agentSessionID,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("opencode: query messages: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type messageInfo struct {
+		id          string
+		role        string
+		timeCreated int64
+	}
+	var messages []messageInfo
+	for rows.Next() {
+		var id string
+		var data string
+		var timeCreated int64
+		if err := rows.Scan(&id, &data, &timeCreated); err != nil {
+			return nil, false, fmt.Errorf("opencode: scan message: %w", err)
+		}
+		var payload struct {
+			Role string `json:"role"`
+		}
+		_ = json.Unmarshal([]byte(data), &payload)
+		messages = append(messages, messageInfo{id: id, role: payload.Role, timeCreated: timeCreated})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("opencode: iterate messages: %w", err)
+	}
+	if len(messages) == 0 {
+		return nil, false, nil
+	}
+
+	// Get text parts for each message
+	var transcript []ports.TranscriptMessage
+	for _, msg := range messages {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		text, ok, err := p.getMessageText(ctx, db, msg.id)
+		if err != nil {
+			// Keep the rest of the transcript: one unreadable message must not
+			// fail the whole copy.
+			continue
+		}
+		if !ok || text == "" {
+			continue
+		}
+		role := msg.role
+		if role == "user" || role == "assistant" {
+			transcript = append(transcript, ports.TranscriptMessage{Role: role, Text: text, Index: len(transcript)})
+		}
+	}
+	return transcript, len(transcript) > 0, nil
+}
+
+func (p *Plugin) getMessageText(ctx context.Context, db *sql.DB, messageID string) (string, bool, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT data FROM part WHERE message_id = ? AND json_extract(data, '$.type') = 'text' ORDER BY time_created`,
+		messageID,
+	)
+	if err != nil {
+		return "", false, fmt.Errorf("opencode: query parts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var texts []string
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return "", false, fmt.Errorf("opencode: scan part: %w", err)
+		}
+		var part struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(data), &part); err == nil && part.Type == "text" && part.Text != "" {
+			texts = append(texts, part.Text)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, fmt.Errorf("opencode: iterate parts: %w", err)
+	}
+	if len(texts) == 0 {
+		return "", false, nil
+	}
+	return strings.Join(texts, "\n"), true, nil
 }
 
 // AuthStatus checks whether opencode has a configured provider credential.

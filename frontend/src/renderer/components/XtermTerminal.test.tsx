@@ -6,6 +6,7 @@ import { XtermTerminal } from "./XtermTerminal";
 
 const state = vi.hoisted(() => ({
 	linkHandler: null as null | ((event: MouseEvent, uri: string) => void),
+	apiGet: vi.fn(),
 	lastTerminal: null as null | {
 		keyHandler?: (event: KeyboardEvent) => boolean;
 		wheelHandler?: (event: WheelEvent) => boolean;
@@ -31,6 +32,10 @@ const state = vi.hoisted(() => ({
 			};
 		};
 	},
+}));
+
+vi.mock("../lib/api-client", () => ({
+	apiClient: { GET: (...args: unknown[]) => state.apiGet(...args) },
 }));
 
 vi.mock("@xterm/xterm", () => ({
@@ -158,6 +163,7 @@ describe("XtermTerminal", () => {
 		setNavigatorPlatform("Linux x86_64");
 		window.ao!.clipboard.writeText = vi.fn().mockResolvedValue(undefined);
 		window.ao!.clipboard.readText = vi.fn().mockResolvedValue("");
+		state.apiGet.mockReset();
 	});
 
 	it("finishes retained activation when xterm emits no render event", async () => {
@@ -350,6 +356,19 @@ describe("XtermTerminal", () => {
 		fireEvent.contextMenu(host);
 		fireEvent.click(await screen.findByText("Clear"));
 		expect(state.lastTerminal!.clear).toHaveBeenCalled();
+	});
+
+	it("copies the last response and requests its indexed transcript message", async () => {
+		state.apiGet
+			.mockResolvedValueOnce({ data: { messages: [{ role: "user", text: "prompt", index: 0 }, { role: "assistant", text: "response", index: 1 }] } })
+			.mockResolvedValueOnce({ data: { messages: [{ role: "assistant", text: "response", index: 1 }] } });
+		const { container } = render(<XtermTerminal sessionId="ao-1" theme="dark" />);
+		fireEvent.contextMenu(container.firstElementChild!);
+		fireEvent.click(await screen.findByText("Copy last response"));
+		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("Assistant:\nresponse"));
+		expect(state.apiGet).toHaveBeenLastCalledWith("/api/v1/sessions/{sessionId}/transcript", {
+			params: { path: { sessionId: "ao-1" }, query: { index: 1 } },
+		});
 	});
 
 	it("pastes from the context menu through the terminal paste path", async () => {

@@ -1045,6 +1045,7 @@ function AttachedTerminal({
 					onReady={handleReady}
 					onVisibleSize={syncVisibleSize}
 					paneScrollsByKeyboard={providerScrollsByKeyboard(provider)}
+					sessionId={session?.id}
 					theme={theme}
 				/>
 				{showEmptyState && (

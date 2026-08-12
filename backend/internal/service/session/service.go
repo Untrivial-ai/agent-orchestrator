@@ -65,6 +65,11 @@ type commander interface {
 	Cleanup(ctx context.Context, project domain.ProjectID) (sessionmanager.CleanupResult, error)
 	RollbackSpawn(ctx context.Context, id domain.SessionID) (deleted, killed bool, err error)
 	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
+	// Agent returns the agent adapter for a session's harness, or (nil, false) if unknown.
+	Agent(ctx context.Context, id domain.SessionID) (ports.Agent, bool, error)
+	// NativeSessionConfigDir resolves the agent-native state root a session's
+	// harness used (stored native-session binding first, then live resolution).
+	NativeSessionConfigDir(ctx context.Context, id domain.SessionID) (string, error)
 }
 
 // interfaceTransitionCommander is an optional command capability. Keeping it
@@ -964,4 +969,92 @@ func (s *Service) harnessSignals(h domain.AgentHarness) bool {
 		return false
 	}
 	return s.signalCapable(h)
+}
+
+// Transcript returns the normalized transcript messages for a session.
+func (s *Service) Transcript(ctx context.Context, id domain.SessionID, from, to *int) ([]ports.TranscriptMessage, error) {
+	if from != nil && *from < 0 || to != nil && *to < 0 {
+		return nil, apierr.Invalid("INVALID_TRANSCRIPT_RANGE", "transcript indexes must be non-negative", nil)
+	}
+	if from != nil && to != nil && *from > *to {
+		return nil, apierr.Invalid("INVALID_TRANSCRIPT_RANGE", "from must be less than or equal to to", nil)
+	}
+	rec, ok, err := s.store.GetSession(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get session %s: %w", id, err)
+	}
+	if !ok {
+		return nil, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	agent, ok, err := s.manager.Agent(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || agent == nil {
+		return nil, nil
+	}
+	reader, ok := agent.(ports.AgentTranscriptReader)
+	if !ok {
+		// The harness records no parseable native transcript; degrade to an
+		// empty (not error) transcript rather than forcing every adapter to
+		// implement a stub.
+		return nil, nil
+	}
+	metadata := map[string]string{
+		"agentSessionId": rec.Metadata.AgentSessionID,
+		"workspacePath":  rec.Metadata.WorkspacePath,
+	}
+	if rec.Metadata.ProviderConversationID != "" {
+		metadata["providerConversationId"] = rec.Metadata.ProviderConversationID
+	}
+	if rec.Metadata.NativeTranscriptPath != "" {
+		metadata["nativeTranscriptPath"] = rec.Metadata.NativeTranscriptPath
+	}
+	if rec.Metadata.Branch != "" {
+		metadata["branch"] = rec.Metadata.Branch
+	}
+	// A session whose agent config dir is not at the default location (e.g.
+	// CODEX_HOME / CLAUDE_CONFIG_DIR set at launch) must still resolve its
+	// transcript. Pass the stored/live native-session config dir through under
+	// the keys the adapters already read so they don't fall back to defaults.
+	if configDir, err := s.manager.NativeSessionConfigDir(ctx, id); err == nil && configDir != "" {
+		switch rec.Harness {
+		case domain.HarnessCodex:
+			metadata["codexHome"] = configDir
+		case domain.HarnessClaudeCode:
+			metadata["claudeConfigDir"] = configDir
+		case domain.HarnessOpenCode:
+			metadata["opencodeDataDir"] = configDir
+		}
+	}
+	sessionRef := ports.SessionRef{
+		ID:            string(id),
+		Metadata:      metadata,
+		WorkspacePath: rec.Metadata.WorkspacePath,
+	}
+	messages, ok, err := reader.Transcript(ctx, sessionRef)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	if from == nil && to == nil {
+		return messages, nil
+	}
+	start := 0
+	if from != nil {
+		start = *from
+	}
+	end := len(messages) - 1
+	if to != nil {
+		end = *to
+	}
+	if start >= len(messages) || (to != nil && end >= len(messages)) {
+		if from != nil && to != nil && *from == *to {
+			return nil, apierr.NotFound("TRANSCRIPT_MESSAGE_NOT_FOUND", "Transcript message not found")
+		}
+		return nil, apierr.Invalid("INVALID_TRANSCRIPT_RANGE", "transcript range is out of bounds", nil)
+	}
+	return messages[start : end+1], nil
 }

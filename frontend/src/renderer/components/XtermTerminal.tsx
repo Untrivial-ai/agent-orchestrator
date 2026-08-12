@@ -33,6 +33,7 @@ import type {
 	TerminalUserInputSource,
 } from "../hooks/useTerminalSession";
 import { aoBridge } from "../lib/bridge";
+import { apiClient } from "../lib/api-client";
 import { TERMINAL_FONT_SIZE_DEFAULT } from "../lib/design-tokens";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
@@ -68,6 +69,12 @@ export type XtermTerminalProps = {
 	isVisible?: boolean;
 	/** Move keyboard focus into xterm when a controller needs human input. */
 	focusRequested?: boolean;
+	/**
+	 * Optional session ID for agent sessions. When provided, the context menu
+	 * will include a "Copy full transcript" action that fetches the complete
+	 * transcript from the backend and copies it to the clipboard.
+	 */
+	sessionId?: string;
 	/**
 	 * The terminal is open in the DOM and ready to be attached to a PTY. The
 	 * handle stays valid until unmount; cols/rows are live getters.
@@ -209,7 +216,7 @@ type TerminalContextMenuState = {
 	link: string | null;
 };
 
-type TerminalContextMenuAction = "copy" | "paste" | "selectAll" | "clear";
+type TerminalContextMenuAction = "copy" | "paste" | "selectAll" | "clear" | "copyTranscript" | "copyLastResponse" | "copyLastPrompt";
 
 type TerminalContextMenuActions = Record<TerminalContextMenuAction, () => void>;
 
@@ -258,6 +265,11 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	const termRef = useRef<Terminal | null>(null);
 	const fitRef = useRef<(() => void) | null>(null);
 	const contextMenuActionsRef = useRef<TerminalContextMenuActions | null>(null);
+	// clipboardTokenRef guards async clipboard writes. Every intentional copy
+	// action bumps the token; an async write only proceeds if the token is
+	// still current when the data arrives, so a late-arriving transcript can
+	// never overwrite newer clipboard content the user copied in the meantime.
+	const clipboardTokenRef = useRef(0);
 	const [contextMenu, setContextMenu] = useState<TerminalContextMenuState>({
 		canCopy: false,
 		open: false,
@@ -411,6 +423,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		const copySelection = (options?: { clipboardData?: DataTransfer | null; dedupe?: boolean }) => {
 			const selection = term.getSelection();
 			if (!selection || (options?.dedupe && selection === lastCopiedSelection)) return false;
+			// This selection is the newest copy intent: any in-flight async
+			// transcript write must no longer hit the clipboard.
+			clipboardTokenRef.current += 1;
 			options?.clipboardData?.setData("text/plain", selection);
 			void aoBridge.clipboard
 				.writeText(selection)
@@ -464,6 +479,25 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				// Terminal is being torn down or its hidden textarea is unavailable.
 			}
 		};
+		const copyTranscript = async (index?: number) => {
+			const sessionId = callbacksRef.current.sessionId;
+			if (!sessionId) return;
+			clipboardTokenRef.current += 1;
+			const token = clipboardTokenRef.current;
+			try {
+				const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/transcript", {
+					params: { path: { sessionId }, query: index === undefined ? {} : { index } },
+				});
+				if (error || !data || !data.messages?.length || clipboardTokenRef.current !== token) return;
+				const text = data.messages
+					.map((m) => `${m.role === "user" ? "User" : "Assistant"}:\n${m.text}`)
+					.join("\n\n---\n\n");
+				await aoBridge.clipboard.writeText(text);
+			} catch (err) {
+				console.warn("Failed to copy transcript:", err);
+			}
+			focusTerminal();
+		};
 		contextMenuActionsRef.current = {
 			clear: () => {
 				term.clear();
@@ -480,6 +514,23 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			selectAll: () => {
 				term.selectAll();
 				focusTerminal();
+			},
+			copyTranscript: async () => {
+				await copyTranscript();
+			},
+			copyLastResponse: async () => {
+				const sessionId = callbacksRef.current.sessionId;
+				if (!sessionId) return;
+				const { data } = await apiClient.GET("/api/v1/sessions/{sessionId}/transcript", { params: { path: { sessionId } } });
+				const index = [...(data?.messages ?? [])].reverse().find((message) => message.role === "assistant")?.index;
+				if (index !== undefined) await copyTranscript(index);
+			},
+			copyLastPrompt: async () => {
+				const sessionId = callbacksRef.current.sessionId;
+				if (!sessionId) return;
+				const { data } = await apiClient.GET("/api/v1/sessions/{sessionId}/transcript", { params: { path: { sessionId } } });
+				const index = [...(data?.messages ?? [])].reverse().find((message) => message.role === "user")?.index;
+				if (index !== undefined) await copyTranscript(index);
 			},
 		};
 		const openContextMenu = (event: MouseEvent) => {
@@ -995,6 +1046,20 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					</DropdownMenuItem>
 					<DropdownMenuItem onSelect={() => runContextMenuAction("paste")}>{t("titlebar.paste")}</DropdownMenuItem>
 					<DropdownMenuItem onSelect={() => runContextMenuAction("selectAll")}>{t("titlebar.selectAll")}</DropdownMenuItem>
+					{props.sessionId ? (
+						<>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem onSelect={() => runContextMenuAction("copyTranscript")}>
+								{t("terminal.copyFullTranscript")}
+							</DropdownMenuItem>
+							<DropdownMenuItem onSelect={() => runContextMenuAction("copyLastResponse")}>
+								{t("terminal.copyLastResponse")}
+							</DropdownMenuItem>
+							<DropdownMenuItem onSelect={() => runContextMenuAction("copyLastPrompt")}>
+								{t("terminal.copyLastPrompt")}
+							</DropdownMenuItem>
+						</>
+					) : null}
 					<DropdownMenuSeparator />
 					<DropdownMenuItem onSelect={() => runContextMenuAction("clear")}>{t("terminal.clear")}</DropdownMenuItem>
 				</DropdownMenuContent>

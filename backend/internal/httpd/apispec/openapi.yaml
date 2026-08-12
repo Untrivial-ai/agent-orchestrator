@@ -4118,6 +4118,78 @@ paths:
       summary: Switch a logical AO session to another agent harness
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/transcript:
+    get:
+      operationId: getSessionTranscript
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Return one message at this 0-based index.
+        in: query
+        name: index
+        schema:
+          description: Return one message at this 0-based index.
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      - description: Inclusive first message index.
+        in: query
+        name: from
+        schema:
+          description: Inclusive first message index.
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      - description: Inclusive last message index; omitted means transcript end.
+        in: query
+        name: to
+        schema:
+          description: Inclusive last message index; omitted means transcript end.
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetSessionTranscriptResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get the full or partial transcript of a session from its agent adapter
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/workspace/events:
     get:
       operationId: streamSessionWorkspaceChanges
@@ -5908,6 +5980,18 @@ components:
       - sourceBranchId
       - activeBranchId
       type: object
+    GetSessionTranscriptResponse:
+      properties:
+        messages:
+          items:
+            $ref: '#/components/schemas/PortsTranscriptMessage'
+          type: array
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - messages
+      type: object
     ImportReport:
       properties:
         dryRun:
@@ -6338,6 +6422,19 @@ components:
       - title
       - targetSha
       - status
+      type: object
+    PortsTranscriptMessage:
+      properties:
+        index:
+          type: integer
+        role:
+          type: string
+        text:
+          type: string
+      required:
+      - role
+      - text
+      - index
       type: object
     PreviewServerStatusResponse:
       properties:

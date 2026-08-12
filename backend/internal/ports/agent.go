@@ -423,6 +423,17 @@ type SessionInfo struct {
 	Summary        string
 }
 
+// TranscriptMessage is one normalized turn from an agent's native transcript.
+// Role is "user" or "assistant"; Text is the plain content suitable for
+// clipboard copy, with ANSI/markup stripped by the adapter. Index is the
+// 0-based position of the message within the returned transcript so clients
+// can reference individual messages without relying on slice identity.
+type TranscriptMessage struct {
+	Role  string `json:"role"`
+	Text  string `json:"text"`
+	Index int    `json:"index"`
+}
+
 // PermissionMode controls how much review an agent requires before acting. It
 // is a type alias for domain.PermissionMode so adapters keep using
 // ports.PermissionMode while the typed AgentConfig (in domain) reuses the same

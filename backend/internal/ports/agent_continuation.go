@@ -81,3 +81,14 @@ type AgentNativeSessionProber interface {
 type AgentTranscriptLocator interface {
 	LocateTranscript(ctx context.Context, ref NativeSessionRef) (path string, ok bool, err error)
 }
+
+// AgentTranscriptReader is an optional adapter capability for reading the
+// provider's native transcript for a session and returning normalized
+// user/assistant turns. It is intentionally separate from Agent: most
+// harnesses do not record a parseable transcript, and keeping the capability
+// optional lets the service degrade to "no transcript" instead of forcing
+// every adapter to implement a stub. ok=false means no transcript is
+// available for this session.
+type AgentTranscriptReader interface {
+	Transcript(ctx context.Context, session SessionRef) (messages []TranscriptMessage, ok bool, err error)
+}

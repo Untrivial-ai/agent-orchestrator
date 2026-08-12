@@ -1239,6 +1239,8 @@ type fakeCommander struct {
 	restoreErr      error
 	restoreResult   sessionmanager.RestoreResult
 	readyErr        error
+	agent           ports.Agent
+	configDir       string
 }
 
 func (f *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
@@ -1328,6 +1330,17 @@ func (f *fakeCommander) StageAttachments(
 	[]ports.SpawnAttachment,
 ) ([]string, error) {
 	return nil, nil
+}
+
+func (f *fakeCommander) Agent(context.Context, domain.SessionID) (ports.Agent, bool, error) {
+	if f.agent == nil {
+		return nil, false, nil
+	}
+	return f.agent, true, nil
+}
+
+func (f *fakeCommander) NativeSessionConfigDir(context.Context, domain.SessionID) (string, error) {
+	return f.configDir, nil
 }
 
 // TestCleanupMapsManagerResult: the service forwards both reclaimed and
@@ -2826,4 +2839,288 @@ func sameStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// fakeTranscriptAgent is a ports.Agent that implements the optional
+// AgentTranscriptReader capability. It lets the service tests drive
+// Transcript through a session whose harness records parseable transcripts.
+type fakeTranscriptAgent struct {
+	messages []ports.TranscriptMessage
+	ok       bool
+	err      error
+	gotRef   *ports.SessionRef
+}
+
+func (*fakeTranscriptAgent) GetConfigSpec(context.Context) (ports.ConfigSpec, error) {
+	return ports.ConfigSpec{}, nil
+}
+func (*fakeTranscriptAgent) GetLaunchCommand(context.Context, ports.LaunchConfig) ([]string, error) {
+	return []string{"fake"}, nil
+}
+func (*fakeTranscriptAgent) GetPromptDeliveryStrategy(context.Context, ports.LaunchConfig) (ports.PromptDeliveryStrategy, error) {
+	return "", nil
+}
+func (*fakeTranscriptAgent) GetAgentHooks(context.Context, ports.WorkspaceHookConfig) error {
+	return nil
+}
+func (*fakeTranscriptAgent) GetRestoreCommand(context.Context, ports.RestoreConfig) ([]string, bool, error) {
+	return nil, false, nil
+}
+func (*fakeTranscriptAgent) SessionInfo(context.Context, ports.SessionRef) (ports.SessionInfo, bool, error) {
+	return ports.SessionInfo{}, false, nil
+}
+
+var _ ports.Agent = (*fakeTranscriptAgent)(nil)
+
+func (f *fakeTranscriptAgent) Transcript(_ context.Context, ref ports.SessionRef) ([]ports.TranscriptMessage, bool, error) {
+	f.gotRef = &ref
+	return f.messages, f.ok, f.err
+}
+
+var _ ports.AgentTranscriptReader = (*fakeTranscriptAgent)(nil)
+
+func TestTranscriptSessionNotFound(t *testing.T) {
+	svc := &Service{manager: &fakeCommander{}, store: newFakeStore()}
+
+	_, err := svc.Transcript(context.Background(), "ghost", nil, nil)
+	var e *apierr.Error
+	if !errors.As(err, &e) || e.Kind != apierr.KindNotFound || e.Code != "SESSION_NOT_FOUND" {
+		t.Fatalf("Transcript error = %v, want SESSION_NOT_FOUND", err)
+	}
+}
+
+func TestTranscriptUnsupportedAgentDegradesToEmpty(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+	}
+	// fc has no agent set: Manager.Agent reports no agent, so the service must
+	// degrade to an empty transcript rather than error.
+	svc := &Service{manager: &fakeCommander{}, store: st}
+
+	got, err := svc.Transcript(context.Background(), "mer-1", nil, nil)
+	if err != nil {
+		t.Fatalf("Transcript: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("messages = %#v, want empty", got)
+	}
+}
+
+func TestTranscriptAgentWithoutReaderDegradesToEmpty(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+	}
+	// The fake agent here is an unknown harness adapter type that does not
+	// implement AgentTranscriptReader (interface{} satisfies the manager's
+	// ports.Agent return only through the compile-checked fakeCommander cast).
+	svc := &Service{
+		manager: &fakeCommander{agent: &fakeNoReaderAgent{}},
+		store:   st,
+	}
+
+	got, err := svc.Transcript(context.Background(), "mer-1", nil, nil)
+	if err != nil {
+		t.Fatalf("Transcript: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("messages = %#v, want empty", got)
+	}
+}
+
+// fakeNoReaderAgent satisfies ports.Agent but not AgentTranscriptReader.
+type fakeNoReaderAgent struct{}
+
+func (*fakeNoReaderAgent) GetConfigSpec(context.Context) (ports.ConfigSpec, error) {
+	return ports.ConfigSpec{}, nil
+}
+func (*fakeNoReaderAgent) GetLaunchCommand(context.Context, ports.LaunchConfig) ([]string, error) {
+	return []string{"fake"}, nil
+}
+func (*fakeNoReaderAgent) GetPromptDeliveryStrategy(context.Context, ports.LaunchConfig) (ports.PromptDeliveryStrategy, error) {
+	return "", nil
+}
+func (*fakeNoReaderAgent) GetAgentHooks(context.Context, ports.WorkspaceHookConfig) error {
+	return nil
+}
+func (*fakeNoReaderAgent) GetRestoreCommand(context.Context, ports.RestoreConfig) ([]string, bool, error) {
+	return nil, false, nil
+}
+func (*fakeNoReaderAgent) SessionInfo(context.Context, ports.SessionRef) (ports.SessionInfo, bool, error) {
+	return ports.SessionInfo{}, false, nil
+}
+
+var _ ports.Agent = (*fakeNoReaderAgent)(nil)
+
+func TestTranscriptHappyPath(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+		Metadata: domain.SessionMetadata{
+			AgentSessionID:       "ses-native",
+			WorkspacePath:        "/work/mer",
+			NativeTranscriptPath: "/work/mer/transcripts/x.jsonl",
+		},
+	}
+	fake := &fakeTranscriptAgent{
+		messages: []ports.TranscriptMessage{
+			{Role: "user", Text: "hello", Index: 0},
+			{Role: "assistant", Text: "hi", Index: 1},
+		},
+		ok: true,
+	}
+	svc := &Service{
+		manager: &fakeCommander{agent: fake, configDir: "/home/u/.codex-custom"},
+		store:   st,
+	}
+
+	got, err := svc.Transcript(context.Background(), "mer-1", nil, nil)
+	if err != nil {
+		t.Fatalf("Transcript: %v", err)
+	}
+	if len(got) != 2 || got[0].Role != "user" || got[1].Role != "assistant" || got[1].Index != 1 {
+		t.Fatalf("messages = %#v, want [user hello idx0, assistant hi idx1]", got)
+	}
+
+	// The adapter receives the metadata it needs to locate the native
+	// transcript, including the resolved codex home.
+	ref := fake.gotRef
+	if ref == nil {
+		t.Fatal("Transcript did not reach the adapter")
+	}
+	if ref.ID != "mer-1" {
+		t.Fatalf("ref.ID = %q, want mer-1", ref.ID)
+	}
+	if ref.Metadata["agentSessionId"] != "ses-native" {
+		t.Fatalf("agentSessionId = %q, want ses-native", ref.Metadata["agentSessionId"])
+	}
+	if ref.Metadata["workspacePath"] != "/work/mer" {
+		t.Fatalf("workspacePath = %q, want /work/mer", ref.Metadata["workspacePath"])
+	}
+	if ref.Metadata["codexHome"] != "/home/u/.codex-custom" {
+		t.Fatalf("codexHome = %q, want /home/u/.codex-custom", ref.Metadata["codexHome"])
+	}
+}
+
+func TestTranscriptPartialRange(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex}
+	fake := &fakeTranscriptAgent{messages: []ports.TranscriptMessage{
+		{Role: "user", Text: "one", Index: 0}, {Role: "assistant", Text: "two", Index: 1}, {Role: "user", Text: "three", Index: 2},
+	}, ok: true}
+	svc := &Service{manager: &fakeCommander{agent: fake}, store: st}
+	from, to := 1, 2
+	got, err := svc.Transcript(context.Background(), "mer-1", &from, &to)
+	if err != nil || len(got) != 2 || got[0].Index != 1 || got[1].Index != 2 {
+		t.Fatalf("range = %#v, err = %v", got, err)
+	}
+	index := 2
+	got, err = svc.Transcript(context.Background(), "mer-1", &index, &index)
+	if err != nil || len(got) != 1 || got[0].Index != 2 {
+		t.Fatalf("index = %#v, err = %v", got, err)
+	}
+	missing := 9
+	if _, err := svc.Transcript(context.Background(), "mer-1", &missing, &missing); err == nil {
+		t.Fatal("out-of-bounds index returned nil error")
+	}
+}
+
+func TestTranscriptReaderErrorPropagates(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessOpenCode,
+	}
+	fake := &fakeTranscriptAgent{err: errors.New("boom")}
+	svc := &Service{manager: &fakeCommander{agent: fake}, store: st}
+
+	_, err := svc.Transcript(context.Background(), "mer-1", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("Transcript error = %v, want boom", err)
+	}
+}
+
+func TestTranscriptEmptyOkDegradesToEmpty(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+	}
+	fake := &fakeTranscriptAgent{ok: false}
+	svc := &Service{manager: &fakeCommander{agent: fake}, store: st}
+
+	got, err := svc.Transcript(context.Background(), "mer-1", nil, nil)
+	if err != nil {
+		t.Fatalf("Transcript: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("messages = %#v, want empty", got)
+	}
+}
+
+// TestTranscriptNonDefaultConfigDirPerHarness verifies the config-dir wiring
+// end to end: when the manager resolves a non-default native config dir for a
+// session (e.g. a CODEX_HOME / CLAUDE_CONFIG_DIR / OPENCODE_DATA_DIR set at
+// launch), the reader receives it under the harness-specific metadata key.
+func TestTranscriptNonDefaultConfigDirPerHarness(t *testing.T) {
+	cases := []struct {
+		name      string
+		harness   domain.AgentHarness
+		configDir string
+		metaKey   string
+	}{
+		{name: "codex", harness: domain.HarnessCodex, configDir: "/opt/custom-codex-home", metaKey: "codexHome"},
+		{name: "claude-code", harness: domain.HarnessClaudeCode, configDir: "/opt/custom-claude-config", metaKey: "claudeConfigDir"},
+		{name: "opencode", harness: domain.HarnessOpenCode, configDir: "/opt/custom-opencode-data", metaKey: "opencodeDataDir"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.sessions["mer-1"] = domain.SessionRecord{
+				ID:        "mer-1",
+				ProjectID: "mer",
+				Kind:      domain.KindWorker,
+				Harness:   tc.harness,
+				Metadata:  domain.SessionMetadata{WorkspacePath: "/work/mer"},
+			}
+			fake := &fakeTranscriptAgent{
+				messages: []ports.TranscriptMessage{{Role: "user", Text: "hello", Index: 0}},
+				ok:       true,
+			}
+			svc := &Service{
+				manager: &fakeCommander{agent: fake, configDir: tc.configDir},
+				store:   st,
+			}
+
+			got, err := svc.Transcript(context.Background(), "mer-1", nil, nil)
+			if err != nil {
+				t.Fatalf("Transcript: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("messages = %#v, want 1", got)
+			}
+
+			ref := fake.gotRef
+			if ref == nil {
+				t.Fatal("Transcript did not reach the adapter")
+			}
+			if got := ref.Metadata[tc.metaKey]; got != tc.configDir {
+				t.Fatalf("%s = %q, want %q (all metadata: %#v)", tc.metaKey, got, tc.configDir, ref.Metadata)
+			}
+		})
+	}
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -1037,5 +1038,75 @@ func TestDoctorLaunchProbesMirrorLaunchFlags(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("override probe missing %q in %s", want, joined)
 		}
+	}
+}
+
+func TestTranscriptReadsCodexRollout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	content := `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the tests"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"here is the patch"},{"type":"input_image_url"}]}}
+{"type":"response_item","payload":{"type":"function_call","name":"shell"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"tool_use"}]}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	messages, ok, err := (&Plugin{}).readCodexTranscript(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []ports.TranscriptMessage{
+		{Role: "user", Text: "fix the tests", Index: 0},
+		{Role: "assistant", Text: "done", Index: 1},
+		{Role: "assistant", Text: "here is the patch", Index: 2},
+	}
+	if !reflect.DeepEqual(messages, want) {
+		t.Fatalf("messages\nwant: %#v\n got: %#v", want, messages)
+	}
+}
+
+func TestTranscriptReadsCodexRolloutAbsentFile(t *testing.T) {
+	messages, ok, err := (&Plugin{}).readCodexTranscript(context.Background(), filepath.Join(t.TempDir(), "missing.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || messages != nil {
+		t.Fatalf("messages = %#v ok=%v, want nil/false", messages, ok)
+	}
+}
+
+// TestTranscriptReadsCodexRolloutSkipsOversizedLine verifies the oversized-line
+// guard: one huge message line (e.g. a giant tool output) must be skipped while
+// the surrounding user/assistant messages are still returned with stable
+// indexes.
+func TestTranscriptReadsCodexRolloutSkipsOversizedLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	huge := `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` +
+		strings.Repeat("x", agentbase.MaxTranscriptLineBytes+1024) +
+		`"}]}}`
+	content := `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"before"}]}}
+` + huge + `
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"after"}]}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	messages, ok, err := (&Plugin{}).readCodexTranscript(context.Background(), path)
+	if err != nil {
+		t.Fatalf("readCodexTranscript: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []ports.TranscriptMessage{
+		{Role: "user", Text: "before", Index: 0},
+		{Role: "assistant", Text: "after", Index: 1},
+	}
+	if !reflect.DeepEqual(messages, want) {
+		t.Fatalf("messages\nwant: %#v\n got: %#v", want, messages)
 	}
 }

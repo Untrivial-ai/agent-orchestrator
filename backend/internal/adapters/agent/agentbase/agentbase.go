@@ -6,11 +6,57 @@
 package agentbase
 
 import (
+	"bufio"
 	"context"
+	"errors"
+	"io"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+// MaxTranscriptLineBytes bounds a single JSONL line read from a native
+// transcript. Agents can emit enormous single-line tool outputs or diffs; an
+// oversized line is skipped rather than aborting the whole transcript read.
+const MaxTranscriptLineBytes = 8 << 20 // 8 MiB
+
+// ReadTranscriptLine reads the next non-empty line from r, draining (not
+// buffering) lines longer than MaxTranscriptLineBytes so one oversized message
+// can never fail the rest of the transcript. ok=false marks end of input.
+func ReadTranscriptLine(r *bufio.Reader) (line string, ok bool, err error) {
+	for {
+		var buf []byte
+		oversized := false
+		for {
+			frag, readErr := r.ReadSlice('\n')
+			if !oversized && len(buf)+len(frag) > MaxTranscriptLineBytes {
+				oversized = true
+				buf = nil // oversized: drop what we have and keep draining the line
+			}
+			if !oversized {
+				buf = append(buf, frag...)
+			}
+			if errors.Is(readErr, bufio.ErrBufferFull) {
+				continue
+			}
+			if readErr == io.EOF && len(buf) == 0 && len(frag) == 0 && !oversized {
+				return "", false, nil
+			}
+			if readErr != nil && readErr != io.EOF {
+				return "", false, readErr
+			}
+			break
+		}
+		if oversized {
+			continue // drop the line entirely; keep reading
+		}
+		line = strings.TrimSpace(string(buf))
+		if line == "" {
+			continue
+		}
+		return line, true, nil
+	}
+}
 
 // ModelConfigSpec returns the common optional model config field used by
 // adapters that forward a --model-style argument.

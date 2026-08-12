@@ -937,3 +937,102 @@ func contains(values []string, needle string) bool {
 	}
 	return false
 }
+
+func TestTranscriptReadsOpencodeDB(t *testing.T) {
+	clearOpenCodeAuthEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dataDir := filepath.Join(home, ".local", "share", "opencode")
+	writeOpenCodeDBAt(t, dataDir, func(db *sql.DB) {
+		for _, stmt := range []string{
+			`CREATE TABLE message (
+				id text PRIMARY KEY,
+				session_id text NOT NULL,
+				time_created integer NOT NULL,
+				time_updated integer NOT NULL,
+				data text NOT NULL
+			)`,
+			`CREATE TABLE part (
+				id text PRIMARY KEY,
+				message_id text NOT NULL,
+				session_id text NOT NULL,
+				time_created integer NOT NULL,
+				time_updated integer NOT NULL,
+				data text NOT NULL
+			)`,
+			`INSERT INTO message (id, session_id, data, time_created, time_updated) VALUES
+				('m1', 'ses_abc', '{"role":"user"}', 100, 100),
+				('m2', 'ses_abc', '{"role":"assistant"}', 200, 200),
+				('m3', 'other', '{"role":"user"}', 300, 300)`,
+			`INSERT INTO part (id, message_id, session_id, data, time_created, time_updated) VALUES
+				('p1', 'm1', 'ses_abc', '{"type":"text","text":"hello"}', 100, 100),
+				('p2', 'm2', 'ses_abc', '{"type":"text","text":"hi there"}', 200, 200),
+				('p3', 'm2', 'ses_abc', '{"type":"tool","text":"tool payload"}', 210, 210),
+				('p4', 'm3', 'other', '{"type":"text","text":"other"}', 300, 300)`,
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("exec %q: %v", stmt, err)
+			}
+		}
+	})
+
+	messages, ok, err := (&Plugin{}).Transcript(context.Background(), ports.SessionRef{
+		Metadata: map[string]string{opencodeAgentSessionIDMetadataKey: "ses_abc"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []ports.TranscriptMessage{
+		{Role: "user", Text: "hello", Index: 0},
+		{Role: "assistant", Text: "hi there", Index: 1},
+	}
+	if !reflect.DeepEqual(messages, want) {
+		t.Fatalf("messages\nwant: %#v\n got: %#v", want, messages)
+	}
+}
+
+func TestTranscriptReadsOpencodeDBNoMatches(t *testing.T) {
+	clearOpenCodeAuthEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dataDir := filepath.Join(home, ".local", "share", "opencode")
+	writeOpenCodeDBAt(t, dataDir, func(db *sql.DB) {
+		for _, stmt := range []string{
+			`CREATE TABLE message (
+				id text PRIMARY KEY,
+				session_id text NOT NULL,
+				time_created integer NOT NULL,
+				time_updated integer NOT NULL,
+				data text NOT NULL
+			)`,
+			`CREATE TABLE part (
+				id text PRIMARY KEY,
+				message_id text NOT NULL,
+				session_id text NOT NULL,
+				time_created integer NOT NULL,
+				time_updated integer NOT NULL,
+				data text NOT NULL
+			)`,
+			`INSERT INTO message (id, session_id, data, time_created, time_updated) VALUES ('m1', 'does-not-exist', '{"role":"user"}', 100, 100)`,
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("exec %q: %v", stmt, err)
+			}
+		}
+	})
+
+	messages, ok, err := (&Plugin{}).Transcript(context.Background(), ports.SessionRef{
+		Metadata: map[string]string{opencodeAgentSessionIDMetadataKey: "ses_abc"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || messages != nil {
+		t.Fatalf("messages = %#v ok=%v, want nil/false", messages, ok)
+	}
+}

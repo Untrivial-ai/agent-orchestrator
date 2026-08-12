@@ -447,6 +447,19 @@ type ResumeAgentResponse struct {
 	Session    SessionView                `json:"session"`
 }
 
+// GetSessionTranscriptResponse is the body of GET /api/v1/sessions/{sessionId}/transcript.
+type GetSessionTranscriptResponse struct {
+	SessionID domain.SessionID          `json:"sessionId"`
+	Messages  []ports.TranscriptMessage `json:"messages"`
+}
+
+// GetSessionTranscriptQuery selects a message or inclusive message range.
+type GetSessionTranscriptQuery struct {
+	Index *int `query:"index,omitempty" minimum:"0" description:"Return one message at this 0-based index."`
+	From  *int `query:"from,omitempty" minimum:"0" description:"Inclusive first message index."`
+	To    *int `query:"to,omitempty" minimum:"0" description:"Inclusive last message index; omitted means transcript end."`
+}
+
 // StartSessionInterfaceTransitionRequest is the body of POST
 // /api/v1/sessions/{sessionId}/interface-transition.
 type StartSessionInterfaceTransitionRequest struct {

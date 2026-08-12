@@ -43,6 +43,8 @@ type fakeSessionService struct {
 	workspaceFiles   sessionsvc.WorkspaceFiles
 	workspaceFile    sessionsvc.WorkspaceFileDetail
 	workspacePaths   []string
+	transcriptErr    error
+	transcriptEmpty  bool
 	spawnErr         error
 	orchestratorMode domain.SessionMode
 	claimErr         error
@@ -492,6 +494,29 @@ func (f *fakeSessionService) GetWorkspaceFile(_ context.Context, id domain.Sessi
 		return f.workspaceFile, nil
 	}
 	return sessionsvc.WorkspaceFileDetail{SessionID: id, Path: path}, nil
+}
+
+func (f *fakeSessionService) Transcript(_ context.Context, id domain.SessionID, from, to *int) ([]ports.TranscriptMessage, error) {
+	if _, ok := f.sessions[id]; !ok {
+		return nil, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if f.transcriptErr != nil {
+		return nil, f.transcriptErr
+	}
+	if f.transcriptEmpty {
+		return nil, nil
+	}
+	messages := []ports.TranscriptMessage{
+		{Role: "user", Text: "hello", Index: 0},
+		{Role: "assistant", Text: "hi", Index: 1},
+	}
+	if from != nil && to != nil {
+		if *from >= len(messages) || *to >= len(messages) {
+			return nil, apierr.NotFound("TRANSCRIPT_MESSAGE_NOT_FOUND", "Transcript message not found")
+		}
+		return messages[*from : *to+1], nil
+	}
+	return messages, nil
 }
 
 func TestSessionsAPI_AgentSwitchLifecycle(t *testing.T) {
@@ -2375,4 +2400,94 @@ func TestSessionsAPI_ClaimPRErrors(t *testing.T) {
 			assertErrorCode(t, body, status, tc.code, tc.want)
 		})
 	}
+}
+
+// TestSessionsAPI_GetTranscript covers the wire shape of
+// GET /api/v1/sessions/{sessionId}/transcript: happy path, empty transcript,
+// and the 404 envelope for an unknown session.
+func TestSessionsAPI_GetTranscript(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/transcript", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET transcript = %d, want 200; body=%s", status, body)
+	}
+	assertJSON(t, headers)
+	var got controllers.GetSessionTranscriptResponse
+	mustJSON(t, body, &got)
+	if got.SessionID != "ao-1" {
+		t.Fatalf("sessionId = %q, want ao-1", got.SessionID)
+	}
+	want := []ports.TranscriptMessage{
+		{Role: "user", Text: "hello"},
+		{Role: "assistant", Text: "hi"},
+	}
+	if len(got.Messages) != len(want) {
+		t.Fatalf("messages = %#v, want %#v", got.Messages, want)
+	}
+	for i := range got.Messages {
+		if got.Messages[i].Role != want[i].Role || got.Messages[i].Text != want[i].Text {
+			t.Fatalf("message[%d] = %#v, want %#v", i, got.Messages[i], want[i])
+		}
+	}
+	// Per-message index is present on the wire so a later partial-copy UI can
+	// address individual messages.
+	if got.Messages[0].Index != 0 || got.Messages[1].Index != 1 {
+		t.Fatalf("message indexes = %d,%d, want 0,1", got.Messages[0].Index, got.Messages[1].Index)
+	}
+}
+
+func TestSessionsAPI_GetTranscriptEmpty(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.sessions["ao-empty"] = domain.Session{SessionRecord: domain.SessionRecord{ID: "ao-empty", ProjectID: "ao", Kind: domain.KindWorker}}
+	svc.transcriptEmpty = true
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-empty/transcript", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET transcript = %d, want 200; body=%s", status, body)
+	}
+	assertJSON(t, headers)
+	var got controllers.GetSessionTranscriptResponse
+	mustJSON(t, body, &got)
+	if got.SessionID != "ao-empty" {
+		t.Fatalf("sessionId = %q, want ao-empty", got.SessionID)
+	}
+	if len(got.Messages) != 0 {
+		t.Fatalf("messages = %#v, want empty", got.Messages)
+	}
+}
+
+func TestSessionsAPI_GetTranscriptPartial(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	for _, query := range []string{"?index=1", "?from=0&to=1"} {
+		body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/transcript"+query, "")
+		if status != http.StatusOK {
+			t.Fatalf("GET transcript%s = %d, want 200; body=%s", query, status, body)
+		}
+		var got controllers.GetSessionTranscriptResponse
+		mustJSON(t, body, &got)
+		if len(got.Messages) == 0 || got.Messages[len(got.Messages)-1].Index != 1 {
+			t.Fatalf("messages for %s = %#v", query, got.Messages)
+		}
+	}
+}
+
+func TestSessionsAPI_GetTranscriptInvalidRange(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	for _, query := range []string{"?index=-1", "?from=1&to=0", "?index=1&from=0"} {
+		body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/transcript"+query, "")
+		assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_TRANSCRIPT_RANGE")
+	}
+}
+
+func TestSessionsAPI_GetTranscriptNotFound(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/nope/transcript", "")
+	assertErrorCode(t, body, status, http.StatusNotFound, "SESSION_NOT_FOUND")
 }

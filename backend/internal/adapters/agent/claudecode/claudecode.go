@@ -18,6 +18,7 @@
 package claudecode
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -73,6 +74,7 @@ func (p *Plugin) EmitsBlockedActivity() bool { return true }
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.AgentTranscriptReader = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.EmptyComposerDetector = (*Plugin)(nil)
 var _ ports.AgentInterfaceHandoff = (*Plugin)(nil)
@@ -263,6 +265,116 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 	}
 	info, ok := agentbase.StandardSessionInfo(session)
 	return info, ok, nil
+}
+
+// Transcript reads the agent's native transcript and returns a normalized
+// list of user/assistant turns. It locates and parses Claude Code's JSONL.
+func (p *Plugin) Transcript(ctx context.Context, session ports.SessionRef) ([]ports.TranscriptMessage, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	agentSessionID := strings.TrimSpace(session.Metadata[ports.MetadataKeyAgentSessionID])
+	if agentSessionID == "" && session.ID != "" {
+		agentSessionID = claudeSessionUUID(session.ID)
+	}
+	if agentSessionID == "" {
+		return nil, false, nil
+	}
+	ref := ports.NativeSessionRef{
+		NativeSessionID: agentSessionID,
+		ConfigDir:       strings.TrimSpace(session.Metadata["claudeConfigDir"]),
+	}
+	if ref.ConfigDir == "" {
+		ref.ConfigDir = strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
+	}
+	if ref.ConfigDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, false, fmt.Errorf("claude-code: resolve home: %w", err)
+		}
+		ref.ConfigDir = filepath.Join(home, ".claude")
+	}
+	transcriptPath, ok, err := p.LocateTranscript(ctx, ref)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok || transcriptPath == "" {
+		return nil, false, nil
+	}
+	return p.readClaudeTranscript(ctx, transcriptPath)
+}
+
+func (p *Plugin) readClaudeTranscript(ctx context.Context, path string) ([]ports.TranscriptMessage, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("claude-code: open transcript: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	var transcript []ports.TranscriptMessage
+	reader := bufio.NewReader(f)
+	for {
+		line, ok, err := agentbase.ReadTranscriptLine(reader)
+		if err != nil {
+			return nil, false, fmt.Errorf("claude-code: scan transcript: %w", err)
+		}
+		if !ok {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		var entry struct {
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Message struct {
+				Role    string      `json:"role"`
+				Content interface{} `json:"content"`
+			} `json:"message"`
+			ParentUUID string `json:"parentUuid"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		role := entry.Role
+		if role == "" {
+			role = entry.Message.Role
+		}
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		var texts []string
+		switch content := entry.Message.Content.(type) {
+		case string:
+			if strings.TrimSpace(content) != "" {
+				texts = append(texts, content)
+			}
+		case []interface{}:
+			for _, c := range content {
+				switch v := c.(type) {
+				case map[string]interface{}:
+					if v["type"] == "text" {
+						if text, ok := v["text"].(string); ok && text != "" {
+							texts = append(texts, text)
+						}
+					}
+				case string:
+					texts = append(texts, v)
+				}
+			}
+		}
+		if len(texts) > 0 {
+			transcript = append(transcript, ports.TranscriptMessage{
+				Role:  role,
+				Text:  strings.Join(texts, "\n"),
+				Index: len(transcript),
+			})
+		}
+	}
+	return transcript, len(transcript) > 0, nil
 }
 
 // NativeConversationID bridges Claude Code's terminal and ACP surfaces. Both

@@ -103,6 +103,7 @@ type SessionService interface {
 	WorkspaceWatchPaths(ctx context.Context, id domain.SessionID) ([]string, error)
 	ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (sessionsvc.WorkspaceFiles, error)
 	GetWorkspaceFile(ctx context.Context, id domain.SessionID, path string) (sessionsvc.WorkspaceFileDetail, error)
+	Transcript(ctx context.Context, id domain.SessionID, from, to *int) ([]ports.TranscriptMessage, error)
 	InvalidateWorkspaceCache(id domain.SessionID)
 	Pin(ctx context.Context, id domain.SessionID) (domain.Session, error)
 	Unpin(ctx context.Context, id domain.SessionID) (domain.Session, error)
@@ -182,6 +183,7 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/activity", c.activity)
 	r.Post("/sessions/{sessionId}/pin", c.pin)
 	r.Delete("/sessions/{sessionId}/pin", c.unpin)
+	r.Get("/sessions/{sessionId}/transcript", c.transcript)
 	r.Get("/orchestrators", c.listOrchestrators)
 	r.Post("/orchestrators", c.spawnOrchestrator)
 	r.Post("/orchestrators/delegate", c.delegateTask)
@@ -549,6 +551,72 @@ func (c *SessionsController) getWorkspaceFile(w http.ResponseWriter, r *http.Req
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, workspaceFileResponse(file))
+}
+
+func (c *SessionsController) transcript(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/transcript")
+		return
+	}
+	query, err := parseTranscriptQuery(r)
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_TRANSCRIPT_RANGE", err.Error(), nil)
+		return
+	}
+	messages, err := c.Svc.Transcript(r.Context(), sessionID(r), query.from, query.to)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, GetSessionTranscriptResponse{
+		SessionID: sessionID(r),
+		Messages:  messages,
+	})
+}
+
+type transcriptQuery struct {
+	from *int
+	to   *int
+}
+
+func parseTranscriptQuery(r *http.Request) (transcriptQuery, error) {
+	values := r.URL.Query()
+	parse := func(name string) (*int, error) {
+		value, present := values[name]
+		if !present {
+			return nil, nil
+		}
+		if len(value) != 1 || value[0] == "" {
+			return nil, fmt.Errorf("%s must be a non-negative integer", name)
+		}
+		parsed, err := strconv.Atoi(value[0])
+		if err != nil || parsed < 0 {
+			return nil, fmt.Errorf("%s must be a non-negative integer", name)
+		}
+		return &parsed, nil
+	}
+	index, err := parse("index")
+	if err != nil {
+		return transcriptQuery{}, err
+	}
+	from, err := parse("from")
+	if err != nil {
+		return transcriptQuery{}, err
+	}
+	to, err := parse("to")
+	if err != nil {
+		return transcriptQuery{}, err
+	}
+	if index != nil && (from != nil || to != nil) {
+		return transcriptQuery{}, errors.New("index cannot be combined with from or to")
+	}
+	if index != nil {
+		return transcriptQuery{from: index, to: index}, nil
+	}
+	if from != nil && to != nil && *from > *to {
+		return transcriptQuery{}, errors.New("from must be less than or equal to to")
+	}
+	return transcriptQuery{from: from, to: to}, nil
 }
 
 func (c *SessionsController) streamWorkspaceChanges(w http.ResponseWriter, r *http.Request) {

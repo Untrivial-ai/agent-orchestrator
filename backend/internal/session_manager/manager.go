@@ -1196,6 +1196,76 @@ func (m *Manager) RollbackSpawn(ctx context.Context, id domain.SessionID) (delet
 	return m.rollbackSpawn(ctx, id)
 }
 
+// Agent returns the agent adapter for a session's harness.
+func (m *Manager) Agent(ctx context.Context, id domain.SessionID) (ports.Agent, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return nil, false, fmt.Errorf("get session %s: %w", id, err)
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	if rec.Harness == "" {
+		return nil, false, nil
+	}
+	agent, ok := m.agents.Agent(rec.Harness)
+	if !ok {
+		return nil, false, nil
+	}
+	return agent, true, nil
+}
+
+// NativeSessionConfigDir resolves the agent-native state root a session's
+// harness used, preferring the ConfigDir stored with the session's
+// native-session binding (recorded by agent switching) and falling back to a
+// live resolution from the session's runtime env so CODEX_HOME /
+// CLAUDE_CONFIG_DIR / OPENCODE_DATA_DIR set at launch are honored. An empty
+// result means the harness has no resolvable config dir; the transcript
+// adapters then fall back to their own defaults.
+func (m *Manager) NativeSessionConfigDir(ctx context.Context, id domain.SessionID) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("get session %s: %w", id, err)
+	}
+	if !ok || rec.Harness == "" {
+		return "", nil
+	}
+	agent, ok := m.agents.Agent(rec.Harness)
+	if !ok {
+		return "", nil
+	}
+	if store, ok := m.store.(ports.AgentSwitchStore); ok {
+		records, err := store.ListAgentNativeSessions(ctx, id)
+		if err == nil {
+			for _, existing := range records {
+				if existing.Harness == rec.Harness && strings.TrimSpace(existing.ConfigDir) != "" {
+					return existing.ConfigDir, nil
+				}
+			}
+		}
+	}
+	// Live resolution: the runtime env the session was launched with plus the
+	// daemon env and home fallbacks, mirroring what nativeConfigDir does for
+	// switch orchestration.
+	project, err := m.loadProject(ctx, rec.ProjectID)
+	if err != nil {
+		return "", nil //nolint:nilerr // best-effort resolution; callers fall back to adapter defaults
+	}
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	m.augmentAgentRuntimeEnv(agent, env)
+	dir, err := nativeConfigDir(ctx, agent, env)
+	if err != nil {
+		return "", nil //nolint:nilerr // best-effort resolution; callers fall back to adapter defaults
+	}
+	return dir, nil
+}
+
 // Kill tears down the runtime and workspace, then records terminal intent with
 // the LCM. A workspace teardown refused by the worktree-remove safety
 // (uncommitted work) is never forced: Kill succeeds with freed=false,

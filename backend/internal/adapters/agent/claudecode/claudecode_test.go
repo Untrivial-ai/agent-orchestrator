@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -993,4 +994,73 @@ func containsSubsequence(values, needle []string) bool {
 		}
 	}
 	return false
+}
+
+func TestTranscriptReadsClaudeSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	content := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]}}
+{"type":"user","message":{"role":"user","content":"plain string text"}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"not a message"}]}}
+{"type":"system","summary":"compacted"}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	messages, ok, err := (&Plugin{}).readClaudeTranscript(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []ports.TranscriptMessage{
+		{Role: "user", Text: "hello", Index: 0},
+		{Role: "assistant", Text: "hi there", Index: 1},
+		{Role: "user", Text: "plain string text", Index: 2},
+	}
+	if !reflect.DeepEqual(messages, want) {
+		t.Fatalf("messages\nwant: %#v\n got: %#v", want, messages)
+	}
+}
+
+func TestTranscriptReadsClaudeSessionAbsentFile(t *testing.T) {
+	messages, ok, err := (&Plugin{}).readClaudeTranscript(context.Background(), filepath.Join(t.TempDir(), "missing.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || messages != nil {
+		t.Fatalf("messages = %#v ok=%v, want nil/false", messages, ok)
+	}
+}
+
+// TestTranscriptReadsClaudeSessionSkipsOversizedLine verifies the oversized-line
+// guard: one huge message line must be skipped while the surrounding
+// user/assistant messages are still returned with stable indexes.
+func TestTranscriptReadsClaudeSessionSkipsOversizedLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	huge := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"` +
+		strings.Repeat("x", agentbase.MaxTranscriptLineBytes+1024) +
+		`"}]}}`
+	content := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"before"}]}}
+` + huge + `
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"after"}]}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	messages, ok, err := (&Plugin{}).readClaudeTranscript(context.Background(), path)
+	if err != nil {
+		t.Fatalf("readClaudeTranscript: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []ports.TranscriptMessage{
+		{Role: "user", Text: "before", Index: 0},
+		{Role: "user", Text: "after", Index: 1},
+	}
+	if !reflect.DeepEqual(messages, want) {
+		t.Fatalf("messages\nwant: %#v\n got: %#v", want, messages)
+	}
 }
