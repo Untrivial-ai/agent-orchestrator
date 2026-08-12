@@ -32,6 +32,7 @@ export const aoBridge: AoBridge =
 			setOverlay: async () => undefined,
 			isFullScreen: async () => false,
 			onFullScreen: () => () => undefined,
+			onRemeasure: () => () => undefined,
 		},
 		theme: {
 			set: async () => undefined,
