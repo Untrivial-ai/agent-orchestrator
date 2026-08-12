@@ -23,6 +23,19 @@ const AUTH_PROTOCOL = {
 	schemes: ["ao-app"],
 };
 const AUTH_PROTOCOL_MIME_TYPE = "x-scheme-handler/ao-app";
+const ACP_RUNTIME_NODE_PATH = "/Contents/Resources/acp-runtime/node/bin/node";
+// V8 uses MAP_JIT on arm64 and mprotect on x64. electron-osx-sign's default
+// allows only the former, so its re-signing makes the bundled Node crash on Intel.
+const ACP_RUNTIME_NODE_ENTITLEMENTS = [
+	"com.apple.security.cs.allow-jit",
+	"com.apple.security.cs.allow-unsigned-executable-memory",
+];
+
+export function macSignOptionsForFile(filePath: string): { entitlements?: string[] } {
+	return filePath.endsWith(ACP_RUNTIME_NODE_PATH)
+		? { entitlements: ACP_RUNTIME_NODE_ENTITLEMENTS }
+		: {};
+}
 
 // parseReleaseRepo turns an "owner/repo" string (from AO_RELEASE_REPO) into the
 // publisher-github { owner, name } shape, falling back to the production default
@@ -66,9 +79,12 @@ const config: ForgeConfig = {
 		//    `notarytool store-credentials`. See ao-macos-signed-release runbook.
 		// Both are valid NotaryToolCredentials, so no cast is needed.
 		osxSign: process.env.APPLE_SIGNING_IDENTITY
-			? { identity: process.env.APPLE_SIGNING_IDENTITY }
+			? {
+					identity: process.env.APPLE_SIGNING_IDENTITY,
+					optionsForFile: macSignOptionsForFile,
+				}
 			: process.env.CSC_LINK
-				? {}
+				? { optionsForFile: macSignOptionsForFile }
 				: undefined,
 		osxNotarize: process.env.AO_NOTARY_PROFILE
 			? { keychainProfile: process.env.AO_NOTARY_PROFILE }
