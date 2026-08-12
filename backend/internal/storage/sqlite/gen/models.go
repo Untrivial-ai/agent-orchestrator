@@ -260,6 +260,7 @@ type PR struct {
 	LastNudgeSignature       string
 	StateChangedAt           sql.NullTime
 	AutoInjectCI             bool
+	AttachmentSource         string
 }
 
 type PRCheck struct {
