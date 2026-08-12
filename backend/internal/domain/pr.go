@@ -90,9 +90,12 @@ type PullRequest struct {
 type PRAttachmentSource string
 
 const (
-	PRAttachmentLegacy    PRAttachmentSource = "legacy"
+	// PRAttachmentLegacy marks rows created before attachment provenance existed.
+	PRAttachmentLegacy PRAttachmentSource = "legacy"
+	// PRAttachmentAutomatic marks branch-and-author inferred associations.
 	PRAttachmentAutomatic PRAttachmentSource = "automatic"
-	PRAttachmentExplicit  PRAttachmentSource = "explicit"
+	// PRAttachmentExplicit marks associations made through an explicit claim.
+	PRAttachmentExplicit PRAttachmentSource = "explicit"
 )
 
 // WithDefault maps zero-value callers written before provenance tracking to
