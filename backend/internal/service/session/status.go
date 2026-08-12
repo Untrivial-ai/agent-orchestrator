@@ -38,6 +38,15 @@ func deriveStatus(rec domain.SessionRecord, prs []domain.PRFacts, now time.Time,
 	case domain.ActivityExited:
 		return domain.StatusExited
 	case domain.ActivityWaitingInput, domain.ActivityBlocked:
+		// PR facts are a newer, more actionable signal than a sticky
+		// waiting_input/blocked activity state: once a worker has raised a
+		// PR, its pipeline status (pr_open, ci_failed, review_pending, ...)
+		// is more useful than a stale "needs input" pinned from the last
+		// hook callback. Only fall back to needs_input when there is no
+		// open (or merged) PR to derive a status from.
+		if scmStatus := deriveSCMStatus(prs); scmStatus != "" {
+			return scmStatus
+		}
 		return domain.StatusNeedsInput
 	}
 

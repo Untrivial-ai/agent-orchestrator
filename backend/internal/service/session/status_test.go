@@ -48,8 +48,22 @@ func TestServiceDerivesStatusFromSessionFactsAndPR(t *testing.T) {
 	}{
 		{"terminated", statusRec(domain.ActivityExited, true), nil, false, domain.StatusTerminated},
 		{"merged-pr", statusRec(domain.ActivityIdle, true), statusPR(domain.PRFacts{Merged: true}), false, domain.StatusMerged},
-		{"needs-input", statusRec(domain.ActivityWaitingInput, false), statusPR(domain.PRFacts{CI: domain.CIFailing}), false, domain.StatusNeedsInput},
-		{"needs-input-blocked", statusRec(domain.ActivityBlocked, false), statusPR(domain.PRFacts{CI: domain.CIFailing}), false, domain.StatusNeedsInput},
+		// Termination outranks activity state entirely, unaffected by the
+		// waiting_input/PR precedence fix below: a terminated session with a
+		// waiting_input activity signal still reports merged, exactly as an
+		// idle terminated session does.
+		{"terminated-waiting-input-merged-pr-still-merged", statusRec(domain.ActivityWaitingInput, true), statusPR(domain.PRFacts{Merged: true}), false, domain.StatusMerged},
+		// waiting_input with no PR to derive a status from still falls back to needs_input.
+		{"needs-input", statusRec(domain.ActivityWaitingInput, false), nil, false, domain.StatusNeedsInput},
+		// waiting_input with an owned PR now surfaces the PR's pipeline status
+		// instead of masking it behind needs_input.
+		{"waiting-input-pr-derived-ci-failed", statusRec(domain.ActivityWaitingInput, false), statusPR(domain.PRFacts{CI: domain.CIFailing}), false, domain.StatusCIFailed},
+		// blocked with no PR to derive a status from still falls back to needs_input.
+		{"needs-input-blocked", statusRec(domain.ActivityBlocked, false), nil, false, domain.StatusNeedsInput},
+		// blocked with an owned PR now surfaces the PR's pipeline status
+		// instead of masking it behind needs_input (same fix as waiting_input,
+		// since both share the same activity-precedence case).
+		{"blocked-pr-derived-ci-failed", statusRec(domain.ActivityBlocked, false), statusPR(domain.PRFacts{CI: domain.CIFailing}), false, domain.StatusCIFailed},
 		{"exited", statusRec(domain.ActivityExited, false), statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), false, domain.StatusExited},
 		{"ci-failed", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{CI: domain.CIFailing}), false, domain.StatusCIFailed},
 		{"draft", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Draft: true}), false, domain.StatusDraft},
@@ -112,8 +126,16 @@ func TestDeriveStatusActivityPrecedence(t *testing.T) {
 		{"exited-without-pr", domain.ActivityExited, nil, domain.StatusExited},
 		{"exited-with-open-pr", domain.ActivityExited, statusPR(domain.PRFacts{}), domain.StatusExited},
 		{"exited-with-merged-pr", domain.ActivityExited, statusPR(domain.PRFacts{Merged: true}), domain.StatusExited},
-		{"waiting-with-pr", domain.ActivityWaitingInput, statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), domain.StatusNeedsInput},
-		{"blocked-with-pr", domain.ActivityBlocked, statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), domain.StatusNeedsInput},
+		// waiting_input/blocked defer to the PR's pipeline status when there is
+		// one to derive; they only fall back to needs_input when there isn't.
+		{"waiting-with-pr", domain.ActivityWaitingInput, statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), domain.StatusMergeable},
+		{"blocked-with-pr", domain.ActivityBlocked, statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), domain.StatusMergeable},
+		{"waiting-without-pr", domain.ActivityWaitingInput, nil, domain.StatusNeedsInput},
+		{"blocked-without-pr", domain.ActivityBlocked, nil, domain.StatusNeedsInput},
+		{"waiting-with-open-pr", domain.ActivityWaitingInput, statusPR(domain.PRFacts{}), domain.StatusPROpen},
+		{"waiting-with-ci-failing-pr", domain.ActivityWaitingInput, statusPR(domain.PRFacts{CI: domain.CIFailing}), domain.StatusCIFailed},
+		{"blocked-with-open-pr", domain.ActivityBlocked, statusPR(domain.PRFacts{}), domain.StatusPROpen},
+		{"blocked-with-ci-failing-pr", domain.ActivityBlocked, statusPR(domain.PRFacts{CI: domain.CIFailing}), domain.StatusCIFailed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
