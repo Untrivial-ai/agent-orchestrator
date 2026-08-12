@@ -605,18 +605,28 @@ const timelineNodeTone: Record<TimelineTone, string> = {
 };
 
 function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: WorkspaceSession }) {
-	const history: {
+	type HistoryEntry = {
 		tone: TimelineTone;
 		node: ReactNode;
 		ts: string | null;
+		/** Epoch ms for chronological sorting. */
+		sortTs: number;
+		/** Push order — descending tiebreaker so same-timestamp events keep
+		 *  reverse-category order (Done > Merged > Opened > Draft > Created). */
+		seq: number;
 		markerTone?: string;
 		markerBreathe?: boolean;
-	}[] = [];
+	};
+
+	const history: HistoryEntry[] = [];
+	let seq = 0;
 
 	history.push({
 		tone: "neutral",
 		node: <>{appI18n.t("inspector.timeline.createdWorkspace")}</>,
 		ts: formatTimeCompact(session.createdAt ?? session.updatedAt),
+		sortTs: parseTimestamp(session.createdAt ?? session.updatedAt),
+		seq: seq++,
 	});
 
 	for (const pr of prs.filter((pr) => pr.state === "draft")) {
@@ -624,6 +634,8 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 			tone: "neutral",
 			node: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.draft")} />,
 			ts: prStateTime(pr),
+			sortTs: parseTimestamp(pr.stateChangedAt ?? pr.updatedAt),
+			seq: seq++,
 		});
 	}
 
@@ -632,6 +644,8 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 			tone: "neutral",
 			node: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.opened")} />,
 			ts: prCreatedTime(pr),
+			sortTs: parseTimestamp(pr.createdAt ?? pr.updatedAt),
+			seq: seq++,
 		});
 	}
 
@@ -640,6 +654,8 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 			tone: "good",
 			node: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.merged")} />,
 			ts: prStateTime(pr),
+			sortTs: parseTimestamp(pr.stateChangedAt ?? pr.updatedAt),
+			seq: seq++,
 		});
 	}
 
@@ -648,11 +664,18 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 			tone: "good",
 			node: <>{appI18n.t("inspector.timeline.done")}</>,
 			ts: latestMergedTime(prs),
+			sortTs: latestMergedTimeMs(prs),
+			seq: seq++,
 		});
 	}
 
+	// Sort historical events in reverse-chronological order (newest first).
+	// Tie-breaking by descending seq keeps the semantic grouping when timestamps
+	// are equal or missing: Done > Merged > Opened > Draft > Created workspace.
+	const sortedHistory = [...history].sort((a, b) => b.sortTs - a.sortTs || b.seq - a.seq);
+
 	// Current activity is a live reading, not a historical event. Keep it above
-	// the optional reverse-chronological history and do not imply that its last
+	// the reverse-chronological history and do not imply that its last
 	// hook time is when the state transition occurred.
 	const activityView = getAgentActivityView(session.activity);
 	const current = {
@@ -684,7 +707,7 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 		markerTone: string;
 		markerBreathe: boolean;
 	};
-	const events = [current, ...history.reverse()];
+	const events = [current, ...sortedHistory];
 
 	return (
 		<div className="relative pl-5">
@@ -744,17 +767,26 @@ function prCreatedTime(pr: SessionPRSummary): string | null {
 	return pr.createdAt ? formatTimeCompact(pr.createdAt) : null;
 }
 
+/** Parse an ISO timestamp to epoch milliseconds, returning 0 on failure/absence. */
+function parseTimestamp(value?: string | null): number {
+	if (!value) return 0;
+	const ms = Date.parse(value);
+	return Number.isFinite(ms) ? ms : 0;
+}
+
 function latestMergedTime(prs: SessionPRSummary[]): string | null {
-	let latest: { timestamp: string; milliseconds: number } | undefined;
+	const ms = latestMergedTimeMs(prs);
+	return ms > 0 ? formatTimeCompact(new Date(ms).toISOString()) : null;
+}
+
+function latestMergedTimeMs(prs: SessionPRSummary[]): number {
+	let latest = 0;
 	for (const pr of prs) {
-		if (pr.state !== "merged" || !pr.stateChangedAt) continue;
-		const milliseconds = Date.parse(pr.stateChangedAt);
-		if (!Number.isFinite(milliseconds)) continue;
-		if (!latest || milliseconds > latest.milliseconds) {
-			latest = { timestamp: pr.stateChangedAt, milliseconds };
-		}
+		if (pr.state !== "merged") continue;
+		const ms = parseTimestamp(pr.stateChangedAt ?? pr.updatedAt);
+		if (ms > latest) latest = ms;
 	}
-	return latest ? formatTimeCompact(latest.timestamp) : null;
+	return latest;
 }
 
 type ScmTimelineState = "ci_failed" | "changes_requested" | "conflict";

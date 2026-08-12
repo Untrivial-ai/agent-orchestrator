@@ -817,6 +817,21 @@ describe("SessionInspector Activity section", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-06-15T12:00:00Z"));
 
+		const summaries = [
+			prSummary(42, "draft", {
+				createdAt: "2026-06-15T10:30:00Z",
+				stateChangedAt: "2026-06-15T10:30:00Z",
+			}),
+			prSummary(41, "open", {
+				createdAt: "2026-06-15T11:00:00Z",
+				stateChangedAt: "2026-06-15T11:00:00Z",
+			}),
+			prSummary(40, "merged", {
+				createdAt: "2026-06-15T09:30:00Z",
+				stateChangedAt: "2026-06-15T11:30:00Z",
+			}),
+		];
+
 		renderWithQuery(
 			<SessionInspector
 				session={session([pr(42, "draft"), pr(41, "open"), pr(40, "merged")], {
@@ -826,6 +841,8 @@ describe("SessionInspector Activity section", () => {
 					activity: { state: "idle", lastActivityAt: "2026-06-15T10:00:00Z" },
 				})}
 			/>,
+			undefined,
+			(client) => client.setQueryData(sessionScmSummaryQueryKey("sess-1"), summaries),
 		);
 
 		const section = screen.getByText("Activity").closest("[data-testid='inspector-section']") as HTMLElement;
@@ -834,11 +851,11 @@ describe("SessionInspector Activity section", () => {
 		);
 		expect(rows).toEqual([
 			"Idle",
-			"Done",
-			"Merged PR #40",
-			"Opened PR #40",
-			"Opened PR #41",
-			"Draft PR #42",
+			"Done30m ago",
+			"Merged PR #4030m ago",
+			"Opened PR #411h ago",
+			"Draft PR #421h ago",
+			"Opened PR #402h ago",
 			"Created workspace3h ago",
 		]);
 
@@ -847,6 +864,51 @@ describe("SessionInspector Activity section", () => {
 		expect(
 			within(eventRows[eventRows.length - 1] as HTMLElement).queryByTestId("inspector-timeline-connector"),
 		).not.toBeInTheDocument();
+	});
+
+	it("sorts activity events chronologically across multiple PRs (regression)", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-06-15T12:00:00Z"));
+
+		// Reproduces the reported bug: two PRs opened at different times must
+		// appear in reverse-chronological order, not in PR-number order.
+		// PR #3683 opened 53m ago should appear ABOVE PR #3647 opened 1d ago.
+		const summaries = [
+			prSummary(3647, "merged", {
+				createdAt: "2026-06-14T12:00:00Z",
+				stateChangedAt: "2026-06-14T18:00:00Z",
+			}),
+			prSummary(3683, "open", {
+				createdAt: "2026-06-15T11:07:00Z",
+				stateChangedAt: "2026-06-15T11:07:00Z",
+			}),
+		];
+
+		renderWithQuery(
+			<SessionInspector
+				session={session([pr(3647, "merged"), pr(3683, "open")], {
+					createdAt: "2026-06-14T10:00:00Z",
+					updatedAt: "2026-06-15T11:07:00Z",
+					activity: { state: "active", lastActivityAt: "2026-06-15T11:50:00Z" },
+				})}
+			/>,
+			undefined,
+			(client) => client.setQueryData(sessionScmSummaryQueryKey("sess-1"), summaries),
+		);
+
+		const section = screen.getByText("Activity").closest("[data-testid='inspector-section']") as HTMLElement;
+		const rows = Array.from(section.querySelectorAll("[data-testid='inspector-timeline-event']"), (row) =>
+			row.textContent?.replace(/\s+/g, " ").trim(),
+		);
+
+		// Newest first: Working > Opened #3683 (53m) > Merged #3647 (18h) > Opened #3647 (1d) > Created workspace
+		expect(rows).toEqual([
+			"Working",
+			"Opened PR #368353m ago",
+			"Merged PR #364718h ago",
+			"Opened PR #36471d ago",
+			"Created workspace1d ago",
+		]);
 	});
 });
 
