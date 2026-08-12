@@ -68,13 +68,13 @@ func TestMigration0088NormalizesLocalZoneActivityTimestamps(t *testing.T) {
 	// The normalized column has to compare as a timestamp again: this is the
 	// predicate the agent-switch source stop runs, and the value it compares
 	// against is a later instant in UTC.
-	var comparable int
+	var comparableRows int
 	if err := db.QueryRow(
 		`SELECT COUNT(*) FROM sessions WHERE activity_last_at <= '2026-08-12 16:00:00.000000 +0000 UTC'`,
-	).Scan(&comparable); err != nil {
+	).Scan(&comparableRows); err != nil {
 		t.Fatal(err)
 	}
-	if comparable != len(seed) {
-		t.Errorf("rows comparing as timestamps = %d, want %d", comparable, len(seed))
+	if comparableRows != len(seed) {
+		t.Errorf("rows comparing as timestamps = %d, want %d", comparableRows, len(seed))
 	}
 }
