@@ -387,6 +387,9 @@ func TestClaimPR_CreatesMovesAndGuardsActiveOwner(t *testing.T) {
 	if err != nil || !ok || got.SessionID != first.ID || got.Number != 42 {
 		t.Fatalf("claimed row = %+v ok=%v err=%v", got, ok, err)
 	}
+	if got.AttachmentSource != domain.PRAttachmentExplicit {
+		t.Fatalf("claimed attachment source = %q, want explicit", got.AttachmentSource)
+	}
 
 	pr.SessionID = second.ID
 	if _, err := s.ClaimPR(ctx, pr, nil, nil, nil, nil, ports.ReviewWritePreserve, false); !errors.Is(err, ports.ErrPRClaimedByActiveSession) {

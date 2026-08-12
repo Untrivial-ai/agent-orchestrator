@@ -91,6 +91,30 @@ type PullRequest struct {
 	CIObservedAt     time.Time
 	ReviewObservedAt time.Time
 	AutoInjectCI     bool
+
+	// AttachmentSource records whether AO inferred this session association or
+	// a user explicitly claimed it. Legacy rows predate provenance tracking and
+	// are kept distinct so reconciliation can apply a narrower safety rule.
+	AttachmentSource PRAttachmentSource
+}
+
+// PRAttachmentSource describes how a pull request became associated with its
+// current session.
+type PRAttachmentSource string
+
+const (
+	PRAttachmentLegacy    PRAttachmentSource = "legacy"
+	PRAttachmentAutomatic PRAttachmentSource = "automatic"
+	PRAttachmentExplicit  PRAttachmentSource = "explicit"
+)
+
+// WithDefault maps zero-value callers written before provenance tracking to
+// the migration-compatible legacy value.
+func (s PRAttachmentSource) WithDefault() PRAttachmentSource {
+	if s == "" {
+		return PRAttachmentLegacy
+	}
+	return s
 }
 
 // PullRequestCheck is one normalized CI check run for a pull request.
