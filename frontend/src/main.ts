@@ -38,7 +38,17 @@ import {
 import { coerceUiSettings, readUiSettings, writeUiSettings, type UiSettings } from "./main/ui-settings";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
+import {
+	closeSync,
+	createWriteStream,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	type WriteStream,
+} from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -308,6 +318,66 @@ const MAX_DAEMON_OUTPUT_CHARS = 12_000;
 
 function appendDaemonOutput(text: string): void {
 	daemonOutput = (daemonOutput + text).slice(-MAX_DAEMON_OUTPUT_CHARS);
+}
+
+// Durable daemon log for the desktop-owned launch (issue #2689). Without it the
+// daemon's stderr — including a panic stack — lives only in the Electron console
+// and dies with the app, so a crash leaves nothing to correlate with the request
+// ID the API handed out. Keep-daemon mode redirects stdio to this same file at
+// spawn time instead, so this writer is only for the piped path.
+const DAEMON_LOG_MAX_BYTES = 8 * 1024 * 1024;
+let daemonLogStream: WriteStream | undefined;
+let daemonLogBytes = 0;
+
+function daemonLogPath(): string {
+	return path.join(os.homedir(), ".ao", ...(isDev ? [DEV_STATE_SUBDIR] : []), "daemon.log");
+}
+
+function openDaemonLog(): void {
+	closeDaemonLog();
+	const logPath = daemonLogPath();
+	try {
+		mkdirSync(path.dirname(logPath), { recursive: true });
+		// Rotate before appending so one long-lived install cannot grow the log
+		// without bound; one generation back is enough to survive a crash loop.
+		let size = 0;
+		try {
+			size = statSync(logPath).size;
+		} catch {
+			size = 0; // absent on first run
+		}
+		if (size >= DAEMON_LOG_MAX_BYTES) {
+			try {
+				renameSync(logPath, `${logPath}.1`);
+				size = 0;
+			} catch {
+				// Rotation is best-effort; appending to an oversized log still beats
+				// losing the crash output entirely.
+			}
+		}
+		daemonLogBytes = size;
+		daemonLogStream = createWriteStream(logPath, { flags: "a" });
+		daemonLogStream.on("error", () => {
+			// A failed log write must never take the app down with it.
+			daemonLogStream = undefined;
+		});
+	} catch {
+		console.warn(`AO: daemon log unavailable: ${logPath}`);
+		daemonLogStream = undefined;
+	}
+}
+
+function closeDaemonLog(): void {
+	daemonLogStream?.end();
+	daemonLogStream = undefined;
+	daemonLogBytes = 0;
+}
+
+function writeDaemonLog(text: string): void {
+	if (!daemonLogStream) return;
+	daemonLogStream.write(text);
+	daemonLogBytes += Buffer.byteLength(text);
+	if (daemonLogBytes >= DAEMON_LOG_MAX_BYTES) openDaemonLog();
 }
 
 // Menu installed on Windows where the native menu bar is hidden. The bar stays
@@ -1259,10 +1329,14 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	if (!keep) {
 		const scanStdout = createListenPortScanner(reportBoundPort);
 		const scanStderr = createListenPortScanner(reportBoundPort);
+		// Mirror the pipes to disk: the scanners still need them, so the log is a
+		// tee rather than the stdio redirect keep-daemon mode uses.
+		openDaemonLog();
 
 		child.stdout?.on("data", (chunk: Buffer) => {
 			const text = chunk.toString("utf8");
 			appendDaemonOutput(text);
+			writeDaemonLog(text);
 			console.log(text.trimEnd());
 			scanStdout(text);
 		});
@@ -1270,6 +1344,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		child.stderr?.on("data", (chunk: Buffer) => {
 			const text = chunk.toString("utf8");
 			appendDaemonOutput(text);
+			writeDaemonLog(text);
 			console.error(text.trimEnd());
 			scanStderr(text);
 		});
@@ -1332,6 +1407,12 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 
 	child.once("exit", (code, signal) => {
 		stopDiscovery();
+		// Stamp the exit before closing: a bare stack with no terminator reads as
+		// a truncated log, while "exited with SIGSEGV" names the failure outright.
+		writeDaemonLog(
+			`\n[ao] daemon exited ${signal ? `with ${signal}` : `with code ${code ?? "unknown"}`} at ${new Date().toISOString()}\n`,
+		);
+		closeDaemonLog();
 		if (daemonProcess !== child) return;
 		daemonProcess = null;
 		// An explicit stopDaemon() already set a clean `{ state: "stopped" }`.
