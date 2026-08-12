@@ -440,12 +440,12 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	}
 	want := []string{
 		"env", "GOOSE_MODE=auto",
-		"goose", "run", "--system", "restore inline wins", "--resume", "--session-id", "20260720_1",
+		"goose", "run", "--system", "restore inline wins", "-t", "", "--resume", "--session-id", "20260720_1",
 	}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
 	}
-	if contains(cmd, "-t") || contains(cmd, "restore original task") {
+	if contains(cmd, "restore original task") {
 		t.Fatalf("restore command %#v unexpectedly replays the original task", cmd)
 	}
 }

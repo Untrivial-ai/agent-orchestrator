@@ -25,6 +25,11 @@ export function DocsToc({ toc }: { toc: TocItem[] }) {
         // Last heading whose top has scrolled past the header band is the active one.
         if (el && el.getBoundingClientRect().top <= 120) current = id;
       }
+      // The last heading may never reach the threshold when the document
+      // cannot scroll any further. At the bottom, it is the active section.
+      if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1) {
+        current = ids.at(-1) ?? current;
+      }
       setActive(current);
     };
     update();

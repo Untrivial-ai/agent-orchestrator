@@ -609,45 +609,53 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 		tone: TimelineTone;
 		node: ReactNode;
 		ts: string | null;
+		sortTs: number;
+		seq?: number;
 		markerTone?: string;
 		markerBreathe?: boolean;
 	}[] = [];
 
-	history.push({
+	const addHistory = (event: (typeof history)[number]) => history.push({ ...event, seq: history.length });
+	addHistory({
 		tone: "neutral",
 		node: <>{appI18n.t("inspector.timeline.createdWorkspace")}</>,
 		ts: formatTimeCompact(session.createdAt ?? session.updatedAt),
+		sortTs: Date.parse(session.createdAt ?? session.updatedAt ?? "") || 0,
 	});
 
 	for (const pr of prs.filter((pr) => pr.state === "draft")) {
-		history.push({
+		addHistory({
 			tone: "neutral",
 			node: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.draft")} />,
 			ts: prStateTime(pr),
+			sortTs: Date.parse(pr.stateChangedAt ?? pr.updatedAt ?? pr.createdAt ?? "") || 0,
 		});
 	}
 
 	for (const pr of prs.filter((pr) => pr.state !== "draft")) {
-		history.push({
+		addHistory({
 			tone: "neutral",
 			node: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.opened")} />,
 			ts: prCreatedTime(pr),
+			sortTs: Date.parse(pr.createdAt ?? "") || 0,
 		});
 	}
 
 	for (const pr of prs.filter((pr) => pr.state === "merged")) {
-		history.push({
+		addHistory({
 			tone: "good",
 			node: <PRTimelineLink pr={pr} verb={appI18n.t("inspector.timeline.merged")} />,
 			ts: prStateTime(pr),
+			sortTs: Date.parse(pr.stateChangedAt ?? pr.updatedAt ?? "") || 0,
 		});
 	}
 
 	if (session.status === "merged") {
-		history.push({
+		addHistory({
 			tone: "good",
 			node: <>{appI18n.t("inspector.timeline.done")}</>,
 			ts: latestMergedTime(prs),
+			sortTs: latestMergedMilliseconds(prs),
 		});
 	}
 
@@ -684,7 +692,7 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 		markerTone: string;
 		markerBreathe: boolean;
 	};
-	const events = [current, ...history.reverse()];
+	const events = [current, ...[...history].sort((a, b) => b.sortTs - a.sortTs || (b.seq ?? 0) - (a.seq ?? 0))];
 
 	return (
 		<div className="relative pl-5">
@@ -745,6 +753,16 @@ function prCreatedTime(pr: SessionPRSummary): string | null {
 }
 
 function latestMergedTime(prs: SessionPRSummary[]): string | null {
+	const latest = latestMergedTimestamp(prs);
+	return latest ? formatTimeCompact(latest) : null;
+}
+
+function latestMergedMilliseconds(prs: SessionPRSummary[]): number {
+	const timestamp = latestMergedTimestamp(prs);
+	return timestamp ? Date.parse(timestamp) : 0;
+}
+
+function latestMergedTimestamp(prs: SessionPRSummary[]): string | null {
 	let latest: { timestamp: string; milliseconds: number } | undefined;
 	for (const pr of prs) {
 		if (pr.state !== "merged" || !pr.stateChangedAt) continue;
@@ -754,7 +772,7 @@ function latestMergedTime(prs: SessionPRSummary[]): string | null {
 			latest = { timestamp: pr.stateChangedAt, milliseconds };
 		}
 	}
-	return latest ? formatTimeCompact(latest.timestamp) : null;
+	return latest?.timestamp ?? null;
 }
 
 type ScmTimelineState = "ci_failed" | "changes_requested" | "conflict";

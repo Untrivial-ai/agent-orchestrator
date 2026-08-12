@@ -834,12 +834,12 @@ describe("SessionInspector Activity section", () => {
 		);
 		expect(rows).toEqual([
 			"Idle",
-			"Done",
+			"Created workspace3h ago",
 			"Merged PR #40",
+			"Draft PR #42",
+			"Done",
 			"Opened PR #40",
 			"Opened PR #41",
-			"Draft PR #42",
-			"Created workspace3h ago",
 		]);
 
 		const eventRows = section.querySelectorAll("[data-testid='inspector-timeline-event']");
