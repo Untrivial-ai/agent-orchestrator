@@ -98,6 +98,7 @@ var shippedMigrations = map[int64]string{
 	92: "0092_pr_reviews_target_sha.sql",
 	93: "0093_review_run_trigger_source.sql",
 	94: "0094_agent_switch_recovery.sql",
+	96: "0096_add_user_config.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
