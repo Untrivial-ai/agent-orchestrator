@@ -359,7 +359,12 @@ func guardNoGitlinks(ctx context.Context, repo string) error {
 func workspaceReposFromRecords(records []domain.WorkspaceRepoRecord) []WorkspaceRepo {
 	out := make([]WorkspaceRepo, 0, len(records))
 	for _, rec := range records {
-		out = append(out, WorkspaceRepo{Name: rec.Name, RelativePath: rec.RelativePath, Repo: rec.RepoOriginURL})
+		out = append(out, WorkspaceRepo{
+			Name:          rec.Name,
+			RelativePath:  rec.RelativePath,
+			Repo:          rec.RepoOriginURL,
+			DefaultBranch: rec.DefaultBranch,
+		})
 	}
 	return out
 }

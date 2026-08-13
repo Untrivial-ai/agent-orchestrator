@@ -68,9 +68,10 @@ type projectDetails struct {
 }
 
 type workspaceRepoDetails struct {
-	Name         string `json:"name"`
-	RelativePath string `json:"relativePath"`
-	Repo         string `json:"repo"`
+	Name          string `json:"name"`
+	RelativePath  string `json:"relativePath"`
+	Repo          string `json:"repo"`
+	DefaultBranch string `json:"defaultBranch"`
 }
 
 // agentConfig mirrors the daemon's typed domain.AgentConfig for the CLI client.

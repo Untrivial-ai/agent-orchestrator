@@ -2820,6 +2820,7 @@ export interface components {
             status: "unmodified" | "modified" | "added" | "deleted" | "renamed";
         };
         WorkspaceRepo: {
+            defaultBranch: string;
             name: string;
             relativePath: string;
             repo: string;

@@ -8085,6 +8085,8 @@ components:
       type: object
     WorkspaceRepo:
       properties:
+        defaultBranch:
+          type: string
         name:
           type: string
         relativePath:
@@ -8095,6 +8097,7 @@ components:
       - name
       - relativePath
       - repo
+      - defaultBranch
       type: object
 tags:
 - description: Supported and locally runnable agent adapters

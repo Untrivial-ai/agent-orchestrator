@@ -1152,6 +1152,36 @@ func TestManager_AddWorkspaceInitializesPlainParent(t *testing.T) {
 	}
 }
 
+func TestManager_AddWorkspaceDetectsChildDefaultBranch(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+	parent := t.TempDir()
+	child := gitRepoWithCommit(t, filepath.Join(parent, "api"))
+	for _, args := range [][]string{
+		{"branch", "-m", "develop"},
+		{"update-ref", "refs/remotes/origin/develop", "HEAD"},
+		{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"},
+		{"switch", "-c", "feature"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", child}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+
+	proj, err := m.Add(ctx, project.AddInput{Path: parent, ProjectID: ptr("ws"), AsWorkspace: true})
+	if err != nil {
+		t.Fatalf("Add workspace: %v", err)
+	}
+	if len(proj.WorkspaceRepos) != 1 || proj.WorkspaceRepos[0].DefaultBranch != "develop" {
+		t.Fatalf("WorkspaceRepos = %#v, want child default develop", proj.WorkspaceRepos)
+	}
+	got, err := m.Get(ctx, "ws")
+	if err != nil || got.Project == nil || got.Project.WorkspaceRepos[0].DefaultBranch != "develop" {
+		t.Fatalf("Get workspace = %#v, err=%v", got, err)
+	}
+}
+
 func TestManager_AddWorkspaceRejectsUncommittedChild(t *testing.T) {
 	configureCommitter(t)
 	ctx := context.Background()

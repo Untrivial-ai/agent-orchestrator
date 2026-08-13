@@ -1396,6 +1396,36 @@ func TestConcurrentSessionCreateAssignsUniqueNums(t *testing.T) {
 	}
 }
 
+func TestWorkspaceReposRoundTripDefaultBranch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project := domain.ProjectRecord{
+		ID:           "ws",
+		Path:         t.TempDir(),
+		DisplayName:  "ws",
+		RegisteredAt: time.Now(),
+		Kind:         domain.ProjectKindWorkspace,
+	}
+	want := domain.WorkspaceRepoRecord{
+		ProjectID:     "ws",
+		Name:          "api",
+		RelativePath:  "api",
+		RepoOriginURL: "https://github.com/acme/api.git",
+		DefaultBranch: "develop",
+		RegisteredAt:  time.Now(),
+	}
+	if err := s.UpsertWorkspaceProject(ctx, project, []domain.WorkspaceRepoRecord{want}); err != nil {
+		t.Fatalf("upsert workspace project: %v", err)
+	}
+	got, err := s.ListWorkspaceRepos(ctx, "ws")
+	if err != nil {
+		t.Fatalf("list workspace repos: %v", err)
+	}
+	if len(got) != 1 || got[0].DefaultBranch != "develop" {
+		t.Fatalf("workspace repos = %#v, want default branch develop", got)
+	}
+}
+
 func TestSessionWorktreesRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

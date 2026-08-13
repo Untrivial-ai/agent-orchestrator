@@ -206,6 +206,26 @@ func TestProjectGet_JSON(t *testing.T) {
 	}
 }
 
+func TestProjectGetWorkspace_JSONIncludesChildDefaultBranch(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := projectServer(t, http.StatusOK, `{"status":"ok","project":{"id":"ws","name":"Workspace","kind":"workspace","path":"/repo/ws","workspaceRepos":[{"name":"api","relativePath":"api","repo":"git@example.com:api.git","defaultBranch":"develop"}]}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "get", "ws", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var got projectGetResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode json output: %v\nout=%s", err, out)
+	}
+	if len(got.Project.WorkspaceRepos) != 1 || got.Project.WorkspaceRepos[0].DefaultBranch != "develop" {
+		t.Fatalf("workspace repos = %#v, want child default branch develop", got.Project.WorkspaceRepos)
+	}
+}
+
 func TestProjectGet_MissingArg(t *testing.T) {
 	setConfigEnv(t)
 	_, _, err := executeCLI(t, Deps{}, "project", "get")

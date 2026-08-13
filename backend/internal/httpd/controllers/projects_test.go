@@ -48,6 +48,47 @@ func (emptyGetManager) Get(context.Context, domain.ProjectID) (projectsvc.GetRes
 
 }
 
+type workspaceGetManager struct{ projectsvc.Manager }
+
+func (workspaceGetManager) Get(context.Context, domain.ProjectID) (projectsvc.GetResult, error) {
+	return projectsvc.GetResult{Status: "ok", Project: &projectsvc.Project{
+		ID:   "ws",
+		Name: "Workspace",
+		Kind: domain.ProjectKindWorkspace,
+		WorkspaceRepos: []projectsvc.WorkspaceRepo{{
+			Name:          "api",
+			RelativePath:  "api",
+			Repo:          "git@example.com:api.git",
+			DefaultBranch: "develop",
+		}},
+	}}, nil
+}
+
+func TestProjectsAPI_GetWorkspaceIncludesChildDefaultBranch(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Projects: workspaceGetManager{},
+	}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+
+	body, status, headers := doRequest(t, srv, "GET", "/api/v1/projects/ws", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	assertJSON(t, headers)
+	var got struct {
+		Project struct {
+			WorkspaceRepos []struct {
+				DefaultBranch string `json:"defaultBranch"`
+			} `json:"workspaceRepos"`
+		} `json:"project"`
+	}
+	mustJSON(t, body, &got)
+	if len(got.Project.WorkspaceRepos) != 1 || got.Project.WorkspaceRepos[0].DefaultBranch != "develop" {
+		t.Fatalf("workspace repos = %#v, want child default branch develop", got.Project.WorkspaceRepos)
+	}
+}
+
 // TestProjectsAPI_GetEmptyResultIs500 locks the fix for the discriminated-union
 
 // invariant: a degenerate GetResult must surface as a parseable 500 envelope,
