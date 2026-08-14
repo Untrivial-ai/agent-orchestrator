@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/ptyexec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -45,11 +46,18 @@ const (
 var sessionIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 var getenv = os.Getenv
+var resolveTmuxBinary = func(ctx context.Context) (string, error) {
+	return binaryutil.ResolveBinary(ctx, binaryutil.BinarySpec{
+		Label:        "tmux",
+		Names:        []string{"tmux"},
+		UnixPathDirs: binaryutil.UnixPathFloorDirs(),
+	})
+}
 
 // Options configures a tmux Runtime. Every field has a sensible default (see
 // New), so the zero value is usable.
 type Options struct {
-	Binary     string        // default "tmux" (resolved via exec.LookPath)
+	Binary     string        // default "tmux" (resolved via binaryutil)
 	Shell      string        // default $SHELL else /bin/sh
 	Timeout    time.Duration // default 5s
 	ChunkSize  int           // default 16*1024
@@ -237,12 +245,12 @@ func stableRunDir() string {
 }
 
 // New builds a tmux Runtime, filling unset Options with defaults: binary "tmux"
-// (resolved via exec.LookPath), shell from $SHELL (else /bin/sh), and the
-// default timeout and output chunk size.
+// (resolved via binaryutil), shell from $SHELL (else /bin/sh), and the default
+// timeout and output chunk size.
 func New(opts Options) *Runtime {
 	binary := opts.Binary
 	if binary == "" {
-		if path, err := exec.LookPath("tmux"); err == nil {
+		if path, err := resolveTmuxBinary(context.Background()); err == nil {
 			binary = path
 		} else {
 			binary = "tmux"

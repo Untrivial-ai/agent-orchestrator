@@ -47,6 +47,86 @@ func TestDefaultFNMDirPrefersXDGDataHome(t *testing.T) {
 	}
 }
 
+func TestResolveBinaryFallsBackToUnixPathFloorDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix PATH floor does not apply on windows")
+	}
+	pathDir := t.TempDir()
+	floorDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	oldFloor := unixPathFloorDirs
+	unixPathFloorDirs = []string{floorDir}
+	t.Cleanup(func() { unixPathFloorDirs = oldFloor })
+	bin := filepath.Join(floorDir, "widget")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ResolveBinary(context.Background(), BinarySpec{
+		Label: "widget",
+		Names: []string{"widget"},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != bin {
+		t.Fatalf("got %q, want %q", got, bin)
+	}
+}
+
+func TestResolveBinaryPrefersPathBeforeUnixPathFloorDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix PATH floor does not apply on windows")
+	}
+	pathDir := t.TempDir()
+	floorDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	pathBin := filepath.Join(pathDir, "widget")
+	floorBin := filepath.Join(floorDir, "widget")
+	if err := os.WriteFile(pathBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(floorBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ResolveBinary(context.Background(), BinarySpec{
+		Label:        "widget",
+		Names:        []string{"widget"},
+		UnixPathDirs: []string{floorDir},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != pathBin {
+		t.Fatalf("got %q, want PATH binary %q", got, pathBin)
+	}
+}
+
+func TestLookPathUsesUnixPathFloor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix PATH floor does not apply on windows")
+	}
+	pathDir := t.TempDir()
+	floorDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	oldFloor := unixPathFloorDirs
+	unixPathFloorDirs = []string{floorDir}
+	t.Cleanup(func() { unixPathFloorDirs = oldFloor })
+	bin := filepath.Join(floorDir, "widget")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LookPath("widget")
+	if err != nil {
+		t.Fatalf("LookPath: %v", err)
+	}
+	if got != bin {
+		t.Fatalf("got %q, want %q", got, bin)
+	}
+}
+
 func TestResolveBinaryFallsBackToHomeCandidate(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix home candidate shape")

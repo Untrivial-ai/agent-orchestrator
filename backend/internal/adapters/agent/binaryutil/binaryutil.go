@@ -1,7 +1,7 @@
-// Package binaryutil centralizes the "find an agent's CLI binary" search that
-// every adapter otherwise reimplements. Adapters differ only in the binary
-// name(s) and the well-known install locations to probe, so they describe those
-// with a BinarySpec and share the identical PATH-then-candidates iteration.
+// Package binaryutil centralizes the "find a CLI binary" search that adapters
+// otherwise reimplement. Callers differ only in the binary name(s) and the
+// well-known install locations to probe, so they describe those with a
+// BinarySpec and share the identical PATH-then-candidates iteration.
 package binaryutil
 
 import (
@@ -19,7 +19,17 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// BinarySpec describes where one agent's CLI binary can live. ResolveBinary
+var unixPathFloorDirs = []string{
+	"/opt/homebrew/bin",
+	"/opt/homebrew/sbin",
+	"/usr/local/bin",
+	"/usr/bin",
+	"/bin",
+	"/usr/sbin",
+	"/sbin",
+}
+
+// BinarySpec describes where one CLI binary can live. ResolveBinary
 // searches PATH (via the platform's name list) first, then the platform's
 // candidate install paths in order, returning the first hit.
 //
@@ -39,6 +49,10 @@ type BinarySpec struct {
 
 	// UnixPaths are absolute candidate paths probed on non-Windows, in order.
 	UnixPaths []string
+	// UnixPathDirs are PATH-floor directories appended after the inherited PATH
+	// on non-Windows; each binary name is joined onto each directory in order.
+	// Nil uses AO's default Unix PATH floor; an empty non-nil slice disables it.
+	UnixPathDirs []string
 	// UnixHomePaths are candidate paths under the user's home dir on
 	// non-Windows; each entry is the components to join onto $HOME.
 	UnixHomePaths [][]string
@@ -70,6 +84,19 @@ const (
 type WinPath struct {
 	Base  WinBase
 	Parts []string
+}
+
+// UnixPathFloorDirs returns the fixed PATH floor AO applies for headless Unix
+// processes whose inherited PATH may omit Homebrew or /usr/local install roots.
+func UnixPathFloorDirs() []string {
+	return append([]string(nil), unixPathFloorDirs...)
+}
+
+// LookPath resolves file on the inherited PATH, then on AO's Unix PATH floor.
+// It mirrors exec.LookPath's signature for call sites that only need a PATH-like
+// lookup rather than a full BinarySpec.
+func LookPath(file string) (string, error) {
+	return lookPathInDirs(context.Background(), []string{file}, UnixPathFloorDirs())
 }
 
 // ResolveBinary returns the path to spec's binary, searching PATH then the
@@ -117,6 +144,11 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 			candidates = append(candidates, filepath.Join(append([]string{base}, wp.Parts...)...))
 		}
 	} else {
+		pathDirs := spec.UnixPathDirs
+		if pathDirs == nil {
+			pathDirs = UnixPathFloorDirs()
+		}
+		candidates = append(candidates, unixPathDirCandidates(names, pathDirs)...)
 		candidates = append(candidates, spec.UnixPaths...)
 		if home, err := os.UserHomeDir(); err == nil {
 			candidates = append(candidates, joinAll(home, spec.UnixHomePaths)...)
@@ -362,4 +394,50 @@ func normalizeNodeVersion(version string) string {
 	version = strings.TrimSpace(version)
 	version = strings.TrimPrefix(version, "v")
 	return version
+}
+
+func lookPathInDirs(ctx context.Context, names, dirs []string) (string, error) {
+	var firstErr error
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		path, err := exec.LookPath(name)
+		if err == nil && path != "" {
+			return path, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if runtime.GOOS != "windows" {
+		for _, candidate := range unixPathDirCandidates(names, dirs) {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			if hookutil.FileExists(candidate) {
+				return candidate, nil
+			}
+		}
+	}
+	if firstErr != nil {
+		return "", firstErr
+	}
+	return "", exec.ErrNotFound
+}
+
+func unixPathDirCandidates(names, dirs []string) []string {
+	out := make([]string, 0, len(names)*len(dirs))
+	for _, name := range names {
+		if filepath.Base(name) != name {
+			continue
+		}
+		for _, dir := range dirs {
+			if dir == "" {
+				continue
+			}
+			out = append(out, filepath.Join(dir, name))
+		}
+	}
+	return out
 }

@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
@@ -309,9 +310,8 @@ type Manager struct {
 	// deterministically prove that a post-stop transcript read failure falls
 	// back without advertising the provider path.
 	openTranscriptFile func(string) (*os.File, error)
-	// lookPath is exec.LookPath in production; tests substitute a stub so
-	// they don't need real binaries on PATH. Returns ports.ErrAgentBinaryNotFound
-	// when the binary is missing so the sentinel propagates through toAPIError.
+	// lookPath is binaryutil.LookPath in production; tests substitute a stub so
+	// they don't need real binaries on PATH.
 	lookPath func(string) (string, error)
 	// executable resolves the daemon's own binary (os.Executable in
 	// production); its directory is prepended to spawned sessions' PATH so the
@@ -559,9 +559,9 @@ type Deps struct {
 	// commands can open the same store.
 	DataDir string
 	Clock   func() time.Time
-	// LookPath overrides exec.LookPath for the pre-launch agent-binary check.
-	// Production wiring leaves this nil and the manager defaults to
-	// exec.LookPath; tests inject a stub so they need not seed real binaries.
+	// LookPath overrides binaryutil.LookPath for runtime prerequisite and
+	// pre-launch agent-binary checks. Production wiring leaves this nil; tests
+	// inject a stub so they need not seed real binaries.
 	LookPath func(string) (string, error)
 	// Executable overrides os.Executable for the session PATH pin (see
 	// hookPATH). Production wiring leaves this nil; tests inject a stub so they
@@ -635,7 +635,7 @@ func New(d Deps) *Manager {
 		m.backgroundContext = context.Background()
 	}
 	if m.lookPath == nil {
-		m.lookPath = exec.LookPath
+		m.lookPath = binaryutil.LookPath
 	}
 	if m.executable == nil {
 		m.executable = os.Executable
@@ -3744,12 +3744,12 @@ func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID
 }
 
 // validateAgentBinary checks that argv[0] resolves via the manager's
-// lookPath (exec.LookPath in prod) before any runtime work happens. Adapters
-// that can't resolve their binary now return ports.ErrAgentBinaryNotFound from
-// GetLaunchCommand directly; this guard is a defense-in-depth for adapters
-// that return an argv[0] like "claude" without verifying. Some adapters prefix
-// their command with `env KEY=value`; in that case validate the first real
-// executable after the environment assignments.
+// lookPath (binaryutil.LookPath in prod) before any runtime work happens.
+// Adapters that can't resolve their binary now return
+// ports.ErrAgentBinaryNotFound from GetLaunchCommand directly; this guard is a
+// defense-in-depth for adapters that return an argv[0] like "claude" without
+// verifying. Some adapters prefix their command with `env KEY=value`; in that
+// case validate the first real executable after the environment assignments.
 func (m *Manager) validateAgentBinary(argv []string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("agent: empty launch argv: %w", ports.ErrAgentBinaryNotFound)

@@ -160,6 +160,19 @@ func TestExecRunnerFallsBackWhenTempDirMissing(t *testing.T) {
 	}
 }
 
+func TestNewDefaultsToResolvedTmuxBinary(t *testing.T) {
+	oldResolve := resolveTmuxBinary
+	resolveTmuxBinary = func(context.Context) (string, error) {
+		return "/opt/homebrew/bin/tmux", nil
+	}
+	t.Cleanup(func() { resolveTmuxBinary = oldResolve })
+
+	r := New(Options{})
+	if got := r.binary; got != "/opt/homebrew/bin/tmux" {
+		t.Fatalf("binary = %q, want resolved tmux path", got)
+	}
+}
+
 // -- command builder tests --
 
 func TestCommandBuilders(t *testing.T) {

@@ -8,12 +8,12 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
@@ -91,7 +91,7 @@ func DefaultDeps() Deps {
 		Executable:           os.Executable,
 		StartProcess:         startProcess,
 		ProcessAlive:         processalive.Alive,
-		LookPath:             exec.LookPath,
+		LookPath:             binaryutil.LookPath,
 		CommandOutput:        commandOutput,
 		CommandOutputInDir:   commandOutputInDir,
 		DoctorGitHubRESTBase: defaultDoctorGitHubRESTBase,
