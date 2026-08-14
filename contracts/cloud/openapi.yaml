@@ -12,6 +12,8 @@ security:
   - bearerAuth: []
 tags:
   - name: Account
+  - name: Organization
+  - name: Sharing
   - name: Agents
   - name: Projects
   - name: Sessions
@@ -200,6 +202,181 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeleteProjectResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects/{projectId}/shares:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectShareLinks
+      tags: [Sharing]
+      responses:
+        "200":
+          description: Every share link ever created for the project, most recent first.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [links]
+                properties:
+                  links:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProjectShareLink"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createProjectShareLink
+      tags: [Sharing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectShareLinkInput"
+      responses:
+        "201":
+          description: Share link created. Its url is only ever returned here.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [link]
+                properties:
+                  link:
+                    $ref: "#/components/schemas/ProjectShareLink"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects/{projectId}/shares/grants:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectShareGrants
+      tags: [Sharing]
+      description: Every active collaborator on the project — everyone who has redeemed a share link for it.
+      responses:
+        "200":
+          description: The project's active share grants.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [grants]
+                properties:
+                  grants:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SharedProject"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects/{projectId}/shares/{linkId}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ShareLinkId"
+    post:
+      operationId: revokeProjectShareLink
+      tags: [Sharing]
+      description: Deactivates the link. Does not affect grants already redeemed from it.
+      responses:
+        "204":
+          description: The share link was revoked.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects/{projectId}/shares/grants/{grantId}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ShareGrantId"
+    post:
+      operationId: revokeProjectShareGrant
+      tags: [Sharing]
+      description: Immediately cuts off a collaborator's already-redeemed access.
+      responses:
+        "204":
+          description: The share grant was revoked.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/share-links/redeem:
+    post:
+      operationId: redeemProjectShareLink
+      tags: [Sharing]
+      description: |
+        Activates a share link's token for the signed-in caller, creating or
+        refreshing their grant. The org is required alongside the token
+        because a link is always looked up within its own org.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RedeemShareLinkInput"
+      responses:
+        "200":
+          description: The link was redeemed; the caller now has a grant on the shared project.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [shared]
+                properties:
+                  shared:
+                    $ref: "#/components/schemas/SharedProject"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/shared/projects/{projectId}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listSharedProjectSessions
+      tags: [Sharing]
+      description: |
+        Every session in a project the caller holds a whole-project grant
+        for. A session-scoped grant only ever gives access to that one
+        session — see the sessionId already returned by redemption — never a
+        listing of its siblings.
+      responses:
+        "200":
+          description: The project's sessions, visible under this grant.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Session"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/shared/projects:
+    get:
+      operationId: listSharedProjects
+      tags: [Sharing]
+      description: Every project or session actively shared with the caller, across every org.
+      responses:
+        "200":
+          description: The caller's "shared with me" list.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [shared]
+                properties:
+                  shared:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SharedProject"
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/github/installations:
@@ -458,6 +635,146 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionReviewState"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/members:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listOrgMembers
+      tags: [Organization]
+      responses:
+        "200":
+          description: Active members of the organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrganizationMember"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/invitations:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listOrgInvitations
+      tags: [Organization]
+      description: Owners and admins only.
+      responses:
+        "200":
+          description: Every invitation raised for the organization, most recent first.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [invitations]
+                properties:
+                  invitations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrganizationInvitation"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createOrgInvitation
+      tags: [Organization]
+      description: Owners and admins only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInvitationInput"
+      responses:
+        "201":
+          description: Invitation created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [invitation]
+                properties:
+                  invitation:
+                    $ref: "#/components/schemas/OrganizationInvitation"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/invitations/{invitationId}:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/InvitationId"
+    get:
+      operationId: getOrgInvitation
+      tags: [Organization]
+      description: |
+        Loads a pending, unexpired invitation addressed to the caller, by
+        prior account link or by signed-in email. Does not require the
+        caller to already be an organization member.
+      responses:
+        "200":
+          description: The invitation.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [invitation]
+                properties:
+                  invitation:
+                    $ref: "#/components/schemas/OrganizationInvitation"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/invitations/{invitationId}/accept:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/InvitationId"
+    post:
+      operationId: acceptOrgInvitation
+      tags: [Organization]
+      responses:
+        "200":
+          description: The invitation was accepted; the caller is now a member.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [organization]
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/OrganizationMembership"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/invitations/{invitationId}/decline:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/InvitationId"
+    post:
+      operationId: declineOrgInvitation
+      tags: [Organization]
+      responses:
+        "204":
+          description: The invitation was declined.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/invitations/{invitationId}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/InvitationId"
+    post:
+      operationId: revokeOrgInvitation
+      tags: [Organization]
+      description: Owners and admins only.
+      responses:
+        "204":
+          description: The invitation was revoked.
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/messages:
@@ -747,6 +1064,68 @@ paths:
       responses:
         "204":
           description: The coding-agent credential was disconnected.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/me/providers:
+    get:
+      operationId: listUserProviderConnections
+      tags: [Providers]
+      description: |
+        The caller's own personal coding-agent connections — usable in
+        every organization they belong to, not just one. Distinct from an
+        organization's shared connections at .../provider-connections.
+      responses:
+        "200":
+          description: Redacted personal provider connection metadata. Secrets are never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providerConnections]
+                properties:
+                  providerConnections:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RedactedProviderConnection"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/me/providers/{provider}:
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [claude-code, codex, cursor]
+    put:
+      operationId: putUserProviderConnection
+      tags: [Providers]
+      description: Creates or replaces the caller's own personal connection for one provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutAgentProviderConnectionInput"
+      responses:
+        "200":
+          description: The validated coding-agent credential was encrypted and stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providerConnection]
+                properties:
+                  providerConnection:
+                    $ref: "#/components/schemas/RedactedProviderConnection"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteUserProviderConnection
+      tags: [Providers]
+      responses:
+        "204":
+          description: The personal coding-agent credential was disconnected.
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/worker/bootstrap:
@@ -1443,6 +1822,27 @@ components:
       schema:
         type: string
         format: uuid
+    InvitationId:
+      name: invitationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ShareLinkId:
+      name: linkId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ShareGrantId:
+      name: grantId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     Cursor:
       name: cursor
       in: query
@@ -1575,6 +1975,244 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/OrganizationMembership"
+    OrganizationMember:
+      type: object
+      additionalProperties: false
+      required: [userId, email, displayName, role, createdAt]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+        createdAt:
+          type: string
+          format: date-time
+    InvitableOrganizationRole:
+      type: string
+      enum: [admin, member]
+    InvitationStatus:
+      type: string
+      enum: [pending, accepted, declined, revoked, expired]
+    OrganizationInvitation:
+      type: object
+      additionalProperties: false
+      required: [id, orgId, email, role, status, expiresAt, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        invitedByEmail:
+          type: string
+          format: email
+        invitedByName:
+          type: string
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+        status:
+          $ref: "#/components/schemas/InvitationStatus"
+        expiresAt:
+          type: string
+          format: date-time
+        acceptedAt:
+          type: string
+          format: date-time
+        declinedAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateInvitationInput:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        role:
+          $ref: "#/components/schemas/InvitableOrganizationRole"
+    ProjectShareRole:
+      type: string
+      enum: [viewer, editor]
+    ProjectShareAccessScope:
+      type: string
+      enum: [anyone, restricted]
+    ProjectShareInteraction:
+      type: string
+      description: Whether a redeemer may only watch a session, or also send it messages.
+      enum: [view, interact]
+    ProjectShareModeCap:
+      type: string
+      description: |
+        Caps the effective session mode a redeemer's activity runs under —
+        never grants more than the session's own configured mode, only
+        restricts it further. Absent means no additional cap.
+      enum: [read-only, standard, trusted]
+    ProjectShareLink:
+      type: object
+      additionalProperties: false
+      required: [id, orgId, projectId, role, status, accessScope, recipients, interaction, deniedCommands, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+          description: Absent means the link shares the whole project, not one session.
+        role:
+          $ref: "#/components/schemas/ProjectShareRole"
+        status:
+          type: string
+          enum: [active, revoked]
+        accessScope:
+          $ref: "#/components/schemas/ProjectShareAccessScope"
+        recipients:
+          type: array
+          items:
+            type: string
+            format: email
+        interaction:
+          $ref: "#/components/schemas/ProjectShareInteraction"
+        modeCap:
+          $ref: "#/components/schemas/ProjectShareModeCap"
+        deniedCommands:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        token:
+          type: string
+          description: |
+            The one-time raw redemption token. Only ever present in the
+            response to creating a link — build the actual shareable URL
+            from window.location.origin plus this token client-side; only
+            the browser reliably knows its own public-facing host.
+        url:
+          type: string
+          format: uri
+          description: |
+            Best-effort convenience link built server-side from this
+            request's own proxy chain. Prefer building the link from
+            token and window.location.origin instead — this is not
+            guaranteed correct in every deployment.
+    CreateProjectShareLinkInput:
+      type: object
+      additionalProperties: false
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/ProjectShareRole"
+        accessScope:
+          $ref: "#/components/schemas/ProjectShareAccessScope"
+        recipients:
+          type: array
+          items:
+            type: string
+            format: email
+        interaction:
+          $ref: "#/components/schemas/ProjectShareInteraction"
+        modeCap:
+          $ref: "#/components/schemas/ProjectShareModeCap"
+        deniedCommands:
+          type: array
+          items:
+            type: string
+        expiresInHours:
+          type: integer
+          minimum: 1
+    RedeemShareLinkInput:
+      type: object
+      additionalProperties: false
+      required: [orgId, token]
+      properties:
+        orgId:
+          type: string
+          format: uuid
+        token:
+          type: string
+    SharedProjectGrantSummary:
+      type: object
+      additionalProperties: false
+      required: [id, role, status, deniedCommands, redeemedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/ProjectShareRole"
+        status:
+          type: string
+          enum: [active, revoked]
+        userEmail:
+          type: string
+          format: email
+        userDisplayName:
+          type: string
+        modeCap:
+          $ref: "#/components/schemas/ProjectShareModeCap"
+        deniedCommands:
+          type: array
+          items:
+            type: string
+        redeemedAt:
+          type: string
+          format: date-time
+    SharedProject:
+      type: object
+      additionalProperties: false
+      required: [grant, project]
+      properties:
+        grant:
+          $ref: "#/components/schemas/SharedProjectGrantSummary"
+        project:
+          $ref: "#/components/schemas/Project"
+        sessionId:
+          type: string
+          format: uuid
+          description: Absent means the whole project was shared, not one session.
+        sessionName:
+          type: string
+        sharedByEmail:
+          type: string
+          format: email
+        sharedByName:
+          type: string
     AgentCapability:
       type: string
       enum:

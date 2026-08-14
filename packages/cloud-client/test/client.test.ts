@@ -761,6 +761,59 @@ describe("CloudClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("does not reconnect event streams on malformed JSON in an SSE payload", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response('id: 1\ndata: {"sequence": not-json}\n\n', {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    );
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    const stream = client.streamEvents("tenant", "session");
+    await expect(stream.next()).rejects.toMatchObject({
+      name: "CloudStreamProtocolError",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["missing sequence", '{"type":"chat.assistant_delta","sessionId":"session"}'],
+    [
+      "non-numeric sequence",
+      '{"sequence":"eight","type":"chat.assistant_delta","sessionId":"session"}',
+    ],
+    ["missing type", '{"sequence":8,"sessionId":"session"}'],
+    ["missing sessionId", '{"sequence":8,"type":"chat.assistant_delta"}'],
+  ])(
+    "does not reconnect event streams on an event with %s",
+    async (_label, payload) => {
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(`id: 8\ndata: ${payload}\n\n`, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+      );
+      const client = createCloudClient({
+        baseUrl: "https://cloud.example.com",
+        getAccessToken: () => "access-token",
+        fetch: fetchMock as typeof fetch,
+      });
+
+      const stream = client.streamEvents("tenant", "session");
+      await expect(stream.next()).rejects.toMatchObject({
+        name: "CloudStreamProtocolError",
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("durably requests turn cancellation with an idempotency key", async () => {
     const fetchMock = vi.fn<
       (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>

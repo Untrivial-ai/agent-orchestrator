@@ -123,6 +123,148 @@ export interface paths {
         patch: operations["updateProject"];
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/projects/{projectId}/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listProjectShareLinks"];
+        put?: never;
+        post: operations["createProjectShareLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/projects/{projectId}/shares/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        /** @description Every active collaborator on the project — everyone who has redeemed a share link for it. */
+        get: operations["listProjectShareGrants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/projects/{projectId}/shares/{linkId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+                linkId: components["parameters"]["ShareLinkId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Deactivates the link. Does not affect grants already redeemed from it. */
+        post: operations["revokeProjectShareLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/projects/{projectId}/shares/grants/{grantId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+                grantId: components["parameters"]["ShareGrantId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Immediately cuts off a collaborator's already-redeemed access. */
+        post: operations["revokeProjectShareGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/share-links/redeem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Activates a share link's token for the signed-in caller, creating or
+         *     refreshing their grant. The org is required alongside the token
+         *     because a link is always looked up within its own org.
+         *      */
+        post: operations["redeemProjectShareLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/shared/projects/{projectId}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        /** @description Every session in a project the caller holds a whole-project grant
+         *     for. A session-scoped grant only ever gives access to that one
+         *     session — see the sessionId already returned by redemption — never a
+         *     listing of its siblings.
+         *      */
+        get: operations["listSharedProjectSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/shared/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Every project or session actively shared with the caller, across every org. */
+        get: operations["listSharedProjects"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/github/installations": {
         parameters: {
             query?: never;
@@ -320,6 +462,125 @@ export interface paths {
         get: operations["getSessionReviewState"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listOrgMembers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+            };
+            cookie?: never;
+        };
+        /** @description Owners and admins only. */
+        get: operations["listOrgInvitations"];
+        put?: never;
+        /** @description Owners and admins only. */
+        post: operations["createOrgInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/invitations/{invitationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        /** @description Loads a pending, unexpired invitation addressed to the caller, by
+         *     prior account link or by signed-in email. Does not require the
+         *     caller to already be an organization member.
+         *      */
+        get: operations["getOrgInvitation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/invitations/{invitationId}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["acceptOrgInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/invitations/{invitationId}/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["declineOrgInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/invitations/{invitationId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Owners and admins only. */
+        post: operations["revokeOrgInvitation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -528,6 +789,45 @@ export interface paths {
         put: operations["putAgentProviderConnection"];
         post?: never;
         delete: operations["deleteAgentProviderConnection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/me/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The caller's own personal coding-agent connections — usable in
+         *     every organization they belong to, not just one. Distinct from an
+         *     organization's shared connections at .../provider-connections.
+         *      */
+        get: operations["listUserProviderConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/me/providers/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "claude-code" | "codex" | "cursor";
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Creates or replaces the caller's own personal connection for one provider. */
+        put: operations["putUserProviderConnection"];
+        post?: never;
+        delete: operations["deleteUserProviderConnection"];
         options?: never;
         head?: never;
         patch?: never;
@@ -926,6 +1226,152 @@ export interface components {
         CurrentAccount: {
             user: components["schemas"]["CurrentUser"];
             organizations: components["schemas"]["OrganizationMembership"][];
+        };
+        OrganizationMember: {
+            /** Format: uuid */
+            userId: string;
+            /** Format: email */
+            email: string;
+            displayName: string;
+            role: components["schemas"]["OrganizationRole"];
+            /** Format: date-time */
+            createdAt: string;
+        };
+        /** @enum {string} */
+        InvitableOrganizationRole: "admin" | "member";
+        /** @enum {string} */
+        InvitationStatus: "pending" | "accepted" | "declined" | "revoked" | "expired";
+        OrganizationInvitation: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            orgId: string;
+            /** Format: email */
+            email: string;
+            /** Format: email */
+            invitedByEmail?: string;
+            invitedByName?: string;
+            role: components["schemas"]["OrganizationRole"];
+            status: components["schemas"]["InvitationStatus"];
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            acceptedAt?: string;
+            /** Format: date-time */
+            declinedAt?: string;
+            /** Format: date-time */
+            revokedAt?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CreateInvitationInput: {
+            /** Format: email */
+            email: string;
+            role?: components["schemas"]["InvitableOrganizationRole"];
+        };
+        /** @enum {string} */
+        ProjectShareRole: "viewer" | "editor";
+        /** @enum {string} */
+        ProjectShareAccessScope: "anyone" | "restricted";
+        /**
+         * @description Whether a redeemer may only watch a session, or also send it messages.
+         * @enum {string}
+         */
+        ProjectShareInteraction: "view" | "interact";
+        /**
+         * @description Caps the effective session mode a redeemer's activity runs under —
+         *     never grants more than the session's own configured mode, only
+         *     restricts it further. Absent means no additional cap.
+         *
+         * @enum {string}
+         */
+        ProjectShareModeCap: "read-only" | "standard" | "trusted";
+        ProjectShareLink: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            orgId: string;
+            /** Format: uuid */
+            projectId: string;
+            /**
+             * Format: uuid
+             * @description Absent means the link shares the whole project, not one session.
+             */
+            sessionId?: string;
+            role: components["schemas"]["ProjectShareRole"];
+            /** @enum {string} */
+            status: "active" | "revoked";
+            accessScope: components["schemas"]["ProjectShareAccessScope"];
+            recipients: string[];
+            interaction: components["schemas"]["ProjectShareInteraction"];
+            modeCap?: components["schemas"]["ProjectShareModeCap"];
+            deniedCommands: string[];
+            /** Format: date-time */
+            expiresAt?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description The one-time raw redemption token. Only ever present in the
+             *     response to creating a link — build the actual shareable URL
+             *     from window.location.origin plus this token client-side; only
+             *     the browser reliably knows its own public-facing host.
+             *      */
+            token?: string;
+            /**
+             * Format: uri
+             * @description Best-effort convenience link built server-side from this
+             *     request's own proxy chain. Prefer building the link from
+             *     token and window.location.origin instead — this is not
+             *     guaranteed correct in every deployment.
+             *
+             */
+            url?: string;
+        };
+        CreateProjectShareLinkInput: {
+            /** Format: uuid */
+            sessionId?: string;
+            role?: components["schemas"]["ProjectShareRole"];
+            accessScope?: components["schemas"]["ProjectShareAccessScope"];
+            recipients?: string[];
+            interaction?: components["schemas"]["ProjectShareInteraction"];
+            modeCap?: components["schemas"]["ProjectShareModeCap"];
+            deniedCommands?: string[];
+            expiresInHours?: number;
+        };
+        RedeemShareLinkInput: {
+            /** Format: uuid */
+            orgId: string;
+            token: string;
+        };
+        SharedProjectGrantSummary: {
+            /** Format: uuid */
+            id: string;
+            role: components["schemas"]["ProjectShareRole"];
+            /** @enum {string} */
+            status: "active" | "revoked";
+            /** Format: email */
+            userEmail?: string;
+            userDisplayName?: string;
+            modeCap?: components["schemas"]["ProjectShareModeCap"];
+            deniedCommands: string[];
+            /** Format: date-time */
+            redeemedAt: string;
+        };
+        SharedProject: {
+            grant: components["schemas"]["SharedProjectGrantSummary"];
+            project: components["schemas"]["Project"];
+            /**
+             * Format: uuid
+             * @description Absent means the whole project was shared, not one session.
+             */
+            sessionId?: string;
+            sessionName?: string;
+            /** Format: email */
+            sharedByEmail?: string;
+            sharedByName?: string;
         };
         /** @enum {string} */
         AgentCapability: "interface.chat" | "interface.tui" | "model.catalog" | "model.custom" | "attachments" | "browser.preview" | "review.execute" | "session.resume";
@@ -1938,6 +2384,9 @@ export interface components {
          *      */
         WorkerTurnAttempt: number;
         InstallationId: string;
+        InvitationId: string;
+        ShareLinkId: string;
+        ShareGrantId: string;
         Cursor: string;
         Limit: number;
         EventLimit: number;
@@ -2193,6 +2642,210 @@ export interface operations {
                 content: {
                     "application/json": {
                         project: components["schemas"]["Project"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listProjectShareLinks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every share link ever created for the project, most recent first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        links: components["schemas"]["ProjectShareLink"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createProjectShareLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProjectShareLinkInput"];
+            };
+        };
+        responses: {
+            /** @description Share link created. Its url is only ever returned here. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        link: components["schemas"]["ProjectShareLink"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listProjectShareGrants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The project's active share grants. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        grants: components["schemas"]["SharedProject"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    revokeProjectShareLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+                linkId: components["parameters"]["ShareLinkId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The share link was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    revokeProjectShareGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+                grantId: components["parameters"]["ShareGrantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The share grant was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    redeemProjectShareLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedeemShareLinkInput"];
+            };
+        };
+        responses: {
+            /** @description The link was redeemed; the caller now has a grant on the shared project. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        shared: components["schemas"]["SharedProject"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listSharedProjectSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The project's sessions, visible under this grant. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        sessions: components["schemas"]["Session"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listSharedProjects: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's "shared with me" list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        shared: components["schemas"]["SharedProject"][];
                     };
                 };
             };
@@ -2550,6 +3203,181 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    listOrgMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active members of the organization. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        members: components["schemas"]["OrganizationMember"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listOrgInvitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every invitation raised for the organization, most recent first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        invitations: components["schemas"]["OrganizationInvitation"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createOrgInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateInvitationInput"];
+            };
+        };
+        responses: {
+            /** @description Invitation created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        invitation: components["schemas"]["OrganizationInvitation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getOrgInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The invitation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        invitation: components["schemas"]["OrganizationInvitation"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    acceptOrgInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The invitation was accepted; the caller is now a member. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        organization: components["schemas"]["OrganizationMembership"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    declineOrgInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The invitation was declined. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    revokeOrgInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The invitation was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     sendMessage: {
         parameters: {
             query?: never;
@@ -2901,6 +3729,79 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description The coding-agent credential was disconnected. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listUserProviderConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redacted personal provider connection metadata. Secrets are never returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        providerConnections: components["schemas"]["RedactedProviderConnection"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    putUserProviderConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "claude-code" | "codex" | "cursor";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutAgentProviderConnectionInput"];
+            };
+        };
+        responses: {
+            /** @description The validated coding-agent credential was encrypted and stored. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        providerConnection: components["schemas"]["RedactedProviderConnection"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteUserProviderConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "claude-code" | "codex" | "cursor";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The personal coding-agent credential was disconnected. */
             204: {
                 headers: {
                     [name: string]: unknown;

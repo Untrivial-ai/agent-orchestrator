@@ -135,29 +135,34 @@ type PullRequestMergeabilitySummary struct {
 
 // PullRequestSummary is the normalized raw SCM read model for one pull request.
 type PullRequestSummary struct {
-	URL              string                         `json:"url"`
-	HTMLURL          string                         `json:"htmlUrl,omitempty"`
-	Number           int                            `json:"number"`
-	Title            string                         `json:"title"`
-	State            PRState                        `json:"state"`
-	Provider         string                         `json:"provider"`
-	Repo             string                         `json:"repository"`
-	Author           string                         `json:"author"`
-	SourceBranch     string                         `json:"sourceBranch"`
-	TargetBranch     string                         `json:"targetBranch"`
-	HeadSHA          string                         `json:"headSha"`
-	Additions        int                            `json:"additions"`
-	Deletions        int                            `json:"deletions"`
-	ChangedFiles     int                            `json:"changedFiles"`
-	CI               PullRequestCISummary           `json:"ci"`
-	Review           PullRequestReviewSummary       `json:"review"`
-	Mergeability     PullRequestMergeabilitySummary `json:"mergeability"`
-	StateChangedAt   time.Time                      `json:"stateChangedAt,omitempty"`
-	CreatedAt        time.Time                      `json:"createdAt,omitempty"`
-	UpdatedAt        time.Time                      `json:"updatedAt"`
-	ObservedAt       time.Time                      `json:"observedAt"`
-	CIObservedAt     time.Time                      `json:"ciObservedAt"`
-	ReviewObservedAt time.Time                      `json:"reviewObservedAt"`
+	URL          string                         `json:"url"`
+	HTMLURL      string                         `json:"htmlUrl,omitempty"`
+	Number       int                            `json:"number"`
+	Title        string                         `json:"title"`
+	State        PRState                        `json:"state"`
+	Provider     string                         `json:"provider"`
+	Repo         string                         `json:"repository"`
+	Author       string                         `json:"author"`
+	SourceBranch string                         `json:"sourceBranch"`
+	TargetBranch string                         `json:"targetBranch"`
+	HeadSHA      string                         `json:"headSha"`
+	Additions    int                            `json:"additions"`
+	Deletions    int                            `json:"deletions"`
+	ChangedFiles int                            `json:"changedFiles"`
+	CI           PullRequestCISummary           `json:"ci"`
+	Review       PullRequestReviewSummary       `json:"review"`
+	Mergeability PullRequestMergeabilitySummary `json:"mergeability"`
+	// StateChangedAt and CreatedAt are *time.Time, not time.Time: the OpenAPI
+	// schema marks both optional, but encoding/json's omitempty does not treat
+	// a zero-value time.Time as empty — it would still serialize as
+	// "0001-01-01T00:00:00Z" instead of being absent. A nil pointer is what
+	// actually omits the field.
+	StateChangedAt   *time.Time `json:"stateChangedAt,omitempty"`
+	CreatedAt        *time.Time `json:"createdAt,omitempty"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
+	ObservedAt       time.Time  `json:"observedAt"`
+	CIObservedAt     time.Time  `json:"ciObservedAt"`
+	ReviewObservedAt time.Time  `json:"reviewObservedAt"`
 }
 
 // AOReviewRun is one transport-neutral AO review pass.

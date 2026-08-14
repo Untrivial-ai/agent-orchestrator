@@ -1,6 +1,7 @@
 export {
   CloudApiError,
   CloudClient,
+  CloudStreamProtocolError,
   WorkerClient,
   createCloudClient,
   createWorkerClient,

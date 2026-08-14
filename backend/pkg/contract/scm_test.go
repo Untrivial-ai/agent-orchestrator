@@ -64,6 +64,61 @@ func TestSCMContractJSONUsesProviderNeutralFields(t *testing.T) {
 	}
 }
 
+func TestPullRequestSummaryOptionalTimestampsAreAbsentWhenZero(t *testing.T) {
+	// A zero time.Time is not what Go's encoding/json omitempty considers
+	// "empty" for a struct field: it still marshals as "0001-01-01T00:00:00Z"
+	// rather than being omitted. StateChangedAt and CreatedAt must be
+	// *time.Time so an unset value is actually absent, matching the OpenAPI
+	// schema, which does not require either field.
+	value := contract.PullRequestSummary{
+		URL:    "github://o/r/pull/7",
+		Number: 7,
+		State:  contract.PRStateOpen,
+	}
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := got["stateChangedAt"]; exists {
+		t.Errorf("stateChangedAt = %#v, want the key absent when unset", got["stateChangedAt"])
+	}
+	if _, exists := got["createdAt"]; exists {
+		t.Errorf("createdAt = %#v, want the key absent when unset", got["createdAt"])
+	}
+}
+
+func TestPullRequestSummaryOptionalTimestampsAreEmittedWhenSet(t *testing.T) {
+	when := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	value := contract.PullRequestSummary{
+		URL:            "github://o/r/pull/7",
+		Number:         7,
+		State:          contract.PRStateOpen,
+		StateChangedAt: &when,
+		CreatedAt:      &when,
+	}
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := when.Format(time.RFC3339)
+	if got["stateChangedAt"] != want {
+		t.Errorf("stateChangedAt = %#v, want %q", got["stateChangedAt"], want)
+	}
+	if got["createdAt"] != want {
+		t.Errorf("createdAt = %#v, want %q", got["createdAt"], want)
+	}
+}
+
 func TestSharedSCMVocabulariesAndCloudReadRoutesMatch(t *testing.T) {
 	repoRoot := scmRepoRoot(t)
 	specData, err := os.ReadFile(filepath.Join(repoRoot, "contracts", "cloud", "openapi.yaml"))

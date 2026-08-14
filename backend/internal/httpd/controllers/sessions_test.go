@@ -31,6 +31,10 @@ import (
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 )
 
+func timePtr(t time.Time) *time.Time {
+	return &t
+}
+
 type fakeSessionService struct {
 	sessions            map[domain.SessionID]domain.Session
 	sent                string
@@ -456,8 +460,8 @@ func (f *fakeSessionService) ListPRSummaries(_ context.Context, id domain.Sessio
 			Reasons: []string{"conflicts"},
 			PRURL:   "https://github.com/aoagents/agent-orchestrator/pull/142",
 		},
-		StateChangedAt: time.Date(2026, 6, 4, 11, 30, 0, 0, time.UTC),
-		CreatedAt:      time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC),
+		StateChangedAt: timePtr(time.Date(2026, 6, 4, 11, 30, 0, 0, time.UTC)),
+		CreatedAt:      timePtr(time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC)),
 		UpdatedAt:      time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
 	}}, nil
 }

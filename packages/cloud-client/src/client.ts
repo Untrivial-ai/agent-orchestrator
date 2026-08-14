@@ -6,7 +6,9 @@ import type {
   CreateGitHubProjectInput,
   CreateGitHubScratchProjectInput,
   CreateGitHubScratchProjectResponse,
+  CreateInvitationInput,
   CreateProjectInput,
+  CreateProjectShareLinkInput,
   CreateSessionInput,
   CurrentAccount,
   DeleteProjectResponse,
@@ -19,16 +21,22 @@ import type {
   GitHubUserAuthorizationStart,
   GitHubUserConnection,
   IdempotentRequestOptions,
+  OrganizationInvitation,
+  OrganizationMember,
+  OrganizationMembership,
   PaginationOptions,
   Project,
   ProjectPage,
+  ProjectShareLink,
   PutAgentProviderConnectionInput,
   RedactedProviderConnection,
+  RedeemShareLinkInput,
   RequestOptions,
   Session,
   SessionPage,
   SessionPullRequests,
   SessionReviewState,
+  SharedProject,
   TerminalKind,
   TerminalTicket,
   UpdateProjectInput,
@@ -95,6 +103,19 @@ export class CloudApiError extends Error {
     this.requestId = envelope.requestId;
     this.details = envelope.details;
     this.envelope = envelope;
+  }
+}
+
+// CloudStreamProtocolError marks an SSE payload as structurally invalid: bad
+// JSON, or valid JSON missing the envelope fields every ClientEvent variant
+// requires. This is distinct from a transport failure (a dropped connection,
+// a 5xx) — retrying the same request will not fix a payload the server
+// actually sent, so streamEvents must never retry on this error, only on
+// CloudApiError with a retryable status or a genuine network failure.
+export class CloudStreamProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CloudStreamProtocolError";
   }
 }
 
@@ -183,6 +204,191 @@ export class CloudClient {
         method: "DELETE",
         signal: options.signal,
       },
+    );
+  }
+
+  async listProjectShareLinks(
+    orgId: string,
+    projectId: string,
+    options: RequestOptions = {},
+  ): Promise<ProjectShareLink[]> {
+    const response = await this.request<{ links: ProjectShareLink[] }>(
+      this.orgPath(orgId, `/projects/${encodeURIComponent(projectId)}/shares`),
+      options,
+    );
+    return response.links;
+  }
+
+  createProjectShareLink(
+    orgId: string,
+    projectId: string,
+    input: CreateProjectShareLinkInput,
+    options: RequestOptions = {},
+  ): Promise<{ link: ProjectShareLink }> {
+    return this.request(
+      this.orgPath(orgId, `/projects/${encodeURIComponent(projectId)}/shares`),
+      { method: "POST", body: input, signal: options.signal },
+    );
+  }
+
+  async listProjectShareGrants(
+    orgId: string,
+    projectId: string,
+    options: RequestOptions = {},
+  ): Promise<SharedProject[]> {
+    const response = await this.request<{ grants: SharedProject[] }>(
+      this.orgPath(orgId, `/projects/${encodeURIComponent(projectId)}/shares/grants`),
+      options,
+    );
+    return response.grants;
+  }
+
+  revokeProjectShareLink(
+    orgId: string,
+    projectId: string,
+    linkId: string,
+    options: RequestOptions = {},
+  ): Promise<void> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/projects/${encodeURIComponent(projectId)}/shares/${encodeURIComponent(linkId)}/revoke`,
+      ),
+      { method: "POST", signal: options.signal },
+    );
+  }
+
+  revokeProjectShareGrant(
+    orgId: string,
+    projectId: string,
+    grantId: string,
+    options: RequestOptions = {},
+  ): Promise<void> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/projects/${encodeURIComponent(projectId)}/shares/grants/${encodeURIComponent(grantId)}/revoke`,
+      ),
+      { method: "POST", signal: options.signal },
+    );
+  }
+
+  async listSharedProjectSessions(
+    orgId: string,
+    projectId: string,
+    options: RequestOptions = {},
+  ): Promise<Session[]> {
+    const response = await this.request<{ sessions: Session[] }>(
+      this.orgPath(orgId, `/shared/projects/${encodeURIComponent(projectId)}/sessions`),
+      options,
+    );
+    return response.sessions;
+  }
+
+  redeemProjectShareLink(
+    input: RedeemShareLinkInput,
+    options: RequestOptions = {},
+  ): Promise<{ shared: SharedProject }> {
+    return this.request("/api/cloud/v1/share-links/redeem", {
+      method: "POST",
+      body: input,
+      signal: options.signal,
+    });
+  }
+
+  async listSharedProjects(
+    options: RequestOptions = {},
+  ): Promise<SharedProject[]> {
+    const response = await this.request<{ shared: SharedProject[] }>(
+      "/api/cloud/v1/shared/projects",
+      options,
+    );
+    return response.shared;
+  }
+
+  async listOrgMembers(
+    orgId: string,
+    options: RequestOptions = {},
+  ): Promise<OrganizationMember[]> {
+    const response = await this.request<{ members: OrganizationMember[] }>(
+      this.orgPath(orgId, "/members"),
+      options,
+    );
+    return response.members;
+  }
+
+  async listOrgInvitations(
+    orgId: string,
+    options: RequestOptions = {},
+  ): Promise<OrganizationInvitation[]> {
+    const response = await this.request<{
+      invitations: OrganizationInvitation[];
+    }>(this.orgPath(orgId, "/invitations"), options);
+    return response.invitations;
+  }
+
+  createOrgInvitation(
+    orgId: string,
+    input: CreateInvitationInput,
+    options: RequestOptions = {},
+  ): Promise<{ invitation: OrganizationInvitation }> {
+    return this.request(this.orgPath(orgId, "/invitations"), {
+      method: "POST",
+      body: input,
+      signal: options.signal,
+    });
+  }
+
+  getOrgInvitation(
+    orgId: string,
+    invitationId: string,
+    options: RequestOptions = {},
+  ): Promise<{ invitation: OrganizationInvitation }> {
+    return this.request(
+      this.orgPath(orgId, `/invitations/${encodeURIComponent(invitationId)}`),
+      options,
+    );
+  }
+
+  acceptOrgInvitation(
+    orgId: string,
+    invitationId: string,
+    options: RequestOptions = {},
+  ): Promise<{ organization: OrganizationMembership }> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/invitations/${encodeURIComponent(invitationId)}/accept`,
+      ),
+      { method: "POST", signal: options.signal },
+    );
+  }
+
+  declineOrgInvitation(
+    orgId: string,
+    invitationId: string,
+    options: RequestOptions = {},
+  ): Promise<void> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/invitations/${encodeURIComponent(invitationId)}/decline`,
+      ),
+      { method: "POST", signal: options.signal },
+    );
+  }
+
+  revokeOrgInvitation(
+    orgId: string,
+    invitationId: string,
+    options: RequestOptions = {},
+  ): Promise<void> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/invitations/${encodeURIComponent(invitationId)}/revoke`,
+      ),
+      { method: "POST", signal: options.signal },
     );
   }
 
@@ -640,6 +846,36 @@ export class CloudClient {
     await this.throwIfError(response);
   }
 
+  async listUserProviderConnections(
+    options: RequestOptions = {},
+  ): Promise<RedactedProviderConnection[]> {
+    const response = await this.request<{
+      providerConnections: RedactedProviderConnection[];
+    }>("/api/cloud/v1/me/providers", options);
+    return response.providerConnections;
+  }
+
+  putUserProviderConnection(
+    provider: "claude-code" | "codex" | "cursor",
+    input: PutAgentProviderConnectionInput,
+    options: RequestOptions = {},
+  ): Promise<{ providerConnection: RedactedProviderConnection }> {
+    return this.request(
+      `/api/cloud/v1/me/providers/${encodeURIComponent(provider)}`,
+      { method: "PUT", body: input, signal: options.signal },
+    );
+  }
+
+  deleteUserProviderConnection(
+    provider: "claude-code" | "codex" | "cursor",
+    options: RequestOptions = {},
+  ): Promise<void> {
+    return this.request(
+      `/api/cloud/v1/me/providers/${encodeURIComponent(provider)}`,
+      { method: "DELETE", signal: options.signal },
+    );
+  }
+
   private orgPath(orgId: string, path: string): string {
     return `/api/cloud/v1/orgs/${encodeURIComponent(orgId)}${path}`;
   }
@@ -1048,10 +1284,45 @@ function parseSSEBlock(block: string): ClientEvent | undefined {
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trimStart())
     .join("\n");
-  return data ? (JSON.parse(data) as ClientEvent) : undefined;
+  if (!data) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch (cause) {
+    throw new CloudStreamProtocolError(
+      `Cloud event stream sent a malformed SSE payload: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    );
+  }
+  if (!isClientEventEnvelope(parsed)) {
+    throw new CloudStreamProtocolError(
+      "Cloud event stream sent an event missing its required envelope fields.",
+    );
+  }
+  return parsed;
+}
+
+// isClientEventEnvelope checks the fields every ClientEvent variant shares
+// (sequence, type, sessionId) rather than the full discriminated union, so it
+// doesn't need to track every event type the schema adds. It exists so a
+// server bug or transport corruption produces a clear, non-retryable error
+// instead of a value that merely satisfies the type checker at compile time
+// but crashes (or worse, silently misbehaves) wherever it's used.
+function isClientEventEnvelope(value: unknown): value is ClientEvent {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.sequence === "number" &&
+    Number.isFinite(candidate.sequence) &&
+    typeof candidate.type === "string" &&
+    candidate.type.length > 0 &&
+    typeof candidate.sessionId === "string"
+  );
 }
 
 function isRetryableStreamError(error: unknown): boolean {
+  if (error instanceof CloudStreamProtocolError) return false;
   if (!(error instanceof CloudApiError)) return true;
   return (
     error.status === 408 ||

@@ -106,8 +106,8 @@ func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, review
 		CI:               summarizeCI(pr, checks),
 		Review:           summarizeReview(pr, comments, reviews),
 		Mergeability:     summarizeMergeability(pr, threads),
-		StateChangedAt:   summarizePRStateChangedAt(pr),
-		CreatedAt:        pr.CreatedAtProvider,
+		StateChangedAt:   optionalTime(summarizePRStateChangedAt(pr)),
+		CreatedAt:        optionalTime(pr.CreatedAtProvider),
 		UpdatedAt:        pr.UpdatedAt,
 		ObservedAt:       pr.ObservedAt,
 		CIObservedAt:     pr.CIObservedAt,
@@ -129,6 +129,16 @@ func summarizePRStateChangedAt(pr domain.PullRequest) time.Time {
 	default:
 		return time.Time{}
 	}
+}
+
+// optionalTime converts a zero time.Time to nil so PRSummary's optional
+// timestamp fields are actually absent from JSON rather than serializing as
+// the year-one zero value.
+func optionalTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 func summarizeCI(pr domain.PullRequest, checks []domain.PullRequestCheck) PRCISummary {
