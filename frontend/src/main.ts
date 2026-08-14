@@ -325,6 +325,10 @@ function appendDaemonOutput(text: string): void {
 // and dies with the app, so a crash leaves nothing to correlate with the request
 // ID the API handed out. Keep-daemon mode redirects stdio to this same file at
 // spawn time instead, so this writer is only for the piped path.
+//
+// Dev-only (review #3892): in a packaged build the daemon's output already
+// reaches the Electron console, and a second on-disk copy on every launch is
+// noise. The tee-log is a debugging aid for unpackaged runs.
 const DAEMON_LOG_MAX_BYTES = 8 * 1024 * 1024;
 let daemonLogStream: WriteStream | undefined;
 let daemonLogBytes = 0;
@@ -335,6 +339,10 @@ function daemonLogPath(): string {
 
 function openDaemonLog(): void {
 	closeDaemonLog();
+	// Packaged builds skip the durable log entirely; the stream stays undefined so
+	// writeDaemonLog/closeDaemonLog are no-ops. Keep-daemon mode is unaffected —
+	// it redirects stdio to the file at spawn time regardless of dev.
+	if (!isDev) return;
 	const logPath = daemonLogPath();
 	try {
 		mkdirSync(path.dirname(logPath), { recursive: true });
