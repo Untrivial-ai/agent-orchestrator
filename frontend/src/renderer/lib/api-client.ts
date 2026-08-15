@@ -268,6 +268,15 @@ export function apiErrorCode(error: unknown): string | undefined {
 	return undefined;
 }
 
+/** Semantic kind from the daemon's stable error envelope. */
+export function apiErrorKind(error: unknown): string | undefined {
+	if (typeof error === "object" && error !== null) {
+		const body = error as { error?: unknown };
+		if (typeof body.error === "string" && body.error !== "") return body.error;
+	}
+	return undefined;
+}
+
 /** Correlation id from the daemon's stable error envelope. */
 export function apiErrorRequestId(error: unknown): string | undefined {
 	if (typeof error === "object" && error !== null) {

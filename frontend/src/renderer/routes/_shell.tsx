@@ -24,13 +24,14 @@ import { useDaemonStatus } from "../hooks/useDaemonStatus";
 import { useOpenShellTerminal } from "../hooks/useShellTerminals";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
-import { apiClient, apiErrorCode, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorKind, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { addRendererExceptionStep, captureRendererEvent, captureRendererException } from "../lib/telemetry";
 import { ShellProvider } from "../lib/shell-context";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
+import { OrchestratorSpawnError, orchestratorSpawnFailureReason } from "../lib/spawn-orchestrator";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import { aoBridge } from "../lib/bridge";
 import { handleModifierLinkClick } from "../lib/external-link-policy";
@@ -324,7 +325,13 @@ function ShellLayout() {
 					const message = spawnError
 						? apiErrorMessage(spawnError, `Failed to spawn orchestrator (${spawnResponse.status})`)
 						: `Failed to spawn orchestrator (${spawnResponse.status})`;
-					throw new Error(message);
+					throw new OrchestratorSpawnError(
+						message,
+						apiErrorCode(spawnError),
+						undefined,
+						spawnResponse.status,
+						apiErrorKind(spawnError),
+					);
 				}
 				void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", {
 					project_id: workspace.id,
@@ -340,6 +347,7 @@ function ShellLayout() {
 				void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
 					project_id: workspace.id,
 					source: "project_add",
+					...orchestratorSpawnFailureReason(spawnError),
 				});
 				void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
 				const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";

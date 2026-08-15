@@ -385,7 +385,7 @@ describe("telemetry sanitizers", () => {
 		}
 	});
 
-	it("keeps only the source enum on orchestrator_spawn events", async () => {
+	it("keeps source and typed reasons on orchestrator_spawn events", async () => {
 		const props = await sanitizeRendererProperties("ao.renderer.orchestrator_spawn_requested", {
 			project_id: "demo-project",
 			source: "board",
@@ -396,8 +396,19 @@ describe("telemetry sanitizers", () => {
 		const badSource = await sanitizeRendererProperties("ao.renderer.orchestrator_spawn_failed", {
 			project_id: "demo-project",
 			source: "/Users/alice/private",
+			error_kind: "internal",
+			error_code: "SPAWN_INTERNAL",
+			message: "raw error with /Users/alice/private",
 		});
 		expect(badSource).not.toHaveProperty("source");
+		expect(badSource).toMatchObject({ error_kind: "internal", error_code: "SPAWN_INTERNAL" });
+		expect(badSource).not.toHaveProperty("message");
+
+		const unsafeReason = await sanitizeRendererProperties("ao.renderer.orchestrator_spawn_failed", {
+			error_kind: "/Users/alice/private",
+			error_code: "raw user text",
+		});
+		expect(unsafeReason).toEqual({});
 	});
 
 	it("keeps every whitelisted spawn source (the shared ORCHESTRATOR_SPAWN_SOURCES list)", async () => {

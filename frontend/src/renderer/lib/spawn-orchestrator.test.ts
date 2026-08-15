@@ -1,5 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { isChatPreflightError, OrchestratorSpawnError, spawnOrchestrator } from "./spawn-orchestrator";
+import {
+	isChatPreflightError,
+	OrchestratorSpawnError,
+	orchestratorSpawnFailureReason,
+	spawnOrchestrator,
+} from "./spawn-orchestrator";
 import { apiClient } from "./api-client";
 import { captureRendererEvent } from "./telemetry";
 
@@ -8,6 +13,10 @@ vi.mock("./api-client", () => ({
 	apiErrorCode: (error: unknown) =>
 		typeof error === "object" && error !== null && "code" in error
 			? String((error as { code: unknown }).code)
+			: undefined,
+	apiErrorKind: (error: unknown) =>
+		typeof error === "object" && error !== null && "error" in error
+			? String((error as { error: unknown }).error)
 			: undefined,
 	apiErrorRequestId: (error: unknown) =>
 		typeof error === "object" && error !== null && "requestId" in error
@@ -91,13 +100,15 @@ describe("spawnOrchestrator", () => {
 	it("emits the failed event and rethrows when the daemon rejects the spawn", async () => {
 		(apiClient.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
 			data: undefined,
-			error: { message: "boom" },
+			error: { error: "internal", code: "SPAWN_INTERNAL", message: "boom" },
 			response: { status: 500 },
 		});
 		await expect(spawnOrchestrator("proj", "topbar")).rejects.toThrow("boom");
 		expect(captureMock).toHaveBeenCalledWith("ao.renderer.orchestrator_spawn_failed", {
 			project_id: "proj",
 			source: "topbar",
+			error_kind: "internal",
+			error_code: "SPAWN_INTERNAL",
 		});
 		expect(captureMock).not.toHaveBeenCalledWith("ao.renderer.orchestrator_spawn_succeeded", expect.anything());
 	});
@@ -106,6 +117,7 @@ describe("spawnOrchestrator", () => {
 		(apiClient.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
 			data: undefined,
 			error: {
+				error: "bad_request",
 				code: "CHAT_DRIVER_UNAVAILABLE",
 				message: "chat driver is unavailable",
 				requestId: "request-42",
@@ -117,10 +129,30 @@ describe("spawnOrchestrator", () => {
 		expect(error).toBeInstanceOf(OrchestratorSpawnError);
 		expect(error).toMatchObject({
 			code: "CHAT_DRIVER_UNAVAILABLE",
+			kind: "bad_request",
 			requestId: "request-42",
 			status: 400,
 		});
 		expect((error as Error).message).toBe("chat driver is unavailable (CHAT_DRIVER_UNAVAILABLE)");
 		expect(isChatPreflightError(error)).toBe(true);
+	});
+
+	it("classifies transport failures without emitting raw error text", async () => {
+		(apiClient.POST as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("dial /Users/alice/private"));
+
+		await expect(spawnOrchestrator("proj", "board")).rejects.toThrow("dial");
+		expect(captureMock).toHaveBeenCalledWith("ao.renderer.orchestrator_spawn_failed", {
+			project_id: "proj",
+			source: "board",
+			error_kind: "network_error",
+		});
+	});
+
+	it("falls back to the HTTP status when an older daemon omits error kind", () => {
+		const error = new OrchestratorSpawnError("conflict", "BRANCH_CHECKED_OUT_ELSEWHERE", undefined, 409);
+		expect(orchestratorSpawnFailureReason(error)).toEqual({
+			error_kind: "conflict",
+			error_code: "BRANCH_CHECKED_OUT_ELSEWHERE",
+		});
 	});
 });

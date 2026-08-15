@@ -50,6 +50,11 @@ Product telemetry is designed not to include:
 - API keys, access tokens, passwords, or other credentials
 - Names, email addresses, or account identities
 
+When an orchestrator spawn fails, the renderer reports only the daemon's fixed
+error kind and stable error code, or a renderer-owned `network_error` or
+`invalid_response` kind when no daemon error envelope exists. Raw error messages
+are not sent with this event.
+
 The optional website waitlist is separate from product telemetry. If you submit
 an email address there, it is used to manage that waitlist as described in the
 [privacy policy](https://aoagents.dev/privacy).

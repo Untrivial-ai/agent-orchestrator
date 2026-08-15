@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	apiClient,
+	apiErrorKind,
 	apiErrorMessage,
 	getApiBaseUrl,
 	hasTrustedApiBaseUrl,
@@ -322,6 +323,11 @@ describe("api error telemetry", () => {
 });
 
 describe("apiErrorMessage", () => {
+	it("reads the semantic kind from a daemon error envelope", () => {
+		expect(apiErrorKind({ error: "conflict", code: "BRANCH_CHECKED_OUT_ELSEWHERE" })).toBe("conflict");
+		expect(apiErrorKind({ error: 409 })).toBeUndefined();
+	});
+
 	it("preserves daemon error codes next to human messages", () => {
 		expect(apiErrorMessage({ code: "AGENT_BINARY_NOT_FOUND", message: "agent binary not found on PATH" })).toBe(
 			"agent binary not found on PATH (AGENT_BINARY_NOT_FOUND)",
