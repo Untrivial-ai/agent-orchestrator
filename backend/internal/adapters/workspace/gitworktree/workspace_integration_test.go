@@ -62,6 +62,211 @@ func TestWorkspaceIntegrationCreateRestoreDestroy(t *testing.T) {
 	}
 }
 
+func TestWorkspaceIntegrationCreateRecoversInterruptedInitialization(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	root := filepath.Join(tmp, "managed")
+	ws, err := New(Options{Binary: git, ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess", Branch: "feature/interrupted"}
+	path := filepath.Join(ws.managedRoot, "proj", "sess")
+
+	runGit(t, git, repo, "worktree", "add", "--no-checkout", "-b", cfg.Branch, path, "origin/main")
+	runGit(t, git, repo, "worktree", "lock", "--reason", "initializing", path)
+	if err := exec.Command(git, "-C", path, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+		t.Fatalf("interrupted worktree should have a valid HEAD: %v", err)
+	}
+
+	info, err := ws.Create(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if info.Path != path || info.Branch != cfg.Branch {
+		t.Fatalf("info = %#v, want path %q branch %q", info, path, cfg.Branch)
+	}
+	head := strings.TrimSpace(string(runGitOutput(t, git, path, "rev-parse", "--verify", "HEAD")))
+	if head == "" {
+		t.Fatal("recreated worktree has no valid HEAD")
+	}
+	status := string(runGitOutput(t, git, repo, "worktree", "list", "--porcelain"))
+	if strings.Contains(status, "locked initializing") {
+		t.Fatalf("recreated worktree remains locked as initializing:\n%s", status)
+	}
+}
+
+func TestWorkspaceIntegrationCreatePreservesInterruptedInitializationWithUntrackedFiles(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	root := filepath.Join(tmp, "managed")
+	ws, err := New(Options{Binary: git, ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess", Branch: "feature/interrupted-dirty"}
+	path := filepath.Join(ws.managedRoot, "proj", "sess")
+
+	runGit(t, git, repo, "worktree", "add", "--no-checkout", "-b", cfg.Branch, path, "origin/main")
+	runGit(t, git, repo, "worktree", "lock", "--reason", "initializing", path)
+	if err := exec.Command(git, "-C", path, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+		t.Fatalf("interrupted worktree should have a valid HEAD: %v", err)
+	}
+	untracked := filepath.Join(path, "notes.txt")
+	if err := os.WriteFile(untracked, []byte("preserve me\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	_, err = ws.Create(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "contains files that must be preserved") {
+		t.Fatalf("Create error = %v, want preservation refusal", err)
+	}
+	if contents, readErr := os.ReadFile(untracked); readErr != nil || string(contents) != "preserve me\n" {
+		t.Fatalf("untracked file was not preserved: contents=%q err=%v", contents, readErr)
+	}
+	status := string(runGitOutput(t, git, repo, "worktree", "list", "--porcelain"))
+	if !strings.Contains(status, "locked initializing") {
+		t.Fatalf("initializing worktree registration was mutated:\n%s", status)
+	}
+}
+
+func TestWorkspaceIntegrationRestoreRecoversInterruptedInitialization(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	root := filepath.Join(tmp, "managed")
+	ws, err := New(Options{Binary: git, ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess", Branch: "feature/restore-interrupted"}
+	path := filepath.Join(ws.managedRoot, "proj", "sess")
+
+	runGit(t, git, repo, "worktree", "add", "--no-checkout", "-b", cfg.Branch, path, "origin/main")
+	runGit(t, git, repo, "worktree", "lock", "--reason", "initializing", path)
+	runGit(t, git, repo, "update-ref", "-d", "refs/heads/"+cfg.Branch)
+
+	info, err := ws.Restore(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if info.Path != path || info.Branch != cfg.Branch {
+		t.Fatalf("info = %#v, want path %q branch %q", info, path, cfg.Branch)
+	}
+	head := strings.TrimSpace(string(runGitOutput(t, git, path, "rev-parse", "--verify", "HEAD")))
+	if head == "" {
+		t.Fatal("restored worktree has no valid HEAD")
+	}
+}
+
+func TestWorkspaceIntegrationCreateWorkspaceProjectRepoRecoversInterruptedInitialization(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		repoName   string
+		relative   string
+		branchName string
+	}{
+		{name: "root", repoName: "root", branchName: "feature/workspace-root-interrupted"},
+		{name: "child", repoName: "api", relative: "services/api", branchName: "feature/workspace-child-interrupted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := requireGit(t)
+			tmp := t.TempDir()
+			repo := setupOriginClone(t, git, tmp)
+			root := filepath.Join(tmp, "managed")
+			ws, err := New(Options{Binary: git, ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+			if err != nil {
+				t.Fatalf("new: %v", err)
+			}
+			output := filepath.Join(ws.managedRoot, "proj", "session")
+			if tc.relative != "" {
+				output = filepath.Join(output, filepath.FromSlash(tc.relative))
+			}
+
+			runGit(t, git, repo, "worktree", "add", "--no-checkout", "-b", tc.branchName, output, "origin/main")
+			runGit(t, git, repo, "worktree", "lock", "--reason", "initializing", output)
+			gitFile, err := os.ReadFile(filepath.Join(output, ".git"))
+			if err != nil {
+				t.Fatalf("read worktree gitfile: %v", err)
+			}
+			gitDir := strings.TrimSpace(strings.TrimPrefix(string(gitFile), "gitdir: "))
+			if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/ao-workspace-project-invalid\n"), 0o644); err != nil {
+				t.Fatalf("invalidate worktree HEAD: %v", err)
+			}
+			if err := exec.Command(git, "-C", output, "rev-parse", "--verify", "HEAD").Run(); err == nil {
+				t.Fatal("interrupted workspace repo unexpectedly has a valid HEAD")
+			}
+
+			baseSHA, err := ws.createWorkspaceProjectRepo(context.Background(), workspaceProjectRepo{
+				name:         tc.repoName,
+				repoPath:     repo,
+				outputPath:   output,
+				relativePath: tc.relative,
+			}, tc.branchName)
+			if err != nil {
+				t.Fatalf("createWorkspaceProjectRepo: %v", err)
+			}
+			if baseSHA == "" {
+				t.Fatal("baseSHA is empty")
+			}
+			if head := strings.TrimSpace(string(runGitOutput(t, git, output, "rev-parse", "--verify", "HEAD"))); head == "" {
+				t.Fatal("recreated workspace repo has no valid HEAD")
+			}
+			status := string(runGitOutput(t, git, repo, "worktree", "list", "--porcelain"))
+			if strings.Contains(status, "locked initializing") {
+				t.Fatalf("recreated workspace repo remains locked as initializing:\n%s", status)
+			}
+		})
+	}
+}
+
+func TestWorkspaceIntegrationCreateWorkspaceProjectRepoPreservesInterruptedFiles(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	root := filepath.Join(tmp, "managed")
+	ws, err := New(Options{Binary: git, ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	output := filepath.Join(ws.managedRoot, "proj", "session", "services", "api")
+	branch := "feature/workspace-child-dirty"
+
+	runGit(t, git, repo, "worktree", "add", "--no-checkout", "-b", branch, output, "origin/main")
+	runGit(t, git, repo, "worktree", "lock", "--reason", "initializing", output)
+	gitFile, err := os.ReadFile(filepath.Join(output, ".git"))
+	if err != nil {
+		t.Fatalf("read worktree gitfile: %v", err)
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(string(gitFile), "gitdir: "))
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/ao-workspace-project-invalid\n"), 0o644); err != nil {
+		t.Fatalf("invalidate worktree HEAD: %v", err)
+	}
+	untracked := filepath.Join(output, "notes.txt")
+	if err := os.WriteFile(untracked, []byte("preserve me\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	_, err = ws.createWorkspaceProjectRepo(context.Background(), workspaceProjectRepo{
+		name:         "api",
+		repoPath:     repo,
+		outputPath:   output,
+		relativePath: "services/api",
+	}, branch)
+	if err == nil || !strings.Contains(err.Error(), "contains files that must be preserved") {
+		t.Fatalf("createWorkspaceProjectRepo error = %v, want preservation refusal", err)
+	}
+	if contents, readErr := os.ReadFile(untracked); readErr != nil || string(contents) != "preserve me\n" {
+		t.Fatalf("untracked file was not preserved: contents=%q err=%v", contents, readErr)
+	}
+	status := string(runGitOutput(t, git, repo, "worktree", "list", "--porcelain"))
+	if !strings.Contains(status, "locked initializing") {
+		t.Fatalf("initializing workspace repo registration was mutated:\n%s", status)
+	}
+}
+
 func TestWorkspaceIntegrationDestroyRefusesLockedWorktree(t *testing.T) {
 	git := requireGit(t)
 	tmp := t.TempDir()
@@ -581,6 +786,16 @@ func gitOutput(t *testing.T, git, dir string, args ...string) string {
 func runGit(t *testing.T, git, dir string, args ...string) {
 	t.Helper()
 	run(t, git, append([]string{"-C", dir}, args...)...)
+}
+
+func runGitOutput(t *testing.T, git, dir string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command(git, append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s -C %s %s: %v\n%s", git, dir, strings.Join(args, " "), err, out)
+	}
+	return out
 }
 
 func run(t *testing.T, binary string, args ...string) {

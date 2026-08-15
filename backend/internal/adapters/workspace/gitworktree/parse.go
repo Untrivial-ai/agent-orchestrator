@@ -6,13 +6,14 @@ import (
 )
 
 type worktreeRecord struct {
-	Path     string
-	Branch   string
-	Head     string
-	Bare     bool
-	Detached bool
-	Locked   bool
-	Prunable bool
+	Path       string
+	Branch     string
+	Head       string
+	Bare       bool
+	Detached   bool
+	Locked     bool
+	LockReason string
+	Prunable   bool
 }
 
 func parseWorktreePorcelain(out string) ([]worktreeRecord, error) {
@@ -60,6 +61,9 @@ func parseWorktreePorcelain(out string) ([]worktreeRecord, error) {
 		case "locked":
 			if cur != nil {
 				cur.Locked = true
+				if hasValue {
+					cur.LockReason = val
+				}
 			}
 		case "prunable":
 			if cur != nil {

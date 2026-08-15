@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -82,6 +84,42 @@ type Workspace struct {
 	defaultBranch string
 	repos         RepoResolver
 	run           commandRunner
+	pathLocks     keyedMutex
+}
+
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*keyedMutexEntry
+}
+
+type keyedMutexEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (m *keyedMutex) lock(key string) func() {
+	m.mu.Lock()
+	if m.locks == nil {
+		m.locks = make(map[string]*keyedMutexEntry)
+	}
+	entry := m.locks[key]
+	if entry == nil {
+		entry = &keyedMutexEntry{}
+		m.locks[key] = entry
+	}
+	entry.refs++
+	m.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		m.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(m.locks, key)
+		}
+		m.mu.Unlock()
+	}
 }
 
 type commandRunner func(ctx context.Context, binary string, args ...string) ([]byte, error)
@@ -137,6 +175,8 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
+	unlock := w.pathLocks.lock(repo + "\x00" + path)
+	defer unlock()
 	if info, ok, err := w.existingWorktree(ctx, repo, path, cfg); err != nil {
 		return ports.WorkspaceInfo{}, err
 	} else if ok {
@@ -718,6 +758,8 @@ func (w *Workspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (por
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
+	unlock := w.pathLocks.lock(repo + "\x00" + path)
+	defer unlock()
 	records, err := w.listRecords(ctx, repo)
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
@@ -734,11 +776,31 @@ func (w *Workspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (por
 			return ports.WorkspaceInfo{}, err
 		}
 		if !missing {
-			branch := rec.Branch
-			if branch == "" {
-				branch = cfg.Branch
+			if rec.Locked && rec.LockReason == "initializing" {
+				if cleanupErr := w.removeIncompleteInitialization(ctx, repo, rec); cleanupErr != nil {
+					return ports.WorkspaceInfo{}, cleanupErr
+				}
+				if rec.Branch != "" {
+					recreateBranch = rec.Branch
+				}
+			} else {
+				if _, err := w.run(ctx, w.binary, revParseHeadArgs(path)...); err != nil {
+					return ports.WorkspaceInfo{}, fmt.Errorf(
+						"gitworktree: refusing to restore registered worktree %q because HEAD is not ready: %w",
+						path, err,
+					)
+				}
+				branch := rec.Branch
+				if branch == "" {
+					branch = cfg.Branch
+				}
+				return ports.WorkspaceInfo{Path: path, Branch: branch, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: repo}, nil
 			}
-			return ports.WorkspaceInfo{Path: path, Branch: branch, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: repo}, nil
+		} else {
+			branch := rec.Branch
+			if branch != "" {
+				recreateBranch = branch
+			}
 		}
 		// The registration outlived its directory (issue #2775: a session's git
 		// worktree registration and DB row survived a deletion that removed only
@@ -749,9 +811,6 @@ func (w *Workspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (por
 		// instantly with no diagnostic. addWorktree re-registers the stale path
 		// itself via `worktree add --force`; the registration is left in place
 		// until then.
-		if rec.Branch != "" {
-			recreateBranch = rec.Branch
-		}
 	}
 	if nonEmpty, err := pathExistsNonEmpty(path); err != nil {
 		return ports.WorkspaceInfo{}, err
@@ -795,6 +854,18 @@ func (w *Workspace) existingWorktree(ctx context.Context, repo, path string, cfg
 			// a leftover from a prior session of the same name and its branch
 			// says nothing about what the caller asked for.
 			return ports.WorkspaceInfo{}, false, nil
+		}
+		if rec.Locked && rec.LockReason == "initializing" {
+			if cleanupErr := w.removeIncompleteInitialization(ctx, repo, rec); cleanupErr != nil {
+				return ports.WorkspaceInfo{}, false, cleanupErr
+			}
+			return ports.WorkspaceInfo{}, false, nil
+		}
+		if _, err := w.run(ctx, w.binary, revParseHeadArgs(path)...); err != nil {
+			return ports.WorkspaceInfo{}, false, fmt.Errorf(
+				"gitworktree: refusing to reuse registered worktree %q because HEAD is not ready: %w",
+				path, err,
+			)
 		}
 		branch := rec.Branch
 		if branch == "" {
@@ -866,6 +937,7 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 	if err != nil {
 		return err
 	}
+	_, registrationExisted := findWorktree(records, path)
 	if conflict, ok := findWorktreeByBranch(records, branch); ok && filepath.Clean(conflict.Path) != filepath.Clean(path) {
 		return fmt.Errorf("%w: %q is checked out at %q", ErrBranchCheckedOutElsewhere, branch, conflict.Path)
 	}
@@ -885,7 +957,8 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 	}
 	if localBranch {
 		if _, err := w.run(ctx, w.binary, worktreeAddBranchArgs(repo, path, branch, force)...); err != nil {
-			return fmt.Errorf("gitworktree: worktree add existing branch %q: %w", branch, err)
+			addErr := fmt.Errorf("gitworktree: worktree add existing branch %q: %w", branch, err)
+			return errors.Join(addErr, w.cleanupFailedInitialization(ctx, repo, path, registrationExisted))
 		}
 		return nil
 	}
@@ -904,7 +977,57 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 		return err
 	}
 	if err := w.addNewBranchWorktree(ctx, repo, branch, path, baseRef, force); err != nil {
-		return fmt.Errorf("gitworktree: worktree add branch %q from %q: %w", branch, baseRef, err)
+		addErr := fmt.Errorf("gitworktree: worktree add branch %q from %q: %w", branch, baseRef, err)
+		return errors.Join(addErr, w.cleanupFailedInitialization(ctx, repo, path, registrationExisted))
+	}
+	return nil
+}
+
+func (w *Workspace) cleanupFailedInitialization(ctx context.Context, repo, path string, registrationExisted bool) error {
+	if registrationExisted {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	records, err := w.listRecords(cleanupCtx, repo)
+	if err != nil {
+		return fmt.Errorf("gitworktree: inspect failed worktree initialization %q: %w", path, err)
+	}
+	rec, ok := findWorktree(records, path)
+	if !ok || !rec.Locked || rec.LockReason != "initializing" {
+		return nil
+	}
+	return w.removeIncompleteInitialization(cleanupCtx, repo, rec)
+}
+
+func (w *Workspace) removeIncompleteInitialization(ctx context.Context, repo string, rec worktreeRecord) error {
+	if !rec.Locked || rec.LockReason != "initializing" {
+		return fmt.Errorf("gitworktree: refusing to remove worktree %q without an initializing lock", rec.Path)
+	}
+	if err := ensureInitializationHusk(rec.Path); err != nil {
+		return err
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if _, err := w.run(cleanupCtx, w.binary, worktreeUnlockArgs(repo, rec.Path)...); err != nil {
+		return fmt.Errorf("gitworktree: unlock incomplete initialization %q: %w", rec.Path, err)
+	}
+	if _, err := w.run(cleanupCtx, w.binary, worktreeForceRemoveArgs(repo, rec.Path)...); err != nil {
+		return fmt.Errorf("gitworktree: remove incomplete initialization %q: %w", rec.Path, err)
+	}
+	return nil
+}
+
+func ensureInitializationHusk(path string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("gitworktree: inspect incomplete initialization %q: %w", path, err)
+	}
+	if len(entries) != 1 || entries[0].Name() != ".git" || entries[0].IsDir() {
+		return fmt.Errorf(
+			"gitworktree: refusing to remove incomplete initialization %q because it contains files that must be preserved",
+			path,
+		)
 	}
 	return nil
 }
@@ -1034,6 +1157,9 @@ func (w *Workspace) workspaceProjectBranchFree(ctx context.Context, repos []work
 }
 
 func (w *Workspace) createWorkspaceProjectRepo(ctx context.Context, repo workspaceProjectRepo, branch string) (string, error) {
+	unlock := w.pathLocks.lock(repo.repoPath + "\x00" + repo.outputPath)
+	defer unlock()
+
 	baseRef, err := w.resolveBaseRef(ctx, repo.repoPath, branch, repo.baseBranch)
 	if err != nil {
 		if errors.Is(err, errNoBaseRef) {
@@ -1054,16 +1180,59 @@ func (w *Workspace) createWorkspaceProjectRepo(ctx context.Context, repo workspa
 	if err != nil {
 		return "", err
 	}
+	_, registrationExisted := findWorktree(records, repo.outputPath)
+	if rec, ok := findWorktree(records, repo.outputPath); ok {
+		missing, err := registeredWorktreeDirMissing(rec)
+		if err != nil {
+			return "", err
+		}
+		if !missing {
+			if rec.Locked && rec.LockReason == "initializing" {
+				if cleanupErr := w.removeIncompleteInitialization(ctx, repo.repoPath, rec); cleanupErr != nil {
+					return "", cleanupErr
+				}
+				records, err = w.listRecords(ctx, repo.repoPath)
+				if err != nil {
+					return "", err
+				}
+				registrationExisted = false
+			} else if _, err := w.run(ctx, w.binary, revParseHeadArgs(repo.outputPath)...); err != nil {
+				return "", fmt.Errorf(
+					"gitworktree: refusing to replace registered workspace repo %q because HEAD is not ready: %w",
+					repo.outputPath, err,
+				)
+			} else if rec.Branch == branch {
+				return baseSHA, nil
+			} else {
+				return "", fmt.Errorf(
+					"gitworktree: refusing to reuse registered workspace repo %q on branch %q for requested branch %q",
+					repo.outputPath, rec.Branch, branch,
+				)
+			}
+		}
+	}
 	force, err := staleRegistrationForPath(records, repo.outputPath)
 	if err != nil {
 		return "", err
+	}
+	localBranch, err := w.refExists(ctx, repo.repoPath, "refs/heads/"+branch)
+	if err != nil {
+		return "", err
+	}
+	if localBranch {
+		if _, err := w.run(ctx, w.binary, worktreeAddBranchArgs(repo.repoPath, repo.outputPath, branch, force)...); err != nil {
+			addErr := fmt.Errorf("gitworktree: workspace repo %q worktree add existing branch %q: %w", repo.name, branch, err)
+			return "", errors.Join(addErr, w.cleanupFailedInitialization(ctx, repo.repoPath, repo.outputPath, registrationExisted))
+		}
+		return baseSHA, nil
 	}
 	// Recovery from a registration that only goes stale after that check is
 	// addNewBranchWorktree's job: git's own --force override, not the repo-wide
 	// prune this used to run, which would also drop sibling sessions'
 	// registrations.
 	if err := w.addNewBranchWorktree(ctx, repo.repoPath, branch, repo.outputPath, baseRef, force); err != nil {
-		return "", fmt.Errorf("gitworktree: workspace repo %q worktree add branch %q from %q: %w", repo.name, branch, baseRef, err)
+		addErr := fmt.Errorf("gitworktree: workspace repo %q worktree add branch %q from %q: %w", repo.name, branch, baseRef, err)
+		return "", errors.Join(addErr, w.cleanupFailedInitialization(ctx, repo.repoPath, repo.outputPath, registrationExisted))
 	}
 	return baseSHA, nil
 }

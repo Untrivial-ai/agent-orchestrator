@@ -49,11 +49,15 @@ func worktreeRemoveArgs(repo, path string) []string {
 }
 
 // worktreeForceRemoveArgs passes --force to bypass git's dirty-worktree check.
-// Only ForceDestroy may call this. It is safe only AFTER the session's
-// uncommitted work has been captured (Task 2's StashUncommitted). Callers that
-// have not yet captured work must use worktreeRemoveArgs / Destroy instead.
+// It is safe after the session's uncommitted work has been captured, or for a
+// worktree still carrying git's "locked initializing" marker with no valid
+// HEAD. All other callers must use worktreeRemoveArgs / Destroy instead.
 func worktreeForceRemoveArgs(repo, path string) []string {
 	return []string{"-C", repo, "worktree", "remove", "--force", path}
+}
+
+func worktreeUnlockArgs(repo, path string) []string {
+	return []string{"-C", repo, "worktree", "unlock", path}
 }
 
 func worktreePruneArgs(repo string) []string {
