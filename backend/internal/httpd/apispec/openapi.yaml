@@ -7539,7 +7539,6 @@ components:
       required:
       - decision
       - hasUnresolvedHumanComments
-      - unresolvedThreadCount
       - unresolvedBy
       type: object
     SessionPRSummary:

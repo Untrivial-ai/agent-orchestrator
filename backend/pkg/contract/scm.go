@@ -117,7 +117,7 @@ type PullRequestReviewSummary struct {
 	HasUnresolvedHumanComments bool           `json:"hasUnresolvedHumanComments"`
 	// UnresolvedThreadCount counts unresolved human review threads, rather than
 	// individual comments (a thread can contain several comments).
-	UnresolvedThreadCount int                             `json:"unresolvedThreadCount"`
+	UnresolvedThreadCount int                             `json:"unresolvedThreadCount,omitempty"`
 	UnresolvedBy          []PullRequestUnresolvedReviewer `json:"unresolvedBy"`
 	Reviews               []PullRequestSubmittedReview    `json:"reviews"`
 }

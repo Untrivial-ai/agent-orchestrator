@@ -666,7 +666,7 @@ type SessionPRFailingCheck struct {
 type SessionPRReviewSummary struct {
 	Decision                   domain.ReviewDecision         `json:"decision" enum:"none,approved,changes_requested,review_required"`
 	HasUnresolvedHumanComments bool                          `json:"hasUnresolvedHumanComments"`
-	UnresolvedThreadCount      int                           `json:"unresolvedThreadCount"`
+	UnresolvedThreadCount      int                           `json:"unresolvedThreadCount,omitempty"`
 	UnresolvedBy               []SessionPRUnresolvedReviewer `json:"unresolvedBy"`
 	Reviews                    []SessionPRReviewEntry        `json:"reviews,omitempty"`
 }
