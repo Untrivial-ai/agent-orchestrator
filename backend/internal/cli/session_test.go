@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type sessionRequestLog struct {
@@ -217,6 +218,79 @@ func TestSessionList_JSONOutputDecodes(t *testing.T) {
 	}
 	if got.Data[0].ID != "demo-1" || got.Data[0].ProjectID != "demo" || got.Data[0].Role != "worker" {
 		t.Fatalf("unexpected JSON entry: %#v", got.Data[0])
+	}
+}
+
+func TestSessionList_EnrichesPRColumnsAndKeepsFallbackFacts(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var detailsMu sync.Mutex
+	detailRequests := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/sessions":
+			if r.URL.Query().Get("active") == "false" {
+				_, _ = io.WriteString(w, `{"sessions":[]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"sessions":[
+				{"id":"demo-1","projectId":"demo","kind":"worker","branch":"feat/INT-1327","activity":{"state":"working","lastActivityAt":"2026-06-02T12:00:00Z"},"isTerminated":false,"createdAt":"2026-06-02T11:00:00Z","updatedAt":"2026-06-02T12:00:00Z","status":"working","prs":[{"number":3,"ci":"passing","review":"approved"}]},
+				{"id":"demo-2","projectId":"demo","kind":"worker","branch":"feat/INT-1328","activity":{"state":"idle","lastActivityAt":"2026-06-02T11:55:00Z"},"isTerminated":false,"createdAt":"2026-06-02T11:00:00Z","updatedAt":"2026-06-02T12:00:00Z","status":"idle","prs":[{"number":2,"ci":"failing","review":"changes_requested"}]}
+			]}`)
+		case "/api/v1/sessions/demo-1/pr":
+			detailsMu.Lock()
+			detailRequests["demo-1"]++
+			detailsMu.Unlock()
+			_, _ = io.WriteString(w, `{"sessionId":"demo-1","prs":[{"number":3,"ci":{"state":"passing"},"review":{"decision":"approved","unresolvedThreadCount":2}}]}`)
+		case "/api/v1/sessions/demo-2/pr":
+			detailsMu.Lock()
+			detailRequests["demo-2"]++
+			detailsMu.Unlock()
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"message":"SCM temporarily unavailable"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	now := time.Date(2026, 6, 2, 12, 5, 0, 0, time.UTC)
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+		Now:          func() time.Time { return now },
+	}, "session", "ls", "--project", "demo")
+	if err != nil {
+		t.Fatalf("session ls failed: %v\nstderr=%s", err, errOut)
+	}
+	for _, want := range []string{"SESSION", "BRANCH", "THREADS", "demo-1", "feat/INT-1327", "#3", "passing", "approved", "2", "working", "5m ago", "demo-2", "#2", "failing", "changes_requested"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	detailsMu.Lock()
+	gotRequests := map[string]int{"demo-1": detailRequests["demo-1"], "demo-2": detailRequests["demo-2"]}
+	detailsMu.Unlock()
+	if !reflect.DeepEqual(gotRequests, map[string]int{"demo-1": 1, "demo-2": 1}) {
+		t.Fatalf("PR summary requests = %#v, want one per session", gotRequests)
+	}
+
+	out, errOut, err = executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+		Now:          func() time.Time { return now },
+	}, "session", "ls", "--project", "demo", "--json")
+	if err != nil {
+		t.Fatalf("session ls --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got sessionListOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode enriched JSON: %v\noutput=%s", err, out)
+	}
+	if len(got.Data) != 2 || got.Data[0].Branch != "feat/INT-1327" || got.Data[0].Activity != "working" || got.Data[0].PRs[0].Threads == nil || *got.Data[0].PRs[0].Threads != 2 {
+		t.Fatalf("first enriched entry = %#v, want branch, activity, and 2 threads", got.Data)
+	}
+	if got.Data[1].PRs[0].Threads != nil || got.Data[1].PRs[0].CI != "failing" || got.Data[1].PRs[0].Review != "changes_requested" {
+		t.Fatalf("fallback entry = %#v, want basic facts and unknown thread count", got.Data[1])
 	}
 }
 

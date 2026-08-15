@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -53,6 +55,8 @@ type sessionDTO struct {
 	CreatedAt    time.Time       `json:"createdAt"`
 	UpdatedAt    time.Time       `json:"updatedAt"`
 	Status       string          `json:"status"`
+	Branch       string          `json:"branch,omitempty"`
+	PRs          []sessionPRDTO  `json:"prs"`
 }
 
 type sessionActivity struct {
@@ -62,6 +66,24 @@ type sessionActivity struct {
 
 type sessionListResponse struct {
 	Sessions []sessionDTO `json:"sessions"`
+}
+
+// sessionPRSummaryResponse mirrors the daemon's curated PR read model. The
+// list endpoint already carries aggregate PR facts, while this response adds
+// the unresolved-thread count needed by the human-readable session table.
+type sessionPRSummaryResponse struct {
+	PRs []sessionPRSummaryDTO `json:"prs"`
+}
+
+type sessionPRSummaryDTO struct {
+	Number int `json:"number"`
+	CI     struct {
+		State string `json:"state"`
+	} `json:"ci"`
+	Review struct {
+		Decision              string `json:"decision"`
+		UnresolvedThreadCount int    `json:"unresolvedThreadCount"`
+	} `json:"review"`
 }
 
 type sessionResponse struct {
@@ -132,16 +154,26 @@ type claimPRResponse struct {
 }
 
 type sessionListEntry struct {
-	ID             string     `json:"id"`
-	ProjectID      string     `json:"projectId"`
-	Role           string     `json:"role"`
-	Status         string     `json:"status,omitempty"`
-	IssueID        string     `json:"issueId,omitempty"`
-	Harness        string     `json:"harness,omitempty"`
-	IsTerminated   bool       `json:"isTerminated"`
-	LastActivityAt *time.Time `json:"lastActivityAt,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
+	ID             string          `json:"id"`
+	ProjectID      string          `json:"projectId"`
+	Role           string          `json:"role"`
+	Status         string          `json:"status,omitempty"`
+	Activity       string          `json:"activity,omitempty"`
+	IssueID        string          `json:"issueId,omitempty"`
+	Harness        string          `json:"harness,omitempty"`
+	Branch         string          `json:"branch,omitempty"`
+	PRs            []sessionListPR `json:"prs"`
+	IsTerminated   bool            `json:"isTerminated"`
+	LastActivityAt *time.Time      `json:"lastActivityAt,omitempty"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	UpdatedAt      time.Time       `json:"updatedAt"`
+}
+
+type sessionListPR struct {
+	Number  int    `json:"number"`
+	CI      string `json:"ci,omitempty"`
+	Review  string `json:"review,omitempty"`
+	Threads *int   `json:"threads"`
 }
 
 type sessionListOutput struct {
@@ -483,13 +515,58 @@ func (c *commandContext) listSessions(ctx context.Context, cmd *cobra.Command, o
 		hiddenTerminatedCount = terminatedCount
 		hiddenOrchestratorCount += terminatedOrchestratorCount
 	}
+	prSummaries, err := c.listSessionPRSummaries(ctx, sessions)
+	if err != nil {
+		return err
+	}
 	if opts.json {
-		out := sessionListOutput{Data: sessionListEntries(sessions)}
+		out := sessionListOutput{Data: sessionListEntries(sessions, prSummaries)}
 		out.Meta.HiddenTerminatedCount = hiddenTerminatedCount
 		out.Meta.HiddenOrchestratorCount = hiddenOrchestratorCount
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
-	return writeSessionList(cmd, sessions, hiddenTerminatedCount, hiddenOrchestratorCount)
+	return writeSessionList(cmd, sessions, prSummaries, hiddenTerminatedCount, hiddenOrchestratorCount, c.deps.Now())
+}
+
+// listSessionPRSummaries fetches rich PR facts concurrently from the daemon.
+// Individual summary failures are intentionally non-fatal: the list response
+// still contains the persisted PR/CI/review facts and remains useful while an
+// SCM observation is incomplete or unavailable.
+func (c *commandContext) listSessionPRSummaries(ctx context.Context, sessions []sessionDTO) (map[string][]sessionPRSummaryDTO, error) {
+	out := make(map[string][]sessionPRSummaryDTO)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	// Keep the loopback daemon responsive when a project has many sessions while
+	// still resolving independent session summaries in parallel.
+	sem := make(chan struct{}, 8)
+	for _, sess := range sessions {
+		if len(sess.PRs) == 0 {
+			continue
+		}
+		id := sess.ID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			var res sessionPRSummaryResponse
+			if err := c.getJSON(ctx, "sessions/"+url.PathEscape(id)+"/pr", &res); err != nil {
+				return
+			}
+			mu.Lock()
+			out[id] = res.PRs
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *commandContext) countHiddenTerminated(ctx context.Context, project string, includeOrchestrators bool) (int, int, error) {
@@ -753,7 +830,7 @@ func filterAndSortSessions(sessions []sessionDTO, includeOrchestrators bool) []s
 	return out
 }
 
-func sessionListEntries(sessions []sessionDTO) []sessionListEntry {
+func sessionListEntries(sessions []sessionDTO, summaries map[string][]sessionPRSummaryDTO) []sessionListEntry {
 	entries := make([]sessionListEntry, 0, len(sessions))
 	for _, sess := range sessions {
 		var last *time.Time
@@ -766,8 +843,11 @@ func sessionListEntries(sessions []sessionDTO) []sessionListEntry {
 			ProjectID:      sess.ProjectID,
 			Role:           sessionRole(sess),
 			Status:         sess.Status,
+			Activity:       sess.Activity.State,
 			IssueID:        sess.IssueID,
 			Harness:        sess.Harness,
+			Branch:         sess.Branch,
+			PRs:            listPRsForSession(sess, summaries[sess.ID]),
 			IsTerminated:   sess.IsTerminated,
 			LastActivityAt: last,
 			CreatedAt:      sess.CreatedAt,
@@ -775,6 +855,25 @@ func sessionListEntries(sessions []sessionDTO) []sessionListEntry {
 		})
 	}
 	return entries
+}
+
+func listPRsForSession(sess sessionDTO, summaries []sessionPRSummaryDTO) []sessionListPR {
+	if len(summaries) > 0 {
+		out := make([]sessionListPR, 0, len(summaries))
+		for _, pr := range summaries {
+			threads := pr.Review.UnresolvedThreadCount
+			out = append(out, sessionListPR{Number: pr.Number, CI: pr.CI.State, Review: pr.Review.Decision, Threads: &threads})
+		}
+		return out
+	}
+
+	// Preserve useful list facts when the more detailed endpoint failed or its
+	// snapshot has already been replaced.
+	out := make([]sessionListPR, 0, len(sess.PRs))
+	for _, pr := range sess.PRs {
+		out = append(out, sessionListPR{Number: pr.Number, CI: pr.CI, Review: pr.Review})
+	}
+	return out
 }
 
 func cleanupLabels(sessions []sessionDTO, scopedProject string) []string {
@@ -800,38 +899,37 @@ func cleanupLabel(sess sessionDTO, scopedProject string) string {
 	return sess.ID
 }
 
-func writeSessionList(cmd *cobra.Command, sessions []sessionDTO, hiddenTerminatedCount, hiddenOrchestratorCount int) error {
+func writeSessionList(cmd *cobra.Command, sessions []sessionDTO, summaries map[string][]sessionPRSummaryDTO, hiddenTerminatedCount, hiddenOrchestratorCount int, now time.Time) error {
 	out := cmd.OutOrStdout()
 	if len(sessions) == 0 {
 		if _, err := fmt.Fprintln(out, "(no active sessions)"); err != nil {
 			return err
 		}
 	} else {
+		table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 		currentProject := ""
 		for _, sess := range sessions {
 			if sess.ProjectID != currentProject {
 				if currentProject != "" {
-					if _, err := fmt.Fprintln(out); err != nil {
+					if _, err := fmt.Fprintln(table); err != nil {
 						return err
 					}
 				}
 				currentProject = sess.ProjectID
-				if _, err := fmt.Fprintf(out, "%s:\n", currentProject); err != nil {
+				if _, err := fmt.Fprintf(table, "%s:\n", currentProject); err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintln(table, "  SESSION\tBRANCH\tPR\tCI\tREVIEW\tTHREADS\tACTIVITY\tAGE"); err != nil {
 					return err
 				}
 			}
-			if _, err := fmt.Fprintf(out, "  %s", sess.ID); err != nil {
+			pr, ci, review, threads := sessionPRColumns(sess, summaries[sess.ID])
+			if _, err := fmt.Fprintf(table, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sess.ID, emptyDash(sess.Branch), pr, ci, review, threads, emptyDash(sess.Activity.State), sessionAge(now, sess.Activity.LastActivityAt)); err != nil {
 				return err
 			}
-			parts := sessionLineParts(sess)
-			if len(parts) > 0 {
-				if _, err := fmt.Fprintf(out, "  %s", strings.Join(parts, "  ")); err != nil {
-					return err
-				}
-			}
-			if _, err := fmt.Fprintln(out); err != nil {
-				return err
-			}
+		}
+		if err := table.Flush(); err != nil {
+			return err
 		}
 	}
 	if hiddenTerminatedCount > 0 {
@@ -846,21 +944,45 @@ func writeSessionList(cmd *cobra.Command, sessions []sessionDTO, hiddenTerminate
 	return nil
 }
 
-func sessionLineParts(sess sessionDTO) []string {
-	parts := []string{}
-	if !sess.Activity.LastActivityAt.IsZero() {
-		parts = append(parts, "("+formatSessionAge(time.Since(sess.Activity.LastActivityAt))+")")
+func sessionPRColumns(sess sessionDTO, summaries []sessionPRSummaryDTO) (prNumbers, ci, review, threads string) {
+	prs := listPRsForSession(sess, summaries)
+	if len(prs) == 0 {
+		return "-", "-", "-", "0"
 	}
-	if sess.Status != "" {
-		parts = append(parts, "["+sess.Status+"]")
+	prValues := make([]string, 0, len(prs))
+	ciValues := make([]string, 0, len(prs))
+	reviewValues := make([]string, 0, len(prs))
+	threadCount := 0
+	threadsKnown := true
+	for _, pr := range prs {
+		prValues = append(prValues, fmt.Sprintf("#%d", pr.Number))
+		ciValues = append(ciValues, emptyDash(pr.CI))
+		reviewValues = append(reviewValues, emptyDash(pr.Review))
+		if pr.Threads == nil {
+			threadsKnown = false
+			continue
+		}
+		threadCount += *pr.Threads
 	}
-	if sess.Kind != "" {
-		parts = append(parts, sess.Kind)
+	threads = "-"
+	if threadsKnown {
+		threads = fmt.Sprintf("%d", threadCount)
 	}
-	if sess.IssueID != "" {
-		parts = append(parts, sess.IssueID)
+	return strings.Join(prValues, ","), strings.Join(ciValues, ","), strings.Join(reviewValues, ","), threads
+}
+
+func emptyDash(value string) string {
+	if value == "" {
+		return "-"
 	}
-	return parts
+	return value
+}
+
+func sessionAge(now, at time.Time) string {
+	if at.IsZero() {
+		return "-"
+	}
+	return formatSessionAge(now.Sub(at)) + " ago"
 }
 
 func writeSessionDetails(cmd *cobra.Command, sess sessionDTO) error {

@@ -116,9 +116,12 @@ type PullRequestSubmittedReview struct {
 type PullRequestReviewSummary struct {
 	Decision                   ReviewDecision                  `json:"decision"`
 	HasUnresolvedHumanComments bool                            `json:"hasUnresolvedHumanComments"`
-	UnresolvedBy               []PullRequestUnresolvedReviewer `json:"unresolvedBy"`
-	ResolvedBy                 []PullRequestUnresolvedReviewer `json:"resolvedBy,omitempty"`
-	Reviews                    []PullRequestSubmittedReview    `json:"reviews"`
+	// UnresolvedThreadCount counts unresolved human review threads, rather than
+	// individual comments (a thread can contain several comments).
+	UnresolvedThreadCount int                             `json:"unresolvedThreadCount"`
+	UnresolvedBy          []PullRequestUnresolvedReviewer `json:"unresolvedBy"`
+	ResolvedBy            []PullRequestUnresolvedReviewer `json:"resolvedBy,omitempty"`
+	Reviews               []PullRequestSubmittedReview    `json:"reviews"`
 }
 
 // PullRequestConflictFile is one file involved in a merge conflict.
