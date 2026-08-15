@@ -993,7 +993,7 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 	// Branch names are not ownership proof. Explicit claims remain available as
 	// the override when the active provider cannot identify a human account.
 	if !identityKnown {
-		return
+		return nil, nil
 	}
 	byRepo := map[string][]sessionRepo{}
 	repos := map[string]ports.SCMRepo{}
