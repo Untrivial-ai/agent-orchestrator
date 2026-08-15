@@ -993,6 +993,9 @@ func TestAddWorktreeRefusesBranchCheckedOutElsewhere(t *testing.T) {
 	if !strings.Contains(err.Error(), strconv.Quote(otherPath)) {
 		t.Fatalf("err = %v, want message to include conflicting path %q", err, otherPath)
 	}
+	if !strings.Contains(err.Error(), "git worktree remove --") {
+		t.Fatalf("err = %v, want a precise worktree remedy", err)
+	}
 }
 
 // TestCreateRejectsInvalidBranchName covers the residual of #152 Bug 3: a branch
@@ -1021,6 +1024,9 @@ func TestCreateRejectsInvalidBranchName(t *testing.T) {
 	if !strings.Contains(err.Error(), "bad branch!!") {
 		t.Fatalf("err = %v, want message to include the rejected branch name", err)
 	}
+	if !strings.Contains(err.Error(), "git check-ref-format --branch") {
+		t.Fatalf("err = %v, want valid-branch remediation", err)
+	}
 }
 
 // TestAddWorktreeReportsBranchNotFetched covers Bug 3 (b): if no local head,
@@ -1043,6 +1049,12 @@ func TestAddWorktreeReportsBranchNotFetched(t *testing.T) {
 			return nil, nil
 		case strings.Contains(joined, "worktree list --porcelain"):
 			return nil, nil
+		case strings.HasSuffix(joined, " remote"):
+			return []byte("origin\n"), nil
+		case strings.Contains(joined, "config --get checkout.defaultRemote"):
+			return nil, commandError{args: args, err: exitOne}
+		case strings.Contains(joined, "fetch --no-tags"):
+			return nil, commandError{args: args, err: exitOne}
 		case strings.Contains(joined, "rev-parse"):
 			return nil, commandError{args: args, err: exitOne}
 		default:
@@ -1055,6 +1067,9 @@ func TestAddWorktreeReportsBranchNotFetched(t *testing.T) {
 	})
 	if !errors.Is(err, ports.ErrWorkspaceBranchNotFetched) {
 		t.Fatalf("err = %v, want ports.ErrWorkspaceBranchNotFetched", err)
+	}
+	if !strings.Contains(err.Error(), "after AO tried") {
+		t.Fatalf("err = %v, want automatic-fetch remediation", err)
 	}
 }
 

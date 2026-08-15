@@ -10,6 +10,11 @@ func revParseVerifyArgs(repo, ref string) []string {
 	return []string{"-C", repo, "rev-parse", "--verify", "--quiet", ref}
 }
 
+func fetchRemoteBranchArgs(repo, remote, branch string) []string {
+	refspec := "+refs/heads/" + branch + ":refs/remotes/" + remote + "/" + branch
+	return []string{"-C", repo, "fetch", "--no-tags", "--no-recurse-submodules", "--", remote, refspec}
+}
+
 // worktreeAddForce is git's documented override for "<path> is a missing but
 // already registered worktree" (git's own hint for that failure is "use
 // 'add -f' to override"). It re-registers a path whose registration outlived
@@ -138,4 +143,33 @@ func configuredBaseRefCandidates(defaultBranch string) []string {
 	// still wins when present, but a remoteless repo can base new branches
 	// on its local default branch instead of failing BRANCH_NOT_FETCHED.
 	return []string{"origin/" + defaultBranch, "refs/heads/" + defaultBranch}
+}
+
+type remoteBranchRef struct {
+	remote string
+	branch string
+}
+
+func remoteBranchFetchCandidates(primaryRemote, branch, defaultBranch string) []remoteBranchRef {
+	candidates := make([]remoteBranchRef, 0, 2)
+	if remote, name, qualified := strings.Cut(defaultBranch, "/"); qualified {
+		candidates = append(candidates, remoteBranchRef{remote: remote, branch: name})
+	} else {
+		candidates = append(candidates, remoteBranchRef{remote: primaryRemote, branch: defaultBranch})
+	}
+	candidates = append(candidates, remoteBranchRef{remote: primaryRemote, branch: branch})
+
+	seen := make(map[remoteBranchRef]struct{}, len(candidates))
+	out := make([]remoteBranchRef, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.remote == "" || candidate.branch == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		out = append(out, candidate)
+	}
+	return out
 }

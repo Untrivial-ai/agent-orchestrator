@@ -211,6 +211,9 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 	for i := range repos {
 		refs, err := w.resolveWorktreeRefs(ctx, remoteCtx, repos[i].repoPath, branch, repos[i].baseBranch)
 		if err != nil {
+			if errors.Is(err, errNoBaseRef) {
+				return ports.WorkspaceProjectInfo{}, branchNotFetchedError(branch, err)
+			}
 			return ports.WorkspaceProjectInfo{}, fmt.Errorf("gitworktree: resolve workspace repo %q base: %w", repos[i].name, err)
 		}
 		repos[i].seedRef = refs.seedRef
@@ -882,7 +885,10 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 		return "", err
 	}
 	if conflict, ok := findWorktreeByBranch(records, branch); ok && filepath.Clean(conflict.Path) != filepath.Clean(path) {
-		return "", fmt.Errorf("%w: %q is checked out at %q", ErrBranchCheckedOutElsewhere, branch, conflict.Path)
+		return "", fmt.Errorf(
+			"%w: %q is checked out at %q; use that worktree, choose another branch, or preserve its changes and run `git worktree remove -- %q` before retrying",
+			ErrBranchCheckedOutElsewhere, branch, conflict.Path, conflict.Path,
+		)
 	}
 	// A registration at path whose directory is gone makes a plain add fail
 	// ("is a missing but already registered worktree; use 'add -f' to
@@ -907,7 +913,7 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 			refs, err := w.resolveWorktreeRefsWithBudget(ctx, repo, branch, baseBranch)
 			if err != nil {
 				if errors.Is(err, errNoBaseRef) {
-					return "", fmt.Errorf("%w: %q has no local head, no remote, and no tag — run `git fetch` then retry", ErrBranchNotFetched, branch)
+					return "", branchNotFetchedError(branch, err)
 				}
 				return "", err
 			}
@@ -923,7 +929,7 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 		err = resolveErr
 		if err != nil {
 			if errors.Is(err, errNoBaseRef) {
-				return "", fmt.Errorf("%w: %q has no local head, no remote, and no tag — run `git fetch` then retry", ErrBranchNotFetched, branch)
+				return "", branchNotFetchedError(branch, err)
 			}
 			return "", err
 		}
@@ -1138,7 +1144,7 @@ func (w *Workspace) revParse(ctx context.Context, repo, ref string) (string, err
 
 func (w *Workspace) validateBranch(ctx context.Context, repo, branch string) error {
 	if _, err := w.run(ctx, w.binary, checkRefFormatBranchArgs(repo, branch)...); err != nil {
-		return fmt.Errorf("%w: %q (%w)", ErrBranchInvalid, branch, err)
+		return fmt.Errorf("%w: %q is not accepted by `git check-ref-format --branch`; choose a valid branch name", ErrBranchInvalid, branch)
 	}
 	return nil
 }
@@ -1157,7 +1163,7 @@ type worktreeRefs struct {
 
 func (w *Workspace) resolveWorktreeRefs(ctx, remoteCtx context.Context, repo, branch, baseBranch string) (worktreeRefs, error) {
 	if strings.TrimSpace(baseBranch) != "" {
-		return w.resolveWorktreeRefsFromDefault(ctx, repo, branch, baseBranch)
+		return w.resolveWorktreeRefsFromDefault(ctx, remoteCtx, repo, branch, baseBranch)
 	}
 	resolver := gitdefault.New(w.binary, gitdefault.Runner(w.run))
 	remote, requestedRef, requestedExists, requestedErr := resolver.FindCachedRemoteBranch(ctx, repo, branch)
@@ -1172,6 +1178,14 @@ func (w *Workspace) resolveWorktreeRefs(ctx, remoteCtx context.Context, repo, br
 			// ref in this case, so preserve the legacy fallback to that branch.
 			if requestedExists {
 				return worktreeRefs{seedRef: requestedRef, baseRef: requestedRef}, nil
+			}
+			// The remote may expose the explicitly requested branch without a
+			// symbolic HEAD. Fetching that exact ref is safe and gives AO a usable
+			// seed even though no authoritative comparison base is available.
+			if remote != "" {
+				if _, fetchErr := w.run(remoteCtx, w.binary, fetchRemoteBranchArgs(repo, remote, branch)...); fetchErr == nil {
+					return worktreeRefs{seedRef: requestedRef, baseRef: requestedRef}, nil
+				}
 			}
 			return worktreeRefs{}, fmt.Errorf(
 				"%w: %s; configure this repository's primary remote and cached HEAD (for example, `git -C %q remote set-head <remote> <branch>`) and retry",
@@ -1211,13 +1225,54 @@ func (w *Workspace) resolveWorktreeRefsWithBudget(ctx context.Context, repo, bra
 	return w.resolveWorktreeRefs(ctx, remoteCtx, repo, branch, baseBranch)
 }
 
-func (w *Workspace) resolveWorktreeRefsFromDefault(ctx context.Context, repo, branch, defaultBranch string) (worktreeRefs, error) {
-	requestedRef := "origin/" + branch
+func (w *Workspace) resolveWorktreeRefsFromDefault(ctx, remoteCtx context.Context, repo, branch, defaultBranch string) (worktreeRefs, error) {
+	refs, err := w.resolveCachedWorktreeRefsFromDefault(ctx, repo, branch, defaultBranch, "origin")
+	if !errors.Is(err, errNoBaseRef) {
+		return refs, err
+	}
+	initialErr := err
+
+	resolver := gitdefault.New(w.binary, gitdefault.Runner(w.run))
+	primaryRemote, _, _, remoteErr := resolver.FindCachedRemoteBranch(ctx, repo, branch)
+	if remoteErr != nil && !errors.Is(remoteErr, gitdefault.ErrUnresolved) {
+		return worktreeRefs{}, fmt.Errorf("gitworktree: inspect requested branch for %q: %w", repo, remoteErr)
+	}
+
+	var fetchErrs []error
+	for _, candidate := range remoteBranchFetchCandidates(primaryRemote, branch, defaultBranch) {
+		if _, fetchErr := w.run(remoteCtx, w.binary, fetchRemoteBranchArgs(repo, candidate.remote, candidate.branch)...); fetchErr != nil {
+			fetchErrs = append(fetchErrs, fmt.Errorf("fetch %s/%s: %w", candidate.remote, candidate.branch, fetchErr))
+			if remoteCtx.Err() != nil {
+				return worktreeRefs{}, errors.Join(initialErr, remoteCtx.Err())
+			}
+		}
+	}
+	refs, retryErr := w.resolveCachedWorktreeRefsFromDefault(ctx, repo, branch, defaultBranch, primaryRemote)
+	if retryErr == nil {
+		return refs, nil
+	}
+	if !errors.Is(retryErr, errNoBaseRef) {
+		return worktreeRefs{}, retryErr
+	}
+	if len(fetchErrs) == 0 {
+		return worktreeRefs{}, retryErr
+	}
+	return worktreeRefs{}, fmt.Errorf("%w: automatic fetch failed: %w", retryErr, errors.Join(fetchErrs...))
+}
+
+func (w *Workspace) resolveCachedWorktreeRefsFromDefault(ctx context.Context, repo, branch, defaultBranch, primaryRemote string) (worktreeRefs, error) {
+	if strings.TrimSpace(primaryRemote) == "" {
+		primaryRemote = "origin"
+	}
+	requestedRef := primaryRemote + "/" + branch
 	requestedExists, err := w.refExists(ctx, repo, requestedRef)
 	if err != nil {
 		return worktreeRefs{}, err
 	}
 	baseCandidates := configuredBaseRefCandidates(defaultBranch)
+	if !strings.Contains(defaultBranch, "/") && primaryRemote != "" {
+		baseCandidates = []string{primaryRemote + "/" + defaultBranch, "refs/heads/" + defaultBranch}
+	}
 	for _, ref := range baseCandidates {
 		exists, err := w.refExists(ctx, repo, ref)
 		if err != nil {
@@ -1251,9 +1306,19 @@ func (w *Workspace) resolveWorktreeRefsFromDefault(ctx context.Context, repo, br
 			return worktreeRefs{seedRef: ref, baseRef: ref}, nil
 		}
 	}
-	allCandidates := append([]string{requestedRef}, baseCandidates...)
+	allCandidates := append([]string(nil), baseCandidates...)
+	if requestedRef != "" {
+		allCandidates = append([]string{requestedRef}, allCandidates...)
+	}
 	allCandidates = append(allCandidates, fallbackCandidates...)
 	return worktreeRefs{}, fmt.Errorf("%w for branch %q (tried %s)", errNoBaseRef, branch, strings.Join(allCandidates, ", "))
+}
+
+func branchNotFetchedError(branch string, cause error) error {
+	return fmt.Errorf(
+		"%w: %q is unavailable after AO tried the selected remote and configured default branch; fetch it manually, then retry: %w",
+		ErrBranchNotFetched, branch, cause,
+	)
 }
 
 func (w *Workspace) refExists(ctx context.Context, repo, ref string) (bool, error) {
