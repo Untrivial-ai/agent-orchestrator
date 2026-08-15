@@ -11,11 +11,11 @@ import (
 // directly in SQL, so such a row stops behaving like a timestamp: a "+0800"
 // wall clock sorts above the UTC rendering of a later instant, and the
 // agent-switch source-stop predicate then matches zero rows and strands the
-// saga. Migration 0088 rewrites those rows to the canonical UTC form.
-func TestMigration0088NormalizesLocalZoneActivityTimestamps(t *testing.T) {
+// saga. Migration 0095 rewrites those rows to the canonical UTC form.
+func TestMigration0095NormalizesLocalZoneActivityTimestamps(t *testing.T) {
 	db := openTestDB(t)
 
-	upTo(t, db, 87)
+	upTo(t, db, 94)
 
 	now := time.Now().UTC()
 	if _, err := db.Exec(`INSERT INTO projects (id, path, display_name, registered_at)
@@ -50,7 +50,7 @@ func TestMigration0088NormalizesLocalZoneActivityTimestamps(t *testing.T) {
 		}
 	}
 
-	upTo(t, db, 88)
+	upTo(t, db, 95)
 
 	// CAST to TEXT to see the stored bytes: scanning the column into a string
 	// lets the driver re-render it as RFC 3339, which would hide the very
