@@ -1129,6 +1129,62 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	}
 }
 
+// The source-stop predicate compares activity_last_at in SQL, and the driver
+// stores a time.Time by its String() form. A session whose activity was last
+// written from a local-zone clock ("… +0700 +07 m=+995.1") must still compare as
+// a timestamp against the UTC value the confirmation carries — otherwise the
+// UPDATE matches zero rows, the confirmation reports a phantom ownership change,
+// and the saga is stranded in stopping_source with no recovery path.
+func TestConfirmAgentSwitchSourceStoppedAcceptsLocalZoneActivity(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "switch-zone")
+	rec := sampleRecord("switch-zone")
+	now := rec.CreatedAt
+	rec.Metadata.RuntimeHandleID = "source-handle"
+	rec.Metadata.RuntimeLaunchID = "source-runtime-generation"
+	// East of UTC, so the rendered wall clock sorts ABOVE the UTC rendering of a
+	// later instant — exactly what breaks a lexicographic comparison.
+	zone := time.FixedZone("+07", 7*60*60)
+	rec.Activity = domain.Activity{State: domain.ActivityActive, LastActivityAt: now.In(zone)}
+	session, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create AO session: %v", err)
+	}
+
+	sw := domain.AgentSwitch{
+		ID: "switch-zone", SessionID: session.ID, IdempotencyKey: "switch-zone",
+		RequestFingerprint: domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, ""),
+		FromHarness:        domain.HarnessClaudeCode,
+		TargetHarness:      domain.HarnessCodex, State: domain.AgentSwitchPreparingHandoff,
+		AgentHandoffStatus: domain.AgentHandoffNotAttempted, SourceGenerationID: "source-switch-generation",
+		RequestedAt: now, UpdatedAt: now,
+	}
+	stored, created, err := s.CreateAgentSwitch(ctx, sw)
+	if err != nil || !created {
+		t.Fatalf("create switch: created=%v err=%v", created, err)
+	}
+	advanceAgentSwitchFixtureWithMutation(ctx, t, s, &stored, domain.AgentSwitchStoppingSource, now.Add(time.Second), func(sw *domain.AgentSwitch) {
+		sw.TargetStartMode = domain.AgentSwitchTargetStartFresh
+		sw.TargetGenerationID = "target-generation"
+	})
+
+	confirmed, err := s.ConfirmAgentSwitchSourceStopped(ctx, domain.AgentSwitchSourceStopConfirmation{
+		SwitchID: sw.ID, SessionID: session.ID, SourceHarness: domain.HarnessClaudeCode,
+		SourceGenerationID:            "source-switch-generation",
+		ExpectedSourceRuntimeLaunchID: "source-runtime-generation",
+		TargetGenerationID:            "target-generation",
+		StoppedAt:                     now.Add(2 * time.Second).UTC(),
+	})
+	if err != nil || !confirmed {
+		t.Fatalf("confirm source stopped over local-zone activity: confirmed=%v err=%v", confirmed, err)
+	}
+	exited, ok, err := s.GetSession(ctx, session.ID)
+	if err != nil || !ok || exited.Activity.State != domain.ActivityExited {
+		t.Fatalf("source stop did not land: session=%+v ok=%v err=%v", exited, ok, err)
+	}
+}
+
 func TestAgentSwitchOwnershipTransactionsRejectTerminatedSession(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

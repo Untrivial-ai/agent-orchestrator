@@ -74,7 +74,12 @@ func New(sessions sessionSource, sink activitySink, runtime outputReader, agents
 		o.outputLines = DefaultOutputLines
 	}
 	if o.clock == nil {
-		o.clock = time.Now
+		// UTC, not bare time.Now: this timestamp becomes sessions.activity_last_at,
+		// and the SQLite driver stores a time.Time by its String() form. A
+		// local-zone value keeps its monotonic reading and offset, which then
+		// fails to compare as a timestamp against the "… +0000 UTC" rows the
+		// other writers produce.
+		o.clock = func() time.Time { return time.Now().UTC() }
 	}
 	if o.logger == nil {
 		o.logger = slog.Default()
