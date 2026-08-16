@@ -16,6 +16,12 @@ import (
 )
 
 const (
+	// defaultGitBinary is the PATH name New looks up via resolveGitBinary when
+	// Options.Binary is not set. It is never used as a bare, unresolved
+	// argv[0]: New always resolves it (or a fallback install location) to a
+	// concrete path first, so every exec in this package still spawns
+	// correctly even when the process's inherited PATH does not include git's
+	// directory (see git_binary.go).
 	defaultGitBinary = "git"
 	// defaultBranch is the base branch used when neither the per-project config
 	// nor the adapter options name one. It shares domain's single source of truth.
@@ -95,7 +101,11 @@ var _ ports.WorkspaceObserver = (*Workspace)(nil)
 func New(opts Options) (*Workspace, error) {
 	binary := opts.Binary
 	if binary == "" {
-		binary = defaultGitBinary
+		resolved, err := resolveGitBinary(exec.LookPath, isRegularFile)
+		if err != nil {
+			return nil, err
+		}
+		binary = resolved
 	}
 	branch := opts.DefaultBranch
 	if branch == "" {
