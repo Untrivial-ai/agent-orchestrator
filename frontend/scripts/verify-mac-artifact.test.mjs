@@ -15,9 +15,9 @@ import { fileURLToPath } from "node:url";
 // (#3288 workstream 1).
 //
 // What IS covered here, on any platform with no signing material at all:
-// the script parses, and every usage/precondition path exits 2 with a clear
-// message before touching macOS-only tooling. That is the half that a
-// non-macOS CI runner can honestly assert.
+// the script parses, every usage/precondition path exits 2 with a clear
+// message, and mocked trust failures prove nested code is never executed before
+// verification succeeds. Real Apple trust decisions remain release evidence.
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "verify-mac-artifact.sh");
 

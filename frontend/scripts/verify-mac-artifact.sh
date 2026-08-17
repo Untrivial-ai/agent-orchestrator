@@ -190,13 +190,19 @@ if [[ "$ARTIFACT" != *.dmg ]]; then
 	if [[ -x "$ACP_NODE" ]]; then
 		run_check "ACP Node allow-jit entitlement" \
 			has_acp_node_entitlement "com.apple.security.cs.allow-jit"
-		acp_node_archs="$(lipo -archs "$ACP_NODE")"
-		case " $acp_node_archs " in
-		*" x86_64 "*)
-			run_check "ACP Node x64 executable-memory entitlement" \
-				has_acp_node_entitlement "com.apple.security.cs.allow-unsigned-executable-memory"
-			;;
-		esac
+		echo "--> ACP Node architecture: lipo -archs $ACP_NODE"
+		if acp_node_archs="$(lipo -archs "$ACP_NODE")"; then
+			echo "    ok: ACP Node architecture ($acp_node_archs)"
+			case " $acp_node_archs " in
+			*" x86_64 "*)
+				run_check "ACP Node x64 executable-memory entitlement" \
+					has_acp_node_entitlement "com.apple.security.cs.allow-unsigned-executable-memory"
+				;;
+			esac
+		else
+			echo "::error::verify-mac-artifact: ACP Node architecture inspection failed for $APP" >&2
+			failed=1
+		fi
 	fi
 fi
 
