@@ -32,11 +32,16 @@ type switchTestStore struct {
 	activateErr                   error
 	activateAfterCommitErr        error
 	createSwitchAfterCommitErr    error
+	createSwitchCancel            context.CancelFunc
+	respectCanceledSwitchReads    bool
 	requestHandoffErr             error
 	requestHandoffAfterCommitErr  error
 	requestHandoffNoop            bool
 	failTransitionErr             error
 	getSwitchErrOnceWhenRequested error
+	getSwitchErrOnce              error
+	createSwitchCommitted         chan struct{}
+	createSwitchRelease           chan struct{}
 }
 
 type switchDeliveryDeadlineStore struct {
@@ -45,6 +50,18 @@ type switchDeliveryDeadlineStore struct {
 
 func (switchDeliveryDeadlineStore) GetAgentSwitch(context.Context, domain.AgentSwitchID) (domain.AgentSwitch, bool, error) {
 	return domain.AgentSwitch{}, false, context.DeadlineExceeded
+}
+
+type switchContextAwareDeliveryStore struct {
+	ports.AgentSwitchStore
+}
+
+func (s switchContextAwareDeliveryStore) GetAgentSwitch(ctx context.Context, id domain.AgentSwitchID) (domain.AgentSwitch, bool, error) {
+	record, found, err := s.AgentSwitchStore.GetAgentSwitch(ctx, id)
+	if err == nil && found && record.State == domain.AgentSwitchDelivering && ctx.Err() != nil {
+		return domain.AgentSwitch{}, false, ctx.Err()
+	}
+	return record, found, err
 }
 
 func newSwitchTestStore() *switchTestStore {
@@ -108,15 +125,35 @@ func (s *switchTestStore) CreateAgentSwitch(_ context.Context, rec domain.AgentS
 		}
 	}
 	s.switches[rec.ID] = rec
+	if s.createSwitchCommitted != nil {
+		select {
+		case s.createSwitchCommitted <- struct{}{}:
+		default:
+		}
+	}
+	if s.createSwitchRelease != nil {
+		<-s.createSwitchRelease
+	}
 	if s.createSwitchAfterCommitErr != nil {
+		if s.createSwitchCancel != nil {
+			s.createSwitchCancel()
+		}
 		return domain.AgentSwitch{}, false, s.createSwitchAfterCommitErr
 	}
 	return rec, true, nil
 }
 
-func (s *switchTestStore) GetAgentSwitch(_ context.Context, id domain.AgentSwitchID) (domain.AgentSwitch, bool, error) {
+func (s *switchTestStore) GetAgentSwitch(ctx context.Context, id domain.AgentSwitchID) (domain.AgentSwitch, bool, error) {
+	if s.respectCanceledSwitchReads && ctx.Err() != nil {
+		return domain.AgentSwitch{}, false, ctx.Err()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.getSwitchErrOnce != nil {
+		err := s.getSwitchErrOnce
+		s.getSwitchErrOnce = nil
+		return domain.AgentSwitch{}, false, err
+	}
 	rec, ok := s.switches[id]
 	if ok && rec.AgentHandoffStatus == domain.AgentHandoffRequested && s.getSwitchErrOnceWhenRequested != nil {
 		err := s.getSwitchErrOnceWhenRequested
@@ -126,7 +163,10 @@ func (s *switchTestStore) GetAgentSwitch(_ context.Context, id domain.AgentSwitc
 	return rec, ok, nil
 }
 
-func (s *switchTestStore) GetAgentSwitchByIdempotencyKey(_ context.Context, sessionID domain.SessionID, key string) (domain.AgentSwitch, bool, error) {
+func (s *switchTestStore) GetAgentSwitchByIdempotencyKey(ctx context.Context, sessionID domain.SessionID, key string) (domain.AgentSwitch, bool, error) {
+	if s.respectCanceledSwitchReads && ctx.Err() != nil {
+		return domain.AgentSwitch{}, false, ctx.Err()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, rec := range s.switches {
@@ -280,6 +320,7 @@ func (s *switchTestStore) ConfirmAgentSwitchSourceStopped(ctx context.Context, c
 	rec.UpdatedAt = confirmation.StoppedAt
 	s.sessions[confirmation.SessionID] = rec
 	sw.State = domain.AgentSwitchSourceStopped
+	sw.ErrorCode = ""
 	sw.UpdatedAt = confirmation.StoppedAt
 	s.switches[confirmation.SwitchID] = sw
 	return true, nil
@@ -357,11 +398,21 @@ type switchTestAgent struct {
 	freshNativeIDMode   ports.FreshNativeSessionIDMode
 	launchPrompt        string
 	launchNativeID      string
+	launchModel         string
+	launchMode          string
+	launchPermissions   ports.PermissionMode
 	restorePrompt       string
+	restoreModel        string
 	launchSystemPrompt  string
 	restoreSystemPrompt string
 	launchSystemFile    string
 	restoreSystemFile   string
+	preflightMu         sync.Mutex
+	preflightStarted    chan struct{}
+	preflightRelease    chan struct{}
+	preflightCalls      int
+	hooksWaitForContext bool
+	hooksContextExpired chan struct{}
 }
 
 type switchReleaseLCM struct {
@@ -373,11 +424,42 @@ type switchCreateErrorRuntime struct {
 	*fakeRestartRuntime
 	createHandle      ports.RuntimeHandle
 	createErr         error
+	createCalls       int
 	exactProbeHandles []string
 }
 
-func (r *switchCreateErrorRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+type switchRollbackCancellationRuntime struct {
+	*fakeRestartRuntime
+	cancel      context.CancelFunc
+	createCalls int
+	rollbackErr error
+}
+
+func (r *switchRollbackCancellationRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	r.createCalls++
+	if r.createCalls > 1 && r.rollbackErr != nil {
+		return ports.RuntimeHandle{}, r.rollbackErr
+	}
+	if r.createCalls > 1 && ctx.Err() != nil {
+		return ports.RuntimeHandle{}, ctx.Err()
+	}
+	return r.fakeRuntime.Create(ctx, cfg)
+}
+
+func (r *switchRollbackCancellationRuntime) IsExactSupervisedProcessAlive(context.Context, ports.RuntimeHandle, ports.SupervisedProcessRef) (bool, error) {
+	if r.cancel != nil {
+		r.cancel()
+		r.cancel = nil
+	}
+	return false, nil
+}
+
+func (r *switchCreateErrorRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	r.createCalls++
 	r.lastCfg = cfg
+	if r.createCalls > 1 {
+		return r.fakeRuntime.Create(ctx, cfg)
+	}
 	return r.createHandle, r.createErr
 }
 
@@ -431,8 +513,14 @@ func (a *switchTestAgent) NativeSessionConfigDir(context.Context, map[string]str
 	return a.configDir, nil
 }
 
-func (a *switchTestAgent) GetAgentHooks(context.Context, ports.WorkspaceHookConfig) error {
+func (a *switchTestAgent) GetAgentHooks(ctx context.Context, _ ports.WorkspaceHookConfig) error {
 	a.hookCalls++
+	if a.hooksWaitForContext {
+		<-ctx.Done()
+		if a.hooksContextExpired != nil {
+			close(a.hooksContextExpired)
+		}
+	}
 	if a.onHooks != nil {
 		a.onHooks()
 	}
@@ -444,11 +532,33 @@ func (a *switchTestAgent) CleanupWorkspace(context.Context, ports.WorkspaceHookC
 	return nil
 }
 
-func (a *switchTestAgent) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+func (a *switchTestAgent) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
+	a.preflightMu.Lock()
+	a.preflightCalls++
+	a.preflightMu.Unlock()
+	if a.preflightStarted != nil {
+		select {
+		case a.preflightStarted <- struct{}{}:
+		default:
+		}
+	}
+	if a.preflightRelease != nil {
+		select {
+		case <-a.preflightRelease:
+		case <-ctx.Done():
+			return ports.AgentAuthStatusUnknown, ctx.Err()
+		}
+	}
 	if a.authStatus == "" {
 		return ports.AgentAuthStatusUnknown, a.authErr
 	}
 	return a.authStatus, a.authErr
+}
+
+func (a *switchTestAgent) preflightCallCount() int {
+	a.preflightMu.Lock()
+	defer a.preflightMu.Unlock()
+	return a.preflightCalls
 }
 
 func (a *switchTestAgent) ProbeNativeSession(_ context.Context, ref ports.NativeSessionRef) (ports.NativeSessionAvailability, error) {
@@ -468,6 +578,9 @@ func (a *switchTestAgent) LocateTranscript(_ context.Context, ref ports.NativeSe
 func (a *switchTestAgent) GetLaunchCommand(_ context.Context, cfg ports.LaunchConfig) ([]string, error) {
 	a.launchPrompt = cfg.Prompt
 	a.launchNativeID = cfg.NativeSessionID
+	a.launchModel = cfg.Config.Model
+	a.launchMode = cfg.Config.Mode
+	a.launchPermissions = cfg.Config.Permissions
 	a.launchSystemPrompt = cfg.SystemPrompt
 	a.launchSystemFile = cfg.SystemPromptFile
 	return []string{"agent", "fresh", cfg.Prompt}, nil
@@ -479,6 +592,7 @@ func (a *switchTestAgent) GetRestoreCommand(_ context.Context, cfg ports.Restore
 		return nil, false, nil
 	}
 	a.restorePrompt = cfg.Prompt
+	a.restoreModel = cfg.Config.Model
 	a.restoreSystemPrompt = cfg.SystemPrompt
 	a.restoreSystemFile = cfg.SystemPromptFile
 	return []string{"agent", "resume", id, cfg.Prompt}, true, nil
@@ -533,7 +647,7 @@ func newSwitchTestManager(t *testing.T, runtime runtimeController) (*Manager, *s
 	messenger := &fakeMessenger{}
 	lcm := &fakeLCM{store: store.fakeStore}
 	store.agentSwitchStore = store
-	launches := []string{"target-generation"}
+	launches := []string{"target-generation", "source-rollback-generation", "source-recovery-generation"}
 	manager := New(Deps{
 		Runtime:   runtime,
 		Agents:    switchTestAgents{domain.HarnessClaudeCode: source, domain.HarnessCodex: target},
@@ -560,6 +674,268 @@ func newSwitchTestManager(t *testing.T, runtime runtimeController) (*Manager, *s
 		},
 	}
 	return manager, store, messenger
+}
+
+func switchAgentSynchronously(ctx context.Context, manager *Manager, id domain.SessionID, cfg SwitchAgentConfig) (domain.AgentSwitch, error) {
+	record, admitted, err := manager.admitAgentSwitch(ctx, id, cfg)
+	if err != nil || admitted == nil {
+		return record, err
+	}
+	return manager.executeAgentSwitch(ctx, admitted)
+}
+
+func awaitSwitchTestSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func waitForSwitchWorkers(t *testing.T, manager *Manager) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.WaitAgentSwitchWorkers(ctx); err != nil {
+		t.Fatalf("wait for agent switch workers: %v", err)
+	}
+}
+
+type switchAgentCallResult struct {
+	record domain.AgentSwitch
+	err    error
+}
+
+func callSwitchAgent(ctx context.Context, manager *Manager, id domain.SessionID, cfg SwitchAgentConfig) <-chan switchAgentCallResult {
+	result := make(chan switchAgentCallResult, 1)
+	go func() {
+		defer close(result)
+		record, err := manager.SwitchAgent(ctx, id, cfg)
+		result <- switchAgentCallResult{record: record, err: err}
+	}()
+	return result
+}
+
+func awaitSwitchAgentCall(t *testing.T, result <-chan switchAgentCallResult) switchAgentCallResult {
+	t.Helper()
+	select {
+	case got := <-result:
+		return got
+	case <-time.After(time.Second):
+		t.Fatal("SwitchAgent did not return after durable admission")
+		return switchAgentCallResult{}
+	}
+}
+
+func blockTargetPreflight(t *testing.T, target *switchTestAgent) func() {
+	t.Helper()
+	target.preflightStarted = make(chan struct{}, 1)
+	target.preflightRelease = make(chan struct{})
+	var releaseOnce sync.Once
+	return func() { releaseOnce.Do(func() { close(target.preflightRelease) }) }
+}
+
+func cleanupBlockedSwitchCall(t *testing.T, manager *Manager, release func(), result <-chan switchAgentCallResult) {
+	t.Helper()
+	t.Cleanup(func() {
+		release()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = manager.WaitAgentSwitchWorkers(ctx)
+		select {
+		case <-result:
+		case <-time.After(time.Second):
+		}
+	})
+}
+
+func TestSwitchAgentReturnsAfterDurableAdmission(t *testing.T) {
+	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+	releasePreflight := blockTargetPreflight(t, target)
+
+	call := callSwitchAgent(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "async-admission",
+	})
+	cleanupBlockedSwitchCall(t, manager, releasePreflight, call)
+	got := awaitSwitchAgentCall(t, call)
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	sw := got.record
+	if sw.State != domain.AgentSwitchPreparingHandoff {
+		t.Fatalf("admitted switch state = %q, want preparing_handoff", sw.State)
+	}
+	active, found, err := store.GetActiveAgentSwitch(context.Background(), "proj-1")
+	if err != nil || !found || active.ID != sw.ID {
+		t.Fatalf("durable active switch = (%+v, %v, %v), want id %q", active, found, err, sw.ID)
+	}
+	if err := manager.Send(context.Background(), "proj-1", "must remain fenced", nil); !errors.Is(err, ErrSwitchInProgress) {
+		t.Fatalf("ordinary session input error = %v, want ErrSwitchInProgress", err)
+	}
+
+	awaitSwitchTestSignal(t, target.preflightStarted, "target preflight")
+	releasePreflight()
+	waitForSwitchWorkers(t, manager)
+}
+
+func TestSwitchAgentRequestCancellationDoesNotCancelWorker(t *testing.T) {
+	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+	releasePreflight := blockTargetPreflight(t, target)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	defer cancelRequest()
+
+	call := callSwitchAgent(requestCtx, manager, "proj-1", SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "request-cancelled-after-admission",
+	})
+	cleanupBlockedSwitchCall(t, manager, releasePreflight, call)
+	got := awaitSwitchAgentCall(t, call)
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	sw := got.record
+	cancelRequest()
+	awaitSwitchTestSignal(t, target.preflightStarted, "target preflight")
+	releasePreflight()
+	waitForSwitchWorkers(t, manager)
+
+	completed, found, err := store.GetAgentSwitch(context.Background(), sw.ID)
+	if err != nil || !found {
+		t.Fatalf("reload admitted switch = (%+v, %v, %v)", completed, found, err)
+	}
+	if completed.State != domain.AgentSwitchCompleted {
+		t.Fatalf("switch state after request cancellation = %q, want completed", completed.State)
+	}
+}
+
+func TestSwitchAgentIdempotentReplayStartsOneWorker(t *testing.T) {
+	manager, _, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+	releasePreflight := blockTargetPreflight(t, target)
+	cfg := SwitchAgentConfig{TargetHarness: domain.HarnessCodex, Model: "gpt-5.4", IdempotencyKey: "same-async-request"}
+
+	firstCall := callSwitchAgent(context.Background(), manager, "proj-1", cfg)
+	cleanupBlockedSwitchCall(t, manager, releasePreflight, firstCall)
+	firstResult := awaitSwitchAgentCall(t, firstCall)
+	if firstResult.err != nil {
+		t.Fatal(firstResult.err)
+	}
+	first := firstResult.record
+	awaitSwitchTestSignal(t, target.preflightStarted, "target preflight")
+	replayConfig := cfg
+	replayConfig.Model = " gpt-5.4 "
+	replayResult := awaitSwitchAgentCall(t, callSwitchAgent(context.Background(), manager, "proj-1", replayConfig))
+	if replayResult.err != nil {
+		t.Fatal(replayResult.err)
+	}
+	replay := replayResult.record
+	if replay.ID != first.ID {
+		t.Fatalf("idempotent replay id = %q, want %q", replay.ID, first.ID)
+	}
+	if calls := target.preflightCallCount(); calls != 1 {
+		t.Fatalf("target preflight calls = %d, want 1", calls)
+	}
+	changedModel := cfg
+	changedModel.Model = "gpt-5.4-mini"
+	if _, err := manager.SwitchAgent(context.Background(), "proj-1", changedModel); !errors.Is(err, domain.ErrAgentSwitchIdempotencyConflict) {
+		t.Fatalf("changed-model retry error = %v, want idempotency conflict", err)
+	}
+	releasePreflight()
+	waitForSwitchWorkers(t, manager)
+}
+
+func TestWaitAgentSwitchWorkersObservesDaemonCancellation(t *testing.T) {
+	daemonCtx, cancelDaemon := context.WithCancel(context.Background())
+	defer cancelDaemon()
+	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	manager.backgroundContext = daemonCtx
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+	releasePreflight := blockTargetPreflight(t, target)
+
+	call := callSwitchAgent(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "daemon-cancellation",
+	})
+	cleanupBlockedSwitchCall(t, manager, releasePreflight, call)
+	got := awaitSwitchAgentCall(t, call)
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	sw := got.record
+	awaitSwitchTestSignal(t, target.preflightStarted, "target preflight")
+	cancelDaemon()
+	waitForSwitchWorkers(t, manager)
+
+	settled, found, err := store.GetAgentSwitch(context.Background(), sw.ID)
+	if err != nil || !found {
+		t.Fatalf("reload canceled switch = (%+v, %v, %v)", settled, found, err)
+	}
+	if !settled.State.Terminal() {
+		t.Fatalf("daemon-canceled pre-stop switch remained nonterminal: %+v", settled)
+	}
+}
+
+func TestSwitchAgentWorkerLaunchRefusalSettlesOrRetainsPreStopGate(t *testing.T) {
+	tests := []struct {
+		name       string
+		settleErr  error
+		wantState  domain.AgentSwitchState
+		wantFenced bool
+	}{
+		{name: "terminal failure releases gate", wantState: domain.AgentSwitchFailed},
+		{name: "ambiguous failure retains gate", settleErr: errors.New("failure persistence unavailable"), wantState: domain.AgentSwitchPreparingHandoff, wantFenced: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+			store.failTransitionErr = tt.settleErr
+			store.createSwitchCommitted = make(chan struct{}, 1)
+			store.createSwitchRelease = make(chan struct{})
+			var releaseOnce sync.Once
+			releaseAdmission := func() { releaseOnce.Do(func() { close(store.createSwitchRelease) }) }
+			t.Cleanup(releaseAdmission)
+
+			call := callSwitchAgent(context.Background(), manager, "proj-1", SwitchAgentConfig{
+				TargetHarness: domain.HarnessCodex, IdempotencyKey: "worker-launch-refused",
+			})
+			awaitSwitchTestSignal(t, store.createSwitchCommitted, "durable switch admission")
+
+			waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+			defer cancelWait()
+			waitDone := make(chan error, 1)
+			go func() { waitDone <- manager.WaitAgentSwitchWorkers(waitCtx) }()
+			eventuallySessionInput(t, time.Second, func() bool {
+				manager.agentSwitchWorkerMu.Lock()
+				defer manager.agentSwitchWorkerMu.Unlock()
+				return manager.agentSwitchWorkersClosed
+			})
+			select {
+			case err := <-waitDone:
+				t.Fatalf("shutdown barrier returned before admission settled: %v", err)
+			default:
+			}
+
+			releaseAdmission()
+			got := awaitSwitchAgentCall(t, call)
+			if !errors.Is(got.err, ErrSwitchShuttingDown) {
+				t.Fatalf("SwitchAgent error = %v, want ErrSwitchShuttingDown", got.err)
+			}
+			if err := <-waitDone; err != nil {
+				t.Fatalf("WaitAgentSwitchWorkers: %v", err)
+			}
+			settled, found, reloadErr := store.GetAgentSwitch(context.Background(), got.record.ID)
+			if reloadErr != nil || !found {
+				t.Fatalf("reload refused switch = (%+v, %v, %v)", settled, found, reloadErr)
+			}
+			if settled.State != tt.wantState {
+				t.Fatalf("refused switch state = %q, want %q", settled.State, tt.wantState)
+			}
+			if fenced := manager.SessionMutationInProgress("proj-1"); fenced != tt.wantFenced {
+				t.Fatalf("input fenced = %v, want %v", fenced, tt.wantFenced)
+			}
+		})
+	}
 }
 
 func TestBuildSourceHandoffRequestUsesCurrentNativeSessionContext(t *testing.T) {
@@ -1015,7 +1391,7 @@ func TestSwitchAgentRejectsCursorAndKimiBeforeMutation(t *testing.T) {
 			rec.Harness = tt.source
 			store.sessions[rec.ID] = rec
 
-			_, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+			_, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 				TargetHarness: tt.target, IdempotencyKey: "unsupported-harness",
 			})
 			if !errors.Is(err, ErrUnsupportedSwitchHarness) {
@@ -1095,7 +1471,7 @@ func TestSwitchAgentFreshPreservesAOIdentityAndDeliversArtifact(t *testing.T) {
 		}
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "request-1", Note: "preserve the unfinished test"})
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "request-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1525,6 @@ func TestSwitchAgentFreshPreservesAOIdentityAndDeliversArtifact(t *testing.T) {
 		!strings.Contains(target.launchSystemPrompt, "implement the feature") ||
 		!strings.Contains(target.launchSystemPrompt, "please keep the API small") ||
 		!strings.Contains(target.launchSystemPrompt, "implementation is half complete") ||
-		!strings.Contains(target.launchSystemPrompt, "preserve the unfinished test") ||
 		!strings.Contains(target.launchSystemPrompt, "main.go") {
 		t.Fatalf("hidden continuation = %q", target.launchSystemPrompt)
 	}
@@ -1191,7 +1566,7 @@ func TestSwitchAgentBindsHiddenContinuationBeforeReleasingLaunchHooks(t *testing
 		}
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness:  domain.HarnessCodex,
 		IdempotencyKey: "in-command-continuation",
 	})
@@ -1262,7 +1637,7 @@ func TestSwitchAgentRetainsSwitchWhenCreateReturnsNoHandle(t *testing.T) {
 	}
 	manager, store, _ := newSwitchTestManager(t, runtime)
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness:  domain.HarnessCodex,
 		IdempotencyKey: "target-create-no-handle",
 	})
@@ -1296,7 +1671,7 @@ func TestSwitchAgentCreateErrorWithTargetHandleUsesConservativeCleanup(t *testin
 	}
 	manager, _, _ := newSwitchTestManager(t, runtime)
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness:  domain.HarnessCodex,
 		IdempotencyKey: "target-create-ambiguous-handle",
 	})
@@ -1311,6 +1686,132 @@ func TestSwitchAgentCreateErrorWithTargetHandleUsesConservativeCleanup(t *testin
 	}
 	if runtime.destroyed != 2 || len(runtime.destroyedIDs) != 2 || runtime.destroyedIDs[0] != "proj-1" || runtime.destroyedIDs[1] != "target-opaque" {
 		t.Fatalf("runtime destroys = %d %v, want source then ambiguous target", runtime.destroyed, runtime.destroyedIDs)
+	}
+}
+
+func TestSwitchAgentRestoresSourceAfterConclusivePreActivationTargetFailure(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{
+		createIDs:          []string{"target-handle", "source-rollback-handle"},
+		supervisedSequence: []bool{false},
+	}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	source := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness:  domain.HarnessCodex,
+		IdempotencyKey: "rollback-safe-target-failure",
+	})
+	if err == nil || !strings.Contains(err.Error(), "target generation exited before activation") {
+		t.Fatalf("switch error = %v, want conclusive target startup failure", err)
+	}
+	if sw.State != domain.AgentSwitchFailed {
+		t.Fatalf("switch state = %q, want failed", sw.State)
+	}
+	rec := store.sessions["proj-1"]
+	if rec.Harness != domain.HarnessClaudeCode || rec.Activity.State != domain.ActivityIdle {
+		t.Fatalf("rolled back session = harness %q activity %q, want live Claude source", rec.Harness, rec.Activity.State)
+	}
+	if rec.Metadata.RuntimeLaunchID != "source-rollback-generation" || rec.Metadata.RuntimeHandleID == "" {
+		t.Fatalf("rolled back runtime metadata = launch %q handle %q", rec.Metadata.RuntimeLaunchID, rec.Metadata.RuntimeHandleID)
+	}
+	if !runtime.aliveByHandle[rec.Metadata.RuntimeHandleID] {
+		t.Fatal("rolled back source runtime is not alive")
+	}
+	if runtime.created != 2 || runtime.restarted != 0 {
+		t.Fatalf("runtime target/source creates and restarts = %d/%d, want 2/0", runtime.created, runtime.restarted)
+	}
+	if target.cleanupCalls != 1 || source.hookCalls != 1 {
+		t.Fatalf("workspace cleanup/source restore hooks = %d/%d, want 1/1", target.cleanupCalls, source.hookCalls)
+	}
+	if manager.SessionMutationInProgress("proj-1") {
+		t.Fatal("successful source rollback left the switch input gate closed")
+	}
+}
+
+func TestSwitchAgentRestoresSourceAfterDaemonCancellationPostStop(t *testing.T) {
+	workerCtx, cancelWorker := context.WithCancel(context.Background())
+	runtime := &switchRollbackCancellationRuntime{
+		fakeRestartRuntime: &fakeRestartRuntime{fakeRuntime: &fakeRuntime{
+			createIDs: []string{"target-handle", "source-rollback-handle"},
+		}},
+		cancel: cancelWorker,
+	}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+
+	sw, err := switchAgentSynchronously(workerCtx, manager, "proj-1", SwitchAgentConfig{
+		TargetHarness:  domain.HarnessCodex,
+		IdempotencyKey: "rollback-after-daemon-cancellation",
+	})
+	if err == nil {
+		t.Fatal("switch unexpectedly succeeded")
+	}
+	if sw.State != domain.AgentSwitchFailed {
+		t.Fatalf("switch state = %q, want failed after successful source rollback", sw.State)
+	}
+	rec := store.sessions["proj-1"]
+	if rec.Harness != domain.HarnessClaudeCode || rec.Activity.State != domain.ActivityIdle {
+		t.Fatalf("rolled back session = harness %q activity %q, want live Claude source", rec.Harness, rec.Activity.State)
+	}
+	if manager.SessionMutationInProgress("proj-1") {
+		t.Fatal("successful source rollback left the switch input gate closed")
+	}
+}
+
+func TestSwitchAgentRetainsRecoveryWhenSourceRollbackFails(t *testing.T) {
+	runtime := &switchRollbackCancellationRuntime{
+		fakeRestartRuntime: &fakeRestartRuntime{fakeRuntime: &fakeRuntime{
+			createIDs: []string{"target-handle"},
+		}},
+		rollbackErr: errors.New("source relaunch unavailable"),
+	}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness:  domain.HarnessCodex,
+		IdempotencyKey: "retain-failed-source-rollback",
+	})
+	if err == nil || !strings.Contains(err.Error(), "source relaunch unavailable") {
+		t.Fatalf("switch error = %v, want rollback failure", err)
+	}
+	if sw.State.Terminal() {
+		t.Fatalf("switch state = %q, want nonterminal recovery boundary", sw.State)
+	}
+	if sw.ErrorCode != domain.AgentSwitchErrorSourceRestoreUnconfirmed || !sw.RequiresSourceRestore() {
+		t.Fatalf("switch recovery marker = code %q sourceRestore=%v, want source restore unconfirmed", sw.ErrorCode, sw.RequiresSourceRestore())
+	}
+	rec := store.sessions["proj-1"]
+	if rec.Harness != domain.HarnessClaudeCode || rec.Activity.State != domain.ActivityExited {
+		t.Fatalf("retained session = harness %q activity %q, want stopped Claude ownership", rec.Harness, rec.Activity.State)
+	}
+	if !manager.SessionMutationInProgress("proj-1") {
+		t.Fatal("failed source rollback reopened the switch input gate")
+	}
+
+	runtime.rollbackErr = nil
+	runtime.createIDs = append(runtime.createIDs, "source-recovery-handle")
+	accepted, err := manager.RecoverAgentSwitch(context.Background(), rec.ID, sw.ID)
+	if err != nil {
+		t.Fatalf("recover retained switch: %v", err)
+	}
+	if accepted.ID != sw.ID {
+		t.Fatalf("accepted recovery switch = %q, want %q", accepted.ID, sw.ID)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := manager.WaitAgentSwitchWorkers(waitCtx); err != nil {
+		t.Fatalf("wait for recovery worker: %v", err)
+	}
+	recovered := store.switches[sw.ID]
+	if recovered.State != domain.AgentSwitchFailed || recovered.ErrorCode != domain.AgentSwitchErrorDaemonRestartPostStop {
+		t.Fatalf("recovered switch = state %q code %q, want failed daemon_restart_post_stop", recovered.State, recovered.ErrorCode)
+	}
+	rec = store.sessions["proj-1"]
+	if rec.Harness != domain.HarnessClaudeCode || rec.Activity.State != domain.ActivityIdle {
+		t.Fatalf("restored session = harness %q activity %q, want live Claude source", rec.Harness, rec.Activity.State)
+	}
+	if manager.SessionMutationInProgress("proj-1") {
+		t.Fatal("successful explicit source recovery left the input gate closed")
 	}
 }
 
@@ -1337,7 +1838,7 @@ func TestSwitchAgentTranscriptReadFailureUsesSingleTerminalFallback(t *testing.T
 	rec.Metadata.NativeTranscriptPath = path
 	store.sessions[rec.ID] = rec
 
-	sw, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "transcript-read-fallback",
 	})
 	if err != nil {
@@ -1358,6 +1859,10 @@ func TestSwitchAgentTranscriptReadFailureUsesSingleTerminalFallback(t *testing.T
 func TestSwitchAgentResumesVerifiedPriorNativeSession(t *testing.T) {
 	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
 	manager, store, _ := newSwitchTestManager(t, runtime)
+	project := store.projects["proj"]
+	project.Config.Worker.Harness = domain.HarnessCodex
+	project.Config.Worker.AgentConfig.Model = "target-model"
+	store.projects[project.ID] = project
 	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
 	target.available["codex-prior"] = ports.NativeSessionAvailabilityAvailable
 	now := time.Now().UTC().Add(-time.Hour)
@@ -1367,12 +1872,15 @@ func TestSwitchAgentResumesVerifiedPriorNativeSession(t *testing.T) {
 		LastGenerationID: "old-generation", CreatedAt: now, LastUsedAt: now,
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "resume-prior"})
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "resume-prior"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sw.TargetStartMode != domain.AgentSwitchTargetStartResumed {
 		t.Fatalf("target mode = %q, want resumed", sw.TargetStartMode)
+	}
+	if target.restoreModel != "target-model" {
+		t.Fatalf("restore model = %q, want target-model", target.restoreModel)
 	}
 	if got := strings.Join(runtime.lastCfg.Argv, " "); !strings.Contains(got, "-- agent resume codex-prior ") || !strings.Contains(target.restoreSystemPrompt, "<ao-continuation") || target.restorePrompt != aoTargetActivationPrompt {
 		t.Fatalf("target argv = %q", got)
@@ -1385,6 +1893,10 @@ func TestSwitchAgentResumesVerifiedPriorNativeSession(t *testing.T) {
 func TestSwitchAgentUnknownResumeEvidenceStartsFresh(t *testing.T) {
 	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
 	manager, store, _ := newSwitchTestManager(t, runtime)
+	project := store.projects["proj"]
+	project.Config.Worker.Harness = domain.HarnessCodex
+	project.Config.Worker.AgentConfig.Model = "target-model"
+	store.projects[project.ID] = project
 	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
 	now := time.Now().UTC().Add(-time.Hour)
 	store.native["native-unknown"] = domain.AgentNativeSession{
@@ -1393,12 +1905,143 @@ func TestSwitchAgentUnknownResumeEvidenceStartsFresh(t *testing.T) {
 		LastGenerationID: "old-generation", CreatedAt: now, LastUsedAt: now,
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "fresh-on-unknown"})
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "fresh-on-unknown"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sw.TargetStartMode != domain.AgentSwitchTargetStartFresh || !strings.Contains(strings.Join(runtime.lastCfg.Argv, " "), "-- agent fresh ") || !strings.Contains(target.launchSystemPrompt, "<ao-continuation") || target.launchPrompt != aoTargetActivationPrompt {
 		t.Fatalf("unknown evidence should start fresh: mode=%q argv=%q", sw.TargetStartMode, strings.Join(runtime.lastCfg.Argv, " "))
+	}
+	if target.launchModel != "target-model" {
+		t.Fatalf("launch model = %q, want target-model", target.launchModel)
+	}
+}
+
+func TestSwitchAgentModelCodexToClaudeDropsSourceOverride(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	rec := store.sessions["proj-1"]
+	rec.Harness = domain.HarnessCodex
+	store.sessions[rec.ID] = rec
+	project := store.projects[string(rec.ProjectID)]
+	project.Config.Worker.Harness = domain.HarnessCodex
+	project.Config.Worker.AgentConfig.Model = "gpt-5.4-mini"
+	store.projects[project.ID] = project
+	target := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
+
+	switchRecord, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness:  domain.HarnessClaudeCode,
+		IdempotencyKey: "codex-to-claude-drops-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switchRecord.State != domain.AgentSwitchCompleted {
+		t.Fatalf("switch state = %q, want completed", switchRecord.State)
+	}
+	if target.launchModel != "" {
+		t.Fatalf("Claude target launch model = %q, want no source override", target.launchModel)
+	}
+}
+
+func TestSwitchAgentModelClaudeToCodexDropsSourceOverride(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	project := store.projects["proj"]
+	project.Config.Worker.Harness = domain.HarnessClaudeCode
+	project.Config.Worker.AgentConfig.Model = "opus"
+	store.projects[project.ID] = project
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+
+	switchRecord, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness:  domain.HarnessCodex,
+		IdempotencyKey: "claude-to-codex-drops-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switchRecord.State != domain.AgentSwitchCompleted {
+		t.Fatalf("switch state = %q, want completed", switchRecord.State)
+	}
+	if target.launchModel != "" {
+		t.Fatalf("Codex target launch model = %q, want no source override", target.launchModel)
+	}
+}
+
+func TestSwitchAgentModelUsesConfiguredTargetDefault(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	project := store.projects["proj"]
+	project.Config.Worker.Harness = domain.HarnessCodex
+	project.Config.Worker.AgentConfig.Model = "target-default"
+	store.projects[project.ID] = project
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+
+	switchRecord, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness:  domain.HarnessCodex,
+		IdempotencyKey: "configured-target-default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switchRecord.State != domain.AgentSwitchCompleted {
+		t.Fatalf("switch state = %q, want completed", switchRecord.State)
+	}
+	if target.launchModel != "target-default" {
+		t.Fatalf("Codex target launch model = %q, want configured target default", target.launchModel)
+	}
+}
+
+func TestSwitchAgentModelUsesExplicitTargetOverride(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	project := store.projects["proj"]
+	project.Config.Worker.Harness = domain.HarnessClaudeCode
+	project.Config.Worker.AgentConfig.Model = "opus"
+	store.projects[project.ID] = project
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+
+	switchRecord, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness:  domain.HarnessCodex,
+		Model:          "gpt-target",
+		IdempotencyKey: "explicit-target-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switchRecord.State != domain.AgentSwitchCompleted {
+		t.Fatalf("switch state = %q, want completed", switchRecord.State)
+	}
+	if target.launchModel != "gpt-target" {
+		t.Fatalf("Codex target launch model = %q, want explicit target override", target.launchModel)
+	}
+}
+
+func TestSwitchAgentTargetConfigDropsSourceModeAndPreservesPermissions(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	project := store.projects["proj"]
+	project.Config.AgentConfig.Permissions = domain.PermissionModeAuto
+	project.Config.Worker.Harness = domain.HarnessClaudeCode
+	project.Config.Worker.AgentConfig.Mode = "high"
+	store.projects[project.ID] = project
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+
+	switchRecord, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness:  domain.HarnessCodex,
+		IdempotencyKey: "target-config-scope",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switchRecord.State != domain.AgentSwitchCompleted {
+		t.Fatalf("switch state = %q, want completed", switchRecord.State)
+	}
+	if target.launchMode != "" {
+		t.Fatalf("Codex target launch mode = %q, want no source override", target.launchMode)
+	}
+	if target.launchPermissions != ports.PermissionModeAuto {
+		t.Fatalf("Codex target permissions = %q, want %q", target.launchPermissions, ports.PermissionModeAuto)
 	}
 }
 
@@ -1414,7 +2057,7 @@ func TestSwitchAgentLeavesFreshProviderAssignedNativeIDForTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := manager.prepareTargetActivation(context.Background(), store, rec, project, target, caps, domain.AgentSwitch{TargetHarness: domain.HarnessCodex}); err != nil {
+	if _, err := manager.prepareTargetActivation(context.Background(), store, rec, project, target, caps, domain.AgentSwitch{TargetHarness: domain.HarnessCodex}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if target.launchNativeID != "" {
@@ -1428,7 +2071,7 @@ func TestSwitchAgentRejectsDefinitelyUnauthenticatedTargetBeforeStoppingSource(t
 	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
 	target.authStatus = ports.AgentAuthStatusUnauthorized
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "unauthenticated"})
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "unauthenticated"})
 	if !errors.Is(err, ErrTargetAgentUnauthorized) {
 		t.Fatalf("switch error = %v, want ErrTargetAgentUnauthorized", err)
 	}
@@ -1450,7 +2093,7 @@ func TestSwitchAgentRejectsOrchestratorBeforeCreatingSaga(t *testing.T) {
 	rec.Kind = domain.KindOrchestrator
 	store.sessions[rec.ID] = rec
 
-	_, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "orchestrator"})
+	_, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "orchestrator"})
 	if !errors.Is(err, ErrUnsupportedSwitchKind) {
 		t.Fatalf("switch error = %v, want ErrUnsupportedSwitchKind", err)
 	}
@@ -1488,7 +2131,7 @@ func TestSwitchAgentIncludesAvailableSourceAuthoredHandoff(t *testing.T) {
 		}
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "semantic", Note: "preserve storage semantics"})
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "semantic"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1508,7 +2151,7 @@ func TestSwitchAgentIncludesAvailableSourceAuthoredHandoff(t *testing.T) {
 	if !strings.Contains(string(body), "wired storage") || !strings.Contains(string(body), `"schemaVersion": 1`) {
 		t.Fatalf("finalized handoff omitted source report:\n%s", body)
 	}
-	for _, deterministic := range []string{"preserve storage semantics", "implement the feature", "please keep the API small", "implementation is half complete", "main.go"} {
+	for _, deterministic := range []string{"implement the feature", "please keep the API small", "implementation is half complete", "main.go"} {
 		if !strings.Contains(string(body), deterministic) {
 			t.Fatalf("finalized handoff omitted deterministic context %q:\n%s", deterministic, body)
 		}
@@ -1516,13 +2159,16 @@ func TestSwitchAgentIncludesAvailableSourceAuthoredHandoff(t *testing.T) {
 	if len(messenger.msgs) != 1 || !strings.HasPrefix(strings.TrimSpace(messenger.msgs[0]), "<ao-handoff-request") {
 		t.Fatalf("message sequence = %#v", messenger.msgs)
 	}
-	for _, want := range []string{"wired storage", "preserve storage semantics", "implement the feature", "please keep the API small", "implementation is half complete", "main.go"} {
+	for _, want := range []string{"wired storage", "implement the feature", "please keep the API small", "implementation is half complete", "main.go"} {
 		if !strings.Contains(target.launchSystemPrompt, want) {
 			t.Fatalf("continuation omitted %q:\n%s", want, target.launchSystemPrompt)
 		}
 	}
 	if strings.Contains(target.launchSystemPrompt, "ao-source-transcript-tail") || target.launchPrompt != aoTargetActivationPrompt {
 		t.Fatalf("semantic continuation used a transcript fallback or leaked visibly: system=%s prompt=%q", target.launchSystemPrompt, target.launchPrompt)
+	}
+	if len(runtime.interrupts) != 0 {
+		t.Fatalf("received semantic handoff interrupted source runtime: %#v", runtime.interrupts)
 	}
 	for _, obsolete := range []string{"agent-handoff.json", "agent-handoff-candidate.json"} {
 		if _, statErr := os.Stat(filepath.Join(filepath.Dir(sw.AgentHandoffPath), obsolete)); !errors.Is(statErr, os.ErrNotExist) {
@@ -1563,7 +2209,7 @@ func TestSwitchAgentRetriesSwallowedSourceHandoffEnterOnlyForSafeHarness(t *test
 		}
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "source-enter-retry",
 	})
 	if err != nil {
@@ -1575,7 +2221,15 @@ func TestSwitchAgentRetriesSwallowedSourceHandoffEnterOnlyForSafeHarness(t *test
 }
 
 func TestSwitchAgentSourceSummaryTimeoutStillDeliversDeterministicHandoff(t *testing.T) {
-	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	baseRuntime := &fakeRuntime{}
+	events := make([]string, 0, 2)
+	baseRuntime.onInterrupt = func(ports.RuntimeHandle) {
+		events = append(events, "interrupt")
+	}
+	baseRuntime.onDestroy = func(_ int, _ ports.RuntimeHandle) {
+		events = append(events, "destroy")
+	}
+	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
 	manager, store, messenger := newSwitchTestManager(t, runtime)
 	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
 	rec := store.sessions["proj-1"]
@@ -1583,7 +2237,7 @@ func TestSwitchAgentSourceSummaryTimeoutStillDeliversDeterministicHandoff(t *tes
 	store.sessions[rec.ID] = rec
 	manager.handoffWait = time.Millisecond
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "summary-timeout",
 	})
 	if err != nil {
@@ -1598,10 +2252,35 @@ func TestSwitchAgentSourceSummaryTimeoutStillDeliversDeterministicHandoff(t *tes
 	if sw.AgentHandoffPath != "" || sw.AgentHandoffHash != "" {
 		t.Fatalf("timeout fallback unexpectedly retained semantic file: %+v", sw)
 	}
+	if got, want := strings.Join(events, ","), "interrupt,destroy"; got != want {
+		t.Fatalf("source timeout shutdown order = %q, want %q", got, want)
+	}
 	for _, want := range []string{"implement the feature", "please keep the API small", "implementation is half complete", "ao-workspace-facts"} {
 		if !strings.Contains(target.launchSystemPrompt, want) {
 			t.Fatalf("timeout fallback continuation omitted %q:\n%s", want, target.launchSystemPrompt)
 		}
+	}
+}
+
+func TestSwitchAgentFailsBeforeSourceStopWhenTimedOutHandoffCannotBeInterrupted(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{interruptErr: errors.New("interrupt unavailable")}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	rec := store.sessions["proj-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now().UTC()}
+	store.sessions[rec.ID] = rec
+	manager.handoffWait = time.Millisecond
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "summary-timeout-interrupt-failure",
+	})
+	if err == nil || !strings.Contains(err.Error(), "stop expired source handoff") {
+		t.Fatalf("switch error = %v, want expired source handoff failure", err)
+	}
+	if sw.State != domain.AgentSwitchFailed || sw.AgentHandoffStatus != domain.AgentHandoffTimedOut {
+		t.Fatalf("switch = state %q handoff %q, want failed/timed_out", sw.State, sw.AgentHandoffStatus)
+	}
+	if runtime.destroyed != 0 || runtime.restarted != 0 {
+		t.Fatalf("source/target mutated after interrupt failure: destroyed=%d restarted=%d", runtime.destroyed, runtime.restarted)
 	}
 }
 
@@ -1615,7 +2294,7 @@ func TestSwitchAgentSkipsSemanticHandoffWhenSourceComposerContainsDraft(t *testi
 	source := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
 	source.composerEmpty = func(string) bool { return false }
 
-	sw, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "source-unsent-draft",
 	})
 	if err != nil {
@@ -1648,7 +2327,7 @@ func TestSwitchAgentSourceSemanticSendFailureStillUsesDeterministicFallback(t *t
 		return nil
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "semantic-send-fallback",
 	})
 	if err != nil {
@@ -1678,7 +2357,7 @@ func TestSwitchAgentSemanticPollingFailureStillUsesDeterministicFallback(t *test
 	manager.handoffWait = 2 * switchPollInterval
 	store.getSwitchErrOnceWhenRequested = errors.New("semantic status read interrupted")
 
-	sw, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "semantic-polling-fallback",
 	})
 	if err != nil {
@@ -1726,7 +2405,7 @@ func TestSwitchAgentSettlesAmbiguousSemanticRequestPersistenceToFallback(t *test
 			store.sessions[rec.ID] = rec
 			tt.configure(store)
 
-			sw, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+			sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 				TargetHarness: domain.HarnessCodex, IdempotencyKey: "ambiguous-semantic-request-" + strings.ReplaceAll(tt.name, " ", "-"),
 			})
 			if err != nil {
@@ -1752,7 +2431,7 @@ func TestSwitchAgentGatesSendDuringReplacement(t *testing.T) {
 	manager, _, _ := newSwitchTestManager(t, runtime)
 	done := make(chan error, 1)
 	go func() {
-		_, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "blocking"})
+		_, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "blocking"})
 		done <- err
 	}()
 	<-runtime.entered
@@ -1790,7 +2469,7 @@ func TestSwitchAgentUsesSeparatePermissionDecisionWindow(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+		_, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 			TargetHarness: domain.HarnessCodex, IdempotencyKey: "permission-during-handoff",
 		})
 		done <- err
@@ -1846,7 +2525,7 @@ func TestSwitchAgentPermissionDecisionTimeoutUsesFallback(t *testing.T) {
 	}
 
 	started := time.Now()
-	sw, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "permission-timeout-fallback",
 	})
 	if err != nil {
@@ -1865,7 +2544,7 @@ func TestSwitchAgentPermissionDecisionTimeoutUsesFallback(t *testing.T) {
 	release()
 }
 
-func TestWaitForTargetAcknowledgementOwnsIndependentDeliveryWindow(t *testing.T) {
+func TestWaitForTargetAcknowledgementObservesDaemonCancellation(t *testing.T) {
 	manager := New(Deps{})
 	manager.switchDeliveryAckWait = 500 * time.Millisecond
 	store := newSwitchTestStore()
@@ -1880,32 +2559,64 @@ func TestWaitForTargetAcknowledgementOwnsIndependentDeliveryWindow(t *testing.T)
 	}
 	store.switches[sw.ID] = sw
 
-	// Model the aggregate post-stop setup budget expiring after target
-	// activation. Delivery must still own its complete, separately bounded
-	// acknowledgement window.
-	parent, cancelParent := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancelParent()
-	ackResult := make(chan error, 1)
-	go func() {
-		time.Sleep(40 * time.Millisecond)
-		acknowledged, err := store.AcknowledgeAgentSwitchTarget(
-			context.Background(), sw.ID, sw.SessionID, sw.TargetGenerationID, time.Now().UTC(),
-		)
-		if err == nil && !acknowledged {
-			err = errors.New("target acknowledgement was rejected")
-		}
-		ackResult <- err
-	}()
+	parent, cancelParent := context.WithCancel(context.Background())
+	cancelParent()
+	_, err := manager.waitForTargetAcknowledgement(parent, store, sw)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForTargetAcknowledgement error = %v, want context.Canceled", err)
+	}
+}
 
-	got, err := manager.waitForTargetAcknowledgement(parent, store, sw)
-	if ackErr := <-ackResult; ackErr != nil {
-		t.Fatal(ackErr)
-	}
+func TestWaitForTargetAcknowledgementOwnsIndependentDeliveryWindow(t *testing.T) {
+	manager, _, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	manager.switchPostStopWait = 250 * time.Millisecond
+	manager.switchDeliveryAckWait = 500 * time.Millisecond
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+	target.hooksWaitForContext = true
+	target.hooksContextExpired = make(chan struct{})
+
+	workerCtx, cancelWorker := context.WithCancel(context.Background())
+	defer cancelWorker()
+	record, admitted, err := manager.admitAgentSwitch(workerCtx, "proj-1", SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "independent-delivery-window",
+	})
 	if err != nil {
-		t.Fatalf("waitForTargetAcknowledgement returned before its delivery window: %v", err)
+		t.Fatal(err)
 	}
-	if got.TargetAcknowledgedAt == nil {
-		t.Fatal("target acknowledgement was not observed")
+	if admitted == nil {
+		t.Fatal("new switch admission returned no execution carrier")
+	}
+	admitted.store = switchContextAwareDeliveryStore{AgentSwitchStore: admitted.store}
+
+	type executionResult struct {
+		record domain.AgentSwitch
+		err    error
+	}
+	done := make(chan executionResult, 1)
+	go func() {
+		result, executeErr := manager.executeAgentSwitch(workerCtx, admitted)
+		done <- executionResult{record: result, err: executeErr}
+	}()
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("executeAgentSwitch after post-stop expiry: %v", result.err)
+		}
+		if result.record.State != domain.AgentSwitchCompleted {
+			t.Fatalf("switch state = %q, want completed", result.record.State)
+		}
+	case <-time.After(2 * time.Second):
+		cancelWorker()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("executeAgentSwitch did not preserve the independent delivery window")
+	}
+	select {
+	case <-target.hooksContextExpired:
+	default:
+		t.Fatalf("post-stop child context did not expire for switch %q", record.ID)
 	}
 }
 
@@ -1926,16 +2637,15 @@ func TestWaitForTargetAcknowledgementClassifiesInternalDeadlineAsUnconfirmed(t *
 	}
 }
 
-func TestSwitchDeliveryAcknowledgementWindowCoversSlowTargetStartup(t *testing.T) {
+func TestSwitchDefaultTimingBudgets(t *testing.T) {
 	manager := New(Deps{})
 	if got, want := manager.switchDeliveryAckWait, 150*time.Second; got != want {
 		t.Fatalf("switch delivery acknowledgement wait = %s, want %s", got, want)
 	}
-}
-
-func TestSwitchPermissionDecisionWindowAllowsHumanResponse(t *testing.T) {
-	manager := New(Deps{})
-	if got, want := manager.switchPermissionDecisionWait, 2*time.Minute; got != want {
+	if got, want := manager.handoffWait, 90*time.Second; got != want {
+		t.Fatalf("switch semantic handoff wait = %s, want %s", got, want)
+	}
+	if got, want := manager.switchPermissionDecisionWait, time.Minute; got != want {
 		t.Fatalf("switch permission decision wait = %s, want %s", got, want)
 	}
 }
@@ -1972,7 +2682,7 @@ func TestSwitchAgentWaitsForDelayedExactGenerationAcknowledgement(t *testing.T) 
 		}(active)
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "delayed-exact-ack",
 	})
 	if err != nil {
@@ -2003,7 +2713,7 @@ func TestSwitchAgentRequiresTargetDeliveryAcknowledgement(t *testing.T) {
 		maxAttempts:     3,
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "missing-ack",
 	})
 	if !errors.Is(err, ErrSwitchDeliveryUnconfirmed) {
@@ -2031,7 +2741,7 @@ func TestSwitchAgentTreatsAmbiguousCommittedTargetActivationAsSuccess(t *testing
 	manager, store, _ := newSwitchTestManager(t, runtime)
 	store.activateAfterCommitErr = errors.New("commit response lost")
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "activation-commit-ambiguous",
 	})
 	if err != nil {
@@ -2052,7 +2762,7 @@ func TestSwitchAgentRecoversAmbiguousCommittedSagaCreation(t *testing.T) {
 	manager, store, _ := newSwitchTestManager(t, runtime)
 	store.createSwitchAfterCommitErr = errors.New("insert commit response lost")
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "create-commit-ambiguous",
 	})
 	if err != nil {
@@ -2063,13 +2773,63 @@ func TestSwitchAgentRecoversAmbiguousCommittedSagaCreation(t *testing.T) {
 	}
 }
 
+func TestSwitchAgentRecoversAmbiguousCommittedSagaCreationAfterRequestCancellation(t *testing.T) {
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	store.createSwitchAfterCommitErr = errors.New("insert commit response lost")
+	store.createSwitchCancel = cancelRequest
+	store.respectCanceledSwitchReads = true
+
+	sw, err := manager.SwitchAgent(requestCtx, "proj-1", SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "create-commit-cancelled",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForSwitchWorkers(t, manager)
+	completed, found, err := store.GetAgentSwitch(context.Background(), sw.ID)
+	if err != nil || !found {
+		t.Fatalf("reload admitted switch = (%+v, %v, %v)", completed, found, err)
+	}
+	if completed.State != domain.AgentSwitchCompleted || len(store.switches) != 1 {
+		t.Fatalf("ambiguous committed create was not resumed exactly once: switch=%+v rows=%#v", completed, store.switches)
+	}
+}
+
+func TestSwitchAgentIdempotentReplayRecoversRetainedCommittedSaga(t *testing.T) {
+	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	store.createSwitchAfterCommitErr = errors.New("insert commit response lost")
+	store.getSwitchErrOnce = errors.New("temporary reload failure")
+	cfg := SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "recover-retained-create"}
+
+	first, err := manager.SwitchAgent(context.Background(), "proj-1", cfg)
+	if err == nil || !strings.Contains(err.Error(), "create saga outcome is ambiguous") {
+		t.Fatalf("first switch error = %v, want ambiguous commit", err)
+	}
+	if !manager.SessionMutationInProgress("proj-1") {
+		t.Fatal("ambiguous committed saga did not retain the input gate")
+	}
+
+	recovered, err := manager.SwitchAgent(context.Background(), "proj-1", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.ID != first.ID || recovered.State != domain.AgentSwitchFailed || recovered.ErrorCode != domain.AgentSwitchErrorDaemonRestartPreStop {
+		t.Fatalf("recovered replay = %+v, want same terminal pre-stop saga", recovered)
+	}
+	if manager.SessionMutationInProgress("proj-1") {
+		t.Fatal("conclusive pre-stop recovery left the input gate closed")
+	}
+}
+
 func TestSwitchAgentCompletesWhenAcknowledgementWinsFailureCAS(t *testing.T) {
 	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
 	manager, store, messenger := newSwitchTestManager(t, runtime)
 	messenger.onSend = nil // let the acknowledgement arrive at the timeout boundary
 	store.ackBeforeDeliveryFailure = true
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "ack-wins-timeout",
 	})
 	if err != nil {
@@ -2083,40 +2843,18 @@ func TestSwitchAgentCompletesWhenAcknowledgementWinsFailureCAS(t *testing.T) {
 	}
 }
 
-func TestSwitchAgentIdempotencyFingerprintIncludesNote(t *testing.T) {
-	manager, _, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
-	first, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
-		TargetHarness: domain.HarnessCodex, IdempotencyKey: "same-key", Note: "preserve tests",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	retry, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
-		TargetHarness: domain.HarnessCodex, IdempotencyKey: "same-key", Note: " preserve tests ",
-	})
-	if err != nil || retry.ID != first.ID {
-		t.Fatalf("same request retry = %+v, err=%v", retry, err)
-	}
-	_, err = manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
-		TargetHarness: domain.HarnessCodex, IdempotencyKey: "same-key", Note: "different request",
-	})
-	if !errors.Is(err, domain.ErrAgentSwitchIdempotencyConflict) {
-		t.Fatalf("changed-note retry error = %v, want idempotency conflict", err)
-	}
-}
-
-func TestSwitchAgentDoesNotStartTargetWhenSourceStopIsUnconfirmed(t *testing.T) {
+func TestSwitchAgentMarksAndRecoversUnconfirmedSourceStop(t *testing.T) {
 	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{destroyErr: errors.New("teardown unavailable")}}
 	manager, store, _ := newSwitchTestManager(t, runtime)
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "stop-unconfirmed",
 	})
 	if !errors.Is(err, ErrSwitchSourceStopUnconfirmed) {
 		t.Fatalf("switch error = %v, want ErrSwitchSourceStopUnconfirmed", err)
 	}
-	if sw.State != domain.AgentSwitchStoppingSource || sw.ErrorCode != "" {
-		t.Fatalf("switch = state %q code %q, want retained stopping_source without terminal error", sw.State, sw.ErrorCode)
+	if sw.State != domain.AgentSwitchStoppingSource || sw.ErrorCode != domain.AgentSwitchErrorSourceStopUnconfirmed || !sw.RequiresRecovery() {
+		t.Fatalf("switch = state %q code %q recovery=%v, want retained source-stop recovery", sw.State, sw.ErrorCode, sw.RequiresRecovery())
 	}
 	if runtime.created != 0 {
 		t.Fatalf("target runtime created %d times", runtime.created)
@@ -2127,40 +2865,22 @@ func TestSwitchAgentDoesNotStartTargetWhenSourceStopIsUnconfirmed(t *testing.T) 
 	if !manager.SessionMutationInProgress("proj-1") {
 		t.Fatal("input gate reopened while source teardown remained unconfirmed")
 	}
-}
 
-func TestSwitchAgentCommitsSourceStopWithDetachedContextAfterCallerCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
-	manager, store, _ := newSwitchTestManager(t, runtime)
-	runtime.onDestroy = func(call int, _ ports.RuntimeHandle) {
-		if call == 0 {
-			cancel()
-		}
-	}
-	confirmCalled := false
-	store.confirmHook = func(confirmCtx context.Context) {
-		confirmCalled = true
-		if err := confirmCtx.Err(); err != nil {
-			t.Errorf("source-stop transaction inherited caller cancellation: %v", err)
-		}
-	}
-
-	sw, switchErr := manager.SwitchAgent(ctx, "proj-1", SwitchAgentConfig{
-		TargetHarness: domain.HarnessCodex, IdempotencyKey: "cancel-after-destroy",
-	})
-	if !confirmCalled {
-		t.Fatal("source-stop transaction was skipped after runtime teardown")
-	}
-	active, ok, err := store.GetActiveAgentSwitch(context.Background(), "proj-1")
+	runtime.destroyErr = nil
+	accepted, err := manager.RecoverAgentSwitch(context.Background(), "proj-1", sw.ID)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("recover retained source stop: %v", err)
 	}
-	if ok && active.State == domain.AgentSwitchStoppingSource {
-		t.Fatalf("source teardown remained durably unrecorded: %+v", active)
+	if accepted.ID != sw.ID {
+		t.Fatalf("accepted recovery switch = %q, want %q", accepted.ID, sw.ID)
 	}
-	if switchErr != nil || sw.State != domain.AgentSwitchCompleted || runtime.created != 1 {
-		t.Fatalf("post-stop caller cancellation stranded switch: switch=%+v created=%d err=%v", sw, runtime.created, switchErr)
+	waitForSwitchWorkers(t, manager)
+	recovered := store.switches[sw.ID]
+	if recovered.State != domain.AgentSwitchFailed || recovered.ErrorCode != domain.AgentSwitchErrorDaemonRestartPreStop {
+		t.Fatalf("recovered switch = state %q code %q, want failed daemon_restart_pre_stop", recovered.State, recovered.ErrorCode)
+	}
+	if manager.SessionMutationInProgress("proj-1") {
+		t.Fatal("proven-live source retained the switch input gate")
 	}
 }
 
@@ -2178,7 +2898,7 @@ func TestSwitchAgentInstallsTargetWorkspaceOnlyAfterFinalSourceSnapshot(t *testi
 		}
 	}
 
-	if _, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	if _, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "snapshot-before-target-hooks",
 	}); err != nil {
 		t.Fatal(err)
@@ -2195,7 +2915,7 @@ func TestSwitchAgentRetainsGateWhenFailureCannotBePersisted(t *testing.T) {
 	target.authStatus = ports.AgentAuthStatusUnauthorized
 	store.failTransitionErr = errors.New("sqlite busy")
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "failure-write-lost",
 	})
 	if !errors.Is(err, ErrTargetAgentUnauthorized) {
@@ -2230,7 +2950,7 @@ func TestSwitchAgentRetainsGateWhenSourceStopCommitIsUnknown(t *testing.T) {
 	manager, store, _ := newSwitchTestManager(t, runtime)
 	store.confirmErr = errors.New("commit result unavailable")
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "unknown-source-stop-commit",
 	})
 	if err == nil || sw.State != domain.AgentSwitchStoppingSource || !manager.SessionMutationInProgress("proj-1") {
@@ -2250,13 +2970,14 @@ func TestSwitchAgentRetainedProbeAndCleanupFailureRecoversUsingOpaqueHandle(t *t
 	probeErr := errors.New("target generation probe unavailable")
 	cleanupErr := errors.New("target cleanup unavailable")
 	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{
+		createIDs:          []string{"h1", "source-rollback-handle"},
 		supervisedErr:      probeErr,
 		destroyErrSequence: []error{nil, cleanupErr},
 	}}
 	manager, store, messenger := newSwitchTestManager(t, runtime)
 	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "ambiguous-target-probe",
 	})
 	if !errors.Is(err, probeErr) || !errors.Is(err, cleanupErr) {
@@ -2290,7 +3011,7 @@ func TestSwitchAgentRetainedProbeAndCleanupFailureRecoversUsingOpaqueHandle(t *t
 	if runtime.aliveByHandle["h1"] {
 		t.Fatal("reconciliation left the rejected target runtime alive")
 	}
-	if rec := store.sessions["proj-1"]; rec.Harness != domain.HarnessClaudeCode || rec.Metadata.RuntimeHandleID != "proj-1" {
+	if rec := store.sessions["proj-1"]; rec.Harness != domain.HarnessClaudeCode || rec.Metadata.RuntimeHandleID != "source-rollback-handle" {
 		t.Fatalf("rejected target changed durable ownership: %+v", rec)
 	}
 	if len(messenger.msgs) != 0 {
@@ -2313,7 +3034,7 @@ func TestSwitchAgentRetainedActivationAndCleanupFailureRecoversByAdoptingOpaqueH
 	manager, store, messenger := newSwitchTestManager(t, runtime)
 	store.activateErr = activationErr
 
-	sw, err := manager.SwitchAgent(context.Background(), "proj-1", SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "ambiguous-target-activation",
 	})
 	if !errors.Is(err, activationErr) || !errors.Is(err, cleanupErr) {
@@ -2372,10 +3093,15 @@ func TestReconcileAgentSwitchesUsesDurableBoundaries(t *testing.T) {
 		wantErrorCode domain.AgentSwitchErrorCode
 		wantError     string
 		wantGated     bool
+		wantActivity  domain.ActivityState
+		rollbackErr   error
+		projectErr    error
 	}{
 		{name: "pre-stop keeps source", state: domain.AgentSwitchPreparingHandoff, runtimeAlive: true, wantState: domain.AgentSwitchFailed, wantHarness: domain.HarnessClaudeCode, wantErrorCode: "daemon_restart_pre_stop"},
-		{name: "stopped source stays source-owned and exited", state: domain.AgentSwitchStoppingSource, runtimeAlive: false, wantState: domain.AgentSwitchFailed, wantHarness: domain.HarnessClaudeCode, wantErrorCode: "daemon_restart_post_stop"},
-		{name: "inconclusive source probe safely retains source ownership", state: domain.AgentSwitchStoppingSource, runtimeErr: errors.New("probe unavailable"), wantState: domain.AgentSwitchFailed, wantHarness: domain.HarnessClaudeCode, wantErrorCode: "source_stop_unconfirmed"},
+		{name: "stopped source is restored", state: domain.AgentSwitchStoppingSource, runtimeAlive: false, wantState: domain.AgentSwitchFailed, wantHarness: domain.HarnessClaudeCode, wantErrorCode: "daemon_restart_post_stop", wantActivity: domain.ActivityIdle},
+		{name: "failed source restore remains recoverable", state: domain.AgentSwitchStoppingSource, runtimeAlive: false, rollbackErr: errors.New("source relaunch unavailable"), wantState: domain.AgentSwitchSourceStopped, wantHarness: domain.HarnessClaudeCode, wantErrorCode: domain.AgentSwitchErrorSourceRestoreUnconfirmed, wantError: "source relaunch unavailable", wantGated: true, wantActivity: domain.ActivityExited},
+		{name: "missing rollback project remains recoverable", state: domain.AgentSwitchStoppingSource, runtimeAlive: false, projectErr: errors.New("project unavailable"), wantState: domain.AgentSwitchSourceStopped, wantHarness: domain.HarnessClaudeCode, wantErrorCode: domain.AgentSwitchErrorSourceRestoreUnconfirmed, wantError: "project unavailable", wantGated: true, wantActivity: domain.ActivityExited},
+		{name: "inconclusive source probe remains available for explicit recovery", state: domain.AgentSwitchStoppingSource, runtimeErr: errors.New("probe unavailable"), wantState: domain.AgentSwitchStoppingSource, wantHarness: domain.HarnessClaudeCode, wantErrorCode: domain.AgentSwitchErrorSourceStopUnconfirmed, wantGated: true},
 		{name: "exact starting target is adopted by opaque handle without delivery", state: domain.AgentSwitchStartingTarget, runtimeAlive: true, targetHandle: "opaque-target-handle", wantState: domain.AgentSwitchFailed, wantHarness: domain.HarnessCodex, wantHandle: "opaque-target-handle", wantErrorCode: "daemon_restart_before_delivery"},
 		{name: "starting target without a durable handle requires recovery", state: domain.AgentSwitchStartingTarget, runtimeAlive: true, wantState: domain.AgentSwitchStartingTarget, wantHarness: domain.HarnessClaudeCode, wantErrorCode: domain.AgentSwitchErrorTargetStartUnconfirmed, wantGated: true},
 		{name: "acknowledged delivery completes", state: domain.AgentSwitchDelivering, runtimeAlive: true, acknowledged: true, wantState: domain.AgentSwitchCompleted, wantHarness: domain.HarnessCodex},
@@ -2386,6 +3112,8 @@ func TestReconcileAgentSwitchesUsesDurableBoundaries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
 			manager, store, messenger := newSwitchTestManager(t, runtime)
+			runtime.createErr = tt.rollbackErr
+			store.getProjectErr = tt.projectErr
 			runtime.aliveErr = tt.runtimeErr
 			store.ackBeforeDeliveryFailure = tt.ackBeforeFail
 			runtime.aliveByHandle["proj-1"] = tt.runtimeAlive
@@ -2442,6 +3170,11 @@ func TestReconcileAgentSwitchesUsesDurableBoundaries(t *testing.T) {
 			}
 			if gotHarness := store.sessions["proj-1"].Harness; gotHarness != tt.wantHarness {
 				t.Fatalf("reconciled owner = %q, want %q", gotHarness, tt.wantHarness)
+			}
+			if tt.wantActivity != "" {
+				if gotActivity := store.sessions["proj-1"].Activity.State; gotActivity != tt.wantActivity {
+					t.Fatalf("reconciled activity = %q, want %q", gotActivity, tt.wantActivity)
+				}
 			}
 			if tt.wantHandle != "" {
 				if gotHandle := store.sessions["proj-1"].Metadata.RuntimeHandleID; gotHandle != tt.wantHandle {
@@ -2569,7 +3302,7 @@ func TestSwitchAgentRefreshesLatestAssistantUpdateAfterSourceHandoff(t *testing.
 		}
 	}
 
-	if _, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "latest-assistant"}); err != nil {
+	if _, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "latest-assistant"}); err != nil {
 		t.Fatal(err)
 	}
 	continuation := target.launchSystemPrompt
@@ -2623,7 +3356,7 @@ func TestSwitchAgentRefreshesLateSourceNativeIdentityAtStopBoundary(t *testing.T
 		}
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
 		TargetHarness: domain.HarnessCodex, IdempotencyKey: "late-source-native-identity",
 	})
 	if err != nil {
@@ -2683,7 +3416,7 @@ func TestSwitchAgentFallsBackWhenReceivedSemanticFileIsChangedBeforeSourceStop(t
 		}
 	}
 
-	sw, err := manager.SwitchAgent(context.Background(), rec.ID, SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "changed-semantic"})
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "changed-semantic"})
 	if err != nil {
 		t.Fatal(err)
 	}

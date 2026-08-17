@@ -123,8 +123,15 @@ func TestParserByteAtATime(t *testing.T) {
 
 // TestParserInterleavedTypes feeds frames of different types and verifies order.
 func TestParserInterleavedTypes(t *testing.T) {
-	types := []byte{MsgStatusReq, MsgKillReq, MsgGetOutputReq, MsgStatusRes}
-	payloads := [][]byte{nil, nil, []byte(`{"lines":10}`), []byte(`{"alive":true,"pid":42}`)}
+	types := []byte{MsgStatusReq, MsgKillReq, MsgGetOutputReq, MsgStatusRes, MsgGetStyledOutputReq, MsgGetStyledOutputRes}
+	payloads := [][]byte{
+		nil,
+		nil,
+		[]byte(`{"lines":10}`),
+		[]byte(`{"alive":true,"pid":42}`),
+		[]byte(`{"lines":12}`),
+		[]byte("\x1b[2mdim\x1b[0m"),
+	}
 
 	var chunk []byte
 	for i, typ := range types {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dockInset, MIN_DOCK_INSET } from "./keyboardInset";
+import { dockInset, MIN_DOCK_INSET, screenKeyboardAvoidance } from "./keyboardInset";
 import { CONTROL_KEYS } from "./keys";
 
 describe("dockInset", () => {
@@ -17,6 +17,17 @@ describe("dockInset", () => {
 
 	it("falls back to a minimum on a device with no home indicator", () => {
 		expect(dockInset(0, 0)).toBe(MIN_DOCK_INSET);
+	});
+});
+
+describe("screenKeyboardAvoidance", () => {
+	it("reserves the reported keyboard height using Android's final keyboard events", () => {
+		expect(screenKeyboardAvoidance("android", 336)).toEqual({
+			showEvent: "keyboardDidShow",
+			hideEvent: "keyboardDidHide",
+			paddingBottom: 336,
+			rootStyle: { paddingBottom: 336 },
+		});
 	});
 });
 

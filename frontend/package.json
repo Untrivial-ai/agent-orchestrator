@@ -16,7 +16,7 @@
 		"build:acp-runtime": "node ./scripts/build-acp-runtime.mjs",
 		"browser-runtime:prepare": "node ./scripts/prepare-agent-browser.mjs",
 		"build:daemon": "node ./scripts/build-daemon.mjs",
-		"predev": "npm run build:daemon && node ./scripts/ensure-browser-runtime.mjs && npm run build:acp-runtime",
+		"predev": "npm run build:daemon -- --dev && node ./scripts/ensure-browser-runtime.mjs && npm run build:acp-runtime",
 		"dev": "electron-forge start",
 		"dev:web": "VITE_NO_ELECTRON=1 vite --config vite.renderer.config.ts",
 		"prepackage": "npm run build:daemon && npm run browser-runtime:prepare && npm run build:acp-runtime",
@@ -61,6 +61,7 @@
 		"vitest": "^4.1.8"
 	},
 	"dependencies": {
+		"@aoagents/product-ui": "file:../packages/product-ui",
 		"@dnd-kit/core": "^6.3.1",
 		"@dnd-kit/sortable": "^10.0.0",
 		"@dnd-kit/utilities": "^3.2.2",

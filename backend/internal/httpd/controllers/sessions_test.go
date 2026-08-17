@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
@@ -32,30 +33,73 @@ import (
 )
 
 type fakeSessionService struct {
-	sessions         map[domain.SessionID]domain.Session
-	sent             string
-	sentAttachment   *ports.SpawnAttachment
-	delegationInput  sessionsvc.DelegateTaskInput
-	delegationErr    error
-	cleanupProjects  []domain.ProjectID
-	cleanupResult    []domain.SessionID
-	cleanupSkipped   []sessionsvc.CleanupSkipped
-	workspaceFiles   sessionsvc.WorkspaceFiles
-	workspaceFile    sessionsvc.WorkspaceFileDetail
-	workspacePaths   []string
-	spawnErr         error
-	orchestratorMode domain.SessionMode
-	claimErr         error
-	listPRErr        error
-	workspaceErr     error
-	staged           []ports.SpawnAttachment
-	stagedPaths      []string
-	stageErr         error
-	agentSwitches    map[domain.AgentSwitchID]domain.AgentSwitch
-	switchConfig     sessionsvc.SwitchAgentInput
-	switchErr        error
-	handoff          json.RawMessage
-	handoffSource    domain.AgentGenerationID
+	sessions            map[domain.SessionID]domain.Session
+	sent                string
+	sentAttachment      *ports.SpawnAttachment
+	delegationInput     sessionsvc.DelegateTaskInput
+	delegationErr       error
+	cleanupProjects     []domain.ProjectID
+	cleanupResult       []domain.SessionID
+	cleanupSkipped      []sessionsvc.CleanupSkipped
+	workspaceFiles      sessionsvc.WorkspaceFiles
+	workspaceFile       sessionsvc.WorkspaceFileDetail
+	workspacePaths      []string
+	spawnErr            error
+	orchestratorMode    domain.SessionMode
+	claimErr            error
+	listPRErr           error
+	workspaceErr        error
+	staged              []ports.SpawnAttachment
+	stagedPaths         []string
+	stageErr            error
+	agentSwitches       map[domain.AgentSwitchID]domain.AgentSwitch
+	switchConfig        sessionsvc.SwitchAgentInput
+	switchErr           error
+	recoveredSwitch     domain.AgentSwitchID
+	handoff             json.RawMessage
+	handoffSource       domain.AgentGenerationID
+	autoInjectCISession domain.SessionID
+	autoInjectCIEnabled bool
+}
+
+type fakeInterfaceTransitionSessionService struct {
+	*fakeSessionService
+	transition             domain.SessionInterfaceTransition
+	acknowledgedSessionID  domain.SessionID
+	acknowledgedTransition string
+}
+
+func (f *fakeInterfaceTransitionSessionService) InterfaceTransitionStatus(
+	context.Context,
+	domain.SessionID,
+) (sessionsvc.InterfaceTransitionStatus, error) {
+	return sessionsvc.InterfaceTransitionStatus{Supported: true, Transition: &f.transition}, nil
+}
+
+func (f *fakeInterfaceTransitionSessionService) StartInterfaceTransition(
+	context.Context,
+	domain.SessionID,
+	domain.SessionMode,
+	domain.SessionInterfaceTransitionPolicy,
+) (domain.SessionInterfaceTransition, error) {
+	return f.transition, nil
+}
+
+func (f *fakeInterfaceTransitionSessionService) CancelInterfaceTransition(
+	context.Context,
+	domain.SessionID,
+) error {
+	return nil
+}
+
+func (f *fakeInterfaceTransitionSessionService) AcknowledgeInterfaceTransitionNotice(
+	_ context.Context,
+	sessionID domain.SessionID,
+	transitionID string,
+) (domain.SessionInterfaceTransition, error) {
+	f.acknowledgedSessionID = sessionID
+	f.acknowledgedTransition = transitionID
+	return f.transition, nil
 }
 
 type fakeManagedPreviewServer struct {
@@ -117,7 +161,7 @@ func (f *fakeManagedPreviewServer) Status(sessionID domain.SessionID) previewser
 
 func newFakeSessionService() *fakeSessionService {
 	now := time.Now().UTC()
-	s := domain.Session{SessionRecord: domain.SessionRecord{ID: "ao-1", ProjectID: "ao", Kind: domain.KindWorker, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, AutoInjectReview: true, CreatedAt: now, UpdatedAt: now}, Status: domain.StatusIdle, TerminalHandleID: "ao-1/terminal_0"}
+	s := domain.Session{SessionRecord: domain.SessionRecord{ID: "ao-1", ProjectID: "ao", Kind: domain.KindWorker, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, AutoInjectReview: true, AutoInjectCI: true, CreatedAt: now, UpdatedAt: now}, Status: domain.StatusIdle, TerminalHandleID: "ao-1/terminal_0"}
 	return &fakeSessionService{
 		sessions:      map[domain.SessionID]domain.Session{s.ID: s},
 		agentSwitches: map[domain.AgentSwitchID]domain.AgentSwitch{},
@@ -146,7 +190,7 @@ func (f *fakeSessionService) Spawn(_ context.Context, cfg ports.SpawnConfig) (do
 		return domain.Session{}, 0, 0, f.spawnErr
 	}
 	now := time.Now().UTC()
-	s := domain.Session{SessionRecord: domain.SessionRecord{ID: domain.SessionID(string(cfg.ProjectID) + "-2"), ProjectID: cfg.ProjectID, IssueID: cfg.IssueID, Kind: cfg.Kind, Harness: cfg.Harness, DisplayName: cfg.DisplayName, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, AutoInjectReview: true, CreatedAt: now, UpdatedAt: now}, Status: domain.StatusIdle}
+	s := domain.Session{SessionRecord: domain.SessionRecord{ID: domain.SessionID(string(cfg.ProjectID) + "-2"), ProjectID: cfg.ProjectID, IssueID: cfg.IssueID, Kind: cfg.Kind, Harness: cfg.Harness, DisplayName: cfg.DisplayName, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, AutoInjectReview: true, AutoInjectCI: true, CreatedAt: now, UpdatedAt: now}, Status: domain.StatusIdle}
 	f.sessions[s.ID] = s
 	return s, len(cfg.Prompt), 0, nil
 }
@@ -210,6 +254,18 @@ func (f *fakeSessionService) SetAutoInjectReview(_ context.Context, id domain.Se
 	return s, nil
 }
 
+func (f *fakeSessionService) SetAutoInjectCI(_ context.Context, id domain.SessionID, autoInject bool) (domain.Session, error) {
+	s, ok := f.sessions[id]
+	if !ok {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	f.autoInjectCISession = id
+	f.autoInjectCIEnabled = autoInject
+	s.AutoInjectCI = autoInject
+	f.sessions[id] = s
+	return s, nil
+}
+
 func (f *fakeSessionService) Pin(_ context.Context, id domain.SessionID) (domain.Session, error) {
 	s, ok := f.sessions[id]
 	if !ok {
@@ -239,6 +295,16 @@ func (f *fakeSessionService) SetReviewerHarness(_ context.Context, id domain.Ses
 		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
 	s.ReviewerHarness = harness
+	f.sessions[id] = s
+	return s, nil
+}
+
+func (f *fakeSessionService) SetAutoReview(_ context.Context, id domain.SessionID, enabled bool) (domain.Session, error) {
+	s, ok := f.sessions[id]
+	if !ok {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	s.AutoReviewEnabled = enabled
 	f.sessions[id] = s
 	return s, nil
 }
@@ -273,7 +339,7 @@ func (f *fakeSessionService) SwitchAgent(_ context.Context, id domain.SessionID,
 		ID: "switch-1", SessionID: id, IdempotencyKey: "private-retry-key", RequestFingerprint: "v1:private-fingerprint",
 		FromHarness: domain.HarnessClaudeCode, TargetHarness: cfg.TargetHarness,
 		TargetNativeSessionRef: &targetRef,
-		TargetStartMode:        domain.AgentSwitchTargetStartFresh, State: domain.AgentSwitchCompleted,
+		TargetStartMode:        domain.AgentSwitchTargetStartFresh, State: domain.AgentSwitchPreparingHandoff,
 		AgentHandoffStatus:      domain.AgentHandoffReceived,
 		SemanticHandoffIncluded: true,
 		AgentHandoffPath:        "/private/ao/handoff.json", AgentHandoffHash: "private-hash",
@@ -300,6 +366,15 @@ func (f *fakeSessionService) ListAgentSwitches(_ context.Context, id domain.Sess
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeSessionService) RecoverAgentSwitch(_ context.Context, id domain.SessionID, switchID domain.AgentSwitchID) (domain.AgentSwitch, error) {
+	record, ok := f.agentSwitches[switchID]
+	if !ok || record.SessionID != id {
+		return domain.AgentSwitch{}, apierr.NotFound("AGENT_SWITCH_NOT_FOUND", "Unknown agent switch")
+	}
+	f.recoveredSwitch = switchID
+	return record, nil
 }
 
 func (f *fakeSessionService) SubmitAgentHandoff(
@@ -500,11 +575,11 @@ func TestSessionsAPI_AgentSwitchLifecycle(t *testing.T) {
 
 	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/switch-agent", `{
 		"targetHarness":"codex",
-		"note":" continue the review ",
+		"model":" gpt-\u0000-5.4 ",
 		"idempotencyKey":"retry-1"
 	}`)
-	if status != http.StatusOK {
-		t.Fatalf("switch agent = %d, want 200; body=%s", status, body)
+	if status != http.StatusAccepted {
+		t.Fatalf("switch agent = %d, want 202; body=%s", status, body)
 	}
 	assertAgentSwitchResponseRedacted(t, body)
 	var switched controllers.AgentSwitchResponse
@@ -521,7 +596,7 @@ func TestSessionsAPI_AgentSwitchLifecycle(t *testing.T) {
 	if !switched.Switch.SemanticHandoffIncluded {
 		t.Fatal("semantic handoff inclusion fact was not projected")
 	}
-	if svc.switchConfig.Note != "continue the review" || svc.switchConfig.IdempotencyKey != "retry-1" {
+	if svc.switchConfig.Model != "gpt--5.4" || svc.switchConfig.IdempotencyKey != "retry-1" {
 		t.Fatalf("switch config = %+v", svc.switchConfig)
 	}
 
@@ -554,7 +629,56 @@ func TestSessionsAPI_AgentSwitchLifecycle(t *testing.T) {
 	if handoff["summary"] != "tests pass" {
 		t.Fatalf("recorded handoff = %#v", handoff)
 	}
+	recovery := svc.agentSwitches["switch-1"]
+	recovery.State = domain.AgentSwitchSourceStopped
+	recovery.ErrorCode = domain.AgentSwitchErrorSourceRestoreUnconfirmed
+	svc.agentSwitches[recovery.ID] = recovery
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/agent-switches/switch-1/recover", "")
+	if status != http.StatusAccepted {
+		t.Fatalf("recover switch = %d, want 202; body=%s", status, body)
+	}
+	assertAgentSwitchResponseRedacted(t, body)
+	if svc.recoveredSwitch != "switch-1" {
+		t.Fatalf("recovered switch = %q, want switch-1", svc.recoveredSwitch)
+	}
 
+}
+
+func TestSessionsAPIActiveSwitchProjectionRedactsPrivateFacts(t *testing.T) {
+	svc := newFakeSessionService()
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	targetRef := domain.AgentNativeSessionID("native-target")
+	session := svc.sessions["ao-1"]
+	session.ActiveAgentSwitch = &domain.AgentSwitch{
+		ID: "switch-active", SessionID: "ao-1", IdempotencyKey: "private-key",
+		RequestFingerprint: "v1:private-fingerprint", FromHarness: domain.HarnessClaudeCode,
+		TargetHarness: domain.HarnessCodex, TargetNativeSessionRef: &targetRef,
+		TargetStartMode: domain.AgentSwitchTargetStartFresh, State: domain.AgentSwitchStartingTarget,
+		AgentHandoffStatus: domain.AgentHandoffReceived, SemanticHandoffIncluded: true,
+		SourceTranscriptStatus: domain.AgentSwitchSourceTranscriptAvailable,
+		AgentHandoffPath:       "/private/agent-handoff.json", AgentHandoffHash: "private-agent-hash",
+		FinalHandoffPath: "/private/final-handoff.json", FinalHandoffHash: "private-final-hash",
+		SourceGenerationID: "private-source-generation", TargetGenerationID: "private-target-generation",
+		TargetRuntimeHandleID: "private-runtime-handle", TargetAcknowledgedAt: &now,
+		RequestedAt: now, UpdatedAt: now,
+	}
+	svc.sessions["ao-1"] = session
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1", "")
+	if status != http.StatusOK {
+		t.Fatalf("get session = %d, want 200; body=%s", status, body)
+	}
+	assertAgentSwitchResponseRedacted(t, body)
+	var response struct {
+		Session struct {
+			ActiveAgentSwitch *controllers.AgentSwitchView `json:"activeAgentSwitch"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &response)
+	if response.Session.ActiveAgentSwitch == nil || response.Session.ActiveAgentSwitch.ID != "switch-active" || response.Session.ActiveAgentSwitch.State != domain.AgentSwitchStartingTarget {
+		t.Fatalf("active switch projection = %+v", response.Session.ActiveAgentSwitch)
+	}
 }
 
 func assertAgentSwitchResponseRedacted(t *testing.T, body []byte) {
@@ -607,7 +731,8 @@ func TestSessionsAPI_AgentSwitchValidationAndErrors(t *testing.T) {
 		wantCode string
 	}{
 		{name: "target required", method: http.MethodPost, path: "/api/v1/sessions/ao-1/switch-agent", body: `{}`, wantCode: "TARGET_HARNESS_REQUIRED"},
-		{name: "note bounded", method: http.MethodPost, path: "/api/v1/sessions/ao-1/switch-agent", body: `{"targetHarness":"codex","note":"` + strings.Repeat("x", 4097) + `"}`, wantCode: "SWITCH_NOTE_TOO_LONG"},
+		{name: "retired note rejected", method: http.MethodPost, path: "/api/v1/sessions/ao-1/switch-agent", body: `{"targetHarness":"codex","note":"old context"}`, wantCode: "INVALID_JSON"},
+		{name: "model bounded", method: http.MethodPost, path: "/api/v1/sessions/ao-1/switch-agent", body: `{"targetHarness":"codex","model":"` + strings.Repeat("x", 257) + `"}`, wantCode: "MODEL_TOO_LONG"},
 		{name: "source generation required", method: http.MethodPost, path: "/api/v1/sessions/ao-1/agent-switches/switch-1/handoff", body: `{"handoff":{}}`, wantCode: "SOURCE_GENERATION_REQUIRED"},
 		{name: "handoff required", method: http.MethodPost, path: "/api/v1/sessions/ao-1/agent-switches/switch-1/handoff", body: `{"sourceGenerationId":"generation-7"}`, wantCode: "HANDOFF_REQUIRED"},
 		{name: "handoff bounded", method: http.MethodPost, path: "/api/v1/sessions/ao-1/agent-switches/switch-1/handoff", body: `{"sourceGenerationId":"generation-7","handoff":{"summary":"` + strings.Repeat("x", 65537) + `"}}`, wantCode: "HANDOFF_TOO_LARGE"},
@@ -699,6 +824,41 @@ func TestSessionsRoutes_DefaultToStubsWithoutService(t *testing.T) {
 	body, status, headers := doRequest(t, srv, "GET", "/api/v1/sessions", "")
 	assertJSON(t, headers)
 	assertErrorCode(t, body, status, http.StatusNotImplemented, "NOT_IMPLEMENTED")
+}
+
+func TestSessionsAPI_AcknowledgeInterfaceTransitionNotice(t *testing.T) {
+	acknowledgedAt := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	svc := &fakeInterfaceTransitionSessionService{
+		fakeSessionService: newFakeSessionService(),
+		transition: domain.SessionInterfaceTransition{
+			ID: "transition-1", SessionID: "ao-1",
+			SourceMode: domain.SessionModeChat, TargetMode: domain.SessionModeTUI,
+			Policy:    domain.SessionInterfaceTransitionDrain,
+			Phase:     domain.SessionInterfaceTransitionRecovery,
+			CreatedAt: acknowledgedAt.Add(-time.Hour), UpdatedAt: acknowledgedAt.Add(-time.Minute),
+			CompletedAt: acknowledgedAt.Add(-time.Minute), NoticeAcknowledgedAt: acknowledgedAt,
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{}, log, nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodPut,
+		"/api/v1/sessions/ao-1/interface-transition/transition-1/notice-acknowledgement", "")
+	if status != http.StatusOK {
+		t.Fatalf("acknowledge notice = %d, want 200; body=%s", status, body)
+	}
+	if svc.acknowledgedSessionID != "ao-1" || svc.acknowledgedTransition != "transition-1" {
+		t.Fatalf("acknowledgement target = %s/%s", svc.acknowledgedSessionID, svc.acknowledgedTransition)
+	}
+	var response controllers.InterfaceTransitionNoticeAckResponse
+	mustJSON(t, body, &response)
+	if !response.OK || response.Transition.NoticeAcknowledgedAt == nil ||
+		!response.Transition.NoticeAcknowledgedAt.Equal(acknowledgedAt) {
+		t.Fatalf("acknowledgement response = %+v", response)
+	}
 }
 
 func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
@@ -843,6 +1003,26 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 		t.Fatalf("session merge policy not updated: %+v", svc.sessions["ao-2"])
 	}
 
+	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/sessions/ao-2/auto-review", `{"enabled":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("auto review = %d, want 200; body=%s", status, body)
+	}
+	var autoReview struct {
+		Session domain.Session `json:"session"`
+	}
+	mustJSON(t, body, &autoReview)
+	if !autoReview.Session.AutoReviewEnabled || !svc.sessions["ao-2"].AutoReviewEnabled {
+		t.Fatalf("auto review response=%+v stored=%+v", autoReview, svc.sessions["ao-2"])
+	}
+
+	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/sessions/ao-2/auto-review", `{}`)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "AUTO_REVIEW_ENABLED_REQUIRED") {
+		t.Fatalf("missing auto review enabled = %d, want 400; body=%s", status, body)
+	}
+	if !svc.sessions["ao-2"].AutoReviewEnabled {
+		t.Fatal("malformed auto review request changed persisted state")
+	}
+
 	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-2/auto-inject-review", `{"autoInjectReview":false}`)
 	if status != http.StatusOK {
 		t.Fatalf("auto-inject review policy = %d, want 200; body=%s", status, body)
@@ -858,6 +1038,23 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	}
 	if svc.sessions["ao-2"].AutoInjectReview {
 		t.Fatalf("session auto-inject review policy not updated: %+v", svc.sessions["ao-2"])
+	}
+
+	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-2/auto-inject-ci", `{"autoInjectCI":false}`)
+	if status != http.StatusOK {
+		t.Fatalf("auto-inject CI policy = %d, want 200; body=%s", status, body)
+	}
+	var ciPolicy struct {
+		OK           bool   `json:"ok"`
+		SessionID    string `json:"sessionId"`
+		AutoInjectCI bool   `json:"autoInjectCI"`
+	}
+	mustJSON(t, body, &ciPolicy)
+	if !ciPolicy.OK || ciPolicy.SessionID != "ao-2" || ciPolicy.AutoInjectCI {
+		t.Fatalf("auto-inject CI policy response = %#v", ciPolicy)
+	}
+	if svc.autoInjectCISession != "ao-2" || svc.autoInjectCIEnabled || svc.sessions["ao-2"].AutoInjectCI {
+		t.Fatalf("auto-inject CI service input = session:%q enabled:%v", svc.autoInjectCISession, svc.autoInjectCIEnabled)
 	}
 
 	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions/ao-2/pin", "")
@@ -907,6 +1104,27 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	body, status, _ = doRequest(t, srv, "POST", "/api/v1/orchestrators", `{"projectId":"ao"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("orchestrator = %d, want 201; body=%s", status, body)
+	}
+}
+
+func TestSessionsAPI_SetAutoInjectCIValidatesBody(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		body     string
+		wantCode string
+	}{
+		{name: "malformed JSON", body: `{`, wantCode: "INVALID_JSON"},
+		{name: "missing autoInjectCI", body: `{}`, wantCode: "AUTO_INJECT_CI_REQUIRED"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newFakeSessionService()
+			srv := newSessionTestServer(t, svc)
+			body, status, _ := doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-1/auto-inject-ci", tt.body)
+			assertErrorCode(t, body, status, http.StatusBadRequest, tt.wantCode)
+			if svc.autoInjectCISession != "" {
+				t.Fatalf("SetAutoInjectCI called for invalid body with session %q", svc.autoInjectCISession)
+			}
+		})
 	}
 }
 
@@ -1309,6 +1527,71 @@ func TestSessionsAPI_PreviewOriginResolvesRootRelativeAssetsFromEntryDirectory(t
 	legacyBody, legacyStatus, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/preview/files/dist/assets/app.css", "")
 	if legacyStatus != http.StatusOK || !strings.Contains(string(legacyBody), "/fonts/app.woff2") {
 		t.Fatalf("legacy preview route = %d, body=%q; want existing file response", legacyStatus, legacyBody)
+	}
+}
+
+func TestSessionsAPI_PreviewFileServesCanonicalAttachmentWithoutWorkspace(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "ao-1")
+	if err := os.MkdirAll(workspace, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("durable-image-bytes")
+	store := attachmentstore.New(dataDir)
+	if err := store.Put(context.Background(), "ao-1", workspace, "attachment-durable.png", want); err != nil {
+		t.Fatalf("Put attachment: %v", err)
+	}
+	if err := os.RemoveAll(workspace); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := newFakeSessionService()
+	session := svc.sessions["ao-1"]
+	session.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = session
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{DataDir: dataDir}, log, nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet,
+		"/api/v1/sessions/ao-1/preview/files/.ao/attachments/attachment-durable.png?cache-bust=1", "")
+	if status != http.StatusOK {
+		t.Fatalf("canonical attachment response = %d, body=%s", status, body)
+	}
+	if !bytes.Equal(body, want) {
+		t.Fatalf("canonical attachment body = %q, want %q", body, want)
+	}
+}
+
+func TestSessionsAPI_PreviewFileDoesNotCrossSessionThroughCanonicalSymlink(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	name := "attachment-private.png"
+	store := attachmentstore.New(dataDir)
+	if err := store.Put(context.Background(), "ao-1", workspace, name, []byte("session-one-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("ao-1", filepath.Join(dataDir, "attachments", "ao-2")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	second := svc.sessions["ao-1"]
+	second.ID = "ao-2"
+	second.Metadata.WorkspacePath = t.TempDir()
+	svc.sessions[second.ID] = second
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{DataDir: dataDir}, log, nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet,
+		"/api/v1/sessions/ao-2/preview/files/.ao/attachments/"+name, "")
+	if status != http.StatusNotFound || !bytes.Contains(body, []byte(`"code":"PREVIEW_FILE_NOT_FOUND"`)) {
+		t.Fatalf("cross-session preview = %d, %s; want PREVIEW_FILE_NOT_FOUND", status, body)
 	}
 }
 

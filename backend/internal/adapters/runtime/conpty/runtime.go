@@ -19,15 +19,18 @@ const runtimeLaunchIDEnv = "AO_RUNTIME_LAUNCH_ID"
 
 // Ensure Runtime satisfies the port at compile time (Attach in attach.go).
 var _ ports.Runtime = (*Runtime)(nil)
+var _ ports.StyledTerminalOutputReader = (*Runtime)(nil)
 
 // validSessionID matches agent-orchestrator's assertValidSessionId.
 var validSessionID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // hostSession is the in-memory state for a live pty-host connection.
 type hostSession struct {
-	addr     string
-	pid      int
-	launchID string
+	addr             string
+	pid              int
+	launchID         string
+	protocolVersion  int
+	protocolResolved bool
 }
 
 // Options configures the Runtime. All fields are optional; zero values use
@@ -101,7 +104,10 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		return ports.RuntimeHandle{}, fmt.Errorf("conpty: spawn pty-host for %q: %w", id, err)
 	}
 
-	sess := &hostSession{addr: addr, pid: pid, launchID: cfg.Env[runtimeLaunchIDEnv]}
+	sess := &hostSession{
+		addr: addr, pid: pid, launchID: cfg.Env[runtimeLaunchIDEnv],
+		protocolVersion: conPTYHostProtocolVersion, protocolResolved: true,
+	}
 
 	r.mu.Lock()
 	r.sessions[id] = sess
@@ -285,7 +291,61 @@ func (r *Runtime) GetOutput(ctx context.Context, handle ports.RuntimeHandle, lin
 	if sess == nil {
 		return "", fmt.Errorf("conpty: session %q not found", handle.ID)
 	}
-	return clientGetOutput(sess.addr, lines)
+	return clientGetOutput(ctx, sess.addr, lines)
+}
+
+// GetStyledOutput returns the current rendered ConPTY viewport with ANSI cell
+// styles preserved. The pty-host owns the screen model so this remains valid
+// across daemon restarts and never substitutes the raw scrollback ring.
+func (r *Runtime) GetStyledOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error) {
+	if lines <= 0 {
+		return "", fmt.Errorf("conpty: lines must be > 0")
+	}
+	sess := r.resolve(handle.ID)
+	if sess == nil {
+		return "", fmt.Errorf("conpty: session %q not found", handle.ID)
+	}
+	protocolVersion, err := r.resolveHostProtocol(ctx, sess)
+	if err != nil {
+		return "", err
+	}
+	if protocolVersion < conPTYStyledOutputProtocolVersion {
+		return "", fmt.Errorf("conpty: pty-host protocol version %d: %w",
+			protocolVersion, ports.ErrStyledTerminalOutputUnavailable)
+	}
+	return clientGetStyledOutput(ctx, sess.addr, lines)
+}
+
+// resolveHostProtocol negotiates capabilities when a daemon adopts a detached
+// pty-host from the recovery registry. Hosts created by this Runtime already
+// have a known version. Older hosts omit protocolVersion from MsgStatusRes, so
+// they resolve to version zero without receiving an unsupported styled-output
+// request or incurring that request's timeout on every drain poll.
+func (r *Runtime) resolveHostProtocol(ctx context.Context, sess *hostSession) (int, error) {
+	r.mu.Lock()
+	if sess.protocolResolved {
+		version := sess.protocolVersion
+		r.mu.Unlock()
+		return version, nil
+	}
+	r.mu.Unlock()
+
+	status, hostAlive, err := clientStatusContext(ctx, sess.addr)
+	if err != nil {
+		return 0, fmt.Errorf("conpty: negotiate pty-host protocol: %w", err)
+	}
+	if !hostAlive {
+		return 0, errors.New("conpty: negotiate pty-host protocol: host is not reachable")
+	}
+
+	r.mu.Lock()
+	if !sess.protocolResolved {
+		sess.protocolVersion = status.ProtocolVersion
+		sess.protocolResolved = true
+	}
+	version := sess.protocolVersion
+	r.mu.Unlock()
+	return version, nil
 }
 
 // resolve looks up a session by id: first the in-memory map, then the B2

@@ -46,7 +46,9 @@ const (
 	SessionInterfaceTransitionFailed SessionInterfaceTransitionPhase = "failed"
 	// SessionInterfaceTransitionCancelled is a user-cancelled terminal transition state.
 	SessionInterfaceTransitionCancelled SessionInterfaceTransitionPhase = "cancelled"
-	// SessionInterfaceTransitionRecovery marks a transition that needs manual recovery.
+	// SessionInterfaceTransitionRecovery marks a transition that either needs
+	// reconciliation or was closed during daemon-start reconciliation. ErrorCode
+	// distinguishes those outcomes; the terminal row remains durable diagnostics.
 	SessionInterfaceTransitionRecovery SessionInterfaceTransitionPhase = "recovery_required"
 )
 
@@ -80,6 +82,7 @@ type SessionInterfaceTransition struct {
 	CreatedAt            time.Time                        `json:"createdAt"`
 	UpdatedAt            time.Time                        `json:"updatedAt"`
 	CompletedAt          time.Time                        `json:"completedAt,omitempty"`
+	NoticeAcknowledgedAt time.Time                        `json:"noticeAcknowledgedAt,omitempty"`
 }
 
 // Active reports whether this row still owns the session's handoff gate.

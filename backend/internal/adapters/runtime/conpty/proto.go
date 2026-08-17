@@ -11,16 +11,23 @@ import (
 	"math"
 )
 
+const (
+	conPTYHostProtocolVersion         = 2
+	conPTYStyledOutputProtocolVersion = 2
+)
+
 // Message type constants. Values must match pty-host.ts MSG_* constants exactly.
 const (
-	MsgTerminalData  byte = 0x01 // host -> client: raw PTY output
-	MsgTerminalInput byte = 0x02 // client -> host: raw keystrokes
-	MsgResize        byte = 0x03 // client -> host: JSON {cols, rows}
-	MsgGetOutputReq  byte = 0x04 // client -> host: JSON {lines}
-	MsgGetOutputRes  byte = 0x05 // host -> client: UTF-8 text
-	MsgStatusReq     byte = 0x06 // client -> host: empty
-	MsgStatusRes     byte = 0x07 // host -> client: JSON {alive, pid, exitCode?}
-	MsgKillReq       byte = 0x08 // client -> host: empty
+	MsgTerminalData       byte = 0x01 // host -> client: raw PTY output
+	MsgTerminalInput      byte = 0x02 // client -> host: raw keystrokes
+	MsgResize             byte = 0x03 // client -> host: JSON {cols, rows}
+	MsgGetOutputReq       byte = 0x04 // client -> host: JSON {lines}
+	MsgGetOutputRes       byte = 0x05 // host -> client: UTF-8 text
+	MsgStatusReq          byte = 0x06 // client -> host: empty
+	MsgStatusRes          byte = 0x07 // host -> client: JSON {alive, pid, exitCode?}
+	MsgKillReq            byte = 0x08 // client -> host: empty
+	MsgGetStyledOutputReq byte = 0x09 // client -> host: JSON {lines}
+	MsgGetStyledOutputRes byte = 0x0a // host -> client: rendered UTF-8 text with ANSI styles
 )
 
 // JSON payload structs shared with later tasks (kept minimal).
@@ -33,9 +40,10 @@ type ResizePayload struct {
 
 // StatusPayload is the JSON body for MsgStatusRes.
 type StatusPayload struct {
-	Alive    bool `json:"alive"`
-	PID      int  `json:"pid"`
-	ExitCode *int `json:"exitCode,omitempty"`
+	Alive           bool `json:"alive"`
+	PID             int  `json:"pid"`
+	ExitCode        *int `json:"exitCode,omitempty"`
+	ProtocolVersion int  `json:"protocolVersion,omitempty"`
 }
 
 // GetOutputReq is the JSON body for MsgGetOutputReq.

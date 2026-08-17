@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -267,29 +268,46 @@ func newSessionCleanupCommand(ctx *commandContext) *cobra.Command {
 func newSessionClaimPRCommand(ctx *commandContext) *cobra.Command {
 	var opts sessionClaimPROptions
 	cmd := &cobra.Command{
-		Use:   "claim-pr <session-id> <pr-ref>",
+		Use:   "claim-pr [<session-id>] <pr-ref>",
 		Short: "Attach an existing PR to a session",
+		Long:  "Attach an existing PR to a session. When session-id is omitted, the current session is read from AO_SESSION_ID.",
+		Example: `  # From inside an AO worker session
+  ao session claim-pr 88
+
+  # Target a session explicitly
+  ao session claim-pr mer-3 88`,
 		Args: func(cmd *cobra.Command, args []string) error {
-			if err := cobra.ExactArgs(2)(cmd, args); err != nil {
+			if err := cobra.RangeArgs(1, 2)(cmd, args); err != nil {
 				return usageError{err}
 			}
-			if _, err := normalizeSessionID(args[0]); err != nil {
-				return err
-			}
-			return nil
+			_, _, err := resolveSessionClaimPRArgs(args)
+			return err
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := normalizeSessionID(args[0])
+			id, ref, err := resolveSessionClaimPRArgs(args)
 			if err != nil {
 				return err
 			}
-			return ctx.claimSessionPR(cmd.Context(), cmd, id, args[1], opts)
+			return ctx.claimSessionPR(cmd.Context(), cmd, id, ref, opts)
 		},
 	}
 	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
 	cmd.Flags().BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the PR")
 	cmd.Flags().BoolVar(&opts.json, "json", false, "Output as JSON")
 	return cmd
+}
+
+func resolveSessionClaimPRArgs(args []string) (sessionID, ref string, err error) {
+	if len(args) == 2 {
+		sessionID, err = normalizeSessionID(args[0])
+		return sessionID, args[1], err
+	}
+	sessionID = strings.TrimSpace(os.Getenv("AO_SESSION_ID"))
+	if sessionID == "" {
+		return "", "", usageError{errors.New("session id is required (pass <session-id> or set AO_SESSION_ID)")}
+	}
+	sessionID, err = normalizeSessionID(sessionID)
+	return sessionID, args[0], err
 }
 
 func addSessionProjectFlag(flags interface {

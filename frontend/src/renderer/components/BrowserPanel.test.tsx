@@ -314,13 +314,23 @@ describe("BrowserPanel", () => {
 		);
 		const toolbarButtonCount = screen.getAllByRole("button").length;
 
-		await userEvent.click(screen.getByRole("button", { name: "Open DevTools" }));
+		const openButton = screen.getByRole("button", { name: "Open DevTools" });
+		expect(openButton).toHaveAttribute("aria-pressed", "false");
+		await userEvent.click(openButton);
 		expect(hookState.openDevTools).toHaveBeenCalledOnce();
 
 		hookState.devtoolsState = { viewId: "42:sess-1", open: true, activeTabId: "t1" };
 		rerender(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 		expect(screen.getAllByRole("button")).toHaveLength(toolbarButtonCount);
-		await userEvent.click(screen.getByRole("button", { name: "Close DevTools" }));
+		const closeButton = screen.getByRole("button", { name: "Close DevTools" });
+		expect(closeButton).toHaveAttribute("aria-pressed", "true");
+		expect(closeButton).toHaveClass(
+			"bg-accent-strong",
+			"text-accent-foreground",
+			"hover:bg-accent-strong",
+			"dark:hover:bg-accent-strong",
+		);
+		await userEvent.click(closeButton);
 		expect(hookState.closeDevTools).toHaveBeenCalledOnce();
 	});
 

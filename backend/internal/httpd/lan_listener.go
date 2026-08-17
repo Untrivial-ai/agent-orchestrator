@@ -94,6 +94,10 @@ func isLANControlBlockedPath(path string) bool {
 	return false
 }
 
+// IsLANControlBlockedPathForTest exposes the LAN block check to package-external
+// tests so route-level invariants can be asserted without a live listener.
+func IsLANControlBlockedPathForTest(path string) bool { return isLANControlBlockedPath(path) }
+
 // NewMobileLAN constructs a LANManager with its own private authState. Callers
 // outside this package (the daemon) cannot construct an authState directly
 // since it is unexported; this gives them a LANManager that owns one, and the

@@ -51,8 +51,12 @@ ao spawn --project my-project --agent codex --name "Finish PR 142" --claim-pr 14
 Or attach a pull request to an existing session:
 
 ```bash
+ao session claim-pr 142
+# From outside the worker, target it explicitly:
 ao session claim-pr <session-id> 142
 ```
+
+The shorter form reads the current worker from `AO_SESSION_ID`.
 
 AO then observes the GitHub pull request and displays CI, review, and mergeability facts with the session.
 

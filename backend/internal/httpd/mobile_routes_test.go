@@ -30,6 +30,10 @@ func (fakeMobileBridge) Regenerate() (controllers.MobileStatusResponse, error) {
 	return controllers.MobileStatusResponse{}, nil
 }
 
+func (fakeMobileBridge) SetSecurePairing(on bool) (controllers.MobileStatusResponse, error) {
+	return controllers.MobileStatusResponse{}, nil
+}
+
 // newTestRouterWithMobile builds a bare router with only the mobile control
 // routes mounted, backed by a fake bridge.
 func newTestRouterWithMobile(t *testing.T) chi.Router {

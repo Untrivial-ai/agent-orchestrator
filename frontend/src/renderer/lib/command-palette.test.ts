@@ -12,6 +12,7 @@ import {
 	MAX_SEARCH_RESULTS,
 	type CommandItem,
 } from "./command-palette";
+import type { PRReviewState } from "./session-reviews";
 import type { PullRequestFacts, WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { appI18n } from "../i18n";
 
@@ -192,6 +193,183 @@ describe("buildCommands pull requests", () => {
 		expect(ids.has("pr:w-mix:9")).toBe(true);
 		expect(ids.has("pr:w-mix:7")).toBe(false);
 		expect(ids.has("pr:w-mix:8")).toBe(false);
+	});
+});
+
+type ReviewRun = NonNullable<PRReviewState["latestRun"]>;
+
+const reviewRun = (prNumber: number): ReviewRun => ({
+	autoInjectReview: false,
+	batchId: "batch-1",
+	triggerSource: "manual" as const,
+	body: "review body",
+	createdAt: "2026-06-10T00:00:00Z",
+	githubReviewId: `${prNumber}01`,
+	harness: "codex",
+	id: `run-${prNumber}`,
+	prUrl: `https://github.com/o/r/pull/${prNumber}`,
+	reviewId: `review-${prNumber}`,
+	sessionId: "w-pr",
+	status: "delivered",
+	targetSha: "sha",
+	verdict: "approved",
+});
+
+const reviewState = (
+	prNumber: number,
+	status: PRReviewState["status"],
+	overrides: Partial<PRReviewState> = {},
+): PRReviewState => ({
+	prNumber,
+	prUrl: `https://github.com/o/r/pull/${prNumber}`,
+	status,
+	targetSha: "sha",
+	title: `PR ${prNumber}`,
+	...overrides,
+});
+
+describe("buildCommands PR actions", () => {
+	it("creates Open PR and Copy PR URL items per open PR", () => {
+		const items = buildCommands({ workspaces: workspaces() });
+		const map = byId(items);
+		const open = map.get("pr-open:w-pr:42");
+		expect(open?.group).toBe("prs");
+		expect(open?.title).toBe("Open PR #42");
+		expect(open?.action).toEqual({ kind: "open-pr", url: "https://github.com/o/r/pull/42" });
+		expect(open?.searchOnly).toBe(true);
+		const copy = map.get("pr-copy:w-pr:42");
+		expect(copy?.title).toBe("Copy PR URL #42");
+		expect(copy?.action).toEqual({ kind: "copy-pr-url", url: "https://github.com/o/r/pull/42" });
+		expect(copy?.searchOnly).toBe(true);
+	});
+
+	it("creates an enabled Run review item per open PR when review data has not loaded", () => {
+		const review = byId(buildCommands({ workspaces: workspaces() })).get("pr-review:w-pr:42");
+		expect(review?.group).toBe("prs");
+		expect(review?.title).toBe("Run review #42");
+		expect(review?.action).toEqual({ kind: "trigger-review", sessionId: "w-pr" });
+		expect(review?.disabled).toBeFalsy();
+		expect(review?.disabledReason).toBeUndefined();
+		expect(review?.searchOnly).toBe(true);
+	});
+
+	it("omits the review item while a session's review data has not yet loaded, but keeps Open PR / Copy PR URL", () => {
+		const map = byId(
+			buildCommands({
+				workspaces: workspaces(),
+				reviewStatesBySessionId: {},
+			}),
+		);
+		expect(map.has("pr-review:w-pr:42")).toBe(false);
+		expect(map.get("pr-open:w-pr:42")).toBeTruthy();
+		expect(map.get("pr-copy:w-pr:42")).toBeTruthy();
+	});
+
+	it("labels the review item Re-run review for changes requested or a completed run", () => {
+		const changesRequested = buildCommands({
+			workspaces: workspaces(),
+			reviewStatesBySessionId: { "w-pr": [reviewState(42, "changes_requested")] },
+		});
+		expect(byId(changesRequested).get("pr-review:w-pr:42")?.title).toBe("Re-run review #42");
+
+		const upToDate = buildCommands({
+			workspaces: workspaces(),
+			reviewStatesBySessionId: { "w-pr": [reviewState(42, "up_to_date", { latestRun: reviewRun(42) })] },
+		});
+		const item = byId(upToDate).get("pr-review:w-pr:42");
+		expect(item?.title).toBe("Re-run review #42");
+		expect(item?.disabled).toBeFalsy();
+	});
+
+	it("disables the review item with Review already running when a session review is running", () => {
+		const items = buildCommands({
+			workspaces: workspaces(),
+			reviewStatesBySessionId: { "w-pr": [reviewState(42, "running")] },
+		});
+		const review = byId(items).get("pr-review:w-pr:42");
+		expect(review?.disabled).toBe(true);
+		expect(review?.disabledReason).toBe("Review already running");
+	});
+
+	it("disables the review item with Not eligible for review for ineligible or draft PRs", () => {
+		const ineligible = buildCommands({
+			workspaces: workspaces(),
+			reviewStatesBySessionId: { "w-pr": [reviewState(42, "ineligible")] },
+		});
+		const ineligibleItem = byId(ineligible).get("pr-review:w-pr:42");
+		expect(ineligibleItem?.disabled).toBe(true);
+		expect(ineligibleItem?.disabledReason).toBe("Not eligible for review");
+
+		const draftWorkspaces: WorkspaceSummary[] = [
+			{
+				id: "proj-1",
+				name: "app",
+				path: "/repos/app",
+				type: "main",
+				sessions: [session({ id: "w-draft", title: "draft work", prs: [{ ...pr(5), state: "draft" }] })],
+			},
+		];
+		const draft = buildCommands({
+			workspaces: draftWorkspaces,
+			reviewStatesBySessionId: { "w-draft": [reviewState(5, "ineligible")] },
+		});
+		const draftItem = byId(draft).get("pr-review:w-draft:5");
+		expect(draftItem?.disabled).toBe(true);
+		expect(draftItem?.disabledReason).toBe("Not eligible for review");
+	});
+
+	it("emits per-PR action items for every open PR of a multi-PR session, all triggering the session", () => {
+		const multiWorkspaces: WorkspaceSummary[] = [
+			{
+				id: "proj-1",
+				name: "app",
+				path: "/repos/app",
+				type: "main",
+				sessions: [session({ id: "w-multi", title: "stacked", prs: [pr(1), pr(2)] })],
+			},
+		];
+		const map = byId(buildCommands({ workspaces: multiWorkspaces }));
+		expect(map.get("pr-open:w-multi:1")?.action).toEqual({ kind: "open-pr", url: "https://github.com/o/r/pull/1" });
+		expect(map.get("pr-open:w-multi:2")?.action).toEqual({ kind: "open-pr", url: "https://github.com/o/r/pull/2" });
+		expect(map.get("pr-review:w-multi:1")?.action).toEqual({ kind: "trigger-review", sessionId: "w-multi" });
+		expect(map.get("pr-review:w-multi:2")?.action).toEqual({ kind: "trigger-review", sessionId: "w-multi" });
+	});
+
+	it("does not create action items for merged or closed PRs", () => {
+		const merged: PullRequestFacts = { ...pr(7), state: "merged" };
+		const closed: PullRequestFacts = { ...pr(8), state: "closed" };
+		const ws: WorkspaceSummary[] = [
+			{
+				id: "proj-1",
+				name: "app",
+				path: "/repos/app",
+				type: "main",
+				sessions: [session({ id: "w-mix", title: "mixed prs", prs: [merged, closed, pr(9)] })],
+			},
+		];
+		const ids = new Set(buildCommands({ workspaces: ws }).map((item) => item.id));
+		expect(ids.has("pr-open:w-mix:9")).toBe(true);
+		expect(ids.has("pr-copy:w-mix:9")).toBe(true);
+		expect(ids.has("pr-review:w-mix:9")).toBe(true);
+		expect(ids.has("pr-open:w-mix:7")).toBe(false);
+		expect(ids.has("pr-copy:w-mix:8")).toBe(false);
+		expect(ids.has("pr-review:w-mix:7")).toBe(false);
+	});
+
+	it("surfaces the action items for open pr / copy pr / review queries but hides them untyped", () => {
+		const items = buildCommands({ workspaces: workspaces() });
+		expect(filterCommands(items, "open pr").some((item) => item.id === "pr-open:w-pr:42")).toBe(true);
+		expect(filterCommands(items, "copy pr").some((item) => item.id === "pr-copy:w-pr:42")).toBe(true);
+		expect(filterCommands(items, "review").some((item) => item.id === "pr-review:w-pr:42")).toBe(true);
+		expect(filterCommands(items, "").some((item) => item.id === "pr-open:w-pr:42")).toBe(false);
+		expect(filterCommands(items, "").some((item) => item.id === "pr-review:w-pr:42")).toBe(false);
+	});
+
+	it("discovers Copy branch name via git and copy keywords", () => {
+		const items = buildCommands({ workspaces: workspaces(), currentProjectId: "proj-1", currentSessionId: "w-pr" });
+		const keywords = byId(items).get("current-copy-branch")?.keywords ?? [];
+		expect(keywords).toContain("copy");
+		expect(keywords).toContain("git");
 	});
 });
 

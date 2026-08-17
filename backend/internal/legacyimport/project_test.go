@@ -55,10 +55,10 @@ func TestMapHarness(t *testing.T) {
 	}
 }
 
-func TestBuildProjectConfig_RemapAndOmitMain(t *testing.T) {
+func TestBuildProjectConfig_RemapAndPreserveMain(t *testing.T) {
 	var notes []string
 	pc := legacyProjectConfig{
-		DefaultBranch: "main", // omitted so config stays minimal
+		DefaultBranch: "main",
 		SessionPrefix: "px",
 		Env:           map[string]string{"K": "V"},
 		AgentConfig:   &legacyAgentConfig{Model: "m", Permissions: "suggest"},
@@ -67,8 +67,8 @@ func TestBuildProjectConfig_RemapAndOmitMain(t *testing.T) {
 		Tracker:       nonNilNode(),
 	}
 	cfg := buildProjectConfig(pc, &notes)
-	if cfg.DefaultBranch != "" {
-		t.Fatalf("defaultBranch = %q, want omitted for main", cfg.DefaultBranch)
+	if cfg.DefaultBranch != "main" {
+		t.Fatalf("defaultBranch = %q, want explicit main preserved", cfg.DefaultBranch)
 	}
 	if cfg.SessionPrefix != "px" || cfg.Env["K"] != "V" {
 		t.Fatalf("config = %+v", cfg)

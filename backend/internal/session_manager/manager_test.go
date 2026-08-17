@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,8 @@ type fakeStore struct {
 	deleteErr     error
 	upsertWTErr   error
 	listAllErr    error
+	getProjectErr error
+	getSessionErr error
 	// agentSwitchStore is wired only by agent-switch tests so fakeLCM can model
 	// Lifecycle Manager's atomic ownership-boundary commands.
 	agentSwitchStore any
@@ -53,6 +56,9 @@ func newFakeStore() *fakeStore {
 	}
 }
 func (f *fakeStore) GetProject(_ context.Context, id string) (domain.ProjectRecord, bool, error) {
+	if f.getProjectErr != nil {
+		return domain.ProjectRecord{}, false, f.getProjectErr
+	}
 	r, ok := f.projects[id]
 	return r, ok, nil
 }
@@ -80,6 +86,9 @@ func (f *fakeStore) RecordSessionLatestUserPrompt(_ context.Context, id domain.S
 	return true, nil
 }
 func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
+	if f.getSessionErr != nil {
+		return domain.SessionRecord{}, false, f.getSessionErr
+	}
 	r, ok := f.sessions[id]
 	return r, ok, nil
 }
@@ -236,6 +245,7 @@ func (l *fakeLCM) MarkTerminated(_ context.Context, id domain.SessionID) error {
 
 type fakeRuntime struct {
 	createErr          error
+	createIDs          []string
 	destroyErr         error
 	destroyErrSequence []error
 	onDestroy          func(call int, handle ports.RuntimeHandle)
@@ -302,6 +312,10 @@ func (r *fakeRestartRuntime) Restart(_ context.Context, handle ports.RuntimeHand
 	if r.restartErr != nil {
 		return ports.RuntimeHandle{}, r.restartErr
 	}
+	if r.aliveByHandle == nil {
+		r.aliveByHandle = map[string]bool{}
+	}
+	r.aliveByHandle[handle.ID] = true
 	return handle, nil
 }
 
@@ -316,6 +330,26 @@ type blockingRestartRuntime struct {
 	*fakeRuntime
 	entered chan struct{}
 	release chan struct{}
+}
+
+type blockingAliveRuntime struct {
+	*fakeRuntime
+	entered chan domain.SessionID
+	release chan struct{}
+}
+
+func (r *blockingAliveRuntime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	select {
+	case r.entered <- domain.SessionID(handle.ID):
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	select {
+	case <-r.release:
+		return true, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
 }
 
 func (r *blockingRestartRuntime) Restart(_ context.Context, handle ports.RuntimeHandle, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
@@ -337,7 +371,12 @@ func (r *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.
 	}
 	r.lastCfg = cfg
 	r.created++
-	handle := ports.RuntimeHandle{ID: "h1"}
+	handleID := "h1"
+	if len(r.createIDs) > 0 {
+		handleID = r.createIDs[0]
+		r.createIDs = r.createIDs[1:]
+	}
+	handle := ports.RuntimeHandle{ID: handleID}
 	if r.aliveByHandle == nil {
 		r.aliveByHandle = map[string]bool{}
 	}
@@ -655,10 +694,14 @@ type fakeWorkspace struct {
 	// trip (production Create resolves this path; the zero default keeps every
 	// other test's behavior unchanged).
 	createRepoPath string
+	// baseRef is the authoritative ref returned with single-repo workspaces.
+	// When empty, an explicit BaseBranch is echoed to match the real adapter.
+	baseRef string
 	// lastDestroyInfo records the WorkspaceInfo passed to the most recent Destroy
 	// so tests can assert teardown fed it the persisted repo path.
 	lastDestroyInfo   ports.WorkspaceInfo
 	lastCfg           ports.WorkspaceConfig
+	restoreConfigs    []ports.WorkspaceConfig
 	projectErr        error
 	projectDestroyed  int
 	lastProjectCfg    ports.WorkspaceProjectConfig
@@ -693,7 +736,11 @@ func (w *fakeWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (po
 	if path == "" {
 		path = "/ws/" + string(cfg.SessionID)
 	}
-	return ports.WorkspaceInfo{Path: path, Branch: cfg.Branch, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: w.createRepoPath}, nil
+	baseRef := w.baseRef
+	if baseRef == "" {
+		baseRef = cfg.BaseBranch
+	}
+	return ports.WorkspaceInfo{Path: path, Branch: cfg.Branch, BaseRef: baseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: w.createRepoPath}, nil
 }
 func (w *fakeWorkspace) CreateWorkspaceProject(_ context.Context, cfg ports.WorkspaceProjectConfig) (ports.WorkspaceProjectInfo, error) {
 	if w.projectErr != nil {
@@ -708,7 +755,11 @@ func (w *fakeWorkspace) CreateWorkspaceProject(_ context.Context, cfg ports.Work
 		rootPath = "/ws/" + string(cfg.SessionID)
 	}
 	branch := cfg.Branch
-	root := ports.WorkspaceInfo{Path: rootPath, Branch: branch, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID}
+	rootBaseRef := cfg.BaseBranch
+	if rootBaseRef == "" {
+		rootBaseRef = "refs/remotes/origin/main"
+	}
+	root := ports.WorkspaceInfo{Path: rootPath, Branch: branch, BaseRef: rootBaseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID}
 	out := ports.WorkspaceProjectInfo{
 		Root: root,
 		Worktrees: []ports.WorkspaceRepoInfo{{
@@ -717,6 +768,7 @@ func (w *fakeWorkspace) CreateWorkspaceProject(_ context.Context, cfg ports.Work
 			Path:      rootPath,
 			Branch:    branch,
 			BaseSHA:   "root-base",
+			BaseRef:   rootBaseRef,
 			SessionID: cfg.SessionID,
 			ProjectID: cfg.ProjectID,
 		}},
@@ -728,6 +780,7 @@ func (w *fakeWorkspace) CreateWorkspaceProject(_ context.Context, cfg ports.Work
 			Path:         filepath.Join(rootPath, filepath.FromSlash(repo.RelativePath)),
 			Branch:       branch,
 			BaseSHA:      repo.Name + "-base",
+			BaseRef:      "refs/remotes/origin/" + repo.Name,
 			SessionID:    cfg.SessionID,
 			ProjectID:    cfg.ProjectID,
 			RelativePath: repo.RelativePath,
@@ -752,6 +805,8 @@ func (w *fakeWorkspace) DestroyWorkspaceProject(context.Context, ports.Workspace
 	return w.destroyErr
 }
 func (w *fakeWorkspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	w.lastCfg = cfg
+	w.restoreConfigs = append(w.restoreConfigs, cfg)
 	if cfg.RepoPath != "" {
 		entry := "Restore:" + fakeWorkspaceRepoName(ports.WorkspaceInfo{
 			Path:      cfg.Path,
@@ -759,7 +814,7 @@ func (w *fakeWorkspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) 
 			RepoPath:  cfg.RepoPath,
 		})
 		w.calls = append(w.calls, entry)
-		return ports.WorkspaceInfo{Path: cfg.Path, Branch: cfg.Branch, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: cfg.RepoPath}, nil
+		return ports.WorkspaceInfo{Path: cfg.Path, Branch: cfg.Branch, BaseRef: cfg.BaseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: cfg.RepoPath}, nil
 	}
 	return w.Create(ctx, cfg)
 }
@@ -922,7 +977,7 @@ func TestSend_WritesAttachmentAndAppendsReference(t *testing.T) {
 	}
 	msg := &fakeMessenger{}
 	ws := &fakeWorkspace{}
-	m := New(Deps{Store: st, Messenger: msg, Workspace: ws})
+	m := New(Deps{Store: st, Messenger: msg, Workspace: ws, DataDir: t.TempDir()})
 
 	attachment := &ports.SpawnAttachment{Ext: ".png", Data: []byte("snapshot-bytes")}
 	if err := m.Send(ctx, "mer-1", "Make the button blue.", attachment); err != nil {
@@ -1112,6 +1167,9 @@ func TestSpawn_ResolvesProjectConfig(t *testing.T) {
 	if !agent.lastConfig.IsZero() {
 		t.Fatalf("launch config = %#v, want zero for project without config", agent.lastConfig)
 	}
+	if got := ws.lastCfg.BaseBranch; got != "" {
+		t.Fatalf("automatic workspace base branch = %q, want empty for adapter inference", got)
+	}
 }
 
 func TestSpawnRecordsDiffBaseForSingleRepoSessions(t *testing.T) {
@@ -1129,6 +1187,33 @@ func TestSpawnRecordsDiffBaseForSingleRepoSessions(t *testing.T) {
 	wantBase := strings.TrimSpace(runManagerGit(t, repo, "rev-parse", "main"))
 	if rec.Metadata.DiffBaseSHA != wantBase || rec.Metadata.DiffBaseRef != "main" {
 		t.Fatalf("spawn diff base = sha:%q ref:%q, want %s main", rec.Metadata.DiffBaseSHA, rec.Metadata.DiffBaseRef, wantBase)
+	}
+}
+
+func TestSpawnAutoRecordsResolvedDiffBaseInsteadOfFeatureTip(t *testing.T) {
+	m, st, _, ws := newManager()
+	repo := newManagerGitRepo(t)
+	wantBase := strings.TrimSpace(runManagerGit(t, repo, "rev-parse", "main"))
+	runManagerGit(t, repo, "switch", "-c", "feature/temporary")
+	if err := os.WriteFile(filepath.Join(repo, "existing-feature.txt"), []byte("already here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runManagerGit(t, repo, "add", "existing-feature.txt")
+	runManagerGit(t, repo, "commit", "-m", "existing feature work")
+	featureTip := strings.TrimSpace(runManagerGit(t, repo, "rev-parse", "HEAD"))
+
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: repo, Config: testRoleAgents()}
+	ws.path = repo
+	ws.baseRef = "refs/heads/main"
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Metadata.DiffBaseSHA != wantBase || rec.Metadata.DiffBaseRef != "refs/heads/main" {
+		t.Fatalf("auto diff base = sha:%q ref:%q, want %s refs/heads/main", rec.Metadata.DiffBaseSHA, rec.Metadata.DiffBaseRef, wantBase)
+	}
+	if rec.Metadata.DiffBaseSHA == featureTip {
+		t.Fatal("auto diff base incorrectly collapsed to the existing feature tip")
 	}
 }
 
@@ -1385,6 +1470,20 @@ func TestResumeAgent_RejectsConcurrentRequest(t *testing.T) {
 	close(runtime.release)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first resume: %v", err)
+	}
+}
+
+func TestResumeAgent_ReportsActiveAgentSwitch(t *testing.T) {
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
+	m, _, _ := newExitedResumeManager(t, baseRuntime, agent)
+	if err := m.beginAgentSwitch(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	defer m.endAgentSwitch("mer-1")
+
+	if _, err := m.ResumeAgentWithMode(ctx, "mer-1"); !errors.Is(err, ErrSwitchInProgress) {
+		t.Fatalf("resume during switch error = %v, want ErrSwitchInProgress", err)
 	}
 }
 
@@ -2025,6 +2124,9 @@ func TestSpawn_WorkspaceProjectRecordsRootAndChildWorktrees(t *testing.T) {
 	if got := ws.lastProjectCfg.RootRepoPath; got != projectPath {
 		t.Fatalf("root repo path = %q, want %q", got, projectPath)
 	}
+	if got := ws.lastProjectCfg.BaseBranch; got != "" {
+		t.Fatalf("root base branch = %q, want empty so adapter infers the repo default", got)
+	}
 	if len(ws.lastProjectCfg.Repos) != 2 {
 		t.Fatalf("child repo configs = %d, want 2", len(ws.lastProjectCfg.Repos))
 	}
@@ -2034,11 +2136,11 @@ func TestSpawn_WorkspaceProjectRecordsRootAndChildWorktrees(t *testing.T) {
 	if want := filepath.Join(projectPath, "apps", "web"); ws.lastProjectCfg.Repos[1].RepoPath != want {
 		t.Fatalf("web repo path = %q, want %q", ws.lastProjectCfg.Repos[1].RepoPath, want)
 	}
-	if got := ws.lastProjectCfg.Repos[0].BaseBranch; got != "dev" {
-		t.Fatalf("api base branch = %q, want dev", got)
+	if got := ws.lastProjectCfg.Repos[0].BaseBranch; got != "" {
+		t.Fatalf("api base branch = %q, want empty so the adapter verifies the repo default", got)
 	}
-	if got := ws.lastProjectCfg.Repos[1].BaseBranch; got != "main" {
-		t.Fatalf("web base branch = %q, want main", got)
+	if got := ws.lastProjectCfg.Repos[1].BaseBranch; got != "" {
+		t.Fatalf("web base branch = %q, want empty so the adapter verifies the repo default", got)
 	}
 	rows := st.worktrees["mer-1"]
 	if len(rows) != 3 {
@@ -2058,6 +2160,9 @@ func TestSpawn_WorkspaceProjectRecordsRootAndChildWorktrees(t *testing.T) {
 		}
 		if row.BaseSHA == "" {
 			t.Fatalf("row %s missing base sha", row.RepoName)
+		}
+		if row.BaseRef == "" {
+			t.Fatalf("row %s missing resolved base ref", row.RepoName)
 		}
 	}
 	if rt.created != 1 {
@@ -2981,6 +3086,19 @@ func TestSpawn_DefaultsBranchFromSessionID(t *testing.T) {
 	}
 	if !st.sessions[s.ID].AutoInjectReview {
 		t.Fatal("automatic review injection must default to enabled")
+	}
+}
+
+func TestPromptProjectContextOmitsAutomaticBranchSentinel(t *testing.T) {
+	automatic := promptProjectContext("mer", domain.ProjectRecord{ID: "mer"})
+	if automatic.DefaultBranch != "" {
+		t.Fatalf("automatic prompt default branch = %q, want omitted", automatic.DefaultBranch)
+	}
+	explicit := promptProjectContext("mer", domain.ProjectRecord{
+		ID: "mer", Config: domain.ProjectConfig{DefaultBranch: "trunk"},
+	})
+	if explicit.DefaultBranch != "trunk" {
+		t.Fatalf("explicit prompt default branch = %q, want trunk", explicit.DefaultBranch)
 	}
 }
 
@@ -4977,6 +5095,119 @@ func TestSaveAndTeardownAllThenRestoreAll_TeardownsAndRestoresReviewerTerminal(t
 	}
 }
 
+func TestSaveAndTeardownAllThenRestoreAll_PreservesIgnoredAttachments(t *testing.T) {
+	dataDir := t.TempDir()
+	workspacePath := filepath.Join(t.TempDir(), "mer-1")
+	attachmentDir := filepath.Join(workspacePath, filepath.FromSlash(attachmentsDir))
+	if err := os.MkdirAll(attachmentDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]byte{
+		"attachment-before-restart.png": []byte("image-bytes-before-restart"),
+		"attachment-before-restart.txt": []byte("text-bytes-before-restart"),
+	}
+	for name, data := range want {
+		if err := os.WriteFile(filepath.Join(attachmentDir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{path: workspacePath}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		DataDir: dataDir, LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath:   workspacePath,
+			Branch:          "ao/mer-1/root",
+			RuntimeHandleID: "h1",
+			AgentSessionID:  "agent-w",
+		},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+
+	if err := m.SaveAndTeardownAll(ctx); err != nil {
+		t.Fatalf("SaveAndTeardownAll: %v", err)
+	}
+	// The fake records ForceDestroy without touching disk. Reproduce the real
+	// adapter's removal, then provide the empty worktree returned by Restore.
+	if err := os.RemoveAll(workspacePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspacePath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RestoreAll(ctx); err != nil {
+		t.Fatalf("RestoreAll: %v", err)
+	}
+
+	for name, wantData := range want {
+		got, err := os.ReadFile(filepath.Join(attachmentDir, name))
+		if err != nil {
+			t.Fatalf("read %s after restore: %v", name, err)
+		}
+		if string(got) != string(wantData) {
+			t.Fatalf("%s after restore = %q, want %q", name, got, wantData)
+		}
+	}
+	if wantPattern := "/" + attachmentsDir + "/"; !reflect.DeepEqual(ws.excludePatterns, []string{wantPattern}) {
+		t.Fatalf("restore exclude patterns = %v, want [%s]", ws.excludePatterns, wantPattern)
+	}
+}
+
+func TestSaveAndTeardownAllDoesNotDestroyWorkspaceWhenAttachmentImportIsUnsafe(t *testing.T) {
+	dataDir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dataDir, "attachments")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	workspacePath := filepath.Join(t.TempDir(), "mer-1")
+	attachmentPath := filepath.Join(workspacePath, filepath.FromSlash(attachmentsDir), "attachment-before-restart.png")
+	if err := os.MkdirAll(filepath.Dir(attachmentPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(attachmentPath, []byte("must survive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{path: workspacePath}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		DataDir: dataDir, LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspacePath, Branch: "ao/mer-1/root", RuntimeHandleID: "h1", AgentSessionID: "agent-w"},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+
+	if err := m.SaveAndTeardownAll(ctx); err != nil {
+		t.Fatalf("SaveAndTeardownAll: %v", err)
+	}
+	if ws.stashCalls != 0 || rt.destroyed != 0 {
+		t.Fatalf("unsafe import still tore down session: stash=%d runtimeDestroy=%d", ws.stashCalls, rt.destroyed)
+	}
+	if got, err := os.ReadFile(attachmentPath); err != nil || string(got) != "must survive" {
+		t.Fatalf("live workspace attachment = %q, %v; want preserved", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "mer-1", "attachment-before-restart.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsafe import wrote outside AO data: %v", err)
+	}
+}
+
 func TestSaveAndTeardownAll_SkipsScratchSessions(t *testing.T) {
 	m, st, rt, ws := newLifecycleManager()
 	st.projects["scratch"] = domain.ProjectRecord{ID: "scratch", Kind: domain.ProjectKindScratch, Config: testRoleAgents()}
@@ -5817,6 +6048,45 @@ func TestRestoreAll_RestoresBothWorkerAndOrchestrator(t *testing.T) {
 	}
 }
 
+func TestRestoreAllCarriesConfiguredAndRecordedBaseToWorkspaceRestore(t *testing.T) {
+	m, st, _, ws := newLifecycleManager()
+	project := st.projects["mer"]
+	project.Config.DefaultBranch = "trunk"
+	st.projects["mer"] = project
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:           "mer-1",
+		ProjectID:    "mer",
+		Kind:         domain.KindWorker,
+		Harness:      domain.HarnessClaudeCode,
+		IsTerminated: true,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath:  "/ws/mer-1",
+			Branch:         "ao/mer-1/root",
+			DiffBaseRef:    "refs/remotes/origin/trunk",
+			AgentSessionID: "agent-w",
+		},
+		Activity: domain.Activity{State: domain.ActivityExited},
+	}
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
+		SessionID: "mer-1",
+		RepoName:  domain.RootWorkspaceRepoName,
+		State:     "removed",
+	}}
+
+	if err := m.RestoreAll(ctx); err != nil {
+		t.Fatalf("RestoreAll err = %v", err)
+	}
+	if len(ws.restoreConfigs) != 1 {
+		t.Fatalf("restore configs = %d, want 1", len(ws.restoreConfigs))
+	}
+	if got := ws.restoreConfigs[0].BaseBranch; got != "trunk" {
+		t.Fatalf("restore BaseBranch = %q, want trunk", got)
+	}
+	if got := ws.restoreConfigs[0].BaseRef; got != "refs/remotes/origin/trunk" {
+		t.Fatalf("restore BaseRef = %q, want refs/remotes/origin/trunk", got)
+	}
+}
+
 func TestRestoreAll_RestoresLegacyShutdownMarkerWithoutState(t *testing.T) {
 	m, st, rt, _ := newLifecycleManager()
 	st.sessions["mer-1"] = domain.SessionRecord{
@@ -6070,8 +6340,8 @@ func TestRestoreAll_WorkspaceProjectRestoresAndAppliesEachRepo(t *testing.T) {
 		Activity:     domain.Activity{State: domain.ActivityExited},
 	}
 	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
-		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", WorktreePath: "/ws/mer-1", PreservedRef: "refs/ao/preserved/mer-1", State: "removed"},
-		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api", PreservedRef: "refs/ao/preserved/mer-1", State: "removed"},
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", BaseRef: "refs/remotes/origin/main", WorktreePath: "/ws/mer-1", PreservedRef: "refs/ao/preserved/mer-1", State: "removed"},
+		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", BaseRef: "refs/remotes/origin/dev", WorktreePath: "/ws/mer-1/api", PreservedRef: "refs/ao/preserved/mer-1", State: "removed"},
 	}
 
 	if err := m.RestoreAll(ctx); err != nil {
@@ -6080,6 +6350,9 @@ func TestRestoreAll_WorkspaceProjectRestoresAndAppliesEachRepo(t *testing.T) {
 	wantPrefix := []string{"Restore:__root__", "Restore:api"}
 	if got := ws.calls[:2]; strings.Join(got, ",") != strings.Join(wantPrefix, ",") {
 		t.Fatalf("restore prefix = %v, want %v; all calls %v", got, wantPrefix, ws.calls)
+	}
+	if len(ws.restoreConfigs) != 2 || ws.restoreConfigs[0].BaseRef != "refs/remotes/origin/main" || ws.restoreConfigs[1].BaseRef != "refs/remotes/origin/dev" {
+		t.Fatalf("restore base refs = %#v, want root main and api dev", ws.restoreConfigs)
 	}
 	applied := strings.Join(ws.calls, ",")
 	if !strings.Contains(applied, "ApplyPreserved:__root__:refs/ao/preserved/mer-1") ||
@@ -6163,8 +6436,9 @@ func TestRestoreAll_WorkspaceProjectRootOnlyMarkerRestoresRegisteredChildren(t *
 	}
 }
 
-func TestReconcileLive_DeadSessionStashedAndTerminated(t *testing.T) {
+func TestReconcileLive_DeadSessionRelaunchesInExistingWorktree(t *testing.T) {
 	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
 	rt := &fakeRuntime{aliveByHandle: map[string]bool{}} // handle not alive
 	ws := &fakeWorkspace{stashRef: "refs/ao/preserved/s1"}
 	lcm := &fakeLCM{store: st}
@@ -6174,48 +6448,45 @@ func TestReconcileLive_DeadSessionStashedAndTerminated(t *testing.T) {
 	rec := domain.SessionRecord{
 		ID:           "s1",
 		ProjectID:    "p1",
+		Harness:      domain.HarnessClaudeCode,
 		IsTerminated: false,
 		Metadata: domain.SessionMetadata{
-			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1",
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1", AgentSessionID: "agent-s1",
 		},
 	}
+	st.sessions[rec.ID] = rec
 
 	if err := m.reconcileLive(context.Background(), rec); err != nil {
 		t.Fatalf("reconcileLive: %v", err)
 	}
-	if ws.stashCalls != 1 {
-		t.Fatalf("StashUncommitted calls = %d, want 1", ws.stashCalls)
+	if ws.stashCalls != 0 {
+		t.Fatalf("StashUncommitted calls = %d, want 0", ws.stashCalls)
 	}
-	if lcm.terminated["s1"] != 1 {
-		t.Fatalf("MarkTerminated(s1) = %d, want 1", lcm.terminated["s1"])
+	if lcm.terminated["s1"] != 0 {
+		t.Fatalf("MarkTerminated(s1) = %d, want 0", lcm.terminated["s1"])
 	}
-	if rt.destroyed != 0 {
-		t.Fatalf("Destroy calls = %d, want 0 (dead session: no tmux to kill)", rt.destroyed)
+	if rt.created != 1 {
+		t.Fatalf("Create calls = %d, want 1", rt.created)
 	}
-	// The crash-orphaned session must be saved for restore, exactly like a
-	// graceful shutdown: a session_worktrees marker carrying the preserve ref,
-	// and the worktree torn down so RestoreAll re-creates it clean.
-	rows := st.worktrees["s1"]
-	if len(rows) != 1 || rows[0].PreservedRef != "refs/ao/preserved/s1" {
-		t.Fatalf("session_worktrees marker for s1 = %+v, want one row with the preserve ref", rows)
+	if st.sessions["s1"].IsTerminated {
+		t.Fatal("reconciled session must remain live")
 	}
-	foundForceDestroy := false
+	if len(ws.restoreConfigs) != 1 || ws.restoreConfigs[0].Path != "/wt/s1" {
+		t.Fatalf("Restore configs = %+v, want the existing worktree path", ws.restoreConfigs)
+	}
 	for _, c := range ws.calls {
 		if c == "ForceDestroy:s1" {
-			foundForceDestroy = true
+			t.Fatalf("reconcileLive must preserve the existing worktree; calls = %v", ws.calls)
 		}
 	}
-	if !foundForceDestroy {
-		t.Fatalf("reconcileLive must ForceDestroy the worktree after capturing work; calls = %v", ws.calls)
+	if rows := st.worktrees["s1"]; len(rows) != 0 {
+		t.Fatalf("in-place recovery must not create a restore marker; got %+v", rows)
 	}
 }
 
-// TestReconcileLive_ClosesScopedShellTerminalsBeforeForceDestroy is the boot
-// path (crash recovery) half of the shutdown save-and-teardown coverage: it
-// calls the same saveAndTeardownOne SaveAndTeardownAll does, so the gate must
-// fire here too, not just for a graceful shutdown.
-func TestReconcileLive_ClosesScopedShellTerminalsBeforeForceDestroy(t *testing.T) {
+func TestReconcileLive_PreservesScopedShellTerminalsWithExistingWorktree(t *testing.T) {
 	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
 	rt := &fakeRuntime{aliveByHandle: map[string]bool{}} // handle not alive
 	ws := &fakeWorkspace{stashRef: "refs/ao/preserved/s1"}
 	var sharedLog []string
@@ -6229,38 +6500,108 @@ func TestReconcileLive_ClosesScopedShellTerminalsBeforeForceDestroy(t *testing.T
 	rec := domain.SessionRecord{
 		ID:           "s1",
 		ProjectID:    "p1",
+		Harness:      domain.HarnessClaudeCode,
 		IsTerminated: false,
 		Metadata: domain.SessionMetadata{
-			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1",
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1", AgentSessionID: "agent-s1",
 		},
 	}
+	st.sessions[rec.ID] = rec
 
 	if err := m.reconcileLive(context.Background(), rec); err != nil {
 		t.Fatalf("reconcileLive: %v", err)
 	}
 
-	if len(closer.began) != 1 || closer.began[0] != "s1" {
-		t.Fatalf("began = %v, want [s1]", closer.began)
+	if len(closer.began) != 0 {
+		t.Fatalf("began = %v, want no shell teardown", closer.began)
 	}
-	if len(closer.ended) != 1 || closer.ended[0] != "s1" {
-		t.Fatalf("ended = %v, want [s1]", closer.ended)
+	if len(closer.ended) != 0 {
+		t.Fatalf("ended = %v, want no shell teardown", closer.ended)
 	}
-	beginIdx, forceIdx, endIdx := -1, -1, -1
-	for i, c := range sharedLog {
-		switch c {
-		case "BeginSessionTeardown:s1":
-			beginIdx = i
-		case "ForceDestroy:s1":
-			forceIdx = i
-		case "EndSessionTeardown:s1":
-			endIdx = i
+	if strings.Contains(strings.Join(sharedLog, ","), "ForceDestroy:s1") {
+		t.Fatalf("existing worktree must not be destroyed; call log = %v", sharedLog)
+	}
+}
+
+func TestReconcileLive_RelaunchFailureFallsBackToCapturedTeardown(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	rt := &fakeRuntime{aliveByHandle: map[string]bool{}}
+	ws := &fakeWorkspace{
+		createErr: errors.New("worktree cannot be reattached"),
+		stashRef:  "refs/ao/preserved/s1",
+	}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: lcm,
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "old", AgentSessionID: "agent-s1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if ws.stashCalls != 1 || lcm.terminated[rec.ID] != 1 {
+		t.Fatalf("fallback must capture and terminate: stash=%d terminated=%d", ws.stashCalls, lcm.terminated[rec.ID])
+	}
+	rows := st.worktrees[rec.ID]
+	if len(rows) != 1 || rows[0].PreservedRef != ws.stashRef {
+		t.Fatalf("fallback restore marker = %+v, want preserve ref %q", rows, ws.stashRef)
+	}
+	foundForceDestroy := false
+	for _, call := range ws.calls {
+		if call == "ForceDestroy:s1" {
+			foundForceDestroy = true
 		}
 	}
-	if beginIdx == -1 || forceIdx == -1 || endIdx == -1 {
-		t.Fatalf("call log missing expected entries: %v", sharedLog)
+	if !foundForceDestroy {
+		t.Fatalf("fallback must remove the captured worktree; calls=%v", ws.calls)
 	}
-	if beginIdx >= forceIdx || forceIdx >= endIdx {
-		t.Fatalf("call order = %v, want begin, then force destroy, then end", sharedLog)
+}
+
+func TestReconcileLive_DoesNotTeardownAfterUncertainRelaunchCommit(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	rt := &fakeRuntime{aliveByHandle: map[string]bool{}}
+	ws := &fakeWorkspace{stashRef: "refs/ao/preserved/s1"}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: lcm,
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "old", AgentSessionID: "agent-s1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	// MarkSpawned commits through the lifecycle fake, then relaunchSession reads
+	// the row back. Model storage becoming unavailable only at that final read.
+	st.getSessionErr = errors.New("readback unavailable")
+
+	err := m.reconcileLive(context.Background(), rec)
+	if err == nil {
+		t.Fatal("reconcileLive must report uncertain durable controller state")
+	}
+	if rt.created != 1 {
+		t.Fatalf("Create calls = %d, want 1 controller launched before readback failed", rt.created)
+	}
+	if ws.stashCalls != 0 || lcm.terminated[rec.ID] != 0 {
+		t.Fatalf("uncertain live controller must keep its worktree intact: stash=%d terminated=%d", ws.stashCalls, lcm.terminated[rec.ID])
+	}
+	for _, call := range ws.calls {
+		if call == "ForceDestroy:s1" {
+			t.Fatalf("uncertain live controller must not lose its worktree; calls=%v", ws.calls)
+		}
 	}
 }
 
@@ -6282,6 +6623,50 @@ func TestReconcileLive_AliveSessionAdoptedNoop(t *testing.T) {
 	}
 	if ws.stashCalls != 0 || lcm.terminated["s2"] != 0 || rt.destroyed != 0 {
 		t.Fatalf("adopt should be a no-op: stash=%d term=%d destroy=%d", ws.stashCalls, lcm.terminated["s2"], rt.destroyed)
+	}
+}
+
+func TestReconcile_LivePassUsesConfiguredConcurrency(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	for _, id := range []domain.SessionID{"s1", "s2"} {
+		st.sessions[id] = domain.SessionRecord{
+			ID: id, ProjectID: "p1", Harness: domain.HarnessClaudeCode,
+			Metadata: domain.SessionMetadata{
+				Branch: "ao/" + string(id) + "/root", WorkspacePath: "/wt/" + string(id), RuntimeHandleID: string(id),
+			},
+		}
+	}
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseAll()
+	rt := &blockingAliveRuntime{
+		fakeRuntime: &fakeRuntime{},
+		entered:     make(chan domain.SessionID, 2),
+		release:     release,
+	}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath:         func(string) (string, error) { return "/bin/true", nil },
+		ReconcileWorkers: 2,
+	})
+	done := make(chan error, 1)
+	go func() { done <- m.Reconcile(context.Background()) }()
+
+	seen := map[domain.SessionID]bool{}
+	for len(seen) < 2 {
+		select {
+		case id := <-rt.entered:
+			seen[id] = true
+		case <-time.After(time.Second):
+			t.Fatalf("live probes did not overlap; entered = %v", seen)
+		}
+	}
+	releaseAll()
+	if err := <-done; err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 }
 
@@ -6368,9 +6753,8 @@ func TestReconcileLive_ScratchDeadRuntimeTerminatesWithoutWorkspaceTeardown(t *t
 //     never torn down, and NO new session minted (the id-increment regression
 //     guard: adoption failure used to mint a fresh orchestrator id 14->15->16).
 //   - an alive worker is adopted as a no-op.
-//   - a worker whose runtime died with the daemon has its work captured (stashed
-//     into a preserve ref, restore marker written) and is relaunched on this same
-//     boot under its ORIGINAL id.
+//   - a worker whose runtime died with the daemon is relaunched in its existing
+//     worktree on this same boot under its ORIGINAL id.
 //   - a truly-dead session with no restore marker is NOT resurrected.
 func TestReconcile_AdoptAcrossDaemonRestart(t *testing.T) {
 	st := newFakeStore()
@@ -6396,7 +6780,8 @@ func TestReconcile_AdoptAcrossDaemonRestart(t *testing.T) {
 		ID: "mer-2", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
 		Metadata: domain.SessionMetadata{Branch: "ao/mer-2/root", WorkspacePath: "/ws/mer-2", RuntimeHandleID: "w-alive", AgentSessionID: "agent-2"},
 	}
-	// Dead worker: its runtime died with the daemon; capture + relaunch under same id.
+	// Dead worker: its runtime died with the daemon; relaunch under the same id
+	// without tearing down the worktree first.
 	st.sessions["mer-3"] = domain.SessionRecord{
 		ID: "mer-3", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
 		Metadata: domain.SessionMetadata{Branch: "ao/mer-3/root", WorkspacePath: "/ws/mer-3", RuntimeHandleID: "w-dead", AgentSessionID: "agent-3"},
@@ -6427,9 +6812,10 @@ func TestReconcile_AdoptAcrossDaemonRestart(t *testing.T) {
 	if rt.destroyed != 0 {
 		t.Fatalf("adopted sessions must not be destroyed; Destroy called %d times", rt.destroyed)
 	}
-	// Dead worker captured, then relaunched under its original id on this same boot.
-	if lcm.terminated["mer-3"] != 1 {
-		t.Fatalf("dead worker must be marked terminated once before relaunch; got %d", lcm.terminated["mer-3"])
+	// Dead worker relaunched under its original id on this same boot without an
+	// intermediate durable termination or worktree capture cycle.
+	if lcm.terminated["mer-3"] != 0 {
+		t.Fatalf("dead worker must not be marked terminated before relaunch; got %d", lcm.terminated["mer-3"])
 	}
 	if st.sessions["mer-3"].IsTerminated {
 		t.Fatal("dead worker must be relaunched (not terminated) after Reconcile")
@@ -6437,7 +6823,10 @@ func TestReconcile_AdoptAcrossDaemonRestart(t *testing.T) {
 	if rt.created != 1 {
 		t.Fatalf("exactly one runtime relaunch expected (the dead worker); got %d", rt.created)
 	}
-	// One-shot restore marker consumed so it never outlives one restart (#2319).
+	if ws.stashCalls != 0 {
+		t.Fatalf("dead worker must reuse its worktree without stashing; got %d stash calls", ws.stashCalls)
+	}
+	// In-place recovery needs no one-shot restore marker.
 	if rows := st.worktrees["mer-3"]; len(rows) != 0 {
 		t.Fatalf("restore marker for mer-3 must be deleted after relaunch; got %+v", rows)
 	}

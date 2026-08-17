@@ -14,6 +14,12 @@ var ErrSessionNotFound = errors.New("session not found")
 type SpawnConfig struct {
 	ProjectID domain.ProjectID
 	IssueID   domain.IssueID
+	// TrackerProvider is the issue-tracker provider hint from the CLI's
+	// --tracker-provider flag (defaults to "github"). It is used as a fallback
+	// when the project's SCM origin cannot be classified by the configured
+	// SCM provider. When the SCM origin resolves successfully, the resolved
+	// provider takes precedence over this hint.
+	TrackerProvider domain.TrackerProvider
 	// IssueContext is optional pre-fetched tracker context for the task prompt.
 	// Standing rules stay in SystemPrompt; issue facts belong to the user task.
 	IssueContext string

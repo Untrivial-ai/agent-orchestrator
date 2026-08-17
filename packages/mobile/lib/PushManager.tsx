@@ -2,13 +2,15 @@
 // side of push notifications: register after pairing (+ refresh on foreground),
 // unregister when switching/leaving a daemon, and route notification taps
 // (warm + cold start). See docs/adr/0001-mobile-push-notifications.md (D6, D7, D9).
+import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import { useRootNavigationState, useRouter } from "expo-router";
 import { useEffect, useRef } from "react";
-import { AppState } from "react-native";
-import { markNotificationRead } from "./api";
+import { AppState, Platform } from "react-native";
+import { announceDevice, markNotificationRead } from "./api";
+import { getInstallId } from "./installId";
 import { notificationTarget } from "./notificationView";
-import { configurePushHandler, ensureAndroidChannel, registerForPush, unregisterFromPush } from "./push";
+import { configurePushHandler, ensureAndroidChannel, registerForPush, unpairFromServer } from "./push";
 import { useApp } from "./store";
 import { MOBILE_EVENTS } from "./telemetry/events";
 import { mobileTelemetry } from "./telemetry/runtime";
@@ -37,15 +39,41 @@ export function PushManager(): null {
 		void ensureAndroidChannel();
 	}, []);
 
-	// When the user clears the server config (unpairs), unregister this device's
-	// token from the daemon it was registered with, so that daemon stops pushing
-	// to a phone that's no longer watching it. Uses the persisted daemon creds.
+	// When the user clears the server config, this phone has unpaired: tell that
+	// daemon to drop the row entirely, not merely clear the token, so the old
+	// desktop stops listing a phone that has moved on. Uses the persisted creds.
 	useEffect(() => {
 		if (wasConfigured.current && !configured) {
-			void unregisterFromPush();
+			void unpairFromServer();
 		}
 		wasConfigured.current = configured;
 	}, [configured]);
+
+	// Announce this device's identity as soon as it connects, and again on every
+	// foreground while connected — with NO permission gate. This is what lets the
+	// desktop roster show a paired phone that hasn't (yet, or ever) granted
+	// notification permission or minted a push token, instead of it having no row
+	// at all. The daemon upserts by install ID, so when registerForPush later
+	// succeeds, the token attaches to this same row rather than creating a
+	// second one.
+	useEffect(() => {
+		if (!config || connection !== "open") return;
+		const safeAnnounce = () => {
+			(async () => {
+				const installId = await getInstallId();
+				await announceDevice(config, {
+					installId,
+					platform: Platform.OS,
+					deviceName: Device.deviceName ?? undefined,
+				});
+			})().catch((e) => console.warn("[push] announce failed", e));
+		};
+		safeAnnounce();
+		const sub = AppState.addEventListener("change", (s) => {
+			if (s === "active") safeAnnounce();
+		});
+		return () => sub.remove();
+	}, [config, connection]);
 
 	// Register after a successful pairing/connection, and refresh on every
 	// foreground while connected. registerForPush persists the daemon it

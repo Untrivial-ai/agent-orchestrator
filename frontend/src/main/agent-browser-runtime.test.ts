@@ -436,7 +436,7 @@ describe("agent-browser structured output", () => {
 
 const nativeBinary = process.env.AO_AGENT_BROWSER_TEST_BINARY;
 describe.skipIf(!nativeBinary)("agent-browser native compatibility", () => {
-	it("connects the pinned native daemon through AO's scoped CDP bridge", async () => {
+	it("connects the pinned native daemon and keeps native tab lifecycle commands aligned", async () => {
 		class DebuggerFixture extends EventEmitter {
 			attached = false;
 			attach() {
@@ -461,21 +461,31 @@ describe.skipIf(!nativeBinary)("agent-browser native compatibility", () => {
 				return {};
 			}
 		}
-		const debug = new DebuggerFixture();
+		const targets = [
+			{
+				id: "t1",
+				url: "http://localhost:5173/",
+				title: "Fixture",
+				debugger: new DebuggerFixture(),
+			},
+		];
 		const provider = {
-			listTargets: () => [
-				{
-					id: "t1",
-					url: "http://localhost:5173/",
-					title: "Fixture",
-					debugger: debug,
-				},
-			],
-			createTarget: async () => {
-				throw new Error("unexpected target creation");
+			listTargets: () => targets,
+			createTarget: async (url: string) => {
+				const target = {
+					id: `t${targets.length + 1}`,
+					url,
+					title: "New tab",
+					debugger: new DebuggerFixture(),
+				};
+				targets.push(target);
+				return target;
 			},
 			activateTarget: () => undefined,
-			closeTarget: () => undefined,
+			closeTarget: (targetId: string) => {
+				const index = targets.findIndex((target) => target.id === targetId);
+				if (index >= 0) targets.splice(index, 1);
+			},
 		};
 		const runtime = new AgentBrowserRuntime({
 			binaryPath: nativeBinary!,
@@ -484,6 +494,11 @@ describe.skipIf(!nativeBinary)("agent-browser native compatibility", () => {
 		try {
 			const result = await runtime.runAction("native-fixture", "get", { property: "url" }, provider);
 			expect(result.url).toBe("http://localhost:5173/");
+			const created = await runtime.runAction("native-fixture", "tab-new", {}, provider);
+			expect(created.tabId).toBe("t2");
+			expect(targets.map((target) => target.id)).toEqual(["t1", "t2"]);
+			await runtime.runAction("native-fixture", "tab-close", { tabId: "t2" }, provider);
+			expect(targets.map((target) => target.id)).toEqual(["t1"]);
 			const screenshot = await runtime.screenshot("native-fixture", provider);
 			expect(screenshot).toMatchObject({ width: 1, height: 1 });
 		} finally {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -54,13 +55,29 @@ func (s *Store) WriteSCMObservation(ctx context.Context, pr domain.PullRequest, 
 func (s *Store) ClaimPR(ctx context.Context, pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment, reviewMode ports.ReviewWriteMode, allowActiveTakeover bool) (ports.ClaimOutcome, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	pr = normalizedPRIdentity(pr)
 	var outcome ports.ClaimOutcome
 	err := s.inTx(ctx, "claim pr", func(q *gen.Queries) error {
-		owner, err := q.GetPRClaimAndOwner(ctx, pr.URL)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		var err error
+		pr, err = resolveWeakPRAlias(ctx, q, pr)
+		if err != nil {
 			return err
 		}
-		if err == nil {
+		candidates, err := findPRIdentityCandidates(ctx, q, pr)
+		if err != nil {
+			return err
+		}
+		for _, candidate := range candidates {
+			owner, err := q.GetPRClaimAndOwner(ctx, candidate.URL)
+			if err != nil {
+				return err
+			}
+			if owner.SessionID == pr.SessionID {
+				continue
+			}
+			if outcome.PreviousOwner != "" && outcome.PreviousOwner != owner.SessionID {
+				return fmt.Errorf("pr identity resolves to multiple sessions: %s and %s", outcome.PreviousOwner, owner.SessionID)
+			}
 			outcome.PreviousOwner = owner.SessionID
 			outcome.OwnerTerminated = owner.IsTerminated
 			if owner.SessionID != pr.SessionID && !owner.IsTerminated && !allowActiveTakeover {
@@ -70,7 +87,7 @@ func (s *Store) ClaimPR(ctx context.Context, pr domain.PullRequest, checks []dom
 		if err := q.ClaimPRForSession(ctx, gen.ClaimPRForSessionParams{
 			URL: pr.URL, SessionID: pr.SessionID, Number: int64(pr.Number), PRState: prState(pr),
 			ReviewDecision: reviewOrDefault(pr.Review), CIState: ciOrDefault(pr.CI), Mergeability: mergeabilityOrDefault(pr.Mergeability), UpdatedAt: pr.UpdatedAt,
-			StateChangedAt: nullTime(initialPRStateChangedAt(pr)),
+			StateChangedAt: nullTime(initialPRStateChangedAt(pr)), ID: pr.SessionID,
 		}); err != nil {
 			return err
 		}
@@ -88,21 +105,27 @@ func (s *Store) writePR(ctx context.Context, pr domain.PullRequest, checks []dom
 }
 
 func writePRRows(ctx context.Context, q *gen.Queries, pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment, reviewMode ports.ReviewWriteMode, replaceLegacyComments, rejectReassignment bool) error {
-	if rejectReassignment {
-		existing, err := q.GetPR(ctx, pr.URL)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err == nil && existing.SessionID != pr.SessionID {
-			return fmt.Errorf("pr %s already belongs to session %s", pr.URL, existing.SessionID)
-		}
+	pr = normalizedPRIdentity(pr)
+	var err error
+	pr, err = resolveWeakPRAlias(ctx, q, pr)
+	if err != nil {
+		return err
 	}
 	if replaceLegacyComments {
+		if rejectReassignment {
+			existing, err := q.GetPR(ctx, pr.URL)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if err == nil && existing.SessionID != pr.SessionID {
+				return fmt.Errorf("pr %s already belongs to session %s", pr.URL, existing.SessionID)
+			}
+		}
 		if err := q.UpsertLegacyPR(ctx, genLegacyPRParams(pr)); err != nil {
 			return err
 		}
 	} else {
-		if err := q.UpsertPR(ctx, genPRParams(pr)); err != nil {
+		if err := upsertPRWithIdentity(ctx, q, pr, rejectReassignment); err != nil {
 			return err
 		}
 	}
@@ -218,6 +241,162 @@ func writePRRows(ctx context.Context, q *gen.Queries, pr domain.PullRequest, che
 	return nil
 }
 
+func normalizedPRIdentity(pr domain.PullRequest) domain.PullRequest {
+	pr.Provider = strings.ToLower(strings.TrimSpace(pr.Provider))
+	pr.Host = strings.ToLower(strings.TrimSpace(pr.Host))
+	pr.ProviderID = strings.TrimSpace(pr.ProviderID)
+	pr.URLAlias = strings.TrimSpace(pr.URLAlias)
+	return pr
+}
+
+func resolveWeakPRAlias(ctx context.Context, q *gen.Queries, pr domain.PullRequest) (domain.PullRequest, error) {
+	if pr.ProviderID != "" || pr.URLAlias != "" {
+		return pr, nil
+	}
+	existing, err := q.GetPRByURLOrAlias(ctx, pr.URL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return pr, nil
+	}
+	if err != nil {
+		return domain.PullRequest{}, err
+	}
+	if existing.URL == pr.URL {
+		return pr, nil
+	}
+	pr.URLAlias = pr.URL
+	pr.URL = existing.URL
+	if pr.Provider == "" {
+		pr.Provider = existing.Provider
+	}
+	if pr.Host == "" {
+		pr.Host = existing.Host
+	}
+	if pr.Repo == "" {
+		pr.Repo = existing.Repo
+	}
+	pr.ProviderID = existing.ProviderID
+	return pr, nil
+}
+
+func upsertPRWithIdentity(ctx context.Context, q *gen.Queries, pr domain.PullRequest, rejectReassignment bool) error {
+	if pr.ProviderID == "" && pr.URLAlias == "" {
+		return q.UpsertPR(ctx, genPRParams(pr))
+	}
+	candidates, err := findPRIdentityCandidates(ctx, q, pr)
+	if err != nil {
+		return err
+	}
+	for _, existing := range candidates {
+		if rejectReassignment && existing.SessionID != pr.SessionID {
+			return fmt.Errorf("pr %s already belongs to session %s", existing.URL, existing.SessionID)
+		}
+		if existing.URL != pr.URL && existing.ProviderID != "" {
+			if err := q.ClearPRProviderIdentity(ctx, existing.URL); err != nil {
+				return err
+			}
+		}
+	}
+	if err := q.UpsertPR(ctx, genPRParams(pr)); err != nil {
+		return err
+	}
+	if err := q.DeletePRAlias(ctx, pr.URL); err != nil {
+		return err
+	}
+	for previousURL := range candidates {
+		if previousURL == pr.URL {
+			continue
+		}
+		if err := movePRAliasRows(ctx, q, previousURL, pr.URL); err != nil {
+			return err
+		}
+		if err := q.RepointPRAliases(ctx, gen.RepointPRAliasesParams{CanonicalURL: pr.URL, PreviousURL: previousURL}); err != nil {
+			return err
+		}
+		if err := q.DeletePRByURL(ctx, previousURL); err != nil {
+			return err
+		}
+		if err := q.UpsertPRAlias(ctx, gen.UpsertPRAliasParams{AliasURL: previousURL, CanonicalURL: pr.URL}); err != nil {
+			return err
+		}
+	}
+	if pr.URLAlias != "" && pr.URLAlias != pr.URL {
+		if err := q.UpsertPRAlias(ctx, gen.UpsertPRAliasParams{AliasURL: pr.URLAlias, CanonicalURL: pr.URL}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func findPRIdentityCandidates(ctx context.Context, q *gen.Queries, pr domain.PullRequest) (map[string]gen.PR, error) {
+	candidates := map[string]gen.PR{}
+	addCandidate := func(row gen.PR, err error) error {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		candidates[row.URL] = row
+		return nil
+	}
+	if err := addCandidate(q.GetPR(ctx, pr.URL)); err != nil {
+		return nil, err
+	}
+	if pr.URLAlias != "" && pr.URLAlias != pr.URL {
+		if err := addCandidate(q.GetPRByURLOrAlias(ctx, pr.URLAlias)); err != nil {
+			return nil, err
+		}
+	}
+	if pr.ProviderID != "" && pr.Provider != "" && pr.Host != "" {
+		if err := addCandidate(q.GetPRByProviderIdentity(ctx, gen.GetPRByProviderIdentityParams{
+			Provider: pr.Provider, Host: pr.Host, ProviderID: pr.ProviderID,
+		})); err != nil {
+			return nil, err
+		}
+	}
+	return candidates, nil
+}
+
+func movePRAliasRows(ctx context.Context, q *gen.Queries, previousURL, canonicalURL string) error {
+	if err := q.MovePRAliasChecks(ctx, gen.MovePRAliasChecksParams{CanonicalURL: canonicalURL, PreviousURL: previousURL}); err != nil {
+		return err
+	}
+	if err := q.DeletePRAliasChecks(ctx, previousURL); err != nil {
+		return err
+	}
+	if err := q.MovePRAliasReviews(ctx, gen.MovePRAliasReviewsParams{CanonicalURL: canonicalURL, PreviousURL: previousURL}); err != nil {
+		return err
+	}
+	if err := q.DeletePRAliasReviews(ctx, previousURL); err != nil {
+		return err
+	}
+	if err := q.MovePRAliasReviewThreads(ctx, gen.MovePRAliasReviewThreadsParams{CanonicalURL: canonicalURL, PreviousURL: previousURL}); err != nil {
+		return err
+	}
+	if err := q.DeletePRAliasReviewThreads(ctx, previousURL); err != nil {
+		return err
+	}
+	if err := q.MovePRAliasComments(ctx, gen.MovePRAliasCommentsParams{CanonicalURL: canonicalURL, PreviousURL: previousURL}); err != nil {
+		return err
+	}
+	if err := q.DeletePRAliasComments(ctx, previousURL); err != nil {
+		return err
+	}
+	if err := q.ResolveConflictingPRAliasNotifications(ctx, gen.ResolveConflictingPRAliasNotificationsParams{CanonicalURL: canonicalURL, PreviousURL: previousURL}); err != nil {
+		return err
+	}
+	if err := q.MovePRAliasNotifications(ctx, gen.MovePRAliasNotificationsParams{CanonicalURL: canonicalURL, PreviousURL: previousURL}); err != nil {
+		return err
+	}
+	if err := q.MovePRAliasReviewState(ctx, gen.MovePRAliasReviewStateParams{CanonicalURL: canonicalURL, PreviousURL: previousURL}); err != nil {
+		return err
+	}
+	if err := q.MovePRAliasReviewRuns(ctx, gen.MovePRAliasReviewRunsParams{CanonicalURL: canonicalURL, PreviousURL: previousURL}); err != nil {
+		return err
+	}
+	return q.DeletePRAliasReviewRuns(ctx, previousURL)
+}
+
 func reviewThreadIDs(threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(threads))
@@ -265,7 +444,7 @@ func (s *Store) UpdatePRLastNudgeSignature(ctx context.Context, url, payload str
 
 // GetPR returns the PR facts for a URL, or ok=false if absent.
 func (s *Store) GetPR(ctx context.Context, url string) (domain.PullRequest, bool, error) {
-	p, err := s.qr.GetPR(ctx, url)
+	p, err := s.qr.GetPRByURLOrAlias(ctx, url)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.PullRequest{}, false, nil
 	}
@@ -370,6 +549,7 @@ func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 		Provider:                 r.Provider,
 		Host:                     r.Host,
 		Repo:                     r.Repo,
+		ProviderID:               r.ProviderID,
 		SourceBranch:             r.SourceBranch,
 		TargetBranch:             r.TargetBranch,
 		HeadSha:                  r.HeadSHA,
@@ -397,6 +577,7 @@ func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 		ObservedAt:               nullTime(r.ObservedAt),
 		CIObservedAt:             nullTime(r.CIObservedAt),
 		ReviewObservedAt:         nullTime(r.ReviewObservedAt),
+		ID:                       r.SessionID,
 	}
 }
 
@@ -414,6 +595,7 @@ func genLegacyPRParams(r domain.PullRequest) gen.UpsertLegacyPRParams {
 		IsDraft:        boolInt(r.Draft),
 		IsMerged:       boolInt(r.Merged),
 		IsClosed:       boolInt(r.Closed),
+		ID:             r.SessionID,
 	}
 }
 
@@ -470,6 +652,7 @@ func prRowFromGen(p gen.PR) domain.PullRequest {
 		Provider:                 p.Provider,
 		Host:                     p.Host,
 		Repo:                     p.Repo,
+		ProviderID:               p.ProviderID,
 		SourceBranch:             p.SourceBranch,
 		TargetBranch:             p.TargetBranch,
 		HeadSHA:                  p.HeadSha,
@@ -494,6 +677,7 @@ func prRowFromGen(p gen.PR) domain.PullRequest {
 		ObservedAt:               timeFromNull(p.ObservedAt),
 		CIObservedAt:             timeFromNull(p.CIObservedAt),
 		ReviewObservedAt:         timeFromNull(p.ReviewObservedAt),
+		AutoInjectCI:             p.AutoInjectCI,
 	}
 }
 
@@ -573,6 +757,7 @@ func genReviewParams(prURL string, review domain.PullRequestReview) gen.UpsertPR
 		IsBot:            boolInt(review.IsBot),
 		SubmittedAt:      review.SubmittedAt,
 		Body:             review.Body,
+		TargetSha:        review.TargetSHA,
 		AutoInjectReview: review.AutoInjectReview,
 	}
 }
@@ -585,6 +770,7 @@ func reviewFromGen(review gen.PRReview) domain.PullRequestReview {
 		URL:              review.URL,
 		Body:             review.Body,
 		IsBot:            review.IsBot != 0,
+		TargetSHA:        review.TargetSha,
 		SubmittedAt:      review.SubmittedAt,
 		AutoInjectReview: review.AutoInjectReview,
 	}

@@ -1,14 +1,15 @@
 -- name: UpsertPR :exec
 INSERT INTO pr (
     url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, state_changed_at,
-    provider, host, repo, source_branch, target_branch, head_sha, title,
+    provider, host, repo, provider_id, source_branch, target_branch, head_sha, title,
     additions, deletions, changed_files, author, base_sha, merge_commit_sha,
     is_draft, is_merged, is_closed,
     provider_state, provider_mergeable, provider_merge_state_status, html_url,
     created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider,
-    metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at
+    metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, auto_inject_ci
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    COALESCE((SELECT auto_inject_ci FROM sessions WHERE id = ?), TRUE))
 ON CONFLICT (url) DO UPDATE SET
     number = excluded.number,
     state_changed_at = CASE
@@ -29,6 +30,7 @@ ON CONFLICT (url) DO UPDATE SET
     provider = excluded.provider,
     host = excluded.host,
     repo = excluded.repo,
+    provider_id = CASE WHEN excluded.provider_id != '' THEN excluded.provider_id ELSE pr.provider_id END,
     source_branch = excluded.source_branch,
     target_branch = excluded.target_branch,
     head_sha = excluded.head_sha,
@@ -60,9 +62,10 @@ ON CONFLICT (url) DO UPDATE SET
 -- name: UpsertLegacyPR :exec
 INSERT INTO pr (
     url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, state_changed_at,
-    is_draft, is_merged, is_closed
+    is_draft, is_merged, is_closed, auto_inject_ci
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    COALESCE((SELECT auto_inject_ci FROM sessions WHERE id = ?), TRUE))
 ON CONFLICT (url) DO UPDATE SET
     number = excluded.number,
     state_changed_at = CASE
@@ -81,6 +84,95 @@ ON CONFLICT (url) DO UPDATE SET
 
 -- name: GetPR :one
 SELECT * FROM pr WHERE url = ?;
+
+-- name: GetPRByURLOrAlias :one
+SELECT pr.*
+FROM pr
+WHERE pr.url = COALESCE(
+    (SELECT canonical_url FROM pr_url_alias WHERE alias_url = sqlc.arg(url)),
+    sqlc.arg(url)
+);
+
+-- name: GetPRByProviderIdentity :one
+SELECT *
+FROM pr
+WHERE provider = sqlc.arg(provider)
+  AND host = sqlc.arg(host)
+  AND provider_id = sqlc.arg(provider_id)
+  AND provider_id != '';
+
+-- name: ClearPRProviderIdentity :exec
+UPDATE pr SET provider_id = '' WHERE url = ?;
+
+-- name: DeletePRByURL :exec
+DELETE FROM pr WHERE url = ?;
+
+-- name: DeletePRAlias :exec
+DELETE FROM pr_url_alias WHERE alias_url = ?;
+
+-- name: RepointPRAliases :exec
+UPDATE pr_url_alias
+SET canonical_url = sqlc.arg(canonical_url)
+WHERE canonical_url = sqlc.arg(previous_url);
+
+-- name: UpsertPRAlias :exec
+INSERT INTO pr_url_alias(alias_url, canonical_url)
+VALUES (sqlc.arg(alias_url), sqlc.arg(canonical_url))
+ON CONFLICT(alias_url) DO UPDATE SET canonical_url = excluded.canonical_url;
+
+-- name: MovePRAliasChecks :exec
+UPDATE OR IGNORE pr_checks SET pr_url = sqlc.arg(canonical_url) WHERE pr_url = sqlc.arg(previous_url);
+
+-- name: DeletePRAliasChecks :exec
+DELETE FROM pr_checks WHERE pr_url = ?;
+
+-- name: MovePRAliasReviews :exec
+UPDATE OR IGNORE pr_reviews SET pr_url = sqlc.arg(canonical_url) WHERE pr_url = sqlc.arg(previous_url);
+
+-- name: DeletePRAliasReviews :exec
+DELETE FROM pr_reviews WHERE pr_url = ?;
+
+-- name: MovePRAliasReviewThreads :exec
+UPDATE OR IGNORE pr_review_threads SET pr_url = sqlc.arg(canonical_url) WHERE pr_url = sqlc.arg(previous_url);
+
+-- name: DeletePRAliasReviewThreads :exec
+DELETE FROM pr_review_threads WHERE pr_url = ?;
+
+-- name: MovePRAliasComments :exec
+UPDATE OR IGNORE pr_comment SET pr_url = sqlc.arg(canonical_url) WHERE pr_url = sqlc.arg(previous_url);
+
+-- name: DeletePRAliasComments :exec
+DELETE FROM pr_comment WHERE pr_url = ?;
+
+-- Preserve both notification records when their open-dedupe keys collide:
+-- the canonical notification stays open and the older alias notification
+-- becomes resolved history before its URL is updated.
+-- name: ResolveConflictingPRAliasNotifications :exec
+UPDATE notifications
+SET status = 'read', resolved_at = COALESCE(notifications.resolved_at, notifications.created_at)
+WHERE notifications.pr_url = sqlc.arg(previous_url)
+  AND (notifications.status = 'unread' OR notifications.resolved_at IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM notifications AS current
+      WHERE current.pr_url = sqlc.arg(canonical_url)
+        AND current.session_id = notifications.session_id
+        AND current.type = notifications.type
+        AND (current.status = 'unread' OR current.resolved_at IS NULL)
+  );
+
+-- name: MovePRAliasNotifications :exec
+UPDATE notifications SET pr_url = sqlc.arg(canonical_url) WHERE pr_url = sqlc.arg(previous_url);
+
+-- name: MovePRAliasReviewState :exec
+UPDATE review SET pr_url = sqlc.arg(canonical_url) WHERE pr_url = sqlc.arg(previous_url);
+
+-- name: MovePRAliasReviewRuns :exec
+UPDATE OR IGNORE review_run SET pr_url = sqlc.arg(canonical_url) WHERE pr_url = sqlc.arg(previous_url);
+
+-- Rows left on the previous URL collided with the canonical review-run
+-- idempotency key and therefore represent the same logical review pass.
+-- name: DeletePRAliasReviewRuns :exec
+DELETE FROM review_run WHERE pr_url = ?;
 
 -- name: ListPRsBySession :many
 SELECT * FROM pr
@@ -144,8 +236,9 @@ WHERE pr.session_id = ?
 ORDER BY pr.updated_at DESC;
 
 -- name: ClaimPRForSession :exec
-INSERT INTO pr (url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, state_changed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pr (url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, state_changed_at, auto_inject_ci)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+    COALESCE((SELECT auto_inject_ci FROM sessions WHERE id = ?), TRUE))
 ON CONFLICT (url) DO UPDATE SET
     session_id = excluded.session_id,
     state_changed_at = CASE

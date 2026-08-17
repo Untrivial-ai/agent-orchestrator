@@ -234,3 +234,136 @@ func TestLoadTelemetryDisabledEventsBlankIsInert(t *testing.T) {
 		t.Fatalf("AppVersion = %q, want empty", cfg.Telemetry.AppVersion)
 	}
 }
+
+func TestLoadGitLabDefaults(t *testing.T) {
+	// Clear the GitLab config vars so we observe pure defaults.
+	for _, k := range []string{"AO_GITLAB_ALLOWED_HOSTS", "AO_GITLAB_HOST_TOKENS"} {
+		t.Setenv(k, "")
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.GitLab.AllowedHosts != nil {
+		t.Errorf("GitLab.AllowedHosts = %v, want nil", cfg.GitLab.AllowedHosts)
+	}
+	if cfg.GitLab.HostTokens != nil {
+		t.Errorf("GitLab.HostTokens = %v, want nil", cfg.GitLab.HostTokens)
+	}
+}
+
+func TestLoadGitLabAllowedHosts(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want []string
+	}{
+		{"single host", "gitlab.mycompany.com", []string{"gitlab.mycompany.com"}},
+		{"comma-separated", "gitlab.mycompany.com,gitlab.internal.corp", []string{"gitlab.mycompany.com", "gitlab.internal.corp"}},
+		{"trimmed whitespace", " gitlab.mycompany.com , gitlab.internal.corp ", []string{"gitlab.mycompany.com", "gitlab.internal.corp"}},
+		{"empty entries skipped", "gitlab.mycompany.com,,gitlab.internal.corp,", []string{"gitlab.mycompany.com", "gitlab.internal.corp"}},
+		{"with port", "gitlab.internal:8443", []string{"gitlab.internal:8443"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_GITLAB_ALLOWED_HOSTS", tc.env)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(cfg.GitLab.AllowedHosts) != len(tc.want) {
+				t.Fatalf("AllowedHosts = %v, want %v", cfg.GitLab.AllowedHosts, tc.want)
+			}
+			for i, h := range tc.want {
+				if cfg.GitLab.AllowedHosts[i] != h {
+					t.Errorf("AllowedHosts[%d] = %q, want %q", i, cfg.GitLab.AllowedHosts[i], h)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadGitLabHostTokens(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want map[string]string
+	}{
+		{
+			name: "single host=token",
+			env:  "gitlab.mycompany.com=token-1",
+			want: map[string]string{"gitlab.mycompany.com": "token-1"},
+		},
+		{
+			name: "multiple host=token pairs",
+			env:  "gitlab.mycompany.com=token-1,gitlab.internal.corp=token-2",
+			want: map[string]string{
+				"gitlab.mycompany.com": "token-1",
+				"gitlab.internal.corp": "token-2",
+			},
+		},
+		{
+			name: "trimmed whitespace around entries",
+			env:  " gitlab.mycompany.com = token-1 , gitlab.internal.corp = token-2 ",
+			want: map[string]string{
+				"gitlab.mycompany.com": "token-1",
+				"gitlab.internal.corp": "token-2",
+			},
+		},
+		{
+			name: "host with port",
+			env:  "gitlab.internal:8443=token-port",
+			want: map[string]string{"gitlab.internal:8443": "token-port"},
+		},
+		{
+			name: "empty entries skipped",
+			env:  "gitlab.mycompany.com=token-1,,",
+			want: map[string]string{"gitlab.mycompany.com": "token-1"},
+		},
+		{
+			name: "entry without equals skipped",
+			env:  "gitlab.mycompany.com=token-1,not-a-pair",
+			want: map[string]string{"gitlab.mycompany.com": "token-1"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_GITLAB_HOST_TOKENS", tc.env)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(cfg.GitLab.HostTokens) != len(tc.want) {
+				t.Fatalf("HostTokens = %v, want %v", cfg.GitLab.HostTokens, tc.want)
+			}
+			for k, v := range tc.want {
+				got, ok := cfg.GitLab.HostTokens[k]
+				if !ok {
+					t.Errorf("HostTokens missing key %q", k)
+					continue
+				}
+				if got != v {
+					t.Errorf("HostTokens[%q] = %q, want %q", k, got, v)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadGitLabInvalidHostTokens(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+	}{
+		{"token contains equals", "gitlab.mycompany.com=token=with=equals"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_GITLAB_HOST_TOKENS", tc.env)
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load() = nil error, want error for malformed AO_GITLAB_HOST_TOKENS")
+			}
+		})
+	}
+}

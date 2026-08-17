@@ -127,9 +127,10 @@ surface (`npm run sqlc`, `npm run api`).
   surface for TUI, or the durable Chat timeline/composer for Chat. Chat retains
   access to session-scoped worktree shells without creating an agent tmux pane.
 - Compatible Claude Code and Codex sessions expose an in-session “Open Chat” /
-  “Open Terminal UI” action. Idle sessions switch directly; busy sessions offer
-  an explicit finish-and-drain or stop-and-interrupt policy and show durable
-  progress/recovery state.
+  “Open Terminal UI” action. Chat→TUI is the recovery path and always fences
+  queued work before interrupting the active turn; a busy TUI→Chat switch offers
+  the explicit finish-and-drain or stop-and-interrupt choice. Both directions
+  show durable progress/recovery state.
 - Desktop status and SCM summary V1: session status comes from
   `GET /api/v1/sessions`; visible/active PR context comes from
   `GET /api/v1/sessions/{sessionId}/pr`; `GET /api/v1/events` is kept open as
@@ -180,11 +181,13 @@ surface (`npm run sqlc`, `npm run api`).
   sanitized network observer and temporary highlight cleanup as safety/UI
   plumbing. Focused checks and a fresh Windows x64 package pass; macOS/Linux
   packaging and manual lifecycle acceptance remain release verification work.
-- **Cross-interface visual history import**: provider-native context continues
-  across a compatible handoff, and Chat history already recorded by AO remains
-  durable. A first TUI→Chat switch does not reconstruct terminal screen output
-  as structured AO messages/tool cards; doing so requires a provider history
-  import contract with stable identities and deduplication.
+- **Cross-interface raw terminal history import**: compatible providers now
+  replay settled native history with stable identities (`thread/read` for Codex,
+  ACP `session/load` where advertised), and AO imports it idempotently before
+  activating Chat. ACP `session/resume` preserves model context but does not
+  replay history, so a TUI→Chat handoff fails closed for resume-only agents.
+  AO deliberately does not reconstruct PTY scrollback as messages/tool cards;
+  arbitrary terminal bytes are redraw artifacts, not canonical provider events.
 - **In-flight tool portability**: drain can finish accepted work and interrupt
   can cancel it, but no common provider protocol serializes a currently executing
   tool call or detached background process for adoption by another controller.

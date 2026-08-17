@@ -2,6 +2,8 @@ package push
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -34,7 +36,7 @@ func (f *fakeDeviceStore) List() []mobilebridge.PushDevice {
 	return append([]mobilebridge.PushDevice(nil), f.devices...)
 }
 
-func (f *fakeDeviceStore) Delete(token string) error {
+func (f *fakeDeviceStore) UnregisterToken(token string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleted = append(f.deleted, token)
@@ -244,6 +246,77 @@ func TestDispatcherSweepPrunesOnReceipt(t *testing.T) {
 	defer store.mu.Unlock()
 	if len(store.deleted) != 1 || store.deleted[0] != "ExponentPushToken[dead]" {
 		t.Fatalf("deleted = %v, want [ExponentPushToken[dead]]", store.deleted)
+	}
+}
+
+func TestDispatchSkipsMutedDevices(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeDeviceStore{devices: []mobilebridge.PushDevice{
+		{InstallID: "i1", Token: "ExponentPushToken[live]", CreatedAt: now, LastSeenAt: now},
+		{InstallID: "i2", Token: "ExponentPushToken[muted]", Muted: true, CreatedAt: now, LastSeenAt: now},
+	}}
+	sender := newFakeSender([]Ticket{{Status: "ok"}})
+	d := NewDispatcher(nil, store, sender, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	d.dispatch(context.Background(), domain.NotificationRecord{ID: "n1", Title: "hi"})
+
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if len(sender.gotMsgs) != 1 {
+		t.Fatalf("messages = %d, want 1 (the muted device must be skipped)", len(sender.gotMsgs))
+	}
+	if sender.gotMsgs[0].To != "ExponentPushToken[live]" {
+		t.Fatalf("sent to %q, want the unmuted device", sender.gotMsgs[0].To)
+	}
+}
+
+// TestDispatchAllMutedNeverCallsSend pins the early return in dispatch: when
+// every registered device is muted, the filtered messages slice is empty and
+// Send must never be called at all (not called-with-empty-slice, which would
+// draw a 400 from Expo). TestDispatchSkipsMutedDevices only covers the mixed
+// case, so a regression that dropped the `len(messages) == 0` guard would slip
+// past it silently.
+func TestDispatchAllMutedNeverCallsSend(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeDeviceStore{devices: []mobilebridge.PushDevice{
+		{InstallID: "i1", Token: "ExponentPushToken[muted1]", Muted: true, CreatedAt: now, LastSeenAt: now},
+		{InstallID: "i2", Token: "ExponentPushToken[muted2]", Muted: true, CreatedAt: now, LastSeenAt: now},
+	}}
+	sender := newFakeSender(nil)
+	d := NewDispatcher(nil, store, sender, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	d.dispatch(context.Background(), domain.NotificationRecord{ID: "n1", Title: "hi"})
+
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if sender.sent {
+		t.Fatal("Send was called despite every device being muted")
+	}
+}
+
+// TestDispatchSkipsDevicesWithoutToken pins the third dispatcher-side guard: a
+// row can now represent a paired phone that never minted a push token (no
+// permission granted, or a build that can't mint one). Sending to an empty
+// token would be a wasted/erroring Expo call, so those rows must be filtered
+// out exactly like muted ones, and the survivor must still be the tokened one.
+func TestDispatchSkipsDevicesWithoutToken(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeDeviceStore{devices: []mobilebridge.PushDevice{
+		{InstallID: "i1", Token: "", CreatedAt: now, LastSeenAt: now},
+		{InstallID: "i2", Token: "ExponentPushToken[live]", CreatedAt: now, LastSeenAt: now},
+	}}
+	sender := newFakeSender([]Ticket{{Status: "ok"}})
+	d := NewDispatcher(nil, store, sender, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	d.dispatch(context.Background(), domain.NotificationRecord{ID: "n1", Title: "hi"})
+
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if len(sender.gotMsgs) != 1 {
+		t.Fatalf("messages = %d, want 1 (the tokenless device must be skipped)", len(sender.gotMsgs))
+	}
+	if sender.gotMsgs[0].To != "ExponentPushToken[live]" {
+		t.Fatalf("sent to %q, want the tokened device", sender.gotMsgs[0].To)
 	}
 }
 

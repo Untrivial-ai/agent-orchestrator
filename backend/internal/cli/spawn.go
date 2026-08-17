@@ -21,30 +21,32 @@ import (
 const maxDisplayNameLen = 20
 
 type spawnOptions struct {
-	project        string
-	harness        string
-	kind           string
-	mode           string
-	branch         string
-	prompt         string
-	issue          string
-	name           string
-	claimPR        string
-	noTakeover     bool
-	skipAgentCheck bool
+	project         string
+	harness         string
+	kind            string
+	mode            string
+	branch          string
+	prompt          string
+	issue           string
+	name            string
+	claimPR         string
+	noTakeover      bool
+	skipAgentCheck  bool
+	trackerProvider string
 }
 
 // spawnRequest mirrors the daemon's SpawnSessionRequest body for
 // POST /api/v1/sessions. The CLI keeps its own copy so it need not import httpd.
 type spawnRequest struct {
-	ProjectID   string `json:"projectId"`
-	IssueID     string `json:"issueId,omitempty"`
-	Kind        string `json:"kind,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Harness     string `json:"harness,omitempty"`
-	Branch      string `json:"branch,omitempty"`
-	Prompt      string `json:"prompt,omitempty"`
-	DisplayName string `json:"displayName"`
+	ProjectID       string `json:"projectId"`
+	IssueID         string `json:"issueId,omitempty"`
+	TrackerProvider string `json:"trackerProvider,omitempty"`
+	Kind            string `json:"kind,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	Harness         string `json:"harness,omitempty"`
+	Branch          string `json:"branch,omitempty"`
+	Prompt          string `json:"prompt,omitempty"`
+	DisplayName     string `json:"displayName"`
 }
 
 type spawnResult struct {
@@ -92,6 +94,15 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				return usageError{fmt.Errorf(`--kind must be "worker" or "orchestrator"`)}
 			}
 
+			tp := strings.TrimSpace(opts.trackerProvider)
+			if tp == "" {
+				tp = "github"
+			}
+			if tp != "github" && tp != "gitlab" {
+				return usageError{fmt.Errorf(`--tracker-provider must be "github" or "gitlab"`)}
+			}
+			opts.trackerProvider = tp
+
 			project, err := ctx.resolveSpawnProject(cmd.Context(), opts.project)
 			if err != nil {
 				return err
@@ -126,14 +137,15 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				}
 			}
 			req := spawnRequest{
-				ProjectID:   opts.project,
-				IssueID:     opts.issue,
-				Kind:        opts.kind,
-				Harness:     opts.harness,
-				Mode:        opts.mode,
-				Branch:      opts.branch,
-				Prompt:      opts.prompt,
-				DisplayName: name,
+				ProjectID:       opts.project,
+				IssueID:         opts.issue,
+				TrackerProvider: opts.trackerProvider,
+				Kind:            opts.kind,
+				Harness:         opts.harness,
+				Mode:            opts.mode,
+				Branch:          opts.branch,
+				Prompt:          opts.prompt,
+				DisplayName:     name,
 			}
 			var res spawnResult
 			if err := ctx.postJSON(cmd.Context(), "sessions", req, &res); err != nil {
@@ -181,6 +193,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for Scratch)")
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")
+	f.StringVar(&opts.trackerProvider, "tracker-provider", "github", "Issue tracker provider: github or gitlab (default: github)")
 	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 20 characters)")
 	f.StringVar(&opts.claimPR, "claim-pr", "", "Immediately claim an existing PR for the spawned session")
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")

@@ -246,6 +246,18 @@ describe("NotificationRuntime", () => {
 });
 
 describe("NotificationCenter", () => {
+	it("uses the compact topbar bell and unread badge sizing", () => {
+		renderNotificationCenter();
+		const trigger = screen.getByRole("button", { name: /unread notifications/ });
+		const bell = trigger.querySelector("svg");
+		const badge = trigger.querySelector("span");
+
+		expect(bell?.classList.contains("size-icon-base")).toBe(true);
+		expect(badge?.classList.contains("h-3")).toBe(true);
+		expect(badge?.classList.contains("min-w-3")).toBe(true);
+		expect(badge?.classList.contains("text-[7px]")).toBe(true);
+	});
+
 	it("opens once on click without a hover/focus remount and dismisses outside", async () => {
 		renderNotificationCenter();
 		const trigger = screen.getByRole("button", { name: /unread notifications/ });

@@ -1172,8 +1172,30 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	handle("browser:openTab", async (event, input: BrowserOpenTabInput) => {
 		const session = entries.get(input.viewId);
 		if (!session || !isRendererOwned(event, input.viewId)) return emptyTabsState(input.viewId);
-		await openTab(session, input.url, true);
-		return listTabs(session);
+		let url = input.url;
+		if (url) {
+			const normalized = normalizeBrowserURL(url);
+			if (!isAllowedBrowserURL(normalized.href, options.rendererOrigin)) {
+				throw browserError("NAVIGATION_FAILED", "Unsupported browser URL");
+			}
+			url = normalized.href;
+		}
+		if (!options.agentBrowserRuntime) {
+			await openTab(session, url, true);
+			return listTabs(session);
+		}
+		return queueNativeOperation(session, async () => {
+			// Let agent-browser create UI tabs too so its stable tab registry and
+			// AO's WebContentsView IDs stay aligned for later select/close commands.
+			await options.agentBrowserRuntime!.runAction(
+				session.sessionId,
+				"tab-new",
+				{ url },
+				agentBrowserTargets(session),
+			);
+			session.nativeActiveTabId = session.activeTabId;
+			return listTabs(session);
+		});
 	});
 	handle("browser:annotation:setMode", (event, input: BrowserAnnotationModeInput) => setAnnotationMode(event, input));
 	on("browser:destroy", (event, viewId: string) => {

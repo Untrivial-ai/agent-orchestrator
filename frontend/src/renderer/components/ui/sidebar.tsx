@@ -8,6 +8,7 @@ import { Slot } from "radix-ui";
 import { useTranslation } from "react-i18next";
 
 import { useIsMobile } from "@/hooks/use-mobile";
+import { SHELL_PANEL_SPRING } from "@/lib/motion-spring";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -207,9 +208,8 @@ function Sidebar({
 	const isOffcanvasCollapsed = state === "collapsed" && collapsible === "offcanvas";
 	const isIconCollapsed = state === "collapsed" && collapsible === "icon";
 	const containerX = isOffcanvasCollapsed ? (side === "left" ? "-100%" : "100%") : "0%";
-	const sidebarSpring = { type: "spring", stiffness: 420, damping: 40, mass: 0.6 } as const;
-	const activeTransition: typeof sidebarSpring | { duration: number } =
-		!isReady || prefersReducedMotion ? { duration: 0 } : sidebarSpring;
+	const activeTransition: typeof SHELL_PANEL_SPRING | { duration: number } =
+		!isReady || prefersReducedMotion ? { duration: 0 } : SHELL_PANEL_SPRING;
 
 	// Target width for the gap placeholder. Animating the actual width lets the
 	// flex sibling <main> follow in real time instead of snapping separately.

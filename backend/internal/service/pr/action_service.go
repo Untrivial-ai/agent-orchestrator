@@ -174,7 +174,7 @@ func parsePRNumber(value string) (int, error) {
 
 func scmRepoForPR(pr domain.PullRequest) (ports.SCMRepo, bool) {
 	parts := strings.Split(pr.Repo, "/")
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+	if len(parts) < 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[len(parts)-1]) == "" {
 		return ports.SCMRepo{}, false
 	}
 	provider := strings.ToLower(strings.TrimSpace(pr.Provider))
@@ -185,7 +185,13 @@ func scmRepoForPR(pr domain.PullRequest) (ports.SCMRepo, bool) {
 	if host == "" && provider == "github" {
 		host = "github.com"
 	}
-	return ports.SCMRepo{Provider: provider, Host: host, Owner: parts[0], Name: parts[1], Repo: pr.Repo}, true
+	return ports.SCMRepo{
+		Provider: provider,
+		Host:     host,
+		Owner:    strings.Join(parts[:len(parts)-1], "/"),
+		Name:     parts[len(parts)-1],
+		Repo:     pr.Repo,
+	}, true
 }
 
 // ResolveComments is not implemented by the current provider action service.

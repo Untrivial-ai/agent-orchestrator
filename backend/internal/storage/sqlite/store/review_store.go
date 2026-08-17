@@ -115,12 +115,16 @@ func (s *Store) UpdateReviewAgentSessionID(ctx context.Context, id, agentSession
 func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if r.TriggerSource == "" {
+		r.TriggerSource = domain.ReviewTriggerManual
+	}
 	err := s.qw.InsertReviewRun(ctx, gen.InsertReviewRunParams{
 		ID:               r.ID,
 		ReviewID:         r.ReviewID,
 		SessionID:        r.SessionID,
 		BatchID:          r.BatchID,
 		Harness:          r.Harness,
+		TriggerSource:    r.TriggerSource,
 		PRURL:            r.PRURL,
 		TargetSha:        r.TargetSHA,
 		Status:           r.Status,
@@ -324,6 +328,7 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		SessionID:        r.SessionID,
 		BatchID:          r.BatchID,
 		Harness:          r.Harness,
+		TriggerSource:    r.TriggerSource,
 		PRURL:            r.PRURL,
 		TargetSHA:        r.TargetSha,
 		Status:           r.Status,

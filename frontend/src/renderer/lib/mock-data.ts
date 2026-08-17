@@ -165,6 +165,7 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				provider: "grok",
 				branch: "demo/new-task-flake",
 				status: "ci_failed",
+				autoInjectCI: false,
 				createdAt: hoursAgo(8),
 				updatedAt: minutesAgo(46),
 				activity: { state: "idle", lastActivityAt: minutesAgo(46) },
@@ -232,6 +233,7 @@ const prSummary = (sessionId: string, number: number, overrides: Partial<Session
 		deletions: 8,
 		changedFiles: 3,
 		ci: {
+			autoInjectCI: true,
 			state: facts?.ci === "failing" ? "failing" : facts?.ci === "pending" ? "pending" : "passing",
 			failingChecks: [],
 		},
@@ -271,6 +273,22 @@ const prSummary = (sessionId: string, number: number, overrides: Partial<Session
 };
 
 export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
+	"demo-ci-failed": [
+		prSummary("demo-ci-failed", 324, {
+			ci: {
+				autoInjectCI: false,
+				state: "failing",
+				failingChecks: [
+					{
+						name: "renderer smoke",
+						status: "failed",
+						conclusion: "failure",
+						url: "https://github.com/acme-inc/ao-demo/actions/runs/324001/job/1",
+					},
+				],
+			},
+		}),
+	],
 	// Carries human + bot PR reviews and an unresolved thread, so the Reviews
 	// tab's Pull request pane has something to show in the browser preview.
 	"demo-needs-input": [
@@ -307,8 +325,8 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 						reviewUrl: "https://github.com/acme-inc/ao-demo/pull/318#pullrequestreview-3101",
 						// Two comments, two separate threads — resolving addresses threads.
 						links: [
-							{ file: "frontend/src/renderer/components/TerminalPane.tsx", line: 84, autoInjectReview: true },
-							{ file: "frontend/src/renderer/styles.css", line: 219, autoInjectReview: true },
+							{ file: "frontend/src/renderer/components/TerminalPane.tsx", line: 84, body: "The reviewer terminal header wraps awkwardly at this width. Please keep the role label and controls on one line.", autoInjectReview: true },
+							{ file: "frontend/src/renderer/styles.css", line: 219, body: "This spacing token makes the review controls look larger than the rest of the inspector controls.", autoInjectReview: true },
 						],
 					},
 				],
@@ -348,6 +366,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 			additions: 91,
 			deletions: 17,
 			ci: {
+				autoInjectCI: true,
 				state: "failing",
 				failingChecks: [
 					{
@@ -384,6 +403,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 			additions: 74,
 			deletions: 22,
 			ci: {
+				autoInjectCI: true,
 				state: "failing",
 				failingChecks: [
 					{

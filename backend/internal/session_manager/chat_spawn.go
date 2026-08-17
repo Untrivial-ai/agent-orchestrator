@@ -23,6 +23,9 @@ import (
 // ChatLauncher starts the structured controller for a chat session. Implemented
 // by the chat service; nil in a build without chat support.
 type ChatLauncher interface {
+	// SupportsChat reports whether a harness has a Chat driver at all, without
+	// probing the local install. Use it to decide whether Chat is even offerable.
+	SupportsChat(harness domain.AgentHarness) bool
 	// PreflightChat reports whether a harness can start in chat mode right now.
 	// Called before any durable state exists so an unsupported request costs
 	// nothing.
@@ -71,6 +74,9 @@ type ChatStart struct {
 	// ProviderConversationID resumes a stored conversation instead of opening a
 	// new one. Empty means start fresh.
 	ProviderConversationID string
+	// RequireNativeHistory is set only for a TUI -> Chat handoff. The target must
+	// replay the provider transcript before it can become the committed UI.
+	RequireNativeHistory bool
 	// ControllerReady commits the durable controller facts before the provider
 	// event stream is consumed. This prevents an immediate exit from racing a
 	// later MarkSpawned write back to idle.
@@ -104,7 +110,10 @@ type chatSpawn struct {
 // first so no app-server process is left behind holding the worktree.
 func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domain.SessionRecord, error) {
 	id := in.record.ID
-	agentConfig := effectiveAgentConfig(in.cfg.Kind, in.project.Config)
+	agentConfig := applySpawnAgentConfig(
+		effectiveAgentConfig(in.cfg.Kind, in.project.Config),
+		in.cfg.AgentConfig,
+	)
 
 	// The same env the terminal path builds, including the HookPATH pin. The
 	// provider passes its environment through to the shell commands it runs, so
@@ -113,7 +122,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	var diffBaseSHA, diffBaseRef string
 	if in.projectKind == domain.ProjectKindSingleRepo {
 		diffBaseSHA, diffBaseRef = resolveSpawnDiffBase(
-			ctx, in.workspace.Path, in.project.Config.WithDefaults().DefaultBranch)
+			ctx, in.workspace.Path, in.workspace.BaseRef)
 	}
 
 	var (
@@ -268,6 +277,7 @@ func (m *Manager) resumeChatController(
 	rec domain.SessionRecord,
 	project domain.ProjectRecord,
 	ws ports.WorkspaceInfo,
+	requireNativeHistory bool,
 ) (RestoreResult, error) {
 	if m.chat == nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w: chat mode is not available in this build",
@@ -301,6 +311,7 @@ func (m *Manager) resumeChatController(
 		AdditionalDirectories: additionalDirectories,
 		// The handle that makes this a resume rather than a new conversation.
 		ProviderConversationID: rec.Metadata.ProviderConversationID,
+		RequireNativeHistory:   requireNativeHistory,
 		ControllerReady: func(started ChatStarted) error {
 			metadata := rec.Metadata
 			metadata.WorkspacePath = ws.Path

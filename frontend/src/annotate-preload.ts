@@ -26,6 +26,8 @@ const PROMPT_MAX_HEIGHT = 360;
 const PROMPT_COMPACT_CHROME_HEIGHT = 48;
 const PROMPT_EXPANDED_CHROME_HEIGHT = 48;
 const TEXTAREA_MIN_HEIGHT = 32;
+const MARKDOWN_ANNOTATION_TARGETS =
+	"h1, h2, h3, h4, h5, h6, p, ul, ol, li, blockquote, pre, table, th, td, figure, figcaption, img, hr, details, summary";
 
 ipcRenderer.on("browser:annotation:setMode", (_event, input: { enabled?: boolean }) => {
 	setEnabled(Boolean(input?.enabled), "disabled");
@@ -190,10 +192,19 @@ function annotationTarget(target: EventTarget | null): Element | null {
 	if (!(target instanceof Element)) return null;
 	const element =
 		target.closest("button, a, input, textarea, select, [role]") ??
+		markdownAnnotationTarget(target) ??
 		target.closest("[data-testid], [id], [class]") ??
 		target;
 	if (element === document.documentElement || element === document.body) return null;
 	return element;
+}
+
+function markdownAnnotationTarget(target: Element): Element | null {
+	// Goldmark emits semantic nodes without classes inside one classed layout
+	// wrapper. Prefer the content block before the generic component heuristic
+	// promotes every Markdown annotation to the full document wrapper.
+	if (!target.closest(".markdown-body")) return null;
+	return target.closest(MARKDOWN_ANNOTATION_TARGETS);
 }
 
 // Registered as FontFace objects from decoded bytes rather than an @font-face

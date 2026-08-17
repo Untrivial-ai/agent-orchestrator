@@ -20,20 +20,28 @@ import (
 
 type fakeReviewService struct {
 	// triggeredHarness records the override the controller forwarded.
-	triggeredHarness domain.ReviewerHarness
-	triggerErr       error
-	cancelErr        error
-	trigger          reviewcore.TriggerResult
-	cancel           reviewcore.CancelResult
-	list             reviewcore.SessionReviews
-	submitted        []reviewsvc.SubmittedReview
-	activityID       string
-	activitySignal   reviewsvc.ActivitySignal
-	activityErr      error
-	killed           bool
-	teardown         bool
-	restored         bool
-	switchedHarness  domain.ReviewerHarness
+	triggeredHarness  domain.ReviewerHarness
+	triggerErr        error
+	cancelErr         error
+	trigger           reviewcore.TriggerResult
+	cancel            reviewcore.CancelResult
+	list              reviewcore.SessionReviews
+	submitted         []reviewsvc.SubmittedReview
+	activityID        string
+	activitySignal    reviewsvc.ActivitySignal
+	activityErr       error
+	killed            bool
+	teardown          bool
+	restored          bool
+	switchedHarness   domain.ReviewerHarness
+	rereviewSession   domain.SessionID
+	rereviewPRURL     string
+	rereviewReviewer  string
+	rereviewErr       error
+	resolveSession    domain.SessionID
+	resolvePRURL      string
+	resolveCommentURL string
+	resolveErr        error
 }
 
 func (f *fakeReviewService) Trigger(
@@ -49,6 +57,24 @@ func (f *fakeReviewService) Trigger(
 		return f.trigger, nil
 	}
 	return reviewcore.TriggerResult{Run: domain.ReviewRun{ID: "run-1"}, Created: true}, nil
+}
+
+func (f *fakeReviewService) RequestRereview(_ context.Context, workerID domain.SessionID, prURL, reviewer string) error {
+	f.rereviewSession = workerID
+	f.rereviewPRURL = prURL
+	f.rereviewReviewer = reviewer
+	return f.rereviewErr
+}
+
+func (f *fakeReviewService) ResolveReviewComment(_ context.Context, workerID domain.SessionID, prURL, commentURL string) error {
+	f.resolveSession = workerID
+	f.resolvePRURL = prURL
+	f.resolveCommentURL = commentURL
+	return f.resolveErr
+}
+
+func (f *fakeReviewService) TriggerAuto(context.Context, domain.SessionID, domain.ReviewerHarness) (reviewcore.TriggerResult, error) {
+	return reviewcore.TriggerResult{}, nil
 }
 
 func (f *fakeReviewService) Submit(context.Context, domain.SessionID, string, domain.ReviewVerdict, string, string) (domain.ReviewRun, error) {
@@ -207,6 +233,48 @@ func TestReviewsTriggerIncludesBatchFields(t *testing.T) {
 			t.Fatalf("body contains deprecated field %s: %s", unwanted, body)
 		}
 	}
+}
+
+func TestReviewsResolveCommentForwardsPRAndComment(t *testing.T) {
+	svc := &fakeReviewService{}
+	srv := newReviewTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/comments/resolve", `{"pullRequestUrl":"https://github.com/o/r/pull/1","commentUrl":"https://github.com/o/r/pull/1#discussion_r1"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if svc.resolveSession != "mer-1" || svc.resolvePRURL != "https://github.com/o/r/pull/1" || svc.resolveCommentURL != "https://github.com/o/r/pull/1#discussion_r1" {
+		t.Fatalf("request = session %q pr %q comment %q", svc.resolveSession, svc.resolvePRURL, svc.resolveCommentURL)
+	}
+	if !strings.Contains(string(body), `"ok":true`) {
+		t.Fatalf("body missing ok: %s", body)
+	}
+}
+
+func TestReviewsRerequestForwardsReviewerAndPR(t *testing.T) {
+	svc := &fakeReviewService{}
+	srv := newReviewTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/rerequest", `{"reviewerId":"prateek","pullRequestUrl":"https://github.com/o/r/pull/1"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if svc.rereviewSession != "mer-1" || svc.rereviewReviewer != "prateek" || svc.rereviewPRURL != "https://github.com/o/r/pull/1" {
+		t.Fatalf("request = session %q reviewer %q pr %q", svc.rereviewSession, svc.rereviewReviewer, svc.rereviewPRURL)
+	}
+	if !strings.Contains(string(body), `"ok":true`) {
+		t.Fatalf("body missing ok: %s", body)
+	}
+}
+
+func TestReviewsRerequestInvalidJSON(t *testing.T) {
+	srv := newReviewTestServer(t, &fakeReviewService{})
+
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/rerequest", `{`)
+	assertJSON(t, headers)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
 }
 
 func TestReviewsCancelIncludesReviewStates(t *testing.T) {

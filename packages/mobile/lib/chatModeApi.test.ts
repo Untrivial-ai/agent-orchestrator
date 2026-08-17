@@ -4,9 +4,16 @@ vi.mock("@react-native-async-storage/async-storage", () => ({ default: { getItem
 vi.mock("expo-secure-store", () => ({ getItemAsync: vi.fn(), setItemAsync: vi.fn(), deleteItemAsync: vi.fn() }));
 vi.mock("expo/fetch", () => ({ fetch: vi.fn() }));
 
-import { ApiError, apiRequest, getPreview, getSettings, launchOrchestrator, mobileReachablePreviewURL, restoreSession, resumeSessionAgent, spawnSession } from "./api";
-import { getConversationPage, getWorkspacePaths } from "./chat/api";
+import { fetch as expoFetch } from "expo/fetch";
+import { ApiError, apiRequest, delegateTask, getAgentModels, getPreview, getSessions, getSettings, launchOrchestrator, mobileReachablePreviewURL, restoreSession, resumeSessionAgent, spawnSession } from "./api";
+import * as chatApi from "./chat/api";
 import type { ServerConfig } from "./config";
+
+const {
+	acknowledgeSessionInterfaceTransitionNotice,
+	getConversationPage,
+	getWorkspacePaths,
+} = chatApi;
 
 const cfg: ServerConfig = { host: "ao.test", httpPort: "3011", muxPort: "3011", secure: false, password: "secret12" };
 
@@ -21,6 +28,37 @@ describe("mobile Chat API boundaries", () => {
 		expect(JSON.parse(String(init?.body))).toMatchObject({ projectId: "p-1", harness: "codex", kind: "worker", mode: "chat" });
 		expect(session.mode).toBe("chat");
 		expect(init?.headers).toMatchObject({ Authorization: "Bearer secret12" });
+	});
+
+	it("loads a project-scoped model catalog for the selected agent", async () => {
+		vi.mocked(fetch).mockResolvedValue(response({
+			agentId: "codex", selectionMode: "catalog", allowCustom: true,
+			models: [{ id: "gpt-5", label: "GPT-5", isDefault: true }],
+			source: "codex", stale: false, fetchedAt: "2026-08-09T00:00:00Z",
+		}));
+		const catalog = await getAgentModels(cfg, "codex", "project one");
+		expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("http://ao.test:3011/api/v1/agents/codex/models?projectId=project%20one");
+		expect(catalog.models[0]).toMatchObject({ id: "gpt-5", isDefault: true });
+	});
+
+	it("preserves daemon pin facts used by the Agents ordering", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({ sessions: [{ id: "w-1", projectId: "p-1", mode: "chat", activity: { state: "idle", lastActivityAt: "2026-08-08T10:00:00Z" }, updatedAt: "2026-08-09T10:00:00Z", isPinned: true, pinnedAt: "2026-08-09T10:00:00Z" }] }))
+			.mockResolvedValueOnce(response({ sessions: [] }))
+			.mockResolvedValueOnce(response({ projects: [] }));
+		const result = await getSessions(cfg);
+		expect(result.sessions[0]).toMatchObject({ isPinned: true, pinnedAt: "2026-08-09T10:00:00Z", lastActivityAt: "2026-08-08T10:00:00Z" });
+	});
+
+	it("delegates an optional empty task with explicit interface and model", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({ ok: true, workerId: "w-2" }, 202))
+			.mockResolvedValueOnce(response({ session: { id: "w-2", projectId: "p-1", harness: "codex", mode: "chat" } }));
+		const session = await delegateTask(cfg, { projectId: "p-1", brief: "", agent: "codex", model: "gpt-5", mode: "chat" });
+		const [url, init] = vi.mocked(fetch).mock.calls[0];
+		expect(url).toBe("http://ao.test:3011/api/v1/orchestrators/delegate");
+		expect(JSON.parse(String(init?.body))).toEqual({ projectId: "p-1", brief: "", agent: "codex", model: "gpt-5", mode: "chat" });
+		expect(session).toMatchObject({ id: "w-2", projectId: "p-1", mode: "chat" });
 	});
 
 	it("keeps an explicit TUI orchestrator request explicit", async () => {
@@ -45,6 +83,35 @@ describe("mobile Chat API boundaries", () => {
 		const [url, init] = vi.mocked(fetch).mock.calls[0];
 		expect(url).toBe("http://ao.test:3011/api/v1/sessions/chat-terminated/restore");
 		expect(init?.method).toBe("POST");
+	});
+
+	it("acknowledges the exact durable interface-transition notice", async () => {
+		vi.mocked(fetch).mockResolvedValue(
+			response({
+				transition: {
+					id: "transition/1",
+					sessionId: "chat/1",
+					sourceMode: "chat",
+					targetMode: "tui",
+					policy: "drain",
+					phase: "recovery_required",
+					createdAt: "2026-08-12T10:00:00Z",
+					updatedAt: "2026-08-12T10:01:00Z",
+					noticeAcknowledgedAt: "2026-08-13T08:00:00Z",
+				},
+			}),
+		);
+		const transition = await acknowledgeSessionInterfaceTransitionNotice(
+			cfg,
+			"chat/1",
+			"transition/1",
+		);
+		const [url, init] = vi.mocked(fetch).mock.calls[0];
+		expect(url).toBe(
+			"http://ao.test:3011/api/v1/sessions/chat%2F1/interface-transition/transition%2F1/notice-acknowledgement",
+		);
+		expect(init?.method).toBe("PUT");
+		expect(transition.noticeAcknowledgedAt).toBe("2026-08-13T08:00:00Z");
 	});
 
 	it("preserves daemon request IDs on API errors", async () => {
@@ -105,6 +172,67 @@ describe("mobile Chat API boundaries", () => {
 		expect(page.controller).toEqual({ state: "busy" });
 		expect(page.capabilities).toEqual(["config_options", "steer"]);
 		expect(page.items[0]).toMatchObject({ activityKind: "approval", requestId: "req-1", decisions: [{ id: "accept", label: "accept" }], detail: { output: { text: "legacy" } } });
+	});
+
+	it("keeps the first Chat payload small while allowing larger history pages", async () => {
+		const wire = {
+			conversationId: "c-1", sessionId: "w-1", harness: "codex", mode: "chat", controller: "idle",
+			latestSequence: 0, oldestSequence: 0, hasMoreBefore: false, settings: {}, turns: [], messages: [], activities: [],
+		};
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response(wire))
+			.mockResolvedValueOnce(response(wire));
+
+		await getConversationPage(cfg, "w-1");
+		await getConversationPage(cfg, "w-1", 100);
+
+		expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([
+			"http://ao.test:3011/api/v1/sessions/w-1/conversation?limit=50",
+			"http://ao.test:3011/api/v1/sessions/w-1/conversation?limit=200&beforeSequence=100",
+		]);
+	});
+
+	it("delivers the global event stream without filtering out other sessions", async () => {
+		vi.mocked(expoFetch).mockResolvedValue(new Response([
+			'id: 1\ndata: {"seq":1,"projectId":"p-1","sessionId":"w-1","type":"session_updated","payload":{"conversationId":"c-1"},"createdAt":"2026-08-11"}\n\n',
+			'id: 2\ndata: {"seq":2,"projectId":"p-1","sessionId":"w-2","type":"session_updated","payload":{"conversationId":"c-2"},"createdAt":"2026-08-11"}\n\n',
+		].join("")) as unknown as Awaited<ReturnType<typeof expoFetch>>);
+		const streamGlobalEvents = (
+			chatApi as unknown as {
+				streamGlobalConversationEvents?: (
+					cfg: ServerConfig,
+					after: number,
+					signal: AbortSignal,
+					onEvent: (event: { sessionId?: string }) => void,
+				) => Promise<number>;
+			}
+		).streamGlobalConversationEvents;
+		const sessions: string[] = [];
+
+		const cursor = await streamGlobalEvents?.(cfg, 0, new AbortController().signal, (event) => {
+			if (event.sessionId) sessions.push(event.sessionId);
+		});
+
+		expect(sessions).toEqual(["w-1", "w-2"]);
+		expect(cursor).toBe(2);
+	});
+
+	it("accepts the daemon's reset cursor after its event database is replaced", async () => {
+		vi.mocked(expoFetch).mockResolvedValue(new Response(
+			'id: 1\ndata: {"seq":1,"projectId":"p-1","sessionId":"w-1","type":"session_updated","createdAt":"2026-08-11"}\n\n',
+			{ headers: { "X-AO-Event-After": "0" } },
+		) as unknown as Awaited<ReturnType<typeof expoFetch>>);
+		const received: number[] = [];
+
+		const cursor = await chatApi.streamGlobalConversationEvents(
+			cfg,
+			100,
+			new AbortController().signal,
+			(event) => received.push(event.seq),
+		);
+
+		expect(received).toEqual([1]);
+		expect(cursor).toBe(1);
 	});
 });
 

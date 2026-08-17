@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import type {
@@ -116,50 +117,52 @@ describe("compaction in the timeline", () => {
 });
 
 describe("the compact control", () => {
-	it("is offered next to the context readout", () => {
+	it("is offered in the composer message tools", () => {
 		const onCompact = vi.fn();
 		render(<ChatWorkspace snapshot={snapshot([assistantSaid])} onCompact={onCompact} />);
 
-		const button = screen.getByRole("button", { name: "Compact conversation history" });
-		button.click();
+		const tools = screen.getByRole("group", { name: "Message tools" });
+		const compactButton = within(tools).getByRole("button", {
+			name: "Compact conversation history",
+		});
+		compactButton.click();
 		expect(onCompact).toHaveBeenCalledOnce();
 	});
 
+	it("offers compact alongside provider skills in the slash menu", async () => {
+		const user = userEvent.setup();
+		render(<ChatWorkspace snapshot={snapshot([assistantSaid])} onCompact={vi.fn()} />);
+
+		await user.type(screen.getByLabelText("Message the agent"), "/");
+		expect(screen.getByRole("option", { name: /compact/i })).toBeInTheDocument();
+	});
+
 	// Measured against a live app-server: thread/compact/start mid-turn silently
-	// interrupts the running turn, then compacts. The daemon refuses it for that
-	// reason, and the control says so before it is pressed rather than letting the
-	// user discover the loss afterwards.
-	it("is disabled while a turn is in flight, and explains why", () => {
+	// interrupts the running turn, then compacts. The command refuses locally and
+	// preserves the draft rather than letting the user discover the loss afterwards.
+	it("refuses while a turn is in flight and keeps the command editable", async () => {
+		const user = userEvent.setup();
+		const onCompact = vi.fn();
 		render(
 			<ChatWorkspace
 				snapshot={snapshot([assistantSaid], [
 					{ id: "t1", state: "running", requestedAt: "2026-08-02T10:00:00Z" },
 				])}
-				onCompact={vi.fn()}
+				onCompact={onCompact}
 			/>,
 		);
 
-		const button = screen.getByRole("button", { name: "Compact conversation history" });
-		expect(button).toBeDisabled();
-		expect(button.title).toContain("stop the current turn");
+		const field = screen.getByLabelText("Message the agent");
+		await user.type(field, "/compact");
+		await user.keyboard("{Enter}");
+
+		expect(onCompact).not.toHaveBeenCalled();
+		expect(field).toHaveValue("/compact");
+		expect(screen.getByRole("alert")).toHaveTextContent("Stop the current turn");
 	});
 
-	it("says when the conversation was last compacted", () => {
-		render(
-			<ChatWorkspace
-				snapshot={snapshot([assistantSaid], [], { compactedAt: "2026-08-02T10:00:00Z" })}
-				onCompact={vi.fn()}
-			/>,
-		);
-
-		expect(
-			screen.getByRole("button", { name: "Compact conversation history" }).title,
-		).toContain("Last compacted");
-	});
-
-	// A control that fails is worse than no control: once the daemon says this agent
-	// cannot compact, the affordance goes away and the reason is stated.
-	it("disappears when the provider cannot compact", () => {
+	it("surfaces a provider refusal only when the command is invoked", async () => {
+		const user = userEvent.setup();
 		render(
 			<ChatWorkspace
 				snapshot={snapshot([assistantSaid])}
@@ -168,29 +171,22 @@ describe("the compact control", () => {
 			/>,
 		);
 
-		expect(
-			screen.queryByRole("button", { name: "Compact conversation history" }),
-		).not.toBeInTheDocument();
 		expect(screen.getByText("This agent cannot compact its history")).toBeInTheDocument();
+		await user.type(screen.getByLabelText("Message the agent"), "/compact");
+		await user.keyboard("{Enter}");
+		expect(screen.getByRole("alert")).toHaveTextContent("This agent cannot compact its history");
 	});
 
-	// The provider takes ten seconds or so. A control that looked idle the whole time
-	// would invite a second click, and a second compaction.
-	it("reports that a compaction is running", () => {
+	it("does not start a second compaction while one is running", async () => {
+		const user = userEvent.setup();
+		const onCompact = vi.fn();
 		render(
-			<ChatWorkspace snapshot={snapshot([assistantSaid])} onCompact={vi.fn()} compacting />,
+			<ChatWorkspace snapshot={snapshot([assistantSaid])} onCompact={onCompact} compacting />,
 		);
 
-		const button = screen.getByRole("button", { name: "Compact conversation history" });
-		expect(button).toBeDisabled();
-		expect(button.textContent).toContain("Compacting");
-	});
-
-	// Nothing to press in a surface with no command wiring, e.g. the fixture preview.
-	it("is absent when the surface has no compact handler", () => {
-		render(<ChatWorkspace snapshot={snapshot([assistantSaid])} />);
-		expect(
-			screen.queryByRole("button", { name: "Compact conversation history" }),
-		).not.toBeInTheDocument();
+		await user.type(screen.getByLabelText("Message the agent"), "/compact");
+		await user.keyboard("{Enter}");
+		expect(onCompact).not.toHaveBeenCalled();
+		expect(screen.getByRole("alert")).toHaveTextContent("already being compacted");
 	});
 });

@@ -51,15 +51,15 @@ func TestCommandArgs(t *testing.T) {
 	}
 }
 
-func TestBaseRefCandidates(t *testing.T) {
-	got := baseRefCandidates("feature/test", "main")
-	want := []string{"origin/feature/test", "origin/main", "refs/heads/main", "feature/test"}
+func TestConfiguredBaseRefCandidates(t *testing.T) {
+	got := configuredBaseRefCandidates("main")
+	want := []string{"origin/main", "refs/heads/main"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates = %#v, want %#v", got, want)
 	}
 
-	got = baseRefCandidates("feature/test", "upstream/main")
-	want = []string{"origin/feature/test", "upstream/main", "feature/test"}
+	got = configuredBaseRefCandidates("upstream/main")
+	want = []string{"upstream/main"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("qualified candidates = %#v, want %#v", got, want)
 	}
@@ -197,6 +197,7 @@ func TestCreateReusesRegisteredWorktreeAtExpectedPath(t *testing.T) {
 		Kind:          domain.KindOrchestrator,
 		SessionPrefix: "proj",
 		Branch:        "ao/proj-orchestrator",
+		BaseBranch:    "main",
 	}
 	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		joined := strings.Join(args, " ")
@@ -205,6 +206,8 @@ func TestCreateReusesRegisteredWorktreeAtExpectedPath(t *testing.T) {
 			return nil, nil
 		case strings.Contains(joined, "worktree list --porcelain"):
 			return []byte("worktree " + path + "\nbranch refs/heads/ao/proj-orchestrator\n"), nil
+		case strings.Contains(joined, "rev-parse --verify --quiet"):
+			return []byte("sha\n"), nil
 		default:
 			t.Fatalf("unexpected git invocation: %v", args)
 			return nil, nil
@@ -241,6 +244,7 @@ func TestCreateRecreatesMissingRegisteredWorktreeWithForce(t *testing.T) {
 		Kind:          domain.KindOrchestrator,
 		SessionPrefix: "proj",
 		Branch:        "ao/proj-orchestrator",
+		BaseBranch:    "main",
 	}
 
 	// The stale registration is never cleared, so it stays in every listing:
@@ -256,6 +260,8 @@ func TestCreateRecreatesMissingRegisteredWorktreeWithForce(t *testing.T) {
 			return []byte("worktree " + path + "\nbranch refs/heads/ao/proj-orchestrator\n"), nil
 		case strings.Contains(joined, "rev-parse --verify --quiet refs/heads/ao/proj-orchestrator"):
 			return nil, nil
+		case strings.Contains(joined, "rev-parse --verify --quiet"):
+			return []byte("sha\n"), nil
 		case strings.Contains(joined, "worktree add --force "+path+" ao/proj-orchestrator"):
 			return nil, nil
 		default:
@@ -316,6 +322,7 @@ func TestRestoreRecreatesMissingRegisteredWorktreeWithForce(t *testing.T) {
 		Kind:          domain.KindOrchestrator,
 		SessionPrefix: "proj",
 		Branch:        "ao/proj-orchestrator",
+		BaseBranch:    "main",
 		Path:          path,
 	}
 
@@ -330,6 +337,8 @@ func TestRestoreRecreatesMissingRegisteredWorktreeWithForce(t *testing.T) {
 			return []byte("worktree " + path + "\nbranch refs/heads/ao/proj-orchestrator\n"), nil
 		case strings.Contains(joined, "rev-parse --verify --quiet refs/heads/ao/proj-orchestrator"):
 			return nil, nil
+		case strings.Contains(joined, "rev-parse --verify --quiet"):
+			return []byte("sha\n"), nil
 		case strings.Contains(joined, "worktree add --force "+path+" ao/proj-orchestrator"):
 			return nil, nil
 		default:
@@ -380,6 +389,7 @@ func TestRestoreRecreatesOnRegisteredBranchNotCfgBranch(t *testing.T) {
 		Kind:          domain.KindOrchestrator,
 		SessionPrefix: "proj",
 		Branch:        "ao/proj-orchestrator/root",
+		BaseBranch:    "main",
 		Path:          path,
 	}
 
@@ -394,6 +404,8 @@ func TestRestoreRecreatesOnRegisteredBranchNotCfgBranch(t *testing.T) {
 			return []byte("worktree " + path + "\nbranch refs/heads/" + registeredBranch + "\n"), nil
 		case strings.Contains(joined, "rev-parse --verify --quiet refs/heads/"+registeredBranch):
 			return nil, nil
+		case strings.Contains(joined, "rev-parse --verify --quiet"):
+			return []byte("sha\n"), nil
 		case strings.Contains(joined, "worktree add --force "+path+" "+registeredBranch):
 			return nil, nil
 		default:
@@ -481,6 +493,7 @@ func TestCreateWorkspaceProjectRepoAddsWithForceWhenRegistrationIsStale(t *testi
 		name:       "api",
 		repoPath:   repo,
 		outputPath: output,
+		baseRef:    "origin/main",
 	}, "feature/test")
 	if err != nil {
 		t.Fatalf("createWorkspaceProjectRepo: %v", err)
@@ -559,6 +572,7 @@ func TestCreateWorkspaceProjectRepoRecoveryRetriesOnExistingBranchForm(t *testin
 		name:       "api",
 		repoPath:   repo,
 		outputPath: output,
+		baseRef:    "origin/main",
 	}, "feature/test")
 	if err != nil {
 		t.Fatalf("createWorkspaceProjectRepo: %v", err)
@@ -630,6 +644,7 @@ func TestAddNewBranchWorktreeRecoveryFailureReportsBothErrors(t *testing.T) {
 		name:       "api",
 		repoPath:   repo,
 		outputPath: output,
+		baseRef:    "origin/main",
 	}, "feature/test")
 	if err == nil {
 		t.Fatal("createWorkspaceProjectRepo: want error when recovery fails, got nil")
@@ -749,11 +764,12 @@ func TestRestoreWithRepoPathMovesStrayPathAside(t *testing.T) {
 	}
 
 	info, err := ws.Restore(context.Background(), ports.WorkspaceConfig{
-		ProjectID: "proj",
-		SessionID: "proj-1",
-		Branch:    "ao/proj-1",
-		RepoPath:  repo,
-		Path:      path,
+		ProjectID:  "proj",
+		SessionID:  "proj-1",
+		Branch:     "ao/proj-1",
+		BaseBranch: "main",
+		RepoPath:   repo,
+		Path:       path,
 	})
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
@@ -1027,10 +1043,6 @@ func TestAddWorktreeReportsBranchNotFetched(t *testing.T) {
 			return nil, nil
 		case strings.Contains(joined, "worktree list --porcelain"):
 			return nil, nil
-		case strings.Contains(joined, "symbolic-ref --quiet --short refs/remotes/origin/HEAD"):
-			return nil, commandError{args: args, err: exitOne}
-		case strings.Contains(joined, "branch --show-current"):
-			return nil, commandError{args: args, err: exitOne}
 		case strings.Contains(joined, "rev-parse"):
 			return nil, commandError{args: args, err: exitOne}
 		default:
@@ -1038,13 +1050,15 @@ func TestAddWorktreeReportsBranchNotFetched(t *testing.T) {
 			return nil, nil
 		}
 	}
-	_, err = ws.Create(context.Background(), ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess", Branch: "feature/missing"})
+	_, err = ws.Create(context.Background(), ports.WorkspaceConfig{
+		ProjectID: "proj", SessionID: "sess", Branch: "feature/missing", BaseBranch: "main",
+	})
 	if !errors.Is(err, ports.ErrWorkspaceBranchNotFetched) {
 		t.Fatalf("err = %v, want ports.ErrWorkspaceBranchNotFetched", err)
 	}
 }
 
-func TestResolveBaseRefInfersRepoDefaultBranchWhenUnset(t *testing.T) {
+func TestResolveWorktreeRefsInfersRepoDefaultBranchWhenUnset(t *testing.T) {
 	ws, err := New(Options{ManagedRoot: t.TempDir(), RepoResolver: StaticRepoResolver{"proj": t.TempDir()}})
 	if err != nil {
 		t.Fatalf("new: %v", err)
@@ -1053,9 +1067,19 @@ func TestResolveBaseRefInfersRepoDefaultBranchWhenUnset(t *testing.T) {
 	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		joined := strings.Join(args, " ")
 		switch {
-		case strings.Contains(joined, "symbolic-ref --quiet --short refs/remotes/origin/HEAD"):
-			return []byte("origin/master\n"), nil
-		case strings.Contains(joined, "origin/master"):
+		case strings.HasSuffix(joined, " remote"):
+			return []byte("origin\n"), nil
+		case strings.Contains(joined, "config --get checkout.defaultRemote"):
+			return nil, commandError{args: args, err: exitOne}
+		case strings.Contains(joined, "ls-remote --symref -- origin HEAD"):
+			return []byte("ref: refs/heads/master\tHEAD\nabc123\tHEAD\n"), nil
+		case strings.Contains(joined, "check-ref-format --branch master"):
+			return nil, nil
+		case strings.Contains(joined, " fetch "):
+			return nil, nil
+		case strings.Contains(joined, "symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master"):
+			return nil, nil
+		case strings.Contains(joined, "refs/remotes/origin/master"):
 			return []byte("sha\n"), nil
 		case strings.Contains(joined, "rev-parse --verify"):
 			return nil, commandError{args: args, err: exitOne}
@@ -1063,12 +1087,12 @@ func TestResolveBaseRefInfersRepoDefaultBranchWhenUnset(t *testing.T) {
 			return nil, nil
 		}
 	}
-	ref, err := ws.resolveBaseRef(context.Background(), "/repo/child", "ao/work", "")
+	refs, err := ws.resolveWorktreeRefs(context.Background(), context.Background(), "/repo/child", "ao/work", "")
 	if err != nil {
-		t.Fatalf("resolveBaseRef err = %v", err)
+		t.Fatalf("resolveWorktreeRefs err = %v", err)
 	}
-	if ref != "origin/master" {
-		t.Fatalf("base ref = %q, want child origin/master", ref)
+	if refs.seedRef != "refs/remotes/origin/master" || refs.baseRef != "refs/remotes/origin/master" {
+		t.Fatalf("refs = %#v, want child default for both seed and base", refs)
 	}
 }
 

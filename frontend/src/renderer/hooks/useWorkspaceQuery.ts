@@ -6,6 +6,7 @@ import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { toReviewerHarnessId } from "../lib/reviewer-harnesses";
 import { captureRendererEvent } from "../lib/telemetry";
 import {
+	type AgentSwitchSummary,
 	type PRState,
 	type PullRequestFacts,
 	toAgentProvider,
@@ -14,6 +15,19 @@ import {
 	toSessionStatus,
 	type WorkspaceSummary,
 } from "../types/workspace";
+
+function toAgentSwitchSummary(
+	agentSwitch: components["schemas"]["AgentSwitch"],
+): AgentSwitchSummary {
+	return {
+		agentHandoffStatus: agentSwitch.agentHandoffStatus,
+		errorCode: agentSwitch.errorCode,
+		fromHarness: agentSwitch.fromHarness,
+		id: agentSwitch.id,
+		state: agentSwitch.state,
+		targetHarness: agentSwitch.targetHarness,
+	};
+}
 
 function toPullRequestFacts(pr: components["schemas"]["SessionPRFacts"]): PullRequestFacts {
 	return {
@@ -90,6 +104,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 						issueId: session.issueId,
 						provider: toAgentProvider(session.harness),
 						reviewerHarness: toReviewerHarnessId(session.reviewerHarness),
+						autoReviewEnabled: session.autoReviewEnabled ?? false,
 						kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,
 						// Carried through verbatim: the session surface must render from
 						// the mode this session was created with, not from whatever the
@@ -101,9 +116,13 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 						isTerminated: session.isTerminated,
 						terminateOnPrMerge: session.terminateOnPrMerge ?? false,
 						autoInjectReview: session.autoInjectReview ?? true,
+						autoInjectCI: session.autoInjectCI ?? true,
 						createdAt: session.createdAt,
 						updatedAt: session.updatedAt,
 						activity,
+						activeAgentSwitch: session.activeAgentSwitch
+							? toAgentSwitchSummary(session.activeAgentSwitch)
+							: undefined,
 						previewUrl: session.previewUrl,
 						previewRevision: session.previewRevision,
 						isPinned: session.isPinned ?? false,

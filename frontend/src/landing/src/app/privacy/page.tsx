@@ -139,9 +139,9 @@ export default function PrivacyPage() {
               sell or rent data to anyone. The desktop app sends{" "}
               <Strong>anonymous, redacted usage telemetry</Strong> so we can tell
               whether releases are stable — you can turn it off. Website analytics
-              stay off until you accept them. If you voluntarily join the
-              Windows/Linux waitlist, we process the email you submit only for
-              that purpose. The mobile app sends <Strong>no telemetry at all</Strong>{" "}
+              stay off until you accept them. If you voluntarily join a
+              waitlist, we process the details you submit only for that
+              purpose. The mobile app sends <Strong>no telemetry at all</Strong>{" "}
               and talks only to the server you point it at.
             </p>
           </div>
@@ -380,13 +380,13 @@ export default function PrivacyPage() {
               recording is disabled on the marketing site.
             </p>
             <p>
-              The optional Windows/Linux waitlist is separate from analytics.
-              When you submit it, the email address and requested platform are
-              sent to PostHog solely to manage that waitlist, even if you opted
-              out of site analytics. The form discloses this before submission,
-              and submitting it does not enable analytics for later browsing.
-              Fonts are self-hosted. Other services involved when you browse
-              are:
+              Optional waitlists are separate from analytics. When you submit
+              one, the details requested by that form, such as your email
+              address, requested platform, or company role, are sent to PostHog
+              solely to manage that waitlist, even if you opted out of site
+              analytics. Submitting a waitlist form does not enable analytics
+              for later browsing. Fonts are self-hosted. Other services involved
+              when you browse are:
             </p>
             <Bullets>
               <Bullet>
@@ -425,9 +425,9 @@ export default function PrivacyPage() {
                 API keys, tokens, passwords, or any other credential.
               </Bullet>
               <Bullet>
-                Names or account information. The only email address we collect
-                is one you voluntarily submit through the optional
-                Windows/Linux waitlist.
+                Names or account information. The only email address or company
+                role we collect is information you voluntarily submit through an
+                optional waitlist.
               </Bullet>
               <Bullet>Precise location data.</Bullet>
               <Bullet>
@@ -450,7 +450,7 @@ export default function PrivacyPage() {
               <Bullet>
                 <Strong>PostHog</Strong> — product analytics for the desktop
                 app, CLI, and website, plus storage of voluntarily submitted
-                Windows/Linux waitlist emails (
+                waitlist details (
                 <Ext href="https://posthog.com/privacy">privacy policy</Ext>).
               </Bullet>
               <Bullet>
@@ -534,10 +534,10 @@ export default function PrivacyPage() {
                 back to an individual.
               </Bullet>
               <Bullet>
-                <Strong>Waitlist emails.</Strong> Retained in PostHog while
-                needed to notify you about Windows or Linux availability, then
-                deleted. You may request earlier deletion using the private
-                contact address below.
+                <Strong>Waitlist details.</Strong> Retained in PostHog while
+                needed to notify you about the relevant release or AO Cloud
+                access, then deleted. You may request earlier deletion using the
+                private contact address below.
               </Bullet>
             </Bullets>
           </Section>

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, FileText, Image as ImageIcon, Loader2, Tag, X } from "lucide-react";
+import { ArrowUp, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ConversationContentSummary } from "../../types/conversation";
 import { Button } from "../ui/button";
+import { ConversationContentItems } from "./ConversationContentItems";
 
 export interface HumanMessageEditorProps {
 	text: string;
@@ -70,24 +71,12 @@ export function HumanMessageEditor({
 			rows={2}
 			className="chat-composer-scrollbar max-h-56 min-h-[3.25rem] w-full resize-none overflow-y-auto overscroll-contain bg-transparent px-1.5 py-1.5 text-sm leading-relaxed text-foreground outline-none"
 		/>
-		{content.length > 0 ? (
-			<div className="mt-2 flex flex-wrap gap-1.5" aria-label={t("chat.edit.preservedContent")}>
-				{content.map((item, index) => {
-					const Icon = item.type === "image" ? ImageIcon : item.type === "resource" ? FileText : Tag;
-					const label = item.type === "image" ? item.mimeType || t("chat.edit.image") : item.name || item.uri || item.type;
-					return (
-						<span
-							key={`${item.type}-${item.uri ?? item.mimeType ?? item.name ?? index}`}
-							title={item.uri || label}
-							className="flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground"
-						>
-							<Icon aria-hidden="true" className="size-3 shrink-0" />
-							<span className="truncate">{label}</span>
-						</span>
-					);
-				})}
-			</div>
-		) : null}
+		<ConversationContentItems
+			content={content}
+			ariaLabel={t("chat.edit.preservedContent")}
+			imageLabel={t("chat.edit.image")}
+			className="mt-2"
+		/>
 		<div className="mt-2 flex min-h-7 items-center justify-end gap-1.5">
 			{error ? (
 				<span role="alert" className="mr-auto text-[11px] text-destructive">

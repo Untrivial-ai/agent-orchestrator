@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appI18n } from "../i18n";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import { useLocaleStore } from "../stores/locale-store";
+import { useUiStore } from "../stores/ui-store";
 
 const {
 	getUpdate,
@@ -141,6 +142,7 @@ beforeEach(async () => {
 	// Locale defaults to English so existing copy assertions stay green.
 	await appI18n.changeLanguage("en");
 	useLocaleStore.setState({ locale: "en", loaded: false, saving: false, saveError: false });
+	useUiStore.setState({ developerMode: false });
 	document.documentElement.lang = "en";
 });
 
@@ -165,6 +167,30 @@ describe("GlobalSettingsForm", () => {
 		for (const row of [connectMobile, keyboardShortcuts]) {
 			expect(row).toHaveClass("settings-row-bar", "settings-link-row");
 		}
+	});
+
+	it("persists Developer Mode and reveals Feature Releases", async () => {
+		const user = userEvent.setup();
+		renderForm();
+		const toggle = await screen.findByRole("switch", { name: "Developer Mode" });
+		expect(toggle).toHaveAttribute("aria-checked", "false");
+
+		await user.click(toggle);
+		expect(window.localStorage.getItem("ao.developerMode")).toBe("true");
+		await user.click(screen.getByLabelText("Updates channel"));
+		expect(await screen.findByRole("menuitem", { name: "Feature Releases" })).toBeInTheDocument();
+	});
+
+	it("shows the available feature builds after choosing Feature Releases", async () => {
+		const user = userEvent.setup();
+		featListBuilds.mockResolvedValue([]);
+		useUiStore.getState().setDeveloperMode(true);
+		renderForm();
+
+		await user.click(await screen.findByLabelText("Updates channel"));
+		await user.click(await screen.findByRole("menuitem", { name: "Feature Releases" }));
+		expect(await screen.findByText("No live feature releases.")).toBeInTheDocument();
+		expect(featListBuilds).toHaveBeenCalled();
 	});
 
 	it("switches General settings labels to Simplified Chinese and persists locale", async () => {
@@ -294,6 +320,26 @@ describe("GlobalSettingsForm", () => {
 		const installBtn = await screen.findByRole("button", { name: /Restart & install/ });
 		await userEvent.click(installBtn);
 		expect(updInstall).toHaveBeenCalled();
+	});
+
+	it("shows a non-error restart nudge when automatic checks keep failing on the network", async () => {
+		updGetStatus.mockResolvedValue({ state: "not-available", staleCheckNudge: true });
+		renderForm();
+		const nudge = await screen.findByText(
+			"Updates haven't been able to check for a while — restarting the app usually fixes this.",
+		);
+		expect(nudge).toBeInTheDocument();
+		// The nudge is a warning, not an error, and the normal status still shows.
+		expect(screen.getByText("You're on the latest version.")).toBeInTheDocument();
+	});
+
+	it("shows localized restart guidance for a net:: error status", async () => {
+		updGetStatus.mockResolvedValue({ state: "error", message: "net::ERR_FAILED", netError: true });
+		renderForm();
+		const guidance = await screen.findByText(
+			"Couldn't reach the update server — the app's network connection appears stuck. Restarting the app usually fixes this.",
+		);
+		expect(guidance).toBeInTheDocument();
 	});
 
 	it("opens feedback from settings and copies redacted report drafts", async () => {

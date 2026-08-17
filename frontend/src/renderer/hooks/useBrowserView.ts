@@ -101,16 +101,15 @@ const HIDDEN_RECT: BrowserRect = { x: 0, y: 0, width: 0, height: 0 };
 
 // The native WebContentsView is a window-level overlay, so DOM `overflow:
 // hidden` never clips it — it paints wherever the slot's bounding box lands.
-// Inside the collapsible inspector the slot sits in a `min-w-[280px]` wrapper,
-// so on a narrow panel (small window, or mid-collapse) the slot's box spills
-// past its resizable-panel column. Intersect the slot box with that column so
-// the view can only ever paint inside it, never over the terminal/sidebar.
+// During inspector open/close the column slides on a transform (the slot box
+// moves without a ResizeObserver size change), so also clip to `.session-split`.
 function visibleSlotRect(node: HTMLElement): BrowserRect {
 	const rect = node.getBoundingClientRect();
 	let { left, top, right, bottom } = rect;
-	const column = node.closest<HTMLElement>("[data-panel]");
-	if (column) {
-		const bounds = column.getBoundingClientRect();
+	const clips = [node.closest<HTMLElement>("[data-panel]"), node.closest<HTMLElement>(".session-split")];
+	for (const clip of clips) {
+		if (!clip) continue;
+		const bounds = clip.getBoundingClientRect();
 		left = Math.max(left, bounds.left);
 		top = Math.max(top, bounds.top);
 		right = Math.min(right, bounds.right);
@@ -252,13 +251,14 @@ export function useBrowserView({
 			}
 			const observer = new ResizeObserver(scheduleMeasure);
 			observer.observe(node);
-			// Also track the resizable-panel column: while the inspector
-			// collapse/expand animates, the slot's own width stays pinned by
-			// `min-w-[280px]` (so a slot-only observer never fires), but the
-			// column's width changes every frame. Observing it re-measures
-			// through the whole animation so the view never lags behind.
+			// The inspector column keeps a stable width and slides on `x`; the
+			// layout gap's width is what actually changes every spring frame.
+			// Observing it re-measures through the whole animation so the native
+			// view tracks the sliding rail instead of lagging at the last size.
 			const column = node.closest("[data-panel]");
 			if (column) observer.observe(column);
+			const gap = node.closest(".session-split")?.querySelector("[data-slot='inspector-gap']");
+			if (gap) observer.observe(gap);
 			observerRef.current = observer;
 			scheduleMeasure();
 		},

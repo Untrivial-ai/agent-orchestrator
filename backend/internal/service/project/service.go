@@ -15,6 +15,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/gitdefault"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
@@ -139,7 +140,7 @@ func (m *Service) Get(ctx context.Context, id domain.ProjectID) (GetResult, erro
 	if !ok || !row.ArchivedAt.IsZero() {
 		return GetResult{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
-	p := m.projectFromRow(row)
+	p := m.projectFromRow(ctx, row)
 	if row.Kind.WithDefault() == domain.ProjectKindWorkspace {
 		repos, err := m.store.ListWorkspaceRepos(ctx, row.ID)
 		if err != nil {
@@ -230,7 +231,7 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 			return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register workspace project")
 		}
 		m.emitProjectAdded(row, projectCountBefore == 0)
-		p := m.projectFromRow(row)
+		p := m.projectFromRow(ctx, row)
 		p.WorkspaceRepos = workspaceReposFromRecords(repos)
 		return p, nil
 	}
@@ -243,22 +244,12 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 			"suggestedFix": "Run `git commit --allow-empty -m \"initial commit\"` in this folder, then try again.",
 		})
 	}
-	// Record the repo's actual checked-out branch as the project default so
-	// session worktrees base off a branch that exists. Without this a repo on
-	// `master` (or any non-`main` default) falls back to DefaultBranchName and
-	// every spawn fails BRANCH_NOT_FETCHED. Only persist when it diverges from
-	// the default, so the common `main` repo keeps an empty (NULL) config.
-	if row.Config.DefaultBranch == "" {
-		if branch := resolveDefaultBranch(path); branch != "" && branch != domain.DefaultBranchName {
-			row.Config.DefaultBranch = branch
-		}
-	}
 	row.RepoOriginURL = resolveGitOriginURL(path)
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register project")
 	}
 	m.emitProjectAdded(row, projectCountBefore == 0)
-	return m.projectFromRow(row), nil
+	return m.projectFromRow(ctx, row), nil
 }
 
 type repositorySetupTarget int
@@ -303,6 +294,21 @@ func (m *Service) InitializeRepository(ctx context.Context, in InitializeReposit
 		if _, err := gitOutput(ctx, path, "init", "-b", domain.DefaultBranchName); err != nil {
 			return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not initialize a Git repository in this folder.", map[string]any{"error": err.Error()})
 		}
+	}
+	managedBranch := domain.DefaultBranchName
+	if target == repositorySetupUnbornRepo {
+		out, err := gitOutput(ctx, path, "symbolic-ref", "--quiet", "--short", "HEAD")
+		if err != nil || strings.TrimSpace(out) == "" {
+			detail := "empty symbolic HEAD"
+			if err != nil {
+				detail = err.Error()
+			}
+			return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not determine the initial branch for this repository.", map[string]any{"error": detail})
+		}
+		managedBranch = strings.TrimSpace(out)
+	}
+	if _, err := gitOutput(ctx, path, "config", "--local", gitdefault.ManagedDefaultConfigKey, managedBranch); err != nil {
+		return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not record the default branch for this repository.", map[string]any{"error": err.Error()})
 	}
 
 	if _, err := gitOutput(ctx, path, "add", "-A"); err != nil {
@@ -541,7 +547,7 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	}
 	row.DisplayName = displayName
 	row.Config = in.Config
-	return m.projectFromRow(row), nil
+	return m.projectFromRow(ctx, row), nil
 }
 
 // EnsureDefaultScratchProject seeds the built-in first-run scratch project when
@@ -592,7 +598,7 @@ func (m *Service) EnsureDefaultScratchProject(ctx context.Context, scratchPath s
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("SCRATCH_PROJECT_SEED_FAILED", "Failed to create scratch project")
 	}
-	return m.projectFromRow(row), nil
+	return m.projectFromRow(ctx, row), nil
 }
 
 // SetConfig replaces the project's stored config. The typed config is validated
@@ -620,7 +626,7 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_CONFIG_UPDATE_FAILED", "Failed to update project config")
 	}
-	return m.projectFromRow(row), nil
+	return m.projectFromRow(ctx, row), nil
 }
 
 func validateScratchProjectConfig(cfg domain.ProjectConfig) error {
@@ -648,30 +654,16 @@ func resolveGitOriginURL(path string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// resolveDefaultBranch returns the repo's default branch, preferring the
-// remote's default (`origin/HEAD`) over the currently checked-out branch. This
-// matters because the user may have the repo on a feature branch when adding the
-// project: keying off HEAD would persist that feature branch as the project
-// default and base every session worktree on it. `origin/HEAD` reflects the
-// real default (e.g. `master`, `develop`) regardless of the active branch.
-//
-// Falls back to the checked-out branch when origin/HEAD is unset (no remote, or
-// it was never fetched). A detached HEAD, missing repo, or any other git error
-// returns an empty string — `project add` must not fail just because the branch
-// can't be resolved (the caller falls back to DefaultBranchName).
-func resolveDefaultBranch(path string) string {
-	if out, err := aoprocess.Command(
-		"git", "-C", path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD",
-	).Output(); err == nil {
-		if ref := strings.TrimSpace(string(out)); ref != "" {
-			return strings.TrimPrefix(ref, "origin/")
-		}
-	}
-	out, err := aoprocess.Command("git", "-C", path, "symbolic-ref", "--short", "HEAD").Output()
+// resolveDefaultBranch inspects only authoritative local metadata: a cached
+// remote HEAD, or the branch AO recorded when it initialized a remoteless repo.
+// It deliberately never consults the checked-out branch and never guesses
+// main/master. Live remote lookup stays on the bounded workspace spawn path.
+func resolveDefaultBranch(ctx context.Context, path string) string {
+	resolution, err := gitdefault.New("git", nil).Inspect(ctx, path)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return resolution.Branch
 }
 
 // Remove stops live project sessions, reclaims safe managed workspaces, then
@@ -712,11 +704,17 @@ func (m *Service) suggestID(ctx context.Context, base domain.ProjectID) domain.P
 	}
 }
 
-func (m *Service) projectFromRow(row domain.ProjectRecord) Project {
+func (m *Service) projectFromRow(ctx context.Context, row domain.ProjectRecord) Project {
 	kind := row.Kind.WithDefault()
-	defaultBranch := row.Config.WithDefaults().DefaultBranch
-	if kind == domain.ProjectKindScratch {
-		defaultBranch = ""
+	defaultBranch := ""
+	if kind != domain.ProjectKindScratch {
+		defaultBranch = row.Config.WorktreeBaseBranch()
+		if defaultBranch == "" {
+			defaultBranch = resolveDefaultBranch(ctx, row.Path)
+			if defaultBranch == "" {
+				defaultBranch = domain.DefaultBranchAuto
+			}
+		}
 	}
 	p := Project{
 		ID:            domain.ProjectID(row.ID),

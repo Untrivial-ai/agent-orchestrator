@@ -148,6 +148,35 @@ func (s *Store) AdvanceSessionInterfaceTransition(
 	return rows > 0, nil
 }
 
+// AcknowledgeSessionInterfaceTransitionNotice records that a user has seen a
+// failed or recovered transition notice. The transition remains intact as an
+// audit record, and COALESCE makes retries return the original timestamp.
+func (s *Store) AcknowledgeSessionInterfaceTransitionNotice(
+	ctx context.Context,
+	sessionID domain.SessionID,
+	transitionID string,
+	now time.Time,
+) (domain.SessionInterfaceTransition, bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	row, err := s.qw.AcknowledgeSessionInterfaceTransitionNotice(
+		ctx,
+		gen.AcknowledgeSessionInterfaceTransitionNoticeParams{
+			NoticeAcknowledgedAt: sql.NullTime{Time: now, Valid: true},
+			ID:                   transitionID,
+			SessionID:            sessionID,
+		},
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.SessionInterfaceTransition{}, false, nil
+	}
+	if err != nil {
+		return domain.SessionInterfaceTransition{}, false,
+			fmt.Errorf("acknowledge interface transition notice %s: %w", transitionID, err)
+	}
+	return interfaceTransitionToDomain(row), true, nil
+}
+
 // CommitSessionControllerEpoch is the atomic persistence primitive used only by
 // Lifecycle Manager. Keeping the CAS here prevents stale controller handoffs;
 // keeping the decision in Lifecycle Manager preserves its ownership of session
@@ -241,6 +270,7 @@ func interfaceTransitionToDomain(row gen.SessionInterfaceTransition) domain.Sess
 		NativeConversationID: row.NativeConversationID,
 		ErrorCode:            row.ErrorCode, ErrorDetail: row.ErrorDetail,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-		CompletedAt: nullTimeToTime(row.CompletedAt),
+		CompletedAt:          nullTimeToTime(row.CompletedAt),
+		NoticeAcknowledgedAt: nullTimeToTime(row.NoticeAcknowledgedAt),
 	}
 }

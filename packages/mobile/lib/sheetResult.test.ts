@@ -4,6 +4,7 @@ import {
 	connectSheetRoute,
 	parkSheetResult,
 	projectSheetRoute,
+	modelSheetRoute,
 	releaseSheetResult,
 	resetSheetResults,
 	takeSheetResult,
@@ -78,6 +79,15 @@ describe("route builders", () => {
 		expect(route.params.selected).toBe("claude-code");
 		takeSheetResult<string>(route.params.resultKey)?.("codex");
 		expect(fn).toHaveBeenCalledWith("codex");
+	});
+
+	it("builds a project-scoped model route and reports the selection", () => {
+		const fn = vi.fn();
+		const route = modelSheetRoute({ agentId: "codex", projectId: "p1", selected: "gpt-5", onSelect: fn });
+		expect(route.pathname).toBe("/sheets/model");
+		expect(route.params).toMatchObject({ agentId: "codex", projectId: "p1", selected: "gpt-5" });
+		takeSheetResult<string>(route.params.resultKey)?.("gpt-5.4");
+		expect(fn).toHaveBeenCalledWith("gpt-5.4");
 	});
 
 	it("builds the connect route", () => {

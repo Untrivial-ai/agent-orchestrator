@@ -128,7 +128,7 @@ for (const name of nativeClaudePackages) {
 writeFileSync(markerPath, `${JSON.stringify({ signature: buildSignature, node: NODE_VERSION }, null, 2)}\n`);
 
 function run(command, args, options = {}) {
-	const result = spawnSync(command, args, { stdio: "inherit", ...options });
+	const result = spawnSync(command, args, { stdio: "inherit", windowsHide: true, ...options });
 	if (result.error) throw result.error;
 	if (result.status !== 0) throw new Error(`${command} exited ${result.status}`);
 }

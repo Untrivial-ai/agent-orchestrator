@@ -112,16 +112,17 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 	}, &resp); err != nil {
 		return nil, asRefusal(fmt.Errorf("thread/read history: %w", err))
 	}
+	for _, turn := range resp.Thread.Turns {
+		state := turnStateFrom(string(turn.Status))
+		if state == domain.TurnStateRunning || state == domain.TurnStateQueued {
+			return nil, fmt.Errorf("%w: Codex turn %s is %s",
+				ports.ErrChatHistoryUnsettled, turn.ID, turn.Status)
+		}
+	}
 
 	events := make([]ports.ChatEvent, 0, len(resp.Thread.Turns)*4)
 	for _, turn := range resp.Thread.Turns {
 		state := turnStateFrom(string(turn.Status))
-		// A history replay is a set of settled facts. If another native client still
-		// has a turn in progress, its partial items must not be projected as a
-		// completed transcript; live notifications remain the authority for it.
-		if state == domain.TurnStateRunning || state == domain.TurnStateQueued {
-			continue
-		}
 
 		events = append(events, ports.ChatEvent{
 			Kind:            ports.ChatEventTurnStarted,

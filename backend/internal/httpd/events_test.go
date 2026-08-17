@@ -122,6 +122,50 @@ func TestEventsStreamRejectsInvalidAfter(t *testing.T) {
 	}
 }
 
+type resetEventSource struct {
+	after int64
+}
+
+func (s *resetEventSource) EventsAfter(_ context.Context, after int64, _ int) ([]cdc.Event, error) {
+	s.after = after
+	return []cdc.Event{testCDCEvent(1)}, nil
+}
+
+func (*resetEventSource) LatestSeq(context.Context) (int64, error) { return 1, nil }
+
+func TestEventsStreamResetsCursorAheadOfCurrentDatabase(t *testing.T) {
+	live := &fakeEventSubscriber{}
+	src := &resetEventSource{}
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{
+		CDC:    src,
+		Events: live,
+	}, ControlDeps{})
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/events?after=100", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("X-AO-Event-After"); got != "0" {
+		t.Fatalf("X-AO-Event-After = %q, want 0", got)
+	}
+	if ids := readSSEIDs(t, resp.Body, 1); ids[0] != "1" {
+		t.Fatalf("id = %q, want 1", ids[0])
+	}
+	if src.after != 0 {
+		t.Fatalf("EventsAfter called with %d, want reset cursor 0", src.after)
+	}
+}
+
 func TestWriteSSEEventSanitizesEventNameNewlines(t *testing.T) {
 	rec := httptest.NewRecorder()
 	sentSeq := int64(0)
@@ -223,7 +267,7 @@ func (s *lastEventIDSource) EventsAfter(_ context.Context, after int64, _ int) (
 	return []cdc.Event{testCDCEvent(after + 1)}, nil
 }
 
-func (*lastEventIDSource) LatestSeq(context.Context) (int64, error) { return 0, nil }
+func (*lastEventIDSource) LatestSeq(context.Context) (int64, error) { return 8, nil }
 
 // TestEventsStreamParsesLastEventIDHeader verifies that the Last-Event-ID
 // request header is used as the replay cursor when the after query param is

@@ -20,7 +20,7 @@ const summary = (overrides: Partial<SessionPRSummary> = {}): SessionPRSummary =>
 	additions: 10,
 	deletions: 3,
 	changedFiles: 2,
-	ci: { state: "passing", failingChecks: [] },
+	ci: { autoInjectCI: true, state: "passing", failingChecks: [] },
 	review: { decision: "approved", hasUnresolvedHumanComments: false, unresolvedBy: [] },
 	mergeability: { state: "mergeable", reasons: [], prUrl: "https://github.com/acme/repo/pull/7" },
 	updatedAt: "2026-06-15T00:00:00Z",
@@ -39,7 +39,7 @@ describe("PRSummaryParts", () => {
 			</>,
 		);
 
-		expect(screen.getByRole("link", { name: "@ada" })).toHaveAttribute("href", "https://github.com/ada");
+		expect(screen.getByRole("link", { name: "ada" })).toHaveAttribute("href", "https://github.com/ada");
 		expect(screen.getByRole("link", { name: "Checks passing" })).toHaveAttribute(
 			"href",
 			"https://github.com/acme/repo/pull/7/checks",
@@ -50,7 +50,7 @@ describe("PRSummaryParts", () => {
 		const { container } = render(
 			<PRCardStatusSummary
 				pr={summary({
-					ci: { state: "pending", failingChecks: [] },
+					ci: { autoInjectCI: true, state: "pending", failingChecks: [] },
 					review: { decision: "review_required", hasUnresolvedHumanComments: false, unresolvedBy: [] },
 					mergeability: {
 						state: "blocked",
@@ -61,7 +61,8 @@ describe("PRSummaryParts", () => {
 			/>,
 		);
 
-		expect(screen.getByText("Review required")).toBeInTheDocument();
+		expect(screen.getByText("Review status")).toBeInTheDocument();
+		expect(screen.getByText("Required review not submitted")).toBeInTheDocument();
 		expect(screen.getByRole("link", { name: "Checks running" })).toHaveAttribute(
 			"href",
 			"https://github.com/acme/repo/pull/7/checks",
@@ -73,8 +74,8 @@ describe("PRSummaryParts", () => {
 		const { container } = render(<PRCardStatusSummary pr={summary()} />);
 
 		const marker = container.querySelector(".size-dot-sm");
-		expect(marker).toHaveClass("mt-1");
-		expect(marker).not.toHaveClass("mt-1.5");
+		expect(marker).toHaveClass("size-dot-sm");
+		expect(marker).not.toHaveClass("mt-1");
 	});
 
 	it("centers a supplied primary action beside the compact status stack", () => {
@@ -84,9 +85,8 @@ describe("PRSummaryParts", () => {
 		const supportingStatus = screen.getByRole("link", { name: "Checks passing" });
 		expect(action.parentElement).toHaveClass("shrink-0", "self-center");
 		expect(action.parentElement?.parentElement).toHaveClass("items-center");
-		expect(action.parentElement?.previousElementSibling).toContainElement(supportingStatus);
-		expect(action.parentElement?.previousElementSibling).toHaveClass("gap-1.5");
-		expect(container.querySelector(".pl-4")).not.toContainElement(action);
+		expect(container.querySelector(".grid")).toContainElement(supportingStatus);
+		expect(screen.getByText("Mergeable")).toBeInTheDocument();
 	});
 
 	it("renders failing check links with visible error contrast", () => {
@@ -94,6 +94,7 @@ describe("PRSummaryParts", () => {
 			<PRCardStatusSummary
 				pr={summary({
 					ci: {
+						autoInjectCI: true,
 						state: "failing",
 						failingChecks: [
 							{ name: "renderer-smoke", status: "failed", conclusion: "failure", url: "https://ci/smoke" },
@@ -103,7 +104,8 @@ describe("PRSummaryParts", () => {
 			/>,
 		);
 
-		expect(screen.getByRole("link", { name: "renderer-smoke" })).toHaveClass("text-error");
+		expect(screen.getByText("Checks failing")).toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: "renderer-smoke" })).not.toBeInTheDocument();
 	});
 
 	it("localizes changed-file plurals instead of rebuilding English nouns", async () => {
@@ -122,6 +124,7 @@ describe("PRSummaryParts", () => {
 				maxLinks={2}
 				pr={summary({
 					ci: {
+						autoInjectCI: true,
 						state: "failing",
 						failingChecks: [
 							{ name: "unit", status: "failed", conclusion: "failure", url: "https://checks.example/unit" },
@@ -145,6 +148,7 @@ describe("PRSummaryParts", () => {
 				interactiveLinks={false}
 				pr={summary({
 					ci: {
+						autoInjectCI: true,
 						state: "failing",
 						failingChecks: [
 							{ name: "unit", status: "failed", conclusion: "failure", url: "https://checks.example/unit" },

@@ -58,7 +58,15 @@ describe("scanImportFolder", () => {
 		const scan = await scanImportFolder(nested, "project");
 
 		expect(scan.path).toBe(nested);
-		expect(scan.repos).toEqual([]);
+		expect(scan.repos).toEqual([
+			expect.objectContaining({
+				name: "universe",
+				path: nested,
+				relativePath: ".",
+				status: "ok",
+				needsGitInit: true,
+			}),
+		]);
 		expect(scan.setupWarning).toContain("Selected folder is inside an existing Git repository at ");
 		expect(scan.setupWarning).toContain("AO will initialize this folder as a separate repository.");
 	});
@@ -75,7 +83,7 @@ describe("scanImportFolder", () => {
 				name: "repo",
 				path: repo,
 				relativePath: ".",
-				branch: "main",
+				branch: "auto",
 				hasRemote: true,
 				status: "ok",
 			}),
@@ -91,7 +99,18 @@ describe("scanImportFolder", () => {
 			env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
 		});
 
-		expect(scan).toEqual({ path: selected, repos: [] });
+		expect(scan).toEqual({
+			path: selected,
+			repos: [
+				expect.objectContaining({
+					name: "plain",
+					path: selected,
+					relativePath: ".",
+					status: "ok",
+					needsGitInit: true,
+				}),
+			],
+		});
 	});
 
 	it("warns when workspace parent is nested inside an ancestor repo", async () => {
@@ -135,6 +154,30 @@ describe("scanImportFolder", () => {
 
 		expect(scan.setupWarning).toBeUndefined();
 		expect(scan.repos).toHaveLength(2);
+	});
+
+	it("surfaces non-git child folders as needsGitInit in workspace mode", async () => {
+		const root = await tempDir();
+		const parent = path.join(root, "workspace");
+		await mkdir(parent);
+		await committedRepo(path.join(parent, "api"));
+		await mkdir(path.join(parent, "docs"));
+
+		const scan = await scanImportFolder(parent, "workspace", {
+			env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+		});
+
+		expect(scan.setupWarning).toBeUndefined();
+		expect(scan.repos).toHaveLength(2);
+		const docs = scan.repos.find((r) => r.name === "docs");
+		expect(docs).toEqual(
+			expect.objectContaining({
+				name: "docs",
+				status: "ok",
+				needsGitInit: true,
+				hasRemote: false,
+			}),
+		);
 	});
 
 	it("reports folders inside AO-managed worktrees before offering setup", async () => {

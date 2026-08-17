@@ -252,6 +252,12 @@ func (m *Manager) releaseRetainedAgentSwitch(id domain.SessionID) {
 func (m *Manager) beginAgentResume(ctx context.Context, id domain.SessionID) error {
 	if err := m.beginAgentOperation(ctx, id, agentOperationResume); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
+			m.agentOpMu.Lock()
+			activeOperation := m.agentOperations[id]
+			m.agentOpMu.Unlock()
+			if activeOperation == agentOperationSwitch {
+				return ErrSwitchInProgress
+			}
 			return ErrResumeInProgress
 		}
 		return err

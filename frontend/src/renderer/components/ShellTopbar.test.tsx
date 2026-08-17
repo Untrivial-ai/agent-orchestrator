@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
 import type { SessionActivityState, WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { ShellTopbar, TopbarKillButton } from "./ShellTopbar";
+import { TooltipProvider } from "./ui/tooltip";
 
 const { navigateMock, onKilledMock, paramsMock, postMock, spawnMock, useWorkspaceQueryMock } = vi.hoisted(() => ({
 	navigateMock: vi.fn(),
@@ -49,7 +51,9 @@ vi.mock("../lib/telemetry", () => ({
 	captureRendererException: vi.fn(),
 }));
 vi.mock("./NewTaskDialog", () => ({ NewTaskDialog: () => null }));
-vi.mock("./NotificationCenter", () => ({ NotificationCenter: () => null }));
+vi.mock("./NotificationCenter", () => ({
+	NotificationCenter: () => <button aria-label="Notifications" type="button" />,
+}));
 
 const worker: WorkspaceSession = {
 	id: "sess-1",
@@ -92,11 +96,29 @@ function sessionWith(overrides: Partial<WorkspaceSession> = {}): WorkspaceSessio
 	};
 }
 
-function renderTopbar(session: WorkspaceSession, embedded = false) {
-	return renderTopbarSessions([session], session.id, embedded);
+function activeAgentSwitch(
+	overrides: Partial<NonNullable<WorkspaceSession["activeAgentSwitch"]>> = {},
+): NonNullable<WorkspaceSession["activeAgentSwitch"]> {
+	return {
+		agentHandoffStatus: "received",
+		fromHarness: "claude-code",
+		id: "switch-1",
+		state: "starting_target",
+		targetHarness: "codex",
+		...overrides,
+	};
 }
 
-function renderTopbarSessions(sessions: WorkspaceSession[], sessionId: string, embedded = false) {
+function renderTopbar(session: WorkspaceSession, embedded = false, sessionAction?: ReactNode) {
+	return renderTopbarSessions([session], session.id, embedded, sessionAction);
+}
+
+function renderTopbarSessions(
+	sessions: WorkspaceSession[],
+	sessionId: string,
+	embedded = false,
+	sessionAction?: ReactNode,
+) {
 	const data: WorkspaceSummary[] = [
 		{
 			id: sessions[0].workspaceId,
@@ -112,7 +134,9 @@ function renderTopbarSessions(sessions: WorkspaceSession[], sessionId: string, e
 	const queryClient = new QueryClient();
 	const topbar = () => (
 		<QueryClientProvider client={queryClient}>
-			<ShellTopbar embedded={embedded} />
+			<TooltipProvider>
+				<ShellTopbar embedded={embedded} sessionAction={sessionAction} />
+			</TooltipProvider>
 		</QueryClientProvider>
 	);
 	const result = render(topbar());
@@ -162,13 +186,52 @@ beforeEach(() => {
 });
 
 describe("ShellTopbar status pill", () => {
-	it("renders only session actions when embedded in the terminal bar", () => {
-		renderTopbar(sessionWith(), true);
+	it("shows the worker session name and activity in the full topbar identity", () => {
+		renderTopbar(sessionWith());
 
-		expect(screen.queryByText("ao/sess-1")).not.toBeInTheDocument();
-		expect(screen.queryByText("Working")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Kill session" })).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Open orchestrator" })).toBeInTheDocument();
+		const identity = screen.getByTestId("session-topbar-identity");
+		expect(identity.textContent).toContain("do the thing");
+		expect(identity.textContent).toContain("Working");
+		expect(identity.textContent).not.toContain("ao/sess-1");
+		expect(identity.querySelector(".workspace-topbar__identity-separator")).not.toBeNull();
+	});
+
+	it("shows project identity and activity without redundant Orchestrator text", () => {
+		renderTopbar(
+			sessionWith({
+				...orchestrator,
+				activity: { state: "idle", lastActivityAt: "2026-06-10T00:00:00Z" },
+			}),
+		);
+
+		const identity = screen.getByTestId("session-topbar-identity");
+		expect(identity.textContent).toContain("my-app");
+		expect(identity.textContent).toContain("Idle");
+		expect(identity.textContent).not.toContain("Orchestrator");
+		expect(identity.querySelector(".lucide-folder")).not.toBeNull();
+	});
+
+	it("renders only session actions when embedded in the terminal bar", () => {
+		renderTopbar(
+			sessionWith(),
+			true,
+			<>
+				<button type="button">New terminal</button>
+				<button type="button">Switch agent</button>
+				<button type="button">Switch to chat UI</button>
+			</>,
+		);
+
+		expect(screen.queryByText("ao/sess-1")).toBeNull();
+		expect(screen.queryByText("Working")).toBeNull();
+		const localActions = screen.getByTestId("session-local-actions");
+		expect(localActions.classList.contains("gap-px")).toBe(true);
+		expect(localActions.classList.contains("mr-0.5")).toBe(true);
+		expect(localActions.contains(screen.getByRole("button", { name: "New terminal" }))).toBe(true);
+		expect(localActions.contains(screen.getByRole("button", { name: "Switch agent" }))).toBe(true);
+		expect(localActions.contains(screen.getByRole("button", { name: "Switch to chat UI" }))).toBe(true);
+		expect(localActions.contains(screen.getByRole("button", { name: "Kill session" }))).toBe(true);
+		expect(localActions.contains(screen.getByRole("button", { name: "Open orchestrator" }))).toBe(false);
 	});
 
 	it.each([
@@ -214,9 +277,32 @@ describe("ShellTopbar status pill", () => {
 		expect(screen.queryByText("session/sess-1")).not.toBeInTheDocument();
 		expect(screen.getByText("Working")).toBeInTheDocument();
 	});
+
+	it("shows switch progress instead of the exited source in the status pill", () => {
+		renderTopbar(sessionWith({
+			status: "exited",
+			activity: {
+				state: "exited",
+				lastActivityAt: "2026-06-10T00:00:00Z",
+			},
+			activeAgentSwitch: activeAgentSwitch(),
+		}));
+
+		const pill = screen.getByText("Switching to Codex").closest("span") as HTMLElement;
+		expect(pill).toHaveStyle({ color: "var(--color-status-working)" });
+		expect(pill.querySelector("span")).toHaveClass("animate-status-pulse");
+		expect(screen.queryByText("Exited")).not.toBeInTheDocument();
+	});
 });
 
 describe("ShellTopbar orchestrator actions", () => {
+	it("owns the responsive action container on the full board topbar", () => {
+		renderTopbarSessions([orchestrator], "");
+
+		const actions = screen.getByTestId("workspace-topbar-actions");
+		expect(actions.closest("header")).toHaveClass("workspace-topbar-container");
+	});
+
 	it.each([
 		["active", "Working", "bg-status-working", true],
 		["waiting_input", "Input Needed", "bg-status-needs-you", false],
@@ -243,8 +329,8 @@ describe("ShellTopbar orchestrator actions", () => {
 		renderTopbar(orchestrator, true);
 
 		const kanbanButton = screen.getByRole("button", { name: "Open Kanban" });
-		expect(kanbanButton).toHaveTextContent("Kanban");
-		expect(kanbanButton).toHaveClass("bg-accent-strong");
+		expect(kanbanButton).toHaveTextContent("Open Kanban");
+		expect(kanbanButton).toHaveClass("topbar-control--feature");
 		expect(screen.queryByText("my-app")).not.toBeInTheDocument();
 		await userEvent.click(kanbanButton);
 		expect(navigateMock).toHaveBeenCalledWith({
@@ -257,8 +343,8 @@ describe("ShellTopbar orchestrator actions", () => {
 		renderTopbar(orchestrator);
 
 		const kanbanButton = screen.getByRole("button", { name: "Open Kanban" });
-		expect(kanbanButton).toHaveTextContent("Kanban");
-		expect(kanbanButton).toHaveClass("bg-accent-strong");
+		expect(kanbanButton).toHaveTextContent("Open Kanban");
+		expect(kanbanButton).toHaveClass("topbar-control--feature");
 		expect(screen.getByRole("button", { name: "New task" })).toHaveClass("bg-raised");
 		await userEvent.click(kanbanButton);
 		expect(navigateMock).toHaveBeenCalledWith({
@@ -284,7 +370,9 @@ describe("ShellTopbar orchestrator actions", () => {
 		paramsMock.sessionId = "sess-1";
 		render(
 			<QueryClientProvider client={new QueryClient()}>
-				<ShellTopbar />
+				<TooltipProvider>
+					<ShellTopbar />
+				</TooltipProvider>
 			</QueryClientProvider>,
 		);
 
@@ -310,18 +398,15 @@ describe("ShellTopbar orchestrator actions", () => {
 });
 
 describe("ShellTopbar inspector state", () => {
-	it("treats missing worker inspector state as open", async () => {
+	it("keeps the expanded worker controls out of the center topbar", () => {
 		renderTopbarSessions([worker], "sess-1");
 
-		const toggle = screen.getByRole("button", { name: "Close inspector panel" });
-		expect(toggle).toHaveAttribute("aria-pressed", "true");
-
-		await userEvent.click(toggle);
-
-		expect(useUiStore.getState().inspectorSessions["sess-1"]).toEqual({ isOpen: false, view: "summary" });
+		expect(screen.getByTestId("session-pinned-actions-reserve")).toHaveAttribute("data-state", "collapsed");
+		expect(screen.queryByRole("button", { name: "Close inspector panel" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Notifications" })).not.toBeInTheDocument();
 	});
 
-	it("routes aria-pressed to the current worker session", () => {
+	it("sizes the pinned-action reserve for the current worker inspector state", () => {
 		useUiStore.setState({
 			inspectorSessions: {
 				"sess-1": { isOpen: true, view: "summary" },
@@ -330,27 +415,25 @@ describe("ShellTopbar inspector state", () => {
 		});
 		const view = renderTopbarSessions([worker, secondWorker], "sess-1");
 
-		expect(screen.getByRole("button", { name: "Close inspector panel" })).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByTestId("session-pinned-actions-reserve")).toHaveAttribute("data-state", "collapsed");
 
 		paramsMock.sessionId = "sess-2";
 		view.rerenderTopbar();
 
-		expect(screen.getByRole("button", { name: "Open inspector panel" })).toHaveAttribute("aria-pressed", "false");
+		expect(screen.getByTestId("session-pinned-actions-reserve")).toHaveAttribute("data-state", "expanded");
 	});
 
-	it("toggles only the current worker session", async () => {
-		useUiStore.setState({
-			inspectorSessions: {
-				"sess-1": { isOpen: false, view: "summary" },
-				"sess-2": { isOpen: true, view: "browser" },
-			},
-		});
-		renderTopbarSessions([worker, secondWorker], "sess-1");
+	it("keeps one reserve mounted while the inspector changes state", () => {
+		useUiStore.setState({ inspectorSessions: { "sess-1": { isOpen: false, view: "summary" } } });
+		const view = renderTopbarSessions([worker], "sess-1");
+		const reserve = screen.getByTestId("session-pinned-actions-reserve");
 
-		await userEvent.click(screen.getByRole("button", { name: "Open inspector panel" }));
+		useUiStore.setState({ inspectorSessions: { "sess-1": { isOpen: true, view: "summary" } } });
+		view.rerenderTopbar();
 
-		expect(useUiStore.getState().inspectorSessions["sess-1"]?.isOpen).toBe(true);
-		expect(useUiStore.getState().inspectorSessions["sess-2"]).toEqual({ isOpen: true, view: "browser" });
+		expect(screen.getByTestId("session-pinned-actions-reserve")).toBe(reserve);
+		expect(reserve).toHaveAttribute("data-state", "collapsed");
+		expect(within(reserve).queryByRole("button")).not.toBeInTheDocument();
 	});
 });
 

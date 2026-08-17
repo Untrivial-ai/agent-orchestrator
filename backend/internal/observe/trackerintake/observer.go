@@ -320,37 +320,80 @@ func trackerRepo(project domain.ProjectRecord, cfg domain.TrackerIntakeConfig) (
 	if provider == "" {
 		provider = domain.TrackerProviderGitHub
 	}
-	if provider != domain.TrackerProviderGitHub {
-		return domain.TrackerRepo{}, false
-	}
 	native := strings.TrimSpace(cfg.Repo)
 	if native == "" {
-		native = parseGitHubRepoNative(project.RepoOriginURL)
+		native, _ = parseRepoNative(project.RepoOriginURL, provider)
 	}
 	if native == "" {
 		return domain.TrackerRepo{}, false
 	}
-	return domain.TrackerRepo{Provider: provider, Native: native}, true
+	host := repoHostFromOrigin(project.RepoOriginURL, provider)
+	return domain.TrackerRepo{Provider: provider, Native: native, Host: host}, true
 }
 
-func parseGitHubRepoNative(remote string) string {
+// parseRepoNative extracts the provider-native repo identifier ("owner/repo"
+// or "group/subgroup/repo") from a remote URL. For GitHub it accepts
+// github.com, *.github.com, and *.ghe.io hosts. For GitLab it accepts any
+// host (self-managed hosts are validated by the SCM provider at fetch time).
+func parseRepoNative(remote string, provider domain.TrackerProvider) (string, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return "", false
+	}
+	if strings.HasPrefix(remote, "git@") {
+		if _, rest, ok := strings.Cut(remote, ":"); ok {
+			return cleanRepoPath(rest), true
+		}
+		return "", false
+	}
+	if u, err := url.Parse(remote); err == nil && u.Host != "" {
+		if provider == domain.TrackerProviderGitHub {
+			host := strings.TrimPrefix(strings.ToLower(u.Host), "www.")
+			if host == "github.com" || strings.HasSuffix(host, ".github.com") || strings.HasSuffix(host, ".ghe.io") {
+				return cleanRepoPath(u.Path), true
+			}
+			return "", false
+		}
+		// GitLab: accept any host.
+		return cleanRepoPath(u.Path), true
+	}
+	return cleanRepoPath(remote), true
+}
+
+// repoHostFromOrigin extracts the host from the SCM origin URL for the given
+// provider. For GitHub the host is always "" (GitHub tracker IDs don't use
+// Host). For GitLab, "gitlab.com" and "www.gitlab.com" normalize to ""
+// (zero value = gitlab.com); self-managed hosts pass through unchanged.
+func repoHostFromOrigin(remote string, provider domain.TrackerProvider) string {
+	if provider != domain.TrackerProviderGitLab {
+		return ""
+	}
+	host := hostFromRemote(remote)
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "gitlab.com" || host == "www.gitlab.com" {
+		return ""
+	}
+	return host
+}
+
+// hostFromRemote extracts the hostname (with port) from a git remote URL,
+// supporting both HTTPS and SSH scp-like forms.
+func hostFromRemote(remote string) string {
 	remote = strings.TrimSpace(remote)
 	if remote == "" {
 		return ""
 	}
 	if strings.HasPrefix(remote, "git@") {
-		if _, rest, ok := strings.Cut(remote, ":"); ok {
-			return cleanRepoPath(rest)
-		}
-	}
-	if u, err := url.Parse(remote); err == nil && u.Host != "" {
-		host := strings.TrimPrefix(strings.ToLower(u.Host), "www.")
-		if host == "github.com" || strings.HasSuffix(host, ".github.com") || strings.HasSuffix(host, ".ghe.io") {
-			return cleanRepoPath(u.Path)
+		rest := strings.TrimPrefix(remote, "git@")
+		if colonIdx := strings.Index(rest, ":"); colonIdx > 0 {
+			return rest[:colonIdx]
 		}
 		return ""
 	}
-	return cleanRepoPath(remote)
+	if u, err := url.Parse(remote); err == nil && u.Host != "" {
+		return u.Host // includes port if present
+	}
+	return ""
 }
 
 func cleanRepoPath(path string) string {
@@ -360,6 +403,8 @@ func cleanRepoPath(path string) string {
 	if len(parts) < 2 {
 		return ""
 	}
+	// For nested namespaces (GitLab group/subgroup/repo), take the last two
+	// segments — the tracker's List endpoint only needs owner/repo.
 	owner := strings.TrimSpace(parts[len(parts)-2])
 	repo := strings.TrimSpace(parts[len(parts)-1])
 	if owner == "" || repo == "" {

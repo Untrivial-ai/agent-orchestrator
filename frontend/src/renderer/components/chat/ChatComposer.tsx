@@ -13,8 +13,8 @@
  * settings because the provider takes all three per turn: choosing one changes the
  * next message and never restarts the agent.
  *
- * Three completions live on top of a plain textarea — `/` for the agent's own
- * skills, `@` for worktree files, and pasted or dropped files. It is a textarea and
+ * Three completions live on top of a plain textarea — `/` for AO commands and the
+ * agent's own skills, `@` for worktree files, and pasted or dropped files. It is a textarea and
  * not a rich editor; the reasoning is in composerSuggest.ts, where the logic that
  * would otherwise justify one lives. What matters here is that the original
  * keyboard contract survives: Enter sends, Shift+Enter makes a newline, and no
@@ -42,7 +42,7 @@ import {
 	type KeyboardEvent,
 	type ReactNode,
 } from "react";
-import { ArrowUp, CornerDownRight, Loader2, Paperclip, X } from "lucide-react";
+import { ArrowUp, CornerDownRight, Loader2, Paperclip, Square, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { ComposerSuggestMenu } from "./ComposerSuggestMenu";
@@ -81,21 +81,30 @@ export function ChatComposer({
 	willQueue,
 	disabled,
 	settings,
+	footerAction,
 	skills = [],
 	filePaths = [],
 	filePathsTruncated,
 	onStageAttachments,
 	nativeImages,
 	onSteer,
+	onInterrupt,
 	canSteer,
 	steerPending,
 	steerRefusal,
 	draftSeed,
 	commandError,
+	attachedTop = false,
+	onCompact,
+	compacting,
+	compactUnavailable,
+	compactBlocked,
 }: {
 	onSend: (text: string, attachments?: FileAttachmentPayload[]) => void | Promise<unknown>;
 	/** The next-turn controls, rendered inline. Omitted in the fixture preview. */
 	settings?: ReactNode;
+	/** Optional secondary action rendered with message tools in the lower input row. */
+	footerAction?: ReactNode;
 	/** A send is in flight. */
 	busy?: boolean;
 	/** The agent is mid-turn, so this message is held until the turn ends. */
@@ -120,6 +129,8 @@ export function ChatComposer({
 	 * cannot steer and the choice is never offered.
 	 */
 	onSteer?: (text: string) => Promise<unknown>;
+	/** Stop the turn already running when there is no draft to send. */
+	onInterrupt?: () => void;
 	/** A turn is actually running, so there is something to steer into. */
 	canSteer?: boolean;
 	steerPending?: boolean;
@@ -129,6 +140,16 @@ export function ChatComposer({
 	draftSeed?: { id: string; text: string };
 	/** A failed send, approval, interrupt, or settings mutation. */
 	commandError?: string;
+	/** A queued-message dock owns the shared rounded top edge. */
+	attachedTop?: boolean;
+	/** Run AO's built-in `/compact` command instead of sending it to the agent. */
+	onCompact?: () => void | Promise<unknown>;
+	/** The provider is already compacting this conversation. */
+	compacting?: boolean;
+	/** A typed provider refusal from the last compaction attempt. */
+	compactUnavailable?: string;
+	/** A running turn must be stopped before its history can be compacted. */
+	compactBlocked?: boolean;
 }) {
 	const [text, setText] = useState("");
 	const [caret, setCaret] = useState(0);
@@ -146,7 +167,6 @@ export function ChatComposer({
 	 * Queueing is the safe default and matches `ao send`: the daemon records the
 	 * message durably and dispatches it when the current turn finishes. Steering is
 	 * timing-sensitive and changes the running turn, so it stays an explicit choice.
-	 * The send hint names whichever destination is armed.
 	 */
 	const [delivery, setDelivery] = useState<"steer" | "queue">("queue");
 
@@ -179,13 +199,26 @@ export function ChatComposer({
 
 	const trigger = useMemo(() => findActiveTrigger(text, caret), [text, caret]);
 
+	const slashCommands = useMemo<ChatSkill[]>(() => {
+		if (!onCompact || compactUnavailable === "This agent cannot compact its history") return skills;
+		return [
+			{
+				name: "compact",
+				displayName: "compact",
+				description: "Summarize earlier history to reclaim context",
+				source: "AO",
+			},
+			...skills.filter((skill) => skill.name !== "compact"),
+		];
+	}, [compactUnavailable, onCompact, skills]);
+
 	const suggestions: Suggestion[] = useMemo(() => {
 		if (!trigger || trigger.start === dismissedAt) return [];
 		// An empty candidate list is the whole reason the sigil stays ordinary: with
-		// no skills there is nothing to open, so `/` types a slash.
-		if (trigger.kind === "skill") return rankSkills(skills, trigger.query);
+		// no commands or skills there is nothing to open, so `/` types a slash.
+		if (trigger.kind === "skill") return rankSkills(slashCommands, trigger.query);
 		return rankFiles(filePaths, trigger.query);
-	}, [trigger, dismissedAt, skills, filePaths]);
+	}, [trigger, dismissedAt, slashCommands, filePaths]);
 
 	const menuOpen = suggestions.length > 0;
 	// Clamped rather than trusted: the list re-ranks on every keystroke, so the
@@ -193,11 +226,13 @@ export function ChatComposer({
 	const activeIndex = Math.min(highlighted, suggestions.length - 1);
 
 	const staged = fileAttachments.attachments.length > 0;
+	const hasDraft = text.trim().length > 0 || staged;
 	// The control disappears the moment the turn ends, and the armed mode degrades
 	// with it: a steer with nothing in flight is refused, so it must never be what
 	// Enter is still pointing at.
 	const steering = Boolean(canSteer && onSteer) && delivery === "steer";
-	const canSend = (text.trim().length > 0 || staged) && !busy && !disabled && !steerPending;
+	const canSend = hasDraft && !busy && !disabled && !steerPending;
+	const canStopTurn = Boolean(willQueue && onInterrupt && !disabled && !hasDraft);
 	const draftSeedId = draftSeed?.id;
 	const draftSeedText = draftSeed?.text;
 
@@ -275,6 +310,31 @@ export function ChatComposer({
 
 		const body = text.trim();
 
+		if (body === "/compact" && onCompact) {
+			if (compactBlocked) {
+				setSendError("Stop the current turn before compacting.");
+				return;
+			}
+			if (compacting) {
+				setSendError("Conversation history is already being compacted.");
+				return;
+			}
+			if (compactUnavailable) {
+				setSendError(compactUnavailable);
+				return;
+			}
+			try {
+				await onCompact();
+			} catch {
+				setSendError("Conversation history could not be compacted. Try again.");
+				return;
+			}
+			applyText("", 0);
+			setDismissedAt(null);
+			setHighlighted(0);
+			return;
+		}
+
 		// Steering keeps the text in the box until the provider has taken it. The turn
 		// is already running, so a refusal is a real possibility — and a refusal that
 		// had already cleared the composer would lose what the user typed.
@@ -340,6 +400,14 @@ export function ChatComposer({
 
 	function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
 		if (menuOpen) {
+			// `/compact` takes no arguments. Once its exact name is present, Enter
+			// executes it directly instead of merely accepting the highlighted row and
+			// requiring a second Enter on the inserted trailing space.
+			if (event.key === "Enter" && text.trim() === "/compact" && onCompact) {
+				event.preventDefault();
+				void submit();
+				return;
+			}
 			// Only these keys are taken while the menu is open. Everything else falls
 			// through to the textarea, which is what keeps typing from being swallowed.
 			if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -431,7 +499,8 @@ export function ChatComposer({
 			onDragLeave={() => setDragging(false)}
 			onDrop={onDrop}
 			className={cn(
-				"cursor-chat-composer relative flex flex-col gap-2 rounded-[10px] border p-2.5 transition-[background,border-color,box-shadow]",
+				"cursor-chat-composer relative flex flex-col gap-2 border p-2.5 transition-[background,border-color,box-shadow]",
+				attachedTop ? "rounded-b-[10px] rounded-t-none" : "rounded-[10px]",
 				dragging ? "border-logo-accent" : "border-border-strong",
 			)}
 		>
@@ -489,7 +558,7 @@ export function ChatComposer({
 				onSelect={onSelectionChange}
 				onClick={onSelectionChange}
 				onPaste={onPaste}
-				rows={2}
+				rows={1}
 				disabled={disabled}
 				aria-label="Message the agent"
 				role="combobox"
@@ -504,11 +573,9 @@ export function ChatComposer({
 							? "Agent is working — this goes into the turn it is running"
 							: willQueue
 								? "Agent is working — this sends when it finishes"
-								: skills.length > 0
-									? "Ask the agent…  /  for skills, @ for files"
-									: "Ask the agent…  @ for files"
+								: "Message the agent…"
 				}
-				className="chat-composer-scrollbar max-h-40 min-h-[3.25rem] w-full resize-none overflow-y-hidden overscroll-contain bg-transparent px-1.5 py-1.5 text-sm leading-relaxed text-foreground outline-none placeholder:text-passive disabled:opacity-50"
+				className="chat-composer-scrollbar max-h-40 min-h-9 w-full resize-none overflow-y-hidden overscroll-contain bg-transparent px-1.5 py-1.5 text-sm leading-relaxed text-foreground outline-none placeholder:text-passive disabled:opacity-50"
 			/>
 
 			{attachmentError ? (
@@ -567,30 +634,33 @@ export function ChatComposer({
 						<span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
 					) : null}
 					{settings}
+					{footerAction ? (
+						<>
+							{canAttach || settings ? (
+								<span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
+							) : null}
+							{footerAction}
+						</>
+					) : null}
 				</div>
 
 				<div
 					role="group"
 					aria-label="Send message controls"
-					className="flex shrink-0 items-center gap-2"
+					className="flex shrink-0 items-center"
 				>
-					<span className="hidden text-[11px] text-muted-foreground sm:inline">
-						{menuOpen
-							? "Enter to insert"
-							: steering
-								? "Enter to steer"
-								: willQueue
-									? "Enter to queue"
-									: "Enter to send"}
-					</span>
 					<Button
-						type="submit"
+						type={canStopTurn ? "button" : "submit"}
 						size="icon-sm"
-						disabled={!canSend}
-						aria-label={steering ? "Steer the running turn" : "Send message"}
+						disabled={canStopTurn ? false : !canSend}
+						onClick={canStopTurn ? onInterrupt : undefined}
+						aria-label={canStopTurn ? "Stop turn" : steering ? "Steer the running turn" : "Send message"}
+						title={canStopTurn ? "Stop turn" : undefined}
 						className="size-8 rounded-lg border-logo-accent bg-logo-accent text-logo-accent-foreground hover:bg-logo-accent-bright focus-visible:ring-logo-accent/45"
 					>
-						{steerPending ? (
+						{canStopTurn ? (
+							<Square aria-hidden="true" className="size-2.5 fill-current" />
+						) : steerPending ? (
 							<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
 						) : steering ? (
 							<CornerDownRight aria-hidden="true" className="size-3.5" />
@@ -613,7 +683,7 @@ export function ChatComposer({
  * and decides for itself what to abandon. Queueing waits for the turn to end and
  * then starts a new one from a cold start. For someone who has just realized they
  * asked for the wrong thing, that is the whole difference, so both are named and the
- * hint below says which one Enter is armed with.
+ * active choice is exposed visually and through `aria-pressed`.
  */
 function DeliveryChoice({
 	value,

@@ -26,6 +26,15 @@ function renderCombobox(
 describe("AgentModelCombobox", () => {
 	beforeEach(() => window.localStorage.clear());
 
+	it("keeps the model menu closed while its owning operation is pending", async () => {
+		renderCombobox([{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }], { disabled: true });
+
+		const trigger = screen.getByRole("button", { name: "Worker model" });
+		expect(trigger).toBeDisabled();
+		await userEvent.click(trigger);
+		expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
+	});
+
 	it("uses direct lookup and provider buckets instead of scanning the complete catalog", () => {
 		const models = Array.from({ length: 1_400 }, (_, index) => ({
 			id: `provider-${index % 4}/model-${index}`,

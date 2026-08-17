@@ -2,6 +2,10 @@ import type { ChatSkill } from "./types";
 
 export type ComposerSuggestion = { kind: "skills" | "files"; query: string; start: number; end: number };
 
+export function composerSuggestionKey(suggestion: ComposerSuggestion): string {
+	return `${suggestion.kind}:${suggestion.start}:${suggestion.end}:${suggestion.query}`;
+}
+
 export type RankedSuggestion = {
 	value: string;
 	label: string;
@@ -10,6 +14,16 @@ export type RankedSuggestion = {
 };
 
 const MAX_SUGGESTIONS = 80;
+
+export type ComposerPickerCatalog =
+	| { kind: "skills"; skills: readonly ChatSkill[] }
+	| { kind: "files"; paths: readonly string[] };
+
+export function rankComposerCatalog(catalog: ComposerPickerCatalog, query: string): RankedSuggestion[] {
+	return catalog.kind === "skills"
+		? rankComposerSkills(catalog.skills, query)
+		: rankComposerFiles(catalog.paths, query);
+}
 
 /**
  * Match the desktop composer's text contract exactly.

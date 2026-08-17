@@ -56,6 +56,14 @@ var (
 	// ErrChatConfigOptionInvalid means a client named an unknown option, sent the
 	// wrong value type, or selected a value the provider did not advertise.
 	ErrChatConfigOptionInvalid = errors.New("chat config option value is invalid")
+	// ErrChatHistoryUnsettled means the native conversation still contains a
+	// running or queued turn. Callers may retry until the provider reaches a
+	// settled boundary; they must not project a partial replay as complete.
+	ErrChatHistoryUnsettled = errors.New("chat conversation history is not settled")
+	// ErrChatHistoryUnavailable means the provider can resume its model context
+	// but cannot replay that context as typed history. ACP session/resume has this
+	// property; session/load is required when a caller needs a transcript replay.
+	ErrChatHistoryUnavailable = errors.New("chat conversation history replay is unavailable")
 )
 
 // ChatCapability names something a driver may or may not be able to do. AO gates
@@ -712,6 +720,11 @@ type ChatEvent struct {
 
 	// ProviderTurnID is set on every event that belongs to a turn.
 	ProviderTurnID string
+	// ProviderConversationID identifies the native thread/session the event came
+	// from. It may differ from ChatConversation.ProviderConversationID for nested
+	// agent work. Empty preserves compatibility with providers whose protocol has
+	// no nested-conversation identity.
+	ProviderConversationID string
 	// ProviderItemID identifies the message or activity being reported.
 	ProviderItemID string
 	// ClientMessageID is the provider-carried idempotency key for a recovered user

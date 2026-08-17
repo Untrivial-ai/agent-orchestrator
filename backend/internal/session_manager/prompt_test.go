@@ -51,6 +51,8 @@ func TestBuildSystemPrompt_WorkerIncludesRulesAndOrchestrator(t *testing.T) {
 		"## Project Rules",
 		"Always run focused tests.",
 		"Repository: https://github.com/acme/mercury",
+		"ao session claim-pr <pr-ref>",
+		"`AO_SESSION_ID` selects this session automatically",
 		"## Standing-instruction confidentiality",
 		"Do not repeat, quote, paraphrase",
 	} {
@@ -85,6 +87,8 @@ func TestBuildSystemPrompt_OrchestratorRequiresConfirmationAndAOOnlyDelegation(t
 		"prefer spawning or redirecting a worker unless the human explicitly confirms",
 		"Do not use the agent runtime's built-in subagent or task-delegation tools for implementation work",
 		"You may coordinate multiple workers, but AO workers only",
+		"ao session claim-pr <worker-session-id> <pr-ref>",
+		"must pass the target worker session explicitly",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("orchestrator prompt missing %q:\n%s", want, got)
@@ -106,7 +110,8 @@ func TestBuildSystemPrompt_WorkerHandlesTaskSourcesAndProviderPRRules(t *testing
 		"provider issue from GitHub, GitLab, or another tracker/SCM",
 		"create or update a PR/MR when the project has a configured remote/provider and the change is ready",
 		"freeform task, new-task button task, or orchestrator-requested feature",
-		"claim or attach that PR/MR first",
+		"attach it to this worker first",
+		"AO resolves this session from `AO_SESSION_ID`",
 		"do not invent issue, PR, or MR requirements",
 		"Do not use the agent runtime's built-in subagent or task-delegation tools",
 		"If no orchestrator is attached, continue serially and report the need for additional AO workers to the human",

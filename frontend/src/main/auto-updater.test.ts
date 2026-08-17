@@ -740,6 +740,202 @@ describe("startAutoUpdates", () => {
     });
   });
 
+  it("flags net errors on a rejected manual check", async () => {
+    const { module, autoUpdater } = await importAutoUpdater();
+    autoUpdater.checkForUpdates.mockRejectedValueOnce(new Error("net::ERR_FAILED"));
+
+    await module.checkForUpdatesNow(stateDir);
+
+    expect(module.getUpdateStatus()).toEqual({
+      state: "error",
+      message: "net::ERR_FAILED",
+      netError: true,
+    });
+  });
+
+  it("flags net errors on a net:: error event during a manual check", async () => {
+    const { module, updaterEvents } = await importAutoUpdater();
+
+    await module.checkForUpdatesNow(stateDir);
+    updaterEvents.get("error")?.(new Error("net::ERR_FAILED"));
+
+    expect(module.getUpdateStatus()).toEqual({
+      state: "error",
+      message: "net::ERR_FAILED",
+      netError: true,
+    });
+  });
+
+  it("keeps non-net manual check errors verbatim", async () => {
+    const { module, autoUpdater } = await importAutoUpdater();
+    autoUpdater.checkForUpdates.mockRejectedValueOnce(new Error("boom"));
+
+    await module.checkForUpdatesNow(stateDir);
+
+    expect(module.getUpdateStatus()).toEqual({
+      state: "error",
+      message: "boom",
+    });
+  });
+
+  it("nudges a restart after three consecutive net:: automatic-check failures", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+    autoUpdater.checkForUpdates.mockImplementation(() => {
+      updaterEvents.get("checking-for-update")?.();
+      updaterEvents.get("error")?.(new Error("net::ERR_FAILED"));
+      return Promise.resolve();
+    });
+
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+    // Below the threshold the suppressed automatic failure stays fully silent.
+    expect(module.getUpdateStatus()).toEqual({ state: "idle" });
+
+    await module.startAutoUpdates(stateDir);
+
+    expect(module.getUpdateStatus()).toEqual({
+      state: "idle",
+      staleCheckNudge: true,
+    });
+  });
+
+  it("does not nudge for non-net automatic-check failures", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+    autoUpdater.checkForUpdates.mockImplementation(() => {
+      updaterEvents.get("checking-for-update")?.();
+      updaterEvents.get("error")?.(new Error("HttpError: 500"));
+      return Promise.resolve();
+    });
+
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+
+    expect(module.getUpdateStatus()).toEqual({ state: "idle" });
+  });
+
+  it("does not nudge when a non-net failure breaks the net:: streak", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+
+    const netFail = () => {
+      updaterEvents.get("checking-for-update")?.();
+      updaterEvents.get("error")?.(new Error("net::ERR_FAILED"));
+      return Promise.resolve();
+    };
+    const httpFail = () => {
+      updaterEvents.get("checking-for-update")?.();
+      updaterEvents.get("error")?.(new Error("HttpError: 500"));
+      return Promise.resolve();
+    };
+
+    autoUpdater.checkForUpdates.mockImplementation(netFail);
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+    autoUpdater.checkForUpdates.mockImplementation(httpFail);
+    await module.startAutoUpdates(stateDir);
+    autoUpdater.checkForUpdates.mockImplementation(netFail);
+    await module.startAutoUpdates(stateDir);
+
+    // net, net, non-net, net → the streak resets on the non-net failure, so the
+    // lone trailing net error stays below the threshold (#3526).
+    expect(module.getUpdateStatus()).toEqual({ state: "idle" });
+  });
+
+  it("counts one failure when an automatic check both emits error and rejects", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+    autoUpdater.checkForUpdates.mockImplementation(() => {
+      updaterEvents.get("checking-for-update")?.();
+      updaterEvents.get("error")?.(new Error("net::ERR_FAILED"));
+      return Promise.reject(new Error("net::ERR_FAILED"));
+    });
+
+    // Two checks that each surface the failure twice must not reach the
+    // threshold of three.
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+    expect(module.getUpdateStatus()).toEqual({ state: "idle" });
+
+    await module.startAutoUpdates(stateDir);
+    expect(module.getUpdateStatus()).toEqual({
+      state: "idle",
+      staleCheckNudge: true,
+    });
+  });
+
+  it("surfaces the nudge when automatic checks reject without an error event", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+    autoUpdater.checkForUpdates.mockImplementation(() => {
+      updaterEvents.get("checking-for-update")?.();
+      return Promise.reject(new Error("net::ERR_FAILED"));
+    });
+
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+    // Restored to the pre-check status (not stuck on "checking"), and no nudge
+    // below the threshold.
+    expect(module.getUpdateStatus()).toEqual({ state: "idle" });
+
+    await module.startAutoUpdates(stateDir);
+    expect(module.getUpdateStatus()).toEqual({
+      state: "idle",
+      staleCheckNudge: true,
+    });
+  });
+
+  it("stamps the nudge on getUpdateStatus even when no broadcast carried it", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { module, autoUpdater, updaterEvents, statusMessages } =
+      await importAutoUpdater();
+    // No checking-for-update: there is no prior status to restore, so the
+    // failures produce no status broadcast at all.
+    autoUpdater.checkForUpdates.mockImplementation(() => {
+      updaterEvents.get("error")?.(new Error("net::ERR_FAILED"));
+      return Promise.resolve();
+    });
+
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+
+    expect(statusMessages()).toEqual([]);
+    expect(module.getUpdateStatus()).toEqual({
+      state: "idle",
+      staleCheckNudge: true,
+    });
+  });
+
+  it("clears the nudge once a check succeeds again", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+    autoUpdater.checkForUpdates.mockImplementation(() => {
+      updaterEvents.get("checking-for-update")?.();
+      updaterEvents.get("error")?.(new Error("net::ERR_FAILED"));
+      return Promise.resolve();
+    });
+
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+    expect(module.getUpdateStatus()).toEqual({
+      state: "idle",
+      staleCheckNudge: true,
+    });
+
+    autoUpdater.checkForUpdates.mockImplementation(() => {
+      updaterEvents.get("checking-for-update")?.();
+      updaterEvents.get("update-not-available")?.();
+      return Promise.resolve();
+    });
+    await module.startAutoUpdates(stateDir);
+
+    expect(module.getUpdateStatus()).toEqual({ state: "not-available" });
+  });
+
   it("logs settings failures during automatic checks and retries on later ticks", async () => {
     vi.useFakeTimers();
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");

@@ -24,6 +24,17 @@ import { type SettingsModal, useUiStore } from "../stores/ui-store";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 
+function initialProjectSaveState(): ProjectSettingsSaveState {
+	return {
+		isPending: false,
+		showSaving: false,
+		validationError: null,
+		mutationError: null,
+		saved: false,
+		replacementError: null,
+	};
+}
+
 export function SettingsDialog() {
 	const { t } = useTranslation();
 	const settingsModal = useUiStore((state) => state.settingsModal);
@@ -61,14 +72,7 @@ export function SettingsDialog() {
 	const isProjectSettings = displaySettings?.scope === "project";
 	const [activeSection, setActiveSection] = useState<Exclude<GlobalSettingsSection, "all">>("general");
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
-	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>({
-		isPending: false,
-		showSaving: false,
-		validationError: null,
-		mutationError: null,
-		saved: false,
-		replacementError: null,
-	});
+	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
 
 	const activeLabel = isProjectSettings
 		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.identity"))
@@ -104,24 +108,22 @@ export function SettingsDialog() {
 		else openProjectSettings(previousSettings.projectId);
 	};
 
+	const closeSettingsDialog = () => {
+		if (isProjectSettings && projectSaveState.isPending) return;
+		closeSettings();
+	};
+
 	useEffect(() => {
 		if (settingsModal?.scope === "global") setActiveSection("general");
 		if (settingsModal?.scope === "project") {
 			setActiveProjectSection("general");
-			setProjectSaveState({
-				isPending: false,
-				showSaving: false,
-				validationError: null,
-				mutationError: null,
-				saved: false,
-				replacementError: null,
-			});
+			setProjectSaveState(initialProjectSaveState());
 		}
 	}, [settingsModal]);
 
 	return (
 		<>
-			<Dialog open={settingsModal !== null} onOpenChange={(open) => !open && closeSettings()}>
+			<Dialog open={settingsModal !== null} onOpenChange={(open) => !open && closeSettingsDialog()}>
 			<DialogContent
 				className={cn(
 					settingsDialogContentClass,
@@ -206,6 +208,7 @@ export function SettingsDialog() {
 							<DialogClose
 								aria-label={t("settings.close")}
 								className="settings-close-button border border-transparent transition-colors hover:border-(--color-border-settings-input) hover:bg-[var(--color-bg-settings-input)]"
+								disabled={isProjectSettings && projectSaveState.isPending}
 							>
 								<X aria-hidden="true" className="size-4" />
 							</DialogClose>

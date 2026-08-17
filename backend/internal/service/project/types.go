@@ -40,4 +40,5 @@ type WorkspaceRepo struct {
 	Name         string `json:"name"`
 	RelativePath string `json:"relativePath"`
 	Repo         string `json:"repo"`
+	GitStatus    string `json:"gitStatus,omitempty"`
 }

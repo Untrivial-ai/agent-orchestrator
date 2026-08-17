@@ -346,6 +346,15 @@ export interface SystemEventDetail {
 	/** steer: the user's own words, delivered into a turn already running. */
 	origin?: string;
 	clientMessageId?: string;
+	/** steer: complete provider-neutral content copied from a promoted queue item. */
+	content?: Array<{
+		type: string;
+		data?: string;
+		mimeType?: string;
+		uri?: string;
+		name?: string;
+		text?: string;
+	}>;
 }
 
 /** A `plan` activity's payload, which is the same plan the turn carries. */

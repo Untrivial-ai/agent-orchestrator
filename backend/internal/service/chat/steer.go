@@ -41,6 +41,15 @@ var (
 	// ErrSteerTextRequired refuses an empty steer. There is no keystroke concept in
 	// Chat mode: an empty body is a caller bug, not a way to nudge the agent.
 	ErrSteerTextRequired = errors.New("steer text is required")
+	// ErrTurnNotQueued reports a selected source that has already dispatched,
+	// settled, or been claimed by another promotion.
+	ErrTurnNotQueued = errors.New("turn is not queued")
+	// ErrPromotionUncertain prevents automatic redelivery after the provider may
+	// have accepted guidance but AO could not durably record the result.
+	ErrPromotionUncertain = errors.New("queued turn promotion delivery is uncertain")
+	// ErrSteerContentUnsupported means the provider cannot accept every structured
+	// block. The whole queued message stays undelivered.
+	ErrSteerContentUnsupported = errors.New("steer content is unsupported")
 )
 
 // SteerResult is what a steer did, for a client that has to attribute it.
@@ -52,6 +61,14 @@ type SteerResult struct {
 	// ActivityID is the timeline row recording the guidance, so a client can
 	// reconcile an optimistic bubble with the durable one instead of showing both.
 	ActivityID string
+}
+
+// PromoteQueuedTurnResult attributes a durable queue item to the running turn
+// that absorbed it.
+type PromoteQueuedTurnResult struct {
+	SourceTurnID   string
+	ProviderTurnID string
+	ActivityID     string
 }
 
 // maxSteerSummaryRunes bounds the one-line label a steer lands on the timeline
@@ -82,6 +99,134 @@ func (s *Service) Steer(
 		return SteerResult{}, ErrSteerUnsupported
 	}
 	return controller.Steer(ctx, msg)
+}
+
+// PromoteQueuedTurn delivers one already queued turn into the active turn. The
+// daemon reads the queued content; callers identify it but cannot replace it.
+func (s *Service) PromoteQueuedTurn(
+	ctx context.Context,
+	id domain.SessionID,
+	turnID string,
+) (PromoteQueuedTurnResult, error) {
+	if _, err := s.requireChatSession(ctx, id); err != nil {
+		return PromoteQueuedTurnResult{}, err
+	}
+	controller, err := s.Controller(id)
+	if err != nil {
+		return PromoteQueuedTurnResult{}, err
+	}
+	if _, ok := controller.conv.(ports.ChatSteerer); !ok {
+		return PromoteQueuedTurnResult{}, ErrSteerUnsupported
+	}
+	return controller.PromoteQueuedTurn(ctx, turnID)
+}
+
+// PromoteQueuedTurn reserves a durable queue item, asks the provider to absorb
+// it, then records the destination and retires the source as one store operation.
+func (c *Controller) PromoteQueuedTurn(
+	ctx context.Context,
+	turnID string,
+) (PromoteQueuedTurnResult, error) {
+	steerer, ok := c.conv.(ports.ChatSteerer)
+	if !ok {
+		return PromoteQueuedTurnResult{}, ErrSteerUnsupported
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.handoffActive() {
+		return PromoteQueuedTurnResult{}, ErrControllerHandoff
+	}
+
+	source, err := c.store.TurnByID(ctx, turnID)
+	if err != nil {
+		return PromoteQueuedTurnResult{}, err
+	}
+	if source.ConversationID != c.conversation.ID {
+		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s", domain.ErrNoConversationTurn, turnID)
+	}
+	if source.State != domain.TurnStateQueued {
+		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s", ErrTurnNotQueued, turnID)
+	}
+
+	target, ok := c.awaitAcknowledgedTurn(ctx)
+	if !ok {
+		return PromoteQueuedTurnResult{}, ErrNoActiveTurn
+	}
+	queued, err := c.store.ReserveQueuedTurnForPromotion(ctx, c.conversation.ID, turnID, c.now())
+	if err != nil {
+		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s: %w", ErrTurnNotQueued, turnID, err)
+	}
+	release := func() {
+		if releaseErr := c.store.ReleaseQueuedTurnPromotion(
+			context.WithoutCancel(ctx), c.conversation.ID, turnID); releaseErr != nil {
+			c.log.Error("failed to release queued turn promotion", "turn", turnID, "error", releaseErr)
+		}
+	}
+	if queued.Origin != domain.MessageOriginHuman {
+		release()
+		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s", ErrTurnNotQueued, turnID)
+	}
+	settleUncertain := func(cause error) error {
+		// A transport error commonly cancels the request context after the provider
+		// may already have accepted the steer. The durable safety transition must
+		// survive that cancellation or the source remains visibly queued forever.
+		settleCtx := context.WithoutCancel(ctx)
+		if settleErr := c.store.SettleTurnByID(
+			settleCtx, turnID, domain.TurnStateFailed, ErrPromotionUncertain.Error(), c.now()); settleErr != nil {
+			c.log.Error("failed to settle uncertain queued turn promotion",
+				"turn", turnID, "cause", cause, "error", settleErr)
+		}
+		return fmt.Errorf("%w: %w", ErrPromotionUncertain, cause)
+	}
+
+	var content []ports.ChatContent
+	if queued.DeliveryContentJSON != "" {
+		if err := json.Unmarshal([]byte(queued.DeliveryContentJSON), &content); err != nil {
+			release()
+			return PromoteQueuedTurnResult{}, fmt.Errorf("decode queued chat content: %w", err)
+		}
+	}
+	msg := ports.ChatUserMessage{
+		Text: queued.Text, Content: content, Origin: queued.Origin,
+		ClientMessageID: queued.ClientMessageID,
+	}
+	ref, err := steerer.Steer(ctx, target, msg)
+	if err != nil {
+		classified := classify(err)
+		switch {
+		case errors.Is(err, ports.ErrChatNoSteerableTurn):
+			release()
+			return PromoteQueuedTurnResult{}, ErrNoActiveTurn
+		case errors.Is(err, ports.ErrChatTurnNotSteerable):
+			release()
+			return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %w", ErrTurnNotSteerable, err)
+		case errors.Is(err, ports.ErrChatSteerContentUnsupported):
+			release()
+			return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %w", ErrSteerContentUnsupported, err)
+		case errors.Is(classified, ErrProviderRefused):
+			release()
+			return PromoteQueuedTurnResult{}, classified
+		default:
+			return PromoteQueuedTurnResult{}, settleUncertain(
+				fmt.Errorf("steer queued turn %s: %w", turnID, err))
+		}
+	}
+	landed := ref.ProviderTurnID
+	if landed == "" {
+		landed = target
+	}
+	activityID := c.newID()
+	activity, err := makeSteerActivity(activityID, msg, turnID)
+	if err != nil {
+		return PromoteQueuedTurnResult{}, settleUncertain(err)
+	}
+	if err := c.store.CompleteQueuedTurnPromotion(
+		ctx, c.conversation.ID, turnID, landed, activity, c.now()); err != nil {
+		return PromoteQueuedTurnResult{}, settleUncertain(err)
+	}
+	return PromoteQueuedTurnResult{
+		SourceTurnID: turnID, ProviderTurnID: landed, ActivityID: activityID,
+	}, nil
 }
 
 // Steer hands guidance to the provider for the turn currently in flight, then
@@ -125,6 +270,8 @@ func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (Stee
 			return SteerResult{}, ErrNoActiveTurn
 		case errors.Is(err, ports.ErrChatTurnNotSteerable):
 			return SteerResult{}, fmt.Errorf("%w: %w", ErrTurnNotSteerable, err)
+		case errors.Is(err, ports.ErrChatSteerContentUnsupported):
+			return SteerResult{}, fmt.Errorf("%w: %w", ErrSteerContentUnsupported, err)
 		}
 		return SteerResult{}, classify(fmt.Errorf("steer turn %s: %w", turn, err))
 	}
@@ -163,6 +310,23 @@ func (c *Controller) recordSteer(
 	providerTurnID string,
 	msg ports.ChatUserMessage,
 ) (string, error) {
+	id := c.newID()
+	activity, err := makeSteerActivity(id, msg, "")
+	if err != nil {
+		return "", err
+	}
+	if err := c.store.UpsertActivity(ctx, c.conversation.ID, providerTurnID,
+		activity, c.now()); err != nil {
+		return "", fmt.Errorf("record steer on turn %s: %w", providerTurnID, err)
+	}
+	return id, nil
+}
+
+func makeSteerActivity(
+	id string,
+	msg ports.ChatUserMessage,
+	sourceTurnID string,
+) (domain.ConversationActivity, error) {
 	detail := map[string]any{
 		"event":  "steer",
 		"text":   msg.Text,
@@ -171,32 +335,28 @@ func (c *Controller) recordSteer(
 	if msg.ClientMessageID != "" {
 		detail["clientMessageId"] = msg.ClientMessageID
 	}
+	if sourceTurnID != "" {
+		detail["sourceTurnId"] = sourceTurnID
+	}
+	if len(msg.Content) > 0 {
+		detail["content"] = msg.Content
+	}
 	encoded, err := json.Marshal(detail)
 	if err != nil {
-		return "", fmt.Errorf("encode steer detail: %w", err)
+		return domain.ConversationActivity{}, fmt.Errorf("encode steer detail: %w", err)
 	}
-
-	id := c.newID()
-	if err := c.store.UpsertActivity(ctx, c.conversation.ID, providerTurnID,
-		domain.ConversationActivity{
-			ID:     id,
-			Kind:   domain.ActivityKindSystem,
-			Status: domain.ActivityStatusCompleted,
-			// Delivered, not pending: the provider accepted it before this ran.
-			Summary: steerSummary(msg.Text),
-			Detail:  encoded,
-			// A synthetic item key, so a client retrying with the same idempotency
-			// handle updates this row instead of adding a second one. Prefixed because
-			// this id is AO's, not the provider's, and the two share a column.
-			ProviderItemID: steerItemID(msg.ClientMessageID),
-		}, c.now()); err != nil {
-		return "", fmt.Errorf("record steer on turn %s: %w", providerTurnID, err)
-	}
-
-	// No activity signal is reported. A steer only happens while a turn is running,
-	// so the session is already Active; saying so again would be a signal that
-	// carries no news.
-	return id, nil
+	return domain.ConversationActivity{
+		ID:     id,
+		Kind:   domain.ActivityKindSystem,
+		Status: domain.ActivityStatusCompleted,
+		// Delivered, not pending: the provider accepted it before this ran.
+		Summary: steerSummary(msg.Text),
+		Detail:  encoded,
+		// A synthetic item key, so a client retrying with the same idempotency
+		// handle updates this row instead of adding a second one. Prefixed because
+		// this id is AO's, not the provider's, and the two share a column.
+		ProviderItemID: steerItemID(msg.ClientMessageID),
+	}, nil
 }
 
 // steerItemID is the dedupe key for a recorded steer, or empty when the caller

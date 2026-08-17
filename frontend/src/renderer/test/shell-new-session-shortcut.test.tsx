@@ -299,20 +299,16 @@ beforeEach(() => {
 });
 
 describe("shell workspace startup", () => {
-	it("places the topbar host inside the center panel surface on session routes", async () => {
+	it("leaves the session topbar row to the session split instead of reserving a full-width shell row", async () => {
 		shellMocks.state.routeParams = { sessionId: "sess-1" };
 		await renderShell();
 
-		const host = screen.getByTestId("session-topbar-host");
 		const sidebar = screen.getByTestId("sidebar");
-		// Host now lives inside center-panel-surface (after the sidebar in DOM order).
-		expect(host.compareDocumentPosition(sidebar) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
-		expect(host).toHaveClass("h-inspector-tabs");
-		// Sidebar uses the same topbar offset as non-session routes (no longer "session").
+		expect(screen.queryByTestId("session-topbar-host")).not.toBeInTheDocument();
+		// The route shell owns only the frame. SessionView places its topbar host
+		// inside the terminal panel so the inspector header can occupy this row too.
 		expect(sidebar).not.toHaveAttribute("data-topbar-offset", "session");
 		expect(document.querySelector(".center-panel-shell--session > .center-panel-surface")).toBeInTheDocument();
-		// Host must be a descendant of the session surface.
-		expect(document.querySelector(".center-panel-shell--session > .center-panel-surface")?.contains(host)).toBe(true);
 	});
 
 	it("forces a confirmed fetch and preserves a collapsed sidebar preference", async () => {

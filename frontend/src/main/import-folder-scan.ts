@@ -15,6 +15,7 @@ export type GitRepoScanResult = {
 	hasRemote: boolean;
 	status: "ok" | "error";
 	reason?: string;
+	needsGitInit?: boolean;
 };
 
 export type ImportFolderScanResult = {
@@ -112,15 +113,9 @@ async function resolveDefaultBranch(repoPath: string, options: ScanOptions = {})
 		const ref = await gitOutput(repoPath, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], options);
 		if (ref) return ref.replace(/^origin\//, "");
 	} catch {
-		// Fall back to the checked-out branch when origin/HEAD is unavailable.
+		// The current checkout may be temporary and is not a repository default.
 	}
-	try {
-		const branch = await gitOutput(repoPath, ["branch", "--show-current"], options);
-		if (branch) return branch;
-	} catch {
-		// Detached or unreadable HEAD is represented below.
-	}
-	return "HEAD";
+	return "auto";
 }
 
 async function scanGitRepo(
@@ -137,11 +132,11 @@ async function scanGitRepo(
 				name,
 				path: repoPath,
 				relativePath,
-				branch: "HEAD",
+				branch: "",
 				remote: "",
 				hasRemote: false,
-				status: "error",
-				reason: "Linked worktree children cannot be imported.",
+				status: "ok",
+				needsGitInit: true,
 			};
 		}
 	} catch {
@@ -159,48 +154,43 @@ async function scanGitRepo(
 				};
 			}
 		} catch {
-			// Not a git repository.
+			// Not a git repository — surface as needs-init.
 		}
-		return null;
+		return {
+			name,
+			path: repoPath,
+			relativePath,
+			branch: "",
+			remote: "",
+			hasRemote: false,
+			status: "ok",
+			needsGitInit: true,
+		};
 	}
 	if (!(await isGitRepo(repoPath, options))) return null;
-	const [branchResult, remoteResult, bareResult, headResult] = await Promise.allSettled([
+	const [branchResult, remoteResult, headResult] = await Promise.allSettled([
 		resolveDefaultBranch(repoPath, options),
 		gitOutput(repoPath, ["remote", "get-url", "origin"], options),
-		gitOutput(repoPath, ["rev-parse", "--is-bare-repository"], options),
 		gitOutput(repoPath, ["rev-parse", "--verify", "HEAD"], options),
 	]);
-	const validationReason = scanRepoValidationReason(
-		name,
-		branchResult.status === "fulfilled" && branchResult.value ? branchResult.value : "HEAD",
-		remoteResult.status === "fulfilled" && remoteResult.value.length > 0,
-		bareResult.status === "fulfilled" && bareResult.value === "true",
-		headResult.status === "fulfilled",
-	);
+	const hasHead = headResult.status === "fulfilled";
+	const hasRemote = remoteResult.status === "fulfilled" && remoteResult.value.length > 0;
+	const validationReason = scanRepoValidationReason(name);
 	return {
 		name,
 		path: repoPath,
 		relativePath,
 		branch: branchResult.status === "fulfilled" && branchResult.value ? branchResult.value : "HEAD",
 		remote: remoteResult.status === "fulfilled" ? remoteResult.value : "",
-		hasRemote: remoteResult.status === "fulfilled" && remoteResult.value.length > 0,
+		hasRemote,
 		status: validationReason ? "error" : "ok",
 		reason: validationReason,
+		needsGitInit: !validationReason && (!hasHead || !hasRemote),
 	};
 }
 
-function scanRepoValidationReason(
-	name: string,
-	branch: string,
-	hasRemote: boolean,
-	isBare: boolean,
-	hasHead: boolean,
-): string | undefined {
+function scanRepoValidationReason(name: string): string | undefined {
 	if (name === "__root__") return "Repository name is reserved by AO.";
-	if (isBare) return "Bare repositories cannot be imported.";
-	if (!hasHead) return "Repository must have at least one commit.";
-	if (branch === "HEAD") return "Repository must have a checked-out branch.";
-	if (!hasRemote) return "Origin remote is required.";
 	return undefined;
 }
 
@@ -243,13 +233,14 @@ export async function scanImportFolder(
 				],
 			};
 		}
-		const repo = await scanGitRepo(rootPath, rootPath, options);
-		if (repo) return { path: rootPath, repos: [repo] };
-		return {
-			path: rootPath,
-			repos: [],
-			setupWarning: await ancestorRepositorySetupWarning(rootPath, options),
-		};
+	const repo = await scanGitRepo(rootPath, rootPath, options);
+	if (repo && !repo.needsGitInit) return { path: rootPath, repos: [repo] };
+	const setupWarning = await ancestorRepositorySetupWarning(rootPath, options);
+	return {
+		path: rootPath,
+		repos: repo ? [repo] : [],
+		...(setupWarning ? { setupWarning } : {}),
+	};
 	}
 
 	const [entries, ancestorWarning] = await Promise.all([

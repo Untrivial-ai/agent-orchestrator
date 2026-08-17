@@ -21,6 +21,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
 // Plugin is the Cursor agent adapter. It is safe for concurrent use; the binary
@@ -91,17 +92,13 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		return nil, err
 	}
 
-	cmd = []string{binary}
-	appendApprovalFlags(&cmd, cfg.Permissions)
-	agentbase.AppendModelFlag(&cmd, cfg.Config, "--model")
-
-	// Prompt is positional and must be last. The `--` sentinel ends option
-	// parsing so a leading "-" in the prompt is not read as a flag.
-	if cfg.Prompt != "" {
-		cmd = append(cmd, "--", cfg.Prompt)
-	}
-
-	return cmd, nil
+	return agentruntime.BuildLaunchCommand(agentruntime.LaunchConfig{
+		Harness:    agentruntime.HarnessCursor,
+		Binary:     binary,
+		Model:      cfg.Config.Model,
+		Prompt:     cfg.Prompt,
+		Permission: agentruntime.PermissionPolicy(cfg.Permissions),
+	})
 }
 
 // GetRestoreCommand rebuilds the argv that continues an existing Cursor CLI
@@ -116,22 +113,26 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	agentSessionID := strings.TrimSpace(cfg.Session.Metadata[ports.MetadataKeyAgentSessionID])
-	if agentSessionID == "" {
+	if _, ok := agentruntime.RestoreIdentity(
+		agentruntime.HarnessCursor,
+		cfg.Session.ID,
+		cfg.Session.Metadata,
+	); !ok {
 		return nil, false, nil
 	}
-
 	binary, err := p.cursorBinary(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 
-	cmd = make([]string, 0, 6)
-	cmd = append(cmd, binary)
-	appendApprovalFlags(&cmd, cfg.Permissions)
-	agentbase.AppendModelFlag(&cmd, cfg.Config, "--model")
-	cmd = append(cmd, "--resume", agentSessionID)
-	return cmd, true, nil
+	return agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
+		Harness:    agentruntime.HarnessCursor,
+		Binary:     binary,
+		SessionID:  cfg.Session.ID,
+		Metadata:   cfg.Session.Metadata,
+		Model:      cfg.Config.Model,
+		Permission: agentruntime.PermissionPolicy(cfg.Permissions),
+	})
 }
 
 // SessionInfo surfaces Cursor hook-derived metadata. Metadata is intentionally
@@ -205,18 +206,4 @@ func (p *Plugin) cursorBinary(ctx context.Context) (string, error) {
 	}
 	p.resolvedBinary = binary
 	return binary, nil
-}
-
-func appendApprovalFlags(cmd *[]string, permissions ports.PermissionMode) {
-	switch ports.NormalizePermissionMode(permissions) {
-	case ports.PermissionModeDefault:
-		// No flag: defer to the user's Cursor config approvalMode.
-	case ports.PermissionModeAcceptEdits:
-		// No dedicated accept-edits flag exists; cursor has no accept-edits
-		// flag, it is governed by .cursor/cli.json permissions.
-	case ports.PermissionModeAuto:
-		*cmd = append(*cmd, "--force")
-	case ports.PermissionModeBypassPermissions:
-		*cmd = append(*cmd, "--yolo")
-	}
 }

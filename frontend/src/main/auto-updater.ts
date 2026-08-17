@@ -15,6 +15,7 @@ import {
 import { reconcileFeaturePin } from "./feature-builds";
 import { evaluateEscalation } from "./escalation-evaluator";
 import {
+  isNetErrorMessage,
   updateFailureOutcome,
   type UpdateOutcome,
   type UpdatePhase,
@@ -105,6 +106,16 @@ let automaticCheckPreviousStatus:
   { status: UpdateStatus; independentRevision: number } | undefined;
 let updaterOperationQueue: Promise<void> = Promise.resolve();
 let automaticCheckInFlight = false;
+// Consecutive automatic-check failures from Chromium's network stack
+// (net::ERR_*): a wedged stack fails every updater request until the app
+// restarts, and automatic failures are UI-suppressed, so the install goes
+// silently stale (#3526). At the threshold, statuses carry staleCheckNudge so
+// the renderer can suggest a restart.
+const STALE_CHECK_NUDGE_THRESHOLD = 3; // hourly checks → ~3h of staleness
+let consecutiveAutomaticNetFailures = 0;
+// One automatic check can both emit an "error" event and reject
+// checkForUpdates(); count that as a single failure.
+let automaticCheckNetFailureCounted = false;
 // Which stage the active operation reached, and what it was fetching. Tracked
 // here because the renderer cannot know either: automatic failures never
 // broadcast a status, and error statuses carry no version.
@@ -138,6 +149,10 @@ function broadcast(
   status: UpdateStatus,
   owner: "independent" | "automatic-operation" = "independent",
 ): void {
+  const stamped: UpdateStatus =
+    consecutiveAutomaticNetFailures >= STALE_CHECK_NUDGE_THRESHOLD
+      ? { ...status, staleCheckNudge: true }
+      : status;
   if (owner === "independent") {
     independentStatusRevision += 1;
     if (
@@ -145,14 +160,14 @@ function broadcast(
       automaticCheckPreviousStatus !== undefined
     ) {
       automaticCheckPreviousStatus = {
-        status,
+        status: stamped,
         independentRevision: independentStatusRevision,
       };
     }
   }
-  lastStatus = status;
+  lastStatus = stamped;
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send("updates:status", status);
+    if (!win.isDestroyed()) win.webContents.send("updates:status", stamped);
   }
 }
 
@@ -315,6 +330,7 @@ async function runSerializedUpdaterOperation(
     activeUpdaterRequestId = requestId;
     activeUpdaterPhase = operation === "manual-download" ? "download" : "check";
     pendingUpdateVersion = undefined;
+    if (operation === "automatic-check") automaticCheckNetFailureCounted = false;
     try {
       await runOperation();
     } finally {
@@ -377,6 +393,47 @@ async function runRetirementPoll(stateDir: string): Promise<void> {
   }
 }
 
+// isNetError checks whether the error is a Chromium network-stack failure
+// (net::ERR_*). When the network stack wedges, every updater request fails
+// this way until the app restarts (#3526).
+function isNetError(err: unknown): boolean {
+  return isNetErrorMessage(
+    err instanceof Error ? err.message : err === undefined ? undefined : String(err),
+  );
+}
+
+// recordAutomaticNetFailure counts one net-level automatic-check failure,
+// guarding against the same check surfacing as both an "error" event and a
+// checkForUpdates() rejection. The flag is re-armed per operation in
+// runSerializedUpdaterOperation.
+function recordAutomaticNetFailure(): void {
+  if (automaticCheckNetFailureCounted) return;
+  automaticCheckNetFailureCounted = true;
+  consecutiveAutomaticNetFailures += 1;
+}
+
+// recordAutomaticCheckFailure tallies one automatic-check failure against the
+// consecutive net:: streak. A net error extends it; any other failure (HTTP
+// status, manifest 404, signature error, …) proves the network stack reached a
+// server and so breaks the streak — otherwise a single interleaving non-net
+// error would let a stale streak still trip the nudge (#3526).
+function recordAutomaticCheckFailure(err: unknown): void {
+  if (isNetError(err)) recordAutomaticNetFailure();
+  else consecutiveAutomaticNetFailures = 0;
+}
+
+// errorMessage extracts the user-facing message for an update error status,
+// defaulting null/undefined to a generic label. Net-error restart guidance is
+// localized in the renderer from the netError flag instead of being built here
+// (#3526).
+function errorMessage(err: unknown): string {
+  return err instanceof Error
+    ? err.message
+    : err == null
+      ? "Update check failed"
+      : String(err);
+}
+
 // isManifest404Error checks whether the error is a 404 on a release
 // manifest YAML file — a routine condition that should not be surfaced
 // to users as an error dialog.
@@ -412,6 +469,8 @@ function wireUpdaterEvents(): void {
     broadcastUpdaterStatus({ state: "checking" });
   });
   autoUpdater.on("update-available", (info) => {
+    // A successful check proves the network stack is healthy.
+    consecutiveAutomaticNetFailures = 0;
     // A manual re-check reports the already-staged build as merely "available"
     // (autoDownload is off on that path). It is still in cache and installs on
     // quit, so keep the richer downloaded status instead of hiding the row.
@@ -423,6 +482,8 @@ function wireUpdaterEvents(): void {
     broadcastUpdaterStatus({ state: "available", version: info?.version });
   });
   autoUpdater.on("update-not-available", () => {
+    // A successful check proves the network stack is healthy.
+    consecutiveAutomaticNetFailures = 0;
     broadcastUpdaterStatus({ state: "not-available" });
     // The staged build outlives a "nothing newer" answer (e.g. after a channel
     // switch); follow up so the restart row returns.
@@ -430,8 +491,10 @@ function wireUpdaterEvents(): void {
       broadcastUpdaterStatus(stagedDownloadedStatus());
   });
   autoUpdater.on("download-progress", (p) => {
-    // Any progress proves the check succeeded, so a later error is a download
-    // failure even when the operation began life as a check.
+    // Any progress proves the network stack is healthy and the check
+    // succeeded, so a later error is a download failure even when the
+    // operation began life as a check.
+    consecutiveAutomaticNetFailures = 0;
     activeUpdaterPhase = "download";
     return broadcastUpdaterStatus({
       state: "downloading",
@@ -473,6 +536,7 @@ function wireUpdaterEvents(): void {
     emitUpdateFailure(err);
     if (activeUpdaterOperation === "automatic-check") {
       console.error("auto-update check failed:", err);
+      recordAutomaticCheckFailure(err);
       restoreAutomaticCheckPreviousStatus();
       return;
     }
@@ -503,17 +567,25 @@ function wireUpdaterEvents(): void {
       return;
     }
     // All other errors: broadcast so the user knows something went wrong.
+    // Chromium network-stack failures carry a netError flag so the renderer can
+    // localize restart guidance instead of showing the raw net:: string (#3526).
     broadcast(
       withActiveRequest({
         state: "error",
-        message: err?.message ?? String(err),
+        message: errorMessage(err),
+        ...(isNetError(err) ? { netError: true } : {}),
       }),
     );
   });
 }
 
 export function getUpdateStatus(): UpdateStatus {
-  return lastStatus;
+  // Derive the nudge at read time: a streak can cross the threshold without
+  // any broadcast (no checking-for-update → restore no-ops), and Settings
+  // seeds from this getter (#3526).
+  return consecutiveAutomaticNetFailures >= STALE_CHECK_NUDGE_THRESHOLD
+    ? { ...lastStatus, staleCheckNudge: true }
+    : lastStatus;
 }
 
 async function runAutomaticUpdateCheck(stateDir: string): Promise<boolean> {
@@ -537,8 +609,19 @@ async function runAutomaticUpdateCheck(stateDir: string): Promise<boolean> {
       configureFeed(settings);
       autoUpdater.autoDownload = true;
       applyInstallOnQuitPolicy();
-      const result = await autoUpdater.checkForUpdates();
-      if (result?.downloadPromise) await result.downloadPromise;
+      try {
+        const result = await autoUpdater.checkForUpdates();
+        if (result?.downloadPromise) await result.downloadPromise;
+      } catch (err) {
+        // electron-updater normally also emits "error" (handled in
+        // wireUpdaterEvents); a reject-only failure must still restore the
+        // pre-check status so the renderer is neither stuck on "checking" nor
+        // denied the stale-check nudge once the streak crosses the threshold
+        // (#3526). Record before restoring so the restore broadcast is stamped.
+        recordAutomaticCheckFailure(err);
+        restoreAutomaticCheckPreviousStatus();
+        throw err;
+      }
     });
   } catch (err) {
     console.error("auto-update check failed:", err);
@@ -671,7 +754,8 @@ export async function checkForUpdatesNow(
     } else {
       broadcast({
         state: "error",
-        message: (err as Error)?.message ?? "Update check failed",
+        message: errorMessage(err),
+        ...(isNetError(err) ? { netError: true } : {}),
         requestId: options.requestId,
       });
     }

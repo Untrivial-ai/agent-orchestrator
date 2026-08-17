@@ -317,6 +317,36 @@ func TestClaimPR_CreatesMovesAndGuardsActiveOwner(t *testing.T) {
 	}
 }
 
+func TestClaimPRSnapshotsDisabledSessionAutoInjectCI(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	record := sampleRecord("mer")
+	record.AutoInjectCI = false
+	owner, err := s.CreateSession(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := domain.PullRequest{
+		URL:       "https://github.com/acme/repo/pull/124",
+		SessionID: owner.ID,
+		Number:    124,
+		CI:        domain.CIFailing,
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	if _, err := s.ClaimPR(ctx, pr, nil, nil, nil, nil, ports.ReviewWritePreserve, true); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetPR(ctx, pr.URL)
+	if err != nil || !ok {
+		t.Fatalf("get claimed PR: ok=%v err=%v", ok, err)
+	}
+	if got.AutoInjectCI {
+		t.Fatal("claimed PR did not snapshot the session's disabled CI injection policy")
+	}
+}
+
 func TestClaimPRCreatedCDCUsesClaimReviewDecision(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

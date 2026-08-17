@@ -7,6 +7,7 @@ import { SettingsOptionMenu, type SettingsOption } from "./SettingsOptionMenu";
 import { SettingsLinkRow, SettingsRow } from "./SettingsRow";
 import { SettingsSection } from "./SettingsSection";
 import { cn } from "../../lib/utils";
+import { Switch } from "../ui/switch";
 import { useSettings, useUpdateSessionInterface } from "../../hooks/useSettings";
 import type { SessionMode } from "../../types/workspace";
 
@@ -94,6 +95,8 @@ export function GeneralSettingsSection({
 	const setLocale = useLocaleStore((state) => state.setLocale);
 	const localeSaving = useLocaleStore((state) => state.saving);
 	const localeSaveError = useLocaleStore((state) => state.saveError);
+	const developerMode = useUiStore((state) => state.developerMode);
+	const setDeveloperMode = useUiStore((state) => state.setDeveloperMode);
 
 	const themeOptions = [
 		{ value: "light", label: t("settings.theme.light") },
@@ -150,6 +153,13 @@ export function GeneralSettingsSection({
 				</p>
 			) : null}
 			<SessionInterfaceRow />
+			<SettingsRow label={t("settings.developerMode")}>
+				<Switch
+					aria-label={t("settings.developerMode")}
+					checked={developerMode}
+					onCheckedChange={setDeveloperMode}
+				/>
+			</SettingsRow>
 			<SettingsLinkRow label={t("settings.connectMobile")} onClick={onConnectMobile} />
 		</SettingsSection>
 	);

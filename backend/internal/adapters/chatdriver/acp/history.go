@@ -21,6 +21,7 @@ type historyCapture struct {
 	occurrences     map[string]int
 	turnID          string
 	turnUserID      string
+	turnHasProvider bool
 	pendingUserID   string
 	pendingUserText string
 	fallbackID      int
@@ -45,6 +46,8 @@ func (c *conversation) beginHistoryReplay(sessionID string) {
 		occurrences: make(map[string]int),
 	}
 	c.historyEvents = nil
+	c.historyErr = nil
+	c.historyLoaded = false
 	c.historyMu.Unlock()
 }
 
@@ -52,6 +55,8 @@ func (c *conversation) abortHistoryReplay() {
 	c.historyMu.Lock()
 	c.history = nil
 	c.historyEvents = nil
+	c.historyErr = nil
+	c.historyLoaded = false
 	c.historyMu.Unlock()
 
 	c.mu.Lock()
@@ -63,11 +68,29 @@ func (c *conversation) abortHistoryReplay() {
 // captured facts through ChatHistoryReader for the controller's transactional,
 // idempotent import path.
 func (c *conversation) finishHistoryReplay() {
+	c.historyMu.Lock()
+	unsettled := c.history != nil && c.history.turnID != "" &&
+		c.history.turnUserID != "" && !c.history.turnHasProvider
+	if unsettled {
+		c.historyEvents = nil
+		c.historyErr = fmt.Errorf("%w: final replayed user turn has no provider output",
+			ports.ErrChatHistoryUnsettled)
+		c.historyLoaded = true
+		c.history = nil
+	}
+	c.historyMu.Unlock()
+	if unsettled {
+		c.resetHistoryItems("")
+		return
+	}
+
 	c.finishHistoryTurn()
 
 	c.historyMu.Lock()
 	if c.history != nil {
 		c.historyEvents = append([]ports.ChatEvent(nil), c.history.events...)
+		c.historyErr = nil
+		c.historyLoaded = true
 	}
 	c.history = nil
 	c.historyMu.Unlock()
@@ -86,6 +109,13 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 	}
 	c.historyMu.Lock()
 	defer c.historyMu.Unlock()
+	if !c.historyLoaded {
+		return nil, fmt.Errorf("%w: ACP session/resume does not replay prior updates; session/load is required",
+			ports.ErrChatHistoryUnavailable)
+	}
+	if c.historyErr != nil {
+		return nil, c.historyErr
+	}
 	return append([]ports.ChatEvent(nil), c.historyEvents...), nil
 }
 
@@ -105,6 +135,11 @@ func (c *conversation) prepareHistoryUpdate(update acpsdk.SessionUpdate) bool {
 	c.flushHistoryUserMessage()
 	if seed, needsTurn := historyUpdateTurnSeed(update); needsTurn {
 		c.ensureHistoryTurn(seed)
+		c.historyMu.Lock()
+		if c.history != nil && c.history.turnID != "" {
+			c.history.turnHasProvider = true
+		}
+		c.historyMu.Unlock()
 	}
 	return false
 }
@@ -169,6 +204,7 @@ func (c *conversation) startHistoryTurn(userID string) {
 	turnID := "acp-history-turn:" + c.history.sessionID + ":" + userID
 	c.history.turnID = turnID
 	c.history.turnUserID = userID
+	c.history.turnHasProvider = false
 	c.historyMu.Unlock()
 
 	c.resetHistoryItems(turnID)
@@ -236,6 +272,7 @@ func (c *conversation) finishHistoryTurn() {
 	if c.history != nil && c.history.turnID == turnID {
 		c.history.turnID = ""
 		c.history.turnUserID = ""
+		c.history.turnHasProvider = false
 		c.history.pendingUserID = ""
 		c.history.pendingUserText = ""
 	}

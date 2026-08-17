@@ -1,4 +1,5 @@
 import { COMPANY, GITHUB_STARS_URL } from "@ao/shared/constants";
+import { env } from "@/env";
 
 export interface GitHubRepoStats {
   stars: number;
@@ -50,8 +51,12 @@ export async function getGitHubRepoStats(): Promise<GitHubRepoStats | null> {
   if (!apiUrl) return null;
 
   try {
+    const token = env.GITHUB_TOKEN?.trim();
     const response = await fetch(apiUrl, {
-      headers: { Accept: "application/vnd.github.v3+json" },
+      headers: {
+        Accept: "application/vnd.github.v3+json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       next: { revalidate: 3600 },
     });
 

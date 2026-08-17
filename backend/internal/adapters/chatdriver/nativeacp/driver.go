@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -24,6 +25,12 @@ type Plugin interface {
 // launch. The returned environment is merged over the session environment.
 type Configure func(acpdriver.LaunchConfig) (args []string, env map[string]string, err error)
 
+// VersionProbe checks the resolved binary's version. If set, the probe runs
+// after binary resolution and before auth status; a returned error fails the
+// probe with ErrChatDriverIncompatible. The string argument is the resolved
+// binary path.
+type VersionProbe func(ctx context.Context, bin string) error
+
 // Config describes the small provider-specific portion of a native ACP binding.
 type Config struct {
 	Harness        domain.AgentHarness
@@ -31,6 +38,8 @@ type Config struct {
 	Configure      Configure
 	SessionMode    func(ports.PermissionMode) string
 	SessionOptions func(ports.ChatTurnSettings) []acpdriver.SessionOption
+	// VersionProbe optionally gates admission on a minimum binary version.
+	VersionProbe VersionProbe
 }
 
 // New creates a Chat driver that launches the exact executable resolved by the
@@ -60,8 +69,17 @@ func buildConfig(plugin Plugin, cfg Config, log *slog.Logger) acpdriver.Config {
 				return fmt.Errorf("%w: incomplete native ACP binding for %s",
 					ports.ErrChatDriverUnavailable, cfg.Harness)
 			}
-			if _, err := plugin.ResolveBinary(ctx); err != nil {
+			bin, err := plugin.ResolveBinary(ctx)
+			if err != nil {
 				return fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
+			}
+			if cfg.VersionProbe != nil {
+				versionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				versionErr := cfg.VersionProbe(versionCtx, bin)
+				cancel()
+				if versionErr != nil {
+					return fmt.Errorf("%w: %w", ports.ErrChatDriverIncompatible, versionErr)
+				}
 			}
 			status, err := plugin.AuthStatus(ctx)
 			if err == nil && status == ports.AgentAuthStatusUnauthorized {

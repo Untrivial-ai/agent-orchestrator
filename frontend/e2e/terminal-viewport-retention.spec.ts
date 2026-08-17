@@ -264,10 +264,13 @@ test.describe("retained terminal viewport", () => {
 		await expect
 			.poll(async () => (await muxStats(page)).resizes[handleB]?.length ?? 0)
 			.toBeGreaterThan(bResizesBeforeGridChange);
-		const fontSizeBefore = Number(
-			(await page.getByText(/^\d+px$/).textContent())?.replace("px", ""),
-		);
-		await page.getByRole("button", { name: "Increase terminal font size" }).click();
+		const fontSizeBefore = await activeTerminal(page)
+			.locator("[aria-label='Session terminal']")
+			.evaluate((element) =>
+				(element as HTMLElement & { __aoXtermForTest?: TestXterm }).__aoXtermForTest!.options.fontSize,
+			);
+		await activeTerminal(page).locator(".xterm-helper-textarea").focus();
+		await page.keyboard.press("ControlOrMeta+=");
 		const fontSizeAfter = fontSizeBefore + 1;
 		expect((await muxStats(page)).resizes[handleA]?.length ?? 0).toBe(aResizesBeforeReturn);
 		await observeNextReveal(parkedA);

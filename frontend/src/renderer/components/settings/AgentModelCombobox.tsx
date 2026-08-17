@@ -59,6 +59,7 @@ export function AgentModelCombobox({
 	renderTrigger,
 	recentScope,
 	compact = false,
+	disabled = false,
 	"aria-label": ariaLabel,
 }: {
 	value: string;
@@ -83,6 +84,7 @@ export function AgentModelCombobox({
 	 *  contexts where the menu should read like a simple choice, not a
 	 *  model-management surface. */
 	compact?: boolean;
+	disabled?: boolean;
 	"aria-label": string;
 }) {
 	const { t } = useTranslation();
@@ -155,14 +157,16 @@ export function AgentModelCombobox({
 				if (!open) setSearch("");
 			}}
 		>
-			<DropdownMenuTrigger asChild>
+			<DropdownMenuTrigger asChild disabled={disabled}>
 				<button
 					type="button"
 					className={cn(
 						"group/agent-model-trigger settings-option-trigger max-w-full min-w-0 hover:text-settings-label focus:outline-none focus-visible:outline-none focus-visible:ring-0 data-[state=open]:outline-none data-[state=open]:ring-0",
+						disabled && "cursor-not-allowed opacity-50",
 						triggerClassName,
 					)}
 					aria-label={ariaLabel}
+					disabled={disabled}
 				>
 					{renderTrigger ? (
 						renderTrigger(currentLabel)

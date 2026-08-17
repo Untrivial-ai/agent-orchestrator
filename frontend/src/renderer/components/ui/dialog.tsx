@@ -39,15 +39,19 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
 function DialogContent({
 	className,
 	children,
+	overlay,
+	portalContainer,
 	showCloseButton = true,
 	...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
+	overlay?: React.ReactNode | false;
+	portalContainer?: HTMLElement | null;
 	showCloseButton?: boolean;
 }) {
 	const { t } = useTranslation();
 	return (
-		<DialogPortal>
-			<DialogOverlay />
+		<DialogPortal container={portalContainer}>
+			{overlay === undefined ? <DialogOverlay /> : overlay}
 			<DialogPrimitive.Content
 				data-slot="dialog-content"
 				className={cn(

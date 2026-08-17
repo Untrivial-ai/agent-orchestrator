@@ -10,6 +10,9 @@ on:
   pull_request:
     paths:
       - "frontend/**"
+      - "contracts/cloud/**"
+      - "packages/cloud-client/**"
+      - "packages/product-ui/**"
       - ".github/workflows/frontend.yml"
 
 permissions:
@@ -31,8 +34,44 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             frontend/src/landing/package-lock.json
+            packages/cloud-client/package-lock.json
+            packages/product-ui/package-lock.json
 
-      - run: npm ci
+      - name: Install frontend dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            echo "npm ci failed; retrying Electron dependency download ($attempt/3)"
+          done
+
+      - name: Install Cloud client dependencies
+        run: npm ci
+        working-directory: packages/cloud-client
+
+      - name: Install product UI dependencies
+        run: npm ci
+        working-directory: packages/product-ui
+
+      - name: Verify Cloud contract and client
+        run: |
+          npm run generate
+          git diff --exit-code -- src/schema.ts
+          npm run typecheck
+          npm test
+          npm pack --dry-run
+        working-directory: packages/cloud-client
+
+      - name: Verify product UI package
+        run: |
+          npm run typecheck
+          npm test
+          npm pack --dry-run
+        working-directory: packages/product-ui
 
       - name: Prepare pinned agent-browser runtime
         run: npm run browser-runtime:prepare -- --quiet

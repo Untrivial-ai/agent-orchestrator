@@ -1,6 +1,30 @@
 import type { SessionPRSummary } from "../hooks/useSessionScmSummary";
 import { sortedPRs, type PRState, type PullRequestFacts, type WorkspaceSession } from "../types/workspace";
 import { appI18n, type PluralMessageKey } from "../i18n";
+import type {
+	PRCardPresentation,
+	PRCardStatus,
+	PRDisplayTone,
+	PRNoun,
+	PRStatusRow,
+	PRSummaryLink,
+	PRSummaryPart,
+} from "@aoagents/product-ui";
+
+export type {
+	PRCardPresentation,
+	PRCardStatus,
+	PRDisplayTone,
+	PRNoun,
+	PRSummaryLink,
+	PRSummaryPart,
+	PRSummaryPartKey,
+} from "@aoagents/product-ui";
+
+function detectProviderFromUrl(url: string): "github" | "gitlab" {
+	if (url.includes("/-/merge_requests/")) return "gitlab";
+	return "github";
+}
 
 const prStateRank: Record<PRState, number> = { open: 0, draft: 1, merged: 2, closed: 3 };
 const ciStates = new Set<SessionPRSummary["ci"]["state"]>(["unknown", "pending", "passing", "failing"]);
@@ -18,19 +42,6 @@ const mergeabilityStates = new Set<SessionPRSummary["mergeability"]["state"]>([
 	"unstable",
 ]);
 
-export type PRDisplayTone = "neutral" | "passive" | "success" | "review" | "warning" | "error";
-
-export type PRStatusRow = {
-	key: "ci" | "review" | "merge";
-	label: string;
-	value: string;
-	detail?: string;
-	tone: PRDisplayTone;
-};
-
-export type PRSummaryPartKey = "ci" | "review" | "merge";
-export type PRNoun = "check" | "comment" | "file" | "line" | "reason" | "reviewer";
-
 export const prNounKeys: Record<PRNoun, PluralMessageKey> = {
 	check: "pr.noun.check",
 	comment: "pr.noun.comment",
@@ -38,39 +49,6 @@ export const prNounKeys: Record<PRNoun, PluralMessageKey> = {
 	line: "pr.noun.line",
 	reason: "pr.noun.reason",
 	reviewer: "pr.noun.reviewer",
-};
-
-export type PRSummaryLink = {
-	label: string;
-	href?: string;
-	title?: string;
-};
-
-export type PRSummaryPart = {
-	key: PRSummaryPartKey;
-	label: string;
-	status: string;
-	summary?: string;
-	links: PRSummaryLink[];
-	linkTotal?: number;
-	overflowLabel?: string;
-	overflowNoun?: PRNoun;
-	tone: PRDisplayTone;
-};
-
-export type PRCardStatus = {
-	key: "ci" | "merge" | "review" | "lifecycle";
-	label: string;
-	detail?: string;
-	href?: string;
-	breathe?: boolean;
-	links: PRSummaryLink[];
-	tone: PRDisplayTone;
-};
-
-export type PRCardPresentation = {
-	primary: PRCardStatus;
-	supporting: PRCardStatus[];
 };
 
 export function comparePRDisplaySummaries(a: SessionPRSummary, b: SessionPRSummary): number {
@@ -91,149 +69,48 @@ export function prChecksUrl(pr: SessionPRSummary): string | undefined {
 	}
 }
 
+/**
+ * Canonical identity key for deduplication. Reuses the URL normalization
+ * from `prURL` (which normalizes GitHub issues→pull, strips query/fragment,
+ * and handles GitLab MR paths). When the URL is absent or unrecognized
+ * (e.g. API URLs), falls back to `number:${number}` so the enriched summary
+ * still matches the session fact.
+ */
+function canonicalKey(url: string, number: number): string {
+	return canonicalURL(url) || `number:${number}`;
+}
+
+function canonicalURL(rawUrl: string): string | undefined {
+	return prURL({ url: rawUrl, htmlUrl: rawUrl, mergeability: { prUrl: rawUrl } } as SessionPRSummary);
+}
+
 export function sessionPRDisplaySummaries(
 	session: WorkspaceSession,
 	summaries: SessionPRSummary[] = [],
 ): SessionPRSummary[] {
-	const dedupedSummaries = deduplicateSummaries(summaries);
-	const summariesByIdentity = new Map<string, SessionPRSummary>();
-	const summaryNumberCounts = countPRNumbers(dedupedSummaries);
-	const summariesByUniqueNumber = new Map<number, SessionPRSummary>();
-	for (const summary of dedupedSummaries) {
-		for (const key of prDisplayIdentities(summary)) {
-			if (!summariesByIdentity.has(key)) {
-				summariesByIdentity.set(key, summary);
-			}
-		}
-		if (summaryNumberCounts.get(summary.number) === 1) {
-			summariesByUniqueNumber.set(summary.number, summary);
-		}
+	// Key by canonical web URL so a GitHub PR #7 and a GitLab MR #7 (or any
+	// same-numbered PRs across providers/repos) both appear instead of one
+	// hiding the other. The key normalizes known URL shapes (e.g. GitHub
+	// issues/7 → pull/7, query params/fragments stripped) so the same PR
+	// observed under different URL variants collapses to one card.
+	// Non-standard URLs (API URLs, etc.) fall back to `number:${number}` so
+	// the enriched summary still matches the session fact.
+	const summariesByUrl = new Map<string, SessionPRSummary>();
+	for (const s of summaries) {
+		const key = canonicalKey(s.url, s.number);
+		if (!summariesByUrl.has(key)) summariesByUrl.set(key, s);
 	}
-	const facts = sortedPRs(session);
-	const factNumberCounts = countPRNumbers(facts);
 	const seen = new Set<string>();
-	const consumedSummaries = new Set<SessionPRSummary>();
-	const fromFacts: SessionPRSummary[] = [];
-	for (const pr of facts) {
-		const key = prDisplayIdentity(pr);
-		if (seen.has(key)) continue;
+	const fromFactsMap = new Map<string, SessionPRSummary>();
+	for (const pr of sortedPRs(session)) {
+		const key = canonicalKey(pr.url, pr.number);
 		seen.add(key);
-		const summary = summariesByIdentity.get(key) ?? uniqueNumberSummary(pr, factNumberCounts, summariesByUniqueNumber);
-		if (summary) {
-			for (const summaryKey of prDisplayIdentities(summary)) {
-				seen.add(summaryKey);
-			}
-			consumedSummaries.add(summary);
+		if (!fromFactsMap.has(key)) {
+			fromFactsMap.set(key, summariesByUrl.get(key) ?? sessionPRFactToSummary(session, pr));
 		}
-		fromFacts.push(summary ?? sessionPRFactToSummary(session, pr));
 	}
-	const summaryOnly: SessionPRSummary[] = [];
-	for (const summary of dedupedSummaries) {
-		const keys = prDisplayIdentities(summary);
-		if (keys.some((key) => seen.has(key))) continue;
-		if (consumedSummaries.has(summary)) continue;
-		for (const key of keys) {
-			seen.add(key);
-		}
-		summaryOnly.push(summary);
-	}
-	return [...fromFacts, ...summaryOnly].sort(comparePRDisplaySummaries);
-}
-
-function deduplicateSummaries(summaries: SessionPRSummary[]): SessionPRSummary[] {
-	const seen = new Set<string>();
-	const out: SessionPRSummary[] = [];
-	for (const summary of summaries) {
-		const keys = prDisplayIdentities(summary);
-		if (keys.some((key) => seen.has(key))) continue;
-		for (const key of keys) {
-			seen.add(key);
-		}
-		out.push(summary);
-	}
-	return out;
-}
-
-function countPRNumbers(prs: Array<Pick<SessionPRSummary, "number"> | PullRequestFacts>): Map<number, number> {
-	const counts = new Map<number, number>();
-	for (const pr of prs) {
-		counts.set(pr.number, (counts.get(pr.number) ?? 0) + 1);
-	}
-	return counts;
-}
-
-function uniqueNumberSummary(
-	pr: PullRequestFacts,
-	factNumberCounts: Map<number, number>,
-	summariesByUniqueNumber: Map<number, SessionPRSummary>,
-): SessionPRSummary | undefined {
-	if (factNumberCounts.get(pr.number) !== 1) return undefined;
-	return summariesByUniqueNumber.get(pr.number);
-}
-
-function prDisplayIdentity(pr: Pick<SessionPRSummary, "number" | "url" | "htmlUrl" | "repo"> | PullRequestFacts): string {
-	const url = "htmlUrl" in pr ? pr.htmlUrl || pr.url : pr.url;
-	const github = githubPRIdentity(url, pr.number);
-	if (github) return github;
-	const repo = "repo" in pr ? pr.repo.trim().toLowerCase() : "";
-	if (repo) return `repo:${repo}#${pr.number}`;
-	return `number:${pr.number}`;
-}
-
-function prDisplayIdentities(pr: SessionPRSummary): string[] {
-	const keys = [prDisplayIdentity(pr)];
-	const alias = prTransferAliasIdentity(pr);
-	if (alias) keys.push(alias);
-	return keys;
-}
-
-function githubPRIdentity(rawURL: string, expectedNumber: number): string | undefined {
-	try {
-		const url = new URL(rawURL);
-		const host = url.hostname.toLowerCase();
-		if (host !== "github.com" && !host.endsWith(".github.com")) return undefined;
-		const [, owner, repoName, kind, number] = url.pathname.split("/");
-		if ((kind !== "pull" && kind !== "issues") || !owner || !repoName || !number) return undefined;
-		if (Number(number) !== expectedNumber) return undefined;
-		return `github:${host}/${owner.toLowerCase()}/${repoName.toLowerCase()}#${number}`;
-	} catch {
-		return undefined;
-	}
-}
-
-function prTransferAliasIdentity(pr: SessionPRSummary): string | undefined {
-	const github = githubPRAliasParts(pr.htmlUrl || pr.url, pr.number);
-	if (!github) return undefined;
-	const sourceBranch = normalizedAliasPart(pr.sourceBranch);
-	const headSha = normalizedAliasPart(pr.headSha);
-	if (!sourceBranch || !headSha) return undefined;
-	return [
-		"github-transfer",
-		github.host,
-		github.repoName,
-		String(pr.number),
-		sourceBranch,
-		normalizedAliasPart(pr.targetBranch),
-		headSha,
-	].join("|");
-}
-
-function githubPRAliasParts(rawURL: string, expectedNumber: number): { host: string; repoName: string } | undefined {
-	try {
-		const url = new URL(rawURL);
-		const host = url.hostname.toLowerCase();
-		if (host !== "github.com" && !host.endsWith(".github.com")) return undefined;
-		const [, owner, repoName, kind, number] = url.pathname.split("/");
-		if ((kind !== "pull" && kind !== "issues") || !owner || !repoName || !number) return undefined;
-		if (Number(number) !== expectedNumber) return undefined;
-		return { host, repoName: repoName.toLowerCase() };
-	} catch {
-		return undefined;
-	}
-}
-
-function normalizedAliasPart(value: string): string {
-	return value.trim().toLowerCase();
+	const summaryOnly = [...summariesByUrl.values()].filter((s) => !seen.has(canonicalKey(s.url, s.number)));
+	return [...fromFactsMap.values(), ...summaryOnly].sort(comparePRDisplaySummaries);
 }
 
 function sessionPRFactToSummary(session: WorkspaceSession, pr: PullRequestFacts): SessionPRSummary {
@@ -243,7 +120,7 @@ function sessionPRFactToSummary(session: WorkspaceSession, pr: PullRequestFacts)
 		number: pr.number,
 		title: session.title,
 		state: pr.state,
-		provider: "github",
+		provider: detectProviderFromUrl(pr.url),
 		repo: session.workspaceName,
 		author: "",
 		sourceBranch: session.branch ?? "",
@@ -253,6 +130,7 @@ function sessionPRFactToSummary(session: WorkspaceSession, pr: PullRequestFacts)
 		deletions: 0,
 		changedFiles: 0,
 		ci: {
+			autoInjectCI: true,
 			state: toCIState(pr.ci),
 			failingChecks: [],
 		},
@@ -335,6 +213,27 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 			supporting.push(cardStatus("ci", "pr.card.checksLoading", "passive", undefined, [], prChecksUrl(pr), true));
 		}
 	}
+	if (pr.state === "open") {
+		const statusRows: PRCardStatus[] = [];
+		if (pr.mergeability.state === "conflicting") {
+			statusRows.push(cardStatus("merge", "pr.card.mergeConflict", "error", "Resolve before merging", mergeLinks(pr)));
+		}
+		if (pr.ci.state === "passing") {
+			statusRows.push(cardStatus("ci", "pr.card.checksPassing", "success", undefined, [], prChecksUrl(pr)));
+		} else if (pr.ci.state === "failing") {
+			statusRows.push(cardStatus("ci", "pr.card.checksFailing", "error", undefined, [], prChecksUrl(pr)));
+		} else if (pr.ci.state === "pending" || pr.ci.state === "unknown") {
+			statusRows.push(cardStatus("ci", pr.ci.state === "pending" ? "pr.card.checksPending" : "pr.card.checksLoading", "neutral", undefined, [], prChecksUrl(pr), true));
+		}
+		statusRows.push(cardStatus("review", "pr.card.reviewStatus", reviewTone(pr.review.decision, pr.review.hasUnresolvedHumanComments), reviewStatusDetail(pr)));
+		const mergeable = pr.mergeability.state !== "conflicting" && pr.ci.state === "passing" && pr.review.decision === "approved";
+		const checkingReadiness = pr.ci.state === "pending" || pr.ci.state === "unknown" || pr.mergeability.state === "unknown";
+		return { primary, supporting, statusRows, readiness: {
+			label: appI18n.t(checkingReadiness ? "pr.merge.checkingReadiness" : mergeable ? "pr.merge.mergeable" : "pr.merge.notMergeableYet"),
+			detail: checkingReadiness ? appI18n.t("pr.merge.checkingDetail") : mergeReadinessDetail(pr),
+			tone: checkingReadiness ? "neutral" : mergeable ? "success" : "error",
+		} };
+	}
 	return { primary, supporting };
 }
 
@@ -355,7 +254,8 @@ function cardStatus(
 		| "pr.card.readyToMerge"
 		| "pr.card.reviewApproved"
 		| "pr.card.open"
-		| "pr.card.checksPassing",
+		| "pr.card.checksPassing"
+		| "pr.card.reviewStatus",
 	tone: PRDisplayTone,
 	detail?: string,
 	links: PRSummaryLink[] = [],
@@ -363,6 +263,22 @@ function cardStatus(
 	breathe = false,
 ): PRCardStatus {
 	return { key, label: appI18n.t(labelKey), detail, href, breathe, links, tone };
+}
+
+function reviewStatusDetail(pr: SessionPRSummary): string {
+	switch (pr.review.decision) {
+		case "approved": return appI18n.t("pr.review.requirementSatisfied");
+		case "changes_requested": return appI18n.t("pr.review.changesActive");
+		case "review_required": return appI18n.t("pr.review.requiredNotSubmitted");
+		default: return appI18n.t("pr.review.pending");
+	}
+}
+
+function mergeReadinessDetail(pr: SessionPRSummary): string {
+	if (pr.mergeability.state === "conflicting") return appI18n.t("pr.merge.reasonConflict");
+	if (pr.ci.state === "failing") return appI18n.t("pr.merge.reasonChecksFailing");
+	if (pr.review.decision !== "approved") return appI18n.t("pr.merge.reasonReview");
+	return appI18n.t("pr.merge.reasonReady");
 }
 
 export function prSummaryParts(pr: SessionPRSummary): PRSummaryPart[] {
@@ -712,14 +628,23 @@ function prURL(pr: SessionPRSummary): string | undefined {
 	}
 	try {
 		const url = new URL(raw);
-		const match = url.pathname.match(/^(\/[^/]+\/[^/]+)\/(?:pull|issues)\/(\d+)(?:\/.*)?$/);
-		if (!match) {
-			return undefined;
+		// GitHub: /owner/repo/pull/N or /issues/N
+		const ghMatch = url.pathname.match(/^(\/[^/]+\/[^/]+)\/(?:pull|issues)\/(\d+)(?:\/.*)?$/);
+		if (ghMatch) {
+			url.pathname = `${ghMatch[1]}/pull/${ghMatch[2]}`;
+			url.search = "";
+			url.hash = "";
+			return url.toString();
 		}
-		url.pathname = `${match[1]}/pull/${match[2]}`;
-		url.search = "";
-		url.hash = "";
-		return url.toString();
+		// GitLab: /owner/repo/-/merge_requests/N
+		const glMatch = url.pathname.match(/^(\/[^/]+\/[^/]+)\/-\/merge_requests\/(\d+)(?:\/.*)?$/);
+		if (glMatch) {
+			url.pathname = `${glMatch[1]}/-/merge_requests/${glMatch[2]}`;
+			url.search = "";
+			url.hash = "";
+			return url.toString();
+		}
+		return undefined;
 	} catch {
 		return undefined;
 	}

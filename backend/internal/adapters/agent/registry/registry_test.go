@@ -99,6 +99,28 @@ func TestRegistryIncludesPrimeAgent(t *testing.T) {
 	t.Fatal("Harnessed does not contain prime-agent")
 }
 
+func TestRegistryIncludesOMP(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("omp")
+	if !ok {
+		t.Fatal("registry does not contain omp")
+	}
+	manifest := adapter.Manifest()
+	if manifest.Name != "OMP" {
+		t.Fatalf("omp manifest name = %q, want OMP", manifest.Name)
+	}
+
+	for _, item := range Harnessed() {
+		if item.Harness == domain.HarnessOMP {
+			return
+		}
+	}
+	t.Fatal("Harnessed does not contain omp")
+}
+
 func TestHarnessedExcludesFakeHarness(t *testing.T) {
 	for _, ha := range Harnessed() {
 		if ha.Harness == domain.HarnessFake {

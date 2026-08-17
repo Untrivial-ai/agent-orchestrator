@@ -72,11 +72,39 @@ const injectCspMeta: Plugin = {
 	},
 };
 
+const productUiReactBoundary: Plugin = {
+	name: "product-ui-react-boundary",
+	enforce: "pre",
+	async resolveId(source, importer) {
+		if (!importer?.includes("/packages/product-ui/")) {
+			return null;
+		}
+		const remap =
+			source === "react" ||
+			source.startsWith("react/") ||
+			source === "react-dom" ||
+			source.startsWith("react-dom/") ||
+			source === "motion" ||
+			source.startsWith("motion/");
+		if (!remap) {
+			return null;
+		}
+		return this.resolve(
+			source,
+			fileURLToPath(new URL("./src/renderer/main.tsx", import.meta.url)),
+			{ skipSelf: true },
+		);
+	},
+};
+
 export default defineConfig({
 	// "@/" → the renderer root (src/renderer), the shadcn/ui import convention.
 	resolve: {
 		alias: {
 			"@": fileURLToPath(new URL("./src/renderer", import.meta.url)),
+			"@aoagents/product-ui": fileURLToPath(
+				new URL("../packages/product-ui/src/index.ts", import.meta.url),
+			),
 		},
 	},
 	// Dev proxy for VITE_NO_ELECTRON=1 browser preview — forwards /api and /mux
@@ -102,6 +130,7 @@ export default defineConfig({
 			target: "react",
 			autoCodeSplitting: true,
 		}),
+		productUiReactBoundary,
 		react(),
 		tailwindcss(),
 		injectCspMeta,

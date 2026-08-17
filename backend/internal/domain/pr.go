@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
+)
 
 // ---- PR read model ----
 
@@ -26,7 +30,10 @@ type PRFacts struct {
 // persisted by the PR store. It is intentionally separate from the sqlc
 // generated sqlite row type so storage details do not leak outside sqlite.
 type PullRequest struct {
-	URL          string
+	URL string
+	// URLAlias is a transient provider-resolved URL that should point at URL.
+	// It is persisted in the alias table, not in the pr row itself.
+	URLAlias     string
 	SessionID    SessionID
 	Number       int
 	Draft        bool
@@ -44,6 +51,9 @@ type PullRequest struct {
 	Provider string
 	Host     string
 	Repo     string
+	// ProviderID is immutable within a provider and host and survives repository
+	// renames or transfers.
+	ProviderID string
 
 	SourceBranch   string
 	TargetBranch   string
@@ -73,6 +83,7 @@ type PullRequest struct {
 	ObservedAt       time.Time
 	CIObservedAt     time.Time
 	ReviewObservedAt time.Time
+	AutoInjectCI     bool
 }
 
 // PullRequestCheck is one normalized CI check run for a pull request.
@@ -121,68 +132,69 @@ type PullRequestReview struct {
 	URL              string
 	Body             string
 	IsBot            bool
+	TargetSHA        string
 	SubmittedAt      time.Time
 	AutoInjectReview bool
 }
 
 // CIState is the aggregate CI status of a PR.
-type CIState string
+type CIState = contract.CIState
 
 // CI states.
 const (
-	CIUnknown CIState = "unknown"
-	CIPending CIState = "pending"
-	CIPassing CIState = "passing"
-	CIFailing CIState = "failing"
+	CIUnknown = contract.CIUnknown
+	CIPending = contract.CIPending
+	CIPassing = contract.CIPassing
+	CIFailing = contract.CIFailing
 )
 
 // ReviewDecision is the aggregate human-review verdict on a PR.
-type ReviewDecision string
+type ReviewDecision = contract.ReviewDecision
 
 // Review decisions.
 const (
-	ReviewNone           ReviewDecision = "none"
-	ReviewApproved       ReviewDecision = "approved"
-	ReviewChangesRequest ReviewDecision = "changes_requested"
-	ReviewRequired       ReviewDecision = "review_required"
+	ReviewNone           = contract.ReviewNone
+	ReviewApproved       = contract.ReviewApproved
+	ReviewChangesRequest = contract.ReviewChangesRequest
+	ReviewRequired       = contract.ReviewRequired
 )
 
 // Mergeability is whether a PR can currently be merged.
-type Mergeability string
+type Mergeability = contract.Mergeability
 
 // Mergeability states.
 const (
-	MergeUnknown     Mergeability = "unknown"
-	MergeMergeable   Mergeability = "mergeable"
-	MergeConflicting Mergeability = "conflicting"
-	MergeBlocked     Mergeability = "blocked"
-	MergeUnstable    Mergeability = "unstable"
+	MergeUnknown     = contract.MergeUnknown
+	MergeMergeable   = contract.MergeMergeable
+	MergeConflicting = contract.MergeConflicting
+	MergeBlocked     = contract.MergeBlocked
+	MergeUnstable    = contract.MergeUnstable
 )
 
 // PRState is the normalized lifecycle of one tracked pull request as stored in
 // the pr table.
-type PRState string
+type PRState = contract.PRState
 
 // PR states.
 const (
-	PRStateDraft  PRState = "draft"
-	PRStateOpen   PRState = "open"
-	PRStateMerged PRState = "merged"
-	PRStateClosed PRState = "closed"
+	PRStateDraft  = contract.PRStateDraft
+	PRStateOpen   = contract.PRStateOpen
+	PRStateMerged = contract.PRStateMerged
+	PRStateClosed = contract.PRStateClosed
 )
 
 // PRCheckStatus is one CI check run's normalized status.
-type PRCheckStatus string
+type PRCheckStatus = contract.PRCheckStatus
 
 // PR check statuses.
 const (
-	PRCheckUnknown    PRCheckStatus = "unknown"
-	PRCheckQueued     PRCheckStatus = "queued"
-	PRCheckInProgress PRCheckStatus = "in_progress"
-	PRCheckPassed     PRCheckStatus = "passed"
-	PRCheckFailed     PRCheckStatus = "failed"
-	PRCheckSkipped    PRCheckStatus = "skipped"
-	PRCheckCancelled  PRCheckStatus = "cancelled"
+	PRCheckUnknown    = contract.PRCheckUnknown
+	PRCheckQueued     = contract.PRCheckQueued
+	PRCheckInProgress = contract.PRCheckInProgress
+	PRCheckPassed     = contract.PRCheckPassed
+	PRCheckFailed     = contract.PRCheckFailed
+	PRCheckSkipped    = contract.PRCheckSkipped
+	PRCheckCancelled  = contract.PRCheckCancelled
 )
 
 // MergeReadiness is the set of durable PR facts that decide whether a PR is

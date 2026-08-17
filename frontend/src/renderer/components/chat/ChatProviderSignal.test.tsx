@@ -291,6 +291,101 @@ describe("steer message", () => {
 	});
 });
 
+describe("provider error", () => {
+	const envelope = JSON.stringify({
+		error: {
+			message: "Reconnecting... [1/5] ",
+			codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+			additionalDetails:
+				"stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing",
+		},
+		threadId: "019feb6c-42f9-7411-b296-fc694ae7c69e",
+		turnId: "019ffd9d-714c-7d31-932f-4e7c10cf5a82",
+		willRetry: true,
+	});
+	// What AO persists: the Codex envelope, prefixed, in summary and detail.error.
+	const stored = `provider error: ${envelope.length > 400 ? `${envelope.slice(0, 400)}…` : envelope}`;
+
+	it("unwraps the truncated prefixed payload AO actually stores", () => {
+		expect(envelope.length).toBeGreaterThan(400);
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: stored,
+					detail: { error: stored },
+				})}
+			/>,
+		);
+		expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
+		expect(screen.getByText(/You have no credits remaining/i)).toBeInTheDocument();
+		// The raw envelope must not paint as the row label — that is what overflowed the column.
+		expect(screen.queryByText(/codexErrorInfo/i)).not.toBeInTheDocument();
+		expect(screen.queryByText(/provider error:/i)).not.toBeInTheDocument();
+	});
+
+	it("reads already-normalized summary and detail without a JSON dump", () => {
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: "Reconnecting... [1/5]",
+					detail: {
+						message: "Reconnecting... [1/5]",
+						error:
+							"stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing",
+					},
+				})}
+			/>,
+		);
+		expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
+		expect(screen.getByText(/You have no credits remaining/i)).toBeInTheDocument();
+		expect(screen.queryByText(/codexErrorInfo/i)).not.toBeInTheDocument();
+	});
+
+	it("keeps plain-language errors readable without a JSON dump", () => {
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: "stream disconnected before completion: You have no credits remaining",
+				})}
+			/>,
+		);
+		expect(screen.getByText(/no credits remaining/i)).toBeInTheDocument();
+	});
+
+	it("stays inside the chat column instead of widening it", () => {
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: stored,
+				})}
+			/>,
+		);
+		const row = screen.getByText("Reconnecting... [1/5]").closest("div.min-w-0.max-w-full");
+		expect(row?.className).toMatch(/overflow-hidden/);
+	});
+
+	it("does not mark historical reconnect rows as live alerts", () => {
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: stored,
+				})}
+			/>,
+		);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+});
+
 describe("command terminal input", () => {
 	it("shows what the agent typed apart from what the command printed", async () => {
 		render(

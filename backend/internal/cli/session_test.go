@@ -572,6 +572,59 @@ func TestSessionClaimPR_ProjectScopeMismatchIsUsage(t *testing.T) {
 	}
 }
 
+func TestSessionClaimPR_UsesCurrentSessionFromEnv(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "demo-1")
+	cfg := setConfigEnv(t)
+	srv, log := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "claim-pr", "142")
+	if err != nil {
+		t.Fatalf("claim-pr with AO_SESSION_ID failed: %v stderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "claimed PR #142") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	want := []string{
+		"GET /api/v1/sessions/demo-1",
+		"GET /api/v1/projects/demo",
+		"POST /api/v1/sessions/demo-1/pr/claim",
+	}
+	if got := log.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests=%#v want %#v", got, want)
+	}
+}
+
+func TestSessionClaimPR_OneArgRequiresCurrentSessionEnv(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
+	setConfigEnv(t)
+
+	_, _, err := executeCLI(t, Deps{}, "session", "claim-pr", "142")
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("err=%v exit=%d, want usage error", err, ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "pass <session-id> or set AO_SESSION_ID") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSessionClaimPR_HelpDocumentsCurrentSessionShorthand(t *testing.T) {
+	out, _, err := executeCLI(t, Deps{}, "session", "claim-pr", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"claim-pr [<session-id>] <pr-ref>",
+		"current session is read from AO_SESSION_ID",
+		"ao session claim-pr 88",
+		"ao session claim-pr mer-3 88",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("help missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestSessionClaimPR_JSONAndNoTakeoverError(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, _ := sessionCommandServer(t)
@@ -589,6 +642,64 @@ func TestSessionClaimPR_JSONAndNoTakeoverError(t *testing.T) {
 	_, _, err = executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "claim-pr", "demo-1", "https://github.com/aoagents/agent-orchestrator/pull/142", "--no-takeover")
 	if err == nil || ExitCode(err) != 1 || !strings.Contains(err.Error(), "PR_CLAIMED_BY_ACTIVE_SESSION") {
 		t.Fatalf("err=%v exit=%d, want takeover refusal runtime error", err, ExitCode(err))
+	}
+}
+
+func TestSessionClaimPR_GitLabMR(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var capturedReq claimPRRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1":
+			_, _ = io.WriteString(w, `{"session":`+sessionJSON("demo-1", "demo", "worker", "working", false)+`}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+			_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","path":"/repo/demo","repo":"https://gitlab.com/castai/ctxd","defaultBranch":"main"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/pr/claim":
+			_ = json.NewDecoder(r.Body).Decode(&capturedReq)
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","prs":[{"url":"`+capturedReq.PR+`","number":9,"state":"open","ci":"passing","review":"review_required","mergeability":"mergeable","reviewComments":false,"updatedAt":"2026-06-04T12:00:00Z"}],"branchChanged":false,"takenOverFrom":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "claim-pr", "demo-1", "https://gitlab.com/castai/ctxd/-/merge_requests/9")
+	if err != nil {
+		t.Fatalf("claim-pr gitlab failed: %v", err)
+	}
+	if capturedReq.PR != "https://gitlab.com/castai/ctxd/-/merge_requests/9" {
+		t.Fatalf("claim request PR = %q, want gitlab MR URL", capturedReq.PR)
+	}
+}
+
+func TestSessionClaimPR_GitLabNumericRef(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var capturedReq claimPRRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1":
+			_, _ = io.WriteString(w, `{"session":`+sessionJSON("demo-1", "demo", "worker", "working", false)+`}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+			_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","path":"/repo/demo","repo":"https://gitlab.com/castai/ctxd","defaultBranch":"main"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/pr/claim":
+			_ = json.NewDecoder(r.Body).Decode(&capturedReq)
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","prs":[{"url":"`+capturedReq.PR+`","number":9,"state":"open","ci":"passing","review":"review_required","mergeability":"mergeable","reviewComments":false,"updatedAt":"2026-06-04T12:00:00Z"}],"branchChanged":false,"takenOverFrom":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "claim-pr", "demo-1", "9")
+	if err != nil {
+		t.Fatalf("claim-pr gitlab numeric failed: %v", err)
+	}
+	if capturedReq.PR != "https://gitlab.com/castai/ctxd/-/merge_requests/9" {
+		t.Fatalf("claim request PR = %q, want expanded gitlab MR URL", capturedReq.PR)
 	}
 }
 

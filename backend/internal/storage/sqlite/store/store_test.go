@@ -38,6 +38,7 @@ func sampleRecord(project string) domain.SessionRecord {
 		Activity:         domain.Activity{State: domain.ActivityActive, LastActivityAt: now},
 		Metadata:         domain.SessionMetadata{Branch: "feat/x", WorkspacePath: "/ws"},
 		AutoInjectReview: true,
+		AutoInjectCI:     true,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -129,6 +130,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	rec.Metadata.LatestUserPrompt = "Please finish the duplicate-listener test."
 	rec.Metadata.LatestAssistantUpdate = "The generation fence is implemented; the test is unfinished."
 	rec.Metadata.NativeTranscriptPath = "/ao/transcripts/claude/session.jsonl"
+	rec.Metadata.AgentSessionID = "native-session-1"
+	rec.Metadata.AgentSessionIDLaunchID = "launch-1"
 
 	created, err := s.CreateSession(ctx, rec)
 	if err != nil {
@@ -140,13 +143,15 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	}
 	if got.Metadata.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
 		got.Metadata.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
-		got.Metadata.NativeTranscriptPath != rec.Metadata.NativeTranscriptPath {
+		got.Metadata.NativeTranscriptPath != rec.Metadata.NativeTranscriptPath ||
+		got.Metadata.AgentSessionIDLaunchID != rec.Metadata.AgentSessionIDLaunchID {
 		t.Fatalf("handoff inputs after create = %+v", got.Metadata)
 	}
 
 	got.Metadata.LatestUserPrompt = "Now run the focused tests."
 	got.Metadata.LatestAssistantUpdate = "The regression test has been added."
 	got.Metadata.NativeTranscriptPath = "/ao/transcripts/codex/session.jsonl"
+	got.Metadata.AgentSessionIDLaunchID = "launch-2"
 	got.UpdatedAt = got.UpdatedAt.Add(time.Second)
 	if err := s.UpdateSession(ctx, got); err != nil {
 		t.Fatalf("update session: %v", err)
@@ -157,11 +162,13 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	}
 	if updated.Metadata.LatestUserPrompt != got.Metadata.LatestUserPrompt ||
 		updated.Metadata.LatestAssistantUpdate != got.Metadata.LatestAssistantUpdate ||
-		updated.Metadata.NativeTranscriptPath != got.Metadata.NativeTranscriptPath {
+		updated.Metadata.NativeTranscriptPath != got.Metadata.NativeTranscriptPath ||
+		updated.Metadata.AgentSessionIDLaunchID != got.Metadata.AgentSessionIDLaunchID {
 		t.Fatalf("handoff inputs after update = %+v", updated.Metadata)
 	}
 	listed, err := s.ListSessions(ctx, created.ProjectID)
-	if err != nil || len(listed) != 1 || listed[0].Metadata.LatestUserPrompt != got.Metadata.LatestUserPrompt {
+	if err != nil || len(listed) != 1 || listed[0].Metadata.LatestUserPrompt != got.Metadata.LatestUserPrompt ||
+		listed[0].Metadata.AgentSessionIDLaunchID != got.Metadata.AgentSessionIDLaunchID {
 		t.Fatalf("listed handoff inputs = %+v err=%v", listed, err)
 	}
 }
@@ -635,6 +642,42 @@ func TestSessionAutoInjectReviewPolicyRoundTripAndCDC(t *testing.T) {
 	}
 }
 
+func TestSessionAutoReviewPolicyRoundTripAndCDC(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
+
+	base, _ := s.LatestSeq(ctx)
+	updatedAt := r.UpdatedAt.Add(time.Minute)
+	ok, err := s.SetSessionAutoReview(ctx, r.ID, true, updatedAt)
+	if err != nil || !ok {
+		t.Fatalf("enable auto review: ok=%v err=%v", ok, err)
+	}
+	got, found, err := s.GetSession(ctx, r.ID)
+	if err != nil || !found {
+		t.Fatalf("get session: found=%v err=%v", found, err)
+	}
+	if !got.AutoReviewEnabled || !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("auto review policy not persisted: %+v", got)
+	}
+
+	evs, err := s.EventsAfter(ctx, base, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || string(evs[0].Type) != "session_updated" {
+		t.Fatalf("auto review policy events = %+v, want one session_updated", evs)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evs[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, ok := payload["autoReviewEnabled"].(bool); !ok || !enabled {
+		t.Fatalf("autoReviewEnabled payload = %#v, want true", payload["autoReviewEnabled"])
+	}
+}
+
 func TestSessionRuntimeLaunchIDRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -735,6 +778,7 @@ func TestPRCRUD(t *testing.T) {
 	pr := domain.PullRequest{
 		URL: "https://gh/pr/1", SessionID: r.ID, Number: 1,
 		Review: domain.ReviewRequired, CI: domain.CIFailing, Mergeability: domain.MergeBlocked, UpdatedAt: now, StateChangedAt: now,
+		AutoInjectCI: true,
 	}
 	if err := s.WritePR(ctx, pr, nil, nil); err != nil {
 		t.Fatal(err)
@@ -745,6 +789,81 @@ func TestPRCRUD(t *testing.T) {
 	}
 	if list, _ := s.ListPRsBySession(ctx, r.ID); len(list) != 1 {
 		t.Fatalf("list prs = %d, want 1", len(list))
+	}
+}
+
+func TestPRAutoInjectCISnapshotsSessionDefaultAtCreation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	owner, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	now := time.Now().UTC().Truncate(time.Second)
+	first := domain.PullRequest{URL: "https://github.com/o/r/pull/1", SessionID: owner.ID, Number: 1, CI: domain.CIFailing, UpdatedAt: now}
+
+	if err := s.WritePR(ctx, first, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := s.GetPR(ctx, first.URL)
+	if err != nil || !found || !got.AutoInjectCI {
+		t.Fatalf("new PR policy = found:%v err:%v value:%v, want enabled", found, err, got.AutoInjectCI)
+	}
+
+	base, _ := s.LatestSeq(ctx)
+	changedAt := now.Add(time.Minute)
+	ok, err := s.SetSessionAutoInjectCI(ctx, owner.ID, false, changedAt)
+	if err != nil || !ok {
+		t.Fatalf("disable session CI default: ok=%v err=%v", ok, err)
+	}
+	session, found, err := s.GetSession(ctx, owner.ID)
+	if err != nil || !found || session.AutoInjectCI {
+		t.Fatalf("disabled session default = found:%v err:%v session:%+v", found, err, session)
+	}
+
+	events, err := s.EventsAfter(ctx, base, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || string(events[0].Type) != "session_updated" {
+		t.Fatalf("policy change events = %+v, want one session_updated", events)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, ok := payload["autoInjectCI"].(bool); !ok || enabled {
+		t.Fatalf("autoInjectCI payload = %#v, want false", payload["autoInjectCI"])
+	}
+
+	// Re-observing the first PR after changing the session default must preserve
+	// the value captured when that PR was first inserted.
+	first.UpdatedAt = changedAt.Add(time.Minute)
+	if err := s.WritePR(ctx, first, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = s.GetPR(ctx, first.URL)
+	if !got.AutoInjectCI {
+		t.Fatal("session toggle rewrote the first PR's enabled snapshot")
+	}
+
+	second := domain.PullRequest{URL: "https://github.com/o/r/pull/2", SessionID: owner.ID, Number: 2, UpdatedAt: changedAt}
+	if err := s.WritePR(ctx, second, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = s.GetPR(ctx, second.URL)
+	if got.AutoInjectCI {
+		t.Fatal("PR created while disabled did not capture the disabled default")
+	}
+
+	if ok, err := s.SetSessionAutoInjectCI(ctx, owner.ID, true, changedAt.Add(time.Minute)); err != nil || !ok {
+		t.Fatalf("enable session CI default: ok=%v err=%v", ok, err)
+	}
+	second.UpdatedAt = changedAt.Add(2 * time.Minute)
+	if err := s.WritePR(ctx, second, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = s.GetPR(ctx, second.URL)
+	if got.AutoInjectCI {
+		t.Fatal("later session enable rewrote the second PR's disabled snapshot")
 	}
 }
 
@@ -835,7 +954,7 @@ func TestWriteSCMObservationPersistsMetadataChecksReviewsAndComments(t *testing.
 		UpdatedAt: now, ObservedAt: now, CIObservedAt: now, ReviewObservedAt: now,
 	}
 	checks := []domain.PullRequestCheck{{Name: "build", CommitHash: "h1", Status: domain.PRCheckFailed, Conclusion: "failure", URL: "ci", Details: "99", LogTail: "boom", CreatedAt: now}}
-	reviews := []domain.PullRequestReview{{ID: "review-1", Author: "reviewer", State: domain.ReviewChangesRequest, URL: "https://github.com/o/r/pull/1#pullrequestreview-1", Body: "please fix the nil check", SubmittedAt: now, AutoInjectReview: false}}
+	reviews := []domain.PullRequestReview{{ID: "review-1", Author: "reviewer", State: domain.ReviewChangesRequest, URL: "https://github.com/o/r/pull/1#pullrequestreview-1", Body: "please fix the nil check", TargetSHA: "h1", SubmittedAt: now, AutoInjectReview: false}}
 	threads := []domain.PullRequestReviewThread{{ThreadID: "t1", Path: "main.go", Line: 7, SemanticHash: "th", UpdatedAt: now}}
 	comments := []domain.PullRequestComment{{ThreadID: "t1", ID: "c1", Author: "reviewer", File: "main.go", Line: 7, Body: "fix", URL: "comment", CreatedAt: now, AutoInjectReview: false}}
 
@@ -858,7 +977,7 @@ func TestWriteSCMObservationPersistsMetadataChecksReviewsAndComments(t *testing.
 		t.Fatalf("threads not persisted: %+v", gotThreads)
 	}
 	gotReviews, _ := s.ListPRReviews(ctx, pr.URL)
-	if len(gotReviews) != 1 || gotReviews[0].ID != "review-1" || gotReviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || gotReviews[0].Body != "please fix the nil check" || gotReviews[0].AutoInjectReview {
+	if len(gotReviews) != 1 || gotReviews[0].ID != "review-1" || gotReviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || gotReviews[0].Body != "please fix the nil check" || gotReviews[0].TargetSHA != "h1" || gotReviews[0].AutoInjectReview {
 		t.Fatalf("reviews not persisted: %+v", gotReviews)
 	}
 	gotComments, _ := s.ListPRComments(ctx, pr.URL)
@@ -1328,8 +1447,8 @@ func TestSessionWorktreesRoundTrip(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	rows := []domain.SessionWorktreeRecord{
-		{SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName, Branch: "ao/ws-1", BaseSHA: "root-base", WorktreePath: "/managed/ws/ws-1", State: "active"},
-		{SessionID: rec.ID, RepoName: "api", Branch: "ao/ws-1", BaseSHA: "api-base", WorktreePath: "/managed/ws/ws-1/api", PreservedRef: "refs/ao/preserved/ws-1", State: "removed"},
+		{SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName, Branch: "ao/ws-1", BaseSHA: "root-base", BaseRef: "refs/remotes/origin/trunk", WorktreePath: "/managed/ws/ws-1", State: "active"},
+		{SessionID: rec.ID, RepoName: "api", Branch: "ao/ws-1", BaseSHA: "api-base", BaseRef: "refs/remotes/origin/dev", WorktreePath: "/managed/ws/ws-1/api", PreservedRef: "refs/ao/preserved/ws-1", State: "removed"},
 	}
 	for _, row := range rows {
 		if err := s.UpsertSessionWorktree(ctx, row); err != nil {

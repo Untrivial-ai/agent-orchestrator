@@ -1,0 +1,3603 @@
+openapi: 3.1.0
+info:
+  title: AO Cloud Public API
+  version: 1.0.0
+  description: |
+    Client-facing contract for a separate AO Cloud implementation. This
+    repository does not serve these routes. The worker surface documents the
+    exact outbound HTTP protocol used by sandbox workers, including one-time
+    bootstrap, rotating credentials, fenced turn execution, orchestration, and
+    durable workspace and terminal transport.
+security:
+  - bearerAuth: []
+tags:
+  - name: Account
+  - name: Agents
+  - name: Projects
+  - name: Sessions
+  - name: GitHub
+  - name: Pull Requests
+  - name: Reviews
+  - name: Events
+  - name: Terminal
+  - name: Workspace
+  - name: Providers
+  - name: Worker Lifecycle
+  - name: Worker Execution
+  - name: Worker Orchestration
+  - name: Worker Transport
+paths:
+  /api/cloud/v1/me:
+    get:
+      operationId: getCurrentAccount
+      tags: [Account]
+      responses:
+        "200":
+          description: The authenticated user and their active organization memberships.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentAccount"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/github/user:
+    get:
+      operationId: getGitHubUserConnection
+      tags: [GitHub]
+      responses:
+        "200":
+          description: The authenticated user's account-wide GitHub connection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubUserConnection"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: disconnectGitHubUser
+      tags: [GitHub]
+      responses:
+        "204":
+          description: The account-wide GitHub authorization was revoked.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/github/user/authorize:
+    post:
+      operationId: startGitHubUserAuthorization
+      tags: [GitHub]
+      responses:
+        "201":
+          description: A short-lived account-wide GitHub authorization attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubUserAuthorizationStart"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/github/user/callback:
+    get:
+      operationId: completeGitHubUserAuthorization
+      tags: [GitHub]
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: GitHub authorization completion page.
+          content:
+            text/html:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/agents:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listAgents
+      tags: [Agents]
+      responses:
+        "200":
+          description: Agent profiles supplied by the runtime and organization host.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [agents]
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentProfile"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listProjects
+      tags: [Projects]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of projects in the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectPage"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createProject
+      tags: [Projects]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectInput"
+      responses:
+        "201":
+          description: Project created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [project]
+                properties:
+                  project:
+                    $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects/{projectId}:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/ProjectId"
+    patch:
+      operationId: updateProject
+      tags: [Projects]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProjectInput"
+      responses:
+        "200":
+          description: Project settings updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [project]
+                properties:
+                  project:
+                    $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteProject
+      tags: [Projects]
+      responses:
+        "202":
+          description: Project archived and sandbox teardown accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteProjectResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/installations:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listGitHubInstallations
+      tags: [GitHub]
+      responses:
+        "200":
+          description: GitHub App installations connected to the organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [installations]
+                properties:
+                  installations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GitHubInstallation"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/installations/start:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      operationId: startGitHubInstallation
+      tags: [GitHub]
+      responses:
+        "201":
+          description: A short-lived GitHub App installation attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubInstallationStart"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/installations/{installationId}/sync:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/InstallationId"
+    post:
+      operationId: syncGitHubInstallation
+      tags: [GitHub]
+      responses:
+        "202":
+          description: Repository synchronization accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [installation]
+                properties:
+                  installation:
+                    $ref: "#/components/schemas/GitHubInstallation"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/installations/{installationId}/disconnect:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/InstallationId"
+    post:
+      operationId: disconnectGitHubInstallation
+      tags: [GitHub]
+      responses:
+        "200":
+          description: The GitHub App installation was disconnected from AO.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [installation]
+                properties:
+                  installation:
+                    $ref: "#/components/schemas/GitHubInstallation"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/repositories:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listGitHubRepositories
+      tags: [GitHub]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of repositories currently or historically granted to the organization.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubRepositoryPage"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/projects:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      operationId: createProjectFromGitHub
+      tags: [GitHub, Projects]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGitHubProjectInput"
+      responses:
+        "201":
+          description: Project created from an actively granted GitHub repository.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [project]
+                properties:
+                  project:
+                    $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects/scratch:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      operationId: createGitHubScratchProject
+      tags: [GitHub, Projects, Sessions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGitHubScratchProjectInput"
+      responses:
+        "201":
+          description: GitHub repository, AO project, and first orchestrator created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateGitHubScratchProjectResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listSessions
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: projectId
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of sessions in the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionPage"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createSession
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionInput"
+      responses:
+        "201":
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session:
+                    $ref: "#/components/schemas/Session"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: getSession
+      tags: [Sessions]
+      responses:
+        "200":
+          description: Session details.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session:
+                    $ref: "#/components/schemas/Session"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteSession
+      tags: [Sessions]
+      responses:
+        "202":
+          description: Session sandbox deletion was requested; durable history is retained.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteSessionResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/pull-requests:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: listSessionPullRequests
+      tags: [Pull Requests]
+      responses:
+        "200":
+          description: Normalized provider pull-request observations for the session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionPullRequests"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviews:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: getSessionReviewState
+      tags: [Reviews]
+      responses:
+        "200":
+          description: AO review planning state and recorded runs for the session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReviewState"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: sendMessage
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 65536
+      responses:
+        "202":
+          description: Message accepted and durably appended.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [event]
+                properties:
+                  event:
+                    $ref: "#/components/schemas/UserMessageEvent"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/turns/{turnId}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/TurnId"
+    post:
+      operationId: cancelTurn
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Cancellation was durably requested for the turn.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/chat-events:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: replayClientEvents
+      tags: [Events]
+      parameters:
+        - $ref: "#/components/parameters/After"
+        - $ref: "#/components/parameters/EventLimit"
+      responses:
+        "200":
+          description: Client-visible events after the supplied sequence.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientEventPage"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/events:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: streamClientEvents
+      tags: [Events]
+      parameters:
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          description: |
+            Replay followed by live client-visible events. Each SSE data field
+            contains a ClientEvent; the SSE id is its sequence.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/terminal-ticket:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: createTerminalTicket
+      tags: [Terminal]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind:
+                  $ref: "#/components/schemas/TerminalKind"
+      responses:
+        "201":
+          description: Short-lived, single-use terminal access ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TerminalTicket"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/terminal:
+    get:
+      operationId: connectTerminal
+      tags: [Terminal]
+      summary: Upgrade to a terminal WebSocket using a short-lived ticket.
+      security: []
+      parameters:
+        - name: ticket
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: after
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            maximum: 9007199254740991
+            default: 0
+        - name: kind
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/TerminalKind"
+      responses:
+        "101":
+          description: WebSocket protocol upgrade accepted.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/files:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: listWorkspaceFiles
+      tags: [Workspace]
+      parameters:
+        - name: path
+          in: query
+          schema:
+            type: string
+            default: ""
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of entries in a workspace directory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceEntryPage"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/file:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: readWorkspaceFile
+      tags: [Workspace]
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: UTF-8 workspace file contents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceFile"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: writeWorkspaceFile
+      tags: [Workspace]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceFileWriteInput"
+      responses:
+        "200":
+          description: The updated UTF-8 workspace file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceFile"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/diff:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: getWorkspaceDiff
+      tags: [Workspace]
+      responses:
+        "200":
+          description: Workspace changes relative to the session compare base.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceDiff"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/provider-connections:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listProviderConnections
+      tags: [Providers]
+      responses:
+        "200":
+          description: Redacted provider connection metadata. Secrets are never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providerConnections]
+                properties:
+                  providerConnections:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RedactedProviderConnection"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/provider-connections/agents/{provider}:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [claude-code, codex, cursor]
+    put:
+      operationId: putAgentProviderConnection
+      tags: [Providers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutAgentProviderConnectionInput"
+      responses:
+        "200":
+          description: The validated coding-agent credential was encrypted and stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providerConnection]
+                properties:
+                  providerConnection:
+                    $ref: "#/components/schemas/RedactedProviderConnection"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAgentProviderConnection
+      tags: [Providers]
+      responses:
+        "204":
+          description: The coding-agent credential was disconnected.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/bootstrap:
+    post:
+      operationId: bootstrapWorker
+      tags: [Worker Lifecycle]
+      security: []
+      summary: Redeem a one-time bootstrap ticket.
+      description: |
+        The bootstrap token is consumed atomically and cannot be replayed. A
+        successful response assigns the worker epoch and returns the first
+        short-lived worker token. The token carries the ticket's scopes and
+        must never be logged or persisted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerBootstrapInput"
+      responses:
+        "200":
+          description: Bootstrap succeeded and the one-time ticket was consumed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerBootstrapResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: The bootstrap token is missing, invalid, expired, or already used.
+          $ref: "#/components/responses/Error"
+        "404":
+          description: Worker bootstrap is not enabled on this deployment.
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/heartbeat:
+    post:
+      operationId: heartbeatWorker
+      tags: [Worker Lifecycle]
+      security:
+        - workerAuth: []
+      description: |
+        Records worker liveness, promotes a bootstrapping sandbox to running,
+        and returns a newly issued token for the same worker identity, epoch,
+        and scopes. The prior token is not revoked by renewal and remains valid
+        until it expires unless the worker epoch is replaced.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerHeartbeatInput"
+      responses:
+        "200":
+          description: Liveness was recorded and a replacement token was issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerHeartbeatResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/WorkerRoutesDisabled"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/events:
+    post:
+      operationId: publishWorkerEvent
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Publishes one allowlisted event. `agent.activity` carries an explicit
+        coding-agent lifecycle hook signal. `worker.ready` must identify the
+        authenticated worker and epoch. `chat.assistant_delta` is fenced by both
+        the token epoch and the claimed turn attempt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerEventInput"
+      responses:
+        "202":
+          description: The event was durably accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: The turn has finished or another epoch or attempt owns it.
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/turns/claim:
+    post:
+      operationId: claimWorkerTurn
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Atomically claims the oldest queued turn for the authenticated worker's
+        session. Reclaiming work from an older worker epoch increments
+        `attempt`. No server lease identifier or expiry is returned. An empty
+        queue is represented by HTTP 200 with `turn: null`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmptyObject"
+      responses:
+        "200":
+          description: The claimed turn, or null when no turn is available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerClaimTurnResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/WorkerRoutesDisabled"
+  /api/cloud/v1/worker/turns/{turnId}/cancellation:
+    parameters:
+      - $ref: "#/components/parameters/TurnId"
+    get:
+      operationId: getWorkerTurnCancellation
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Returns cancellation intent only if the token epoch and supplied
+        positive attempt still own the active turn.
+      parameters:
+        - $ref: "#/components/parameters/WorkerTurnAttempt"
+      responses:
+        "200":
+          description: Current cancellation state for this fenced attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerCancellationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: The turn has finished or another epoch or attempt owns it.
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/turns/{turnId}/complete:
+    parameters:
+      - $ref: "#/components/parameters/TurnId"
+    post:
+      operationId: completeWorkerTurn
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Completes the exact claimed attempt. `cancelled: true` records an
+        interrupted completion. Repeating the same callback after that attempt
+        has finished succeeds with `alreadyFinished: true`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerCompleteTurnInput"
+      responses:
+        "200":
+          description: The fenced completion was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerFinishTurnResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Another epoch or attempt owns the turn.
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/turns/{turnId}/fail:
+    parameters:
+      - $ref: "#/components/parameters/TurnId"
+    post:
+      operationId: failWorkerTurn
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Fails the exact claimed attempt with a non-empty error message. A
+        repeated callback for the same finished attempt is idempotent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerFailTurnInput"
+      responses:
+        "200":
+          description: The fenced failure was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerFinishTurnResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Another epoch or attempt owns the turn.
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/credential:
+    get:
+      operationId: getWorkerCredential
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Returns the valid default coding-agent credential selected by the
+        session harness. The secret must never be logged or persisted.
+      responses:
+        "200":
+          description: The decrypted session-scoped coding-agent credential.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerCredentialResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/checkout-grant:
+    post:
+      operationId: createWorkerCheckoutGrant
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Brokers a fresh repository-scoped GitHub installation token. Repository
+        identity is derived from the worker session and cannot be supplied by
+        the sandbox. The token must never be logged or persisted.
+      responses:
+        "200":
+          description: A short-lived checkout grant.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerCheckoutGrantResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/WorkerRoutesDisabled"
+        "502":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/children:
+    get:
+      operationId: listWorkerChildren
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      description: Creates a trusted child by default and passes its required prompt directly to the coding-agent launch command.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of direct child sessions owned by this orchestrator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createWorkerChild
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkerChildInput"
+      responses:
+        "201":
+          description: A worker child was created under this orchestrator.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [session]
+                properties:
+                  session:
+                    $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/children/{sessionId}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    delete:
+      operationId: deleteWorkerChild
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      description: Requests deletion of a direct child owned by the authenticated orchestrator.
+      responses:
+        "202":
+          description: Child sandbox deletion was requested.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteSessionResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/children/{sessionId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: sendWorkerChildMessage
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageInput"
+      responses:
+        "202":
+          description: The message was durably appended to the direct child.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [event]
+                properties:
+                  event:
+                    $ref: "#/components/schemas/UserMessageEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/transport/claim:
+    post:
+      operationId: claimWorkerTransport
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: |
+        Claims the next durable workspace or terminal command for the token's
+        session and epoch. The internal claim lasts 10 seconds and may be
+        reclaimed up to three times. The positive claim attempt is returned and
+        must be echoed by completion or failure callbacks. No work is represented
+        by HTTP 200 with `request: null`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmptyObject"
+      responses:
+        "200":
+          description: The claimed command, or null when none is available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerClaimTransportResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/WorkerRoutesDisabled"
+  /api/cloud/v1/worker/transport/{requestId}/complete:
+    parameters:
+      - $ref: "#/components/parameters/WorkerRequestId"
+    post:
+      operationId: completeWorkerTransport
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: |
+        Completes a claimed durable command. The worker token epoch, request
+        status, request expiry, and positive claim attempt are checked.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerCompleteTransportInput"
+      responses:
+        "200":
+          description: The command result was durably recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          description: The command is no longer claimed or has expired.
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/transport/{requestId}/fail:
+    parameters:
+      - $ref: "#/components/parameters/WorkerRequestId"
+    post:
+      operationId: failWorkerTransport
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: |
+        Records a bounded machine-readable error for a claimed command. The
+        token epoch, request status, expiry, and positive claim attempt are
+        checked.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerFailTransportInput"
+      responses:
+        "200":
+          description: The command failure was durably recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          description: The command is no longer claimed or has expired.
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/terminals/agent:
+    post:
+      operationId: ensureWorkerAgentTerminal
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: Returns the epoch-scoped persistent terminal used by the interactive agent TUI.
+      responses:
+        "200":
+          description: The agent terminal is ready for process attachment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerAgentTerminalResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/terminals/{terminalId}/output:
+    parameters:
+      - $ref: "#/components/parameters/TerminalId"
+    post:
+      operationId: publishWorkerTerminalOutput
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: |
+        Appends one base64-encoded output frame to a live workspace terminal.
+        The terminal and worker token must have the same current epoch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerTerminalOutputInput"
+      responses:
+        "202":
+          description: The output frame was appended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerTerminalOutputResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          description: The terminal is closed, expired, over quota, or no longer current.
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/terminals/{terminalId}/exit:
+    parameters:
+      - $ref: "#/components/parameters/TerminalId"
+    post:
+      operationId: publishWorkerTerminalExit
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: Marks the epoch-scoped agent or workspace terminal process as exited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerTerminalExitInput"
+      responses:
+        "200":
+          description: The terminal exit was recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    workerAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        Session-scoped credential formatted as `Worker <token>`. Every
+        authenticated route verifies both the token signature and that its
+        worker ID and epoch are still current. Replacing a sandbox therefore
+        fences an otherwise unexpired token with `STALE_WORKER_TOKEN`.
+
+        Route scopes are `worker:connect` for heartbeat, `worker:event` for
+        events, `worker:turn:claim`, `worker:turn:poll`, and
+        `worker:turn:complete` for turn execution,
+        `worker:credential:read` for the agent secret, `worker:git` for a
+        checkout grant, `worker:orchestrate` for child controls, and
+        `worker:transport` for workspace and terminal transport.
+  parameters:
+    OrgId:
+      name: orgId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TurnId:
+      name: turnId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    WorkerRequestId:
+      name: requestId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TerminalId:
+      name: terminalId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    WorkerTurnAttempt:
+      name: attempt
+      in: query
+      required: true
+      description: |
+        Positive claim attempt returned with the turn. Together with the epoch
+        in the worker token, this fences cancellation checks, output, and the
+        terminal turn callback.
+      schema:
+        type: integer
+        minimum: 1
+    InstallationId:
+      name: installationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    EventLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+    After:
+      name: after
+      in: query
+      description: Return events with a sequence strictly greater than this value.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+        default: 0
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Reusing a key with the same command returns the original result.
+        Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+  responses:
+    Error:
+      description: Standard Cloud API error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    BadRequest:
+      description: The JSON body, path value, query value, or required header is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ValidationError:
+      description: The request is syntactically valid but violates a resource constraint.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    WorkerUnauthorized:
+      description: |
+        The `Worker` credential is absent, invalid, expired, or belongs to a
+        worker epoch that has been replaced.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    WorkerScopeRequired:
+      description: The worker token does not contain the scope required by this operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    WorkerRoutesDisabled:
+      description: Worker routes are not enabled on this deployment.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    EmptyObject:
+      type: object
+      additionalProperties: false
+    AuthProvider:
+      type: string
+      enum: [workos, local]
+    OrganizationRole:
+      type: string
+      enum: [owner, admin, member]
+    CurrentUser:
+      type: object
+      additionalProperties: false
+      required: [id, email, displayName, authProvider]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        authProvider:
+          $ref: "#/components/schemas/AuthProvider"
+    OrganizationMembership:
+      type: object
+      additionalProperties: false
+      required: [id, slug, displayName, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{1,62}$"
+        displayName:
+          type: string
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+    CurrentAccount:
+      type: object
+      additionalProperties: false
+      required: [user, organizations]
+      properties:
+        user:
+          $ref: "#/components/schemas/CurrentUser"
+        organizations:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationMembership"
+    AgentCapability:
+      type: string
+      enum:
+        - interface.chat
+        - interface.tui
+        - model.catalog
+        - model.custom
+        - attachments
+        - browser.preview
+        - review.execute
+        - session.resume
+    AgentInstallationState:
+      type: string
+      enum: [installed, not_installed, unknown, not_applicable]
+    AgentAuthenticationState:
+      type: string
+      enum: [authorized, unauthorized, unknown, not_applicable]
+    AgentOrganizationPolicy:
+      type: string
+      enum: [not_applicable, allowed, denied]
+    AgentAvailability:
+      type: object
+      additionalProperties: false
+      required: [available, installation, authentication, organizationPolicy]
+      properties:
+        available:
+          type: boolean
+          description: Effective host readiness after installation, authentication, and organization policy.
+        installation:
+          $ref: "#/components/schemas/AgentInstallationState"
+        authentication:
+          $ref: "#/components/schemas/AgentAuthenticationState"
+        organizationPolicy:
+          $ref: "#/components/schemas/AgentOrganizationPolicy"
+        reason:
+          type: string
+          description: Host-supplied explanation when the agent is unavailable.
+    AgentProfile:
+      type: object
+      additionalProperties: false
+      required: [id, label, capabilities, availability]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        capabilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentCapability"
+        availability:
+          $ref: "#/components/schemas/AgentAvailability"
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error, code, message, requestId]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        message:
+          type: string
+        requestId:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    PageInfo:
+      type: object
+      additionalProperties: false
+      required: [hasMore]
+      properties:
+        hasMore:
+          type: boolean
+        nextCursor:
+          type: string
+    Project:
+      type: object
+      additionalProperties: false
+      required: [id, orgId, displayName, repositoryUrl, defaultBranch, config, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        repositoryUrl:
+          type: string
+          format: uri
+        defaultBranch:
+          type: string
+        githubRepositoryId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer repository ID encoded as a decimal string to preserve precision.
+        config:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateProjectInput:
+      type: object
+      additionalProperties: false
+      required: [displayName, repositoryUrl, defaultBranch]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        repositoryUrl:
+          type: string
+          format: uri
+          pattern: "^https://"
+        defaultBranch:
+          type: string
+          minLength: 1
+          maxLength: 255
+        config:
+          type: object
+          additionalProperties: true
+    UpdateProjectInput:
+      type: object
+      additionalProperties: false
+      required: [displayName, defaultBranch]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        defaultBranch:
+          type: string
+          minLength: 1
+          maxLength: 255
+    DeleteProjectResponse:
+      type: object
+      additionalProperties: false
+      required: [project]
+      properties:
+        project:
+          type: object
+          additionalProperties: false
+          required: [id, deleted]
+          properties:
+            id:
+              type: string
+              format: uuid
+            deleted:
+              type: boolean
+    ProjectPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+        page:
+          $ref: "#/components/schemas/PageInfo"
+    GitHubInstallationStatus:
+      type: string
+      enum: [active, suspended, removed]
+    GitHubSyncStatus:
+      type: string
+      enum: [pending, syncing, ready, retry, failed]
+    GitHubInstallation:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - githubInstallationId
+        - accountLogin
+        - accountType
+        - status
+        - repositorySelection
+        - syncStatus
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        githubInstallationId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer installation ID encoded as a decimal string to preserve precision.
+        accountLogin:
+          type: string
+        accountType:
+          type: string
+          enum: [User, Organization, Enterprise]
+        status:
+          $ref: "#/components/schemas/GitHubInstallationStatus"
+        repositorySelection:
+          type: string
+          enum: [all, selected]
+        syncStatus:
+          $ref: "#/components/schemas/GitHubSyncStatus"
+        lastSyncedAt:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    GitHubInstallationStart:
+      type: object
+      additionalProperties: false
+      required: [installationUrl, expiresAt]
+      properties:
+        installationUrl:
+          type: string
+          format: uri
+        expiresAt:
+          type: string
+          format: date-time
+    GitHubUserInstallation:
+      type: object
+      additionalProperties: false
+      required:
+        - githubInstallationId
+        - accountLogin
+        - accountType
+        - repositorySelection
+        - canCreateRepository
+      properties:
+        githubInstallationId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer installation ID encoded as a decimal string to preserve precision.
+        accountLogin:
+          type: string
+        accountType:
+          type: string
+          enum: [User, Organization, Enterprise]
+        repositorySelection:
+          type: string
+          enum: [all, selected]
+        canCreateRepository:
+          type: boolean
+        unavailableReason:
+          type: string
+    GitHubUserConnection:
+      type: object
+      additionalProperties: false
+      required: [connected, installations]
+      properties:
+        connected:
+          type: boolean
+        login:
+          type: string
+        avatarUrl:
+          type: string
+          format: uri
+        installations:
+          type: array
+          items:
+            $ref: "#/components/schemas/GitHubUserInstallation"
+        lastSyncedAt:
+          type: string
+          format: date-time
+    GitHubUserAuthorizationStart:
+      type: object
+      additionalProperties: false
+      required: [authorizeUrl, expiresAt]
+      properties:
+        authorizeUrl:
+          type: string
+          format: uri
+        expiresAt:
+          type: string
+          format: date-time
+    GitHubRepositoryAccessState:
+      type: string
+      enum: [active, revoked]
+    GitHubRepository:
+      type: object
+      additionalProperties: false
+      required:
+        - githubRepositoryId
+        - name
+        - fullName
+        - htmlUrl
+        - defaultBranch
+        - visibility
+        - isPrivate
+        - isArchived
+        - access
+        - grantedAt
+      properties:
+        githubRepositoryId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer repository ID encoded as a decimal string to preserve precision.
+        name:
+          type: string
+        fullName:
+          type: string
+        htmlUrl:
+          type: string
+          format: uri
+        defaultBranch:
+          type: string
+        visibility:
+          type: string
+        isPrivate:
+          type: boolean
+        isArchived:
+          type: boolean
+        access:
+          $ref: "#/components/schemas/GitHubRepositoryAccessState"
+        grantedAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+    GitHubRepositoryPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GitHubRepository"
+        page:
+          $ref: "#/components/schemas/PageInfo"
+    CreateGitHubProjectInput:
+      type: object
+      additionalProperties: false
+      required: [githubRepositoryId]
+      properties:
+        githubRepositoryId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+        displayName:
+          type: string
+          maxLength: 120
+        config:
+          type: object
+          additionalProperties: true
+    CreateGitHubScratchProjectInput:
+      type: object
+      additionalProperties: false
+      required: [displayName, githubInstallationId, orchestrator]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        githubInstallationId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+        private:
+          type: boolean
+          default: true
+        orchestrator:
+          type: object
+          additionalProperties: false
+          required: [harness]
+          properties:
+            harness:
+              type: string
+              enum: [claude-code, codex, cursor]
+            prompt:
+              type: string
+              maxLength: 65536
+    CreateGitHubScratchProjectResponse:
+      type: object
+      additionalProperties: false
+      required: [project, repository, session]
+      properties:
+        project:
+          $ref: "#/components/schemas/Project"
+        repository:
+          $ref: "#/components/schemas/GitHubRepository"
+        session:
+          $ref: "#/components/schemas/Session"
+    SessionKind:
+      type: string
+      enum: [worker, orchestrator]
+    SessionMode:
+      type: string
+      enum: [read-only, standard, trusted]
+    SessionActivityState:
+      type: string
+      enum: [active, idle, waiting_input, blocked, exited]
+    SessionStatus:
+      type: string
+      enum:
+        - working
+        - needs_input
+        - pr_open
+        - draft
+        - review_pending
+        - ci_failed
+        - changes_requested
+        - approved
+        - mergeable
+        - merged
+        - exited
+        - idle
+        - terminated
+        - no_signal
+    Turn:
+      type: object
+      additionalProperties: false
+      required: [id, sessionId, userMessageSequence, state, attemptCount, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        userMessageSequence:
+          type: integer
+          format: int64
+          maximum: 9007199254740991
+        state:
+          type: string
+          enum: [queued, provisioning, running, cancel_requested, completed, failed]
+        attemptCount:
+          type: integer
+          minimum: 0
+        errorMessage:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    WorkerBootstrapInput:
+      type: object
+      additionalProperties: false
+      required: [bootstrapToken]
+      properties:
+        bootstrapToken:
+          type: string
+          minLength: 1
+          writeOnly: true
+          description: One-time bootstrap ticket. Never log or persist this value.
+        version:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+    WorkerLaunchContext:
+      type: object
+      additionalProperties: false
+      required:
+        - sessionId
+        - projectId
+        - kind
+        - harness
+        - displayName
+        - branch
+        - prompt
+        - mode
+        - deniedCommands
+        - repositoryUrl
+        - defaultBranch
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/SessionKind"
+        harness:
+          type: string
+        displayName:
+          type: string
+        branch:
+          type: string
+        prompt:
+          type: string
+        agentSessionId:
+          type: string
+          maxLength: 256
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+        deniedCommands:
+          type: array
+          items:
+            type: string
+        repositoryUrl:
+          type: string
+          format: uri
+        defaultBranch:
+          type: string
+    WorkerBootstrapResponse:
+      type: object
+      additionalProperties: false
+      required: [workerToken, workerId, epoch, expiresIn, sessionId, launch]
+      properties:
+        workerToken:
+          type: string
+          format: password
+          minLength: 1
+          readOnly: true
+          description: Short-lived worker token. Never log or persist this value.
+        workerId:
+          type: string
+        epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        expiresIn:
+          type: integer
+          minimum: 1
+          description: Worker token lifetime in seconds.
+        sessionId:
+          type: string
+          format: uuid
+        launch:
+          $ref: "#/components/schemas/WorkerLaunchContext"
+    WorkerHeartbeatInput:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+    WorkerHeartbeatResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, workerToken, expiresIn]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        workerToken:
+          type: string
+          format: password
+          minLength: 1
+          readOnly: true
+          description: Newly issued worker token. Never log or persist this value.
+        expiresIn:
+          type: integer
+          minimum: 1
+          description: New worker token lifetime in seconds.
+    WorkerReadyPayload:
+      type: object
+      additionalProperties: false
+      required: [workerId, epoch, version, capabilities]
+      properties:
+        workerId:
+          type: string
+        epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        capabilities:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+    WorkerOutputPayload:
+      type: object
+      additionalProperties: false
+      required: [turnId, attempt, stream, text]
+      properties:
+        turnId:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        stream:
+          type: string
+          enum: [stdout, stderr]
+        text:
+          type: string
+          minLength: 1
+          description: Assistant output frame, limited by the server to 16 KiB.
+    WorkerReadyEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, payload]
+      properties:
+        type:
+          type: string
+          const: worker.ready
+        payload:
+          $ref: "#/components/schemas/WorkerReadyPayload"
+    WorkerOutputEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, payload]
+      properties:
+        type:
+          type: string
+          const: chat.assistant_delta
+        payload:
+          $ref: "#/components/schemas/WorkerOutputPayload"
+    WorkerActivityPayload:
+      type: object
+      additionalProperties: false
+      required: [harness, event]
+      properties:
+        harness:
+          type: string
+          enum: [claude-code, codex, cursor]
+        event:
+          type: string
+          enum:
+            - session-start
+            - user-prompt-submit
+            - pre-tool-use
+            - post-tool-use
+            - post-tool-use-failure
+            - permission-request
+            - stop
+            - notification
+            - session-end
+        state:
+          $ref: "#/components/schemas/SessionActivityState"
+        toolName:
+          type: string
+          maxLength: 256
+        toolUseId:
+          type: string
+          maxLength: 256
+        agentSessionId:
+          type: string
+          maxLength: 256
+    WorkerActivityEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, payload]
+      properties:
+        type:
+          type: string
+          const: agent.activity
+        payload:
+          $ref: "#/components/schemas/WorkerActivityPayload"
+    WorkerEventInput:
+      oneOf:
+        - $ref: "#/components/schemas/WorkerActivityEventInput"
+        - $ref: "#/components/schemas/WorkerReadyEventInput"
+        - $ref: "#/components/schemas/WorkerOutputEventInput"
+      discriminator:
+        propertyName: type
+        mapping:
+          agent.activity: "#/components/schemas/WorkerActivityEventInput"
+          worker.ready: "#/components/schemas/WorkerReadyEventInput"
+          chat.assistant_delta: "#/components/schemas/WorkerOutputEventInput"
+    WorkerOKResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+    WorkerTurn:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - prompt
+        - mode
+        - deniedCommands
+        - harness
+        - attempt
+        - cancelRequested
+      properties:
+        id:
+          type: string
+          format: uuid
+        prompt:
+          type: string
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+        deniedCommands:
+          type: array
+          items:
+            type: string
+        harness:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+          description: Claim attempt used with the token epoch as the turn fence.
+        cancelRequested:
+          type: boolean
+        agentSessionId:
+          type: string
+          description: Provider-native conversation identity to resume when present.
+    WorkerClaimTurnResponse:
+      type: object
+      additionalProperties: false
+      required: [turn]
+      properties:
+        turn:
+          oneOf:
+            - $ref: "#/components/schemas/WorkerTurn"
+            - type: "null"
+    WorkerCancellationResponse:
+      type: object
+      additionalProperties: false
+      required: [requested]
+      properties:
+        requested:
+          type: boolean
+    WorkerCompleteTurnInput:
+      type: object
+      additionalProperties: false
+      required: [attempt]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+        cancelled:
+          type: boolean
+    WorkerFailTurnInput:
+      type: object
+      additionalProperties: false
+      required: [attempt, error]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+        error:
+          type: string
+          minLength: 1
+          description: Failure message, limited by the server to 4 KiB.
+    WorkerFinishTurnResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, alreadyFinished]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        alreadyFinished:
+          type: boolean
+    CreateWorkerChildInput:
+      type: object
+      additionalProperties: false
+      required: [harness, displayName, prompt]
+      properties:
+        harness:
+          type: string
+          minLength: 1
+          maxLength: 120
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 65536
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+        deniedCommands:
+          type: array
+          maxItems: 128
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
+        sandboxProviderConnectionId:
+          type: string
+          format: uuid
+    SendMessageInput:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 65536
+    WorkerWorkspaceListPayload:
+      type: object
+      additionalProperties: false
+      required: [path, limit]
+      properties:
+        path:
+          type: string
+          maxLength: 4096
+        cursor:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+    WorkerWorkspaceReadPayload:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    WorkerWorkspaceWritePayload:
+      $ref: "#/components/schemas/WorkspaceFileWriteInput"
+    WorkerWorkspaceEntryPage:
+      type: object
+      additionalProperties: false
+      required: [path, items, hasMore]
+      properties:
+        path:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceEntry"
+        hasMore:
+          type: boolean
+        nextCursor:
+          type: string
+    WorkerTerminalOpenPayload:
+      type: object
+      additionalProperties: false
+      required: [terminalId, kind]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/TerminalKind"
+        columns:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 65535
+    WorkerTerminalInputPayload:
+      type: object
+      additionalProperties: false
+      required: [terminalId, data]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+        data:
+          type: string
+          contentEncoding: base64
+          minLength: 1
+          description: Base64-encoded terminal input, at most 16 KiB after decoding.
+    WorkerTerminalClosePayload:
+      type: object
+      additionalProperties: false
+      required: [terminalId]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+    WorkerTerminalResizePayload:
+      type: object
+      additionalProperties: false
+      required: [terminalId, columns, rows]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+        columns:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 65535
+    WorkerTerminalOpenResult:
+      type: object
+      additionalProperties: false
+      required: [open]
+      properties:
+        open:
+          type: boolean
+    WorkerTerminalInputResult:
+      type: object
+      additionalProperties: false
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+    WorkerTerminalCloseResult:
+      type: object
+      additionalProperties: false
+      required: [closed]
+      properties:
+        closed:
+          type: boolean
+    WorkerTerminalResizeResult:
+      type: object
+      additionalProperties: false
+      required: [resized]
+      properties:
+        resized:
+          type: boolean
+    WorkerWorkspaceListTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: workspace.list
+        payload:
+          $ref: "#/components/schemas/WorkerWorkspaceListPayload"
+    WorkerWorkspaceReadTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: workspace.read
+        payload:
+          $ref: "#/components/schemas/WorkerWorkspaceReadPayload"
+    WorkerWorkspaceWriteTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: workspace.write
+        payload:
+          $ref: "#/components/schemas/WorkerWorkspaceWritePayload"
+    WorkerWorkspaceDiffTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: workspace.diff
+        payload:
+          $ref: "#/components/schemas/EmptyObject"
+    WorkerTerminalOpenTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: terminal.open
+        payload:
+          $ref: "#/components/schemas/WorkerTerminalOpenPayload"
+    WorkerTerminalInputTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: terminal.input
+        payload:
+          $ref: "#/components/schemas/WorkerTerminalInputPayload"
+    WorkerTerminalResizeTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: terminal.resize
+        payload:
+          $ref: "#/components/schemas/WorkerTerminalResizePayload"
+    WorkerTerminalCloseTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: terminal.close
+        payload:
+          $ref: "#/components/schemas/WorkerTerminalClosePayload"
+    WorkerTransportRequest:
+      oneOf:
+        - $ref: "#/components/schemas/WorkerWorkspaceListTransport"
+        - $ref: "#/components/schemas/WorkerWorkspaceReadTransport"
+        - $ref: "#/components/schemas/WorkerWorkspaceWriteTransport"
+        - $ref: "#/components/schemas/WorkerWorkspaceDiffTransport"
+        - $ref: "#/components/schemas/WorkerTerminalOpenTransport"
+        - $ref: "#/components/schemas/WorkerTerminalInputTransport"
+        - $ref: "#/components/schemas/WorkerTerminalResizeTransport"
+        - $ref: "#/components/schemas/WorkerTerminalCloseTransport"
+      discriminator:
+        propertyName: kind
+    WorkerClaimTransportResponse:
+      type: object
+      additionalProperties: false
+      required: [request]
+      properties:
+        request:
+          oneOf:
+            - $ref: "#/components/schemas/WorkerTransportRequest"
+            - type: "null"
+    WorkerTransportResult:
+      type: object
+      additionalProperties: true
+      description: |
+        The server accepts any non-null JSON object. Built-in workers return a
+        WorkerWorkspaceEntryPage, WorkspaceFile, WorkspaceDiff,
+        WorkerTerminalOpenResult, WorkerTerminalInputResult, or
+        WorkerTerminalCloseResult appropriate to the claimed command.
+    WorkerCompleteTransportInput:
+      type: object
+      additionalProperties: false
+      required: [attempt, response]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+        response:
+          $ref: "#/components/schemas/WorkerTransportResult"
+    WorkerFailTransportInput:
+      type: object
+      additionalProperties: false
+      required: [attempt, code, message]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+        code:
+          type: string
+          minLength: 1
+          maxLength: 100
+        message:
+          type: string
+          minLength: 1
+          description: Worker-safe failure message, limited by the server to 4 KiB.
+    WorkerAgentTerminalResponse:
+      type: object
+      additionalProperties: false
+      required: [terminalId]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+    WorkerTerminalExitInput:
+      type: object
+      additionalProperties: false
+      required: [exitCode]
+      properties:
+        exitCode:
+          type: integer
+    WorkerTerminalOutputInput:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: string
+          contentEncoding: base64
+          minLength: 1
+          description: Base64-encoded output frame, at most 16 KiB after decoding.
+    WorkerTerminalOutputResponse:
+      type: object
+      additionalProperties: false
+      required: [sequence]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+    DeleteSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [session]
+      properties:
+        session:
+          type: object
+          additionalProperties: false
+          required: [id, desiredState]
+          properties:
+            id:
+              type: string
+              format: uuid
+            desiredState:
+              type: string
+              const: deleted
+    Session:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - orgId
+        - projectId
+        - kind
+        - harness
+        - displayName
+        - branch
+        - mode
+        - deniedCommands
+        - activityState
+        - status
+        - runtimeConnected
+        - isTerminated
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/SessionKind"
+        harness:
+          type: string
+        displayName:
+          type: string
+        branch:
+          type: string
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+        deniedCommands:
+          type: array
+          items:
+            type: string
+        activityState:
+          $ref: "#/components/schemas/SessionActivityState"
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        capabilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentCapability"
+        runtimeConnected:
+          type: boolean
+        runtimeState:
+          type: string
+        runtimeError:
+          type: string
+        activeTurn:
+          $ref: "#/components/schemas/Turn"
+        isTerminated:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateSessionInput:
+      type: object
+      additionalProperties: false
+      required: [projectId, kind, harness, displayName, prompt]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/SessionKind"
+        harness:
+          type: string
+          minLength: 1
+          maxLength: 120
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        prompt:
+          type: string
+          maxLength: 65536
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+          default: trusted
+        deniedCommands:
+          type: array
+          items:
+            type: string
+          default: []
+        sandboxProviderConnectionId:
+          type: string
+          format: uuid
+    SessionPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+        page:
+          $ref: "#/components/schemas/PageInfo"
+    PullRequestState:
+      type: string
+      enum: [draft, open, merged, closed]
+    CIState:
+      type: string
+      enum: [unknown, pending, passing, failing]
+    PullRequestCheckStatus:
+      type: string
+      enum: [unknown, queued, in_progress, passed, failed, skipped, cancelled]
+    ReviewDecision:
+      type: string
+      enum: [none, approved, changes_requested, review_required]
+    MergeabilityState:
+      type: string
+      enum: [unknown, mergeable, conflicting, blocked, unstable]
+    PullRequestFailingCheck:
+      type: object
+      additionalProperties: false
+      required: [name, status, conclusion]
+      properties:
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/PullRequestCheckStatus"
+        conclusion:
+          type: string
+        url:
+          type: string
+    PullRequestCISummary:
+      type: object
+      additionalProperties: false
+      required: [state, failingChecks]
+      properties:
+        state:
+          $ref: "#/components/schemas/CIState"
+        failingChecks:
+          type: array
+          items:
+            $ref: "#/components/schemas/PullRequestFailingCheck"
+    PullRequestReviewCommentLink:
+      type: object
+      additionalProperties: false
+      required: [autoInjectReview]
+      properties:
+        url:
+          type: string
+        file:
+          type: string
+        line:
+          type: integer
+          minimum: 0
+        autoInjectReview:
+          type: boolean
+    PullRequestUnresolvedReviewer:
+      type: object
+      additionalProperties: false
+      required: [reviewerId, count, links]
+      properties:
+        reviewerId:
+          type: string
+        count:
+          type: integer
+          minimum: 0
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/PullRequestReviewCommentLink"
+        reviewUrl:
+          type: string
+        isBot:
+          type: boolean
+    PullRequestSubmittedReview:
+      type: object
+      additionalProperties: false
+      required: [reviewerId, verdict, submittedAt, autoInjectReview]
+      properties:
+        reviewerId:
+          type: string
+        verdict:
+          $ref: "#/components/schemas/ReviewDecision"
+        body:
+          type: string
+        reviewUrl:
+          type: string
+        submittedAt:
+          type: string
+          format: date-time
+        isBot:
+          type: boolean
+        autoInjectReview:
+          type: boolean
+    PullRequestReviewSummary:
+      type: object
+      additionalProperties: false
+      required: [decision, hasUnresolvedHumanComments, unresolvedBy, reviews]
+      properties:
+        decision:
+          $ref: "#/components/schemas/ReviewDecision"
+        hasUnresolvedHumanComments:
+          type: boolean
+        unresolvedBy:
+          type: array
+          items:
+            $ref: "#/components/schemas/PullRequestUnresolvedReviewer"
+        reviews:
+          type: array
+          items:
+            $ref: "#/components/schemas/PullRequestSubmittedReview"
+    PullRequestConflictFile:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path:
+          type: string
+        url:
+          type: string
+    PullRequestMergeabilitySummary:
+      type: object
+      additionalProperties: false
+      required: [state, reasons, pullRequestUrl, conflictFiles]
+      properties:
+        state:
+          $ref: "#/components/schemas/MergeabilityState"
+        reasons:
+          type: array
+          items:
+            type: string
+        pullRequestUrl:
+          type: string
+        conflictFiles:
+          type: array
+          items:
+            $ref: "#/components/schemas/PullRequestConflictFile"
+    PullRequestSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+        - number
+        - title
+        - state
+        - provider
+        - repository
+        - author
+        - sourceBranch
+        - targetBranch
+        - headSha
+        - additions
+        - deletions
+        - changedFiles
+        - ci
+        - review
+        - mergeability
+        - updatedAt
+        - observedAt
+        - ciObservedAt
+        - reviewObservedAt
+      properties:
+        url:
+          type: string
+        htmlUrl:
+          type: string
+        number:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+        state:
+          $ref: "#/components/schemas/PullRequestState"
+        provider:
+          type: string
+        repository:
+          type: string
+        author:
+          type: string
+        sourceBranch:
+          type: string
+        targetBranch:
+          type: string
+        headSha:
+          type: string
+        additions:
+          type: integer
+          minimum: 0
+        deletions:
+          type: integer
+          minimum: 0
+        changedFiles:
+          type: integer
+          minimum: 0
+        ci:
+          $ref: "#/components/schemas/PullRequestCISummary"
+        review:
+          $ref: "#/components/schemas/PullRequestReviewSummary"
+        mergeability:
+          $ref: "#/components/schemas/PullRequestMergeabilitySummary"
+        stateChangedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        observedAt:
+          type: string
+          format: date-time
+        ciObservedAt:
+          type: string
+          format: date-time
+        reviewObservedAt:
+          type: string
+          format: date-time
+    SessionPullRequests:
+      type: object
+      additionalProperties: false
+      required: [sessionId, pullRequests]
+      properties:
+        sessionId:
+          type: string
+        pullRequests:
+          type: array
+          items:
+            $ref: "#/components/schemas/PullRequestSummary"
+    AOReviewRunStatus:
+      type: string
+      enum: [running, complete, delivered, failed, cancelled]
+    AOReviewVerdict:
+      type: string
+      enum: ["", approved, changes_requested]
+    AOReviewState:
+      type: string
+      enum: [needs_review, running, up_to_date, changes_requested, ineligible]
+    AOReviewRun:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - reviewId
+        - sessionId
+        - batchId
+        - harness
+        - pullRequestUrl
+        - targetSha
+        - status
+        - verdict
+        - body
+        - providerReviewId
+        - createdAt
+        - autoInjectReview
+      properties:
+        id:
+          type: string
+        reviewId:
+          type: string
+        sessionId:
+          type: string
+        batchId:
+          type: string
+        harness:
+          type: string
+        pullRequestUrl:
+          type: string
+        targetSha:
+          type: string
+        status:
+          $ref: "#/components/schemas/AOReviewRunStatus"
+        verdict:
+          $ref: "#/components/schemas/AOReviewVerdict"
+        body:
+          type: string
+        providerReviewId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        deliveredAt:
+          type: string
+          format: date-time
+        autoInjectReview:
+          type: boolean
+    AOPullRequestReviewState:
+      type: object
+      additionalProperties: false
+      required: [pullRequestUrl, pullRequestNumber, title, targetSha, status]
+      properties:
+        pullRequestUrl:
+          type: string
+        pullRequestNumber:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+        targetSha:
+          type: string
+        status:
+          $ref: "#/components/schemas/AOReviewState"
+        staleTargetSha:
+          type: string
+          description: Head SHA of the newest completed run that does not match targetSha.
+        latestRun:
+          $ref: "#/components/schemas/AOReviewRun"
+        previousRun:
+          $ref: "#/components/schemas/AOReviewRun"
+    SessionReviewState:
+      type: object
+      additionalProperties: false
+      required: [sessionId, reviews, runs]
+      properties:
+        sessionId:
+          type: string
+        reviewerHandleId:
+          type: string
+        reviewerHarness:
+          type: string
+        reviews:
+          type: array
+          items:
+            $ref: "#/components/schemas/AOPullRequestReviewState"
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AOReviewRun"
+    UserMessageEvent:
+      type: object
+      additionalProperties: false
+      required: [sessionId, sequence, type, payload, createdAt]
+      properties:
+        sessionId:
+          type: string
+        sequence:
+          type: integer
+          format: int64
+          maximum: 9007199254740991
+        type:
+          const: chat.user_message
+        payload:
+          type: object
+          additionalProperties: false
+          required: [text]
+          properties:
+            text:
+              type: string
+        createdAt:
+          type: string
+          format: date-time
+    AssistantDeltaEvent:
+      type: object
+      additionalProperties: false
+      required: [sessionId, sequence, type, payload, createdAt]
+      properties:
+        sessionId:
+          type: string
+        sequence:
+          type: integer
+          format: int64
+          maximum: 9007199254740991
+        type:
+          const: chat.assistant_delta
+        payload:
+          $ref: "#/components/schemas/WorkerOutputPayload"
+        createdAt:
+          type: string
+          format: date-time
+    TurnStartedEvent:
+      type: object
+      additionalProperties: false
+      required: [sessionId, sequence, type, payload, createdAt]
+      properties:
+        sessionId:
+          type: string
+        sequence:
+          type: integer
+          format: int64
+          maximum: 9007199254740991
+        type:
+          const: chat.turn_started
+        payload:
+          type: object
+          additionalProperties: false
+          required: [turnId, attempt, workerEpoch]
+          properties:
+            turnId:
+              type: string
+              format: uuid
+            attempt:
+              type: integer
+              minimum: 1
+            workerEpoch:
+              type: integer
+              format: int64
+              minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+    TurnCompletedEvent:
+      type: object
+      additionalProperties: false
+      required: [sessionId, sequence, type, payload, createdAt]
+      properties:
+        sessionId:
+          type: string
+        sequence:
+          type: integer
+          format: int64
+          maximum: 9007199254740991
+        type:
+          const: chat.turn_completed
+        payload:
+          type: object
+          additionalProperties: false
+          required: [turnId, attempt]
+          properties:
+            turnId:
+              type: string
+              format: uuid
+            attempt:
+              type: integer
+              minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+    TurnInterruptedEvent:
+      type: object
+      additionalProperties: false
+      required: [sessionId, sequence, type, payload, createdAt]
+      properties:
+        sessionId:
+          type: string
+        sequence:
+          type: integer
+          format: int64
+          maximum: 9007199254740991
+        type:
+          const: chat.turn_interrupted
+        payload:
+          type: object
+          additionalProperties: false
+          required: [turnId, attempt]
+          properties:
+            turnId:
+              type: string
+              format: uuid
+            attempt:
+              type: integer
+              minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+    TurnAbortedEvent:
+      type: object
+      additionalProperties: false
+      required: [sessionId, sequence, type, payload, createdAt]
+      properties:
+        sessionId:
+          type: string
+        sequence:
+          type: integer
+          format: int64
+          maximum: 9007199254740991
+        type:
+          const: chat.turn_aborted
+        payload:
+          type: object
+          additionalProperties: false
+          required: [turnId, attempt, error]
+          properties:
+            turnId:
+              type: string
+              format: uuid
+            attempt:
+              type: integer
+              minimum: 1
+            error:
+              type: string
+        createdAt:
+          type: string
+          format: date-time
+    InterruptRequestedEvent:
+      type: object
+      additionalProperties: false
+      required: [sessionId, sequence, type, payload, createdAt]
+      properties:
+        sessionId:
+          type: string
+        sequence:
+          type: integer
+          format: int64
+          maximum: 9007199254740991
+        type:
+          const: chat.interrupt_requested
+        payload:
+          type: object
+          additionalProperties: false
+          required: [turnId]
+          properties:
+            turnId:
+              type: string
+              format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    ClientEvent:
+      oneOf:
+        - $ref: "#/components/schemas/UserMessageEvent"
+        - $ref: "#/components/schemas/AssistantDeltaEvent"
+        - $ref: "#/components/schemas/TurnStartedEvent"
+        - $ref: "#/components/schemas/TurnCompletedEvent"
+        - $ref: "#/components/schemas/TurnInterruptedEvent"
+        - $ref: "#/components/schemas/TurnAbortedEvent"
+        - $ref: "#/components/schemas/InterruptRequestedEvent"
+    ClientEventPage:
+      type: object
+      additionalProperties: false
+      required: [events, hasMore, nextAfter]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClientEvent"
+        hasMore:
+          type: boolean
+        nextAfter:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+          description: Highest sequence returned, or the supplied after cursor when the page is empty.
+    TerminalKind:
+      type: string
+      enum: [agent, workspace]
+    TerminalScope:
+      type: string
+      enum: [terminal:read, terminal:operate]
+    TerminalTicket:
+      type: object
+      additionalProperties: false
+      required: [ticket, expiresIn, scopes]
+      properties:
+        ticket:
+          type: string
+        expiresIn:
+          type: integer
+          minimum: 1
+          description: Lifetime in seconds.
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TerminalScope"
+    WorkspaceEntry:
+      type: object
+      additionalProperties: false
+      required: [name, path, isDir, size, mode, modTime]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        isDir:
+          type: boolean
+        size:
+          type: integer
+          format: int64
+        mode:
+          type: string
+        modTime:
+          type: string
+          format: date-time
+    WorkspaceEntryPage:
+      type: object
+      additionalProperties: false
+      required: [path, items, page]
+      properties:
+        path:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceEntry"
+        page:
+          $ref: "#/components/schemas/PageInfo"
+    WorkspaceFile:
+      type: object
+      additionalProperties: false
+      required: [path, content, size]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        size:
+          type: integer
+          format: int64
+    WorkspaceFileWriteInput:
+      type: object
+      additionalProperties: false
+      required: [path, content]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        content:
+          type: string
+          maxLength: 1048576
+    WorkspaceFileStatus:
+      type: string
+      enum: [unmodified, modified, added, deleted, renamed, untracked, copied, changed]
+    WorkspaceDiffFile:
+      type: object
+      additionalProperties: false
+      required: [path, status, additions, deletions, binary]
+      properties:
+        path:
+          type: string
+        oldPath:
+          type: string
+        status:
+          $ref: "#/components/schemas/WorkspaceFileStatus"
+        staged:
+          type: string
+        unstaged:
+          type: string
+        additions:
+          type: integer
+          minimum: 0
+        deletions:
+          type: integer
+          minimum: 0
+        binary:
+          type: boolean
+    WorkspaceDiff:
+      type: object
+      additionalProperties: false
+      required: [status, unstaged, staged, combined, diffBaseRef, files, untrackedFiles, truncated]
+      properties:
+        status:
+          type: string
+        unstaged:
+          type: string
+        staged:
+          type: string
+        combined:
+          type: string
+        diffBaseRef:
+          type: string
+        diffBaseSha:
+          type: string
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceDiffFile"
+        untrackedFiles:
+          type: array
+          items:
+            type: string
+        truncated:
+          type: object
+          additionalProperties: false
+          required: [combined, stats]
+          properties:
+            combined:
+              type: boolean
+            stats:
+              type: boolean
+    ProviderName:
+      type: string
+      enum: [daytona, claude-code, codex, cursor]
+    ProviderPublicConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        apiUrl:
+          type: string
+          format: uri
+        target:
+          type: string
+          enum: [us, eu]
+        credentialType:
+          type: string
+          enum: [oauth_token, api_key, access_token]
+    PutAgentProviderConnectionInput:
+      type: object
+      additionalProperties: false
+      required: [credentialType, secret]
+      properties:
+        credentialType:
+          type: string
+          enum: [oauth_token, api_key, access_token]
+        secret:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          writeOnly: true
+    WorkerCredentialResponse:
+      type: object
+      additionalProperties: false
+      required: [provider, credentialType, secret]
+      properties:
+        provider:
+          type: string
+          enum: [claude-code, codex, cursor]
+        credentialType:
+          type: string
+          enum: [oauth_token, api_key, access_token]
+        secret:
+          type: string
+          minLength: 1
+          format: password
+          readOnly: true
+          description: Decrypted coding-agent secret. Never log or persist this value.
+    WorkerCheckoutGrantResponse:
+      type: object
+      additionalProperties: false
+      required: [cloneUrl, token, expiresAt]
+      properties:
+        cloneUrl:
+          type: string
+          format: uri
+        token:
+          type: string
+          minLength: 1
+          format: password
+          readOnly: true
+          description: Repository-scoped GitHub installation token. Never log or persist this value.
+        expiresAt:
+          type: string
+          format: date-time
+    RedactedProviderConnection:
+      type: object
+      additionalProperties: false
+      required: [id, provider, label, config, validationState, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        provider:
+          $ref: "#/components/schemas/ProviderName"
+        label:
+          type: string
+        config:
+          $ref: "#/components/schemas/ProviderPublicConfig"
+        validationState:
+          type: string
+          enum: [pending, valid, invalid]
+        validatedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time

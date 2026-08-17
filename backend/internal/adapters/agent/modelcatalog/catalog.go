@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 const (
@@ -262,7 +263,7 @@ func hasDiscoverySource(agentID string) bool {
 }
 
 func modelCommand(ctx context.Context, binary string, args []string, workingDir string, env map[string]string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, binary, args...) //nolint:gosec // binary is adapter-resolved, args are static
+	cmd := aoprocess.CommandContext(ctx, binary, args...) //nolint:gosec // binary is adapter-resolved, args are static
 	cmd.WaitDelay = commandTerminationWait
 	if strings.TrimSpace(workingDir) != "" {
 		cmd.Dir = workingDir

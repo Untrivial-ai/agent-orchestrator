@@ -80,6 +80,9 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/sessions",
 	"/api/v1/sessions/{sessionId}",
 	"/api/v1/sessions/{sessionId}/activity",
+	"/api/v1/sessions/{sessionId}/agent-switches",
+	"/api/v1/sessions/{sessionId}/agent-switches/{switchId}/handoff",
+	"/api/v1/sessions/{sessionId}/agent-switches/{switchId}/recover",
 	"/api/v1/sessions/{sessionId}/interface-transition",
 	"/api/v1/sessions/{sessionId}/kill",
 	"/api/v1/sessions/{sessionId}/pr",
@@ -89,8 +92,10 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/sessions/{sessionId}/preview/server",
 	"/api/v1/sessions/{sessionId}/resume-agent",
 	"/api/v1/sessions/{sessionId}/restore",
+	"/api/v1/sessions/{sessionId}/switch-agent",
 	"/api/v1/sessions/{sessionId}/reviews",
 	"/api/v1/sessions/{sessionId}/reviews/cancel",
+	"/api/v1/sessions/{sessionId}/reviews/comments/resolve",
 	"/api/v1/sessions/{sessionId}/reviews/submit",
 	"/api/v1/sessions/{sessionId}/reviews/trigger",
 	"/api/v1/sessions/{sessionId}/rollback",
@@ -278,6 +283,9 @@ export function apiErrorMessage(error: unknown, fallback = "Request failed"): st
 	if (typeof error === "string" && error !== "") return error;
 	if (typeof error === "object" && error !== null) {
 		const body = error as { code?: unknown; message?: unknown; error?: unknown };
+		if (typeof body.error === "object" && body.error !== null) {
+			return apiErrorMessage(body.error, fallback);
+		}
 		const code = typeof body.code === "string" && body.code !== "" ? body.code : "";
 		if (typeof body.message === "string" && body.message !== "") {
 			return code && !body.message.includes(code) ? `${body.message} (${code})` : body.message;

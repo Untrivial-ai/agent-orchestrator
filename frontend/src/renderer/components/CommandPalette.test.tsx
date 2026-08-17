@@ -9,6 +9,10 @@ import { useUiStore } from "../stores/ui-store";
 const navigateMock = vi.hoisted(() => vi.fn());
 const spawnMock = vi.hoisted(() => vi.fn());
 const choosePathMock = vi.hoisted(() => vi.fn());
+const getMock = vi.hoisted(() => vi.fn());
+const postMock = vi.hoisted(() => vi.fn());
+const openExternalMock = vi.hoisted(() => vi.fn());
+const writeTextMock = vi.hoisted(() => vi.fn());
 const restoreMock = vi.hoisted(() => vi.fn());
 
 const ctx = vi.hoisted(() => {
@@ -107,6 +111,27 @@ vi.mock("../lib/shell-context", () => ({
 
 vi.mock("../lib/spawn-orchestrator", () => ({ spawnOrchestrator: spawnMock }));
 
+vi.mock("../lib/api-client", () => ({
+	apiClient: {
+		GET: getMock,
+		POST: postMock,
+	},
+	apiErrorMessage: (error: unknown, fallback = "Request failed") => {
+		if (error instanceof Error) return error.message;
+		if (typeof error === "object" && error !== null && "message" in error) {
+			return String((error as { message: unknown }).message);
+		}
+		return fallback;
+	},
+}));
+
+vi.mock("../lib/bridge", () => ({
+	aoBridge: {
+		app: { openExternal: openExternalMock },
+		clipboard: { writeText: writeTextMock },
+	},
+}));
+
 vi.mock("../hooks/useRestoreSession", () => ({ useRestoreSession: () => restoreMock }));
 
 function StubNestedLayer() {
@@ -195,9 +220,14 @@ beforeEach(() => {
 	ctx.enabled = true;
 	ctx.workspaces[0].orchestratorAgent = "codex";
 	ctx.workspaces[1].orchestratorAgent = "codex";
+	ctx.workspaces[0].sessions[0].prs = [];
 	navigateMock.mockReset();
 	spawnMock.mockReset();
 	choosePathMock.mockReset();
+	getMock.mockReset();
+	postMock.mockReset();
+	openExternalMock.mockReset();
+	writeTextMock.mockReset();
 	restoreMock.mockReset();
 	restoreMock.mockResolvedValue({ status: "success" });
 	act(() => {
@@ -567,6 +597,206 @@ describe("CommandPalette actions", () => {
 		fireEvent.click(screen.getByText("New project"));
 		await waitFor(() => expect(choosePathMock).toHaveBeenCalledTimes(1));
 		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+});
+
+describe("CommandPalette PR and review actions", () => {
+	const openPr = {
+		url: "https://github.com/o/r/pull/7",
+		number: 7,
+		state: "open" as const,
+		ci: "passing",
+		review: "pending",
+		mergeability: "clean",
+		reviewComments: false,
+		updatedAt: "2026-06-10T00:00:00Z",
+	};
+
+	const reviewState = (status: string) => ({
+		prNumber: 7,
+		prUrl: openPr.url,
+		status,
+		targetSha: "sha",
+		title: "PR 7",
+	});
+
+	const mockReviews = (reviews: unknown[]) => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/reviews") {
+				return { data: { reviewerHandleId: "", reviews } };
+			}
+			return { data: undefined };
+		});
+	};
+
+	beforeEach(() => {
+		ctx.workspaces[0].sessions[0].prs = [openPr];
+		mockReviews([]);
+		postMock.mockResolvedValue({ data: { reviewerHandleId: "", reviews: [] } });
+	});
+
+	async function openPaletteWithQuery(value: string) {
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		const input = await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.change(input, { target: { value } });
+		return input;
+	}
+
+	it("opens the PR URL externally and closes", async () => {
+		await openPaletteWithQuery("open pr");
+		fireEvent.click(await screen.findByText("Open PR #7"));
+		await waitFor(() => expect(openExternalMock).toHaveBeenCalledWith("https://github.com/o/r/pull/7"));
+		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+
+	it("copies the PR URL to the clipboard and closes", async () => {
+		await openPaletteWithQuery("copy pr");
+		fireEvent.click(await screen.findByText("Copy PR URL #7"));
+		await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith("https://github.com/o/r/pull/7"));
+		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+
+	it("triggers a review for the PR's session and closes", async () => {
+		mockReviews([reviewState("needs_review")]);
+		await openPaletteWithQuery("review");
+		fireEvent.click(await screen.findByText("Review latest commit #7"));
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/trigger", {
+				params: { path: { sessionId: "w-merge" } },
+			}),
+		);
+		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+
+	it("shows Not eligible for review once the session review state loads", async () => {
+		await openPaletteWithQuery("review");
+		expect(await screen.findByText("Not eligible for review")).toBeInTheDocument();
+		fireEvent.click(screen.getByText("Run review #7"));
+		expect(postMock).not.toHaveBeenCalled();
+	});
+
+	it("disables the review action with Review already running once the session review state loads", async () => {
+		mockReviews([reviewState("running")]);
+		await openPaletteWithQuery("review");
+		expect(await screen.findByText("Review already running")).toBeInTheDocument();
+		fireEvent.click(screen.getByText("Reviewing... #7"));
+		expect(postMock).not.toHaveBeenCalled();
+		expect(useUiStore.getState().isCommandPaletteOpen).toBe(true);
+	});
+
+	it("hides the review action until the session's review state loads, then keeps it stable for the rest of the open", async () => {
+		let resolveReviews: (value: { data: { reviewerHandleId: string; reviews: unknown[] } }) => void = () => {};
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/reviews") {
+				return new Promise((resolve) => {
+					resolveReviews = resolve;
+				});
+			}
+			return { data: undefined };
+		});
+		await openPaletteWithQuery("#7");
+		// Open PR / Copy PR URL don't depend on review state; the mutating
+		// review action must not render until we actually know it's safe.
+		expect(await screen.findByText("Open PR #7")).toBeInTheDocument();
+		expect(screen.queryByText(/run review|re-run review|reviewing/i)).toBeNull();
+		await act(async () => {
+			resolveReviews({ data: { reviewerHandleId: "", reviews: [reviewState("running")] } });
+		});
+		expect(await screen.findByText("Review already running")).toBeInTheDocument();
+		// A later poll reflecting a finished review must not retitle the row —
+		// this session is frozen for the remainder of this open.
+		mockReviews([reviewState("up_to_date")]);
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(screen.getByText("Reviewing... #7")).toBeInTheDocument();
+		expect(screen.queryByText("Re-run review #7")).toBeNull();
+	});
+
+	it("does not expose Run review from stale cached data while a background refetch is settling", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(
+			["session-reviews", "w-merge"],
+			{ reviewerHandleId: "", reviews: [reviewState("needs_review")] },
+			// Force this cached value to look well past the palette's 60s
+			// staleTime so opening the palette triggers a background refetch
+			// while still returning this (now-outdated) data synchronously.
+			{ updatedAt: Date.now() - 120_000 },
+		);
+
+		let resolveReviews: (value: { data: { reviewerHandleId: string; reviews: unknown[] } }) => void = () => {};
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/reviews") {
+				return new Promise((resolve) => {
+					resolveReviews = resolve;
+				});
+			}
+			return { data: undefined };
+		});
+
+		render(
+			<QueryClientProvider client={queryClient}>
+				<CommandPalette />
+			</QueryClientProvider>,
+		);
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		const input = await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.change(input, { target: { value: "#7" } });
+
+		// The stale cached "needs_review" data must not surface as an enabled
+		// Run review action while the background refetch is still settling.
+		expect(await screen.findByText("Open PR #7")).toBeInTheDocument();
+		expect(screen.queryByText(/run review|re-run review/i)).toBeNull();
+
+		await act(async () => {
+			resolveReviews({ data: { reviewerHandleId: "", reviews: [reviewState("running")] } });
+		});
+
+		// Once the refetch settles with the true state, the row must reflect it.
+		expect(await screen.findByText("Review already running")).toBeInTheDocument();
+		fireEvent.click(screen.getByText("Reviewing... #7"));
+		expect(postMock).not.toHaveBeenCalled();
+	});
+
+	it("does not expose Run review from stale cached data when a background refetch fails", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(
+			["session-reviews", "w-merge"],
+			{ reviewerHandleId: "", reviews: [reviewState("needs_review")] },
+			// Force this cached value to look well past the palette's 60s
+			// staleTime so opening the palette triggers a background refetch
+			// while still returning this (now-outdated) data synchronously.
+			{ updatedAt: Date.now() - 120_000 },
+		);
+		let rejectReviews: (error: Error) => void = () => {};
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/reviews") {
+				return new Promise((_resolve, reject) => {
+					rejectReviews = reject;
+				});
+			}
+			return { data: undefined };
+		});
+		render(
+			<QueryClientProvider client={queryClient}>
+				<CommandPalette />
+			</QueryClientProvider>,
+		);
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		const input = await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.change(input, { target: { value: "#7" } });
+		expect(await screen.findByText("Open PR #7")).toBeInTheDocument();
+		expect(screen.queryByText(/run review|re-run review/i)).toBeNull();
+		await act(async () => {
+			rejectReviews(new Error("network error"));
+		});
+		// TanStack Query keeps the stale cached data and flips isFetching back
+		// to false on a failed refetch — the stale "needs_review" value must
+		// still not be treated as resolved, so the row must stay hidden rather
+		// than reappearing as an enabled Run review.
+		await waitFor(() => expect(getMock).toHaveBeenCalled());
+		expect(screen.queryByText(/run review|re-run review/i)).toBeNull();
 	});
 });
 

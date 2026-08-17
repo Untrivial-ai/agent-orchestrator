@@ -28,6 +28,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { terminalFontSizeDelta as shortcutFontSizeDelta } from "../../shared/shortcuts";
 import type {
 	AttachableTerminal,
 	TerminalUserInputSource,
@@ -35,6 +36,7 @@ import type {
 import { aoBridge } from "../lib/bridge";
 import { TERMINAL_FONT_SIZE_DEFAULT } from "../lib/design-tokens";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { isMacPlatform } from "../lib/platform";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import { buildTerminalThemes } from "../lib/terminal-themes";
 import { useUiStore, type Theme } from "../stores/ui-store";
@@ -50,7 +52,12 @@ export type XtermTerminalProps = {
 	ariaLabel?: string;
 	className?: string;
 	fontSize?: number;
+	isFullscreen?: boolean;
 	theme: Theme;
+	/** Resize this terminal without changing application zoom. */
+	onChangeFontSize?: (delta: number) => void;
+	/** Enter or exit fullscreen for the terminal pane that owns this xterm. */
+	onToggleFullscreen?: () => void;
 	/**
 	 * The pane app scrolls its transcript by keyboard (PageUp/PageDown) rather
 	 * than acting on SGR wheel reports — e.g. opencode, which enables mouse
@@ -141,6 +148,20 @@ function consumeTerminalShortcut(event: KeyboardEvent): void {
 	event.stopPropagation();
 }
 
+function terminalFontSizeDelta(event: KeyboardEvent): -1 | 0 | 1 {
+	return shortcutFontSizeDelta(
+		{
+			key: event.key,
+			code: event.code,
+			ctrl: event.ctrlKey,
+			meta: event.metaKey,
+			shift: event.shiftKey,
+			alt: event.altKey,
+		},
+		isMacPlatform(),
+	);
+}
+
 function normalizedTerminalShortcut(event: KeyboardEvent): string | null {
 	if (event.metaKey || event.shiftKey) return null;
 
@@ -209,7 +230,7 @@ type TerminalContextMenuState = {
 	link: string | null;
 };
 
-type TerminalContextMenuAction = "copy" | "paste" | "selectAll" | "clear";
+type TerminalContextMenuAction = "copy" | "paste" | "selectAll";
 
 type TerminalContextMenuActions = Record<TerminalContextMenuAction, () => void>;
 
@@ -313,6 +334,25 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	useEffect(() => {
 		const host = hostRef.current;
 		if (!host) return undefined;
+		let reportedFocused = false;
+		const reportFocused = (focused: boolean) => {
+			const next = focused && Boolean(callbacksRef.current.onChangeFontSize);
+			if (next === reportedFocused) return;
+			reportedFocused = next;
+			aoBridge.terminal.setFocused(next);
+		};
+		const handleFocusIn = () => reportFocused(true);
+		const handleFocusOut = (event: FocusEvent) => {
+			const next = event.relatedTarget;
+			if (next instanceof Node && host.contains(next)) return;
+			reportFocused(false);
+		};
+		host.addEventListener("focusin", handleFocusIn);
+		host.addEventListener("focusout", handleFocusOut);
+		const disposeFontSizeShortcut = aoBridge.terminal.onFontSizeShortcut((delta) => {
+			if (!terminalHasFocus(host)) return;
+			callbacksRef.current.onChangeFontSize?.(delta);
+		});
 		const activateLink = (event: MouseEvent, uri: string) => {
 			// Left-click on a web link opens it inside the AO Browser panel (the
 			// parent decides how). Non-web schemes (mailto:, etc.) still go to the OS
@@ -465,10 +505,6 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			}
 		};
 		contextMenuActionsRef.current = {
-			clear: () => {
-				term.clear();
-				focusTerminal();
-			},
 			copy: () => {
 				copySelection();
 				focusTerminal();
@@ -519,6 +555,12 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			if (event.key === "Enter" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
 				consumeTerminalShortcut(event);
 				emitUserInput("\x1b\r", "keyboard");
+				return false;
+			}
+			const fontSizeDelta = terminalFontSizeDelta(event);
+			if (fontSizeDelta !== 0 && callbacksRef.current.onChangeFontSize) {
+				consumeTerminalShortcut(event);
+				callbacksRef.current.onChangeFontSize(fontSizeDelta);
 				return false;
 			}
 			if (isTerminalCopyShortcut(event)) {
@@ -576,9 +618,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		};
 		// ResizeObserver fires for every intermediate box during native fullscreen,
 		// sidebar drags and other animated application layout. Fitting on every
-		// callback repeatedly reallocates xterm's WebGL surface. Keep only the
-		// latest proposal and commit once the box has been quiet, with a cap so a
-		// continuously moving window cannot postpone the terminal forever.
+		// callback repeatedly reallocates xterm's WebGL surface, so those changes
+		// normally settle through the debounce below. A short, explicit live-resize
+		// marker lets controlled layout animations keep xterm visually in step.
 		const FIT_QUIET_MS = 120;
 		const FIT_CAP_MS = 500;
 		let fitQuietTimer: ReturnType<typeof setTimeout> | null = null;
@@ -635,7 +677,13 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		if (document.fonts?.ready) {
 			void document.fonts.ready.then(() => scheduleStableFit());
 		}
-		const observer = new ResizeObserver(scheduleVisibleFit);
+		const observer = new ResizeObserver(() => {
+			if (host.closest('[data-terminal-live-resize="true"]')) {
+				fitTerminal();
+				return;
+			}
+			scheduleVisibleFit();
+		});
 		observer.observe(host);
 
 		// Recovery re-fit that does NOT depend on the host box changing size.
@@ -878,6 +926,10 @@ export function XtermTerminal(props: XtermTerminalProps) {
 
 		return () => {
 			disposed = true;
+			if (reportedFocused) aoBridge.terminal.setFocused(false);
+			disposeFontSizeShortcut();
+			host.removeEventListener("focusin", handleFocusIn);
+			host.removeEventListener("focusout", handleFocusOut);
 			delete (host as DevXtermHost).__aoXtermForTest;
 			termRef.current = null;
 			fitRef.current = null;
@@ -937,6 +989,15 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		if (term) callbacksRef.current.onVisibleSize?.(term.cols, term.rows);
 	}, [props.isVisible]);
 
+	const fullscreenElement = document.fullscreenElement;
+	const contextMenuPortalContainer =
+		props.isFullscreen &&
+		fullscreenElement instanceof HTMLElement &&
+		hostRef.current &&
+		fullscreenElement.contains(hostRef.current)
+			? fullscreenElement
+			: undefined;
+
 	return (
 		<>
 			<div
@@ -973,6 +1034,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					align="start"
 					className="min-w-36"
 					onCloseAutoFocus={(event) => event.preventDefault()}
+					portalContainer={contextMenuPortalContainer}
 					side="right"
 					sideOffset={2}
 				>
@@ -995,8 +1057,16 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					</DropdownMenuItem>
 					<DropdownMenuItem onSelect={() => runContextMenuAction("paste")}>{t("titlebar.paste")}</DropdownMenuItem>
 					<DropdownMenuItem onSelect={() => runContextMenuAction("selectAll")}>{t("titlebar.selectAll")}</DropdownMenuItem>
-					<DropdownMenuSeparator />
-					<DropdownMenuItem onSelect={() => runContextMenuAction("clear")}>{t("terminal.clear")}</DropdownMenuItem>
+					{props.onToggleFullscreen ? (
+						<DropdownMenuItem
+							onSelect={() => {
+								setContextMenuOpen(false);
+								callbacksRef.current.onToggleFullscreen?.();
+							}}
+						>
+							{props.isFullscreen ? t("terminal.exitFullscreen") : t("terminal.fullscreen")}
+						</DropdownMenuItem>
+					) : null}
 				</DropdownMenuContent>
 			</DropdownMenu>
 		</>

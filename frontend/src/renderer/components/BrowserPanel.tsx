@@ -458,7 +458,11 @@ export function BrowserPanelView({
 				) : null}
 				<Button
 					aria-label={t(devtoolsState.open ? "browser.closeDevTools" : "browser.openDevTools")}
-					className={cn(devtoolsState.open && "bg-accent-weak text-accent")}
+					aria-pressed={devtoolsState.open}
+					className={cn(
+						devtoolsState.open &&
+							"bg-accent-strong text-accent-foreground hover:bg-accent-strong dark:hover:bg-accent-strong",
+					)}
 					disabled={!canUseDevTools}
 					onClick={() => void (devtoolsState.open ? closeDevTools() : openDevTools())}
 					size="icon-sm"

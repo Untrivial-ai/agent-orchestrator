@@ -105,7 +105,7 @@ export function ShellTerminalTab({
 	return (
 		<span
 			className={cn(
-				"group relative min-w-shell-tab-min items-center transition-colors",
+				"group relative min-w-shell-tab-min shrink-0 items-center transition-colors",
 				appearance === "connected"
 					? "grid w-shell-tab-connected grid-cols-[auto_minmax(0,1fr)_auto] self-stretch border-x border-transparent pl-2 pr-0"
 					: "inline-flex gap-1 rounded-md px-2 py-1",
@@ -170,12 +170,13 @@ export function ShellTerminalTab({
 			)}
 			<button
 				aria-label={t("terminal.closeNamed", { title: shell.title })}
+				data-terminal-tab-action
 				className={cn(
 					"inline-flex h-control-sm shrink-0 items-center justify-center overflow-hidden rounded-sm text-passive transition-[width,margin,background,color,opacity] hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50",
 					appearance === "connected"
 						? isActive
-							? "ml-1 w-control-sm opacity-100"
-							: "ml-0 w-0 opacity-0 group-hover:ml-1 group-hover:w-control-sm group-hover:opacity-100 group-focus-within:ml-1 group-focus-within:w-control-sm group-focus-within:opacity-100"
+							? "ml-1 mr-1 w-control-sm opacity-100"
+							: "ml-0 mr-1 w-0 opacity-0 group-hover:ml-1 group-hover:w-control-sm group-hover:opacity-100 group-focus-within:ml-1 group-focus-within:w-control-sm group-focus-within:opacity-100"
 						: "w-control-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
 				)}
 				onClick={(event) => {

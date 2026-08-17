@@ -392,3 +392,85 @@ func (f *fakeSpawner) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.Se
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
+
+func TestTrackerRepoGitLabSelfManagedHost(t *testing.T) {
+	project := domain.ProjectRecord{
+		ID:            "demo",
+		RepoOriginURL: "https://gitlab.internal/group/project.git",
+		Config: domain.ProjectConfig{TrackerIntake: domain.TrackerIntakeConfig{
+			Enabled:  true,
+			Provider: domain.TrackerProviderGitLab,
+			Assignee: "alice",
+		}},
+	}
+	repo, ok := trackerRepo(project, project.Config.TrackerIntake.WithDefaults())
+	if !ok {
+		t.Fatal("trackerRepo ok = false")
+	}
+	if repo.Provider != domain.TrackerProviderGitLab {
+		t.Errorf("Provider = %q, want gitlab", repo.Provider)
+	}
+	if repo.Host != "gitlab.internal" {
+		t.Errorf("Host = %q, want gitlab.internal", repo.Host)
+	}
+	if repo.Native != "group/project" {
+		t.Errorf("Native = %q, want group/project", repo.Native)
+	}
+}
+
+func TestTrackerRepoGitLabDotComHostEmpty(t *testing.T) {
+	project := domain.ProjectRecord{
+		ID:            "demo",
+		RepoOriginURL: "https://gitlab.com/group/project.git",
+		Config: domain.ProjectConfig{TrackerIntake: domain.TrackerIntakeConfig{
+			Enabled:  true,
+			Provider: domain.TrackerProviderGitLab,
+			Assignee: "alice",
+		}},
+	}
+	repo, ok := trackerRepo(project, project.Config.TrackerIntake.WithDefaults())
+	if !ok {
+		t.Fatal("trackerRepo ok = false")
+	}
+	if repo.Host != "" {
+		t.Errorf("Host = %q, want \"\" (gitlab.com zero value)", repo.Host)
+	}
+}
+
+func TestTrackerRepoGitHubHostEmpty(t *testing.T) {
+	project := domain.ProjectRecord{
+		ID:            "demo",
+		RepoOriginURL: "https://github.com/acme/demo.git",
+		Config: domain.ProjectConfig{TrackerIntake: domain.TrackerIntakeConfig{
+			Enabled:  true,
+			Provider: domain.TrackerProviderGitHub,
+			Assignee: "alice",
+		}},
+	}
+	repo, ok := trackerRepo(project, project.Config.TrackerIntake.WithDefaults())
+	if !ok {
+		t.Fatal("trackerRepo ok = false")
+	}
+	if repo.Host != "" {
+		t.Errorf("Host = %q, want \"\" (GitHub never uses Host)", repo.Host)
+	}
+}
+
+func TestTrackerRepoGitLabSelfManagedWithPort(t *testing.T) {
+	project := domain.ProjectRecord{
+		ID:            "demo",
+		RepoOriginURL: "https://gitlab.local:8443/group/project.git",
+		Config: domain.ProjectConfig{TrackerIntake: domain.TrackerIntakeConfig{
+			Enabled:  true,
+			Provider: domain.TrackerProviderGitLab,
+			Assignee: "alice",
+		}},
+	}
+	repo, ok := trackerRepo(project, project.Config.TrackerIntake.WithDefaults())
+	if !ok {
+		t.Fatal("trackerRepo ok = false")
+	}
+	if repo.Host != "gitlab.local:8443" {
+		t.Errorf("Host = %q, want gitlab.local:8443", repo.Host)
+	}
+}

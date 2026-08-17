@@ -18,6 +18,7 @@
     "@ao/shared": "workspace:*",
     "@ao/ui": "workspace:*",
     "@mux/mux-player-react": "^3.13.2",
+    "@neondatabase/serverless": "^1.1.0",
     "@paper-design/shaders-react": "workspace:*",
     "@sentry/nextjs": "10.46.0",
     "@t3-oss/env-nextjs": "0.13.11",

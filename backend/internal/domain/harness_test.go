@@ -20,3 +20,21 @@ func TestPrimeAgentHarnessIsKnown(t *testing.T) {
 		t.Fatal("AllHarnesses does not contain HarnessPrimeAgent")
 	}
 }
+func TestOMPHarnessIsKnown(t *testing.T) {
+	if HarnessOMP != AgentHarness("omp") {
+		t.Fatalf("HarnessOMP = %q, want omp", HarnessOMP)
+	}
+	if !HarnessOMP.IsKnown() {
+		t.Fatal("HarnessOMP.IsKnown() = false, want true")
+	}
+	found := false
+	for _, harness := range AllHarnesses {
+		if harness == HarnessOMP {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("AllHarnesses does not contain HarnessOMP")
+	}
+}

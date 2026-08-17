@@ -136,8 +136,9 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			return nil
 		}
 		return []ports.ChatEvent{{
-			Kind:           ports.ChatEventTurnStarted,
-			ProviderTurnID: firstNonEmpty(p.Turn.ID, turnIDFallback(n.Params)),
+			Kind:                   ports.ChatEventTurnStarted,
+			ProviderTurnID:         firstNonEmpty(p.Turn.ID, turnIDFallback(n.Params)),
+			ProviderConversationID: p.ThreadID,
 		}}
 
 	case codexproto.MethodTurnCompleted:
@@ -146,9 +147,10 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			return nil
 		}
 		ev := ports.ChatEvent{
-			Kind:           ports.ChatEventTurnCompleted,
-			ProviderTurnID: firstNonEmpty(p.Turn.ID, turnIDFallback(n.Params)),
-			TurnState:      turnStateFrom(string(p.Turn.Status)),
+			Kind:                   ports.ChatEventTurnCompleted,
+			ProviderTurnID:         firstNonEmpty(p.Turn.ID, turnIDFallback(n.Params)),
+			ProviderConversationID: p.ThreadID,
+			TurnState:              turnStateFrom(string(p.Turn.Status)),
 		}
 		if p.Turn.Error != nil && p.Turn.Error.Message != "" {
 			ev.Err = fmt.Errorf("%s", p.Turn.Error.Message)

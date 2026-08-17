@@ -62,12 +62,10 @@ func (p *Provider) RepoPRListGuard(ctx context.Context, repo ports.SCMRepo, etag
 	return ports.SCMGuardResult{ETag: firstNonEmptyHeader(resp.ETag, etag), NotModified: resp.NotModified}, nil
 }
 
-// ListOpenPRsByRepo lists every open pull request in the repository so the
-// observer can attribute each to a session by head-branch prefix. It paginates
-// the REST pulls endpoint; AO repos are not expected to carry thousands of
-// concurrent open PRs, and the observer only calls this when the repo PR-list
-// ETag guard reports a change.
-func (p *Provider) ListOpenPRsByRepo(ctx context.Context, repo ports.SCMRepo) ([]ports.SCMPRObservation, error) {
+// ListPRsByRepo lists pull requests in the repository, optionally filtered to
+// those updated after updatedAfter (zero = full listing). It paginates the REST
+// pulls endpoint using state=open and sort=updated
+func (p *Provider) ListPRsByRepo(ctx context.Context, repo ports.SCMRepo, updatedAfter time.Time) ([]ports.SCMPRObservation, error) {
 	const perPage = 100
 	out := []ports.SCMPRObservation{}
 	for page := 1; ; page++ {
@@ -77,6 +75,9 @@ func (p *Provider) ListOpenPRsByRepo(ctx context.Context, repo ports.SCMRepo) ([
 		q.Set("direction", "desc")
 		q.Set("per_page", strconv.Itoa(perPage))
 		q.Set("page", strconv.Itoa(page))
+		if !updatedAfter.IsZero() {
+			q.Set("since", updatedAfter.UTC().Format(time.RFC3339Nano))
+		}
 		resp, err := p.client.doREST(ctx, http.MethodGet, repoPath(repo.Owner, repo.Name, "pulls"), q, nil)
 		if err != nil {
 			return nil, err
@@ -311,6 +312,7 @@ func (p *Provider) FetchReviewThreads(ctx context.Context, ref ports.SCMPRRef) (
 type restListPull struct {
 	URL     string `json:"url"`
 	HTMLURL string `json:"html_url"`
+	NodeID  string `json:"node_id"`
 	Number  int    `json:"number"`
 	State   string `json:"state"`
 	Draft   bool   `json:"draft"`
@@ -336,6 +338,7 @@ type restListPull struct {
 func restListPullToSCM(pull restListPull) ports.SCMPRObservation {
 	closed := strings.EqualFold(pull.State, "closed")
 	return ports.SCMPRObservation{
+		ProviderID:        pull.NodeID,
 		URL:               firstNonEmpty(pull.HTMLURL, pull.URL),
 		Number:            pull.Number,
 		State:             normalizePRState(pull.Draft, false, closed),
@@ -371,7 +374,7 @@ func buildSCMBatchQuery(refs []ports.SCMPRRef) (string, []string) {
 
 func scmPRFields() string {
 	return strings.ReplaceAll(`
-number url state isDraft merged closed title additions deletions changedFiles
+number id url state isDraft merged closed title additions deletions changedFiles
 mergeable mergeStateStatus reviewDecision headRefName headRefOid baseRefName baseRefOid
 createdAt updatedAt mergedAt closedAt
 author{ login }
@@ -469,13 +472,23 @@ func scmObservationFromGraphQL(ref ports.SCMPRRef, pr map[string]any) ports.SCMO
 	merged := boolv(pr["merged"])
 	closed := boolv(pr["closed"]) && !merged
 	draft := boolv(pr["isDraft"])
+	canonicalRepo := repoFullName(ref.Repo)
+	if owner, repoName, _, err := parsePRURL(prURL); err == nil {
+		canonicalRepo = owner + "/" + repoName
+	}
+	urlAlias := strings.TrimSpace(ref.URL)
+	if urlAlias == strings.TrimSpace(prURL) {
+		urlAlias = ""
+	}
 	obs := ports.SCMObservation{
 		Fetched:  true,
 		Provider: ref.Repo.Provider,
 		Host:     ref.Repo.Host,
-		Repo:     repoFullName(ref.Repo),
+		Repo:     canonicalRepo,
 		PR: ports.SCMPRObservation{
+			ProviderID:               str(pr["id"]),
 			URL:                      prURL,
+			URLAlias:                 urlAlias,
 			Number:                   int(num(pr["number"])),
 			State:                    normalizePRState(draft, merged, closed),
 			Draft:                    draft,
@@ -668,7 +681,7 @@ func buildReviewThreadsQuery(ref ports.SCMPRRef, beforeCursor string, includeRev
 	}
 	reviewSelection := ""
 	if includeReviews {
-		reviewSelection = fmt.Sprintf(" reviewSummaries: reviews(last:%d, states:[APPROVED,CHANGES_REQUESTED]){ nodes{ id state url submittedAt body author{ login __typename } } }", githubReviewSummaryLimit)
+		reviewSelection = fmt.Sprintf(" reviewSummaries: reviews(last:%d, states:[APPROVED,CHANGES_REQUESTED]){ nodes{ id state url submittedAt body commit{ oid } author{ login __typename } } }", githubReviewSummaryLimit)
 	}
 	return fmt.Sprintf(`query{
 repo: repository(owner:%s,name:%s){ pullRequest(number:%d){ reviewDecision%s reviewThreads(last:%d, before:%s){ nodes{
@@ -680,12 +693,14 @@ repo: repository(owner:%s,name:%s){ pullRequest(number:%d){ reviewDecision%s rev
 
 func scmReviewSummaryFromGraphQL(review map[string]any) ports.SCMReviewSummaryObservation {
 	author, _ := review["author"].(map[string]any)
+	commit, _ := review["commit"].(map[string]any)
 	return ports.SCMReviewSummaryObservation{
 		ID:          str(review["id"]),
 		Author:      str(author["login"]),
 		State:       string(reviewStateFromGraphQL(review["state"])),
 		URL:         str(review["url"]),
 		Body:        str(review["body"]),
+		TargetSHA:   str(commit["oid"]),
 		IsBot:       isBotAuthor(author),
 		SubmittedAt: parseGitHubTime(str(review["submittedAt"])),
 	}

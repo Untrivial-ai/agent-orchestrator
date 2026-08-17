@@ -64,7 +64,7 @@ ao doctor --json
 		Run `gh auth status` and confirm the active account can access the repository. GitHub authentication is lazy so an auth failure does not need to block unrelated local session work.
 	</Accordion>
 	<Accordion title="The agent opened a PR but AO did not link it">
-		Claim it explicitly from the session UI or run `ao session claim-pr <session-id> <pr-number-or-url>`. The session id comes first.
+		Claim it from the session UI or, inside the worker, run `ao session claim-pr <pr-number-or-url>`; AO reads the worker from `AO_SESSION_ID`. From another shell, use `ao session claim-pr <session-id> <pr-number-or-url>`.
 	</Accordion>
 	<Accordion title="CI or review data is delayed">
 		The SCM observer polls GitHub and respects rate limits and ETags. Check `gh auth status`, wait for another observation cycle, and open the pull request directly for full raw logs or comment bodies.

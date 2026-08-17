@@ -1,4 +1,12 @@
-import { ArrowRightLeft, Loader2, TriangleAlert, X } from "lucide-react";
+import {
+	ArrowRightLeft,
+	CheckCircle2,
+	Loader2,
+	MessageSquare,
+	SquareTerminal,
+	TriangleAlert,
+	X,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import type {
 	SessionInterfaceMode,
@@ -10,6 +18,7 @@ import {
 	interfaceTransitionIsCancellable,
 } from "../hooks/useSessionInterfaceTransition";
 import { cn } from "../lib/utils";
+import { TopbarButton } from "./TopbarButton";
 import { Button } from "./ui/button";
 import {
 	Dialog,
@@ -19,6 +28,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "./ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 function targetLabel(target: SessionInterfaceMode): string {
 	return target === "chat" ? "chat UI" : "terminal UI";
@@ -39,7 +49,7 @@ const phaseCopy: Record<SessionInterfaceTransition["phase"], string> = {
 	completed: "Interface switched",
 	failed: "Interface switch failed",
 	cancelled: "Interface switch cancelled",
-	recovery_required: "Interface switch needs recovery",
+	recovery_required: "Interface switch needs attention",
 };
 
 export function SessionInterfaceSwitchButton({
@@ -106,29 +116,31 @@ export function SessionInterfaceSwitchButton({
 	}
 
 	const label = `Switch to ${targetLabel(target)}`;
+	const tooltipLabel = supported ? `${label} using this agent's native conversation` : disabledReason || label;
+	const TargetIcon = target === "chat" ? MessageSquare : SquareTerminal;
 	return (
-		<Button
-			type="button"
-			size="sm"
-			variant="ghost"
-			className={cn(
-				"h-7 gap-1.5 px-2.5 text-xs text-muted-foreground",
-				supported && "hover:text-foreground",
-				!supported && "opacity-50",
-				className,
-			)}
-			disabled={!supported || pending}
-			onClick={onClick}
-			title={supported ? `${label} using this agent's native conversation` : disabledReason}
-			aria-label={label}
-		>
-			{pending ? (
-				<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
-			) : (
-				<ArrowRightLeft aria-hidden="true" className="size-3.5" />
-			)}
-			<span className="whitespace-nowrap">{label}</span>
-		</Button>
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<span className="inline-flex">
+					<TopbarButton
+						aria-label={label}
+						className={cn(!supported && "opacity-50", className)}
+						disabled={!supported || pending}
+						onClick={onClick}
+						title={tooltipLabel}
+						type="button"
+						variant="icon"
+					>
+						{pending ? (
+							<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+						) : (
+							<TargetIcon aria-hidden="true" className="size-icon-md" />
+						)}
+					</TopbarButton>
+				</span>
+			</TooltipTrigger>
+			<TooltipContent side="bottom">{tooltipLabel}</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -187,6 +199,7 @@ export function SessionInterfaceSwitchDialog({
 						<span className="mt-1 block text-xs leading-5 text-muted-foreground">
 							Cancel the running turn before switching. Files already changed remain in the worktree, but
 							unfinished output and queued Chat turns are cancelled.
+							{target === "chat" ? " Any unsent Terminal UI draft is discarded." : null}
 						</span>
 					</button>
 					{waitingForInput ? (
@@ -215,34 +228,92 @@ export function SessionInterfaceSwitchDialog({
 export function SessionInterfaceTransitionNotice({
 	transition,
 	onDismiss,
+	dismissing,
+	dismissError,
+	onSwitchWithInterrupt,
+	interrupting,
 }: {
 	transition?: SessionInterfaceTransition;
 	onDismiss: () => void;
+	dismissing?: boolean;
+	dismissError?: string;
+	onSwitchWithInterrupt?: () => void;
+	interrupting?: boolean;
 }) {
-	if (!transition || (transition.phase !== "failed" && transition.phase !== "recovery_required")) {
+	if (
+		!transition ||
+		transition.noticeAcknowledgedAt ||
+		(transition.phase !== "failed" && transition.phase !== "recovery_required")
+	) {
 		return null;
 	}
+	const recovered =
+		transition.phase === "recovery_required" && transition.errorCode === "DAEMON_RESTARTED";
 	return (
-		<div className="absolute left-1/2 top-3 z-20 flex w-[min(34rem,calc(100%-1.5rem))] -translate-x-1/2 items-start gap-2 rounded-lg border border-warning/30 bg-popover px-3 py-2.5 shadow-md">
-		<TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
-		<div className="min-w-0 flex-1">
-			<strong className="block text-xs font-medium text-foreground">{phaseCopy[transition.phase]}</strong>
-			<p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-				{transition.errorDetail || "The original interface remains available. You can retry the switch."}
-			</p>
-		</div>
-		<button
-			type="button"
-			className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-			onClick={onDismiss}
-			aria-label="Dismiss interface switch message"
+		<div
+			className={cn(
+				"absolute left-1/2 top-3 z-20 flex w-[min(34rem,calc(100%-1.5rem))] -translate-x-1/2 items-start gap-2 rounded-lg border bg-popover px-3 py-2.5 shadow-md",
+				recovered ? "border-success/30" : "border-warning/30",
+			)}
 		>
-			<X aria-hidden="true" className="size-3.5" />
-		</button>
-	</div>
+			{recovered ? (
+				<CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" />
+			) : (
+				<TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
+			)}
+			<div className="min-w-0 flex-1">
+				<strong className="block text-xs font-medium text-foreground">
+					{recovered ? "Interface switch recovered" : phaseCopy[transition.phase]}
+				</strong>
+				<p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+					{transition.errorDetail ||
+						(recovered
+							? "AO restored the session in its last committed interface."
+							: transition.phase === "recovery_required"
+								? "Restart AO to reconcile this session before sending more work."
+								: "The original interface remains available. You can retry the switch.")}
+				</p>
+				{transition.phase === "failed" &&
+				(transition.errorCode === "DRAIN_DRAFT_PRESENT" ||
+					transition.errorCode === "DRAIN_DECISION_PENDING") &&
+				onSwitchWithInterrupt ? (
+					<Button
+						type="button"
+						size="sm"
+						variant="outline"
+						className="mt-2 h-7 text-[11px]"
+						disabled={interrupting}
+						onClick={onSwitchWithInterrupt}
+					>
+						{interrupting ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : null}
+						{transition.errorCode === "DRAIN_DRAFT_PRESENT"
+							? "Discard draft and switch"
+							: "Cancel request and switch"}
+					</Button>
+				) : null}
+				{dismissError ? (
+					<p role="alert" className="mt-1 text-[11px] leading-4 text-destructive">
+						Could not dismiss this message. Try again.
+					</p>
+				) : null}
+			</div>
+			<button
+				type="button"
+				className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+				onClick={onDismiss}
+				disabled={dismissing}
+				aria-label="Dismiss interface switch message"
+			>
+				{dismissing ? (
+					<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+				) : (
+					<X aria-hidden="true" className="size-3.5" />
+				)}
+			</button>
+		</div>
 	);
 }
 
 export function SessionInterfaceActionGroup({ children }: { children: ReactNode }) {
-	return <div className="flex items-center gap-1">{children}</div>;
+	return <div className="inline-flex shrink-0 items-center gap-px">{children}</div>;
 }

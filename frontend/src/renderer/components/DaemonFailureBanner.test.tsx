@@ -66,6 +66,25 @@ describe("DaemonFailureBanner", () => {
 		expect(container).toBeEmptyDOMElement();
 	});
 
+	it("shows slow startup as progress without offering a restart", () => {
+		render(
+			<DaemonFailureBanner
+				status={{
+					state: "starting",
+					message: "AO daemon is still starting. Session recovery can take a while.",
+					details: "restoring session mer-3",
+				}}
+			/>,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent("AO daemon is not ready yet");
+		expect(screen.getByRole("status")).toHaveTextContent("AO daemon is still starting");
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Restart daemon" })).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Show details" }));
+		expect(screen.getByText("restoring session mer-3")).toBeInTheDocument();
+	});
+
 	it("updates an already-mounted failure when the language changes", async () => {
 		render(<DaemonFailureBanner status={{ state: "error", code: "not_ready" }} />);
 		expect(screen.getByRole("button", { name: "Restart daemon" })).toBeInTheDocument();

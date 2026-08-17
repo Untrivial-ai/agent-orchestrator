@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/httpkit"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -52,28 +52,10 @@ var (
 	ErrBadID         = errors.New("github tracker: malformed native id")
 )
 
-// RateLimitError is returned when GitHub reports the request was rate-limited.
-// Callers that want to back off intelligently can extract ResetAt /
-// RetryAfter via errors.As; callers that only need the category can use
-// errors.Is(err, ErrRateLimited).
-type RateLimitError struct {
-	ResetAt    time.Time
-	RetryAfter time.Duration
-	Message    string
-}
-
-func (e *RateLimitError) Error() string {
-	if e == nil {
-		return ErrRateLimited.Error()
-	}
-	if e.Message != "" {
-		return "github tracker: rate limited: " + e.Message
-	}
-	return ErrRateLimited.Error()
-}
-
-// Is lets errors.Is match a *RateLimitError against the ErrRateLimited sentinel.
-func (e *RateLimitError) Is(target error) bool { return target == ErrRateLimited }
+// RateLimitError is an alias for httpkit.RateLimitError so existing callers
+// that use errors.As with *RateLimitError continue to work. The sentinel
+// field is set to ErrRateLimited by the adapter's classifyError.
+type RateLimitError = httpkit.RateLimitError
 
 // Options configures a Tracker. All fields except Token are optional —
 // production code typically sets Token alone; tests inject HTTPClient and
@@ -104,12 +86,7 @@ type Tracker struct {
 	listCacheMu sync.Mutex
 	listCache   map[string]listCacheEntry
 
-	// preflightOK is the fast-path: once a Preflight succeeds, every
-	// subsequent call short-circuits via atomic.Load without touching the
-	// mutex. preflightMu serializes the one-time network call so concurrent
-	// first-callers don't all fire GET /user against GitHub.
-	preflightOK atomic.Bool
-	preflightMu sync.Mutex
+	preflight httpkit.PreflightCache
 }
 
 type listCacheEntry struct {
@@ -321,7 +298,7 @@ func (t *Tracker) List(ctx context.Context, repo domain.TrackerRepo, filter doma
 					t.listCacheMu.Unlock()
 				}
 				var done bool
-				out, done = appendIssuesWithLimit(out, cloneIssues(cached.issues), filter.Limit)
+				out, done = httpkit.AppendIssuesWithLimit(out, cloneIssues(cached.issues), filter.Limit)
 				if done {
 					break
 				}
@@ -359,28 +336,13 @@ func (t *Tracker) List(ctx context.Context, repo domain.TrackerRepo, filter doma
 			t.listCacheMu.Unlock()
 		}
 		var done bool
-		out, done = appendIssuesWithLimit(out, pageIssues, filter.Limit)
+		out, done = httpkit.AppendIssuesWithLimit(out, pageIssues, filter.Limit)
 		if done {
 			break
 		}
 		path = nextPath
 	}
 	return out, nil
-}
-
-func appendIssuesWithLimit(dst, src []domain.Issue, limit int) ([]domain.Issue, bool) {
-	if limit <= 0 {
-		return append(dst, src...), false
-	}
-	remaining := limit - len(dst)
-	if remaining <= 0 {
-		return dst, true
-	}
-	if len(src) > remaining {
-		return append(dst, src[:remaining]...), true
-	}
-	dst = append(dst, src...)
-	return dst, len(dst) >= limit
 }
 
 func cloneIssues(in []domain.Issue) []domain.Issue {
@@ -401,27 +363,14 @@ func cloneIssues(in []domain.Issue) []domain.Issue {
 // "token can do everything the SM will ask of it." Per-repo authorization
 // is detected lazily at the first Get/List against that repo.
 //
-// Successful checks are cached for the lifetime of the Tracker via a
-// double-checked atomic+mutex pattern: the hot path is one atomic.Load
-// with no contention; concurrent first-callers serialize on the mutex so
-// only one GET /user is in flight. Failures are intentionally NOT cached
-// so a transient startup glitch is recoverable on a subsequent call.
+// Successful checks are cached via httpkit.PreflightCache (double-checked
+// atomic+mutex). Failures are intentionally NOT cached so a transient
+// startup glitch is recoverable on a subsequent call.
 func (t *Tracker) Preflight(ctx context.Context) error {
-	if t.preflightOK.Load() {
-		return nil
-	}
-	t.preflightMu.Lock()
-	defer t.preflightMu.Unlock()
-	// Re-check after acquiring the lock — another goroutine may have raced
-	// us through the network call and stored success while we were waiting.
-	if t.preflightOK.Load() {
-		return nil
-	}
-	if _, err := t.do(ctx, http.MethodGet, "/user", nil); err != nil {
+	return t.preflight.Run(ctx, func(ctx context.Context) error {
+		_, err := t.do(ctx, http.MethodGet, "/user", nil)
 		return err
-	}
-	t.preflightOK.Store(true)
-	return nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +416,7 @@ func (t *Tracker) roundTrip(ctx context.Context, method, path string, body any, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	etag := resp.Header.Get("ETag")
-	nextPath := parseLinkNext(resp.Header.Get("Link"), t.baseURL)
+	nextPath := httpkit.ParseLinkNext(resp.Header.Get("Link"), t.baseURL)
 	if resp.StatusCode == http.StatusNotModified {
 		return nil, etag, nextPath, true, nil
 	}
@@ -481,73 +430,13 @@ func (t *Tracker) roundTrip(ctx context.Context, method, path string, body any, 
 	return respBody, etag, nextPath, false, classifyError(resp, respBody)
 }
 
-func parseLinkNext(linkHeader, baseURL string) string {
-	for _, part := range strings.Split(linkHeader, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" || !strings.HasPrefix(part, "<") {
-			continue
-		}
-		urlEnd := strings.Index(part, ">")
-		if urlEnd < 0 {
-			continue
-		}
-		rawURL := part[1:urlEnd]
-		if !linkHasRelNext(part[urlEnd+1:]) {
-			continue
-		}
-		return relativePathForLink(rawURL, baseURL)
-	}
-	return ""
-}
-
-func linkHasRelNext(params string) bool {
-	for _, param := range strings.Split(params, ";") {
-		name, value, ok := strings.Cut(strings.TrimSpace(param), "=")
-		if !ok || !strings.EqualFold(name, "rel") {
-			continue
-		}
-		value = strings.Trim(value, `"`)
-		for _, rel := range strings.Fields(value) {
-			if strings.EqualFold(rel, "next") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func relativePathForLink(rawLink, baseURL string) string {
-	if strings.HasPrefix(rawLink, "/") {
-		return rawLink
-	}
-	base, err := url.Parse(baseURL)
-	if err != nil {
-		return ""
-	}
-	u, err := url.Parse(rawLink)
-	if err != nil {
-		return ""
-	}
-	if !u.IsAbs() {
-		u = base.ResolveReference(u)
-	}
-	if u.Path == "" {
-		return ""
-	}
-	path := u.EscapedPath()
-	if u.RawQuery != "" {
-		path += "?" + u.RawQuery
-	}
-	return path
-}
-
 func classifyError(resp *http.Response, body []byte) error {
-	msg := githubMessage(body)
+	msg := httpkit.Message(body)
 	switch resp.StatusCode {
 	case http.StatusNotFound:
 		return fmt.Errorf("%w: %s", ErrNotFound, msg)
 	case http.StatusTooManyRequests:
-		return rateLimited(resp, msg)
+		return httpkit.BuildRateLimitError(resp, msg, ErrRateLimited)
 	case http.StatusUnauthorized:
 		// 401 is unambiguously an auth failure. GitHub never uses 401 for
 		// rate limiting; that's always 403 or 429.
@@ -561,7 +450,7 @@ func classifyError(resp *http.Response, body []byte) error {
 		// Everything else is an auth/permission failure (token missing the
 		// right scope, repo not visible to this token, etc).
 		if isRateLimited(resp, msg) {
-			return rateLimited(resp, msg)
+			return httpkit.BuildRateLimitError(resp, msg, ErrRateLimited)
 		}
 		return fmt.Errorf("%w: %s", ErrAuthFailed, msg)
 	}
@@ -579,31 +468,6 @@ func isRateLimited(resp *http.Response, msg string) bool {
 	}
 	low := strings.ToLower(msg)
 	return strings.Contains(low, "rate limit") || strings.Contains(low, "abuse detection")
-}
-
-func rateLimited(resp *http.Response, msg string) error {
-	e := &RateLimitError{Message: msg}
-	if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
-		if sec, err := strconv.ParseInt(reset, 10, 64); err == nil && sec > 0 {
-			e.ResetAt = time.Unix(sec, 0)
-		}
-	}
-	if ra := resp.Header.Get("Retry-After"); ra != "" {
-		if sec, err := strconv.Atoi(ra); err == nil && sec >= 0 {
-			e.RetryAfter = time.Duration(sec) * time.Second
-		}
-	}
-	return e
-}
-
-func githubMessage(body []byte) string {
-	var p struct {
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(body, &p) == nil && p.Message != "" {
-		return p.Message
-	}
-	return strings.TrimSpace(string(body))
 }
 
 // ---------------------------------------------------------------------------

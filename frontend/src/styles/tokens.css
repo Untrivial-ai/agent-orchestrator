@@ -262,6 +262,7 @@
 	--size-icon-sm: 13px;
 	--size-icon-md: 14px;
 	--size-icon-base: 16px;
+	--size-terminal-agent-icon: 11px;
 	--size-icon-lg: 15px;
 	--size-icon-xl: 18px;
 	--size-dot-sm: 7px;
@@ -277,15 +278,15 @@
 	--size-table-head: var(--space-10);
 	/* Reverb's route-level workspace bar and pane-level secondary rows. Keep
 	   the old names as compatibility aliases while route mounts migrate. */
-	--size-topbar-primary: 40px;
+	--size-topbar-primary: 36px;
 	--size-topbar-secondary: 36px;
 	--size-topbar-control: 28px;
 	--size-toolbar: var(--size-topbar-primary);
 	/* ShellTopbar (.dashboard-app-header) on Win/Linux — the full-width bar
-	   the sidebar hangs below. Distinct from --size-toolbar (40px) because
+	   the sidebar hangs below. Distinct from --size-toolbar (36px) because
 	   the shell header is taller (56px) to accommodate the project crumb. */
 	--size-shell-topbar: 56px;
-	/* Windows custom title bar (.window-titlebar) — keep in sync with TITLEBAR_HEIGHT in main.ts. */
+	/* Windows custom title bar (.window-titlebar). */
 	--size-window-titlebar: 36px;
 	--size-inspector-tabs: var(--size-topbar-secondary);
 	--size-topbar-context-max: 32rem;
@@ -312,8 +313,8 @@
 		var(--size-titlebar-cluster-left) + var(--size-titlebar-cluster-width) + var(--size-titlebar-content-gap)
 	);
 
-	/* Clears the macOS traffic-light row used by the fixed titlebar controls. */
-	--size-traffic-light-clearance: 40px;
+	/* Keep macOS traffic-light chrome aligned with the shared route topbar. */
+	--size-traffic-light-clearance: var(--size-toolbar);
 	/* Fullscreen has no traffic lights, but the left navigation still needs one
 	 * compact row before sidebar content begins. */
 	--size-traffic-light-clearance-fullscreen: calc(var(--size-control-md) + var(--space-1));

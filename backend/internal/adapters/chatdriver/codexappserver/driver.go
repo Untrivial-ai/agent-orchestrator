@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/processenv"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // clientName identifies AO to the provider. It shows up in the app-server's
@@ -225,7 +225,7 @@ func (v codexVersion) String() string {
 }
 
 func installedCodexVersion(ctx context.Context, bin string) (string, error) {
-	output, err := exec.CommandContext(ctx, bin, "--version").CombinedOutput()
+	output, err := aoprocess.CommandContext(ctx, bin, "--version").CombinedOutput()
 	if err != nil {
 		return "", err
 	}
@@ -387,7 +387,7 @@ func approvalSettings(mode ports.PermissionMode) (policy, sandbox string) {
 
 // spawnAppServer is the real launcher.
 func spawnAppServer(ctx context.Context, bin, workdir string, env []string) (*process, error) {
-	cmd := exec.Command(bin, "app-server")
+	cmd := aoprocess.Command(bin, "app-server")
 	cmd.Dir = workdir
 	if len(env) > 0 {
 		cmd.Env = env

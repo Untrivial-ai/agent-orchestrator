@@ -1,82 +1,64 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
-	AlertTriangle,
-	Check,
-	Copy,
-	GitBranch,
-	LoaderCircle,
-	Plus,
-	RotateCcw,
-	RotateCw,
-	Trash2,
-} from "lucide-react";
+	SessionsArchiveView,
+	SessionsBoardGridView,
+	archiveToggleOffsetClassName,
+} from "@aoagents/product-ui";
+import { AlertTriangle, LayoutDashboard, Plus, RotateCw } from "lucide-react";
 import {
 	type WorkspaceSession,
-	canonicalTrackerIssueId,
 	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
 	orchestratorHealth,
 	workerSessions,
 } from "../types/workspace";
 import {
-	attentionZone,
 	boardAttentionZoneOrder,
 	getAgentActivityView,
 	getAttentionZoneViewForZone,
-	getSessionStatusView,
-	isSessionIdle,
-	type AttentionZone,
 	type AttentionZoneView,
 } from "../lib/session-presentation";
-import { useSessionScmSummary, type SessionPRSummary } from "../hooks/useSessionScmSummary";
 import {
 	useSessionUsageSummaries,
 	type SessionUsageSummary,
 } from "../hooks/useSessionUsageSummaries";
 import { useRestoreSession } from "../hooks/useRestoreSession";
-import {
-	clearTerminateSessionState,
-	useTerminateSession,
-	useTerminateSessionState,
-} from "../hooks/useTerminateSession";
+import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { NotificationCenter } from "./NotificationCenter";
 import { BoardWelcome, ProjectBoardEmpty } from "./BoardEmptyStates";
 import { OrchestratorIcon } from "./icons";
 import { OrchestratorActivityIndicator } from "./OrchestratorActivityIndicator";
-import { AgentAvatar } from "./AgentAvatar";
 import { TopbarButton, TopbarKillError, topbarProjectLabelClass } from "./TopbarButton";
 import { isChatPreflightError, spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
-import { prBrowserUrl, sessionPRDisplaySummaries } from "../lib/pr-display";
-import { formatTimeCompact } from "../lib/format-time";
-import { formatTokenCount } from "../lib/format-token-count";
-import { aoBridge } from "../lib/bridge";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
-import { cn } from "../lib/utils";
 import { isLinuxPlatform, isMacPlatform, usesBoardActionsInPanel } from "../lib/platform";
+import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-import { SessionTerminationPopover } from "./SessionTerminationPopover";
 import { DaemonStartupLoader } from "./DaemonStartupLoader";
 import { useShellMaybe } from "../lib/shell-context";
+import {
+	ArchivedSessionCardAdapter,
+	BoardSessionCardAdapter,
+	sessionsBoardLabels,
+} from "./SessionsBoardAdapters";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type SessionsBoardProps = {
 	/** When set, the board shows only this project's sessions. */
 	projectId?: string;
 };
 
-// Live merged sessions remain in-flow. A terminated runtime is archived even
-// when its SCM outcome remains `merged`.
-type Column = AttentionZoneView;
 type UsageBySession = ReadonlyMap<string, SessionUsageSummary>;
 const emptyUsageBySession: UsageBySession = new Map();
 
+// Live merged sessions remain in-flow. A terminated runtime is archived even
+// when its SCM outcome remains `merged`.
 function isArchivedSession(session: WorkspaceSession): boolean {
 	return session.isTerminated === true || session.status === "terminated";
 }
@@ -89,8 +71,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
-	const COLUMNS: Column[] = boardAttentionZoneOrder.map((zone) => getAttentionZoneViewForZone(zone, t));
-	const restoreSessionById = useRestoreSession();
+	const columns: AttentionZoneView[] = boardAttentionZoneOrder.map((zone) => getAttentionZoneViewForZone(zone, t));
 	const workspaceQuery = useWorkspaceQuery();
 	const shell = useShellMaybe();
 	const usageBySession = useSessionUsageSummaries(projectId).data ?? emptyUsageBySession;
@@ -99,11 +80,11 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	/** Bell lives in the board action row when the shell topbar does not host it. */
 	const boardOwnsNotificationCenter = isLinuxPlatform() || boardActionsInPanel;
 	const all = workspaceQuery.data ?? [];
-	const workspaces = projectId ? all.filter((w) => w.id === projectId) : all;
+	const workspaces = projectId ? all.filter((workspace) => workspace.id === projectId) : all;
 	const workspace = projectId ? workspaces[0] : undefined;
-	// Same crumb as ShellTopbar: project name in scope, else root-board "Board".
-	const boardLabel = workspace?.name ?? (projectId ? "" : t("shell.board"));
-	const sessions = workspaces.flatMap((w) => workerSessions(w.sessions));
+	// Board chrome stays route-oriented; project context remains in the sidebar.
+	const boardLabel = t("shell.board");
+	const sessions = workspaces.flatMap((workspace) => workerSessions(workspace.sessions));
 	const orchestrator = projectId ? newestActiveOrchestrator(workspaces[0]?.sessions ?? []) : undefined;
 	const orchestratorActivityLabel = orchestrator ? getAgentActivityView(orchestrator.activity, t).label : undefined;
 	const [isSpawning, setIsSpawning] = useState(false);
@@ -120,6 +101,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const isProjectRestarting = projectId ? restartingProjectIds.has(projectId) : false;
 	const health = workspace ? orchestratorHealth(workspace, isProjectRestarting) : { state: "ok" as const };
 	const visibleSpawnError = spawnError ?? orchestratorStartupError;
+
 	// The board instance survives project-to-project navigation (same route,
 	// new param), so a spawn failure must not follow the user to another board.
 	useEffect(() => {
@@ -143,11 +125,8 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const archived = sessions
 		.filter(isArchivedSession)
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-	const byZone = new Map<AttentionZone, WorkspaceSession[]>();
-	for (const session of sessions.filter((candidate) => !isArchivedSession(candidate))) {
-		const zone = attentionZone(session);
-		(byZone.get(zone) ?? byZone.set(zone, []).get(zone)!).push(session);
-	}
+	const activeSessions = sessions.filter((candidate) => !isArchivedSession(candidate));
+	const boardLabels = sessionsBoardLabels(t);
 	// First-run orientation replaces the empty column shells (only once the
 	// query has resolved, so the welcome never flashes over real data): the
 	// global board teaches the app before any project exists, and a fresh
@@ -162,58 +141,16 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 		(!isDaemonReady || workspaceStartupState === "loading" || (!workspaceQuery.isSuccess && !workspaceQuery.isError));
 	const showWelcome = !projectId && isLoaded && all.length === 0;
 	const showProjectEmpty = projectId !== undefined && isLoaded && workspaces.length > 0 && sessions.length === 0;
-	// Archived sessions cost one quiet line under the board until expanded.
-	const [archiveExpanded, setArchiveExpanded] = useState(false);
-	const [restoringSessionId, setRestoringSessionId] = useState<string | undefined>();
-	const [restoreErrors, setRestoreErrors] = useState<Record<string, string>>({});
-	const [restoreUnavailableSession, setRestoreUnavailableSession] = useState<WorkspaceSession | undefined>();
+	const hasArchive = archived.length > 0;
 	const terminateSession = useTerminateSession();
 	const activeProjectIdRef = useRef(projectId);
 	activeProjectIdRef.current = projectId;
-	useEffect(() => {
-		setRestoringSessionId(undefined);
-		setRestoreErrors({});
-		setRestoreUnavailableSession(undefined);
-	}, [projectId]);
 
 	const openSession = (session: WorkspaceSession) =>
 		void navigate({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: session.workspaceId, sessionId: session.id },
 		});
-
-	const restoreArchivedSession = async (event: MouseEvent<HTMLButtonElement>, session: WorkspaceSession) => {
-		event.stopPropagation();
-		if (restoringSessionId) return;
-		const restoreProjectId = projectId;
-		const isStillActiveProject = () => !restoreProjectId || activeProjectIdRef.current === restoreProjectId;
-		setRestoringSessionId(session.id);
-		setRestoreErrors((current) => {
-			const next = { ...current };
-			delete next[session.id];
-			return next;
-		});
-		try {
-			const result = await restoreSessionById(session.id);
-			if (!isStillActiveProject()) return;
-			if (result.status === "success") {
-				void navigate({
-					to: "/projects/$projectId/sessions/$sessionId",
-					params: { projectId: session.workspaceId, sessionId: session.id },
-				});
-				return;
-			}
-			if (result.status === "not_resumable") {
-				setRestoreUnavailableSession(session);
-				return;
-			}
-			setRestoreErrors((current) => ({ ...current, [session.id]: result.message }));
-		} finally {
-			if (isStillActiveProject()) {
-				setRestoringSessionId(undefined);
-			}
-		}
-	};
 
 	const openOrchestrator = async (mode?: "tui") => {
 		if (!projectId || isProjectRestarting) return;
@@ -242,12 +179,12 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 				to: "/projects/$projectId/sessions/$sessionId",
 				params: { projectId, sessionId },
 			});
-		} catch (err) {
+		} catch (error) {
 			// Never fail silently: the daemon's message (e.g. a worktree/branch
 			// conflict) is the only actionable signal the user gets.
-			console.error("Failed to spawn orchestrator:", err);
-			setSpawnError(err instanceof Error ? err.message : t("shell.couldNotSpawn"));
-			setCanCreateAsTui(isChatPreflightError(err));
+			console.error("Failed to spawn orchestrator:", error);
+			setSpawnError(error instanceof Error ? error.message : t("shell.couldNotSpawn"));
+			setCanCreateAsTui(isChatPreflightError(error));
 		} finally {
 			setIsSpawning(false);
 		}
@@ -276,43 +213,68 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 					{t("newTask.createAsTui")}
 				</TopbarButton>
 			) : null}
-			<TopbarButton
-				aria-label={t("shell.newTask")}
-				disabled={isProjectRestarting}
-				onClick={() => projectId && requestNewTask(projectId)}
-				variant="accent"
-			>
-				<Plus className="size-icon-md" aria-hidden="true" />
-				{t("shell.newTask")}
-			</TopbarButton>
-			<TopbarButton
-				aria-label={
-					orchestratorActivityLabel
-						? t("shell.orchestratorWithActivity", { activity: orchestratorActivityLabel })
-						: t("shell.spawnOrchestrator")
-				}
-				disabled={isSpawning || isProjectRestarting}
-				onClick={() => void openOrchestrator()}
-				variant="primary"
-			>
-				<OrchestratorIcon className="size-icon-md" aria-hidden="true" />
-				{orchestrator ? <OrchestratorActivityIndicator session={orchestrator} /> : null}
-				{isProjectRestarting
-					? t("shell.restartingDots")
-					: isSpawning
-						? t("shell.spawningDots")
-						: orchestrator
-							? t("shell.orchestrator")
-							: t("shell.spawnOrchestrator")}
-			</TopbarButton>
-			{boardOwnsNotificationCenter ? <NotificationCenter /> : null}
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<span className="inline-flex">
+						<TopbarButton
+							aria-label={t("shell.newTask")}
+							className="topbar-control--labeled"
+							data-priority="primary"
+							disabled={isProjectRestarting}
+							onClick={() => projectId && requestNewTask(projectId)}
+							variant="accent"
+						>
+							<Plus className="size-icon-md" aria-hidden="true" />
+							<span data-compact-label>{t("newTask.task")}</span>
+						</TopbarButton>
+					</span>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">{t("shell.newTask")}</TooltipContent>
+			</Tooltip>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<span className="inline-flex">
+						<TopbarButton
+							aria-label={
+								orchestratorActivityLabel
+									? t("shell.orchestratorWithActivity", { activity: orchestratorActivityLabel })
+									: t("shell.spawnOrchestrator")
+							}
+							className="topbar-control--labeled"
+							data-priority="secondary"
+							disabled={isSpawning || isProjectRestarting}
+							onClick={() => void openOrchestrator()}
+							variant="primary"
+						>
+							<OrchestratorIcon className="size-icon-md" aria-hidden="true" />
+							<span data-compact-label>{t("shell.orchestrator")}</span>
+							{orchestrator ? <OrchestratorActivityIndicator session={orchestrator} /> : null}
+						</TopbarButton>
+					</span>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">
+					{isProjectRestarting
+						? t("shell.restarting")
+						: isSpawning
+							? t("shell.spawning")
+							: orchestrator
+								? t("shell.openOrchestrator")
+								: t("shell.spawnOrchestrator")}
+				</TooltipContent>
+			</Tooltip>
+			{boardOwnsNotificationCenter ? (
+				<>
+					<span aria-hidden="true" className="workspace-topbar__utility-separator" />
+					<NotificationCenter />
+				</>
+			) : null}
 		</>
 	) : boardOwnsNotificationCenter ? (
 		<NotificationCenter />
 	) : undefined;
 
 	return (
-		<div className="flex h-full min-h-0 flex-col bg-background text-foreground" data-testid="board">
+		<div className="relative flex h-full min-h-0 flex-col bg-background text-foreground" data-testid="board">
 			{/* macOS: shell topbar is hidden on board routes, so the project/"Board"
 			    crumb + New task / Orchestrator / bell live in this in-panel row.
 			    Win/Linux keep the crumb and actions in the framed ShellTopbar.
@@ -320,28 +282,38 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 			    chooser was review feedback on #2432. */}
 			{!showWelcome && !showStartup && boardActionsInPanel && (boardLabel || actions) ? (
 				<div
-					className="center-panel-titlebar flex h-toolbar shrink-0 items-center gap-2 border-b border-border-strong pr-4"
+					className="workspace-topbar-container center-panel-titlebar flex h-toolbar shrink-0 items-center gap-2 border-b border-border-strong pr-4"
 					style={dragStyle}
 				>
-					{boardLabel ? <span className={topbarProjectLabelClass}>{boardLabel}</span> : null}
+					{boardLabel ? (
+						<span
+							className={cn(topbarProjectLabelClass, "inline-flex items-center gap-1.5")}
+							data-testid="board-topbar-label"
+						>
+							<LayoutDashboard aria-hidden="true" className="size-icon-md" />
+							{boardLabel}
+						</span>
+					) : null}
 					<div className="min-w-0 flex-1" />
 					{actions ? (
-						<div className="flex shrink-0 items-center gap-2" style={noDragStyle}>
+						<div className="workspace-topbar-actions flex shrink-0 items-center" style={noDragStyle}>
 							{actions}
 						</div>
 					) : null}
 				</div>
 			) : null}
 
-			<div className="min-h-0 flex-1 overflow-hidden">
+			{/* Reserve only the collapsed archive bar. Expanded archive overlays the
+			    board so lane height (and Needs You scrollbars) stay stable. */}
+			<div className={cn("min-h-0 flex-1 overflow-hidden", hasArchive && archiveToggleOffsetClassName)}>
 				{projectId && health.state !== "ok" ? (
 					<div className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
 						<AlertTriangle className="size-icon-base shrink-0 text-warning" aria-hidden="true" />
 						<span className="min-w-0 flex-1">{health.message}</span>
 						{health.state === "restart_needed" || health.state === "duplicates" ? (
-								<TopbarButton disabled={isProjectRestarting} onClick={() => void restartOrchestrator()} variant="primary">
-									<RotateCw className="size-3.5" aria-hidden="true" />
-									{t("shell.restart")}
+							<TopbarButton disabled={isProjectRestarting} onClick={() => void restartOrchestrator()} variant="primary">
+								<RotateCw className="size-3.5" aria-hidden="true" />
+								{t("shell.restart")}
 							</TopbarButton>
 						) : null}
 					</div>
@@ -363,81 +335,136 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						spawnError={visibleSpawnError}
 					/>
 				) : (
-					<div className="h-full overflow-x-auto overflow-y-hidden">
-						{/* Hairline column grid: vertical divide-x + one absolute header rule so
-						    the horizontal divider stays continuous and level across lanes.
-						    Keep `top-12` aligned with each column header's `h-12`. */}
-						<div className="relative grid h-full min-w-[64rem] grid-cols-4 divide-x divide-border-strong xl:min-w-0">
-							<div
-								aria-hidden="true"
-								className="pointer-events-none absolute inset-x-0 top-12 z-10 border-t border-border-strong"
+					<SessionsBoardGridView
+						columns={columns}
+						key={projectId ?? "all"}
+						labels={boardLabels}
+						renderSessionCard={(session) => (
+							<BoardSessionCardAdapter
+								onOpen={() => openSession(session)}
+								onTerminate={() => terminateSession.mutate(session)}
+								session={session}
+								usage={usageBySession.get(session.id)}
 							/>
-							{COLUMNS.map((col) => (
-								<BoardColumn
-									key={`${projectId ?? "all"}:${col.zone}`}
-									col={col}
-									sessions={byZone.get(col.zone) ?? []}
-									onOpen={openSession}
-									onTerminate={(session) => terminateSession.mutate(session)}
-									usageBySession={usageBySession}
-								/>
-							))}
-						</div>
-					</div>
+						)}
+						sessions={activeSessions}
+					/>
 				)}
 			</div>
 
-			{archived.length > 0 && (
-				<div className="shrink-0 border-t border-border-strong px-3">
-					{/* The 46px control gives the compact archive bar a slightly taller
-					    target while preserving the bar's surrounding row height. */}
-					<div className={cn("flex items-center gap-2", archiveExpanded ? "min-h-11" : "min-h-row-md")}>
-						<button
-							aria-expanded={archiveExpanded}
-							aria-label={t("shell.archiveSessionsAria", { count: archived.length })}
-							className="group flex h-[46px] min-w-0 items-center gap-2 py-0 text-muted-foreground transition-colors hover:text-foreground"
-							onClick={() => setArchiveExpanded((v) => !v)}
-							type="button"
-						>
-							<svg
-								aria-hidden="true"
-								className={cn(
-									"size-icon-2xs shrink-0 transition-transform duration-normal",
-									archiveExpanded && "rotate-90",
-								)}
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="2"
-								viewBox="0 0 24 24"
-							>
-								<path d="m9 18 6-6-6-6" />
-							</svg>
-							<span className="font-mono text-2xs font-medium uppercase tracking-wide-sm">{t("shell.archive")}</span>
-							<span className="ml-1.5 font-mono text-micro text-passive">{archived.length}</span>
-						</button>
-					</div>
-					{archiveExpanded && (
-						<div
-							aria-label={t("shell.archivedSessions")}
-							className="board-scrollbar grid max-h-[45vh] grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-2 overflow-y-auto pb-3"
-							role="list"
-						>
-							{archived.map((s) => (
-								<ArchiveSessionItem
-									key={s.id}
-									session={s}
-									restoreAction={(event) => void restoreArchivedSession(event, s)}
-									restoreError={restoreErrors[s.id]}
-									isRestoring={restoringSessionId === s.id}
-									isRestoreDisabled={restoringSessionId !== undefined}
-									usage={usageBySession.get(s.id)}
-								/>
-							))}
-						</div>
-					)}
-				</div>
-			)}
-			{restoreUnavailableSession && (
+			{hasArchive ? (
+				<BoardArchivePanel
+					activeProjectIdRef={activeProjectIdRef}
+					projectId={projectId}
+					sessions={archived}
+					usageBySession={usageBySession}
+				/>
+			) : null}
+		</div>
+	);
+}
+
+/**
+ * Restore state lives here so expand/collapse in SessionsArchiveView does not
+ * re-render the kanban columns. In-flight restores are invalidated on project
+ * change or unmount so completion cannot navigate after the user left.
+ */
+const BoardArchivePanel = memo(function BoardArchivePanel({
+	activeProjectIdRef,
+	projectId,
+	sessions,
+	usageBySession,
+}: {
+	activeProjectIdRef: React.MutableRefObject<string | undefined>;
+	projectId?: string;
+	sessions: WorkspaceSession[];
+	usageBySession: UsageBySession;
+}) {
+	const { t } = useTranslation();
+	const navigate = useNavigate();
+	const queryClient = useQueryClient();
+	const restoreSessionById = useRestoreSession();
+	const [restoringSessionId, setRestoringSessionId] = useState<string | undefined>();
+	const [restoreErrors, setRestoreErrors] = useState<Record<string, string>>({});
+	const [restoreUnavailableSession, setRestoreUnavailableSession] = useState<WorkspaceSession | undefined>();
+	const restoreGenerationRef = useRef(0);
+
+	useEffect(() => {
+		setRestoringSessionId(undefined);
+		setRestoreErrors({});
+		setRestoreUnavailableSession(undefined);
+		restoreGenerationRef.current += 1;
+	}, [projectId]);
+
+	useEffect(() => {
+		const generation = restoreGenerationRef.current;
+		return () => {
+			// Invalidate in-flight restores if this panel unmounts (e.g. project with
+			// no archive) so completion cannot navigate after the user left.
+			if (restoreGenerationRef.current === generation) {
+				restoreGenerationRef.current += 1;
+			}
+		};
+	}, []);
+
+	const restoreArchivedSession = async (event: MouseEvent<HTMLButtonElement>, session: WorkspaceSession) => {
+		event.stopPropagation();
+		if (restoringSessionId) return;
+		const restoreProjectId = projectId;
+		const generation = restoreGenerationRef.current;
+		const isStillActiveProject = () =>
+			generation === restoreGenerationRef.current &&
+			(!restoreProjectId || activeProjectIdRef.current === restoreProjectId);
+		setRestoringSessionId(session.id);
+		setRestoreErrors((current) => {
+			const next = { ...current };
+			delete next[session.id];
+			return next;
+		});
+		try {
+			const result = await restoreSessionById(session.id);
+			if (!isStillActiveProject()) return;
+			if (result.status === "success") {
+				void navigate({
+					to: "/projects/$projectId/sessions/$sessionId",
+					params: { projectId: session.workspaceId, sessionId: session.id },
+				});
+				return;
+			}
+			if (result.status === "not_resumable") {
+				setRestoreUnavailableSession(session);
+				return;
+			}
+			setRestoreErrors((current) => ({ ...current, [session.id]: result.message }));
+		} finally {
+			if (isStillActiveProject()) {
+				setRestoringSessionId(undefined);
+			}
+		}
+	};
+
+	return (
+		<>
+			<SessionsArchiveView
+				labels={{
+					archive: t("shell.archive"),
+					archiveAria: t("shell.archiveSessionsAria", { count: sessions.length }),
+					archivedSessions: t("shell.archivedSessions"),
+				}}
+				renderSessionCard={(session) => (
+					<ArchivedSessionCardAdapter
+						isRestoreDisabled={restoringSessionId !== undefined}
+						isRestoring={restoringSessionId === session.id}
+						restoreAction={(event) => void restoreArchivedSession(event, session)}
+						restoreError={restoreErrors[session.id]}
+						session={session}
+						usage={usageBySession.get(session.id)}
+					/>
+				)}
+				resetKey={projectId}
+				sessions={sessions}
+			/>
+			{restoreUnavailableSession ? (
 				<RestoreUnavailableDialog
 					open={true}
 					session={restoreUnavailableSession}
@@ -448,741 +475,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 					}}
 				/>
-			)}
-		</div>
-	);
-}
-
-function BoardColumn({
-	col,
-	sessions,
-	onOpen,
-	onTerminate,
-	usageBySession,
-}: {
-	col: Column;
-	sessions: WorkspaceSession[];
-	onOpen: (s: WorkspaceSession) => void;
-	onTerminate: (s: WorkspaceSession) => void;
-	usageBySession: UsageBySession;
-}) {
-	if (col.zone === "working") {
-		return (
-			<WorkLaneColumn
-				sessions={sessions}
-				onOpen={onOpen}
-				onTerminate={onTerminate}
-				usageBySession={usageBySession}
-			/>
-		);
-	}
-	if (col.zone === "merge") {
-		return (
-			<MergeLaneColumn
-				sessions={sessions}
-				onOpen={onOpen}
-				onTerminate={onTerminate}
-				usageBySession={usageBySession}
-			/>
-		);
-	}
-	return (
-		<ZoneColumn
-			col={col}
-			sessions={sessions}
-			onOpen={onOpen}
-			onTerminate={onTerminate}
-			usageBySession={usageBySession}
-		/>
-	);
-}
-
-function ZoneColumn({
-	col,
-	sessions,
-	onOpen,
-	onTerminate,
-	usageBySession,
-}: {
-	col: Column;
-	sessions: WorkspaceSession[];
-	onOpen: (s: WorkspaceSession) => void;
-	onTerminate: (s: WorkspaceSession) => void;
-	usageBySession: UsageBySession;
-}) {
-	const { t } = useTranslation();
-	return (
-		<section
-			aria-label={t("shell.sessionsAria", { label: col.label })}
-			className="flex min-w-0 flex-col overflow-hidden"
-			data-testid="board-column"
-			data-column={col.zone}
-		>
-			<div className="flex h-12 shrink-0 items-center gap-2.5 px-4">
-				<span
-					className="size-dot-sm rounded-full"
-					style={{
-						background: col.dot,
-						boxShadow: col.dotGlow ? `0 0 7px color-mix(in srgb, ${col.dot} 60%, transparent)` : undefined,
-					}}
-				/>
-				<span className={cn("font-mono text-2xs font-medium uppercase tracking-wide-sm", col.titleClassName)}>
-					{col.label}
-				</span>
-				<span className="ml-auto font-mono text-2xs leading-none text-passive">{sessions.length}</span>
-			</div>
-			<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
-				<div className="flex min-h-full flex-col gap-2.5">
-					{sessions.map((session) => (
-						<SessionCard
-							key={session.id}
-							session={session}
-							onOpen={() => onOpen(session)}
-							onTerminate={() => onTerminate(session)}
-							usage={usageBySession.get(session.id)}
-						/>
-					))}
-				</div>
-			</div>
-		</section>
-	);
-}
-
-type SplitLaneTone = {
-	label: string;
-	countLabel: string;
-	regionLabel: string;
-	dotClassName: string;
-	titleClassName: string;
-	color: string;
-	dotGlow: boolean;
-};
-
-function splitLaneTones(t: TFunction): {
-	idle: SplitLaneTone;
-	working: SplitLaneTone;
-	ready: SplitLaneTone;
-	merged: SplitLaneTone;
-} {
-	return {
-		idle: {
-			label: t("status.idle"),
-			countLabel: t("shell.countLabel.idle"),
-			regionLabel: t("shell.idleSessions"),
-			dotClassName: "bg-status-idle",
-			titleClassName: "text-status-idle",
-			color: "var(--color-status-idle)",
-			dotGlow: false,
-		},
-		working: {
-			label: t("status.working"),
-			countLabel: t("shell.countLabel.working"),
-			regionLabel: t("shell.workingSessions"),
-			dotClassName: "bg-status-working",
-			titleClassName: "text-status-working",
-			color: "var(--color-status-working)",
-			dotGlow: true,
-		},
-		ready: {
-			label: t("zone.merge"),
-			countLabel: t("shell.countLabel.readyToMerge"),
-			regionLabel: t("shell.readyToMergeSessions"),
-			dotClassName: "bg-status-ready",
-			titleClassName: "text-status-ready",
-			color: "var(--color-status-ready)",
-			dotGlow: true,
-		},
-		merged: {
-			label: t("status.merged"),
-			countLabel: t("shell.countLabel.merged"),
-			regionLabel: t("shell.mergedSessions"),
-			dotClassName: "bg-status-merged",
-			titleClassName: "text-status-merged",
-			color: "var(--color-status-merged)",
-			dotGlow: false,
-		},
-	};
-}
-
-function WorkLaneColumn({
-	sessions,
-	onOpen,
-	onTerminate,
-	usageBySession,
-}: {
-	sessions: WorkspaceSession[];
-	onOpen: (s: WorkspaceSession) => void;
-	onTerminate: (s: WorkspaceSession) => void;
-	usageBySession: UsageBySession;
-}) {
-	const { t } = useTranslation();
-	const tones = splitLaneTones(t);
-	const idleSessions = sessions.filter(isSessionIdle);
-	const workingSessions = sessions.filter((session) => !isSessionIdle(session));
-
-	return (
-		<SplitLaneColumn
-			ariaLabel={t("shell.idleWorkingSessions")}
-			zone="working"
-			primarySessions={idleSessions}
-			primaryTone={tones.idle}
-			secondarySessions={workingSessions}
-			secondaryTone={tones.working}
-			onOpen={onOpen}
-			onTerminate={onTerminate}
-			usageBySession={usageBySession}
-		/>
-	);
-}
-
-function MergeLaneColumn({
-	sessions,
-	onOpen,
-	onTerminate,
-	usageBySession,
-}: {
-	sessions: WorkspaceSession[];
-	onOpen: (s: WorkspaceSession) => void;
-	onTerminate: (s: WorkspaceSession) => void;
-	usageBySession: UsageBySession;
-}) {
-	const { t } = useTranslation();
-	const tones = splitLaneTones(t);
-	const mergedSessions = sessions
-		.filter((session) => session.status === "merged")
-		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-	const readySessions = sessions
-		.filter((session) => session.status !== "merged")
-		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-
-	return (
-		<SplitLaneColumn
-			ariaLabel={t("shell.readyMergedSessions")}
-			zone="merge"
-			primarySessions={readySessions}
-			primaryTone={tones.ready}
-			secondarySessions={mergedSessions}
-			secondaryTone={tones.merged}
-			onOpen={onOpen}
-			onTerminate={onTerminate}
-			usageBySession={usageBySession}
-		/>
-	);
-}
-
-function SplitLaneColumn({
-	ariaLabel,
-	zone,
-	primarySessions,
-	primaryTone,
-	secondarySessions,
-	secondaryTone,
-	onOpen,
-	onTerminate,
-	usageBySession,
-}: {
-	ariaLabel: string;
-	zone: Extract<AttentionZone, "working" | "merge">;
-	primarySessions: WorkspaceSession[];
-	primaryTone: SplitLaneTone;
-	secondarySessions: WorkspaceSession[];
-	secondaryTone: SplitLaneTone;
-	onOpen: (s: WorkspaceSession) => void;
-	onTerminate: (s: WorkspaceSession) => void;
-	usageBySession: UsageBySession;
-}) {
-	const { t } = useTranslation();
-	const showPrimary = primarySessions.length > 0;
-	const showSecondary = secondarySessions.length > 0;
-
-	return (
-		<section
-			aria-label={ariaLabel}
-			className="flex min-w-0 flex-col overflow-hidden"
-			data-column={zone}
-			data-testid="board-column"
-		>
-			<div className="flex h-12 shrink-0 items-center gap-2.5 px-4">
-				<div
-					aria-label={t("shell.laneSummaryAria", { primary: primaryTone.label, secondary: secondaryTone.label })}
-					className="flex min-w-0 items-center gap-2 font-mono text-2xs font-medium uppercase tracking-wide-sm"
-					role="group"
-				>
-					<LaneStatusLabel tone={primaryTone} />
-					<span className="text-passive" aria-hidden="true">
-						/
-					</span>
-					<LaneStatusLabel tone={secondaryTone} />
-				</div>
-				<div className="ml-auto flex shrink-0 items-center gap-2 font-mono text-2xs leading-none text-passive">
-					<SessionCount count={primarySessions.length} label={primaryTone.countLabel} />
-					<span aria-hidden="true">/</span>
-					<SessionCount count={secondarySessions.length} label={secondaryTone.countLabel} />
-				</div>
-			</div>
-			<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
-				<div className="flex min-h-full flex-col">
-					{showPrimary ? (
-						<div
-							aria-label={primaryTone.regionLabel}
-							className={cn("flex flex-col", showSecondary ? "flex-none pb-3" : "flex-1")}
-							role="region"
-						>
-							<div className="flex flex-col gap-2.5">
-								{primarySessions.map((session) => (
-									<SessionCard
-										key={session.id}
-										session={session}
-										onOpen={() => onOpen(session)}
-										onTerminate={() => onTerminate(session)}
-										usage={usageBySession.get(session.id)}
-									/>
-								))}
-							</div>
-						</div>
-					) : null}
-					{showSecondary ? (
-						<SecondaryLaneSection
-							sessions={secondarySessions}
-							standalone={!showPrimary}
-							tone={secondaryTone}
-							onOpen={onOpen}
-							onTerminate={onTerminate}
-							usageBySession={usageBySession}
-						/>
-					) : null}
-				</div>
-			</div>
-		</section>
-	);
-}
-
-function LaneStatusLabel({ tone }: { tone: SplitLaneTone }) {
-	return (
-		<span className={cn("inline-flex shrink-0 items-center gap-2 whitespace-nowrap", tone.titleClassName)}>
-			<span
-				className={cn("size-dot-sm rounded-full", tone.dotClassName)}
-				style={{ boxShadow: tone.dotGlow ? `0 0 7px color-mix(in srgb, ${tone.color} 60%, transparent)` : undefined }}
-				aria-hidden="true"
-			/>
-			{tone.label}
-		</span>
-	);
-}
-
-function SessionCount({ count, label }: { count: number; label: string }) {
-	const { t } = useTranslation();
-	return <span aria-label={t("shell.countSessionsAria", { count, label })}>{count}</span>;
-}
-
-function SecondaryLaneSection({
-	sessions,
-	onOpen,
-	onTerminate,
-	standalone,
-	tone,
-	usageBySession,
-}: {
-	sessions: WorkspaceSession[];
-	onOpen: (s: WorkspaceSession) => void;
-	onTerminate?: (s: WorkspaceSession) => void;
-	standalone: boolean;
-	tone: SplitLaneTone;
-	usageBySession: UsageBySession;
-}) {
-	return (
-		<div
-			aria-label={tone.regionLabel}
-			className={cn(
-				"overflow-hidden",
-				standalone ? "flex flex-1 flex-col" : "flex flex-1 flex-col border-t border-border-strong",
-			)}
-			role="region"
-		>
-			<div className="flex shrink-0 items-center gap-2.5 px-4 py-2.5">
-				<div className="font-mono text-2xs font-medium uppercase tracking-wide-sm">
-					<LaneStatusLabel tone={tone} />
-				</div>
-				<span className="ml-auto font-mono text-2xs leading-none text-passive">{sessions.length}</span>
-			</div>
-			<div className="flex flex-col gap-2.5 pt-3">
-				{sessions.map((session) => (
-					<SessionCard
-						key={session.id}
-						session={session}
-						onOpen={() => onOpen(session)}
-						onTerminate={onTerminate ? () => onTerminate(session) : undefined}
-						usage={usageBySession.get(session.id)}
-					/>
-				))}
-			</div>
-		</div>
-	);
-}
-
-function SessionCard({
-	session,
-	onOpen,
-	onTerminate,
-	usage,
-	interactive = true,
-	action,
-	branchAction,
-	footer,
-}: {
-	session: WorkspaceSession;
-	onOpen?: () => void;
-	onTerminate?: () => void;
-	usage?: SessionUsageSummary;
-	interactive?: boolean;
-	action?: ReactNode;
-	branchAction?: ReactNode;
-	footer?: ReactNode;
-}) {
-	const { t } = useTranslation();
-	const queryClient = useQueryClient();
-	const [confirmOpen, setConfirmOpen] = useState(false);
-	const badge = getSessionStatusView(session.status, t);
-	const activity = getAgentActivityView(session.activity, t);
-	const showLiveActivity = session.status === "working" && activity.state === "active";
-	const issueId = canonicalTrackerIssueId(session.issueId);
-	const branch = session.branch || "";
-	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
-	const prSummaries = sessionPRDisplaySummaries(session, useSessionScmSummary(session.id).data);
-	const termination = useTerminateSessionState(session.id);
-	const showTerminate = interactive && session.isTerminated !== true && onTerminate;
-	const keepTerminateVisible = session.status === "merged";
-	const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-		if (!interactive || !onOpen) return;
-		if (event.currentTarget !== event.target) return;
-		if (event.key !== "Enter" && event.key !== " ") return;
-		event.preventDefault();
-		onOpen();
-	};
-	const cardBodyProps = interactive
-		? {
-				onClick: onOpen,
-				onKeyDown: handleKeyDown,
-				role: "button",
-				tabIndex: 0,
-			}
-		: { role: "listitem" };
-	return (
-		<div
-			{...cardBodyProps}
-			className={cn(
-				"group relative w-full rounded-lg border text-left transition-[border-color,box-shadow]",
-				badge.cardClassName ?? "border-border bg-surface",
-				interactive && "cursor-pointer hover:border-border-strong hover:shadow-sm",
-			)}
-			data-testid="board-session-card"
-			data-session-id={session.id}
-		>
-			{showTerminate ? (
-				<SessionTerminationPopover
-					onConfirm={() => {
-						setConfirmOpen(false);
-						onTerminate();
-					}}
-					onOpenChange={setConfirmOpen}
-					open={confirmOpen}
-					session={session}
-					trigger={
-						<button
-							aria-label={
-								termination.isPending
-									? t("shell.killingNamedAria", { title: session.title })
-									: t("shell.terminateNamed", { title: session.title })
-							}
-							className={cn(
-								"absolute right-2 top-1.5 z-10 inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-[color,background-color,opacity] hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
-								keepTerminateVisible || termination.isPending
-									? "opacity-100"
-									: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
-							)}
-							onClick={(event) => {
-								event.stopPropagation();
-								clearTerminateSessionState(queryClient, session.id);
-							}}
-							disabled={termination.isPending}
-							title={termination.isPending ? t("shell.killingSession") : t("shell.terminateSession")}
-							type="button"
-						>
-							{termination.isPending ? (
-								<LoaderCircle className="size-icon-sm animate-spin" aria-hidden="true" />
-							) : (
-								<Trash2 className="size-icon-sm" aria-hidden="true" />
-							)}
-						</button>
-					}
-				/>
 			) : null}
-			{action ? <div className="absolute right-2 top-1.5 z-10">{action}</div> : null}
-			<div className="flex items-start gap-2.5 px-3.5 pb-2.5 pt-3">
-				<AgentAvatar className="mt-0.5" provider={session.provider} />
-				<div className="min-w-0 flex-1">
-					<div
-						className={cn(
-							"line-clamp-2 overflow-hidden text-sm-md font-semibold leading-tight tracking-tight text-foreground",
-							(showTerminate || action) && "pr-6",
-						)}
-						title={session.title}
-					>
-						{session.title}
-					</div>
-					{showBranch && (
-						<div className="mt-1.5 flex min-w-0 items-center gap-1.5 font-mono text-2xs text-passive">
-							<GitBranch aria-hidden="true" className="size-icon-2xs shrink-0" />
-							<span className="truncate">{branch}</span>
-							{branchAction}
-						</div>
-					)}
-				</div>
-			</div>
-			<div aria-hidden="true" className="mx-3.5 my-px h-px bg-border" />
-			<div className="flex flex-col gap-1.5 px-3.5 py-2">
-				<div className="flex items-center justify-between gap-2">
-					<span
-						className={cn("inline-flex min-w-0 items-center gap-1.5 truncate text-2xs font-medium", badge.className)}
-						style={showLiveActivity ? { color: activity.tone } : undefined}
-					>
-						<span
-							aria-hidden="true"
-							className={cn(
-								"size-dot-sm shrink-0 rounded-full",
-								showLiveActivity ? activity.indicatorClassName : "bg-current",
-							)}
-						/>
-						{badge.label}
-					</span>
-					<div className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap font-mono text-2xs text-passive">
-						<SessionUsageMetric usage={usage} />
-						{usage && usage.totalTokens > 0 ? <span aria-hidden="true">·</span> : null}
-						<span title={t("shell.updatedAt", { time: session.updatedAt })}>
-							{formatTimeCompact(session.updatedAt)}
-						</span>
-					</div>
-				</div>
-				{prSummaries.length > 0 && (
-					<div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-2xs text-passive">
-						{groupPRsByLifecycle(prSummaries).map((group) => (
-							<BoardPRGroup group={group} key={group.status.label} />
-						))}
-					</div>
-				)}
-				{issueId && (
-					<span
-						className="inline-flex max-w-branch-chip items-center self-start truncate rounded-sm bg-accent/12 px-1.5 py-0.5 font-mono text-micro text-accent"
-						title={t("shell.intakeIssue", { id: issueId })}
-					>
-						{issueId}
-					</span>
-				)}
-			</div>
-			{termination.error ? (
-				<div className="border-t border-border px-3.5 py-1.5 text-2xs text-destructive" role="alert">
-					{termination.error}
-				</div>
-			) : null}
-			{footer}
-		</div>
+		</>
 	);
-}
-
-function ArchiveSessionItem({
-	session,
-	restoreAction,
-	restoreError,
-	isRestoring,
-	isRestoreDisabled,
-	usage,
-}: {
-	session: WorkspaceSession;
-	restoreAction: (event: MouseEvent<HTMLButtonElement>) => void;
-	restoreError?: string;
-	isRestoring: boolean;
-	isRestoreDisabled: boolean;
-	usage?: SessionUsageSummary;
-}) {
-	const branch = session.branch || "";
-	const restoreButton = (
-		<ArchiveRestoreButton
-			isDisabled={isRestoreDisabled}
-			isRestoring={isRestoring}
-			label={`Restore ${session.title}`}
-			onClick={restoreAction}
-		/>
-	);
-
-	return (
-		<SessionCard
-			action={restoreButton}
-			branchAction={branch ? <CopyActionButton label={`branch ${branch}`} value={branch} /> : undefined}
-			footer={<ArchiveRestoreError message={restoreError} />}
-			interactive={false}
-			session={session}
-			usage={usage}
-		/>
-	);
-}
-
-function SessionUsageMetric({ usage }: { usage?: SessionUsageSummary }) {
-	const { t } = useTranslation();
-	if (!usage || usage.totalTokens <= 0) return null;
-	const tooltip = t("shell.usageTokens", {
-		count: usage.totalTokens.toLocaleString("en-US"),
-	});
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<span
-					aria-label={tooltip}
-					className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-2xs text-muted-foreground"
-				>
-					{formatTokenCount(usage.totalTokens)}
-				</span>
-			</TooltipTrigger>
-			<TooltipContent side="top">{tooltip}</TooltipContent>
-		</Tooltip>
-	);
-}
-
-function ArchiveRestoreButton({
-	label,
-	onClick,
-	isRestoring,
-	isDisabled,
-}: {
-	label: string;
-	onClick: (event: MouseEvent<HTMLButtonElement>) => void;
-	isRestoring: boolean;
-	isDisabled: boolean;
-}) {
-	const { t } = useTranslation();
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<button
-					aria-label={label}
-					className="grid size-control-board-sm shrink-0 place-items-center rounded-md text-passive transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:cursor-not-allowed disabled:opacity-35"
-					disabled={isDisabled}
-					onClick={onClick}
-					type="button"
-				>
-					<RotateCcw className={cn("size-icon-md", isRestoring && "animate-spin")} aria-hidden="true" />
-				</button>
-			</TooltipTrigger>
-			<TooltipContent side="top">{isRestoring ? t("shell.restoringSession") : t("shell.restoreSession")}</TooltipContent>
-		</Tooltip>
-	);
-}
-
-function ArchiveRestoreError({ message }: { message?: string }) {
-	return message ? (
-		<div className="border-t border-border px-2 py-1.5 text-2xs text-destructive" role="alert">
-			{message}
-		</div>
-	) : null;
-}
-
-type BoardPRLifecycleStatus = { label: "closed" | "open" | "draft" | "merged"; className: string };
-type BoardPRGroup = { status: BoardPRLifecycleStatus; prs: SessionPRSummary[] };
-
-function BoardPRGroup({ group }: { group: BoardPRGroup }) {
-	const { t } = useTranslation();
-	const statusLabel = t(`pr.state.${group.status.label}`);
-	return (
-		<span
-			aria-label={`${group.prs.map((pr) => `#${pr.number}`).join(", ")} ${statusLabel}`}
-			className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1"
-		>
-			<span>{t("pr.short")}</span>
-			{group.prs.map((pr, index) => (
-				<span className="inline-flex items-center" key={pr.url || pr.htmlUrl || pr.number}>
-					<a
-						className="text-passive underline-offset-2 transition-colors hover:text-foreground hover:underline"
-						href={prBrowserUrl(pr)}
-						onClick={(event) => event.stopPropagation()}
-						rel="noreferrer"
-						target="_blank"
-					>
-						#{pr.number}
-					</a>
-					{index < group.prs.length - 1 ? "," : null}
-				</span>
-			))}
-			<span className={cn("font-medium", group.status.className)}>{statusLabel}</span>
-		</span>
-	);
-}
-
-function CopyActionButton({ label, value }: { label: string; value: string }) {
-	const [copied, setCopied] = useState(false);
-	const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	useEffect(
-		() => () => {
-			if (copiedTimeoutRef.current !== null) clearTimeout(copiedTimeoutRef.current);
-		},
-		[],
-	);
-	const buttonLabel = copied ? `Copied ${label}` : `Copy ${label}`;
-	const copyValue = async (event: MouseEvent<HTMLButtonElement>) => {
-		event.stopPropagation();
-		try {
-			await aoBridge.clipboard.writeText(value);
-		} catch {
-			return;
-		}
-		setCopied(true);
-		if (copiedTimeoutRef.current !== null) clearTimeout(copiedTimeoutRef.current);
-		copiedTimeoutRef.current = setTimeout(() => {
-			setCopied(false);
-			copiedTimeoutRef.current = null;
-		}, 1_500);
-	};
-	return (
-		<button
-			aria-label={buttonLabel}
-			className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-passive transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-			onClick={(event) => void copyValue(event)}
-			title={buttonLabel}
-			type="button"
-		>
-			{copied ? (
-				<Check className="size-icon-2xs text-success" aria-hidden="true" />
-			) : (
-				<Copy className="size-icon-2xs" aria-hidden="true" />
-			)}
-		</button>
-	);
-}
-
-function groupPRsByLifecycle(prs: SessionPRSummary[]): BoardPRGroup[] {
-	const groups = new Map<BoardPRLifecycleStatus["label"], BoardPRGroup>();
-	for (const pr of prs) {
-		const status = prLifecycleStatus(pr);
-		const group = groups.get(status.label);
-		if (group) {
-			group.prs.push(pr);
-		} else {
-			groups.set(status.label, { status, prs: [pr] });
-		}
-	}
-	return Array.from(groups.values());
-}
-
-function prLifecycleStatus(pr: SessionPRSummary): BoardPRLifecycleStatus {
-	if (pr.state === "draft") return { label: "draft", className: "text-passive" };
-	if (pr.state === "merged") return { label: "merged", className: "text-status-merged" };
-	if (pr.state === "closed") return { label: "closed", className: "text-error" };
-	return { label: "open", className: "text-success" };
-}
-
-function sameLabel(a: string, b: string): boolean {
-	const normalize = (value: string) =>
-		value
-			.toLowerCase()
-			.replace(/^(feat|fix|chore|refactor|session)\//, "")
-			.replace(/[^a-z0-9]+/g, "");
-	return normalize(a) === normalize(b);
-}
+});

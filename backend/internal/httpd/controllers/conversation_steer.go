@@ -16,6 +16,7 @@ import (
 // steerPath is the one route this file owns, named once so the not-implemented
 // answer and the spec cannot drift apart.
 const steerPath = "/api/v1/sessions/{sessionId}/conversation/steer"
+const queuedTurnSteerPath = "/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/steer"
 
 // SteerConversationRequest is guidance for a turn that is already running.
 type SteerConversationRequest struct {
@@ -36,6 +37,13 @@ type SteerConversationResponse struct {
 	// ActivityID is the timeline row recording the guidance, so an optimistic bubble
 	// can be reconciled with the durable one rather than shown twice.
 	ActivityID string `json:"activityId,omitempty"`
+}
+
+// PromoteQueuedTurnResponse reports where one durable queued turn landed.
+type PromoteQueuedTurnResponse struct {
+	SourceTurnID   string `json:"sourceTurnId"`
+	ProviderTurnID string `json:"providerTurnId"`
+	ActivityID     string `json:"activityId"`
 }
 
 // steer sends guidance into the in-flight turn.
@@ -75,6 +83,40 @@ func (c *ConversationsController) steer(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (c *ConversationsController) promoteQueuedTurn(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", queuedTurnSteerPath)
+		return
+	}
+	result, err := c.Svc.PromoteQueuedTurn(
+		r.Context(),
+		domain.SessionID(chi.URLParam(r, "sessionId")),
+		chi.URLParam(r, "turnId"),
+	)
+	if err != nil {
+		writeQueuedTurnSteerError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, PromoteQueuedTurnResponse{
+		SourceTurnID: result.SourceTurnID, ProviderTurnID: result.ProviderTurnID,
+		ActivityID: result.ActivityID,
+	})
+}
+
+func writeQueuedTurnSteerError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, chatsvc.ErrTurnNotQueued):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_TURN_NOT_QUEUED", "that message is no longer queued", nil)
+	case errors.Is(err, chatsvc.ErrPromotionUncertain):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_PROMOTION_UNCERTAIN",
+			"the provider may have received this guidance; it will not be queued again automatically", nil)
+	default:
+		writeSteerError(w, r, err)
+	}
+}
+
 // writeSteerError maps the refusals that are specific to steering, then falls
 // through to the shared Chat mapping for everything a steer shares with the other
 // conversation commands (unknown session, TUI session, no controller, provider
@@ -104,6 +146,11 @@ func writeSteerError(w http.ResponseWriter, r *http.Request, err error) {
 		// because it names which kind of turn is in the way.
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_TURN_NOT_STEERABLE", err.Error(), nil)
+
+	case errors.Is(err, chatsvc.ErrSteerContentUnsupported):
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			"CHAT_UNSUPPORTED_STEER_CONTENT",
+			"this agent cannot steer every attachment in that message", nil)
 
 	case errors.Is(err, chatsvc.ErrNoActiveTurn):
 		// Ordinary: the turn finished while the user was typing. Steering has nothing

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -75,5 +76,55 @@ func TestMergePullRequest_RejectsIncompleteGuard(t *testing.T) {
 	request.ExpectedHeadSHA = "abc"
 	if _, err := newProviderForTest(t, newFakeGH(t)).MergePullRequest(ctx(), request); err == nil {
 		t.Fatal("merge with invalid expected head succeeded")
+	}
+}
+
+func TestRequestReview_PostsRequestedReviewer(t *testing.T) {
+	f := newFakeGH(t)
+	f.on(http.MethodPost, "/repos/octocat/hello/pulls/42/requested_reviewers", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Reviewers []string `json:"reviewers"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Reviewers) != 1 || body.Reviewers[0] != "reviewer" {
+			t.Fatalf("body = %#v", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	err := newProviderForTest(t, f).RequestReview(ctx(), ports.SCMReviewRequest{
+		PR:       validMergeRequest().PR,
+		Reviewer: "@reviewer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResolveReviewThread_UsesGraphQLMutation(t *testing.T) {
+	f := newFakeGH(t)
+	f.on(http.MethodPost, "/graphql", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(body.Query, "resolveReviewThread") || body.Variables["threadId"] != "thread-1" {
+			t.Fatalf("body = %#v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"resolveReviewThread": map[string]any{"thread": map[string]any{"id": "thread-1"}}}})
+	})
+
+	err := newProviderForTest(t, f).ResolveReviewThread(ctx(), ports.SCMReviewResolveRequest{
+		PR:       validMergeRequest().PR,
+		ThreadID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

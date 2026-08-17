@@ -1,276 +1,113 @@
-# Telemetry
+# Product telemetry
 
-AO uses anonymous telemetry to understand reliability and product usage. The
-Electron renderer sends sanitized PostHog events directly, and the Go daemon can
-persist allowlisted events locally and fan them out to PostHog when remote
-telemetry is enabled.
+AO collects limited product-usage and reliability data to learn which parts of
+the app are useful and whether releases are working as expected. The data is
+not account-linked: AO does not attach a name or email address. It is
+pseudonymous rather than unlinkable, because a random installation identifier
+lets events from the same installation be counted together over time.
 
-For cost-control runbooks, including the v2 PostHog event namespace and legacy
-ingestion drop rules, see [posthog-cost-controls.md](posthog-cost-controls.md).
+Remote telemetry is enabled in production desktop and mobile releases. A
+packaged desktop release also enables telemetry for the daemon it starts.
+Development builds and daemons started directly do not send remote telemetry by
+default.
 
-## What is collected
+## What AO sends
 
-- App activation events: `ao.app.active` / `ao.v2.app.active` from the
-  renderer and meaningful user-context CLI commands, each capped to one event
-  per six-hour UTC slot, or four per day per install/channel
-- Renderer load and daily route-surface usage, grouped by coarse surface names
-- Project/task/session UI actions, with project identifiers SHA-256 hashed
-- Renderer exceptions, reduced to error name and coarse context
-- Daemon operational events: CLI invocation, session spawn/failure, waiting-input
-  transitions, HTTP 5xx, and daemon panics
-- Code review outcomes: `ao.review.triggered`, `ao.review.submitted`,
-  `ao.review.cancelled`, and `ao.review.trigger_failed`. These carry the reviewer
-  `harness`, the `verdict` (`approved` / `changes_requested`), how long the pass
-  took, whether the review reached the provider, and a coarse `error_kind` on
-  failure. The review body is never sent: it is reviewer prose about a user's
-  source code. The PR URL and target SHA are also withheld, because both identify
-  the repository. `ao.review.submitted` fires only on the real running-to-complete
-  transition, so a reviewer retrying a submit cannot double-count a verdict
-- Desktop update outcomes: `ao.renderer.update_failed`,
-  `ao.renderer.update_downloaded`, and `ao.renderer.update_unsupported`. These
-  carry a coarse `error_category`, the `phase` (`check` or `download`), whether
-  the operation was `automatic` or `manual`, and the target version. The
-  updater's raw error message is never sent, because it can contain feed URLs
-  and local staging paths; it is bucketed into a category first. Progress is not
-  reported, since it fires per percent tick and the UI already shows it.
+AO sends structured events in a few broad categories:
 
-  These are decided in the **main process**, at the updater's operation
-  boundary, and pushed to the renderer on a channel separate from
-  `updates:status`. That separation matters: `auto-updater.ts` deliberately
-  suppresses the UI status when an *automatic* check fails, and automatic checks
-  run hourly. A renderer observer watching statuses would therefore miss the
-  silent-failure case these exist to diagnose. Owning it in main also makes
-  `phase` and `to_version` authoritative, since only main knows which operation
-  was running and what it was fetching
-- Agent inventory: `ao.renderer.agents_available`, reported once per app launch
-  with `installed_count`, `authorized_count`, `supported_count`, and a sorted list
-  of authorized agent ids. Agent ids are a fixed vocabulary from AO's own
-  registry, never user input. This exists because `ao.session.spawned` only shows
-  which harness *ran*, so an install with six authorized agents that always picks
-  one was indistinguishable from an install that only had that one
-- AO version context (`app_version` / `ao_version`), platform, and build mode
-- Mobile app product events (`client = "mobile"` / `"mobile-web"`), all under the
-  `ao.v2.*` namespace and carrying `telemetry_schema_version = 2`:
-  `ao.v2.app.active` (once per UTC day), `ao.v2.mobile_app.paired`
-  (`method`, `from_onboarding`), `ao.v2.mobile_app.connected` (`trigger`,
-  emitted only on the not-open-to-open transition, never per poll tick),
-  `ao.v2.mobile_app.onboarding_started` / `_completed` / `_skipped`,
-  `ao.v2.mobile_app.notification_opened` (`target`, `cold_start`), and
-  `ao.v2.mobile_app.feature_used` (`feature`, `outcome`). Every event carries
-  `$process_person_profile: false` (anonymous rate), and the client is built with
-  `personProfiles: "never"`, `enableSessionReplay: false`, and
-  `captureAppLifecycleEvents: false`. There is no screen recording, no touch or
-  screen autocapture, and no free-text property: the allowlist in
-  `packages/mobile/lib/telemetry/events.ts` drops any unregistered key, so session
-  titles, project names, terminal output, and the connection password cannot
-  leave the device. Identity is posthog-react-native's persisted anonymous
-  install id, device-based and never IP. Errors are out of scope here and go to
-  Sentry, not PostHog. A dev client (`npm start`) constructs no client and sends
-  nothing.
+- App usage, such as launching AO, viewing a coarse area of the interface, or
+  starting a task or agent session
+- Feature outcomes, such as whether creating a project, starting an agent,
+  connecting the mobile app, or installing an update succeeded
+- Reliability data, such as an error type and context, a crash message and
+  stack trace after path redaction, an HTTP status, or an agent waiting for
+  input
+- Basic environment information, such as the AO version, operating system,
+  release channel, and which supported agent types are available
+- A random installation identifier and one-way hashes of project or session
+  identifiers when an event needs them
+- Coarse mobile-app usage, such as pairing, reconnecting, completing onboarding,
+  opening a notification, or using a core action
 
-PostHog session recording is disabled in the client via
-`disable_session_recording`, so the project-side replay toggle cannot turn it on.
-Replay is billed per recording rather than per event, which puts it outside every
-rate limit described below, and AO does not watch replays. If a time-boxed
-investigation ever needs it, network request names are masked before recording.
+AO uses [PostHog](https://posthog.com/privacy) to process remote product
+telemetry. PostHog receives standard connection and device metadata, including
+the connection's IP address, device type, and operating system, and may use it
+to derive approximate geographic information.
 
-Feature flags and surveys are also disabled in the client
-(`advanced_disable_flags`, `disable_surveys`). AO reads no flags and ships no
-surveys, and `/flags` requests are billed, so those requests were pure cost.
+The installation identifier lets PostHog group activity from one AO
+installation over time. Hashed project and session identifiers can likewise
+group events for the same project or session without sending those identifiers
+in plain text. Neither is linked to an AO account.
 
-## Privacy
+## What AO does not intentionally send
 
-Before any renderer event or recording is transmitted:
+Product telemetry is designed not to include:
 
-- Absolute file paths (`/home/...`, `/Users/...`, `C:\...`) are replaced with
-  `[redacted-local-path]`
-- Local URLs (`file://`, `app://renderer`, `localhost`, `127.0.0.1`, `[::1]`)
-  are replaced with `[redacted-local-url]`
-- Project IDs are one-way hashed and never sent in plain text
+- Source code, diffs, commits, or file contents
+- Prompts, agent conversations, agent output, or terminal contents
+- Shell command arguments, command history, or environment variables
+- Repository names, project names, branch names, or plain-text file paths
+- API keys, access tokens, passwords, or other credentials
+- Names, email addresses, or account identities
 
-Daemon events use a remote payload allowlist before PostHog export. Project and
-session IDs are hashed, and raw location/IP fields are not accepted from AO
-payloads. Geographic reporting should use PostHog's GeoIP enrichment only.
+The optional website waitlist is separate from product telemetry. If you submit
+an email address there, it is used to manage that waitlist as described in the
+[privacy policy](https://aoagents.dev/privacy).
 
-Three burst-prone daemon events — `ao.http.5xx`, `ao.daemon.panic`,
-`ao.cli.usage_errors` — are aggregated before export: every occurrence in a
-rolling one-minute window is folded into a single rollup event carrying
-`count`, `window_start`, and `window_end`, instead of exporting one PostHog
-event per occurrence. A storm of 10,000 errors and one of 6 both cost the same
-one event, and the true magnitude is still visible via `count` rather than
-being silently capped away. Only the most recent occurrence's other
-properties (path, fingerprint, etc.) are kept on the rollup — if a burst hits
-several different endpoints or fingerprints in the same window, the ones
-overwritten by later occurrences aren't visible on that rollup. Local SQLite
-storage is unaffected: it receives every raw occurrence, unaggregated, for
-full-fidelity debugging regardless of what PostHog sees.
+## How AO limits the data
 
-Everything reaching PostHog remotely is still bounded per event name: a
-5-per-minute burst cap plus a 200-per-day hard ceiling for ordinary events,
-or a 1,500-per-day ceiling for the three aggregated names above (since their
-per-occurrence cost is already collapsed by aggregation, the daily cap there
-is a structural backstop rather than the primary limit). The renderer applies
-the same 5-per-minute / 200-per-day shape to its own event and exception
-capture path, without the aggregation step.
+- AO generates a random installation identifier on first run. It is stored at
+  `~/.ao/data/telemetry_install_id` (or under `AO_DATA_DIR`) and is not linked to
+  a personal account.
+- Project and session identifiers included in telemetry are one-way hashed.
+  Hashing hides the plain text but still allows related events to be grouped.
+- Absolute local paths and local application URLs detected in desktop events
+  are replaced with redaction markers before the events are sent.
+- Daemon events sent to PostHog and mobile events accept a fixed set of
+  properties; unexpected fields are discarded.
+- Event rates are limited to reduce repeated background activity and error
+  loops.
+- Person profiles and session recording are disabled in the desktop and mobile
+  apps. AO does not automatically record screens, clicks, or touches.
 
-All events are sent as PostHog anonymous events (`$process_person_profile:
-false`; the renderer never calls `identify()`). The renderer keeps PostHog SDK
-persistence in memory, disables person profiles, and explicitly bootstraps the
-AO install ID as anonymous. This prevents legacy PostHog state from restoring
-an identified user or replacing the stable AO device ID after an upgrade. The
-install ID still deduplicates unique-user counts, but no person profiles are
-created — person properties and person-property cohorts are intentionally
-unavailable. AO's heartbeat and route reservations continue to use their own
-sanitized `localStorage` keys independently of PostHog SDK persistence.
+Separately from remote telemetry, the daemon can keep a local copy of
+operational events in AO's SQLite database. While local telemetry is active, AO
+periodically prunes records older than 30 days. This data stays under `~/.ao` on
+your machine.
 
-`ao.cli.invoked` is capped at once per actor type and command path per UTC day
-per install. Routine successful internal/read-only commands (`ao status`,
-`ao session ls`, `ao session get`, `ao project ls`, `ao project get`,
-`ao orchestrator ls`, `ao hooks`, and `ao pty-host`) are excluded outright.
-Commands that never reflect product activity — the supervisor-driven
-`ao daemon`/`ao start`, the self-documenting `ao completion`/`ao help`, and
-the internal `ao agent-process` runtime process — are also excluded outright.
+## Turn desktop and daemon telemetry off
 
-CLI invocations are classified by actor:
-
-- `actor_type=user`: a user-context CLI command. These can refresh CLI-channel
-  `ao.app.active`.
-- `actor_type=agent`: commands run inside an AO-managed agent session
-  (`AO_SESSION_ID` is set). These are useful command-adoption signal but do not
-  refresh `ao.app.active`, because agents can keep running after the human has
-  stopped actively using AO. Routine internal paths such as `ao hooks` are
-  dropped on success.
-- `actor_type=system`: supervisor/runtime background processes. These are not
-  sent as CLI usage.
-
-The per-command daily cap keeps invocation frequency off PostHog, and the CLI
-reservation state is persisted under the AO data dir so a daemon restart does
-not re-emit every polling command for the same day.
-
-Routine successful internal/read-only commands are not reliability signal by
-themselves and should not be reintroduced as success telemetry. For commands
-such as `ao status`, `ao session ls`, `ao session get`, `ao project ls`,
-`ao project get`, `ao orchestrator ls`, `ao hooks`, and `ao pty-host`, track
-only meaningful user-impacting failures through a separate, rate-limited event
-such as `ao.v2.cli.failed`. That event should carry safe enum-like fields such
-as `command_path`, `actor_type`, `error_category`, and stable `error_code`; it
-must not include raw error messages, stack traces, local paths, project names,
-repository URLs, prompts, terminal output, tokens, or request payloads.
-
-`ao.renderer.route_viewed` is capped at once per coarse surface per UTC day per
-renderer install. This preserves surface adoption and retention signal while
-dropping repeated navigation churn inside the same surface.
-
-## Product Metrics Model
-
-AO currently has a stable install ID, not a signed-in account user ID. That
-means today's DAU/MAU can accurately represent active installs, but not unique
-people across multiple machines. True user-level new/churn/journey metrics
-require an explicit stable user identity from a login, license, or workspace
-account system. That identity should be sent as a first-party AO user ID (or a
-one-way hash of it) only when the user has authenticated or explicitly enabled
-account-level telemetry; it should not be inferred from machine fingerprints,
-paths, git remotes, emails in repo config, or other local data.
-
-The minimum signals for accurate usage analytics are:
-
-- `ao.app.active` / `ao.v2.app.active`: up to one event per six-hour UTC slot
-  per install/account when a human uses the desktop app or runs a meaningful
-  user-context CLI command. This powers DAU, WAU, MAU, retention, and churn
-  while keeping arbitrary rolling windows from undercounting long-running
-  usage. Renderer active events are sent immediately; a slot is released for
-  retry when the SDK rejects or throws while capturing the event.
-- `ao.projects.created` and `ao.onboarding.first_project_added`: activation
-  funnel from install to first project.
-- `ao.session.spawned`, `ao.session.spawn_failed`, and
-  `ao.onboarding.first_session_spawned`: activation funnel from project to
-  first running agent, plus spawn reliability.
-- `ao.cli.invoked` / `ao.v2.cli.invoked` with `actor_type=user|agent`:
-  command adoption by actor for meaningful non-internal commands, capped by
-  command/install/day. Agent-context command usage is product signal, but
-  should be analyzed separately from active-user counts.
-- `ao.session.waiting_input_entered/exited`: whether agents are making progress
-  or waiting on the human, with dwell time.
-- Renderer and daemon error/crash events: reliability and support signal.
-
-Signals that should not drive active-user metrics:
-
-- Internal runtime hosts such as `ao pty-host`.
-- Supervisor startup/control commands such as `ao daemon` and `ao start`.
-- Agent hook callbacks and other CLI commands run with `AO_SESSION_ID`, except
-  as separate agent-activity or command-adoption metrics.
-- Raw polling frequency for read-only state commands.
-
-## Install ID
-
-On first run, a random install identifier is generated and stored at
-`~/.ao/data/telemetry_install_id` (or `$AO_DATA_DIR/telemetry_install_id`). The
-renderer and daemon both use this ID as the PostHog distinct ID so activity is
-deduplicated across app launches and CLI invocations. It is not linked to any
-personal account. In the renderer it is also the PostHog device ID, and the SDK
-is explicitly kept in anonymous mode.
-
-## Configuration
-
-Renderer PostHog key and host are baked in at build time. To point a build at
-another PostHog project, set these environment variables before building:
+AO currently provides environment-variable controls rather than an in-app
+desktop setting. Set all three variables in the environment used to launch AO:
 
 ```bash
-VITE_AO_POSTHOG_KEY=phc_yourkey
-VITE_AO_POSTHOG_HOST=https://your-posthog-host.com
+export AO_TELEMETRY_RENDERER=off
+export AO_TELEMETRY_EVENTS=off
+export AO_TELEMETRY_REMOTE=off
 ```
 
-Daemon event capture is off by default when the daemon is launched directly. The
-Electron supervisor starts the daemon with these defaults unless the environment
-already provides explicit values:
+Then restart AO. `AO_TELEMETRY_RENDERER=off` disables events sent directly by
+the desktop interface. `AO_TELEMETRY_EVENTS=off` disables daemon event capture,
+including its local copy. `AO_TELEMETRY_REMOTE=off` explicitly disables daemon
+export to PostHog.
 
-```bash
-AO_TELEMETRY_EVENTS=on
-AO_TELEMETRY_REMOTE=posthog
-AO_TELEMETRY_POSTHOG_KEY=phc_yourkey
-AO_TELEMETRY_POSTHOG_HOST=https://us.i.posthog.com
-```
+The values must reach the desktop app process itself. For example, variables in
+a shell startup file may not be inherited when you launch AO from the macOS
+Finder or Dock.
 
-The supervisor also passes `AO_TELEMETRY_APP_VERSION` (the Electron app version)
-so daemon events carry `app_version`/`ao_version`. The daemon binary has no
-version of its own that release tooling sets, so without this every daemon event
-arrives unattributable to a release and a failure rate cannot be traced to the
-build that caused it.
+If you run the daemon without the desktop app, event capture and remote export
+are already off unless you enable them.
 
-Local daemon telemetry is retained in SQLite for 30 days.
+These environment variables do not control the mobile app. The current
+production mobile app does not provide an in-app telemetry opt-out. Turning
+desktop or daemon telemetry off stops new collection there; it does not delete
+events already sent to PostHog, remove the local installation identifier, or
+delete existing local telemetry records. Automatic deletion of local records
+older than 30 days resumes if daemon event capture is enabled again.
 
-### Kill switch
+## Questions or corrections
 
-`AO_TELEMETRY_DISABLED_EVENTS` is a comma-separated list of event streams that
-must never reach PostHog:
-
-```bash
-AO_TELEMETRY_DISABLED_EVENTS="ao.v2.app.active, ao.renderer.*"
-```
-
-An entry ending in `*` matches by prefix. Matching is case-insensitive and
-accepts either the internal name (`ao.app.active`) or the exported PostHog alias
-(`ao.v2.app.active`), so the name visible in PostHog works without translation.
-
-The list is enforced in two places, because AO has two producers: the daemon's
-billed sink, and the renderer, which talks to PostHog directly. The supervisor
-passes the list to the daemon as an environment variable and to the renderer on
-the telemetry bootstrap, so denying `ao.v2.app.active` silences both rather than
-leaving the renderer sending under the same exported name.
-
-Renderer export is additionally off by default on unpackaged builds, so a
-developer's ordinary session does not appear in the production project as a real
-install. `AO_TELEMETRY_RENDERER=on` opts a dev build back in for deliberate
-testing; `off` opts a packaged build out.
-
-This exists because every other control in this document is compiled into the
-build. Silencing a stream previously meant shipping a release and waiting for
-users to install it, which took weeks the one time a stream turned out to be
-expensive. The denylist is applied by the daemon at startup, so it takes effect
-on installs that already exist.
-
-The switch is applied outermost on the remote chain: a silenced stream consumes
-no aggregation window, no rate-limit slot, and no export. Local SQLite storage is
-deliberately unaffected, so a stream silenced in production stays debuggable
-locally. Unrecognized entries are inert rather than fatal, because the switch has
-to be usable in a hurry.
+For the broader data policy, retention information, and contact options, see
+the [AO privacy policy](https://aoagents.dev/privacy). You can report a problem
+with this documentation in the
+[GitHub repository](https://github.com/Untrivial-ai/agent-orchestrator).

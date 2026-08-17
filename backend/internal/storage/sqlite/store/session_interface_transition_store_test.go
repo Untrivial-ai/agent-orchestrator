@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -120,5 +121,88 @@ func TestSessionInterfaceTransitionClaimModeCASAndOutbox(t *testing.T) {
 	}
 	if _, active, err := st.GetActiveSessionInterfaceTransition(ctx, createdSession.ID); err != nil || active {
 		t.Fatalf("active after completion = %v err=%v", active, err)
+	}
+}
+
+func TestSessionInterfaceTransitionNoticeAcknowledgementRoundTripAndCDC(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, st, "switch-notice")
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	rec := sampleRecord("switch-notice")
+	rec.Mode = domain.SessionModeChat
+	createdSession, err := st.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	transition, created, err := st.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{
+		ID: "transition-notice", SessionID: createdSession.ID,
+		SourceMode: domain.SessionModeChat, TargetMode: domain.SessionModeTUI,
+		Policy: domain.SessionInterfaceTransitionDrain, Phase: domain.SessionInterfaceTransitionRequested,
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil || !created {
+		t.Fatalf("create transition: created=%v err=%v", created, err)
+	}
+	settledAt := now.Add(time.Minute)
+	moved, err := st.AdvanceSessionInterfaceTransition(ctx, transition.ID,
+		domain.SessionInterfaceTransitionRequested, domain.SessionInterfaceTransitionRecovery,
+		"", "DAEMON_RESTARTED", "AO recovered the session.", settledAt)
+	if err != nil || !moved {
+		t.Fatalf("settle transition: moved=%v err=%v", moved, err)
+	}
+
+	baseSeq, _ := st.LatestSeq(ctx)
+	acknowledgedAt := settledAt.Add(time.Minute)
+	acknowledged, ok, err := st.AcknowledgeSessionInterfaceTransitionNotice(
+		ctx, createdSession.ID, transition.ID, acknowledgedAt,
+	)
+	if err != nil || !ok {
+		t.Fatalf("acknowledge transition notice: ok=%v err=%v", ok, err)
+	}
+	if !acknowledged.NoticeAcknowledgedAt.Equal(acknowledgedAt) {
+		t.Fatalf("notice acknowledged at = %v, want %v", acknowledged.NoticeAcknowledgedAt, acknowledgedAt)
+	}
+	if !acknowledged.UpdatedAt.Equal(settledAt) || !acknowledged.CompletedAt.Equal(settledAt) {
+		t.Fatalf("acknowledgement rewrote settlement timestamps: %+v", acknowledged)
+	}
+	events, err := st.EventsAfter(ctx, baseSeq, 100)
+	if err != nil {
+		t.Fatalf("read acknowledgement CDC: %v", err)
+	}
+	if len(events) != 1 || string(events[0].Type) != "session_updated" {
+		t.Fatalf("acknowledgement events = %+v, want one session_updated", events)
+	}
+	if !events[0].CreatedAt.Equal(acknowledgedAt) {
+		t.Fatalf("acknowledgement event time = %v, want %v", events[0].CreatedAt, acknowledgedAt)
+	}
+	var payload struct {
+		InterfaceTransitionID    string `json:"interfaceTransitionId"`
+		InterfaceTransitionPhase string `json:"interfaceTransitionPhase"`
+	}
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("decode acknowledgement CDC: %v", err)
+	}
+	if payload.InterfaceTransitionID != transition.ID ||
+		payload.InterfaceTransitionPhase != string(domain.SessionInterfaceTransitionRecovery) {
+		t.Fatalf("acknowledgement CDC payload = %+v", payload)
+	}
+
+	baseSeq, _ = st.LatestSeq(ctx)
+	again, ok, err := st.AcknowledgeSessionInterfaceTransitionNotice(
+		ctx, createdSession.ID, transition.ID, acknowledgedAt.Add(time.Minute),
+	)
+	if err != nil || !ok {
+		t.Fatalf("acknowledge transition notice again: ok=%v err=%v", ok, err)
+	}
+	if !again.NoticeAcknowledgedAt.Equal(acknowledgedAt) {
+		t.Fatalf("idempotent acknowledgement changed timestamp to %v", again.NoticeAcknowledgedAt)
+	}
+	events, err = st.EventsAfter(ctx, baseSeq, 100)
+	if err != nil {
+		t.Fatalf("read idempotent acknowledgement CDC: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("idempotent acknowledgement emitted duplicate events: %+v", events)
 	}
 }

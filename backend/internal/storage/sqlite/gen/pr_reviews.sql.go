@@ -34,7 +34,7 @@ func (q *Queries) DeletePRReviews(ctx context.Context, prUrl string) error {
 }
 
 const listPRReviews = `-- name: ListPRReviews :many
-SELECT pr_url, review_id, author, state, url, is_bot, submitted_at, body, auto_inject_review
+SELECT pr_url, review_id, author, state, url, is_bot, submitted_at, body, auto_inject_review, target_sha
 FROM pr_reviews WHERE pr_url = ? ORDER BY submitted_at, review_id
 `
 
@@ -57,6 +57,7 @@ func (q *Queries) ListPRReviews(ctx context.Context, prUrl string) ([]PRReview, 
 			&i.SubmittedAt,
 			&i.Body,
 			&i.AutoInjectReview,
+			&i.TargetSha,
 		); err != nil {
 			return nil, err
 		}
@@ -72,15 +73,16 @@ func (q *Queries) ListPRReviews(ctx context.Context, prUrl string) ([]PRReview, 
 }
 
 const upsertPRReview = `-- name: UpsertPRReview :exec
-INSERT INTO pr_reviews (pr_url, review_id, author, state, url, is_bot, submitted_at, body, auto_inject_review)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pr_reviews (pr_url, review_id, author, state, url, is_bot, submitted_at, body, target_sha, auto_inject_review)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (pr_url, review_id) DO UPDATE SET
     author = excluded.author,
     state = excluded.state,
     url = excluded.url,
     is_bot = excluded.is_bot,
     submitted_at = excluded.submitted_at,
-    body = excluded.body
+    body = excluded.body,
+    target_sha = excluded.target_sha
 `
 
 type UpsertPRReviewParams struct {
@@ -92,6 +94,7 @@ type UpsertPRReviewParams struct {
 	IsBot            int64
 	SubmittedAt      time.Time
 	Body             string
+	TargetSha        string
 	AutoInjectReview bool
 }
 
@@ -105,6 +108,7 @@ func (q *Queries) UpsertPRReview(ctx context.Context, arg UpsertPRReviewParams) 
 		arg.IsBot,
 		arg.SubmittedAt,
 		arg.Body,
+		arg.TargetSha,
 		arg.AutoInjectReview,
 	)
 	return err

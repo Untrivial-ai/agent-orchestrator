@@ -7,7 +7,8 @@ import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 import { Linking, Platform } from "react-native";
-import { ApiError, registerPushDevice, unregisterPushDevice } from "./api";
+import { ApiError, registerPushDevice, unpairFromDaemon, unregisterPushDevice } from "./api";
+import { getInstallId } from "./installId";
 import type { ServerConfig } from "./config";
 import { classifyServerFailure, hasServer, type PushRegisterResult, type PushStatus } from "./pushStatus";
 
@@ -265,6 +266,35 @@ export async function openNotificationSettings(): Promise<void> {
 // unregister fails (daemon unreachable), the target is queued for retry instead
 // of being dropped — so the old daemon can't keep pushing to this device. Never
 // throws — the caller must not be blocked.
+// Tell the daemon this phone has unpaired, so it drops the row rather than just
+// clearing the token. Used by "Disconnect & forget server" and by the unpair
+// effect in PushManager — the two places where the phone is genuinely leaving,
+// as opposed to merely switching notifications off.
+//
+// Sends the install id when we have one and the token otherwise, so a daemon can
+// find the row either way. Best-effort like unregisterFromPush: local state is
+// cleared regardless, since a phone that cannot reach the old daemon must still
+// be able to disconnect from it.
+export async function unpairFromServer(): Promise<void> {
+	const reg = await loadRegistration();
+	await clearRegistration();
+	if (!reg) return;
+	let id = reg.token;
+	try {
+		id = (await getInstallId()) || reg.token;
+	} catch {
+		// Fall back to the token; an unreadable install id must not block unpairing.
+	}
+	try {
+		await unpairFromDaemon(configOf(reg), id);
+	} catch {
+		// The daemon may be unreachable (that is often *why* the user is
+		// disconnecting). Nothing to retry against: the phone is forgetting this
+		// server's address and credentials, so a queued call could never be sent.
+		// The row is left for the desktop to remove.
+	}
+}
+
 export async function unregisterFromPush(): Promise<void> {
 	const reg = await loadRegistration();
 	// Clear the active registration up front: the device is disconnecting, so it

@@ -68,6 +68,19 @@ export function isLocalNetworkHost(host: string): boolean {
 	return false;
 }
 
+/**
+ * True for Tailscale's 100.64.0.0/10 CGNAT range. Deliberately NOT part of
+ * `isLocalNetworkHost`: a failure here is never the iOS Local Network prompt, and
+ * it is never a Wi-Fi problem either.
+ */
+export function isTailscaleHost(host: string): boolean {
+	const h = host.trim().toLowerCase();
+	const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+	if (!m) return false;
+	const [a, b] = [Number(m[1]), Number(m[2])];
+	return a === 100 && b >= 64 && b <= 127;
+}
+
 export type ConnectionErrorCopy = {
 	// Short heading. Used where the failure owns the screen (the board's empty
 	// state); the inline error boxes on the pairing screens show `message` alone.
@@ -101,9 +114,11 @@ export function describeConnectionFailure(
 		case "unreachable":
 			return {
 				title: "Your desktop disconnected",
-				message:
-					`Reached nothing at ${target.host}:${target.port}. ` +
-					"Is Connect Mobile still on, and is your phone on the same Wi-Fi?",
+				message: isTailscaleHost(target.host)
+					? `Reached nothing at ${target.host}:${target.port}. ` +
+						"Make sure Tailscale is connected on both this phone and your computer, and that your computer is awake."
+					: `Reached nothing at ${target.host}:${target.port}. ` +
+						"Is Connect Mobile still on, and is your phone on the same Wi-Fi?",
 				showLocalNetworkHint,
 			};
 		case "auth":

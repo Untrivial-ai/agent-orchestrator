@@ -112,6 +112,46 @@ func TestSpawnClaimPRWiring(t *testing.T) {
 	}
 }
 
+func TestSpawnClaimPR_GitLab(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var capturedReq claimPRRequest
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		appendPrimaryRequest(&requests, r)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+			_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","path":"/repo/demo","repo":"https://gitlab.com/castai/ctxd","defaultBranch":"main"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/refresh":
+			_, _ = io.WriteString(w, authorizedAgentsJSON("codex"))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-9","status":"idle"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-9/pr/claim":
+			_ = json.NewDecoder(r.Body).Decode(&capturedReq)
+			if capturedReq.PR != "https://gitlab.com/castai/ctxd/-/merge_requests/9" || capturedReq.AllowTakeover {
+				t.Fatalf("claim request = %#v", capturedReq)
+			}
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-9","prs":[{"url":"https://gitlab.com/castai/ctxd/-/merge_requests/9","number":9,"state":"open","ci":"passing","review":"review_required","mergeability":"mergeable","reviewComments":false,"updatedAt":"2026-06-04T12:00:00Z"}],"branchChanged":false,"takenOverFrom":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--project", "demo", "--agent", "codex", "--name", "worker", "--claim-pr", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "--no-takeover")
+	if err != nil {
+		t.Fatalf("spawn claim-pr gitlab failed: %v stderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "claimed https://gitlab.com/castai/ctxd/-/merge_requests/9") {
+		t.Fatalf("output missing claimed label: %s", out)
+	}
+	want := []string{"GET /api/v1/projects/demo", "POST /api/v1/agents/refresh", "POST /api/v1/sessions", "POST /api/v1/sessions/demo-9/pr/claim"}
+	if !reflect.DeepEqual(requests, want) {
+		t.Fatalf("requests=%#v want %#v", requests, want)
+	}
+}
+
 func TestSpawnClaimPRFailureRollsBackSession(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string

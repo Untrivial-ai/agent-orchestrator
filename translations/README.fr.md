@@ -1,198 +1,248 @@
 <div align="center">
-  <img src="../assets/ao-logo.svg" alt="Agent Orchestrator" width="160" height="160" />
+  <img src="../assets/ao-logo.svg" alt="Agent Orchestrator" width="144" height="144" />
 
-# Agent Orchestrator
+### Agent Orchestrator
 
-**La couche d'orchestration pour les agents de codage IA en parallèle**
+#### Planifiez, exécutez et supervisez vos agents de développement depuis un seul endroit.
 
-[![Stars](https://img.shields.io/github/stars/Untrivial-ai/agent-orchestrator)](https://github.com/Untrivial-ai/agent-orchestrator/stargazers)
-[![Contributors](https://img.shields.io/github/contributors/Untrivial-ai/agent-orchestrator)](https://github.com/Untrivial-ai/agent-orchestrator/graphs/contributors)
-[![Twitter](https://img.shields.io/badge/Twitter-1DA1F2?logo=twitter&logoColor=white)](https://x.com/aoagents)
-[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/UZv7JjxbwG)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](../LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/Untrivial-ai/agent-orchestrator?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/stargazers)
+![Top 6k repositories](https://img.shields.io/badge/Top%206k%20repositories-181717?style=flat&logo=github&logoColor=white)
+[![GitHub release](https://img.shields.io/github/v/release/Untrivial-ai/agent-orchestrator?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest)
+[![GitHub downloads](https://img.shields.io/github/downloads/Untrivial-ai/agent-orchestrator/total?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](../LICENSE)
+[![X](https://img.shields.io/badge/@aoagents-555?style=flat&logo=x&logoColor=white)](https://x.com/aoagents)
+[![Discord](https://img.shields.io/badge/Discord-555?style=flat&logo=discord&logoColor=white)](https://discord.com/invite/UZv7JjxbwG)
+
+Donnez à chaque tâche de développement son propre agent, son propre espace de travail et sa propre boucle de feedback.<br />
+Planifiez et déléguez les objectifs plus vastes avec un orchestrateur qui connaît votre projet.<br />
+Suivez chaque worker, pull request, exécution CI et revue sur un Kanban actualisé en direct.
+
+[**Télécharger AO**](#installation) &nbsp;&bull;&nbsp; [Documentation](https://aoagents.dev/docs) &nbsp;&bull;&nbsp; [Versions](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contribuer](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · **Français** · [Deutsch](README.de.md) · [Português (Brasil)](README.pt-BR.md)
 
-Un IDE agentique qui supervise des agents de codage IA en parallèle dans des espaces de travail isolés, avec un contrôle complet et des boucles de feedback automatiques à partir des échecs CI, des commentaires de revue et des conflits de fusion.
+<br />
 
-<img src="../docs/assets/readme/dashboard.png" alt="Tableau de bord Agent Orchestrator montrant des sessions d'agents de codage en parallèle" width="100%" />
+<img src="../docs/assets/readme/hero.png" alt="Kanban d'Agent Orchestrator montrant les sessions de workers regroupées selon leur état en direct" width="100%" />
 </div>
 
----
+## Un espace de travail pour le développement piloté par des agents
 
-## Qu'est-ce qu'Agent Orchestrator ?
+Un agent de développement peut prendre en charge une tâche. Dès que plusieurs agents travaillent en parallèle sur un projet, le défi change : il faut décider de ce qui compte, découper le travail proprement, donner à chaque agent le bon contexte, éviter les collisions entre branches et suivre chaque changement jusqu'à la revue et à la fusion.
 
-Agent Orchestrator est un IDE d'agents de type méta-harness pour exécuter des agents de codage IA en parallèle. Il offre aux agents basés sur le terminal comme Claude Code, Codex, Cursor, Kimi Code, opencode et d'autres un espace de travail partagé où leurs sessions, terminaux, branches, pull requests et boucles de feedback peuvent être supervisés depuis un seul endroit.
+AO est un espace de travail local conçu pour ce rôle. Ajoutez un dépôt, puis créez une session de worker avec l'agent, le modèle et l'interface adaptés à la tâche. Pour les travaux suivis avec Git, AO attribue au worker sa propre branche et son propre worktree. La tâche, la conversation, le terminal, les fichiers modifiés, l'aperçu du navigateur, la pull request, la CI et l'état des revues restent attachés à cette session du début à la fin.
 
-Les agents codent toujours. AO fournit le harness autour d'eux : espaces de travail isolés, accès live au terminal, état de session, conscience des PR, et boucles automatiques qui renvoient les échecs CI, commentaires de revue et conflits de fusion à l'agent concerné. Au lieu de coordonner manuellement une pile de terminaux d'agents, AO transforme le travail parallèle d'agents en un flux de travail géré.
+Derrière l'application de bureau, le daemon local d'AO observe l'activité des agents et l'état du contrôle de version. Vous obtenez ainsi une vue partagée et actualisée du projet, au lieu d'une collection de terminaux, de branches et d'onglets de navigateur déconnectés.
 
-## Pourquoi Agent Orchestrator ?
+<img src="../docs/assets/readme/tui.png" alt="Agent Orchestrator workspace with a supervised native agent interface" width="100%" />
 
-Les agents de codage IA sont bien plus utiles lorsqu'ils peuvent travailler en parallèle, mais le travail parallèle devient vite chaotique. Les branches se chevauchent, les terminaux se perdent, les échecs CI demandent un suivi, les commentaires de revue nécessitent une réponse, et les conflits de fusion doivent atteindre le bon worker.
+## Les workers exécutent des tâches bien délimitées
 
-Agent Orchestrator est conçu pour garder cette boucle visible et gérable. Il vous aide à :
+Un worker est l'unité d'exécution d'AO : une tâche, un agent de développement et un espace de travail isolé. Utilisez **New task** lorsque le travail est déjà clair. Décrivez le résultat attendu, choisissez un agent et un modèle, joignez les fichiers utiles, puis travaillez avec l'agent dans le Chat structuré ou dans son interface de terminal native.
 
-- Lancer plusieurs agents depuis le même projet sans mélanger leur travail
-- Garder chaque session dans un git worktree séparé
-- Voir quels agents travaillent, attendent, ont terminé ou sont bloqués
-- Router les échecs CI, commentaires de revue et conflits de fusion vers la bonne session
-- Utiliser différents CLI d'agents via un superviseur commun
+Vous pouvez ouvrir un worker à tout moment pour poursuivre la conversation, vous connecter à son terminal, examiner ses changements, utiliser son navigateur isolé, relire sa pull request ou renvoyer les retours de CI et de revue au même agent. Chaque tâche reste ainsi compréhensible indépendamment, sans que le travail parallèle ne se mélange dans un contexte partagé.
 
-## Comment ça fonctionne
+<img src="../docs/assets/readme/new-task.png" alt="Creating a focused worker task in Agent Orchestrator" width="100%" />
 
-À haut niveau, Agent Orchestrator suit une boucle simple :
+## L'orchestrateur planifie à l'échelle du projet
 
-1. Ajoutez un projet sur lequel les agents doivent travailler.
-2. Démarrez une ou plusieurs sessions depuis l'application de bureau ou la CLI.
-3. AO crée un git worktree isolé pour chaque session.
-4. AO lance l'agent de codage sélectionné dans le runtime terminal de cette session.
-5. Le daemon local surveille l'état de session, l'activité du terminal, les pull requests, la CI et le feedback de revue.
-6. L'application de bureau et la CLI affichent l'état actuel et vous permettent d'envoyer des instructions de suivi à la bonne session.
+L'orchestrateur du projet est l'agent permanent de planification et de coordination d'AO. Il travaille à un niveau supérieur à celui des tâches individuelles : la direction produit, la stratégie technique, les priorités et l'ordre des travaux dans l'ensemble du dépôt.
 
-Le résultat est une couche de contrôle locale pour le codage agentique : les agents codent toujours, tandis qu'Agent Orchestrator organise leurs espaces de travail, statuts, terminaux et boucles de feedback.
+Utilisez l'orchestrateur pour explorer une idée avant son implémentation, élaborer des approches produit et techniques, raisonner sur les compromis, repérer les tâches à fort impact et transformer un objectif ambigu en plan concret. Sa conversation, liée au projet, conserve les objectifs, les décisions, les contraintes et les raisonnements précédents. Il associe cet historique de planification au contexte du dépôt et à l'état actuel d'AO, notamment les workers actifs, les responsabilités, les pull requests, la CI et les revues. La planification reste ainsi ancrée dans le projet et dans le travail déjà en cours.
 
-## Fonctionnalités
+Lorsqu'un plan devient exploitable, l'orchestrateur peut le découper en tâches ciblées, lancer ou réorienter des workers, transmettre à chacun le contexte pertinent, suivre leur progression et coordonner la suite. L'orchestrateur prend en charge la planification et la délégation. Les workers prennent en charge l'implémentation, les tests, les commits et les pull requests.
 
-L'application de bureau est la surface de contrôle principale : projets à gauche, sessions actives au centre, et dans l'inspecteur le terminal de la session sélectionnée, l'état du pull request, les exécutions de revue et l'aperçu navigateur.
+<img src="../docs/assets/readme/orchestrator.png" alt="Agent Orchestrator coordinating multiple workers with project context" width="100%" />
+
+## Le Kanban rend le système lisible
+
+Chaque worker apparaît sur le même tableau en direct, qu'il ait été lancé depuis **New task** ou délégué par l'orchestrateur. AO détermine la position de chaque carte à partir des faits concernant la session, la pull request, la CI et la revue. Le Kanban devient ainsi une vue opérationnelle du projet :
+
+- **Working:** workers en cours d'implémentation ou prêts à recevoir une nouvelle instruction
+- **Needs you:** sessions bloquées, informations manquantes, CI en échec, changements demandés ou signaux perdus
+- **In review:** pull requests ouvertes ou en brouillon qui attendent des vérifications ou une revue
+- **Ready to merge:** travaux approuvés ou prêts à fusionner ; les sessions fusionnées restent visibles jusqu'à leur archivage
+
+Chaque carte rassemble la tâche, l'agent, la branche, l'activité, la pull request et l'état. Ouvrez-la pour examiner la conversation ou le terminal, les fichiers modifiés, le résumé de la PR, les revues et l'aperçu. Le tableau indique ce qui avance, ce qui est bloqué et où votre attention aura le plus d'impact.
+
+<img src="../docs/assets/readme/hero.png" alt="Agent Orchestrator Kanban showing workers grouped by live status" width="100%" />
+
+## Un seul workflow, de l'idée à la fusion
+
+1. **Commencez au bon niveau.** Confiez une tâche claire directement à un worker, ou développez un objectif plus large avec l'orchestrateur du projet et laissez-le structurer le plan.
+2. **Déléguez un travail ciblé.** Lancez vous-même les workers, ou demandez à l'orchestrateur de les créer avec le contexte et les responsabilités nécessaires.
+3. **Travaillez en isolation.** Chaque worker suivi avec Git reçoit sa propre branche et son propre worktree. Les workers Scratch reçoivent des répertoires sans branche gérés par AO.
+4. **Supervisez l'état en direct.** AO suit l'activité des agents, les pull requests, la CI, les retours de revue et les conflits de fusion, puis reflète ces faits dans le Kanban.
+5. **Fermez la boucle de feedback.** Examinez directement chaque worker, prenez les décisions à l'échelle du projet avec l'orchestrateur et renvoyez les échecs exploitables ou les commentaires de revue à l'agent responsable.
+
+AO fonctionne avec les agents de développement et le workflow de contrôle de version que vous utilisez déjà. Les agents conservent leurs points forts. AO apporte le contexte du projet, l'exécution isolée, la coordination et la vue opérationnelle qui leur permettent de fonctionner comme un système.
+
+## Points forts du produit
 
 <table>
   <tr>
-    <td width="36%">
-      <h3>Sessions d'agents en parallèle</h3>
-      <p>Lancez plusieurs agents de codage depuis le même projet sans mélanger fichiers, branches, terminaux ni l'état des pull requests.</p>
+    <td width="36%" valign="middle">
+      <h3>Pull requests et revues par des agents</h3>
+      <p>Gardez la CI, la fusionnabilité, l'état des relecteurs et les revues interactives par des agents aux côtés du worker, puis renvoyez les changements demandés au même responsable.</p>
     </td>
     <td width="64%">
-      <img src="../docs/assets/readme/dashboard.png" alt="Tableau Agent Orchestrator avec plusieurs sessions en parallèle" />
+      <img src="../docs/assets/readme/review.png" alt="Session de worker avec pull request, CI et état de revue par des agents dans Agent Orchestrator" width="100%" />
     </td>
   </tr>
   <tr>
-    <td width="36%">
-      <h3>Contrôle du terminal en direct</h3>
-      <p>Ouvrez n'importe quelle session et attachez-vous au terminal du worker tout en gardant le résumé de session, l'état PR et les actions de suivi visibles.</p>
+    <td width="36%" valign="middle">
+      <h3>Navigateur contrôlable par les agents</h3>
+      <p>Prévisualisez et inspectez l'application locale d'un worker à côté de son interface. Les profils de navigateur sont isolés par worker afin que les tâches d'interface parallèles ne partagent pas leur état.</p>
     </td>
     <td width="64%">
-      <img src="../docs/assets/readme/session-terminal.png" alt="Terminal de session dans Agent Orchestrator" />
+      <img src="../docs/assets/readme/browser.png" alt="Un worker contrôle son aperçu isolé dans le navigateur intégré" width="100%" />
     </td>
   </tr>
   <tr>
-    <td width="36%">
-      <h3>Boucle de feedback de revue</h3>
-      <p>Exécutez des agents relecteurs, inspectez le statut de revue et renvoyez les changements demandés à la bonne session worker.</p>
+    <td width="36%" valign="middle">
+      <h3>Interfaces natives, un seul superviseur</h3>
+      <p>Utilisez le Chat structuré ou l'interface de terminal native de l'agent, tandis qu'AO conserve le contexte, l'état de l'espace de travail et les retours au même endroit.</p>
     </td>
     <td width="64%">
-      <img src="../docs/assets/readme/reviews-tab.png" alt="Onglet Reviews montrant les exécutions de relecture et les actions" />
-    </td>
-  </tr>
-  <tr>
-    <td width="36%">
-      <h3>Aperçu navigateur intégré</h3>
-      <p>Prévisualisez l'application locale d'une session à côté du terminal pour garder ensemble le travail UI, l'état du navigateur et la sortie de l'agent.</p>
-    </td>
-    <td width="64%">
-      <img src="../docs/assets/readme/browser-preview.png" alt="Onglet d'aperçu navigateur montrant une application locale" />
+      <img src="../docs/assets/readme/tui.png" alt="Agent terminal interface supervised inside Agent Orchestrator" width="100%" />
     </td>
   </tr>
 </table>
 
 ## Agents pris en charge
 
-AO inclut des adaptateurs pour 23 harnesses d'agents worker :
+**26 agents de développement pris en charge** dans un workflow supervisé unique.
 
-<p>
-  <a href="https://aoagents.dev/docs/plugins/agents/claude-code"><img src="../frontend/src/renderer/assets/agents/claude-code.svg" alt="" width="16" height="16" valign="middle" /> <code>claude-code</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents/codex"><img src="../frontend/src/renderer/assets/agents/codex.svg" alt="" width="16" height="16" valign="middle" /> <code>codex</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents/aider"><img src="../frontend/src/renderer/assets/agents/aider.png" alt="" width="16" height="16" valign="middle" /> <code>aider</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents/opencode"><img src="../frontend/src/renderer/assets/agents/opencode.svg" alt="" width="16" height="16" valign="middle" /> <code>opencode</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/grok.png" alt="" width="16" height="16" valign="middle" /> <code>grok</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/droid.png" alt="" width="16" height="16" valign="middle" /> <code>droid</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/amp.svg" alt="" width="16" height="16" valign="middle" /> <code>amp</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/agy.png" alt="" width="16" height="16" valign="middle" /> <code>agy</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/crush.png" alt="" width="16" height="16" valign="middle" /> <code>crush</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents/cursor"><img src="../frontend/src/renderer/assets/agents/cursor.svg" alt="" width="16" height="16" valign="middle" /> <code>cursor</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/qwen.png" alt="" width="16" height="16" valign="middle" /> <code>qwen</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/copilot.svg" alt="" width="16" height="16" valign="middle" /> <code>copilot</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/goose.svg" alt="" width="16" height="16" valign="middle" /> <code>goose</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/auggie.svg" alt="" width="16" height="16" valign="middle" /> <code>auggie</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/continue.png" alt="" width="16" height="16" valign="middle" /> <code>continue</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/devin.png" alt="" width="16" height="16" valign="middle" /> <code>devin</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/cline.svg" alt="" width="16" height="16" valign="middle" /> <code>cline</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/kimi.png" alt="" width="16" height="16" valign="middle" /> <code>kimi</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/kiro.png" alt="" width="16" height="16" valign="middle" /> <code>kiro</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/kilocode.svg" alt="" width="16" height="16" valign="middle" /> <code>kilocode</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/vibe.png" alt="" width="16" height="16" valign="middle" /> <code>vibe</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/pi.png" alt="" width="16" height="16" valign="middle" /> <code>pi</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents"><img src="../frontend/src/renderer/assets/agents/autohand.svg" alt="" width="16" height="16" valign="middle" /> <code>autohand</code></a>
-</p>
+<table>
+  <tr valign="middle">
+    <td width="33%" valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/claude-code.svg" alt="Claude Code" width="24" height="24" align="middle" /> &nbsp; <b>Claude Code</b></td>
+    <td width="33%" valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/codex.svg" alt="Codex" width="24" height="24" align="middle" /> &nbsp; <b>Codex</b></td>
+    <td width="33%" valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/cursor.svg" alt="Cursor" width="24" height="24" align="middle" /> &nbsp; <b>Cursor</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/opencode.svg" alt="opencode" width="24" height="24" align="middle" /> &nbsp; <b>opencode</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/aider.png" alt="Aider" width="24" height="24" align="middle" /> &nbsp; <b>Aider</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/copilot.svg" alt="GitHub Copilot" width="24" height="24" align="middle" /> &nbsp; <b>GitHub Copilot</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/grok.png" alt="Grok" width="24" height="24" align="middle" /> &nbsp; <b>Grok</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/kimi.png" alt="Kimi" width="24" height="24" align="middle" /> &nbsp; <b>Kimi</b></td>
+    <td valign="middle" nowrap><img src="../docs/assets/readme/agents/pi-coding-agent.svg" alt="Pi" width="24" height="24" align="middle" /> &nbsp; <b>Pi</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/amp.svg" alt="Amp" width="24" height="24" align="middle" /> &nbsp; <b>Amp</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/auggie.svg" alt="Auggie" width="24" height="24" align="middle" /> &nbsp; <b>Auggie</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/droid.png" alt="Droid" width="24" height="24" align="middle" /> &nbsp; <b>Droid</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/crush.png" alt="Crush" width="24" height="24" align="middle" /> &nbsp; <b>Crush</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/cline.svg" alt="Cline" width="24" height="24" align="middle" /> &nbsp; <b>Cline</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/goose.svg" alt="Goose" width="24" height="24" align="middle" /> &nbsp; <b>Goose</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/qwen.png" alt="Qwen" width="24" height="24" align="middle" /> &nbsp; <b>Qwen</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/continue.png" alt="Continue" width="24" height="24" align="middle" /> &nbsp; <b>Continue</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/devin.png" alt="Devin" width="24" height="24" align="middle" /> &nbsp; <b>Devin</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/kiro.png" alt="Kiro" width="24" height="24" align="middle" /> &nbsp; <b>Kiro</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/kilocode.svg" alt="Kilo Code" width="24" height="24" align="middle" /> &nbsp; <b>Kilo Code</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/vibe.png" alt="Vibe" width="24" height="24" align="middle" /> &nbsp; <b>Vibe</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/muse.png" alt="Muse" width="24" height="24" align="middle" /> &nbsp; <b>Muse</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/agy.png" alt="Agy" width="24" height="24" align="middle" /> &nbsp; <b>Agy</b></td>
+    <td valign="middle" nowrap><picture><source media="(prefers-color-scheme: dark)" srcset="../docs/assets/readme/agents/autohand-stacked-dark.png" /><img src="../docs/assets/readme/agents/autohand-stacked-light.png" alt="Autohand" width="24" height="24" align="middle" /></picture> <b>Autohand</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/kimchi.svg" alt="Kimchi" width="24" height="24" align="middle" /> &nbsp; <b>Kimchi</b></td>
+    <td valign="middle" nowrap><img src="../docs/assets/readme/agents/prime-agent.svg" alt="Prime Agent" width="24" height="24" align="middle" /> &nbsp; <b>Prime Agent</b></td>
+    <td valign="middle" nowrap></td>
+  </tr>
+</table>
 
-Les agents relecteurs sont configurés séparément. Les harnesses de relecture actuels sont :
+[Consulter les guides de configuration des agents →](https://aoagents.dev/docs/plugins/agents)
 
-<p>
-  <a href="https://aoagents.dev/docs/plugins/agents/claude-code"><img src="../frontend/src/renderer/assets/agents/claude-code.svg" alt="" width="16" height="16" valign="middle" /> <code>claude-code</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents/codex"><img src="../frontend/src/renderer/assets/agents/codex.svg" alt="" width="16" height="16" valign="middle" /> <code>codex</code></a> ·
-  <a href="https://aoagents.dev/docs/plugins/agents/opencode"><img src="../frontend/src/renderer/assets/agents/opencode.svg" alt="" width="16" height="16" valign="middle" /> <code>opencode</code></a>
-</p>
-
-**S'il tourne dans un terminal, il tourne sur Agent Orchestrator.**
+**Utilisez l'interface adaptée au moment : le Chat structuré ou l'interface de terminal native de l'agent.**
 
 ## Installation
 
-Téléchargez la dernière build de bureau pour votre plateforme :
+Téléchargez la dernière application de bureau AO pour votre plateforme. AO vérifie automatiquement la disponibilité des mises à jour.
 
-| Plateforme            | Téléchargement                                                                                                                |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| macOS (Apple silicon) | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-arm64.dmg)   |
-| macOS (Intel)         | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-x64.dmg)     |
-| Windows               | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-win32-x64.exe)      |
-| Linux (AppImage)      | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.AppImage) |
-| Linux (Debian/Ubuntu) | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
-| Linux (Fedora/RHEL)   | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
+| Plateforme            | Téléchargement                                                                                                                   |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| macOS (Apple silicon) | [Télécharger](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-arm64.dmg)   |
+| macOS (Intel)         | [Télécharger](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-x64.dmg)     |
+| Windows               | [Télécharger](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-win32-x64.exe)      |
+| Linux (AppImage)      | [Télécharger](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.AppImage) |
+| Linux (Debian/Ubuntu) | [Télécharger](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
+| Linux (Fedora/RHEL)   | [Télécharger](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
-Après l'installation, ouvrez Agent Orchestrator et pointez-le vers le dépôt que vous voulez qu'AO gère. L'application de bureau lance le daemon pour vous, aucune CLI n'est requise. Les builds de bureau installées vérifient les mises à jour au lancement et périodiquement pendant l'exécution. Consultez le [guide d'installation](https://aoagents.dev/docs/installation) pour la configuration des CLI d'agents et le dépannage.
+Ouvrez Agent Orchestrator et sélectionnez le dépôt qu'AO doit gérer. L'application de bureau exécute le daemon pour vous, aucune CLI n'est donc nécessaire. Consultez le [guide d'installation](https://aoagents.dev/docs/installation) pour configurer les CLI des agents et résoudre les problèmes.
 
-<details>
-<summary>Installer via npm (CLI legacy, plus recommandé)</summary>
+## Signaler un bug
 
-npm fonctionne encore mais n'est plus recommandé. `0.10.0` est la dernière version publiée sur npm, et le paquet `@aoagents/ao` est figé et ne recevra plus de mises à jour. Il reste disponible pour les utilisateurs existants qui ont la CLI `ao` dans leur PATH ; `ao start` récupère et ouvre la même build de bureau liée ci-dessus. Pour toute nouvelle installation, préférez le téléchargement de bureau.
+La méthode recommandée pour signaler un bug consiste à demander à votre agent de développement de suivre la [skill de triage des bugs](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/.agents/skills/bug-triage/SKILL.md) du dépôt. Elle guide l'agent pour reproduire le problème sur le code actuel, recueillir les diagnostics, remonter le chemin de code concerné, rechercher les doublons et créer ou mettre à jour une issue GitHub détaillée.
 
-```bash
-npm install -g @aoagents/ao
-ao start
+Que vous sollicitiez un agent de développement local ou AO Bot sur Discord, joignez des captures d'écran et partagez autant d'informations pertinentes que possible. Indiquez ce qui s'est passé, où et quand, les étapes de reproduction, votre système d'exploitation, votre version d'AO et si le problème est systématique ou intermittent. L'agent aura ainsi les meilleures chances de reproduire le bug et de rédiger un rapport exploitable.
+
+```text
+Lis et suis https://github.com/Untrivial-ai/agent-orchestrator/blob/main/.agents/skills/bug-triage/SKILL.md. Reproduis ce bug et effectue son triage, puis crée ou mets à jour l'issue GitHub. Contexte : <ce qui s'est passé, où, quand, étapes de reproduction, système d'exploitation, version d'AO et fréquence>. Captures d'écran : <joindre les captures disponibles>.
 ```
 
-</details>
+Vous pouvez également signaler un bug dans le [canal de triage des bugs sur Discord](https://discord.com/channels/1476302178913357958/1491735678156013588). Mentionnez `@AO Bot#8425`, décrivez le problème et demandez-lui d'utiliser la skill de triage des bugs.
 
-## Suivez le parcours d'AO sur X
+```text
+@AO Bot#8425 Reproduis ce bug et effectue son triage avec la skill de triage des bugs, puis crée ou mets à jour l'issue GitHub. Contexte : <ce qui s'est passé, où, quand, étapes de reproduction, système d'exploitation, version d'AO et fréquence>. Captures d'écran : <joindre les captures disponibles>.
+```
+
+## Développer et contribuer
+
+Les contributions au code, à la documentation, au triage, aux exemples et aux tests sont les bienvenues.
+
+```bash
+git clone https://github.com/Untrivial-ai/agent-orchestrator.git
+cd agent-orchestrator
+```
+
+Commencez par le [guide de développement](../docs/development.md) pour connaître les prérequis, la configuration locale et les commandes de test. Lisez [CONTRIBUTING.md](../CONTRIBUTING.md) avant d'ouvrir une pull request et utilisez les [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues) pour les bugs et les demandes de fonctionnalités.
+
+## Documentation
+
+| Document                                                            | Commencez ici pour                                                                                   |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| [Documentation produit](https://aoagents.dev/docs)                  | Installation, configuration des agents et utilisation quotidienne du produit.                        |
+| [docs/architecture.md](../docs/architecture.md)                     | Modèle mental du backend, cycle de vie, persistance, CDC, dérivation de l'état et limites du daemon. |
+| [docs/backend-code-structure.md](../docs/backend-code-structure.md) | Responsabilité des paquets et emplacement de chaque domaine du backend.                              |
+| [docs/cli/README.md](../docs/cli/README.md)                         | Comportement de la CLI et correspondance avec les routes du daemon.                                  |
+| [docs/development.md](../docs/development.md)                       | Prérequis, compilation, tests et dépannage pour le développement local.                              |
+| [docs/STATUS.md](../docs/STATUS.md)                                 | Ce qui est actuellement livré sur `main` et ce qui reste en cours.                                   |
+
+## Suivez notre parcours
 
 <table>
   <tr>
     <td width="50%" align="center">
       <a href="https://x.com/agent_wrapper/status/2026329204405723180">
-        <img src="../assets/tweet2.png" height="330" alt="Capture un du parcours d'Agent Orchestrator" />
+        <img src="../assets/tweet2.png" height="330" alt="Actualité du parcours d'Agent Orchestrator sur X" />
       </a>
     </td>
     <td width="50%" align="center">
       <a href="https://x.com/agent_wrapper/status/2025986105485733945">
-        <img src="../assets/tweet1.png" height="330" alt="Capture deux du parcours d'Agent Orchestrator" />
+        <img src="../assets/tweet1.png" height="330" alt="Actualité du parcours d'Agent Orchestrator sur X" />
       </a>
     </td>
   </tr>
 </table>
 
-## Documentation
+## Communauté
 
-| Document                                                         | Commencez ici lorsque vous avez besoin de                                                    |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| [docs/architecture.md](../docs/architecture.md)                     | Modèle mental du backend, cycle de vie, persistance, CDC, dérivation du statut et limites du daemon. |
-| [docs/backend-code-structure.md](../docs/backend-code-structure.md) | Propriété des paquets et emplacement de chaque préoccupation backend.                        |
-| [docs/cli/README.md](../docs/cli/README.md)                         | Comportement de la CLI et correspondance des routes du daemon.                               |
-| [docs/development.md](../docs/development.md)                       | Prérequis, étapes de build, exécution des tests et dépannage pour le développement local.    |
-| [docs/STATUS.md](../docs/STATUS.md)                                 | Ce qui est actuellement livré sur `main` et ce qui est encore en cours.                      |
-| [docs/stack.md](../docs/stack.md)                                   | Décisions de bibliothèques, runtime et dépendances.                                          |
+Rejoignez [Discord](https://discord.com/invite/UZv7JjxbwG) pour obtenir de l'aide et échanger avec les contributeurs, suivez [@aoagents](https://x.com/aoagents) pour les nouveautés ou lancez une discussion dans les [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues).
 
 ## Télémétrie anonyme
 
-AO utilise des mesures d'usage et de fiabilité respectueuses de la vie privée — conçues pour exclure les PII et le contenu des projets — afin de mesurer l'adoption et d'améliorer le produit. [En savoir plus sur la télémétrie et la confidentialité](../docs/telemetry.md).
+AO utilise des métriques d'usage et de fiabilité respectueuses de la vie privée, conçues pour exclure les données personnelles et le contenu des projets. Ces métriques nous aident à comprendre l'adoption et à améliorer le produit. [En savoir plus sur la télémétrie et la confidentialité](../docs/telemetry.md).
 
 ## Licence
 
-Apache License 2.0. Voir [LICENSE](../LICENSE).
+Agent Orchestrator est disponible sous [licence Apache 2.0](../LICENSE).

@@ -5,6 +5,8 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-nati
 import { WebView } from "react-native-webview";
 import { getPreview } from "../../lib/api";
 import { authHeaders } from "../../lib/config";
+import { headerActionStyle, headerGlyphStyle } from "../../lib/headerAction";
+import { haptics } from "../../lib/haptics";
 import { useApp } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
@@ -32,11 +34,11 @@ export default function SessionPreviewScreen() {
 	}, [config, id, previewUrl]);
 
 	useEffect(() => { void refresh(); const poll = setInterval(() => void refresh(), 5_000); return () => clearInterval(poll); }, [refresh]);
-	useLayoutEffect(() => { navigation.setOptions({ title: title || preview?.entry || "Preview", headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="Reload preview" hitSlop={10} onPress={() => preview ? web.current?.reload() : void refresh()}><Feather name="refresh-cw" size={18} color={t.textSecondary} /></Pressable> }); }, [navigation, preview, refresh, t.textSecondary, title]);
+	useLayoutEffect(() => { navigation.setOptions({ title: title || preview?.entry || "Preview", headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="Reload preview" hitSlop={10} onPress={() => { haptics.tap(); if (preview) web.current?.reload(); else void refresh(); }} style={headerActionStyle}><Feather name="refresh-cw" size={18} color={t.textSecondary} style={headerGlyphStyle} /></Pressable> }); }, [navigation, preview, refresh, t.textSecondary, title]);
 
 	if (!config || loading) return <View style={styles.center}><ActivityIndicator color={t.blue} /><Text style={styles.copy}>Looking for a session preview…</Text></View>;
-	if (!preview) return <View style={styles.center}><Feather name={error ? "alert-triangle" : "globe"} size={24} color={error ? t.red : t.textTertiary} /><Text style={styles.title}>{error ? "Could not load preview" : "No preview yet"}</Text><Text style={styles.copy}>{error || "Waiting for the agent to generate a page or document. This screen will keep checking."}</Text><Pressable onPress={() => void refresh()} style={styles.retry}><Text style={styles.retryText}>Check again</Text></Pressable></View>;
-	return <View style={styles.screen}><WebView ref={web} source={{ uri: preview.url, headers: preview.authenticated ? authHeaders(config) : undefined }} style={styles.web} startInLoadingState renderLoading={() => <View style={styles.webLoading}><ActivityIndicator color={t.blue} /></View>} onLoadStart={() => setError(undefined)} onHttpError={(event) => setError(`Preview returned HTTP ${event.nativeEvent.statusCode}.`)} onError={(event) => setError(event.nativeEvent.description || "The preview could not be loaded.")} />{error ? <View accessibilityRole="alert" style={styles.webError}><Feather name="alert-triangle" size={15} color={t.red} /><Text style={styles.webErrorText}>{error}</Text><Pressable onPress={() => { setError(undefined); web.current?.reload(); }}><Text style={styles.retryText}>Retry</Text></Pressable></View> : null}</View>;
+	if (!preview) return <View style={styles.center}><Feather name={error ? "alert-triangle" : "globe"} size={24} color={error ? t.red : t.textTertiary} /><Text style={styles.title}>{error ? "Could not load preview" : "No preview yet"}</Text><Text style={styles.copy}>{error || "Waiting for the agent to generate a page or document. This screen will keep checking."}</Text><Pressable onPress={() => { haptics.tap(); void refresh(); }} style={styles.retry}><Text style={styles.retryText}>Check again</Text></Pressable></View>;
+	return <View style={styles.screen}><WebView ref={web} source={{ uri: preview.url, headers: preview.authenticated ? authHeaders(config) : undefined }} style={styles.web} startInLoadingState renderLoading={() => <View style={styles.webLoading}><ActivityIndicator color={t.blue} /></View>} onLoadStart={() => setError(undefined)} onHttpError={(event) => setError(`Preview returned HTTP ${event.nativeEvent.statusCode}.`)} onError={(event) => setError(event.nativeEvent.description || "The preview could not be loaded.")} />{error ? <View accessibilityRole="alert" style={styles.webError}><Feather name="alert-triangle" size={15} color={t.red} /><Text style={styles.webErrorText}>{error}</Text><Pressable onPress={() => { haptics.tap(); setError(undefined); web.current?.reload(); }}><Text style={styles.retryText}>Retry</Text></Pressable></View> : null}</View>;
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({

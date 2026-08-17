@@ -4,22 +4,23 @@ import (
 	"sort"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 )
 
 // StateStatus is the per-PR review planning state.
-type StateStatus string
+type StateStatus = contract.AOReviewState
 
 const (
 	// ReviewStateNeedsReview means an eligible PR has no current AO approval or running pass.
-	ReviewStateNeedsReview StateStatus = "needs_review"
+	ReviewStateNeedsReview = contract.AOReviewNeedsReview
 	// ReviewStateRunning means a review run is already active for the PR's current head.
-	ReviewStateRunning StateStatus = "running"
+	ReviewStateRunning = contract.AOReviewRunning
 	// ReviewStateUpToDate means AO approved the PR's current head.
-	ReviewStateUpToDate StateStatus = "up_to_date"
+	ReviewStateUpToDate = contract.AOReviewUpToDate
 	// ReviewStateChangesRequested means AO requested changes on the PR's current head.
-	ReviewStateChangesRequested StateStatus = "changes_requested"
+	ReviewStateChangesRequested = contract.AOReviewChangesRequested
 	// ReviewStateIneligible means the PR is draft, closed, merged, or missing required facts.
-	ReviewStateIneligible StateStatus = "ineligible"
+	ReviewStateIneligible = contract.AOReviewIneligible
 )
 
 // PRReviewState is one PR-scoped review decision for a worker session.

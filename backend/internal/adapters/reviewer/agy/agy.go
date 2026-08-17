@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	agentagy "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agy"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/reviewgateway"
 )
 
@@ -38,7 +38,7 @@ func New() *Reviewer {
 	return &Reviewer{
 		resolveBinary: agentagy.ResolveAgyBinary,
 		run: func(ctx context.Context, env map[string]string, binary string, args ...string) ([]byte, error) {
-			cmd := exec.CommandContext(ctx, binary, args...)
+			cmd := aoprocess.CommandContext(ctx, binary, args...)
 			cmd.Env = appendEnvironment(os.Environ(), env)
 			return cmd.CombinedOutput()
 		},

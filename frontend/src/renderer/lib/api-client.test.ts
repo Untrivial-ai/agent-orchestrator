@@ -336,4 +336,12 @@ describe("apiErrorMessage", () => {
 			}),
 		).toBe("tmux required (RUNTIME_PREREQUISITE_MISSING)");
 	});
+
+	it("reads the nested daemon error envelope", () => {
+		expect(
+			apiErrorMessage({
+				error: { code: "REVIEWER_NOT_FOUND", message: "reviewer has not reviewed this PR" },
+			}),
+		).toBe("reviewer has not reviewed this PR (REVIEWER_NOT_FOUND)");
+	});
 });

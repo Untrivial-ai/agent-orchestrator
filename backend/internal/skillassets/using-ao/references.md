@@ -33,7 +33,8 @@ Natural-language-to-command mappings for common AO tasks.
 | Run health checks | `ao doctor` |
 | Clear the preview panel | `ao preview clear` |
 | List orchestrator sessions | `ao orchestrator ls` |
-| Claim an existing PR for a session | `ao session claim-pr <id> <pr-ref>` |
+| Claim an existing PR for the current session | `ao session claim-pr <pr-ref>` (`AO_SESSION_ID`) |
+| Claim an existing PR for another session | `ao session claim-pr <id> <pr-ref>` |
 | Submit a code review verdict | `ao review submit <session-id> --run <run-id> --verdict approved` |
 | Configure a project's default branch or model | `ao project set-config <id> --default-branch <branch> --model <model>` |
 | Import projects from a legacy AO install | `ao import --dry-run` (preview), then `ao import -y` |

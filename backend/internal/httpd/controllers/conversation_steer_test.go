@@ -46,6 +46,39 @@ func (f *fakeChatService) Steer(
 	return chatsvc.SteerResult{}, nil
 }
 
+func (f *fakeConversationService) PromoteQueuedTurn(
+	context.Context,
+	domain.SessionID,
+	string,
+) (chatsvc.PromoteQueuedTurnResult, error) {
+	return chatsvc.PromoteQueuedTurnResult{}, nil
+}
+
+func (f *fakeChatService) PromoteQueuedTurn(
+	context.Context,
+	domain.SessionID,
+	string,
+) (chatsvc.PromoteQueuedTurnResult, error) {
+	return chatsvc.PromoteQueuedTurnResult{}, nil
+}
+
+type promoteQueuedStub struct {
+	*fakeConversationService
+	result  chatsvc.PromoteQueuedTurnResult
+	err     error
+	session domain.SessionID
+	turnID  string
+}
+
+func (s *promoteQueuedStub) PromoteQueuedTurn(
+	_ context.Context,
+	session domain.SessionID,
+	turnID string,
+) (chatsvc.PromoteQueuedTurnResult, error) {
+	s.session, s.turnID = session, turnID
+	return s.result, s.err
+}
+
 // steerStub overrides only the steer answer, so a scenario states the outcome it is
 // about and inherits everything else.
 type steerStub struct {
@@ -268,5 +301,43 @@ func TestSteerRouteIsNotImplementedWithoutAChatService(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Errorf("status = %d, want 501", resp.StatusCode)
+	}
+}
+
+// The turn-scoped route identifies durable content; it carries no request body
+// that could replace what AO already queued.
+func TestQueuedTurnSteerRoutePromotesTheSelectedTurn(t *testing.T) {
+	svc := &promoteQueuedStub{
+		fakeConversationService: &fakeConversationService{},
+		result: chatsvc.PromoteQueuedTurnResult{
+			SourceTurnID: "queued-2", ProviderTurnID: "provider-running", ActivityID: "activity-steer",
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Sessions: newFakeSessionService(), Conversations: svc,
+	}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(
+		srv.URL+"/api/v1/sessions/p1-1/conversation/turns/queued-2/steer",
+		"application/json", nil)
+	if err != nil {
+		t.Fatalf("POST queued steer: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 202: %s", resp.StatusCode, body)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if svc.session != "p1-1" || svc.turnID != "queued-2" {
+		t.Fatalf("service target = (%s, %s)", svc.session, svc.turnID)
+	}
+	if body["sourceTurnId"] != "queued-2" || body["providerTurnId"] != "provider-running" || body["activityId"] != "activity-steer" {
+		t.Fatalf("response = %#v", body)
 	}
 }

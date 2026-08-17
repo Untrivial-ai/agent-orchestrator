@@ -233,7 +233,7 @@ function OrchestratorCard({
 						accessibilityRole="button"
 						accessibilityLabel={intent.label}
 						disabled={busy}
-						onPress={onLaunch}
+						onPress={() => { haptics.tap(); onLaunch(); }}
 						style={({ pressed }) => [styles.start, pressed && { opacity: 0.85 }, busy && { opacity: 0.5 }]}
 					>
 						<Text style={styles.startText}>{busy ? "Starting…" : intent.label}</Text>

@@ -133,7 +133,7 @@ Project resolution order is explicit `--project`, `AO_PROJECT_ID`, the project o
 | `ao session restore <id>` | Relaunch a terminated session. |
 | `ao session rename <id> <name>` | Change its display name. |
 | `ao session cleanup` | Reclaim eligible terminated workspaces; supports `--dry-run`. |
-| `ao session claim-pr <session-id> <pr-ref>` | Attach an existing GitHub PR. |
+| `ao session claim-pr [<session-id>] <pr-ref>` | Attach an existing PR; omitting the session uses `AO_SESSION_ID`. |
 | `ao session switch-agent <id> <target-harness>` | Switch a compatible session to another harness. |
 | `ao session agent-switch ls <session-id>` | Inspect agent-switch attempts. |
 

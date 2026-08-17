@@ -223,6 +223,12 @@ type PostHogSink struct {
 	ch         chan ports.TelemetryEvent
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
+	// ctx bounds every in-flight send and its retry backoff. Close cancels it
+	// when the caller's shutdown context is done, so pending retry work stops
+	// promptly instead of outliving shutdown on an uncancellable sleep or a
+	// long HTTP timeout.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // NewPostHogSink starts a buffered PostHog exporter with a stable install ID.
@@ -240,6 +246,7 @@ func NewPostHogSink(dataDir, apiKey, host, appVersion, defaultAgent string, clie
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &PostHogSink{
 		apiKey:       apiKey,
 		host:         strings.TrimRight(host, "/"),
@@ -250,6 +257,8 @@ func NewPostHogSink(dataDir, apiKey, host, appVersion, defaultAgent string, clie
 		log:          telemetryLogger(log),
 		appVersion:   strings.TrimSpace(appVersion),
 		ch:           make(chan ports.TelemetryEvent, postHogBufferSize),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 	s.wg.Add(1)
 	go s.loop()
@@ -275,8 +284,14 @@ func (s *PostHogSink) Close(ctx context.Context) error {
 	}()
 	select {
 	case <-ctx.Done():
+		// The caller's shutdown deadline elapsed: cancel in-flight sends and
+		// their retry backoff so the drain goroutine exits promptly rather than
+		// blocking on a sleep or a long HTTP timeout.
+		s.cancel()
+		<-done
 		return ctx.Err()
 	case <-done:
+		s.cancel()
 		return nil
 	}
 }
@@ -284,16 +299,36 @@ func (s *PostHogSink) Close(ctx context.Context) error {
 func (s *PostHogSink) loop() {
 	defer s.wg.Done()
 	for ev := range s.ch {
-		s.send(ev)
+		s.send(s.ctx, ev)
 	}
 }
 
-func (s *PostHogSink) send(ev ports.TelemetryEvent) {
+// Bounded retry for a single event. A dropped send is a permanent gap,
+// because the upstream reservoir has already marked this event's dedup slot
+// (ao.app.active per UTC day, ao.cli.invoked per command/day) spent before it
+// ever reached this sink, so there is no second attempt from the caller. Only
+// failed sends are retried, so a healthy path still makes exactly one request
+// per event and adds no billable volume. A sustained outage gives up after
+// postHogSendMaxAttempts rather than blocking the drain goroutine forever.
+const (
+	postHogSendMaxAttempts = 2
+	postHogSendRetryDelay  = 200 * time.Millisecond
+)
+
+func (s *PostHogSink) send(ctx context.Context, ev ports.TelemetryEvent) {
 	eventName := remoteEventName(ev.Name)
+	// A stable per-event UUID, reused across every attempt, is PostHog's
+	// idempotency key. A transport error only means AO received no response;
+	// PostHog may already have ingested the first attempt, so without a shared
+	// UUID a retry would land as a duplicate (inflating counts and the billed
+	// volume, breaking the "retries add no volume" guarantee). PostHog dedupes
+	// events that carry the same uuid.
+	eventUUID := uuid.NewString()
 	body := map[string]any{
 		"api_key":     s.apiKey,
 		"event":       eventName,
 		"distinct_id": s.distinctID,
+		"uuid":        eventUUID,
 		"properties":  s.properties(ev),
 		"timestamp":   ev.OccurredAt.UTC().Format(time.RFC3339Nano),
 	}
@@ -302,23 +337,51 @@ func (s *PostHogSink) send(ev ports.TelemetryEvent) {
 		s.log.Warn("telemetry posthog payload marshal failed", "name", ev.Name, "error", err)
 		return
 	}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.host+"/capture/", bytes.NewReader(payload))
+
+	for attempt := 1; attempt <= postHogSendMaxAttempts; attempt++ {
+		retryable, err := s.sendOnce(ctx, payload)
+		if err == nil {
+			return
+		}
+		if !retryable || attempt == postHogSendMaxAttempts {
+			s.log.Warn("telemetry posthog export failed", "name", ev.Name, "attempts", attempt, "error", err)
+			return
+		}
+		// Cancellable backoff: shutdown must be able to stop pending retry work
+		// instead of waiting out the full delay.
+		timer := time.NewTimer(postHogSendRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+// sendOnce posts a single capture attempt. retryable is true only for
+// transient failures a retry might clear (connection errors, HTTP 429, and
+// 5xx); a permanent rejection (any other non-2xx, e.g. a 4xx auth/shape error)
+// returns retryable=false so a retry does not waste a call that will fail
+// identically.
+func (s *PostHogSink) sendOnce(ctx context.Context, payload []byte) (retryable bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.host+"/capture/", bytes.NewReader(payload))
 	if err != nil {
-		s.log.Warn("telemetry posthog request build failed", "name", ev.Name, "error", err)
-		return
+		return false, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		s.log.Warn("telemetry posthog export failed", "name", ev.Name, "error", err)
-		return
+		return true, fmt.Errorf("do request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		s.log.Warn("telemetry posthog rejected event", "name", ev.Name, "status", resp.StatusCode, "body", strings.TrimSpace(string(b)))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return false, nil
 	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	rejected := fmt.Errorf("rejected status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(b)))
+	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500, rejected
 }
 
 func (s *PostHogSink) properties(ev ports.TelemetryEvent) map[string]any {

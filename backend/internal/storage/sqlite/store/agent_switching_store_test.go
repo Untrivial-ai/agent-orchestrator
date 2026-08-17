@@ -33,6 +33,51 @@ func advanceAgentSwitchFixtureWithMutation(ctx context.Context, t *testing.T, s 
 	}
 }
 
+func TestListActiveAgentSwitchesExcludesTerminalRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	makeSwitch := func(projectID string, switchID domain.AgentSwitchID) domain.AgentSwitch {
+		t.Helper()
+		seedProject(t, s, projectID)
+		session, err := s.CreateSession(ctx, sampleRecord(projectID))
+		if err != nil {
+			t.Fatalf("create %s session: %v", projectID, err)
+		}
+		rec := domain.AgentSwitch{
+			ID: switchID, SessionID: session.ID, IdempotencyKey: string(switchID),
+			RequestFingerprint: domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, ""),
+			FromHarness:        domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+			State: domain.AgentSwitchPreparingHandoff, TargetStartMode: domain.AgentSwitchTargetStartPending,
+			AgentHandoffStatus: domain.AgentHandoffNotAttempted, SourceGenerationID: domain.AgentGenerationID("generation-" + projectID),
+			RequestedAt: now, UpdatedAt: now,
+		}
+		stored, created, err := s.CreateAgentSwitch(ctx, rec)
+		if err != nil || !created {
+			t.Fatalf("create %s switch: created=%v err=%v", projectID, created, err)
+		}
+		return stored
+	}
+
+	active := makeSwitch("active-switch", "switch-active")
+	failed := makeSwitch("terminal-switch", "switch-failed")
+	failed.State = domain.AgentSwitchFailed
+	failed.ErrorCode = domain.AgentSwitchErrorSwitchFailed
+	failed.UpdatedAt = now.Add(time.Second)
+	if updated, err := s.UpdateAgentSwitch(ctx, failed, domain.AgentSwitchPreparingHandoff, failed.SourceGenerationID, ""); err != nil || !updated {
+		t.Fatalf("fail terminal switch: updated=%v err=%v", updated, err)
+	}
+
+	got, err := s.ListActiveAgentSwitches(ctx)
+	if err != nil {
+		t.Fatalf("list active agent switches: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != active.ID {
+		t.Fatalf("active switches = %+v, want only %s", got, active.ID)
+	}
+}
+
 func TestAgentNativeSessionsRetainMultipleConversationsNewestFirst(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -181,7 +226,7 @@ func TestAgentSwitchIdempotencySingleActiveSagaAndGenerationFences(t *testing.T)
 	}
 
 	conflictingRetry := retry
-	conflictingRetry.RequestFingerprint = domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, "different note")
+	conflictingRetry.RequestFingerprint = domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, "different-model")
 	if _, _, err := s.CreateAgentSwitch(ctx, conflictingRetry); !errors.Is(err, domain.ErrAgentSwitchIdempotencyConflict) {
 		t.Fatalf("conflicting idempotency key err=%v", err)
 	}
@@ -374,6 +419,120 @@ func TestAgentSwitchTargetStartUnconfirmedMarkerIsNonTerminalAndMonotonic(t *tes
 	owner, ok, err := s.GetSession(ctx, session.ID)
 	if err != nil || !ok || owner.Harness != domain.HarnessClaudeCode || owner.Activity.State != domain.ActivityExited {
 		t.Fatalf("recovery activation changed source ownership: owner=%+v ok=%v err=%v", owner, ok, err)
+	}
+}
+
+func TestAgentSwitchSourceStopMarkerCanAdvanceOnlyThroughConfirmedBoundary(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "source-stop-recovery")
+	rec := sampleRecord("source-stop-recovery")
+	now := rec.CreatedAt
+	rec.Metadata.RuntimeHandleID = "source-handle"
+	rec.Metadata.RuntimeLaunchID = "source-runtime"
+	session, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create AO session: %v", err)
+	}
+	sw, created, err := s.CreateAgentSwitch(ctx, domain.AgentSwitch{
+		ID: "switch-source-stop", SessionID: session.ID, IdempotencyKey: "switch-source-stop",
+		RequestFingerprint: domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, ""),
+		FromHarness:        domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchPreparingHandoff, TargetStartMode: domain.AgentSwitchTargetStartPending,
+		AgentHandoffStatus: domain.AgentHandoffNotAttempted, SourceGenerationID: "source-generation",
+		RequestedAt: now, UpdatedAt: now,
+	})
+	if err != nil || !created {
+		t.Fatalf("create switch: created=%v err=%v", created, err)
+	}
+	advanceAgentSwitchFixtureWithMutation(ctx, t, s, &sw, domain.AgentSwitchStoppingSource, now.Add(time.Second), func(sw *domain.AgentSwitch) {
+		sw.TargetGenerationID = "target-generation"
+	})
+	sw.ErrorCode = domain.AgentSwitchErrorSourceStopUnconfirmed
+	sw.UpdatedAt = now.Add(2 * time.Second)
+	if ok, err := s.UpdateAgentSwitch(ctx, sw, domain.AgentSwitchStoppingSource, "source-generation", "target-generation"); err != nil || !ok {
+		t.Fatalf("persist source-stop marker: ok=%v err=%v", ok, err)
+	}
+	marked, ok, err := s.GetActiveAgentSwitch(ctx, session.ID)
+	if err != nil || !ok || !marked.RequiresRecovery() || marked.State.Terminal() {
+		t.Fatalf("marked switch = %+v, ok=%v err=%v", marked, ok, err)
+	}
+
+	staleClear := marked
+	staleClear.ErrorCode = ""
+	staleClear.UpdatedAt = now.Add(3 * time.Second)
+	if changed, err := s.UpdateAgentSwitch(ctx, staleClear, domain.AgentSwitchStoppingSource, "source-generation", "target-generation"); err != nil || changed {
+		t.Fatalf("stale source-stop clear: changed=%v err=%v", changed, err)
+	}
+	if ok, err := s.ConfirmAgentSwitchSourceStopped(ctx, domain.AgentSwitchSourceStopConfirmation{
+		SwitchID: marked.ID, SessionID: session.ID, SourceHarness: domain.HarnessClaudeCode,
+		SourceGenerationID: "source-generation", ExpectedSourceRuntimeLaunchID: "source-runtime", TargetGenerationID: "target-generation",
+		StoppedAt: now.Add(4 * time.Second),
+	}); err != nil || !ok {
+		t.Fatalf("confirm marked source stopped: ok=%v err=%v", ok, err)
+	}
+	confirmed, ok, err := s.GetAgentSwitch(ctx, marked.ID)
+	if err != nil || !ok || confirmed.State != domain.AgentSwitchSourceStopped || confirmed.ErrorCode != "" {
+		t.Fatalf("confirmed switch = %+v, ok=%v err=%v", confirmed, ok, err)
+	}
+}
+
+func TestAgentSwitchSourceRestoreMarkerCanSettleOnlyAsTerminalFailure(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "source-restore-recovery")
+	rec := sampleRecord("source-restore-recovery")
+	now := rec.CreatedAt
+	rec.Metadata.RuntimeHandleID = "source-handle"
+	rec.Metadata.RuntimeLaunchID = "source-runtime"
+	session, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create AO session: %v", err)
+	}
+	sw, created, err := s.CreateAgentSwitch(ctx, domain.AgentSwitch{
+		ID: "switch-source-restore", SessionID: session.ID, IdempotencyKey: "switch-source-restore",
+		RequestFingerprint: domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, ""),
+		FromHarness:        domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchPreparingHandoff, TargetStartMode: domain.AgentSwitchTargetStartPending,
+		AgentHandoffStatus: domain.AgentHandoffNotAttempted, SourceGenerationID: "source-generation",
+		RequestedAt: now, UpdatedAt: now,
+	})
+	if err != nil || !created {
+		t.Fatalf("create switch: created=%v err=%v", created, err)
+	}
+	advanceAgentSwitchFixtureWithMutation(ctx, t, s, &sw, domain.AgentSwitchStoppingSource, now.Add(time.Second), func(sw *domain.AgentSwitch) {
+		sw.TargetGenerationID = "target-generation"
+	})
+	if ok, err := s.ConfirmAgentSwitchSourceStopped(ctx, domain.AgentSwitchSourceStopConfirmation{
+		SwitchID: sw.ID, SessionID: session.ID, SourceHarness: domain.HarnessClaudeCode,
+		SourceGenerationID: "source-generation", ExpectedSourceRuntimeLaunchID: "source-runtime", TargetGenerationID: "target-generation",
+		StoppedAt: now.Add(2 * time.Second),
+	}); err != nil || !ok {
+		t.Fatalf("confirm source stopped: ok=%v err=%v", ok, err)
+	}
+	sw, _, _ = s.GetAgentSwitch(ctx, sw.ID)
+	sw.ErrorCode = domain.AgentSwitchErrorSourceRestoreUnconfirmed
+	sw.UpdatedAt = now.Add(3 * time.Second)
+	if ok, err := s.UpdateAgentSwitch(ctx, sw, domain.AgentSwitchSourceStopped, "source-generation", "target-generation"); err != nil || !ok {
+		t.Fatalf("persist source-restore marker: ok=%v err=%v", ok, err)
+	}
+	marked, ok, err := s.GetActiveAgentSwitch(ctx, session.ID)
+	if err != nil || !ok || !marked.RequiresSourceRestore() || marked.State.Terminal() {
+		t.Fatalf("marked switch = %+v, ok=%v err=%v", marked, ok, err)
+	}
+
+	staleClear := marked
+	staleClear.ErrorCode = ""
+	staleClear.UpdatedAt = now.Add(4 * time.Second)
+	if changed, err := s.UpdateAgentSwitch(ctx, staleClear, domain.AgentSwitchSourceStopped, "source-generation", "target-generation"); err != nil || changed {
+		t.Fatalf("stale source-restore clear: changed=%v err=%v", changed, err)
+	}
+	failed := marked
+	failed.State = domain.AgentSwitchFailed
+	failed.ErrorCode = domain.AgentSwitchErrorDaemonRestartPostStop
+	failed.UpdatedAt = now.Add(5 * time.Second)
+	if changed, err := s.UpdateAgentSwitch(ctx, failed, domain.AgentSwitchSourceStopped, "source-generation", "target-generation"); err != nil || !changed {
+		t.Fatalf("terminal source-restore settlement: changed=%v err=%v", changed, err)
 	}
 }
 
@@ -768,6 +927,15 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	if err != nil {
 		t.Fatalf("create AO session: %v", err)
 	}
+	conversation, err := s.CreateConversation(ctx, "conversation-switch-activation", domain.ConversationScopeSession, session.ProjectID, session.ID, now)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if err := s.SetConversationSettings(ctx, conversation.ID, domain.ConversationSettings{
+		Model: "source-model", ReasoningEffort: "source-mode", ApprovalMode: domain.PermissionModeAcceptEdits,
+	}, now); err != nil {
+		t.Fatalf("set source conversation settings: %v", err)
+	}
 	target := domain.AgentNativeSession{
 		ID: "activation-target", AOSessionID: session.ID, Harness: domain.HarnessCodex,
 		NativeSessionID: "codex-native-id",
@@ -780,7 +948,7 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	targetRef := target.ID
 	sw := domain.AgentSwitch{
 		ID: "switch-activation", SessionID: session.ID, IdempotencyKey: "switch-activation",
-		RequestFingerprint: domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, "keep going"),
+		RequestFingerprint: domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, ""),
 		FromHarness:        domain.HarnessClaudeCode,
 		TargetHarness:      domain.HarnessCodex, State: domain.AgentSwitchPreparingHandoff,
 		AgentHandoffStatus: domain.AgentHandoffNotAttempted, SourceGenerationID: "source-switch-generation",
@@ -889,6 +1057,10 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	if ok, err := s.ActivateAgentSwitchTarget(ctx, activation); err != nil || ok {
 		t.Fatalf("stale runtime handle activation: ok=%v err=%v", ok, err)
 	}
+	unchangedConversation, err := s.ConversationForSession(ctx, session.ID)
+	if err != nil || unchangedConversation.Settings.Model != "source-model" || unchangedConversation.Settings.ReasoningEffort != "source-mode" {
+		t.Fatalf("stale activation changed conversation settings: conversation=%+v err=%v", unchangedConversation, err)
+	}
 	unchanged, ok, err = s.GetSession(ctx, session.ID)
 	if err != nil || !ok || unchanged.Harness != domain.HarnessClaudeCode || unchanged.Activity.State != domain.ActivityExited {
 		t.Fatalf("stale runtime handle partially mutated session: session=%+v ok=%v err=%v", unchanged, ok, err)
@@ -903,11 +1075,19 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	}
 	if activated.Harness != domain.HarnessCodex || activated.Activity.State != domain.ActivityIdle ||
 		activated.Metadata.RuntimeHandleID != "target-handle" || activated.Metadata.RuntimeLaunchID != "target-generation" ||
-		activated.Metadata.AgentSessionID != target.NativeSessionID || activated.Metadata.NativeTranscriptPath != target.TranscriptPath {
+		activated.Metadata.AgentSessionID != target.NativeSessionID || activated.Metadata.AgentSessionIDLaunchID != "target-generation" ||
+		activated.Metadata.NativeTranscriptPath != target.TranscriptPath {
 		t.Fatalf("target owner projection = %+v", activated)
 	}
 	if !activated.FirstSignalAt.IsZero() {
 		t.Fatalf("target activation retained old hook receipt: %v", activated.FirstSignalAt)
+	}
+	activatedConversation, err := s.ConversationForSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get activated conversation: %v", err)
+	}
+	if activatedConversation.Settings.Model != "" || activatedConversation.Settings.ReasoningEffort != "" || activatedConversation.Settings.ApprovalMode != domain.PermissionModeAcceptEdits {
+		t.Fatalf("target activation conversation settings = %+v, want target-default model/mode and preserved approval", activatedConversation.Settings)
 	}
 	if activated.IsTerminated || activated.DisplayName != rec.DisplayName ||
 		activated.TerminateOnPRMerge != rec.TerminateOnPRMerge || activated.CleanupGeneration != rec.CleanupGeneration ||

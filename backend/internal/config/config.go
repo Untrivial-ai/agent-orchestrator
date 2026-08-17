@@ -69,6 +69,21 @@ type TelemetryConfig struct {
 	AppVersion string
 }
 
+// GitLabConfig carries the self-managed GitLab host allowlist and per-host
+// token overrides. It is loaded once at daemon boot from environment variables
+// (no hot-reload), matching the existing config pattern. gitlab.com is always
+// allowed (hardcoded in the provider) and does not need to appear here.
+type GitLabConfig struct {
+	// AllowedHosts is the list of self-managed GitLab hosts (each may include a
+	// port, e.g. "gitlab.internal:8443"). gitlab.com is always allowed and is not
+	// included here.
+	AllowedHosts []string
+	// HostTokens maps a self-managed host to a token override. Hosts in
+	// AllowedHosts without an explicit entry fall back to the default token
+	// (AO_GITLAB_TOKEN / GITLAB_TOKEN / glab).
+	HostTokens map[string]string
+}
+
 // DefaultAllowedOrigins are the browser origins the daemon's CORS boundary
 // trusts, beyond loopback-served content (which the middleware always trusts —
 // local pages can reach the no-auth daemon directly anyway). The daemon has no
@@ -119,6 +134,9 @@ type Config struct {
 	// normalizes it. The desktop uses this to identify dev daemons after the
 	// process cwd is moved to the stable data dir.
 	StartupWorkingDirectory string
+	// GitLab carries the self-managed GitLab host allowlist and per-host
+	// token overrides, loaded once at boot from environment variables.
+	GitLab GitLabConfig
 }
 
 // Addr returns the host:port the HTTP server binds. It uses net.JoinHostPort so
@@ -147,6 +165,8 @@ func (c Config) Addr() string {
 //	AO_TELEMETRY_REMOTE  remote exporter off|posthog (default off)
 //	AO_TELEMETRY_POSTHOG_KEY   PostHog project key
 //	AO_TELEMETRY_POSTHOG_HOST  PostHog host (default DefaultTelemetryPostHogHost)
+//	AO_GITLAB_ALLOWED_HOSTS    comma-separated self-managed GitLab hosts (each may include :port)
+//	AO_GITLAB_HOST_TOKENS      host=token,host=token per-host token overrides
 //
 // The bind host is not configurable: the daemon is loopback-only by design.
 func Load() (Config, error) {
@@ -256,6 +276,26 @@ func Load() (Config, error) {
 		cfg.Telemetry.AppVersion = strings.TrimSpace(raw)
 	}
 
+	if raw, ok := os.LookupEnv("AO_GITLAB_ALLOWED_HOSTS"); ok && raw != "" {
+		hosts := make([]string, 0, 4)
+		for _, h := range strings.Split(raw, ",") {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			hosts = append(hosts, h)
+		}
+		cfg.GitLab.AllowedHosts = hosts
+	}
+
+	if raw, ok := os.LookupEnv("AO_GITLAB_HOST_TOKENS"); ok && raw != "" {
+		tokens, err := parseHostTokenMap("AO_GITLAB_HOST_TOKENS", raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.GitLab.HostTokens = tokens
+	}
+
 	runFile, err := resolveRunFilePath()
 	if err != nil {
 		return Config{}, err
@@ -306,6 +346,37 @@ func parseTelemetryDisabledEvents(raw string) []string {
 		}
 	}
 	return names
+}
+
+// parseHostTokenMap parses a host=token,host=token map. Whitespace around
+// entries, hosts, and tokens is trimmed. Empty entries and entries without an
+// equals sign are skipped. A token containing an equals sign is rejected as
+// ambiguous (a token value with embedded '=' would be indistinguishable from
+// a malformed entry).
+func parseHostTokenMap(name, raw string) (map[string]string, error) {
+	tokens := make(map[string]string, 4)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		eq := strings.IndexByte(entry, '=')
+		if eq < 0 {
+			continue // skip entries without an equals sign
+		}
+		host := strings.TrimSpace(entry[:eq])
+		token := strings.TrimSpace(entry[eq+1:])
+		if host == "" {
+			continue
+		}
+		// Reject tokens containing '=' — they would be ambiguous on re-parse
+		// and likely indicate a malformed entry (e.g. host=token=with=equals).
+		if strings.ContainsRune(token, '=') {
+			return nil, fmt.Errorf("invalid %s entry %q: token contains '='", name, entry)
+		}
+		tokens[host] = token
+	}
+	return tokens, nil
 }
 
 // parsePositiveDuration rejects zero and negative durations: a zero

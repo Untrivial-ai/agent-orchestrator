@@ -1,7 +1,13 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+// Aliased: this file already declares its own `AppState` type for the
+// provider's context value, so the React Native app-lifecycle API imports
+// under a different name to avoid colliding with it.
+import { AppState as RNAppState } from "react-native";
+import { shouldPoll } from "./appStatePoll";
 import {
 	ApiError,
+	delegateTask,
 	getNotifications,
 	getSessions,
 	killSession,
@@ -9,7 +15,6 @@ import {
 	mergePR as apiMergePR,
 	restoreSession,
 	sendMessage,
-	spawnSession,
 	type DashboardPR,
 	type DashboardSession,
 	type DashboardStats,
@@ -19,9 +24,11 @@ import {
 } from "./api";
 import { isConfigured, loadConfig, type ServerConfig } from "./config";
 import { shouldKeepPolling } from "./connectionError";
+import { primeInstallId } from "./installId";
 import { collectPRs } from "./prView";
 import { MOBILE_EVENTS } from "./telemetry/events";
 import { mobileTelemetry, trackFeature } from "./telemetry/runtime";
+import { useConversationEventTransport } from "./chat/conversationEvents";
 
 const ACTIVE_PROJECT_KEY = "ao.activeProject";
 const POLL_INTERVAL_MS = 8000;
@@ -36,9 +43,8 @@ export type SpawnOptions = {
 	/** Falls back to the active project, or the only project. */
 	projectId?: string;
 	prompt?: string;
-	/** The task name. Becomes the session's title — see sessionTitle. */
-	issueId?: string;
 	harness?: string;
+	model?: string;
 	/** Mobile defaults to Chat; TUI remains an explicit compatibility choice. */
 	mode?: SessionMode;
 };
@@ -109,6 +115,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const [errorStatus, setErrorStatus] = useState<number | null>(null);
+	// Start authenticated streaming only after the REST probe succeeds. A stale
+	// password must cost one failed request, not a poll plus a parallel SSE attempt.
+	useConversationEventTransport(connection === "open" ? config : null);
 
 	const cfgRef = useRef<ServerConfig | null>(null);
 	// Gate for the connected event: emit only on the not-open -> open transition,
@@ -116,6 +125,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// tells a fresh launch apart from a later reconnect.
 	const openRef = useRef(false);
 	const everConnectedRef = useRef(false);
+	// Mirrors appActive for code that runs mid-flight, where reading the state
+	// value would see a stale closure. fetchAll consults it between requests so a
+	// poll interrupted by backgrounding does not fire its remaining calls — each
+	// would carry the install-id header and keep the device "live" on the desktop
+	// past the point the user left the app.
+	const pollActiveRef = useRef(true);
+
+	// The poll is the daemon's liveness signal (see shouldPoll), so it must stop
+	// while backgrounded rather than rely on the OS suspending the JS timer
+	// whenever it feels like it.
+	const [appActive, setAppActive] = useState(() => shouldPoll(RNAppState.currentState));
+
+	useEffect(() => {
+		const sub = RNAppState.addEventListener("change", (s) => {
+			const active = shouldPoll(s);
+			pollActiveRef.current = active;
+			setAppActive(active);
+		});
+		return () => sub.remove();
+	}, []);
+
+	// Warm the install id cache as early as possible so the first REST poll tick
+	// (fired from the config effect below) can send X-AO-Install-Id synchronously
+	// via cachedInstallId() in api.ts's req(). A module-load side effect would run
+	// this before React Native's AsyncStorage native module is guaranteed ready;
+	// a mount-time effect matches this file's existing pattern (see the active
+	// project load just below) and keeps the async I/O inside the component
+	// lifecycle instead of hidden at import time.
+	useEffect(() => {
+		void primeInstallId();
+	}, []);
 
 	// Load persisted active project once.
 	useEffect(() => {
@@ -169,6 +209,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// Badge count for the board's bell. Deliberately after the session fetch
 			// and separately caught: an older daemon without /notifications must not
 			// knock the board offline. limit:1 because we only read unreadCount.
+			// The app may have gone to the background while the sessions request was
+			// in flight. Stop here rather than spending another request that would
+			// re-mark this device live after the user left.
+			if (!pollActiveRef.current) return true;
 			try {
 				const page = await getNotifications(c, { status: "unread", limit: 1 });
 				setNotificationsUnread(page.unreadCount);
@@ -207,6 +251,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			setLoading(false);
 			return;
 		}
+		if (!appActive) return; // backgrounded: stop polling, stop heartbeating
 		setLoading(true);
 		setConnection("connecting");
 		let stopped = false;
@@ -217,8 +262,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		};
 		void tick();
 		const poll = setInterval(() => void tick(), POLL_INTERVAL_MS);
-		return () => clearInterval(poll);
-	}, [config, fetchAll]);
+		return () => {
+			clearInterval(poll);
+			// Clearing the interval does not stop a tick already in flight, and
+			// every request it makes carries the install-id header, so an
+			// in-flight fetchAll would keep the device "live" past backgrounding.
+			// Marking the closure stopped ends the loop at the next await
+			// boundary instead of one whole request-timeout later.
+			stopped = true;
+		};
+	}, [config, fetchAll, appActive]);
 
 	const setActiveProject = useCallback((id: string) => {
 		setActiveProjectId(id);
@@ -233,12 +286,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	}, [activeProjectId, projects]);
 
 	const spawn = useCallback(
-		async ({ projectId, prompt, issueId, harness, mode }: SpawnOptions) =>
+		async ({ projectId, prompt, harness, model, mode }: SpawnOptions) =>
 			trackFeature("spawn", async () => {
 				const c = cfgRef.current;
 				const proj = projectId ?? targetProject();
 				if (!c || !proj) throw new Error("Pick a project first");
-				const session = await spawnSession(c, { projectId: proj, prompt, issueId, harness, mode: mode ?? "chat" });
+				const session = await delegateTask(c, {
+					projectId: proj,
+					brief: prompt ?? "",
+					agent: harness,
+					model,
+					mode: mode ?? "chat",
+				});
 				await fetchAll();
 				return session;
 			}),

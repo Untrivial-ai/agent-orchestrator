@@ -647,7 +647,7 @@ export function buildPostHogConfig(distinctId: string): PostHogInitOptions {
 
 export async function initTelemetry(): Promise<boolean> {
 	if (initPromise) return initPromise;
-	initPromise = (async () => {
+	const attempt = (async () => {
 		if (!POSTHOG_KEY) return false;
 		const bootstrap = await aoBridge.telemetry.getBootstrap();
 		// Null means the supervisor withheld it: no key, no data dir, or an
@@ -691,8 +691,18 @@ export async function initTelemetry(): Promise<boolean> {
 			);
 		}
 		return true;
-	})().catch(() => false);
-	return initPromise;
+	})().catch(() => {
+		// A thrown error is transient (the bridge not ready yet, or a hiccup in
+		// posthog.init): drop the memoized promise so the next captured event
+		// retries init rather than the whole session going dark after one bad
+		// moment. A deliberate `return false` above (no key, not opted in) is
+		// not an error and stays cached, so an intentionally-withheld client is
+		// not retried forever.
+		if (initPromise === attempt) initPromise = null;
+		return false;
+	});
+	initPromise = attempt;
+	return attempt;
 }
 
 export async function captureRendererEvent(event: string, properties?: Record<string, unknown>): Promise<void> {

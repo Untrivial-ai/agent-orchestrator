@@ -37,6 +37,16 @@ export function interfaceTransitionIsCancellable(transition?: SessionInterfaceTr
 	return Boolean(transition && cancellablePhases.has(transition.phase));
 }
 
+export function interfaceTransitionHasUnacknowledgedNotice(
+	transition?: SessionInterfaceTransition,
+): boolean {
+	return Boolean(
+		transition &&
+			!transition.noticeAcknowledgedAt &&
+			(transition.phase === "failed" || transition.phase === "recovery_required"),
+	);
+}
+
 export function sessionInterfaceTransitionQueryKey(sessionId: string) {
 	return ["session-interface-transition", sessionId] as const;
 }
@@ -65,12 +75,12 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 		refetchInterval: (state) => {
 			const status = state.state.data;
 			if (interfaceTransitionIsActive(status?.transition)) return 250;
-			// Codex reports its native thread id from an asynchronous SessionStart
-			// hook. The first status request can therefore race that hook and return
-			// NATIVE_SESSION_MISSING. Recheck only this transient readiness state so
-			// a supported switch enables without polling permanently unsupported
-			// harnesses or ordinary idle sessions.
-			return status?.reasonCode === "NATIVE_SESSION_MISSING"
+			// A missing or not-yet-current native identity is transient while the
+			// terminal's session-start hook is arriving. Recheck only those readiness
+			// states so supported switches enable without polling permanently
+			// unsupported harnesses or ordinary idle sessions.
+			return status?.reasonCode === "NATIVE_SESSION_MISSING" ||
+				status?.reasonCode === "NATIVE_SESSION_UNVERIFIED"
 				? nativeSessionReadinessPoll
 				: false;
 		},
@@ -110,6 +120,38 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			if (error) throw error;
 		},
 		onSuccess: () => {
+			if (sessionId) {
+				void queryClient.invalidateQueries({
+					queryKey: sessionInterfaceTransitionQueryKey(sessionId),
+				});
+			}
+		},
+	});
+
+	const acknowledgeNotice = useMutation({
+		mutationFn: async (transitionId: string) => {
+			const { data, error } = await apiClient.PUT(
+				"/api/v1/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement",
+				{
+					params: {
+						path: { sessionId: sessionId as string, transitionId },
+					},
+				},
+			);
+			if (error) throw error;
+			return data;
+		},
+		onSuccess: (response) => {
+			if (!sessionId) return;
+			queryClient.setQueryData<SessionInterfaceTransitionStatus>(
+				sessionInterfaceTransitionQueryKey(sessionId),
+				(current) =>
+					current?.transition?.id === response.transition.id
+						? { ...current, transition: response.transition }
+						: current,
+			);
+		},
+		onSettled: () => {
 			if (sessionId) {
 				void queryClient.invalidateQueries({
 					queryKey: sessionInterfaceTransitionQueryKey(sessionId),
@@ -165,5 +207,10 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 		cancel: cancel.mutateAsync,
 		cancelling: cancel.isPending,
 		cancelError: cancel.error ? apiErrorMessage(cancel.error) : undefined,
+		acknowledgeNotice: acknowledgeNotice.mutateAsync,
+		acknowledgingNotice: acknowledgeNotice.isPending,
+		acknowledgeNoticeError: acknowledgeNotice.error
+			? apiErrorMessage(acknowledgeNotice.error)
+			: undefined,
 	};
 }

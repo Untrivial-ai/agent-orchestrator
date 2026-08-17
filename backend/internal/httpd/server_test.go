@@ -82,6 +82,56 @@ func TestHealthProbesIncludeDaemonIdentity(t *testing.T) {
 	}
 }
 
+func TestHealthProbesIncludeAppImageIdentity(t *testing.T) {
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	t.Run("reports AO_APPIMAGE when set", func(t *testing.T) {
+		t.Setenv("AO_APPIMAGE", "/home/user/Apps/agent-orchestrator.AppImage")
+		router := newTestRouter(config.Config{}, discardLogger(), nil)
+		srv := httptest.NewServer(router)
+		defer srv.Close()
+
+		for _, path := range []string{"/healthz", "/readyz"} {
+			resp, err := client.Get(srv.URL + path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", path, err)
+			}
+			defer resp.Body.Close()
+			var body struct {
+				AppImagePath string `json:"appImagePath"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode %s: %v", path, err)
+			}
+			if body.AppImagePath != "/home/user/Apps/agent-orchestrator.AppImage" {
+				t.Errorf("GET %s appImagePath = %q, want the AO_APPIMAGE value", path, body.AppImagePath)
+			}
+		}
+	})
+
+	t.Run("omits appImagePath when AO_APPIMAGE is unset", func(t *testing.T) {
+		t.Setenv("AO_APPIMAGE", "")
+		router := newTestRouter(config.Config{}, discardLogger(), nil)
+		srv := httptest.NewServer(router)
+		defer srv.Close()
+
+		for _, path := range []string{"/healthz", "/readyz"} {
+			resp, err := client.Get(srv.URL + path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", path, err)
+			}
+			defer resp.Body.Close()
+			var body map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode %s: %v", path, err)
+			}
+			if _, ok := body["appImagePath"]; ok {
+				t.Errorf("GET %s appImagePath present, want omitted", path)
+			}
+		}
+	})
+}
+
 // TestServerLifecycle exercises the full Run loop: bind an ephemeral port,
 // publish running.json, serve a request, then cancel the context and confirm a
 // clean shutdown that removes the handshake file.

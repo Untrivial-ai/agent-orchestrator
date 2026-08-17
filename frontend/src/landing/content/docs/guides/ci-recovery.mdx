@@ -20,8 +20,12 @@ AO fingerprints the failing-check set. An unchanged failure is not resent on eve
 PRs created by a session are discovered and associated through normal observation. To attach an existing PR explicitly:
 
 ```bash
+ao session claim-pr <pr-number-or-url>
+# From outside the worker, target it explicitly:
 ao session claim-pr <session-id> <pr-number-or-url>
 ```
+
+Inside a worker, the one-argument form uses `AO_SESSION_ID` automatically.
 
 Or claim it while creating a session:
 

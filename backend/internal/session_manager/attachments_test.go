@@ -13,7 +13,8 @@ import (
 
 func TestWriteSpawnAttachments(t *testing.T) {
 	dir := t.TempDir()
-	refs, err := writeSpawnAttachments(dir, []ports.SpawnAttachment{
+	m := New(Deps{DataDir: t.TempDir()})
+	refs, err := m.writeSpawnAttachments(context.Background(), "ao-1", dir, []ports.SpawnAttachment{
 		{Ext: ".html", Data: []byte("first")},
 		{Ext: ".png", Data: []byte("second")},
 		{Ext: "", Data: []byte("third")},
@@ -42,12 +43,13 @@ func TestWriteSpawnAttachments(t *testing.T) {
 
 func TestStageAttachmentsUsesNeutralFileNames(t *testing.T) {
 	dir := t.TempDir()
+	dataDir := t.TempDir()
 	st := newFakeStore()
 	st.sessions["ao-1"] = domain.SessionRecord{
 		ID:       "ao-1",
 		Metadata: domain.SessionMetadata{WorkspacePath: dir},
 	}
-	m := New(Deps{Store: st, Workspace: &fakeWorkspace{}})
+	m := New(Deps{Store: st, Workspace: &fakeWorkspace{}, DataDir: dataDir})
 
 	refs, err := m.StageAttachments(context.Background(), "ao-1", []ports.SpawnAttachment{
 		{Ext: ".html", Data: []byte("<main>hi</main>")},
@@ -63,6 +65,55 @@ func TestStageAttachmentsUsesNeutralFileNames(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(refs[0]))); err != nil {
 		t.Fatalf("staged attachment missing on disk: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "attachments", "ao-1", filepath.Base(refs[0]))); err != nil {
+		t.Fatalf("canonical attachment missing on disk: %v", err)
+	}
+}
+
+func TestStageAttachmentsRetriesGeneratedNameCollisionsWithoutOverwritingHistory(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := t.TempDir()
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{
+		ID:       "ao-1",
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+	m := New(Deps{Store: st, Workspace: &fakeWorkspace{}, DataDir: dataDir})
+	suffixes := []string{"deadbeef00", "cafebabe00"}
+	m.attachmentSuffix = func() (string, error) {
+		next := suffixes[0]
+		suffixes = suffixes[1:]
+		return next, nil
+	}
+
+	oldName := "attachment-deadbeef00.png"
+	for _, dir := range []string{
+		filepath.Join(dataDir, "attachments", "ao-1"),
+		filepath.Join(workspace, filepath.FromSlash(attachmentsDir)),
+	} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, oldName), []byte("historical bytes"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	refs, err := m.StageAttachments(context.Background(), "ao-1", []ports.SpawnAttachment{{Ext: ".png", Data: []byte("new bytes")}})
+	if err != nil {
+		t.Fatalf("StageAttachments: %v", err)
+	}
+	if len(refs) != 1 || refs[0] != ".ao/attachments/attachment-cafebabe00.png" {
+		t.Fatalf("refs = %v, want retried collision-free name", refs)
+	}
+	oldBytes, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(attachmentsDir), oldName))
+	if err != nil || string(oldBytes) != "historical bytes" {
+		t.Fatalf("historical attachment = %q, %v; want unchanged", oldBytes, err)
+	}
+	newBytes, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(refs[0])))
+	if err != nil || string(newBytes) != "new bytes" {
+		t.Fatalf("new attachment = %q, %v; want new bytes", newBytes, err)
 	}
 }
 

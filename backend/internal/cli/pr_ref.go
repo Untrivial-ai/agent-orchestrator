@@ -12,7 +12,7 @@ import (
 func (c *commandContext) resolvePRRef(ctx context.Context, ref string, project projectDetails) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return "", usageError{errors.New("PR reference must be a github.com PR URL or a number")}
+		return "", usageError{errors.New("PR reference must be a PR/MR URL or a number")}
 	}
 	if isNumericPRRef(ref) {
 		repo := strings.TrimSpace(project.Repo)
@@ -27,18 +27,18 @@ func (c *commandContext) resolvePRRef(ctx context.Context, ref string, project p
 			}
 			repo = strings.TrimSpace(string(out))
 		}
-		owner, name, err := cliGitHubRepoFromURL(repo)
+		host, owner, name, err := cliRepoFromURL(repo)
 		if err != nil {
-			return "", usageError{errors.New("PR reference must be a github.com PR URL or a number")}
+			return "", usageError{errors.New("PR reference must be a PR/MR URL or a number")}
 		}
 		n, _ := strconv.Atoi(strings.TrimPrefix(ref, "#"))
-		return fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, name, n), nil
+		return cliPRURLFromParts(host, owner, name, n), nil
 	}
-	owner, name, n, err := cliParseGitHubPRURL(ref)
-	if err != nil || owner == "" || name == "" || n <= 0 {
-		return "", usageError{errors.New("PR reference must be a github.com PR URL or a number")}
+	host, owner, name, n, err := cliParsePRURL(ref)
+	if err != nil || host == "" || owner == "" || name == "" || n <= 0 {
+		return "", usageError{errors.New("PR reference must be a PR/MR URL or a number")}
 	}
-	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, name, n), nil
+	return cliPRURLFromParts(host, owner, name, n), nil
 }
 
 func isNumericPRRef(ref string) bool {
@@ -47,44 +47,101 @@ func isNumericPRRef(ref string) bool {
 	return err == nil && n > 0
 }
 
-func cliParseGitHubPRURL(raw string) (string, string, int, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", "", 0, err
+// cliPRURLFromParts constructs the canonical PR/MR URL for a provider.
+// GitHub uses /pull/N; GitLab uses /-/merge_requests/N.
+func cliPRURLFromParts(host, owner, repo string, number int) string {
+	if isCLIGitHubHost(host) {
+		return fmt.Sprintf("https://%s/%s/%s/pull/%d", host, owner, repo, number)
 	}
-	if !strings.EqualFold(u.Scheme, "https") || !strings.EqualFold(u.Hostname(), "github.com") {
-		return "", "", 0, errors.New("not github")
-	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) != 4 || parts[2] != "pull" {
-		return "", "", 0, errors.New("not pr")
-	}
-	n, err := strconv.Atoi(parts[3])
-	if err != nil || n <= 0 {
-		return "", "", 0, errors.New("bad number")
-	}
-	return parts[0], strings.TrimSuffix(parts[1], ".git"), n, nil
+	return fmt.Sprintf("https://%s/%s/%s/-/merge_requests/%d", host, owner, repo, number)
 }
 
-func cliGitHubRepoFromURL(raw string) (string, string, error) {
-	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "git@github.com:") {
-		parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(raw, "git@github.com:"), ".git"), "/")
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			return parts[0], parts[1], nil
+func cliParsePRURL(raw string) (host, owner, name string, number int, err error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", "", 0, err
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return "", "", "", 0, errors.New("not https")
+	}
+	host = u.Hostname()
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+
+	// GitHub: /owner/repo/pull/N → 4 parts, parts[2] == "pull"
+	if len(parts) == 4 && parts[2] == "pull" {
+		n, parseErr := strconv.Atoi(parts[3])
+		if parseErr != nil || n <= 0 {
+			return "", "", "", 0, errors.New("bad number")
 		}
-		return "", "", errors.New("bad repo")
+		return host, parts[0], strings.TrimSuffix(parts[1], ".git"), n, nil
+	}
+
+	// GitLab: /owner/repo/-/merge_requests/N
+	// Supports nested groups: /group/subgroup/repo/-/merge_requests/N
+	if len(parts) >= 5 && parts[len(parts)-2] == "merge_requests" && parts[len(parts)-3] == "-" {
+		n, parseErr := strconv.Atoi(parts[len(parts)-1])
+		if parseErr != nil || n <= 0 {
+			return "", "", "", 0, errors.New("bad number")
+		}
+		repoParts := parts[:len(parts)-3]
+		if len(repoParts) < 2 {
+			return "", "", "", 0, errors.New("bad repo path")
+		}
+		owner = strings.Join(repoParts[:len(repoParts)-1], "/")
+		name = strings.TrimSuffix(repoParts[len(repoParts)-1], ".git")
+		return host, owner, name, n, nil
+	}
+
+	return "", "", "", 0, errors.New("not a PR/MR URL")
+}
+
+func cliRepoFromURL(raw string) (host, owner, name string, err error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", "", errors.New("empty repo")
+	}
+	if strings.HasPrefix(raw, "git@") {
+		rest := strings.TrimPrefix(raw, "git@")
+		colonIdx := strings.Index(rest, ":")
+		if colonIdx < 0 {
+			return "", "", "", errors.New("bad ssh remote")
+		}
+		host = rest[:colonIdx]
+		path := rest[colonIdx+1:]
+		parts := strings.Split(strings.TrimSuffix(path, ".git"), "/")
+		if len(parts) < 2 {
+			return "", "", "", errors.New("bad repo")
+		}
+		for _, seg := range parts {
+			if seg == "" {
+				return "", "", "", errors.New("bad repo")
+			}
+		}
+		name = parts[len(parts)-1]
+		owner = strings.Join(parts[:len(parts)-1], "/")
+		return host, owner, name, nil
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	if !strings.EqualFold(u.Hostname(), "github.com") {
-		return "", "", errors.New("not github")
-	}
+	host = u.Hostname()
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", errors.New("bad repo")
+	if len(parts) < 2 {
+		return "", "", "", errors.New("bad repo")
 	}
-	return parts[0], strings.TrimSuffix(parts[1], ".git"), nil
+	for _, seg := range parts {
+		if seg == "" {
+			return "", "", "", errors.New("bad repo")
+		}
+	}
+	name = strings.TrimSuffix(parts[len(parts)-1], ".git")
+	owner = strings.Join(parts[:len(parts)-1], "/")
+	return host, owner, name, nil
+}
+
+func isCLIGitHubHost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "github.com" || host == "www.github.com" || host == "api.github.com" ||
+		strings.HasSuffix(host, ".github.com") || strings.HasSuffix(host, ".ghe.io")
 }

@@ -25,6 +25,7 @@ invariants.
 | Frontend shell     | Electron + TypeScript                                                                           | Implemented            | Local desktop control plane paired with the daemon.                                                                                 |
 | Runtime adapter    | `tmux` CLI via `os/exec` (Darwin/Linux), conpty pty-host (Windows), selected by `runtimeselect` | Implemented            | Terminal multiplexing fits long-running sessions, attach/debug workflows, and adapter isolation.                                    |
 | Terminal PTY       | `github.com/creack/pty`                                                                         | Implemented            | PTY-backed terminal sessions with resize/input/output control.                                                                      |
+| Terminal viewport  | `github.com/unixshells/vt-go`                                                                   | Implemented            | Gives the ConPTY host a rendered current-screen model for safety checks; the existing ring remains historical attach replay only.    |
 | Git/worktrees      | `git` CLI via `os/exec`                                                                         | Implemented            | Uses real repo behavior, credentials, hooks, LFS, submodules, and user config.                                                      |
 | HTTP API           | `net/http` + `github.com/go-chi/chi/v5`                                                         | Implemented            | Lightweight, idiomatic router without committing AO to a large web framework.                                                       |
 | WebSocket          | `github.com/coder/websocket`                                                                    | Implemented            | Small WebSocket library for terminal streaming.                                                                                     |
@@ -87,6 +88,7 @@ Go daemon
   net/http + github.com/go-chi/chi/v5
   github.com/coder/websocket
   github.com/creack/pty
+  github.com/unixshells/vt-go (ConPTY rendered viewport)
   tmux runtime adapter via os/exec (conpty on Windows), selected by runtimeselect
   git worktree adapter via git CLI
   SQLite via database/sql + modernc.org/sqlite

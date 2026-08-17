@@ -1,18 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileText, Loader2, Paperclip, X } from "lucide-react";
 import {
-	type ClipboardEvent,
-	type DragEvent,
-	type FormEvent,
-	useCallback,
-	useEffect,
-	useId,
-	useRef,
-	useState,
-} from "react";
+	TaskComposerView,
+	type TaskComposerAgentControl,
+	type TaskComposerModelCatalog,
+	type TaskComposerModelControl,
+} from "@aoagents/product-ui";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button } from "./ui/button";
-import { cn } from "../lib/utils";
+import { Loader2 } from "lucide-react";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
@@ -24,8 +19,8 @@ import {
 	agentModelsQueryKey,
 	agentModelsQueryOptions,
 	revalidateAgentModels,
-	type AgentModelCatalog,
 } from "../hooks/useAgentModelsQuery";
+import { cn } from "../lib/utils";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
@@ -75,10 +70,6 @@ export function TaskComposer({
 }: TaskComposerProps) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const promptId = useId();
-	const modelId = useId();
-	const agentId = useId();
-	const fileInputRef = useRef<HTMLInputElement>(null);
 	const [prompt, setPrompt] = useState("");
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
@@ -87,9 +78,7 @@ export function TaskComposer({
 	const [modelTouched, setModelTouched] = useState(false);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [error, setError] = useState<string | undefined>();
-	const [modelWarning, setModelWarning] = useState<string | undefined>();
 	const [canCreateAsTUI, setCanCreateAsTUI] = useState(false);
-	const [isDragging, setIsDragging] = useState(false);
 	const {
 		attachments,
 		error: attachmentError,
@@ -135,7 +124,7 @@ export function TaskComposer({
 		enabled: Boolean(projectId),
 		queryFn: async () => {
 			const { data, error: apiError } = await apiClient.GET("/api/v1/projects/{id}", {
-				params: { path: { id: projectId as string } },
+				params: { path: { id: projectId ?? "" } },
 			});
 			if (apiError) throw new Error(apiErrorMessage(apiError));
 			if (data?.status !== "ok") throw new Error(t("newTask.configUnavailable"));
@@ -168,6 +157,45 @@ export function TaskComposer({
 
 	// Shares the picker's query key, so this is the same fetch, not a second one.
 	const modelCatalogQuery = useQuery(agentModelsQueryOptions(selectedAgent, projectId ?? ""));
+	const revalidationQuery = useQuery({
+		queryKey: [
+			"agent-model-revalidation",
+			selectedAgent,
+			projectId ?? "",
+			modelCatalogQuery.data?.validatedAt ?? "",
+		],
+		queryFn: () => revalidateAgentModels(selectedAgent, projectId ?? ""),
+		enabled: selectedAgent !== "" && modelCatalogQuery.data?.refreshRecommended === true,
+		staleTime: Number.POSITIVE_INFINITY,
+		retry: false,
+	});
+	useEffect(() => {
+		if (revalidationQuery.data) {
+			queryClient.setQueryData(
+				agentModelsQueryKey(selectedAgent, projectId ?? ""),
+				revalidationQuery.data,
+			);
+		}
+	}, [projectId, queryClient, revalidationQuery.data, selectedAgent]);
+	const modelWarning =
+		(revalidationQuery.isError
+			? revalidationQuery.error instanceof Error
+				? revalidationQuery.error.message
+				: t("settings.models.validateFailed")
+			: undefined) ??
+		modelCatalogQuery.data?.warning ??
+		(modelCatalogQuery.isError
+			? modelCatalogQuery.error instanceof Error
+				? modelCatalogQuery.error.message
+				: t("settings.models.loadFailed")
+			: undefined);
+	const modelCatalog: TaskComposerModelCatalog | undefined = modelCatalogQuery.data
+		? {
+				allowCustom: modelCatalogQuery.data.allowCustom,
+				models: modelCatalogQuery.data.models,
+				selectionMode: modelCatalogQuery.data.selectionMode,
+			}
+		: undefined;
 	const catalogDefaultOption = modelCatalogQuery.data?.models?.find((item) => item.isDefault)?.id ?? "";
 	const catalogUsesModes = modelCatalogQuery.data?.selectionMode === "mode";
 	const defaultModelForSelectedAgent =
@@ -241,205 +269,89 @@ export function TaskComposer({
 		}
 	};
 
-	const submit = (event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		void submitTask(requiresTuiFallback ? "tui" : undefined);
-	};
-
-	const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-		const files = Array.from(event.clipboardData?.files ?? []);
-		if (files.length === 0) return;
-		event.preventDefault();
-		void addFiles(files);
-	};
-
-	const handleDrop = (event: DragEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		setIsDragging(false);
-		const files = Array.from(event.dataTransfer?.files ?? []);
-		if (files.length > 0) void addFiles(files);
-	};
-
-	const handleDragOver = (event: DragEvent<HTMLFormElement>) => {
-		if (Array.from(event.dataTransfer?.items ?? []).some((item) => item.kind === "file")) {
-			event.preventDefault();
-			setIsDragging(true);
-		}
-	};
-
 	return (
-		<form
-			onSubmit={submit}
-			className="composer-prompt-surface flex flex-col transition-[background-color,box-shadow]"
-			data-dragging={isDragging || undefined}
-			onDrop={handleDrop}
-			onDragOver={handleDragOver}
-			onDragLeave={(event) => {
-				const nextTarget = event.relatedTarget;
-				if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setIsDragging(false);
+		<TaskComposerView
+			autoFocusPrompt={autoFocusTitle}
+			canSubmit={Boolean(projectId)}
+			prompt={prompt}
+			onPromptChange={setPrompt}
+			labels={{
+				addFile: t("newTask.addFile"),
+				createAsTui: t("newTask.createAsTui"),
+				removeFile: (name) => t("newTask.removeFile", { name }),
+				runsWith: t("newTask.runsWith"),
+				start: t("newTask.start"),
+				starting: t("newTask.starting"),
+				task: t("newTask.task"),
+				taskPlaceholder: t("newTask.taskPlaceholder"),
 			}}
-		>
-			{/* The whole card is one composer: the prompt carries the hierarchy and the
-			    launch controls sit in its own bottom padding, without a dialog footer. */}
-			<label className="sr-only" htmlFor={promptId}>
-				{t("newTask.task")}
-			</label>
-			<textarea
-				id={promptId}
-				autoFocus={autoFocusTitle}
-				className="min-h-(--size-composer-prompt-min) w-full resize-none bg-transparent px-4 pb-3 pt-4 text-md leading-relaxed text-foreground outline-none placeholder:text-passive"
-				placeholder={t("newTask.taskPlaceholder")}
-				value={prompt}
-				onChange={(event) => setPrompt(event.target.value)}
-				onPaste={handlePaste}
-				onKeyDown={(event) => {
-					if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.nativeEvent.isComposing) {
-						event.preventDefault();
-						event.currentTarget.form?.requestSubmit();
-					}
-				}}
-			/>
+			agent={{
+				label: t("newTask.agent"),
+				placeholder: t("newTask.selectAgent"),
+				value: selectedAgent,
+				authorized: agentCatalog?.authorized,
+				installed: agentCatalog?.installed,
+				supported: agentCatalog?.supported,
+				disabled: agentsQuery.isFetching && agentCatalog === undefined,
+				onChange: (value) => {
+					setAgent(value);
+					setAgentTouched(true);
+					setModel("");
+					setMode("");
+					setModelTouched(false);
+				},
+			}}
+			model={{
+				agentId: selectedAgent,
+				agentLabel: selectedAgentLabel,
+				projectId: projectId ?? "",
+				value: model,
+				mode,
+				catalog: modelCatalog,
+				fetching: modelCatalogQuery.isFetching,
+				loading:
+					selectedAgent !== "" &&
+					modelCatalogQuery.isFetching &&
+					modelCatalogQuery.data === undefined,
+				refreshing: false,
+				onModelChange: (value) => {
+					setModel(value);
+					setMode("");
+					setModelTouched(true);
+				},
+				onModeChange: (value) => {
+					setMode(value);
+					setModel("");
+					setModelTouched(true);
+				},
+			}}
+			attachments={{
+				items: attachments.map(({ id, name, dataUrl }) => ({ id, name, previewUrl: dataUrl })),
+				error: attachmentError,
+				onAddFiles: (files) => void addFiles(files),
+				onRemove: removeAttachment,
+			}}
+			submission={{
+				canCreateAsTui: canCreateAsTUI,
+				error,
+				isSubmitting,
+				modelWarning,
+				onSubmit: () => void submitTask(requiresTuiFallback ? "tui" : undefined),
+				onSubmitAsTui: () => void submitTask("tui"),
+			}}
+			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
+			renderModelControl={(control) => <TaskModelPicker {...control} />}
+		/>
+	);
+}
 
-			{attachments.length > 0 && (
-				<ul className="scrollbar-none flex max-h-24 flex-wrap gap-2 overflow-y-auto px-3 pb-2">
-					{attachments.map((attachment) => (
-						<li
-							key={attachment.id}
-							className="flex min-w-0 max-w-48 items-center gap-2 rounded-md bg-surface px-1.5 py-1 text-xs text-foreground"
-						>
-							{attachment.dataUrl ? (
-								<img src={attachment.dataUrl} alt="" className="size-7 shrink-0 rounded object-cover" />
-							) : (
-								<FileText
-									className="size-7 shrink-0 rounded bg-input/60 p-1.5 text-muted-foreground"
-									aria-hidden="true"
-								/>
-							)}
-							<span className="min-w-0 flex-1 truncate font-medium">{attachment.name}</span>
-							<button
-								type="button"
-								className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-border hover:text-foreground"
-								aria-label={t("newTask.removeFile", { name: attachment.name })}
-								onClick={() => removeAttachment(attachment.id)}
-							>
-								<X className="size-icon-sm" aria-hidden="true" />
-							</button>
-						</li>
-					))}
-				</ul>
-			)}
-			<input
-				ref={fileInputRef}
-				type="file"
-				multiple
-				className="hidden"
-				onChange={(event) => {
-					if (event.target.files) void addFiles(event.target.files);
-					event.target.value = "";
-				}}
-			/>
-			{attachmentError && (
-				<p className="px-4 pb-2 text-caption text-destructive">{attachmentError}</p>
-			)}
-
-			{(error || modelWarning) && (
-				<div className="px-3 pb-2">
-					{error && (
-						<div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-							<span>{error}</span>
-							{/* Chat preflight failed for this agent: offer the terminal interface
-							    rather than making the user rediscover the task. */}
-							{canCreateAsTUI ? (
-								<Button
-									type="button"
-									variant="outline"
-									size="sm"
-									disabled={isSubmitting}
-									onClick={() => void submitTask("tui")}
-									className="shrink-0"
-								>
-									{t("newTask.createAsTui")}
-								</Button>
-							) : null}
-						</div>
-					)}
-					{!error && modelWarning && <p className="text-caption text-warning">{modelWarning}</p>}
-				</div>
-			)}
-
-			<div className="composer-toolbar">
-				<div className="composer-run-controls" role="group" aria-label={t("newTask.runsWith")}>
-					<div className="composer-toolbar-slot">
-						<RequiredAgentField
-							id={agentId}
-							variant="chip"
-							label={t("newTask.agent")}
-							placeholder={t("newTask.selectAgent")}
-							value={selectedAgent}
-							authorized={agentCatalog?.authorized}
-							installed={agentCatalog?.installed}
-							supported={agentCatalog?.supported}
-							disabled={agentsQuery.isFetching && agentCatalog === undefined}
-							triggerClassName="composer-toolbar-option w-full justify-between"
-							onChange={(value) => {
-								setAgent(value);
-								setAgentTouched(true);
-								// Never pair a newly selected agent with the previous agent's model.
-								// The new catalog will resolve its own default into this cleared slot.
-								setModel("");
-								setMode("");
-								setModelTouched(false);
-							}}
-						/>
-					</div>
-					<span className="composer-toolbar-divider" aria-hidden="true" />
-					<div className="composer-toolbar-slot">
-						<TaskModelPicker
-							id={modelId}
-							agentId={selectedAgent}
-							agentLabel={selectedAgentLabel}
-							projectId={projectId ?? ""}
-							value={model}
-							mode={mode}
-							onWarningChange={setModelWarning}
-							onModelChange={(value) => {
-								setModel(value);
-								setMode("");
-								setModelTouched(true);
-							}}
-							onModeChange={(value) => {
-								setMode(value);
-								setModel("");
-								setModelTouched(true);
-							}}
-						/>
-					</div>
-				</div>
-				<button
-					type="button"
-					className="grid size-(--size-settings-action-height) place-items-center rounded-md text-muted-foreground transition-colors hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-					aria-label={t("newTask.addFile")}
-					onClick={() => fileInputRef.current?.click()}
-				>
-					<Paperclip className="size-icon-base" aria-hidden="true" />
-				</button>
-				<Button
-					type="submit"
-					variant="primary"
-					size="none"
-					disabled={isSubmitting || !projectId}
-					className="h-(--size-settings-action-height) min-w-(--size-composer-start-button) px-3"
-				>
-					{isSubmitting ? <Loader2 className="size-icon-base animate-spin" aria-hidden="true" /> : null}
-					{isSubmitting ? t("newTask.starting") : t("newTask.start")}
-					{!isSubmitting && (
-						<kbd className="composer-keycap" aria-hidden="true">
-							↵
-						</kbd>
-					)}
-				</Button>
-			</div>
-		</form>
+function DesktopAgentControl(control: TaskComposerAgentControl) {
+	return (
+		<RequiredAgentField
+			{...control}
+			variant="chip"
+			triggerClassName="composer-toolbar-option w-full justify-between"
+		/>
 	);
 }
 
@@ -447,62 +359,23 @@ function TaskModelPicker({
 	id,
 	agentId,
 	agentLabel,
-	projectId,
+	catalog,
+	fetching,
+	loading,
 	value,
 	mode,
 	onModelChange,
 	onModeChange,
-	onWarningChange,
-}: {
-	id: string;
-	agentId: string;
-	agentLabel: string;
-	projectId: string;
-	value: string;
-	mode: string;
-	onModelChange: (value: string) => void;
-	onModeChange: (value: string) => void;
-	onWarningChange: (warning: string | undefined) => void;
-}) {
+}: TaskComposerModelControl) {
 	const { t } = useTranslation();
-	const queryClient = useQueryClient();
 	const [customAgentId, setCustomAgentId] = useState<string | null>(null);
-	const query = useQuery(agentModelsQueryOptions(agentId, projectId));
-	const catalog: AgentModelCatalog | undefined = query.data;
-	const revalidationQuery = useQuery({
-		queryKey: ["agent-model-revalidation", agentId, projectId, catalog?.validatedAt ?? ""],
-		queryFn: () => revalidateAgentModels(agentId, projectId),
-		enabled: agentId !== "" && catalog?.refreshRecommended === true,
-		staleTime: Number.POSITIVE_INFINITY,
-		retry: false,
-	});
-	useEffect(() => {
-		if (revalidationQuery.data) {
-			queryClient.setQueryData(agentModelsQueryKey(agentId, projectId), revalidationQuery.data);
-		}
-	}, [agentId, projectId, queryClient, revalidationQuery.data]);
-	const warning =
-		(revalidationQuery.isError
-			? revalidationQuery.error instanceof Error
-				? revalidationQuery.error.message
-				: t("settings.models.validateFailed")
-			: undefined) ??
-		catalog?.warning ??
-		(query.isError ? (query.error instanceof Error ? query.error.message : t("settings.models.loadFailed")) : undefined);
-	// The composer owns the one place warnings appear, so a picker never grows a
-	// second line and shifts the launch controls while you are typing.
-	useEffect(() => {
-		onWarningChange(warning);
-	}, [onWarningChange, warning]);
-	useEffect(() => () => onWarningChange(undefined), [onWarningChange]);
 
 	// Says what happens with no override, rather than labelling it "Agent default".
 	const noOverrideLabel = agentLabel
 		? t("newTask.letAgentChoose", { agent: agentLabel })
 		: t("settings.models.agentDefault");
-	const catalogLoading = agentId !== "" && query.isFetching && catalog === undefined;
 
-	if (catalogLoading) {
+	if (loading) {
 		return (
 			<span
 				className="composer-chip composer-toolbar-option w-full cursor-not-allowed justify-start opacity-50"
@@ -541,13 +414,6 @@ function TaskModelPicker({
 
 	const hasCatalog = catalog?.selectionMode === "catalog" && (catalog.models?.length ?? 0) > 0;
 	const modelIsInCatalog = catalog?.models?.some((item) => item.id === value) ?? false;
-	// Cursor's own "auto" model routes each request to whatever it judges best —
-	// a distinct, explicit choice from leaving the field untouched (which just
-	// omits --model and defers to Cursor's own default, currently also "auto").
-	// Relabel so the two don't read as the same option twice. Other agents'
-	// default-flagged model keeps its real name: for them, explicitly picking
-	// it isn't functionally different from leaving the field untouched, so a
-	// second "Default" entry would just duplicate the no-override option.
 	const displayModels = (catalog?.models ?? []).map((item) =>
 		item.id === "auto" ? { ...item, label: t("settings.models.autoRouteLabel") } : item,
 	);
@@ -596,16 +462,12 @@ function TaskModelPicker({
 				aria-label={t("newTask.model")}
 				className={cn(
 					"composer-chip composer-toolbar-option min-w-0 flex-1 text-control placeholder:text-passive disabled:cursor-not-allowed disabled:opacity-50",
-					// When no Browse button trails it, this input is the pill's
-					// rightmost element — its own square corner sits inside the
-					// container's rounded curve, not past it, so overflow-hidden on
-					// the container never clips it. Round it to match explicitly.
 					!hasCatalog && "rounded-r-md!",
 				)}
 				value={value}
 				disabled={agentId === ""}
 				onChange={(event) => onModelChange(event.target.value)}
-				placeholder={query.isFetching ? t("settings.models.loading") : noOverrideLabel}
+				placeholder={fetching ? t("settings.models.loading") : noOverrideLabel}
 			/>
 			{hasCatalog && (
 				<AgentModelCombobox

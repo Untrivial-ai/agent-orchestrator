@@ -21,7 +21,7 @@ import {
 	Trash2,
 	User,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { UpdateStatus } from "../../main/update-settings";
 import {
@@ -29,9 +29,11 @@ import {
 	newestActiveOrchestrator,
 	type WorkspaceSession,
 	type WorkspaceSummary,
+	sortedWorkerSessions,
 	workerSessions,
 } from "../types/workspace";
 import { getAgentActivityView } from "../lib/session-presentation";
+import { deriveSessionAgentSwitchPresentation } from "../lib/agent-switch-presentation";
 import { aoBridge } from "../lib/bridge";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
@@ -81,13 +83,14 @@ import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CreateProjectFlow, type CreateProjectInput } from "./CreateProjectFlow";
 import { ResizeHandle } from "./ResizeHandle";
-import { isMacPlatform } from "../lib/platform";
+import { isMacPlatform, isWindowsPlatform } from "../lib/platform";
 import { useCloudSession } from "../lib/cloud-session";
 
 // macOS paints framed chrome: the fixed TitlebarNav cluster carries the
 // sidebar toggle + history arrows above this surface. Windows hangs the sidebar
 // under its custom titlebar.
 const isMac = isMacPlatform();
+const isWindows = isWindowsPlatform();
 const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
 
 // Shared styling for the per-project hover action buttons (orchestrator, kebab):
@@ -305,9 +308,26 @@ export function Sidebar({
 							{t("shell.orchestratorBoard")}
 						</TooltipContent>
 					</Tooltip>
-					<span className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden">
-						Agent Orchestrator
-					</span>
+					{isWindows ? (
+						<span
+							aria-label={t("shell.orchestratorBoard")}
+							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
+							onClick={selection.goHome}
+							onKeyDown={(event: KeyboardEvent<HTMLSpanElement>) => {
+								if (event.key !== "Enter" && event.key !== " ") return;
+								event.preventDefault();
+								selection.goHome();
+							}}
+							role="button"
+							tabIndex={0}
+						>
+							Agent Orchestrator
+						</span>
+					) : (
+						<span className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden">
+							Agent Orchestrator
+						</span>
+					)}
 					{isNightly && (
 						<span className="sidebar-expanded-chrome shrink-0 rounded-full bg-purple-subtle px-1.5 py-0.5 text-micro font-semibold leading-none text-purple-accent group-data-[collapsible=icon]:hidden">
 							{t("shell.nightly")}
@@ -372,7 +392,7 @@ export function Sidebar({
 				</div>
 			</div>
 
-			<SidebarContent className="gap-0 px-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
+			<SidebarContent className="project-sidebar-scrollbar gap-0 px-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
 				<SidebarGroup className="p-0">
 					{/* Tree (project-sidebar__tree) */}
 					<SidebarGroupContent>
@@ -401,12 +421,16 @@ export function Sidebar({
 			</SidebarContent>
 
 			{/* Footer — Settings opens the global settings page directly.
-			    Its hairline and row height match the board Archive bar. On macOS
-			    the sidebar is already height-clamped beside the inset center surface. */}
+			    Its hairline and row height match the board Archive bar. Bottom
+			    margin matches the framed center-panel inset plus the 1px surface
+			    border so the two hairlines meet. Native fullscreen drops the
+			    mac inset, so the footer collapses to the 1px surface border. */}
 			<SidebarFooter
 				className={cn(
 					"relative mt-auto gap-0 overflow-hidden border-t border-border-strong px-2 !py-2 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:min-h-16 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:!pb-0 group-data-[collapsible=icon]:!pt-1.5",
-					isMac ? "mb-px" : "mb-[calc(var(--size-center-panel-bottom-inset)+1px)]",
+					isMac
+						? "mb-[calc(var(--size-center-panel-inset-mac)+1px)] in-[.native-fullscreen]:mb-px"
+						: "mb-[calc(var(--size-center-panel-bottom-inset)+1px)]",
 				)}
 			>
 				{/* Always-present daemon status mirror for the smoke suite: no visible
@@ -522,7 +546,7 @@ function ProjectItem({
 	// Keep completed PR sessions reachable while their runtime still exists.
 	// Only termination removes a worker from the sidebar; archived sessions stay
 	// reachable through SessionsBoard.
-	const sessions = workerSessions(workspace.sessions).filter((session) => session.isTerminated !== true);
+	const sessions = sortedWorkerSessions(workspace.sessions).filter((session) => session.isTerminated !== true);
 	// The project's live orchestrator (if any) backs the hover Orchestrator
 	// button: navigate to it when present, otherwise spawn one first.
 	const orchestrator = newestActiveOrchestrator(workspace.sessions);
@@ -862,6 +886,11 @@ function SessionRow({
 	onOpen: () => void;
 }) {
 	const { t } = useTranslation();
+	const switchPresentation = deriveSessionAgentSwitchPresentation(session);
+	const switchLabel = switchPresentation
+		? t(switchPresentation.compactLabelKey, switchPresentation.values)
+		: undefined;
+	const switchStatusId = useId();
 	const [isEditing, setIsEditing] = useState(false);
 	const [draft, setDraft] = useState(session.title);
 	// Escape must not be swallowed by the blur-to-save path: the keydown handler
@@ -939,21 +968,27 @@ function SessionRow({
 				<div className="flex min-w-0 flex-1 transition-[transform] duration-[100ms] ease-out active:scale-[0.97]">
 					<button
 						aria-current={active ? "page" : undefined}
+						aria-describedby={switchLabel ? switchStatusId : undefined}
 						aria-label={t("shell.openSession", { title: session.title })}
 						className="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 py-0 text-left text-sm outline-hidden focus-visible:ring-2 focus-visible:ring-sidebar-ring"
 						onClick={onOpen}
 						type="button"
 					>
 						<SessionStatusDot session={session} />
-						<span className="min-w-0 flex-1">
+						<span className="flex min-w-0 flex-1 items-center gap-1.5">
 							<span
 								className={cn(
-									"block truncate transition-colors",
+									"min-w-0 flex-1 truncate transition-colors",
 									active ? "text-foreground" : "text-muted-foreground group-hover/session-row:text-foreground",
 								)}
 							>
 								{session.title}
 							</span>
+							{switchLabel ? (
+								<span id={switchStatusId} className="max-w-28 shrink-0 truncate text-2xs text-muted-foreground">
+									{switchLabel}
+								</span>
+							) : null}
 						</span>
 					</button>
 				</div>{/* end scale wrapper */}
@@ -1018,8 +1053,8 @@ function SessionRow({
 // email with a sign-out action in a dropdown.
 function CloudAccountRow({ tabIndex }: { tabIndex: number }) {
 	const { t } = useTranslation();
-	const { session, status, signIn, signOut } = useCloudSession();
-	if (status === "loading") return null;
+	const { configured, session, status, signIn, signOut } = useCloudSession();
+	if (!configured || status === "loading") return null;
 
 	if (status === "unauthenticated") {
 		return (
@@ -1080,8 +1115,8 @@ function CloudAccountRow({ tabIndex }: { tabIndex: number }) {
 // Icon-rail variant for collapsed sidebar.
 function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
 	const { t } = useTranslation();
-	const { session, status, signIn, signOut } = useCloudSession();
-	if (status === "loading") return null;
+	const { configured, session, status, signIn, signOut } = useCloudSession();
+	if (!configured || status === "loading") return null;
 
 	if (status === "unauthenticated") {
 		return (

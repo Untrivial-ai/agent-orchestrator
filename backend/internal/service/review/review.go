@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -50,6 +52,9 @@ func reviewErrorKind(err error) string {
 // Manager is the reviews surface the HTTP controller depends on.
 type Manager interface {
 	Trigger(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (reviewcore.TriggerResult, error)
+	RequestRereview(ctx context.Context, workerID domain.SessionID, prURL, reviewer string) error
+	ResolveReviewComment(ctx context.Context, workerID domain.SessionID, prURL, commentURL string) error
+	TriggerAuto(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (reviewcore.TriggerResult, error)
 	Cancel(ctx context.Context, workerID domain.SessionID) (reviewcore.CancelResult, error)
 	TerminateReviewer(ctx context.Context, workerID domain.SessionID, body string) error
 	TeardownReviewerTerminal(ctx context.Context, workerID domain.SessionID) error
@@ -65,6 +70,8 @@ type Manager interface {
 type Service struct {
 	engine    *reviewcore.Engine
 	store     Store
+	requester ports.SCMReviewRequester
+	resolver  ports.SCMReviewResolver
 	lifecycle Reducer
 	clock     func() time.Time
 	telemetry ports.EventSink
@@ -81,6 +88,8 @@ type Store interface {
 	UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error)
 	MarkReviewRunDelivered(ctx context.Context, id string, deliveredAt time.Time) (bool, error)
 	ListPRsBySession(ctx context.Context, id domain.SessionID) ([]domain.PullRequest, error)
+	ListPRReviews(ctx context.Context, prURL string) ([]domain.PullRequestReview, error)
+	ListPRComments(ctx context.Context, prURL string) ([]domain.PullRequestComment, error)
 }
 
 // Reducer is the lifecycle reaction boundary used after a review result has
@@ -100,6 +109,16 @@ func WithLifecycleReducer(r Reducer) Option {
 // WithClock overrides the service clock for tests.
 func WithClock(clock func() time.Time) Option {
 	return func(s *Service) { s.clock = clock }
+}
+
+// WithReviewRequester wires provider-backed re-review requests.
+func WithReviewRequester(requester ports.SCMReviewRequester) Option {
+	return func(s *Service) { s.requester = requester }
+}
+
+// WithReviewResolver wires provider-backed review-thread resolution.
+func WithReviewResolver(resolver ports.SCMReviewResolver) Option {
+	return func(s *Service) { s.resolver = resolver }
 }
 
 // WithTelemetry records review outcomes.
@@ -146,6 +165,203 @@ func New(engine *reviewcore.Engine, store Store, opts ...Option) *Service {
 	return s
 }
 
+// RequestRereview asks the SCM provider to request another review from reviewer
+// on one of the worker session's tracked PRs.
+func (s *Service) RequestRereview(ctx context.Context, workerID domain.SessionID, prURL, reviewer string) error {
+	reviewer = strings.TrimSpace(strings.TrimPrefix(reviewer, "@"))
+	if workerID == "" {
+		return fmt.Errorf("%w: worker session id is required", ErrInvalid)
+	}
+	if reviewer == "" {
+		return fmt.Errorf("%w: reviewer is required", ErrInvalid)
+	}
+	if s.requester == nil {
+		return fmt.Errorf("%w: review request provider is unavailable", ErrInvalid)
+	}
+	prs, err := s.store.ListPRsBySession(ctx, workerID)
+	if err != nil {
+		return err
+	}
+	if len(prs) == 0 {
+		return fmt.Errorf("%w: worker %q has no PR", ErrInvalid, workerID)
+	}
+	pr, ok := selectRereviewPR(prs, prURL)
+	if !ok {
+		return fmt.Errorf("%w: pull request is not tracked for worker %q", ErrNotFound, workerID)
+	}
+	if pr.Closed || pr.Merged {
+		return fmt.Errorf("%w: pull request is not open", ErrInvalid)
+	}
+	if !reviewerReviewedPR(ctx, s.store, pr.URL, reviewer) {
+		return fmt.Errorf("%w: reviewer %q has not reviewed this PR", ErrInvalid, reviewer)
+	}
+	ref, err := reviewRequestRef(pr)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if err := s.requester.RequestReview(ctx, ports.SCMReviewRequest{PR: ref, Reviewer: reviewer}); err != nil {
+		if errors.Is(err, ports.ErrSCMNotFound) {
+			return fmt.Errorf("%w: %w", ErrNotFound, err)
+		}
+		if errors.Is(err, ports.ErrSCMUnsupported) {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		return err
+	}
+	s.emit("ao.review.rereview_requested", workerID, map[string]any{
+		"provider": pr.Provider,
+	})
+	return nil
+}
+
+func selectRereviewPR(prs []domain.PullRequest, prURL string) (domain.PullRequest, bool) {
+	want := strings.TrimSpace(prURL)
+	if want == "" && len(prs) == 1 {
+		return prs[0], true
+	}
+	for _, pr := range prs {
+		if pr.URL == want || pr.HTMLURL == want {
+			return pr, true
+		}
+	}
+	return domain.PullRequest{}, false
+}
+
+func reviewerReviewedPR(ctx context.Context, store Store, prURL, reviewer string) bool {
+	reviews, err := store.ListPRReviews(ctx, prURL)
+	if err != nil {
+		return false
+	}
+	for _, review := range reviews {
+		if strings.EqualFold(strings.TrimPrefix(strings.TrimSpace(review.Author), "@"), reviewer) {
+			return true
+		}
+	}
+	comments, err := store.ListPRComments(ctx, prURL)
+	if err != nil {
+		return false
+	}
+	for _, comment := range comments {
+		if strings.EqualFold(strings.TrimPrefix(strings.TrimSpace(comment.Author), "@"), reviewer) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewRequestRef(pr domain.PullRequest) (ports.SCMPRRef, error) {
+	repo := ports.SCMRepo{Provider: pr.Provider, Host: pr.Host, Repo: pr.Repo}
+	if repo.Provider == "" {
+		repo.Provider = providerFromPRURL(pr.URL)
+	}
+	if repo.Host == "" {
+		repo.Host = hostFromPRURL(pr.URL)
+	}
+	if repo.Repo != "" {
+		parts := strings.SplitN(repo.Repo, "/", 2)
+		if len(parts) == 2 {
+			repo.Owner = parts[0]
+			repo.Name = parts[1]
+		}
+	}
+	if repo.Provider == "github" && (repo.Owner == "" || repo.Name == "") {
+		owner, name := githubOwnerRepoFromPRURL(pr.URL)
+		repo.Owner, repo.Name = owner, name
+		if repo.Repo == "" && owner != "" && name != "" {
+			repo.Repo = owner + "/" + name
+		}
+	}
+	if pr.Number <= 0 || repo.Provider == "" || repo.Owner == "" || repo.Name == "" {
+		return ports.SCMPRRef{}, fmt.Errorf("invalid pull request reference")
+	}
+	return ports.SCMPRRef{Repo: repo, Number: pr.Number, URL: pr.URL}, nil
+}
+
+func providerFromPRURL(raw string) string {
+	if strings.Contains(raw, "/-/merge_requests/") {
+		return "gitlab"
+	}
+	if strings.Contains(raw, "/pull/") {
+		return "github"
+	}
+	return ""
+}
+
+func hostFromPRURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+func githubOwnerRepoFromPRURL(raw string) (string, string) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) >= 4 && parts[2] == "pull" {
+		return parts[0], parts[1]
+	}
+	return "", ""
+}
+
+// ResolveReviewComment resolves the provider review thread that owns the given
+// unresolved review comment.
+func (s *Service) ResolveReviewComment(ctx context.Context, workerID domain.SessionID, prURL, commentURL string) error {
+	commentURL = strings.TrimSpace(commentURL)
+	if workerID == "" {
+		return fmt.Errorf("%w: worker session id is required", ErrInvalid)
+	}
+	if commentURL == "" {
+		return fmt.Errorf("%w: comment URL is required", ErrInvalid)
+	}
+	if s.resolver == nil {
+		return fmt.Errorf("%w: review resolver provider is unavailable", ErrInvalid)
+	}
+	prs, err := s.store.ListPRsBySession(ctx, workerID)
+	if err != nil {
+		return err
+	}
+	pr, ok := selectRereviewPR(prs, prURL)
+	if !ok {
+		return fmt.Errorf("%w: pull request is not tracked for worker %q", ErrNotFound, workerID)
+	}
+	comments, err := s.store.ListPRComments(ctx, pr.URL)
+	if err != nil {
+		return err
+	}
+	var target domain.PullRequestComment
+	for _, comment := range comments {
+		if comment.URL == commentURL {
+			target = comment
+			break
+		}
+	}
+	if target.ThreadID == "" {
+		return fmt.Errorf("%w: review comment is not tracked for this PR", ErrNotFound)
+	}
+	if target.Resolved {
+		return nil
+	}
+	ref, err := reviewRequestRef(pr)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if err := s.resolver.ResolveReviewThread(ctx, ports.SCMReviewResolveRequest{PR: ref, ThreadID: target.ThreadID}); err != nil {
+		if errors.Is(err, ports.ErrSCMNotFound) {
+			return fmt.Errorf("%w: %w", ErrNotFound, err)
+		}
+		if errors.Is(err, ports.ErrSCMUnsupported) {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		return err
+	}
+	s.emit("ao.review.comment_resolved", workerID, map[string]any{"provider": pr.Provider})
+	return nil
+}
+
 // Trigger starts (or reuses) a review pass for a worker's PR. An empty harness
 // runs under the project's configured reviewer; a non-empty one overrides it for
 // this pass only, so choosing a reviewer for one session leaves every other
@@ -172,6 +388,11 @@ func (s *Service) Trigger(
 		"reused":       len(result.CreatedRuns) == 0,
 	})
 	return result, nil
+}
+
+// TriggerAuto starts a daemon-initiated review pass.
+func (s *Service) TriggerAuto(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (reviewcore.TriggerResult, error) {
+	return s.engine.TriggerWithSource(ctx, workerID, harness, domain.ReviewTriggerAuto)
 }
 
 // Cancel stops the live reviewer pane and marks running review passes as failed.

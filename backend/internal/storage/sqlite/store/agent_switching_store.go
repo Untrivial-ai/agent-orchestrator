@@ -209,6 +209,19 @@ func (s *Store) GetActiveAgentSwitch(ctx context.Context, sessionID domain.Sessi
 	return agentSwitchFromGen(row), true, nil
 }
 
+// ListActiveAgentSwitches returns every non-terminal switch saga.
+func (s *Store) ListActiveAgentSwitches(ctx context.Context) ([]domain.AgentSwitch, error) {
+	rows, err := s.qr.ListActiveAgentSwitches(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list active agent switches: %w", err)
+	}
+	out := make([]domain.AgentSwitch, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, agentSwitchFromGen(row))
+	}
+	return out, nil
+}
+
 // ListAgentSwitches returns a session's switch history, newest first.
 func (s *Store) ListAgentSwitches(ctx context.Context, sessionID domain.SessionID) ([]domain.AgentSwitch, error) {
 	rows, err := s.qr.ListAgentSwitches(ctx, sessionID)
@@ -531,6 +544,11 @@ func (s *Store) ActivateAgentSwitchTarget(ctx context.Context, activation domain
 	if n != 1 {
 		return false, nil
 	}
+	if err := q.ResetConversationAgentOverridesForSession(ctx, gen.ResetConversationAgentOverridesForSessionParams{
+		UpdatedAt: activation.ActivatedAt, CurrentSessionID: &activation.SessionID,
+	}); err != nil {
+		return false, fmt.Errorf("activate agent switch target %s: reset conversation agent overrides: %w", activation.SwitchID, err)
+	}
 	targetRef := activation.TargetNativeSessionRef
 	n, err = q.MarkAgentSwitchTargetReady(ctx, gen.MarkAgentSwitchTargetReadyParams{
 		ActivatedAt: activation.ActivatedAt, ID: activation.SwitchID,
@@ -586,9 +604,11 @@ func validateAgentSwitch(rec domain.AgentSwitch, create bool) error {
 		return fmt.Errorf("agent switch %s: invalid error code %q", rec.ID, rec.ErrorCode)
 	}
 	recoveryRequired := rec.RequiresRecovery()
-	failureCode := rec.State == domain.AgentSwitchFailed && rec.ErrorCode != "" && rec.ErrorCode != domain.AgentSwitchErrorTargetStartUnconfirmed
+	recoveryMarker := rec.ErrorCode == domain.AgentSwitchErrorTargetStartUnconfirmed ||
+		rec.ErrorCode == domain.AgentSwitchErrorSourceRestoreUnconfirmed
+	failureCode := rec.State == domain.AgentSwitchFailed && rec.ErrorCode != "" && !recoveryMarker
 	if (rec.State == domain.AgentSwitchFailed) != failureCode || (rec.ErrorCode != "" && !failureCode && !recoveryRequired) {
-		return fmt.Errorf("agent switch %s: error code must describe a terminal failure or the exact target-start recovery condition", rec.ID)
+		return fmt.Errorf("agent switch %s: error code must describe a terminal failure or an exact recovery condition", rec.ID)
 	}
 	if rec.SourceGenerationID == "" {
 		return fmt.Errorf("agent switch %s: source generation is required", rec.ID)

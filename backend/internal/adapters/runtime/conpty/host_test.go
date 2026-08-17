@@ -618,6 +618,9 @@ func TestStatusReq_AliveAndExited(t *testing.T) {
 	if sp.PID != 105 {
 		t.Fatalf("expected pid=105, got %d", sp.PID)
 	}
+	if sp.ProtocolVersion != conPTYHostProtocolVersion {
+		t.Fatalf("protocol version = %d, want %d", sp.ProtocolVersion, conPTYHostProtocolVersion)
+	}
 
 	// Simulate PTY exit.
 	f.pty.signalExit(42)

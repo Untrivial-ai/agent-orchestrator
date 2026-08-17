@@ -3,10 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { aoBridge } from "../../lib/bridge";
+import { useUiStore } from "../../stores/ui-store";
 import { useUpdateStatus } from "../../hooks/useUpdateStatus";
 import type { UpdateChannel, UpdateSettings, UpdateState, UpdateStatus } from "../../../main/update-settings";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { ConfirmDialog } from "../ConfirmDialog";
 import { SettingsOptionMenu } from "./SettingsOptionMenu";
 import { SettingsRow } from "./SettingsRow";
 import { SettingsSection } from "./SettingsSection";
@@ -14,7 +16,7 @@ import { captureRendererEvent, releaseChannelFrom, setReleaseChannelContext } fr
 
 export const updateSettingsQueryKey = ["update-settings"] as const;
 
-type PrimaryValue = UpdateChannel;
+type PrimaryValue = UpdateChannel | "feature";
 
 const DEFAULT_SETTINGS: UpdateSettings = { enabled: false, channel: "latest", nightlyAck: false, feature: null };
 
@@ -36,6 +38,9 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 	const [form, setForm] = useState<UpdateSettings>(DEFAULT_SETTINGS);
 	const formRef = useRef(form);
 	formRef.current = form;
+	const [showFeature, setShowFeature] = useState(false);
+	const [pendingPin, setPendingPin] = useState<{ pr: number; title: string } | null>(null);
+	const developerMode = useUiStore((state) => state.developerMode);
 
 	const status = useUpdateStatus();
 	// Set only for the owned pin/home transition request, so unrelated hourly
@@ -85,8 +90,9 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 	const channelOptions: { value: PrimaryValue; label: string }[] = [
 		{ value: "latest", label: t("settings.updates.channel.stable") },
 		{ value: "nightly", label: t("settings.updates.channel.nightly") },
+		{ value: "feature", label: t("settings.updates.channel.feature") },
 	];
-	const primaryValue: PrimaryValue = form.channel;
+	const primaryValue: PrimaryValue = developerMode && (form.feature !== null || showFeature) ? "feature" : form.channel;
 
 	const setEnabled = (enabled: boolean) => {
 		const next = { ...formRef.current, enabled };
@@ -96,6 +102,11 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 
 	const handlePrimaryChannel = (value: PrimaryValue) => {
 		if (!formRef.current.enabled) return;
+		if (value === "feature") {
+			setShowFeature(true);
+			return;
+		}
+		setShowFeature(false);
 		const next = {
 			...formRef.current,
 			channel: value,
@@ -115,7 +126,26 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 		}
 	};
 
+	const confirmPinBuild = async () => {
+		if (!pendingPin) return;
+		const { pr } = pendingPin;
+		setPendingPin(null);
+		const next = { ...formRef.current, feature: { pr } };
+		setForm(next);
+		const requestId = nextUpdateRequestId();
+		autoProgressRef.current = requestId;
+		handledStatusRef.current = null;
+		try {
+			await aoBridge.updates.check({ settings: next, requestId });
+			void queryClient.invalidateQueries({ queryKey: updateSettingsQueryKey });
+		} catch {
+			if (autoProgressRef.current === requestId) autoProgressRef.current = null;
+			void queryClient.invalidateQueries({ queryKey: updateSettingsQueryKey });
+		}
+	};
+
 	const handleReturnToHome = async () => {
+		setShowFeature(false);
 		// Optimistic; the main process clears the pin against persisted state.
 		setForm({ ...formRef.current, feature: null });
 		const requestId = nextUpdateRequestId();
@@ -139,7 +169,7 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 	});
 	const activeBuild = activeQuery.data ?? null;
 	// Show the escape hatch whenever a feature build is running or pinned.
-	const featurePr = activeBuild?.pr ?? form.feature?.pr;
+	const featurePr = activeBuild?.pr ?? (developerMode ? null : (form.feature?.pr ?? null));
 
 	return (
 		<>
@@ -157,9 +187,9 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 								{form.channel === "nightly" ? t("settings.updates.returnToNightly") : t("settings.updates.returnToStable")}
 							</Button>
 						</div>
-						<p className="px-1 text-xs text-settings-muted">
-							{t("settings.updates.featureTracking", { pr: featurePr })}
-						</p>
+					<p className="px-(--size-settings-row-padding) text-xs text-settings-muted">
+						{t("settings.updates.featureTracking", { pr: featurePr })}
+					</p>
 					</div>
 				)}
 
@@ -178,11 +208,18 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 						<SettingsOptionMenu
 							aria-label={t("settings.updates.channel")}
 							value={primaryValue}
-							options={channelOptions}
+							options={developerMode ? channelOptions : channelOptions.filter((option) => option.value !== "feature")}
 							onChange={handlePrimaryChannel}
 							disabled={!form.enabled || save.isPending}
 						/>
 					</SettingsRow>
+
+					{primaryValue === "feature" && (
+						<FeatureBuildsSelect
+							currentPr={form.feature?.pr ?? null}
+							onPin={(pr, title) => setPendingPin({ pr, title })}
+						/>
+					)}
 
 					{primaryValue === "nightly" && form.enabled && (
 						<p className="nightly-warning px-(--size-settings-row-padding) pb-(--size-settings-row-padding) text-xs leading-row text-warning">
@@ -194,14 +231,60 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 					)}
 				</div>
 
-				{save.isError && (
-					<p className="px-1 text-xs text-error">{save.error instanceof Error ? save.error.message : t("settings.updates.saveFailed")}</p>
+				{status.staleCheckNudge && (
+					<p className="flex items-center gap-2 px-(--size-settings-row-padding) text-xs leading-row text-warning">
+						<AlertTriangle className="size-icon-sm shrink-0" aria-hidden="true" />
+						<span>{t("settings.updates.networkStale")}</span>
+					</p>
 				)}
+
+			{save.isError && (
+				<p className="px-(--size-settings-row-padding) text-xs text-error">{save.error instanceof Error ? save.error.message : t("settings.updates.saveFailed")}</p>
+			)}
 
 				<UpdateActions status={status} suppressTopBorder={primaryValue === "nightly" && form.enabled} />
 			</SettingsSection>
-
+			<ConfirmDialog
+				open={pendingPin !== null}
+				title={t("settings.updates.switchFeatureTitle")}
+				description={pendingPin ? t("settings.updates.switchFeatureBody", pendingPin) : null}
+				confirmLabel={t("settings.updates.confirm")}
+				onConfirm={() => void confirmPinBuild()}
+				onOpenChange={(open) => !open && setPendingPin(null)}
+			/>
 		</>
+	);
+}
+
+function FeatureBuildsSelect({
+	currentPr,
+	onPin,
+}: {
+	currentPr: number | null;
+	onPin: (pr: number, title: string) => void;
+}) {
+	const { t } = useTranslation();
+	const buildsQuery = useQuery({ queryKey: ["feature-builds"], queryFn: () => aoBridge.featureBuilds.list() });
+	const builds = buildsQuery.data ?? [];
+
+	if (!buildsQuery.isLoading && builds.length === 0) {
+		return <p className="px-3 text-xs text-settings-muted">{t("settings.updates.noFeatureReleases")}</p>;
+	}
+
+	return (
+		<SettingsRow label={t("settings.updates.featureBuild")}>
+			<SettingsOptionMenu
+				aria-label={t("settings.updates.featureBuild")}
+				value={currentPr === null ? "__none__" : currentPr.toString()}
+				placeholder={t("settings.updates.selectFeature")}
+				options={builds.map((build) => ({ value: build.pr.toString(), label: `PR #${build.pr}: ${build.title}` }))}
+				disabled={buildsQuery.isLoading}
+				onChange={(value) => {
+					const build = builds.find((item) => item.pr === Number(value));
+					if (build) onPin(build.pr, build.title);
+				}}
+			/>
+		</SettingsRow>
 	);
 }
 
@@ -283,7 +366,13 @@ function UpdateStatusLine({ status }: { status: UpdateStatus }) {
 		case "unsupported":
 			return <span className="text-xs text-settings-muted">{status.message ?? t("settings.updates.needInstalledApp")}</span>;
 		case "error":
-			return <span className="text-xs text-error">{status.message ?? t("settings.updates.updateFailed")}</span>;
+			return (
+				<span className="text-xs text-error">
+				{status.netError
+					? t("settings.updates.netErrorRestartGuidance")
+					: status.message ?? t("settings.updates.updateFailed")}
+				</span>
+			);
 		default:
 			return null;
 	}

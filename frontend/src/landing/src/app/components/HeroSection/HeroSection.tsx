@@ -1,6 +1,10 @@
 "use client";
 
-import { COMPANY, HERO_SUBHEADLINE, TAGLINE } from "@ao/shared/constants";
+import {
+  COMPANY,
+  HERO_SUBHEADLINE,
+  TAGLINE,
+} from "@ao/shared/constants";
 import { Star } from "lucide-react";
 import { useState } from "react";
 import { FaGithub } from "react-icons/fa";
@@ -26,11 +30,12 @@ interface HeroSectionProps {
 
 export function HeroSection({ initialStars }: HeroSectionProps) {
   const [copiedCommand, setCopiedCommand] = useState(false);
+  const stars = initialStars;
 
   const githubButtonLabel =
-    initialStars === null
+    stars === null
       ? "Stars on GitHub"
-      : `${formatStarCount(initialStars)} Stars on GitHub`;
+      : `${formatStarCount(stars)} Stars on GitHub`;
 
   const copyInstallCommand = async () => {
     if (!navigator.clipboard) return;
@@ -71,14 +76,14 @@ export function HeroSection({ initialStars }: HeroSectionProps) {
               >
                 <FaGithub className="size-4" aria-hidden="true" />
                 <span>Star on GitHub</span>
-                {initialStars !== null ? (
+                {stars !== null ? (
                   <span className="flex items-center gap-1 pl-0.5 text-muted-foreground">
                     <Star
                       className="size-3.5 fill-yellow-400 text-yellow-400"
                       aria-hidden="true"
                     />
                     <span className="tabular-nums">
-                      {formatStarCount(initialStars)}
+                      {formatStarCount(stars)}
                     </span>
                   </span>
                 ) : null}

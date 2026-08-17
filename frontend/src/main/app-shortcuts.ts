@@ -10,6 +10,8 @@ import {
 	OPEN_SETTINGS_SHORTCUT_CHANNEL,
 	PREVIOUS_SESSION_SHORTCUT_CHANNEL,
 	PREVIOUS_TAB_SHORTCUT_CHANNEL,
+	terminalFontSizeDelta,
+	TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL,
 	type AppShortcutId,
 	type KeybindingOverrides,
 	type ShortcutChord,
@@ -40,7 +42,7 @@ type BeforeInputContents = {
 
 type ShortcutTargetContents = {
 	focus: () => void;
-	send: (channel: string) => void;
+	send: (channel: string, ...args: unknown[]) => void;
 };
 
 const mainShortcutChannels: readonly [AppShortcutId, string][] = [
@@ -79,12 +81,10 @@ export function attachAppShortcuts(
 	isRecording: () => boolean = () => false,
 	shouldHandle: (id: AppShortcutId) => boolean = () => true,
 	onShortcut?: (id: AppShortcutId) => void,
+	isTerminalFocused: () => boolean = () => false,
 ): void {
 	contents.on("before-input-event", (event, input) => {
-		if (input.type !== "keyDown" || input.isAutoRepeat) return;
-		// Let the renderer's capture listener receive application-owned chords
-		// while the user is recording a replacement binding.
-		if (isRecording()) return;
+		if (input.type !== "keyDown") return;
 		const chord = {
 			key: input.key,
 			code: input.code,
@@ -93,6 +93,17 @@ export function attachAppShortcuts(
 			shift: input.shift,
 			alt: input.alt,
 		};
+		const fontSizeDelta = terminalFontSizeDelta(chord, isMac);
+		if (fontSizeDelta !== 0 && isTerminalFocused()) {
+			event.preventDefault();
+			if (focusTarget) target.focus();
+			target.send(TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, fontSizeDelta);
+			return;
+		}
+		if (input.isAutoRepeat) return;
+		// Let the renderer's capture listener receive application-owned chords
+		// while the user is recording a replacement binding.
+		if (isRecording()) return;
 		if (onShortcut && matchesAppShortcut("toggle-browser-devtools", chord, isMac, getOverrides())) {
 			event.preventDefault();
 			if (focusTarget) target.focus();

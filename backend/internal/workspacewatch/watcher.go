@@ -10,12 +10,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
+
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // Watch subscribes to relevant changes below the workspace roots until ctx is cancelled. The
@@ -112,11 +113,11 @@ type gitWorkspace struct {
 }
 
 func discoverGitWorkspace(ctx context.Context, root string) gitWorkspace {
-	gitDirRaw, err := exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "--absolute-git-dir").Output()
+	gitDirRaw, err := aoprocess.CommandContext(ctx, "git", "-C", root, "rev-parse", "--absolute-git-dir").Output()
 	if err != nil {
 		return gitWorkspace{}
 	}
-	filesRaw, err := exec.CommandContext(ctx, "git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").Output()
+	filesRaw, err := aoprocess.CommandContext(ctx, "git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").Output()
 	if err != nil {
 		return gitWorkspace{}
 	}
@@ -132,14 +133,14 @@ func discoverGitWorkspace(ctx context.Context, root string) gitWorkspace {
 		filepath.Join(gitDir, "HEAD"): {},
 	}
 	commonDir := gitDir
-	if raw, commonErr := exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "--git-common-dir").Output(); commonErr == nil {
+	if raw, commonErr := aoprocess.CommandContext(ctx, "git", "-C", root, "rev-parse", "--git-common-dir").Output(); commonErr == nil {
 		commonDir = strings.TrimSpace(string(raw))
 		if !filepath.IsAbs(commonDir) {
 			commonDir = filepath.Join(root, commonDir)
 		}
 	}
 	metadataFiles[filepath.Join(commonDir, "packed-refs")] = struct{}{}
-	if raw, refErr := exec.CommandContext(ctx, "git", "-C", root, "symbolic-ref", "-q", "HEAD").Output(); refErr == nil {
+	if raw, refErr := aoprocess.CommandContext(ctx, "git", "-C", root, "symbolic-ref", "-q", "HEAD").Output(); refErr == nil {
 		ref := strings.TrimSpace(string(raw))
 		if ref != "" {
 			metadataFiles[filepath.Join(commonDir, filepath.FromSlash(ref))] = struct{}{}
@@ -273,7 +274,7 @@ func gitIgnored(ctx context.Context, root, target string) bool {
 	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return false
 	}
-	return exec.CommandContext(ctx, "git", "-C", root, "check-ignore", "-q", "--", filepath.ToSlash(rel)).Run() == nil
+	return aoprocess.CommandContext(ctx, "git", "-C", root, "check-ignore", "-q", "--", filepath.ToSlash(rel)).Run() == nil
 }
 
 func isWithin(root, target string) bool {

@@ -1,4 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
+import { ProjectModePickerView } from "@aoagents/product-ui";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, ChevronRight, Folder, FolderPlus, X, XCircle } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -343,119 +344,35 @@ function ImportModePicker({
 }) {
 	const { t } = useTranslation();
 	return (
-		<div
-			className="relative isolate flex w-full max-w-(--size-import-modal-max) flex-col items-stretch gap-8 rounded-welcome-panel border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)] p-(--size-import-modal-padding) shadow-[var(--shadow-import-modal)]"
-			role={dialog ? undefined : "group"}
-			aria-label={dialog ? undefined : t("createProject.importTitle")}
-		>
-			<div className={cn("relative z-[1] flex flex-col items-start gap-1", onClose && "pr-10")}>
-				{dialog ? (
-					<Dialog.Title className="import-title">{t("createProject.importTitle")}</Dialog.Title>
-				) : (
-					<h2 className="import-title">{t("createProject.importTitle")}</h2>
-				)}
-				{dialog ? (
-					<Dialog.Description className="import-description">{t("createProject.importWhat")}</Dialog.Description>
-				) : (
-					<p className="import-description">{t("createProject.importWhat")}</p>
-				)}
-			</div>
-			<div className="relative z-[2] flex flex-row items-stretch justify-center gap-6 self-stretch">
-				<ProjectModeButton
-					description={t("createProject.workspaceDesc")}
-					disabled={disabled}
-					kind="workspace"
-					onClick={() => onSelect("workspace")}
-				/>
-				<ProjectModeButton
-					description={t("createProject.projectDesc")}
-					disabled={disabled}
-					kind="single_repo"
-					onClick={() => onSelect("single_repo")}
-				/>
-			</div>
-			{onClose && (
-				<button
-					type="button"
-					className="import-close-button"
-					aria-label={t("createProject.closeDialog")}
-					disabled={disabled}
-					onClick={onClose}
-				>
-					<X className="size-5" aria-hidden="true" strokeWidth={1.67} />
-				</button>
+		<>
+			{dialog && (
+				<>
+					<Dialog.Title className="sr-only">{t("createProject.importTitle")}</Dialog.Title>
+					<Dialog.Description className="sr-only">{t("createProject.importWhat")}</Dialog.Description>
+				</>
 			)}
-		</div>
-	);
-}
-
-function ProjectModeButton({
-	description,
-	disabled,
-	kind,
-	onClick,
-}: {
-	description: string;
-	disabled: boolean;
-	kind: ProjectKind;
-	onClick: () => void;
-}) {
-	const { t } = useTranslation();
-	const isWorkspace = kind === "workspace";
-	const title = isWorkspace ? t("createProject.workspace") : t("createProject.project");
-	return (
-		<button
-			type="button"
-			aria-label={title}
-			className="flex min-h-(--size-import-mode-card-min) w-full flex-1 flex-col justify-start gap-6 self-stretch rounded-welcome-panel border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-card)] p-6 text-left transition-colors hover:bg-[var(--color-bg-import-card-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50 sm:min-h-(--size-import-mode-card-min-sm)"
-			disabled={disabled}
-			onClick={onClick}
-		>
-			<span className="flex w-full flex-col items-start">
-				<span
-					className={cn(
-						"flex h-(--size-import-mode-illustration) w-full justify-center",
-						isWorkspace ? "items-start" : "items-center",
-					)}
-				>
-					{isWorkspace ? (
-						<span className="flex h-(--size-import-mode-illustration) w-full max-w-[240px] flex-col items-start gap-3 rounded-lg border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-illustration)] p-4">
-							<span className="flex items-center gap-2 text-[14px] leading-5 text-[var(--color-text-import-muted)]">
-								<Folder className="size-[14px] shrink-0" aria-hidden="true" />
-								my-workspace/
-							</span>
-							<span className="flex w-full flex-col items-start gap-2">
-								{["web-app", "api-server", "shared-libs"].map((repo) => (
-									<span key={repo} className="flex w-full items-center px-3 py-2">
-										<span className="mr-2 size-2 shrink-0 rounded-full bg-accent-strong" aria-hidden="true" />
-										<span className="text-[12px] font-bold leading-4 text-[var(--color-text-import-title)]">
-											{repo}
-										</span>
-									</span>
-								))}
-							</span>
-						</span>
-					) : (
-						<span className="flex h-[50px] w-fit items-center rounded-lg border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-chip)] px-4 py-3">
-							<span className="mr-2 size-2 shrink-0 rounded-full bg-accent-strong" aria-hidden="true" />
-							<span className="text-[14px] font-bold leading-5 text-[var(--color-text-import-title)]">web-app</span>
-							<span className="px-1 text-[16px] leading-6 text-[var(--color-text-import-muted)]" aria-hidden="true">
-								·
-							</span>
-							<span className="text-[14px] font-normal leading-5 text-[var(--color-text-import-muted)]">main</span>
-						</span>
-					)}
-				</span>
-			</span>
-			<span className="mt-auto flex w-full flex-col items-start gap-2">
-				<span className="text-[16px] font-bold leading-6 text-[var(--color-text-import-title)]">
-					{title}
-				</span>
-				<span className="text-[14px] font-normal leading-[23px] text-[var(--color-text-import-muted)]">
-					{description}
-				</span>
-			</span>
-		</button>
+			<ProjectModePickerView
+				dialog={dialog}
+				disabled={disabled}
+				onClose={onClose}
+				onSelect={onSelect}
+				closeIcon={<X className="size-5" aria-hidden="true" strokeWidth={1.67} />}
+				folderIcon={<Folder className="size-[14px] shrink-0" aria-hidden="true" />}
+				labels={{
+					title: t("createProject.importTitle"),
+					description: t("createProject.importWhat"),
+					workspace: t("createProject.workspace"),
+					workspaceDescription: t("createProject.workspaceDesc"),
+					project: t("createProject.project"),
+					projectDescription: t("createProject.projectDesc"),
+					close: t("createProject.closeDialog"),
+					workspaceExample: "my-workspace/",
+					workspaceRepositories: ["web-app", "api-server", "shared-libs"],
+					projectExample: "web-app",
+					projectBranchExample: "main",
+				}}
+			/>
+		</>
 	);
 }
 
@@ -480,7 +397,7 @@ function CreateProjectFolderDialog({
 }) {
 	const { t } = useTranslation();
 	const isWorkspace = kind === "workspace";
-	const failedRepos = scan?.repos.filter((repo) => repo.status === "error" || !repo.hasRemote) ?? [];
+	const failedRepos = scan?.repos.filter((repo) => (repo.status === "error" || !repo.hasRemote) && !repo.needsGitInit) ?? [];
 	const hasScan = scan !== null;
 	const footerMessage =
 		failedRepos.length > 0
@@ -558,9 +475,9 @@ function CreateProjectFolderDialog({
 									</div>
 								)}
 
-								{scan.repos
-									.filter((repo) => repo.status !== "error" && repo.hasRemote)
-									.map((repo) => (
+							{scan.repos
+								.filter((repo) => (repo.status !== "error" && repo.hasRemote) || repo.needsGitInit)
+								.map((repo) => (
 										<div
 											key={repo.path}
 											className="rounded-lg border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-card)]"
@@ -633,7 +550,11 @@ function ImportRepoRow({ failed = false, repo }: { failed?: boolean; repo: Impor
 				</div>
 			</div>
 			<div className="hidden max-w-[260px] shrink-0 truncate text-right font-mono text-[12px] text-[var(--color-text-import-muted)] sm:block">
-				{failed ? (repo.reason ?? t("createProject.repoCannotImport")) : `${repo.branch} ${remoteDisplay(repo.remote)}`}
+				{repo.needsGitInit
+					? "Needs git init"
+					: failed
+						? (repo.reason ?? t("createProject.repoCannotImport"))
+						: `${repo.branch} ${remoteDisplay(repo.remote)}`}
 			</div>
 		</div>
 	);

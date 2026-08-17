@@ -463,6 +463,106 @@ paths:
       summary: Run the legacy AO project import through the daemon store
       tags:
       - import
+  /api/v1/mobile/devices:
+    get:
+      operationId: listMobileDevices
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileDevicesResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: List paired mobile devices with their live/muted status
+      tags:
+      - mobile
+  /api/v1/mobile/devices/{installId}:
+    delete:
+      operationId: removeMobileDevice
+      parameters:
+      - description: The device's stable install id.
+        in: path
+        name: installId
+        required: true
+        schema:
+          description: The device's stable install id.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Remove a paired device from the roster
+      tags:
+      - mobile
+    patch:
+      operationId: muteMobileDevice
+      parameters:
+      - description: The device's stable install id.
+        in: path
+        name: installId
+        required: true
+        schema:
+          description: The device's stable install id.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MuteDeviceRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: boolean
+                type: object
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Mute or unmute push notifications for a paired device
+      tags:
+      - mobile
   /api/v1/mobile/disable:
     post:
       operationId: disableMobile
@@ -536,6 +636,43 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Internal Server Error
       summary: Rotate the Connect Mobile password, dropping any connected phone
+      tags:
+      - mobile
+  /api/v1/mobile/secure-pairing:
+    post:
+      operationId: setMobileSecurePairing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersSetSecurePairingRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileStatusResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Turn TLS-over-Tailscale secure pairing on or off
       tags:
       - mobile
   /api/v1/mobile/status:
@@ -1307,7 +1444,36 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Unregister a phone's Expo push token
+      summary: Unregister a phone's Expo push token, leaving it paired
+      tags:
+      - push
+  /api/v1/push/pairings/{id}:
+    delete:
+      operationId: unpairPushDevice
+      parameters:
+      - description: The phone's install id, or its push token for older builds.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: The phone's install id, or its push token for older builds.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Unpair this phone from the daemon, removing it from the roster
       tags:
       - push
   /api/v1/reviews/{reviewSessionID}/activity:
@@ -1694,6 +1860,58 @@ paths:
       summary: Submit a generation-fenced source-agent handoff
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/agent-switches/{switchId}/recover:
+    post:
+      operationId: recoverSessionAgentSwitch
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Durable agent-switch identifier.
+        in: path
+        name: switchId
+        required: true
+        schema:
+          description: Durable agent-switch identifier.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSwitchResponse'
+          description: Accepted
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Retry safe source restoration for an agent switch
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/attachments:
     post:
       operationId: stageSessionAttachments
@@ -1745,6 +1963,57 @@ paths:
       summary: Write images into a running session's worktree and return their paths
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/auto-inject-ci:
+    patch:
+      operationId: setSessionAutoInjectCI
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetSessionAutoInjectCIRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetSessionAutoInjectCIResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Set the automatic CI-failure injection default for new session PRs
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/auto-inject-review:
     patch:
       operationId: setSessionAutoInjectReview
@@ -1788,6 +2057,57 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Set the auto-inject review setting for a session
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/auto-review:
+    put:
+      operationId: setSessionAutoReview
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersSetSessionAutoReviewRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Enable or disable automatic review for a session
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/conversation:
@@ -2710,6 +3030,65 @@ paths:
       summary: Discard a turn and everything after it from the agent's memory
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/turns/{turnId}/steer:
+    post:
+      operationId: promoteQueuedSessionConversationTurn
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: AO conversation turn identifier, from the snapshot's turns array.
+        in: path
+        name: turnId
+        required: true
+        schema:
+          description: AO conversation turn identifier, from the snapshot's turns
+            array.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoteQueuedTurnResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Promote a queued message into the in-flight turn
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/interface-transition:
     delete:
       operationId: cancelSessionInterfaceTransition
@@ -2853,6 +3232,58 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Switch a live session between its TUI and Chat controllers
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement:
+    put:
+      operationId: acknowledgeSessionInterfaceTransitionNotice
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Durable interface-transition identifier.
+        in: path
+        name: transitionId
+        required: true
+        schema:
+          description: Durable interface-transition identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgeSessionInterfaceTransitionNoticeResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Acknowledge a failed or recovered interface handoff notice
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/kill:
@@ -3703,6 +4134,57 @@ paths:
       summary: Cancel a running code review
       tags:
       - reviews
+  /api/v1/sessions/{sessionId}/reviews/comments/resolve:
+    post:
+      operationId: resolveReviewComment
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersResolveReviewCommentRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersResolveReviewCommentResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Resolve an external review comment thread
+      tags:
+      - reviews
   /api/v1/sessions/{sessionId}/reviews/kill:
     post:
       operationId: killReviewSession
@@ -3740,6 +4222,57 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Kill a worker's reviewer terminal session
+      tags:
+      - reviews
+  /api/v1/sessions/{sessionId}/reviews/rerequest:
+    post:
+      operationId: requestRereview
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersRequestRereviewRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersRequestRereviewResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Ask an external reviewer to re-review a worker's PR
       tags:
       - reviews
   /api/v1/sessions/{sessionId}/reviews/restore:
@@ -4042,12 +4575,12 @@ paths:
               $ref: '#/components/schemas/SwitchAgentRequest'
         required: true
       responses:
-        "200":
+        "202":
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentSwitchResponse'
-          description: OK
+          description: Accepted
         "400":
           content:
             application/json:
@@ -4555,6 +5088,19 @@ components:
       - code
       - message
       type: object
+    AcknowledgeSessionInterfaceTransitionNoticeResponse:
+      properties:
+        ok:
+          type: boolean
+        sessionId:
+          type: string
+        transition:
+          $ref: '#/components/schemas/SessionInterfaceTransition'
+      required:
+      - ok
+      - sessionId
+      - transition
+      type: object
     ActivateConversationBranchResponse:
       properties:
         activeBranchId:
@@ -4687,6 +5233,7 @@ components:
           - target_binary_missing
           - target_agent_unauthorized
           - target_start_unconfirmed
+          - source_restore_unconfirmed
           - request_cancelled
           - source_blocked
           - failed_pre_stop
@@ -4917,11 +5464,77 @@ components:
         disabled:
           type: boolean
       type: object
+    ControllersRequestRereviewRequest:
+      properties:
+        pullRequestUrl:
+          description: Tracked pull request URL. Required when the session has multiple
+            PRs.
+          type: string
+        reviewerId:
+          description: Provider login of the reviewer to ask for another review.
+          type: string
+      required:
+      - reviewerId
+      type: object
+    ControllersRequestRereviewResponse:
+      properties:
+        ok:
+          type: boolean
+      required:
+      - ok
+      type: object
+    ControllersResolveReviewCommentRequest:
+      properties:
+        commentUrl:
+          description: Provider URL of the unresolved review comment to resolve.
+          type: string
+        pullRequestUrl:
+          description: Tracked pull request URL. Required when the session has multiple
+            PRs.
+          type: string
+      required:
+      - commentUrl
+      type: object
+    ControllersResolveReviewCommentResponse:
+      properties:
+        ok:
+          type: boolean
+      required:
+      - ok
+      type: object
+    ControllersSecurePairingStatus:
+      properties:
+        active:
+          type: boolean
+        available:
+          type: boolean
+        enabled:
+          type: boolean
+        host:
+          type: string
+        port:
+          type: integer
+        reason:
+          type: string
+      required:
+      - enabled
+      - available
+      - active
+      - host
+      - port
+      - reason
+      type: object
     ControllersSessionView:
       properties:
+        activeAgentSwitch:
+          $ref: '#/components/schemas/AgentSwitch'
         activity:
           $ref: '#/components/schemas/DomainActivity'
+        autoInjectCI:
+          type: boolean
         autoInjectReview:
+          type: boolean
+        autoReviewEnabled:
           type: boolean
         branch:
           type: string
@@ -5030,16 +5643,32 @@ components:
       - id
       - projectId
       - kind
+      - autoReviewEnabled
       - mode
       - activity
       - isTerminated
       - terminateOnPrMerge
       - autoInjectReview
+      - autoInjectCI
       - createdAt
       - updatedAt
       - isPinned
       - status
       - prs
+      type: object
+    ControllersSetSecurePairingRequest:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
+      type: object
+    ControllersSetSessionAutoReviewRequest:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
       type: object
     ConversationAccountPayload:
       properties:
@@ -6124,6 +6753,50 @@ components:
       - prNumber
       - method
       type: object
+    MobileDeviceResponse:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        deviceName:
+          type: string
+        installId:
+          type: string
+        lastSeenAt:
+          format: date-time
+          type: string
+        live:
+          description: True when the phone's app is open and polling.
+          type: boolean
+        muted:
+          type: boolean
+        notificationsEnabled:
+          description: True when this device has a push token registered.
+          type: boolean
+        platform:
+          enum:
+          - ios
+          - android
+          type: string
+        token:
+          type: string
+      required:
+      - installId
+      - muted
+      - live
+      - notificationsEnabled
+      - createdAt
+      - lastSeenAt
+      type: object
+    MobileDevicesResponse:
+      properties:
+        devices:
+          items:
+            $ref: '#/components/schemas/MobileDeviceResponse'
+          type: array
+      required:
+      - devices
+      type: object
     MobileStatusResponse:
       properties:
         enabled:
@@ -6134,14 +6807,28 @@ components:
           type: string
         port:
           type: integer
+        securePairing:
+          $ref: '#/components/schemas/ControllersSecurePairingStatus'
+        tailscaleHost:
+          type: string
         warning:
           type: string
       required:
       - enabled
       - host
+      - tailscaleHost
       - port
       - password
       - warning
+      - securePairing
+      type: object
+    MuteDeviceRequest:
+      properties:
+        muted:
+          description: True to stop sending push notifications to this device.
+          type: boolean
+      required:
+      - muted
       type: object
     NotificationEnvelope:
       properties:
@@ -6442,6 +7129,19 @@ components:
       - kind
       - sessionPrefix
       type: object
+    PromoteQueuedTurnResponse:
+      properties:
+        activityId:
+          type: string
+        providerTurnId:
+          type: string
+        sourceTurnId:
+          type: string
+      required:
+      - sourceTurnId
+      - providerTurnId
+      - activityId
+      type: object
     PushDeviceEnvelope:
       properties:
         device:
@@ -6464,7 +7164,6 @@ components:
         token:
           type: string
       required:
-      - token
       - createdAt
       - lastSeenAt
       type: object
@@ -6473,6 +7172,11 @@ components:
         deviceName:
           description: Human-friendly device label.
           type: string
+        installId:
+          description: 'Stable per-install device id, keying the registry so a rotated
+            push token updates the same row. Optional: older app builds omit it and
+            the daemon synthesizes one.'
+          type: string
         platform:
           description: Device platform.
           enum:
@@ -6480,10 +7184,9 @@ components:
           - android
           type: string
         token:
-          description: Expo push token, e.g. ExponentPushToken[...].
+          description: 'Expo push token, e.g. ExponentPushToken[...]. Optional: omitted
+            when the phone has no push token yet.'
           type: string
-      required:
-      - token
       type: object
     ReloadConversationMCPServersResponse:
       properties:
@@ -6647,6 +7350,11 @@ components:
           type: string
         targetSha:
           type: string
+        triggerSource:
+          enum:
+          - manual
+          - auto
+          type: string
         verdict:
           type: string
       required:
@@ -6655,6 +7363,7 @@ components:
       - sessionId
       - batchId
       - harness
+      - triggerSource
       - prUrl
       - targetSha
       - status
@@ -6783,6 +7492,11 @@ components:
           type: string
         id:
           type: string
+        noticeAcknowledgedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         phase:
           enum:
           - requested
@@ -6848,6 +7562,8 @@ components:
       type: object
     SessionPRCISummary:
       properties:
+        autoInjectCI:
+          type: boolean
         failingChecks:
           items:
             $ref: '#/components/schemas/SessionPRFailingCheck'
@@ -6862,6 +7578,7 @@ components:
       required:
       - state
       - failingChecks
+      - autoInjectCI
       type: object
     SessionPRConflictFile:
       properties:
@@ -6969,6 +7686,8 @@ components:
       properties:
         autoInjectReview:
           type: boolean
+        body:
+          type: string
         file:
           type: string
         line:
@@ -7064,6 +7783,7 @@ components:
         provider:
           enum:
           - github
+          - gitlab
           type: string
         repo:
           type: string
@@ -7287,6 +8007,29 @@ components:
       - ok
       - reviewSessionId
       type: object
+    SetSessionAutoInjectCIRequest:
+      properties:
+        autoInjectCI:
+          type: boolean
+      required:
+      - autoInjectCI
+      type: object
+    SetSessionAutoInjectCIResponse:
+      properties:
+        autoInjectCI:
+          type: boolean
+        ok:
+          type: boolean
+        session:
+          $ref: '#/components/schemas/ControllersSessionView'
+        sessionId:
+          type: string
+      required:
+      - ok
+      - sessionId
+      - autoInjectCI
+      - session
+      type: object
     SetSessionAutoInjectReviewRequest:
       properties:
         autoInjectReview:
@@ -7492,6 +8235,11 @@ components:
         prompt:
           maxLength: 4096
           type: string
+        trackerProvider:
+          enum:
+          - github
+          - gitlab
+          type: string
       required:
       - projectId
       type: object
@@ -7639,9 +8387,9 @@ components:
             rejected.
           maxLength: 128
           type: string
-        note:
-          description: Optional user guidance included in the bounded handoff context.
-          maxLength: 4096
+        model:
+          description: Optional model override for the target agent launch or resume.
+          maxLength: 256
           type: string
         targetHarness:
           description: Agent harness to continue the logical AO session with.
@@ -7661,6 +8409,7 @@ components:
         provider:
           enum:
           - github
+          - gitlab
           type: string
         repo:
           type: string
@@ -7926,6 +8675,8 @@ components:
       type: object
     WorkspaceRepo:
       properties:
+        gitStatus:
+          type: string
         name:
           type: string
         relativePath:

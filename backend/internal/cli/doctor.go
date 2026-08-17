@@ -48,9 +48,12 @@ const (
 	doctorSectionTools          = "Tools"
 	doctorSectionAgents         = "Agent harnesses"
 	doctorSectionGitHub         = "GitHub"
+	doctorSectionGitLab         = "GitLab"
 	minGitVersion               = "2.25.0"
 	githubDoctorUserAgent       = "ao-agent-orchestrator/doctor"
+	gitlabDoctorUserAgent       = "ao-agent-orchestrator/doctor"
 	defaultDoctorGitHubRESTBase = "https://api.github.com"
+	defaultDoctorGitLabRESTBase = "https://gitlab.com/api/v4"
 )
 
 type harnessProbe struct {
@@ -176,7 +179,7 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 	for _, harness := range doctorHarnesses {
 		checks = append(checks, c.checkHarness(ctx, harness))
 	}
-	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx))
+	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
 	return checks
 }
 
@@ -503,6 +506,97 @@ func (c *commandContext) githubToken(ctx context.Context) (token, source string,
 		return "", "", errors.New("gh is installed but returned an empty auth token")
 	}
 	return token, "gh", nil
+}
+
+func (c *commandContext) checkGitLabToken(ctx context.Context) doctorCheck {
+	token, source, err := c.gitlabToken(ctx)
+	if err != nil {
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionGitLab, Name: "gitlab-token", Message: err.Error()}
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, strings.TrimRight(c.deps.DoctorGitLabRESTBase, "/")+"/user", http.NoBody)
+	if err != nil {
+		return doctorCheck{Level: doctorFail, Section: doctorSectionGitLab, Name: "gitlab-token", Message: err.Error()}
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", gitlabDoctorUserAgent)
+	req.Header.Set("PRIVATE-TOKEN", token)
+	resp, err := c.deps.HTTPClient.Do(req)
+	if err != nil {
+		return doctorCheck{Level: doctorFail, Section: doctorSectionGitLab, Name: "gitlab-token", Message: fmt.Sprintf("%s token validation failed: %v", source, err)}
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return doctorCheck{Level: doctorFail, Section: doctorSectionGitLab, Name: "gitlab-token", Message: fmt.Sprintf("%s token rejected by GitLab (HTTP %d)", source, resp.StatusCode)}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionGitLab, Name: "gitlab-token", Message: fmt.Sprintf("%s token probe returned HTTP %d", source, resp.StatusCode)}
+	}
+
+	var user struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return doctorCheck{Level: doctorFail, Section: doctorSectionGitLab, Name: "gitlab-token", Message: fmt.Sprintf("%s token probe decode failed: %v", source, err)}
+	}
+	login := user.Username
+	if login == "" {
+		login = "unknown user"
+	}
+	return doctorCheck{Level: doctorPass, Section: doctorSectionGitLab, Name: "gitlab-token", Message: fmt.Sprintf("%s token valid for %s", source, login)}
+}
+
+func (c *commandContext) gitlabToken(ctx context.Context) (token, source string, err error) {
+	for _, name := range []string{"AO_GITLAB_TOKEN", "GITLAB_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v, name, nil
+		}
+	}
+	path, lookErr := c.deps.LookPath("glab")
+	if lookErr != nil || path == "" {
+		return "", "", errors.New("no GitLab token found (set AO_GITLAB_TOKEN/GITLAB_TOKEN or run `glab auth login`)")
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	out, cmdErr := c.deps.CommandOutput(reqCtx, path, "auth", "status", "--show-token")
+	if cmdErr != nil {
+		return "", "", fmt.Errorf("glab is installed but no token was available (`glab auth status --show-token` failed: %w)", cmdErr)
+	}
+	token = parseGLabTokenLine(string(out))
+	if token == "" {
+		return "", "", errors.New("glab is installed but returned no auth token")
+	}
+	return token, "glab", nil
+}
+
+// parseGLabTokenLine extracts the token value from `glab auth status --show-token`
+// output. The token appears on a line containing "Token" followed by a colon
+// and the token value (e.g. "✓ Token found: glpat-xxx"). This mirrors the
+// parsing logic in the GitLab SCM adapter (gitlab/auth.go) without importing
+// the adapter package into the CLI.
+func parseGLabTokenLine(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		tokenIdx := strings.Index(line, "Token")
+		if tokenIdx < 0 {
+			continue
+		}
+		colonIdx := strings.Index(line[tokenIdx:], ":")
+		if colonIdx < 0 {
+			continue
+		}
+		val := strings.TrimSpace(line[tokenIdx+colonIdx+1:])
+		if val != "" {
+			return val
+		}
+	}
+	return ""
 }
 
 var (

@@ -104,6 +104,22 @@ func TestReadHistoryMakesMissingItemIDsUniqueAcrossTurns(t *testing.T) {
 	}
 }
 
+func TestReadHistoryRejectsAnUnsettledNativeTurnInsteadOfOmittingIt(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"completed","items":[{"type":"agentMessage","text":"settled"}]},`+
+		`{"id":"turn-b","status":"inProgress","items":[{"type":"agentMessage","text":"partial"}]}`+
+		`]}}`)
+
+	events, err := conv.ReadHistory(context.Background())
+	if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+		t.Fatalf("ReadHistory error = %v, want ErrChatHistoryUnsettled", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("ReadHistory returned %d partial events with an unsettled turn", len(events))
+	}
+}
+
 // The provider takes a COUNT from the end of the thread, not a turn id, so the whole
 // correctness of rollback rests on turning the named turn into the right number.
 // Naming the middle of three turns must discard that turn and the one after it.

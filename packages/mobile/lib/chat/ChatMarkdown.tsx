@@ -85,7 +85,7 @@ function CodeBlock({ text, language, streaming }: { text: string; language?: str
 		<View style={styles.codeCard}>
 			<View style={styles.codeHeader}>
 				<Text style={styles.codeLanguage}>{language || "code"}</Text>
-				<Pressable accessibilityRole="button" accessibilityLabel={wrap ? "Disable code wrapping" : "Wrap code"} accessibilityState={{ selected: wrap }} onPress={() => { preferredCodeWrap = !wrap; setWrap(!wrap); }} style={styles.copyButton}><Feather name="corner-down-left" size={13} color={wrap ? t.blue : t.textTertiary} /><Text style={[styles.copyLabel, wrap && { color: t.blue }]}>Wrap</Text></Pressable>
+				<Pressable accessibilityRole="button" accessibilityLabel={wrap ? "Disable code wrapping" : "Wrap code"} accessibilityState={{ selected: wrap }} onPress={() => { haptics.select(); preferredCodeWrap = !wrap; setWrap(!wrap); }} style={styles.copyButton}><Feather name="corner-down-left" size={13} color={wrap ? t.blue : t.textTertiary} /><Text style={[styles.copyLabel, wrap && { color: t.blue }]}>Wrap</Text></Pressable>
 				<Pressable
 					accessibilityRole="button"
 					accessibilityLabel="Copy code"
@@ -123,7 +123,7 @@ function inline(text: string, styles: ReturnType<typeof makeStyles>): ReactNode[
 					key={`${match.index}-link`}
 					accessibilityRole="link"
 					style={styles.link}
-					onPress={() => void Linking.openURL(url).catch(() => haptics.error())}
+					onPress={() => { haptics.tap(); void Linking.openURL(url).catch(() => haptics.error()); }}
 				>
 					{label}
 				</Text>,

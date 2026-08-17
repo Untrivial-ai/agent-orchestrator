@@ -67,10 +67,11 @@ func applyLegacyAgentSwitchMigrations(t *testing.T, db *sql.DB, switchPath, hand
 	if err != nil {
 		t.Fatalf("read agent-switch migration: %v", err)
 	}
+	normalizedAgentSwitchMigration := strings.ReplaceAll(string(agentSwitchMigration), "\r\n", "\n")
 	// Reconstruct the exact pre-consolidation table shape. The historical 0084
 	// below then adds only the two finalized-handoff columns, leaving transcript
 	// status for the compatibility repair to add.
-	legacyAgentSwitchMigration := strings.ReplaceAll(string(agentSwitchMigration), `    source_transcript_status   TEXT NOT NULL DEFAULT 'not_attempted'
+	legacyAgentSwitchMigration := strings.ReplaceAll(normalizedAgentSwitchMigration, `    source_transcript_status   TEXT NOT NULL DEFAULT 'not_attempted'
         CHECK (source_transcript_status IN ('not_attempted', 'available', 'unavailable')),
 `, "")
 	legacyAgentSwitchMigration = strings.ReplaceAll(legacyAgentSwitchMigration, `    semantic_handoff_included INTEGER NOT NULL DEFAULT 0
@@ -92,7 +93,7 @@ func applyLegacyAgentSwitchMigrations(t *testing.T, db *sql.DB, switchPath, hand
 		`            'mode', NEW.session_mode
 `,
 	)
-	if legacyAgentSwitchMigration == string(agentSwitchMigration) ||
+	if legacyAgentSwitchMigration == normalizedAgentSwitchMigration ||
 		strings.Contains(legacyAgentSwitchMigration, "source_transcript_status") ||
 		strings.Contains(legacyAgentSwitchMigration, "semantic_handoff_included") ||
 		strings.Contains(legacyAgentSwitchMigration, "final_handoff_path") ||

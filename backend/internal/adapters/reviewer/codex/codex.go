@@ -47,7 +47,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 	if err != nil {
 		return ports.ReviewCommandSpec{}, err
 	}
-	extra, err := codexReadOnlyArgs()
+	extra, err := codexReadOnlyArgs(inv)
 	if err != nil {
 		return ports.ReviewCommandSpec{}, err
 	}
@@ -61,7 +61,7 @@ func (r *Reviewer) ReviewRestoreCommand(ctx context.Context, inv ports.ReviewInv
 	if err != nil || !ok {
 		return cmd, ok, err
 	}
-	extra, err := codexReadOnlyArgs()
+	extra, err := codexReadOnlyArgs(inv)
 	if err != nil {
 		return ports.ReviewCommandSpec{}, false, err
 	}
@@ -106,12 +106,17 @@ func insertBeforeLastArg(argv []string, extra ...string) []string {
 	return append(out, argv[len(argv)-1])
 }
 
-func codexReadOnlyArgs() ([]string, error) {
+func codexReadOnlyArgs(inv ports.ReviewInvocation) ([]string, error) {
 	extra := []string{"--sandbox", "read-only"}
 	// Shell commands inherit only Codex's core environment by default. Preserve
 	// the AO location overrides the reviewer needs to submit to this daemon.
+	values := map[string]string{
+		"AO_PORT":     os.Getenv("AO_PORT"),
+		"AO_DATA_DIR": firstNonEmpty(inv.DataDir, os.Getenv("AO_DATA_DIR")),
+		"AO_RUN_FILE": firstNonEmpty(inv.RunFilePath, os.Getenv("AO_RUN_FILE")),
+	}
 	for _, name := range []string{"AO_PORT", "AO_DATA_DIR", "AO_RUN_FILE"} {
-		value := os.Getenv(name)
+		value := values[name]
 		if value == "" {
 			continue
 		}
@@ -122,4 +127,13 @@ func codexReadOnlyArgs() ([]string, error) {
 		extra = append(extra, "-c", "shell_environment_policy.set."+name+"="+string(encoded))
 	}
 	return extra, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -1,5 +1,14 @@
 import { expect, test } from "vitest";
-import { updateFailureCategory, updateFailureOutcome } from "./update-telemetry";
+import { isNetErrorMessage, updateFailureCategory, updateFailureOutcome } from "./update-telemetry";
+
+test("detects Chromium network-stack errors", () => {
+	expect(isNetErrorMessage("net::ERR_FAILED")).toBe(true);
+	expect(isNetErrorMessage("net::ERR_CONNECTION_RESET")).toBe(true);
+	// Anchored at the start — a net:: substring elsewhere is not the wedge signature.
+	expect(isNetErrorMessage("Error: net::ERR_FAILED")).toBe(false);
+	expect(isNetErrorMessage("HttpError: 404")).toBe(false);
+	expect(isNetErrorMessage(undefined)).toBe(false);
+});
 
 test("buckets updater errors into safe categories", () => {
 	expect(updateFailureCategory("net::ERR_CONNECTION_RESET")).toBe("network");

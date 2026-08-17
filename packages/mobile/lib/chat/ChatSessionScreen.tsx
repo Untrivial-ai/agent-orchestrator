@@ -1,11 +1,13 @@
 import { Feather } from "@expo/vector-icons";
 import { useNavigation, useRouter } from "expo-router";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
 	ActivityIndicator,
 	Alert,
-	FlatList,
+	InteractionManager,
+	Keyboard,
 	KeyboardAvoidingView,
+	LayoutAnimation,
 	Modal,
 	Platform,
 	Pressable,
@@ -17,21 +19,25 @@ import {
 } from "react-native";
 import { restoreSession, resumeSessionAgent, type DashboardSession, type OrchestratorLink } from "../api";
 import { haptics } from "../haptics";
+import { headerActionStyle } from "../headerAction";
+import { deferRouteContent, resetHeaderRightForSwap } from "../headerRightSwap";
 import { useApp } from "../store";
 import {
 	mobileInterfaceTransitionIsActive,
 	mobileInterfaceTransitionIsCancellable,
 	useInterfaceTransition,
 } from "../session/useInterfaceTransition";
+import { screenKeyboardAvoidance } from "../session/keyboardInset";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { getWorkspacePaths, openSessionShell } from "./api";
 import { ChatComposer } from "./ChatComposer";
-import { ChatSettingsModal } from "./ChatSettingsModal";
 import { ChatTimeline } from "./ChatTimeline";
-import { contextReadout, elapsedLabel, mcpServerFailureLabel, quotaWarning, resetLabel } from "./conversationChrome";
-import { conversationActionUnsupported } from "./conversationErrors";
-import { conversationMarkers, type ConversationMarker } from "./timelineModel";
+import { chatSheetRoute } from "./chatSheetRegistry";
+import { centeredConversationMenu } from "./chatLayout";
+import { elapsedLabel, mcpServerFailureLabel, quotaWarning, resetLabel } from "./conversationChrome";
+import { conversationActionError, conversationActionUnsupported } from "./conversationErrors";
+import { conversationMarkers } from "./timelineModel";
 import { brokenMcpServers, can } from "./types";
 import { useMobileConversation } from "./useConversation";
 
@@ -42,19 +48,53 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const styles = useThemedStyles(makeStyles);
 	const navigation = useNavigation();
 	const router = useRouter();
+	const [headerRightReady, setHeaderRightReady] = useState(false);
+	const [contentReadySessionId, setContentReadySessionId] = useState<string>();
+	useLayoutEffect(
+		() => resetHeaderRightForSwap(
+			() => navigation.setOptions({ headerRight: undefined }),
+			() => setHeaderRightReady(true),
+		),
+		[navigation],
+	);
+	useEffect(() => deferRouteContent(
+		() => setContentReadySessionId(session.id),
+		(callback) => {
+			const task = InteractionManager.runAfterInteractions(callback);
+			return () => task.cancel();
+		},
+	), [session.id]);
 	const { config, refresh: refreshBoard, setActiveProject } = useApp();
 	const conversation = useMobileConversation(config, session.id);
 	const interfaceSwitch = useInterfaceTransition(config, session.id, refreshBoard);
-	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [menuOpen, setMenuOpen] = useState(false);
-	const [mapOpen, setMapOpen] = useState(false);
 	const [jumpToSequence, setJumpToSequence] = useState<number>();
+	const clearJumpToSequence = useCallback(() => setJumpToSequence(undefined), []);
 	const [filePaths, setFilePaths] = useState<string[]>([]);
 	const [filePathsTruncated, setFilePathsTruncated] = useState(false);
+	const filePathsRequest = useRef<Promise<{ paths: string[]; truncated: boolean }> | null>(null);
 	const [openingShell, setOpeningShell] = useState(false);
 	const [resuming, setResuming] = useState(false);
+	const [keyboardHeight, setKeyboardHeight] = useState(0);
 	const terminated = "projectName" in session ? Boolean(session.isTerminal) : Boolean(session.isTerminated);
 	const interfaceTransitionActive = mobileInterfaceTransitionIsActive(interfaceSwitch.transition);
+	const interfaceTransitionNotice =
+		!interfaceTransitionActive &&
+		!interfaceSwitch.transition?.noticeAcknowledgedAt &&
+		(interfaceSwitch.transition?.phase === "failed" ||
+			interfaceSwitch.transition?.phase === "recovery_required")
+			? interfaceSwitch.transition
+			: undefined;
+	const interfaceTransitionRecovered =
+		interfaceTransitionNotice?.phase === "recovery_required" &&
+		interfaceTransitionNotice.errorCode === "DAEMON_RESTARTED";
+	const interfaceTransitionNoticeText =
+		interfaceTransitionNotice?.errorDetail ||
+		(interfaceTransitionRecovered
+			? "AO restored the session in its last committed interface."
+			: interfaceTransitionNotice?.phase === "recovery_required"
+				? "The interface switch needs recovery before more work is sent."
+				: "The interface switch failed; the current interface remains available.");
 	const turnActive = Boolean(
 		conversation.snapshot?.turns.some((turn) => turn.state === "running" || turn.state === "queued"),
 	);
@@ -67,26 +107,80 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		),
 	);
 
+	useEffect(() => {
+		if (Platform.OS !== "android") return;
+		const avoidance = screenKeyboardAvoidance("android", 0);
+		const animate = (duration?: number) => LayoutAnimation.configureNext({
+			duration: duration || 250,
+			update: { type: LayoutAnimation.Types.keyboard },
+		});
+		const show = Keyboard.addListener(avoidance.showEvent, (event) => {
+			animate(event.duration);
+			setKeyboardHeight(event.endCoordinates.height);
+		});
+		const hide = Keyboard.addListener(avoidance.hideEvent, (event) => {
+			animate(event?.duration);
+			setKeyboardHeight(0);
+		});
+		return () => {
+			show.remove();
+			hide.remove();
+		};
+	}, []);
+
 	const title = conversation.snapshot?.title || sessionTitle(session);
 	useLayoutEffect(() => {
+		if (!headerRightReady) {
+			navigation.setOptions({ headerRight: undefined });
+			return;
+		}
 		navigation.setOptions({
 			title: title.length > 24 ? `${title.slice(0, 22)}…` : title,
 			headerRight: () => (
-				<Pressable accessibilityRole="button" accessibilityLabel="Conversation actions" hitSlop={11} onPress={() => setMenuOpen(true)} style={styles.headerAction}>
+				<Pressable accessibilityRole="button" accessibilityLabel="Conversation actions" hitSlop={11} onPress={() => { haptics.tap(); setMenuOpen(true); }} style={headerActionStyle}>
 					<Feather name="more-horizontal" size={20} color={t.textSecondary} />
 				</Pressable>
 			),
 		});
-	}, [navigation, title, styles, t]);
+	}, [headerRightReady, navigation, title, styles, t]);
 
-	useEffect(() => {
-		if (!config || !conversation.snapshot) return;
-		let cancelled = false;
-		const load = () => void getWorkspacePaths(config, session.id).then((result) => { if (!cancelled) { setFilePaths(result.paths); setFilePathsTruncated(result.truncated); } }).catch(() => {});
-		load();
-		const poll = setInterval(load, 30_000);
-		return () => { cancelled = true; clearInterval(poll); };
-	}, [config, session.id, conversation.snapshot?.conversationId]);
+	const loadWorkspaceFiles = useCallback(async () => {
+		if (!config || !conversation.snapshot) return { paths: filePaths, truncated: filePathsTruncated };
+		if (filePathsRequest.current) return filePathsRequest.current;
+		const request = getWorkspacePaths(config, session.id)
+			.then((result) => {
+				setFilePaths(result.paths);
+				setFilePathsTruncated(result.truncated);
+				return result;
+			})
+			.catch(() => ({ paths: filePaths, truncated: filePathsTruncated }))
+			.finally(() => { filePathsRequest.current = null; });
+		filePathsRequest.current = request;
+		return request;
+	}, [config, conversation.snapshot, filePaths, filePathsTruncated, session.id]);
+
+	const openTurnSettings = useCallback(async () => {
+		const current = conversation.snapshot;
+		if (!current) return;
+		let catalog = { models: conversation.models, configOptions: conversation.configOptions };
+		let catalogError = conversation.actionErrors.settings ?? conversation.actionErrors.config;
+		try {
+			catalog = await conversation.loadTurnOptions();
+		} catch (cause) {
+			catalogError = conversationActionError(cause);
+		}
+		router.push(chatSheetRoute({
+			kind: "turn-settings",
+			snapshot: current,
+			models: catalog.models,
+			options: catalog.configOptions,
+			disabled: current.controller.state === "stopped" || conversation.pendingActions.includes("settings") || conversation.pendingActions.includes("config"),
+			error: catalogError,
+			onSettings: conversation.chooseSettings,
+			onOption: conversation.setConfigOption,
+			onRefresh: () => conversation.loadTurnOptions({ refresh: true }),
+		}));
+	}, [conversation, router]);
 
 	const openShell = useCallback(async () => {
 		if (!config || openingShell) return;
@@ -151,6 +245,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	if (conversation.loading && !conversation.snapshot) return <Centered icon="message-square" title="Loading conversation…" spinning />;
 	if (conversation.unavailable) return <Unavailable message={conversation.unavailable.message} onShell={() => void openShell()} openingShell={openingShell} />;
 	if (!conversation.snapshot) return <Centered icon="alert-triangle" title="Could not load conversation" message={conversation.error || "The daemon did not return a conversation."} action="Retry" onAction={() => void conversation.refresh()} />;
+	if (contentReadySessionId !== session.id) return <Centered icon="message-square" title="Preparing conversation…" spinning />;
 
 	const snapshot = conversation.snapshot;
 	const active = snapshot.turns.some((turn) => turn.state === "running" || turn.state === "queued");
@@ -158,20 +253,25 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const brokenServers = brokenMcpServers(snapshot);
 	const rolledBack = snapshot.turns.filter((turn) => turn.rolledBack).length;
 	const quota = quotaWarning(snapshot.rateLimits);
-	const markers = conversationMarkers(snapshot);
 	const compactSupported = can(snapshot, "compaction") && !conversationActionUnsupported("compact", conversation.actionCodes.compact);
 	const mcpReloadSupported = can(snapshot, "mcp_reload") && !conversationActionUnsupported("mcp", conversation.actionCodes.mcp);
 	const steerUnsupported = conversationActionUnsupported("steer", conversation.actionCodes.steer);
 
 	return (
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 86 : 0}>
+		<KeyboardAvoidingView
+			style={[
+				styles.screen,
+				Platform.OS === "android" && keyboardHeight > 0
+					? { paddingBottom: screenKeyboardAvoidance("android", keyboardHeight).paddingBottom }
+					: undefined,
+			]}
+			behavior={Platform.OS === "ios" ? "padding" : undefined}
+			keyboardVerticalOffset={Platform.OS === "ios" ? 86 : 0}
+		>
 			<ChatMetaBar
 				snapshot={snapshot}
 				refreshing={conversation.refreshing}
-				compacting={conversation.pendingActions.includes("compact")}
 				onRefresh={() => void conversation.refresh()}
-				onCompact={compactSupported ? () => void conversation.compact().catch(() => {}) : undefined}
-				compactDisabled={active || snapshot.controller.state === "stopped" || conversation.pendingActions.includes("compact")}
 			/>
 			{interfaceTransitionActive ? (
 				<InlineBanner
@@ -181,8 +281,25 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 					action={mobileInterfaceTransitionIsCancellable(interfaceSwitch.transition) ? (interfaceSwitch.cancelling ? "Cancelling…" : "Cancel") : undefined}
 					onPress={interfaceSwitch.cancelling ? undefined : () => void interfaceSwitch.cancel().catch(() => {})}
 				/>
-			) : interfaceSwitch.transition?.phase === "failed" || interfaceSwitch.transition?.phase === "recovery_required" ? (
-				<InlineBanner tone="danger" icon="alert-triangle" text={interfaceSwitch.transition.errorDetail || "The interface switch failed; the current interface remains available."} />
+			) : interfaceTransitionNotice ? (
+				<InlineBanner
+					tone={interfaceTransitionRecovered ? "warning" : "danger"}
+					icon={interfaceTransitionRecovered ? "check-circle" : "alert-triangle"}
+					text={`${interfaceTransitionNoticeText}${
+						interfaceSwitch.acknowledgeNoticeError
+							? ` Could not dismiss: ${interfaceSwitch.acknowledgeNoticeError}`
+							: ""
+					}`}
+					action={interfaceSwitch.acknowledgingNotice ? "Dismissing…" : "Dismiss"}
+					onPress={
+						interfaceSwitch.acknowledgingNotice
+							? undefined
+							: () =>
+									void interfaceSwitch
+										.acknowledgeNotice(interfaceTransitionNotice.id)
+										.catch(() => {})
+					}
+				/>
 			) : null}
 			<ConversationBanners
 				snapshot={snapshot}
@@ -205,14 +322,14 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			<ChatTimeline
 				snapshot={snapshot}
 				loadingOlder={conversation.loadingOlder}
-				onLoadOlder={() => void conversation.loadOlder()}
+				onLoadOlder={conversation.loadOlder}
 				approvalPending={conversation.pendingActions.includes("approval")}
 				inputPending={conversation.pendingActions.includes("input")}
 				onDecide={conversation.resolveApproval}
 				onResolveInput={conversation.resolveInput}
 				onRollback={conversation.rollback}
 				jumpToSequence={jumpToSequence}
-				onJumpHandled={() => setJumpToSequence(undefined)}
+				onJumpHandled={clearJumpToSequence}
 			/>
 			{activeTurn ? <LiveTurnBar snapshot={snapshot} startedAt={activeTurn.startedAt ?? activeTurn.requestedAt} stopping={conversation.pendingActions.includes("interrupt")} onInterrupt={() => void conversation.interrupt().catch(() => {})} /> : null}
 			<ChatComposer
@@ -221,6 +338,8 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				skills={conversation.skills}
 				filePaths={filePaths}
 				filePathsTruncated={filePathsTruncated}
+				onLoadSkills={conversation.loadSkills}
+				onLoadFiles={loadWorkspaceFiles}
 				configOptions={conversation.configOptions}
 				steerUnavailable={steerUnsupported}
 				pending={interfaceTransitionActive || conversation.pendingSends.some((item) => item.state === "sending")}
@@ -228,18 +347,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				onSend={conversation.send}
 				onSteer={conversation.steer}
 				onInterrupt={() => void conversation.interrupt().catch(() => {})}
-				onOpenSettings={() => setSettingsOpen(true)}
-			/>
-			<ChatSettingsModal
-				visible={settingsOpen}
-				onClose={() => setSettingsOpen(false)}
-				snapshot={snapshot}
-				models={conversation.models}
-				options={conversation.configOptions}
-				disabled={snapshot.controller.state === "stopped" || conversation.pendingActions.includes("settings") || conversation.pendingActions.includes("config")}
-				error={conversation.actionErrors.settings ?? conversation.actionErrors.config}
-				onSettings={(settings) => void conversation.chooseSettings(settings).catch(() => {})}
-				onOption={(id, value) => void conversation.setConfigOption(id, value).catch(() => {})}
+				onOpenSettings={() => void openTurnSettings()}
 			/>
 			<ConversationMenu
 				visible={menuOpen}
@@ -253,35 +361,26 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				interfaceSupported={Boolean(interfaceSwitch.status?.supported)}
 				interfaceReason={interfaceSwitch.status?.reason || interfaceSwitch.error}
 				interfaceSwitching={interfaceTransitionActive || interfaceSwitch.starting}
-				onMap={() => { setMenuOpen(false); setMapOpen(true); }}
+				onMap={() => { setMenuOpen(false); router.push(chatSheetRoute({ kind: "conversation-map", markers: conversationMarkers(snapshot), onSelect: setJumpToSequence })); }}
 				onOpenShell={() => void openShell()}
 				onPreview={() => { setMenuOpen(false); router.push({ pathname: "/preview/[id]", params: { id: session.id, title, previewUrl: "previewUrl" in session ? session.previewUrl ?? undefined : undefined } }); }}
 				onPullRequests={() => { setMenuOpen(false); setActiveProject(session.projectId); router.push("/(tabs)/prs"); }}
-				onSettings={() => { setMenuOpen(false); setSettingsOpen(true); }}
+				onSettings={() => { setMenuOpen(false); void openTurnSettings(); }}
 				onSwitchInterface={requestInterfaceSwitch}
 				onCompact={() => { setMenuOpen(false); void conversation.compact().catch(() => {}); }}
 				onReload={() => { setMenuOpen(false); void conversation.reloadMcp().catch(() => {}); }}
 				onRename={(next) => { setMenuOpen(false); void conversation.rename(next).catch(() => {}); }}
 			/>
-			<ConversationMap
-				visible={mapOpen}
-				markers={markers}
-				onClose={() => setMapOpen(false)}
-				onSelect={(sequence) => { setMapOpen(false); setJumpToSequence(sequence); }}
-			/>
 		</KeyboardAvoidingView>
 	);
 }
 
-function ChatMetaBar({ snapshot, refreshing, compacting, onRefresh, onCompact, compactDisabled }: { snapshot: NonNullable<ReturnType<typeof useMobileConversation>["snapshot"]>; refreshing: boolean; compacting: boolean; onRefresh(): void; onCompact?: () => void; compactDisabled?: boolean }) {
+function ChatMetaBar({ snapshot, refreshing, onRefresh }: { snapshot: NonNullable<ReturnType<typeof useMobileConversation>["snapshot"]>; refreshing: boolean; onRefresh(): void }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const state = snapshot.controller.state;
-	const context = contextReadout(snapshot.usage);
 	const stateColor = state === "busy" ? t.orange : state === "ready" ? t.green : state === "stopped" ? t.red : t.amber;
-	const contextColor = context?.severity === "critical" ? t.red : context?.severity === "warn" ? t.amber : t.blue;
-	const contextFillWidth = context?.percent !== undefined ? `${context.fillPercent ?? context.percent}%` as const : "0%";
-	return <View style={styles.meta}><View style={[styles.dot, { backgroundColor: stateColor }]} /><Text style={styles.harness}>{snapshot.harness || "agent"}</Text><Text style={styles.mode}>CHAT</Text><View style={{ flex: 1 }} />{context?.percent !== undefined ? <View accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: context.percent }} accessibilityLabel="Context window used" style={styles.usage}><View style={[styles.usageFill, { width: contextFillWidth, backgroundColor: contextColor }]} /></View> : null}{context?.percent !== undefined ? <Text style={[styles.percent, { color: contextColor }]}>{context.percent}%</Text> : context ? <Text style={styles.percent}>{formatTokens(context.tokens)} tokens</Text> : null}{onCompact ? <Pressable accessibilityRole="button" accessibilityLabel={compacting ? "Compacting conversation history" : compactDisabled ? "Compact after the current turn finishes" : "Compact conversation history"} accessibilityState={{ disabled: compactDisabled, busy: compacting }} disabled={compactDisabled} hitSlop={9} onPress={onCompact}>{compacting ? <ActivityIndicator size="small" color={t.textTertiary} /> : <Feather name="archive" size={13} color={compactDisabled ? t.textFaint : t.textTertiary} />}</Pressable> : null}<Pressable accessibilityRole="button" accessibilityLabel="Refresh conversation" hitSlop={9} onPress={onRefresh}><Feather name="refresh-cw" size={13} color={t.textTertiary} style={refreshing ? { opacity: 0.4 } : undefined} /></Pressable></View>;
+	return <View style={styles.meta}><View style={[styles.dot, { backgroundColor: stateColor }]} /><Text style={styles.harness}>{snapshot.harness || "agent"}</Text><Text style={styles.mode}>CHAT</Text><View style={{ flex: 1 }} />{/* Context usage and the compact shortcut are intentionally hidden from the mobile header for now. Compaction remains available in the conversation menu. */}<Pressable accessibilityRole="button" accessibilityLabel="Refresh conversation" hitSlop={9} onPress={() => { haptics.tap(); void onRefresh(); }}><Feather name="refresh-cw" size={13} color={t.textTertiary} style={refreshing ? { opacity: 0.4 } : undefined} /></Pressable></View>;
 }
 
 function ConversationBanners({ snapshot, brokenServers, resuming, terminated, mcpReloading, mcpError, mcpReloadSupported, turnInFlight, onResume, onReload, onOpenShell }: { snapshot: NonNullable<ReturnType<typeof useMobileConversation>["snapshot"]>; brokenServers: ReturnType<typeof brokenMcpServers>; resuming: boolean; terminated: boolean; mcpReloading: boolean; mcpError?: string; mcpReloadSupported: boolean; turnInFlight: boolean; onResume(): void; onReload(): void; onOpenShell(): void }) {
@@ -305,7 +404,7 @@ function LiveTurnBar({ snapshot, startedAt, stopping, onInterrupt }: { snapshot:
 	const blocked = snapshot.items.some((item) => item.kind === "activity" && (item.activityKind === "approval" || item.activityKind === "user_input") && item.status === "pending");
 	const elapsed = elapsedLabel(startedAt, now);
 	const stopLabel = queued ? "Stop and clear queue" : "Stop turn";
-	return <View style={styles.live}><ActivityIndicator size="small" color={blocked ? t.amber : t.orange} /><Text style={styles.liveText}>{blocked ? "Waiting for your input" : "Agent is working"}{elapsed ? ` · ${elapsed}` : ""}{queued ? ` · ${queued} queued` : ""}</Text><Pressable accessibilityRole="button" accessibilityLabel={stopLabel} accessibilityState={{ busy: stopping }} disabled={stopping} onPress={onInterrupt} style={styles.stopTurn}><Feather name="square" size={11} color={t.textPrimary} /><Text style={styles.stopTurnText}>{stopping ? "Stopping…" : stopLabel}</Text></Pressable></View>;
+	return <View style={styles.live}><ActivityIndicator size="small" color={blocked ? t.amber : t.orange} /><Text style={styles.liveText}>{blocked ? "Waiting for your input" : "Agent is working"}{elapsed ? ` · ${elapsed}` : ""}{queued ? ` · ${queued} queued` : ""}</Text><Pressable accessibilityRole="button" accessibilityLabel={stopLabel} accessibilityState={{ busy: stopping }} disabled={stopping} onPress={() => { haptics.tap(); void onInterrupt(); }} style={styles.stopTurn}><Feather name="square" size={11} color={t.textPrimary} /><Text style={styles.stopTurnText}>{stopping ? "Stopping…" : stopLabel}</Text></Pressable></View>;
 }
 
 function InlineBanner({ tone, icon, text, action, secondary, onPress, onSecondary }: { tone: "warning" | "danger" | "muted"; icon: keyof typeof Feather.glyphMap; text: string; action?: string; secondary?: string; onPress?(): void; onSecondary?(): void }) {
@@ -313,7 +412,7 @@ function InlineBanner({ tone, icon, text, action, secondary, onPress, onSecondar
 	const styles = useThemedStyles(makeStyles);
 	const color = tone === "danger" ? t.red : tone === "warning" ? t.amber : t.textTertiary;
 	const fill = tone === "danger" ? t.tintRed : tone === "warning" ? t.tintAmber : t.bgSubtle;
-	return <View style={[styles.banner, { backgroundColor: fill }]}><Feather name={icon} size={13} color={color} /><Text style={styles.bannerText}>{text}</Text>{secondary ? <Pressable hitSlop={7} onPress={onSecondary}><Text style={styles.bannerSecondary}>{secondary}</Text></Pressable> : null}{action ? <Pressable hitSlop={7} onPress={onPress}><Text style={[styles.bannerAction, { color }]}>{action}</Text></Pressable> : null}</View>;
+	return <View style={[styles.banner, { backgroundColor: fill }]}><Feather name={icon} size={13} color={color} /><Text style={styles.bannerText}>{text}</Text>{secondary ? <Pressable hitSlop={7} onPress={() => { haptics.tap(); onSecondary?.(); }}><Text style={styles.bannerSecondary}>{secondary}</Text></Pressable> : null}{action ? <Pressable hitSlop={7} onPress={() => { haptics.tap(); onPress?.(); }}><Text style={[styles.bannerAction, { color }]}>{action}</Text></Pressable> : null}</View>;
 }
 
 function ConversationMenu({ visible, onClose, snapshot, openingShell, compacting, mcpReloading, compactSupported, mcpReloadSupported, interfaceSupported, interfaceReason, interfaceSwitching, onMap, onOpenShell, onPreview, onPullRequests, onSettings, onSwitchInterface, onCompact, onReload, onRename }: { visible: boolean; onClose(): void; snapshot: NonNullable<ReturnType<typeof useMobileConversation>["snapshot"]>; openingShell: boolean; compacting: boolean; mcpReloading: boolean; compactSupported: boolean; mcpReloadSupported: boolean; interfaceSupported: boolean; interfaceReason?: string; interfaceSwitching: boolean; onMap(): void; onOpenShell(): void; onPreview(): void; onPullRequests(): void; onSettings(): void; onSwitchInterface(): void; onCompact(): void; onReload(): void; onRename(title: string): void }) {
@@ -323,8 +422,8 @@ function ConversationMenu({ visible, onClose, snapshot, openingShell, compacting
 	const [title, setTitle] = useState(snapshot.title ?? "");
 	const turnInFlight = snapshot.turns.some((turn) => turn.state === "running" || turn.state === "queued");
 	useEffect(() => { if (visible) { setRenaming(false); setTitle(snapshot.title ?? ""); } }, [visible, snapshot.title]);
-	return <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}><Pressable style={styles.menuScrim} onPress={onClose} /><View style={styles.menu}>
-		{renaming ? <View style={styles.rename}><Text style={styles.menuHeading}>Rename conversation</Text><TextInput autoFocus value={title} onChangeText={setTitle} placeholder="Conversation title" placeholderTextColor={t.textFaint} style={styles.renameInput} /><View style={styles.menuButtons}><Pressable onPress={() => setRenaming(false)}><Text style={styles.menuCancel}>Cancel</Text></Pressable><Pressable disabled={!title.trim()} onPress={() => onRename(title.trim())}><Text style={styles.menuSave}>Save</Text></Pressable></View></View> : <ScrollView>
+	return <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}><Pressable style={styles.menuScrim} onPress={() => { haptics.tap(); onClose(); }} /><View style={styles.menu}>
+		{renaming ? <View style={styles.rename}><Text style={styles.menuHeading}>Rename conversation</Text><TextInput autoFocus value={title} onChangeText={setTitle} placeholder="Conversation title" placeholderTextColor={t.textFaint} style={styles.renameInput} /><View style={styles.menuButtons}><Pressable onPress={() => { haptics.tap(); setRenaming(false); }}><Text style={styles.menuCancel}>Cancel</Text></Pressable><Pressable disabled={!title.trim()} onPress={() => { haptics.tap(); onRename(title.trim()); }}><Text style={styles.menuSave}>Save</Text></Pressable></View></View> : <ScrollView>
 			<Text style={styles.menuHeading}>Conversation</Text>
 			<MenuRow icon="repeat" label={interfaceSwitching ? "Switching interface…" : "Open Terminal UI"} hint={interfaceSupported ? "Resume this native conversation in the agent's terminal" : interfaceReason || "This agent has not declared a compatible handoff"} disabled={!interfaceSupported || interfaceSwitching} onPress={onSwitchInterface} />
 			<MenuRow icon="list" label="Conversation map" hint="Jump to any request and response" onPress={onMap} />
@@ -341,29 +440,10 @@ function ConversationMenu({ visible, onClose, snapshot, openingShell, compacting
 	</View></Modal>;
 }
 
-function ConversationMap({ visible, markers, onClose, onSelect }: { visible: boolean; markers: ConversationMarker[]; onClose(): void; onSelect(sequence: number): void }) {
-	const t = useTheme();
-	const styles = useThemedStyles(makeStyles);
-	return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-		<Pressable accessibilityLabel="Close conversation map" style={styles.menuScrim} onPress={onClose} />
-		<View style={styles.mapSheet}>
-			<View style={styles.mapHeader}><View style={{ flex: 1 }}><Text style={styles.mapTitle}>Conversation map</Text><Text style={styles.mapSubtitle}>{markers.length} {markers.length === 1 ? "exchange" : "exchanges"}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose} hitSlop={10}><Feather name="x" size={19} color={t.textSecondary} /></Pressable></View>
-			<FlatList
-				data={markers}
-				keyExtractor={(marker) => marker.key}
-				initialNumToRender={20}
-				windowSize={7}
-				ListEmptyComponent={<Text style={styles.mapEmpty}>No conversation entries yet.</Text>}
-				renderItem={({ item: marker, index }) => <Pressable accessibilityRole="button" accessibilityLabel={`Jump to ${marker.title}`} onPress={() => onSelect(marker.sequence)} style={({ pressed }) => [styles.mapRow, pressed && { backgroundColor: t.bgSubtle }]}><View style={styles.mapRail}><View style={[styles.mapDot, marker.state === "failed" && { backgroundColor: t.red }, marker.state === "running" && { backgroundColor: t.orange }]} />{index < markers.length - 1 ? <View style={styles.mapLine} /> : null}</View><View style={{ flex: 1, paddingBottom: 13 }}><View style={styles.mapTitleRow}><Text numberOfLines={2} style={styles.mapRowTitle}>{marker.title}</Text>{marker.state ? <Text style={styles.mapState}>{marker.state}</Text> : null}</View>{marker.detail ? <Text numberOfLines={3} style={styles.mapDetail}>{marker.detail}</Text> : null}</View></Pressable>}
-			/>
-		</View>
-	</Modal>;
-}
-
 function MenuRow({ icon, label, hint, disabled, onPress }: { icon: keyof typeof Feather.glyphMap; label: string; hint?: string; disabled?: boolean; onPress(): void }) { const t = useTheme(); const styles = useThemedStyles(makeStyles); return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={() => { haptics.tap(); onPress(); }} style={({ pressed }) => [styles.menuRow, pressed && { backgroundColor: t.bgSubtle }, disabled && { opacity: 0.45 }]}><Feather name={icon} size={16} color={t.textTertiary} /><View style={{ flex: 1 }}><Text style={styles.menuLabel}>{label}</Text>{hint ? <Text style={styles.menuHint}>{hint}</Text> : null}</View><Feather name="chevron-right" size={15} color={t.textFaint} /></Pressable>; }
 
 function Unavailable({ message, onShell, openingShell }: { message: string; onShell(): void; openingShell: boolean }) { return <Centered icon="alert-triangle" title="Conversation unavailable" message={`${message}\n\nThe worktree is untouched. You can still open a plain shell in it.`} action={openingShell ? "Opening…" : "Open worktree shell"} onAction={onShell} />; }
-function Centered({ icon, title, message, spinning, action, onAction }: { icon: keyof typeof Feather.glyphMap; title: string; message?: string; spinning?: boolean; action?: string; onAction?(): void }) { const t = useTheme(); const styles = useThemedStyles(makeStyles); return <View style={styles.center}>{spinning ? <ActivityIndicator color={t.blue} /> : <Feather name={icon} size={22} color={t.amber} />}<Text style={styles.centerTitle}>{title}</Text>{message ? <Text style={styles.centerCopy}>{message}</Text> : null}{action ? <Pressable onPress={onAction} style={styles.centerAction}><Text style={styles.centerActionText}>{action}</Text></Pressable> : null}</View>; }
+function Centered({ icon, title, message, spinning, action, onAction }: { icon: keyof typeof Feather.glyphMap; title: string; message?: string; spinning?: boolean; action?: string; onAction?(): void }) { const t = useTheme(); const styles = useThemedStyles(makeStyles); return <View style={styles.center}>{spinning ? <ActivityIndicator color={t.blue} /> : <Feather name={icon} size={22} color={t.amber} />}<Text style={styles.centerTitle}>{title}</Text>{message ? <Text style={styles.centerCopy}>{message}</Text> : null}{action ? <Pressable onPress={() => { haptics.tap(); onAction?.(); }} style={styles.centerAction}><Text style={styles.centerActionText}>{action}</Text></Pressable> : null}</View>; }
 
 function sessionTitle(session: MobileChatSession): string { return "displayName" in session ? session.displayName || session.issueTitle || session.issueLabel || session.id : session.projectName || session.id; }
 function formatTokens(value: number): string { return value >= 1_000 ? `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k` : String(value); }
@@ -382,7 +462,6 @@ function formatReset(seconds?: number): string { if (seconds === undefined || se
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgBase },
-	headerAction: { width: 36, height: 32, alignItems: "center", justifyContent: "center" },
 	meta: { minHeight: 37, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, backgroundColor: t.bgSurface, borderBottomWidth: 1, borderBottomColor: t.borderSubtle },
 	dot: { width: 7, height: 7, borderRadius: 4 },
 	harness: { color: t.textSecondary, fontSize: 11, fontWeight: "600" },
@@ -404,7 +483,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	centerAction: { minHeight: 42, justifyContent: "center", backgroundColor: t.blue, borderRadius: 11, paddingHorizontal: 15, marginTop: 4 },
 	centerActionText: { color: t.onAccent, fontSize: 13, fontWeight: "700" },
 	menuScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: t.scrim },
-	menu: { position: "absolute", top: 76, right: 12, width: "88%", maxWidth: 310, maxHeight: "75%", backgroundColor: t.bgSurface, borderRadius: 16, borderWidth: 1, borderColor: t.borderDefault, overflow: "hidden" },
+	menu: { ...centeredConversationMenu, top: 76, maxHeight: "75%", backgroundColor: t.bgSurface, borderRadius: 16, borderWidth: 1, borderColor: t.borderDefault, overflow: "hidden" },
 	menuHeading: { color: t.textPrimary, fontSize: 14, fontWeight: "700", paddingHorizontal: 14, paddingTop: 14, paddingBottom: 8 },
 	menuRow: { minHeight: 57, flexDirection: "row", alignItems: "center", gap: 11, paddingHorizontal: 14, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
 	menuLabel: { color: t.textPrimary, fontSize: 13, fontWeight: "600" },
@@ -417,17 +496,4 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	menuButtons: { flexDirection: "row", justifyContent: "flex-end", gap: 18, paddingTop: 3 },
 	menuCancel: { color: t.textTertiary, fontSize: 12, fontWeight: "600" },
 	menuSave: { color: t.blue, fontSize: 12, fontWeight: "700" },
-	mapSheet: { position: "absolute", left: 0, right: 0, bottom: 0, height: "78%", borderTopLeftRadius: 22, borderTopRightRadius: 22, backgroundColor: t.bgSurface, borderWidth: 1, borderColor: t.borderSubtle, overflow: "hidden" },
-	mapHeader: { minHeight: 68, flexDirection: "row", alignItems: "center", paddingHorizontal: 18, borderBottomWidth: 1, borderBottomColor: t.borderSubtle },
-	mapTitle: { color: t.textPrimary, fontSize: 17, fontWeight: "700" },
-	mapSubtitle: { color: t.textTertiary, fontSize: 10, marginTop: 2 },
-	mapEmpty: { color: t.textTertiary, fontSize: 13, textAlign: "center", paddingVertical: 44 },
-	mapRow: { minHeight: 66, flexDirection: "row", paddingHorizontal: 15, paddingTop: 12 },
-	mapRail: { width: 20, alignItems: "center" },
-	mapDot: { width: 7, height: 7, borderRadius: 4, marginTop: 5, backgroundColor: t.blue },
-	mapLine: { width: 1, flex: 1, backgroundColor: t.borderSubtle, marginTop: 4 },
-	mapTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
-	mapRowTitle: { flex: 1, color: t.textPrimary, fontSize: 13, lineHeight: 18, fontWeight: "600" },
-	mapState: { color: t.textFaint, fontSize: 8, textTransform: "uppercase", letterSpacing: 0.6, paddingTop: 2 },
-	mapDetail: { color: t.textTertiary, fontSize: 11, lineHeight: 15, marginTop: 4 },
 });

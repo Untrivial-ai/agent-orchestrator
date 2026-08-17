@@ -15,6 +15,15 @@
 /** Minimum breathing room under the dock on a device with no home indicator. */
 export const MIN_DOCK_INSET = 8;
 
+export function screenKeyboardAvoidance(platform: "android" | "ios", height: number) {
+	return {
+		showEvent: platform === "ios" ? "keyboardWillShow" as const : "keyboardDidShow" as const,
+		hideEvent: platform === "ios" ? "keyboardWillHide" as const : "keyboardDidHide" as const,
+		paddingBottom: height,
+		rootStyle: { paddingBottom: height },
+	};
+}
+
 export function dockInset(kbHeight: number, insetsBottom: number): number {
 	// Keyboard up: the root view's padding already clears it. Anything here is
 	// dead space between the dock and the keyboard.

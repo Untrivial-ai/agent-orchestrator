@@ -231,12 +231,20 @@ func (s *lifecycleStore) ListPRsBySession(_ context.Context, _ domain.SessionID)
 	return nil, nil
 }
 
+func (s *lifecycleStore) GetPR(_ context.Context, prURL string) (domain.PullRequest, bool, error) {
+	return domain.PullRequest{URL: prURL, AutoInjectCI: true}, true, nil
+}
+
 func (s *lifecycleStore) ListPRReviews(_ context.Context, _ string) ([]domain.PullRequestReview, error) {
 	return nil, nil
 }
 
 func (s *lifecycleStore) ListPRComments(_ context.Context, _ string) ([]domain.PullRequestComment, error) {
 	return nil, nil
+}
+
+func (s *lifecycleStore) GetProject(_ context.Context, _ string) (domain.ProjectRecord, bool, error) {
+	return domain.ProjectRecord{}, false, nil
 }
 
 func (s *lifecycleStore) GetPRLastNudgeSignature(_ context.Context, _ string) (string, error) {

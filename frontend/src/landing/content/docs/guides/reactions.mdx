@@ -10,8 +10,12 @@ Current AO ships lifecycle policy rather than a configurable reaction recipe eng
 Claim the pull request to the worker that should respond:
 
 ```bash
+ao session claim-pr <pr-number-or-url>
+# From outside the worker, target it explicitly:
 ao session claim-pr <session-id> <pr-number-or-url>
 ```
+
+The one-argument form uses `AO_SESSION_ID` and is preferred inside a worker session.
 
 AO then routes failing checks, requested changes, unresolved comments, and eligible merge conflicts to that session. Delivery is mode-aware, so the same workflow works for structured Chat and Terminal UI.
 

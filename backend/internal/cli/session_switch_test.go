@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -79,10 +80,14 @@ func TestSessionSwitchAgentPostsRequestAndPrintsSwitch(t *testing.T) {
 	cfg := setConfigEnv(t)
 	capture := &agentSwitchRequestCapture{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capture.record(r)
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/switch-agent" {
+			capture.record(r)
 			_, _ = io.WriteString(w, `{"switch":`+agentSwitchFixture("switch-1", "preparing_handoff")+`}`)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/agent-switches" {
+			_, _ = io.WriteString(w, `{"switches":[`+agentSwitchFixture("switch-1", "completed")+`]}`)
 			return
 		}
 		http.NotFound(w, r)
@@ -92,7 +97,6 @@ func TestSessionSwitchAgentPostsRequestAndPrintsSwitch(t *testing.T) {
 
 	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
 		"session", "switch-agent", "demo-1", "codex",
-		"--note", "preserve the current investigation",
 		"--idempotency-key", "switch-key",
 	)
 	if err != nil {
@@ -108,52 +112,43 @@ func TestSessionSwitchAgentPostsRequestAndPrintsSwitch(t *testing.T) {
 	}
 	want := switchAgentRequest{
 		TargetHarness:  "codex",
-		Note:           "preserve the current investigation",
 		IdempotencyKey: "switch-key",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("request = %#v, want %#v", got, want)
 	}
-	for _, needle := range []string{"id: switch-1", "from: claude-code", "target: codex", "state: preparing_handoff", "source transcript: available"} {
+	for _, needle := range []string{"id: switch-1", "from: claude-code", "target: codex", "state: completed", "source transcript: available"} {
 		if !strings.Contains(out, needle) {
 			t.Errorf("output missing %q:\n%s", needle, out)
 		}
 	}
 }
 
-func TestSessionSwitchAgentOutlivesSharedHTTPClientTimeout(t *testing.T) {
-	if sharedTimeout := DefaultDeps().HTTPClient.Timeout; switchAgentCommandTimeout <= sharedTimeout {
-		t.Fatalf("switch timeout = %s, must exceed shared HTTP client timeout %s", switchAgentCommandTimeout, sharedTimeout)
-	}
-
-	// Scale the production 2s-versus-7m relationship down so this regression
-	// test proves the switch request does not inherit the shared client timeout
-	// without adding multiple seconds to every CLI test run.
-	const (
-		sharedTimeout = 20 * time.Millisecond
-		responseDelay = 75 * time.Millisecond
-	)
+func TestSessionSwitchAgentAlreadyTerminalOnPOSTDoesNotPoll(t *testing.T) {
 	cfg := setConfigEnv(t)
+	var getCount int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/agent-switches" {
+			getCount++
+			http.Error(w, "unexpected poll", http.StatusInternalServerError)
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/sessions/demo-1/switch-agent" {
 			http.NotFound(w, r)
 			return
 		}
-		time.Sleep(responseDelay)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"switch":`+agentSwitchFixture("switch-delayed", "completed")+`}`)
+		_, _ = io.WriteString(w, `{"switch":`+agentSwitchFixture("switch-terminal", "completed")+`}`)
 	}))
 	t.Cleanup(srv.Close)
 	writeRunFileFor(t, cfg, srv)
 
-	out, errOut, err := executeCLI(t, Deps{
-		HTTPClient:   &http.Client{Timeout: sharedTimeout},
-		ProcessAlive: func(int) bool { return true },
-	}, "session", "switch-agent", "demo-1", "codex", "--json")
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"session", "switch-agent", "demo-1", "codex", "--json")
 	if err != nil {
-		t.Fatalf("delayed switch-agent failed (shared client timeout leaked): %v\nstderr=%s", err, errOut)
+		t.Fatalf("terminal switch-agent failed: %v\nstderr=%s", err, errOut)
 	}
-	if !strings.Contains(out, `"id": "switch-delayed"`) {
+	if !strings.Contains(out, `"id": "switch-terminal"`) || getCount != 0 {
 		t.Fatalf("unexpected output: %s", out)
 	}
 }
@@ -165,6 +160,10 @@ func TestSessionSwitchAgentJSONAndTypedDaemonError(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/switch-agent" {
 				_, _ = io.WriteString(w, `{"switch":`+agentSwitchFixtureWithPrivateFields("switch-1", "preparing_handoff")+`}`)
+				return
+			}
+			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/agent-switches" {
+				_, _ = io.WriteString(w, `{"switches":[`+agentSwitchFixtureWithPrivateFields("switch-1", "completed")+`]}`)
 				return
 			}
 			http.NotFound(w, r)
@@ -183,6 +182,9 @@ func TestSessionSwitchAgentJSONAndTypedDaemonError(t *testing.T) {
 		}
 		if got.Switch.ID != "switch-1" || got.Switch.TargetHarness != "codex" {
 			t.Fatalf("unexpected response: %#v", got)
+		}
+		if got.Switch.State != "completed" {
+			t.Fatalf("JSON output state = %q, want completed", got.Switch.State)
 		}
 		var envelope map[string]map[string]any
 		if err := json.Unmarshal([]byte(out), &envelope); err != nil {
@@ -232,6 +234,96 @@ func TestSessionSwitchAgentJSONAndTypedDaemonError(t *testing.T) {
 			if !strings.Contains(err.Error(), needle) {
 				t.Errorf("error %q missing %q", err, needle)
 			}
+		}
+	})
+}
+
+func TestSessionSwitchAgentAcceptedThenFailedPrintsFinalRecordAndErrorCode(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/switch-agent":
+			_, _ = io.WriteString(w, `{"switch":`+agentSwitchFixture("switch-failed", "preparing_handoff")+`}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/agent-switches":
+			var failed map[string]any
+			_ = json.Unmarshal([]byte(agentSwitchFixture("switch-failed", "failed")), &failed)
+			failed["errorCode"] = "delivery_failed"
+			payload, _ := json.Marshal(failed)
+			_, _ = io.WriteString(w, `{"switches":[`+string(payload)+`]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"session", "switch-agent", "demo-1", "codex")
+	if err == nil || ExitCode(err) != 1 || !strings.Contains(err.Error(), "delivery_failed") {
+		t.Fatalf("failed switch error = %v", err)
+	}
+	if !strings.Contains(out, "id: switch-failed") || !strings.Contains(out, "state: failed") || !strings.Contains(out, "error code: delivery_failed") {
+		t.Fatalf("final failed record not printed:\n%s", out)
+	}
+}
+
+func TestSessionSwitchAgentCancellationAndOverallTimeout(t *testing.T) {
+	t.Run("overall timeout includes recovery command", func(t *testing.T) {
+		oldWait, oldInterval := switchAgentOverallWait, switchAgentPollInterval
+		switchAgentOverallWait, switchAgentPollInterval = 20*time.Millisecond, time.Millisecond
+		t.Cleanup(func() {
+			switchAgentOverallWait, switchAgentPollInterval = oldWait, oldInterval
+		})
+		cfg := setConfigEnv(t)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodPost {
+				_, _ = io.WriteString(w, `{"switch":`+agentSwitchFixture("switch-timeout", "preparing_handoff")+`}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"switches":[`+agentSwitchFixture("switch-timeout", "starting_target")+`]}`)
+		}))
+		t.Cleanup(srv.Close)
+		writeRunFileFor(t, cfg, srv)
+
+		_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+			"session", "switch-agent", "demo-1", "codex")
+		if err == nil || !strings.Contains(err.Error(), "switch-timeout") || !strings.Contains(err.Error(), "ao session agent-switch ls demo-1") {
+			t.Fatalf("overall timeout error = %v", err)
+		}
+	})
+
+	t.Run("command cancellation stops polling", func(t *testing.T) {
+		oldInterval := switchAgentPollInterval
+		switchAgentPollInterval = time.Millisecond
+		t.Cleanup(func() { switchAgentPollInterval = oldInterval })
+		cfg := setConfigEnv(t)
+		polled := make(chan struct{}, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/switch-agent":
+				_, _ = io.WriteString(w, `{"switch":`+agentSwitchFixture("switch-cancelled", "preparing_handoff")+`}`)
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/agent-switches":
+				polled <- struct{}{}
+				_, _ = io.WriteString(w, `{"switches":[`+agentSwitchFixture("switch-cancelled", "starting_target")+`]}`)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		writeRunFileFor(t, cfg, srv)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cmd := NewRootCommand(Deps{ProcessAlive: func(int) bool { return true }})
+		cmd.SetArgs([]string{"session", "switch-agent", "demo-1", "codex"})
+		errCh := make(chan error, 1)
+		go func() { errCh <- cmd.ExecuteContext(ctx) }()
+		<-polled
+		cancel()
+		if err := <-errCh; err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+			t.Fatalf("cancellation error = %v", err)
 		}
 	})
 }

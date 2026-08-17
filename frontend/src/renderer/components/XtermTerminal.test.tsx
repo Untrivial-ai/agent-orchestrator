@@ -5,6 +5,7 @@ import { useUiStore } from "../stores/ui-store";
 import { XtermTerminal } from "./XtermTerminal";
 
 const state = vi.hoisted(() => ({
+	fit: vi.fn(),
 	linkHandler: null as null | ((event: MouseEvent, uri: string) => void),
 	lastTerminal: null as null | {
 		keyHandler?: (event: KeyboardEvent) => boolean;
@@ -109,7 +110,9 @@ vi.mock("@xterm/xterm", () => ({
 
 vi.mock("@xterm/addon-fit", () => ({
 	FitAddon: class FakeFitAddon {
-		fit() {}
+		fit() {
+			state.fit();
+		}
 	},
 }));
 
@@ -153,11 +156,50 @@ function setNavigatorPlatform(platform: string) {
 
 describe("XtermTerminal", () => {
 	beforeEach(() => {
+		state.fit.mockReset();
 		state.lastTerminal = null;
 		state.linkHandler = null;
 		setNavigatorPlatform("Linux x86_64");
 		window.ao!.clipboard.writeText = vi.fn().mockResolvedValue(undefined);
 		window.ao!.clipboard.readText = vi.fn().mockResolvedValue("");
+		window.ao!.terminal.setFocused = vi.fn();
+		window.ao!.terminal.onFontSizeShortcut = () => () => undefined;
+	});
+
+	it("fits on each observed frame while an ancestor requests live terminal resizing", () => {
+		const callbacks: ResizeObserverCallback[] = [];
+		const originalResizeObserver = window.ResizeObserver;
+		class CapturingResizeObserver implements ResizeObserver {
+			constructor(callback: ResizeObserverCallback) {
+				callbacks.push(callback);
+			}
+			disconnect() {}
+			observe() {}
+			unobserve() {}
+		}
+		Object.defineProperty(window, "ResizeObserver", {
+			configurable: true,
+			writable: true,
+			value: CapturingResizeObserver,
+		});
+		try {
+			render(
+				<div data-terminal-live-resize="true">
+					<XtermTerminal theme="dark" />
+				</div>,
+			);
+			state.fit.mockClear();
+
+			act(() => callbacks.at(-1)?.([], {} as ResizeObserver));
+
+			expect(state.fit).toHaveBeenCalledTimes(1);
+		} finally {
+			Object.defineProperty(window, "ResizeObserver", {
+				configurable: true,
+				writable: true,
+				value: originalResizeObserver,
+			});
+		}
 	});
 
 	it("finishes retained activation when xterm emits no render event", async () => {
@@ -287,6 +329,67 @@ describe("XtermTerminal", () => {
 		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("copied selection");
 	});
 
+	it.each([
+		["Command", "MacIntel", false, true],
+		["Ctrl", "Linux x86_64", true, false],
+	])("uses %s plus/minus for terminal font size on %s", (_label, platform, ctrlKey, metaKey) => {
+		setNavigatorPlatform(platform);
+		const onChangeFontSize = vi.fn();
+		render(<XtermTerminal onChangeFontSize={onChangeFontSize} theme="dark" />);
+
+		const increase = {
+			altKey: false,
+			code: "Equal",
+			ctrlKey,
+			key: "=",
+			metaKey,
+			preventDefault: vi.fn(),
+			shiftKey: false,
+			stopPropagation: vi.fn(),
+			type: "keydown",
+		} as unknown as KeyboardEvent;
+		const decrease = {
+			...increase,
+			code: "Minus",
+			key: "-",
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		const otherPlatformModifier = { ...increase, ctrlKey: !ctrlKey, metaKey: !metaKey };
+
+		expect(state.lastTerminal!.keyHandler!(increase)).toBe(false);
+		expect(state.lastTerminal!.keyHandler!(decrease)).toBe(false);
+		expect(state.lastTerminal!.keyHandler!(otherPlatformModifier)).toBe(true);
+		expect(onChangeFontSize).toHaveBeenNthCalledWith(1, 1);
+		expect(onChangeFontSize).toHaveBeenNthCalledWith(2, -1);
+		expect(increase.preventDefault).toHaveBeenCalledOnce();
+		expect(decrease.preventDefault).toHaveBeenCalledOnce();
+	});
+
+	it("reports terminal focus and applies main-process font-size shortcuts only there", () => {
+		let fontSizeShortcut: ((delta: -1 | 1) => void) | undefined;
+		window.ao!.terminal.onFontSizeShortcut = (listener) => {
+			fontSizeShortcut = listener;
+			return () => undefined;
+		};
+		const onChangeFontSize = vi.fn();
+		const { container } = render(<XtermTerminal onChangeFontSize={onChangeFontSize} theme="dark" />);
+		const textarea = container.querySelector("textarea")!;
+
+		textarea.focus();
+		expect(window.ao!.terminal.setFocused).toHaveBeenLastCalledWith(true);
+		fontSizeShortcut?.(1);
+		expect(onChangeFontSize).toHaveBeenCalledWith(1);
+
+		const outside = document.createElement("button");
+		document.body.appendChild(outside);
+		outside.focus();
+		expect(window.ao!.terminal.setFocused).toHaveBeenLastCalledWith(false);
+		fontSizeShortcut?.(-1);
+		expect(onChangeFontSize).toHaveBeenCalledTimes(1);
+		outside.remove();
+	});
+
 	it("handles native copy events from inside the terminal", () => {
 		const { container } = render(<XtermTerminal theme="dark" />);
 		state.lastTerminal!.selection = "native copied selection";
@@ -333,7 +436,32 @@ describe("XtermTerminal", () => {
 		expect(trigger.style.top).toBe("88px");
 	});
 
-	it("runs context menu copy, select all, and clear against the xterm instance", async () => {
+	it("toggles terminal fullscreen from the right-click menu", async () => {
+		const onToggleFullscreen = vi.fn();
+		const { container, rerender } = render(
+			<div className="terminal-pane-frame">
+				<XtermTerminal isFullscreen={false} onToggleFullscreen={onToggleFullscreen} theme="dark" />
+			</div>,
+		);
+
+		fireEvent.contextMenu(container.querySelector(".terminal-pane-frame")!.firstElementChild!);
+		fireEvent.click(await screen.findByText("Fullscreen terminal"));
+		expect(onToggleFullscreen).toHaveBeenCalledOnce();
+
+		const pane = container.querySelector(".terminal-pane-frame") as HTMLElement;
+		Object.defineProperty(document, "fullscreenElement", { configurable: true, value: pane });
+		rerender(
+			<div className="terminal-pane-frame">
+				<XtermTerminal isFullscreen onToggleFullscreen={onToggleFullscreen} theme="dark" />
+			</div>,
+		);
+		fireEvent.contextMenu(pane.firstElementChild!);
+		const exitFullscreenItem = await screen.findByText("Exit fullscreen");
+		expect(pane.contains(exitFullscreenItem.closest<HTMLElement>("[role='menu']"))).toBe(true);
+		Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+	});
+
+	it("runs context menu copy and select all against the xterm instance", async () => {
 		const { container } = render(<XtermTerminal theme="dark" />);
 		const host = container.firstElementChild!;
 		state.lastTerminal!.selection = "menu copy";
@@ -346,10 +474,6 @@ describe("XtermTerminal", () => {
 		fireEvent.contextMenu(host);
 		fireEvent.click(await screen.findByText("Select All"));
 		expect(state.lastTerminal!.selectAll).toHaveBeenCalled();
-
-		fireEvent.contextMenu(host);
-		fireEvent.click(await screen.findByText("Clear"));
-		expect(state.lastTerminal!.clear).toHaveBeenCalled();
 	});
 
 	it("pastes from the context menu through the terminal paste path", async () => {

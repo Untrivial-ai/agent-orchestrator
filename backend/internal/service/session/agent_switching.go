@@ -12,7 +12,7 @@ import (
 // provider while retaining the logical AO session.
 type SwitchAgentInput struct {
 	TargetHarness  domain.AgentHarness
-	Note           string
+	Model          string
 	IdempotencyKey string
 }
 
@@ -20,9 +20,16 @@ type SwitchAgentInput struct {
 func (s *Service) SwitchAgent(ctx context.Context, id domain.SessionID, in SwitchAgentInput) (domain.AgentSwitch, error) {
 	switchRecord, err := s.manager.SwitchAgent(ctx, id, sessionmanager.SwitchAgentConfig{
 		TargetHarness:  in.TargetHarness,
-		Note:           in.Note,
+		Model:          in.Model,
 		IdempotencyKey: in.IdempotencyKey,
 	})
+	return switchRecord, toAPIError(err)
+}
+
+// RecoverAgentSwitch retries a durable source restoration without restarting
+// the target side of the failed switch.
+func (s *Service) RecoverAgentSwitch(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID) (domain.AgentSwitch, error) {
+	switchRecord, err := s.manager.RecoverAgentSwitch(ctx, id, switchID)
 	return switchRecord, toAPIError(err)
 }
 

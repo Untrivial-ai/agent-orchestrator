@@ -51,6 +51,7 @@ func (s *Store) UpdateSessionFromActivitySignal(ctx context.Context, rec domain.
 		ActivityLastAt:               activity.LastActivityAt,
 		FirstSignalAt:                timeToNullTime(rec.FirstSignalAt),
 		AgentSessionID:               rec.Metadata.AgentSessionID,
+		AgentSessionIDLaunchID:       rec.Metadata.AgentSessionIDLaunchID,
 		LatestUserPrompt:             rec.Metadata.LatestUserPrompt,
 		LatestAssistantUpdate:        rec.Metadata.LatestAssistantUpdate,
 		NativeTranscriptPath:         rec.Metadata.NativeTranscriptPath,
@@ -191,6 +192,22 @@ func (s *Store) SetSessionAutoInjectReview(ctx context.Context, id domain.Sessio
 	return rows > 0, nil
 }
 
+// SetSessionAutoInjectCI persists the default CI-failure injection policy that
+// newly created PRs snapshot. Existing PR rows retain their original value.
+func (s *Store) SetSessionAutoInjectCI(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionAutoInjectCI(ctx, gen.SetSessionAutoInjectCIParams{
+		ID:           id,
+		AutoInjectCI: autoInject,
+		UpdatedAt:    updatedAt,
+	})
+	if err != nil {
+		return false, fmt.Errorf("set auto-inject CI for session %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // SetSessionReviewerHarness persists the reviewer preference for one session.
 func (s *Store) SetSessionReviewerHarness(ctx context.Context, id domain.SessionID, harness domain.ReviewerHarness, updatedAt time.Time) (bool, error) {
 	s.writeMu.Lock()
@@ -202,6 +219,21 @@ func (s *Store) SetSessionReviewerHarness(ctx context.Context, id domain.Session
 	})
 	if err != nil {
 		return false, fmt.Errorf("set reviewer harness for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// SetSessionAutoReview persists the daemon-side review automation toggle.
+func (s *Store) SetSessionAutoReview(ctx context.Context, id domain.SessionID, enabled bool, updatedAt time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionAutoReview(ctx, gen.SetSessionAutoReviewParams{
+		AutoReviewEnabled: enabled,
+		UpdatedAt:         updatedAt,
+		ID:                id,
+	})
+	if err != nil {
+		return false, fmt.Errorf("set auto review for %s: %w", id, err)
 	}
 	return rows > 0, nil
 }
@@ -331,14 +363,15 @@ func mapListAllSessionsRows(rows []gen.ListAllSessionsRow) []domain.SessionRecor
 
 func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 	return domain.SessionRecord{
-		ID:              row.ID,
-		ProjectID:       row.ProjectID,
-		IssueID:         row.IssueID,
-		Kind:            row.Kind,
-		Harness:         row.Harness,
-		ReviewerHarness: row.ReviewerHarness,
-		DisplayName:     row.DisplayName,
-		Mode:            domain.NormalizeSessionMode(row.SessionMode),
+		ID:                row.ID,
+		ProjectID:         row.ProjectID,
+		IssueID:           row.IssueID,
+		Kind:              row.Kind,
+		Harness:           row.Harness,
+		ReviewerHarness:   row.ReviewerHarness,
+		AutoReviewEnabled: row.AutoReviewEnabled,
+		DisplayName:       row.DisplayName,
+		Mode:              domain.NormalizeSessionMode(row.SessionMode),
 		Activity: domain.Activity{
 			State:          row.ActivityState,
 			LastActivityAt: row.ActivityLastAt,
@@ -349,6 +382,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		PinnedAt:           nullTimeToTimePtr(row.PinnedAt),
 		TerminateOnPRMerge: row.TerminateOnPRMerge,
 		AutoInjectReview:   row.AutoInjectReview,
+		AutoInjectCI:       row.AutoInjectCI,
 		Metadata: domain.SessionMetadata{
 			Branch:                    row.Branch,
 			WorkspacePath:             row.WorkspacePath,
@@ -358,6 +392,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			RuntimeHandleID:           row.RuntimeHandleID,
 			RuntimeLaunchID:           row.RuntimeLaunchID,
 			AgentSessionID:            row.AgentSessionID,
+			AgentSessionIDLaunchID:    row.AgentSessionIDLaunchID,
 			Prompt:                    row.Prompt,
 			LatestUserPrompt:          row.LatestUserPrompt,
 			LatestAssistantUpdate:     row.LatestAssistantUpdate,
@@ -396,6 +431,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		Kind:                      rec.Kind,
 		Harness:                   rec.Harness,
 		ReviewerHarness:           rec.ReviewerHarness,
+		AutoReviewEnabled:         rec.AutoReviewEnabled,
 		DisplayName:               rec.DisplayName,
 		ActivityState:             activity.State,
 		ActivityLastAt:            activity.LastActivityAt,
@@ -411,6 +447,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		RuntimeHandleID:           rec.Metadata.RuntimeHandleID,
 		RuntimeLaunchID:           rec.Metadata.RuntimeLaunchID,
 		AgentSessionID:            rec.Metadata.AgentSessionID,
+		AgentSessionIDLaunchID:    rec.Metadata.AgentSessionIDLaunchID,
 		Prompt:                    rec.Metadata.Prompt,
 		LatestUserPrompt:          rec.Metadata.LatestUserPrompt,
 		LatestAssistantUpdate:     rec.Metadata.LatestAssistantUpdate,
@@ -419,6 +456,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		PreviewRevision:           rec.Metadata.PreviewRevision,
 		TerminateOnPRMerge:        rec.TerminateOnPRMerge,
 		AutoInjectReview:          rec.AutoInjectReview,
+		AutoInjectCI:              rec.AutoInjectCI,
 		CleanupGeneration:         rec.CleanupGeneration,
 		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
 		SessionMode:               domain.NormalizeSessionMode(rec.Mode),
@@ -437,6 +475,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		Kind:                      rec.Kind,
 		Harness:                   rec.Harness,
 		ReviewerHarness:           rec.ReviewerHarness,
+		AutoReviewEnabled:         rec.AutoReviewEnabled,
 		DisplayName:               rec.DisplayName,
 		ActivityState:             activity.State,
 		ActivityLastAt:            activity.LastActivityAt,
@@ -452,6 +491,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		RuntimeHandleID:           rec.Metadata.RuntimeHandleID,
 		RuntimeLaunchID:           rec.Metadata.RuntimeLaunchID,
 		AgentSessionID:            rec.Metadata.AgentSessionID,
+		AgentSessionIDLaunchID:    rec.Metadata.AgentSessionIDLaunchID,
 		Prompt:                    rec.Metadata.Prompt,
 		LatestUserPrompt:          rec.Metadata.LatestUserPrompt,
 		LatestAssistantUpdate:     rec.Metadata.LatestAssistantUpdate,
@@ -460,6 +500,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		PreviewRevision:           rec.Metadata.PreviewRevision,
 		TerminateOnPRMerge:        rec.TerminateOnPRMerge,
 		AutoInjectReview:          rec.AutoInjectReview,
+		AutoInjectCI:              rec.AutoInjectCI,
 		CleanupGeneration:         rec.CleanupGeneration,
 		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,

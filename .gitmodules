@@ -1,0 +1,4 @@
+[submodule "private/ao-cloud"]
+	path = private/ao-cloud
+	url = https://github.com/Untrivial-ai/ao-cloud.git
+	update = none

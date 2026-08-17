@@ -21,6 +21,8 @@ type fakeStore struct {
 	reviewOK                bool
 	batchRuns               []domain.ReviewRun
 	prs                     []domain.PullRequest
+	prReviews               map[string][]domain.PullRequestReview
+	prComments              map[string][]domain.PullRequestComment
 	sessionAutoInjectReview *bool
 
 	updateCalls        int
@@ -123,6 +125,94 @@ func (f *fakeStore) ListReviewRunsByBatch(context.Context, domain.SessionID, str
 func (f *fakeStore) ListPRsBySession(context.Context, domain.SessionID) ([]domain.PullRequest, error) {
 	out := append([]domain.PullRequest(nil), f.prs...)
 	return out, nil
+}
+
+func (f *fakeStore) ListPRReviews(_ context.Context, prURL string) ([]domain.PullRequestReview, error) {
+	out := append([]domain.PullRequestReview(nil), f.prReviews[prURL]...)
+	return out, nil
+}
+
+func (f *fakeStore) ListPRComments(_ context.Context, prURL string) ([]domain.PullRequestComment, error) {
+	out := append([]domain.PullRequestComment(nil), f.prComments[prURL]...)
+	return out, nil
+}
+
+type fakeReviewResolver struct {
+	request ports.SCMReviewResolveRequest
+	err     error
+}
+
+func (f *fakeReviewResolver) ResolveReviewThread(_ context.Context, request ports.SCMReviewResolveRequest) error {
+	f.request = request
+	return f.err
+}
+
+type fakeReviewRequester struct {
+	request ports.SCMReviewRequest
+	err     error
+}
+
+func (f *fakeReviewRequester) RequestReview(_ context.Context, request ports.SCMReviewRequest) error {
+	f.request = request
+	return f.err
+}
+
+func TestResolveReviewCommentResolvesTrackedThread(t *testing.T) {
+	prURL := "https://github.com/acme/widget/pull/7"
+	commentURL := "https://github.com/acme/widget/pull/7#discussion_r1"
+	store := &fakeStore{
+		prs: []domain.PullRequest{{URL: prURL, Number: 7, Provider: "github", Repo: "acme/widget"}},
+		prComments: map[string][]domain.PullRequestComment{
+			prURL: {{ThreadID: "thread-1", URL: commentURL}},
+		},
+	}
+	resolver := &fakeReviewResolver{}
+	svc := New(nil, store, WithReviewResolver(resolver))
+
+	if err := svc.ResolveReviewComment(context.Background(), "mer-1", prURL, commentURL); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.request.ThreadID != "thread-1" || resolver.request.PR.Number != 7 {
+		t.Fatalf("request = %#v", resolver.request)
+	}
+}
+
+func TestRequestRereviewRequestsReviewerForTrackedPR(t *testing.T) {
+	prURL := "https://github.com/acme/widget/pull/7"
+	store := &fakeStore{
+		prs: []domain.PullRequest{{
+			URL:      prURL,
+			Number:   7,
+			Provider: "github",
+			Host:     "github.com",
+			Repo:     "acme/widget",
+		}},
+		prReviews: map[string][]domain.PullRequestReview{
+			prURL: {{Author: "prateek"}},
+		},
+	}
+	requester := &fakeReviewRequester{}
+	svc := New(nil, store, WithReviewRequester(requester))
+
+	if err := svc.RequestRereview(context.Background(), "mer-1", prURL, "@prateek"); err != nil {
+		t.Fatal(err)
+	}
+	if requester.request.Reviewer != "prateek" || requester.request.PR.Number != 7 || requester.request.PR.Repo.Owner != "acme" || requester.request.PR.Repo.Name != "widget" {
+		t.Fatalf("request = %#v", requester.request)
+	}
+}
+
+func TestRequestRereviewRejectsUnknownReviewer(t *testing.T) {
+	prURL := "https://github.com/acme/widget/pull/7"
+	store := &fakeStore{
+		prs:       []domain.PullRequest{{URL: prURL, Number: 7, Provider: "github", Repo: "acme/widget"}},
+		prReviews: map[string][]domain.PullRequestReview{prURL: {{Author: "someone-else"}}},
+	}
+	svc := New(nil, store, WithReviewRequester(&fakeReviewRequester{}))
+
+	if err := svc.RequestRereview(context.Background(), "mer-1", prURL, "prateek"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("error = %v, want ErrInvalid", err)
+	}
 }
 
 type fakeReducer struct {

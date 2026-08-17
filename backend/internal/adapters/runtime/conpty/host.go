@@ -16,6 +16,11 @@ import (
 	"time"
 )
 
+const (
+	initialConPTYColumns = 220
+	initialConPTYRows    = 50
+)
+
 // ptyConn is the host's handle to the running agent's pseudo-terminal.
 // The real impl (conptyConn) lives in host_conpty_windows.go; tests use a fake.
 type ptyConn interface {
@@ -45,6 +50,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	h := &host{
 		cfg:       cfg,
 		clients:   make(map[net.Conn]*clientState),
+		surface:   newRenderedSurface(initialConPTYColumns, initialConPTYRows),
 		shutdownC: make(chan struct{}),
 	}
 	return h.run(ctx)
@@ -65,6 +71,7 @@ type host struct {
 	cfg     ServeConfig
 	mu      sync.Mutex
 	clients map[net.Conn]*clientState
+	surface *renderedSurface
 
 	// curCols/curRows are the grid the host last applied to the shared PTY (0,0
 	// = none applied yet). Guarded by mu; used to skip redundant resizes.
@@ -112,6 +119,7 @@ func (h *host) applyLargestLocked() {
 	}
 	h.curCols, h.curRows = bestCols, bestRows
 	_ = h.cfg.PTY.Resize(bestCols, bestRows)
+	h.surface.Resize(bestCols, bestRows)
 }
 
 // run is the main event loop.
@@ -185,6 +193,7 @@ func (h *host) pumpPTY() {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 			h.cfg.Ring.Append(chunk)
+			h.surface.Write(chunk)
 			if frame, err := EncodeMessage(MsgTerminalData, chunk); err == nil {
 				h.broadcast(frame)
 			}
@@ -328,6 +337,17 @@ func (h *host) handleClientMsg(conn net.Conn, msgType byte, payload []byte) {
 			h.sendTo(conn, frame)
 		}
 
+	case MsgGetStyledOutputReq:
+		lines := 50
+		var req GetOutputReq
+		if err := json.Unmarshal(payload, &req); err == nil && req.Lines > 0 {
+			lines = req.Lines
+		}
+		text := h.surface.Tail(lines)
+		if frame, err := EncodeMessage(MsgGetStyledOutputRes, []byte(text)); err == nil {
+			h.sendTo(conn, frame)
+		}
+
 	case MsgStatusReq:
 		code, exited := h.cfg.PTY.ExitCode()
 		alive := !exited
@@ -346,7 +366,10 @@ func (h *host) handleClientMsg(conn net.Conn, msgType byte, payload []byte) {
 
 // statusFrame builds a MsgStatusRes frame.
 func statusFrame(alive bool, pid int, exitCode *int) []byte {
-	sp := StatusPayload{Alive: alive, PID: pid, ExitCode: exitCode}
+	sp := StatusPayload{
+		Alive: alive, PID: pid, ExitCode: exitCode,
+		ProtocolVersion: conPTYHostProtocolVersion,
+	}
 	b, _ := json.Marshal(sp)
 	frame, _ := EncodeMessage(MsgStatusRes, b) // b is small JSON, never overflows uint32
 	return frame

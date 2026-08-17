@@ -1,6 +1,8 @@
 package controllers_test
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +20,7 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 			UnresolvedBy: []sessionsvc.PRUnresolvedReviewer{{
 				ReviewerID: "bob",
 				Count:      1,
-				Links:      []sessionsvc.PRReviewCommentLink{{URL: "comment-url", AutoInjectReview: false}},
+				Links:      []sessionsvc.PRReviewCommentLink{{URL: "comment-url", Body: "please fix this", AutoInjectReview: false}},
 			}},
 			Reviews: []sessionsvc.PRReviewEntry{{
 				Reviewer:         "alice",
@@ -60,5 +62,24 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 	}
 	if len(got.Review.UnresolvedBy) != 1 || len(got.Review.UnresolvedBy[0].Links) != 1 || got.Review.UnresolvedBy[0].Links[0].AutoInjectReview {
 		t.Fatalf("unresolved comment links = %+v, want one not-injected link", got.Review.UnresolvedBy)
+	}
+	if got.Review.UnresolvedBy[0].Links[0].Body != "please fix this" {
+		t.Fatalf("unresolved comment body = %q, want body text", got.Review.UnresolvedBy[0].Links[0].Body)
+	}
+}
+
+func TestNewSessionPRSummaryExposesCIFailureInjectionPolicy(t *testing.T) {
+	got := controllers.NewSessionPRSummary(sessionsvc.PRSummary{
+		CI: sessionsvc.PRCISummary{State: domain.CIFailing, AutoInjectCI: false},
+	})
+	payload, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CI.State != domain.CIFailing {
+		t.Fatalf("CI state = %q, want failing", got.CI.State)
+	}
+	if !strings.Contains(string(payload), `"autoInjectCI":false`) {
+		t.Fatalf("CI summary payload = %s, want explicit disabled injection policy", payload)
 	}
 }

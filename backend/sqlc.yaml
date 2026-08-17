@@ -112,6 +112,8 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ReviewerHarness"
+          - column: "sessions.auto_review_enabled"
+            go_type: "bool"
           - column: "sessions.activity_state"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -231,6 +233,10 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ReviewVerdict"
+          - column: "review_run.trigger_source"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "ReviewTriggerSource"
           - column: "app_settings.default_session_mode"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

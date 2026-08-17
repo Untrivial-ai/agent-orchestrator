@@ -44,6 +44,16 @@ export type UpdateOutcome = {
 };
 
 /**
+ * True when the error is a Chromium network-stack failure (`net::ERR_*`). A
+ * wedged network stack makes every updater request fail this way until the app
+ * restarts, so the updater keys user-facing restart guidance off this (#3526).
+ * Anchored at the start: that is how Chromium surfaces these errors.
+ */
+export function isNetErrorMessage(message: string | undefined): boolean {
+	return /^net::/i.test(message ?? "");
+}
+
+/**
  * Buckets an updater error into a safe category.
  *
  * electron-updater surfaces failures as free-text, so this matches on

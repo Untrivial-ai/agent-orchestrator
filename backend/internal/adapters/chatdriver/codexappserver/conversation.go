@@ -148,12 +148,20 @@ func (c *conversation) pump() {
 		// as an absolute instant and has to become a remaining duration, and a
 		// normalizer that reads the clock itself cannot be tested deterministically.
 		for _, ev := range normalizeNotification(n, time.Now()) {
-			if ev.Kind == ports.ChatEventTurnStarted && ev.ProviderTurnID != "" {
+			rootConversation := ev.ProviderConversationID == "" || ev.ProviderConversationID == c.threadID
+			if ev.Kind == ports.ChatEventTurnStarted && ev.ProviderTurnID != "" && rootConversation {
 				c.mu.Lock()
 				c.activeTurn = ev.ProviderTurnID
 				// Snapshot the context position this turn starts from. Cheap on every
 				// turn, and the only way to know what a compaction reclaimed.
 				c.contextAtTurnStart = c.contextTokens
+				c.mu.Unlock()
+			}
+			if ev.Kind == ports.ChatEventTurnCompleted && ev.ProviderTurnID != "" && rootConversation {
+				c.mu.Lock()
+				if c.activeTurn == ev.ProviderTurnID {
+					c.activeTurn = ""
+				}
 				c.mu.Unlock()
 			}
 			if ev.Kind == ports.ChatEventCompacted {

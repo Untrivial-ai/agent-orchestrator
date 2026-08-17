@@ -1,8 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	canSubmitProjectSetup,
+	ProjectSetupFormView,
+	ProjectSetupHeaderView,
+} from "@aoagents/product-ui";
 import { useTranslation } from "react-i18next";
 import * as Dialog from "@radix-ui/react-dialog";
 import { TriangleAlert, X, type LucideIcon } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import type { components } from "../../api/schema";
 import { agentsQueryKey, agentsQueryOptions, refreshAgents } from "../hooks/useAgentsQuery";
 import { AGENT_OPTIONS } from "../lib/agent-options";
@@ -20,7 +25,6 @@ import { AgentSelectMenuItem } from "./settings/AgentSelectMenuItem";
 import { SettingsRow } from "./settings/SettingsRow";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import type { ProjectKind } from "../types/workspace";
-import { Button } from "./ui/button";
 import { Label } from "./ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { appI18n } from "../i18n";
@@ -135,7 +139,16 @@ export function CreateProjectAgentSheet({
 	const isBusy = isCreating || isInitializing;
 	const [intake, setIntake] = useState<IntakeForm>(EMPTY_INTAKE);
 	const intakeIncomplete = intakeNeedsRule(intake);
-	const canSubmit = workerAgent !== "" && orchestratorAgent !== "" && !intakeIncomplete && !isBusy && !isLoadingAgents;
+	const canSubmit =
+		canSubmitProjectSetup({
+			workerAgent,
+			orchestratorAgent,
+			intakeEnabled: intake.enabled,
+			intakeAssignee: intake.assignee,
+		}) &&
+		!intakeIncomplete &&
+		!isBusy &&
+		!isLoadingAgents;
 	const sheetError = error ? projectSheetError(error) : null;
 
 	useEffect(() => {
@@ -160,102 +173,93 @@ export function CreateProjectAgentSheet({
 			<Dialog.Portal>
 				<Dialog.Overlay className="dialog-overlay data-[state=open]:animate-overlay-in" />
 				<Dialog.Content className="fixed left-1/2 top-1/2 z-overlay w-[min(480px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-agents-sheet border border-[var(--color-border-agents-sheet)] bg-[var(--color-bg-agents-sheet)] p-0 text-[var(--color-text-agents-sheet-title)] shadow-[var(--shadow-import-modal)] data-[state=open]:animate-modal-in">
-					<div className="flex items-start justify-between gap-4 border-b border-[var(--color-border-agents-sheet)] p-(--size-import-dialog-padding)">
-						<div className="min-w-0">
-							<Dialog.Title className="text-subtitle font-semibold text-[var(--color-text-agents-sheet-title)]">
-								{kind === "workspace" ? t("createProject.workspaceAgents") : t("createProject.projectAgents")}
-							</Dialog.Title>
-							<Dialog.Description className="mt-1 break-all text-xs text-[var(--color-text-agents-sheet-description)]">
-								{path ?? ""}
-							</Dialog.Description>
-						</div>
-						<Dialog.Close asChild>
-							<button
-								type="button"
-								className="settings-close-button"
-								aria-label={t("createProject.closeAgents")}
-								disabled={isBusy}
-							>
-								<X className="size-icon-base" aria-hidden="true" />
-							</button>
-						</Dialog.Close>
-					</div>
-					<form
-						className="space-y-5 p-(--size-import-dialog-padding)"
-						onSubmit={(event) => {
-							event.preventDefault();
-							if (!canSubmit) return;
-							void onSubmit({ workerAgent, orchestratorAgent, trackerIntake: buildIntake(intake) });
+					<ProjectSetupHeaderView
+						CloseButton={ProjectSheetCloseButton}
+						Description={Dialog.Description}
+						Title={Dialog.Title}
+						closeIcon={<X className="size-icon-base" aria-hidden="true" />}
+						closeLabel={t("createProject.closeAgents")}
+						disabled={isBusy}
+						path={path ?? ""}
+						title={
+							kind === "workspace"
+								? t("createProject.workspaceAgents")
+								: t("createProject.projectAgents")
+						}
+					/>
+					<ProjectSetupFormView
+						agentControls={{
+							worker: (
+								<RequiredAgentField
+									id="newProjectWorkerAgent"
+									label={t("createProject.workerAgent")}
+									placeholder={t("createProject.selectWorker")}
+									value={workerAgent}
+									authorized={agentOptions}
+									installed={installedAgents}
+									supported={supportedAgents}
+									disabled={isLoadingAgents}
+									labelClassName="agents-sheet-label"
+									triggerClassName="agents-sheet-control"
+									contentClassName="agents-sheet-menu"
+									onChange={(value) => {
+										setWorkerAgent(value);
+										setWorkerAgentTouched(true);
+									}}
+								/>
+							),
+							orchestrator: (
+								<RequiredAgentField
+									id="newProjectOrchestratorAgent"
+									label={t("createProject.orchestratorAgent")}
+									placeholder={t("createProject.selectOrchestrator")}
+									value={orchestratorAgent}
+									authorized={agentOptions}
+									installed={installedAgents}
+									supported={supportedAgents}
+									disabled={isLoadingAgents}
+									labelClassName="agents-sheet-label"
+									triggerClassName="agents-sheet-control"
+									contentClassName="agents-sheet-menu"
+									onChange={(value) => {
+										setOrchestratorAgent(value);
+										setOrchestratorAgentTouched(true);
+									}}
+								/>
+							),
 						}}
-					>
-						<div className="grid gap-4 sm:grid-cols-2">
-							<RequiredAgentField
-								id="newProjectWorkerAgent"
-								label={t("createProject.workerAgent")}
-								placeholder={t("createProject.selectWorker")}
-								value={workerAgent}
-								authorized={agentOptions}
-								installed={installedAgents}
-								supported={supportedAgents}
-								disabled={isLoadingAgents}
-								labelClassName="agents-sheet-label"
-								triggerClassName="agents-sheet-control"
-								contentClassName="agents-sheet-menu"
-								onChange={(value) => {
-									setWorkerAgent(value);
-									setWorkerAgentTouched(true);
-								}}
-							/>
-							<RequiredAgentField
-								id="newProjectOrchestratorAgent"
-								label={t("createProject.orchestratorAgent")}
-								placeholder={t("createProject.selectOrchestrator")}
-								value={orchestratorAgent}
-								authorized={agentOptions}
-								installed={installedAgents}
-								supported={supportedAgents}
-								disabled={isLoadingAgents}
-								labelClassName="agents-sheet-label"
-								triggerClassName="agents-sheet-control"
-								contentClassName="agents-sheet-menu"
-								onChange={(value) => {
-									setOrchestratorAgent(value);
-									setOrchestratorAgentTouched(true);
-								}}
-							/>
-						</div>
-
-						{isLoadingAgents && (
-							<p className="text-xs leading-row text-[var(--color-text-agents-sheet-description)]">{t("createProject.loadingAgents")}</p>
-						)}
-
-						<div className="flex items-center justify-between gap-3 text-xs leading-row text-[var(--color-text-agents-sheet-description)]">
-							<span>{t("createProject.agentsCached")}</span>
-							<button
-								type="button"
-								className="shrink-0 rounded text-[var(--color-text-agents-sheet-title)] underline-offset-2 hover:underline disabled:pointer-events-none disabled:opacity-50"
-								disabled={refreshAgentsMutation.isPending}
-								onClick={() => refreshAgentsMutation.mutate()}
-							>
-								{refreshAgentsMutation.isPending ? t("createProject.refreshing") : t("createProject.refreshAgents")}
-							</button>
-						</div>
-
-						{displayError && (
-							<div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs leading-row text-destructive">
-								<span>{displayError}</span>
-								<button
-									type="button"
-									className="shrink-0 rounded text-[var(--color-text-agents-sheet-title)] underline-offset-2 hover:underline disabled:pointer-events-none disabled:opacity-50"
-									disabled={refreshAgentsMutation.isPending}
-									onClick={() => refreshAgentsMutation.mutate()}
-								>
-									{t("createProject.retry")}
-								</button>
-							</div>
-						)}
-
-						<div className="border-t border-[var(--color-border-agents-sheet)] pt-5">
+						agents={{
+							cacheMessage: t("createProject.agentsCached"),
+							error: displayError,
+							loading: isLoadingAgents,
+							loadingMessage: t("createProject.loadingAgents"),
+							onRefresh: () => refreshAgentsMutation.mutate(),
+							refreshLabel: refreshAgentsMutation.isPending
+								? t("createProject.refreshing")
+								: t("createProject.refreshAgents"),
+							refreshing: refreshAgentsMutation.isPending,
+							retryLabel: t("createProject.retry"),
+						}}
+						alert={
+							sheetError
+								? {
+										...sheetError,
+										icon: (
+											<TriangleAlert
+												className={
+													sheetError.tone === "warning"
+														? "mt-0.5 size-icon-sm shrink-0 text-warning"
+														: "mt-0.5 size-icon-sm shrink-0 text-destructive"
+												}
+												aria-hidden="true"
+											/>
+										),
+									}
+								: null
+						}
+						canSubmit={canSubmit}
+						cancelLabel={t("createProject.cancel")}
+						intakeControl={
 							<IntakeFields
 								form={intake}
 								onChange={(patch) => setIntake((f) => ({ ...f, ...patch }))}
@@ -263,74 +267,53 @@ export function CreateProjectAgentSheet({
 								controlClassName="agents-sheet-control"
 								labelClassName="agents-sheet-label"
 							/>
-						</div>
-
-						{repositorySetupNeeded && (
-							<div className="rounded-lg border border-[var(--color-border-agents-sheet)] bg-[var(--color-bg-agents-sheet-control)]/80 px-3 py-2.5 text-xs leading-body-md text-[var(--color-text-agents-sheet-description)]">
-								<p>{t("createProject.gitSetupNotice")}</p>
-								{repositorySetupWarning && (
-									<p className="mt-2 text-warning">
-										{repositorySetupWarning}
-									</p>
-								)}
-							</div>
-						)}
-
-						{sheetError && (
-							<div
-								role="alert"
-								className={
-									sheetError.tone === "warning"
-										? "flex gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs leading-body-md"
-										: "flex gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs leading-body-md"
-								}
-							>
-								<TriangleAlert
-									className={
-										sheetError.tone === "warning"
-											? "mt-0.5 size-icon-sm shrink-0 text-warning"
-											: "mt-0.5 size-icon-sm shrink-0 text-destructive"
-									}
-									aria-hidden="true"
-								/>
-								<div className="min-w-0 space-y-0.5">
-									<p
-										className={
-											sheetError.tone === "warning"
-												? "font-medium text-[var(--color-text-agents-sheet-title)]"
-												: "font-medium text-destructive"
-										}
-									>
-										{sheetError.title}
-									</p>
-									<p className="text-[var(--color-text-agents-sheet-description)]">{sheetError.message}</p>
-								</div>
-							</div>
-						)}
-
-						<div className="flex items-center justify-end gap-3 pt-1">
-							<Button
-								type="button"
-								variant="footer"
-								disabled={isBusy}
-								onClick={() => onOpenChange(false)}
-							>
-								{t("createProject.cancel")}
-							</Button>
-							<Button type="submit" variant="footer-primary" disabled={!canSubmit}>
-								{isInitializing
-									? t("createProject.settingUp")
-									: isCreating
-										? t("createProject.creating")
-										: kind === "workspace"
-											? t("createProject.createWorkspaceAndStart")
-											: t("createProject.createAndStart")}
-							</Button>
-						</div>
-					</form>
+						}
+						isBusy={isBusy}
+						onCancel={() => onOpenChange(false)}
+						onSubmit={() =>
+							void onSubmit({ workerAgent, orchestratorAgent, trackerIntake: buildIntake(intake) })
+						}
+						setupNotice={
+							repositorySetupNeeded
+								? { message: t("createProject.gitSetupNotice"), warning: repositorySetupWarning }
+								: null
+						}
+						submitLabel={
+							isInitializing
+								? t("createProject.settingUp")
+								: isCreating
+									? t("createProject.creating")
+									: kind === "workspace"
+										? t("createProject.createWorkspaceAndStart")
+										: t("createProject.createAndStart")
+						}
+					/>
 				</Dialog.Content>
 			</Dialog.Portal>
 		</Dialog.Root>
+	);
+}
+
+function ProjectSheetCloseButton({
+	children,
+	disabled,
+	"aria-label": ariaLabel,
+}: {
+	children: ReactNode;
+	disabled: boolean;
+	"aria-label": string;
+}) {
+	return (
+		<Dialog.Close asChild>
+			<button
+				type="button"
+				className="settings-close-button"
+				aria-label={ariaLabel}
+				disabled={disabled}
+			>
+				{children}
+			</button>
+		</Dialog.Close>
 	);
 }
 

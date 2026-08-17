@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,20 @@ function renderWithQuery(children: ReactNode) {
 		defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
 	});
 	return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
+}
+
+/**
+ * @tanstack/react-virtual falls back to a 150ms scroll-end debounce when the
+ * environment has no `scrollend` event (jsdom). That timer is not cancelled on
+ * unmount, so it can fire after vitest tears down jsdom and React throws
+ * `window is not defined` — failing the run even when every test passed.
+ * Unmount first, then drain past that delay while `window` still exists.
+ */
+async function drainVirtualizerScrollDebounce() {
+	cleanup();
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 200));
+	});
 }
 
 // A diff line's content lives in a span with a `whitespace-pre*` class. Intra-line
@@ -172,7 +186,8 @@ describe("SessionFilesView", () => {
 		});
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		await drainVirtualizerScrollDebounce();
 		vi.useRealTimers();
 		window.getSelection()?.removeAllRanges();
 	});
@@ -798,7 +813,8 @@ describe("SessionFilesView", () => {
 			vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(800);
 		});
 
-		afterEach(() => {
+		afterEach(async () => {
+			await drainVirtualizerScrollDebounce();
 			vi.restoreAllMocks();
 		});
 

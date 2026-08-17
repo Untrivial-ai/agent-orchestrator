@@ -34,6 +34,11 @@ var ErrConversationNotFound = domain.ErrNoConversation
 // draining, not a failure.
 var ErrNoQueuedTurn = domain.ErrNoQueuedTurn
 
+// ErrQueuedTurnNotAvailable means the selected turn cannot be reserved: it is
+// absent from this conversation, no longer queued, or another promotion already
+// owns it. The caller must not contact the provider after this outcome.
+var ErrQueuedTurnNotAvailable = errors.New("queued turn is not available for promotion")
+
 // CreateConversation opens a worker's session-scoped conversation or rebinds an
 // orchestrator's project-scoped narrative to its current session. Returning the
 // existing row makes controller restart and clean orchestrator replacement
@@ -574,16 +579,16 @@ func (s *Store) AppendImportedUserMessage(
 // BindTurnToProvider records the provider's turn id once a send is accepted and
 // marks the turn running.
 func (s *Store) BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if err := s.qw.BindConversationTurnProviderID(ctx, gen.BindConversationTurnProviderIDParams{
+	q, unlock := s.conversationWriter(ctx)
+	defer unlock()
+	if err := q.BindConversationTurnProviderID(ctx, gen.BindConversationTurnProviderIDParams{
 		ProviderTurnID: providerTurnID,
 		StartedAt:      sql.NullTime{Time: now, Valid: true},
 		ID:             turnID,
 	}); err != nil {
 		return fmt.Errorf("bind turn %s to provider turn %s: %w", turnID, providerTurnID, err)
 	}
-	if err := s.qw.MarkConversationTurnStarted(ctx, gen.MarkConversationTurnStartedParams{
+	if err := q.MarkConversationTurnStarted(ctx, gen.MarkConversationTurnStartedParams{
 		StartedAt: sql.NullTime{Time: now, Valid: true},
 		ID:        turnID,
 	}); err != nil {
@@ -672,6 +677,21 @@ func (s *Store) SettleOrphanedTurns(ctx context.Context, session domain.SessionI
 		return fmt.Errorf("settle orphaned turns for %s: %w", session, err)
 	}
 	return nil
+}
+
+// ListVisibleRunningTurnProviderIDs returns the same active-branch running turns,
+// in the same order, that a conversation snapshot exposes to clients. Interrupt
+// uses the full set because a root and nested provider turn may overlap; settling
+// only one would leave the UI's Working state behind.
+func (s *Store) ListVisibleRunningTurnProviderIDs(
+	ctx context.Context,
+	conversationID string,
+) ([]string, error) {
+	providerTurnIDs, err := s.qr.ListVisibleRunningTurnsForConversation(ctx, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("list visible running turns for %s: %w", conversationID, err)
+	}
+	return providerTurnIDs, nil
 }
 
 // SetConversationSettings records the provider choices for the next turn.
@@ -985,7 +1005,18 @@ func (s *Store) AppendActivityStreamedText(
 	if err != nil {
 		return false, fmt.Errorf("append streamed text to %s: %w", providerItemID, err)
 	}
-	return rows > 0, nil
+	if rows > 0 {
+		return true, nil
+	}
+	found, err := q.ConversationActivityExistsForProviderItem(ctx,
+		gen.ConversationActivityExistsForProviderItemParams{
+			ConversationID: conversationID,
+			ProviderItemID: providerItemID,
+		})
+	if err != nil {
+		return false, fmt.Errorf("find streamed text activity %s after no-op append: %w", providerItemID, err)
+	}
+	return found, nil
 }
 
 // SettleActivityStreamedText replaces streamed prose with the provider's settled
@@ -1041,6 +1072,98 @@ func (s *Store) NextQueuedTurn(ctx context.Context, conversationID string) (doma
 	}, nil
 }
 
+// ReserveQueuedTurnForPromotion atomically removes one selected queued turn from
+// automatic drain and returns the durable content that must be steered.
+func (s *Store) ReserveQueuedTurnForPromotion(
+	ctx context.Context,
+	conversationID, turnID string,
+	now time.Time,
+) (domain.QueuedTurn, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.ReserveQueuedConversationTurnForPromotion(ctx,
+		gen.ReserveQueuedConversationTurnForPromotionParams{
+			PromotionStartedAt: sql.NullTime{Time: now, Valid: true},
+			ID:                 turnID, ConversationID: conversationID,
+		})
+	if err != nil {
+		return domain.QueuedTurn{}, fmt.Errorf("reserve queued turn %s: %w", turnID, err)
+	}
+	if rows == 0 {
+		return domain.QueuedTurn{}, fmt.Errorf("%w: %s", ErrQueuedTurnNotAvailable, turnID)
+	}
+	row, err := s.qw.SelectReservedConversationTurnForPromotion(ctx,
+		gen.SelectReservedConversationTurnForPromotionParams{ID: turnID, ConversationID: conversationID})
+	if err != nil {
+		// Do not strand a reservation when its message row is corrupt or absent.
+		_, _ = s.qw.ReleaseQueuedConversationTurnPromotion(ctx,
+			gen.ReleaseQueuedConversationTurnPromotionParams{ID: turnID, ConversationID: conversationID})
+		return domain.QueuedTurn{}, fmt.Errorf("load reserved queued turn %s: %w", turnID, err)
+	}
+	return domain.QueuedTurn{
+		TurnID: row.ID, Text: row.Text, ClientMessageID: row.ClientMessageID,
+		Origin: row.Origin, DeliveryContentJSON: row.DeliveryContentJson,
+	}, nil
+}
+
+// ReleaseQueuedTurnPromotion restores a provider-refused reservation without
+// changing its immutable queue order.
+func (s *Store) ReleaseQueuedTurnPromotion(
+	ctx context.Context,
+	conversationID, turnID string,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.ReleaseQueuedConversationTurnPromotion(ctx,
+		gen.ReleaseQueuedConversationTurnPromotionParams{ID: turnID, ConversationID: conversationID})
+	if err != nil {
+		return fmt.Errorf("release queued turn promotion %s: %w", turnID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: %s", ErrQueuedTurnNotAvailable, turnID)
+	}
+	return nil
+}
+
+// CompleteQueuedTurnPromotion records the visible steer and retires its queued
+// source together, so snapshots can never show both copies or neither copy.
+func (s *Store) CompleteQueuedTurnPromotion(
+	ctx context.Context,
+	conversationID, sourceTurnID, providerTurnID string,
+	activity domain.ConversationActivity,
+	now time.Time,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "complete queued turn promotion", func(q *gen.Queries) error {
+		target, err := q.SelectConversationTurnByProviderID(ctx,
+			gen.SelectConversationTurnByProviderIDParams{
+				ConversationID: conversationID, ProviderTurnID: providerTurnID,
+			})
+		if err != nil {
+			return fmt.Errorf("select promotion target %s: %w", providerTurnID, err)
+		}
+		txCtx := context.WithValue(ctx, conversationProjectionTxKey{}, q)
+		if err := s.UpsertActivity(txCtx, conversationID, providerTurnID, activity, now); err != nil {
+			return err
+		}
+		rows, err := q.CompleteQueuedConversationTurnPromotion(ctx,
+			gen.CompleteQueuedConversationTurnPromotionParams{
+				CompletedAt:      sql.NullTime{Time: now, Valid: true},
+				PromotedToTurnID: sql.NullString{String: target.ID, Valid: true},
+				ID:               sourceTurnID,
+				ConversationID:   conversationID,
+			})
+		if err != nil {
+			return fmt.Errorf("complete source turn %s: %w", sourceTurnID, err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("%w: %s", ErrQueuedTurnNotAvailable, sourceTurnID)
+		}
+		return nil
+	})
+}
+
 // CancelQueuedTurns closes out everything queued at or before cutoff.
 //
 // They settle as interrupted rather than failed: nothing went wrong, the user
@@ -1059,6 +1182,25 @@ func (s *Store) CancelQueuedTurns(
 		RequestedAt:    cutoff,
 	}); err != nil {
 		return fmt.Errorf("cancel queued turns for %s: %w", conversationID, err)
+	}
+	return nil
+}
+
+// CancelAllQueuedTurns closes the whole durable queue after an interface
+// handoff has synchronously fenced intake and promotion. Unlike an ordinary Stop
+// action, there is no post-request message to preserve with a timestamp cutoff.
+func (s *Store) CancelAllQueuedTurns(
+	ctx context.Context,
+	conversationID string,
+	now time.Time,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.qw.CancelAllQueuedConversationTurns(ctx, gen.CancelAllQueuedConversationTurnsParams{
+		CompletedAt:    sql.NullTime{Time: now, Valid: true},
+		ConversationID: conversationID,
+	}); err != nil {
+		return fmt.Errorf("cancel all queued turns for %s: %w", conversationID, err)
 	}
 	return nil
 }
@@ -1305,7 +1447,18 @@ func (s *Store) AppendCommandOutput(
 	if err != nil {
 		return false, fmt.Errorf("append command output to %s: %w", providerItemID, err)
 	}
-	return rows > 0, nil
+	if rows > 0 {
+		return true, nil
+	}
+	found, err := q.ConversationActivityExistsForProviderItem(ctx,
+		gen.ConversationActivityExistsForProviderItemParams{
+			ConversationID: conversationID,
+			ProviderItemID: providerItemID,
+		})
+	if err != nil {
+		return false, fmt.Errorf("find command output activity %s after no-op append: %w", providerItemID, err)
+	}
+	return found, nil
 }
 
 // SetTurnDiff overwrites a turn's changed-file summary.

@@ -27,6 +27,14 @@ const (
 var (
 	errConversationClosed = errors.New("ACP conversation closed")
 	errClientCapability   = errors.New("ACP client capability not advertised")
+
+	// ErrACPSetterUnsupported is returned by applyTurnSettings when the agent
+	// does not implement session/set_mode or session/set_config_option
+	// (JSON-RPC -32601). Start() and Resume() tolerate it because the initial
+	// model and permission mode may have been applied via launch-time flags;
+	// SendTurn propagates it so a runtime change that cannot be applied is
+	// surfaced to the user instead of silently running with the wrong mode.
+	ErrACPSetterUnsupported = errors.New("ACP agent does not support runtime session configuration")
 )
 
 type preparedTurn struct {
@@ -103,6 +111,8 @@ type conversation struct {
 	historyMu     sync.Mutex
 	history       *historyCapture
 	historyEvents []ports.ChatEvent
+	historyErr    error
+	historyLoaded bool
 }
 
 var _ ports.ChatConversation = (*conversation)(nil)
@@ -121,6 +131,7 @@ func newConversation(proc *process, log *slog.Logger) *conversation {
 		log:            log,
 		pending:        make(map[string]*parkedPermission),
 		pendingInputs:  make(map[string]*parkedInput),
+		capabilities:   make(ports.ChatCapabilities),
 		messages:       make(map[string]string),
 		thoughts:       make(map[string]string),
 		nestedMessages: make(map[string]nestedMessageState),
@@ -143,7 +154,13 @@ func (c *conversation) start(
 	c.mu.Lock()
 	c.sessionID = sessionID
 	c.capabilities = capabilities
-	c.configOptions = normalizeConfigOptions(configOptions)
+	// Preserve config options received via session/update during session/new.
+	// An agent may send config_option_update before start() runs; only overwrite
+	// the catalog when the response actually carries one, so an early update is
+	// not lost to an empty response snapshot.
+	if len(configOptions) > 0 {
+		c.configOptions = normalizeConfigOptions(configOptions)
+	}
 	if len(c.configOptions) > 0 {
 		c.capabilities[ports.ChatCapabilityConfigOptions] = true
 	}
@@ -224,6 +241,9 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 			if _, err := c.conn.SetSessionMode(ctx, acpsdk.SetSessionModeRequest{
 				SessionId: acpsdk.SessionId(sessionID), ModeId: acpsdk.SessionModeId(mode),
 			}); err != nil {
+				if isACPMethodNotFound(err) {
+					return fmt.Errorf("%w: session/set_mode %q", ErrACPSetterUnsupported, mode)
+				}
 				return fmt.Errorf("set ACP session mode %q: %w", mode, err)
 			}
 		}
@@ -240,6 +260,9 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 				},
 			})
 			if err != nil {
+				if isACPMethodNotFound(err) {
+					return fmt.Errorf("%w: session/set_config_option %q", ErrACPSetterUnsupported, option.ID)
+				}
 				return fmt.Errorf("set ACP session option %q: %w", option.ID, err)
 			}
 			c.replaceConfigOptions(resp.ConfigOptions)

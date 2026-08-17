@@ -7,7 +7,8 @@ import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureRendererEvent } from "../lib/telemetry";
 import { cn } from "../lib/utils";
 import { ConnectMobileGetApp } from "./settings/ConnectMobileGetApp";
-import { ConnectMobileSetup } from "./settings/ConnectMobileSetup";
+import { ConnectMobileSetup, type SetupMode } from "./settings/ConnectMobileSetup";
+import { MobileDevicesSection } from "./settings/MobileDevicesSection";
 import {
 	Dialog,
 	DialogClose,
@@ -30,9 +31,18 @@ const QR_CODE_SIZE = 204;
 interface MobileStatus {
 	enabled: boolean;
 	host: string;
+	tailscaleHost: string;
 	port: number;
 	password: string;
 	warning: string;
+	securePairing: {
+		enabled: boolean;
+		available: boolean;
+		active: boolean;
+		host: string;
+		port: number;
+		reason: string;
+	};
 }
 
 // pairingPayload is the QR code contents scanned by the mobile app to connect
@@ -40,8 +50,11 @@ interface MobileStatus {
 // autofills everything and connects with no typing. The bridge is a trusted-
 // home-network tool over plaintext HTTP, so a QR that grants access is an
 // acceptable trade-off; regenerating the password invalidates any old QR.
-export function pairingPayload(host: string, port: number, password: string): string {
-	return JSON.stringify({ v: 1, host, port, password });
+//
+// `secure` is omitted unless true so every plaintext QR stays byte-identical
+// to what older app builds already scan successfully.
+export function pairingPayload(host: string, port: number, password: string, secure?: boolean): string {
+	return JSON.stringify(secure ? { v: 1, host, port, password, secure: true } : { v: 1, host, port, password });
 }
 
 async function fetchMobileStatus(): Promise<MobileStatus> {
@@ -65,6 +78,7 @@ export function ConnectMobileModal({ open, onOpenChange }: ConnectMobileModalPro
 	const queryClient = useQueryClient();
 	const [copied, setCopied] = useState(false);
 	const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const [mode, setMode] = useState<SetupMode>("lan");
 
 	useEffect(() => {
 		return () => {
@@ -86,6 +100,7 @@ export function ConnectMobileModal({ open, onOpenChange }: ConnectMobileModalPro
 	useEffect(() => {
 		if (!open) {
 			reportedOpen.current = false;
+			setMode("lan");
 			return;
 		}
 		if (initialEnabled === undefined || reportedOpen.current) return;
@@ -124,14 +139,37 @@ export function ConnectMobileModal({ open, onOpenChange }: ConnectMobileModalPro
 		onSuccess: invalidate,
 	});
 
+	const setSecure = useMutation({
+		mutationFn: async (secureEnabled: boolean) => {
+			const { data, error } = await apiClient.POST("/api/v1/mobile/secure-pairing", { body: { enabled: secureEnabled } });
+			if (error) throw new Error(apiErrorMessage(error));
+			return data;
+		},
+		onSuccess: invalidate,
+	});
+
 	const status = query.data;
 	const enabled = status?.enabled ?? false;
-	const busy = enable.isPending || disable.isPending || regenerate.isPending;
+	// The QR encodes whichever address matches the selected tab. Either can be
+	// empty — no LAN interface, or Tailscale not running — and an empty host
+	// would otherwise produce a QR the phone rejects outright.
+	const secureActive = mode === "tailscale" && (status?.securePairing?.active ?? false);
+	const activeHost = secureActive
+		? status!.securePairing.host
+		: mode === "tailscale"
+			? (status?.tailscaleHost ?? "")
+			: (status?.host ?? "");
+	const activePort = secureActive ? status!.securePairing.port : (status?.port ?? 0);
+	// Blocked = the user asked for secure pairing but it isn't usable yet. Show
+	// setup steps instead of a QR that cannot connect.
+	const secureBlocked = mode === "tailscale" && (status?.securePairing?.enabled ?? false) && !secureActive;
+	const busy = enable.isPending || disable.isPending || regenerate.isPending || setSecure.isPending;
 
 	const clearActionErrors = () => {
 		enable.reset();
 		disable.reset();
 		regenerate.reset();
+		setSecure.reset();
 	};
 
 	const copyPassword = async () => {
@@ -164,6 +202,7 @@ export function ConnectMobileModal({ open, onOpenChange }: ConnectMobileModalPro
 		(enable.error instanceof Error && enable.error.message) ||
 		(disable.error instanceof Error && disable.error.message) ||
 		(regenerate.error instanceof Error && regenerate.error.message) ||
+		(setSecure.error instanceof Error && setSecure.error.message) ||
 		null;
 
 	return (
@@ -240,20 +279,44 @@ export function ConnectMobileModal({ open, onOpenChange }: ConnectMobileModalPro
 									>
 										{/* Steps sit above the QR so the LAN/Tailscale choice is on screen
 										    the moment the bridge turns on, with no scrolling. */}
-										<ConnectMobileSetup port={status.port} enabled={enabled} />
+										<ConnectMobileSetup
+											mode={mode}
+											onModeChange={setMode}
+											enabled={enabled}
+											busy={busy}
+											secure={{
+												enabled: status.securePairing?.enabled ?? false,
+												reason: status.securePairing?.reason ?? "",
+											}}
+											onSecureChange={(on) => {
+												clearActionErrors();
+												setSecure.mutate(on);
+											}}
+										/>
 
 										<div className="mt-6 flex w-(--size-settings-mobile-qr) flex-col items-center">
-											<div className="rounded-md border border-(--color-border-settings-input) bg-white p-2">
-												<QRCodeSVG
-													value={pairingPayload(status.host, status.port, status.password)}
-													size={QR_CODE_SIZE}
-													className="block size-(--size-settings-mobile-qr-code)"
-												/>
-											</div>
-											<p className="mt-4 text-sm leading-5 text-settings-muted">{t("mobile.scanToPair")}</p>
+											{activeHost && !secureBlocked ? (
+												<>
+													<div className="rounded-md border border-(--color-border-settings-input) bg-white p-2">
+														<QRCodeSVG
+															value={pairingPayload(activeHost, activePort, status.password, secureActive)}
+															data-qr-value={pairingPayload(activeHost, activePort, status.password, secureActive)}
+															size={QR_CODE_SIZE}
+															className="block size-(--size-settings-mobile-qr-code)"
+														/>
+													</div>
+													<p className="mt-4 text-sm leading-5 text-settings-muted">{t("mobile.scanToPair")}</p>
+												</>
+											) : (
+												<div className="flex size-(--size-settings-mobile-qr-code) items-center justify-center rounded-md border border-(--color-border-settings-input) bg-(--color-bg-settings-input) p-4">
+													<p className="text-center text-caption leading-(--leading-settings-mobile-hint) text-settings-muted">
+														{mode === "tailscale" ? t("mobile.noTailscaleHost") : t("mobile.noPairingHost")}
+													</p>
+												</div>
+											)}
 										</div>
 
-										{status.warning && (
+										{status.warning && !secureActive && (
 											<p className="mt-6 flex w-full max-w-(--size-settings-mobile-warning) items-start gap-2 text-caption leading-(--leading-settings-mobile-warning) text-warning">
 												<Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
 												<span>{status.warning}</span>
@@ -261,10 +324,10 @@ export function ConnectMobileModal({ open, onOpenChange }: ConnectMobileModalPro
 										)}
 
 										<div className="mt-6 flex w-full flex-col gap-1 px-(--size-settings-mobile-details-pad-x)">
-											<div className="flex items-center gap-6 text-sm leading-5">
+											<div className="flex items-center gap-6 text-sm leading-5" data-testid="mobile-pairing-address">
 												<span className="w-(--size-settings-mobile-label) shrink-0 text-settings-muted">{t("mobile.address")}</span>
 												<span className="tracking-settings-mono text-settings-label">
-													{status.host}:{status.port}
+													{activeHost ? `${activeHost}:${activePort}` : "—"}
 												</span>
 											</div>
 											<div className="flex items-center gap-6 text-sm leading-5">
@@ -302,6 +365,12 @@ export function ConnectMobileModal({ open, onOpenChange }: ConnectMobileModalPro
 											{regenerate.isPending && <Loader2 className="mr-2 size-4 animate-spin" aria-hidden="true" />}
 											{t("mobile.regenerate")}
 										</Button>
+
+										{/* Not just visually hidden with the rest of this wrapper: the roster's
+										    Switch/remove controls issue real PATCH/DELETE calls, so they must be
+										    absent from the DOM (not merely aria-hidden) while the bridge is off —
+										    otherwise they stay keyboard-focusable behind the collapse animation. */}
+										{enabled && <MobileDevicesSection />}
 									</div>
 								</div>
 							</div>

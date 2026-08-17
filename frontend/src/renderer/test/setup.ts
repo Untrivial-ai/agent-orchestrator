@@ -1,5 +1,11 @@
 import "@testing-library/jest-dom/vitest";
+import * as jestDomMatchers from "@testing-library/jest-dom/matchers";
+import { expect } from "vitest";
 import "../i18n";
+
+// Vitest 4 can load the convenience entry against a different matcher
+// instance. Register the matchers on the active test runtime as well.
+expect.extend(jestDomMatchers);
 
 // Guard: src/main/** tests run in the Node.js environment (no DOM). vitest still
 // routes setupFiles here, so only install the DOM stubs when a DOM exists.
@@ -76,9 +82,12 @@ if (typeof window !== "undefined") {
 		},
 		terminal: {
 			saveDroppedFile: async () => "",
+			setFocused: () => undefined,
+			onFontSizeShortcut: () => () => undefined,
 		},
 		window: {
-			setOverlay: async () => undefined,
+			isMaximized: async () => false,
+			onMaximized: () => () => undefined,
 			isFullScreen: async () => false,
 			onFullScreen: () => () => undefined,
 		},

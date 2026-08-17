@@ -154,9 +154,11 @@ gitignored** — the run commands prebuild them for you.
    It does **not** cover the daemon connection — that still goes over Wi-Fi (or Tailscale) to
    `host:3011`.
 
-Cleartext HTTP to the bridge already works on both platforms: Android through
-`usesCleartextTraffic` in `app.json`, iOS through `NSAllowsLocalNetworking` in the prebuilt
-`Info.plist`.
+Cleartext HTTP to the bridge works on Android everywhere via `usesCleartextTraffic` in
+`app.json`. On iOS, `NSAllowsLocalNetworking` in the prebuilt `Info.plist` only permits
+cleartext to link-local, `.local`, and RFC 1918 (LAN) addresses — Tailscale's
+`100.64.0.0/10` range is RFC 6598, so iOS blocks plaintext to it. Tailscale pairing on iOS
+requires the desktop's secure-pairing mode (TLS via `tailscale serve`).
 
 > **On `expo-dev-client`:** this package doesn't depend on it today, so the debug build
 > connects straight to Metro and has no in-app launcher or URL switcher. If you want the

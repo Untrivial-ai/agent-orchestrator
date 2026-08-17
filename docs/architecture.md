@@ -337,11 +337,17 @@ sequenceDiagram
 
     Client->>Manager: POST interface-transition(target, policy)
     Manager->>DB: Claim one active transition
+    alt source = Chat
+        Manager->>Source: Arm handoff; close intake and queue dispatch
+    else source = TUI
+        Manager->>Source: Gate new terminal input
+    end
     Manager->>Target: Preflight binary/auth/protocol
     alt policy = drain
-        Manager->>Source: Close intake; finish accepted work
+        Manager->>Source: Finish accepted work
     else policy = interrupt
-        Manager->>Source: Cancel active and queued work
+        Source->>DB: Cancel queued Chat turns
+        Manager->>Source: Cancel active provider turn
     end
     Manager->>Source: Stop and wait for shutdown
     Manager->>Lifecycle: CommitControllerEpoch(source, target, native id)
@@ -363,17 +369,29 @@ events are fenced by controller generation; old TUI hooks are fenced by runtime
 launch id.
 
 `drain` is loss-minimizing and may wait on an approval or user-input request;
-`interrupt` sends the provider's cancellation first, allows a short transcript
-flush, and then stops the source. Files and completed provider context survive.
+`interrupt` synchronously closes source intake and queue dispatch at transition
+acceptance. After target preflight succeeds, it settles queued Chat turns and
+then sends the provider's active-turn cancellation, allows a short transcript
+flush, and stops the source. The reversible first phase preserves queued work if
+the target is unavailable; its dispatch fence prevents a completion callback
+from promoting that work during preflight or provider cancellation. Files and
+completed provider context survive.
 There is no provider-neutral way to migrate a currently executing tool call or a
 detached background process, and AO does not synthesize terminal screen output
 into structured Chat history.
 
-For TUI drains, AO gates new terminal input before checking quiescence. It accepts
-either an idle fact newer than the last accepted input or an adapter-confirmed
-idle terminal held across the settle window. A contradictory stale-idle fact has
-a bounded proof window and fails without stopping the source; activity reported
-as active work or a user-paced decision remains unbounded.
+For TUI drains, AO gates new terminal input before checking quiescence. Agent
+adapters that can interpret their rendered TUI report work state and composer
+occupancy as separate ephemeral facts. The runtime side of that contract must
+provide the current rendered viewport with ANSI cell styles: tmux uses styled
+`capture-pane`, while the Windows ConPTY host maintains a VT cell model beside
+its historical replay ring. AO accepts only repeated observations of an idle
+surface with an empty composer, held across the settle window; a visible draft
+fails with the source untouched and requires the user to submit, clear, or
+explicitly discard it. Adapter/runtime pairs without rendered-surface support
+retain the causally newer idle-fact or legacy terminal-idle fallback. An
+unverified idle state has a bounded proof window; active work or a user-paced
+decision remains unbounded.
 
 ### Observation Flow
 

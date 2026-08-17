@@ -3,6 +3,7 @@ import {
 	classifyConnectionFailure,
 	describeConnectionFailure,
 	isLocalNetworkHost,
+	isTailscaleHost,
 	shouldKeepPolling,
 } from "./connectionError";
 
@@ -71,11 +72,41 @@ describe("isLocalNetworkHost", () => {
 	});
 });
 
+describe("isTailscaleHost", () => {
+	it("accepts the 100.64.0.0/10 CGNAT range", () => {
+		expect(isTailscaleHost("100.64.0.0")).toBe(true);
+		expect(isTailscaleHost("100.101.102.103")).toBe(true);
+		expect(isTailscaleHost("100.127.255.255")).toBe(true);
+	});
+
+	it("rejects addresses just outside the range", () => {
+		expect(isTailscaleHost("100.63.255.255")).toBe(false);
+		expect(isTailscaleHost("100.128.0.0")).toBe(false);
+	});
+
+	it("rejects LAN addresses and hostnames", () => {
+		expect(isTailscaleHost("192.168.1.5")).toBe(false);
+		expect(isTailscaleHost("my-pc.tail1234.ts.net")).toBe(false);
+	});
+});
+
 describe("describeConnectionFailure", () => {
 	it("names the scanned address when nothing answered", () => {
 		const d = describeConnectionFailure("unreachable", target({ host: "192.168.1.5", port: "3011" }));
 		expect(d.message).toContain("192.168.1.5:3011");
 		expect(d.message).toContain("same Wi-Fi");
+	});
+
+	it("blames Wi-Fi for an unreachable LAN host", () => {
+		const d = describeConnectionFailure("unreachable", target({ host: "192.168.1.5" }));
+		expect(d.message).toContain("Wi-Fi");
+	});
+
+	it("does not blame Wi-Fi for an unreachable Tailscale host, and stays off the Local Network hint", () => {
+		const d = describeConnectionFailure("unreachable", target({ host: "100.101.102.103" }));
+		expect(d.message).not.toContain("Wi-Fi");
+		expect(d.message.toLowerCase()).toContain("tailscale");
+		expect(d.showLocalNetworkHint).toBe(false);
 	});
 
 	it("blames the password, not the network, on a 401", () => {

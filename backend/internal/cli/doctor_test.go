@@ -261,9 +261,106 @@ func TestDoctorFailsExpiredGitHubToken(t *testing.T) {
 	}
 }
 
+func TestDoctorChecksGitLabTokenFromEnv(t *testing.T) {
+	setConfigEnv(t)
+	srv := gitlabDoctorServer(t, http.StatusOK, `{"username":"gitlab-user"}`)
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("git version 2.43.0\n"), nil
+	})
+	t.Setenv("AO_GITLAB_TOKEN", "env-token")
+	c.deps.HTTPClient = srv.Client()
+	c.deps.DoctorGitLabRESTBase = srv.URL
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "gitlab-token")
+	if check.Level != doctorPass || !strings.Contains(check.Message, "AO_GITLAB_TOKEN") || !strings.Contains(check.Message, "gitlab-user") {
+		t.Fatalf("gitlab-token check = %+v, want PASS with source and username", check)
+	}
+}
+
+func TestDoctorChecksGitLabTokenFromEnvGitLabToken(t *testing.T) {
+	setConfigEnv(t)
+	srv := gitlabDoctorServer(t, http.StatusOK, `{"username":"gitlab-user"}`)
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("git version 2.43.0\n"), nil
+	})
+	t.Setenv("GITLAB_TOKEN", "env-token-2")
+	c.deps.HTTPClient = srv.Client()
+	c.deps.DoctorGitLabRESTBase = srv.URL
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "gitlab-token")
+	if check.Level != doctorPass || !strings.Contains(check.Message, "GITLAB_TOKEN") {
+		t.Fatalf("gitlab-token check = %+v, want PASS from GITLAB_TOKEN", check)
+	}
+}
+
+func TestDoctorChecksGitLabTokenFromGLab(t *testing.T) {
+	setConfigEnv(t)
+	srv := gitlabDoctorServer(t, http.StatusOK, `{"username":"glab-user"}`)
+	c := doctorContext(t, map[string]string{"git": "/bin/git", "glab": "/bin/glab"}, func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "/bin/glab" {
+			if len(args) != 3 || args[0] != "auth" || args[1] != "status" || args[2] != "--show-token" {
+				t.Fatalf("unexpected glab command: %s %v", name, args)
+			}
+			return []byte("Hostname: gitlab.com\n✓ Token found: glpat-token123\n"), nil
+		}
+		return []byte("git version 2.43.0\n"), nil
+	})
+	c.deps.HTTPClient = srv.Client()
+	c.deps.DoctorGitLabRESTBase = srv.URL
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "gitlab-token")
+	if check.Level != doctorPass || !strings.Contains(check.Message, "glab token valid") || !strings.Contains(check.Message, "glab-user") {
+		t.Fatalf("gitlab-token check = %+v, want PASS from glab", check)
+	}
+}
+
+func TestDoctorWarnsWhenGitLabTokenMissing(t *testing.T) {
+	setConfigEnv(t)
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("git version 2.43.0\n"), nil
+	})
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "gitlab-token")
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "no GitLab token found") {
+		t.Fatalf("gitlab-token check = %+v, want WARN missing token", check)
+	}
+}
+
+func TestDoctorFailsExpiredGitLabToken(t *testing.T) {
+	setConfigEnv(t)
+	srv := gitlabDoctorServer(t, http.StatusUnauthorized, `{"message":"401 Unauthorized"}`)
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("git version 2.43.0\n"), nil
+	})
+	t.Setenv("GITLAB_TOKEN", "expired-token")
+	c.deps.HTTPClient = srv.Client()
+	c.deps.DoctorGitLabRESTBase = srv.URL
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "gitlab-token")
+	if check.Level != doctorFail || !strings.Contains(check.Message, "HTTP 401") {
+		t.Fatalf("gitlab-token check = %+v, want FAIL rejected token", check)
+	}
+}
+
+func gitlabDoctorServer(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/user" {
+			t.Fatalf("unexpected gitlab probe: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("PRIVATE-TOKEN"); got == "" {
+			t.Fatalf("missing PRIVATE-TOKEN auth header: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+}
+
 func TestDoctorJSONOutputIsDecodable(t *testing.T) {
 	setConfigEnv(t)
 	clearDoctorGitHubEnv(t)
+	clearDoctorGitLabEnv(t)
 	out, errOut, err := executeCLI(t, Deps{
 		LookPath: func(name string) (string, error) {
 			switch name {
@@ -300,6 +397,7 @@ func TestDoctorJSONOutputIsDecodable(t *testing.T) {
 func TestDoctorTextOutputIsGrouped(t *testing.T) {
 	setConfigEnv(t)
 	clearDoctorGitHubEnv(t)
+	clearDoctorGitLabEnv(t)
 	out, errOut, err := executeCLI(t, Deps{
 		LookPath: func(name string) (string, error) {
 			switch name {
@@ -321,7 +419,7 @@ func TestDoctorTextOutputIsGrouped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor failed: %v\nstderr=%s\nstdout=%s", err, errOut, out)
 	}
-	for _, want := range []string{"Core:\nPASS config:", "Tools:\nPASS git:", "Agent harnesses:\nWARN claude-code:", "WARN codex:", "WARN muse:", "GitHub:\nWARN github-token:"} {
+	for _, want := range []string{"Core:\nPASS config:", "Tools:\nPASS git:", "Agent harnesses:\nWARN claude-code:", "WARN codex:", "WARN muse:", "GitHub:\nWARN github-token:", "GitLab:\nWARN gitlab-token:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, out)
 		}
@@ -333,6 +431,12 @@ func clearDoctorGitHubEnv(t *testing.T) {
 	t.Setenv("AO_GITHUB_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
+}
+
+func clearDoctorGitLabEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("AO_GITLAB_TOKEN", "")
+	t.Setenv("GITLAB_TOKEN", "")
 }
 
 // TestDoctorChecksAOBinaryIdentity covers the `ao-binary` check: workspace
@@ -402,6 +506,7 @@ func TestDoctorIncludesAOBinaryCheck(t *testing.T) {
 func doctorContext(t *testing.T, paths map[string]string, commandOutput func(context.Context, string, ...string) ([]byte, error)) *commandContext {
 	t.Helper()
 	clearDoctorGitHubEnv(t)
+	clearDoctorGitLabEnv(t)
 	deps := Deps{
 		LookPath: func(name string) (string, error) {
 			path, ok := paths[name]

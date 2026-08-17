@@ -640,48 +640,6 @@ func TestList_PageCountShrinkIgnoresOrphanedCachedPage(t *testing.T) {
 	}
 }
 
-func TestParseLinkNext(t *testing.T) {
-	baseURL := "https://api.github.com"
-	cases := []struct {
-		name string
-		link string
-		want string
-	}{
-		{
-			name: "quoted next strips absolute host",
-			link: `<https://api.github.com/repos/o/r/issues?state=all&per_page=100&page=2>; rel="next"`,
-			want: "/repos/o/r/issues?state=all&per_page=100&page=2",
-		},
-		{
-			name: "unquoted next among multiple links",
-			link: `<https://api.github.com/repos/o/r/issues?page=1>; rel=prev, <https://api.github.com/repos/o/r/issues?page=3>; rel=next`,
-			want: "/repos/o/r/issues?page=3",
-		},
-		{
-			name: "multiple rel values",
-			link: `<https://example.test/repos/o/r/issues?page=4>; rel="last next"`,
-			want: "/repos/o/r/issues?page=4",
-		},
-		{
-			name: "relative path",
-			link: `</repos/o/r/issues?page=2>; rel="next"`,
-			want: "/repos/o/r/issues?page=2",
-		},
-		{
-			name: "no next",
-			link: `<https://api.github.com/repos/o/r/issues?page=1>; rel="prev"`,
-			want: "",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := parseLinkNext(tc.link, baseURL); got != tc.want {
-				t.Fatalf("parseLinkNext() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestList_ConditionalRevalidationReturns304CachedIssues(t *testing.T) {
 	f := newFakeGH(t)
 	var calls int

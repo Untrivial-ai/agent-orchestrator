@@ -82,7 +82,7 @@ func (c *conversation) RequestPermission(
 	c.emit(ports.ChatEvent{
 		Kind:           ports.ChatEventApprovalRequested,
 		ProviderTurnID: turnID,
-		ProviderItemID: string(params.ToolCall.ToolCallId),
+		ProviderItemID: requestID,
 		ActivityKind:   activityKindFromTool(pointerValue(params.ToolCall.Kind)),
 		ActivityStatus: domain.ActivityStatusPending,
 		Summary:        summary,

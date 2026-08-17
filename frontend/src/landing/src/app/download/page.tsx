@@ -5,9 +5,10 @@ import {
   DOWNLOAD_URL_MAC_X64,
   DOWNLOAD_URL_WINDOWS,
 } from "@ao/shared/constants";
-import { Download } from "lucide-react";
+import { Cloud, Download } from "lucide-react";
 import type { Metadata } from "next";
 import Image from "next/image";
+import Link from "next/link";
 import { FaApple, FaLinux, FaWindows } from "react-icons/fa";
 import { AndroidAppCTA } from "./AndroidAppCTA";
 import { MobileAppCTA } from "./MobileAppCTA";
@@ -259,6 +260,30 @@ export default async function DownloadPage() {
               </div>
             </article>
           </div>
+
+          <section className="mt-8 overflow-hidden rounded-2xl border border-border bg-card">
+            <div className="grid gap-6 p-5 sm:p-6 lg:grid-cols-[1fr_auto] lg:items-center">
+              <div className="max-w-3xl">
+                <p className="inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  <Cloud className="size-3.5" aria-hidden="true" />
+                  AO Cloud
+                </p>
+                <h2 className="mt-3 text-2xl font-semibold text-foreground">
+                  Join the AO Cloud waitlist
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Request early access for shared agent sessions, team handoffs,
+                  and hosted runs.
+                </p>
+              </div>
+              <Link
+                href="/waitlist"
+                className="inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-3xl bg-foreground px-3 py-2 text-sm font-semibold tracking-[-0.5px] text-background transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-6 sm:py-3 sm:text-base"
+              >
+                Join waitlist
+              </Link>
+            </div>
+          </section>
 
           <div className="mt-16 space-y-16">
             {[

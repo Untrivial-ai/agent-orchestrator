@@ -70,6 +70,23 @@ func TestRuntimeEnvClearsDaemonBrowserRuntimeSecrets(t *testing.T) {
 	}
 }
 
+func TestRuntimeEnvPinsHooksToDaemonRunFile(t *testing.T) {
+	daemonRunFile := filepath.Join(t.TempDir(), "daemon-running.json")
+	t.Setenv("AO_RUN_FILE", filepath.Join(t.TempDir(), "inherited-wrong-daemon.json"))
+	manager := &Manager{
+		dataDir:     "/data",
+		runFilePath: daemonRunFile,
+		executable:  func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
+		"AO_RUN_FILE": "/project/cannot-redirect-hooks.json",
+	})
+	if got, want := env["AO_RUN_FILE"], daemonRunFile; got != want {
+		t.Fatalf("AO_RUN_FILE = %q, want daemon run-file %q", got, want)
+	}
+}
+
 func TestHookPATH(t *testing.T) {
 	sep := string(os.PathListSeparator)
 	daemonExe := filepath.Join("/opt", "aod", "ao")

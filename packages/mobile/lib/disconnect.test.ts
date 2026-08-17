@@ -5,12 +5,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // not their implementations (which have their own coverage).
 const calls: string[] = [];
 // Lets a test make the push step fail the way a SecureStore write can.
-let unregisterThrows: Error | null = null;
+let unpairThrows: Error | null = null;
 
 vi.mock("./push", () => ({
-	unregisterFromPush: vi.fn(async () => {
-		calls.push("unregisterFromPush");
-		if (unregisterThrows) throw unregisterThrows;
+	// forgetServer unpairs rather than merely unregistering: the phone is leaving
+	// this daemon, so its row must go, not just its push token. Unregistering
+	// would leave the old desktop listing a phone that has moved on.
+	unpairFromServer: vi.fn(async () => {
+		calls.push("unpairFromServer");
+		if (unpairThrows) throw unpairThrows;
 	}),
 }));
 vi.mock("./config", () => ({
@@ -29,28 +32,28 @@ const { forgetServer } = await import("./disconnect");
 describe("forgetServer", () => {
 	beforeEach(() => {
 		calls.length = 0;
-		unregisterThrows = null;
+		unpairThrows = null;
 	});
 
 	// Clearing only the config would leave the daemon still pushing to this
-	// device, and leave the password behind in the keystore.
-	it("unregisters push, clears the config, and re-arms onboarding", async () => {
+	// device, still listing it as paired, and leave the password in the keystore.
+	it("unpairs, clears the config, and re-arms onboarding", async () => {
 		await forgetServer();
-		expect(calls).toEqual(["unregisterFromPush", "clearConfig", "clearOnboardingSkipped"]);
+		expect(calls).toEqual(["unpairFromServer", "clearConfig", "clearOnboardingSkipped"]);
 	});
 
-	// The unregister needs credentials that clearConfig would otherwise destroy,
+	// The unpair call needs credentials that clearConfig would otherwise destroy,
 	// so the ordering is load-bearing, not incidental.
-	it("unregisters before the credentials are thrown away", async () => {
+	it("unpairs before the credentials are thrown away", async () => {
 		await forgetServer();
-		expect(calls.indexOf("unregisterFromPush")).toBeLessThan(calls.indexOf("clearConfig"));
+		expect(calls.indexOf("unpairFromServer")).toBeLessThan(calls.indexOf("clearConfig"));
 	});
 
-	// unregisterFromPush catches its own network failures, but its SecureStore
+	// unpairFromServer catches its own network failures, but its SecureStore
 	// writes are unguarded. A throw there used to abort the disconnect with the
 	// host and password still on disk — the phone looked disconnected and was not.
 	it("still clears credentials when the push step throws", async () => {
-		unregisterThrows = new Error("SecureStore unavailable");
+		unpairThrows = new Error("SecureStore unavailable");
 		await expect(forgetServer()).rejects.toThrow("SecureStore unavailable");
 		expect(calls).toContain("clearConfig");
 		expect(calls).toContain("clearOnboardingSkipped");

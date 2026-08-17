@@ -18,6 +18,7 @@ import (
 const (
 	eventsReplayBatch = 512
 	eventsLiveBuffer  = 1024
+	eventAfterHeader  = "X-AO-Event-After"
 )
 
 type cdcSubscriber interface {
@@ -48,6 +49,15 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 			"after must be a non-negative integer", nil)
 		return
 	}
+	latestSeq, err := c.Source.LatestSeq(r.Context())
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "EVENT_CURSOR_FAILED",
+			"Could not inspect the event cursor", nil)
+		return
+	}
+	if after > latestSeq {
+		after = 0
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -76,6 +86,7 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
+	h.Set(eventAfterHeader, strconv.FormatInt(after, 10))
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 

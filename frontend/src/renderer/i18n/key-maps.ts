@@ -48,4 +48,5 @@ export const agentSwitchErrorLabelKeys: Record<AgentSwitchErrorCode, MessageKey>
 	delivery_failed: "switchAgent.error.deliveryFailed",
 	switch_failed: "switchAgent.error.switchFailed",
 	target_start_unconfirmed: "switchAgent.error.targetStartUnconfirmed",
+	source_restore_unconfirmed: "switchAgent.sourceRecovery.description",
 };

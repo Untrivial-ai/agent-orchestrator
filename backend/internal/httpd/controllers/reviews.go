@@ -98,6 +98,8 @@ func (c *ReviewsController) Register(r chi.Router) {
 	r.Post("/reviews/{reviewSessionID}/activity", c.activity)
 	r.Get("/sessions/{sessionId}/reviews", c.list)
 	r.Post("/sessions/{sessionId}/reviews/trigger", c.trigger)
+	r.Post("/sessions/{sessionId}/reviews/rerequest", c.rerequest)
+	r.Post("/sessions/{sessionId}/reviews/comments/resolve", c.resolveComment)
 	r.Post("/sessions/{sessionId}/reviews/cancel", c.cancel)
 	r.Post("/sessions/{sessionId}/reviews/kill", c.kill)
 	r.Post("/sessions/{sessionId}/reviews/restore", c.restore)
@@ -196,6 +198,40 @@ func (c *ReviewsController) trigger(w http.ResponseWriter, r *http.Request) {
 		Runs:             runs,
 		Created:          res.Created,
 	})
+}
+
+func (c *ReviewsController) resolveComment(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/reviews/comments/resolve")
+		return
+	}
+	var in ResolveReviewCommentRequest
+	if err := decodeJSON(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	if err := c.Svc.ResolveReviewComment(r.Context(), sessionID(r), in.PullRequestURL, in.CommentURL); err != nil {
+		writeReviewError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, ResolveReviewCommentResponse{OK: true})
+}
+
+func (c *ReviewsController) rerequest(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/reviews/rerequest")
+		return
+	}
+	var in RequestRereviewRequest
+	if err := decodeJSON(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	if err := c.Svc.RequestRereview(r.Context(), sessionID(r), in.PullRequestURL, in.ReviewerID); err != nil {
+		writeReviewError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, RequestRereviewResponse{OK: true})
 }
 
 func (c *ReviewsController) cancel(w http.ResponseWriter, r *http.Request) {

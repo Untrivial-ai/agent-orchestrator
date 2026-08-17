@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,6 +161,136 @@ func TestProviderEventIdentityDeduplicatesTheWholeProjection(t *testing.T) {
 	}
 }
 
+func TestCommandOutputStopsChangingAfterTruncation(t *testing.T) {
+	s, _, conversation := conversationFixture(t)
+	ctx := context.Background()
+	if err := s.UpsertActivity(ctx, conversation, "provider-turn-1", domain.ConversationActivity{
+		ID:             "activity-output-cap",
+		Kind:           domain.ActivityKindCommand,
+		Status:         domain.ActivityStatusRunning,
+		Summary:        "npm run dev",
+		ProviderItemID: "exec-output-cap",
+	}, histClock); err != nil {
+		t.Fatalf("seed command activity: %v", err)
+	}
+
+	truncatedAt := histClock.Add(time.Second)
+	found, err := s.AppendCommandOutput(ctx, conversation, "exec-output-cap",
+		strings.Repeat("x", store.MaxCommandOutputChars+1), truncatedAt)
+	if err != nil || !found {
+		t.Fatalf("append output through cap: found=%v err=%v", found, err)
+	}
+
+	snapshot, err := s.LoadConversationSnapshot(ctx, conversation)
+	if err != nil {
+		t.Fatalf("load capped snapshot: %v", err)
+	}
+	if len(snapshot.Activities) != 1 {
+		t.Fatalf("activities = %d, want 1", len(snapshot.Activities))
+	}
+	capped := snapshot.Activities[0]
+	if len(capped.CommandOutput) != store.MaxCommandOutputChars || !capped.CommandOutputTruncated {
+		t.Fatalf("capped output = %d chars truncated=%v, want %d/true",
+			len(capped.CommandOutput), capped.CommandOutputTruncated, store.MaxCommandOutputChars)
+	}
+	cdcAfterCap, err := s.LatestSeq(ctx)
+	if err != nil {
+		t.Fatalf("read CDC head after cap: %v", err)
+	}
+
+	found, err = s.AppendCommandOutput(ctx, conversation, "exec-output-cap", "still running\n", truncatedAt.Add(time.Second))
+	if err != nil || !found {
+		t.Fatalf("append output after cap: found=%v err=%v", found, err)
+	}
+	snapshot, err = s.LoadConversationSnapshot(ctx, conversation)
+	if err != nil {
+		t.Fatalf("load snapshot after capped delta: %v", err)
+	}
+	after := snapshot.Activities[0]
+	if after.CommandOutput != capped.CommandOutput || !after.CommandOutputTruncated {
+		t.Fatalf("capped output changed after another delta: len=%d truncated=%v",
+			len(after.CommandOutput), after.CommandOutputTruncated)
+	}
+	if after.Revision != capped.Revision {
+		t.Errorf("revision after capped delta = %d, want unchanged %d", after.Revision, capped.Revision)
+	}
+	if !after.UpdatedAt.Equal(capped.UpdatedAt) {
+		t.Errorf("updated_at after capped delta = %s, want unchanged %s", after.UpdatedAt, capped.UpdatedAt)
+	}
+	cdcAfterNoop, err := s.LatestSeq(ctx)
+	if err != nil {
+		t.Fatalf("read CDC head after capped delta: %v", err)
+	}
+	if cdcAfterNoop != cdcAfterCap {
+		t.Errorf("CDC head after capped delta = %d, want unchanged %d", cdcAfterNoop, cdcAfterCap)
+	}
+}
+
+func TestActivityStreamedTextStopsChangingAfterTruncation(t *testing.T) {
+	s, _, conversation := conversationFixture(t)
+	ctx := context.Background()
+	if err := s.UpsertActivity(ctx, conversation, "provider-turn-1", domain.ConversationActivity{
+		ID:             "activity-text-cap",
+		Kind:           domain.ActivityKindReasoning,
+		Status:         domain.ActivityStatusRunning,
+		Summary:        "Reasoning",
+		ProviderItemID: "reasoning-text-cap",
+	}, histClock); err != nil {
+		t.Fatalf("seed reasoning activity: %v", err)
+	}
+
+	truncatedAt := histClock.Add(time.Second)
+	found, err := s.AppendActivityStreamedText(ctx, conversation, "reasoning-text-cap",
+		strings.Repeat("x", store.MaxStreamedTextChars+1), truncatedAt)
+	if err != nil || !found {
+		t.Fatalf("append streamed text through cap: found=%v err=%v", found, err)
+	}
+	snapshot, err := s.LoadConversationSnapshot(ctx, conversation)
+	if err != nil {
+		t.Fatalf("load capped snapshot: %v", err)
+	}
+	if len(snapshot.Activities) != 1 {
+		t.Fatalf("activities = %d, want 1", len(snapshot.Activities))
+	}
+	capped := snapshot.Activities[0]
+	if len(capped.StreamedText) != store.MaxStreamedTextChars || !capped.StreamedTextTruncated {
+		t.Fatalf("capped streamed text = %d chars truncated=%v, want %d/true",
+			len(capped.StreamedText), capped.StreamedTextTruncated, store.MaxStreamedTextChars)
+	}
+	cdcAfterCap, err := s.LatestSeq(ctx)
+	if err != nil {
+		t.Fatalf("read CDC head after cap: %v", err)
+	}
+
+	found, err = s.AppendActivityStreamedText(ctx, conversation, "reasoning-text-cap",
+		"still reasoning", truncatedAt.Add(time.Second))
+	if err != nil || !found {
+		t.Fatalf("append streamed text after cap: found=%v err=%v", found, err)
+	}
+	snapshot, err = s.LoadConversationSnapshot(ctx, conversation)
+	if err != nil {
+		t.Fatalf("load snapshot after capped delta: %v", err)
+	}
+	after := snapshot.Activities[0]
+	if after.StreamedText != capped.StreamedText || !after.StreamedTextTruncated {
+		t.Fatalf("capped streamed text changed after another delta: len=%d truncated=%v",
+			len(after.StreamedText), after.StreamedTextTruncated)
+	}
+	if after.Revision != capped.Revision {
+		t.Errorf("revision after capped delta = %d, want unchanged %d", after.Revision, capped.Revision)
+	}
+	if !after.UpdatedAt.Equal(capped.UpdatedAt) {
+		t.Errorf("updated_at after capped delta = %s, want unchanged %s", after.UpdatedAt, capped.UpdatedAt)
+	}
+	cdcAfterNoop, err := s.LatestSeq(ctx)
+	if err != nil {
+		t.Fatalf("read CDC head after capped delta: %v", err)
+	}
+	if cdcAfterNoop != cdcAfterCap {
+		t.Errorf("CDC head after capped delta = %d, want unchanged %d", cdcAfterNoop, cdcAfterCap)
+	}
+}
+
 func TestConversationSnapshotPagesCombinedTimelineBySequence(t *testing.T) {
 	s, session, conversation := conversationFixture(t)
 	ctx := context.Background()
@@ -190,6 +321,67 @@ func TestConversationSnapshotPagesCombinedTimelineBySequence(t *testing.T) {
 	}
 	if got := []string{older.Messages[0].Text, older.Messages[1].Text}; !reflect.DeepEqual(got, []string{"two", "three"}) {
 		t.Fatalf("older messages = %v", got)
+	}
+}
+
+// A promotion reservation removes only the selected row from automatic drain.
+// Without the conditional reservation, two clients can steer the same queued
+// message or the drain loop can start it as a fresh turn while steering is in
+// flight.
+func TestQueuedTurnPromotionReservationPreservesTheOtherQueueOrder(t *testing.T) {
+	s, session, conversation := conversationFixture(t)
+	ctx := context.Background()
+	for i, text := range []string{"first queued", "second queued", "third queued"} {
+		turnID := fmt.Sprintf("queued-%d", i+1)
+		created, err := s.AppendUserMessage(ctx, conversation, session, "gen-1",
+			domain.ConversationMessage{
+				ID: turnID + "-message", Text: text, Origin: domain.MessageOriginHuman,
+			}, turnID, histClock.Add(time.Duration(i)*time.Second))
+		if err != nil || !created {
+			t.Fatalf("append %s: created=%v err=%v", turnID, created, err)
+		}
+	}
+
+	selected, err := s.ReserveQueuedTurnForPromotion(
+		ctx, conversation, "queued-2", histClock.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("reserve second queued turn: %v", err)
+	}
+	if selected.TurnID != "queued-2" || selected.Text != "second queued" {
+		t.Fatalf("reserved = %+v, want queued-2 with its durable text", selected)
+	}
+	if _, err := s.ReserveQueuedTurnForPromotion(
+		ctx, conversation, "queued-2", histClock.Add(2*time.Minute)); !errors.Is(err, store.ErrQueuedTurnNotAvailable) {
+		t.Fatalf("second reservation error = %v, want ErrQueuedTurnNotAvailable", err)
+	}
+
+	next, err := s.NextQueuedTurn(ctx, conversation)
+	if err != nil {
+		t.Fatalf("next queued turn: %v", err)
+	}
+	if next.TurnID != "queued-1" {
+		t.Fatalf("queue head = %q, want queued-1", next.TurnID)
+	}
+	if err := s.SettleTurnByID(ctx, "queued-1", domain.TurnStateCompleted, "", histClock); err != nil {
+		t.Fatalf("remove queue head: %v", err)
+	}
+	next, err = s.NextQueuedTurn(ctx, conversation)
+	if err != nil {
+		t.Fatalf("next queued turn behind reservation: %v", err)
+	}
+	if next.TurnID != "queued-3" {
+		t.Fatalf("queue behind reservation = %q, want queued-3", next.TurnID)
+	}
+
+	if err := s.ReleaseQueuedTurnPromotion(ctx, conversation, "queued-2"); err != nil {
+		t.Fatalf("release reservation: %v", err)
+	}
+	next, err = s.NextQueuedTurn(ctx, conversation)
+	if err != nil {
+		t.Fatalf("next queued turn after release: %v", err)
+	}
+	if next.TurnID != "queued-2" {
+		t.Fatalf("released queue head = %q, want queued-2 in its original order", next.TurnID)
 	}
 }
 

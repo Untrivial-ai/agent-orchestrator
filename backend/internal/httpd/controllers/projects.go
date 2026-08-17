@@ -160,8 +160,8 @@ func decodeJSON(r *http.Request, out any) error {
 }
 
 // decodeJSONStrict rejects request bodies that include keys outside the target
-// type. Used on project add/set-config so a misspelled or removed config field
-// surfaces as a 400 instead of being silently dropped.
+// type. It is used where misspelled or retired fields must surface as a 400
+// instead of being silently dropped.
 func decodeJSONStrict(r *http.Request, out any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()

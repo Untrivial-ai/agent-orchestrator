@@ -12,19 +12,23 @@ import (
 )
 
 const (
-	interfaceTransitionPoll             = 150 * time.Millisecond
-	interfaceTransitionIdleSettle       = 750 * time.Millisecond
-	interfaceTransitionStaleIdleSamples = 3
-	interfaceTransitionStaleIdleLimit   = 5 * time.Second
-	interfaceTransitionOutputLines      = 40
-	interfaceInterruptSettle            = 2 * time.Second
-	interfaceTransitionStopLimit        = 15 * time.Second
-	interfaceTransitionStepLimit        = 45 * time.Second
-	interfaceDeliveryRetry              = 2 * time.Second
-	interfaceDeliveryIdlePoll           = 30 * time.Second
+	interfaceTransitionPoll               = 150 * time.Millisecond
+	interfaceTransitionIdleSettle         = 750 * time.Millisecond
+	interfaceTransitionSurfaceIdleSamples = 3
+	interfaceTransitionStaleIdleLimit     = 5 * time.Second
+	interfaceTransitionOutputLines        = 40
+	interfaceInterruptSettle              = 2 * time.Second
+	interfaceTransitionStopLimit          = 15 * time.Second
+	interfaceTransitionStepLimit          = 45 * time.Second
+	interfaceDeliveryRetry                = 2 * time.Second
+	interfaceDeliveryIdlePoll             = 30 * time.Second
 )
 
-var errDrainQuiescenceUnverified = errors.New("AO could not verify that the terminal was idle after the latest input. The source interface was left untouched; retry after the terminal settles")
+var (
+	errDrainQuiescenceUnverified = errors.New("AO could not verify that the terminal was idle after the latest input. The source interface was left untouched; retry after the terminal settles")
+	errDrainDraftPresent         = errors.New("AO found unsent text in the terminal composer. The source interface was left untouched; submit or clear the draft and retry, or choose Discard draft and switch")
+	errDrainDecisionPending      = errors.New("AO found a provider decision waiting in Terminal. The source interface was left untouched; answer it in Terminal and retry, or choose Cancel request and switch")
+)
 
 // interfaceTransitionStore is optional so the existing narrow Manager Store
 // port and its many focused fakes do not grow methods unrelated to their tests.
@@ -37,12 +41,14 @@ type interfaceTransitionStore interface {
 	ListActiveSessionInterfaceTransitions(context.Context) ([]domain.SessionInterfaceTransition, error)
 	ListDeliverableSessionInterfaceTransitions(context.Context) ([]domain.SessionInterfaceTransition, error)
 	AdvanceSessionInterfaceTransition(context.Context, string, domain.SessionInterfaceTransitionPhase, domain.SessionInterfaceTransitionPhase, string, string, string, time.Time) (bool, error)
+	AcknowledgeSessionInterfaceTransitionNotice(context.Context, domain.SessionID, string, time.Time) (domain.SessionInterfaceTransition, bool, error)
 	EnqueueSessionInterfaceTransitionMessage(context.Context, string, string, string, time.Time) error
 	ListPendingSessionInterfaceTransitionMessages(context.Context, string) ([]domain.SessionInterfaceTransitionMessage, error)
 	MarkSessionInterfaceTransitionMessageDelivered(context.Context, int64, time.Time) error
 }
 
 type chatHandoffLauncher interface {
+	ArmChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	PrepareChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	AbortChatHandoff(domain.SessionID)
 }
@@ -85,11 +91,16 @@ func (m *Manager) InterfaceTransitionStatus(
 	if rec.IsTerminated {
 		status.ReasonCode = "SESSION_TERMINATED"
 		status.Reason = "Terminated sessions must be restored before switching interfaces."
+	} else if target == domain.SessionModeChat && (m.chat == nil || !m.chat.SupportsChat(rec.Harness)) {
+		status.ReasonCode = "CHAT_UNSUPPORTED"
+		status.Reason = fmt.Sprintf("%s does not support Chat UI.", rec.Harness)
 	} else if _, _, err := m.nativeConversationID(ctx, rec); err != nil {
 		if errors.Is(err, ErrInterfaceHandoffUnsupported) {
 			status.ReasonCode = "INTERFACE_HANDOFF_UNSUPPORTED"
 		} else if errors.Is(err, ErrNativeConversationMissing) {
 			status.ReasonCode = "NATIVE_SESSION_MISSING"
+		} else if errors.Is(err, ErrNativeConversationUnverified) {
+			status.ReasonCode = "NATIVE_SESSION_UNVERIFIED"
 		} else {
 			return InterfaceTransitionStatus{}, err
 		}
@@ -163,6 +174,27 @@ func (m *Manager) StartInterfaceTransition(
 	if !created {
 		return transition, ErrInterfaceTransitionInProgress
 	}
+	if source == domain.SessionModeChat {
+		handoff, ok := m.chat.(chatHandoffLauncher)
+		if !ok {
+			err := ErrInterfaceHandoffUnsupported
+			_ = m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionFailed,
+				"SOURCE_FENCE_FAILED", err.Error())
+			return domain.SessionInterfaceTransition{}, err
+		}
+		// This is the acceptance boundary visible to the caller. The transition
+		// must not return while a Chat completion can still promote queued work;
+		// target preflight and provider cancellation happen asynchronously later.
+		if err := handoff.ArmChatHandoff(ctx, id, policy); err != nil {
+			finishErr := m.finishInterfaceTransition(transition.ID,
+				domain.SessionInterfaceTransitionFailed, "SOURCE_FENCE_FAILED", err.Error())
+			if finishErr != nil {
+				return domain.SessionInterfaceTransition{}, errors.Join(err,
+					fmt.Errorf("record source fence failure: %w", finishErr))
+			}
+			return domain.SessionInterfaceTransition{}, err
+		}
+	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	run := &interfaceTransitionRun{cancel: cancel, done: make(chan struct{})}
@@ -225,6 +257,42 @@ func (m *Manager) CancelInterfaceTransition(ctx context.Context, id domain.Sessi
 	return nil
 }
 
+// AcknowledgeInterfaceTransitionNotice records that a failed/recovered handoff
+// notice has been seen without deleting the transition's audit history. Both
+// ids are checked so a stale client cannot accidentally dismiss a newer row or
+// a transition owned by another session.
+func (m *Manager) AcknowledgeInterfaceTransitionNotice(
+	ctx context.Context,
+	id domain.SessionID,
+	transitionID string,
+) (domain.SessionInterfaceTransition, error) {
+	store, ok := m.store.(interfaceTransitionStore)
+	if !ok {
+		return domain.SessionInterfaceTransition{}, ErrInterfaceHandoffUnsupported
+	}
+	transition, found, err := store.GetSessionInterfaceTransition(ctx, transitionID)
+	if err != nil {
+		return domain.SessionInterfaceTransition{}, err
+	}
+	if !found || transition.SessionID != id {
+		return domain.SessionInterfaceTransition{}, ErrInterfaceTransitionNotFound
+	}
+	if transition.Phase != domain.SessionInterfaceTransitionFailed &&
+		transition.Phase != domain.SessionInterfaceTransitionRecovery {
+		return domain.SessionInterfaceTransition{}, ErrInterfaceTransitionNoticeNotAcknowledgeable
+	}
+	acknowledged, changed, err := store.AcknowledgeSessionInterfaceTransitionNotice(
+		ctx, id, transitionID, m.clock(),
+	)
+	if err != nil {
+		return domain.SessionInterfaceTransition{}, err
+	}
+	if !changed {
+		return domain.SessionInterfaceTransition{}, ErrInterfaceTransitionNoticeNotAcknowledgeable
+	}
+	return acknowledged, nil
+}
+
 func (m *Manager) runInterfaceTransition(
 	ctx context.Context,
 	transition domain.SessionInterfaceTransition,
@@ -240,9 +308,13 @@ func (m *Manager) runInterfaceTransition(
 		m.transitionMu.Unlock()
 	}()
 
-	sourcePrepared := false
+	// Chat was armed synchronously before StartInterfaceTransition returned. TUI
+	// installs its raw-input gate below because that gate is tied to this worker's
+	// lifetime. Any failure before Chat stops must therefore reopen Chat intake.
+	sourcePrepared := transition.SourceMode == domain.SessionModeChat
 	sourceStopped := false
 	modeChanged := false
+	var sourceRuntimeHandle ports.RuntimeHandle
 	fail := func(code string, cause error) {
 		if sourcePrepared && !sourceStopped {
 			m.abortSourceHandoff(transition)
@@ -253,7 +325,7 @@ func (m *Manager) runInterfaceTransition(
 			return
 		}
 		if sourceStopped {
-			m.rollbackInterfaceTransition(transition, modeChanged, code, cause)
+			m.rollbackInterfaceTransition(transition, sourceRuntimeHandle, modeChanged, code, cause)
 			return
 		}
 		_ = m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionFailed, code, cause.Error())
@@ -275,6 +347,7 @@ func (m *Manager) runInterfaceTransition(
 		fail("SESSION_CHANGED", fmt.Errorf("session changed before the interface switch could start"))
 		return
 	}
+	sourceRuntimeHandle = runtimeHandle(rec.Metadata)
 	// Claim the raw terminal input path before target preflight or the first idle
 	// observation. Without this gate a mux client can submit work after the TUI is
 	// observed idle but before Destroy, and that accepted work is then killed by
@@ -293,14 +366,55 @@ func (m *Manager) runInterfaceTransition(
 	}
 	if err := m.prepareSourceHandoff(ctx, rec, transition.Policy, lastTerminalInputAt); err != nil {
 		code := "SOURCE_QUIESCE_FAILED"
-		if errors.Is(err, errDrainQuiescenceUnverified) {
+		switch {
+		case errors.Is(err, errDrainQuiescenceUnverified):
 			code = "DRAIN_QUIESCENCE_UNVERIFIED"
+		case errors.Is(err, errDrainDraftPresent):
+			code = "DRAIN_DRAFT_PRESENT"
+		case errors.Is(err, errDrainDecisionPending):
+			code = "DRAIN_DECISION_PENDING"
 		}
 		fail(code, err)
 		return
 	}
 	sourcePrepared = true
-	if err := m.moveInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionSourceStopping, "", ""); err != nil {
+	// A promptless TUI may not create a provider conversation until its first
+	// submitted turn. When the transition was admitted from positive initial-
+	// composer proof, resolve again after input is frozen and drain is complete.
+	// This closes the race where a turn starts between the admission snapshot and
+	// the terminal input gate: the new native id is transferred, or the switch
+	// fails before stopping the source if identity still cannot be proven.
+	if transition.SourceMode == domain.SessionModeTUI && transition.NativeConversationID == "" {
+		current, found, refreshErr := m.store.GetSession(ctx, rec.ID)
+		if refreshErr != nil || !found {
+			if refreshErr == nil {
+				refreshErr = ErrNotFound
+			}
+			fail("SESSION_NOT_FOUND", refreshErr)
+			return
+		}
+		if current.Metadata.RuntimeLaunchID != rec.Metadata.RuntimeLaunchID ||
+			domain.NormalizeSessionMode(current.Mode) != transition.SourceMode {
+			fail("SESSION_CHANGED", fmt.Errorf("session changed while the interface switch was draining"))
+			return
+		}
+		resolvedID, handoff, refreshErr := m.nativeConversationID(ctx, current)
+		if refreshErr == nil {
+			resolvedID, refreshErr = m.persistedNativeConversationID(ctx, current, resolvedID, handoff)
+		}
+		if refreshErr != nil {
+			fail(interfaceTransitionErrorCode(refreshErr), refreshErr)
+			return
+		}
+		transition.NativeConversationID = resolvedID
+	}
+	if err := m.moveInterfaceTransitionWithNativeID(
+		transition.ID,
+		domain.SessionInterfaceTransitionSourceStopping,
+		transition.NativeConversationID,
+		"",
+		"",
+	); err != nil {
 		fail("TRANSITION_STATE_FAILED", err)
 		return
 	}
@@ -339,8 +453,15 @@ func (m *Manager) runInterfaceTransition(
 		fail("TRANSITION_STATE_FAILED", err)
 		return
 	}
-	if err := m.startTransitionTarget(ctx, rec.ID, transition.NativeConversationID == ""); err != nil {
-		fail("TARGET_RESUME_FAILED", err)
+	if err := m.startTransitionTarget(ctx, rec.ID, transition.NativeConversationID == "", true); err != nil {
+		code := "TARGET_RESUME_FAILED"
+		switch {
+		case errors.Is(err, ports.ErrChatHistoryUnavailable):
+			code = "TARGET_HISTORY_UNAVAILABLE"
+		case errors.Is(err, ports.ErrChatHistoryUnsettled):
+			code = "TARGET_HISTORY_UNSETTLED"
+		}
+		fail(code, err)
 		return
 	}
 	if err := m.moveInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionActivating, "", ""); err != nil {
@@ -357,6 +478,14 @@ func (m *Manager) runInterfaceTransition(
 	}
 }
 
+// nativeConversationID resolves the adapter's native conversation id for the
+// session's current interface. An empty id is only safe to pass through when
+// the adapter can distinguish a fresh TUI from a real conversation (it
+// implements AgentInterfaceHandoffHistoryProbe) AND the session has no
+// hook-derived conversation history. If any conversation metadata is set but
+// the native id is empty, the hooks fired but failed to capture the id — a
+// bug state where fresh-starting would silently discard the conversation, so
+// hard-block with ErrNativeConversationMissing instead.
 func (m *Manager) nativeConversationID(
 	ctx context.Context,
 	rec domain.SessionRecord,
@@ -370,30 +499,98 @@ func (m *Manager) nativeConversationID(
 		return "", nil, fmt.Errorf("%w: %s has not declared compatible TUI and Chat identities",
 			ErrInterfaceHandoffUnsupported, rec.Harness)
 	}
+	mode := domain.NormalizeSessionMode(rec.Mode)
 	ref := ports.SessionRef{
 		ID: string(rec.ID), WorkspacePath: rec.Metadata.WorkspacePath,
 		Metadata: map[string]string{ports.MetadataKeyAgentSessionID: rec.Metadata.AgentSessionID},
 	}
-	id, ok, err := handoff.NativeConversationID(ctx, ref, domain.NormalizeSessionMode(rec.Mode), rec.Metadata.ProviderConversationID)
+	id, ok, err := handoff.NativeConversationID(ctx, ref, mode, rec.Metadata.ProviderConversationID)
 	if err != nil {
 		return "", handoff, err
 	}
 	id = strings.TrimSpace(id)
 	if !ok || id == "" {
+		if m.nativeConversationNotStarted(ctx, rec, agent) {
+			return "", handoff, nil
+		}
 		return "", handoff, fmt.Errorf("%w for %s", ErrNativeConversationMissing, rec.Harness)
+	}
+	// AgentSessionID is also the resume hint used to launch a TUI, so it can
+	// legitimately outlive the runtime generation that originally reported it.
+	// That makes it insufficient as handoff proof by itself: a failed resume may
+	// leave a fresh visible TUI beside the old durable id. Only a native-id hook
+	// accepted under this exact launch generation proves the two still match.
+	if mode == domain.SessionModeTUI {
+		launchID := strings.TrimSpace(rec.Metadata.RuntimeLaunchID)
+		identityLaunchID := strings.TrimSpace(rec.Metadata.AgentSessionIDLaunchID)
+		if launchID == "" || identityLaunchID != launchID {
+			return "", handoff, fmt.Errorf("%w for %s", ErrNativeConversationUnverified, rec.Harness)
+		}
 	}
 	return id, handoff, nil
 }
 
-// persistedNativeConversationID turns an adapter's reserved-but-empty native
-// id into the transition's explicit "start fresh" sentinel. Adapters that do
-// not expose the optional probe retain the conservative resume-only behavior.
+// nativeConversationNotStarted is the only evidence that may turn a missing
+// provider history into an intentional fresh handoff. A missing file or a
+// reserved native id is not enough: both are also observable when persistence
+// is lagging or broken after real work. The current rendered provider surface
+// must positively identify its untouched initial composer, and AO must have no
+// hook-derived conversation facts that contradict it.
+func (m *Manager) nativeConversationNotStarted(
+	ctx context.Context,
+	rec domain.SessionRecord,
+	agent ports.Agent,
+) bool {
+	if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeTUI ||
+		rec.Metadata.LatestUserPrompt != "" ||
+		rec.Metadata.LatestAssistantUpdate != "" ||
+		rec.Metadata.NativeTranscriptPath != "" {
+		return false
+	}
+	if _, ok := agent.(ports.AgentInterfaceHandoffHistoryProbe); !ok {
+		return false
+	}
+	return m.terminalProvesNativeConversationNotStarted(ctx, rec, agent)
+}
+
+func (m *Manager) terminalProvesNativeConversationNotStarted(
+	ctx context.Context,
+	rec domain.SessionRecord,
+	agent ports.Agent,
+) bool {
+	inspector, ok := agent.(ports.TerminalSurfaceInspector)
+	if !ok {
+		return false
+	}
+	styled, ok := m.runtime.(ports.StyledTerminalOutputReader)
+	if !ok || strings.TrimSpace(rec.Metadata.RuntimeHandleID) == "" {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, interfaceInterruptSettle)
+	defer cancel()
+	output, err := styled.GetStyledOutput(
+		probeCtx,
+		ports.RuntimeHandle{ID: rec.Metadata.RuntimeHandleID},
+		interfaceTransitionOutputLines,
+	)
+	if err != nil {
+		return false
+	}
+	return inspector.InspectTerminalSurface(output).NativeConversationNotStarted
+}
+
+// persistedNativeConversationID verifies that a reserved native id has durable
+// provider history behind it. A failed lookup is not proof of freshness: only
+// positive untouched-composer evidence may produce the explicit fresh sentinel.
 func (m *Manager) persistedNativeConversationID(
 	ctx context.Context,
 	rec domain.SessionRecord,
 	id string,
 	handoff ports.AgentInterfaceHandoff,
 ) (string, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", nil
+	}
 	probe, ok := handoff.(ports.AgentInterfaceHandoffHistoryProbe)
 	if !ok {
 		return id, nil
@@ -414,7 +611,11 @@ func (m *Manager) persistedNativeConversationID(
 		return "", fmt.Errorf("inspect native conversation %s: %w", id, err)
 	}
 	if !exists {
-		return "", nil
+		agent, registered := m.agents.Agent(rec.Harness)
+		if registered && m.nativeConversationNotStarted(ctx, rec, agent) {
+			return "", nil
+		}
+		return "", fmt.Errorf("%w for %s", ErrNativeConversationMissing, rec.Harness)
 	}
 	return id, nil
 }
@@ -491,14 +692,24 @@ func (m *Manager) prepareSourceHandoff(
 		if rec.Activity.State == domain.ActivityExited {
 			return nil
 		}
-		if !tuiIdleAfterInput(rec, lastTerminalInputAt) {
-			interrupter, ok := m.runtime.(runtimeInterrupter)
-			if !ok {
-				return fmt.Errorf("runtime cannot interrupt a live terminal controller")
-			}
-			if err := interrupter.Interrupt(ctx, handle); err != nil {
-				return err
-			}
+		interrupter, ok := m.runtime.(runtimeInterrupter)
+		if !ok {
+			return fmt.Errorf("runtime cannot interrupt a live terminal controller")
+		}
+		// Explicit Stop now is authoritative even when the durable activity row
+		// says idle: approval screens can be user-blocked while that row is idle.
+		// Sending the interrupt is what makes “Cancel request and switch” true.
+		if err := interrupter.Interrupt(ctx, handle); err != nil {
+			return err
+		}
+		// Let the provider observe Ctrl-C and begin flushing its native history
+		// before an already-idle activity row can end the loop immediately.
+		initialSettle := time.NewTimer(m.interfaceTransition.pollInterval)
+		select {
+		case <-ctx.Done():
+			initialSettle.Stop()
+			return ctx.Err()
+		case <-initialSettle.C:
 		}
 		// Give the provider a short, bounded window to flush its native transcript
 		// after Ctrl-C. The subsequent Destroy is still authoritative, so a stale
@@ -529,14 +740,24 @@ func (m *Manager) prepareSourceHandoff(
 	}
 
 	var detector ports.TerminalActivityDetector
+	var surfaceInspector ports.TerminalSurfaceInspector
+	var emptyComposerDetector ports.EmptyComposerDetector
 	if agent, ok := m.agents.Agent(rec.Harness); ok {
 		detector, _ = agent.(ports.TerminalActivityDetector)
+		surfaceInspector, _ = agent.(ports.TerminalSurfaceInspector)
+		emptyComposerDetector, _ = agent.(ports.EmptyComposerDetector)
 	}
+	styledOutput, _ := m.runtime.(ports.StyledTerminalOutputReader)
+	// Surface proof is a joint capability: the adapter must understand its TUI
+	// and the runtime must provide a rendered viewport with the styling that
+	// distinguishes provider chrome from human-authored text. Runtimes without
+	// that capability retain the causally-fresh idle / legacy fallback below.
+	surfaceProofAvailable := surfaceInspector != nil && styledOutput != nil
 	ticker := time.NewTicker(m.interfaceTransition.pollInterval)
 	defer ticker.Stop()
 	idleSince := time.Time{}
 	idleSamples := 0
-	staleIdleSince := time.Time{}
+	unverifiedIdleSince := time.Time{}
 	for {
 		current, ok, err := m.store.GetSession(ctx, rec.ID)
 		if err != nil {
@@ -548,40 +769,107 @@ func (m *Manager) prepareSourceHandoff(
 		if current.Activity.State == domain.ActivityExited {
 			return nil
 		}
+		switch current.Activity.State {
+		case domain.ActivityWaitingInput, domain.ActivityBlocked:
+			// This typed provider state outranks terminal-screen heuristics. The
+			// input gate is already closed, so continuing to wait would make the
+			// decision impossible to answer and deadlock the drain on runtimes
+			// without styled current-screen capture.
+			return errDrainDecisionPending
+		}
 		now := time.Now()
-		idleProven := tuiIdleAfterInput(current, lastTerminalInputAt)
-		staleIdle := current.Activity.State == domain.ActivityIdle && !idleProven
+		durableIdleProven := tuiIdleAfterInput(current, lastTerminalInputAt)
+		idleProven := durableIdleProven && !surfaceProofAvailable
+		unverifiedIdle := current.Activity.State == domain.ActivityIdle && !idleProven
 		probeCtx := ctx
 		var cancelProbe context.CancelFunc
-		if staleIdle {
-			if staleIdleSince.IsZero() {
-				staleIdleSince = now
+		if unverifiedIdle {
+			if unverifiedIdleSince.IsZero() {
+				unverifiedIdleSince = now
 			}
-			probeCtx, cancelProbe = context.WithDeadline(ctx, staleIdleSince.Add(m.interfaceTransition.staleIdleLimit))
-			// A screen can still show the idle composer briefly after Enter was
-			// accepted. Give the last input a full settle window before treating
-			// adapter markers as evidence, then require repeated samples below.
-			inputQuiet := lastTerminalInputAt.IsZero() ||
-				!now.Before(lastTerminalInputAt.Add(m.interfaceTransition.idleSettle))
-			if detector != nil && inputQuiet {
-				output, outputErr := m.runtime.GetOutput(probeCtx, handle, interfaceTransitionOutputLines)
-				now = time.Now()
-				if outputErr == nil {
-					state, authoritative := detector.DetectTerminalActivity(output)
-					idleProven = authoritative && state == domain.ActivityIdle
+			probeCtx, cancelProbe = context.WithDeadline(ctx, unverifiedIdleSince.Add(m.interfaceTransition.staleIdleLimit))
+		}
+		// A screen can still show the idle composer briefly after Enter was
+		// accepted. Give the last input a full settle window before treating
+		// adapter markers as evidence, then require repeated samples below.
+		inputQuiet := lastTerminalInputAt.IsZero() ||
+			!now.Before(lastTerminalInputAt.Add(m.interfaceTransition.idleSettle))
+		surfaceKnownBusy := false
+		if surfaceProofAvailable && inputQuiet && styledOutput != nil {
+			output, outputErr := styledOutput.GetStyledOutput(probeCtx, handle, interfaceTransitionOutputLines)
+			now = time.Now()
+			if errors.Is(outputErr, ports.ErrStyledTerminalOutputUnavailable) {
+				// Detached ConPTY hosts survive daemon/app upgrades. A host from a
+				// protocol version without current-screen support is a per-handle
+				// capability miss, so retain the same durable/legacy fallback as a
+				// runtime that never implemented styled output at all.
+				surfaceProofAvailable = false
+				idleProven = durableIdleProven
+				unverifiedIdle = current.Activity.State == domain.ActivityIdle && !idleProven
+			} else if outputErr == nil {
+				observation := surfaceInspector.InspectTerminalSurface(output)
+				switch {
+				case observation.Work == ports.TerminalSurfaceWorkWaitingInput,
+					observation.Work == ports.TerminalSurfaceWorkBlocked:
+					// Provider-owned approval and input requests are not composer
+					// drafts. The terminal input gate is closed while draining, so
+					// waiting here would also make the request impossible to answer.
+					// Abort the drain and return control to the source interface.
+					if cancelProbe != nil {
+						cancelProbe()
+					}
+					return errDrainDecisionPending
+				case observation.Composer == ports.TerminalComposerDraft &&
+					current.Activity.State == domain.ActivityIdle:
+					// A positively identified draft is sufficient to preserve the
+					// source. Work markers are provider chrome heuristics and may
+					// also occur in transcript or draft text, so they cannot hide
+					// unsent input when the durable provider state is idle.
+					if cancelProbe != nil {
+						cancelProbe()
+					}
+					return errDrainDraftPresent
+				case current.Activity.State == domain.ActivityIdle &&
+					observation.Work == ports.TerminalSurfaceWorkIdle &&
+					observation.Composer == ports.TerminalComposerEmpty:
+					idleProven = true
+				case observation.Work == ports.TerminalSurfaceWorkActive:
+					surfaceKnownBusy = true
 				}
 			}
-		} else {
-			// A reported active turn or user-paced decision is allowed to wait
-			// without a deadline. A real state change resets prior ambiguity.
-			staleIdleSince = time.Time{}
+		}
+		if !surfaceProofAvailable && unverifiedIdle && detector != nil && inputQuiet {
+			// Compatibility path for terminal activity adapters that have not yet
+			// adopted the richer surface observation capability.
+			if output, outputErr := m.runtime.GetOutput(probeCtx, handle, interfaceTransitionOutputLines); outputErr == nil {
+				now = time.Now()
+				state, authoritative := detector.DetectTerminalActivity(output)
+				idleProven = authoritative && state == domain.ActivityIdle
+				if idleProven && emptyComposerDetector != nil {
+					// The legacy activity contract cannot carry draft state. At
+					// this destructive boundary, an adapter that can separately
+					// prove composer emptiness must do so before idle is accepted.
+					idleProven = emptyComposerDetector.ComposerIsEmpty(output)
+				}
+			}
+		}
+		if current.Activity.State != domain.ActivityIdle || surfaceKnownBusy {
+			// Active work may wait without a deadline. A recognized current-screen
+			// state resets prior ambiguity; decisions returned above instead because
+			// the closed input gate would prevent the user from answering them.
+			unverifiedIdleSince = time.Time{}
+			if surfaceKnownBusy && cancelProbe != nil {
+				cancelProbe()
+				cancelProbe = nil
+				probeCtx = ctx
+			}
 		}
 		if idleProven {
 			idleSamples++
 			if idleSince.IsZero() {
 				idleSince = now
 			} else if now.Sub(idleSince) >= m.interfaceTransition.idleSettle &&
-				(!staleIdle || idleSamples >= interfaceTransitionStaleIdleSamples) {
+				(!surfaceProofAvailable && durableIdleProven || idleSamples >= interfaceTransitionSurfaceIdleSamples) {
 				if cancelProbe != nil {
 					cancelProbe()
 				}
@@ -599,10 +887,11 @@ func (m *Manager) prepareSourceHandoff(
 			return nil
 		}
 		now = time.Now()
-		// Bound the whole contradictory stale-idle regime, not just consecutive
-		// unknown captures. Partial terminal redraws may alternate between idle
+		// Bound the whole contradictory idle regime, not just consecutive
+		// unknown captures. Partial terminal redraws may alternate between safe
 		// and ambiguous forever; neither outcome is enough to stop the source.
-		if staleIdle && now.Sub(staleIdleSince) >= m.interfaceTransition.staleIdleLimit {
+		if current.Activity.State == domain.ActivityIdle && !idleProven && !surfaceKnownBusy &&
+			!unverifiedIdleSince.IsZero() && now.Sub(unverifiedIdleSince) >= m.interfaceTransition.staleIdleLimit {
 			return errDrainQuiescenceUnverified
 		}
 		select {
@@ -676,7 +965,9 @@ func (m *Manager) stopSourceControllerConclusive(rec domain.SessionRecord) error
 	return fmt.Errorf("could not prove the source controller stopped after retry: %w", errors.Join(failures...))
 }
 
-func (m *Manager) startTransitionTarget(ctx context.Context, id domain.SessionID, fresh bool) error {
+func (m *Manager) startTransitionTarget(ctx context.Context, id domain.SessionID, fresh, requireNativeHistory bool) error {
+	ctx, cancel := context.WithTimeout(ctx, interfaceTransitionStepLimit)
+	defer cancel()
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		return err
@@ -689,16 +980,19 @@ func (m *Manager) startTransitionTarget(ctx context.Context, id domain.SessionID
 		return err
 	}
 	ws := workspaceInfo(rec)
-	if fresh {
-		_, err = m.relaunchSessionFresh(ctx, "switch interface", rec, project, ws, nil)
-	} else {
-		_, err = m.relaunchSession(ctx, "switch interface", rec, project, ws, nil)
-	}
+	// A genuinely fresh target has nothing to replay. Every resumed TUI -> Chat
+	// handoff must import native history before activation; rollback and ordinary
+	// daemon restore deliberately use the normal context-resume policy.
+	_, err = m.relaunchSessionWithPolicy(
+		ctx, "switch interface", rec, project, ws, nil,
+		fresh, requireNativeHistory && !fresh,
+	)
 	return err
 }
 
 func (m *Manager) rollbackInterfaceTransition(
 	transition domain.SessionInterfaceTransition,
+	sourceRuntimeHandle ports.RuntimeHandle,
 	modeChanged bool,
 	code string,
 	cause error,
@@ -729,7 +1023,18 @@ func (m *Manager) rollbackInterfaceTransition(
 			return
 		}
 	}
-	if err := m.startTransitionTarget(ctx, transition.SessionID, transition.NativeConversationID == ""); err != nil {
+	// A conclusive liveness probe can prove the source process exited even when
+	// its first teardown timed out. Clear any stale runtime registration using
+	// the handle captured before the controller epoch erased it, or rollback can
+	// fail to recreate the TUI with "session already exists" on ConPTY.
+	if transition.SourceMode != domain.SessionModeChat && sourceRuntimeHandle.ID != "" {
+		if err := m.runtime.Destroy(ctx, sourceRuntimeHandle); err != nil {
+			_ = m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionRecovery,
+				"RECOVERY_REQUIRED", cause.Error()+"; source runtime cleanup: "+err.Error())
+			return
+		}
+	}
+	if err := m.startTransitionTarget(ctx, transition.SessionID, transition.NativeConversationID == "", false); err != nil {
 		_ = m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionRecovery,
 			"RECOVERY_REQUIRED", cause.Error()+"; source restore: "+err.Error())
 		return
@@ -740,6 +1045,15 @@ func (m *Manager) rollbackInterfaceTransition(
 func (m *Manager) moveInterfaceTransition(
 	id string,
 	next domain.SessionInterfaceTransitionPhase,
+	errorCode, errorDetail string,
+) error {
+	return m.moveInterfaceTransitionWithNativeID(id, next, "", errorCode, errorDetail)
+}
+
+func (m *Manager) moveInterfaceTransitionWithNativeID(
+	id string,
+	next domain.SessionInterfaceTransitionPhase,
+	nativeConversationID string,
 	errorCode, errorDetail string,
 ) error {
 	store, ok := m.store.(interfaceTransitionStore)
@@ -759,8 +1073,11 @@ func (m *Manager) moveInterfaceTransition(
 		if current.Phase.Terminal() {
 			return fmt.Errorf("transition %s is already %s", id, current.Phase)
 		}
+		if nativeConversationID == "" {
+			nativeConversationID = current.NativeConversationID
+		}
 		moved, err := store.AdvanceSessionInterfaceTransition(ctx, id, current.Phase, next,
-			current.NativeConversationID, errorCode, errorDetail, m.clock())
+			nativeConversationID, errorCode, errorDetail, m.clock())
 		if err != nil {
 			return err
 		}
@@ -1006,9 +1323,10 @@ func (m *Manager) hasActiveInterfaceTransition(ctx context.Context, id domain.Se
 }
 
 // recoverInterruptedInterfaceTransitions closes every durable handoff left
-// active by a daemon exit. The session row is the commit point, so normal
-// Reconcile can safely adopt or restore whichever mode that row names. Queued
-// coordination messages are returned for delivery after controller recovery.
+// active by a daemon exit. A TUI -> Chat transition whose mode commit landed is
+// rolled back first: ordinary Chat restore is context-only and cannot satisfy
+// the handoff's mandatory replay barrier. Reconcile can then restore the source
+// TUI, and a later retry performs native replay again idempotently.
 func (m *Manager) recoverInterruptedInterfaceTransitions(
 	ctx context.Context,
 ) ([]domain.SessionInterfaceTransition, error) {
@@ -1023,6 +1341,32 @@ func (m *Manager) recoverInterruptedInterfaceTransitions(
 	for i := range active {
 		transition := &active[i]
 		detail := "The daemon restarted during the interface switch; AO recovered the session from its last committed mode."
+		if transition.SourceMode == domain.SessionModeTUI && transition.TargetMode == domain.SessionModeChat {
+			rec, found, readErr := m.store.GetSession(ctx, transition.SessionID)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if found && !rec.IsTerminated && domain.NormalizeSessionMode(rec.Mode) == transition.TargetMode {
+				if m.lcm == nil {
+					return nil, fmt.Errorf("recover transition %s: lifecycle manager is unavailable", transition.ID)
+				}
+				changed, rollbackErr := m.lcm.CommitControllerEpoch(
+					ctx,
+					transition.SessionID,
+					transition.TargetMode,
+					transition.SourceMode,
+					transition.NativeConversationID,
+					transition.NativeConversationID == "",
+				)
+				if rollbackErr != nil {
+					return nil, fmt.Errorf("recover transition %s source mode: %w", transition.ID, rollbackErr)
+				}
+				if !changed {
+					return nil, fmt.Errorf("recover transition %s source mode: session changed", transition.ID)
+				}
+				detail = "The daemon restarted during the interface switch; AO restored Terminal so native history can be replayed safely on retry."
+			}
+		}
 		moved, err := store.AdvanceSessionInterfaceTransition(
 			ctx,
 			transition.ID,
@@ -1067,6 +1411,8 @@ func interfaceTransitionErrorCode(err error) string {
 		return "TARGET_AUTH_REQUIRED"
 	case errors.Is(err, ErrNativeConversationMissing):
 		return "NATIVE_SESSION_MISSING"
+	case errors.Is(err, ErrNativeConversationUnverified):
+		return "NATIVE_SESSION_UNVERIFIED"
 	default:
 		return "TARGET_PREFLIGHT_FAILED"
 	}

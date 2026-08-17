@@ -1,6 +1,6 @@
 import { clearConfig } from "./config";
 import { clearOnboardingSkipped } from "./onboardingStore";
-import { unregisterFromPush } from "./push";
+import { unpairFromServer } from "./push";
 
 // "Disconnect & forget server" — the inverse of pairing. Until this existed
 // there was no way to un-pair a phone at all: clearing the host by hand left the
@@ -12,7 +12,7 @@ import { unregisterFromPush } from "./push";
 // copy, doing it first also means a failure there is queued for retry before we
 // throw the credentials away.
 //
-// The `finally` is the point, not a formality. `unregisterFromPush` catches its
+// The `finally` is the point, not a formality. `unpairFromServer` catches its
 // *network* failures, so a dead daemon is already handled — but it also does
 // unguarded SecureStore writes (clearRegistration, savePendingUnregisters), and
 // any of those throwing used to abort the disconnect with the host and password
@@ -20,7 +20,7 @@ import { unregisterFromPush } from "./push";
 // credentials behind: whatever happens upstream, the config gets cleared.
 export async function forgetServer(): Promise<void> {
 	try {
-		await unregisterFromPush();
+		await unpairFromServer();
 	} finally {
 		await clearConfig();
 		// Re-arm onboarding: a user with no server should be offered the pairing

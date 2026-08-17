@@ -11,8 +11,12 @@ Claim a PR while spawning or attach it later:
 
 ```bash
 ao spawn --project my-app --name review-fix --claim-pr 42
+ao session claim-pr 42
+# From outside the worker, target it explicitly:
 ao session claim-pr ao-123 42
 ```
+
+Inside a worker, the one-argument form reads the target session from `AO_SESSION_ID`.
 
 PR ownership prevents multiple active workers from silently driving the same pull request. Add `--no-takeover` when a conflicting owner must be treated as an error.
 

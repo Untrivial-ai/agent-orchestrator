@@ -13,7 +13,9 @@ describe("SessionTopbarPortal", () => {
 			</SessionTopbarProvider>,
 		);
 
-		expect(within(screen.getByTestId("session-topbar-host")).getByText("terminal tabs")).toBeInTheDocument();
+		const host = screen.getByTestId("session-topbar-host");
+		expect(host.classList.contains("workspace-topbar-container")).toBe(true);
+		expect(within(host).getByText("terminal tabs")).not.toBeNull();
 	});
 
 	it("renders inline when a component test has no shell provider", () => {

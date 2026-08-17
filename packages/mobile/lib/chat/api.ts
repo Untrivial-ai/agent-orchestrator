@@ -29,7 +29,8 @@ export { mergeConversationPages } from "./snapshot";
 export type { ConversationPage } from "./snapshot";
 
 const API = "/api/v1";
-export const CHAT_PAGE_SIZE = 200;
+export const CHAT_INITIAL_PAGE_SIZE = 50;
+export const CHAT_HISTORY_PAGE_SIZE = 200;
 
 export type SessionInterfaceTransition = {
 	id: string;
@@ -54,6 +55,7 @@ export type SessionInterfaceTransition = {
 	createdAt: string;
 	updatedAt: string;
 	completedAt?: string;
+	noticeAcknowledgedAt?: string;
 };
 
 export type SessionInterfaceTransitionStatus = {
@@ -95,6 +97,20 @@ export async function cancelSessionInterfaceTransition(
 	});
 }
 
+export async function acknowledgeSessionInterfaceTransitionNotice(
+	cfg: ServerConfig,
+	sessionId: string,
+	transitionId: string,
+): Promise<SessionInterfaceTransition> {
+	const res = await apiRequest(
+		cfg,
+		`${API}/sessions/${encodeURIComponent(sessionId)}/interface-transition/${encodeURIComponent(transitionId)}/notice-acknowledgement`,
+		{ method: "PUT" },
+	);
+	const body = (await res.json()) as { transition: SessionInterfaceTransition };
+	return body.transition;
+}
+
 type WireSnapshot = Omit<ConversationSnapshot, "items" | "controller"> & {
 	controller: ControllerState;
 	messages?: ConversationMessage[];
@@ -109,7 +125,8 @@ export async function getConversationPage(
 	sessionId: string,
 	beforeSequence?: number,
 ): Promise<ConversationPage> {
-	const query = new URLSearchParams({ limit: String(CHAT_PAGE_SIZE) });
+	const limit = beforeSequence === undefined ? CHAT_INITIAL_PAGE_SIZE : CHAT_HISTORY_PAGE_SIZE;
+	const query = new URLSearchParams({ limit: String(limit) });
 	if (beforeSequence !== undefined) query.set("beforeSequence", String(beforeSequence));
 	const res = await apiRequest(
 		cfg,
@@ -281,12 +298,12 @@ export async function closeShellTerminal(cfg: ServerConfig, handleId: string): P
  * deliberately because React Native's global fetch does not expose a streaming
  * response body consistently under Hermes.
  */
-export async function streamConversationEvents(
+export async function streamGlobalConversationEvents(
 	cfg: ServerConfig,
-	sessionId: string,
 	after: number,
 	signal: AbortSignal,
 	onEvent: (event: ConversationEvent) => void,
+	onCursorReset?: (cursor: number) => void,
 ): Promise<number> {
 	const res = await expoFetch(`${httpBase(cfg)}${API}/events?after=${Math.max(0, after)}`, {
 		headers: { ...authHeaders(cfg), Accept: "text/event-stream" },
@@ -294,24 +311,39 @@ export async function streamConversationEvents(
 	});
 	if (!res.ok) throw await streamError(res);
 	if (!res.body) throw new Error("The mobile network stack did not provide an event stream");
+	const advertisedAfterHeader = res.headers.get("X-AO-Event-After");
+	const advertisedAfter = advertisedAfterHeader === null ? Number.NaN : Number(advertisedAfterHeader);
+	const effectiveAfter = Number.isSafeInteger(advertisedAfter) && advertisedAfter >= 0
+		? advertisedAfter
+		: after;
+	if (effectiveAfter !== after) onCursorReset?.(effectiveAfter);
 
 	const decoder = new TextDecoder();
 	const reader = res.body.getReader();
 	let buffer = "";
-	let cursor = after;
-	while (!signal.aborted) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		buffer += decoder.decode(value, { stream: true });
-		const split = takeSseFrames(buffer);
-		buffer = split.remainder;
-		for (const frame of split.frames) {
-			const parsed = parseSseFrame(frame);
-			if (parsed) {
-				cursor = Math.max(cursor, parsed.seq);
-				if (parsed.sessionId === sessionId) onEvent(parsed);
+	let cursor = effectiveAfter;
+	try {
+		while (!signal.aborted) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			const split = takeSseFrames(buffer);
+			buffer = split.remainder;
+			for (const frame of split.frames) {
+				const parsed = parseSseFrame(frame);
+				if (parsed) {
+					cursor = Math.max(cursor, parsed.seq);
+					onEvent(parsed);
+				}
 			}
 		}
+	} finally {
+		try {
+			await reader.cancel();
+		} catch {
+			// Aborting the native request can close the reader before cancel runs.
+		}
+		reader.releaseLock();
 	}
 	return cursor;
 }

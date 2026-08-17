@@ -1260,6 +1260,42 @@ func TestSCMObservationUsesRollupStateWhenContextsPaginated(t *testing.T) {
 	}
 }
 
+func TestSCMBatchQueryRequestsStablePullRequestID(t *testing.T) {
+	query, _ := buildSCMBatchQuery([]ports.SCMPRRef{{
+		Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello"},
+		Number: 42,
+	}})
+	if !strings.Contains(query, "number id url") {
+		t.Fatalf("batch query does not request the stable pull request id:\n%s", query)
+	}
+}
+
+func TestSCMObservationCarriesStableIDAndRequestedURLAlias(t *testing.T) {
+	fx := basePRFixture()
+	var pr map[string]any
+	fx.prData(func(m map[string]any) {
+		pr = m
+		m["id"] = "PR_kwDOStable"
+		m["url"] = "https://github.com/new-owner/hello/pull/42"
+	})
+	ref := ports.SCMPRRef{
+		Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "old-owner", Name: "hello", Repo: "old-owner/hello"},
+		Number: 42,
+		URL:    "https://github.com/old-owner/hello/pull/42",
+	}
+
+	obs := scmObservationFromGraphQL(ref, pr)
+	if obs.PR.ProviderID != "PR_kwDOStable" {
+		t.Fatalf("ProviderID = %q, want PR_kwDOStable", obs.PR.ProviderID)
+	}
+	if obs.PR.URLAlias != ref.URL {
+		t.Fatalf("URLAlias = %q, want %s", obs.PR.URLAlias, ref.URL)
+	}
+	if obs.Repo != "new-owner/hello" {
+		t.Fatalf("Repo = %q, want canonical new-owner/hello", obs.Repo)
+	}
+}
+
 func TestSCMMergeabilityBlocksReviewRequiredAndDraft(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -1416,8 +1452,8 @@ func TestFetchReviewThreadsUsesLatestWindowWithoutFallbackWhenOldestResolved(t *
 		if !strings.Contains(string(body), "reviews(last:20, states:[APPROVED,CHANGES_REQUESTED])") {
 			t.Fatalf("review query should fetch decisive review summaries, body=%s", body)
 		}
-		if !strings.Contains(string(body), "submittedAt body author") {
-			t.Fatalf("review query should request the review body, body=%s", body)
+		if !strings.Contains(string(body), "submittedAt body commit") {
+			t.Fatalf("review query should request the review body and commit, body=%s", body)
 		}
 		if !strings.Contains(string(body), "comments(first:5)") {
 			t.Fatalf("review query should cap comments per thread, body=%s", body)
@@ -1432,6 +1468,7 @@ func TestFetchReviewThreadsUsesLatestWindowWithoutFallbackWhenOldestResolved(t *
 					"url":         "https://github.com/o/r/pull/1#pullrequestreview-1",
 					"submittedAt": "2026-06-15T00:00:00Z",
 					"body":        "please address the failing test",
+					"commit":      map[string]any{"oid": "head-sha-1"},
 					"author":      map[string]any{"login": "alice", "__typename": "User"},
 				}}},
 				"reviewThreads": map[string]any{
@@ -1457,7 +1494,7 @@ func TestFetchReviewThreadsUsesLatestWindowWithoutFallbackWhenOldestResolved(t *
 	if len(review.Threads) != 1 || review.Threads[0].ID != "latest-resolved" {
 		t.Fatalf("threads = %#v", review.Threads)
 	}
-	if len(review.Reviews) != 1 || review.Reviews[0].Author != "alice" || review.Reviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || review.Reviews[0].Body != "please address the failing test" {
+	if len(review.Reviews) != 1 || review.Reviews[0].Author != "alice" || review.Reviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || review.Reviews[0].Body != "please address the failing test" || review.Reviews[0].TargetSHA != "head-sha-1" {
 		t.Fatalf("reviews = %#v", review.Reviews)
 	}
 	if len(review.Threads[0].Comments) != 1 || review.Threads[0].Comments[0].URL != "https://github.com/o/r/pull/1#discussion_r1" {

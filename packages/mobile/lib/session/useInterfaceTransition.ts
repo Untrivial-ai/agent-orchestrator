@@ -1,32 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ServerConfig } from "../config";
 import {
+	acknowledgeSessionInterfaceTransitionNotice,
 	cancelSessionInterfaceTransition,
 	getSessionInterfaceTransition,
 	startSessionInterfaceTransition,
-	type SessionInterfaceTransition,
 	type SessionInterfaceTransitionStatus,
 } from "../chat/api";
+import {
+	interfaceTransitionPollInterval,
+	mobileInterfaceTransitionIsActive,
+} from "./interfaceTransition";
 
-const activePhases = new Set<SessionInterfaceTransition["phase"]>([
-	"requested",
-	"preflighting",
-	"draining",
-	"source_stopping",
-	"source_stopped",
-	"target_starting",
-	"activating",
-]);
-
-export function mobileInterfaceTransitionIsActive(transition?: SessionInterfaceTransition): boolean {
-	return Boolean(transition && activePhases.has(transition.phase));
-}
-
-export function mobileInterfaceTransitionIsCancellable(transition?: SessionInterfaceTransition): boolean {
-	return Boolean(
-		transition && ["requested", "preflighting", "draining"].includes(transition.phase),
-	);
-}
+export {
+	mobileInterfaceTransitionIsActive,
+	mobileInterfaceTransitionIsCancellable,
+} from "./interfaceTransition";
 
 export function useInterfaceTransition(
 	cfg: ServerConfig | null,
@@ -37,6 +26,8 @@ export function useInterfaceTransition(
 	const [loading, setLoading] = useState(Boolean(cfg && sessionId));
 	const [starting, setStarting] = useState(false);
 	const [cancelling, setCancelling] = useState(false);
+	const [acknowledgingNotice, setAcknowledgingNotice] = useState(false);
+	const [acknowledgeNoticeError, setAcknowledgeNoticeError] = useState<string>();
 	const [error, setError] = useState<string>();
 	const settledRef = useRef("");
 	const onSettledRef = useRef(onSettled);
@@ -65,8 +56,8 @@ export function useInterfaceTransition(
 	}, [refresh]);
 
 	useEffect(() => {
-		if (!cfg || !sessionId) return;
-		const interval = mobileInterfaceTransitionIsActive(status?.transition) ? 300 : 10_000;
+		const interval = interfaceTransitionPollInterval(status?.transition);
+		if (!cfg || !sessionId || interval === undefined) return;
 		const timer = setInterval(() => void refresh(), interval);
 		return () => clearInterval(timer);
 	}, [cfg, refresh, sessionId, status?.transition?.phase]);
@@ -110,5 +101,43 @@ export function useInterfaceTransition(
 		}
 	}, [cfg, refresh, sessionId]);
 
-	return { status, transition: status?.transition, loading, starting, cancelling, error, start, cancel, refresh };
+	const acknowledgeNotice = useCallback(
+		async (transitionId: string) => {
+			if (!cfg) throw new Error("No AO server configured");
+			setAcknowledgingNotice(true);
+			setAcknowledgeNoticeError(undefined);
+			try {
+				const transition = await acknowledgeSessionInterfaceTransitionNotice(
+					cfg,
+					sessionId,
+					transitionId,
+				);
+				setStatus((current) =>
+					current?.transition?.id === transition.id ? { ...current, transition } : current,
+				);
+			} catch (cause) {
+				const message = cause instanceof Error ? cause.message : String(cause);
+				setAcknowledgeNoticeError(message);
+				throw cause;
+			} finally {
+				setAcknowledgingNotice(false);
+			}
+		},
+		[cfg, sessionId],
+	);
+
+	return {
+		status,
+		transition: status?.transition,
+		loading,
+		starting,
+		cancelling,
+		acknowledgingNotice,
+		error,
+		acknowledgeNoticeError,
+		start,
+		cancel,
+		acknowledgeNotice,
+		refresh,
+	};
 }

@@ -7,6 +7,73 @@ export type ConversationEvent = {
 	createdAt: string;
 };
 
+export type ConversationEventRegistry = {
+	subscribe(sessionId: string, listener: (event: ConversationEvent) => void): () => void;
+	publish(event: ConversationEvent): void;
+};
+
+export function createConversationEventRegistry(): ConversationEventRegistry {
+	const listeners = new Map<string, Set<(event: ConversationEvent) => void>>();
+	return {
+		subscribe(sessionId, listener) {
+			const sessionListeners = listeners.get(sessionId) ?? new Set();
+			sessionListeners.add(listener);
+			listeners.set(sessionId, sessionListeners);
+			return () => {
+				sessionListeners.delete(listener);
+				if (sessionListeners.size === 0) listeners.delete(sessionId);
+			};
+		},
+		publish(event) {
+			if (!event.sessionId) return;
+			for (const listener of listeners.get(event.sessionId) ?? []) listener(event);
+		},
+	};
+}
+
+const CURSOR_PERSIST_DELAY_MS = 500;
+
+export function createCursorPersister(
+	persist: (cursor: number) => void | Promise<void>,
+): { update(cursor: number): void; replace(cursor: number): void; flush(): void } {
+	let latest = 0;
+	let persisted = 0;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+
+	const save = (cursor: number) => {
+		try {
+			const result = persist(cursor);
+			if (result) void result.catch(() => {});
+		} catch {
+			// Cursor persistence is an optimization. Durable replay remains authoritative.
+		}
+	};
+	const commit = () => {
+		timer = undefined;
+		if (latest <= persisted) return;
+		persisted = latest;
+		save(latest);
+	};
+
+	return {
+		update(cursor) {
+			latest = Math.max(latest, cursor);
+			if (!timer) timer = setTimeout(commit, CURSOR_PERSIST_DELAY_MS);
+		},
+		replace(cursor) {
+			if (timer) clearTimeout(timer);
+			timer = undefined;
+			latest = cursor;
+			persisted = cursor;
+			save(cursor);
+		},
+		flush() {
+			if (timer) clearTimeout(timer);
+			commit();
+		},
+	};
+}
+
 /** Pull complete LF or CRLF SSE frames while preserving an incomplete tail. */
 export function takeSseFrames(buffer: string): { frames: string[]; remainder: string } {
 	const frames: string[] = [];
