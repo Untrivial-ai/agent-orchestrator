@@ -31,8 +31,11 @@ const ACP_RUNTIME_NODE_ENTITLEMENTS = [
 	"com.apple.security.cs.allow-unsigned-executable-memory",
 ];
 
-export function macSignOptionsForFile(filePath: string): { entitlements?: string[] } {
-	return filePath.endsWith(ACP_RUNTIME_NODE_PATH)
+export function macSignOptionsForFile(
+	filePath: string,
+	arch: NodeJS.Architecture = process.arch,
+): { entitlements?: string[] } {
+	return arch === "x64" && filePath.endsWith(ACP_RUNTIME_NODE_PATH)
 		? { entitlements: ACP_RUNTIME_NODE_ENTITLEMENTS }
 		: {};
 }
