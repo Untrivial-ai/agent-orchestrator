@@ -568,6 +568,53 @@ func TestWorkspaceIntegrationAutoUsesRequestedRemoteBranchWithoutRemoteHead(t *t
 	}
 }
 
+func TestWorkspaceIntegrationCreateFetchesMissingRemoteBranch(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, filepath.Join(tmp, "source"))
+	origin := gitOutput(t, git, repo, "remote", "get-url", "origin")
+
+	publisher := filepath.Join(tmp, "publisher")
+	run(t, git, "clone", origin, publisher)
+	runGit(t, git, publisher, "config", "user.email", "ao@example.com")
+	runGit(t, git, publisher, "config", "user.name", "Ao Agents")
+	runGit(t, git, publisher, "checkout", "-b", "feature/remote")
+	if err := os.WriteFile(filepath.Join(publisher, "remote.txt"), []byte("remote branch\n"), 0o644); err != nil {
+		t.Fatalf("write remote branch file: %v", err)
+	}
+	runGit(t, git, publisher, "add", "remote.txt")
+	runGit(t, git, publisher, "commit", "-m", "remote branch")
+	runGit(t, git, publisher, "push", "origin", "feature/remote")
+
+	if err := exec.Command(git, "-C", repo, "show-ref", "--verify", "--quiet", "refs/remotes/origin/feature/remote").Run(); err == nil {
+		t.Fatal("test setup unexpectedly fetched origin/feature/remote")
+	}
+
+	ws, err := New(Options{
+		Binary:       git,
+		ManagedRoot:  filepath.Join(tmp, "managed"),
+		RepoResolver: StaticRepoResolver{"proj": repo},
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	info, err := ws.Create(context.Background(), ports.WorkspaceConfig{
+		ProjectID:  "proj",
+		SessionID:  "sess",
+		Branch:     "feature/remote",
+		BaseBranch: "feature/remote",
+	})
+	if err != nil {
+		t.Fatalf("create from unfetched remote branch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(info.Path, "remote.txt")); err != nil {
+		t.Fatalf("fetched remote branch file missing: %v", err)
+	}
+	if err := ws.Destroy(context.Background(), info); err != nil {
+		t.Fatalf("destroy: %v", err)
+	}
+}
+
 func TestWorkspaceIntegrationRequestedRemoteBranchKeepsDefaultComparisonBase(t *testing.T) {
 	git := requireGit(t)
 	for _, tc := range []struct {
