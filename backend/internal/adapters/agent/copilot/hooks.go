@@ -67,23 +67,25 @@ type copilotHookSpec struct {
 }
 
 // copilotManagedHooks is the source of truth for the hooks AO installs. The AO
-// sub-command names (session-start, user-prompt-submit, permission-request,
-// stop) are exactly what DeriveActivityState in activity.go switches on.
+// sub-command names (session-start, user-prompt-submit, tool-use, stop) are
+// exactly what StandardDeriveActivityState switches on.
 //
 // Native event names use Copilot's camelCase form, taken verbatim from
 // https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks
 // (sessionStart, sessionEnd, userPromptSubmitted, preToolUse, postToolUse,
 // errorOccurred, agentStop). Copilot does not document a "permissionRequest"
-// event — the closest signal that AO's permission-request sub-command can
-// piggyback on is preToolUse, which fires before any tool invocation, including
-// the ones that would otherwise prompt the user for approval. This is a
-// many-to-one collapse: every preToolUse currently produces ActivityWaitingInput
-// via the permission-request sub-command. agentStop is the per-turn completion
-// signal and maps to the "stop" sub-command (turn end → idle).
+// event. preToolUse fires before EVERY tool invocation — not just ones that
+// prompt the user for approval, and never at all when Copilot runs with
+// --allow-all-tools / --allow-all (see appendApprovalFlags), where it auto-runs
+// every tool. Routing it to permission-request therefore pinned an
+// actively-working session to the sticky waiting_input state, masking the
+// session's PR-derived status and firing spurious "needs input" notifications.
+// preToolUse means the agent is about to work, so it maps to tool-use (active).
+// agentStop is the per-turn completion signal and maps to "stop" (turn → idle).
 var copilotManagedHooks = []copilotHookSpec{
 	{Event: "sessionStart", Command: "session-start"},
 	{Event: "userPromptSubmitted", Command: "user-prompt-submit"},
-	{Event: "preToolUse", Command: "permission-request"},
+	{Event: "preToolUse", Command: "tool-use"},
 	{Event: "agentStop", Command: "stop"},
 }
 

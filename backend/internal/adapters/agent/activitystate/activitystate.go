@@ -14,8 +14,18 @@ import "github.com/aoagents/agent-orchestrator/backend/internal/domain"
 // hooks report activity purely through which callback fired.
 //
 //   - session-start / user-prompt-submit → active
+//   - tool-use                           → active
 //   - stop                               → idle
 //   - permission-request                 → waiting_input
+//
+// tool-use is for a "before/around a tool invocation" hook: an agent about to
+// run a tool is actively working, not blocked on the user. It exists so an
+// adapter whose only tool-adjacent hook fires before every tool (not just ones
+// that prompt for approval) does not have to misroute that event through
+// permission-request, which would pin an actively-working session to the sticky
+// waiting_input state. It mirrors how the agy adapter treats tool activity
+// (after-tool → active). permission-request stays reserved for events that
+// genuinely gate on a user decision (e.g. Cursor's beforeShellExecution).
 //
 // permission-request maps to waiting_input, not blocked: none of the sharing
 // adapters install the pre/post-tool-use trio, so a blocked state could never
@@ -26,6 +36,8 @@ func StandardDeriveActivityState(event string, _ []byte) (domain.ActivityState, 
 	case "session-start":
 		return domain.ActivityActive, true
 	case "user-prompt-submit":
+		return domain.ActivityActive, true
+	case "tool-use":
 		return domain.ActivityActive, true
 	case "stop":
 		return domain.ActivityIdle, true

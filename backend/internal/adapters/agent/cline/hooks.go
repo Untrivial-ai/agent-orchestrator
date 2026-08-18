@@ -51,12 +51,19 @@ type clineHookSpec struct {
 // derivation stays uniform across adapters:
 //   - TaskStart        -> session-start       (a new task begins: active)
 //   - UserPromptSubmit -> user-prompt-submit  (user message submitted: active)
-//   - PreToolUse       -> permission-request  (about to act: approval point)
+//   - PreToolUse       -> tool-use            (about to run a tool: active)
 //   - TaskCancel       -> stop                (task cancelled/aborted: idle)
+//
+// PreToolUse fires before EVERY tool invocation, not just ones that gate on a
+// user decision (and never at all under --auto-approve / --yolo, see
+// appendApprovalFlags). It means "the agent is about to work", so it maps to
+// tool-use (active). Routing it to permission-request pinned an actively-working
+// session to the sticky waiting_input state, hiding its PR-derived status and
+// firing spurious "needs input" notifications.
 var clineManagedHooks = []clineHookSpec{
 	{Event: "TaskStart", Subcommand: "session-start"},
 	{Event: "UserPromptSubmit", Subcommand: "user-prompt-submit"},
-	{Event: "PreToolUse", Subcommand: "permission-request"},
+	{Event: "PreToolUse", Subcommand: "tool-use"},
 	{Event: "TaskCancel", Subcommand: "stop"},
 }
 

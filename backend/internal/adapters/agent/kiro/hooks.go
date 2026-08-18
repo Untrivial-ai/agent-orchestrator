@@ -57,16 +57,22 @@ type kiroHookSpec struct {
 
 // kiroManagedHooks is the source of truth for the hooks AO installs. The native
 // Kiro events are mapped onto AO hook sub-command names (the trailing word) so
-// the CLI hook dispatcher routes them to DeriveActivityState:
+// the CLI hook dispatcher routes them to StandardDeriveActivityState:
 //
 //	agentSpawn       -> session-start       (ActivityActive)
 //	userPromptSubmit -> user-prompt-submit  (ActivityActive)
-//	preToolUse       -> permission-request  (ActivityWaitingInput)
+//	preToolUse       -> tool-use            (ActivityActive)
 //	stop             -> stop                (ActivityIdle)
+//
+// preToolUse fires before EVERY tool invocation, not just ones that gate on a
+// user decision, so it means "the agent is about to work" (tool-use → active),
+// not "blocked on the user". Routing it to permission-request pinned an
+// actively-working session to the sticky waiting_input state, hiding its
+// PR-derived status and firing spurious "needs input" notifications.
 var kiroManagedHooks = []kiroHookSpec{
 	{Event: "agentSpawn", Command: kiroHookCommandPrefix + "session-start"},
 	{Event: "userPromptSubmit", Command: kiroHookCommandPrefix + "user-prompt-submit"},
-	{Event: "preToolUse", Command: kiroHookCommandPrefix + "permission-request"},
+	{Event: "preToolUse", Command: kiroHookCommandPrefix + "tool-use"},
 	{Event: "stop", Command: kiroHookCommandPrefix + "stop"},
 }
 

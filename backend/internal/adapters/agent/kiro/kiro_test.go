@@ -11,10 +11,37 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitystate"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+// TestKiroPreToolUseReportsActiveNotWaiting is a regression guard for the
+// sticky-waiting_input misclassification: Kiro's preToolUse hook fires before
+// every tool invocation (and never at all under auto/bypass approval modes), so
+// it must report the agent as actively working, not blocked on the user.
+func TestKiroPreToolUseReportsActiveNotWaiting(t *testing.T) {
+	sub := ""
+	for _, spec := range kiroManagedHooks {
+		if spec.Event == "preToolUse" {
+			sub = strings.TrimPrefix(spec.Command, kiroHookCommandPrefix)
+		}
+	}
+	if sub == "" {
+		t.Fatal("kiro installs no preToolUse hook")
+	}
+	state, ok := activitystate.StandardDeriveActivityState(sub, nil)
+	if !ok {
+		t.Fatalf("preToolUse sub-command %q derives no activity", sub)
+	}
+	if state == domain.ActivityWaitingInput {
+		t.Fatalf("preToolUse maps to %q; a tool invocation must not pin the session to the sticky waiting_input state", state)
+	}
+	if state != domain.ActivityActive {
+		t.Fatalf("preToolUse derives %q, want %q (the agent is working)", state, domain.ActivityActive)
+	}
+}
 
 func TestManifestIDIsKiro(t *testing.T) {
 	m := (&Plugin{}).Manifest()

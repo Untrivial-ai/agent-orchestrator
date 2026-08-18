@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitystate"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -982,7 +984,7 @@ func TestCopilotManagedHooksUseDocumentedEventNames(t *testing.T) {
 	wantEventByCommand := map[string]string{
 		"session-start":      "sessionStart",
 		"user-prompt-submit": "userPromptSubmitted",
-		"permission-request": "preToolUse",
+		"tool-use":           "preToolUse",
 		"stop":               "agentStop",
 	}
 	if len(copilotManagedHooks) != len(wantEventByCommand) {
@@ -996,6 +998,34 @@ func TestCopilotManagedHooksUseDocumentedEventNames(t *testing.T) {
 		if spec.Event != want {
 			t.Fatalf("command %q event = %q, want %q (Copilot CLI documented camelCase)", spec.Command, spec.Event, want)
 		}
+	}
+}
+
+// TestCopilotPreToolUseReportsActiveNotWaiting is a regression guard for the
+// sticky-waiting_input misclassification: Copilot's preToolUse hook fires before
+// every tool invocation (and never at all under --allow-all-tools/--allow-all),
+// so it must report the agent as actively working, not blocked on the user.
+// Mapping it to waiting_input pinned an actively-working session to "needs
+// input", masking its PR status and firing spurious notifications.
+func TestCopilotPreToolUseReportsActiveNotWaiting(t *testing.T) {
+	sub := ""
+	for _, spec := range copilotManagedHooks {
+		if spec.Event == "preToolUse" {
+			sub = spec.Command
+		}
+	}
+	if sub == "" {
+		t.Fatal("copilot installs no preToolUse hook")
+	}
+	state, ok := activitystate.StandardDeriveActivityState(sub, nil)
+	if !ok {
+		t.Fatalf("preToolUse sub-command %q derives no activity", sub)
+	}
+	if state == domain.ActivityWaitingInput {
+		t.Fatalf("preToolUse maps to %q; a tool invocation must not pin the session to the sticky waiting_input state", state)
+	}
+	if state != domain.ActivityActive {
+		t.Fatalf("preToolUse derives %q, want %q (the agent is working)", state, domain.ActivityActive)
 	}
 }
 

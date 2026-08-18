@@ -10,9 +10,37 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitystate"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+// TestClinePreToolUseReportsActiveNotWaiting is a regression guard for the
+// sticky-waiting_input misclassification: Cline's PreToolUse hook fires before
+// every tool invocation (and never at all under --auto-approve/--yolo), so it
+// must report the agent as actively working, not blocked on the user.
+func TestClinePreToolUseReportsActiveNotWaiting(t *testing.T) {
+	sub := ""
+	for _, spec := range clineManagedHooks {
+		if spec.Event == "PreToolUse" {
+			sub = spec.Subcommand
+		}
+	}
+	if sub == "" {
+		t.Fatal("cline installs no PreToolUse hook")
+	}
+	state, ok := activitystate.StandardDeriveActivityState(sub, nil)
+	if !ok {
+		t.Fatalf("PreToolUse sub-command %q derives no activity", sub)
+	}
+	if state == domain.ActivityWaitingInput {
+		t.Fatalf("PreToolUse maps to %q; a tool invocation must not pin the session to the sticky waiting_input state", state)
+	}
+	if state != domain.ActivityActive {
+		t.Fatalf("PreToolUse derives %q, want %q (the agent is working)", state, domain.ActivityActive)
+	}
+}
 
 func TestGetLaunchCommandBuildsCrossPlatformArgv(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "cline"}
