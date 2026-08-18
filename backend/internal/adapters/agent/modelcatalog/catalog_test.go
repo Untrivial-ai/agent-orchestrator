@@ -117,6 +117,42 @@ func TestBaseMuseCatalogAllowsCustomModels(t *testing.T) {
 	}
 }
 
+func TestParseAgyModelsAcceptsTabSeparatedLabels(t *testing.T) {
+	got, err := parseAgyModels([]byte(
+		"Fetching available models...\n" +
+			"gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n" +
+			"claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("models = %#v, want 2", got)
+	}
+
+	byID := make(map[string]ports.AgentModelInfo, len(got))
+	for _, model := range got {
+		byID[model.ID] = model
+	}
+
+	gemini, ok := byID["gemini-3.6-flash-high"]
+	if !ok {
+		t.Fatalf("models = %#v, missing gemini-3.6-flash-high", got)
+	}
+	if gemini.Label != "Gemini 3.6 Flash (High)" {
+		t.Fatalf("gemini label = %q, want %q", gemini.Label, "Gemini 3.6 Flash (High)")
+	}
+
+	claude, ok := byID["claude-sonnet-4-6"]
+	if !ok {
+		t.Fatalf("models = %#v, missing claude-sonnet-4-6", got)
+	}
+	if claude.Label != "Claude Sonnet 4.6 (Thinking)" {
+		t.Fatalf("claude label = %q, want %q", claude.Label, "Claude Sonnet 4.6 (Thinking)")
+	}
+}
+
 func TestParseIDLinesAcceptsOnlyWholeModelIDs(t *testing.T) {
 	got, err := parseIDLines([]byte("\x1b[32mModels\x1b[0m\nanthropic/claude-sonnet\nopenai/gpt-5.4\nTip: use --model <id>\nopenai/gpt-5.4 duplicate\n"))
 	if err != nil {

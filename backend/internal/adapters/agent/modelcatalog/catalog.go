@@ -48,7 +48,7 @@ var commandSpecs = map[string]commandSpec{
 	"opencode": {args: []string{"--pure", "models"}, parser: parseIDLines},
 	"grok":     {args: []string{"models"}, parser: parseGrokModels},
 	"cursor":   {args: []string{"models"}, parser: parseCursorModels},
-	"agy":      {args: []string{"models"}, parser: parseIDLines},
+	"agy":      {args: []string{"models"}, parser: parseAgyModels},
 	"kilocode": {args: []string{"models"}, parser: parseIDLines},
 	"pi":       {args: []string{"--list-models"}, parser: parsePiModels},
 	"kimchi":   {args: []string{"--list-models"}, parser: parsePiModels},
@@ -157,9 +157,10 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	runCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 	cmd := modelCommand(runCtx, binary, spec.args, workingDir, env)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return base, modelDiscoveryError(runCtx, agentID, err)
+	output, commandErr := cmd.CombinedOutput()
+	allowDrainTimeoutOutput := agentID == "agy" && errors.Is(commandErr, exec.ErrWaitDelay)
+	if commandErr != nil && !allowDrainTimeoutOutput {
+		return base, modelDiscoveryError(runCtx, agentID, commandErr)
 	}
 	models, err := spec.parser(output)
 	if err != nil {
@@ -167,6 +168,9 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	}
 	models = normalize(models)
 	if len(models) == 0 {
+		if commandErr != nil {
+			return base, modelDiscoveryError(runCtx, agentID, commandErr)
+		}
 		return base, fmt.Errorf("%s model discovery returned no models", agentID)
 	}
 	base.Models = models
@@ -372,6 +376,53 @@ func catalog(agentID, source string, allowCustom bool, at time.Time, models ...p
 
 func model(id, label string, isDefault bool) ports.AgentModelInfo {
 	return ports.AgentModelInfo{ID: id, Label: label, IsDefault: isDefault}
+}
+
+func parseAgyModels(output []byte) ([]ports.AgentModelInfo, error) {
+	text := ansiPattern.ReplaceAllString(string(output), "")
+	var models []ports.AgentModelInfo
+
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+
+		// Current Agy:
+		// gemini-3.6-flash-high<TAB>Gemini 3.6 Flash (High)
+		if idText, labelText, ok := strings.Cut(line, "\t"); ok {
+			id := strings.TrimSpace(idText)
+			id = strings.Trim(id, "`\"'[](),:")
+			if !looksLikeModelID(id) {
+				continue
+			}
+
+			label := strings.TrimSpace(labelText)
+			if label == "" {
+				label = id
+			}
+
+			models = append(models, ports.AgentModelInfo{
+				ID:    id,
+				Label: label,
+			})
+			continue
+		}
+
+		// Backwards-compatible with Agy versions that only return model ID.
+		fields := strings.Fields(line)
+		if len(fields) != 1 || !looksLikeModelID(fields[0]) {
+			continue
+		}
+
+		id := strings.Trim(fields[0], "`\"'[](),:")
+		models = append(models, ports.AgentModelInfo{
+			ID:    id,
+			Label: id,
+		})
+	}
+
+	return normalize(models), nil
 }
 
 func parseIDLines(output []byte) ([]ports.AgentModelInfo, error) {
