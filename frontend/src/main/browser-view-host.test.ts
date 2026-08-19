@@ -4,7 +4,9 @@ import {
 	clampBoundsToWindow,
 	createBrowserViewHost,
 	isAllowedBrowserURL,
+	looksLikeHost,
 	normalizeBrowserURL,
+	withDefaultScheme,
 	scaleBoundsForZoom,
 } from "./browser-view-host";
 import { NEW_SESSION_SHORTCUT_CHANNEL } from "../shared/shortcuts";
@@ -509,6 +511,13 @@ describe("normalizeBrowserURL", () => {
 		expect(() => normalizeBrowserURL("file:///C:/tmp/index.html")).toThrow("Unsupported browser URL scheme");
 	});
 
+	it("treats bare filenames with common extensions as search terms rather than hosts", () => {
+		expect(withDefaultScheme("file.html")).toBe("https://www.google.com/search?q=file.html");
+		expect(withDefaultScheme("index.html?foo=bar")).toBe("https://www.google.com/search?q=index.html%3Ffoo%3Dbar");
+		expect(looksLikeHost("file.html")).toBe(false);
+		expect(looksLikeHost("example.com")).toBe(true);
+	});
+
 	it("rejects absolute local paths rather than converting them into automatable files", () => {
 		expect(() => normalizeBrowserURL("C:\\Users\\Lenovo\\Downloads\\sm5\\paper_explainer.html")).toThrow(
 			"Unsupported browser URL scheme",
@@ -530,6 +539,56 @@ describe("isAllowedBrowserURL", () => {
 
 	it("still blocks the renderer's own http origin", () => {
 		expect(isAllowedBrowserURL("http://localhost:5173/", "http://localhost:5173")).toBe(false);
+	});
+});
+
+describe("browser navigation", () => {
+	it("resolves local-looking paths through the daemon before navigating", async () => {
+		const fetchMock = vi.fn(async () =>
+			new Response(JSON.stringify({ session: { previewUrl: "http://127.0.0.1:3001/preview/index.html" } }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const { invoke, webContents } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "notes/index.html" });
+
+		expect(fetchMock).toHaveBeenCalled();
+		expect(webContents.loadURL).toHaveBeenCalledWith("http://127.0.0.1:3001/preview/index.html");
+	});
+
+	it("keeps local-looking misses on the error path instead of searching", async () => {
+		const fetchMock = vi.fn(async () =>
+			new Response(JSON.stringify({ code: "PREVIEW_FILE_NOT_FOUND", message: "Preview file not found" }), {
+				status: 404,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const { invoke, webContents } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+
+		const state = await invoke("browser:navigate", { viewId: "1:sess-1", url: "missing.html" });
+
+		expect(state.error).toContain("Preview file not found");
+		expect(webContents.loadURL).not.toHaveBeenCalledWith(expect.stringContaining("google.com"));
+	});
+
+	it("does not misclassify standard domains as local preview paths", async () => {
+		const fetchMock = vi.fn(async () => {
+			throw new Error("fetch should not be called for standard hosts");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const { invoke, webContents } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "example.com/path?q=1" });
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(webContents.loadURL).toHaveBeenCalledWith("https://example.com/path?q=1");
 	});
 });
 

@@ -2824,6 +2824,8 @@ export interface components {
         SetSessionPreviewRequest: {
             /** @description Preview target URL. When empty, the daemon autodetects a static entry point in the session workspace. */
             url?: string;
+            /** @description Optional effective working directory for resolving workspace-relative preview paths. */
+            workingDirectory?: string;
         };
         SetSessionReviewerRequest: {
             /** @enum {string} */

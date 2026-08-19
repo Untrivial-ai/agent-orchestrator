@@ -339,16 +339,25 @@ const ANNOTATION_SNAPSHOT_TIMEOUT_MS = 200;
 const ANNOTATION_SNAPSHOT_MAX_DIMENSION = 1568;
 const UNTRUSTED_BEGIN = "<<<BEGIN UNTRUSTED EXTERNAL CONTENT>>>";
 const UNTRUSTED_END = "<<<END UNTRUSTED EXTERNAL CONTENT>>>";
-// Browser targets are shared with session automation after navigation. Keep
-// local files out of this surface even when navigation starts in the human
-// address bar; workspace files arrive through the daemon's confined HTTP
-// preview origin instead.
-const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+// The human-facing address bar may open local preview files. Agent commands use
+// normalizeAgentBrowserURL below, which permits only explicit HTTP(S) targets.
+const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "file:"]);
+
 export function normalizeBrowserURL(input: string): URL {
 	const raw = input.trim();
 	if (raw === "") {
 		throw new Error("URL is required");
 	}
+	
+	// Reject file://, Windows absolute paths (C:\ or C:/), and POSIX absolute paths (/tmp/...)
+	if (
+		raw.startsWith("file://") ||
+		/^[a-zA-Z]:[/\\]/.test(raw) ||
+		raw.startsWith("/")
+	) {
+		throw new Error("Unsupported browser URL scheme");
+	}
+
 	const candidate = withDefaultScheme(raw);
 	const url = new URL(candidate);
 	if (!ALLOWED_PROTOCOLS.has(url.protocol)) {
@@ -913,10 +922,43 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		return navigateEntry(activeEntry(session), url);
 	};
 
+    async function resolveLocalPreviewTarget(
+	sessionId: string,
+	path: string
+): Promise<string> {
+	try {
+		const res = await fetch(`http://127.0.0.1:3000/api/v1/sessions/${sessionId}/preview`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ url: path }),
+		});
+		if (!res.ok) {
+			const errData = await res.json().catch(() => ({}));
+			throw new Error(errData.message || "Preview file not found");
+		}
+		const data = await res.json();
+		return data.session.previewUrl;
+	} catch (err: any) {
+		throw new Error(err.message || "Preview file not found");
+	}
+}
+
 	const navigateEntry = async (entry: BrowserEntry, url: string): Promise<BrowserNavState> => {
 		await entry.ready;
 		cancelAnnotation(options, entry, "navigation");
-		const normalized = normalizeBrowserURL(url);
+		let target = url.trim();
+		let resolved = target;
+		if (looksLikeLocalPreviewPath(target)) {
+			try {
+				resolved = (await resolveLocalPreviewTarget(entry.sessionId, target)) ?? target;
+			} catch (err) {
+				entry.view.setVisible?.(false);
+				entry.state = { ...readNavState(entry), error: String((err as Error)?.message || "Unable to resolve preview file") };
+				shellContents(options).send("browser:navState", entry.state);
+				return entry.state;
+			}
+		}
+		const normalized = normalizeBrowserURL(resolved);
 		if (!isAllowedBrowserURL(normalized.href, options.rendererOrigin)) {
 			throw new Error("Unsupported browser URL");
 		}
@@ -926,7 +968,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			if ((err as { errorCode?: number })?.errorCode === -3) return pushNavState(options, entry);
 			entry.view.setVisible?.(false);
 			entry.state = { ...readNavState(entry), error: String((err as Error)?.message || "Unable to load page") };
-			shellWebContents.send("browser:navState", entry.state);
+			shellContents(options).send("browser:navState", entry.state);
 			return entry.state;
 		}
 		const session = entries.get(entry.state.viewId);
@@ -1413,7 +1455,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	};
 }
 
-function withDefaultScheme(raw: string): string {
+export function withDefaultScheme(raw: string): string {
 	if (isWindowsAbsolutePath(raw) || isPosixAbsolutePath(raw)) return localPathToFileURL(raw);
 	if (/^https?:\/\//i.test(raw)) return raw;
 	if (isLocalhostLike(raw)) return `http://${raw}`;
@@ -1430,17 +1472,50 @@ function withDefaultScheme(raw: string): string {
 
 // Treat input as a navigable host when the authority (the part before any
 // path/query/fragment) is an IPv6 literal, carries an explicit :port, or has a
-// dot (a domain). Bare words like "hi" fail this and become a search instead.
-function looksLikeHost(raw: string): boolean {
+// dot (a domain). Bare words like "hi" and bare filenames with common
+// extensions fail this and become a search instead.
+
+const BARE_FILE_EXTENSIONS = new Set([
+  "html",
+  "htm",
+  "pdf",
+  "svg",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+]);
+
+export function looksLikeHost(raw: string): boolean {
 	const host = raw.split(/[/?#]/, 1)[0];
 	if (host === "") return false;
+	if (host.includes("\\")) return false;
 	if (host.startsWith("[") && host.includes("]")) return true;
 	if (/:\d+$/.test(host)) return true;
-	return host.includes(".");
+	if (!host.includes(".")) return false;
+	const dot = host.lastIndexOf(".");
+	if (dot > 0 && dot < host.length-1) {
+		const ext = host.slice(dot + 1).toLowerCase();
+		if (BARE_FILE_EXTENSIONS.has(ext)) return false;
+	}
+	return true;
 }
 
 function searchURL(query: string): string {
 	return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+}
+
+function looksLikeLocalPreviewPath(raw: string): boolean {
+	const trimmed = raw.trim();
+	if (!trimmed || /^https?:\/\//i.test(trimmed) || /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed)) return false;
+	const parsed = trimmed.match(/^([^?#]+)(?:[?#].*)?$/);
+	const pathPart = parsed?.[1] ?? trimmed;
+	const hostCandidate = pathPart.split("/")[0];
+	if (pathPart.includes("/") && looksLikeHost(hostCandidate)) return false;
+	if (pathPart.includes("\\") || pathPart.startsWith(".") || pathPart.startsWith("/")) return true;
+	const ext = pathPart.split(".").pop()?.toLowerCase();
+	return ext ? BARE_FILE_EXTENSIONS.has(ext) : false;
 }
 
 function isWindowsAbsolutePath(raw: string): boolean {

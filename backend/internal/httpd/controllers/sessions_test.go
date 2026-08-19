@@ -1411,6 +1411,138 @@ func TestSessionsAPI_SetPreviewLocalRelativePathResolvesToPreviewOrigin(t *testi
 	}
 }
 
+func TestSessionsAPI_SetPreviewBareFilenameNotFound(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace := t.TempDir()
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/preview", `{"url":"-pr-3386-adapter-model-selection.html"}`)
+	assertErrorCode(t, body, status, http.StatusNotFound, "PREVIEW_FILE_NOT_FOUND")
+}
+
+func TestSessionsAPI_SetPreviewResolvesRootIndexFile(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "index.html"), []byte("<html>root</html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/preview", `{"url":"index.html"}`)
+	if status != http.StatusOK {
+		t.Fatalf("set preview = %d, want 200; body=%s", status, body)
+	}
+	var resp struct {
+		Session struct {
+			PreviewURL string `json:"previewUrl"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &resp)
+	if !strings.HasSuffix(resp.Session.PreviewURL, "/index.html") {
+		t.Fatalf("response previewUrl = %q, want index.html preview URL", resp.Session.PreviewURL)
+	}
+}
+
+func TestSessionsAPI_SetPreviewRejectsSymlinkEscapingWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.html")
+	if err := os.WriteFile(outside, []byte("<html>secret</html>"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	link := filepath.Join(workspace, "alias.html")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/preview", `{"url":"alias.html"}`)
+	assertErrorCode(t, body, status, http.StatusNotFound, "PREVIEW_FILE_NOT_FOUND")
+}
+
+func TestSessionsAPI_SetPreviewResolvesRelativePathAgainstWorkingDirectory(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "nested", "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir nested docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "nested", "docs", "index.html"), []byte(`<html>ok</html>`), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/preview", `{"url":"index.html","workingDirectory":"nested/docs"}`)
+	if status != http.StatusOK {
+		t.Fatalf("set preview = %d, want 200; body=%s", status, body)
+	}
+	var resp struct {
+		Session struct {
+			PreviewURL string `json:"previewUrl"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &resp)
+	if !strings.HasSuffix(resp.Session.PreviewURL, "/nested/docs/index.html") {
+		t.Fatalf("response previewUrl = %q, want nested/docs/index.html preview URL", resp.Session.PreviewURL)
+	}
+}
+
+func TestSessionsAPI_SetPreviewResolvesPathLikeInputWithQueryAndHash(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "docs", "My Résumé.html"), []byte(`<html>résumé</html>`), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/preview", `{"url":"docs/My Résumé.html?view=1#top"}`)
+	if status != http.StatusOK {
+		t.Fatalf("set preview = %d, want 200; body=%s", status, body)
+	}
+	var resp struct {
+		Session struct {
+			PreviewURL string `json:"previewUrl"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &resp)
+	if !strings.Contains(resp.Session.PreviewURL, "/docs/My%20R%C3%A9sum%C3%A9.html") {
+		t.Fatalf("response previewUrl = %q, want workspace-relative preview URL for the file", resp.Session.PreviewURL)
+	}
+	if !strings.Contains(resp.Session.PreviewURL, "?view=1#top") {
+		t.Fatalf("response previewUrl = %q, want query/hash preserved", resp.Session.PreviewURL)
+	}
+}
+
+func TestSessionsAPI_SetPreviewRejectsTraversalAttempts(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace := t.TempDir()
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/preview", `{"url":"../outside.html"}`)
+	assertErrorCode(t, body, status, http.StatusNotFound, "PREVIEW_FILE_NOT_FOUND")
+}
+
 func TestSessionsAPI_SetPreviewServesBrowserDisplayableArtifacts(t *testing.T) {
 	tests := []struct {
 		name        string
