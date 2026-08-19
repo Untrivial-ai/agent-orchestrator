@@ -1,7 +1,7 @@
 import type { ForgeConfig } from "@electron-forge/shared-types";
 import { VitePlugin } from "@electron-forge/plugin-vite";
 import MakerNSIS from "./makers/maker-nsis";
-import MakerDMG, { sealDmg, verifyDmg } from "./makers/maker-dmg";
+import MakerDMG, { isSigningConfigured, sealDmg, verifyDmg, verifyMacArtifact } from "./makers/maker-dmg";
 import MakerAppImage from "./makers/maker-appimage";
 import { writeFileSync } from "node:fs";
 
@@ -129,17 +129,32 @@ const config: ForgeConfig = {
 		//
 		// Then PROVE the seal. sealDmg exiting 0 only says three commands ran on
 		// this machine; it does not say Gatekeeper accepts the published bytes with
-		// a stapled ticket. verify-mac-artifact.sh is the canonical gate for that
-		// (#3288 workstreams 1 and 2), and #3267 decision 3 step 4 asks for exactly
-		// this check on the dmg. Run only when sealDmg actually sealed: an unsigned
-		// local or desktop-testing build has nothing to verify and must keep
-		// producing its dmg.
+		// a stapled ticket, or that a bundled nested executable (the Intel ACP
+		// Node, #3879) actually runs. verify-mac-artifact.sh is the canonical gate
+		// for both (#3288 workstreams 1 and 2; #3879 for the nested-Node check),
+		// and #3267 decision 3 step 4 asks for exactly this check on the dmg. Run
+		// only when sealDmg actually sealed: an unsigned local or desktop-testing
+		// build has nothing to verify and must keep producing its dmg.
+		//
+		// The zip needs the SAME nested-Node check but no separate sealing step:
+		// its inner .app was already signed/notarized/stapled by packagerConfig
+		// above, so verifying it only needs the same "was this build actually
+		// signed" gate sealDmg uses (isSigningConfigured), not a seal call of its
+		// own. Without this, the dmg-only check left the maker-zip artifact — the
+		// one electron-updater actually installs auto-updates from, per
+		// makers/maker-dmg.ts's ERR_UPDATER_ZIP_FILE_NOT_FOUND note, and per-arch
+		// the artifact CI ships for x64 — completely unverified: a regression of
+		// exactly the crash #3879 fixed could ship without any automated gate
+		// catching it.
 		postMake: async (_forgeConfig, makeResults) => {
 			for (const result of makeResults) {
 				if (result.platform !== "darwin") continue;
 				for (const artifact of result.artifacts) {
-					if (!artifact.endsWith(".dmg")) continue;
-					if (await sealDmg(artifact)) await verifyDmg(artifact);
+					if (artifact.endsWith(".dmg")) {
+						if (await sealDmg(artifact)) await verifyDmg(artifact);
+					} else if (artifact.endsWith(".zip") && isSigningConfigured()) {
+						await verifyMacArtifact(artifact);
+					}
 				}
 			}
 			return makeResults;
