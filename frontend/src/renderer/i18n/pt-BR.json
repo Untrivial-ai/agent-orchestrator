@@ -911,6 +911,8 @@
 	"termination.confirmAria": "Sim, encerrar sessão",
 	"termination.dialog": "Encerrar sessão?",
 	"termination.dialogNamed": "Encerrar {{title}}?",
+	"terminal.agentExited": "Agente encerrado",
+	"terminal.agentExitedRestore": "O agente foi encerrado. Restaure para reiniciá-lo nesta sessão.",
 	"terminal.agent": "agente",
 	"terminal.backToAgent": "Voltar ao terminal do agente",
 	"terminal.close": "Fechar terminal",

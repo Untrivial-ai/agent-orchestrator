@@ -563,6 +563,61 @@ describe("terminal restore", () => {
 		}
 	});
 
+	it.each([
+		["worker", worker],
+		["orchestrator", orchestrator],
+	])(
+		"posts resume-agent when a live %s session's supervised agent exited (Ctrl-C in the pane)",
+		async (_kind, session) => {
+			// The supervised keep-alive holds the tmux pane open, so the attachment
+			// stays "attached" and the session row stays live — the strip must key
+			// off the agent's exited activity, not the terminal or session lifecycle.
+			terminalState.value = "attached";
+			const view = renderPane({
+				...session,
+				status: "exited",
+				activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:02Z" },
+				terminalHandleId: "term-1",
+			});
+			const invalidate = vi.spyOn(view.queryClient, "invalidateQueries").mockResolvedValue(undefined);
+			try {
+				expect(screen.getByText("Agent exited")).toBeInTheDocument();
+				await userEvent.click(screen.getByRole("button", { name: "Restore session" }));
+
+				await waitFor(() =>
+					expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
+						params: { path: { sessionId: session.id } },
+					}),
+				);
+				expect(invalidate).toHaveBeenCalledWith({ queryKey: ["workspaces"] });
+			} finally {
+				view.restore();
+			}
+		},
+	);
+
+	it("offers no resume affordance while an agent switch is replacing the exited agent", () => {
+		terminalState.value = "attached";
+		const view = renderPane({
+			...worker,
+			status: "exited",
+			activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:02Z" },
+			activeAgentSwitch: {
+				agentHandoffStatus: "requested",
+				fromHarness: "claude-code",
+				id: "switch-1",
+				state: "starting_target",
+				targetHarness: "codex",
+			},
+			terminalHandleId: "term-1",
+		});
+		try {
+			expect(screen.queryByRole("button", { name: "Restore session" })).not.toBeInTheDocument();
+		} finally {
+			view.restore();
+		}
+	});
+
 	it("offers restore when a merged session is terminated", () => {
 		const view = renderPane({
 			...worker,

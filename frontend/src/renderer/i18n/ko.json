@@ -900,6 +900,8 @@
 	"termination.confirmAria": "예, 세션 종료",
 	"termination.dialog": "세션을 종료하시겠습니까?",
 	"termination.dialogNamed": "{{title}}을(를) 종료하시겠습니까?",
+	"terminal.agentExited": "에이전트 종료됨",
+	"terminal.agentExitedRestore": "에이전트가 종료되었습니다. 복원하면 이 세션에서 다시 시작됩니다.",
 	"terminal.agent": "agent",
 	"terminal.backToAgent": "에이전트 터미널로 돌아가기",
 	"terminal.close": "터미널 닫기",

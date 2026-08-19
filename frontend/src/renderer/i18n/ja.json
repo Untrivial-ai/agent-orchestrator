@@ -900,6 +900,8 @@
 	"termination.confirmAria": "はい、セッションを終了します",
 	"termination.dialog": "セッションを終了しますか？",
 	"termination.dialogNamed": "{{title}} を終了しますか？",
+	"terminal.agentExited": "エージェント終了",
+	"terminal.agentExitedRestore": "エージェントが終了しました。復元するとこのセッションで再起動します。",
 	"terminal.agent": "agent",
 	"terminal.backToAgent": "エージェントターミナルに戻る",
 	"terminal.close": "ターミナルを閉じる",

@@ -33,7 +33,7 @@ import {
 } from "../lib/terminal-mux";
 import { cn } from "../lib/utils";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
-import { useRestoreSession } from "../hooks/useRestoreSession";
+import { useRestoreSession, useResumeAgentSession } from "../hooks/useRestoreSession";
 import { useShellTerminals } from "../hooks/useShellTerminals";
 import { XtermTerminal } from "./XtermTerminal";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
@@ -917,6 +917,7 @@ function AttachedTerminal({
 	const [restoreUnavailable, setRestoreUnavailable] = useState(false);
 	const queryClient = useQueryClient();
 	const restoreSessionById = useRestoreSession();
+	const resumeAgentById = useResumeAgentSession();
 	// A shell pane has no session, so it hands the hook its handle directly
 	// instead of reading one off `attachSession`.
 	const shellTerminalHandleId = terminalTarget?.kind === "shell" ? terminalTarget.handleId : undefined;
@@ -957,6 +958,17 @@ function AttachedTerminal({
 		terminalTarget?.kind !== "shell" &&
 		session !== undefined &&
 		!isSessionActive;
+	// The supervised keep-alive holds the tmux pane open after the agent dies
+	// (e.g. Ctrl-C), so the session stays live and the attachment never reports
+	// "exited". The pane itself must offer recovery: relaunch the agent in place
+	// via resume-agent, preserving the terminal identity and worktree.
+	const canResumeAgent =
+		terminalTarget?.kind !== "reviewer" &&
+		terminalTarget?.kind !== "shell" &&
+		session !== undefined &&
+		isSessionActive &&
+		session.activity?.state === "exited" &&
+		!session.activeAgentSwitch;
 
 	const handleReady = useCallback((handle: AttachableTerminal) => {
 		setTerminal(handle);
@@ -976,11 +988,15 @@ function AttachedTerminal({
 	}, [initFailed, onFatal]);
 	const handleLinkOpen = useSessionBrowserLink(session);
 	const restoreSession = useCallback(async () => {
-		if (!session?.id || !canRestoreSession || isRestoring) return;
+		if (!session?.id || (!canRestoreSession && !canResumeAgent) || isRestoring) return;
 		setIsRestoring(true);
 		setRestoreError(undefined);
 		try {
-			const result = await restoreSessionById(session.id);
+			// A terminated session needs the full restore (workspace recreation); a
+			// live session with an exited agent relaunches the agent in place.
+			const result = canRestoreSession
+				? await restoreSessionById(session.id)
+				: await resumeAgentById(session.id);
 			if (result.status === "not_resumable") {
 				setRestoreUnavailable(true);
 				return;
@@ -993,7 +1009,7 @@ function AttachedTerminal({
 		} finally {
 			setIsRestoring(false);
 		}
-	}, [canRestoreSession, isRestoring, restoreSessionById, session?.id, t]);
+	}, [canRestoreSession, canResumeAgent, isRestoring, restoreSessionById, resumeAgentById, session?.id, t]);
 
 	useEffect(() => {
 		if (!terminal) return;
@@ -1037,7 +1053,7 @@ function AttachedTerminal({
 		Boolean(handleId) &&
 		(!replaySettled || replayPaintPending) &&
 		(state === "connecting" || state === "attached");
-	const showEndedState = state === "exited" || canRestoreSession;
+	const showEndedState = state === "exited" || canRestoreSession || canResumeAgent;
 	const emptyStateTitle = session ? t("terminal.startingSession") : "Agent Orchestrator";
 	const emptyStateMessage = session
 		? session.kind === "orchestrator"
@@ -1050,6 +1066,7 @@ function AttachedTerminal({
 			{showEndedState && (
 				<TerminalEndedStrip
 					canRestore={canRestoreSession}
+					canResumeAgent={canResumeAgent}
 					error={restoreError}
 					isRestoring={isRestoring}
 					onRestore={restoreSession}
@@ -1135,33 +1152,36 @@ function ReplayCover() {
 
 type TerminalEndedStripProps = {
 	canRestore: boolean;
+	canResumeAgent?: boolean;
 	error?: string;
 	isRestoring: boolean;
 	onRestore: () => void;
 	variant: "reviewer" | "session" | "shell";
 };
 
-function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, variant }: TerminalEndedStripProps) {
+function TerminalEndedStrip({ canRestore, canResumeAgent, error, isRestoring, onRestore, variant }: TerminalEndedStripProps) {
 	const { t } = useTranslation();
-	const message = canRestore
-		? t("terminal.restoreToContinue")
-		: variant === "reviewer"
-			? t("terminal.reviewerEnded")
-			: variant === "shell"
-				? t("terminal.shellExited")
-				: t("terminal.sessionEndedNotTerminated");
+	const message = canResumeAgent
+		? t("terminal.agentExitedRestore")
+		: canRestore
+			? t("terminal.restoreToContinue")
+			: variant === "reviewer"
+				? t("terminal.reviewerEnded")
+				: variant === "shell"
+					? t("terminal.shellExited")
+					: t("terminal.sessionEndedNotTerminated");
 
 	return (
 		<div className="shrink-0 border-b border-border bg-surface/80 px-4 py-2">
 			<div className="flex min-h-control-board items-center gap-3">
 				<div className="min-w-0 flex-1">
 					<div className="font-mono text-caption font-medium uppercase tracking-wide-md text-muted-foreground">
-						{t("terminal.ended")}
+						{canResumeAgent ? t("terminal.agentExited") : t("terminal.ended")}
 					</div>
 					<div className="mt-0.5 truncate text-xs text-muted-foreground">{message}</div>
 				</div>
 				{error && <div className="max-w-content-max truncate text-xs text-destructive">{error}</div>}
-				{canRestore && (
+				{(canRestore || canResumeAgent) && (
 					<button
 						type="button"
 						aria-label={t("terminal.restoreSession")}
