@@ -2679,6 +2679,7 @@ export interface components {
             hasUnresolvedHumanComments: boolean;
             reviews?: components["schemas"]["SessionPRReviewEntry"][];
             unresolvedBy: components["schemas"]["SessionPRUnresolvedReviewer"][];
+            unresolvedThreadCount?: number;
         };
         SessionPRSummary: {
             additions: number;

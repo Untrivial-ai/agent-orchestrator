@@ -681,6 +681,7 @@ type SessionPRFailingCheck struct {
 type SessionPRReviewSummary struct {
 	Decision                   domain.ReviewDecision         `json:"decision" enum:"none,approved,changes_requested,review_required"`
 	HasUnresolvedHumanComments bool                          `json:"hasUnresolvedHumanComments"`
+	UnresolvedThreadCount      int                           `json:"unresolvedThreadCount,omitempty"`
 	UnresolvedBy               []SessionPRUnresolvedReviewer `json:"unresolvedBy"`
 	Reviews                    []SessionPRReviewEntry        `json:"reviews,omitempty"`
 }
@@ -800,7 +801,7 @@ func newSessionPRReviewSummary(in sessionsvc.PRReviewSummary) SessionPRReviewSum
 			AutoInjectReview: review.AutoInjectReview,
 		})
 	}
-	return SessionPRReviewSummary{Decision: in.Decision, HasUnresolvedHumanComments: in.HasUnresolvedHumanComments, UnresolvedBy: reviewers, Reviews: entries}
+	return SessionPRReviewSummary{Decision: in.Decision, HasUnresolvedHumanComments: in.HasUnresolvedHumanComments, UnresolvedThreadCount: in.UnresolvedThreadCount, UnresolvedBy: reviewers, Reviews: entries}
 }
 
 func newSessionPRMergeabilitySummary(in sessionsvc.PRMergeabilitySummary) SessionPRMergeabilitySummary {
