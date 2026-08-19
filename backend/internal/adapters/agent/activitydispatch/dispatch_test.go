@@ -71,6 +71,13 @@ func TestAiderDerivesCompletionNotification(t *testing.T) {
 	}
 }
 
+func TestContinueDerivesClaudeCompatibleNeedsInput(t *testing.T) {
+	got, ok := Derive("continue", "notification", []byte(`{"notification_type":"agent_needs_input"}`))
+	if !ok || got != domain.ActivityWaitingInput {
+		t.Fatalf("Derive(continue, notification) = (%q, %v), want (%q, true)", got, ok, domain.ActivityWaitingInput)
+	}
+}
+
 func TestPrimeAgentDerivesManagedExtensionActivity(t *testing.T) {
 	tests := []struct {
 		name    string

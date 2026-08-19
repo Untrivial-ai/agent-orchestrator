@@ -14,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/aider"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/continueagent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/droid"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/fake"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimchi"
@@ -37,6 +38,7 @@ var Derivers = map[string]DeriveFunc{
 	"grok":        claudecode.DeriveActivityState,
 	"muse":        muse.DeriveActivityState,
 	"codex":       codex.DeriveActivityState,
+	"continue":    continueagent.DeriveActivityState,
 	"droid":       droid.DeriveActivityState,
 	"agy":         agy.DeriveActivityState,
 	"aider":       aider.DeriveActivityState,
@@ -76,12 +78,10 @@ const (
 )
 
 // signalCoverageOverrides records harnesses whose callback coverage cannot be
-// inferred from a same-named Derivers entry. Continue emits the claude-code
-// callback token through its compatibility layer; Aider has a same-named
-// deriver but only a completion callback.
+// inferred from a same-named Derivers entry. Aider has a same-named deriver but
+// only a completion callback.
 var signalCoverageOverrides = map[domain.AgentHarness]SignalCoverage{
-	domain.HarnessAider:    SignalCoveragePartial,
-	domain.HarnessContinue: SignalCoverageComplete,
+	domain.HarnessAider: SignalCoveragePartial,
 }
 
 // CoverageForHarness returns the activity-signal coverage for a selectable
