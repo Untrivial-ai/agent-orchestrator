@@ -1125,7 +1125,10 @@ func buildLaunchCommand(cfg ports.RuntimeConfig) string {
 	if cfg.Env["AO_SUPERVISED_PROCESS"] == "1" {
 		// cat consumes and discards any input that arrived while the supervised
 		// child was exiting. Runtime Restart/Destroy replaces or kills the pane.
-		b.WriteString(`; exec cat >/dev/null`)
+		// The banner keeps the parked pane self-explanatory: without it, an
+		// interrupted agent leaves a screen that swallows keystrokes and looks
+		// hung. \r\n covers a child that died with the terminal still in raw mode.
+		b.WriteString(`; printf '\r\n[ao] agent exited - restore this session from the app to continue\r\n'; exec cat >/dev/null`)
 	} else {
 		// Keep the tmux session alive after an unsupervised agent exits so the
 		// operator can inspect it and use the historical manual-recovery shell.
