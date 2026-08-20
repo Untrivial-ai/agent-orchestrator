@@ -3,6 +3,7 @@
 package ompacp
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -24,8 +25,9 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 			ports.ChatCapabilityDiffs: true,
 			ports.ChatCapabilityPlans: true,
 		},
-		Configure:      configure,
-		SessionOptions: sessionOptions,
+		Configure:            configure,
+		SessionOptions:       sessionOptions,
+		ValidateTurnSettings: validateTurnSettings,
 	}, log)
 }
 
@@ -51,4 +53,23 @@ func sessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {
 		return []acpdriver.SessionOption{{ID: "model", Value: model}}
 	}
 	return nil
+}
+
+func validateTurnSettings(initial ports.PermissionMode, settings ports.ChatTurnSettings) error {
+	if settings.Approval == "" || ompApprovalMode(settings.Approval) == ompApprovalMode(initial) {
+		return nil
+	}
+	return fmt.Errorf("%w: OMP ACP approval mode is fixed at process launch (%s); restart Chat to change it to %s",
+		acpdriver.ErrACPSetterUnsupported, ompApprovalMode(initial), ompApprovalMode(settings.Approval))
+}
+
+func ompApprovalMode(mode ports.PermissionMode) string {
+	switch ports.NormalizePermissionMode(mode) {
+	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
+		return "write"
+	case ports.PermissionModeBypassPermissions:
+		return "yolo"
+	default:
+		return "default"
+	}
 }

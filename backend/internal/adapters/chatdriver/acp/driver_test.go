@@ -1266,6 +1266,39 @@ func TestACPDriverSendTurnPropagatesMethodNotFound(t *testing.T) {
 	}
 }
 
+func TestACPDriverRejectsUnsupportedTurnSettingsBeforePreparingTurn(t *testing.T) {
+	agent := &fakeAgent{}
+	rejected := errors.New("approval mode cannot change")
+	driver := New(Config{
+		Harness:      domain.HarnessOMP,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		ValidateTurnSettings: func(initial ports.PermissionMode, settings ports.ChatTurnSettings) error {
+			if initial == ports.PermissionModeDefault && settings.Approval == ports.PermissionModeAcceptEdits {
+				return rejected
+			}
+			return nil
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.spawn = fakeSpawn(agent)
+
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		WorkspacePath: t.TempDir(), Permissions: ports.PermissionModeDefault,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conv.Close()
+
+	_, err = conv.SendTurn(context.Background(), ports.ChatUserMessage{
+		Text: "hello", Settings: ports.ChatTurnSettings{Approval: ports.PermissionModeAcceptEdits},
+	})
+	if !errors.Is(err, rejected) {
+		t.Fatalf("SendTurn error = %v, want validator error", err)
+	}
+}
+
 // TestNormalizeMCPServersFailsWithoutCapabilities verifies that
 // normalizeMCPServers returns an error when MCP server configs are provided
 // but the agent does not advertise any MCP capability.

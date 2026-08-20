@@ -61,6 +61,33 @@ func TestSessionOptionsUseAdvertisedModelOption(t *testing.T) {
 	}
 }
 
+func TestValidateTurnSettingsRejectsApprovalModeChange(t *testing.T) {
+	tests := []struct {
+		name      string
+		initial   ports.PermissionMode
+		requested ports.PermissionMode
+		wantErr   bool
+	}{
+		{name: "empty keeps launch mode", initial: ports.PermissionModeAcceptEdits},
+		{name: "same default", initial: ports.PermissionModeDefault, requested: ports.PermissionModeDefault},
+		{name: "same write spelling", initial: ports.PermissionModeAcceptEdits, requested: ports.PermissionModeAuto},
+		{name: "same yolo", initial: ports.PermissionModeBypassPermissions, requested: ports.PermissionModeBypassPermissions},
+		{name: "write to yolo", initial: ports.PermissionModeAcceptEdits, requested: ports.PermissionModeBypassPermissions, wantErr: true},
+		{name: "write back to default", initial: ports.PermissionModeAuto, requested: ports.PermissionModeDefault, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTurnSettings(tt.initial, ports.ChatTurnSettings{Approval: tt.requested})
+			if tt.wantErr && !errors.Is(err, acpdriver.ErrACPSetterUnsupported) {
+				t.Fatalf("error = %v, want ErrACPSetterUnsupported", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("error = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestDriverReusesOMPPluginForProbe(t *testing.T) {
 	plugin := &fakePlugin{status: ports.AgentAuthStatusAuthorized, binary: "/usr/bin/omp"}
 	driver := New(plugin, nil)
