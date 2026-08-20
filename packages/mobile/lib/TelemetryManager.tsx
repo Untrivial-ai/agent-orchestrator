@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { AppState, type AppStateStatus } from "react-native";
+import { initMobileSentry } from "./sentry";
 import { initMobileTelemetry, mobileTelemetry, telemetryActiveStorage } from "./telemetry/runtime";
 
 // Headless. Mounted once in the app shell beside PushManager. Initialises the
@@ -10,6 +11,9 @@ export function TelemetryManager() {
 	useEffect(() => {
 		initMobileTelemetry();
 		void mobileTelemetry()?.active(telemetryActiveStorage);
+		// Same consent gate as telemetry (only when the client is active). No-op
+		// unless EXPO_PUBLIC_SENTRY_DSN is set.
+		if (mobileTelemetry()) void initMobileSentry();
 
 		const onChange = (state: AppStateStatus) => {
 			if (state === "active") void mobileTelemetry()?.active(telemetryActiveStorage);

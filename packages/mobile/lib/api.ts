@@ -1,5 +1,6 @@
 import { authHeaders, httpBase, normalizeServerHost, type ServerConfig } from "./config";
 import { cachedInstallId, getInstallId } from "./installId";
+import { captureMobileApiError, httpCategory } from "./sentry";
 import type { AttentionLevel } from "./theme";
 
 // ---- Types (subset of AO's DashboardSession we use on the phone) ------------
@@ -296,8 +297,12 @@ async function req(cfg: ServerConfig, path: string, init?: RequestInit, timeoutM
 		});
 	} catch (e) {
 		if ((e as { name?: string })?.name === "AbortError") {
+			// Timed out reaching the host (commonly a sleeping Tailscale peer).
+			captureMobileApiError(path, "timeout");
 			throw new Error("Request timed out - is the server reachable?", { cause: e });
 		}
+		// fetch threw without reaching the server: DNS/refused/offline.
+		captureMobileApiError(path, "offline");
 		throw e;
 	} finally {
 		clearTimeout(timer);
@@ -315,6 +320,8 @@ async function req(cfg: ServerConfig, path: string, init?: RequestInit, timeoutM
 		} catch {
 			/* ignore */
 		}
+		// Server answered with an error: classify by status + daemon code.
+		captureMobileApiError(path, httpCategory(res.status), res.status, code);
 		throw new ApiError(
 			res.status,
 			`${res.status} ${res.statusText}${detail ? ` - ${detail}` : ""}`,
