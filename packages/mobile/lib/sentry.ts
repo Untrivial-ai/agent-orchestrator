@@ -49,8 +49,12 @@ export async function initMobileSentry(context: MobileObservabilityContext = {})
 	if (!d) return;
 	initStarted = true;
 	try {
+		// Dormant placeholder: Metro only bundles a dynamic import() with a static
+		// string literal, so this computed specifier is intentionally NOT bundled
+		// today (keeps the package dependency-free). SHIP STEP: install the SDK and
+		// replace this line with `const mod = await import("@sentry/react-native")`.
 		const spec = ["@sentry", "react-native"].join("/");
-		const mod = (await import(/* @vite-ignore */ spec)) as unknown as SentryLike;
+		const mod = (await import(spec)) as unknown as SentryLike;
 		mod.init({
 			dsn: d,
 			release: context.release,
@@ -75,9 +79,20 @@ function tagsFor(meta: CaptureMeta, triage: Triage) {
 		category: meta.category,
 		code: meta.code,
 		http_status: meta.httpStatus,
+		apierr_kind: meta.kind,
 		severity: triage.severity,
 		owner: triage.owner,
 	};
+}
+
+// Collapse id-like path segments to :id so the operation is a low-cardinality
+// route template, never a per-request value (no session ids in tags, no tag
+// cardinality blow-up). Mirrors the renderer's normalizeApiOperation.
+function normalizePath(path: string): string {
+	return path
+		.split("/")
+		.map((seg) => (/^[0-9]+$/.test(seg) || /^[0-9a-fA-F-]{6,}$/.test(seg) ? ":id" : seg))
+		.join("/");
 }
 
 export function captureMobileException(error: unknown, meta: CaptureMeta = {}): void {
@@ -91,10 +106,11 @@ export function captureMobileException(error: unknown, meta: CaptureMeta = {}): 
 /** Capture a classified API failure from the mobile request helper. */
 export function captureMobileApiError(path: string, category: string, status?: number, code?: string): void {
 	if (!sentry) return;
+	const template = normalizePath(path.split("?")[0]);
 	// domain = first meaningful path segment (…/api/v1/<domain>/…)
-	const parts = path.split("?")[0].split("/").filter(Boolean);
+	const parts = template.split("/").filter(Boolean);
 	const domain = parts.includes("v1") ? parts[parts.indexOf("v1") + 1] : parts[0];
-	const meta: CaptureMeta = { operation: path.split("?")[0], domain, category, httpStatus: status, code };
+	const meta: CaptureMeta = { operation: template, domain, category, httpStatus: status, code };
 	const triage = classifyError(meta);
 	const tags = tagsFor(meta, triage);
 	if (triage.report) sentry.captureMessage(`${meta.operation} failed: ${category}${status ? ` (${status})` : ""}`, { level: triage.level, tags });
