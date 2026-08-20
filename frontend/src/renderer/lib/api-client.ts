@@ -3,6 +3,7 @@ import type { paths } from "../../api/schema";
 import type { DaemonStatus } from "../../shared/daemon-status";
 import { daemonFailureMessage } from "./daemon-failure";
 import { captureRendererEvent } from "./telemetry";
+import { captureApiErrorToSentry } from "./sentry";
 
 function devApiBaseUrl(): string {
 	return typeof window === "undefined" ? "http://127.0.0.1:3001" : window.location.origin;
@@ -191,6 +192,8 @@ function reportApiError(operation: string, category: ApiErrorCategory, status?: 
 		error_category: category,
 		status,
 	});
+	// Mirror into Sentry (no-op unless a DSN is configured).
+	captureApiErrorToSentry(operation, category, status);
 }
 
 async function runtimeFetch(input: Request): Promise<Response> {
