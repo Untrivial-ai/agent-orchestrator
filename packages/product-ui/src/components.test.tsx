@@ -19,13 +19,25 @@ function ExternalLink({ ariaLabel, children, stopPropagation, ...props }: Extern
 }
 
 describe("portable leaf components", () => {
-	it("renders GitHub avatars from the login and falls back to initials", () => {
-		const { container } = render(<GithubAvatar login="ada-lovelace" />);
+	it("keeps GitHub initials visible until the provider avatar loads and after errors", () => {
+		const avatarUrl = "https://avatars.githubusercontent.com/u/123?v=4";
+		const { container } = render(<GithubAvatar avatarUrl={avatarUrl} login="ada-lovelace" />);
 		const image = container.querySelector("img");
 
-		expect(image).toHaveAttribute("src", "https://github.com/ada-lovelace.png?size=64");
-		if (image) fireEvent.error(image);
 		expect(container).toHaveTextContent("AL");
+		expect(image).toHaveAttribute("src", avatarUrl);
+		expect(image).toHaveClass("opacity-0");
+		if (image) fireEvent.load(image);
+		expect(image).toHaveClass("opacity-100");
+		if (image) fireEvent.error(image);
+		expect(image).toHaveClass("opacity-0");
+	});
+
+	it("renders only initials when no provider avatar URL exists", () => {
+		const { container } = render(<GithubAvatar login="ada-lovelace" />);
+
+		expect(container).toHaveTextContent("AL");
+		expect(container.querySelector("img")).not.toBeInTheDocument();
 	});
 
 	it("renders an injected agent logo without owning app assets", () => {
@@ -51,6 +63,7 @@ describe("portable leaf components", () => {
 				pr={{
 					provider: "github",
 					author: "ada",
+					authorAvatarUrl: "https://avatars.githubusercontent.com/u/123?v=4",
 					sourceBranch: "feature",
 					targetBranch: "main",
 					changedFiles: 2,
@@ -63,6 +76,10 @@ describe("portable leaf components", () => {
 		expect(screen.getByText("feature → main")).toBeInTheDocument();
 		expect(screen.getByText("2 localized-file")).toBeInTheDocument();
 		expect(screen.getByRole("link", { name: "ada" })).toHaveAttribute("href", "https://github.com/ada");
+		expect(screen.getByRole("link", { name: "ada" }).querySelector("img")).toHaveAttribute(
+			"src",
+			"https://avatars.githubusercontent.com/u/123?v=4",
+		);
 		expect(screen.getByText("feature → main")).toHaveClass("break-words");
 	});
 

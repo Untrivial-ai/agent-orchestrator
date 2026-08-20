@@ -14,7 +14,9 @@ import (
 func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 	submitted := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	in := sessionsvc.PRSummary{
-		URL: "https://github.com/o/r/pull/7",
+		URL:             "https://github.com/o/r/pull/7",
+		Author:          "alice",
+		AuthorAvatarURL: "https://avatars.githubusercontent.com/u/123?v=4",
 		Review: sessionsvc.PRReviewSummary{
 			Decision: domain.ReviewChangesRequest,
 			UnresolvedBy: []sessionsvc.PRUnresolvedReviewer{{
@@ -35,6 +37,9 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 	}
 
 	got := controllers.NewSessionPRSummary(in)
+	if got.Author != "alice" || got.AuthorAvatarURL != "https://avatars.githubusercontent.com/u/123?v=4" {
+		t.Fatalf("author metadata = %+v", got)
+	}
 	if len(got.Review.Reviews) != 1 {
 		t.Fatalf("review entries = %+v, want 1", got.Review.Reviews)
 	}

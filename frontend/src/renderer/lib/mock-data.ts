@@ -225,7 +225,8 @@ const prSummary = (sessionId: string, number: number, overrides: Partial<Session
 		state: facts?.state ?? "open",
 		provider: "github",
 		repo: `me/${session?.workspaceName ?? "preview"}`,
-		author: "preview-agent",
+		author: "octocat",
+		authorAvatarUrl: "https://avatars.githubusercontent.com/u/583231?v=4",
 		sourceBranch: session?.branch ?? "",
 		targetBranch: "main",
 		headSha: `preview-${number}`,
@@ -293,6 +294,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 	// tab's Pull request pane has something to show in the browser preview.
 	"demo-needs-input": [
 		prSummary("demo-needs-input", 318, {
+			authorAvatarUrl: undefined,
 			changedFiles: 2,
 			additions: 68,
 			deletions: 12,

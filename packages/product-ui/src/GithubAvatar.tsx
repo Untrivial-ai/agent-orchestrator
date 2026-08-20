@@ -3,6 +3,7 @@ import { cn } from "./utils";
 
 export type GithubAvatarProps = {
 	login: string;
+	avatarUrl?: string;
 	className?: string;
 };
 
@@ -17,34 +18,30 @@ function initials(login: string): string {
 		.join("") || "?";
 }
 
-export function GithubAvatar({ login, className }: GithubAvatarProps) {
+export function GithubAvatar({ login, avatarUrl, className }: GithubAvatarProps) {
 	const normalizedLogin = login.replace(/^@/, "").trim();
-	const [failed, setFailed] = useState(false);
-	const avatarURL = normalizedLogin
-		? `https://github.com/${encodeURIComponent(normalizedLogin)}.png?size=64`
-		: "";
-
-	if (avatarURL && !failed) {
-		return (
-			<img
-				alt=""
-				aria-hidden="true"
-				className={cn("size-icon-sm shrink-0 rounded-full object-cover", className)}
-				draggable={false}
-				loading="lazy"
-				onError={() => setFailed(true)}
-				referrerPolicy="no-referrer"
-				src={avatarURL}
-			/>
-		);
-	}
+	const [loadedUrl, setLoadedUrl] = useState<string>();
+	const normalizedAvatarUrl = avatarUrl?.trim() ?? "";
+	const loaded = loadedUrl === normalizedAvatarUrl;
 
 	return (
 		<span
 			aria-hidden="true"
-			className={cn("inline-flex size-icon-sm shrink-0 items-center justify-center rounded-full bg-muted text-micro font-semibold text-muted-foreground", className)}
+			className={cn("relative inline-flex size-icon-sm shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted text-micro font-semibold text-muted-foreground", className)}
 		>
 			{initials(normalizedLogin)}
+			{normalizedAvatarUrl ? (
+				<img
+					alt=""
+					className={cn("absolute inset-0 size-full object-cover", loaded ? "opacity-100" : "opacity-0")}
+					draggable={false}
+					loading="lazy"
+					onError={() => setLoadedUrl(undefined)}
+					onLoad={() => setLoadedUrl(normalizedAvatarUrl)}
+					referrerPolicy="no-referrer"
+					src={normalizedAvatarUrl}
+				/>
+			) : null}
 		</span>
 	);
 }
