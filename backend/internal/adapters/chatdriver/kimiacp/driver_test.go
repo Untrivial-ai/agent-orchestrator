@@ -2,7 +2,10 @@ package kimiacp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
@@ -45,8 +48,10 @@ func TestDriverReusesKimiPluginAndDeclaresNativeFeatures(t *testing.T) {
 }
 
 func TestConfigureLaunchesNativeACPSubcommand(t *testing.T) {
+	workspace := t.TempDir()
 	args, env, err := configure(acpdriver.LaunchConfig{
-		Model: "kimi-code/kimi-for-coding", Permissions: ports.PermissionModeBypassPermissions,
+		WorkspacePath: workspace,
+		Model:         "kimi-code/kimi-for-coding", Permissions: ports.PermissionModeBypassPermissions,
 		SystemPrompt: "AO worker instructions",
 	})
 	if err != nil {
@@ -57,6 +62,26 @@ func TestConfigureLaunchesNativeACPSubcommand(t *testing.T) {
 	}
 	if env != nil {
 		t.Fatalf("env = %#v, want nil", env)
+	}
+	instructions, err := os.ReadFile(filepath.Join(workspace, ".kimi-code", "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read Kimi ACP instructions: %v", err)
+	}
+	for _, want := range []string{
+		"<!-- managed by agent-orchestrator: kimi system prompt -->",
+		"AO worker instructions",
+		"<!-- /managed by agent-orchestrator: kimi system prompt -->",
+	} {
+		if !strings.Contains(string(instructions), want) {
+			t.Errorf("Kimi ACP instructions missing %q:\n%s", want, instructions)
+		}
+	}
+	gitignore, err := os.ReadFile(filepath.Join(workspace, ".kimi-code", ".gitignore"))
+	if err != nil {
+		t.Fatalf("read Kimi ACP gitignore: %v", err)
+	}
+	if !strings.Contains(string(gitignore), "/AGENTS.md\n") {
+		t.Fatalf("Kimi ACP instructions are not gitignored:\n%s", gitignore)
 	}
 }
 

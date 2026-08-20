@@ -5,6 +5,7 @@ package kimiacp
 import (
 	"log/slog"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimi"
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/nativeacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -26,7 +27,10 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 	}, log)
 }
 
-func configure(acpdriver.LaunchConfig) ([]string, map[string]string, error) {
+func configure(cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
+	if err := kimi.PrepareACPInstructions(cfg.WorkspacePath, cfg.SystemPrompt); err != nil {
+		return nil, nil, err
+	}
 	return []string{"acp"}, nil, nil
 }
 
