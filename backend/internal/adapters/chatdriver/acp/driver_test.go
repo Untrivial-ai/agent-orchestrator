@@ -356,6 +356,41 @@ func TestACPDriverDefersPromptUntilDurableTurnBinding(t *testing.T) {
 	}
 }
 
+func TestACPDriverValidatesHandshakeIdentityBeforeOpeningSession(t *testing.T) {
+	agent := &fakeAgent{}
+	validated := false
+	driver := New(Config{
+		Harness: domain.HarnessPi,
+		Capabilities: ports.ChatCapabilities{
+			ports.ChatCapabilityStreaming: true,
+			ports.ChatCapabilityApprovals: true,
+			ports.ChatCapabilityInterrupt: true,
+			ports.ChatCapabilityResume:    true,
+		},
+		Probe:  func(context.Context) error { return nil },
+		Launch: func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		ValidateInitialize: func(acpsdk.InitializeResponse) error {
+			validated = true
+			return errors.New("unsupported adapter version")
+		},
+	}, nil)
+	driver.spawn = fakeSpawn(agent)
+
+	_, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if !validated {
+		t.Fatal("initialize response was not validated")
+	}
+	if !errors.Is(err, ports.ErrChatDriverIncompatible) || !strings.Contains(err.Error(), "unsupported adapter version") {
+		t.Fatalf("Start error = %v", err)
+	}
+	agent.mu.Lock()
+	opened := agent.newParams.Cwd != ""
+	agent.mu.Unlock()
+	if opened {
+		t.Fatal("session/new ran before the handshake identity was admitted")
+	}
+}
+
 func TestACPInterruptCancelsTheLocalPromptAfterNotifyingTheAgent(t *testing.T) {
 	agent := &fakeAgent{promptBlock: true, promptStarted: make(chan struct{}, 1)}
 	driver := New(Config{
