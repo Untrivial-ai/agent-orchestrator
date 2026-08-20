@@ -1,12 +1,14 @@
 package usage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1804,6 +1806,110 @@ func TestCollectorRejectsCopilotSourceForDifferentNativeSession(t *testing.T) {
 	binding := domain.UsageBindingRecord{Harness: domain.HarnessCopilot, NativeRootID: "bound-native"}
 	if err := validateSourceAttribution(binding, domain.UsageSourceCopilotShutdown, "bound-native", "", canonicalUsagePath(t, path), ""); err == nil {
 		t.Fatal("accepted Copilot events file from a different native session")
+	}
+}
+
+func TestCollectorDiscoversKimiWireSourcesFromSessionIndex(t *testing.T) {
+	const nativeID = "kimi-session-1"
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessKimi, nativeID, false)
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, "sessions", "wd_agent-orchestrator-379_1f71c05c08c2", nativeID)
+	mainPath := filepath.Join(sessionDir, "agents", "main", "wire.jsonl")
+	childPath := filepath.Join(sessionDir, "agents", "researcher", "wire.jsonl")
+	writeUsageFixture(t, mainPath, "{}\n")
+	writeUsageFixture(t, childPath, "{}\n")
+	writeUsageFixture(t, filepath.Join(home, "session_index.jsonl"),
+		fmt.Sprintf(`{"sessionId":%q,"sessionDir":%q,"workDir":"/repo"}`+"\n", nativeID, sessionDir))
+	collector := NewCollector(store, SourceRoots{KimiHome: home}, nil)
+
+	mustNoError(t, collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness: domain.HarnessKimi, Event: "session-start", NativeSessionID: nativeID,
+	}))
+	bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	if err != nil || len(bindings) != 1 {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 2 {
+		t.Fatalf("sources=%+v err=%v", sources, err)
+	}
+	gotSubagents := []string{sources[0].SubagentID, sources[1].SubagentID}
+	slices.Sort(gotSubagents)
+	if !reflect.DeepEqual(gotSubagents, []string{"", "researcher"}) {
+		t.Fatalf("subagent IDs = %v", gotSubagents)
+	}
+}
+
+func TestCollectorKimiIndexRejectsDeletedAndEscapingSessions(t *testing.T) {
+	const nativeID = "kimi-session-1"
+	tests := []struct {
+		name    string
+		records func(home string) string
+	}{
+		{
+			name: "last record deletes session",
+			records: func(home string) string {
+				dir := filepath.Join(home, "sessions", nativeID)
+				return fmt.Sprintf(`{"sessionId":%q,"sessionDir":%q}`+"\n"+`{"sessionId":%q,"deleted":true}`+"\n", nativeID, dir, nativeID)
+			},
+		},
+		{
+			name: "session directory escapes root",
+			records: func(home string) string {
+				dir := filepath.Join(filepath.Dir(home), nativeID)
+				return fmt.Sprintf(`{"sessionId":%q,"sessionDir":%q}`+"\n", nativeID, dir)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			escapingDir := filepath.Join(filepath.Dir(home), nativeID)
+			t.Cleanup(func() { _ = os.RemoveAll(escapingDir) })
+			writeUsageFixture(t, filepath.Join(home, "sessions", nativeID, "agents", "main", "wire.jsonl"), "{}\n")
+			writeUsageFixture(t, filepath.Join(escapingDir, "agents", "main", "wire.jsonl"), "{}\n")
+			writeUsageFixture(t, filepath.Join(home, "session_index.jsonl"), tc.records(home))
+			collector := NewCollector(collectorTestStore(t), SourceRoots{KimiHome: home}, nil)
+			path, err := collector.discoverPath(context.Background(), domain.HarnessKimi, nativeID)
+			mustNoError(t, err)
+			if path != "" {
+				t.Fatalf("discovered rejected session path %q", path)
+			}
+		})
+	}
+}
+
+func TestCollectorKimiIndexReplaysRecordsBeyondEightMiB(t *testing.T) {
+	const nativeID = "kimi-late-session"
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, "sessions", nativeID)
+	wire := filepath.Join(sessionDir, "agents", "main", "wire.jsonl")
+	writeUsageFixture(t, wire, "{}\n")
+	fillerLine := []byte(`{"sessionId":"unrelated","deleted":true}` + "\n")
+	filler := bytes.Repeat(fillerLine, (8<<20)/len(fillerLine)+1)
+	late := []byte(fmt.Sprintf(`{"sessionId":%q,"sessionDir":%q}`+"\n", nativeID, sessionDir))
+	writeUsageFixture(t, filepath.Join(home, "session_index.jsonl"), string(append(filler, late...)))
+	collector := NewCollector(collectorTestStore(t), SourceRoots{KimiHome: home}, nil)
+
+	path, err := collector.discoverPath(context.Background(), domain.HarnessKimi, nativeID)
+	mustNoError(t, err)
+	if path != wire {
+		t.Fatalf("discovered %q, want late-index wire %q", path, wire)
+	}
+}
+
+func TestCollectorRejectsKimiWireOutsideCanonicalSessionsDirectory(t *testing.T) {
+	const nativeID = "kimi-session-1"
+	home := t.TempDir()
+	path := filepath.Join(home, "attacker", "sessions", nativeID, "agents", "main", "wire.jsonl")
+	writeUsageFixture(t, path, "{}\n")
+	binding := domain.UsageBindingRecord{Harness: domain.HarnessKimi, NativeRootID: nativeID}
+	collector := NewCollector(collectorTestStore(t), SourceRoots{KimiHome: home}, nil)
+	if err := collector.validateSourceAttribution(
+		binding, domain.UsageSourceKimiWire, nativeID, "", canonicalUsagePath(t, path), "",
+	); err == nil {
+		t.Fatal("accepted Kimi wire outside <KimiHome>/sessions/<native-id>")
 	}
 }
 
