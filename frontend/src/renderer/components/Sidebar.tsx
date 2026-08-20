@@ -1239,7 +1239,7 @@ function RestartToUpdateRailButton({ status, tabIndex }: { status: UpdateStatus;
 	);
 }
 
-function SectionDisclosure({
+export function SectionDisclosure({
 	icon,
 	label,
 	open = true,

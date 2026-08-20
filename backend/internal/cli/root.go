@@ -210,6 +210,7 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newReviewCommand(ctx))
 	root.AddCommand(newCompletionCommand())
 	root.AddCommand(newVersionCommand())
+	root.AddCommand(newIOSCommand(ctx))
 
 	return root
 }

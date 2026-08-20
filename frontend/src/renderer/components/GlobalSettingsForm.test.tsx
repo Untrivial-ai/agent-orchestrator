@@ -142,7 +142,7 @@ beforeEach(async () => {
 	// Locale defaults to English so existing copy assertions stay green.
 	await appI18n.changeLanguage("en");
 	useLocaleStore.setState({ locale: "en", loaded: false, saving: false, saveError: false });
-	useUiStore.setState({ developerMode: false });
+	useUiStore.setState({ developerMode: false, mobileEmulatorEnabled: false });
 	document.documentElement.lang = "en";
 });
 
@@ -179,6 +179,16 @@ describe("GlobalSettingsForm", () => {
 		expect(window.localStorage.getItem("ao.developerMode")).toBe("true");
 		await user.click(screen.getByLabelText("Updates channel"));
 		expect(await screen.findByRole("menuitem", { name: "Feature Releases" })).toBeInTheDocument();
+	});
+
+	it("reveals and persists the Mobile Emulator toggle", async () => {
+		const user = userEvent.setup();
+		renderForm();
+		const toggle = await screen.findByRole("switch", { name: "Mobile Emulator" });
+		expect(toggle).toHaveAttribute("aria-checked", "false");
+
+		await user.click(toggle);
+		expect(window.localStorage.getItem("ao.mobileEmulator")).toBe("true");
 	});
 
 	it("shows the available feature builds after choosing Feature Releases", async () => {

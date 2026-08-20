@@ -97,6 +97,8 @@ export function GeneralSettingsSection({
 	const localeSaveError = useLocaleStore((state) => state.saveError);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const setDeveloperMode = useUiStore((state) => state.setDeveloperMode);
+	const mobileEmulatorEnabled = useUiStore((state) => state.mobileEmulatorEnabled);
+	const setMobileEmulatorEnabled = useUiStore((state) => state.setMobileEmulatorEnabled);
 
 	const themeOptions = [
 		{ value: "light", label: t("settings.theme.light") },
@@ -158,6 +160,13 @@ export function GeneralSettingsSection({
 					aria-label={t("settings.developerMode")}
 					checked={developerMode}
 					onCheckedChange={setDeveloperMode}
+				/>
+			</SettingsRow>
+			<SettingsRow label={t("settings.mobileEmulator")}>
+				<Switch
+					aria-label={t("settings.mobileEmulator")}
+					checked={mobileEmulatorEnabled}
+					onCheckedChange={setMobileEmulatorEnabled}
 				/>
 			</SettingsRow>
 			<SettingsLinkRow label={t("settings.connectMobile")} onClick={onConnectMobile} />

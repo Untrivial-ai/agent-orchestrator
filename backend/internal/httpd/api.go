@@ -45,6 +45,7 @@ type APIDeps struct {
 	Events              cdcSubscriber
 	Telemetry           ports.EventSink
 	Mobile              *controllers.MobileController
+	IOSDevice           *controllers.IOSDeviceController
 	Browser             controllers.BrowserService
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
@@ -105,12 +106,16 @@ type API struct {
 	dev           *controllers.DevController
 	browser       *controllers.BrowserController
 	events        *EventsController
+	iosDevice     *controllers.IOSDeviceController
 }
 
 // NewAPI constructs the API surface from its dependencies. cfg carries the
 // per-request timeout so the REST group can apply it without re-reading the
 // environment.
 func NewAPI(cfg config.Config, deps APIDeps) *API {
+	if deps.IOSDevice == nil {
+		deps.IOSDevice = &controllers.IOSDeviceController{}
+	}
 	return &API{
 		cfg:  cfg,
 		deps: deps,
@@ -140,6 +145,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
+		iosDevice:     deps.IOSDevice,
 	}
 }
 
@@ -171,12 +177,20 @@ func (a *API) Register(root chi.Router) {
 			a.settings.Register(r)
 			a.dev.Register(r)
 			a.browser.Register(r)
+			if a.iosDevice != nil {
+				a.iosDevice.Register(r)
+			}
 			// Sibling REST controllers plug in here.
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.
 		a.notifications.RegisterStream(r)
 		a.sessions.RegisterStreams(r)
 		a.events.Register(r)
+		if a.iosDevice != nil {
+			// The simulator frame stream stays open for the lifetime of the
+			// viewer socket; the REST timeout group would cut it.
+			a.iosDevice.RegisterStream(r)
+		}
 	})
 }
 

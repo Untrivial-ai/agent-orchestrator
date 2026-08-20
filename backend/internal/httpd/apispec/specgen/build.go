@@ -196,11 +196,22 @@ var schemaNames = map[string]string{
 	"DomainAgentConfig":               "AgentConfig",
 	"DomainRoleOverride":              "RoleOverride",
 	// httpd/controllers (wire envelopes)
-	"ControllersListProjectsResponse":                     "ListProjectsResponse",
-	"ControllersProjectResponse":                          "ProjectResponse",
-	"ControllersAgentIDParam":                             "AgentIDParam",
-	"ControllersGetProjectResponse":                       "ProjectGetResponse",
-	"ControllersProjectOrDegraded":                        "ProjectOrDegraded",
+	"ControllersListProjectsResponse": "ListProjectsResponse",
+	"ControllersProjectResponse":      "ProjectResponse",
+	"ControllersAgentIDParam":         "AgentIDParam",
+	"ControllersGetProjectResponse":   "ProjectGetResponse",
+	"ControllersProjectOrDegraded":    "ProjectOrDegraded",
+	// httpd/controllers: iOS Simulator wire envelopes
+	"ControllersStatusResponse":                           "StatusResponse",
+	"ControllersFetchRuntimeResponse":                     "FetchRuntimeResponse",
+	"ControllersSimulatorStatusResponse":                  "SimulatorStatusResponse",
+	"ControllersSimulatorScreenshotResponse":              "SimulatorScreenshotResponse",
+	"ControllersSimulatorInputRequest":                    "SimulatorInputRequest",
+	"ControllersSimulatorPermissionsResponse":             "SimulatorPermissionsResponse",
+	"ControllersSimulatorInputResponse":                   "SimulatorInputResponse",
+	"ControllersSimulatorAppRequest":                      "SimulatorAppRequest",
+	"ControllersSimulatorBuildRequest":                    "SimulatorBuildRequest",
+	"ControllersSimulatorBuildResponse":                   "SimulatorBuildResponse",
 	"ControllersListSessionsQuery":                        "ListSessionsQuery",
 	"ControllersCleanupSessionsQuery":                     "CleanupSessionsQuery",
 	"ControllersListSessionsResponse":                     "ListSessionsResponse",
@@ -445,8 +456,29 @@ func operations() []operation {
 	ops = append(ops, mobileOperations()...)
 	ops = append(ops, mobileDeviceOperations()...)
 	ops = append(ops, browserOperations()...)
+	ops = append(ops, iosDeviceOperations()...)
 	ops = append(ops, shellTerminalOperations()...)
 	return ops
+}
+
+func iosDeviceOperations() []operation {
+	return []operation{
+		{method: http.MethodGet, path: "/api/v1/ios-device/toolchain/status", id: "getIOSDeviceToolchainStatus", tag: "ios-device", summary: "Check Xcode and iOS Simulator toolchain availability", resps: []respUnit{{http.StatusOK, controllers.StatusResponse{}}, {http.StatusForbidden, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/ios-device/toolchain/recheck", id: "recheckIOSDeviceToolchain", tag: "ios-device", summary: "Re-evaluate Xcode and iOS Simulator toolchain availability", resps: []respUnit{{http.StatusOK, controllers.StatusResponse{}}, {http.StatusForbidden, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/ios-device/toolchain/fetch-runtime", id: "fetchIOSDeviceRuntime", tag: "ios-device", summary: "Return guidance for acquiring the iOS Simulator runtime", resps: []respUnit{{http.StatusOK, controllers.FetchRuntimeResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}}},
+		{method: http.MethodGet, path: "/api/v1/ios-device/devices", id: "listIOSDevices", tag: "ios-device", summary: "List available iOS Simulator devices", pathParams: []any{controllers.SimulatorSessionQuery{}}, resps: []respUnit{{http.StatusOK, []controllers.SimulatorDeviceResponse{}}, {http.StatusConflict, envelope.APIError{}}}},
+		{method: http.MethodGet, path: "/api/v1/ios-device/status", id: "getIOSDeviceStatus", tag: "ios-device", summary: "Get the AO-managed iOS Simulator status", pathParams: []any{controllers.SimulatorSessionQuery{}}, resps: []respUnit{{http.StatusOK, controllers.SimulatorStatusResponse{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/ios-device/start", id: "startIOSDevice", tag: "ios-device", summary: "Create and boot the AO-managed iOS Simulator", pathParams: []any{controllers.SimulatorSessionQuery{}, controllers.SimulatorDeviceQuery{}}, resps: []respUnit{{http.StatusOK, controllers.SimulatorStatusResponse{}}, {http.StatusInternalServerError, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/ios-device/stop", id: "stopIOSDevice", tag: "ios-device", summary: "Shut down the AO-managed iOS Simulator", pathParams: []any{controllers.SimulatorSessionQuery{}}, resps: []respUnit{{http.StatusOK, controllers.SimulatorStatusResponse{}}, {http.StatusInternalServerError, envelope.APIError{}}}},
+		{method: http.MethodGet, path: "/api/v1/ios-device/screenshot", id: "getIOSDeviceScreenshot", tag: "ios-device", summary: "Capture a screenshot from the AO-managed iOS Simulator", pathParams: []any{controllers.SimulatorSessionQuery{}}, resps: []respUnit{{http.StatusOK, controllers.SimulatorScreenshotResponse{}}, {http.StatusConflict, envelope.APIError{}}}},
+		{method: http.MethodGet, path: "/api/v1/ios-device/permissions", id: "getIOSDevicePermissions", tag: "ios-device", summary: "Check macOS permissions needed for iOS Simulator capture and input", resps: []respUnit{{http.StatusOK, controllers.SimulatorPermissionsResponse{}}}},
+		{method: http.MethodPost, path: "/api/v1/ios-device/input", id: "sendIOSDeviceInput", tag: "ios-device", summary: "Send tap, swipe, text, or key input to the iOS Simulator", pathParams: []any{controllers.SimulatorSessionQuery{}}, reqBody: controllers.SimulatorInputRequest{}, resps: []respUnit{{http.StatusOK, controllers.SimulatorInputResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}}},
+		{method: http.MethodGet, path: "/api/v1/ios-device/stream", id: "streamIOSDevice", tag: "ios-device", summary: "Stream periodic iOS Simulator screenshots over WebSocket", pathParams: []any{controllers.SimulatorSessionQuery{}}, resps: []respUnit{{http.StatusSwitchingProtocols, controllers.SimulatorScreenshotResponse{}}}},
+		{method: http.MethodPost, path: "/api/v1/ios-device/app/install", id: "installIOSDeviceApp", tag: "ios-device", summary: "Install an iOS app bundle", reqBody: controllers.SimulatorAppRequest{}, resps: []respUnit{{http.StatusOK, controllers.SimulatorInputResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/ios-device/app/launch", id: "launchIOSDeviceApp", tag: "ios-device", summary: "Launch an installed iOS app", reqBody: controllers.SimulatorAppRequest{}, resps: []respUnit{{http.StatusOK, controllers.SimulatorInputResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/ios-device/app/terminate", id: "terminateIOSDeviceApp", tag: "ios-device", summary: "Terminate an iOS app", reqBody: controllers.SimulatorAppRequest{}, resps: []respUnit{{http.StatusOK, controllers.SimulatorInputResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/ios-device/app/build", id: "buildIOSDeviceApp", tag: "ios-device", summary: "Build, install, and optionally launch an iOS app", reqBody: controllers.SimulatorBuildRequest{}, resps: []respUnit{{http.StatusOK, controllers.SimulatorBuildResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}}},
+	}
 }
 
 func browserOperations() []operation {

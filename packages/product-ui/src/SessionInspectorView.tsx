@@ -21,7 +21,7 @@ import type {
 import { cn } from "./utils";
 import { GithubAvatar } from "./GithubAvatar";
 
-export type InspectorView = "summary" | "reviews" | "browser" | "files";
+export type InspectorView = "summary" | "reviews" | "browser" | "files" | "emulator";
 
 export type InspectorTab = {
 	badge?: boolean;
@@ -42,6 +42,7 @@ export function SessionInspectorShellView({
 	browserPoppedOut,
 	browserView,
 	filesView,
+	emulatorView,
 	headerActions,
 	isVisible = true,
 	loadingText,
@@ -55,6 +56,7 @@ export function SessionInspectorShellView({
 	browserPoppedOut: boolean;
 	browserView?: ReactNode;
 	filesView?: ReactNode;
+	emulatorView?: ReactNode;
 	headerActions?: ReactNode;
 	isVisible?: boolean;
 	loadingText?: string;
@@ -148,11 +150,12 @@ export function SessionInspectorShellView({
 				className={cn(
 					inspectorBodyBaseClass,
 					!isVisible && "invisible pointer-events-none",
-					activeView !== "browser" && activeView !== "files" && inspectorScrollableBodyClass,
+					activeView !== "browser" && activeView !== "files" && activeView !== "emulator" && inspectorScrollableBodyClass,
 					activeView === "browser" &&
 						!browserPoppedOut &&
 						"session-inspector__body--browser p-0 overflow-hidden [&>[role=tabpanel]]:border-0 [&>[role=tabpanel]]:rounded-none",
 					activeView === "files" && "p-0 overflow-hidden [&>[role=tabpanel]]:h-full",
+					activeView === "emulator" && "p-0 overflow-hidden [&>[role=tabpanel]]:h-full [&>[role=tabpanel]]:overflow-hidden",
 				)}
 				inert={!isVisible}
 			>
@@ -160,6 +163,7 @@ export function SessionInspectorShellView({
 				{activeView === "reviews" ? reviewsView : null}
 				{activeView === "browser" ? browserView : null}
 				{activeView === "files" ? filesView : null}
+				{activeView === "emulator" ? emulatorView : null}
 			</div>
 		</aside>
 	);

@@ -245,7 +245,7 @@ beforeEach(() => {
   navigateMock.mockReset();
   patchMock.mockReset();
   postMock.mockReset();
-  useUiStore.setState({ developerMode: false, inspectorSessions: {} });
+  useUiStore.setState({ developerMode: false, inspectorSessions: {}, mobileEmulatorEnabled: false });
   putMock.mockReset();
   mockCommonGets();
   patchMock.mockResolvedValue({
@@ -266,7 +266,50 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  restoreNavigator();
 });
+
+const originalPlatform = Object.getOwnPropertyDescriptor(
+  window.navigator,
+  "platform",
+);
+const originalUserAgent = Object.getOwnPropertyDescriptor(
+  window.navigator,
+  "userAgent",
+);
+const originalUserAgentData = Object.getOwnPropertyDescriptor(
+  window.navigator,
+  "userAgentData",
+);
+
+function spoofMacPlatform() {
+  Object.defineProperty(window.navigator, "platform", {
+    configurable: true,
+    get: () => "MacIntel",
+  });
+  Object.defineProperty(window.navigator, "userAgent", {
+    configurable: true,
+    get: () => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+  });
+  Object.defineProperty(window.navigator, "userAgentData", {
+    configurable: true,
+    get: () => ({ platform: "macOS" }),
+  });
+}
+
+function restoreNavigator() {
+  for (const [name, descriptor] of [
+    ["platform", originalPlatform],
+    ["userAgent", originalUserAgent],
+    ["userAgentData", originalUserAgentData],
+  ] as const) {
+    if (descriptor) {
+      Object.defineProperty(window.navigator, name, descriptor);
+    } else {
+      delete (window.navigator as unknown as Record<string, unknown>)[name];
+    }
+  }
+}
 
 describe("SessionInspector tabs", () => {
   it("gives the Browser viewport the full inspector body without the default content gutter", async () => {
@@ -1448,6 +1491,29 @@ describe("SessionInspector tabs", () => {
 
     expect(await screen.findByText("Review controls")).toBeInTheDocument();
     expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
+  });
+
+it("hides the Emulator tab until the Mobile Emulator setting is switched on, even on macOS", () => {
+    spoofMacPlatform();
+    renderWithQuery(<SessionInspector session={session([pr(1, "open")])} />);
+    const tabs = screen.getAllByRole("tab").map((el) => el.textContent?.trim());
+    expect(tabs).toEqual(["Summary", "Reviews", "Browser", "Files"]);
+    expect(screen.queryByRole("tab", { name: "Emulator" })).not.toBeInTheDocument();
+  });
+
+  it("adds the Emulator tab on macOS once the Mobile Emulator setting is enabled", () => {
+    spoofMacPlatform();
+    useUiStore.setState({ mobileEmulatorEnabled: true });
+    renderWithQuery(<SessionInspector session={session([pr(1, "open")])} />);
+    const tabs = screen.getAllByRole("tab").map((el) => el.textContent?.trim());
+    expect(tabs).toEqual(["Summary", "Reviews", "Browser", "Files", "▣Emulator"]);
+    expect(screen.getByRole("tab", { name: "Emulator" })).toBeInTheDocument();
+  });
+
+  it("keeps the Emulator tab hidden on non-macOS even when the setting is enabled", () => {
+    useUiStore.setState({ mobileEmulatorEnabled: true });
+    renderWithQuery(<SessionInspector session={session([pr(1, "open")])} />);
+    expect(screen.queryByRole("tab", { name: "Emulator" })).not.toBeInTheDocument();
   });
 
   it("keeps the Reviews tab available for draft PRs", async () => {

@@ -463,6 +463,402 @@ paths:
       summary: Run the legacy AO project import through the daemon store
       tags:
       - import
+  /api/v1/ios-device/app/build:
+    post:
+      operationId: buildIOSDeviceApp
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulatorBuildRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorBuildResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Build, install, and optionally launch an iOS app
+      tags:
+      - ios-device
+  /api/v1/ios-device/app/install:
+    post:
+      operationId: installIOSDeviceApp
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulatorAppRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorInputResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Install an iOS app bundle
+      tags:
+      - ios-device
+  /api/v1/ios-device/app/launch:
+    post:
+      operationId: launchIOSDeviceApp
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulatorAppRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorInputResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Launch an installed iOS app
+      tags:
+      - ios-device
+  /api/v1/ios-device/app/terminate:
+    post:
+      operationId: terminateIOSDeviceApp
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulatorAppRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorInputResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Terminate an iOS app
+      tags:
+      - ios-device
+  /api/v1/ios-device/devices:
+    get:
+      operationId: listIOSDevices
+      parameters:
+      - description: AO session owning this simulator.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session owning this simulator.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ControllersSimulatorDeviceResponse'
+                type: array
+          description: OK
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: List available iOS Simulator devices
+      tags:
+      - ios-device
+  /api/v1/ios-device/input:
+    post:
+      operationId: sendIOSDeviceInput
+      parameters:
+      - description: AO session owning this simulator.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session owning this simulator.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulatorInputRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorInputResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Send tap, swipe, text, or key input to the iOS Simulator
+      tags:
+      - ios-device
+  /api/v1/ios-device/permissions:
+    get:
+      operationId: getIOSDevicePermissions
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorPermissionsResponse'
+          description: OK
+      summary: Check macOS permissions needed for iOS Simulator capture and input
+      tags:
+      - ios-device
+  /api/v1/ios-device/screenshot:
+    get:
+      operationId: getIOSDeviceScreenshot
+      parameters:
+      - description: AO session owning this simulator.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session owning this simulator.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorScreenshotResponse'
+          description: OK
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Capture a screenshot from the AO-managed iOS Simulator
+      tags:
+      - ios-device
+  /api/v1/ios-device/start:
+    post:
+      operationId: startIOSDevice
+      parameters:
+      - description: AO session owning this simulator.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session owning this simulator.
+          type: string
+      - description: Explicit simulator UDID to attach and boot.
+        in: query
+        name: deviceId
+        schema:
+          description: Explicit simulator UDID to attach and boot.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorStatusResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Create and boot the AO-managed iOS Simulator
+      tags:
+      - ios-device
+  /api/v1/ios-device/status:
+    get:
+      operationId: getIOSDeviceStatus
+      parameters:
+      - description: AO session owning this simulator.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session owning this simulator.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorStatusResponse'
+          description: OK
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get the AO-managed iOS Simulator status
+      tags:
+      - ios-device
+  /api/v1/ios-device/stop:
+    post:
+      operationId: stopIOSDevice
+      parameters:
+      - description: AO session owning this simulator.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session owning this simulator.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorStatusResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Shut down the AO-managed iOS Simulator
+      tags:
+      - ios-device
+  /api/v1/ios-device/stream:
+    get:
+      operationId: streamIOSDevice
+      parameters:
+      - description: AO session owning this simulator.
+        in: query
+        name: sessionId
+        schema:
+          description: AO session owning this simulator.
+          type: string
+      responses:
+        "101":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorScreenshotResponse'
+          description: Switching Protocols
+      summary: Stream periodic iOS Simulator screenshots over WebSocket
+      tags:
+      - ios-device
+  /api/v1/ios-device/toolchain/fetch-runtime:
+    post:
+      operationId: fetchIOSDeviceRuntime
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FetchRuntimeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+      summary: Return guidance for acquiring the iOS Simulator runtime
+      tags:
+      - ios-device
+  /api/v1/ios-device/toolchain/recheck:
+    post:
+      operationId: recheckIOSDeviceToolchain
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+      summary: Re-evaluate Xcode and iOS Simulator toolchain availability
+      tags:
+      - ios-device
+  /api/v1/ios-device/toolchain/status:
+    get:
+      operationId: getIOSDeviceToolchainStatus
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+      summary: Check Xcode and iOS Simulator toolchain availability
+      tags:
+      - ios-device
   /api/v1/mobile/devices:
     get:
       operationId: listMobileDevices
@@ -5731,6 +6127,21 @@ components:
       required:
       - enabled
       type: object
+    ControllersSimulatorDeviceResponse:
+      properties:
+        deviceId:
+          type: string
+        name:
+          type: string
+        runtime:
+          type: string
+        state:
+          type: string
+      required:
+      - deviceId
+      - name
+      - state
+      type: object
     ConversationAccountPayload:
       properties:
         authMode:
@@ -6531,6 +6942,16 @@ components:
       required:
       - sourceBranchId
       - activeBranchId
+      type: object
+    FetchRuntimeResponse:
+      properties:
+        message:
+          type: string
+        success:
+          type: boolean
+      required:
+      - success
+      - message
       type: object
     ImportReport:
       properties:
@@ -8224,6 +8645,116 @@ components:
       - title
       - createdAt
       type: object
+    SimulatorAppRequest:
+      properties:
+        appPath:
+          type: string
+        bundleId:
+          type: string
+      type: object
+    SimulatorBuildRequest:
+      properties:
+        bundleId:
+          type: string
+        derivedData:
+          type: string
+        project:
+          type: string
+        scheme:
+          type: string
+        workspace:
+          type: string
+      required:
+      - scheme
+      - bundleId
+      type: object
+    SimulatorBuildResponse:
+      properties:
+        accepted:
+          type: boolean
+        appPath:
+          type: string
+      required:
+      - appPath
+      - accepted
+      type: object
+    SimulatorInputRequest:
+      properties:
+        action:
+          type: string
+        keyCode:
+          type: integer
+        text:
+          type: string
+        x:
+          format: double
+          type: number
+        x2:
+          format: double
+          type: number
+        "y":
+          format: double
+          type: number
+        y2:
+          format: double
+          type: number
+      required:
+      - action
+      type: object
+    SimulatorInputResponse:
+      properties:
+        accepted:
+          type: boolean
+      required:
+      - accepted
+      type: object
+    SimulatorPermissionsResponse:
+      properties:
+        accessibility:
+          type: boolean
+        screenRecording:
+          type: boolean
+        supported:
+          type: boolean
+      required:
+      - screenRecording
+      - accessibility
+      - supported
+      type: object
+    SimulatorScreenshotResponse:
+      properties:
+        data:
+          type: string
+        height:
+          type: integer
+        mimeType:
+          type: string
+        width:
+          type: integer
+      required:
+      - data
+      - mimeType
+      type: object
+    SimulatorStatusResponse:
+      properties:
+        available:
+          type: boolean
+        deviceId:
+          type: string
+        error:
+          type: string
+        name:
+          type: string
+        screenHeight:
+          type: integer
+        screenWidth:
+          type: integer
+        state:
+          type: string
+      required:
+      - available
+      - state
+      type: object
     SpawnOrchestratorRequest:
       properties:
         clean:
@@ -8382,6 +8913,28 @@ components:
       - ok
       - sessionId
       - transition
+      type: object
+    StatusResponse:
+      properties:
+        cltOnly:
+          type: boolean
+        defaultRuntimeAvailable:
+          type: boolean
+        guidanceAppStoreURL:
+          type: string
+        guidanceDeveloperURL:
+          type: string
+        guidanceWhyMissing:
+          type: string
+        simctlAvailable:
+          type: boolean
+        xcodeDetected:
+          type: boolean
+      required:
+      - xcodeDetected
+      - cltOnly
+      - simctlAvailable
+      - defaultRuntimeAvailable
       type: object
     SteerConversationRequest:
       properties:
