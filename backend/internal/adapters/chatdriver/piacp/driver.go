@@ -47,10 +47,11 @@ func buildConfig(plugin piPlugin, resolve binaryResolver, log *slog.Logger) acpd
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming: true,
 			ports.ChatCapabilityTools:     true,
-			// Pi deliberately executes tools without permission popups. Marking
-			// this true records that there is no unresolved approval gate; pi-acp
-			// never emits permission requests for AO to display or answer.
-			ports.ChatCapabilityApprovals: true,
+			// pi-acp does not request ACP permissions and Pi executes tools without
+			// permission popups. Keep approvals false so AO's production floor
+			// refuses mutating Chat admission instead of presenting a permission
+			// selector whose value the provider would silently ignore.
+			ports.ChatCapabilityApprovals: false,
 			ports.ChatCapabilityInterrupt: true,
 			ports.ChatCapabilityResume:    true,
 			ports.ChatCapabilityUsage:     true,

@@ -1,8 +1,10 @@
 # Pi
 
-AO supports Pi in TUI mode through the `pi` executable and in Chat mode through
-the independently installed [`@victor-software-house/pi-acp`](https://github.com/victor-software-house/pi-acp)
-distribution.
+AO supports Pi in TUI mode through the `pi` executable. AO includes a Chat
+driver for the independently installed
+[`@victor-software-house/pi-acp`](https://github.com/victor-software-house/pi-acp)
+distribution, but current pi-acp releases do not provide a permission boundary,
+so AO refuses mutating Chat admission until that gap is closed.
 
 ## Chat prerequisites and install policy
 
@@ -28,7 +30,7 @@ conversation files remain in Pi's own session directory.
 | --- | --- |
 | Text and thinking | ACP message/thought chunks stream into Chat events. |
 | Tools | ACP tool calls and updates map to tool events; edit/write structured diffs are preserved. |
-| Approvals | Pi intentionally has no permission popups and pi-acp emits no ACP permission requests. There is no approval UI to answer; tools follow Pi's native behavior. |
+| Approvals | Unsupported. Pi has no permission popups and pi-acp emits no ACP permission requests, so AO reports this capability as false. The production capability floor therefore refuses mutating Pi Chat sessions rather than silently ignoring the selected permission mode. |
 | Images and attachments | Images are sent as native ACP image blocks. Text resources are sent as embedded context. Audio is not supported by pi-acp. |
 | Load/resume | AO stores the pi-acp session id and uses ACP `session/load`, including structured history replay. |
 | Models | pi-acp's live `model` config option drives AO's model selector; `thought_level` carries effort. |
@@ -39,6 +41,6 @@ append the same generated AO standing prompt passed to `pi
 --append-system-prompt`, while retaining Pi's ordinary project `AGENTS.md`,
 skills, prompts, extensions, provider config, and auth directory.
 
-Pi is Chat-only once a session starts in Chat mode. AO does not offer TUI/Chat
-handoff until the `pi` terminal and pi-acp can prove that their continuation ids
-refer to the same durable conversation.
+When Pi Chat can be safely admitted, it will initially remain Chat-only. AO does
+not offer TUI/Chat handoff until the `pi` terminal and pi-acp can prove that
+their continuation ids refer to the same durable conversation.
