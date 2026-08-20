@@ -75,7 +75,7 @@ func buildConfig(plugin piPlugin, resolve binaryResolver, log *slog.Logger) acpd
 				return acpdriver.Launch{}, fmt.Errorf("%w: pi-acp is not installed: %w", ports.ErrChatDriverUnavailable, err)
 			}
 			if !filepath.IsAbs(cfg.DataDir) {
-				return acpdriver.Launch{}, fmt.Errorf("Pi ACP requires an absolute AO data directory, got %q", cfg.DataDir)
+				return acpdriver.Launch{}, fmt.Errorf("pi-acp requires an absolute AO data directory, got %q", cfg.DataDir)
 			}
 			env := cloneEnv(cfg.Env)
 			// pi-acp 0.17 uses a long-running daemon. A session-private socket
