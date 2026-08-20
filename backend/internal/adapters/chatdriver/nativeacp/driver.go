@@ -21,6 +21,14 @@ type Plugin interface {
 	AuthStatus(context.Context) (ports.AgentAuthStatus, error)
 }
 
+// runtimeEnvAugmenter is the existing optional agent-plugin hook for provider
+// profile isolation and other launch environment policy. Native ACP launches
+// use it too, so Chat and TUI sessions do not acquire different answers for
+// where a provider keeps its state.
+type runtimeEnvAugmenter interface {
+	AugmentRuntimeEnv(env map[string]string, dataDir string)
+}
+
 // Configure adds provider-native arguments and environment overlays to one ACP
 // launch. The returned environment is merged over the session environment.
 type Configure func(acpdriver.LaunchConfig) (args []string, env map[string]string, err error)
@@ -109,6 +117,9 @@ func buildConfig(plugin Plugin, cfg Config, log *slog.Logger) acpdriver.Config {
 			env := make(map[string]string, len(launchCfg.Env)+len(overrides))
 			for key, value := range launchCfg.Env {
 				env[key] = value
+			}
+			if augmenter, ok := plugin.(runtimeEnvAugmenter); ok {
+				augmenter.AugmentRuntimeEnv(env, launchCfg.DataDir)
 			}
 			for key, value := range overrides {
 				env[key] = value

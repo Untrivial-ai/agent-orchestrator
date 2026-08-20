@@ -48,8 +48,10 @@ surface (`npm run sqlc`, `npm run api`).
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), OpenCode, and Droid. AO reuses each harness's existing
-  binary/auth resolution and does not bundle provider CLIs.
+  (claude-agent-acp), Cursor, OpenCode, Droid, and Kimchi. AO reuses each
+  harness's existing binary/auth/environment resolution and does not bundle
+  provider CLIs. Cursor is Chat-only until its ACP and TUI conversation ids are
+  proven to share identity.
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
   `/prs/{id}/resolve-comments`.

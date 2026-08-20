@@ -583,9 +583,6 @@ func TestACPDriverLoadsSettledHistoryWhenTheAgentCanReplayIt(t *testing.T) {
 	agent := &fakeAgent{
 		capabilities: &acpsdk.AgentCapabilities{
 			LoadSession: true,
-			SessionCapabilities: acpsdk.SessionCapabilities{
-				Resume: &acpsdk.SessionResumeCapabilities{},
-			},
 		},
 		loadUpdates: []acpsdk.SessionUpdate{userOne, answerOneA, answerOneB, userTwo, answerTwo},
 	}
@@ -671,6 +668,16 @@ func TestACPDriverLoadsSettledHistoryWhenTheAgentCanReplayIt(t *testing.T) {
 	case event := <-conv.Events():
 		t.Fatalf("history leaked onto the live event stream: %#v", event)
 	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func TestConversationCapabilitiesTreatLoadSessionAsResume(t *testing.T) {
+	configured := ports.ChatCapabilities{ports.ChatCapabilityResume: true}
+	init := acpsdk.InitializeResponse{AgentCapabilities: acpsdk.AgentCapabilities{
+		LoadSession: true,
+	}}
+	if !conversationCapabilities(configured, init)[ports.ChatCapabilityResume] {
+		t.Fatal("loadSession-only ACP agent was reported as non-resumable")
 	}
 }
 
