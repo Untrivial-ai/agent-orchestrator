@@ -2141,6 +2141,71 @@ func TestCollectorBindsPiWhenLifecycleCapturesNativeSessionID(t *testing.T) {
 	}
 }
 
+func TestCollectorDiscoversQwenSharedMonthlyUsage(t *testing.T) {
+	const nativeID = "qwen-session-1"
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessQwen, nativeID, false)
+	root := t.TempDir()
+	path := filepath.Join(root, "token-usage-2026-08.jsonl")
+	writeUsageFixture(t, path, `{"schemaVersion":1,"id":"turn-1","sessionId":"`+nativeID+`","model":"qwen3","inputTokens":1,"outputTokens":1,"cachedTokens":0,"thoughtsTokens":0,"totalTokens":2}`+"\n")
+	collector := NewCollector(store, SourceRoots{QwenUsage: root}, nil)
+
+	mustNoError(t, collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness: domain.HarnessQwen, Event: "session-start", NativeSessionID: nativeID,
+	}))
+	bindings, _ := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	if len(bindings) != 1 {
+		t.Fatalf("bindings = %+v", bindings)
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 1 || sources[0].Kind != domain.UsageSourceQwenMonthly {
+		t.Fatalf("sources=%+v err=%v", sources, err)
+	}
+}
+
+func TestCollectorQwenRegistersNewestMonthAndLaterRollover(t *testing.T) {
+	const nativeID = "qwen-session-1"
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessQwen, nativeID, false)
+	root := t.TempDir()
+	june := filepath.Join(root, "token-usage-2026-06.jsonl")
+	july := filepath.Join(root, "token-usage-2026-07.jsonl")
+	writeUsageFixture(t, june, "{}\n")
+	writeUsageFixture(t, july, "{}\n")
+	future := time.Now().Add(24 * time.Hour)
+	mustNoError(t, os.Chtimes(june, future, future))
+	collector := NewCollector(store, SourceRoots{QwenUsage: root}, nil)
+
+	mustNoError(t, collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness: domain.HarnessQwen, Event: "session-start", NativeSessionID: nativeID,
+	}))
+	bindings, _ := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 1 || sources[0].ArtifactPath != canonicalUsagePath(t, july) {
+		t.Fatalf("initial sources=%+v err=%v", sources, err)
+	}
+
+	august := filepath.Join(root, "token-usage-2026-08.jsonl")
+	writeUsageFixture(t, august, "{}\n")
+	mustNoError(t, collector.ReconcileSources(context.Background(), -1))
+	sources, err = store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 2 {
+		t.Fatalf("rollover sources=%+v err=%v", sources, err)
+	}
+	gotPaths := []string{sources[0].ArtifactPath, sources[1].ArtifactPath}
+	slices.Sort(gotPaths)
+	wantPaths := []string{canonicalUsagePath(t, july), canonicalUsagePath(t, august)}
+	slices.Sort(wantPaths)
+	if !reflect.DeepEqual(gotPaths, wantPaths) {
+		t.Fatalf("paths=%v want=%v", gotPaths, wantPaths)
+	}
+	for _, source := range sources {
+		if source.State != domain.UsageSourceActive && source.State != domain.UsageSourcePending {
+			t.Fatalf("source state=%s, want active or newly pending", source.State)
+		}
+	}
+}
+
 func differentHarness(harness domain.AgentHarness) domain.AgentHarness {
 	if harness == domain.HarnessCopilot {
 		return domain.HarnessKimi

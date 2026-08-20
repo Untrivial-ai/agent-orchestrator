@@ -49,6 +49,8 @@ func parseRecordsWithState(
 		parseKimi(source, records, &result)
 	case domain.UsageSourcePiSession:
 		parsePi(source, records, &result)
+	case domain.UsageSourceQwenMonthly:
+		parseQwen(source, records, &result)
 	default:
 		result.Cursor.AnomalyCount++
 		result.Cursor.LastErrorCode = domain.UsageErrorUnsupportedSourceFormat
@@ -218,7 +220,7 @@ func decodeParserState(source domain.UsageSourceRecord) (*parserStateEnvelope, e
 				return nil, errors.New("copilot state has invalid model baseline")
 			}
 		}
-	case domain.UsageSourceKimiWire, domain.UsageSourcePiSession:
+	case domain.UsageSourceKimiWire, domain.UsageSourcePiSession, domain.UsageSourceQwenMonthly:
 		if state.Claude != nil || state.Codex != nil || state.Copilot != nil {
 			return nil, errors.New("append-only state has invalid parser payload")
 		}
@@ -243,7 +245,7 @@ func newParserState(kind domain.UsageSourceKind) (*parserStateEnvelope, error) {
 		}
 	case domain.UsageSourceCopilotShutdown:
 		state.Copilot = &copilotParserStateV1{Models: make(map[string]copilotTokenVector)}
-	case domain.UsageSourceKimiWire, domain.UsageSourcePiSession:
+	case domain.UsageSourceKimiWire, domain.UsageSourcePiSession, domain.UsageSourceQwenMonthly:
 		// Append-only sources derive replay-stable event keys from native record IDs
 		// and do not need a provider-specific parser baseline.
 	default:
