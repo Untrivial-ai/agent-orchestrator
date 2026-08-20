@@ -1,10 +1,11 @@
 # Pi
 
-AO supports Pi in TUI mode through the `pi` executable. AO includes a Chat
-driver for the independently installed
+AO supports Pi in TUI mode through the `pi` executable. AO contains an
+unregistered Chat binding for the independently installed
 [`@victor-software-house/pi-acp`](https://github.com/victor-software-house/pi-acp)
 distribution, but current pi-acp releases do not provide a permission boundary,
-so AO refuses mutating Chat admission until that gap is closed.
+so AO neither advertises Pi as Chat-capable nor admits mutating Pi Chat sessions
+until that gap is closed.
 
 ## Chat prerequisites and install policy
 
