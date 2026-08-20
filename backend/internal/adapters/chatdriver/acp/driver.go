@@ -48,6 +48,11 @@ type Config struct {
 	Capabilities ports.ChatCapabilities
 	Probe        func(context.Context) error
 	Launch       func(context.Context, LaunchConfig) (Launch, error)
+	// ValidateInitialize optionally admits only the tested ACP distribution and
+	// version after the protocol handshake identifies it. This is preferable to
+	// invoking an adapter-specific version flag, which many stdio agents do not
+	// implement and which can emit protocol bytes instead of a version string.
+	ValidateInitialize func(acpsdk.InitializeResponse) error
 	// SessionMeta carries adapter-defined ACP extensions whenever AO creates the
 	// provider-side session object: session/new, session/load, or
 	// session/resume. Standing context such as a system prompt is process input,
@@ -298,6 +303,12 @@ func (d *Driver) connect(
 			return nil, acpsdk.InitializeResponse{}, normalizeACPError("ACP initialize", err)
 		}
 		return nil, acpsdk.InitializeResponse{}, fmt.Errorf("%w: ACP initialize: %w", ports.ErrChatDriverIncompatible, err)
+	}
+	if d.cfg.ValidateInitialize != nil {
+		if err := d.cfg.ValidateInitialize(init); err != nil {
+			_ = conv.Close()
+			return nil, acpsdk.InitializeResponse{}, fmt.Errorf("%w: %w", ports.ErrChatDriverIncompatible, err)
+		}
 	}
 	return conv, init, nil
 }

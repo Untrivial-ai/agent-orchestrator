@@ -50,7 +50,7 @@ func New(drivers ...ports.ChatDriver) *Registry {
 // transport plus claude-agent-acp, pointed at the user's own Claude executable.
 // OpenCode and Droid expose ACP themselves, so AO launches the exact executable
 // resolved by each existing agent plugin. No path scrapes terminal output or
-// packages a second provider CLI.
+// auto-downloads a provider or protocol adapter.
 //
 // Every other harness stays TUI-only until the same is true of it. The driver
 // reuses the harness's existing agent plugin for binary resolution and auth, so
