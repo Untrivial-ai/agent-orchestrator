@@ -20,6 +20,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
 )
 
 type doctorLevel string
@@ -310,21 +311,21 @@ func (c *commandContext) checkTerminalRuntime(ctx context.Context) doctorCheck {
 }
 
 func (c *commandContext) checkTmux(ctx context.Context) doctorCheck {
-	path, err := c.deps.LookPath("tmux")
-	if err != nil || path == "" {
-		return doctorCheck{Level: doctorWarn, Section: doctorSectionTools, Name: "tmux", Message: "not found in PATH; required on macOS/Linux to start sessions"}
+	resolution, err := tmuxbin.ResolveWith(c.deps.Executable, c.deps.LookPath)
+	if err != nil || resolution.Path == "" {
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionTools, Name: "tmux", Message: "no bundled or system tmux found; required on macOS/Linux to start sessions"}
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	out, err := c.deps.CommandOutput(reqCtx, path, "-V")
+	out, err := c.deps.CommandOutput(reqCtx, resolution.Path, "-V")
 	if err != nil {
-		return doctorCheck{Level: doctorFail, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s: %v", path, err)}
+		return doctorCheck{Level: doctorFail, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s): %v", resolution.Path, resolution.Source, err)}
 	}
 	version := firstOutputLine(out)
 	if version == "" {
 		version = "version unknown"
 	}
-	return doctorCheck{Level: doctorPass, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s)", path, version)}
+	return doctorCheck{Level: doctorPass, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s; %s)", resolution.Path, resolution.Source, version)}
 }
 
 // checkHooksLog surfaces recent agent hook delivery failures. `ao hooks`
