@@ -1470,6 +1470,27 @@ func TestMarkSpawnedReactivatesUsageAfterLifecycleTransition(t *testing.T) {
 	}
 }
 
+func TestApplyActivitySignalNativeSessionIDReactivatesUsageDiscovery(t *testing.T) {
+	m, st, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-1"
+	st.sessions[rec.ID] = rec
+	usage := &fakeUsageLifecycle{fakeUsageFinalizer: fakeUsageFinalizer{store: st}}
+	m.SetUsageFinalizer(usage)
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		AgentSessionID: "pi-native-1",
+		LaunchID:       "launch-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if usage.reactivateCalls != 1 || usage.reactivateID != rec.ID ||
+		usage.reactivateLaunch != "launch-1" || !usage.sawLive {
+		t.Fatalf("usage discovery = calls:%d id:%q launch:%q live:%v",
+			usage.reactivateCalls, usage.reactivateID, usage.reactivateLaunch, usage.sawLive)
+	}
+}
+
 func TestMarkTerminatedFinalizesUsageBeforeLifecycleTransition(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
