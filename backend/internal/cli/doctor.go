@@ -313,19 +313,19 @@ func (c *commandContext) checkTerminalRuntime(ctx context.Context) doctorCheck {
 func (c *commandContext) checkTmux(ctx context.Context) doctorCheck {
 	resolution, err := tmuxbin.ResolveWith(c.deps.Executable, c.deps.LookPath)
 	if err != nil || resolution.Path == "" {
-		return doctorCheck{Level: doctorWarn, Section: doctorSectionTools, Name: "tmux", Message: "no bundled or system tmux found; required on macOS/Linux to start sessions"}
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionTools, Name: "tmux", Message: "no bundled or system tmux found by this ao doctor process; required on macOS/Linux to start sessions"}
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	out, err := c.deps.CommandOutput(reqCtx, resolution.Path, "-V")
 	if err != nil {
-		return doctorCheck{Level: doctorFail, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s for this ao process): %v", resolution.Path, resolution.Source, err)}
+		return doctorCheck{Level: doctorFail, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s for this ao doctor process): %v", resolution.Path, resolution.Source, err)}
 	}
 	version := firstOutputLine(out)
 	if version == "" {
 		version = "version unknown"
 	}
-	return doctorCheck{Level: doctorPass, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s for this ao process; %s)", resolution.Path, resolution.Source, version)}
+	return doctorCheck{Level: doctorPass, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s for this ao doctor process; %s)", resolution.Path, resolution.Source, version)}
 }
 
 // checkHooksLog surfaces recent agent hook delivery failures. `ao hooks`

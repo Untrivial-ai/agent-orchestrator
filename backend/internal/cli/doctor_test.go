@@ -74,7 +74,7 @@ func TestDoctorChecksTmuxVersion(t *testing.T) {
 	})
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "tmux")
-	if check.Level != doctorPass || !strings.Contains(check.Message, "3.3a") || !strings.Contains(check.Message, "system for this ao process") {
+	if check.Level != doctorPass || !strings.Contains(check.Message, "3.3a") || !strings.Contains(check.Message, "system for this ao doctor process") {
 		t.Fatalf("tmux check = %+v, want PASS with system source and version", check)
 	}
 }
@@ -104,7 +104,7 @@ func TestDoctorPrefersAndReportsBundledTmux(t *testing.T) {
 	c.deps.Executable = func() (string, error) { return self, nil }
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "tmux")
-	if check.Level != doctorPass || !strings.Contains(check.Message, bundled) || !strings.Contains(check.Message, "bundled for this ao process") || !strings.Contains(check.Message, "3.5a") {
+	if check.Level != doctorPass || !strings.Contains(check.Message, bundled) || !strings.Contains(check.Message, "bundled for this ao doctor process") || !strings.Contains(check.Message, "3.5a") {
 		t.Fatalf("tmux check = %+v, want PASS with bundled source and version", check)
 	}
 }
@@ -144,6 +144,9 @@ func TestDoctorWarnsWhenTmuxMissing(t *testing.T) {
 	}
 	if !strings.Contains(check.Message, "no bundled or system tmux found") {
 		t.Fatalf("tmux check = %+v, want both lookup locations reported missing", check)
+	}
+	if !strings.Contains(check.Message, "this ao doctor process") {
+		t.Fatalf("tmux check = %+v, want process-local lookup scope", check)
 	}
 }
 
