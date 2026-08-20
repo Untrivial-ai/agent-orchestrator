@@ -181,7 +181,7 @@ type ApiErrorCategory = "daemon_unavailable" | "network_error" | "http_4xx" | "h
 const API_ERROR_DEDUPE_MS = 30_000;
 const lastApiErrorAt = new Map<string, number>();
 
-function reportApiError(operation: string, category: ApiErrorCategory, status?: number): void {
+function reportApiError(operation: string, category: ApiErrorCategory, status?: number, code?: string): void {
 	const key = `${operation}|${category}|${status ?? ""}`;
 	const now = Date.now();
 	const last = lastApiErrorAt.get(key);
@@ -192,8 +192,9 @@ function reportApiError(operation: string, category: ApiErrorCategory, status?: 
 		error_category: category,
 		status,
 	});
-	// Mirror into Sentry (no-op unless a DSN is configured).
-	captureApiErrorToSentry(operation, category, status);
+	// Mirror into Sentry (no-op unless a DSN is configured). The daemon `code`
+	// is what drives the fine-grained severity/owner classification.
+	captureApiErrorToSentry(operation, category, status, code);
 }
 
 async function runtimeFetch(input: Request): Promise<Response> {
@@ -250,7 +251,16 @@ async function runtimeFetch(input: Request): Promise<Response> {
 		throw error;
 	}
 	if (!response.ok) {
-		reportApiError(operation, response.status >= 500 ? "http_5xx" : "http_4xx", response.status);
+		// Best-effort read the daemon error envelope's `code` (via a clone so the
+		// caller still gets an unconsumed body) to drive classification.
+		let code: string | undefined;
+		try {
+			const body = (await response.clone().json()) as { code?: unknown };
+			if (typeof body?.code === "string" && body.code !== "") code = body.code;
+		} catch {
+			// Non-JSON or empty body: fall back to status-only classification.
+		}
+		reportApiError(operation, response.status >= 500 ? "http_5xx" : "http_4xx", response.status, code);
 	}
 	return response;
 }

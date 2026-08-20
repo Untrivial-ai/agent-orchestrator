@@ -34,9 +34,22 @@ function dsn(): string {
 // we attach are safe enums/ids, so this guards the message + stack strings.
 const LOCAL_URL = /(?:\bfile:\/\/\/\S+|\bapp:\/\/renderer\/\S+|\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\S*)/gi;
 const HOME_PATH = /\/(?:Users|home)\/[^\s"']+/g;
+// Windows: C:\Users\alice\... and UNC \\host\Users\...
+const WIN_PATH = /[A-Za-z]:\\[^\s"']+|\\\\[^\s"']+/g;
 function scrub(value: unknown): unknown {
-	if (typeof value === "string") return value.replace(LOCAL_URL, "[redacted-url]").replace(HOME_PATH, "[redacted-path]");
+	if (typeof value === "string")
+		return value.replace(LOCAL_URL, "[redacted-url]").replace(HOME_PATH, "[redacted-path]").replace(WIN_PATH, "[redacted-path]");
 	return value;
+}
+
+// Renderer operations are "METHOD /api/v1/<domain>/…" templates (already
+// id-normalized by normalizeApiOperation). Pull the coarse domain out of them.
+function domainOf(operation?: string): string | undefined {
+	if (!operation) return undefined;
+	const path = operation.split(" ").pop() ?? operation;
+	const parts = path.split("/").filter(Boolean);
+	const i = parts.indexOf("v1");
+	return i >= 0 ? parts[i + 1] : parts[0];
 }
 
 export type ObservabilityContext = {
@@ -119,7 +132,7 @@ export function captureApiErrorToSentry(
 	code?: string,
 ): void {
 	if (!sentry) return;
-	const meta: CaptureMeta = { operation, category, httpStatus: status, code, domain: operation.split(".")[0] };
+	const meta: CaptureMeta = { operation, category, httpStatus: status, code, domain: domainOf(operation) };
 	const triage = classifyError(meta);
 	const tags = tagsFor(meta, triage);
 	if (triage.report) sentry.captureMessage(`${operation} failed: ${category}${status ? ` (${status})` : ""}`, { level: triage.level, tags });
