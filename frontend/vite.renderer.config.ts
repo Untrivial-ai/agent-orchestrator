@@ -111,6 +111,12 @@ export default defineConfig({
 	// to the daemon so the renderer can be tested against a running daemon from
 	// a plain browser without an Electron shell.
 	server: {
+		// Some development hosts have a low inotify watcher budget. Polling keeps
+		// Electron Forge startup reliable there, especially when agent-browser is
+		// present as a large watched tree.
+		watch: {
+			usePolling: true,
+		},
 		proxy: {
 			"/api": {
 				target: process.env.AO_DEV_API_TARGET ?? "http://127.0.0.1:3001",

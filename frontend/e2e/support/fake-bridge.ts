@@ -192,13 +192,19 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					list: async () => [],
 					getActive: async () => null,
 				},
-				cloud: {
-					getSession: async () => null,
-					signIn: async () => undefined,
-					signOut: async () => undefined,
-					onSessionChanged: unsubscribe,
-				},
-			} satisfies AoBridge;
+			cloud: {
+				getSession: async () => null,
+				signIn: async () => undefined,
+				signOut: async () => undefined,
+				onSessionChanged: unsubscribe,
+			},
+			rpc: {
+				getSettings: async () => ({ enabled: false }),
+				setSettings: async (settings) => settings,
+				getStatus: async () => ({ state: "disconnected" }),
+				onStatus: unsubscribe,
+			},
+		} satisfies AoBridge;
 			(window as unknown as { ao: unknown }).ao = ao;
 		},
 		{ version, daemonState, daemonPort },
@@ -615,13 +621,19 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					list: async () => [],
 					getActive: async () => null,
 				},
-				cloud: {
-					getSession: async () => null,
-					signIn: async () => undefined,
-					signOut: async () => undefined,
-					onSessionChanged: unsubscribe,
-				},
-			} satisfies AoBridge;
+			cloud: {
+				getSession: async () => null,
+				signIn: async () => undefined,
+				signOut: async () => undefined,
+				onSessionChanged: unsubscribe,
+			},
+			rpc: {
+				getSettings: async () => ({ enabled: false }),
+				setSettings: async (settings) => settings,
+				getStatus: async () => ({ state: "disconnected" }),
+				onStatus: unsubscribe,
+			},
+		} satisfies AoBridge;
 			(window as unknown as { ao: unknown }).ao = ao;
 		},
 		{ version, daemonPort, projectId, projectName, platform, workers },

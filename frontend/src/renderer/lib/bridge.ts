@@ -164,11 +164,17 @@ export const aoBridge: AoBridge =
 			get: async () => ({ locale: "en" as const }),
 			set: async (settings) => ({ locale: coerceLocale(settings.locale) }),
 		},
-		keybindings: {
-			get: async () => ({}),
-			set: async (overrides) => overrides,
-			setRecording: async () => undefined,
-		},
+	keybindings: {
+		get: async () => ({}),
+		set: async (overrides) => overrides,
+		setRecording: async () => undefined,
+	},
+	rpc: {
+		getSettings: async () => ({ enabled: false }),
+		setSettings: async (settings) => settings,
+		getStatus: async () => ({ state: "disconnected" }),
+		onStatus: () => () => undefined,
+	},
 		updates: {
 			getStatus: async () => ({ state: "idle" }),
 			check: async () => undefined,

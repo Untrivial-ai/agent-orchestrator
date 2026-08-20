@@ -92,6 +92,22 @@ import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/exter
 import { shouldSignalAttention, shouldToast } from "./main/notification-signals";
 import { buildWindowsAppMenuTemplate } from "./main/menu";
 import { ancestorRepositorySetupWarning, scanImportFolder } from "./main/import-folder-scan";
+import {
+	startDiscordRpc,
+	disposeDiscordRpc,
+	setDaemonPort as setRpcDaemonPort,
+	setRpcSettings,
+	getRpcStatus,
+	onRpcStatus,
+} from "./main/discord-rpc";
+import { readRpcSettings, updateRpcSettings } from "./main/rpc-settings";
+import {
+	RPC_GET_SETTINGS_CHANNEL,
+	RPC_GET_STATUS_CHANNEL,
+	RPC_SET_SETTINGS_CHANNEL,
+	RPC_STATUS_CHANNEL,
+	type RpcSettings,
+} from "./shared/rpc";
 
 // Globals injected at compile time by @electron-forge/plugin-vite.
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -1263,6 +1279,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		portConfirmed = true;
 		stopDiscovery();
 		setDaemonStatus({ state: "ready", port });
+		setRpcDaemonPort(port);
 
 		// Establish the OS-native liveness link on the spawn path (we own this
 		// daemon). Holding the connection keeps the daemon alive; when Electron
@@ -1658,6 +1675,24 @@ ipcMain.handle("updateSettings:set", async (_event, settings: UpdateSettings) =>
 	await setUpdateSettings(path.dirname(runFile), settings);
 });
 
+ipcMain.handle(RPC_GET_SETTINGS_CHANNEL, async (): Promise<RpcSettings> => {
+	const runFile = runFilePath();
+	if (!runFile) return { enabled: false };
+	return readRpcSettings(path.dirname(runFile));
+});
+ipcMain.handle(RPC_SET_SETTINGS_CHANNEL, async (_event, settings: RpcSettings): Promise<RpcSettings> => {
+	const runFile = runFilePath();
+	if (!runFile) return settings;
+	const next = await updateRpcSettings(path.dirname(runFile), () => settings);
+	await setRpcSettings(next);
+	return next;
+});
+ipcMain.handle(RPC_GET_STATUS_CHANNEL, () => getRpcStatus());
+
+onRpcStatus((status) => {
+	getShellWebContents()?.send(RPC_STATUS_CHANNEL, status);
+});
+
 ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
 	const runFile = runFilePath();
 	if (!runFile) return { locale: "en" };
@@ -1991,6 +2026,11 @@ app.whenReady().then(async () => {
 	await createWindow();
 	void startDaemon();
 	initAutoUpdates();
+	const rpcRunFile = runFilePath();
+	if (rpcRunFile) {
+		const rpcSettings = await readRpcSettings(path.dirname(rpcRunFile));
+		if (rpcSettings.enabled) void startDiscordRpc();
+	}
 
 	// Windows/Linux: on first launch, the deep-link URL may arrive as a
 	// process.argv entry (e.g. ao-app://callback?token=...).
@@ -2013,6 +2053,7 @@ app.whenReady().then(async () => {
 app.on("before-quit", (event) => {
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
+	disposeDiscordRpc();
 	trayLifecycle.dispose();
 	trayController = null;
 	if (!browserCleanupComplete) {

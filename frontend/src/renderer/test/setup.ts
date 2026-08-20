@@ -214,11 +214,17 @@ if (typeof window !== "undefined") {
 				locale: settings.locale as "en",
 			}),
 		},
-		keybindings: {
-			get: async () => ({}),
-			set: async (overrides) => overrides,
-			setRecording: async () => undefined,
-		},
+	keybindings: {
+		get: async () => ({}),
+		set: async (overrides) => overrides,
+		setRecording: async () => undefined,
+	},
+	rpc: {
+		getSettings: async () => ({ enabled: false }),
+		setSettings: async (settings) => settings,
+		getStatus: async () => ({ state: "disconnected" }),
+		onStatus: () => () => undefined,
+	},
 		updates: {
 			getStatus: async () => ({ state: "idle" }),
 			check: async () => undefined,

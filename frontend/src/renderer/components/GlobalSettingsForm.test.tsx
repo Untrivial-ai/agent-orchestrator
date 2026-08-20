@@ -80,6 +80,12 @@ vi.mock("../lib/bridge", () => ({
 			onStatus: updOnStatus,
 		},
 		featureBuilds: { list: featListBuilds, getActive: featGetActive },
+		rpc: {
+			getSettings: vi.fn().mockResolvedValue({ enabled: false }),
+			setSettings: vi.fn().mockImplementation(async (settings: { enabled: boolean }) => settings),
+			getStatus: vi.fn().mockResolvedValue({ state: "disconnected" }),
+			onStatus: vi.fn().mockReturnValue(() => undefined),
+		},
 	},
 }));
 

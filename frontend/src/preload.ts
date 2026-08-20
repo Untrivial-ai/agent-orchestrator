@@ -24,6 +24,13 @@ import type { UpdateOutcome } from "./shared/update-telemetry";
 import type { UiSettings } from "./main/ui-settings";
 import type { UpdateCheckOptions } from "./main/auto-updater";
 import type { FeatureBuild } from "./main/feature-builds";
+import {
+	RPC_GET_SETTINGS_CHANNEL,
+	RPC_GET_STATUS_CHANNEL,
+	RPC_SET_SETTINGS_CHANNEL,
+	RPC_STATUS_CHANNEL,
+} from "./shared/rpc";
+import type { RpcSettings, RpcStatus } from "./shared/rpc";
 import type {
 	BrowserAnnotationCancelPayload,
 	BrowserAnnotationModeInput,
@@ -332,6 +339,19 @@ const api = {
 		set: (overrides: KeybindingOverrides) =>
 			ipcRenderer.invoke("keybindings:set", overrides) as Promise<KeybindingOverrides>,
 		setRecording: (active: boolean) => ipcRenderer.invoke("keybindings:setRecording", active) as Promise<void>,
+	},
+	rpc: {
+		getSettings: () => ipcRenderer.invoke(RPC_GET_SETTINGS_CHANNEL) as Promise<RpcSettings>,
+		setSettings: (settings: RpcSettings) =>
+			ipcRenderer.invoke(RPC_SET_SETTINGS_CHANNEL, settings) as Promise<RpcSettings>,
+		getStatus: () => ipcRenderer.invoke(RPC_GET_STATUS_CHANNEL) as Promise<RpcStatus>,
+		onStatus: (callback: (status: RpcStatus) => void) => {
+			const listener = (_event: Electron.IpcRendererEvent, status: RpcStatus) => callback(status);
+			ipcRenderer.on(RPC_STATUS_CHANNEL, listener);
+			return () => {
+				ipcRenderer.off(RPC_STATUS_CHANNEL, listener);
+			};
+		},
 	},
 	updates: {
 		getStatus: () => ipcRenderer.invoke("updates:getStatus") as Promise<UpdateStatus>,
