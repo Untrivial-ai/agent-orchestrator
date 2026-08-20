@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -73,6 +74,23 @@ func newTestRuntime(chunkSize int) (*Runtime, *fakeRunner) {
 	r.enterDelay = 0                           // tests must not pay the real 300ms pre-Enter pause
 	r.reapSessions = (&recordingReaper{}).reap // never signal real processes from unit tests
 	return r, fr
+}
+
+func TestNewResolvesTmuxFromPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable lookup semantics differ on Windows")
+	}
+	dir := t.TempDir()
+	tmuxPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	r := New(Options{})
+	if r.binary != tmuxPath {
+		t.Fatalf("New().binary = %q, want resolved tmux %q", r.binary, tmuxPath)
+	}
 }
 
 // countCalls returns how many of fr's recorded calls invoked the given tmux

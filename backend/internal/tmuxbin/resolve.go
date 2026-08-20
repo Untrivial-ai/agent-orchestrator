@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 var errTmuxNotFound = errors.New("tmux executable not found")
@@ -15,7 +16,7 @@ var errTmuxNotFound = errors.New("tmux executable not found")
 type Source string
 
 const (
-	// SourceBundled means tmux is packaged next to the ao executable.
+	// SourceBundled means tmux is packaged in the macOS app's daemon directory.
 	SourceBundled Source = "bundled"
 	// SourceSystem means tmux was resolved from PATH.
 	SourceSystem Source = "system"
@@ -37,20 +38,18 @@ func Resolve() (Resolution, error) {
 func ResolveWith(executable func() (string, error), lookPath func(string) (string, error)) (Resolution, error) {
 	var bundledErr error
 	if self, err := executable(); err == nil && self != "" {
-		candidate := filepath.Join(filepath.Dir(self), "tmux")
-		path, err := lookPath(candidate)
-		if err == nil && path != "" {
-			return Resolution{Path: path, Source: SourceBundled}, nil
+		if resolved, resolveErr := filepath.EvalSymlinks(self); resolveErr == nil {
+			self = resolved
 		}
+		if candidate, ok := bundledCandidate(self); ok {
+			path, lookupErr := lookPath(candidate)
+			if lookupErr == nil && path != "" {
+				return Resolution{Path: path, Source: SourceBundled}, nil
+			}
+			bundledErr = lookupErr
+		}
+	} else if err != nil {
 		bundledErr = err
-		if bundledErr == nil {
-			bundledErr = errTmuxNotFound
-		}
-	} else {
-		bundledErr = err
-		if bundledErr == nil {
-			bundledErr = errTmuxNotFound
-		}
 	}
 
 	path, err := lookPath("tmux")
@@ -60,5 +59,22 @@ func ResolveWith(executable func() (string, error), lookPath func(string) (strin
 	if err == nil {
 		err = errTmuxNotFound
 	}
-	return Resolution{}, errors.Join(bundledErr, err)
+	return Resolution{}, errors.Join(bundledErr, err, errTmuxNotFound)
+}
+
+// bundledCandidate recognizes the macOS application layout populated by the
+// release pipeline. Restricting bundled provenance to this layout prevents a
+// system ao and tmux that merely share a bin directory from being mislabeled.
+func bundledCandidate(self string) (string, bool) {
+	daemonDir := filepath.Dir(self)
+	resourcesDir := filepath.Dir(daemonDir)
+	contentsDir := filepath.Dir(resourcesDir)
+	appDir := filepath.Dir(contentsDir)
+	if filepath.Base(daemonDir) != "daemon" ||
+		filepath.Base(resourcesDir) != "Resources" ||
+		filepath.Base(contentsDir) != "Contents" ||
+		!strings.HasSuffix(strings.ToLower(filepath.Base(appDir)), ".app") {
+		return "", false
+	}
+	return filepath.Join(daemonDir, "tmux"), true
 }

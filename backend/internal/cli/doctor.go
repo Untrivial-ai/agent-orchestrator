@@ -319,13 +319,13 @@ func (c *commandContext) checkTmux(ctx context.Context) doctorCheck {
 	defer cancel()
 	out, err := c.deps.CommandOutput(reqCtx, resolution.Path, "-V")
 	if err != nil {
-		return doctorCheck{Level: doctorFail, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s): %v", resolution.Path, resolution.Source, err)}
+		return doctorCheck{Level: doctorFail, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s for this ao process): %v", resolution.Path, resolution.Source, err)}
 	}
 	version := firstOutputLine(out)
 	if version == "" {
 		version = "version unknown"
 	}
-	return doctorCheck{Level: doctorPass, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s; %s)", resolution.Path, resolution.Source, version)}
+	return doctorCheck{Level: doctorPass, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s for this ao process; %s)", resolution.Path, resolution.Source, version)}
 }
 
 // checkHooksLog surfaces recent agent hook delivery failures. `ao hooks`

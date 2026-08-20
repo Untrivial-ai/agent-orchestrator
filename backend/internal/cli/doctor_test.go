@@ -74,7 +74,7 @@ func TestDoctorChecksTmuxVersion(t *testing.T) {
 	})
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "tmux")
-	if check.Level != doctorPass || !strings.Contains(check.Message, "3.3a") || !strings.Contains(check.Message, "system") {
+	if check.Level != doctorPass || !strings.Contains(check.Message, "3.3a") || !strings.Contains(check.Message, "system for this ao process") {
 		t.Fatalf("tmux check = %+v, want PASS with system source and version", check)
 	}
 }
@@ -84,7 +84,7 @@ func TestDoctorPrefersAndReportsBundledTmux(t *testing.T) {
 		t.Skip("ao doctor emits a conpty check on Windows, not tmux")
 	}
 	setConfigEnv(t)
-	self := filepath.Join(t.TempDir(), "ao")
+	self := filepath.Join(t.TempDir(), "AO.app", "Contents", "Resources", "daemon", "ao")
 	bundled := filepath.Join(filepath.Dir(self), "tmux")
 	paths := map[string]string{"git": "/bin/git", bundled: bundled, "tmux": "/bin/tmux"}
 	c := doctorContext(t, paths, func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -104,7 +104,7 @@ func TestDoctorPrefersAndReportsBundledTmux(t *testing.T) {
 	c.deps.Executable = func() (string, error) { return self, nil }
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "tmux")
-	if check.Level != doctorPass || !strings.Contains(check.Message, bundled) || !strings.Contains(check.Message, "bundled") || !strings.Contains(check.Message, "3.5a") {
+	if check.Level != doctorPass || !strings.Contains(check.Message, bundled) || !strings.Contains(check.Message, "bundled for this ao process") || !strings.Contains(check.Message, "3.5a") {
 		t.Fatalf("tmux check = %+v, want PASS with bundled source and version", check)
 	}
 }

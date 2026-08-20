@@ -5088,7 +5088,7 @@ func TestSpawn_RejectsMissingTmuxBeforeSessionRow(t *testing.T) {
 	m := New(Deps{Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
 
 	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
-	if !errors.Is(err, ports.ErrRuntimePrerequisite) || !strings.Contains(err.Error(), "tmux required") {
+	if !errors.Is(err, ports.ErrRuntimePrerequisite) || !strings.Contains(err.Error(), "no bundled or system tmux was found") {
 		t.Fatalf("err = %v, want missing tmux prerequisite", err)
 	}
 	if len(st.sessions) != 0 {
@@ -5099,6 +5099,26 @@ func TestSpawn_RejectsMissingTmuxBeforeSessionRow(t *testing.T) {
 	}
 	if rt.created != 0 {
 		t.Fatal("runtime must not be created when tmux is missing")
+	}
+}
+
+func TestValidateRuntimePrerequisites_AllowsBundledTmux(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses ConPTY, not tmux")
+	}
+	self := filepath.Join(string(filepath.Separator), "Applications", "AO.app", "Contents", "Resources", "daemon", "ao")
+	bundled := filepath.Join(filepath.Dir(self), "tmux")
+	m := &Manager{
+		executable: func() (string, error) { return self, nil },
+		lookPath: func(name string) (string, error) {
+			if name == bundled {
+				return bundled, nil
+			}
+			return "", fmt.Errorf("exec: %q: not found", name)
+		},
+	}
+	if err := m.validateRuntimePrerequisites(); err != nil {
+		t.Fatalf("validateRuntimePrerequisites() = %v, want bundled tmux accepted", err)
 	}
 }
 
