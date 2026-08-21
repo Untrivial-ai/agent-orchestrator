@@ -481,6 +481,10 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		// when its configuration changes, so retaining absent entries is wrong.
 		c.replaceAvailableCommands(update.AvailableCommandsUpdate.AvailableCommands)
 	case update.UsageUpdate != nil:
+		if limits := claudePlanUsage(update.UsageUpdate.Meta); limits != nil {
+			c.emit(ports.ChatEvent{Kind: ports.ChatEventRateLimits, RateLimits: limits})
+			return nil
+		}
 		usage := &ports.ChatUsage{
 			ContextUsed: int64(update.UsageUpdate.Used), ContextWindow: int64(update.UsageUpdate.Size),
 			ContextKnown: true,
@@ -760,12 +764,75 @@ func claudeRateLimits(meta map[string]any) *ports.ChatRateLimits {
 	return limits
 }
 
+func claudePlanUsage(meta map[string]any) *ports.ChatRateLimits {
+	value := nestedMap(meta, "_claude/planUsage")
+	if value == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	snapshot := &domain.QuotaSnapshot{
+		Provider: "claude", AccountID: "default", Completeness: domain.QuotaComplete,
+		Capabilities: domain.QuotaCapabilities{SupportsSubscribe: true}, ObservedAt: now,
+	}
+	if planType, ok := value["subscription_type"].(string); ok {
+		snapshot.PlanType = planType
+	}
+	available, _ := value["rate_limits_available"].(bool)
+	if !available {
+		snapshot.Completeness = domain.QuotaPartial
+		return &ports.ChatRateLimits{PrimaryUsedPercent: -1, SecondaryUsedPercent: -1, Quota: snapshot}
+	}
+	rateLimits, _ := value["rate_limits"].(map[string]any)
+	appendWindow := func(id, name string, scope domain.QuotaLimitScope, scopeID string, raw any) {
+		window, ok := raw.(map[string]any)
+		if !ok || window == nil {
+			return
+		}
+		limit := domain.QuotaLimit{
+			ID: domain.QuotaLimitID(id), Name: name, Category: domain.QuotaRateLimit,
+			Scope: scope, ScopeID: scopeID, WindowType: "rolling", ObservedAt: now,
+		}
+		if duration := claudeWindowDuration(id); duration != nil {
+			limit.WindowDuration = duration
+		}
+		if utilization, ok := number(window["utilization"]); ok {
+			limit.UsedPercent = &utilization
+		}
+		if resetsAt, ok := window["resets_at"].(string); ok && resetsAt != "" {
+			if reset, err := time.Parse(time.RFC3339, resetsAt); err == nil {
+				reset = reset.UTC()
+				limit.ResetsAt = &reset
+			}
+		}
+		snapshot.Limits = append(snapshot.Limits, limit)
+	}
+	appendWindow("five_hour", "5-hour window", domain.QuotaAccountScope, "", rateLimits["five_hour"])
+	appendWindow("seven_day", "7-day window", domain.QuotaAccountScope, "", rateLimits["seven_day"])
+	appendWindow("seven_day_oauth_apps", "OAuth apps", domain.QuotaAccountScope, "", rateLimits["seven_day_oauth_apps"])
+	appendWindow("seven_day_opus", "Opus", domain.QuotaModelScope, "opus", rateLimits["seven_day_opus"])
+	appendWindow("seven_day_sonnet", "Sonnet", domain.QuotaModelScope, "sonnet", rateLimits["seven_day_sonnet"])
+	if modelScoped, ok := rateLimits["model_scoped"].([]any); ok {
+		for index, raw := range modelScoped {
+			window, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := window["display_name"].(string)
+			id := fmt.Sprintf("model_scoped_%d", index)
+			if name != "" {
+				id = "model_" + strings.ToLower(strings.ReplaceAll(name, " ", "_"))
+			}
+			appendWindow(id, name, domain.QuotaModelScope, id, window)
+		}
+	}
+	return &ports.ChatRateLimits{PrimaryUsedPercent: -1, SecondaryUsedPercent: -1, Quota: snapshot}
+}
+
 // claudeQuotaPlaceholder makes the provider visible as soon as Claude reports
-// ordinary Chat usage. Anthropic's SDK exposes no on-demand quota read and only
-// emits rate_limit_event when its subscription state changes, so a healthy
-// session may otherwise remain absent from Plan Usage indefinitely. Unknown
-// values stay unknown; a later provider event merges the real bucket into this
-// partial snapshot.
+// ordinary Chat usage. Older Claude SDKs only emit rate_limit_event when their
+// subscription state changes, so a healthy session may otherwise remain absent
+// until the structured plan-usage control request completes. Unknown values stay
+// unknown; a later provider event merges the real buckets into this snapshot.
 func claudeQuotaPlaceholder(now time.Time) *ports.ChatRateLimits {
 	return &ports.ChatRateLimits{
 		PrimaryUsedPercent:   -1,
@@ -783,7 +850,7 @@ func claudeWindowDuration(kind string) *time.Duration {
 	switch kind {
 	case "five_hour":
 		duration = 5 * time.Hour
-	case "seven_day":
+	case "seven_day", "seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet":
 		duration = 7 * 24 * time.Hour
 	default:
 		return nil

@@ -180,11 +180,11 @@ func resolveRuntime(ctx context.Context) (runtimeLaunch, error) {
 	if runtime.GOOS == "windows" {
 		node = filepath.Join(runtimeDir, "node", "node.exe")
 	}
-	entry := filepath.Join(runtimeDir, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js")
+	entry := filepath.Join(runtimeDir, "ao-claude-agent-acp.mjs")
 	if err := requireFile(node, "packaged Node runtime"); err != nil {
 		return runtimeLaunch{}, err
 	}
-	if err := requireFile(entry, "claude-agent-acp entrypoint"); err != nil {
+	if err := requireFile(entry, "AO Claude ACP entrypoint"); err != nil {
 		return runtimeLaunch{}, err
 	}
 	if err := requireNodeVersion(ctx, node); err != nil {
