@@ -915,6 +915,13 @@ func TestReadRateLimitsFromProviderResult(t *testing.T) {
 		t.Errorf("primary resets in %d, want a positive remaining duration",
 			limits.PrimaryResetsInSeconds)
 	}
+	if limits.Quota == nil || limits.Quota.Provider != "codex" || limits.Quota.PlanType != "pro" ||
+		limits.Quota.Completeness != domain.QuotaComplete || len(limits.Quota.Limits) != 2 {
+		t.Fatalf("provider-neutral Codex quota = %#v", limits.Quota)
+	}
+	if limits.Quota.Limits[1].Scope != domain.QuotaModelScope || limits.Quota.Limits[1].Name != "GPT-5.3-Codex-Spark" {
+		t.Fatalf("model quota = %#v", limits.Quota.Limits[1])
+	}
 }
 
 // The capability gates the readout, so it must be advertised or the UI hides a

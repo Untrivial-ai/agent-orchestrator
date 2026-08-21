@@ -1653,6 +1653,91 @@ export interface paths {
         patch: operations["renameShellTerminal"];
         trace?: never;
     };
+    "/api/v1/usage/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List account-level subscription quota for every observed provider */
+        get: operations["listProviderQuota"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/usage/plans/{provider}/accounts/{accountId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one provider account's current subscription quota */
+        get: operations["getProviderQuota"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/usage/plans/{provider}/accounts/{accountId}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get bounded quota-position history for one provider account */
+        get: operations["getProviderQuotaHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/usage/plans/{provider}/accounts/{accountId}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh quota through a provider that supports an on-demand read */
+        post: operations["refreshProviderQuota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/usage/plans/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List recent transition-only provider quota alerts */
+        get: operations["listProviderQuotaAlerts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/usage/sessions": {
         parameters: {
             query?: never;
@@ -2268,6 +2353,15 @@ export interface components {
         ListProjectsResponse: {
             projects: components["schemas"]["ProjectSummary"][];
         };
+        ListProviderQuotaResponse: {
+            providers: components["schemas"]["ProviderQuotaResponse"][];
+        };
+        ListQuotaAlertsResponse: {
+            alerts: components["schemas"]["QuotaAlertResponse"][];
+        };
+        ListQuotaHistoryResponse: {
+            points: components["schemas"]["QuotaHistoryPointResponse"][];
+        };
         ListReviewsResponse: {
             reviewerHandleId: string;
             reviewerHarness?: string;
@@ -2478,6 +2572,25 @@ export interface components {
             providerTurnId: string;
             sourceTurnId: string;
         };
+        ProviderQuotaResponse: {
+            accountId: string;
+            accountLabel?: string;
+            authMode?: string;
+            balances: components["schemas"]["QuotaBalanceResponse"][];
+            capabilities: components["schemas"]["QuotaCapabilitiesResponse"];
+            /** @enum {string} */
+            completeness: "complete" | "partial";
+            /** @enum {string} */
+            freshness: "fresh" | "aging" | "stale" | "unavailable";
+            limits: components["schemas"]["QuotaLimitResponse"][];
+            /** Format: date-time */
+            observedAt: string;
+            planType?: string;
+            provider: string;
+            refreshError?: string;
+            /** @enum {string} */
+            severity: "normal" | "warning" | "critical" | "exhausted" | "unknown";
+        };
         PushDeviceEnvelope: {
             device: components["schemas"]["PushDeviceResponse"];
         };
@@ -2489,6 +2602,65 @@ export interface components {
             lastSeenAt: string;
             platform?: string;
             token?: string;
+        };
+        QuotaAlertResponse: {
+            accountId: string;
+            body?: string;
+            /** Format: date-time */
+            createdAt: string;
+            id: string;
+            kind: string;
+            limitId?: string;
+            provider: string;
+            /** @enum {string} */
+            severity: "normal" | "warning" | "critical" | "exhausted" | "unknown";
+            title: string;
+        };
+        QuotaBalanceResponse: {
+            currency?: string;
+            id: string;
+            name?: string;
+            unlimited: boolean;
+            value?: string;
+        };
+        QuotaCapabilitiesResponse: {
+            supportsCredits: boolean;
+            supportsHistory: boolean;
+            supportsRead: boolean;
+            supportsSpendLimits: boolean;
+            supportsSubscribe: boolean;
+        };
+        QuotaHistoryPointResponse: {
+            limitId: string;
+            /** Format: date-time */
+            observedAt: string;
+            reached?: null | boolean;
+            /** Format: date-time */
+            resetsAt?: null | string;
+            scope: string;
+            scopeId?: string;
+            usedPercent?: null | number;
+            windowType?: string;
+        };
+        QuotaLimitResponse: {
+            category: string;
+            id: string;
+            name?: string;
+            reached?: null | boolean;
+            reachedReason?: string;
+            remainingPercent?: null | number;
+            remainingValue?: null | number;
+            /** Format: date-time */
+            resetsAt?: null | string;
+            scope: string;
+            scopeId?: string;
+            /** @enum {string} */
+            severity: "normal" | "warning" | "critical" | "exhausted" | "unknown";
+            totalValue?: null | number;
+            unit?: string;
+            usedPercent?: null | number;
+            windowDurationSeconds?: null | number;
+            windowType?: string;
         };
         RegisterPushDeviceRequest: {
             /** @description Human-friendly device label. */
@@ -9416,6 +9588,257 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listProviderQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListProviderQuotaResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getProviderQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque quota provider id, for example codex or claude. */
+                provider: string;
+                /** @description Local non-secret provider account id. */
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderQuotaResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getProviderQuotaHistory: {
+        parameters: {
+            query?: {
+                /** @description History lookback in hours. Defaults to 168 (seven days). */
+                hours?: number;
+                /** @description Maximum points. Defaults to 500. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Opaque quota provider id, for example codex or claude. */
+                provider: string;
+                /** @description Local non-secret provider account id. */
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListQuotaHistoryResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    refreshProviderQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque quota provider id, for example codex or claude. */
+                provider: string;
+                /** @description Local non-secret provider account id. */
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderQuotaResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listProviderQuotaAlerts: {
+        parameters: {
+            query?: {
+                /** @description Alert lookback in minutes. Defaults to 10. */
+                minutes?: number;
+                /** @description Maximum alerts. Defaults to 100. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListQuotaAlertsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

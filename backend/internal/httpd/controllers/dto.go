@@ -1008,6 +1008,107 @@ type SessionUsageResponse struct {
 	Harnesses  []UsageHarnessResponse `json:"harnesses"`
 }
 
+type QuotaCapabilitiesResponse struct {
+	SupportsRead        bool `json:"supportsRead"`
+	SupportsSubscribe   bool `json:"supportsSubscribe"`
+	SupportsHistory     bool `json:"supportsHistory"`
+	SupportsCredits     bool `json:"supportsCredits"`
+	SupportsSpendLimits bool `json:"supportsSpendLimits"`
+}
+
+type QuotaLimitResponse struct {
+	ID                    string     `json:"id"`
+	Name                  string     `json:"name,omitempty"`
+	Category              string     `json:"category"`
+	Scope                 string     `json:"scope"`
+	ScopeID               string     `json:"scopeId,omitempty"`
+	WindowType            string     `json:"windowType,omitempty"`
+	WindowDurationSeconds *int64     `json:"windowDurationSeconds,omitempty"`
+	UsedPercent           *float64   `json:"usedPercent,omitempty"`
+	RemainingPercent      *float64   `json:"remainingPercent,omitempty"`
+	RemainingValue        *float64   `json:"remainingValue,omitempty"`
+	TotalValue            *float64   `json:"totalValue,omitempty"`
+	Unit                  string     `json:"unit,omitempty"`
+	ResetsAt              *time.Time `json:"resetsAt,omitempty"`
+	Reached               *bool      `json:"reached,omitempty"`
+	ReachedReason         string     `json:"reachedReason,omitempty"`
+	Severity              string     `json:"severity" enum:"normal,warning,critical,exhausted,unknown"`
+}
+
+type QuotaBalanceResponse struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Currency  string `json:"currency,omitempty"`
+	Unlimited bool   `json:"unlimited"`
+}
+
+type ProviderQuotaResponse struct {
+	Provider     string                    `json:"provider"`
+	AccountID    string                    `json:"accountId"`
+	AccountLabel string                    `json:"accountLabel,omitempty"`
+	PlanType     string                    `json:"planType,omitempty"`
+	AuthMode     string                    `json:"authMode,omitempty"`
+	Capabilities QuotaCapabilitiesResponse `json:"capabilities"`
+	Completeness string                    `json:"completeness" enum:"complete,partial"`
+	Freshness    string                    `json:"freshness" enum:"fresh,aging,stale,unavailable"`
+	Severity     string                    `json:"severity" enum:"normal,warning,critical,exhausted,unknown"`
+	ObservedAt   time.Time                 `json:"observedAt"`
+	RefreshError string                    `json:"refreshError,omitempty"`
+	Limits       []QuotaLimitResponse      `json:"limits"`
+	Balances     []QuotaBalanceResponse    `json:"balances"`
+}
+
+type ListProviderQuotaResponse struct {
+	Providers []ProviderQuotaResponse `json:"providers"`
+}
+
+type QuotaAlertsQuery struct {
+	Minutes int64 `query:"minutes,omitempty" minimum:"1" maximum:"10080" description:"Alert lookback in minutes. Defaults to 10."`
+	Limit   int64 `query:"limit,omitempty" minimum:"1" maximum:"500" description:"Maximum alerts. Defaults to 100."`
+}
+
+type QuotaAlertResponse struct {
+	ID        string    `json:"id"`
+	Provider  string    `json:"provider"`
+	AccountID string    `json:"accountId"`
+	LimitID   string    `json:"limitId,omitempty"`
+	Kind      string    `json:"kind"`
+	Severity  string    `json:"severity" enum:"normal,warning,critical,exhausted,unknown"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type ListQuotaAlertsResponse struct {
+	Alerts []QuotaAlertResponse `json:"alerts"`
+}
+
+type QuotaProviderAccountParams struct {
+	Provider  string `path:"provider" description:"Opaque quota provider id, for example codex or claude."`
+	AccountID string `path:"accountId" description:"Local non-secret provider account id."`
+}
+
+type QuotaHistoryQuery struct {
+	Hours int64 `query:"hours,omitempty" minimum:"1" maximum:"2160" description:"History lookback in hours. Defaults to 168 (seven days)."`
+	Limit int64 `query:"limit,omitempty" minimum:"1" maximum:"2000" description:"Maximum points. Defaults to 500."`
+}
+
+type QuotaHistoryPointResponse struct {
+	LimitID     string     `json:"limitId"`
+	WindowType  string     `json:"windowType,omitempty"`
+	Scope       string     `json:"scope"`
+	ScopeID     string     `json:"scopeId,omitempty"`
+	UsedPercent *float64   `json:"usedPercent,omitempty"`
+	ResetsAt    *time.Time `json:"resetsAt,omitempty"`
+	Reached     *bool      `json:"reached,omitempty"`
+	ObservedAt  time.Time  `json:"observedAt"`
+}
+
+type ListQuotaHistoryResponse struct {
+	Points []QuotaHistoryPointResponse `json:"points"`
+}
+
 // ListNotificationsQuery is the query string accepted by GET /api/v1/notifications.
 type ListNotificationsQuery struct {
 	Status string `query:"status,omitempty" enum:"unread,all,unresolved" description:"Notification filter. Defaults to unread (unseen); unresolved returns notifications whose underlying issue is still open; all includes read history."`

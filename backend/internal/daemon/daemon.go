@@ -43,6 +43,7 @@ import (
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	quotasvc "github.com/aoagents/agent-orchestrator/backend/internal/service/quota"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
@@ -186,6 +187,7 @@ func Run() error {
 	// resolver (AO_AGENT validated here for compatibility), and the agent
 	// messenger, then mount it on the API.
 	chatDrivers := chatdriverregistry.Build(log)
+	quotaSvc := quotasvc.New(store)
 
 	// Daemon-owned preferences. The store's type is field-compatible with the
 	// service's, adapted here so neither package imports the other.
@@ -237,8 +239,13 @@ func Run() error {
 		// The LCM satisfies ActivityRecorder directly: a chat turn is a pure
 		// lifecycle reduction, same as a hook signal from a terminal session.
 		Activity: lcStack.LCM,
+		Quota:    quotaSvc,
 		Log:      log,
 		NewID:    uuid.NewString,
+	})
+	quotaSvc.SetRefresher(chatSvc)
+	quotaMaintenanceDone := quotaSvc.StartMaintenance(ctx, func(err error) {
+		log.Warn("quota history maintenance failed", "err", err)
 	})
 
 	sessionSvc, reviewSvc, sessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, messenger, telemetrySink, agents, managedPreview, browserBroker, browserAuthority, chatLauncher{svc: chatSvc}, settingsSvc, log)
@@ -418,6 +425,7 @@ func Run() error {
 		Activity:           lcStack.LCM,
 		UsageHooks:         usageCollector,
 		UsageSummary:       usagesvc.NewSummaryReader(store),
+		Quota:              quotaSvc,
 		Telemetry:          telemetrySink,
 		Mobile:             mc,
 		DevImport: devimportsvc.New(devimportsvc.Deps{
@@ -522,6 +530,7 @@ func Run() error {
 	if usageDone != nil {
 		<-usageDone
 	}
+	<-quotaMaintenanceDone
 	lcStack.Stop()
 	// Tear the tailnet proxy down before the listener it fronts. `tailscale
 	// serve --bg` state lives in tailscaled and outlives this process, so

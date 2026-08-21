@@ -1,0 +1,121 @@
+import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProviderQuota } from "../../hooks/useProviderQuota";
+
+const hookState = vi.hoisted(() => ({
+	providers: [] as ProviderQuota[],
+}));
+
+vi.mock("../../hooks/useProviderQuota", () => ({
+	useProviderQuota: () => ({
+		data: hookState.providers,
+		error: null,
+		isError: false,
+		isLoading: false,
+		isSuccess: true,
+	}),
+	useQuotaHistory: () => ({ data: [] }),
+	useRefreshProviderQuota: () => ({
+		error: null,
+		isError: false,
+		isPending: false,
+		mutate: vi.fn(),
+	}),
+}));
+
+vi.mock("../CenterPanelShell", () => ({
+	CenterPanelShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+const { PlanUsagePage } = await import("./PlanUsagePage");
+
+function quota(overrides: Partial<ProviderQuota> = {}): ProviderQuota {
+	return {
+		accountId: "default",
+		balances: [],
+		capabilities: {
+			supportsCredits: false,
+			supportsHistory: false,
+			supportsRead: false,
+			supportsSpendLimits: false,
+			supportsSubscribe: true,
+		},
+		completeness: "partial",
+		freshness: "fresh",
+		limits: [],
+		observedAt: new Date().toISOString(),
+		provider: "claude",
+		severity: "normal",
+		...overrides,
+	};
+}
+
+describe("PlanUsagePage", () => {
+	beforeEach(() => {
+		hookState.providers = [];
+	});
+
+	it("shows an actionable empty state before providers report quota", () => {
+		render(<PlanUsagePage />);
+
+		expect(screen.getByText("No provider quota observed yet")).toBeInTheDocument();
+		expect(screen.getByText(/Start a Codex or Claude chat session/i)).toBeInTheDocument();
+	});
+
+	it("renders Codex and Claude through the same provider-neutral card", () => {
+		hookState.providers = [
+			quota({
+				accountLabel: "Codex Team",
+				capabilities: {
+					supportsCredits: true,
+					supportsHistory: true,
+					supportsRead: true,
+					supportsSpendLimits: true,
+					supportsSubscribe: true,
+				},
+				completeness: "complete",
+				limits: [{
+					category: "requests",
+					id: "primary",
+					remainingPercent: 8,
+					scope: "account",
+					severity: "critical",
+					usedPercent: 92,
+					windowDurationSeconds: 18_000,
+					windowType: "rolling",
+				}],
+				provider: "codex",
+				severity: "critical",
+			}),
+			quota({
+				accountLabel: "Claude Pro",
+				limits: [{
+					category: "requests",
+					id: "five_hour",
+					remainingPercent: 72,
+					scope: "account",
+					severity: "normal",
+					usedPercent: 28,
+					windowDurationSeconds: 18_000,
+					windowType: "rolling",
+				}],
+			}),
+		];
+
+		render(<PlanUsagePage />);
+
+		expect(screen.getByText("Codex Team")).toBeInTheDocument();
+		expect(screen.getByText("Claude Pro")).toBeInTheDocument();
+		expect(screen.getByText("8% remaining")).toHaveClass("text-status-exited");
+		expect(screen.getByText("72% remaining")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Refresh Codex Team usage" })).toBeInTheDocument();
+	});
+
+	it("renders an unknown future provider without frontend adapter code", () => {
+		hookState.providers = [quota({ provider: "future-ai", accountLabel: undefined })];
+
+		render(<PlanUsagePage />);
+
+		expect(screen.getByText("Future Ai")).toBeInTheDocument();
+	});
+});

@@ -3,6 +3,7 @@ package codexappserver
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -685,18 +686,6 @@ func turnIDFallback(params json.RawMessage) string {
 	return p.TurnID
 }
 
-// rateLimitWindow is one Codex RateLimitWindow.
-//
-// UsedPercent is a percentage in 0..100, not a token count, and ResetsAt is an
-// absolute unix timestamp in seconds rather than a duration. Both were confirmed
-// against a live account: `{"usedPercent":71,"windowDurationMins":10080,
-// "resetsAt":1786159947}`.
-type rateLimitWindow struct {
-	UsedPercent        *float64 `json:"usedPercent"`
-	WindowDurationMins *int64   `json:"windowDurationMins"`
-	ResetsAt           *int64   `json:"resetsAt"`
-}
-
 // rateLimitsEnvelope is the params shape of account/rateLimits/updated and the
 // result shape of account/rateLimits/read.
 //
@@ -704,11 +693,10 @@ type rateLimitWindow struct {
 // result share the `rateLimits` object, and codexproto declares them as two
 // unrelated types.
 type rateLimitsEnvelope struct {
-	RateLimits struct {
-		Primary   *rateLimitWindow `json:"primary"`
-		Secondary *rateLimitWindow `json:"secondary"`
-		PlanType  string           `json:"planType"`
-	} `json:"rateLimits"`
+	RateLimits            codexproto.RateLimitSnapshot             `json:"rateLimits"`
+	RateLimitsByLimitID   map[string]codexproto.RateLimitSnapshot  `json:"rateLimitsByLimitId,omitempty"`
+	RateLimitResetCredits *codexproto.RateLimitResetCreditsSummary `json:"rateLimitResetCredits,omitempty"`
+	complete              bool
 }
 
 // rateLimitsFrom converts a provider rate-limit snapshot into AO's neutral shape.
@@ -722,21 +710,119 @@ type rateLimitsEnvelope struct {
 // provider's agree, and a stale snapshot decays into 0 rather than into a time in
 // the past that reads as if it already refilled.
 func rateLimitsFrom(p rateLimitsEnvelope, now time.Time) ports.ChatRateLimits {
+	planLabel := ""
+	if p.RateLimits.PlanType != nil {
+		planLabel = string(*p.RateLimits.PlanType)
+	}
 	limits := ports.ChatRateLimits{
 		PrimaryUsedPercent:   -1,
 		SecondaryUsedPercent: -1,
-		PlanLabel:            p.RateLimits.PlanType,
+		PlanLabel:            planLabel,
 	}
-	if w := p.RateLimits.Primary; w != nil && w.UsedPercent != nil {
-		limits.PrimaryUsedPercent = *w.UsedPercent
+	if w := p.RateLimits.Primary; w != nil {
+		limits.PrimaryUsedPercent = float64(w.UsedPercent)
 		limits.PrimaryResetsInSeconds = resetsIn(w.ResetsAt, now)
 	}
-	if w := p.RateLimits.Secondary; w != nil && w.UsedPercent != nil {
-		limits.SecondaryUsedPercent = *w.UsedPercent
+	if w := p.RateLimits.Secondary; w != nil {
+		limits.SecondaryUsedPercent = float64(w.UsedPercent)
 		limits.SecondaryResetsInSeconds = resetsIn(w.ResetsAt, now)
 	}
+	quota := codexQuotaSnapshot(p, now)
+	limits.Quota = &quota
 	return limits
 }
+
+func codexQuotaSnapshot(p rateLimitsEnvelope, now time.Time) domain.QuotaSnapshot {
+	completeness := domain.QuotaPartial
+	if p.complete {
+		completeness = domain.QuotaComplete
+	}
+	snapshot := domain.QuotaSnapshot{
+		Provider: "codex", AccountID: "default", Completeness: completeness,
+		Capabilities: domain.QuotaCapabilities{
+			SupportsRead: true, SupportsSubscribe: true, SupportsHistory: true,
+			SupportsCredits: true, SupportsSpendLimits: true,
+		},
+		ObservedAt: now.UTC(),
+	}
+	appendSnapshot := func(fallbackID string, raw codexproto.RateLimitSnapshot, scope domain.QuotaLimitScope) {
+		id := fallbackID
+		if raw.LimitID != nil && *raw.LimitID != "" {
+			id = *raw.LimitID
+		}
+		name := id
+		if raw.LimitName != nil && *raw.LimitName != "" {
+			name = *raw.LimitName
+		}
+		if raw.PlanType != nil && snapshot.PlanType == "" {
+			snapshot.PlanType = string(*raw.PlanType)
+		}
+		appendWindow := func(windowType string, window *codexproto.RateLimitWindow) {
+			if window == nil {
+				return
+			}
+			used := float64(window.UsedPercent)
+			limit := domain.QuotaLimit{
+				ID: domain.QuotaLimitID(id), Name: name, Category: domain.QuotaRateLimit,
+				Scope: scope, WindowType: windowType, UsedPercent: &used, ObservedAt: now.UTC(),
+			}
+			if scope == domain.QuotaModelScope {
+				limit.ScopeID = id
+			}
+			if window.WindowDurationMins != nil {
+				duration := time.Duration(*window.WindowDurationMins) * time.Minute
+				limit.WindowDuration = &duration
+			}
+			if window.ResetsAt != nil && *window.ResetsAt > 0 {
+				reset := time.Unix(*window.ResetsAt, 0).UTC()
+				limit.ResetsAt = &reset
+			}
+			if raw.RateLimitReachedType != nil {
+				reached := true
+				limit.Reached = &reached
+				limit.ReachedReason = string(*raw.RateLimitReachedType)
+			}
+			snapshot.Limits = append(snapshot.Limits, limit)
+		}
+		appendWindow("primary", raw.Primary)
+		appendWindow("secondary", raw.Secondary)
+		if raw.Credits != nil {
+			value := ""
+			if raw.Credits.Balance != nil {
+				value = *raw.Credits.Balance
+			}
+			snapshot.Balances = append(snapshot.Balances, domain.QuotaBalance{
+				ID: id + ":credits", Name: name + " credits", Value: value,
+				Unlimited: raw.Credits.Unlimited, ObservedAt: now.UTC(),
+			})
+		}
+		if raw.IndividualLimit != nil {
+			remaining := float64(raw.IndividualLimit.RemainingPercent)
+			used := 100 - remaining
+			reset := time.Unix(raw.IndividualLimit.ResetsAt, 0).UTC()
+			snapshot.Limits = append(snapshot.Limits, domain.QuotaLimit{
+				ID: domain.QuotaLimitID(id + ":individual"), Name: "Individual spending limit",
+				Category: domain.QuotaSpendLimit, Scope: domain.QuotaAccountScope,
+				UsedPercent: &used, RemainingValue: &remaining, TotalValue: float64Pointer(100), Unit: "percent",
+				WindowType: "spend", ResetsAt: &reset, Reached: raw.SpendControlReached,
+				ObservedAt: now.UTC(),
+			})
+		}
+	}
+	appendSnapshot("codex", p.RateLimits, domain.QuotaAccountScope)
+	for id, raw := range p.RateLimitsByLimitID {
+		appendSnapshot(id, raw, domain.QuotaModelScope)
+	}
+	if p.RateLimitResetCredits != nil {
+		snapshot.Balances = append(snapshot.Balances, domain.QuotaBalance{
+			ID: "reset-credits", Name: "Reset credits",
+			Value: strconv.FormatInt(p.RateLimitResetCredits.AvailableCount, 10), ObservedAt: now.UTC(),
+		})
+	}
+	return snapshot
+}
+
+func float64Pointer(value float64) *float64 { return &value }
 
 // resetsIn turns an absolute unix reset instant into seconds from now, floored at
 // zero: a window whose reset has already passed has nothing left to wait for.

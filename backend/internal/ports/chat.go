@@ -388,6 +388,9 @@ type ChatRateLimits struct {
 	SecondaryResetsInSeconds int64
 	// PlanLabel is the provider's name for the account tier, when it says.
 	PlanLabel string
+	// Quota is the provider-neutral, account-level snapshot. The legacy fields
+	// above remain during the conversation-meter migration.
+	Quota *domain.QuotaSnapshot
 }
 
 // ChatTurnDiff is the running diff of what a turn changed on disk.

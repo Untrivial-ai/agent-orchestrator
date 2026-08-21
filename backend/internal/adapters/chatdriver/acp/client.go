@@ -717,22 +717,56 @@ func claudeRateLimits(meta map[string]any) *ports.ChatRateLimits {
 	if value == nil {
 		return nil
 	}
+	now := time.Now().UTC()
 	limits := &ports.ChatRateLimits{PrimaryUsedPercent: -1, SecondaryUsedPercent: -1}
+	quotaLimit := domain.QuotaLimit{
+		Category: domain.QuotaRateLimit, Scope: domain.QuotaAccountScope,
+		WindowType: "rolling", ObservedAt: now,
+	}
 	if utilization, ok := number(value["utilization"]); ok {
 		// The Claude SDK reports utilization as 0..1.
 		limits.PrimaryUsedPercent = utilization * 100
+		used := utilization * 100
+		quotaLimit.UsedPercent = &used
 	}
 	if resetsAt, ok := number(value["resetsAt"]); ok {
-		remaining := int64(resetsAt) - time.Now().Unix()
+		remaining := int64(resetsAt) - now.Unix()
 		if remaining < 0 {
 			remaining = 0
 		}
 		limits.PrimaryResetsInSeconds = remaining
+		reset := time.Unix(int64(resetsAt), 0).UTC()
+		quotaLimit.ResetsAt = &reset
 	}
 	if kind, ok := value["rateLimitType"].(string); ok {
-		limits.PlanLabel = strings.ReplaceAll(kind, "_", " ")
+		quotaLimit.ID = domain.QuotaLimitID(kind)
+		quotaLimit.Name = strings.ReplaceAll(kind, "_", " ")
+		if duration := claudeWindowDuration(kind); duration != nil {
+			quotaLimit.WindowDuration = duration
+		}
+	}
+	if quotaLimit.ID == "" {
+		quotaLimit.ID = "subscription"
+	}
+	limits.Quota = &domain.QuotaSnapshot{
+		Provider: "claude", AccountID: "default", Completeness: domain.QuotaPartial,
+		Capabilities: domain.QuotaCapabilities{SupportsSubscribe: true},
+		Limits:       []domain.QuotaLimit{quotaLimit}, ObservedAt: now,
 	}
 	return limits
+}
+
+func claudeWindowDuration(kind string) *time.Duration {
+	var duration time.Duration
+	switch kind {
+	case "five_hour":
+		duration = 5 * time.Hour
+	case "seven_day":
+		duration = 7 * 24 * time.Hour
+	default:
+		return nil
+	}
+	return &duration
 }
 
 func number(value any) (float64, bool) {

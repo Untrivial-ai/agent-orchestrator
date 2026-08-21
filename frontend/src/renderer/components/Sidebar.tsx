@@ -8,6 +8,7 @@ import {
 	ChevronRight,
 	Folder,
 	FolderOpen,
+	Gauge,
 	LogOut,
 	MoreVertical,
 	Pencil,
@@ -142,9 +143,11 @@ function useSelection() {
 	const pathname = useRouterState({ select: (state) => state.location.pathname });
 	return {
 		isHome: pathname === "/",
+		isUsage: pathname === "/usage",
 		activeProjectId: params.projectId,
 		activeSessionId: params.sessionId,
 		goHome: () => void navigate({ to: "/" }),
+		goUsage: () => void navigate({ to: "/usage" }),
 		// Settings is a modal — open it in place so the current page (session
 		// terminal, board, etc.) stays underneath.
 		goGlobalSettings: () => openGlobalSettings(),
@@ -449,6 +452,16 @@ export function Sidebar({
 					<RestartToUpdateRow status={updateStatus} tabIndex={isCollapsed ? -1 : 0} />
 					<CloudAccountRow tabIndex={isCollapsed ? -1 : 0} />
 					<button
+						aria-label={t("planUsage.title")}
+						className={cn(NAV_ROW_CLASS, "flex h-[42px] w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0", selection.isUsage && "bg-interactive-active text-foreground")}
+						onClick={selection.goUsage}
+						tabIndex={isCollapsed ? -1 : 0}
+						type="button"
+					>
+						<Gauge aria-hidden="true" />
+						<span className="tracking-tight">{t("planUsage.title")}</span>
+					</button>
+					<button
 						aria-label={t("shell.settings")}
 						className={cn(
 							NAV_ROW_CLASS,
@@ -468,6 +481,12 @@ export function Sidebar({
 				>
 					<RestartToUpdateRailButton status={updateStatus} tabIndex={isCollapsed ? 0 : -1} />
 					<CloudAccountRailButton tabIndex={isCollapsed ? 0 : -1} />
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button aria-label={t("planUsage.title")} className={cn("grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base", selection.isUsage && "bg-interactive-active text-foreground")} onClick={selection.goUsage} tabIndex={isCollapsed ? 0 : -1} type="button"><Gauge aria-hidden="true" /></button>
+						</TooltipTrigger>
+						<TooltipContent side="right">{t("planUsage.title")}</TooltipContent>
+					</Tooltip>
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<button

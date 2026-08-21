@@ -1057,6 +1057,11 @@ func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 	if limitEvent.RateLimits == nil || limitEvent.RateLimits.PrimaryUsedPercent != 80 || limitEvent.RateLimits.PrimaryResetsInSeconds < 3500 {
 		t.Fatalf("rate-limit event = %#v", limitEvent)
 	}
+	if quota := limitEvent.RateLimits.Quota; quota == nil || quota.Provider != "claude" ||
+		quota.Completeness != domain.QuotaPartial || len(quota.Limits) != 1 || quota.Limits[0].ID != "five_hour" ||
+		quota.PlanType != "" {
+		t.Fatalf("provider-neutral Claude quota = %#v", quota)
+	}
 
 	agent.mu.Lock()
 	agent.promptNoPermission = false
