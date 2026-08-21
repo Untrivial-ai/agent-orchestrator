@@ -32,6 +32,25 @@ function ExternalLink({
   );
 }
 
+function setRenderedOverflow(
+  element: HTMLElement,
+  axis: "horizontal" | "vertical",
+  overflowing: boolean,
+) {
+  if (axis === "vertical") {
+    Object.defineProperties(element, {
+      clientHeight: { configurable: true, value: 64 },
+      scrollHeight: { configurable: true, value: overflowing ? 96 : 64 },
+    });
+  } else {
+    Object.defineProperties(element, {
+      clientWidth: { configurable: true, value: 240 },
+      scrollWidth: { configurable: true, value: overflowing ? 320 : 240 },
+    });
+  }
+  fireEvent(window, new Event("resize"));
+}
+
 const tabs = [
   { id: "summary" as const, icon: <svg />, label: "Summary" },
   { id: "reviews" as const, icon: <svg />, label: "Reviews" },
@@ -261,12 +280,10 @@ describe("portable inspector presentations", () => {
     const row = screen.getByTestId("review-pr-row");
     expect(row).not.toHaveAttribute("aria-expanded");
     expect(screen.getByText("Looks good.")).toBeInTheDocument();
-    expect(screen.queryByText("Ship it.")).not.toBeInTheDocument();
-    const externalReview = screen.getByRole("button", {
+    expect(screen.getByText("Ship it.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", {
       name: /review-bot.*Approved/,
-    });
-    expect(externalReview).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(externalReview);
+    })).not.toBeInTheDocument();
     const githubSummary = screen
       .getByText("Ship it.")
       .closest('[data-testid="github-review-summary"]');
@@ -308,11 +325,6 @@ describe("portable inspector presentations", () => {
       />
     );
     const { rerender } = render(view([olderReview]));
-    const olderButton = screen.getByRole("button", {
-      name: /ada.*Changes requested/,
-    });
-    expect(olderButton).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(olderButton);
     expect(screen.getByText(olderBody)).toBeInTheDocument();
 
     rerender(
@@ -330,15 +342,11 @@ describe("portable inspector presentations", () => {
     );
 
     const cards = screen.getAllByTestId("github-review-card");
-    expect(
-      within(cards[0]).getByRole("button", {
-        name: /grace.*Changes requested/,
-      }),
-    ).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText(newerBody)).not.toBeInTheDocument();
+    expect(within(cards[0]).getByText("grace")).toBeInTheDocument();
+    expect(within(cards[0]).getByText(newerBody)).toBeInTheDocument();
   });
 
-  it("keeps external review actions inside comments and does not show re-review CTAs", () => {
+  it("keeps external review actions in the header without toggling nested comments", () => {
     render(
       <InspectorReviewsView
         externalLink={ExternalLink}
@@ -350,6 +358,7 @@ describe("portable inspector presentations", () => {
                   body: "Please take another pass after fixes land.",
                   id: "github-review-1",
                   reviewerId: "maya",
+                  resolvedComments: [{ body: "Already addressed.", resolved: true }],
                   reviewUrl: "https://example.com/review",
                   submittedAt: "2026-08-09T10:00:00Z",
                   submittedAtLabel: "1h ago",
@@ -372,14 +381,22 @@ describe("portable inspector presentations", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /maya.*Changes requested/ }),
-    );
-
     expect(
       screen.queryByRole("button", { name: "Request to re-review PR" }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("Please take another pass after fixes land.")).toBeInTheDocument();
+    const reviewToggle = screen.getByRole("button", { name: /maya.*Changes requested/i });
+    const actionMenu = screen.getByRole("button", { name: "Review actions" });
+    expect(screen.getByTestId("external-review-header")).toContainElement(actionMenu);
+    expect(reviewToggle).not.toContainElement(actionMenu);
+    expect(reviewToggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(actionMenu);
+    expect(screen.getByRole("link", { name: "Open in system browser" })).toBeInTheDocument();
+    expect(reviewToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Resolved comments · 1")).not.toBeInTheDocument();
+    fireEvent.click(within(screen.getByTestId("external-review-header")).getByRole("button", { name: "Show more" }));
+    expect(reviewToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Resolved comments · 1")).toBeInTheDocument();
   });
 
   it("does not offer re-review for an approved external review", () => {
@@ -416,8 +433,6 @@ describe("portable inspector presentations", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /maya.*Approved/ }));
-
     expect(
       screen.queryByRole("button", { name: "Request to re-review PR" }),
     ).not.toBeInTheDocument();
@@ -426,6 +441,7 @@ describe("portable inspector presentations", () => {
   it("shows unresolved inline review comments inside each reviewer dropdown", async () => {
     const onResolveInlineComment = vi.fn().mockResolvedValue(undefined);
     const onSendInlineComment = vi.fn().mockResolvedValue(undefined);
+    const onViewInlineCommentInFile = vi.fn();
     render(
       <InspectorReviewsView
         externalLink={ExternalLink}
@@ -489,6 +505,7 @@ describe("portable inspector presentations", () => {
         labels={reviewLabels}
         onResolveInlineComment={onResolveInlineComment}
         onSendInlineComment={onSendInlineComment}
+        onViewInlineCommentInFile={onViewInlineCommentInFile}
         renderAvatar={() => null}
         renderMarkdown={(body) => <p>{body}</p>}
       />,
@@ -540,7 +557,10 @@ describe("portable inspector presentations", () => {
       }),
     );
     await waitFor(() => expect(screen.getByText("Resolved")).toBeInTheDocument());
-    expect(screen.getByRole("link", { name: "View in file" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View in file" }));
+    expect(onViewInlineCommentInFile).toHaveBeenCalledWith(
+      expect.objectContaining({ file: "src/panel.tsx", line: 42 }),
+    );
     expect(screen.getByRole("link", { name: "Open on GitHub" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy comment link" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy file path" })).not.toBeInTheDocument();
@@ -765,6 +785,133 @@ describe("portable inspector presentations", () => {
       }),
     );
   });
+
+  it("shows summary expansion only when the rendered four-line clamp overflows", async () => {
+    render(
+      <InspectorReviewsView
+        externalLink={ExternalLink}
+        groups={[{
+          ao: {
+            runs: [{
+              body: "A rendered Markdown summary whose fit depends on the inspector width.",
+              createdAtLabel: "Now",
+              harness: "codex",
+              id: "run-overflow",
+              status: "complete",
+              verdict: { label: "Approved", tone: "success" },
+            }],
+          },
+          meta: "#12",
+          number: 12,
+          title: "Measured overflow",
+        }]}
+        isLoading={false}
+        labels={reviewLabels}
+        renderAvatar={() => null}
+        renderMarkdown={(body) => <p>{body}</p>}
+      />,
+    );
+
+    const summary = screen.getByTestId("review-run-summary");
+    setRenderedOverflow(summary, "vertical", false);
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+
+    setRenderedOverflow(summary, "vertical", true);
+    expect(await screen.findByRole("button", { name: "Show more" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(summary).not.toHaveClass("line-clamp-4");
+    fireEvent.click(screen.getByRole("button", { name: "Show less" }));
+    expect(summary).toHaveClass("line-clamp-4");
+
+    setRenderedOverflow(summary, "vertical", false);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument());
+  });
+
+  it("makes an inline comment expandable only when its preview is multiline or rendered-truncated", async () => {
+    render(
+      <InspectorReviewsView
+        externalLink={ExternalLink}
+        groups={[{
+          github: {
+            entries: [{
+              id: "review-comments",
+              inlineComments: [{ body: "A short comment", file: "src/panel.tsx", line: 42 }],
+              reviewerId: "maya",
+              submittedAt: "2026-08-09T10:00:00Z",
+              submittedAtLabel: "Now",
+              verdict: { label: "Commented", tone: "neutral" },
+            }],
+            unresolved: 1,
+            unresolvedBy: [],
+          },
+          meta: "#12",
+          number: 12,
+          title: "Measured comment overflow",
+        }]}
+        isLoading={false}
+        labels={reviewLabels}
+        renderAvatar={() => null}
+        renderMarkdown={(body) => <p>{body}</p>}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /maya.*Commented/i }));
+    const preview = screen.getByText("A short comment");
+    setRenderedOverflow(preview, "horizontal", false);
+    expect(preview.closest('[role="button"]')).toBeNull();
+
+    setRenderedOverflow(preview, "horizontal", true);
+    await waitFor(() => expect(preview.closest('[role="button"]')).toHaveAttribute("aria-expanded", "false"));
+    fireEvent.click(preview);
+    expect(preview.closest('[role="button"]')).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("offers AO browser, system browser, and worker-send actions for summaries", async () => {
+    const onOpenInAOBrowser = vi.fn();
+    const onSendReviewSummary = vi.fn().mockResolvedValue(undefined);
+    render(
+      <InspectorReviewsView
+        externalLink={ExternalLink}
+        groups={[{
+          ao: {
+            runs: [{
+              body: "Please update the validation and tests.",
+              createdAtLabel: "Now",
+              harness: "codex",
+              id: "run-actions",
+              status: "complete",
+              url: "https://github.com/example/repo/pull/12#pullrequestreview-1",
+              verdict: { label: "Changes requested", tone: "danger" },
+            }],
+          },
+          meta: "#12",
+          number: 12,
+          title: "Summary actions",
+        }]}
+        isLoading={false}
+        labels={reviewLabels}
+        onOpenInAOBrowser={onOpenInAOBrowser}
+        onSendReviewSummary={onSendReviewSummary}
+        renderAvatar={() => null}
+        renderMarkdown={(body) => <p>{body}</p>}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Review actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open in AO Browser" }));
+    expect(onOpenInAOBrowser).toHaveBeenCalledWith("https://github.com/example/repo/pull/12#pullrequestreview-1");
+    expect(screen.getByRole("link", { name: "Open in system browser" })).toHaveAttribute(
+      "href",
+      "https://github.com/example/repo/pull/12#pullrequestreview-1",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send to worker agent" }));
+    await waitFor(() => expect(onSendReviewSummary).toHaveBeenCalledWith(expect.objectContaining({
+      body: "Please update the validation and tests.",
+      reviewerId: "codex",
+      source: "agent",
+    })));
+    expect(await screen.findByRole("button", { name: "Sent to worker agent" })).toBeDisabled();
+  });
 });
 
 const reviewLabels: InspectorReviewLabels = {
@@ -777,8 +924,11 @@ const reviewLabels: InspectorReviewLabels = {
   noPastReviewSummaries: "No summaries",
   notInjected: "Not injected",
   openComments: "Open comments",
+  openInAOBrowser: "Open in AO Browser",
+  openInSystemBrowser: "Open in system browser",
   openInlineComments: (count) => `${count} open comments`,
   requestRereviewPR: "Request to re-review PR",
+  reviewActions: "Review actions",
   reviews: "Reviews",
   reviewedAt: (time) => `Reviewed ${time}`,
   resolvedComments: (count) => `Resolved comments · ${count}`,

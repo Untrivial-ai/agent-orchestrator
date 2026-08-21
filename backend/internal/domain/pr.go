@@ -101,6 +101,7 @@ type PullRequestCheck struct {
 // PullRequestComment is one normalized review comment for a pull request.
 type PullRequestComment struct {
 	ThreadID         string
+	ReviewID         string
 	ID               string
 	Author           string
 	File             string

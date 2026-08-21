@@ -71,7 +71,10 @@ type SessionFilesViewProps = {
 	sessionId: string;
 	isMaximized?: boolean;
 	onToggleMaximized?: (next: boolean) => void;
+	revealFile?: ReviewFileTarget;
 };
+
+export type ReviewFileTarget = { line?: number; path: string; requestId: number };
 
 const emptyFiles: WorkspaceFileSummary[] = [];
 
@@ -103,6 +106,7 @@ export function SessionFilesView({
 	sessionId,
 	isMaximized = false,
 	onToggleMaximized,
+	revealFile,
 }: SessionFilesViewProps) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
@@ -121,6 +125,27 @@ export function SessionFilesView({
 	useEffect(() => subscribeWorkspaceFileChanges(sessionId, queryClient), [queryClient, sessionId]);
 	const files = filesQuery.data?.files ?? emptyFiles;
 	const changedFiles = useMemo(() => files.filter(isChangedWorkspaceFile), [files]);
+
+	useEffect(() => {
+		if (!revealFile?.path) return;
+		const match = changedFiles.find(
+			(file) => file.path === revealFile.path || file.previousPath === revealFile.path,
+		);
+		if (!match) return;
+		setFilter("");
+		setExpandedPaths((current) => {
+			if (current.has(match.path)) return current;
+			const next = new Set(current);
+			next.add(match.path);
+			return next;
+		});
+		window.requestAnimationFrame(() => {
+			const row = Array.from(rootRef.current?.querySelectorAll<HTMLElement>("[data-file-path]") ?? [])
+				.find((candidate) => candidate.dataset.filePath === match.path);
+			row?.scrollIntoView?.({ block: "nearest" });
+			row?.querySelector<HTMLButtonElement>("[data-file-toggle]")?.focus();
+		});
+	}, [changedFiles, revealFile]);
 
 	useEffect(() => {
 		annotationGenerationRef.current += 1;
@@ -438,7 +463,7 @@ function ReviewFileCard({
 
 	return (
 		<AccordionItem asChild value={file.path}>
-			<li className="session-files-review-row overflow-hidden bg-transparent">
+			<li className="session-files-review-row overflow-hidden bg-transparent" data-file-path={file.path}>
 				<AccordionTrigger
 					aria-label={t(expanded ? "files.collapseFile" : "files.expandFile", { file: fileLabel(file) })}
 					className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left"

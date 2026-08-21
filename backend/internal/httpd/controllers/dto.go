@@ -730,6 +730,7 @@ type SessionPRUnresolvedReviewer struct {
 // SessionPRReviewCommentLink points to one review comment.
 type SessionPRReviewCommentLink struct {
 	URL              string `json:"url,omitempty"`
+	ReviewID         string `json:"reviewId,omitempty"`
 	File             string `json:"file,omitempty"`
 	Line             int    `json:"line,omitempty"`
 	Body             string `json:"body,omitempty"`
@@ -823,7 +824,7 @@ func newSessionPRCommentReviewers(in []sessionsvc.PRUnresolvedReviewer) []Sessio
 	for _, reviewer := range in {
 		links := make([]SessionPRReviewCommentLink, 0, len(reviewer.Links))
 		for _, link := range reviewer.Links {
-			links = append(links, SessionPRReviewCommentLink{URL: link.URL, File: link.File, Line: link.Line, Body: link.Body, AutoInjectReview: link.AutoInjectReview})
+			links = append(links, SessionPRReviewCommentLink{URL: link.URL, ReviewID: link.ReviewID, File: link.File, Line: link.Line, Body: link.Body, AutoInjectReview: link.AutoInjectReview})
 		}
 		reviewers = append(reviewers, SessionPRUnresolvedReviewer{ReviewerID: reviewer.ReviewerID, Count: reviewer.Count, Links: links, ReviewURL: reviewer.ReviewURL, IsBot: reviewer.IsBot})
 	}

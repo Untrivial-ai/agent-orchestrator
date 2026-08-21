@@ -699,7 +699,7 @@ func buildReviewThreadsQuery(ref ports.SCMPRRef, beforeCursor string, includeRev
 	return fmt.Sprintf(`query{
 repo: repository(owner:%s,name:%s){ pullRequest(number:%d){ reviewDecision%s reviewThreads(last:%d, before:%s){ nodes{
   id isResolved path line
-  comments(first:%d){ nodes{ id body url author{ login __typename } } }
+  comments(first:%d){ nodes{ id body url pullRequestReview{ databaseId } author{ login __typename } } }
 } pageInfo{ hasPreviousPage startCursor } } } }
 }`, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, reviewSelection, githubReviewThreadPageSize, before, githubReviewCommentLimitPerThread)
 }
@@ -744,16 +744,18 @@ func scmThreadFromGraphQL(th map[string]any) ports.SCMReviewThreadObservation {
 	allCommentsBot := len(commentNodes) > 0
 	for _, cn := range commentNodes {
 		author, _ := cn["author"].(map[string]any)
+		parentReview, _ := cn["pullRequestReview"].(map[string]any)
 		isBot := isBotAuthor(author)
 		if !isBot {
 			allCommentsBot = false
 		}
 		out.Comments = append(out.Comments, ports.SCMReviewCommentObservation{
-			ID:     str(cn["id"]),
-			Author: str(author["login"]),
-			Body:   str(cn["body"]),
-			URL:    str(cn["url"]),
-			IsBot:  isBot,
+			ID:       str(cn["id"]),
+			ReviewID: decimalID(parentReview["databaseId"]),
+			Author:   str(author["login"]),
+			Body:     str(cn["body"]),
+			URL:      str(cn["url"]),
+			IsBot:    isBot,
 		})
 	}
 	out.IsBot = allCommentsBot

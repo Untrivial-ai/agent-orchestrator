@@ -518,6 +518,7 @@ func prCommentObservations(comments []domain.PullRequestComment) []ports.PRComme
 		out = append(out, ports.PRCommentObservation{
 			ID:               comment.ID,
 			ThreadID:         comment.ThreadID,
+			ReviewID:         comment.ReviewID,
 			Author:           comment.Author,
 			File:             comment.File,
 			Line:             comment.Line,

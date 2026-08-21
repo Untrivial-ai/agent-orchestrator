@@ -227,6 +227,83 @@ describe("SessionFilesView", () => {
 		expect(await screen.findByText(diffLine("const value = 1;"))).toBeInTheDocument();
 	});
 
+	it("reveals and focuses a file requested by a review comment", async () => {
+		const focus = vi.spyOn(HTMLElement.prototype, "focus");
+		renderWithQuery(<SessionFilesView revealFile={{ path: "docs/guide.md", line: 7, requestId: 1 }} sessionId="sess-1" />);
+
+		expect(await screen.findByRole("button", { name: "Collapse docs/guide.md" })).toBeInTheDocument();
+		await waitFor(() =>
+			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/file", {
+				params: { path: { sessionId: "sess-1" }, query: { path: "docs/guide.md" } },
+			}),
+		);
+		await waitFor(() => expect(focus).toHaveBeenCalled());
+		focus.mockRestore();
+	});
+
+	it("resolves a requested previous path to its renamed file", async () => {
+		getMock.mockImplementation(async (path: string, options?: unknown) => {
+			if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
+				return {
+					data: {
+						sessionId: "sess-1",
+						truncated: false,
+						compareMode: "base",
+						files: [{
+							path: "src/NewName.tsx",
+							previousPath: "src/OldName.tsx",
+							status: "renamed",
+							additions: 1,
+							deletions: 1,
+							size: 120,
+							binary: false,
+						}],
+					},
+				};
+			}
+			if (path === "/api/v1/sessions/{sessionId}/workspace/file") {
+				const query = options as { params?: { query?: { path?: string } } };
+				return {
+					data: {
+						sessionId: "sess-1",
+						path: query.params?.query?.path ?? "src/NewName.tsx",
+						previousPath: "src/OldName.tsx",
+						status: "renamed",
+						additions: 1,
+						deletions: 1,
+						size: 120,
+						binary: false,
+						deleted: false,
+						content: "",
+						contentTruncated: false,
+						diff: "",
+						diffTruncated: false,
+						compareMode: "base",
+					},
+				};
+			}
+			return { data: undefined };
+		});
+
+		renderWithQuery(<SessionFilesView revealFile={{ path: "src/OldName.tsx", requestId: 1 }} sessionId="sess-1" />);
+
+		expect(await screen.findByRole("button", { name: "Collapse src/OldName.tsx -> src/NewName.tsx" })).toBeInTheDocument();
+		await waitFor(() =>
+			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/file", {
+				params: { path: { sessionId: "sess-1" }, query: { path: "src/NewName.tsx" } },
+			}),
+		);
+	});
+
+	it("does not expand an unrelated file when a review path is missing", async () => {
+		renderWithQuery(<SessionFilesView revealFile={{ path: "src/Missing.tsx", requestId: 1 }} sessionId="sess-1" />);
+
+		expect(await screen.findByRole("button", { name: "Expand src/App.tsx" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Expand docs/guide.md" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /^Collapse / })).not.toBeInTheDocument();
+		expect(getMock).not.toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/file", expect.anything());
+	});
+
 	it("filters and expands a changed file from the review list", async () => {
 		renderWithQuery(<SessionFilesView sessionId="sess-1" />);
 

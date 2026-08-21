@@ -306,11 +306,17 @@ vi.mock("./SessionFilesView", () => ({
 	SessionFilesView: ({
 		isMaximized,
 		onToggleMaximized,
+		revealFile,
 	}: {
 		isMaximized?: boolean;
 		onToggleMaximized?: (next: boolean) => void;
+		revealFile?: { line?: number; path: string };
 	}) => (
-		<button type="button" onClick={() => onToggleMaximized?.(!isMaximized)}>
+		<button
+			data-reveal-file={revealFile ? `${revealFile.path}:${revealFile.line ?? ""}` : undefined}
+			type="button"
+			onClick={() => onToggleMaximized?.(!isMaximized)}
+		>
 			{isMaximized ? "files center" : "files rail"}
 		</button>
 	),
@@ -356,12 +362,14 @@ vi.mock("./SessionInspector", () => ({
 		filesView,
 		isInspectorVisible = true,
 		onOpenFiles,
+		onOpenReviewFile,
 		onToggleBrowserPopOut,
 		view,
 	}: {
 		filesView?: ReactNode;
 		isInspectorVisible?: boolean;
 		onOpenFiles?: () => void;
+		onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 		onToggleBrowserPopOut?: () => void;
 		view?: string;
 	}) => {
@@ -373,6 +381,9 @@ vi.mock("./SessionInspector", () => ({
 				</button>
 				<button type="button" onClick={onOpenFiles}>
 					open files
+				</button>
+				<button type="button" onClick={() => onOpenReviewFile?.({ path: "src/panel.tsx", line: 42 })}>
+					view review file
 				</button>
 				{view === "files" ? filesView : null}
 			</div>
@@ -1275,6 +1286,18 @@ describe("SessionView", () => {
 		).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "files center" })).not.toBeInTheDocument();
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
+	});
+
+	it("opens a review file target in the Files inspector", () => {
+		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
+		render(<SessionView sessionId="sess-1" />);
+
+		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
+
+		const files = within(screen.getByTestId("panel-inspector")).getByRole("button", { name: "files rail" });
+		expect(files).toHaveAttribute("data-reveal-file", "src/panel.tsx:42");
+		expect(useUiStore.getState().inspectorSessions["sess-1"]?.view).toBe("files");
+		expect(screen.queryByRole("button", { name: "files center" })).not.toBeInTheDocument();
 	});
 
 	it("maximizes files over the whole app window and returns to the rail", () => {

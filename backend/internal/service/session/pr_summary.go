@@ -177,6 +177,7 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 		}
 		link := PRReviewCommentLink{
 			URL:              c.URL,
+			ReviewID:         c.ReviewID,
 			File:             c.File,
 			Line:             c.Line,
 			Body:             c.Body,

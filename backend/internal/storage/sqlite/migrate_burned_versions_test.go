@@ -106,6 +106,7 @@ var shippedMigrations = map[int64]string{
 	100: "0100_session_model.sql",
 	101: "0101_conversation_provider_ownership_epochs.sql",
 	102: "0102_canonical_usage.sql",
+	103: "0103_pr_comment_review_id.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

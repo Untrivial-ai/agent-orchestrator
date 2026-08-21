@@ -8034,6 +8034,8 @@ components:
           type: string
         line:
           type: integer
+        reviewId:
+          type: string
         url:
           type: string
       required:

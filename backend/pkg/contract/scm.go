@@ -85,6 +85,7 @@ type PullRequestCISummary struct {
 // PullRequestReviewCommentLink points to one review comment.
 type PullRequestReviewCommentLink struct {
 	URL              string `json:"url,omitempty"`
+	ReviewID         string `json:"reviewId,omitempty"`
 	File             string `json:"file,omitempty"`
 	Line             int    `json:"line,omitempty"`
 	Body             string `json:"body,omitempty"`

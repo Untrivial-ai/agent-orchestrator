@@ -20,7 +20,7 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 			UnresolvedBy: []sessionsvc.PRUnresolvedReviewer{{
 				ReviewerID: "bob",
 				Count:      1,
-				Links:      []sessionsvc.PRReviewCommentLink{{URL: "comment-url", Body: "please fix this", AutoInjectReview: false}},
+				Links:      []sessionsvc.PRReviewCommentLink{{URL: "comment-url", ReviewID: "4876751117", Body: "please fix this", AutoInjectReview: false}},
 			}},
 			Reviews: []sessionsvc.PRReviewEntry{{
 				Reviewer:         "alice",
@@ -59,6 +59,9 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 	}
 	if entry.AutoInjectReview {
 		t.Fatal("autoInjectReview = true, want false")
+	}
+	if got.Review.UnresolvedBy[0].Links[0].ReviewID != "4876751117" {
+		t.Fatalf("reviewId = %q, want 4876751117", got.Review.UnresolvedBy[0].Links[0].ReviewID)
 	}
 	if len(got.Review.UnresolvedBy) != 1 || len(got.Review.UnresolvedBy[0].Links) != 1 || got.Review.UnresolvedBy[0].Links[0].AutoInjectReview {
 		t.Fatalf("unresolved comment links = %+v, want one not-injected link", got.Review.UnresolvedBy)
