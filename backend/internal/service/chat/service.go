@@ -39,6 +39,7 @@ type Service struct {
 	sessions   SessionReader
 	drivers    ports.ChatDriverRegistry
 	activity   ActivityRecorder
+	quota      ports.QuotaCollector
 	log        *slog.Logger
 	newID      IDFactory
 	now        Clock
@@ -78,9 +79,12 @@ type Options struct {
 	// Activity feeds derived session status from turn events. Nil leaves a chat
 	// session reading as idle while it works, so production always wires it.
 	Activity ActivityRecorder
-	Log      *slog.Logger
-	NewID    IDFactory
-	Now      Clock
+	// Quota receives account-level provider snapshots. Nil keeps legacy
+	// conversation meters working without enabling the global quota dashboard.
+	Quota ports.QuotaCollector
+	Log   *slog.Logger
+	NewID IDFactory
+	Now   Clock
 }
 
 // New builds a Chat service.
@@ -100,6 +104,7 @@ func New(opts Options) *Service {
 		sessions:     opts.Sessions,
 		drivers:      opts.Drivers,
 		activity:     opts.Activity,
+		quota:        opts.Quota,
 		log:          log,
 		newID:        opts.NewID,
 		now:          now,
@@ -108,6 +113,44 @@ func New(opts Options) *Service {
 		gates:        make(map[domain.SessionID]controllerGate),
 		probed:       make(map[domain.AgentHarness]struct{}),
 	}
+}
+
+// RefreshQuota reads one authoritative snapshot from any live provider
+// conversation that advertises on-demand quota. Provider IDs remain opaque: the
+// service discovers them from the adapter result instead of switching on names.
+func (s *Service) RefreshQuota(ctx context.Context, provider domain.QuotaProviderID, accountID domain.QuotaAccountID) (domain.QuotaSnapshot, error) {
+	s.mu.RLock()
+	controllers := make([]*Controller, 0, len(s.controllers))
+	for _, controller := range s.controllers {
+		controllers = append(controllers, controller)
+	}
+	s.mu.RUnlock()
+	for _, controller := range controllers {
+		reporter, ok := controller.conv.(ports.ChatUsageReporter)
+		if !ok {
+			continue
+		}
+		identity, ok := controller.conv.(ports.ChatQuotaIdentity)
+		if !ok {
+			continue
+		}
+		candidateProvider, candidateAccount := identity.QuotaIdentity()
+		if candidateProvider != provider || candidateAccount != accountID {
+			continue
+		}
+		limits, err := reporter.ReadRateLimits(ctx)
+		if err != nil {
+			return domain.QuotaSnapshot{}, err
+		}
+		if limits.Quota == nil {
+			return domain.QuotaSnapshot{}, fmt.Errorf("provider quota read returned no account snapshot")
+		}
+		snapshot := domain.NormalizeQuotaSnapshot(*limits.Quota)
+		if snapshot.AccountID == accountID {
+			return snapshot, nil
+		}
+	}
+	return domain.QuotaSnapshot{}, ports.ErrQuotaRefreshUnsupported
 }
 
 func (s *Service) controllerGate(id domain.SessionID) controllerGate {
@@ -374,7 +417,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, conversation, generation, conv, s.store, s.activity, s.log, s.newID, s.now)
+		cfg.SessionID, conversation, generation, conv, s.store, s.activity, s.quota, s.log, s.newID, s.now)
 	if cfg.ProviderConversationID != "" && !cfg.SkipNativeHistoryImport {
 		// The provider's native thread is the continuity authority across TUI and
 		// Chat. Import it before the live projector starts so the first notification

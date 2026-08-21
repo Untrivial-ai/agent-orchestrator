@@ -36,13 +36,19 @@ const unreadCache: NotificationsCache = {
 	pageParams: [""],
 };
 
-const { setBadge } = vi.hoisted(() => ({ setBadge: vi.fn() }));
+const { quotaAlertState, setBadge, showNotification } = vi.hoisted(() => ({
+	quotaAlertState: { data: [] as Array<{ id: string; title: string; body?: string }> },
+	setBadge: vi.fn(),
+	showNotification: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn(), useParams: () => ({}) }));
 
 vi.mock("../hooks/useNotificationsQuery", () => ({
 	useNotificationsQuery: () => ({ data: unreadCache, isError: false }),
 }));
+
+vi.mock("../hooks/useProviderQuota", () => ({ useQuotaAlerts: () => quotaAlertState }));
 
 vi.mock("../lib/notifications", async (importOriginal) => ({
 	...((await importOriginal()) as object),
@@ -53,7 +59,7 @@ vi.mock("../lib/bridge", () => ({
 	aoBridge: {
 		notifications: {
 			setBadge,
-			show: vi.fn(),
+			show: showNotification,
 			devBounce: vi.fn(),
 			onClick: () => () => undefined,
 		},
@@ -80,5 +86,24 @@ describe("NotificationRuntime badge sync", () => {
 		// of NotificationCenter, which Linux hides from the topbar and only mounts
 		// on the sessions board.
 		await waitFor(() => expect(setBadge).toHaveBeenCalledWith(notifications.length));
+	});
+
+	it("delivers newly observed quota transitions through native notifications", async () => {
+		showNotification.mockClear();
+		quotaAlertState.data = [];
+		const view = renderRuntimeOnly();
+		quotaAlertState.data = [{ id: "quota_1", title: "Claude usage is critical", body: "Five hour has 9% remaining." }];
+		view.rerender(
+			<QueryClientProvider client={new QueryClient()}>
+				<NotificationRuntime />
+			</QueryClientProvider>,
+		);
+
+		await waitFor(() => expect(showNotification).toHaveBeenCalledWith({
+			id: "quota_1",
+			title: "Claude usage is critical",
+			body: "Five hour has 9% remaining.",
+			type: "quota",
+		}));
 	});
 });

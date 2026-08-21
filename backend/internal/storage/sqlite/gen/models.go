@@ -330,6 +330,79 @@ type Project struct {
 	Kind          string
 }
 
+type QuotaAccount struct {
+	Provider            string
+	AccountID           string
+	AccountLabel        string
+	PlanType            string
+	AuthMode            string
+	SupportsRead        int64
+	SupportsSubscribe   int64
+	SupportsHistory     int64
+	SupportsCredits     int64
+	SupportsSpendLimits int64
+	Completeness        string
+	ObservedAt          time.Time
+	LastRefreshError    string
+}
+
+type QuotaAlert struct {
+	ID        string
+	Provider  string
+	AccountID string
+	LimitID   string
+	Kind      string
+	Severity  string
+	Title     string
+	Body      string
+	CreatedAt time.Time
+}
+
+type QuotaBalance struct {
+	Provider    string
+	AccountID   string
+	BalanceID   string
+	BalanceName string
+	Value       string
+	Currency    string
+	Unlimited   int64
+	ObservedAt  time.Time
+}
+
+type QuotaHistory struct {
+	ID          int64
+	Provider    string
+	AccountID   string
+	LimitID     string
+	WindowType  string
+	Scope       string
+	ScopeID     string
+	UsedPercent sql.NullFloat64
+	ResetsAt    sql.NullTime
+	Reached     sql.NullInt64
+	ObservedAt  time.Time
+}
+
+type QuotaLimit struct {
+	Provider              string
+	AccountID             string
+	LimitID               string
+	WindowType            string
+	Category              string
+	Scope                 string
+	ScopeID               string
+	LimitName             string
+	UsedPercent           sql.NullFloat64
+	RemainingValue        sql.NullFloat64
+	TotalValue            sql.NullFloat64
+	Unit                  string
+	WindowDurationSeconds sql.NullInt64
+	ResetsAt              sql.NullTime
+	Reached               sql.NullInt64
+	ReachedReason         string
+	ObservedAt            time.Time
+}
+
 type Review struct {
 	ID               string
 	SessionID        domain.SessionID

@@ -169,6 +169,7 @@ type Manager struct {
 	// for normal source discovery.
 	usageFinalizer   sessionUsageFinalizer
 	usageReactivator sessionUsageReactivator
+	activityObserver func(domain.SessionRecord, ports.ActivitySignal)
 	containers       ports.ContainerReaper
 	projects         projectConfigLoader
 	operationGateMu  sync.RWMutex
@@ -235,6 +236,15 @@ func (m *Manager) SetUsageFinalizer(finalizer sessionUsageFinalizer) {
 	defer m.mu.Unlock()
 	m.usageFinalizer = finalizer
 	m.usageReactivator, _ = finalizer.(sessionUsageReactivator)
+}
+
+// SetActivityObserver installs a best-effort observer for accepted activity
+// signals. The callback runs after ApplyActivitySignal releases lifecycle's
+// mutex and must return quickly.
+func (m *Manager) SetActivityObserver(observer func(domain.SessionRecord, ports.ActivitySignal)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.activityObserver = observer
 }
 
 // SetSessionInputLease late-binds Session Manager's pane-input authority into
@@ -521,6 +531,10 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		!rec.UpdatedAt.Equal(s.ExpectedUpdatedAt) {
 		m.mu.Unlock()
 		return nil
+	}
+	observer := m.activityObserver
+	if observer != nil {
+		defer func() { observer(rec, s) }()
 	}
 	// An explicit prompt submission is proof that an agent was relaunched in the
 	// preserved shell. Other same-generation callbacks may have been delayed

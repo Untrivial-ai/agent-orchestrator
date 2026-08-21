@@ -1040,6 +1040,16 @@ func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
 		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
 		Update: acpsdk.SessionUpdate{UsageUpdate: &acpsdk.SessionUsageUpdate{
+			SessionUpdate: "usage_update", Used: 10, Size: 100,
+		}},
+	}); err != nil {
+		t.Fatalf("usage update without rate limit: %v", err)
+	}
+	_ = nextEvent(t, opened.Events())
+
+	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
+		Update: acpsdk.SessionUpdate{UsageUpdate: &acpsdk.SessionUsageUpdate{
 			SessionUpdate: "usage_update", Used: 25, Size: 100, Cost: &acpsdk.Cost{Amount: 1.25, Currency: "USD"},
 			Meta: map[string]any{"_claude/rateLimit": map[string]any{
 				"utilization": 0.8, "resetsAt": float64(time.Now().Add(time.Hour).Unix()),
@@ -1056,6 +1066,11 @@ func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 	}
 	if limitEvent.RateLimits == nil || limitEvent.RateLimits.PrimaryUsedPercent != 80 || limitEvent.RateLimits.PrimaryResetsInSeconds < 3500 {
 		t.Fatalf("rate-limit event = %#v", limitEvent)
+	}
+	if quota := limitEvent.RateLimits.Quota; quota == nil || quota.Provider != "claude" ||
+		quota.Completeness != domain.QuotaPartial || len(quota.Limits) != 1 || quota.Limits[0].ID != "five_hour" ||
+		quota.PlanType != "" {
+		t.Fatalf("provider-neutral Claude quota = %#v", quota)
 	}
 
 	agent.mu.Lock()
@@ -1509,5 +1524,40 @@ func TestACPDriverPreservesEarlyConfigOptionUpdates(t *testing.T) {
 	}
 	if options[0].ID != "model" {
 		t.Fatalf("option id = %q, want %q", options[0].ID, "model")
+	}
+}
+
+func TestClaudePlanUsageNormalizesStructuredSDKResponse(t *testing.T) {
+	limits := NormalizeClaudePlanUsage(map[string]any{
+		"subscription_type":     "max",
+		"rate_limits_available": true,
+		"rate_limits": map[string]any{
+			"five_hour": map[string]any{
+				"utilization": 28.0,
+				"resets_at":   "2026-08-21T12:00:00Z",
+			},
+			"seven_day":      map[string]any{"utilization": 41.0},
+			"seven_day_opus": map[string]any{"utilization": 9.0},
+			"model_scoped": []any{
+				map[string]any{"display_name": "Fable", "utilization": 12.0},
+			},
+		},
+	})
+	if limits == nil || limits.Quota == nil {
+		t.Fatal("structured Claude usage did not produce quota")
+	}
+	quota := limits.Quota
+	if quota.PlanType != "max" || quota.Completeness != domain.QuotaComplete || len(quota.Limits) != 4 {
+		t.Fatalf("Claude quota = %#v", quota)
+	}
+	if got := quota.Limits[0]; got.ID != "five_hour" || got.UsedPercent == nil || *got.UsedPercent != 28 ||
+		got.WindowDuration == nil || *got.WindowDuration != 5*time.Hour || got.ResetsAt == nil {
+		t.Fatalf("five-hour limit = %#v", got)
+	}
+	if got := quota.Limits[2]; got.Scope != domain.QuotaModelScope || got.ScopeID != "opus" {
+		t.Fatalf("Opus limit = %#v", got)
+	}
+	if got := quota.Limits[3]; got.Name != "Fable" || got.Scope != domain.QuotaModelScope {
+		t.Fatalf("model-scoped limit = %#v", got)
 	}
 }

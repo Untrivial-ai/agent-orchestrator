@@ -915,6 +915,51 @@ func TestReadRateLimitsFromProviderResult(t *testing.T) {
 		t.Errorf("primary resets in %d, want a positive remaining duration",
 			limits.PrimaryResetsInSeconds)
 	}
+	if limits.Quota == nil || limits.Quota.Provider != "codex" || limits.Quota.PlanType != "pro" ||
+		limits.Quota.Completeness != domain.QuotaComplete || len(limits.Quota.Limits) != 2 {
+		t.Fatalf("provider-neutral Codex quota = %#v", limits.Quota)
+	}
+	if limits.Quota.Limits[1].Scope != domain.QuotaModelScope || limits.Quota.Limits[1].Name != "GPT-5.3-Codex-Spark" {
+		t.Fatalf("model quota = %#v", limits.Quota.Limits[1])
+	}
+}
+
+func TestRefreshQuotaReadsWithoutStartingThread(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.reply("account/rateLimits/read", `{"rateLimits":{"limitId":"codex","primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"credits":null,"planType":"pro"},"rateLimitsByLimitId":{},"rateLimitResetCredits":{"availableCount":0,"credits":[]}}`)
+
+	snapshot, err := d.RefreshQuota(context.Background(), "codex", "default")
+	if err != nil {
+		t.Fatalf("RefreshQuota: %v", err)
+	}
+	if snapshot.Provider != "codex" || snapshot.AccountID != "default" || snapshot.PlanType != "pro" {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if srv.sentMethod("thread/start") {
+		t.Fatal("quota refresh created a Codex thread")
+	}
+}
+
+func TestRateLimitsFromCollapsesDuplicateQuotaWindows(t *testing.T) {
+	var envelope rateLimitsEnvelope
+	if err := json.Unmarshal([]byte(`{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null}}}`), &envelope); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	envelope.complete = true
+
+	limits := rateLimitsFrom(envelope, time.Unix(4102012800, 0))
+	if limits.Quota == nil {
+		t.Fatal("quota snapshot is nil")
+	}
+	if got := len(limits.Quota.Limits); got != 1 {
+		t.Fatalf("quota limits = %d, want 1: %#v", got, limits.Quota.Limits)
+	}
+	if limits.Quota.Limits[0].WindowType != "primary" {
+		t.Fatalf("window type = %q, want primary", limits.Quota.Limits[0].WindowType)
+	}
+	if got := len(limits.Quota.Balances); got != 1 || limits.Quota.Balances[0].Value != "0" {
+		t.Fatalf("credits balance = %#v, want one zero balance", limits.Quota.Balances)
+	}
 }
 
 // The capability gates the readout, so it must be advertised or the UI hides a

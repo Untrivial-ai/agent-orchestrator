@@ -5034,6 +5034,262 @@ paths:
       summary: Rename a standalone shell terminal tab
       tags:
       - shellTerminals
+  /api/v1/usage/plans:
+    get:
+      operationId: listProviderQuota
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProviderQuotaResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List account-level subscription quota for every observed provider
+      tags:
+      - usage
+  /api/v1/usage/plans/{provider}/accounts/{accountId}:
+    get:
+      operationId: getProviderQuota
+      parameters:
+      - description: Opaque quota provider id, for example codex or claude.
+        in: path
+        name: provider
+        required: true
+        schema:
+          description: Opaque quota provider id, for example codex or claude.
+          type: string
+      - description: Local non-secret provider account id.
+        in: path
+        name: accountId
+        required: true
+        schema:
+          description: Local non-secret provider account id.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderQuotaResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get one provider account's current subscription quota
+      tags:
+      - usage
+  /api/v1/usage/plans/{provider}/accounts/{accountId}/history:
+    get:
+      operationId: getProviderQuotaHistory
+      parameters:
+      - description: Opaque quota provider id, for example codex or claude.
+        in: path
+        name: provider
+        required: true
+        schema:
+          description: Opaque quota provider id, for example codex or claude.
+          type: string
+      - description: Local non-secret provider account id.
+        in: path
+        name: accountId
+        required: true
+        schema:
+          description: Local non-secret provider account id.
+          type: string
+      - description: History lookback in hours. Defaults to 168 (seven days).
+        in: query
+        name: hours
+        schema:
+          description: History lookback in hours. Defaults to 168 (seven days).
+          format: int64
+          maximum: 2160
+          minimum: 1
+          type: integer
+      - description: Maximum points. Defaults to 500.
+        in: query
+        name: limit
+        schema:
+          description: Maximum points. Defaults to 500.
+          format: int64
+          maximum: 2000
+          minimum: 1
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListQuotaHistoryResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get bounded quota-position history for one provider account
+      tags:
+      - usage
+  /api/v1/usage/plans/{provider}/accounts/{accountId}/refresh:
+    post:
+      operationId: refreshProviderQuota
+      parameters:
+      - description: Opaque quota provider id, for example codex or claude.
+        in: path
+        name: provider
+        required: true
+        schema:
+          description: Opaque quota provider id, for example codex or claude.
+          type: string
+      - description: Local non-secret provider account id.
+        in: path
+        name: accountId
+        required: true
+        schema:
+          description: Local non-secret provider account id.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderQuotaResponse'
+          description: OK
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Refresh quota through a provider that supports an on-demand read
+      tags:
+      - usage
+  /api/v1/usage/plans/alerts:
+    get:
+      operationId: listProviderQuotaAlerts
+      parameters:
+      - description: Alert lookback in minutes. Defaults to 10.
+        in: query
+        name: minutes
+        schema:
+          description: Alert lookback in minutes. Defaults to 10.
+          format: int64
+          maximum: 10080
+          minimum: 1
+          type: integer
+      - description: Maximum alerts. Defaults to 100.
+        in: query
+        name: limit
+        schema:
+          description: Maximum alerts. Defaults to 100.
+          format: int64
+          maximum: 500
+          minimum: 1
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListQuotaAlertsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List recent transition-only provider quota alerts
+      tags:
+      - usage
+  /api/v1/usage/plans/refresh:
+    post:
+      operationId: refreshAllProviderQuota
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProviderQuotaResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Refresh every daemon-known subscription quota account
+      tags:
+      - usage
   /api/v1/usage/sessions:
     get:
       operationId: listCompactSessionUsage
@@ -6680,6 +6936,33 @@ components:
       required:
       - projects
       type: object
+    ListProviderQuotaResponse:
+      properties:
+        providers:
+          items:
+            $ref: '#/components/schemas/ProviderQuotaResponse'
+          type: array
+      required:
+      - providers
+      type: object
+    ListQuotaAlertsResponse:
+      properties:
+        alerts:
+          items:
+            $ref: '#/components/schemas/QuotaAlertResponse'
+          type: array
+      required:
+      - alerts
+      type: object
+    ListQuotaHistoryResponse:
+      properties:
+        points:
+          items:
+            $ref: '#/components/schemas/QuotaHistoryPointResponse'
+          type: array
+      required:
+      - points
+      type: object
     ListReviewsResponse:
       properties:
         reviewerHandleId:
@@ -7205,6 +7488,64 @@ components:
       - providerTurnId
       - activityId
       type: object
+    ProviderQuotaResponse:
+      properties:
+        accountId:
+          type: string
+        accountLabel:
+          type: string
+        authMode:
+          type: string
+        balances:
+          items:
+            $ref: '#/components/schemas/QuotaBalanceResponse'
+          type: array
+        capabilities:
+          $ref: '#/components/schemas/QuotaCapabilitiesResponse'
+        completeness:
+          enum:
+          - complete
+          - partial
+          type: string
+        freshness:
+          enum:
+          - fresh
+          - aging
+          - stale
+          - unavailable
+          type: string
+        limits:
+          items:
+            $ref: '#/components/schemas/QuotaLimitResponse'
+          type: array
+        observedAt:
+          format: date-time
+          type: string
+        planType:
+          type: string
+        provider:
+          type: string
+        refreshError:
+          type: string
+        severity:
+          enum:
+          - normal
+          - warning
+          - critical
+          - exhausted
+          - unknown
+          type: string
+      required:
+      - provider
+      - accountId
+      - capabilities
+      - completeness
+      - freshness
+      - severity
+      - observedAt
+      - limits
+      - balances
+      type: object
     PushDeviceEnvelope:
       properties:
         device:
@@ -7229,6 +7570,169 @@ components:
       required:
       - createdAt
       - lastSeenAt
+      type: object
+    QuotaAlertResponse:
+      properties:
+        accountId:
+          type: string
+        body:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        kind:
+          type: string
+        limitId:
+          type: string
+        provider:
+          type: string
+        severity:
+          enum:
+          - normal
+          - warning
+          - critical
+          - exhausted
+          - unknown
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - provider
+      - accountId
+      - kind
+      - severity
+      - title
+      - createdAt
+      type: object
+    QuotaBalanceResponse:
+      properties:
+        currency:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        unlimited:
+          type: boolean
+        value:
+          type: string
+      required:
+      - id
+      - unlimited
+      type: object
+    QuotaCapabilitiesResponse:
+      properties:
+        supportsCredits:
+          type: boolean
+        supportsHistory:
+          type: boolean
+        supportsRead:
+          type: boolean
+        supportsSpendLimits:
+          type: boolean
+        supportsSubscribe:
+          type: boolean
+      required:
+      - supportsRead
+      - supportsSubscribe
+      - supportsHistory
+      - supportsCredits
+      - supportsSpendLimits
+      type: object
+    QuotaHistoryPointResponse:
+      properties:
+        limitId:
+          type: string
+        observedAt:
+          format: date-time
+          type: string
+        reached:
+          type:
+          - "null"
+          - boolean
+        resetsAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        scope:
+          type: string
+        scopeId:
+          type: string
+        usedPercent:
+          type:
+          - "null"
+          - number
+        windowType:
+          type: string
+      required:
+      - limitId
+      - scope
+      - observedAt
+      type: object
+    QuotaLimitResponse:
+      properties:
+        category:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        reached:
+          type:
+          - "null"
+          - boolean
+        reachedReason:
+          type: string
+        remainingPercent:
+          type:
+          - "null"
+          - number
+        remainingValue:
+          type:
+          - "null"
+          - number
+        resetsAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        scope:
+          type: string
+        scopeId:
+          type: string
+        severity:
+          enum:
+          - normal
+          - warning
+          - critical
+          - exhausted
+          - unknown
+          type: string
+        totalValue:
+          type:
+          - "null"
+          - number
+        unit:
+          type: string
+        usedPercent:
+          type:
+          - "null"
+          - number
+        windowDurationSeconds:
+          type:
+          - "null"
+          - integer
+        windowType:
+          type: string
+      required:
+      - id
+      - category
+      - scope
+      - severity
       type: object
     RegisterPushDeviceRequest:
       properties:

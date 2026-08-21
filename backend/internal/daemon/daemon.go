@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/claudeacp"
 	chatdriverregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/autoreview"
@@ -43,6 +44,7 @@ import (
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	quotasvc "github.com/aoagents/agent-orchestrator/backend/internal/service/quota"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
@@ -186,6 +188,7 @@ func Run() error {
 	// resolver (AO_AGENT validated here for compatibility), and the agent
 	// messenger, then mount it on the API.
 	chatDrivers := chatdriverregistry.Build(log)
+	quotaSvc := quotasvc.New(store)
 
 	// Daemon-owned preferences. The store's type is field-compatible with the
 	// service's, adapted here so neither package imports the other.
@@ -237,8 +240,37 @@ func Run() error {
 		// The LCM satisfies ActivityRecorder directly: a chat turn is a pure
 		// lifecycle reduction, same as a hook signal from a terminal session.
 		Activity: lcStack.LCM,
+		Quota:    quotaSvc,
 		Log:      log,
 		NewID:    uuid.NewString,
+	})
+	quotaSvc.SetRefresher(chatSvc)
+	if codexDriver, err := chatDrivers.Driver(domain.HarnessCodex); err == nil {
+		if refresher, ok := codexDriver.(quotasvc.Refresher); ok {
+			quotaSvc.RegisterRefresher("codex", "default", refresher)
+		}
+	}
+	if claudeAgent, ok := agents.Agent(domain.HarnessClaudeCode); ok {
+		if plugin, ok := claudeAgent.(interface {
+			ports.AgentBinaryResolver
+			ports.AgentAuthChecker
+		}); ok {
+			quotaSvc.RegisterRefresher("claude", "default", claudeacp.NewQuotaRefresher(plugin))
+		}
+	}
+	const quotaRefreshInterval = 5 * time.Minute
+	quotaRefreshDone := quotaSvc.StartAutoRefresh(ctx, quotaRefreshInterval)
+	lcStack.LCM.SetActivityObserver(func(session domain.SessionRecord, signal ports.ActivitySignal) {
+		if session.Kind != domain.KindWorker || !signal.Valid || signal.State != domain.ActivityIdle {
+			return
+		}
+		if session.Harness != domain.HarnessClaudeCode && session.Harness != domain.HarnessCodex {
+			return
+		}
+		go quotaSvc.RefreshRegisteredIfStale(ctx)
+	})
+	quotaMaintenanceDone := quotaSvc.StartMaintenance(ctx, func(err error) {
+		log.Warn("quota history maintenance failed", "err", err)
 	})
 
 	sessionSvc, reviewSvc, sessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, messenger, telemetrySink, agents, managedPreview, browserBroker, browserAuthority, chatLauncher{svc: chatSvc}, settingsSvc, log)
@@ -418,6 +450,7 @@ func Run() error {
 		Activity:           lcStack.LCM,
 		UsageHooks:         usageCollector,
 		UsageSummary:       usagesvc.NewSummaryReader(store),
+		Quota:              quotaSvc,
 		Telemetry:          telemetrySink,
 		Mobile:             mc,
 		DevImport: devimportsvc.New(devimportsvc.Deps{
@@ -522,6 +555,8 @@ func Run() error {
 	if usageDone != nil {
 		<-usageDone
 	}
+	<-quotaMaintenanceDone
+	<-quotaRefreshDone
 	lcStack.Stop()
 	// Tear the tailnet proxy down before the listener it fronts. `tailscale
 	// serve --bg` state lives in tailscaled and outlives this process, so

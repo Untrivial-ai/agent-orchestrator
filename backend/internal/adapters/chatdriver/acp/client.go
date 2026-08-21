@@ -717,22 +717,122 @@ func claudeRateLimits(meta map[string]any) *ports.ChatRateLimits {
 	if value == nil {
 		return nil
 	}
+	now := time.Now().UTC()
 	limits := &ports.ChatRateLimits{PrimaryUsedPercent: -1, SecondaryUsedPercent: -1}
+	quotaLimit := domain.QuotaLimit{
+		Category: domain.QuotaRateLimit, Scope: domain.QuotaAccountScope,
+		WindowType: "rolling", ObservedAt: now,
+	}
 	if utilization, ok := number(value["utilization"]); ok {
 		// The Claude SDK reports utilization as 0..1.
 		limits.PrimaryUsedPercent = utilization * 100
+		used := utilization * 100
+		quotaLimit.UsedPercent = &used
 	}
 	if resetsAt, ok := number(value["resetsAt"]); ok {
-		remaining := int64(resetsAt) - time.Now().Unix()
+		remaining := int64(resetsAt) - now.Unix()
 		if remaining < 0 {
 			remaining = 0
 		}
 		limits.PrimaryResetsInSeconds = remaining
+		reset := time.Unix(int64(resetsAt), 0).UTC()
+		quotaLimit.ResetsAt = &reset
 	}
 	if kind, ok := value["rateLimitType"].(string); ok {
-		limits.PlanLabel = strings.ReplaceAll(kind, "_", " ")
+		quotaLimit.ID = domain.QuotaLimitID(kind)
+		quotaLimit.Name = strings.ReplaceAll(kind, "_", " ")
+		if duration := claudeWindowDuration(kind); duration != nil {
+			quotaLimit.WindowDuration = duration
+		}
+	}
+	if quotaLimit.ID == "" {
+		quotaLimit.ID = "subscription"
+	}
+	limits.Quota = &domain.QuotaSnapshot{
+		Provider: "claude", AccountID: "default", Completeness: domain.QuotaPartial,
+		Capabilities: domain.QuotaCapabilities{SupportsSubscribe: true},
+		Limits:       []domain.QuotaLimit{quotaLimit}, ObservedAt: now,
 	}
 	return limits
+}
+
+// NormalizeClaudePlanUsage converts the Claude SDK's structured get_usage
+// response into AO's provider-neutral quota model for the daemon's sessionless
+// collector.
+func NormalizeClaudePlanUsage(value map[string]any) *ports.ChatRateLimits {
+	if value == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	snapshot := &domain.QuotaSnapshot{
+		Provider: "claude", AccountID: "default", Completeness: domain.QuotaComplete,
+		Capabilities: domain.QuotaCapabilities{SupportsSubscribe: true}, ObservedAt: now,
+	}
+	if planType, ok := value["subscription_type"].(string); ok {
+		snapshot.PlanType = planType
+	}
+	available, _ := value["rate_limits_available"].(bool)
+	if !available {
+		snapshot.Completeness = domain.QuotaPartial
+		return &ports.ChatRateLimits{PrimaryUsedPercent: -1, SecondaryUsedPercent: -1, Quota: snapshot}
+	}
+	rateLimits, _ := value["rate_limits"].(map[string]any)
+	appendWindow := func(id, name string, scope domain.QuotaLimitScope, scopeID string, raw any) {
+		window, ok := raw.(map[string]any)
+		if !ok || window == nil {
+			return
+		}
+		limit := domain.QuotaLimit{
+			ID: domain.QuotaLimitID(id), Name: name, Category: domain.QuotaRateLimit,
+			Scope: scope, ScopeID: scopeID, WindowType: "rolling", ObservedAt: now,
+		}
+		if duration := claudeWindowDuration(id); duration != nil {
+			limit.WindowDuration = duration
+		}
+		if utilization, ok := number(window["utilization"]); ok {
+			limit.UsedPercent = &utilization
+		}
+		if resetsAt, ok := window["resets_at"].(string); ok && resetsAt != "" {
+			if reset, err := time.Parse(time.RFC3339, resetsAt); err == nil {
+				reset = reset.UTC()
+				limit.ResetsAt = &reset
+			}
+		}
+		snapshot.Limits = append(snapshot.Limits, limit)
+	}
+	appendWindow("five_hour", "5-hour window", domain.QuotaAccountScope, "", rateLimits["five_hour"])
+	appendWindow("seven_day", "7-day window", domain.QuotaAccountScope, "", rateLimits["seven_day"])
+	appendWindow("seven_day_oauth_apps", "OAuth apps", domain.QuotaAccountScope, "", rateLimits["seven_day_oauth_apps"])
+	appendWindow("seven_day_opus", "Opus", domain.QuotaModelScope, "opus", rateLimits["seven_day_opus"])
+	appendWindow("seven_day_sonnet", "Sonnet", domain.QuotaModelScope, "sonnet", rateLimits["seven_day_sonnet"])
+	if modelScoped, ok := rateLimits["model_scoped"].([]any); ok {
+		for index, raw := range modelScoped {
+			window, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := window["display_name"].(string)
+			id := fmt.Sprintf("model_scoped_%d", index)
+			if name != "" {
+				id = "model_" + strings.ToLower(strings.ReplaceAll(name, " ", "_"))
+			}
+			appendWindow(id, name, domain.QuotaModelScope, id, window)
+		}
+	}
+	return &ports.ChatRateLimits{PrimaryUsedPercent: -1, SecondaryUsedPercent: -1, Quota: snapshot}
+}
+
+func claudeWindowDuration(kind string) *time.Duration {
+	var duration time.Duration
+	switch kind {
+	case "five_hour":
+		duration = 5 * time.Hour
+	case "seven_day", "seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet":
+		duration = 7 * 24 * time.Hour
+	default:
+		return nil
+	}
+	return &duration
 }
 
 func number(value any) (float64, bool) {

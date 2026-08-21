@@ -238,7 +238,7 @@ func (s *Service) EditMessage(
 	}
 	conversation := source.conversation
 	conversation.ActiveBranchID = branchID
-	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
+	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.quota, s.log, s.newID, s.now)
 	if err := s.store.CreateAndActivateConversationBranch(ctx, id, branch, generation, s.now()); err != nil {
 		_ = provider.Close()
 		return EditMessageResult{}, fmt.Errorf("activate edited conversation: %w", err)
@@ -339,7 +339,7 @@ func (s *Service) ActivateBranch(ctx context.Context, id domain.SessionID, branc
 	generation := s.newID()
 	conversation := source.conversation
 	conversation.ActiveBranchID = branch.ID
-	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
+	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.quota, s.log, s.newID, s.now)
 	if err := s.store.ActivateConversationBranch(ctx, id, conversation.ID, branch.ID,
 		branch.ProviderConversationID, generation, s.now()); err != nil {
 		_ = provider.Close()
