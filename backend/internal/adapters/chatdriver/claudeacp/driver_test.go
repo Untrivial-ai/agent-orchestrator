@@ -86,3 +86,16 @@ func TestRuntimeCommandOverride(t *testing.T) {
 		t.Fatalf("runtime = %#v", launch)
 	}
 }
+
+func TestClaudeSubscriptionEnvPrefersStoredLogin(t *testing.T) {
+	got := claudeSubscriptionEnv([]string{
+		"PATH=/usr/bin",
+		"ANTHROPIC_API_KEY=secret",
+		"ANTHROPIC_AUTH_TOKEN=token",
+		"CLAUDE_CODE_EXECUTABLE=/old/claude",
+	}, "/new/claude")
+	want := []string{"PATH=/usr/bin", "CLAUDE_CODE_EXECUTABLE=/new/claude"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("collector env = %#v, want %#v", got, want)
+	}
+}

@@ -28,9 +28,16 @@ type Service struct {
 	store     Store
 	mu        sync.Mutex
 	refresher Refresher
+	providers map[string]providerRefresher
 	refreshes singleflight.Group
 	collects  singleflight.Group
 	reads     map[string]cachedRateLimits
+}
+
+type providerRefresher struct {
+	provider  domain.QuotaProviderID
+	accountID domain.QuotaAccountID
+	refresher Refresher
 }
 
 type cachedRateLimits struct {
@@ -45,7 +52,7 @@ type Refresher interface {
 
 // New creates a quota service backed by store.
 func New(store Store) *Service {
-	return &Service{store: store, reads: make(map[string]cachedRateLimits)}
+	return &Service{store: store, providers: make(map[string]providerRefresher), reads: make(map[string]cachedRateLimits)}
 }
 
 // SetRefresher late-binds the live chat service, breaking the construction cycle:
@@ -55,6 +62,17 @@ func (s *Service) SetRefresher(refresher Refresher) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refresher = refresher
+}
+
+// RegisterRefresher adds a daemon-owned reader for an account that can be
+// refreshed even when no live Chat conversation exists.
+func (s *Service) RegisterRefresher(provider domain.QuotaProviderID, accountID domain.QuotaAccountID, refresher Refresher) {
+	if s == nil || refresher == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.providers[quotaKey(provider, accountID)] = providerRefresher{provider: provider, accountID: accountID, refresher: refresher}
 }
 
 // RecordQuotaSnapshot merges and persists a provider quota observation.
@@ -165,6 +183,9 @@ func (s *Service) Refresh(ctx context.Context, provider domain.QuotaProviderID, 
 	}
 	s.mu.Lock()
 	refresher := s.refresher
+	if registered, ok := s.providers[quotaKey(provider, accountID)]; ok {
+		refresher = registered.refresher
+	}
 	s.mu.Unlock()
 	if refresher == nil {
 		return domain.QuotaSnapshot{}, ports.ErrQuotaRefreshUnsupported
@@ -189,6 +210,61 @@ func (s *Service) Refresh(ctx context.Context, provider domain.QuotaProviderID, 
 		return domain.QuotaSnapshot{}, fmt.Errorf("unexpected refreshed quota result type %T", result)
 	}
 	return snapshot, nil
+}
+
+// RefreshAll refreshes stale daemon-owned accounts and then returns every
+// durable snapshot. Provider-card refresh remains the explicit path for
+// providers that can only read through a live conversation.
+func (s *Service) RefreshAll(ctx context.Context) ([]domain.QuotaSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("quota store is unavailable")
+	}
+	s.RefreshRegisteredIfStale(ctx)
+	return s.store.ListQuotaSnapshots(ctx)
+}
+
+// RefreshRegisteredIfStale refreshes daemon-owned accounts whose last good
+// observation is outside FreshWindow. It is suitable for startup, periodic,
+// page-entry, and completion triggers without multiplying provider traffic.
+func (s *Service) RefreshRegisteredIfStale(ctx context.Context) {
+	s.mu.Lock()
+	accounts := make([]providerRefresher, 0, len(s.providers))
+	for _, registered := range s.providers {
+		accounts = append(accounts, registered)
+	}
+	s.mu.Unlock()
+	for _, account := range accounts {
+		snapshot, ok, err := s.store.GetQuotaSnapshot(ctx, account.provider, account.accountID)
+		if err == nil && ok && time.Since(snapshot.ObservedAt) < FreshWindow {
+			continue
+		}
+		_, _ = s.Refresh(ctx, account.provider, account.accountID)
+	}
+}
+
+// StartAutoRefresh performs an initial daemon-owned read and repeats it at the
+// requested interval until ctx is cancelled.
+func (s *Service) StartAutoRefresh(ctx context.Context, interval time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.RefreshRegisteredIfStale(ctx)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.RefreshRegisteredIfStale(ctx)
+			}
+		}
+	}()
+	return done
+}
+
+func quotaKey(provider domain.QuotaProviderID, accountID domain.QuotaAccountID) string {
+	return string(provider) + "\x00" + string(accountID)
 }
 
 // StartMaintenance compacts durable history immediately and once per day. It

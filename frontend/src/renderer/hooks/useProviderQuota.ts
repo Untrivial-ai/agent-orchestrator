@@ -23,6 +23,20 @@ export function useProviderQuota() {
 	});
 }
 
+export function useRefreshAllProviderQuota() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async () => {
+			const { data, error, response } = await apiClient.POST("/api/v1/usage/plans/refresh");
+			if (error) throw new Error(apiErrorMessage(error, `Unable to refresh plan usage (${response.status})`));
+			return data?.providers ?? [];
+		},
+		onSuccess: (providers) => {
+			queryClient.setQueryData(providerQuotaQueryKey, providers);
+		},
+	});
+}
+
 export function useQuotaHistory(provider: string, accountId: string, enabled = true) {
 	return useQuery({
 		queryKey: [...providerQuotaQueryKey, provider, accountId, "history"],

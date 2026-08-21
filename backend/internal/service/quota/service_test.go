@@ -17,6 +17,16 @@ type memoryQuotaStore struct {
 	has      bool
 }
 
+type testRefresher struct {
+	calls    atomic.Int64
+	snapshot domain.QuotaSnapshot
+}
+
+func (r *testRefresher) RefreshQuota(context.Context, domain.QuotaProviderID, domain.QuotaAccountID) (domain.QuotaSnapshot, error) {
+	r.calls.Add(1)
+	return r.snapshot, nil
+}
+
 func (s *memoryQuotaStore) PersistQuotaObservation(_ context.Context, snapshot domain.QuotaSnapshot, _ []domain.QuotaAlert) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -107,5 +117,36 @@ func TestCollectRateLimitsCoalescesAccountReads(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("fresh cached provider reads = %d, want 1", calls.Load())
+	}
+}
+
+func TestRegisteredRefresherWorksWithoutExistingSessionOrSnapshot(t *testing.T) {
+	store := &memoryQuotaStore{}
+	service := New(store)
+	reader := &testRefresher{snapshot: domain.QuotaSnapshot{
+		Provider: "claude", AccountID: "default", Completeness: domain.QuotaComplete, ObservedAt: time.Now().UTC(),
+	}}
+	service.RegisterRefresher("claude", "default", reader)
+
+	snapshots, err := service.RefreshAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reader.calls.Load() != 1 || len(snapshots) != 1 || snapshots[0].Provider != "claude" {
+		t.Fatalf("calls=%d snapshots=%#v", reader.calls.Load(), snapshots)
+	}
+}
+
+func TestRegisteredRefreshSkipsFreshObservation(t *testing.T) {
+	store := &memoryQuotaStore{has: true, snapshot: domain.QuotaSnapshot{
+		Provider: "claude", AccountID: "default", Completeness: domain.QuotaComplete, ObservedAt: time.Now().UTC(),
+	}}
+	service := New(store)
+	reader := &testRefresher{snapshot: store.snapshot}
+	service.RegisterRefresher("claude", "default", reader)
+
+	service.RefreshRegisteredIfStale(context.Background())
+	if reader.calls.Load() != 0 {
+		t.Fatalf("fresh provider reads = %d, want 0", reader.calls.Load())
 	}
 }

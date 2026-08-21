@@ -1199,7 +1199,7 @@
 	"planUsage.credits": "Credits and balances",
 	"planUsage.description": "Provider-reported subscription capacity across every connected coding agent.",
 	"planUsage.disclaimer": "Remaining capacity is provider-reported. AO does not estimate prompts or tasks from token totals.",
-	"planUsage.emptyDescription": "Start a Codex or Claude chat session. AO will record quota as soon as the provider reports it.",
+	"planUsage.emptyDescription": "AO is checking connected providers. Make sure the provider CLI is signed in.",
 	"planUsage.emptyTitle": "No provider quota observed yet",
 	"planUsage.history": "Observed usage history",
 	"planUsage.historyAria": "Provider quota usage over time",

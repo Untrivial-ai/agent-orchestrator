@@ -5265,6 +5265,31 @@ paths:
       summary: List recent transition-only provider quota alerts
       tags:
       - usage
+  /api/v1/usage/plans/refresh:
+    post:
+      operationId: refreshAllProviderQuota
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProviderQuotaResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Refresh every daemon-known subscription quota account
+      tags:
+      - usage
   /api/v1/usage/sessions:
     get:
       operationId: listCompactSessionUsage

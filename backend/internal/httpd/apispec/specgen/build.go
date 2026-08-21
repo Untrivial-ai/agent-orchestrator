@@ -533,6 +533,15 @@ func usageOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/usage/plans/refresh", id: "refreshAllProviderQuota", tag: "usage",
+			summary: "Refresh every daemon-known subscription quota account",
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListProviderQuotaResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodGet, path: "/api/v1/usage/plans/alerts", id: "listProviderQuotaAlerts", tag: "usage",
 			summary:    "List recent transition-only provider quota alerts",
 			pathParams: []any{controllers.QuotaAlertsQuery{}},

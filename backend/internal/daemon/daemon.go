@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/claudeacp"
 	chatdriverregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/autoreview"
@@ -244,6 +245,22 @@ func Run() error {
 		NewID:    uuid.NewString,
 	})
 	quotaSvc.SetRefresher(chatSvc)
+	if claudeAgent, ok := agents.Agent(domain.HarnessClaudeCode); ok {
+		if plugin, ok := claudeAgent.(interface {
+			ports.AgentBinaryResolver
+			ports.AgentAuthChecker
+		}); ok {
+			quotaSvc.RegisterRefresher("claude", "default", claudeacp.NewQuotaRefresher(plugin))
+		}
+	}
+	const quotaRefreshInterval = 5 * time.Minute
+	quotaRefreshDone := quotaSvc.StartAutoRefresh(ctx, quotaRefreshInterval)
+	lcStack.LCM.SetActivityObserver(func(session domain.SessionRecord, signal ports.ActivitySignal) {
+		if session.Kind != domain.KindWorker || session.Harness != domain.HarnessClaudeCode || !signal.Valid || signal.State != domain.ActivityIdle {
+			return
+		}
+		go quotaSvc.RefreshRegisteredIfStale(ctx)
+	})
 	quotaMaintenanceDone := quotaSvc.StartMaintenance(ctx, func(err error) {
 		log.Warn("quota history maintenance failed", "err", err)
 	})
@@ -531,6 +548,7 @@ func Run() error {
 		<-usageDone
 	}
 	<-quotaMaintenanceDone
+	<-quotaRefreshDone
 	lcStack.Stop()
 	// Tear the tailnet proxy down before the listener it fronts. `tailscale
 	// serve --bg` state lives in tailscaled and outlives this process, so

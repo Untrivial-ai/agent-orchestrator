@@ -766,6 +766,13 @@ func claudeRateLimits(meta map[string]any) *ports.ChatRateLimits {
 
 func claudePlanUsage(meta map[string]any) *ports.ChatRateLimits {
 	value := nestedMap(meta, "_claude/planUsage")
+	return NormalizeClaudePlanUsage(value)
+}
+
+// NormalizeClaudePlanUsage converts the Claude SDK's structured get_usage
+// response into AO's provider-neutral quota model. It is exported so the
+// daemon's sessionless collector and the ACP event path share one normalizer.
+func NormalizeClaudePlanUsage(value map[string]any) *ports.ChatRateLimits {
 	if value == nil {
 		return nil
 	}

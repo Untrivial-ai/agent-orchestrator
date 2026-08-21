@@ -1,8 +1,9 @@
 import { AlertTriangle, Gauge, RefreshCw } from "lucide-react";
 import type { TFunction } from "i18next";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { ProviderQuota, QuotaHistoryPoint } from "../../hooks/useProviderQuota";
-import { useProviderQuota, useQuotaHistory, useRefreshProviderQuota } from "../../hooks/useProviderQuota";
+import { useProviderQuota, useQuotaHistory, useRefreshAllProviderQuota, useRefreshProviderQuota } from "../../hooks/useProviderQuota";
 import { cn } from "../../lib/utils";
 import { CenterPanelShell } from "../CenterPanelShell";
 import { Button } from "../ui/button";
@@ -35,6 +36,10 @@ const statusKeys = {
 export function PlanUsagePage() {
 	const { t } = useTranslation();
 	const query = useProviderQuota();
+	const refreshAll = useRefreshAllProviderQuota();
+	useEffect(() => {
+		refreshAll.mutate();
+	}, [refreshAll.mutate]);
 	return (
 		<CenterPanelShell>
 			<div className="h-full overflow-y-auto" data-testid="plan-usage-page">

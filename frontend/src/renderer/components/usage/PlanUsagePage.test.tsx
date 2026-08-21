@@ -4,6 +4,7 @@ import type { ProviderQuota } from "../../hooks/useProviderQuota";
 
 const hookState = vi.hoisted(() => ({
 	providers: [] as ProviderQuota[],
+	refreshAll: vi.fn(),
 }));
 
 vi.mock("../../hooks/useProviderQuota", () => ({
@@ -15,6 +16,7 @@ vi.mock("../../hooks/useProviderQuota", () => ({
 		isSuccess: true,
 	}),
 	useQuotaHistory: () => ({ data: [] }),
+	useRefreshAllProviderQuota: () => ({ mutate: hookState.refreshAll }),
 	useRefreshProviderQuota: () => ({
 		error: null,
 		isError: false,
@@ -53,13 +55,15 @@ function quota(overrides: Partial<ProviderQuota> = {}): ProviderQuota {
 describe("PlanUsagePage", () => {
 	beforeEach(() => {
 		hookState.providers = [];
+		hookState.refreshAll.mockClear();
 	});
 
 	it("shows an actionable empty state before providers report quota", () => {
 		render(<PlanUsagePage />);
 
 		expect(screen.getByText("No provider quota observed yet")).toBeInTheDocument();
-		expect(screen.getByText(/Start a Codex or Claude chat session/i)).toBeInTheDocument();
+		expect(screen.getByText(/checking connected providers/i)).toBeInTheDocument();
+		expect(hookState.refreshAll).toHaveBeenCalledOnce();
 	});
 
 	it("renders Codex and Claude through the same provider-neutral card", () => {

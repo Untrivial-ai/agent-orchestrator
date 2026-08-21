@@ -39,6 +39,9 @@ func (f *fakeQuotaService) History(context.Context, domain.QuotaProviderID, doma
 func (f *fakeQuotaService) Refresh(context.Context, domain.QuotaProviderID, domain.QuotaAccountID) (domain.QuotaSnapshot, error) {
 	return f.snapshot, f.refreshErr
 }
+func (f *fakeQuotaService) RefreshAll(context.Context) ([]domain.QuotaSnapshot, error) {
+	return []domain.QuotaSnapshot{f.snapshot}, f.refreshErr
+}
 
 func newQuotaTestServer(t *testing.T, svc *fakeQuotaService) *httptest.Server {
 	t.Helper()
@@ -81,6 +84,17 @@ func TestQuotaAPIReportsUnsupportedRefresh(t *testing.T) {
 	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/usage/plans/claude/accounts/default/refresh", "")
 	if status != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body=%s", status, body)
+	}
+}
+
+func TestQuotaAPIRefreshesAllKnownProviders(t *testing.T) {
+	svc := &fakeQuotaService{snapshot: domain.QuotaSnapshot{
+		Provider: "claude", AccountID: "default", Completeness: domain.QuotaPartial, ObservedAt: time.Now().UTC(),
+	}}
+	srv := newQuotaTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/usage/plans/refresh", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"provider":"claude"`) {
+		t.Fatalf("status = %d; body=%s", status, body)
 	}
 }
 

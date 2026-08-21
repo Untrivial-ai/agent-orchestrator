@@ -23,6 +23,7 @@ type QuotaService interface {
 	Get(context.Context, domain.QuotaProviderID, domain.QuotaAccountID) (domain.QuotaSnapshot, bool, error)
 	History(context.Context, domain.QuotaProviderID, domain.QuotaAccountID, time.Time, int64) ([]domain.QuotaHistoryPoint, error)
 	Refresh(context.Context, domain.QuotaProviderID, domain.QuotaAccountID) (domain.QuotaSnapshot, error)
+	RefreshAll(context.Context) ([]domain.QuotaSnapshot, error)
 	Alerts(context.Context, time.Time, int64) ([]domain.QuotaAlert, error)
 }
 
@@ -32,10 +33,24 @@ type QuotaController struct{ Svc QuotaService }
 // Register mounts the subscription quota endpoints on r.
 func (c *QuotaController) Register(r chi.Router) {
 	r.Get("/usage/plans", c.list)
+	r.Post("/usage/plans/refresh", c.refreshAll)
 	r.Get("/usage/plans/alerts", c.alerts)
 	r.Get("/usage/plans/{provider}/accounts/{accountId}", c.get)
 	r.Get("/usage/plans/{provider}/accounts/{accountId}/history", c.history)
 	r.Post("/usage/plans/{provider}/accounts/{accountId}/refresh", c.refresh)
+}
+
+func (c *QuotaController) refreshAll(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/usage/plans/refresh")
+		return
+	}
+	snapshots, err := c.Svc.RefreshAll(r.Context())
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	writeQuotaList(w, snapshots)
 }
 
 func (c *QuotaController) alerts(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +114,10 @@ func (c *QuotaController) list(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
+	writeQuotaList(w, snapshots)
+}
+
+func writeQuotaList(w http.ResponseWriter, snapshots []domain.QuotaSnapshot) {
 	out := make([]ProviderQuotaResponse, 0, len(snapshots))
 	for _, snapshot := range snapshots {
 		out = append(out, quotaResponse(snapshot, time.Now().UTC()))
