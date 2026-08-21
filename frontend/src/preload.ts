@@ -29,6 +29,12 @@ import type {
 	BrowserAnnotationModeInput,
 	BrowserAnnotationSubmitPayload,
 } from "./shared/browser-annotations";
+import type {
+	BrowserProfile,
+	BrowserProfileListState,
+	BrowserProfileMenuInput,
+	BrowserProfileViewState,
+} from "./shared/browser-profiles";
 
 if (typeof document !== "undefined") {
 	const markNativeBrowserComposition = () => {
@@ -279,6 +285,10 @@ const api = {
 			ipcRenderer.invoke("browser:closeTab", input) as Promise<BrowserTabsState>,
 		openTab: (input: { viewId: string; url?: string }) =>
 			ipcRenderer.invoke("browser:openTab", input) as Promise<BrowserTabsState>,
+		getProfile: (viewId: string) =>
+			ipcRenderer.invoke("browser:profile:get", viewId) as Promise<BrowserProfileViewState>,
+		showProfileMenu: (input: BrowserProfileMenuInput) =>
+			ipcRenderer.invoke("browser:profile:menu", input) as Promise<void>,
 		devtools: (input: BrowserDevToolsInput) =>
 			ipcRenderer.invoke("browser:devtools", input) as Promise<BrowserDevToolsState>,
 		destroy: (viewId: string) => ipcRenderer.send("browser:destroy", viewId),
@@ -312,6 +322,22 @@ const api = {
 				ipcRenderer.off("browser:devtoolsState", wrapped);
 			};
 		},
+		onProfileState: (listener: (state: BrowserProfileViewState) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserProfileViewState) => listener(state);
+			ipcRenderer.on("browser:profileState", wrapped);
+			return () => {
+				ipcRenderer.off("browser:profileState", wrapped);
+			};
+		},
+		onProfileManage: (listener: (viewId: string) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, payload: { viewId?: unknown }) => {
+				if (typeof payload?.viewId === "string") listener(payload.viewId);
+			};
+			ipcRenderer.on("browser:profileManage", wrapped);
+			return () => {
+				ipcRenderer.off("browser:profileManage", wrapped);
+			};
+		},
 		onAnnotationSubmit: (listener: (payload: BrowserAnnotationSubmitPayload) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, payload: BrowserAnnotationSubmitPayload) => listener(payload);
 			ipcRenderer.on("browser:annotation:submitted", wrapped);
@@ -326,6 +352,14 @@ const api = {
 				ipcRenderer.off("browser:annotation:canceled", wrapped);
 			};
 		},
+	},
+	browserProfiles: {
+		list: () => ipcRenderer.invoke("browserProfiles:list") as Promise<BrowserProfileListState>,
+		create: (name: string) => ipcRenderer.invoke("browserProfiles:create", { name }) as Promise<BrowserProfile>,
+		rename: (input: { id: string; name: string }) =>
+			ipcRenderer.invoke("browserProfiles:rename", input) as Promise<BrowserProfile>,
+		clear: (id: string) => ipcRenderer.invoke("browserProfiles:clear", { id }) as Promise<void>,
+		delete: (id: string) => ipcRenderer.invoke("browserProfiles:delete", { id }) as Promise<void>,
 	},
 	notifications: {
 		show: (notification: { id: string; title: string; body?: string; type?: string }) =>

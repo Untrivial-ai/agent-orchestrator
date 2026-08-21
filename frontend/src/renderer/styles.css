@@ -3623,6 +3623,8 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 }
 
 .browser-panel__toolbar {
+	container-name: browser-toolbar;
+	container-type: inline-size;
 	display: flex;
 	align-items: center;
 	gap: 2px;
@@ -3644,6 +3646,25 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 		inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
 		0 1px 0 color-mix(in srgb, black 22%, transparent);
 	backdrop-filter: blur(10px);
+}
+
+/* Keep the URL field useful in the narrow inspector. The selected profile name
+   remains available through the button tooltip, accessible label, and native
+   menu; only its inline label collapses at constrained toolbar widths. */
+@container browser-toolbar (max-width: 34rem) {
+	.browser-profile-button {
+		width: var(--size-control-md);
+		max-width: var(--size-control-md);
+		flex-shrink: 0;
+		justify-content: center;
+		gap: 0;
+		padding-inline: 0;
+	}
+
+	.browser-profile-button__label,
+	.browser-profile-button__chevron {
+		display: none;
+	}
 }
 
 .browser-panel__url,

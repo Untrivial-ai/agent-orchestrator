@@ -11,6 +11,7 @@ import {
 	Notification as ElectronNotification,
 	protocol,
 	shell,
+	session,
 	WebContentsView,
 	webContents,
 	type WebContents,
@@ -87,6 +88,13 @@ import {
 import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/posthog-config";
 import { buildTelemetryBootstrap } from "./shared/telemetry";
 import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view-host";
+import { createBrowserProfileStore } from "./main/browser-profile-store";
+import {
+	registerBrowserProfileIpc,
+	type BrowserProfileIpc,
+	type BrowserProfileMenuItem,
+} from "./main/browser-profile-ipc";
+import type { BrowserProfileMenuInput } from "./shared/browser-profiles";
 import { createWindowComposition, type WindowComposition } from "./main/window-composition";
 import { AgentBrowserRuntime } from "./main/agent-browser-runtime";
 import { sameBrowserRuntimeIdentity, type BrowserRuntimeIdentity } from "./main/browser-runtime-identity";
@@ -177,6 +185,7 @@ let daemonStartEpoch = 0;
 let daemonStatus: DaemonStatus = { state: "stopped" };
 let daemonOutput = "";
 let browserViewHost: BrowserViewHost | null = null;
+let browserProfileIpc: BrowserProfileIpc | null = null;
 let windowComposition: WindowComposition | null = null;
 const browserCleanupPromises = new Set<Promise<void>>();
 let browserQuitCleanupPromise: Promise<void> | null = null;
@@ -365,6 +374,9 @@ function buildWindowsAppMenu(): Menu {
 async function disposeBrowserViewHost(): Promise<void> {
 	const host = browserViewHost;
 	browserViewHost = null;
+	const profileIpc = browserProfileIpc;
+	browserProfileIpc = null;
+	profileIpc?.dispose();
 	if (!host) return;
 	const cleanup = Promise.resolve()
 		.then(() => host.dispose())
@@ -377,6 +389,16 @@ async function disposeBrowserViewHost(): Promise<void> {
 		() => browserCleanupPromises.delete(cleanup),
 	);
 	await cleanup;
+}
+
+function browserProfileStateDir(): string {
+	const runFile = runFilePath();
+	return path.dirname(runFile ?? path.join(os.homedir(), ".ao", "running.json"));
+}
+
+async function clearElectronBrowserProfileData(partition: string): Promise<void> {
+	const browserSession = session.fromPartition(partition);
+	await Promise.all([browserSession.clearStorageData(), browserSession.clearCache()]);
 }
 
 async function disposeAllBrowserViewHosts(): Promise<void> {
@@ -403,6 +425,7 @@ async function createWindowInternal(): Promise<void> {
 		await agentBrowserRuntime.dispose();
 		return;
 	}
+	const browserProfileStore = await createBrowserProfileStore({ stateDir: browserProfileStateDir() });
 	const windowOptions: Electron.BaseWindowConstructorOptions = {
 		width: 1320,
 		height: 860,
@@ -496,6 +519,31 @@ async function createWindowInternal(): Promise<void> {
 		isKeybindingRecording: () => keybindingRecordingActive,
 		agentBrowserRuntime,
 		isCloseShellTerminalShortcutEnabled: () => closeShellTerminalShortcutEnabled,
+		browserProfileStore,
+		clearBrowserProfileData: clearElectronBrowserProfileData,
+	});
+	browserProfileIpc = registerBrowserProfileIpc({
+		ipcMain,
+		shellWebContents,
+		mainWindow,
+		store: browserProfileStore,
+		host: browserViewHost,
+		buildMenu: (items: BrowserProfileMenuItem[]) => {
+			const menu = Menu.buildFromTemplate(items as Electron.MenuItemConstructorOptions[]);
+			return { popup: (options) => menu.popup(options as Electron.PopupOptions) };
+		},
+		confirmSwitch: async (labels: BrowserProfileMenuInput["labels"]) => {
+			const result = await dialog.showMessageBox({
+				type: "warning",
+				title: labels.switchTitle,
+				message: labels.switchMessage,
+				detail: labels.switchDetail,
+				buttons: [labels.cancel, labels.confirm],
+				defaultId: 0,
+				cancelId: 0,
+			});
+			return result.response === 1;
+		},
 	});
 	if (daemonStatus.state === "ready") establishBrowserRuntimeLink();
 

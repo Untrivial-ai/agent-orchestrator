@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appI18n } from "../i18n";
-import { GlobalSettingsForm } from "./GlobalSettingsForm";
+import { GlobalSettingsForm, type GlobalSettingsSection } from "./GlobalSettingsForm";
 import { useLocaleStore } from "../stores/locale-store";
 import { useSoundNotificationsStore } from "../stores/sound-notifications-store";
 import { useUiStore } from "../stores/ui-store";
@@ -84,11 +84,11 @@ vi.mock("../lib/bridge", () => ({
 	},
 }));
 
-function renderForm() {
+function renderForm(section: GlobalSettingsSection = "all") {
 	const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	render(
 		<QueryClientProvider client={qc}>
-			<GlobalSettingsForm />
+			<GlobalSettingsForm section={section} />
 		</QueryClientProvider>,
 	);
 	return qc;
@@ -151,6 +151,12 @@ beforeEach(async () => {
 });
 
 describe("GlobalSettingsForm", () => {
+	it("keeps Browser in its dedicated settings page", async () => {
+		renderForm("general");
+		expect(await screen.findByLabelText("Settings")).toBeInTheDocument();
+		expect(document.querySelector('[data-section="browserProfiles"]')).not.toBeInTheDocument();
+	});
+
 	it("renders the Figma settings sections", async () => {
 		renderForm();
 		expect(await screen.findByLabelText("Settings")).toBeInTheDocument();

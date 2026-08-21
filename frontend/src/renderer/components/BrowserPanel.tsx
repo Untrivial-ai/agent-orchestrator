@@ -21,6 +21,7 @@ import type { WorkspaceSession } from "../types/workspace";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { BrowserTabsRail, type BrowserTabsRailHandle } from "./BrowserTabsRail";
+import { BrowserProfileButton } from "./BrowserProfileButton";
 import { cn } from "../lib/utils";
 import { appI18n, type MessageKey } from "../i18n";
 
@@ -246,6 +247,7 @@ export function BrowserPanelView({
 		agentBrowserActive,
 		agentBrowserActivity,
 		devtoolsState = { viewId: "", open: false, activeTabId: "" },
+		profileState = { viewId: "", profileId: null, temporary: true },
 		openDevTools = async () => undefined,
 		closeDevTools = async () => undefined,
 		annotationMode,
@@ -479,6 +481,7 @@ export function BrowserPanelView({
 						{tabNotice}
 					</span>
 				) : null}
+				<BrowserProfileButton profileState={profileState} viewId={viewId} />
 				<Button
 					aria-label={t(devtoolsState.open ? "browser.closeDevTools" : "browser.openDevTools")}
 					aria-pressed={devtoolsState.open}

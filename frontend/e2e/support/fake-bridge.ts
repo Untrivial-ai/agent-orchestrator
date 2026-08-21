@@ -140,6 +140,8 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 						activeTabId: "t1",
 						tabs: [{ id: "t1", url: "", title: "", active: true }],
 					}),
+					getProfile: async (viewId: string) => ({ viewId, profileId: null, temporary: true }),
+					showProfileMenu: async () => undefined,
 					devtools: async (input: { viewId: string }) => ({ viewId: input.viewId, open: false, activeTabId: "" }),
 					destroy: () => undefined,
 					// Annotation contract (mirrors src/preload.ts): useBrowserView subscribes
@@ -152,6 +154,21 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					onTabsState: unsubscribe,
 					onAgentActivity: unsubscribe,
 					onDevToolsState: unsubscribe,
+					onProfileState: unsubscribe,
+					onProfileManage: unsubscribe,
+				},
+				browserProfiles: {
+					list: async () => ({ profiles: [] }),
+					create: async (name: string) => {
+						const now = new Date().toISOString();
+						return { id: `fake-${name}`, name, createdAt: now, updatedAt: now };
+					},
+					rename: async ({ id, name }: { id: string; name: string }) => {
+						const now = new Date().toISOString();
+						return { id, name, createdAt: now, updatedAt: now };
+					},
+					clear: async () => undefined,
+					delete: async () => undefined,
 				},
 				notifications: {
 					show: async () => undefined,
@@ -571,6 +588,8 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 						activeTabId: "t1",
 						tabs: [{ id: "t1", url: "", title: "", active: true }],
 					}),
+					getProfile: async (viewId: string) => ({ viewId, profileId: null, temporary: true }),
+					showProfileMenu: async () => undefined,
 					devtools: async (input: { viewId: string }) => ({ viewId: input.viewId, open: false, activeTabId: "" }),
 					destroy: () => undefined,
 					// Annotation contract (mirrors src/preload.ts): useBrowserView subscribes
@@ -583,6 +602,21 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					onTabsState: unsubscribe,
 					onAgentActivity: unsubscribe,
 					onDevToolsState: unsubscribe,
+					onProfileState: unsubscribe,
+					onProfileManage: unsubscribe,
+				},
+				browserProfiles: {
+					list: async () => ({ profiles: [] }),
+					create: async (name: string) => {
+						const now = new Date().toISOString();
+						return { id: `fake-${name}`, name, createdAt: now, updatedAt: now };
+					},
+					rename: async ({ id, name }: { id: string; name: string }) => {
+						const now = new Date().toISOString();
+						return { id, name, createdAt: now, updatedAt: now };
+					},
+					clear: async () => undefined,
+					delete: async () => undefined,
 				},
 				notifications: {
 					show: async () => undefined,

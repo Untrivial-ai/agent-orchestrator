@@ -7,6 +7,7 @@ type Listener = (state: BrowserNavState) => void;
 type TabsListener = (state: import("../../main/browser-view-host").BrowserTabsState) => void;
 type DevToolsListener = (state: import("../../main/browser-view-host").BrowserDevToolsState) => void;
 type ActivityListener = (state: import("../../main/browser-view-host").BrowserAgentActivityState) => void;
+type ProfileListener = (state: import("../../shared/browser-profiles").BrowserProfileViewState) => void;
 
 function createSlot(rect: Partial<DOMRect> = {}) {
 	const slot = document.createElement("div");
@@ -31,6 +32,7 @@ function setupBridge() {
 	const tabsListeners = new Set<TabsListener>();
 	const devtoolsListeners = new Set<DevToolsListener>();
 	const activityListeners = new Set<ActivityListener>();
+	const profileListeners = new Set<ProfileListener>();
 	const bridge = {
 		nativeCompositionEnabled: false,
 		stateFor(viewId: string): BrowserNavState {
@@ -94,6 +96,8 @@ function setupBridge() {
 				placement: placement ?? "undocked",
 			}),
 		),
+		getProfile: vi.fn(async (viewId: string) => ({ viewId, profileId: null, temporary: true })),
+		showProfileMenu: vi.fn(),
 		destroy: vi.fn(),
 		setAnnotationMode: vi.fn(async () => undefined),
 		onNavState: vi.fn((listener: Listener) => {
@@ -112,6 +116,11 @@ function setupBridge() {
 			activityListeners.add(listener);
 			return () => activityListeners.delete(listener);
 		}),
+		onProfileState: vi.fn((listener: ProfileListener) => {
+			profileListeners.add(listener);
+			return () => profileListeners.delete(listener);
+		}),
+		onProfileManage: vi.fn(() => () => undefined),
 		onAnnotationSubmit: vi.fn(() => () => undefined),
 		onAnnotationCancel: vi.fn(() => () => undefined),
 		emit(state: BrowserNavState) {
@@ -125,6 +134,9 @@ function setupBridge() {
 		},
 		emitActivity(state: Parameters<ActivityListener>[0]) {
 			activityListeners.forEach((listener) => listener(state));
+		},
+		emitProfile(state: Parameters<ProfileListener>[0]) {
+			profileListeners.forEach((listener) => listener(state));
 		},
 	};
 	window.ao = { ...window.ao!, browser: bridge };

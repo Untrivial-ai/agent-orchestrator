@@ -179,6 +179,8 @@ if (typeof window !== "undefined") {
 			selectTab: async ({ viewId, tabId }) => ({ viewId, activeTabId: tabId, tabs: [] }),
 			closeTab: async ({ viewId }) => ({ viewId, activeTabId: "", tabs: [] }),
 			openTab: async ({ viewId }) => ({ viewId, activeTabId: "", tabs: [] }),
+			getProfile: async (viewId: string) => ({ viewId, profileId: null, temporary: true }),
+			showProfileMenu: async () => undefined,
 			devtools: async ({ viewId, operation }) => ({
 				viewId,
 				open: operation !== "close",
@@ -190,8 +192,23 @@ if (typeof window !== "undefined") {
 			onTabsState: () => () => undefined,
 			onAgentActivity: () => () => undefined,
 			onDevToolsState: () => () => undefined,
+			onProfileState: () => () => undefined,
+			onProfileManage: () => () => undefined,
 			onAnnotationSubmit: () => () => undefined,
 			onAnnotationCancel: () => () => undefined,
+		},
+		browserProfiles: {
+			list: async () => ({ profiles: [] }),
+			create: async (name: string) => {
+				const now = new Date().toISOString();
+				return { id: `test-${name}`, name, createdAt: now, updatedAt: now };
+			},
+			rename: async ({ id, name }: { id: string; name: string }) => {
+				const now = new Date().toISOString();
+				return { id, name, createdAt: now, updatedAt: now };
+			},
+			clear: async () => undefined,
+			delete: async () => undefined,
 		},
 		notifications: {
 			show: async () => undefined,

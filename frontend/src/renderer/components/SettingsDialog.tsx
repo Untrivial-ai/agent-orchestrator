@@ -1,4 +1,4 @@
-import { Bot, CircleHelp, GitBranch, Inbox, MonitorCog, RefreshCw, Settings2, TriangleAlert, X } from "lucide-react";
+import { Bot, CircleHelp, GitBranch, Globe2, Inbox, MonitorCog, RefreshCw, Settings2, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GlobalSettingsForm, type GlobalSettingsSection } from "./GlobalSettingsForm";
@@ -58,6 +58,7 @@ export function SettingsDialog() {
 
 	const globalSections: Array<{ id: Exclude<GlobalSettingsSection, "all">; label: string; icon: typeof Settings2 }> = [
 		{ id: "general", label: t("settings.general"), icon: Settings2 },
+		{ id: "browserProfiles", label: t("settings.browserProfiles"), icon: Globe2 },
 		{ id: "updates", label: t("settings.updates"), icon: RefreshCw },
 		{ id: "help", label: t("settings.help"), icon: CircleHelp },
 	];
@@ -89,7 +90,7 @@ export function SettingsDialog() {
 		const previousSettings = keyboardShortcutsRestoreRef.current;
 		keyboardShortcutsRestoreRef.current = null;
 		if (!previousSettings) return;
-		if (previousSettings.scope === "global") openGlobalSettings();
+		if (previousSettings.scope === "global") openGlobalSettings(previousSettings.section);
 		else openProjectSettings(previousSettings.projectId);
 	};
 
@@ -104,7 +105,7 @@ export function SettingsDialog() {
 		const previousSettings = connectMobileRestoreRef.current;
 		connectMobileRestoreRef.current = null;
 		if (!previousSettings) return;
-		if (previousSettings.scope === "global") openGlobalSettings();
+		if (previousSettings.scope === "global") openGlobalSettings(previousSettings.section);
 		else openProjectSettings(previousSettings.projectId);
 	};
 
@@ -114,7 +115,7 @@ export function SettingsDialog() {
 	};
 
 	useEffect(() => {
-		if (settingsModal?.scope === "global") setActiveSection("general");
+		if (settingsModal?.scope === "global") setActiveSection(settingsModal.section ?? "general");
 		if (settingsModal?.scope === "project") {
 			setActiveProjectSection("general");
 			setProjectSaveState(initialProjectSaveState());

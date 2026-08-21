@@ -130,6 +130,8 @@ export const aoBridge: AoBridge =
 			selectTab: async ({ viewId, tabId }) => ({ viewId, activeTabId: tabId, tabs: [] }),
 			closeTab: async ({ viewId }) => ({ viewId, activeTabId: "", tabs: [] }),
 			openTab: async ({ viewId }) => ({ viewId, activeTabId: "", tabs: [] }),
+			getProfile: async (viewId) => ({ viewId, profileId: null, temporary: true }),
+			showProfileMenu: async () => undefined,
 			devtools: async ({ viewId, operation }) => ({
 				viewId,
 				open: operation !== "close",
@@ -141,8 +143,23 @@ export const aoBridge: AoBridge =
 			onTabsState: () => () => undefined,
 			onAgentActivity: () => () => undefined,
 			onDevToolsState: () => () => undefined,
+			onProfileState: () => () => undefined,
+			onProfileManage: () => () => undefined,
 			onAnnotationSubmit: () => () => undefined,
 			onAnnotationCancel: () => () => undefined,
+		},
+		browserProfiles: {
+			list: async () => ({ profiles: [] }),
+			create: async (name: string) => {
+				const now = new Date().toISOString();
+				return { id: `preview-${name}`, name, createdAt: now, updatedAt: now };
+			},
+			rename: async ({ id, name }) => {
+				const now = new Date().toISOString();
+				return { id, name, createdAt: now, updatedAt: now };
+			},
+			clear: async () => undefined,
+			delete: async () => undefined,
 		},
 		notifications: {
 			show: async () => undefined,

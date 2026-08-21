@@ -5,8 +5,10 @@ import { ReportProblemDialog } from "./settings/ReportProblemDialog";
 import { SettingsLinkRow } from "./settings/SettingsRow";
 import { SettingsSection } from "./settings/SettingsSection";
 import { UpdatesSection } from "./settings/UpdatesSection";
+import { BrowserProfilesSection } from "./settings/BrowserProfilesSection";
+import type { GlobalSettingsSectionId } from "../stores/ui-store";
 
-export type GlobalSettingsSection = "general" | "updates" | "help" | "all";
+export type GlobalSettingsSection = GlobalSettingsSectionId | "all";
 
 export function GlobalSettingsForm({
 	section = "all",
@@ -45,6 +47,8 @@ export function GlobalSettingsForm({
 						</SettingsSection>
 					</>
 				)}
+				{section === "all" && <BrowserProfilesSection titleHidden={leadingTitleHidden} />}
+				{section === "browserProfiles" && <BrowserProfilesSection titleHidden={leadingTitleHidden} />}
 				{(section === "all" || section === "updates") && <UpdatesSection titleHidden={leadingTitleHidden} />}
 				{(section === "all" || section === "help") && (
 					<SettingsSection title={t("settings.getHelp")} titleHidden={leadingTitleHidden} grouped>

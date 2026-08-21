@@ -212,3 +212,57 @@ describe("preload uiSettings bridge", () => {
 		expect(electronMocks.invoke).toHaveBeenNthCalledWith(2, "uiSettings:set", { locale: "zh-CN" });
 	});
 });
+
+describe("preload browser profile bridge", () => {
+	it("routes profile state, native menu, and CRUD calls over IPC", async () => {
+		const bridge = exposedBridge();
+		await bridge.browser.getProfile("1:worker-1");
+		await bridge.browser.showProfileMenu({
+			viewId: "1:worker-1",
+			bounds: { x: 1, y: 2, width: 3, height: 4 },
+			labels: {
+				temporary: "Temporary",
+				manage: "Manage",
+				switchTitle: "Switch",
+				switchMessage: "Reload",
+				switchDetail: "Unsaved",
+				cancel: "No",
+				confirm: "Yes",
+			},
+		});
+		await bridge.browserProfiles.list();
+		await bridge.browserProfiles.create("Work");
+		await bridge.browserProfiles.rename({ id: "profile-id", name: "Personal" });
+		await bridge.browserProfiles.clear("profile-id");
+		await bridge.browserProfiles.delete("profile-id");
+
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(1, "browser:profile:get", "1:worker-1");
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(2, "browser:profile:menu", expect.objectContaining({ viewId: "1:worker-1" }));
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(3, "browserProfiles:list");
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(4, "browserProfiles:create", { name: "Work" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(5, "browserProfiles:rename", { id: "profile-id", name: "Personal" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(6, "browserProfiles:clear", { id: "profile-id" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(7, "browserProfiles:delete", { id: "profile-id" });
+	});
+
+	it("validates profile-management event payloads and removes wrapped listeners", () => {
+		const bridge = exposedBridge();
+		const stateListener = vi.fn();
+		const stateDispose = bridge.browser.onProfileState(stateListener);
+		const stateWrapped = electronMocks.listeners.get("browser:profileState");
+		stateWrapped?.({}, { viewId: "1:worker-1", profileId: null, temporary: true });
+		expect(stateListener).toHaveBeenCalledWith({ viewId: "1:worker-1", profileId: null, temporary: true });
+		stateDispose();
+		expect(electronMocks.off).toHaveBeenCalledWith("browser:profileState", stateWrapped);
+
+		const manageListener = vi.fn();
+		const manageDispose = bridge.browser.onProfileManage(manageListener);
+		const manageWrapped = electronMocks.listeners.get("browser:profileManage");
+		manageWrapped?.({}, { viewId: "1:worker-1" });
+		manageWrapped?.({}, { viewId: 42 });
+		expect(manageListener).toHaveBeenCalledTimes(1);
+		expect(manageListener).toHaveBeenCalledWith("1:worker-1");
+		manageDispose();
+		expect(electronMocks.off).toHaveBeenCalledWith("browser:profileManage", manageWrapped);
+	});
+});

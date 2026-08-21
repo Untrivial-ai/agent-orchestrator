@@ -9,6 +9,7 @@ import type {
 	BrowserTabsState,
 } from "../../main/browser-view-host";
 import type { BrowserAnnotationCancelPayload, BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
+import type { BrowserProfileViewState } from "../../shared/browser-profiles";
 import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
 
 export type { BrowserNavState };
@@ -54,6 +55,7 @@ export type BrowserViewModel = {
 	openTab: () => Promise<void>;
 	reorderTabs: (orderedIds: string[]) => void;
 	devtoolsState: BrowserDevToolsState;
+	profileState: BrowserProfileViewState;
 	openDevTools: () => Promise<void>;
 	closeDevTools: () => Promise<void>;
 	setDevToolsPlacement: (placement: BrowserDevToolsPlacement) => Promise<void>;
@@ -84,6 +86,12 @@ const EMPTY_DEVTOOLS_STATE: BrowserDevToolsState = {
 	open: false,
 	activeTabId: "",
 	placement: "undocked",
+};
+
+const EMPTY_PROFILE_STATE: BrowserProfileViewState = {
+	viewId: "",
+	profileId: null,
+	temporary: true,
 };
 
 type PreviewTrigger = { revision: number | null; target: string };
@@ -167,6 +175,7 @@ export function useBrowserView({
 	// authoritative and browser:tabsState pushes on every nav/title event.
 	const [tabOrder, setTabOrder] = useState<string[]>([]);
 	const [devtoolsState, setDevtoolsState] = useState<BrowserDevToolsState>(EMPTY_DEVTOOLS_STATE);
+	const [profileState, setProfileState] = useState<BrowserProfileViewState>(EMPTY_PROFILE_STATE);
 	const [tabNotice, setTabNotice] = useState("");
 	const [agentBrowserActive, setAgentBrowserActive] = useState(false);
 	const [agentBrowserActivity, setAgentBrowserActivity] = useState<BrowserAgentActivityState | null>(null);
@@ -296,6 +305,7 @@ export function useBrowserView({
 		// previous session could otherwise silently reapply to the new one.
 		setTabOrder([]);
 		setDevtoolsState(EMPTY_DEVTOOLS_STATE);
+		setProfileState(EMPTY_PROFILE_STATE);
 		setTabNotice("");
 		setAgentBrowserActive(false);
 		setAgentBrowserActivity(null);
@@ -314,6 +324,7 @@ export function useBrowserView({
 			setViewId(state.viewId);
 			setNavState(state);
 			setDevtoolsState((current) => ({ ...current, viewId: state.viewId, activeTabId: "" }));
+			setProfileState({ viewId: state.viewId, profileId: null, temporary: true });
 			return () => {
 				disposed = true;
 				viewIdRef.current = "";
@@ -324,6 +335,12 @@ export function useBrowserView({
 			viewIdRef.current = state.viewId;
 			setViewId(state.viewId);
 			setNavState(state);
+			void window.ao?.browser
+				.getProfile(state.viewId)
+				.then((profile) => {
+					if (!disposed && viewIdRef.current === profile.viewId) setProfileState(profile);
+				})
+				.catch(() => undefined);
 			void window.ao?.browser
 				.getTabs(state.viewId)
 				.then((tabs) => {
@@ -396,6 +413,13 @@ export function useBrowserView({
 		return window.ao?.browser.onDevToolsState((state) => {
 			if (state.viewId !== viewIdRef.current) return;
 			setDevtoolsState(state);
+		});
+	}, []);
+
+	useEffect(() => {
+		return window.ao?.browser.onProfileState((state) => {
+			if (state.viewId !== viewIdRef.current) return;
+			setProfileState(state);
 		});
 	}, []);
 
@@ -682,6 +706,7 @@ export function useBrowserView({
 		openTab,
 		reorderTabs,
 		devtoolsState: stateBelongsToSession ? devtoolsState : EMPTY_DEVTOOLS_STATE,
+		profileState: stateBelongsToSession ? profileState : EMPTY_PROFILE_STATE,
 		openDevTools: () => runDevtools("open"),
 		closeDevTools: () => runDevtools("close"),
 		setDevToolsPlacement: (placement) => runDevtools("setPlacement", placement),
