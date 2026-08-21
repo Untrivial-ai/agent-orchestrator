@@ -78,9 +78,10 @@ type nestedMessageState struct {
 }
 
 type conversation struct {
-	conn *acpsdk.ClientSideConnection
-	proc *process
-	log  *slog.Logger
+	conn    *acpsdk.ClientSideConnection
+	proc    *process
+	log     *slog.Logger
+	harness domain.AgentHarness
 
 	mu             sync.Mutex
 	sessionID      string
@@ -125,10 +126,11 @@ var _ ports.ChatInputResponder = (*conversation)(nil)
 var _ acpsdk.Client = (*conversation)(nil)
 var _ acpsdk.ClientExperimental = (*conversation)(nil)
 
-func newConversation(proc *process, log *slog.Logger) *conversation {
+func newConversation(proc *process, log *slog.Logger, harness domain.AgentHarness) *conversation {
 	c := &conversation{
 		proc:           proc,
 		log:            log,
+		harness:        harness,
 		pending:        make(map[string]*parkedPermission),
 		pendingInputs:  make(map[string]*parkedInput),
 		capabilities:   make(ports.ChatCapabilities),

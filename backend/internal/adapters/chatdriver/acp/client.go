@@ -491,7 +491,11 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 			usage.Currency = update.UsageUpdate.Cost.Currency
 		}
 		c.emit(ports.ChatEvent{Kind: ports.ChatEventUsage, Usage: usage})
-		if limits := claudeRateLimits(update.UsageUpdate.Meta); limits != nil {
+		limits := claudeRateLimits(update.UsageUpdate.Meta)
+		if limits == nil && c.harness == domain.HarnessClaudeCode {
+			limits = claudeQuotaPlaceholder(time.Now().UTC())
+		}
+		if limits != nil {
 			c.emit(ports.ChatEvent{Kind: ports.ChatEventRateLimits, RateLimits: limits})
 		}
 	}
@@ -754,6 +758,24 @@ func claudeRateLimits(meta map[string]any) *ports.ChatRateLimits {
 		Limits:       []domain.QuotaLimit{quotaLimit}, ObservedAt: now,
 	}
 	return limits
+}
+
+// claudeQuotaPlaceholder makes the provider visible as soon as Claude reports
+// ordinary Chat usage. Anthropic's SDK exposes no on-demand quota read and only
+// emits rate_limit_event when its subscription state changes, so a healthy
+// session may otherwise remain absent from Plan Usage indefinitely. Unknown
+// values stay unknown; a later provider event merges the real bucket into this
+// partial snapshot.
+func claudeQuotaPlaceholder(now time.Time) *ports.ChatRateLimits {
+	return &ports.ChatRateLimits{
+		PrimaryUsedPercent:   -1,
+		SecondaryUsedPercent: -1,
+		Quota: &domain.QuotaSnapshot{
+			Provider: "claude", AccountID: "default", Completeness: domain.QuotaPartial,
+			Capabilities: domain.QuotaCapabilities{SupportsSubscribe: true},
+			ObservedAt:   now,
+		},
+	}
 }
 
 func claudeWindowDuration(kind string) *time.Duration {

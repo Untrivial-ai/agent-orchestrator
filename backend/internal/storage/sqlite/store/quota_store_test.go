@@ -131,3 +131,36 @@ func TestPersistQuotaObservationStoresAlertsAtomically(t *testing.T) {
 		t.Fatalf("alerts = %#v", alerts)
 	}
 }
+
+func TestPersistQuotaObservationComposesWithProviderEventProjection(t *testing.T) {
+	store, session, conversation := conversationFixture(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	snapshot := domain.QuotaSnapshot{
+		Provider: "claude", AccountID: "default", Completeness: domain.QuotaPartial,
+		ObservedAt: now, Capabilities: domain.QuotaCapabilities{SupportsSubscribe: true},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.ProjectProviderEvent(ctx, conversation, session, "gen-1", "quota-event-1", "usage_update", `{}`, now,
+			func(txCtx context.Context) error {
+				return store.PersistQuotaObservation(txCtx, snapshot, nil)
+			})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("quota persistence deadlocked inside provider event projection")
+	}
+
+	got, ok, err := store.GetQuotaSnapshot(ctx, "claude", "default")
+	if err != nil || !ok || !got.Capabilities.SupportsSubscribe {
+		t.Fatalf("snapshot = %+v, ok %v, err %v", got, ok, err)
+	}
+}

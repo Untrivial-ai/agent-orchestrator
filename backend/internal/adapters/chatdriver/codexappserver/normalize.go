@@ -746,6 +746,7 @@ func codexQuotaSnapshot(p rateLimitsEnvelope, now time.Time) domain.QuotaSnapsho
 		ObservedAt: now.UTC(),
 	}
 	seenWindows := make(map[string]struct{})
+	seenBalances := make(map[string]struct{})
 	appendSnapshot := func(fallbackID string, raw codexproto.RateLimitSnapshot, scope domain.QuotaLimitScope) {
 		id := fallbackID
 		if raw.LimitID != nil && *raw.LimitID != "" {
@@ -762,7 +763,7 @@ func codexQuotaSnapshot(p rateLimitsEnvelope, now time.Time) domain.QuotaSnapsho
 			if window == nil {
 				return
 			}
-			windowKey := codexQuotaWindowKey(id, scope, window)
+			windowKey := codexQuotaWindowKey(id, window)
 			if _, ok := seenWindows[windowKey]; ok {
 				return
 			}
@@ -793,14 +794,18 @@ func codexQuotaSnapshot(p rateLimitsEnvelope, now time.Time) domain.QuotaSnapsho
 		appendWindow("primary", raw.Primary)
 		appendWindow("secondary", raw.Secondary)
 		if raw.Credits != nil {
-			value := ""
-			if raw.Credits.Balance != nil {
-				value = *raw.Credits.Balance
+			balanceID := id + ":credits"
+			if _, ok := seenBalances[balanceID]; !ok {
+				seenBalances[balanceID] = struct{}{}
+				value := ""
+				if raw.Credits.Balance != nil {
+					value = *raw.Credits.Balance
+				}
+				snapshot.Balances = append(snapshot.Balances, domain.QuotaBalance{
+					ID: balanceID, Name: name + " credits", Value: value,
+					Unlimited: raw.Credits.Unlimited, ObservedAt: now.UTC(),
+				})
 			}
-			snapshot.Balances = append(snapshot.Balances, domain.QuotaBalance{
-				ID: id + ":credits", Name: name + " credits", Value: value,
-				Unlimited: raw.Credits.Unlimited, ObservedAt: now.UTC(),
-			})
 		}
 		if raw.IndividualLimit != nil {
 			remaining := float64(raw.IndividualLimit.RemainingPercent)
@@ -830,7 +835,7 @@ func codexQuotaSnapshot(p rateLimitsEnvelope, now time.Time) domain.QuotaSnapsho
 
 func float64Pointer(value float64) *float64 { return &value }
 
-func codexQuotaWindowKey(id string, scope domain.QuotaLimitScope, window *codexproto.RateLimitWindow) string {
+func codexQuotaWindowKey(id string, window *codexproto.RateLimitWindow) string {
 	duration, resetsAt := "", ""
 	if window.WindowDurationMins != nil {
 		duration = strconv.FormatInt(*window.WindowDurationMins, 10)
@@ -840,7 +845,6 @@ func codexQuotaWindowKey(id string, scope domain.QuotaLimitScope, window *codexp
 	}
 	return strings.Join([]string{
 		id,
-		string(scope),
 		strconv.FormatInt(window.UsedPercent, 10),
 		duration,
 		resetsAt,

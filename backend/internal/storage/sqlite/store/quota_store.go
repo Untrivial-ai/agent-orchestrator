@@ -28,9 +28,7 @@ func (s *Store) PersistQuotaObservation(ctx context.Context, input domain.QuotaS
 		return fmt.Errorf("quota observation time is required")
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return s.inTx(ctx, "upsert quota snapshot", func(q *gen.Queries) error {
+	persist := func(q *gen.Queries) error {
 		if err := q.UpsertQuotaAccount(ctx, quotaAccountParams(snapshot)); err != nil {
 			return err
 		}
@@ -73,7 +71,16 @@ func (s *Store) PersistQuotaObservation(ctx context.Context, input domain.QuotaS
 			}
 		}
 		return nil
-	})
+	}
+	if q, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); ok && q != nil {
+		if err := persist(q); err != nil {
+			return fmt.Errorf("upsert quota snapshot: %w", err)
+		}
+		return nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "upsert quota snapshot", persist)
 }
 
 // ListQuotaSnapshots returns the latest snapshot for every provider account.

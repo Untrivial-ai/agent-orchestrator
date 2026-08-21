@@ -926,7 +926,7 @@ func TestReadRateLimitsFromProviderResult(t *testing.T) {
 
 func TestRateLimitsFromCollapsesDuplicateQuotaWindows(t *testing.T) {
 	var envelope rateLimitsEnvelope
-	if err := json.Unmarshal([]byte(`{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null}}`), &envelope); err != nil {
+	if err := json.Unmarshal([]byte(`{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null}}}`), &envelope); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	envelope.complete = true

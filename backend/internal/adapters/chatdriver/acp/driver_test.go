@@ -1040,6 +1040,22 @@ func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
 		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
 		Update: acpsdk.SessionUpdate{UsageUpdate: &acpsdk.SessionUsageUpdate{
+			SessionUpdate: "usage_update", Used: 10, Size: 100,
+		}},
+	}); err != nil {
+		t.Fatalf("usage update without rate limit: %v", err)
+	}
+	_ = nextEvent(t, opened.Events())
+	placeholderEvent := nextEvent(t, opened.Events())
+	if quota := placeholderEvent.RateLimits; quota == nil || quota.Quota == nil ||
+		quota.Quota.Provider != "claude" || len(quota.Quota.Limits) != 0 ||
+		!quota.Quota.Capabilities.SupportsSubscribe {
+		t.Fatalf("Claude quota placeholder = %#v", quota)
+	}
+
+	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
+		Update: acpsdk.SessionUpdate{UsageUpdate: &acpsdk.SessionUsageUpdate{
 			SessionUpdate: "usage_update", Used: 25, Size: 100, Cost: &acpsdk.Cost{Amount: 1.25, Currency: "USD"},
 			Meta: map[string]any{"_claude/rateLimit": map[string]any{
 				"utilization": 0.8, "resetsAt": float64(time.Now().Add(time.Hour).Unix()),
