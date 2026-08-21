@@ -1214,5 +1214,15 @@
 	"settings.project.autoReview": "Auto review",
 	"settings.project.autoReviewToggle": "Auto review PRs",
 	"settings.project.autoReviewDescription": "When enabled, new worker sessions will automatically review their pull requests. This can still be toggled per session after spawn.",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"survey.eyebrow": "AO 개선에 참여하기",
+	"survey.progress": "{{current}} / {{total}}",
+	"survey.dialogAria": "AO 설문조사",
+	"survey.thanksTitle": "감사합니다. 큰 도움이 됩니다.",
+	"survey.thanksBody": "모든 답변을 읽습니다. 다시 작업으로 돌아가세요.",
+	"survey.done": "완료",
+	"survey.back": "뒤로",
+	"survey.skip": "건너뛰기",
+	"survey.continue": "계속",
+	"survey.finish": "완료"
 }

@@ -551,6 +551,25 @@ export async function sanitizeRendererProperties(
 			break;
 		case "ao.renderer.support_opened":
 			break;
+		case "ao.renderer.survey_answered":
+			// One question answered. `choice` is the joined label(s); `choices` keeps
+			// the raw list for multi-select. All are the user's own picks from a fixed
+			// set, so they pass through capped in length and count.
+			if (typeof properties?.survey === "string") safe.survey = properties.survey.slice(0, 100);
+			if (typeof properties?.choice === "string") safe.choice = properties.choice.slice(0, 500);
+			if (Array.isArray(properties?.choices)) {
+				safe.choices = properties.choices.filter((c): c is string => typeof c === "string").slice(0, 20);
+			}
+			break;
+		case "ao.renderer.survey_completed":
+			// A finished response, one row: every answer_<id> the survey recorded.
+			for (const [key, value] of Object.entries(properties ?? {})) {
+				if (key.startsWith("answer_") && typeof value === "string") safe[key] = value.slice(0, 500);
+			}
+			break;
+		case "ao.renderer.survey_invite_dismissed":
+		case "ao.renderer.survey_invite_opted_out":
+			break;
 		case "ao.renderer.support_submitted":
 			// The report's summary, details, and diagnostics block are the user's own
 			// words and machine state. Only the chosen destination and whether the

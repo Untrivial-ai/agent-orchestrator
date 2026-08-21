@@ -1196,5 +1196,15 @@
 	"inspector.usage.totalTokensAria": "{{count}} total tokens",
 	"inspector.usage.totalTokensUnavailable": "Total tokens unavailable",
 	"inspector.usage.uncachedInputTokens": "Uncached input tokens",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"survey.eyebrow": "Help improve AO",
+	"survey.progress": "{{current}} of {{total}}",
+	"survey.dialogAria": "AO survey",
+	"survey.thanksTitle": "Thanks, that really helps.",
+	"survey.thanksBody": "We read every answer. Back to work.",
+	"survey.done": "Done",
+	"survey.back": "Back",
+	"survey.skip": "Skip",
+	"survey.continue": "Continue",
+	"survey.finish": "Finish"
 }

@@ -1230,5 +1230,15 @@
 	"settings.project.autoReview": "Auto review",
 	"settings.project.autoReviewToggle": "Auto review PRs",
 	"settings.project.autoReviewDescription": "When enabled, new worker sessions will automatically review their pull requests. This can still be toggled per session after spawn.",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"survey.eyebrow": "Ayuda a mejorar AO",
+	"survey.progress": "{{current}} de {{total}}",
+	"survey.dialogAria": "Encuesta de AO",
+	"survey.thanksTitle": "Gracias, eso ayuda mucho.",
+	"survey.thanksBody": "Leemos cada respuesta. Vuelve al trabajo.",
+	"survey.done": "Hecho",
+	"survey.back": "Atrás",
+	"survey.skip": "Omitir",
+	"survey.continue": "Continuar",
+	"survey.finish": "Finalizar"
 }

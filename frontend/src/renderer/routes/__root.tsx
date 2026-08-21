@@ -1,6 +1,7 @@
 import { createRootRouteWithContext, Outlet, useRouterState } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { TooltipProvider } from "../components/ui/tooltip";
+import { SurveyPrompt } from "../components/SurveyPrompt";
 import type { QueryClient } from "@tanstack/react-query";
 import { captureRendererEvent, routeSurface } from "../lib/telemetry";
 import { useKeybindingsStore } from "../stores/keybindings-store";
@@ -28,6 +29,7 @@ function RootComponent() {
 	return (
 		<TooltipProvider>
 			<Outlet />
+			<SurveyPrompt />
 		</TooltipProvider>
 	);
 }
