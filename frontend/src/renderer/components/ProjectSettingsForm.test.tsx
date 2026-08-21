@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getMock, putMock, postMock, navigateMock, closeSettingsMock, setOrchestratorReplacementErrorMock, captureOrchestratorReplacementFailureMock } = vi.hoisted(() => ({
+const { getMock, putMock, postMock, navigateMock, closeSettingsMock, setOrchestratorReplacementErrorMock, captureOrchestratorReplacementFailureMock, refreshAgentsIfStaleMock } = vi.hoisted(() => ({
 	getMock: vi.fn(),
 	putMock: vi.fn(),
 	postMock: vi.fn(),
@@ -12,7 +12,13 @@ const { getMock, putMock, postMock, navigateMock, closeSettingsMock, setOrchestr
 	closeSettingsMock: vi.fn(),
 	setOrchestratorReplacementErrorMock: vi.fn(),
 	captureOrchestratorReplacementFailureMock: vi.fn(),
+	refreshAgentsIfStaleMock: vi.fn(async () => undefined),
 }));
+
+vi.mock("../hooks/useAgentsQuery", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../hooks/useAgentsQuery")>();
+	return { ...actual, refreshAgentsIfStale: refreshAgentsIfStaleMock };
+});
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@tanstack/react-router")>();
@@ -203,6 +209,7 @@ beforeEach(() => {
 	closeSettingsMock.mockReset();
 	setOrchestratorReplacementErrorMock.mockReset();
 	captureOrchestratorReplacementFailureMock.mockReset();
+	refreshAgentsIfStaleMock.mockReset().mockResolvedValue(undefined);
 	putMock.mockResolvedValue({ data: { project: {} }, error: undefined });
 	postMock.mockResolvedValue({
 		data: { orchestrator: { id: "proj-1-orch-2" } },
@@ -212,6 +219,28 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
+	it("refreshes agent inventory in the background without catalog refresh buttons", async () => {
+		mockProject({
+			id: "proj-1",
+			name: "Project One",
+			kind: "single_repo",
+			path: "/repo/project-one",
+			repo: "",
+			defaultBranch: "main",
+			config: {
+				worker: { agent: "codex" },
+				orchestrator: { agent: "claude-code" },
+			},
+		});
+
+		renderSettings("proj-1", undefined, "agents");
+
+		await waitFor(() => expect(refreshAgentsIfStaleMock).toHaveBeenCalledOnce());
+		expect(screen.queryByRole("button", { name: "Refresh agents" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Refresh worker model list" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Refresh orchestrator model list" })).not.toBeInTheDocument();
+	});
+
 	it("does not have its own close button (dialog handles closing)", async () => {
 		mockProject({
 			id: "proj-1",
@@ -576,7 +605,7 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.getByRole("menuitem", { name: "Custom model…" })).toBeInTheDocument();
 	});
 
-	it("shows a warning when refreshing a cached model catalog fails", async () => {
+	it("shows a warning when background model revalidation fails", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents") return agentCatalogResponse;
 			if (path === "/api/v1/agents/{agent}/models") {
@@ -588,6 +617,8 @@ describe("ProjectSettingsForm", () => {
 						allowCustom: true,
 						source: "official-catalog",
 						fetchedAt: "2026-07-31T00:00:00Z",
+						validatedAt: "2026-07-31T00:00:00Z",
+						refreshRecommended: true,
 						stale: false,
 					},
 					error: undefined,
@@ -616,8 +647,7 @@ describe("ProjectSettingsForm", () => {
 
 		renderSettings("proj-1", undefined, "agents");
 
-		await userEvent.click(await screen.findByRole("button", { name: "Refresh worker model list" }));
-		expect(await screen.findByText("model refresh unavailable")).toBeInTheDocument();
+		expect(await screen.findAllByText("model refresh unavailable")).toHaveLength(2);
 		expect(screen.getByRole("button", { name: "Worker model" })).toHaveTextContent("Agent default");
 	});
 

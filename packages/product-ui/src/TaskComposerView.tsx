@@ -55,9 +55,7 @@ export type TaskComposerModelControl = {
 	mode: string;
 	onModeChange: (value: string) => void;
 	onModelChange: (value: string) => void;
-	onRefresh?: () => void;
 	projectId: string;
-	refreshing: boolean;
 	value: string;
 };
 

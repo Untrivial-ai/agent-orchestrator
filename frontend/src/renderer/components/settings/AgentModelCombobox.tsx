@@ -1,4 +1,4 @@
-import { ChevronDown, RefreshCw, Search } from "lucide-react";
+import { ChevronDown, Search } from "lucide-react";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentModelCatalog } from "../../hooks/useAgentModelsQuery";
@@ -50,8 +50,6 @@ export function AgentModelCombobox({
 	allowCustom,
 	onChange,
 	onCustom,
-	onRefresh,
-	refreshing = false,
 	emptyLabel,
 	triggerLabel,
 	triggerClassName,
@@ -67,9 +65,6 @@ export function AgentModelCombobox({
 	allowCustom: boolean;
 	onChange: (value: string) => void;
 	onCustom: (value: string) => void;
-	/** Rediscovery action, offered inside the menu instead of as standing chrome. */
-	onRefresh?: () => void;
-	refreshing?: boolean;
 	/** Names what happens with no override, e.g. "Use codex's default". */
 	emptyLabel?: string;
 	triggerLabel?: string;
@@ -78,8 +73,8 @@ export function AgentModelCombobox({
 	renderTrigger?: (label: string) => ReactNode;
 	/** Persists explicit model choices for this agent and pins them below defaults. */
 	recentScope?: string;
-	/** Flat "no override" + plain model names — no groups, badges, or refresh
-	 *  action. Search still shows once the catalog passes MODEL_SEARCH_THRESHOLD,
+	/** Flat "no override" + plain model names with no groups or badges.
+	 *  Search still shows once the catalog passes MODEL_SEARCH_THRESHOLD,
 	 *  same as non-compact mode; only the grouping/decoration is stripped. For
 	 *  contexts where the menu should read like a simple choice, not a
 	 *  model-management surface. */
@@ -269,28 +264,6 @@ export function AgentModelCombobox({
 								<DropdownMenuSeparator />
 								<DropdownMenuItem onSelect={() => onCustom("")} className={modelItemClass(false)}>
 									{t("settings.models.custom")}
-								</DropdownMenuItem>
-							</>
-						)}
-						{/* Rediscovery lives here, not as a standing link beside the field: it is
-						    a rare repair action, and the daemon revalidates a stale catalog on its
-						    own. Keeping it in the menu costs no layout in the calm state. */}
-						{!compact && onRefresh && (
-							<>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									disabled={refreshing}
-									onSelect={(event) => {
-										event.preventDefault();
-										onRefresh();
-									}}
-									className={modelItemClass(false)}
-								>
-									<RefreshCw
-										className={cn("size-icon-sm shrink-0 opacity-70", refreshing && "animate-spin")}
-										aria-hidden="true"
-									/>
-									{refreshing ? t("settings.models.refreshing") : t("settings.models.refreshList")}
 								</DropdownMenuItem>
 							</>
 						)}

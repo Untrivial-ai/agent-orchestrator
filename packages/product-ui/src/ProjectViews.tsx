@@ -249,11 +249,9 @@ export function ProjectSetupFormView({
 		error?: string | null;
 		loading: boolean;
 		loadingMessage: string;
-		onRefresh?: () => void;
 		onRetry?: () => void;
-		refreshLabel?: string;
-		refreshing: boolean;
-		retryLabel: string;
+		refreshing?: boolean;
+		retryLabel?: string;
 	};
 	alert?: ProjectSetupAlert | null;
 	canSubmit: boolean;
@@ -282,19 +280,9 @@ export function ProjectSetupFormView({
 				</p>
 			)}
 
-			<div className="flex items-center justify-between gap-3 text-xs leading-row text-[var(--color-text-agents-sheet-description)]">
-				<span>{agents.cacheMessage}</span>
-				{agents.onRefresh && agents.refreshLabel && (
-					<button
-						type="button"
-						className="shrink-0 rounded text-[var(--color-text-agents-sheet-title)] underline-offset-2 hover:underline disabled:pointer-events-none disabled:opacity-50"
-						disabled={agents.refreshing}
-						onClick={agents.onRefresh}
-					>
-						{agents.refreshLabel}
-					</button>
-				)}
-			</div>
+			<p className="text-xs leading-row text-[var(--color-text-agents-sheet-description)]">
+				{agents.cacheMessage}
+			</p>
 
 			{agents.error && (
 				<div
@@ -302,12 +290,12 @@ export function ProjectSetupFormView({
 					role="alert"
 				>
 					<span>{agents.error}</span>
-					{(agents.onRetry ?? agents.onRefresh) && (
+					{agents.onRetry && (
 						<button
 							type="button"
 							className="shrink-0 rounded text-[var(--color-text-agents-sheet-title)] underline-offset-2 hover:underline disabled:pointer-events-none disabled:opacity-50"
 							disabled={agents.refreshing}
-							onClick={agents.onRetry ?? agents.onRefresh}
+							onClick={agents.onRetry}
 						>
 							{agents.retryLabel}
 						</button>
@@ -598,29 +586,18 @@ export function ProjectGeneralSettingsView({
 }
 
 export function ProjectAgentsSettingsView({
-	error,
 	missingRequiredMessage,
 	orchestratorArea,
 	orchestratorModelArea,
 	permissions,
-	refresh,
 	title,
 	workerArea,
 	workerModelArea,
 }: {
-	error?: string | null;
 	missingRequiredMessage?: string | null;
 	orchestratorArea: ReactNode;
 	orchestratorModelArea: ReactNode;
 	permissions: { control: ReactNode; icon?: ReactNode; label: string };
-	refresh: {
-		actionIcon?: ReactNode;
-		disabled: boolean;
-		label: string;
-		onClick: () => void;
-		rowIcon?: ReactNode;
-		value: string;
-	};
 	title: string;
 	workerArea: ReactNode;
 	workerModelArea: ReactNode;
@@ -634,19 +611,6 @@ export function ProjectAgentsSettingsView({
 			<ProjectSettingsRow icon={permissions.icon} label={permissions.label}>
 				{permissions.control}
 			</ProjectSettingsRow>
-			<ProjectSettingsRow icon={refresh.rowIcon} label={refresh.label}>
-				<button
-					type="button"
-					aria-label={refresh.label}
-					className="settings-option-trigger inline-flex items-center gap-1.5 disabled:pointer-events-none disabled:opacity-50"
-					disabled={refresh.disabled}
-					onClick={refresh.onClick}
-				>
-					{refresh.actionIcon}
-					{refresh.value}
-				</button>
-			</ProjectSettingsRow>
-			{error && <p className="px-1 text-xs leading-row text-error" role="alert">{error}</p>}
 			{missingRequiredMessage && (
 				<p className="px-1 text-xs leading-row text-error" role="alert">{missingRequiredMessage}</p>
 			)}

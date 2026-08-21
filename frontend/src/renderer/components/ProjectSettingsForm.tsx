@@ -11,22 +11,20 @@ import {
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useEffect, useState } from "react";
-import { Info, Pencil, RefreshCw } from "lucide-react";
+import { Info, Pencil } from "lucide-react";
 import type { components } from "../../api/schema";
 import {
 	agentModelsQueryKey,
 	agentModelsQueryOptions,
-	refreshAgentModels,
 	revalidateAgentModels,
 	type AgentModelCatalog,
 } from "../hooks/useAgentModelsQuery";
-import { agentsQueryKey, agentsQueryOptions, refreshAgents } from "../hooks/useAgentsQuery";
+import { agentsQueryKey, agentsQueryOptions, refreshAgentsIfStale } from "../hooks/useAgentsQuery";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { captureRendererEvent } from "../lib/telemetry";
-import { cn } from "../lib/utils";
 import { type OrchestratorReplacementFailure, useUiStore } from "../stores/ui-store";
 import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
@@ -164,10 +162,11 @@ function SettingsBody({
 	const missingRequiredAgent = form.workerAgent === "" || form.orchestratorAgent === "";
 	const agentsQuery = useQuery(agentsQueryOptions);
 	const agentCatalog = agentsQuery.data;
-	const refreshAgentsMutation = useMutation({
-		mutationFn: refreshAgents,
-		onSuccess: (next) => queryClient.setQueryData(agentsQueryKey, next),
-	});
+	useEffect(() => {
+		void refreshAgentsIfStale().then((next) => {
+			if (next) queryClient.setQueryData(agentsQueryKey, next);
+		});
+	}, [queryClient]);
 
 	const intakeForm: IntakeForm = {
 		enabled: form.intakeEnabled,
@@ -484,30 +483,6 @@ function SettingsBody({
 							),
 							label: t("settings.project.permissionMode"),
 						}}
-						refresh={{
-							actionIcon: (
-								<RefreshCw
-									className={cn(
-										"size-icon-base",
-										refreshAgentsMutation.isPending && "animate-spin",
-									)}
-									aria-hidden="true"
-								/>
-							),
-							disabled: refreshAgentsMutation.isPending,
-							label: t("settings.project.refreshAgents"),
-							onClick: () => refreshAgentsMutation.mutate(),
-							value: refreshAgentsMutation.isPending
-								? t("settings.project.refreshing")
-								: t("settings.project.refresh"),
-						}}
-						error={
-							refreshAgentsMutation.isError
-								? refreshAgentsMutation.error instanceof Error
-									? refreshAgentsMutation.error.message
-									: t("settings.project.refreshFailed")
-								: null
-						}
 						missingRequiredMessage={
 							missingRequiredAgent ? t("settings.project.agentsRequired") : null
 						}
@@ -656,19 +631,10 @@ function AgentModelField({
 			queryClient.setQueryData(agentModelsQueryKey(agentId, projectId), revalidationQuery.data);
 		}
 	}, [agentId, projectId, queryClient, revalidationQuery.data]);
-	const refreshMutation = useMutation({
-		mutationFn: () => refreshAgentModels(agentId, projectId),
-		onSuccess: (catalog) => queryClient.setQueryData(agentModelsQueryKey(agentId, projectId), catalog),
-	});
 	const isMode = catalog?.selectionMode === "mode";
 	const label = t(`settings.models.${role}${isMode ? "Mode" : "Model"}`);
 	const datalistID = `${role}-model-options`;
 	const warning =
-		(refreshMutation.isError
-			? refreshMutation.error instanceof Error
-				? refreshMutation.error.message
-				: t("settings.models.refreshFailed")
-			: undefined) ??
 		(revalidationQuery.isError
 			? revalidationQuery.error instanceof Error
 				? revalidationQuery.error.message
@@ -686,12 +652,6 @@ function AgentModelField({
 			<>
 				<SettingsRow label={label}>
 					<div className="flex min-w-0 items-center gap-2">
-						<ModelRefreshButton
-							label={label}
-							pending={refreshMutation.isPending}
-							disabled={agentId === ""}
-							onClick={() => refreshMutation.mutate()}
-						/>
 						<SettingsOptionMenu
 							aria-label={label}
 							value={mode || "__default__"}
@@ -726,12 +686,6 @@ function AgentModelField({
 		<>
 			<SettingsRow label={label}>
 				<div className="flex min-w-0 items-center gap-2">
-					<ModelRefreshButton
-						label={label}
-						pending={refreshMutation.isPending}
-						disabled={agentId === ""}
-						onClick={() => refreshMutation.mutate()}
-					/>
 					{hasCatalog && !showCustomInput ? (
 						<AgentModelCombobox
 							aria-label={label}
@@ -774,32 +728,6 @@ function AgentModelField({
 			</SettingsRow>
 			{warning && <p className="px-1 text-xs leading-row text-warning">{warning}</p>}
 		</>
-	);
-}
-
-function ModelRefreshButton({
-	label,
-	pending,
-	disabled,
-	onClick,
-}: {
-	label: string;
-	pending: boolean;
-	disabled: boolean;
-	onClick: () => void;
-}) {
-	const { t } = useTranslation();
-	return (
-		<button
-			type="button"
-			aria-label={t("settings.models.refreshAria", { label: label.toLocaleLowerCase() })}
-			title={t("settings.models.refreshAria", { label: label.toLocaleLowerCase() })}
-			className="settings-option-trigger shrink-0 disabled:pointer-events-none disabled:opacity-50"
-			disabled={disabled || pending}
-			onClick={onClick}
-		>
-			<RefreshCw className={cn("size-icon-sm", pending && "animate-spin")} aria-hidden="true" />
-		</button>
 	);
 }
 

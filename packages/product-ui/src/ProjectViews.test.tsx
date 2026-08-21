@@ -87,10 +87,6 @@ describe("project presentation", () => {
 					cacheMessage: "Cached",
 					loading: false,
 					loadingMessage: "Loading",
-					onRefresh: vi.fn(),
-					refreshLabel: "Refresh",
-					refreshing: false,
-					retryLabel: "Retry",
 				}}
 				canSubmit
 				intakeControl={<span>Intake control</span>}
@@ -106,6 +102,7 @@ describe("project presentation", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Create and start" }));
 		expect(onSubmit).toHaveBeenCalledOnce();
 		expect(screen.getByText("Nested repository")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
 	});
 
 	it("can hide the normal refresh action while keeping an error retry", () => {

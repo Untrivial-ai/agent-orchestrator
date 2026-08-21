@@ -12,6 +12,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+type AgentInventoryCache struct {
+	ID            int64
+	InventoryJson string
+	ObservedAt    time.Time
+}
+
 type AgentModelCatalog struct {
 	AgentID       string
 	ProjectID     string

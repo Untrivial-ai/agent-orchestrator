@@ -157,6 +157,13 @@ type CachedAgentModelCatalog struct {
 	FetchedAt     time.Time
 }
 
+// AgentInventoryCache persists the last successful advisory installation and
+// authentication probe across daemon restarts.
+type AgentInventoryCache interface {
+	GetAgentInventoryCache(ctx context.Context) (inventoryJSON string, observedAt time.Time, ok bool, err error)
+	UpsertAgentInventoryCache(ctx context.Context, inventoryJSON string, observedAt time.Time) error
+}
+
 // AgentModelCatalogCache persists normalized model catalogs across daemon
 // restarts. Implementations must treat agent+project as the logical key.
 type AgentModelCatalogCache interface {

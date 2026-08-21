@@ -65,6 +65,30 @@ type fakeModelCache struct {
 	putErr  error
 }
 
+type fakeInventoryCache struct {
+	data       string
+	observedAt time.Time
+	ok         bool
+	getErr     error
+	putErr     error
+	puts       int
+}
+
+func (f *fakeInventoryCache) GetAgentInventoryCache(context.Context) (string, time.Time, bool, error) {
+	return f.data, f.observedAt, f.ok, f.getErr
+}
+
+func (f *fakeInventoryCache) UpsertAgentInventoryCache(_ context.Context, data string, observedAt time.Time) error {
+	if f.putErr != nil {
+		return f.putErr
+	}
+	f.data = data
+	f.observedAt = observedAt
+	f.ok = true
+	f.puts++
+	return nil
+}
+
 type fakeProjectLookup struct {
 	records map[string]domain.ProjectRecord
 	gotID   string
@@ -284,6 +308,132 @@ func TestListReturnsInitialSupportedInventoryWithoutProbing(t *testing.T) {
 	}
 	if got.Authorized == nil {
 		t.Fatal("Authorized = nil, want empty slice")
+	}
+}
+
+func TestListLoadsPersistedInventoryWithoutProbing(t *testing.T) {
+	probed := false
+	cached := Inventory{
+		Supported: []Info{{ID: "retired", Label: "Retired"}},
+		Installed: []Info{
+			{ID: "codex", Label: "Old Codex label", AuthStatus: ports.AgentAuthStatusAuthorized},
+			{ID: "retired", Label: "Retired"},
+		},
+		Authorized: []Info{{ID: "codex", Label: "Old Codex label", AuthStatus: ports.AgentAuthStatusAuthorized}},
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeInventoryCache{data: string(data), ok: true}
+	svc := NewWithAgents([]agentregistry.HarnessAgent{{
+		Harness:  domain.AgentHarness("codex"),
+		Manifest: adapters.Manifest{ID: "codex", Name: "Codex"},
+		Agent:    probeTrackingAgent{onProbe: func() { probed = true }},
+	}})
+	svc.inventoryCache = cache
+	svc.inventoryLoaded = false
+
+	got, err := svc.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probed {
+		t.Fatal("List ran a live probe")
+	}
+	if len(got.Supported) != 1 || got.Supported[0].Label != "Codex" {
+		t.Fatalf("supported = %#v, want current Codex manifest", got.Supported)
+	}
+	if len(got.Installed) != 1 || got.Installed[0].ID != "codex" || got.Installed[0].Label != "Codex" {
+		t.Fatalf("installed = %#v, want only current Codex adapter", got.Installed)
+	}
+}
+
+func TestListFallsBackToSupportedInventoryWhenPersistedCacheIsUnavailable(t *testing.T) {
+	tests := map[string]*fakeInventoryCache{
+		"read error":   {getErr: errors.New("sqlite unavailable")},
+		"invalid JSON": {data: "{invalid", ok: true},
+	}
+	for name, cache := range tests {
+		t.Run(name, func(t *testing.T) {
+			probed := false
+			svc := NewWithAgents([]agentregistry.HarnessAgent{{
+				Harness:  domain.AgentHarness("codex"),
+				Manifest: adapters.Manifest{ID: "codex", Name: "Codex"},
+				Agent:    probeTrackingAgent{onProbe: func() { probed = true }},
+			}})
+			svc.inventoryCache = cache
+			svc.inventoryLoaded = false
+
+			got, err := svc.List(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if probed {
+				t.Fatal("List ran a live probe")
+			}
+			if len(got.Supported) != 1 || got.Supported[0].ID != "codex" {
+				t.Fatalf("supported = %#v, want current Codex adapter", got.Supported)
+			}
+			if len(got.Installed) != 0 || len(got.Authorized) != 0 {
+				t.Fatalf("advisory inventory = %#v, want empty fallback", got)
+			}
+		})
+	}
+}
+
+func TestRefreshPersistsInventorySnapshot(t *testing.T) {
+	cache := &fakeInventoryCache{}
+	svc := NewWithAgents([]agentregistry.HarnessAgent{
+		harnessAuthAgent("codex", "Codex", ports.AgentAuthStatusAuthorized, nil),
+	})
+	svc.inventoryCache = cache
+	svc.inventoryLoaded = false
+
+	got, err := svc.Refresh(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Authorized) != 1 || cache.puts != 1 {
+		t.Fatalf("inventory = %#v, cache puts = %d", got, cache.puts)
+	}
+	var stored cachedInventory
+	if err := json.Unmarshal([]byte(cache.data), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored.Installed, got.Installed) || !reflect.DeepEqual(stored.Authorized, got.Authorized) {
+		t.Fatalf("stored inventory = %#v, want installed/authorized from %#v", stored, got)
+	}
+}
+
+func TestRefreshPublishesOnlyAfterInventoryPersistenceSucceeds(t *testing.T) {
+	cache := &fakeInventoryCache{putErr: errors.New("sqlite unavailable")}
+	svc := NewWithAgents([]agentregistry.HarnessAgent{
+		harnessAuthAgent("codex", "Codex", ports.AgentAuthStatusAuthorized, nil),
+	})
+	svc.inventoryCache = cache
+	svc.inventoryLoaded = false
+
+	if _, err := svc.Refresh(context.Background()); err == nil {
+		t.Fatal("Refresh succeeded despite persistence failure")
+	}
+	if !svc.lastRefresh.IsZero() {
+		t.Fatalf("last refresh = %v, want zero so the next call retries", svc.lastRefresh)
+	}
+	if len(svc.inventory.Installed) != 0 || len(svc.inventory.Authorized) != 0 {
+		t.Fatalf("published inventory = %#v, want pre-refresh snapshot", svc.inventory)
+	}
+
+	cache.putErr = nil
+	got, err := svc.Refresh(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache.puts != 1 {
+		t.Fatalf("cache puts = %d, want successful retry", cache.puts)
+	}
+	if len(got.Installed) != 1 || len(got.Authorized) != 1 {
+		t.Fatalf("inventory = %#v, want persisted Codex snapshot", got)
 	}
 }
 
@@ -1004,5 +1154,37 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	}
 	if discoverer.discoverCalls.Load() != 1 {
 		t.Fatalf("discovery calls = %d, want the cached catalog served immediately", discoverer.discoverCalls.Load())
+	}
+}
+
+func TestRevalidateModelsRediscoversAnAgedCatalog(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := &fakeModelDiscoverer{version: "v1", catalog: ports.AgentModelCatalog{
+		SelectionMode: ports.ModelSelectionCatalog,
+		Models:        []ports.AgentModelInfo{{ID: "model-one"}},
+		Source:        "cli",
+	}}
+	svc := newService([]agentregistry.HarnessAgent{
+		harnessAgent("opencode", "OpenCode", nil),
+	}, cache, nil, discoverer)
+
+	if _, err := svc.Models(context.Background(), "opencode", "proj-1", false); err != nil {
+		t.Fatal(err)
+	}
+	discoverer.catalog.Models = []ports.AgentModelInfo{{ID: "model-two"}}
+	discoverer.catalog.FetchedAt = time.Time{}
+
+	got, err := svc.RevalidateModels(context.Background(), "opencode", "proj-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discoverer.discoverCalls.Load() != 2 {
+		t.Fatalf("discovery calls = %d, want initial load plus revalidation", discoverer.discoverCalls.Load())
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "model-two" {
+		t.Fatalf("revalidated catalog = %#v, want model-two", got)
+	}
+	if got.RefreshRecommended {
+		t.Fatal("revalidated catalog still recommends refresh")
 	}
 }

@@ -41,10 +41,8 @@ function viewProps(overrides: Partial<TaskComposerViewProps> = {}): TaskComposer
 			},
 			fetching: false,
 			loading: false,
-			refreshing: false,
 			onModelChange: vi.fn(),
 			onModeChange: vi.fn(),
-			onRefresh: vi.fn(),
 		},
 		attachments: {
 			items: [],

@@ -313,7 +313,6 @@ export function TaskComposer({
 					selectedAgent !== "" &&
 					modelCatalogQuery.isFetching &&
 					modelCatalogQuery.data === undefined,
-				refreshing: false,
 				onModelChange: (value) => {
 					setModel(value);
 					setMode("");

@@ -270,7 +270,7 @@ func Run() error {
 	}
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, log)
 
-	agentSvc := agentsvc.NewWithDeps(agentsvc.Deps{Cache: store, Discoverer: modelcatalog.Discoverer{}, Projects: store, Sessions: store})
+	agentSvc := agentsvc.NewWithDeps(agentsvc.Deps{Cache: store, InventoryCache: store, Discoverer: modelcatalog.Discoverer{}, Projects: store, Sessions: store})
 	go func() {
 		if _, err := agentSvc.Refresh(ctx); err != nil {
 			log.Warn("initial agent catalog refresh failed", "err", err)
