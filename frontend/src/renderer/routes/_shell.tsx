@@ -869,7 +869,12 @@ function ShellLayout() {
 						workspaceError={workspaceQuery.isError ? errorMessage(workspaceQuery.error) : undefined}
 						workspaces={workspaces}
 					/>
-					<main className={cn("flex min-w-0 flex-1 flex-col overflow-x-hidden", !isSidebarOpen && "sidebar-hidden")}>
+					<main
+						className={cn(
+							"flex min-w-0 flex-1 flex-col overflow-x-hidden",
+							(!isSidebarOpen || (isWindows && isStartupLoading)) && "sidebar-hidden",
+						)}
+					>
 						<div className="min-h-0 flex-1 overflow-x-hidden">
 							{/* Board/session routes render inside the same inset box the welcome board and settings paint for themselves, so every screen sits within the app's outer boundary. */}
 							{hideShellTopbar ? (
@@ -885,7 +890,7 @@ function ShellLayout() {
 						)
 					) : framedAppTopbar ? (
 						<CenterPanelShell className={routeParams.sessionId ? "center-panel-shell--session" : undefined}>
-							{routeParams.sessionId ? null : (
+							{routeParams.sessionId || (isWindows && isStartupLoading) ? null : (
 								<ShellTopbar />
 							)}
 							<div className="flex min-h-0 flex-1 flex-col">
