@@ -745,6 +745,7 @@ func codexQuotaSnapshot(p rateLimitsEnvelope, now time.Time) domain.QuotaSnapsho
 		},
 		ObservedAt: now.UTC(),
 	}
+	seenWindows := make(map[string]struct{})
 	appendSnapshot := func(fallbackID string, raw codexproto.RateLimitSnapshot, scope domain.QuotaLimitScope) {
 		id := fallbackID
 		if raw.LimitID != nil && *raw.LimitID != "" {
@@ -761,6 +762,11 @@ func codexQuotaSnapshot(p rateLimitsEnvelope, now time.Time) domain.QuotaSnapsho
 			if window == nil {
 				return
 			}
+			windowKey := codexQuotaWindowKey(id, scope, window)
+			if _, ok := seenWindows[windowKey]; ok {
+				return
+			}
+			seenWindows[windowKey] = struct{}{}
 			used := float64(window.UsedPercent)
 			limit := domain.QuotaLimit{
 				ID: domain.QuotaLimitID(id), Name: name, Category: domain.QuotaRateLimit,
@@ -823,6 +829,23 @@ func codexQuotaSnapshot(p rateLimitsEnvelope, now time.Time) domain.QuotaSnapsho
 }
 
 func float64Pointer(value float64) *float64 { return &value }
+
+func codexQuotaWindowKey(id string, scope domain.QuotaLimitScope, window *codexproto.RateLimitWindow) string {
+	duration, resetsAt := "", ""
+	if window.WindowDurationMins != nil {
+		duration = strconv.FormatInt(*window.WindowDurationMins, 10)
+	}
+	if window.ResetsAt != nil {
+		resetsAt = strconv.FormatInt(*window.ResetsAt, 10)
+	}
+	return strings.Join([]string{
+		id,
+		string(scope),
+		strconv.FormatInt(window.UsedPercent, 10),
+		duration,
+		resetsAt,
+	}, "\x00")
+}
 
 // resetsIn turns an absolute unix reset instant into seconds from now, floored at
 // zero: a window whose reset has already passed has nothing left to wait for.

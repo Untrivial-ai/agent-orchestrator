@@ -924,6 +924,28 @@ func TestReadRateLimitsFromProviderResult(t *testing.T) {
 	}
 }
 
+func TestRateLimitsFromCollapsesDuplicateQuotaWindows(t *testing.T) {
+	var envelope rateLimitsEnvelope
+	if err := json.Unmarshal([]byte(`{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null}}`), &envelope); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	envelope.complete = true
+
+	limits := rateLimitsFrom(envelope, time.Unix(4102012800, 0))
+	if limits.Quota == nil {
+		t.Fatal("quota snapshot is nil")
+	}
+	if got := len(limits.Quota.Limits); got != 1 {
+		t.Fatalf("quota limits = %d, want 1: %#v", got, limits.Quota.Limits)
+	}
+	if limits.Quota.Limits[0].WindowType != "primary" {
+		t.Fatalf("window type = %q, want primary", limits.Quota.Limits[0].WindowType)
+	}
+	if got := len(limits.Quota.Balances); got != 1 || limits.Quota.Balances[0].Value != "0" {
+		t.Fatalf("credits balance = %#v, want one zero balance", limits.Quota.Balances)
+	}
+}
+
 // The capability gates the readout, so it must be advertised or the UI hides a
 // meter the driver can actually feed.
 func TestCapabilitiesAdvertiseUsageAndRateLimits(t *testing.T) {
