@@ -17,6 +17,7 @@ import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { useBrowserView, type BrowserViewModel } from "../hooks/useBrowserView";
 import { formatBrowserAnnotationMessage, type BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
 import { MAX_BROWSER_TABS } from "../../shared/browser-tabs";
+import { isAgentActivityWorking } from "../lib/session-presentation";
 import type { WorkspaceSession } from "../types/workspace";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -38,6 +39,14 @@ type AnnotationStatus = "idle" | "picking" | "queued" | "sending" | "sent" | "er
 // one-time choice, not a state.
 const RAIL_PINNED_STORAGE_KEY = "ao.browserTabs.railPinned";
 
+// A queued annotation waits for the agent to leave "active" before it's
+// delivered, so it doesn't collide with a turn the agent is still mid-way
+// through. This is a bounded safety valve, not the primary wakeup signal (the
+// agentWorking prop flipping false is) — it guarantees delivery even if the
+// activity signal never arrives, since an earlier version of this gate got
+// permanently stuck on stale status data (#2606).
+const ANNOTATION_BUSY_RETRY_MS = 20_000;
+
 export type BrowserAnnotationQueueModel = {
 	status: AnnotationStatus;
 	error: string;
@@ -52,9 +61,11 @@ export type BrowserAnnotationQueueModel = {
 export function useBrowserAnnotationQueue({
 	sessionId,
 	navUrl,
+	agentWorking,
 }: {
 	sessionId?: string;
 	navUrl?: string;
+	agentWorking?: boolean;
 }): BrowserAnnotationQueueModel {
 	const [state, setState] = useState<{ status: AnnotationStatus; error: string; queuedCount: number }>({
 		status: "idle",
@@ -66,75 +77,100 @@ export function useBrowserAnnotationQueue({
 	const sessionIdRef = useRef(sessionId ?? "");
 	const generationRef = useRef(0);
 	const sentTimerRef = useRef<number | null>(null);
+	const agentWorkingRef = useRef(Boolean(agentWorking));
+	const busyRetryTimerRef = useRef<number | null>(null);
+
+	const clearBusyRetryTimer = useCallback(() => {
+		if (busyRetryTimerRef.current !== null) window.clearTimeout(busyRetryTimerRef.current);
+		busyRetryTimerRef.current = null;
+	}, []);
 
 	const resetQueue = useCallback(() => {
 		generationRef.current += 1;
 		if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
 		sentTimerRef.current = null;
+		clearBusyRetryTimer();
 		annotationQueueRef.current = [];
 		annotationSendingRef.current = false;
 		setState({ status: "idle", error: "", queuedCount: 0 });
-	}, []);
+	}, [clearBusyRetryTimer]);
 
-	const drainAnnotationQueue = useCallback(() => {
-		if (annotationSendingRef.current || !sessionIdRef.current) {
-			return;
-		}
-
-		const payload = annotationQueueRef.current.shift();
-		setState((current) => ({ ...current, queuedCount: annotationQueueRef.current.length }));
-		if (!payload) return;
-
-		annotationSendingRef.current = true;
-		const sendGeneration = generationRef.current;
-		const sendSessionId = sessionIdRef.current;
-		setState({ status: "sending", error: "", queuedCount: annotationQueueRef.current.length });
-
-		void (async () => {
-			let sent = false;
-			let failureMessage = appI18n.t("browser.unableSendAnnotation");
-			try {
-				const message = formatBrowserAnnotationMessage(payload);
-				const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
-					params: { path: { sessionId: sendSessionId } },
-					body: { message, attachment: payload.snapshot },
-				});
-				if (error) {
-					failureMessage = apiErrorMessage(error, appI18n.t("browser.unableSendAnnotation"));
-					return;
-				}
-				sent = true;
-			} catch (error) {
-				failureMessage = apiErrorMessage(error, appI18n.t("browser.unableSendAnnotation"));
-			} finally {
-				if (sendGeneration !== generationRef.current || sendSessionId !== sessionIdRef.current) return;
-				annotationSendingRef.current = false;
-				if (!sent) {
-					annotationQueueRef.current.unshift(payload);
-					setState({
-						status: "error",
-						error: failureMessage,
-						queuedCount: annotationQueueRef.current.length,
-					});
-					return;
-				}
-
-				const queuedCount = annotationQueueRef.current.length;
-				setState({ status: queuedCount > 0 ? "queued" : "sent", error: "", queuedCount });
-				if (queuedCount > 0) {
-					drainAnnotationQueue();
-				} else {
-					if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
-					sentTimerRef.current = window.setTimeout(() => {
-						sentTimerRef.current = null;
-						setState((current) =>
-							current.status === "sent" ? { status: "idle", error: "", queuedCount: 0 } : current,
-						);
-					}, 2_000);
-				}
+	const drainAnnotationQueue = useCallback(
+		(bypassBusyGate = false) => {
+			if (annotationSendingRef.current || !sessionIdRef.current) {
+				return;
 			}
-		})();
-	}, []);
+
+			const payload = annotationQueueRef.current[0];
+			if (!payload) return;
+
+			if (agentWorkingRef.current && !bypassBusyGate) {
+				setState((current) => ({ ...current, status: "queued", queuedCount: annotationQueueRef.current.length }));
+				if (busyRetryTimerRef.current === null) {
+					busyRetryTimerRef.current = window.setTimeout(() => {
+						busyRetryTimerRef.current = null;
+						drainAnnotationQueue(true);
+					}, ANNOTATION_BUSY_RETRY_MS);
+				}
+				return;
+			}
+			clearBusyRetryTimer();
+
+			annotationQueueRef.current.shift();
+			setState((current) => ({ ...current, queuedCount: annotationQueueRef.current.length }));
+
+			annotationSendingRef.current = true;
+			const sendGeneration = generationRef.current;
+			const sendSessionId = sessionIdRef.current;
+			setState({ status: "sending", error: "", queuedCount: annotationQueueRef.current.length });
+
+			void (async () => {
+				let sent = false;
+				let failureMessage = appI18n.t("browser.unableSendAnnotation");
+				try {
+					const message = formatBrowserAnnotationMessage(payload);
+					const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
+						params: { path: { sessionId: sendSessionId } },
+						body: { message, attachment: payload.snapshot },
+					});
+					if (error) {
+						failureMessage = apiErrorMessage(error, appI18n.t("browser.unableSendAnnotation"));
+						return;
+					}
+					sent = true;
+				} catch (error) {
+					failureMessage = apiErrorMessage(error, appI18n.t("browser.unableSendAnnotation"));
+				} finally {
+					if (sendGeneration !== generationRef.current || sendSessionId !== sessionIdRef.current) return;
+					annotationSendingRef.current = false;
+					if (!sent) {
+						annotationQueueRef.current.unshift(payload);
+						setState({
+							status: "error",
+							error: failureMessage,
+							queuedCount: annotationQueueRef.current.length,
+						});
+						return;
+					}
+
+					const queuedCount = annotationQueueRef.current.length;
+					setState({ status: queuedCount > 0 ? "queued" : "sent", error: "", queuedCount });
+					if (queuedCount > 0) {
+						drainAnnotationQueue();
+					} else {
+						if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
+						sentTimerRef.current = window.setTimeout(() => {
+							sentTimerRef.current = null;
+							setState((current) =>
+								current.status === "sent" ? { status: "idle", error: "", queuedCount: 0 } : current,
+							);
+						}, 2_000);
+					}
+				}
+			})();
+		},
+		[clearBusyRetryTimer],
+	);
 
 	useEffect(() => {
 		sessionIdRef.current = sessionId ?? "";
@@ -146,11 +182,17 @@ export function useBrowserAnnotationQueue({
 		resetQueue();
 	}, [navUrl, resetQueue]);
 
+	useEffect(() => {
+		agentWorkingRef.current = Boolean(agentWorking);
+		if (!agentWorking) drainAnnotationQueue();
+	}, [agentWorking, drainAnnotationQueue]);
+
 	useEffect(
 		() => () => {
 			if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
+			clearBusyRetryTimer();
 		},
-		[],
+		[clearBusyRetryTimer],
 	);
 
 	const beginPicking = useCallback(() => {
@@ -207,6 +249,7 @@ export function BrowserPanel({ session, active, poppedOut, onTogglePopOut }: Bro
 	const annotationQueue = useBrowserAnnotationQueue({
 		sessionId: session.id,
 		navUrl: browserView.navState.url,
+		agentWorking: isAgentActivityWorking(session.activity),
 	});
 	return (
 		<BrowserPanelView

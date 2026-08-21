@@ -50,6 +50,7 @@ import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { SHELL_PANEL_SPRING } from "../lib/motion-spring";
 import { hidesShellTopbar, isMacPlatform } from "../lib/platform";
+import { isAgentActivityWorking } from "../lib/session-presentation";
 import { useShell } from "../lib/shell-context";
 import { cn } from "../lib/utils";
 import { isOrchestratorSession, sessionIsActive } from "../types/workspace";
@@ -579,6 +580,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const browserAnnotationQueue = useBrowserAnnotationQueue({
 		sessionId: session?.id,
 		navUrl: browserView.navState.url,
+		agentWorking: isAgentActivityWorking(session?.activity),
 	});
 	const browserUrl = browserView.navState.url.trim();
 	// A terminated session's `previewUrl` is a stale DB fact; useBrowserView

@@ -953,6 +953,167 @@ describe("BrowserPanel", () => {
 		expect(postMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("holds a queued annotation while the agent is actively working, then sends once it goes idle", async () => {
+		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
+		const { rerender } = render(
+			<BrowserPanel
+				active
+				onTogglePopOut={() => undefined}
+				poppedOut={false}
+				session={{ ...session, activity: { state: "active", lastActivityAt: "2026-06-15T00:00:00Z" } }}
+			/>,
+		);
+
+		act(() => {
+			annotationSubmitListeners.forEach((listener) => listener(annotationPayload("Make this button blue.")));
+		});
+
+		expect(screen.getByText("Queued")).toBeInTheDocument();
+		expect(postMock).not.toHaveBeenCalled();
+
+		rerender(
+			<BrowserPanel
+				active
+				onTogglePopOut={() => undefined}
+				poppedOut={false}
+				session={{ ...session, activity: { state: "idle", lastActivityAt: "2026-06-15T00:01:00Z" } }}
+			/>,
+		);
+
+		expect(await screen.findByText("Sent")).toBeInTheDocument();
+		expect(postMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("sends a held annotation once the agent reaches waiting_input", async () => {
+		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
+		const { rerender } = render(
+			<BrowserPanel
+				active
+				onTogglePopOut={() => undefined}
+				poppedOut={false}
+				session={{ ...session, activity: { state: "active", lastActivityAt: "2026-06-15T00:00:00Z" } }}
+			/>,
+		);
+
+		act(() => {
+			annotationSubmitListeners.forEach((listener) => listener(annotationPayload("Make this button blue.")));
+		});
+		expect(postMock).not.toHaveBeenCalled();
+
+		rerender(
+			<BrowserPanel
+				active
+				onTogglePopOut={() => undefined}
+				poppedOut={false}
+				session={{ ...session, activity: { state: "waiting_input", lastActivityAt: "2026-06-15T00:01:00Z" } }}
+			/>,
+		);
+
+		expect(await screen.findByText("Sent")).toBeInTheDocument();
+		expect(postMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("force-sends a held annotation once the busy-retry fallback elapses", async () => {
+		vi.useFakeTimers();
+		try {
+			hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
+			render(
+				<BrowserPanel
+					active
+					onTogglePopOut={() => undefined}
+					poppedOut={false}
+					session={{ ...session, activity: { state: "active", lastActivityAt: "2026-06-15T00:00:00Z" } }}
+				/>,
+			);
+
+			act(() => {
+				annotationSubmitListeners.forEach((listener) => listener(annotationPayload("Make this button blue.")));
+			});
+			expect(postMock).not.toHaveBeenCalled();
+
+			await act(async () => {
+				vi.advanceTimersByTime(20_000);
+			});
+
+			expect(postMock).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("arms only one busy-retry fallback for several annotations queued while the agent is active", async () => {
+		vi.useFakeTimers();
+		try {
+			hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
+			render(
+				<BrowserPanel
+					active
+					onTogglePopOut={() => undefined}
+					poppedOut={false}
+					session={{ ...session, activity: { state: "active", lastActivityAt: "2026-06-15T00:00:00Z" } }}
+				/>,
+			);
+
+			act(() => {
+				annotationSubmitListeners.forEach((listener) => {
+					listener(annotationPayload("Make this button blue."));
+					listener(annotationPayload("Make this heading shorter."));
+				});
+			});
+			expect(postMock).not.toHaveBeenCalled();
+
+			await act(async () => {
+				vi.advanceTimersByTime(20_000);
+			});
+
+			expect(postMock).toHaveBeenCalledTimes(1);
+			expect((postMock.mock.calls[0][1].body as { message: string }).message).toContain("Make this button blue.");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not force-send a stale busy-retry fallback into a session switched to afterward", async () => {
+		vi.useFakeTimers();
+		try {
+			hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
+			const { rerender } = render(
+				<BrowserPanel
+					active
+					onTogglePopOut={() => undefined}
+					poppedOut={false}
+					session={{ ...session, activity: { state: "active", lastActivityAt: "2026-06-15T00:00:00Z" } }}
+				/>,
+			);
+
+			act(() => {
+				annotationSubmitListeners.forEach((listener) => listener(annotationPayload("Make this button blue.")));
+			});
+			expect(postMock).not.toHaveBeenCalled();
+
+			rerender(
+				<BrowserPanel
+					active
+					onTogglePopOut={() => undefined}
+					poppedOut={false}
+					session={{
+						...session,
+						id: "sess-2",
+						activity: { state: "active", lastActivityAt: "2026-06-15T00:02:00Z" },
+					}}
+				/>,
+			);
+
+			await act(async () => {
+				vi.advanceTimersByTime(20_000);
+			});
+
+			expect(postMock).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("clears the annotation delivery confirmation after two seconds", async () => {
 		vi.useFakeTimers();
 		try {
