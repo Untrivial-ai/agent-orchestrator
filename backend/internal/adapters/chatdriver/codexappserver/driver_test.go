@@ -337,6 +337,9 @@ func TestApprovalIsParkedUntilResolved(t *testing.T) {
 	if ev.RequestID != "0" {
 		t.Fatalf("request id = %q, want the JSON-RPC id 0", ev.RequestID)
 	}
+	if ev.ProviderTurnID != "turn-1" {
+		t.Fatalf("provider turn id = %q, want turn-1", ev.ProviderTurnID)
+	}
 	if ev.ActivityStatus != domain.ActivityStatusPending {
 		t.Errorf("status = %q, want pending", ev.ActivityStatus)
 	}
@@ -351,6 +354,14 @@ func TestApprovalIsParkedUntilResolved(t *testing.T) {
 	want := []string{"accept", "acceptWithExecpolicyAmendment", "cancel"}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Fatalf("decisions = %v, want %v (from the provider's own list)", ids, want)
+	}
+	wantKinds := []ports.ChatDecisionKind{
+		ports.ChatDecisionAllowOnce, ports.ChatDecisionAllowAlways, ports.ChatDecisionRejectOnce,
+	}
+	for i, option := range ev.Decisions {
+		if option.Kind != wantKinds[i] {
+			t.Fatalf("decision %q kind = %q, want %q", option.ID, option.Kind, wantKinds[i])
+		}
 	}
 
 	// Nothing has been answered yet, so the provider is still blocked.

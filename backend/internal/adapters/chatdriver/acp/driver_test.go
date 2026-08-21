@@ -335,8 +335,20 @@ func TestACPDriverDefersPromptUntilDurableTurnBinding(t *testing.T) {
 		}
 		if event.Kind == ports.ChatEventApprovalRequested {
 			approvalID = event.RequestID
-			if len(event.Decisions) != 2 || event.Decisions[0].ID != "allow" {
+			if len(event.Decisions) != 2 || event.Decisions[0].ID != "allow" ||
+				event.Decisions[0].Kind != ports.ChatDecisionAllowOnce ||
+				event.Decisions[1].Kind != ports.ChatDecisionRejectOnce {
 				t.Fatalf("approval decisions = %#v", event.Decisions)
+			}
+			var detail struct {
+				SubjectKind string          `json:"subjectKind"`
+				ToolKind    acpsdk.ToolKind `json:"toolKind"`
+			}
+			if err := json.Unmarshal(event.Detail, &detail); err != nil {
+				t.Fatalf("approval detail: %v (%s)", err, event.Detail)
+			}
+			if detail.SubjectKind != string(domain.ActivityKindFileChange) || detail.ToolKind != acpsdk.ToolKindEdit {
+				t.Fatalf("approval detail = %+v, want an ACP file edit", detail)
 			}
 		}
 	}

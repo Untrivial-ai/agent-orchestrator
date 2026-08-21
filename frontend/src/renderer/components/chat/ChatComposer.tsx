@@ -82,6 +82,7 @@ export function ChatComposer({
 	disabled,
 	settings,
 	footerAction,
+	approval,
 	skills = [],
 	filePaths = [],
 	filePathsTruncated,
@@ -107,6 +108,8 @@ export function ChatComposer({
 	settings?: ReactNode;
 	/** Optional secondary action rendered with message tools in the lower input row. */
 	footerAction?: ReactNode;
+	/** A provider decision that temporarily replaces ordinary message entry. */
+	approval?: ReactNode;
 	/** A send is in flight. */
 	busy?: boolean;
 	/** The agent is mid-turn, so this message is held until the turn ends. */
@@ -522,6 +525,26 @@ export function ChatComposer({
 	}
 
 	const attachmentError = fileAttachments.error ?? sendError ?? commandError;
+
+	if (approval) {
+		return (
+			<form
+				onSubmit={(event) => event.preventDefault()}
+				className={cn(
+					"cursor-chat-composer relative flex flex-col gap-2 border p-2.5 transition-[background,border-color,box-shadow]",
+					attachedTop ? "rounded-b-[10px] rounded-t-none" : "rounded-[10px]",
+					"border-border-strong",
+				)}
+			>
+				{approval}
+				{commandError ? (
+					<p role="alert" className="px-1.5 text-[11px] leading-snug text-destructive">
+						{commandError}
+					</p>
+				) : null}
+			</form>
+		);
+	}
 
 	return (
 		<form

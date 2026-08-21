@@ -18,6 +18,16 @@ const MODELS = [
 	{ id: "gpt-5.6-terra-mini", displayName: "gpt-5.6-terra-mini", default: false },
 ];
 
+function withoutPendingApproval(snapshot: ConversationSnapshot): ConversationSnapshot {
+	return {
+		...snapshot,
+		items: snapshot.items.filter(
+			(item) =>
+				!(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+		),
+	};
+}
+
 describe("reasoning", () => {
 	it("keeps provider reasoning out of the conversation chrome", () => {
 		render(<ChatWorkspace snapshot={chatFixture} />);
@@ -151,7 +161,7 @@ describe("model reroute", () => {
 	it("names what answered rather than what was asked for", () => {
 		render(
 			<ChatWorkspace
-				snapshot={chatFixtureRerouted}
+				snapshot={withoutPendingApproval(chatFixtureRerouted)}
 				models={MODELS}
 				onChooseSettings={vi.fn()}
 			/>,
@@ -180,7 +190,13 @@ describe("model reroute", () => {
 	});
 
 	it("keeps naming the chosen model when nothing was substituted", () => {
-		render(<ChatWorkspace snapshot={chatFixture} models={MODELS} onChooseSettings={vi.fn()} />);
+		render(
+			<ChatWorkspace
+				snapshot={withoutPendingApproval(chatFixture)}
+				models={MODELS}
+				onChooseSettings={vi.fn()}
+			/>,
+		);
 		expect(screen.getByText("gpt-5.6-terra")).toBeInTheDocument();
 		expect(screen.queryByLabelText(/Substituted for/)).not.toBeInTheDocument();
 	});

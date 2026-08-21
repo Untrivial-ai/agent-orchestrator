@@ -546,10 +546,24 @@ type ChatDecisionOption struct {
 	ID string
 	// Label is a human-readable form when the provider supplies one.
 	Label string
+	// Kind is the provider-neutral consent meaning. Provider IDs and labels may
+	// be opaque or localized, so clients must not infer approval semantics from
+	// either one.
+	Kind ChatDecisionKind
 	// Raw is the provider's own encoding, preserved so a structured decision
 	// (one carrying a policy amendment, say) can be echoed back exactly.
 	Raw []byte
 }
+
+// ChatDecisionKind is the semantic effect of a provider-owned decision.
+type ChatDecisionKind string
+
+const (
+	ChatDecisionAllowOnce    ChatDecisionKind = "allow_once"
+	ChatDecisionAllowAlways  ChatDecisionKind = "allow_always"
+	ChatDecisionRejectOnce   ChatDecisionKind = "reject_once"
+	ChatDecisionRejectAlways ChatDecisionKind = "reject_always"
+)
 
 // ChatDecision is the answer to a pending request.
 type ChatDecision struct {

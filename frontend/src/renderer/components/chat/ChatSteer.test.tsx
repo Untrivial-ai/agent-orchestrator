@@ -272,7 +272,14 @@ describe("ChatWorkspace steering", () => {
 	});
 
 	it("offers steering only into a turn the provider is actually running", () => {
-		render(<ChatWorkspace snapshot={chatFixture} onSteer={vi.fn()} />);
+		const snapshot = {
+			...chatFixture,
+			items: chatFixture.items.filter(
+				(item) =>
+					!(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+			),
+		};
+		render(<ChatWorkspace snapshot={snapshot} onSteer={vi.fn()} />);
 		// The live fixture is mid-turn.
 		expect(screen.getByRole("button", { name: "Steer this turn" })).toBeInTheDocument();
 	});

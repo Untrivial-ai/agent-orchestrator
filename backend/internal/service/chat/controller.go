@@ -2564,7 +2564,11 @@ func mergeApprovalDetail(event ports.ChatEvent) []byte {
 	}
 	decisions := make([]map[string]string, 0, len(event.Decisions))
 	for _, option := range event.Decisions {
-		decisions = append(decisions, map[string]string{"id": option.ID, "label": option.Label})
+		decision := map[string]string{"id": option.ID, "label": option.Label}
+		if option.Kind != "" {
+			decision["kind"] = string(option.Kind)
+		}
+		decisions = append(decisions, decision)
 	}
 	merged["decisions"] = decisions
 	encoded, err := json.Marshal(merged)

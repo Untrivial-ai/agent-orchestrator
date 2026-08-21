@@ -877,14 +877,25 @@ function readDecisions(detail: Record<string, unknown>): DecisionOption[] | unde
 	const options: DecisionOption[] = [];
 	for (const entry of raw) {
 		if (entry && typeof entry === "object" && "id" in entry) {
-			const option = entry as { id?: unknown; label?: unknown };
+			const option = entry as { id?: unknown; label?: unknown; kind?: unknown };
 			if (typeof option.id === "string" && option.id !== "") {
+				const kind = isDecisionKind(option.kind) ? option.kind : undefined;
 				options.push({
 					id: option.id,
 					label: typeof option.label === "string" && option.label ? option.label : option.id,
+					kind,
 				});
 			}
 		}
 	}
 	return options.length > 0 ? options : undefined;
+}
+
+function isDecisionKind(value: unknown): value is NonNullable<DecisionOption["kind"]> {
+	return (
+		value === "allow_once" ||
+		value === "allow_always" ||
+		value === "reject_once" ||
+		value === "reject_always"
+	);
 }

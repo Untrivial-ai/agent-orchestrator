@@ -78,6 +78,10 @@ function idleSnapshot(snapshot: ConversationSnapshot = chatFixture): Conversatio
 	return {
 		...snapshot,
 		controller: { state: "ready" },
+		items: snapshot.items.filter(
+			(item) =>
+				!(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+		),
 		turns: snapshot.turns.map((turn) =>
 			turn.state === "running"
 				? { ...turn, state: "completed" as const, completedAt: turn.requestedAt }
@@ -276,7 +280,7 @@ describe("ChatWorkspace timeline", () => {
 	});
 
 	it("keeps the composer aligned to the readable conversation width", () => {
-		render(<ChatWorkspace snapshot={chatFixture} />);
+		render(<ChatWorkspace snapshot={idleSnapshot(chatFixtureSettled)} />);
 		const composer = screen.getByLabelText("Message the agent").closest("form");
 		expect(composer?.parentElement).toHaveClass("mx-auto", "w-full", "max-w-3xl");
 	});
@@ -304,7 +308,9 @@ describe("ChatWorkspace timeline", () => {
 		expect(onInterrupt).toHaveBeenCalledOnce();
 	});
 
-	it("shows blocked turn state inline with the current turn", () => {
+	it("moves a pending approval into the chat composer", async () => {
+		const user = userEvent.setup();
+		const onDecide = vi.fn();
 		const snapshot = structuredClone(chatFixture);
 		snapshot.items.push({
 			kind: "activity",
@@ -316,16 +322,174 @@ describe("ChatWorkspace timeline", () => {
 			status: "pending",
 			summary: "Run command",
 			requestId: "approval-1",
-			decisions: [{ id: "accept", label: "Approve" }],
+			decisions: [
+				{ id: "deny", label: "Deny" },
+				{ id: "allow_once", label: "Allow Once" },
+				{ id: "always_allow", label: "Always Allow" },
+			],
 			detail: { command: "npm test" },
 			createdAt: "2026-08-08T00:00:00Z",
 		});
 
-		render(<ChatWorkspace snapshot={snapshot} onInterrupt={vi.fn()} />);
+		render(<ChatWorkspace snapshot={snapshot} onDecide={onDecide} onInterrupt={vi.fn()} />);
 
 		expect(screen.getByRole("alert")).toHaveTextContent("The agent is waiting for your decision.");
-		expect(screen.getByText("Waiting for your decision")).toBeInTheDocument();
+		expect(screen.getByText("Do you want to run this command?")).toBeInTheDocument();
+		expect(screen.queryByText("Waiting for your decision")).not.toBeInTheDocument();
 		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
+		const approval = screen.getByRole("group", { name: "Approval request approval-1" });
+		const composer = approval.closest("form");
+		expect(composer).toHaveClass("cursor-chat-composer", "border-border-strong");
+		expect(screen.getByRole("log", { name: "Conversation" })).not.toContainElement(approval);
+		expect(screen.queryByLabelText("Message the agent")).not.toBeInTheDocument();
+		expect(within(approval).queryByText("Terminal")).not.toBeInTheDocument();
+		expect(within(approval).getByRole("button", { name: /Deny/ })).toHaveTextContent("DenyEsc");
+		expect(within(approval).getByRole("button", { name: /Allow once/ })).toBeInTheDocument();
+		expect(within(approval).getByRole("button", { name: "More approval options" })).toBeInTheDocument();
+		expect(within(approval).queryByRole("button", { name: "Allow Once" })).not.toBeInTheDocument();
+		expect(within(approval).queryByRole("button", { name: "Always Allow" })).not.toBeInTheDocument();
+		expect(within(approval).queryByRole("button", { name: "Deny" })).not.toBeInTheDocument();
+		await user.click(within(approval).getByRole("button", { name: "More approval options" }));
+		await user.keyboard("{Escape}");
+		expect(onDecide).not.toHaveBeenCalled();
+
+		approval.focus();
+		fireEvent.keyDown(approval, { key: "Enter" });
+		expect(onDecide).toHaveBeenCalledWith("approval-1", "allow_once");
+		fireEvent.keyDown(approval, { key: "Escape" });
+		expect(onDecide).toHaveBeenCalledWith("approval-1", "deny");
+		onDecide.mockClear();
+
+		const deny = within(approval).getByRole("button", { name: /Deny/ });
+		deny.focus();
+		fireEvent.keyDown(deny, { key: "Enter" });
+		expect(onDecide).not.toHaveBeenCalled();
+		fireEvent.click(deny);
+		expect(onDecide).toHaveBeenCalledWith("approval-1", "deny");
+		onDecide.mockClear();
+
+		document.body.focus();
+		fireEvent.keyDown(window, { key: "Enter" });
+		expect(onDecide).not.toHaveBeenCalled();
+
+		await user.click(within(approval).getByRole("button", { name: /Allow once/ }));
+		expect(onDecide).toHaveBeenCalledWith("approval-1", "allow_once");
+
+		await user.click(within(approval).getByRole("button", { name: "More approval options" }));
+		await user.click(screen.getByRole("menuitem", { name: "Always allow this command" }));
+		expect(onDecide).toHaveBeenCalledWith("approval-1", "always_allow");
+	});
+
+	it("shows an unbound pending approval in the composer", () => {
+		const snapshot = structuredClone(chatFixture);
+		snapshot.items.push({
+			kind: "activity",
+			id: "approval-unbound",
+			sequence: 100,
+			revision: 1,
+			activityKind: "approval",
+			status: "pending",
+			summary: "Run command",
+			requestId: "0",
+			decisions: [
+				{ id: "cancel", label: "Cancel", kind: "reject_once" },
+				{ id: "accept", label: "Approve", kind: "allow_once" },
+			],
+			detail: { command: "touch /tmp/marker" },
+			createdAt: "2026-08-08T00:00:00Z",
+		});
+
+		render(<ChatWorkspace snapshot={snapshot} onDecide={vi.fn()} onInterrupt={vi.fn()} />);
+
+		const approval = screen.getByRole("group", { name: "Approval request 0" });
+		expect(approval.closest("form")).toHaveClass("cursor-chat-composer");
+		expect(screen.queryByLabelText("Message the agent")).not.toBeInTheDocument();
+	});
+
+	it("uses ACP edit metadata and semantic kinds instead of guessing opaque labels", () => {
+		const onDecide = vi.fn();
+		const snapshot = structuredClone(chatFixture);
+		snapshot.items.push({
+			kind: "activity",
+			id: "approval-edit",
+			sequence: 101,
+			revision: 1,
+			turnId: "turn-2",
+			activityKind: "approval",
+			status: "pending",
+			summary: "Write marker.txt",
+			requestId: "opaque-request",
+			decisions: [
+				{ id: "option-a", label: "Einmal", kind: "allow_once" },
+				{ id: "option-b", label: "Nein", kind: "reject_once" },
+				{ id: "option-c", label: "Immer", kind: "allow_always" },
+			],
+			detail: { subjectKind: "file_change", toolKind: "edit" },
+			createdAt: "2026-08-08T00:00:00Z",
+		});
+
+		render(<ChatWorkspace snapshot={snapshot} onDecide={onDecide} onInterrupt={vi.fn()} />);
+
+		expect(screen.getByText("Do you want to allow these file changes?")).toBeInTheDocument();
+		expect(screen.queryByText("Do you want to run this command?")).not.toBeInTheDocument();
+		const approval = screen.getByRole("group", { name: "Approval request opaque-request" });
+		approval.focus();
+		fireEvent.keyDown(approval, { key: "Enter" });
+		expect(onDecide).toHaveBeenCalledWith("opaque-request", "option-a");
+	});
+
+	it.each([
+		["accept", "Approved"],
+		["acceptWithExecpolicyAmendment", "Approved and remembered"],
+		["cancel", "Cancelled"],
+	] as const)("keeps a resolved %s approval compact and explicit", (decision, label) => {
+		const snapshot = structuredClone(chatFixture);
+		snapshot.items = [
+			{
+				kind: "activity",
+				id: "approval-resolved-1",
+				sequence: 99,
+				revision: 2,
+				turnId: "turn-2",
+				activityKind: "approval",
+				status: "resolved",
+				summary: "Run gh pr create --base main --head ao/example",
+				requestId: "approval-resolved-1",
+				detail: { decision },
+				createdAt: "2026-08-08T00:00:00Z",
+			},
+		];
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		expect(screen.getByText(label)).toBeInTheDocument();
+		expect(screen.getByText("Run gh pr create --base main --head ao/example")).toBeInTheDocument();
+		expect(screen.queryByText(/req approval-resolved-1/)).not.toBeInTheDocument();
+		expect(screen.queryByText("Already answered. This card is kept for the record.")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+	});
+
+	it("does not describe an expired approval as approved", () => {
+		const snapshot = structuredClone(chatFixture);
+		snapshot.items = [
+			{
+				kind: "activity",
+				id: "approval-expired-1",
+				sequence: 99,
+				revision: 2,
+				turnId: "turn-2",
+				activityKind: "approval",
+				status: "failed",
+				summary: "Run npm test",
+				requestId: "approval-expired-1",
+				createdAt: "2026-08-08T00:00:00Z",
+			},
+		];
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		expect(screen.getByText("Approval expired")).toBeInTheDocument();
+		expect(screen.queryByText("Approved")).not.toBeInTheDocument();
 	});
 
 	it("lets readers select conversation text", () => {

@@ -63,7 +63,9 @@ func (c *conversation) RequestPermission(
 		id := string(option.OptionId)
 		options[id] = option
 		raw, _ := json.Marshal(option)
-		decisions = append(decisions, ports.ChatDecisionOption{ID: id, Label: option.Name, Raw: raw})
+		decisions = append(decisions, ports.ChatDecisionOption{
+			ID: id, Label: option.Name, Kind: ports.ChatDecisionKind(option.Kind), Raw: raw,
+		})
 	}
 	request := &parkedPermission{options: options, result: make(chan string, 1)}
 
@@ -76,6 +78,8 @@ func (c *conversation) RequestPermission(
 	turnID := c.activeTurn
 	c.mu.Unlock()
 
+	toolKind := pointerValue(params.ToolCall.Kind)
+	activityKind := activityKindFromTool(toolKind)
 	summary := "Permission required"
 	if params.ToolCall.Title != nil && strings.TrimSpace(*params.ToolCall.Title) != "" {
 		summary = *params.ToolCall.Title
@@ -84,9 +88,10 @@ func (c *conversation) RequestPermission(
 		Kind:           ports.ChatEventApprovalRequested,
 		ProviderTurnID: turnID,
 		ProviderItemID: requestID,
-		ActivityKind:   activityKindFromTool(pointerValue(params.ToolCall.Kind)),
+		ActivityKind:   activityKind,
 		ActivityStatus: domain.ActivityStatusPending,
 		Summary:        summary,
+		Detail:         approvalToolDetail(params.ToolCall, activityKind),
 		RequestID:      requestID,
 		Decisions:      decisions,
 	})
@@ -109,6 +114,24 @@ func (c *conversation) RequestPermission(
 		c.emit(ports.ChatEvent{Kind: ports.ChatEventApprovalResolved, RequestID: requestID})
 		return acpsdk.RequestPermissionResponse{Outcome: acpsdk.NewRequestPermissionOutcomeCancelled()}, nil
 	}
+}
+
+func approvalToolDetail(tool acpsdk.ToolCallUpdate, activityKind domain.ActivityKind) []byte {
+	detail := map[string]any{
+		"protocol": "acp", "toolKind": pointerValue(tool.Kind),
+		"subjectKind": string(activityKind),
+	}
+	if tool.RawInput != nil {
+		detail["input"] = tool.RawInput
+	}
+	if claude := nestedMap(tool.Meta, "claudeCode"); claude != nil {
+		copyDetail(detail, claude, "toolName", "providerToolName")
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 // UnstableCreateElicitation bridges ACP's structured input request into AO's

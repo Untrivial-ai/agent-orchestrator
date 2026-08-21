@@ -634,7 +634,7 @@ func (c *conversation) handleServerRequest(ctx context.Context, req serverReques
 		return nil, errors.New("server request carried no id")
 	}
 
-	decisions, summary, detail := parseApproval(req.Method, req.Params)
+	decisions, summary, detail, turnID := parseApproval(req.Method, req.Params)
 
 	offered := make(map[string]json.RawMessage, len(decisions))
 	for _, option := range decisions {
@@ -652,6 +652,7 @@ func (c *conversation) handleServerRequest(ctx context.Context, req serverReques
 
 	c.emit(ports.ChatEvent{
 		Kind:           ports.ChatEventApprovalRequested,
+		ProviderTurnID: turnID,
 		ProviderItemID: requestID,
 		RequestID:      requestID,
 		ActivityKind:   kind,
@@ -822,10 +823,10 @@ type approvalPayload struct {
 }
 
 // parseApproval extracts the decisions, label, and neutral detail for a request.
-func parseApproval(method string, params json.RawMessage) ([]ports.ChatDecisionOption, string, []byte) {
+func parseApproval(method string, params json.RawMessage) ([]ports.ChatDecisionOption, string, []byte, string) {
 	var p approvalPayload
 	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, "Approval required", nil
+		return nil, "Approval required", nil, ""
 	}
 
 	options := make([]ports.ChatDecisionOption, 0, len(p.AvailableDecisions))
@@ -868,7 +869,7 @@ func parseApproval(method string, params json.RawMessage) ([]ports.ChatDecisionO
 	if err != nil {
 		encoded = nil
 	}
-	return options, summary, encoded
+	return options, summary, encoded, p.TurnID
 }
 
 // decisionOption reads one entry of availableDecisions, which is either a plain
@@ -885,7 +886,9 @@ func decisionOption(raw json.RawMessage) (ports.ChatDecisionOption, bool) {
 		if asString == "" {
 			return ports.ChatDecisionOption{}, false
 		}
-		return ports.ChatDecisionOption{ID: asString, Label: decisionLabel(asString), Raw: raw}, true
+		return ports.ChatDecisionOption{
+			ID: asString, Label: decisionLabel(asString), Kind: codexDecisionKind(asString), Raw: raw,
+		}, true
 	}
 
 	var asObject map[string]json.RawMessage
@@ -893,9 +896,24 @@ func decisionOption(raw json.RawMessage) (ports.ChatDecisionOption, bool) {
 		return ports.ChatDecisionOption{}, false
 	}
 	for key := range asObject {
-		return ports.ChatDecisionOption{ID: key, Label: decisionLabel(key), Raw: raw}, true
+		return ports.ChatDecisionOption{
+			ID: key, Label: decisionLabel(key), Kind: codexDecisionKind(key), Raw: raw,
+		}, true
 	}
 	return ports.ChatDecisionOption{}, false
+}
+
+func codexDecisionKind(id string) ports.ChatDecisionKind {
+	switch id {
+	case "accept":
+		return ports.ChatDecisionAllowOnce
+	case "acceptForSession", "acceptWithExecpolicyAmendment":
+		return ports.ChatDecisionAllowAlways
+	case "decline", "cancel":
+		return ports.ChatDecisionRejectOnce
+	default:
+		return ""
+	}
 }
 
 // decisionLabel gives known decision ids readable text. An unknown id falls back
