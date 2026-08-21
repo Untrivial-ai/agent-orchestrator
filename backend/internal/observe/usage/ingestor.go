@@ -37,6 +37,11 @@ type IngestorConfig struct {
 	RecordBytes      int
 	FinalizationWait time.Duration
 	Clock            func() time.Time
+	// OnUsageApplied, when set, is invoked after a chunk's usage events are
+	// durably committed (exactly once, guarded by the source cursor). It lets a
+	// consumer price and export the events without this package depending on
+	// telemetry or pricing. Best-effort: it must not block or error the ingest.
+	OnUsageApplied func(context.Context, domain.SessionID, []domain.ModelUsageEvent)
 }
 
 // IngestResult tells the coordinator whether another immediate chunk, source
@@ -61,6 +66,7 @@ type Ingestor struct {
 	now              func() time.Time
 	openTranscript   func(string) (*os.File, error)
 	afterRead        func()
+	onUsageApplied   func(context.Context, domain.SessionID, []domain.ModelUsageEvent)
 }
 
 // NewIngestor constructs a bounded transcript ingestor.
@@ -84,6 +90,7 @@ func NewIngestor(store ingestorStore, cfg IngestorConfig) *Ingestor {
 		finalizationWait: cfg.FinalizationWait,
 		now:              cfg.Clock,
 		openTranscript:   os.Open,
+		onUsageApplied:   cfg.OnUsageApplied,
 	}
 }
 
@@ -311,6 +318,11 @@ func (i *Ingestor) Ingest(ctx context.Context, sourceID int64) (IngestResult, er
 			return result, nil
 		}
 		return result, fmt.Errorf("apply usage source %d: %w", source.Source.ID, err)
+	}
+	if i.onUsageApplied != nil && len(parsed.Events) > 0 {
+		// Events are now durably committed and the cursor advanced, so this
+		// fires exactly once per event across the source's lifetime.
+		i.onUsageApplied(ctx, source.SessionID, parsed.Events)
 	}
 	result.Reconcile = parsed.newCodexChild
 	if parsed.Cursor.State == domain.UsageSourceComplete {
