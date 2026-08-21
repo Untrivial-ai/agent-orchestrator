@@ -923,8 +923,23 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// Forward xterm's write callback: it fires once THIS chunk has been
 			// parsed into the buffer, which is what lets the attachment reveal the
 			// pane at the replay's settled scroll position (issue #3160).
-			write: (data, done) => term.write(data, done),
-			writeln: (line) => term.writeln(line),
+			//
+			// Once teardown starts the handle goes inert immediately: final
+			// disposal is deferred a macrotask (see the cleanup below), and a late
+			// mux chunk must not enqueue new parse work into a terminal that is
+			// about to be disposed. The callback still fires so attachment
+			// bookkeeping never hangs on a dropped chunk.
+			write: (data, done) => {
+				if (disposed) {
+					done?.();
+					return;
+				}
+				term.write(data, done);
+			},
+			writeln: (line) => {
+				if (disposed) return;
+				term.writeln(line);
+			},
 			showLatestOutput,
 			prepareForActivation,
 			onUserInput: (listener) => {
@@ -965,12 +980,23 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			clearSuppressNativePaste();
 			keyInput.dispose();
 			userInputListeners.clear();
-			try {
-				term.dispose();
-			} catch {
-				// Some renderer addons can throw during dispose in certain GPU
-				// environments; the terminal is being torn down regardless.
-			}
+			// AO's listeners and transport are detached above, synchronously — the
+			// handle stopped accepting writes the moment `disposed` flipped. Only
+			// the final dispose() is deferred one macrotask: xterm queues viewport
+			// work (write parsing, Viewport.syncScrollArea) on its own microtask/
+			// timer queues, and disposing while that work is still queued lets a
+			// callback reach a torn-down renderer ("Cannot read properties of
+			// undefined (reading 'dimensions')" — issue #3803). One macrotask lets
+			// the already-queued work drain against a live instance; nothing new
+			// can be enqueued because every input path above is already detached.
+			window.setTimeout(() => {
+				try {
+					term.dispose();
+				} catch {
+					// Some renderer addons can throw during dispose in certain GPU
+					// environments; the terminal is being torn down regardless.
+				}
+			}, 0);
 		};
 	}, []);
 

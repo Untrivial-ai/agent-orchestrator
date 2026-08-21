@@ -682,6 +682,21 @@ func TestRuntimeObservation_ExitedWorkloadKeepsSessionLive(t *testing.T) {
 	}
 }
 
+func TestRuntimeObservation_WorkloadDeadSkippedDuringSessionMutation(t *testing.T) {
+	m, st, _ := newManager()
+	m.SetSessionOperationGate(fixedSessionOperationGate(true))
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-1"
+	st.sessions["mer-1"] = rec
+
+	if err := m.ApplyRuntimeObservation(ctx, "mer-1", ports.RuntimeFacts{Runtime: ports.ProbeAlive, Workload: ports.ProbeDead, LaunchID: "launch-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.sessions["mer-1"]; got != rec {
+		t.Fatalf("workload-dead observation marked exited during session mutation: %+v", got)
+	}
+}
+
 func TestRuntimeObservation_AliveWorkloadCannotResurrectExitedSession(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
@@ -984,6 +999,72 @@ func TestActivity_StaleUserPromptDoesNotResumeExitedWorkload(t *testing.T) {
 	}
 	if got := st.sessions["mer-1"]; got != rec {
 		t.Fatalf("stale prompt resumed exited workload: %+v", got)
+	}
+}
+
+func TestActivity_ToolUseResumesExitedWorkload(t *testing.T) {
+	m, st, _ := newManager()
+	rec := working("mer-1")
+	rec.Activity.State = domain.ActivityExited
+	rec.Metadata.RuntimeLaunchID = "launch-2"
+	st.sessions["mer-1"] = rec
+	signalAt := time.Unix(123, 0).UTC()
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid:     true,
+		State:     domain.ActivityActive,
+		Event:     "pre-tool-use",
+		Timestamp: signalAt,
+		LaunchID:  "launch-2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := st.sessions["mer-1"]
+	if got.IsTerminated || got.Activity.State != domain.ActivityActive {
+		t.Fatalf("tool-use signal did not resume exited workload: %+v", got)
+	}
+}
+
+func TestActivity_PermissionRequestResumesExitedWorkload(t *testing.T) {
+	m, st, _ := newManager()
+	rec := working("mer-1")
+	rec.Activity.State = domain.ActivityExited
+	rec.Metadata.RuntimeLaunchID = "launch-2"
+	st.sessions["mer-1"] = rec
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid:    true,
+		State:    domain.ActivityBlocked,
+		Event:    "permission-request",
+		LaunchID: "launch-2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := st.sessions["mer-1"]
+	if got.IsTerminated || got.Activity.State != domain.ActivityBlocked {
+		t.Fatalf("permission-request did not resume exited workload: %+v", got)
+	}
+}
+
+func TestActivity_TurnBoundaryDoesNotResumeExitedWorkload(t *testing.T) {
+	m, st, _ := newManager()
+	rec := working("mer-1")
+	rec.Activity.State = domain.ActivityExited
+	rec.Metadata.RuntimeLaunchID = "launch-2"
+	st.sessions["mer-1"] = rec
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid:    true,
+		State:    domain.ActivityIdle,
+		Event:    "stop",
+		LaunchID: "launch-2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.sessions["mer-1"]; got != rec {
+		t.Fatalf("turn-boundary callback resumed exited workload: %+v", got)
 	}
 }
 

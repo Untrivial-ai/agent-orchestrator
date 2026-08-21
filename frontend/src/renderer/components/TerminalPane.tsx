@@ -71,6 +71,7 @@ type CachedTerminalEntry = TerminalCacheDescriptor & {
 	activationPhase: "parked" | "preparing" | "ready" | "revealed" | "visible";
 	container: HTMLDivElement;
 	discardOnDeactivate?: boolean;
+	lastActivatedAt: number;
 	props: TerminalPaneProps;
 	terminal?: AttachableTerminal;
 };
@@ -87,6 +88,24 @@ type TerminalCacheController = {
 };
 
 const TerminalCacheContext = createContext<TerminalCacheController | null>(null);
+
+// Bound retained xterm buffers, renderer contexts and mux writers. Retaining
+// every visited terminal for the renderer's lifetime exceeds Chromium's
+// per-page WebGL context limit once enough sessions have been visited; the
+// browser then force-loses the OLDEST contexts, which is the "earliest-visited
+// panes go black while their sessions stay healthy" failure in #2333. The
+// active terminal is always retained; activating one beyond the cap evicts the
+// least-recently-activated parked entry, which takes the covered replay path
+// when opened again.
+const MAX_RETAINED_TERMINALS = 6;
+
+// A retained activation normally settles within a few frames (fit + two paint
+// frames). If any preparation step throws, rejects, or never completes, the
+// pane would otherwise sit at visibility:hidden forever — a black pane over a
+// healthy session (#2333). After this bound the cover is force-lifted; worst
+// case the viewport briefly shows its historical position instead of staying
+// invisible.
+const ACTIVATION_STALL_MS = 2000;
 
 function terminalTargetMatches(left?: TerminalTarget, right?: TerminalTarget): boolean {
 	if (left === right) return true;
@@ -220,6 +239,7 @@ function CachedTerminalPortal({
 	onPrepared,
 	onReveal,
 	onActivated,
+	onStalled,
 	onTerminalReady,
 }: {
 	active: boolean;
@@ -228,6 +248,7 @@ function CachedTerminalPortal({
 	onPrepared: (cacheKey: string, activationId: number) => void;
 	onReveal: (cacheKey: string, activationId: number) => void;
 	onActivated: (cacheKey: string, activationId: number) => void;
+	onStalled: (cacheKey: string, activationId: number) => void;
 	onTerminalReady: (cacheKey: string, terminal: AttachableTerminal) => void;
 }) {
 	const handleFatal = useCallback(
@@ -245,9 +266,15 @@ function CachedTerminalPortal({
 		if (!active || entry.activationPhase !== "preparing" || !terminal) return;
 		const activationId = entry.activationId;
 		let current = true;
-		void terminal.prepareForActivation().then(() => {
-			if (current) onPrepared(entry.cacheKey, activationId);
-		});
+		// A rejected preparation must still lift the cover: the pane is hidden
+		// until onPrepared advances the phase, so swallowing the rejection would
+		// leave a black pane over a healthy session (#2333).
+		void terminal
+			.prepareForActivation()
+			.catch(() => undefined)
+			.then(() => {
+				if (current) onPrepared(entry.cacheKey, activationId);
+			});
 		return () => {
 			current = false;
 		};
@@ -259,6 +286,24 @@ function CachedTerminalPortal({
 		entry.terminal,
 		onPrepared,
 	]);
+	// Watchdog for the hidden activation phases. Every legitimate transition
+	// re-renders this portal and re-arms the timer, so it only ever fires when a
+	// phase genuinely wedged (a preparation promise that never settles, a paint
+	// frame that never ran) — then the provider force-lifts the cover.
+	useEffect(() => {
+		if (
+			!active ||
+			entry.activationPhase === "visible" ||
+			entry.activationPhase === "parked"
+		) {
+			return;
+		}
+		const activationId = entry.activationId;
+		const timer = window.setTimeout(() => {
+			onStalled(entry.cacheKey, activationId);
+		}, ACTIVATION_STALL_MS);
+		return () => window.clearTimeout(timer);
+	}, [active, entry, entry.activationId, entry.activationPhase, onStalled]);
 	useLayoutEffect(() => {
 		if (!active || entry.activationPhase !== "ready") return;
 		onReveal(entry.cacheKey, entry.activationId);
@@ -307,6 +352,7 @@ export function TerminalCacheProvider({
 	const workspaceQuery = useWorkspaceQuery();
 	const shellTerminalsQuery = useShellTerminals();
 	const entriesRef = useRef(new Map<string, CachedTerminalEntry>());
+	const activationClockRef = useRef(0);
 	const activeRef = useRef<ActiveTerminalEntry | null>(null);
 	const parkingRef = useRef<HTMLDivElement | null>(null);
 	const muxPoolRef = useRef<TerminalMuxPool | null>(null);
@@ -380,14 +426,27 @@ export function TerminalCacheProvider({
 					activationId: 0,
 					activationPhase: "parked",
 					container,
+					lastActivatedAt: 0,
 					props: cachedProps,
 				};
 				entriesRef.current.set(entry.cacheKey, entry);
 			} else {
 				entry.props = cachedProps;
 			}
+			entry.lastActivatedAt = ++activationClockRef.current;
 			showTerminal(entry, slot);
 			activeRef.current = { key: entry.cacheKey, slot };
+			if (entriesRef.current.size > MAX_RETAINED_TERMINALS) {
+				const parked = [...entriesRef.current.values()]
+					.filter((candidate) => candidate.cacheKey !== entry.cacheKey)
+					.sort((left, right) => left.lastActivatedAt - right.lastActivatedAt);
+				while (entriesRef.current.size > MAX_RETAINED_TERMINALS) {
+					const oldest = parked.shift();
+					if (!oldest) break;
+					entriesRef.current.delete(oldest.cacheKey);
+					oldest.container.remove();
+				}
+			}
 			rerender();
 		},
 		[muxPool, rerender],
@@ -494,6 +553,32 @@ export function TerminalCacheProvider({
 				activeRef.current?.key !== cacheKey
 			) {
 				return;
+			}
+			activateTerminal(entry);
+			rerender();
+		},
+		[rerender],
+	);
+
+	const markStalled = useCallback(
+		(cacheKey: string, activationId: number) => {
+			const entry = entriesRef.current.get(cacheKey);
+			if (
+				!entry ||
+				entry.activationId !== activationId ||
+				entry.activationPhase === "visible" ||
+				entry.activationPhase === "parked" ||
+				activeRef.current?.key !== cacheKey
+			) {
+				return;
+			}
+			// Whatever step wedged, showing possibly-stale content beats an
+			// invisible pane. Best-effort snap to the tail first so the reveal
+			// matches what a completed preparation would have shown.
+			try {
+				entry.terminal?.showLatestOutput();
+			} catch {
+				// The renderer may be mid-teardown; the reveal below still applies.
 			}
 			activateTerminal(entry);
 			rerender();
@@ -612,6 +697,7 @@ export function TerminalCacheProvider({
 					onFatal={markFatal}
 					onPrepared={markPrepared}
 					onReveal={markReveal}
+					onStalled={markStalled}
 					onTerminalReady={markTerminalReady}
 				/>
 			))}
@@ -941,9 +1027,14 @@ function AttachedTerminal({
 		}
 		if (!replayPaintPending || !terminal) return;
 		let current = true;
-		void terminal.prepareForActivation().then(() => {
-			if (current) setReplayPaintPending(false);
-		});
+		// A rejected preparation must still lift the first-load cover — the pane
+		// would otherwise stay covered over live output (#2333).
+		void terminal
+			.prepareForActivation()
+			.catch(() => undefined)
+			.then(() => {
+				if (current) setReplayPaintPending(false);
+			});
 		return () => {
 			current = false;
 		};
@@ -1003,10 +1094,16 @@ function AttachedTerminal({
 		// before FitAddon has measured its real slot makes full-screen worker TUIs
 		// redraw once at 80×24 and again at the actual grid. Settle that first fit
 		// before attaching so the daemon receives only the authoritative size.
-		void terminal.prepareForActivation().then(() => {
-			if (!current) return;
-			detach = attach(terminal);
-		});
+		// Attach even if the preparation failed: a mis-sized first draw corrects
+		// on the next fit, but a skipped attach is a permanently blank pane
+		// (#2333).
+		void terminal
+			.prepareForActivation()
+			.catch(() => undefined)
+			.then(() => {
+				if (!current) return;
+				detach = attach(terminal);
+			});
 		return () => {
 			current = false;
 			detach?.();

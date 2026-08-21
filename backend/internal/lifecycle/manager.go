@@ -378,6 +378,15 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 			if cur.Activity.State == domain.ActivityExited {
 				return cur, false
 			}
+			if m.sessionMutationInProgress(id) {
+				// A live pane whose supervised workload is "missing" while a
+				// spawn/restore/agent-switch mutation is mid-flight is the old
+				// process tree probed against new metadata (or vice versa), not
+				// an agent exit — the same guard the termination path below
+				// already applies. Marking exited here desyncs an actively
+				// relaunching session (#2047); the next probe re-decides.
+				return cur, false
+			}
 			next := cur
 			next.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: timeOr(f.ObservedAt, now)}
 			delete(m.flights, id)
@@ -523,10 +532,20 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		return nil
 	}
 	// An explicit prompt submission is proof that an agent was relaunched in the
-	// preserved shell. Other same-generation callbacks may have been delayed
-	// behind the process-exit report and cannot resurrect an exited workload.
+	// preserved shell, and live-work hooks are equally strong evidence: the
+	// tool-use trio and permission-request are executed BY the agent process,
+	// so their arrival proves an agent is running right now. Without them, a
+	// stale `exited` (e.g. a workload-probe race across a daemon restart) pins
+	// an actively-working session on "exited" until the user happens to type a
+	// prompt (#2047): the reaper only transitions INTO exited, so nothing else
+	// ever corrects it. The asymmetry makes accepting them safe — a resurrect
+	// from a genuinely-delayed callback is re-marked exited by the reaper's
+	// next workload probe within one tick, while a wrongly-pinned exited never
+	// self-corrects. Turn-boundary callbacks (stop, notification, session-end)
+	// still cannot resurrect: they are exactly the deliveries that can trail a
+	// real process exit.
 	if rec.Activity.State == domain.ActivityExited && s.Valid && s.State != domain.ActivityExited &&
-		(s.State != domain.ActivityActive || s.Event != "user-prompt-submit") {
+		!isLiveAgentEvidence(s) {
 		m.mu.Unlock()
 		return nil
 	}
@@ -742,6 +761,22 @@ const maxInflightTools = 128
 // trio whose signals must not demote a sticky state on their own.
 func isToolUseEvent(event string) bool {
 	return event == "pre-tool-use" || isPostToolUseEvent(event)
+}
+
+// isLiveAgentEvidence reports whether an activity signal proves an agent
+// process is alive in the session's shell right now: an explicit prompt
+// submission, in-flight tool traffic, or a permission dialog appearing. Only
+// these signals may resurrect a session out of `exited`.
+func isLiveAgentEvidence(s ports.ActivitySignal) bool {
+	switch {
+	case s.State == domain.ActivityActive && s.Event == "user-prompt-submit":
+		return true
+	case s.State == domain.ActivityActive && isToolUseEvent(s.Event):
+		return true
+	case s.State == domain.ActivityBlocked && s.Event == "permission-request":
+		return true
+	}
+	return false
 }
 
 func isPostToolUseEvent(event string) bool {

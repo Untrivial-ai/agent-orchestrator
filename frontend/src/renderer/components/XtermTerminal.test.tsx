@@ -17,6 +17,8 @@ const state = vi.hoisted(() => ({
 		scrollLines: ReturnType<typeof vi.fn>;
 		scrollToBottom: ReturnType<typeof vi.fn>;
 		refresh: ReturnType<typeof vi.fn>;
+		write: ReturnType<typeof vi.fn>;
+		dispose: ReturnType<typeof vi.fn>;
 		clear: ReturnType<typeof vi.fn>;
 		focus: ReturnType<typeof vi.fn>;
 		selectAll: ReturnType<typeof vi.fn>;
@@ -71,9 +73,9 @@ vi.mock("@xterm/xterm", () => ({
 		open(host: HTMLElement) {
 			host.appendChild(document.createElement("textarea"));
 		}
-		write() {}
+		write = vi.fn();
 		writeln() {}
-		dispose() {}
+		dispose = vi.fn();
 		onData(listener: (data: string) => void) {
 			this.dataListeners.add(listener);
 			return { dispose: () => this.dataListeners.delete(listener) };
@@ -222,6 +224,32 @@ describe("XtermTerminal", () => {
 		} finally {
 			vi.useRealTimers();
 			vi.unstubAllGlobals();
+		}
+	});
+
+	it("defers xterm dispose past unmount and drops writes to the dead handle", () => {
+		vi.useFakeTimers();
+		try {
+			let terminal: AttachableTerminal | undefined;
+			const { unmount } = render(
+				<XtermTerminal theme="dark" onReady={(ready) => { terminal = ready; }} />,
+			);
+			const fake = state.lastTerminal!;
+
+			unmount();
+			// Dispose must not run synchronously: queued write/viewport work from
+			// the old handle may still land this task (#3803).
+			expect(fake.dispose).not.toHaveBeenCalled();
+
+			const done = vi.fn();
+			terminal!.write(new Uint8Array([104, 105]), done);
+			expect(fake.write).not.toHaveBeenCalled();
+			expect(done).toHaveBeenCalledTimes(1);
+
+			vi.runAllTimers();
+			expect(fake.dispose).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 

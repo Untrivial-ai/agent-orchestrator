@@ -535,26 +535,32 @@
 	--color-project-accent-violet: #c4b5fd;
 
 	/* Terminal ANSI palette. Keep this independent from product status colors:
-	   agent TUIs own the semantic meaning of these slots. */
+	   agent TUIs own the semantic meaning of these slots.
+
+	   The 12 chromatic slots track the de-facto standard terminal values (VS
+	   Code's integrated-terminal defaults) rather than a pastelized house mix:
+	   agent CLIs are designed against real terminal palettes, and the softened
+	   values read as washed-out next to the same CLI in Terminal.app (#2529).
+	   The neutral endpoints stay tuned to AO's terminal plate. */
 	--color-term-black: #1f2329;
-	--color-term-red: #f05d5e;
-	--color-term-green: #44c97a;
-	--color-term-yellow: #e5c34b;
-	--color-term-blue: #5b9cff;
-	--color-term-magenta: #c678dd;
-	--color-term-cyan: #56b6c2;
-	--color-term-white: #d7dae0;
+	--color-term-red: #cd3131;
+	--color-term-green: #0dbc79;
+	--color-term-yellow: #e5e510;
+	--color-term-blue: #2472c8;
+	--color-term-magenta: #bc3fbc;
+	--color-term-cyan: #11a8cd;
+	--color-term-white: #e5e5e5;
 	--color-term-selection-dark: rgb(77 141 255 / 0.3);
 	--color-term-selection-light: rgb(37 99 235 / 0.25);
 	--color-term-selection-inactive: rgb(128 128 128 / 0.2);
 	--color-term-selection-inactive-light: rgb(128 128 128 / 0.15);
-	--color-term-bright-black: #7f8792;
-	--color-term-bright-red: #ff7b7c;
-	--color-term-bright-green: #62df91;
-	--color-term-bright-yellow: #f2d66d;
-	--color-term-bright-blue: #79b1ff;
-	--color-term-bright-magenta: #d99aee;
-	--color-term-bright-cyan: #79d4df;
+	--color-term-bright-black: #666666;
+	--color-term-bright-red: #f14c4c;
+	--color-term-bright-green: #23d18b;
+	--color-term-bright-yellow: #f5f543;
+	--color-term-bright-blue: #3b8eea;
+	--color-term-bright-magenta: #d670d6;
+	--color-term-bright-cyan: #29b8db;
 	--color-term-bright-white: #f4f5f7;
 
 	/* ═══════════════════════════════════════════════════════════════
@@ -795,22 +801,28 @@
 	--color-settings-accent: var(--primary);
 	--color-settings-switch-on: var(--primary);
 
+	/* Light terminal ANSI palette: standard light-terminal values (VS Code's
+	   integrated-terminal light defaults) instead of the earlier darkened,
+	   desaturated mix, so colors match the same CLI in a native terminal
+	   (#2529). Black stays near the app's dark neutral; bright-white is a
+	   visible light gray, NOT re-darkened — TUIs use it for emphasis text and
+	   the old near-black value inverted their intent. */
 	--color-term-black: #24292f;
-	--color-term-red: #a13c37;
-	--color-term-green: #2e6b3e;
-	--color-term-yellow: #87660f;
-	--color-term-blue: #3b5aa6;
-	--color-term-magenta: #7b5799;
-	--color-term-cyan: #3d7a7a;
-	--color-term-white: #666d75;
-	--color-term-bright-black: #4c535b;
-	--color-term-bright-red: #7e3330;
-	--color-term-bright-green: #265231;
-	--color-term-bright-yellow: #6b5108;
-	--color-term-bright-blue: #31487f;
-	--color-term-bright-magenta: #5f4476;
-	--color-term-bright-cyan: #316061;
-	--color-term-bright-white: #24292f;
+	--color-term-red: #cd3131;
+	--color-term-green: #00bc00;
+	--color-term-yellow: #949800;
+	--color-term-blue: #0451a5;
+	--color-term-magenta: #bc05bc;
+	--color-term-cyan: #0598bc;
+	--color-term-white: #555555;
+	--color-term-bright-black: #666666;
+	--color-term-bright-red: #cd3131;
+	--color-term-bright-green: #14ce14;
+	--color-term-bright-yellow: #b5ba00;
+	--color-term-bright-blue: #0451a5;
+	--color-term-bright-magenta: #bc05bc;
+	--color-term-bright-cyan: #0598bc;
+	--color-term-bright-white: #a5a5a5;
 }
 
 

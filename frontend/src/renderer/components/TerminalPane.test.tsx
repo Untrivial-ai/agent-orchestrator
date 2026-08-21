@@ -392,7 +392,10 @@ describe("TerminalCacheProvider", () => {
 		}
 	});
 
-	it("retains every visited terminal until an authoritative lifecycle cleanup", async () => {
+	it("evicts the least-recently-shown parked terminal beyond the retention cap", async () => {
+		// Retention is bounded (MAX_RETAINED_TERMINALS = 6): each live xterm holds
+		// a WebGL context, and Chromium force-loses the oldest contexts past its
+		// per-page cap, blanking the earliest-visited panes (#2333).
 		const sessions = Array.from({ length: 7 }, (_, index) => ({
 			...worker,
 			id: `sess-retained-${index}`,
@@ -410,13 +413,19 @@ describe("TerminalCacheProvider", () => {
 					).not.toBeNull(),
 				);
 			}
-			expect(document.querySelectorAll("[data-terminal-cache-key]")).toHaveLength(7);
-			expect(oldest.isConnected).toBe(true);
-			expect(xtermUnmounts.value).toBe(0);
+			await waitFor(() =>
+				expect(document.querySelectorAll("[data-terminal-cache-key]")).toHaveLength(6),
+			);
+			expect(
+				document.querySelector(`[data-terminal-cache-key^="session:${sessions[0].id}:worker|"]`),
+			).toBeNull();
+			expect(oldest.isConnected).toBe(false);
+			await waitFor(() => expect(xtermUnmounts.value).toBe(1));
 
+			// Revisiting the evicted session mounts a fresh terminal.
 			view.show(sessions[0]);
-			await waitFor(() => expect(activeXterm()).toBe(oldest));
-			expect(xtermMounts.value).toBe(7);
+			await waitFor(() => expect(activeXterm()).not.toBe(oldest));
+			expect(xtermMounts.value).toBe(8);
 		} finally {
 			view.restore();
 		}
