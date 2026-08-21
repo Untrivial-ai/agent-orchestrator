@@ -310,8 +310,8 @@ type Manager struct {
 	// admitted path while ordinary input remains fenced out.
 	messenger *sessionguard.Guard
 	// chat launches the structured controller for a chat-mode session. Nil means
-	// this build cannot run chat sessions, and a chat spawn is refused rather
-	// than silently downgraded to a terminal.
+	// this build cannot run chat sessions. Explicit Chat requests are refused;
+	// an inherited Chat preference falls back to TUI.
 	// defaults resolves the daemon-owned default session interface for a spawn
 	// that names no mode. Nil falls back to the compatibility default, so a build
 	// without it behaves exactly as before.
@@ -572,8 +572,8 @@ type Deps struct {
 	// name no mode. Nil means always use the compatibility default.
 	Defaults SessionModeDefaults
 	// Chat launches the structured controller for a chat-mode session. Nil means
-	// chat mode is unavailable, and a chat spawn is refused rather than silently
-	// downgraded to a terminal.
+	// chat mode is unavailable. Explicit Chat requests are refused; an inherited
+	// Chat preference falls back to TUI.
 	Chat                ChatLauncher
 	Lifecycle           lifecycleRecorder
 	Preview             PreviewLifecycle
@@ -733,17 +733,27 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	adapterConfig := normalizeAgentConfigForHarness(cfg.Harness, agentConfig)
 
 	// Resolve the controller mode here, before anything durable is created, for
-	// the same reason an unknown harness is rejected above: a chat request AO
-	// cannot honor should cost nothing, not leave a terminated row and a worktree
-	// behind. It never falls back to TUI — that would put the user in a terminal
-	// they deliberately did not ask for.
+	// the same reason an unknown harness is rejected above: an explicit Chat
+	// request AO cannot honor should cost nothing, not leave a terminated row and
+	// a worktree behind. Chat inherited from the daemon preference is best-effort:
+	// if it is unavailable for this harness or installation, fall back to TUI.
+	modeExplicitlyRequested := cfg.RequestedMode.Valid()
 	mode := m.resolveSessionMode(ctx, cfg.RequestedMode)
 	if mode == domain.SessionModeChat {
 		if m.chat == nil {
-			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: chat mode is not available in this build", ports.ErrChatUnsupported)
-		}
-		if err := m.chat.PreflightChat(ctx, cfg.Harness); err != nil {
-			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+			if modeExplicitlyRequested {
+				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: chat mode is not available in this build", ports.ErrChatUnsupported)
+			}
+			m.logger.Warn("spawn: default Chat unavailable; falling back to TUI",
+				"harness", cfg.Harness, "error", ports.ErrChatUnsupported)
+			mode = domain.SessionModeTUI
+		} else if err := m.chat.PreflightChat(ctx, cfg.Harness); err != nil {
+			if modeExplicitlyRequested || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+			}
+			m.logger.Warn("spawn: default Chat unavailable; falling back to TUI",
+				"harness", cfg.Harness, "error", err)
+			mode = domain.SessionModeTUI
 		}
 	}
 	cfg.RequestedMode = mode

@@ -32,6 +32,12 @@ func newChatManager(chat ChatLauncher) (*Manager, *fakeStore, *fakeRuntime) {
 
 const chatTestProject = domain.ProjectID("mer")
 
+type fixedSessionModeDefaults domain.SessionMode
+
+func (d fixedSessionModeDefaults) DefaultSessionMode(context.Context) domain.SessionMode {
+	return domain.SessionMode(d)
+}
+
 // The load-bearing property of the split: exactly one controller starts. A chat
 // spawn must not touch the terminal runtime, and a TUI spawn must not touch the
 // chat launcher. Anything else means two writers on one conversation.
@@ -352,6 +358,74 @@ func TestChatSpawnWithoutLauncherIsRefusedNotDowngraded(t *testing.T) {
 	}
 	if runtime.created != 0 {
 		t.Fatalf("a refused chat spawn created %d runtimes — it downgraded to TUI", runtime.created)
+	}
+}
+
+func TestDefaultChatSpawnFallsBackToTUIWhenUnavailable(t *testing.T) {
+	tests := []struct {
+		name            string
+		withoutLauncher bool
+		preflightErr    error
+	}{
+		{name: "launcher not configured", withoutLauncher: true},
+		{name: "harness unsupported", preflightErr: ports.ErrChatUnsupported},
+		{name: "driver unavailable", preflightErr: ports.ErrChatDriverUnavailable},
+		{name: "driver incompatible", preflightErr: ports.ErrChatDriverIncompatible},
+		{name: "authentication required", preflightErr: ports.ErrChatAuthRequired},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			launcher := &recordingLauncher{preflightErr: tt.preflightErr}
+			var chat ChatLauncher = launcher
+			if tt.withoutLauncher {
+				chat = nil
+			}
+			mgr, _, runtime := newChatManager(chat)
+			mgr.defaults = fixedSessionModeDefaults(domain.SessionModeChat)
+
+			rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+				ProjectID: chatTestProject,
+				Kind:      domain.KindWorker,
+				Harness:   domain.HarnessCodex,
+			})
+			if err != nil {
+				t.Fatalf("Spawn: %v", err)
+			}
+			if rec.Mode != domain.SessionModeTUI {
+				t.Fatalf("mode = %q, want TUI fallback", rec.Mode)
+			}
+			if runtime.created == 0 {
+				t.Fatal("TUI fallback created no terminal runtime")
+			}
+			if len(launcher.started) != 0 {
+				t.Fatalf("fallback started %d Chat controllers, want 0", len(launcher.started))
+			}
+		})
+	}
+}
+
+func TestDefaultChatSpawnUsesChatWhenAvailable(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, _, runtime := newChatManager(launcher)
+	mgr.defaults = fixedSessionModeDefaults(domain.SessionModeChat)
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: chatTestProject,
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if rec.Mode != domain.SessionModeChat {
+		t.Fatalf("mode = %q, want chat", rec.Mode)
+	}
+	if runtime.created != 0 {
+		t.Fatalf("default Chat spawn created %d terminal runtimes, want 0", runtime.created)
+	}
+	if len(launcher.preflighted) != 1 || len(launcher.started) != 1 {
+		t.Fatalf("default Chat dispatch: preflight=%v started=%d, want one of each",
+			launcher.preflighted, len(launcher.started))
 	}
 }
 

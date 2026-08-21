@@ -69,9 +69,9 @@ func TestParseSessionModeRejectsUnknownInsteadOfFallingBack(t *testing.T) {
 	}
 }
 
-func TestDefaultSessionModeIsTUIForUpgradeCompatibility(t *testing.T) {
+func TestDefaultSessionModeIsTUIForSettingsFailureCompatibility(t *testing.T) {
 	if DefaultSessionMode != SessionModeTUI {
-		t.Fatalf("DefaultSessionMode = %q, want %q so an upgrade changes no existing workflow",
+		t.Fatalf("DefaultSessionMode = %q, want %q so a settings failure keeps terminal spawns working",
 			DefaultSessionMode, SessionModeTUI)
 	}
 }
