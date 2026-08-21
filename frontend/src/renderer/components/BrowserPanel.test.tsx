@@ -219,6 +219,85 @@ describe("BrowserPanel", () => {
 		expect(hookState.navigate).toHaveBeenCalledWith("localhost:5173");
 	});
 
+	it("constrains the device frame to a named preset's width, and clears it back to fit", async () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const frame = screen.getByTestId("browser-device-frame").parentElement as HTMLElement;
+		expect(frame.style.width).toBe("");
+
+		await userEvent.click(screen.getByRole("button", { name: "Device preset" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: /iPhone SE/ }));
+		expect(frame.style.width).toBe("375px");
+
+		await userEvent.click(screen.getByRole("button", { name: "Device preset" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: /iPad Mini/ }));
+		expect(frame.style.width).toBe("768px");
+
+		await userEvent.click(screen.getByRole("button", { name: "Device preset" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "Fit panel" }));
+		expect(frame.style.width).toBe("");
+	});
+
+	it("applies a custom device-frame width typed into the dropdown, clamped to a sane range", async () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const frame = screen.getByTestId("browser-device-frame").parentElement as HTMLElement;
+
+		await userEvent.click(screen.getByRole("button", { name: "Device preset" }));
+		const customWidthInput = screen.getByLabelText("Custom width") as HTMLInputElement;
+		await userEvent.clear(customWidthInput);
+		await userEvent.type(customWidthInput, "600");
+		expect(frame.style.width).toBe("600px");
+
+		await userEvent.clear(customWidthInput);
+		await userEvent.type(customWidthInput, "10");
+		expect(frame.style.width).toBe("240px");
+	});
+
+	// Regression: the reviewer flagged that the original 6-device list should
+	// match Chrome DevTools' own "Standard" device list rather than a
+	// hand-picked subset.
+	it("offers Chrome DevTools' own standard device list", async () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		await userEvent.click(screen.getByRole("button", { name: "Device preset" }));
+
+		for (const name of [
+			"iPhone SE",
+			"iPhone XR",
+			"iPhone 12 Pro",
+			"iPhone 14 Pro Max",
+			"iPhone 15 Pro Max",
+			"iPhone 16 Pro Max",
+			"Pixel 7",
+			"Pixel 8",
+			"Pixel 9",
+			"Pixel 10",
+			"Samsung Galaxy S8+",
+			"Samsung Galaxy S20 Ultra",
+			"Samsung Galaxy A51/71",
+			"iPad Mini",
+			"iPad Air",
+			"iPad Pro",
+			"Surface Pro 7",
+			"Surface Duo",
+			"Galaxy Z Fold 5",
+			"Asus Zenbook Fold",
+			"Nest Hub Max",
+		]) {
+			expect(screen.getByRole("menuitem", { name: new RegExp(name.replace(/[+.]/g, "\\$&")) })).toBeInTheDocument();
+		}
+		// "Nest Hub" alone is a prefix of "Nest Hub Max" — assert it separately
+		// with a negative lookahead so the two rows aren't ambiguous.
+		expect(screen.getByRole("menuitem", { name: /Nest Hub(?! Max)/ })).toBeInTheDocument();
+	});
+
+	it("marks the device-preset dropdown as a browser overlay so it paints above the live page", async () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		await userEvent.click(screen.getByRole("button", { name: "Device preset" }));
+
+		const menu = screen.getByRole("menu");
+		expect(menu.getAttribute("data-browser-native-overlay")).toBe("true");
+	});
+
 	it("keeps the URL input editable while the browser is maximized", async () => {
 		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut session={session} />);

@@ -496,6 +496,7 @@ async function createWindowInternal(): Promise<void> {
 		isKeybindingRecording: () => keybindingRecordingActive,
 		agentBrowserRuntime,
 		isCloseShellTerminalShortcutEnabled: () => closeShellTerminalShortcutEnabled,
+		getDaemonPort: () => (daemonStatus.state === "ready" ? daemonStatus.port : undefined),
 	});
 	if (daemonStatus.state === "ready") establishBrowserRuntimeLink();
 
@@ -1551,6 +1552,10 @@ ipcMain.on("shell:focus", () => browserViewHost?.forgetLastFocusedPanel());
 ipcMain.on("browser:overlay", (event, open: unknown) => {
 	if (event.sender !== getShellWebContents() || typeof open !== "boolean") return;
 	windowComposition?.setOverlayOpen(open);
+	// Raising the shell can leave the live page's own compositor surface stale
+	// (the same class of bug window-composition.ts already works around for
+	// the shell itself) — nudge it the same way once the shell is on top.
+	if (open) browserViewHost?.refreshLastFocusedPanelSurface();
 });
 
 ipcMain.on(SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, (_event, enabled: unknown) => {

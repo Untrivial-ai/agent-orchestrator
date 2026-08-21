@@ -220,6 +220,12 @@ function setupTabHost() {
 			closeDevTools: ReturnType<typeof vi.fn>;
 			openWindow: (url: string) => void;
 			close: ReturnType<typeof vi.fn>;
+			session: {
+				webRequest: {
+					onCompleted: ReturnType<typeof vi.fn>;
+					onErrorOccurred: ReturnType<typeof vi.fn>;
+				};
+			};
 			};
 			setBounds: ReturnType<typeof vi.fn>;
 			setBorderRadius: ReturnType<typeof vi.fn>;
@@ -291,6 +297,18 @@ function setupTabHost() {
 				if (result?.action === "allow") {
 					void result.createWindow?.().loadURL(url);
 				}
+			},
+			emitConsoleMessage: (level: number, message: string, line = 0, sourceId = "") => {
+				const listener = listeners.get("console-message") as
+					| ((event: unknown, level: number, message: string, line: number, sourceId: string) => void)
+					| undefined;
+				listener?.({}, level, message, line, sourceId);
+			},
+			session: {
+				webRequest: {
+					onCompleted: vi.fn(),
+					onErrorOccurred: vi.fn(),
+				},
 			},
 		};
 		const view = { webContents, setBounds: vi.fn(), setBorderRadius: vi.fn(), setVisible: vi.fn() };
@@ -771,6 +789,41 @@ describe("native browser visibility", () => {
 		expect(view.setVisible).toHaveBeenLastCalledWith(true);
 	});
 
+	// Regression, reported live (macOS, maximized/popped-out panel): opening a
+	// toolbar dropdown over the browser blanked the live page to black.
+	// window-composition.ts documents the same class of bug for its own shell
+	// view — re-adding a view to reorder it can leave its *previous*
+	// compositor surface on screen until a real geometry change rebuilds it,
+	// and identical bounds are a no-op Electron ignores. refreshLastFocusedPanelSurface
+	// applies that same "shrink by 1px, restore next tick" nudge to the live
+	// page's own view; main.ts calls it right after raising the shell.
+	it("toggles visibility and nudges the last-focused panel's bounds to force a real resize, then restores both", async () => {
+		const { emit, host, invoke, view } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+		emit("browser:setBounds", 1, {
+			viewId: "1:sess-1",
+			rect: { x: 10, y: 20, width: 320, height: 240 },
+			visible: true,
+		});
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "http://localhost:3000" });
+		view.setBounds.mockClear();
+		view.setVisible.mockClear();
+
+		host.refreshLastFocusedPanelSurface();
+		expect(view.setVisible).toHaveBeenLastCalledWith(false);
+		expect(view.setBounds).toHaveBeenLastCalledWith({ x: 10, y: 20, width: 320, height: 239 });
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(view.setBounds).toHaveBeenLastCalledWith({ x: 10, y: 20, width: 320, height: 240 });
+		expect(view.setVisible).toHaveBeenLastCalledWith(true);
+	});
+
+	it("does nothing when nothing has been focused yet, or the panel is hidden", async () => {
+		const { host, view } = setupHost();
+		host.refreshLastFocusedPanelSurface();
+		expect(view.setBounds).not.toHaveBeenCalled();
+	});
+
 	it("keeps rounded native geometry across page zoom", async () => {
 		const { emit, invoke, view } = setupHost();
 		await invoke("browser:ensure", "sess-1");
@@ -1051,21 +1104,86 @@ describe("agent browser runtime", () => {
 		await host.execute("sess-1", "open", { url: "http://localhost:3000" });
 
 		views[0].webContents.openWindow("http://localhost:3000/popup");
-		await Promise.resolve();
 
-		const listed = (await host.execute("sess-1", "tabs")) as {
-			activeTabId: string;
-			tabs: Array<{ id: string; url: string }>;
-		};
-		expect(listed.activeTabId).toBe("t2");
-		expect(listed.tabs[1]).toEqual(
-			expect.objectContaining({ id: "t2", url: "http://localhost:3000/popup" }),
-		);
+		// Popups now open through the real async openTab (createTab, then await
+		// navigation) instead of the old synchronous createWindow path, so give
+		// it room to actually finish navigating before asserting on the result.
+		await vi.waitFor(async () => {
+			const listed = (await host.execute("sess-1", "tabs")) as {
+				activeTabId: string;
+				tabs: Array<{ id: string; url: string }>;
+			};
+			expect(listed.activeTabId).toBe("t2");
+			expect(listed.tabs[1]).toEqual(
+				expect.objectContaining({ id: "t2", url: "http://localhost:3000/popup" }),
+			);
+		});
 
 		await host.execute("sess-1", "tab-close");
 		await expect(host.execute("sess-1", "tab-close")).rejects.toMatchObject({
 			code: "CANNOT_CLOSE_LAST_TAB",
 		});
+	});
+
+	it("closes the tab locally when the automation runtime reports its registry does not recognize it", async () => {
+		const { invoke, runtime } = setupTabHost();
+		const ensured = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
+		const viewId = ensured.viewId;
+		await invoke("browser:openTab", { viewId });
+
+		const before = (await invoke("browser:getTabs", viewId)) as { tabs: { id: string }[] };
+		expect(before.tabs.map((tab) => tab.id)).toEqual(["t1", "t2"]);
+
+		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+		runAction.mockImplementation(async (sessionId: string, action: string, args: Record<string, unknown>, provider: unknown) => {
+			if (action === "tab-close" && String(args.tabId) === "t2") {
+				throw Object.assign(new Error("Tab t2 not found; run `agent-browser tab` to list open tabs"), {
+					code: "AGENT_BROWSER_COMMAND_FAILED",
+				});
+			}
+			return originalRunAction(sessionId, action, args, provider);
+		});
+
+		const result = (await invoke("browser:closeTab", { viewId, tabId: "t2" })) as { tabs: { id: string }[] };
+		expect(result.tabs.map((tab) => tab.id)).toEqual(["t1"]);
+	});
+
+	it("still surfaces an unrelated automation-runtime failure instead of silently closing the tab", async () => {
+		const { invoke, runtime } = setupTabHost();
+		const ensured = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
+		const viewId = ensured.viewId;
+		await invoke("browser:openTab", { viewId });
+
+		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+		runAction.mockImplementation(async (sessionId: string, action: string, args: Record<string, unknown>, provider: unknown) => {
+			if (action === "tab-close" && String(args.tabId) === "t2") {
+				throw Object.assign(new Error("agent-browser exited with code 1"), {
+					code: "AGENT_BROWSER_START_FAILED",
+				});
+			}
+			return originalRunAction(sessionId, action, args, provider);
+		});
+
+		await expect(invoke("browser:closeTab", { viewId, tabId: "t2" })).rejects.toThrow("agent-browser exited with code 1");
+
+		const after = (await invoke("browser:getTabs", viewId)) as { tabs: { id: string }[] };
+		expect(after.tabs.map((tab) => tab.id)).toEqual(["t1", "t2"]);
+	});
+
+	it("registers a session-scoped webRequest watcher for failed requests exactly once, not per tab", async () => {
+		const { host, views } = setupTabHost();
+		await host.execute("sess-1", "open", { url: "http://localhost:3000" });
+		await host.execute("sess-1", "tab-new");
+
+		// One registration for the whole session, not one per tab created within it.
+		expect(views[0].webContents.session.webRequest.onCompleted).toHaveBeenCalledTimes(1);
+		expect(views[0].webContents.session.webRequest.onCompleted).toHaveBeenCalledWith(
+			{ urls: ["*://*/*"] },
+			expect.any(Function),
+		);
+		expect(views[0].webContents.session.webRequest.onErrorOccurred).toHaveBeenCalledTimes(1);
 	});
 
 	it("exposes owned tab state and manual tab actions to the renderer", async () => {

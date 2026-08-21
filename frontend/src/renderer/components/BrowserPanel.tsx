@@ -4,13 +4,17 @@ import {
 	ArrowLeft,
 	ArrowRight,
 	Bug,
+	Check,
 	Globe2,
 	Layers3,
 	Maximize2,
 	Minimize2,
+	Monitor,
 	MousePointer2,
 	Plus,
 	RefreshCw,
+	Smartphone,
+	Tablet,
 	X,
 } from "lucide-react";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
@@ -19,10 +23,58 @@ import { formatBrowserAnnotationMessage, type BrowserAnnotationSubmitPayload } f
 import { MAX_BROWSER_TABS } from "../../shared/browser-tabs";
 import type { WorkspaceSession } from "../types/workspace";
 import { Button } from "./ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { Input } from "./ui/input";
 import { BrowserTabsRail, type BrowserTabsRailHandle } from "./BrowserTabsRail";
 import { cn } from "../lib/utils";
 import { appI18n, type MessageKey } from "../i18n";
+
+// One-click viewport width presets for responsive testing — height is shown
+// for reference but not enforced (only width drives CSS breakpoints, and
+// this is a docked panel of limited, variable height, not a device
+// emulator). No "Desktop" entry: the panel is already viewed on desktop, so
+// that preset was always a no-op. "Custom" covers anything these named
+// devices don't — you're never stuck with only this list.
+//
+// Matches Chrome DevTools' own "Standard" device list (front_end/models/
+// emulation/EmulatedDevices.ts) so anyone already familiar with that list
+// finds the same names here. Dimensions are each device's portrait/vertical
+// mode from that source; Nest Hub/Max are fixed-landscape smart displays, so
+// their one orientation is used directly. iPad Air and Nest Hub have since
+// been dropped from Chrome's own current list but are kept here since
+// they're still common, well-known breakpoints worth testing against.
+const DEVICE_PRESETS: { id: string; label: string; width: number; height: number; category: "phone" | "tablet" }[] = [
+	{ id: "iphone-se", label: "iPhone SE", width: 375, height: 667, category: "phone" },
+	{ id: "iphone-xr", label: "iPhone XR", width: 414, height: 896, category: "phone" },
+	{ id: "iphone-12-pro", label: "iPhone 12 Pro", width: 390, height: 844, category: "phone" },
+	{ id: "iphone-14-pro-max", label: "iPhone 14 Pro Max", width: 430, height: 932, category: "phone" },
+	{ id: "iphone-15-pro-max", label: "iPhone 15 Pro Max", width: 430, height: 932, category: "phone" },
+	{ id: "iphone-16-pro-max", label: "iPhone 16 Pro Max", width: 440, height: 956, category: "phone" },
+	{ id: "pixel-7", label: "Pixel 7", width: 412, height: 915, category: "phone" },
+	{ id: "pixel-8", label: "Pixel 8", width: 412, height: 915, category: "phone" },
+	{ id: "pixel-9", label: "Pixel 9", width: 412, height: 924, category: "phone" },
+	{ id: "pixel-10", label: "Pixel 10", width: 412, height: 924, category: "phone" },
+	{ id: "galaxy-s8-plus", label: "Samsung Galaxy S8+", width: 360, height: 740, category: "phone" },
+	{ id: "galaxy-s20-ultra", label: "Samsung Galaxy S20 Ultra", width: 412, height: 915, category: "phone" },
+	{ id: "galaxy-a51-71", label: "Samsung Galaxy A51/71", width: 412, height: 914, category: "phone" },
+	{ id: "ipad-mini", label: "iPad Mini", width: 768, height: 1024, category: "tablet" },
+	{ id: "ipad-air", label: "iPad Air", width: 820, height: 1180, category: "tablet" },
+	{ id: "ipad-pro", label: "iPad Pro", width: 1032, height: 1376, category: "tablet" },
+	{ id: "surface-pro-7", label: "Surface Pro 7", width: 912, height: 1368, category: "tablet" },
+	{ id: "surface-duo", label: "Surface Duo", width: 540, height: 720, category: "phone" },
+	{ id: "galaxy-z-fold-5", label: "Galaxy Z Fold 5", width: 344, height: 882, category: "phone" },
+	{ id: "zenbook-fold", label: "Asus Zenbook Fold", width: 853, height: 1280, category: "tablet" },
+	{ id: "nest-hub", label: "Nest Hub", width: 1024, height: 600, category: "tablet" },
+	{ id: "nest-hub-max", label: "Nest Hub Max", width: 1280, height: 800, category: "tablet" },
+];
+const CUSTOM_DEVICE_PRESET_ID = "custom";
+const MIN_DEVICE_FRAME_WIDTH = 240;
+const MAX_DEVICE_FRAME_WIDTH = 2560;
+
+function clampDeviceFrameWidth(width: number): number | undefined {
+	if (!Number.isFinite(width)) return undefined;
+	return Math.min(MAX_DEVICE_FRAME_WIDTH, Math.max(MIN_DEVICE_FRAME_WIDTH, Math.round(width)));
+}
 
 type BrowserPanelProps = {
 	session: WorkspaceSession;
@@ -261,6 +313,12 @@ export function BrowserPanelView({
 	const canAnnotate = Boolean(window.ao?.browser && viewId && navState.url);
 	const canRetryAnnotation = status === "error" && queuedCount > 0;
 	const canOpenTab = tabs.length < MAX_BROWSER_TABS;
+	const [devicePreset, setDevicePreset] = useState<string | null>(null);
+	const [customDeviceWidth, setCustomDeviceWidth] = useState("390");
+	const deviceFrameWidth =
+		devicePreset === CUSTOM_DEVICE_PRESET_ID
+			? clampDeviceFrameWidth(Number(customDeviceWidth))
+			: DEVICE_PRESETS.find((preset) => preset.id === devicePreset)?.width;
 	const railRef = useRef<BrowserTabsRailHandle>(null);
 	const urlInputRef = useRef<HTMLInputElement>(null);
 	const [pinned, setPinned] = useState(() => window.localStorage.getItem(RAIL_PINNED_STORAGE_KEY) === "1");
@@ -481,6 +539,85 @@ export function BrowserPanelView({
 						{tabNotice}
 					</span>
 				) : null}
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button
+							aria-label={t("browser.devicePreset")}
+							aria-pressed={devicePreset !== null}
+							className={cn(
+								devicePreset !== null &&
+									"bg-accent-strong text-accent-foreground hover:bg-accent-strong dark:hover:bg-accent-strong",
+							)}
+							size="icon-sm"
+							title={t("browser.devicePreset")}
+							type="button"
+							variant="ghost"
+						>
+							{(() => {
+								const active = DEVICE_PRESETS.find((preset) => preset.id === devicePreset);
+								const ActiveIcon = active ? (active.category === "tablet" ? Tablet : Smartphone) : Monitor;
+								return <ActiveIcon aria-hidden="true" className="size-icon-base" />;
+							})()}
+						</Button>
+					</DropdownMenuTrigger>
+					{/* Opens directly over the live page (the toolbar sits right above the
+					    native browser view), so without this it renders behind the native
+					    view — Electron always paints native view pixels above the
+					    renderer. Marked as a browser overlay so useBrowserView.ts's
+					    MutationObserver raises the transparent shell above the native view
+					    for as long as this stays mounted+open. See the matching comment on
+					    BrowserTabsRail's flyout for the full mechanism. */}
+					<DropdownMenuContent align="end" className="w-64" data-browser-native-overlay="true">
+						<DropdownMenuItem className="gap-1.5" onSelect={() => setDevicePreset(null)}>
+							<span className="flex size-4 shrink-0 items-center justify-center">
+								{devicePreset === null ? <Check aria-hidden="true" className="text-accent" /> : null}
+							</span>
+							{t("browser.deviceFit")}
+						</DropdownMenuItem>
+						<div className="my-1 h-px bg-border" role="separator" />
+						<div className="flex max-h-72 flex-col gap-px overflow-y-auto">
+							{DEVICE_PRESETS.map((preset) => {
+								const PresetIcon = preset.category === "tablet" ? Tablet : Smartphone;
+								return (
+									<DropdownMenuItem
+										className="gap-1.5"
+										key={preset.id}
+										onSelect={() => setDevicePreset(preset.id)}
+									>
+										<span className="flex size-4 shrink-0 items-center justify-center">
+											{devicePreset === preset.id ? <Check aria-hidden="true" className="text-accent" /> : null}
+										</span>
+										<PresetIcon aria-hidden="true" className="size-3.5 shrink-0 text-passive" />
+										<span className="flex-1 truncate">{preset.label}</span>
+										<span className="shrink-0 font-mono text-caption text-passive">
+											{preset.width}×{preset.height}
+										</span>
+									</DropdownMenuItem>
+								);
+							})}
+						</div>
+						<div className="my-1 h-px bg-border" role="separator" />
+						<label className="flex items-center gap-1.5 px-2 py-1.5 text-body">
+							<span className="flex size-4 shrink-0 items-center justify-center">
+								{devicePreset === CUSTOM_DEVICE_PRESET_ID ? <Check aria-hidden="true" className="text-accent" /> : null}
+							</span>
+							<span className="flex-1">{t("browser.deviceCustomWidth")}</span>
+							<Input
+								className="h-6 w-16 shrink-0 px-1.5 text-right font-mono text-caption"
+								inputMode="numeric"
+								max={MAX_DEVICE_FRAME_WIDTH}
+								min={MIN_DEVICE_FRAME_WIDTH}
+								onChange={(event) => {
+									setCustomDeviceWidth(event.target.value);
+									setDevicePreset(CUSTOM_DEVICE_PRESET_ID);
+								}}
+								onClick={(event) => event.stopPropagation()}
+								type="number"
+								value={customDeviceWidth}
+							/>
+						</label>
+					</DropdownMenuContent>
+				</DropdownMenu>
 				<Button
 					aria-label={t(devtoolsState.open ? "browser.closeDevTools" : "browser.openDevTools")}
 					aria-pressed={devtoolsState.open}
@@ -579,7 +716,20 @@ export function BrowserPanelView({
 					data-placeholder={!hasNativeBrowser || navState.url === "" ? "true" : undefined}
 					data-testid="browser-viewport"
 				>
-					<div className="browser-panel__slot absolute inset-0 min-h-px min-w-px" ref={slotRef} />
+					{/* Only the native-view slot is width-constrained for a device
+					    preset — the empty/error placeholders below stay full-width
+					    overlays. maxWidth caps it to whatever room the panel actually
+					    has instead of overflowing a narrow docked panel. */}
+					<div
+						className={cn("relative mx-auto h-full", deviceFrameWidth && "border-x border-border shadow-(--shadow-popover)")}
+						style={deviceFrameWidth ? { maxWidth: "100%", width: deviceFrameWidth } : undefined}
+					>
+						<div
+							className="browser-panel__slot absolute inset-0 min-h-px min-w-px"
+							data-testid="browser-device-frame"
+							ref={slotRef}
+						/>
+					</div>
 					{showStaticPreview ? <StaticPreview url={navState.url} /> : null}
 					{navState.url === "" ? (
 						<div className="pointer-events-none absolute inset-0 grid place-items-center p-5 text-center font-mono text-xs text-passive">
