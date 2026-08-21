@@ -1,13 +1,12 @@
-import { AlertTriangle, Gauge, RefreshCw } from "lucide-react";
+import { AlertTriangle, Gauge } from "lucide-react";
 import type { TFunction } from "i18next";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { ProviderQuota } from "../../hooks/useProviderQuota";
-import { useProviderQuota, useRefreshAllProviderQuota, useRefreshProviderQuota } from "../../hooks/useProviderQuota";
+import { useProviderQuota, useRefreshAllProviderQuota } from "../../hooks/useProviderQuota";
 import { cn } from "../../lib/utils";
 import { CenterPanelShell } from "../CenterPanelShell";
-import { Button } from "../ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 const severityColor: Record<string, string> = {
 	normal: "bg-logo-accent",
@@ -73,7 +72,6 @@ export function PlanUsagePage() {
 
 function ProviderQuotaCard({ quota }: { quota: ProviderQuota }) {
 	const { t } = useTranslation();
-	const refresh = useRefreshProviderQuota(quota.provider, quota.accountId);
 	const title = quota.accountLabel || providerName(quota.provider);
 	return (
 		<Card className="gap-0 border border-border-strong bg-surface py-0 shadow-none ring-0">
@@ -88,17 +86,9 @@ function ProviderQuotaCard({ quota }: { quota: ProviderQuota }) {
 					<span>{freshnessLabel(quota.freshness, quota.observedAt, t)}</span>
 					{quota.completeness === "partial" ? <><span aria-hidden="true">·</span><span>{t("planUsage.partial")}</span></> : null}
 				</CardDescription>
-				{quota.capabilities.supportsRead ? (
-					<CardAction>
-						<Button aria-label={t("planUsage.refreshProvider", { provider: title })} disabled={refresh.isPending} onClick={() => refresh.mutate()} size="icon-sm" variant="ghost">
-							<RefreshCw aria-hidden="true" className={cn("size-3.5", refresh.isPending && "animate-spin")} />
-						</Button>
-					</CardAction>
-				) : null}
 			</CardHeader>
 			<CardContent className="flex flex-col gap-4 px-4 py-4">
 				{quota.refreshError ? <p className="rounded-md bg-status-exited/5 px-3 py-2 text-xs text-status-exited" role="alert">{t("planUsage.lastRefreshError", { error: quota.refreshError })}</p> : null}
-				{refresh.isError ? <p className="text-xs text-status-exited" role="alert">{refresh.error instanceof Error ? refresh.error.message : t("planUsage.refreshError")}</p> : null}
 				{quota.limits.length === 0 ? <p className="text-sm text-muted-foreground">{t("planUsage.waiting")}</p> : (
 					<div className="grid gap-3 sm:grid-cols-2">
 						{quota.limits.map((limit) => <QuotaLimitBar key={`${limit.id}:${limit.windowType}:${limit.scope}:${limit.scopeId ?? ""}`} limit={limit} />)}

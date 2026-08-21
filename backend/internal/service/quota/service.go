@@ -213,8 +213,7 @@ func (s *Service) Refresh(ctx context.Context, provider domain.QuotaProviderID, 
 }
 
 // RefreshAll refreshes stale daemon-owned accounts and then returns every
-// durable snapshot. Provider-card refresh remains the explicit path for
-// providers that can only read through a live conversation.
+// durable snapshot.
 func (s *Service) RefreshAll(ctx context.Context) ([]domain.QuotaSnapshot, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("quota store is unavailable")

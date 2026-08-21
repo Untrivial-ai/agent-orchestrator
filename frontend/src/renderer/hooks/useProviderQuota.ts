@@ -36,23 +36,6 @@ export function useRefreshAllProviderQuota() {
 	});
 }
 
-export function useRefreshProviderQuota(provider: string, accountId: string) {
-	const queryClient = useQueryClient();
-	return useMutation({
-		mutationFn: async () => {
-			const { data, error, response } = await apiClient.POST(
-				"/api/v1/usage/plans/{provider}/accounts/{accountId}/refresh",
-				{ params: { path: { provider, accountId } } },
-			);
-			if (error) throw new Error(apiErrorMessage(error, `Unable to refresh plan usage (${response.status})`));
-			return data;
-		},
-		onSuccess: async () => {
-			await queryClient.invalidateQueries({ queryKey: providerQuotaQueryKey });
-		},
-	});
-}
-
 export function useQuotaAlerts() {
 	return useQuery({
 		queryKey: [...providerQuotaQueryKey, "alerts"],

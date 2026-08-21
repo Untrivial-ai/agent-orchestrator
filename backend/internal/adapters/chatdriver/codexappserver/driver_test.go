@@ -924,6 +924,22 @@ func TestReadRateLimitsFromProviderResult(t *testing.T) {
 	}
 }
 
+func TestRefreshQuotaReadsWithoutStartingThread(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.reply("account/rateLimits/read", `{"rateLimits":{"limitId":"codex","primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"credits":null,"planType":"pro"},"rateLimitsByLimitId":{},"rateLimitResetCredits":{"availableCount":0,"credits":[]}}`)
+
+	snapshot, err := d.RefreshQuota(context.Background(), "codex", "default")
+	if err != nil {
+		t.Fatalf("RefreshQuota: %v", err)
+	}
+	if snapshot.Provider != "codex" || snapshot.AccountID != "default" || snapshot.PlanType != "pro" {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if srv.sentMethod("thread/start") {
+		t.Fatal("quota refresh created a Codex thread")
+	}
+}
+
 func TestRateLimitsFromCollapsesDuplicateQuotaWindows(t *testing.T) {
 	var envelope rateLimitsEnvelope
 	if err := json.Unmarshal([]byte(`{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":84,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null}}}`), &envelope); err != nil {

@@ -16,12 +16,6 @@ vi.mock("../../hooks/useProviderQuota", () => ({
 		isSuccess: true,
 	}),
 	useRefreshAllProviderQuota: () => ({ mutate: hookState.refreshAll }),
-	useRefreshProviderQuota: () => ({
-		error: null,
-		isError: false,
-		isPending: false,
-		mutate: vi.fn(),
-	}),
 }));
 
 vi.mock("../CenterPanelShell", () => ({
@@ -112,7 +106,7 @@ describe("PlanUsagePage", () => {
 		expect(screen.getByText("Claude Pro")).toBeInTheDocument();
 		expect(screen.getByText("8% remaining")).toHaveClass("text-status-exited");
 		expect(screen.getByText("72% remaining")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Refresh Codex Team usage" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /refresh/i })).not.toBeInTheDocument();
 		expect(screen.queryByText("Credits and balances")).not.toBeInTheDocument();
 		expect(screen.queryByText("Observed usage history")).not.toBeInTheDocument();
 	});

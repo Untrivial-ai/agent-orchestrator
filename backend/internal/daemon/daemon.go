@@ -245,6 +245,11 @@ func Run() error {
 		NewID:    uuid.NewString,
 	})
 	quotaSvc.SetRefresher(chatSvc)
+	if codexDriver, err := chatDrivers.Driver(domain.HarnessCodex); err == nil {
+		if refresher, ok := codexDriver.(quotasvc.Refresher); ok {
+			quotaSvc.RegisterRefresher("codex", "default", refresher)
+		}
+	}
 	if claudeAgent, ok := agents.Agent(domain.HarnessClaudeCode); ok {
 		if plugin, ok := claudeAgent.(interface {
 			ports.AgentBinaryResolver
@@ -256,7 +261,10 @@ func Run() error {
 	const quotaRefreshInterval = 5 * time.Minute
 	quotaRefreshDone := quotaSvc.StartAutoRefresh(ctx, quotaRefreshInterval)
 	lcStack.LCM.SetActivityObserver(func(session domain.SessionRecord, signal ports.ActivitySignal) {
-		if session.Kind != domain.KindWorker || session.Harness != domain.HarnessClaudeCode || !signal.Valid || signal.State != domain.ActivityIdle {
+		if session.Kind != domain.KindWorker || !signal.Valid || signal.State != domain.ActivityIdle {
+			return
+		}
+		if session.Harness != domain.HarnessClaudeCode && session.Harness != domain.HarnessCodex {
 			return
 		}
 		go quotaSvc.RefreshRegisteredIfStale(ctx)

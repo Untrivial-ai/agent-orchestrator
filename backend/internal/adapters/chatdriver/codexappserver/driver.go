@@ -23,9 +23,10 @@ import (
 // clientName identifies AO to the provider. It shows up in the app-server's
 // reported user agent, which makes a stray process attributable.
 const (
-	clientName    = "agent-orchestrator"
-	clientTitle   = "Agent Orchestrator"
-	clientVersion = "0.1.0"
+	clientName       = "agent-orchestrator"
+	clientTitle      = "Agent Orchestrator"
+	clientVersion    = "0.1.0"
+	quotaReadTimeout = 20 * time.Second
 	// This is the oldest Codex build whose complete Chat surface AO exercised:
 	// thread start/resume, turn start/interrupt, approvals, and every advertised
 	// extension. initialize plus model/list alone cannot prove those mutating
@@ -79,6 +80,35 @@ func New(plugin codexPlugin, log *slog.Logger) *Driver {
 }
 
 var _ ports.ChatDriver = (*Driver)(nil)
+
+// RefreshQuota reads the user's Codex subscription limits without creating a
+// thread, AO session, or worktree. app-server exposes this account-level read
+// immediately after initialize, so the daemon can keep Plan Usage current even
+// when no Codex worker is running.
+func (d *Driver) RefreshQuota(ctx context.Context, provider domain.QuotaProviderID, accountID domain.QuotaAccountID) (domain.QuotaSnapshot, error) {
+	if d == nil || provider != "codex" || accountID != "default" {
+		return domain.QuotaSnapshot{}, ports.ErrQuotaRefreshUnsupported
+	}
+	workdir, err := os.Getwd()
+	if err != nil || !filepath.IsAbs(workdir) {
+		workdir = os.TempDir()
+	}
+	readCtx, cancel := context.WithTimeout(ctx, quotaReadTimeout)
+	defer cancel()
+	conv, err := d.connect(readCtx, workdir, nil)
+	if err != nil {
+		return domain.QuotaSnapshot{}, err
+	}
+	defer func() { _ = conv.Close() }()
+	limits, err := conv.ReadRateLimits(readCtx)
+	if err != nil {
+		return domain.QuotaSnapshot{}, err
+	}
+	if limits.Quota == nil {
+		return domain.QuotaSnapshot{}, errors.New("Codex plan usage read returned no quota snapshot")
+	}
+	return domain.NormalizeQuotaSnapshot(*limits.Quota), nil
+}
 
 // Harness reports which agent this driver serves.
 func (d *Driver) Harness() domain.AgentHarness { return domain.HarnessCodex }
