@@ -19,28 +19,40 @@ type QuotaAccountID string
 // buckets without an AO release, so callers must not switch exhaustively on it.
 type QuotaLimitID string
 
+// QuotaCompleteness reports whether a snapshot contains the provider's full inventory.
 type QuotaCompleteness string
 
 const (
+	// QuotaComplete identifies a snapshot with the provider's full inventory.
 	QuotaComplete QuotaCompleteness = "complete"
-	QuotaPartial  QuotaCompleteness = "partial"
+	// QuotaPartial identifies an incremental snapshot that preserves prior buckets.
+	QuotaPartial QuotaCompleteness = "partial"
 )
 
+// QuotaLimitCategory classifies the resource constrained by a quota bucket.
 type QuotaLimitCategory string
 
 const (
-	QuotaRateLimit    QuotaLimitCategory = "rate_limit"
-	QuotaSpendLimit   QuotaLimitCategory = "spend_limit"
+	// QuotaRateLimit classifies a request or model rate bucket.
+	QuotaRateLimit QuotaLimitCategory = "rate_limit"
+	// QuotaSpendLimit classifies a provider spend cap bucket.
+	QuotaSpendLimit QuotaLimitCategory = "spend_limit"
+	// QuotaUsageCredits classifies prepaid or included usage credits.
 	QuotaUsageCredits QuotaLimitCategory = "usage_credits"
+	// QuotaResetCredits classifies credits that refresh on a provider window.
 	QuotaResetCredits QuotaLimitCategory = "reset_credits"
 )
 
+// QuotaLimitScope identifies the resource boundary to which a limit applies.
 type QuotaLimitScope string
 
 const (
-	QuotaAccountScope   QuotaLimitScope = "account"
+	// QuotaAccountScope identifies a quota enforced for the whole account.
+	QuotaAccountScope QuotaLimitScope = "account"
+	// QuotaWorkspaceScope identifies a quota enforced for one workspace.
 	QuotaWorkspaceScope QuotaLimitScope = "workspace"
-	QuotaModelScope     QuotaLimitScope = "model"
+	// QuotaModelScope identifies a quota enforced for one model.
+	QuotaModelScope QuotaLimitScope = "model"
 )
 
 // QuotaCapabilities describe what an adapter can truthfully provide. The UI
@@ -110,6 +122,7 @@ type QuotaBalance struct {
 	ObservedAt time.Time
 }
 
+// QuotaHistoryPoint is one durable observation of a quota bucket.
 type QuotaHistoryPoint struct {
 	LimitID     QuotaLimitID
 	WindowType  string
@@ -121,6 +134,7 @@ type QuotaHistoryPoint struct {
 	ObservedAt  time.Time
 }
 
+// QuotaAlert describes a threshold transition surfaced to AO users.
 type QuotaAlert struct {
 	ID        string
 	Provider  QuotaProviderID

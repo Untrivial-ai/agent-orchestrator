@@ -7,6 +7,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+// ErrQuotaRefreshUnsupported indicates that a provider cannot perform an on-demand quota read.
 var ErrQuotaRefreshUnsupported = errors.New("provider quota cannot be refreshed on demand")
 
 // QuotaSink is the provider-neutral write boundary. Chat adapters translate

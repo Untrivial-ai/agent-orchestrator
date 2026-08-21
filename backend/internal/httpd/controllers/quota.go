@@ -17,6 +17,7 @@ import (
 	quotasvc "github.com/aoagents/agent-orchestrator/backend/internal/service/quota"
 )
 
+// QuotaService is the controller boundary for subscription quota operations.
 type QuotaService interface {
 	List(context.Context) ([]domain.QuotaSnapshot, error)
 	Get(context.Context, domain.QuotaProviderID, domain.QuotaAccountID) (domain.QuotaSnapshot, bool, error)
@@ -25,8 +26,10 @@ type QuotaService interface {
 	Alerts(context.Context, time.Time, int64) ([]domain.QuotaAlert, error)
 }
 
+// QuotaController serves provider-neutral subscription quota endpoints.
 type QuotaController struct{ Svc QuotaService }
 
+// Register mounts the subscription quota endpoints on r.
 func (c *QuotaController) Register(r chi.Router) {
 	r.Get("/usage/plans", c.list)
 	r.Get("/usage/plans/alerts", c.alerts)

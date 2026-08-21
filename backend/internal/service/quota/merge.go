@@ -8,7 +8,9 @@ import (
 )
 
 const (
+	// FreshWindow is how long a provider read is considered fresh.
 	FreshWindow = 2 * time.Minute
+	// AgingWindow is how long a provider read can age before it is stale.
 	AgingWindow = 5 * time.Minute
 )
 

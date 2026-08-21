@@ -2,16 +2,23 @@ package quota
 
 import "github.com/aoagents/agent-orchestrator/backend/internal/domain"
 
+// Severity is the provider-neutral urgency of a quota state.
 type Severity string
 
 const (
-	SeverityNormal    Severity = "normal"
-	SeverityWarning   Severity = "warning"
-	SeverityCritical  Severity = "critical"
+	// SeverityNormal means the provider quota is comfortably available.
+	SeverityNormal Severity = "normal"
+	// SeverityWarning means the provider quota is approaching exhaustion.
+	SeverityWarning Severity = "warning"
+	// SeverityCritical means the provider quota is close to exhaustion.
+	SeverityCritical Severity = "critical"
+	// SeverityExhausted means the provider quota is fully consumed or blocked.
 	SeverityExhausted Severity = "exhausted"
-	SeverityUnknown   Severity = "unknown"
+	// SeverityUnknown means the provider did not report enough data to derive urgency.
+	SeverityUnknown Severity = "unknown"
 )
 
+// LimitSeverity derives urgency from a single provider-reported quota limit.
 func LimitSeverity(limit domain.QuotaLimit) Severity {
 	if limit.Reached != nil && *limit.Reached {
 		return SeverityExhausted
@@ -31,6 +38,7 @@ func LimitSeverity(limit domain.QuotaLimit) Severity {
 	}
 }
 
+// SnapshotSeverity returns the most urgent severity across a snapshot's limits.
 func SnapshotSeverity(snapshot domain.QuotaSnapshot) Severity {
 	worst := SeverityUnknown
 	order := map[Severity]int{SeverityUnknown: 0, SeverityNormal: 1, SeverityWarning: 2, SeverityCritical: 3, SeverityExhausted: 4}

@@ -76,6 +76,7 @@ func (s *Store) PersistQuotaObservation(ctx context.Context, input domain.QuotaS
 	})
 }
 
+// ListQuotaSnapshots returns the latest snapshot for every provider account.
 func (s *Store) ListQuotaSnapshots(ctx context.Context) ([]domain.QuotaSnapshot, error) {
 	accounts, err := s.qr.ListQuotaAccounts(ctx)
 	if err != nil {
@@ -92,6 +93,7 @@ func (s *Store) ListQuotaSnapshots(ctx context.Context) ([]domain.QuotaSnapshot,
 	return out, nil
 }
 
+// GetQuotaSnapshot returns the latest snapshot for one provider account.
 func (s *Store) GetQuotaSnapshot(ctx context.Context, provider domain.QuotaProviderID, accountID domain.QuotaAccountID) (domain.QuotaSnapshot, bool, error) {
 	row, err := s.qr.GetQuotaAccount(ctx, gen.GetQuotaAccountParams{Provider: string(provider), AccountID: string(accountID)})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -134,6 +136,7 @@ func (s *Store) quotaSnapshotFromAccount(ctx context.Context, row gen.QuotaAccou
 	return snapshot, nil
 }
 
+// RecordQuotaRefreshFailure stores the latest on-demand refresh error for an account.
 func (s *Store) RecordQuotaRefreshFailure(ctx context.Context, provider domain.QuotaProviderID, accountID domain.QuotaAccountID, message string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -147,6 +150,7 @@ func (s *Store) RecordQuotaRefreshFailure(ctx context.Context, provider domain.Q
 	return nil
 }
 
+// ListQuotaHistory returns recent observations for one provider account.
 func (s *Store) ListQuotaHistory(ctx context.Context, provider domain.QuotaProviderID, accountID domain.QuotaAccountID, since time.Time, limit int64) ([]domain.QuotaHistoryPoint, error) {
 	if limit <= 0 || limit > 2000 {
 		limit = 500
@@ -169,6 +173,7 @@ func (s *Store) ListQuotaHistory(ctx context.Context, provider domain.QuotaProvi
 	return out, nil
 }
 
+// ListQuotaAlerts returns recent quota threshold alerts.
 func (s *Store) ListQuotaAlerts(ctx context.Context, since time.Time, limit int64) ([]domain.QuotaAlert, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -188,6 +193,7 @@ func (s *Store) ListQuotaAlerts(ctx context.Context, since time.Time, limit int6
 	return out, nil
 }
 
+// DeleteQuotaHistoryBefore removes observations older than before.
 func (s *Store) DeleteQuotaHistoryBefore(ctx context.Context, before time.Time) (int64, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

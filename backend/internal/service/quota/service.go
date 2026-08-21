@@ -6,11 +6,13 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"golang.org/x/sync/singleflight"
 )
 
+// Store is the durable quota persistence boundary used by Service.
 type Store interface {
 	PersistQuotaObservation(context.Context, domain.QuotaSnapshot, []domain.QuotaAlert) error
 	ListQuotaSnapshots(context.Context) ([]domain.QuotaSnapshot, error)
@@ -25,7 +27,7 @@ type Store interface {
 type Service struct {
 	store     Store
 	mu        sync.Mutex
-	refresher QuotaRefresher
+	refresher Refresher
 	refreshes singleflight.Group
 	collects  singleflight.Group
 	reads     map[string]cachedRateLimits
@@ -36,10 +38,12 @@ type cachedRateLimits struct {
 	observedAt time.Time
 }
 
-type QuotaRefresher interface {
+// Refresher performs a provider-native on-demand quota read.
+type Refresher interface {
 	RefreshQuota(context.Context, domain.QuotaProviderID, domain.QuotaAccountID) (domain.QuotaSnapshot, error)
 }
 
+// New creates a quota service backed by store.
 func New(store Store) *Service {
 	return &Service{store: store, reads: make(map[string]cachedRateLimits)}
 }
@@ -47,12 +51,13 @@ func New(store Store) *Service {
 // SetRefresher late-binds the live chat service, breaking the construction cycle:
 // chat writes provider events to this service, while manual refresh needs a live
 // provider conversation owned by chat.
-func (s *Service) SetRefresher(refresher QuotaRefresher) {
+func (s *Service) SetRefresher(refresher Refresher) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refresher = refresher
 }
 
+// RecordQuotaSnapshot merges and persists a provider quota observation.
 func (s *Service) RecordQuotaSnapshot(ctx context.Context, update domain.QuotaSnapshot) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("quota store is unavailable")
@@ -70,6 +75,7 @@ func (s *Service) RecordQuotaSnapshot(ctx context.Context, update domain.QuotaSn
 	return s.store.PersistQuotaObservation(ctx, update, TransitionAlerts(current, update))
 }
 
+// Alerts lists quota alerts created at or after since.
 func (s *Service) Alerts(ctx context.Context, since time.Time, limit int64) ([]domain.QuotaAlert, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("quota store is unavailable")
@@ -77,6 +83,7 @@ func (s *Service) Alerts(ctx context.Context, since time.Time, limit int64) ([]d
 	return s.store.ListQuotaAlerts(ctx, since, limit)
 }
 
+// List returns the latest durable snapshot for every provider account.
 func (s *Service) List(ctx context.Context) ([]domain.QuotaSnapshot, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("quota store is unavailable")
@@ -84,6 +91,7 @@ func (s *Service) List(ctx context.Context) ([]domain.QuotaSnapshot, error) {
 	return s.store.ListQuotaSnapshots(ctx)
 }
 
+// Get returns the latest durable snapshot for one provider account.
 func (s *Service) Get(ctx context.Context, provider domain.QuotaProviderID, accountID domain.QuotaAccountID) (domain.QuotaSnapshot, bool, error) {
 	if s == nil || s.store == nil {
 		return domain.QuotaSnapshot{}, false, fmt.Errorf("quota store is unavailable")
@@ -91,6 +99,7 @@ func (s *Service) Get(ctx context.Context, provider domain.QuotaProviderID, acco
 	return s.store.GetQuotaSnapshot(ctx, provider, accountID)
 }
 
+// History lists durable quota observations for one provider account.
 func (s *Service) History(ctx context.Context, provider domain.QuotaProviderID, accountID domain.QuotaAccountID, since time.Time, limit int64) ([]domain.QuotaHistoryPoint, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("quota store is unavailable")
@@ -135,7 +144,11 @@ func (s *Service) CollectRateLimits(ctx context.Context, provider domain.QuotaPr
 	if err != nil {
 		return ports.ChatRateLimits{}, err
 	}
-	return result.(ports.ChatRateLimits), nil
+	limits, ok := result.(ports.ChatRateLimits)
+	if !ok {
+		return ports.ChatRateLimits{}, fmt.Errorf("unexpected collected quota result type %T", result)
+	}
+	return limits, nil
 }
 
 func (s *Service) cachedRead(key string, now time.Time) (ports.ChatRateLimits, bool) {
@@ -145,6 +158,7 @@ func (s *Service) cachedRead(key string, now time.Time) (ports.ChatRateLimits, b
 	return cached.limits, ok && now.Sub(cached.observedAt) < FreshWindow
 }
 
+// Refresh requests and persists a fresh snapshot for one provider account.
 func (s *Service) Refresh(ctx context.Context, provider domain.QuotaProviderID, accountID domain.QuotaAccountID) (domain.QuotaSnapshot, error) {
 	if s == nil || s.store == nil {
 		return domain.QuotaSnapshot{}, fmt.Errorf("quota store is unavailable")
@@ -170,7 +184,11 @@ func (s *Service) Refresh(ctx context.Context, provider domain.QuotaProviderID, 
 		_ = s.store.RecordQuotaRefreshFailure(context.WithoutCancel(ctx), provider, accountID, err.Error())
 		return domain.QuotaSnapshot{}, err
 	}
-	return result.(domain.QuotaSnapshot), nil
+	snapshot, ok := result.(domain.QuotaSnapshot)
+	if !ok {
+		return domain.QuotaSnapshot{}, fmt.Errorf("unexpected refreshed quota result type %T", result)
+	}
+	return snapshot, nil
 }
 
 // StartMaintenance compacts durable history immediately and once per day. It
