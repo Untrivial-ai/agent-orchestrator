@@ -23,6 +23,11 @@ AO sends structured events in a few broad categories:
   recorded on project-add events. Only the owner segment is sent, never the
   repository name, path, or URL. For a personal repository this owner is the
   user's own GitHub username, so this particular value is not anonymous
+- Per-session token usage at session end: input, output, and cache token
+  counts, the dominant model, and an estimated dollar cost, taken from the
+  usage totals AO already derives from the agent's own transcript. Only numeric
+  counters and the model name are sent; prompt and completion content are never
+  included. Attributed to the project's GitHub owner where available
 - Reliability data, such as an error type and context, a crash message and
   stack trace after path redaction, an HTTP status, or an agent waiting for
   input

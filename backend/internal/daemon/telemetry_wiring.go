@@ -31,6 +31,16 @@ var aggregatedEventNames = []string{
 	"ao.cli.usage_errors",
 }
 
+// meteringEventNames are legitimately high-frequency, per-occurrence-meaningful
+// events that cannot be aggregated (each carries distinct numeric totals) and
+// so get the generous metering rate-limit tier instead of the standard 5/min
+// ceiling. ao.session.token_usage fires once per session end; a busy user or an
+// orchestrator fleet can exceed the standard tier, and dropping those events
+// would under-count exactly the heaviest usage the metric is meant to rank.
+var meteringEventNames = []string{
+	"ao.session.token_usage",
+}
+
 func newTelemetrySink(cfg config.Config, store *sqlite.Store, log *slog.Logger) ports.EventSink {
 	if !cfg.Telemetry.Events {
 		return telemetryadapter.NoopSink{}
@@ -52,7 +62,8 @@ func newTelemetrySink(cfg config.Config, store *sqlite.Store, log *slog.Logger) 
 	// applies the generous tier to those same names as a structural backstop
 	// rather than the primary cost control, and still does the real limiting
 	// job for every event name that isn't aggregated.
-	rateLimited := telemetryadapter.NewRateLimitedSink(remote, aggregatedEventNames)
+	rateLimited := telemetryadapter.NewRateLimitedSink(remote, aggregatedEventNames).
+		WithMeteringNames(meteringEventNames...)
 	aggregated := telemetryadapter.NewAggregatingSink(rateLimited, aggregatedEventNames, time.Minute)
 	// The kill switch sits outermost on the remote chain so a silenced stream
 	// costs nothing downstream: no aggregation window, no rate-limit slot, no
