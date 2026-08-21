@@ -195,6 +195,18 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 		"harness":     {},
 		"kind":        {},
 	},
+	"ao.session.token_usage": {
+		"cache_read_tokens":  {},
+		"cache_write_tokens": {},
+		"est_cost_usd":       {},
+		"github_org":         {},
+		"harness":            {},
+		"incomplete":         {},
+		"input_tokens":       {},
+		"model":              {},
+		"output_tokens":      {},
+		"total_tokens":       {},
+	},
 	"ao.session.waiting_input_entered": {
 		"state": {},
 	},

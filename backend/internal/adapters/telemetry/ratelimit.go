@@ -34,6 +34,18 @@ const (
 	// full day (1440) with headroom, at a cost of a few cents a month even
 	// in the worst case.
 	eventsPerNamePerDayAggregated = 1500
+	// eventsPerNamePerMinuteMetering / eventsPerNamePerDayMetering apply to
+	// legitimately high-frequency, per-occurrence-meaningful metering events
+	// (e.g. ao.session.token_usage, one per session end). These cannot be
+	// aggregated because each event carries distinct numeric totals that must
+	// survive individually, and the standard 5/min ceiling would silently drop
+	// exactly the heaviest users — an orchestrator fleet can end far more than
+	// five sessions in a minute. The caps are still finite so a client looping
+	// the reporting path stays cost-bounded (worst case a few dollars a month
+	// per install at anonymous rates), just generous enough that real usage is
+	// never truncated.
+	eventsPerNamePerMinuteMetering = 30
+	eventsPerNamePerDayMetering    = 1000
 )
 
 // RateLimitedSink wraps a sink and drops events past a per-event-name rate
@@ -46,6 +58,10 @@ type RateLimitedSink struct {
 	// an upstream AggregatingSink already compresses their occurrence count
 	// into one rollup per flush window.
 	aggregated map[string]struct{}
+
+	// metering marks legitimately high-frequency, unaggregatable events that
+	// get the metering tier (see eventsPerNamePer*Metering).
+	metering map[string]struct{}
 
 	mu      sync.Mutex
 	minutes map[string]*rateWindow
@@ -69,9 +85,21 @@ func NewRateLimitedSink(next ports.EventSink, aggregatedNames []string) *RateLim
 	return &RateLimitedSink{
 		next:       next,
 		aggregated: aggregated,
+		metering:   make(map[string]struct{}),
 		minutes:    make(map[string]*rateWindow),
 		days:       make(map[string]*rateWindow),
 	}
+}
+
+// WithMeteringNames marks event names that get the high-frequency metering tier
+// (see eventsPerNamePer*Metering) rather than the standard ceiling. It returns
+// the same sink for chaining and is meant to be called once at construction,
+// before the sink starts receiving events.
+func (s *RateLimitedSink) WithMeteringNames(names ...string) *RateLimitedSink {
+	for _, n := range names {
+		s.metering[n] = struct{}{}
+	}
+	return s
 }
 
 // Emit forwards ev to the wrapped sink unless its event name has exceeded
@@ -87,14 +115,24 @@ func (s *RateLimitedSink) reserve(name string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !reserveWindow(s.minutes, name, now, time.Minute, eventsPerNamePerMinute) {
+	minuteLimit, dayLimit := s.limitsFor(name)
+	if !reserveWindow(s.minutes, name, now, time.Minute, minuteLimit) {
 		return false
 	}
-	dayLimit := eventsPerNamePerDay
-	if _, ok := s.aggregated[name]; ok {
-		dayLimit = eventsPerNamePerDayAggregated
-	}
 	return reserveWindow(s.days, name, now, 24*time.Hour, dayLimit)
+}
+
+// limitsFor returns the per-minute and per-day ceilings for an event name. The
+// metering tier takes precedence over the aggregated tier so a name marked as
+// both is never throttled below its metering allowance.
+func (s *RateLimitedSink) limitsFor(name string) (minute, day int) {
+	if _, ok := s.metering[name]; ok {
+		return eventsPerNamePerMinuteMetering, eventsPerNamePerDayMetering
+	}
+	if _, ok := s.aggregated[name]; ok {
+		return eventsPerNamePerMinute, eventsPerNamePerDayAggregated
+	}
+	return eventsPerNamePerMinute, eventsPerNamePerDay
 }
 
 func reserveWindow(windows map[string]*rateWindow, name string, now time.Time, size time.Duration, limit int) bool {

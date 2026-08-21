@@ -92,6 +92,41 @@ func TestRateLimitedSinkNonAggregatedNameKeepsStandardTierEvenWhenOthersAreAggre
 	}
 }
 
+func TestRateLimitedSinkMeteringTierRaisesBurstCeiling(t *testing.T) {
+	rec := &recordingSink{}
+	s := NewRateLimitedSink(rec, nil).WithMeteringNames("ao.session.token_usage")
+	ctx := context.Background()
+	now := time.Now()
+
+	for i := 0; i < eventsPerNamePerMinuteMetering; i++ {
+		s.Emit(ctx, ports.TelemetryEvent{Name: "ao.session.token_usage", OccurredAt: now})
+	}
+	if len(rec.events) != eventsPerNamePerMinuteMetering {
+		t.Fatalf("metering events forwarded = %d, want %d", len(rec.events), eventsPerNamePerMinuteMetering)
+	}
+	s.Emit(ctx, ports.TelemetryEvent{Name: "ao.session.token_usage", OccurredAt: now})
+	if len(rec.events) != eventsPerNamePerMinuteMetering {
+		t.Fatalf("metering burst not capped: forwarded = %d, want %d", len(rec.events), eventsPerNamePerMinuteMetering)
+	}
+}
+
+func TestRateLimitedSinkMeteringTierDailyCeiling(t *testing.T) {
+	s := NewRateLimitedSink(&recordingSink{}, nil).WithMeteringNames("ao.session.token_usage")
+	start := time.Now()
+
+	const step = 30 * time.Second
+	var forwarded int
+	for i := 0; i < eventsPerNamePerDayMetering+10; i++ {
+		if s.reserve("ao.session.token_usage", start) {
+			forwarded++
+		}
+		start = start.Add(step)
+	}
+	if forwarded != eventsPerNamePerDayMetering {
+		t.Fatalf("metering events forwarded = %d, want %d", forwarded, eventsPerNamePerDayMetering)
+	}
+}
+
 func TestRateLimitedSinkTracksEventNamesIndependently(t *testing.T) {
 	rec := &recordingSink{}
 	s := NewRateLimitedSink(rec, nil)
