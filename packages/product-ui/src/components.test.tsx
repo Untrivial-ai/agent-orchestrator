@@ -29,8 +29,10 @@ describe("portable leaf components", () => {
 		expect(image).toHaveClass("opacity-0");
 		if (image) fireEvent.load(image);
 		expect(image).toHaveClass("opacity-100");
+		expect(container).not.toHaveTextContent("AL");
 		if (image) fireEvent.error(image);
 		expect(image).toHaveClass("opacity-0");
+		expect(container).toHaveTextContent("AL");
 	});
 
 	it("renders only initials when no provider avatar URL exists", () => {

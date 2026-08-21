@@ -29,7 +29,7 @@ export function GithubAvatar({ login, avatarUrl, className }: GithubAvatarProps)
 			aria-hidden="true"
 			className={cn("relative inline-flex size-icon-sm shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted text-micro font-semibold text-muted-foreground", className)}
 		>
-			{initials(normalizedLogin)}
+			{loaded ? null : initials(normalizedLogin)}
 			{normalizedAvatarUrl ? (
 				<img
 					alt=""

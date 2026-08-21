@@ -50,6 +50,8 @@ const CONTENT_SECURITY_POLICY = [
 	"default-src 'self'",
 	"script-src 'self'",
 	"style-src 'self' 'unsafe-inline'",
+	// Enterprise avatar hosts are intentionally excluded: a static CSP cannot narrowly allow
+	// arbitrary instance domains, so those records retain the monogram fallback.
 	"img-src 'self' data: http://127.0.0.1:* https://avatars.githubusercontent.com",
 	"font-src 'self' data:",
 	["connect-src", "'self'", "http://127.0.0.1:*", "ws://127.0.0.1:*", ...POSTHOG_ORIGINS].filter(Boolean).join(" "),
