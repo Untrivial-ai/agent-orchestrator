@@ -752,6 +752,12 @@ function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 		capabilities: wire.capabilities?.length ? wire.capabilities : undefined,
 		activeBranchId: wire.activeBranchId || undefined,
 		branchedFromEarlierMessage: wire.branchedFromEarlierMessage ?? undefined,
+		branchMaterialization: wire.branchMaterialization
+			? {
+					strategy: wire.branchMaterialization.strategy,
+					replayTruncated: wire.branchMaterialization.replayTruncated,
+				}
+			: undefined,
 		branchPoints: (wire.branchPoints ?? []).map((point) => ({
 			turnId: point.turnId,
 			position: point.position,

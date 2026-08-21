@@ -105,6 +105,7 @@ var shippedMigrations = map[int64]string{
 	99:  "0099_interface_transition_notice_acknowledgement.sql",
 	100: "0100_session_model.sql",
 	101: "0101_conversation_provider_ownership_epochs.sql",
+	102: "0102_approximate_conversation_branches.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

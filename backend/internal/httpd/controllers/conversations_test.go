@@ -152,15 +152,18 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	body := conversationSnapshotBody(t, chatsvc.Snapshot{
 		Conversation: domain.ConversationRecord{ID: "conversation-1", ActiveBranchID: "branch-child"},
-		SessionID:    domain.SessionID("p1-1"),
+		ActiveBranch: domain.ConversationBranch{
+			ID: "branch-child", Strategy: "approximate_context", ReplayTruncated: true,
+		},
+		SessionID: domain.SessionID("p1-1"),
 		Messages: []domain.ConversationMessage{
 			{
 				ID: "valid", Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
-				Text: "inspect", CreatedAt: now,
-				DeliveryContentJSON: `[{"type":"text","text":"inspect"},{"type":"image","data":"secret-bytes","mimeType":"image/png","name":"diagram.png"},{"type":"resource","uri":"file:///notes.md","name":"notes.md","text":"secret resource text"},{"type":"skill_binding"}]`,
+				Sequence: 1, Text: "inspect", CreatedAt: now,
+				DeliveryContentJSON: `[{"type":"text","text":"inspect"},{"type":"resource","uri":"ao://conversation/edit-replay","name":"approximate conversation context","text":"internal replay"},{"type":"image","data":"secret-bytes","mimeType":"image/png","name":"diagram.png"},{"type":"resource","uri":"file:///notes.md","name":"notes.md","text":"secret resource text"},{"type":"skill_binding"}]`,
 			},
-			{ID: "legacy", Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman, Text: "legacy", CreatedAt: now},
-			{ID: "malformed", Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman, Text: "broken", DeliveryContentJSON: `{broken`, CreatedAt: now},
+			{ID: "legacy", Sequence: 2, Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman, Text: "legacy", CreatedAt: now},
+			{ID: "malformed", Sequence: 3, Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman, Text: "broken", DeliveryContentJSON: `{broken`, CreatedAt: now},
 		},
 		BranchPoints: []domain.ConversationBranchPoint{{
 			TurnID: "turn-edited", Position: 2, Total: 2, PreviousBranchID: "branch-root",
@@ -172,6 +175,13 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 	}
 	if body["branchedFromEarlierMessage"] != true {
 		t.Fatalf("branchedFromEarlierMessage = %#v", body["branchedFromEarlierMessage"])
+	}
+	materialization, ok := body["branchMaterialization"].(map[string]any)
+	if !ok {
+		t.Fatalf("branchMaterialization = %#v, want an object", body["branchMaterialization"])
+	}
+	if materialization["strategy"] != "approximate_context" || materialization["replayTruncated"] != true {
+		t.Fatalf("branchMaterialization = %#v", materialization)
 	}
 	points := body["branchPoints"].([]any)
 	if len(points) != 1 || points[0].(map[string]any)["previousBranchId"] != "branch-root" {
@@ -203,6 +213,35 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 	}
 	if messages[2].(map[string]any)["editAvailable"] != false {
 		t.Fatalf("malformed message is editable: %#v", messages[2])
+	}
+}
+
+func TestConversationSnapshotScopesEditAvailabilityToActiveProviderBinding(t *testing.T) {
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	body := conversationSnapshotBody(t, chatsvc.Snapshot{
+		Conversation:      domain.ConversationRecord{ID: "conversation-1"},
+		SessionID:         domain.SessionID("p1-1"),
+		EditFloorSequence: 10,
+		Messages: []domain.ConversationMessage{
+			{
+				ID: "old-provider", TurnID: "turn-old", Sequence: 10,
+				Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
+				Text: "old provider prompt", CreatedAt: now,
+			},
+			{
+				ID: "active-provider", TurnID: "turn-active", Sequence: 11,
+				Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
+				Text: "active provider prompt", CreatedAt: now,
+			},
+		},
+	})
+
+	messages := body["messages"].([]any)
+	if messages[0].(map[string]any)["editAvailable"] != false {
+		t.Fatalf("old-provider editAvailable = %#v, want false", messages[0])
+	}
+	if messages[1].(map[string]any)["editAvailable"] != true {
+		t.Fatalf("active-provider editAvailable = %#v, want true", messages[1])
 	}
 }
 

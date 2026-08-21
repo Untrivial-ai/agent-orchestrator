@@ -210,6 +210,8 @@ func Run() error {
 			}
 			return chatsvc.ConversationRows{
 				Conversation:               rows.Conversation,
+				ActiveBranch:               rows.ActiveBranch,
+				EditFloorSequence:          rows.EditFloorSequence,
 				Turns:                      rows.Turns,
 				Messages:                   rows.Messages,
 				Activities:                 rows.Activities,
@@ -224,6 +226,8 @@ func Run() error {
 			}
 			return chatsvc.ConversationRows{
 				Conversation:               rows.Conversation,
+				ActiveBranch:               rows.ActiveBranch,
+				EditFloorSequence:          rows.EditFloorSequence,
 				Turns:                      rows.Turns,
 				Messages:                   rows.Messages,
 				Activities:                 rows.Activities,

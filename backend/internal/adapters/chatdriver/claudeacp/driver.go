@@ -38,14 +38,15 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 	return acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
 		Capabilities: ports.ChatCapabilities{
-			ports.ChatCapabilityStreaming: true,
-			ports.ChatCapabilityTools:     true,
-			ports.ChatCapabilityApprovals: true,
-			ports.ChatCapabilityInterrupt: true,
-			ports.ChatCapabilityResume:    true,
-			ports.ChatCapabilityUsage:     true,
-			ports.ChatCapabilityDiffs:     true,
-			ports.ChatCapabilityPlans:     true,
+			ports.ChatCapabilityStreaming:    true,
+			ports.ChatCapabilityTools:        true,
+			ports.ChatCapabilityApprovals:    true,
+			ports.ChatCapabilityInterrupt:    true,
+			ports.ChatCapabilityResume:       true,
+			ports.ChatCapabilityPromptReplay: true,
+			ports.ChatCapabilityUsage:        true,
+			ports.ChatCapabilityDiffs:        true,
+			ports.ChatCapabilityPlans:        true,
 		},
 		Probe: func(ctx context.Context) error {
 			if _, err := resolveRuntime(ctx); err != nil {
@@ -113,14 +114,15 @@ func validateClaudeACPExecutable(binary, goos string) error {
 }
 
 func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
-	if strings.TrimSpace(cfg.SystemPrompt) == "" {
+	standing := strings.TrimSpace(cfg.SystemPrompt)
+	if standing == "" {
 		return nil
 	}
 	// Append AO's standing instructions to Claude Code's own prompt. Replacing
 	// the preset would discard Claude's native coding/tool instructions.
 	return map[string]any{
 		"systemPrompt": map[string]any{
-			"type": "preset", "preset": "claude_code", "append": cfg.SystemPrompt,
+			"type": "preset", "preset": "claude_code", "append": standing,
 		},
 	}
 }

@@ -86,6 +86,10 @@ describe("useConversation snapshot mapping", () => {
 				...WIRE,
 				activeBranchId: "branch-child",
 				branchedFromEarlierMessage: true,
+				branchMaterialization: {
+					strategy: "approximate_context",
+					replayTruncated: true,
+				},
 				branchPoints: [
 					{
 						turnId: "turn-1",
@@ -123,6 +127,10 @@ describe("useConversation snapshot mapping", () => {
 		expect(result.current.snapshot).toMatchObject({
 			activeBranchId: "branch-child",
 			branchedFromEarlierMessage: true,
+			branchMaterialization: {
+				strategy: "approximate_context",
+				replayTruncated: true,
+			},
 			branchPoints: [{ turnId: "turn-1", position: 2, total: 3 }],
 		});
 		expect(result.current.snapshot!.items[0]).toMatchObject({

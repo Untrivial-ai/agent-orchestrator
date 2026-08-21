@@ -794,6 +794,7 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 		Messages:                   make([]ConversationMessageResponse, 0, len(s.Messages)),
 		Activities:                 make([]ConversationActivityResponse, 0, len(s.Activities)),
 		BranchPoints:               make([]ConversationBranchPointResponse, 0, len(s.BranchPoints)),
+		BranchMaterialization:      branchMaterializationPayload(s.ActiveBranch),
 		Settings:                   turnSettingsPayload(s.Conversation.Settings),
 		Usage:                      usagePayload(s.Usage),
 		RateLimits:                 rateLimitsPayload(s.RateLimits),
@@ -835,6 +836,7 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 			CreatedAt: msg.CreatedAt.UTC().Format(time.RFC3339),
 		}
 		message.Content, message.EditAvailable = conversationContentSummary(msg)
+		message.EditAvailable = message.EditAvailable && msg.Sequence > s.EditFloorSequence
 		out.Messages = append(out.Messages, message)
 	}
 	for _, point := range s.BranchPoints {
@@ -863,6 +865,16 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 	return out
 }
 
+func branchMaterializationPayload(branch domain.ConversationBranch) *ConversationBranchMaterializationResponse {
+	if branch.ID == "" || branch.Strategy == "" {
+		return nil
+	}
+	return &ConversationBranchMaterializationResponse{
+		Strategy:        string(branch.Strategy),
+		ReplayTruncated: branch.ReplayTruncated,
+	}
+}
+
 func conversationContentSummary(msg domain.ConversationMessage) ([]ConversationContentSummaryResponse, bool) {
 	if msg.Role != domain.MessageRoleUser || msg.Origin != domain.MessageOriginHuman {
 		return nil, false
@@ -876,7 +888,10 @@ func conversationContentSummary(msg domain.ConversationMessage) ([]ConversationC
 	}
 	summaries := make([]ConversationContentSummaryResponse, 0, len(content))
 	for _, block := range content {
-		if block.Type == "text" {
+		// AO's reconstructed-history seed is provider context, not content the
+		// person attached. Keeping it out of this public summary prevents it from
+		// appearing as a user resource when the edited message is rendered again.
+		if block.Type == "text" || block.URI == "ao://conversation/edit-replay" {
 			continue
 		}
 		name := block.Name

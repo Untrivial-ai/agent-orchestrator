@@ -666,6 +666,8 @@ export interface ConversationSnapshot {
 	activeBranchId?: string;
 	branchedFromEarlierMessage?: boolean;
 	branchPoints?: ConversationBranchPoint[];
+	/** How the active historical branch acquired its provider context. */
+	branchMaterialization?: ConversationBranchMaterialization;
 	/** What the next turn will be sent with. Daemon-owned, so it survives a
 	 *  restart and applies to turns AO dispatches on the user's behalf. */
 	settings: TurnSettings;
@@ -707,6 +709,13 @@ export interface ConversationSnapshot {
 	 * Read it through `can()`, which encodes that distinction once.
 	 */
 	capabilities?: string[];
+}
+
+/** The provider-history fidelity of the active branch. */
+export interface ConversationBranchMaterialization {
+	strategy: "native" | "approximate_context" | (string & {});
+	/** True when AO's bounded reconstructed context omitted some text. */
+	replayTruncated: boolean;
 }
 
 /**

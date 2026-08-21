@@ -60,6 +60,13 @@ type controllerEpochStore interface {
 	) (bool, error)
 }
 
+// chatSpawnStore commits the lifecycle facts and the provider boundary in one
+// transaction. A fresh provider must never become the durable session owner
+// while the conversation head still names the provider it replaced.
+type chatSpawnStore interface {
+	CommitChatSpawn(context.Context, domain.SessionRecord, domain.ConversationBranch) error
+}
+
 // agentSwitchSourceStopStore and agentSwitchTargetActivationStore are the
 // atomic persistence primitives used at the two agent-switch ownership
 // boundaries. They remain optional so focused lifecycle reducer fakes do not
@@ -958,6 +965,32 @@ func (m *Manager) resolveNotifications(ctx context.Context, resolutions ...ports
 
 // MarkSpawned marks a newly spawned or restored session live and stores runtime/workspace handles.
 func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
+	return m.markSpawned(ctx, id, metadata, nil)
+}
+
+// MarkChatSpawned atomically marks a Chat controller live and publishes the
+// fresh provider boundary reserved before the provider process connected.
+func (m *Manager) MarkChatSpawned(
+	ctx context.Context,
+	id domain.SessionID,
+	metadata domain.SessionMetadata,
+	boundary domain.ConversationBranch,
+) error {
+	if boundary.ID == "" || boundary.ConversationID == "" || boundary.SessionID != id ||
+		boundary.ProviderConversationID == "" || boundary.ProviderScopeID != boundary.ID ||
+		metadata.ProviderConversationID != boundary.ProviderConversationID ||
+		strings.TrimSpace(metadata.ControllerGeneration) == "" {
+		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
+	}
+	return m.markSpawned(ctx, id, metadata, &boundary)
+}
+
+func (m *Manager) markSpawned(
+	ctx context.Context,
+	id domain.SessionID,
+	metadata domain.SessionMetadata,
+	boundary *domain.ConversationBranch,
+) error {
 	launchID := strings.TrimSpace(metadata.RuntimeLaunchID)
 	reactivator, err := func() (sessionUsageReactivator, error) {
 		m.mu.Lock()
@@ -979,8 +1012,18 @@ func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata
 		rec.FirstSignalAt = time.Time{}
 		rec.Metadata = mergeMetadata(rec.Metadata, metadata)
 		rec.UpdatedAt = now
-		if err := m.store.UpdateSession(ctx, rec); err != nil {
-			return nil, err
+		if boundary == nil {
+			if err := m.store.UpdateSession(ctx, rec); err != nil {
+				return nil, err
+			}
+		} else {
+			writer, ok := m.store.(chatSpawnStore)
+			if !ok {
+				return nil, errors.New("lifecycle: atomic Chat spawn persistence is unavailable")
+			}
+			if err := writer.CommitChatSpawn(ctx, rec, *boundary); err != nil {
+				return nil, err
+			}
 		}
 		return m.usageReactivator, nil
 	}()

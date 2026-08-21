@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -78,9 +79,10 @@ type nestedMessageState struct {
 }
 
 type conversation struct {
-	conn *acpsdk.ClientSideConnection
-	proc *process
-	log  *slog.Logger
+	conn            *acpsdk.ClientSideConnection
+	proc            *process
+	log             *slog.Logger
+	providerScopeID string
 
 	mu             sync.Mutex
 	sessionID      string
@@ -125,23 +127,81 @@ var _ ports.ChatInputResponder = (*conversation)(nil)
 var _ acpsdk.Client = (*conversation)(nil)
 var _ acpsdk.ClientExperimental = (*conversation)(nil)
 
-func newConversation(proc *process, log *slog.Logger) *conversation {
+func newConversation(proc *process, log *slog.Logger, providerScopeID string) *conversation {
 	c := &conversation{
-		proc:           proc,
-		log:            log,
-		pending:        make(map[string]*parkedPermission),
-		pendingInputs:  make(map[string]*parkedInput),
-		capabilities:   make(ports.ChatCapabilities),
-		messages:       make(map[string]string),
-		thoughts:       make(map[string]string),
-		nestedMessages: make(map[string]nestedMessageState),
-		tools:          make(map[string]*toolState),
-		events:         make(chan ports.ChatEvent, eventBuffer),
+		proc:            proc,
+		log:             log,
+		providerScopeID: providerScopeID,
+		pending:         make(map[string]*parkedPermission),
+		pendingInputs:   make(map[string]*parkedInput),
+		capabilities:    make(ports.ChatCapabilities),
+		messages:        make(map[string]string),
+		thoughts:        make(map[string]string),
+		nestedMessages:  make(map[string]nestedMessageState),
+		tools:           make(map[string]*toolState),
+		events:          make(chan ports.ChatEvent, eventBuffer),
 	}
 	c.conn = acpsdk.NewClientSideConnection(c, proc.stdin, proc.stdout)
 	c.conn.SetLogger(log)
 	go c.watchConnection()
 	return c
+}
+
+// providerItemID makes ACP's session-scoped opaque item ids safe to use in
+// AO's conversation-wide indexes. ACP only promises ids such as toolCallId are
+// unique inside one provider session, while reconstructed branches deliberately
+// create new sessions that may reuse those values.
+func (c *conversation) providerItemID(id string) string {
+	if id == "" || c.providerScopeID == "" {
+		return id
+	}
+	return "acp:" + lengthPrefixedTuple(c.providerScopeID, id)
+}
+
+// lengthPrefixedTuple encodes opaque strings injectively. ACP identifiers are
+// allowed to contain delimiters (including NUL), and AO provider scopes contain
+// colons, so delimiter-joining cannot safely define a durable identity.
+func lengthPrefixedTuple(parts ...string) string {
+	var encoded strings.Builder
+	for _, part := range parts {
+		encoded.WriteString(strconv.Itoa(len(part)))
+		encoded.WriteByte(':')
+		encoded.WriteString(part)
+	}
+	return encoded.String()
+}
+
+func decodeLengthPrefixedTuple(encoded string, count int) ([]string, bool) {
+	parts := make([]string, 0, count)
+	for range count {
+		separator := strings.IndexByte(encoded, ':')
+		if separator <= 0 {
+			return nil, false
+		}
+		lengthText := encoded[:separator]
+		length, err := strconv.Atoi(lengthText)
+		if err != nil || length < 0 || strconv.Itoa(length) != lengthText {
+			return nil, false
+		}
+		encoded = encoded[separator+1:]
+		if len(encoded) < length {
+			return nil, false
+		}
+		parts = append(parts, encoded[:length])
+		encoded = encoded[length:]
+	}
+	return parts, encoded == ""
+}
+
+func (c *conversation) legacyProviderItemAlias(id string) (string, bool) {
+	if c.providerScopeID == "" || !strings.HasPrefix(id, "acp:") {
+		return "", false
+	}
+	parts, ok := decodeLengthPrefixedTuple(strings.TrimPrefix(id, "acp:"), 2)
+	if !ok || parts[0] != c.providerScopeID || parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
 }
 
 func (c *conversation) start(

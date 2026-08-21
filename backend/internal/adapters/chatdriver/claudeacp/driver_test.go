@@ -25,6 +25,14 @@ func TestClaudeSessionMetaAppendsWithoutReplacingPreset(t *testing.T) {
 	}
 }
 
+func TestClaudeSessionMetaNeverIncludesReplayContext(t *testing.T) {
+	meta := claudeSessionMeta(acpdriver.LaunchConfig{SystemPrompt: "AO standing instructions"})
+	prompt := meta["systemPrompt"].(map[string]any)
+	if strings.Contains(prompt["append"].(string), "replayed-conversation") {
+		t.Fatal("replay context entered the system prompt")
+	}
+}
+
 func TestClaudeSessionModeUsesAdapterModeIDs(t *testing.T) {
 	tests := map[ports.PermissionMode]string{
 		ports.PermissionModeDefault:           "",

@@ -1609,6 +1609,10 @@ type ConversationSnapshotResponse struct {
 	Messages       []ConversationMessageResponse     `json:"messages"`
 	Activities     []ConversationActivityResponse    `json:"activities"`
 	BranchPoints   []ConversationBranchPointResponse `json:"branchPoints,omitempty"`
+	// BranchMaterialization says whether the selected provider branch preserved
+	// native history or was rebuilt from AO's bounded text transcript. Omitted for
+	// conversations that have no durable branch metadata yet.
+	BranchMaterialization *ConversationBranchMaterializationResponse `json:"branchMaterialization,omitempty"`
 	// Settings are the provider choices for the next turn. Carried on the snapshot
 	// the client already polls so the composer can label itself without a second
 	// request, and so a choice made on another client shows up here.
@@ -1653,6 +1657,13 @@ type ConversationSnapshotResponse struct {
 	// unstarted session's abilities are not yet known — and a client must treat
 	// absent as "do not offer yet" rather than as "cannot".
 	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// ConversationBranchMaterializationResponse describes the fidelity of the
+// active branch's provider context without exposing provider-owned identifiers.
+type ConversationBranchMaterializationResponse struct {
+	Strategy        string `json:"strategy" enum:"native,approximate_context"`
+	ReplayTruncated bool   `json:"replayTruncated"`
 }
 
 // ConversationBranchPointResponse describes sibling continuations at one prompt.

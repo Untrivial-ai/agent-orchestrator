@@ -408,9 +408,9 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 	update := params.Update
 	switch {
 	case update.AgentMessageChunk != nil:
-		id := messageID(update.AgentMessageChunk.MessageId, "assistant", turnID)
+		id := c.providerItemID(messageID(update.AgentMessageChunk.MessageId, "assistant", turnID))
 		if delta := contentText(update.AgentMessageChunk.Content); delta != "" {
-			if parentID := parentToolUseID(update.AgentMessageChunk.Meta); parentID != "" {
+			if parentID := c.providerItemID(parentToolUseID(update.AgentMessageChunk.Meta)); parentID != "" {
 				c.mu.Lock()
 				item, existed := c.nestedMessages[id]
 				item.text += delta
@@ -433,7 +433,7 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 			c.emit(ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderTurnID: turnID, ProviderItemID: id, Delta: delta})
 		}
 	case update.AgentThoughtChunk != nil:
-		id := messageID(update.AgentThoughtChunk.MessageId, "thought", turnID)
+		id := c.providerItemID(messageID(update.AgentThoughtChunk.MessageId, "thought", turnID))
 		if delta := contentText(update.AgentThoughtChunk.Content); delta != "" {
 			c.mu.Lock()
 			_, existed := c.thoughts[id]
@@ -463,7 +463,7 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		tool := c.mergeToolUpdate(update.ToolCallUpdate)
 		if delta := terminalOutput(update.ToolCallUpdate.Meta); delta != "" {
 			c.emit(ports.ChatEvent{Kind: ports.ChatEventCommandOutputDelta, ProviderTurnID: turnID,
-				ProviderItemID: tool.id, Delta: delta})
+				ProviderItemID: c.providerItemID(tool.id), Delta: delta})
 		}
 		c.emit(c.toolEvent(turnID, tool, toolTerminal(tool.status)))
 		c.emitDiffs(turnID, tool.content)
@@ -561,7 +561,9 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 	}
 	if claude := nestedMap(tool.meta, "claudeCode"); claude != nil {
 		copyDetail(detailMap, claude, "toolName", "providerToolName")
-		copyDetail(detailMap, claude, "parentToolUseId", "parentProviderItemId")
+		if parentID, ok := claude["parentToolUseId"].(string); ok && parentID != "" {
+			detailMap["parentProviderItemId"] = c.providerItemID(parentID)
+		}
 		copyDetail(detailMap, claude, "subagent", "nestedAgent")
 		copyDetail(detailMap, claude, "subagentType", "subagentType")
 		copyDetail(detailMap, claude, "subagentRetry", "subagentRetry")
@@ -601,7 +603,7 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 		summary = "Agent tool"
 	}
 	return ports.ChatEvent{
-		Kind: kind, ProviderTurnID: turnID, ProviderItemID: tool.id,
+		Kind: kind, ProviderTurnID: turnID, ProviderItemID: c.providerItemID(tool.id),
 		ActivityKind: activityKindFromTool(tool.kind), ActivityStatus: status,
 		Summary: summary, Detail: detail,
 	}

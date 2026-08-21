@@ -26,6 +26,8 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import {
 	Archive,
 	ArrowDown,
@@ -124,6 +126,21 @@ function initialTerminalFontSize(): number {
 	return clampTerminalFontSize(parsed);
 }
 
+function branchContextNotice(snapshot: ConversationSnapshot, t: TFunction): string {
+	const materialization = snapshot.branchMaterialization;
+	if (materialization?.strategy === "native") {
+		return t("chat.branch.context.native");
+	}
+	if (materialization?.strategy === "approximate_context") {
+		return t(
+			materialization.replayTruncated
+				? "chat.branch.context.approximateTruncated"
+				: "chat.branch.context.approximate",
+		);
+	}
+	return t("chat.branch.context.fallback");
+}
+
 type ReviewerTerminalTarget = Extract<TerminalTarget, { kind: "reviewer" }>;
 type ShellTerminalTarget = Extract<TerminalTarget, { kind: "shell" }>;
 
@@ -140,6 +157,7 @@ type MessageEditDraft = {
 	turnId: string;
 	text: string;
 	content: ConversationContentSummary[];
+	reconstructedContext: boolean;
 };
 
 export interface ChatWorkspaceProps {
@@ -336,6 +354,7 @@ export function ChatWorkspace({
 	reloadingMcpServers,
 	mcpReloadError,
 }: ChatWorkspaceProps) {
+	const { t } = useTranslation();
 	const turn = activeTurn(snapshot);
 	// Selection is durable UI state; availability only controls whether the tab is
 	// offered. Keeping these separate preserves a selected reviewer while an active
@@ -537,8 +556,6 @@ export function ChatWorkspace({
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
-	const editHumanMessage = can(snapshot, "fork") ? onEditMessage : undefined;
-
 	return (
 		<section
 			ref={surfaceRef}
@@ -664,7 +681,7 @@ export function ChatWorkspace({
 						onResolveInput={onResolveInput}
 						busy={busy}
 						onRollback={rollbackTarget}
-						onEditHumanMessage={editHumanMessage}
+						onEditHumanMessage={onEditMessage}
 						editPending={editMessagePending}
 						editBusy={Boolean(turn)}
 						editError={editMessageError}
@@ -678,9 +695,14 @@ export function ChatWorkspace({
 					<div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
 						{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
 						{snapshot.branchedFromEarlierMessage ? (
-							<p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+							<p
+								role="status"
+								aria-live="polite"
+								aria-atomic="true"
+								className="flex items-center gap-1.5 text-pretty text-[11px] text-muted-foreground"
+							>
 								<GitBranch aria-hidden="true" className="size-3 shrink-0" />
-								Conversation branched; worktree files were left unchanged.
+								{branchContextNotice(snapshot, t)}
 							</p>
 						) : null}
 						{turn?.state === "running" && queuedMessages.length > 0 ? (
@@ -1234,16 +1256,83 @@ function Timeline({
 	const activateBranch = useStableCallback(onActivateBranch);
 	const canEditHumanMessage = Boolean(onEditHumanMessage);
 	const canActivateBranch = Boolean(onActivateBranch);
+	const canForkHistoricalContext = can(snapshot, "fork");
+	const canReconstructHistoricalContext =
+		can(snapshot, "prompt_replay") &&
+		can(snapshot, "embedded_context");
 	const branchPoints = useMemo(
 		() => new Map((snapshot.branchPoints ?? []).map((point) => [point.turnId, point])),
 		[snapshot.branchPoints],
 	);
-	const editableTurns = useMemo(
-		() => new Set(snapshot.turns.filter((turn) => turn.providerTurnId).map((turn) => turn.id)),
-		[snapshot.turns],
+	const firstEditableHumanPromptTurnId = useMemo(
+		() =>
+			snapshot.items.find(
+				(item) =>
+					item.kind === "message" &&
+					item.role === "user" &&
+					item.origin === "human" &&
+					item.editAvailable &&
+					item.turnId,
+			)?.turnId,
+		[snapshot.items],
 	);
+	const { editableTurns, reconstructedTurns } = useMemo(() => {
+		const editable = new Set<string>();
+		const reconstructed = new Set<string>();
+		if (snapshot.controller.state !== "ready") {
+			return { editableTurns: editable, reconstructedTurns: reconstructed };
+		}
+		const accepted = new Set(
+			snapshot.turns
+				.filter(
+					(turn) =>
+						turn.state === "completed" ||
+						turn.state === "interrupted" ||
+						turn.state === "failed",
+				)
+				.map((turn) => turn.id),
+		);
+		const providerBacked = new Set(
+			snapshot.turns.filter((turn) => turn.providerTurnId).map((turn) => turn.id),
+		);
+		let hasPriorVisibleProviderTurn = false;
+		for (const item of snapshot.items) {
+			if (
+				item.kind !== "message" ||
+				item.role !== "user" ||
+				item.origin !== "human" ||
+				!item.turnId
+			) {
+				continue;
+			}
+			const firstPromptInBinding =
+				!snapshot.hasMoreBefore && item.turnId === firstEditableHumanPromptTurnId;
+			const canNativeFork = canForkHistoricalContext && hasPriorVisibleProviderTurn;
+			if (
+				item.editAvailable &&
+				accepted.has(item.turnId) &&
+				(firstPromptInBinding || canNativeFork || canReconstructHistoricalContext)
+			) {
+				editable.add(item.turnId);
+				if (!firstPromptInBinding && !canNativeFork) reconstructed.add(item.turnId);
+			}
+			if (providerBacked.has(item.turnId)) hasPriorVisibleProviderTurn = true;
+		}
+		return { editableTurns: editable, reconstructedTurns: reconstructed };
+	}, [
+		canForkHistoricalContext,
+		canReconstructHistoricalContext,
+		firstEditableHumanPromptTurnId,
+		snapshot.controller.state,
+		snapshot.hasMoreBefore,
+		snapshot.items,
+		snapshot.turns,
+	]);
 
-	useEffect(() => setMessageEdit(undefined), [snapshot.sessionId]);
+	// An edit draft belongs to the branch where it began. A replacement branch can
+	// become active even when the provider send ends ambiguously; once that durable
+	// state arrives, the old prompt is no longer the message being edited.
+	useEffect(() => setMessageEdit(undefined), [snapshot.activeBranchId, snapshot.sessionId]);
 
 	const startMessageEdit = useCallback((message: ConversationMessage) => {
 		if (!message.turnId) return;
@@ -1251,8 +1340,9 @@ function Timeline({
 			turnId: message.turnId,
 			text: message.text,
 			content: message.content ?? [],
+			reconstructedContext: reconstructedTurns.has(message.turnId),
 		});
-	}, []);
+	}, [reconstructedTurns]);
 	const updateMessageEdit = useCallback((text: string) => {
 		setMessageEdit((current) => (current ? { ...current, text } : current));
 	}, []);
@@ -1529,6 +1619,7 @@ function Timeline({
 								pending={Boolean(editPending)}
 								busy={Boolean(editBusy)}
 								error={editError}
+								reconstructedContext={messageEdit.reconstructedContext}
 								onDraftChange={updateMessageEdit}
 								onCancel={cancelMessageEdit}
 								onSend={submitMessageEdit}
@@ -1886,6 +1977,7 @@ function TimelineItem({
 					onEdit={editAvailable ? (_turnID, text) => onSubmitMessageEdit(text) : undefined}
 					editing={editing}
 					editText={editing ? messageEdit?.text : undefined}
+					editReconstructedContext={editing && messageEdit?.reconstructedContext}
 					onEditStart={editAvailable ? () => onStartMessageEdit(item) : undefined}
 					onEditDraftChange={onUpdateMessageEdit}
 					onEditCancel={onCancelMessageEdit}

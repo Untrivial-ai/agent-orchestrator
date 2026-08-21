@@ -11,6 +11,7 @@ import {
 	chatFixtureSettled,
 	chatFixtureThreadError,
 } from "../../lib/chat-fixture";
+import { appI18n } from "../../i18n";
 import type { ConversationMessage, ConversationSnapshot } from "../../types/conversation";
 import { setApiBaseUrl } from "../../lib/api-client";
 import { useUiStore } from "../../stores/ui-store";
@@ -110,7 +111,10 @@ beforeEach(() => {
 	useUiStore.setState({ isSidebarOpen: true });
 });
 
-afterEach(() => setApiBaseUrl(null));
+afterEach(async () => {
+	setApiBaseUrl(null);
+	await appI18n.changeLanguage("en");
+});
 
 function humanMessage(text: string): ConversationMessage {
 	return {
@@ -599,6 +603,213 @@ describe("automation reports", () => {
 });
 
 describe("ChatWorkspace message actions", () => {
+	it("hides first-message editing until the conversation controller is ready", () => {
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					controller: { state: "stopped" },
+					capabilities: ["fork", "prompt_replay", "embedded_context"],
+					hasMoreBefore: false,
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		expect(screen.queryByRole("button", { name: "Edit user message" })).not.toBeInTheDocument();
+	});
+
+	it("offers exact first-message edits even when the provider cannot branch or replay history", async () => {
+		const user = userEvent.setup();
+		const onEditMessage = vi.fn(async () => undefined);
+		const view = render(
+			<ChatWorkspace
+				snapshot={{ ...idleSnapshot(), capabilities: [], hasMoreBefore: true }}
+				onEditMessage={onEditMessage}
+			/>,
+		);
+
+		// The earliest loaded prompt is not necessarily the first provider prompt
+		// until every older page has been loaded.
+		expect(screen.queryByRole("button", { name: "Edit user message" })).not.toBeInTheDocument();
+		view.rerender(
+			<ChatWorkspace
+				snapshot={{ ...idleSnapshot(), capabilities: [], hasMoreBefore: false }}
+				onEditMessage={onEditMessage}
+			/>,
+		);
+
+		const editButtons = screen.getAllByRole("button", { name: "Edit user message" });
+		expect(editButtons).toHaveLength(1);
+		await user.click(editButtons[0]!);
+		expect(screen.queryByText(/Reconstructed context:/)).not.toBeInTheDocument();
+
+		const editor = screen.getByRole("textbox", { name: "Edit message" });
+		await user.clear(editor);
+		await user.type(editor, "Replace the first prompt exactly.");
+		await user.click(screen.getByRole("button", { name: "Send edited message" }));
+
+		expect(onEditMessage).toHaveBeenCalledWith("turn-1", "Replace the first prompt exactly.");
+	});
+
+	it("uses the server's first eligible prompt after a provider boundary", () => {
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					capabilities: [],
+					hasMoreBefore: false,
+					items: snapshot.items.map((item) =>
+						item.kind === "message" && item.turnId === "turn-1"
+							? { ...item, editAvailable: false }
+							: item,
+					),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		const edits = screen.getAllByRole("button", { name: "Edit user message" });
+		expect(edits).toHaveLength(1);
+	});
+
+	it("offers reconstructed historical edits only when text replay and embedded context are both negotiated", async () => {
+		const user = userEvent.setup();
+		const onEditMessage = vi.fn(async () => undefined);
+		const promptReplayOnly = {
+			...idleSnapshot(),
+			capabilities: ["prompt_replay"],
+		};
+		const view = render(
+			<ChatWorkspace snapshot={promptReplayOnly} onEditMessage={onEditMessage} />,
+		);
+
+		// The first prompt is still exactly reconstructable in a fresh provider session.
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(1);
+
+		view.rerender(
+			<ChatWorkspace
+				snapshot={{
+					...promptReplayOnly,
+					capabilities: ["prompt_replay", "embedded_context"],
+				}}
+				onEditMessage={onEditMessage}
+			/>,
+		);
+
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(2);
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[1]!);
+		const disclosure = screen.getByText(/Reconstructed context:/);
+		expect(disclosure).toHaveTextContent(
+			"Reconstructed context: text messages will be replayed into a new agent session. Tool calls, approvals, and workspace history will not be replayed; current worktree files stay as they are.",
+		);
+		expect(screen.getByRole("textbox", { name: "Edit message" })).toHaveAttribute(
+			"aria-describedby",
+			disclosure.id,
+		);
+	});
+
+	it("keeps replay available when the provider also supports native forks", async () => {
+		const user = userEvent.setup();
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					capabilities: ["fork", "prompt_replay", "embedded_context"],
+					branchedFromEarlierMessage: true,
+					branchMaterialization: {
+						strategy: "approximate_context",
+						replayTruncated: false,
+					},
+					turns: snapshot.turns.map((turn) => ({ ...turn, providerTurnId: undefined })),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(2);
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[1]!);
+		expect(screen.getByText(/Reconstructed context:/)).toBeVisible();
+	});
+
+	it("requires a prior visible provider turn before offering a native historical fork", () => {
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					capabilities: ["fork"],
+					turns: snapshot.turns.map((turn) =>
+						turn.id === "turn-1" ? { ...turn, providerTurnId: undefined } : turn,
+					),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		// The first provider prompt can always be restarted fresh. The second needs
+		// either a prior provider turn to fork or negotiated reconstructed replay.
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(1);
+	});
+
+	it("does not warn about reconstruction when a native fork anchor is visible", async () => {
+		const user = userEvent.setup();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					capabilities: ["fork", "prompt_replay", "embedded_context"],
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[1]!);
+		expect(screen.queryByText(/Reconstructed context:/)).not.toBeInTheDocument();
+	});
+
+	it("keeps reconstructed ancestor prompts editable when their provider ids belong to the source scope", () => {
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					capabilities: ["prompt_replay", "embedded_context"],
+					branchedFromEarlierMessage: true,
+					branchMaterialization: {
+						strategy: "approximate_context",
+						replayTruncated: false,
+					},
+					turns: snapshot.turns.map((turn) =>
+						turn.id === "turn-1" ? { ...turn, providerTurnId: undefined } : turn,
+					),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(2);
+	});
+
+	it("treats the earliest loaded prompt as historical while older pages remain", async () => {
+		const user = userEvent.setup();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					hasMoreBefore: true,
+					capabilities: ["prompt_replay", "embedded_context"],
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[0]!);
+		expect(screen.getByText(/Reconstructed context:/)).toBeVisible();
+	});
+
 	it("copies a human message as the exact text the user sent", async () => {
 		const user = userEvent.setup();
 		render(<ChatWorkspace snapshot={chatFixture} />);
@@ -646,8 +857,7 @@ describe("ChatWorkspace message actions", () => {
 		expect(composer).toHaveValue("unsent composer draft");
 	});
 
-	it("keeps edit available while another turn is active", async () => {
-		const user = userEvent.setup();
+	it("hides editing while another turn is active", () => {
 		render(
 			<ChatWorkspace
 				snapshot={chatFixture}
@@ -655,15 +865,7 @@ describe("ChatWorkspace message actions", () => {
 			/>,
 		);
 
-		const editButtons = screen.getAllByRole("button", { name: "Edit user message" });
-		expect(editButtons.length).toBeGreaterThan(0);
-
-		await user.click(editButtons[0]!);
-		expect(screen.getByRole("textbox", { name: "Edit message" })).toHaveValue(
-			"Check the worktree state and tell me what changed since the base commit.",
-		);
-		expect(screen.getByRole("button", { name: "Send edited message" })).toBeDisabled();
-		expect(screen.getByText("Stop the current turn before branching")).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Edit user message" })).not.toBeInTheDocument();
 	});
 
 	it("retains the inline draft when branch creation fails", async () => {
@@ -671,30 +873,33 @@ describe("ChatWorkspace message actions", () => {
 		const onEditMessage = vi.fn(async () => {
 			throw new Error("branch failed");
 		});
+		const approximateSnapshot = {
+			...idleSnapshot(),
+			capabilities: ["prompt_replay", "embedded_context"],
+		};
 		const view = render(
 			<ChatWorkspace
-				snapshot={idleSnapshot()}
+				snapshot={approximateSnapshot}
 				onEditMessage={onEditMessage}
 				editMessageError="branch failed"
 			/>,
 		);
 
-		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[0]!);
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[1]!);
 		const editor = screen.getByRole("textbox", { name: "Edit message" });
 		await user.clear(editor);
 		await user.type(editor, "keep this draft");
 		fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
 
-		await waitFor(() => expect(onEditMessage).toHaveBeenCalledWith("turn-1", "keep this draft"));
+		await waitFor(() => expect(onEditMessage).toHaveBeenCalledWith("turn-2", "keep this draft"));
 		expect(screen.getByRole("textbox", { name: "Edit message" })).toHaveValue("keep this draft");
 		expect(screen.getByRole("alert")).toHaveTextContent("branch failed");
+		expect(screen.getByText(/Reconstructed context:/)).toBeVisible();
 
 		view.rerender(
 			<ChatWorkspace
 				snapshot={{
-					...idleSnapshot(),
-					activeBranchId: "branch-failed",
-					branchedFromEarlierMessage: true,
+					...approximateSnapshot,
 					items: [],
 					turns: [],
 				}}
@@ -704,6 +909,61 @@ describe("ChatWorkspace message actions", () => {
 		);
 		expect(screen.getByRole("textbox", { name: "Edit message" })).toHaveValue("keep this draft");
 		expect(screen.getByRole("alert")).toHaveTextContent("branch failed");
+		expect(screen.getByText(/Reconstructed context:/)).toBeVisible();
+
+		// An ambiguous provider failure can durably activate the replacement branch.
+		// Once that refetch arrives, the source-branch draft is stale and must close.
+		view.rerender(
+			<ChatWorkspace
+				snapshot={{
+					...approximateSnapshot,
+					activeBranchId: "branch-failed",
+					branchedFromEarlierMessage: true,
+					items: [],
+					turns: [],
+				}}
+				onEditMessage={onEditMessage}
+				editMessageError="branch failed"
+			/>,
+		);
+		await waitFor(() =>
+			expect(screen.queryByRole("textbox", { name: "Edit message" })).not.toBeInTheDocument(),
+		);
+	});
+
+	it("lets the user retry a failed replacement on the active approximate branch", async () => {
+		const user = userEvent.setup();
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					activeBranchId: "branch-failed",
+					branchedFromEarlierMessage: true,
+					branchMaterialization: {
+						strategy: "approximate_context",
+						replayTruncated: false,
+					},
+					capabilities: ["prompt_replay", "embedded_context"],
+					turns: snapshot.turns.map((turn) =>
+						turn.id === "turn-2"
+							? {
+									...turn,
+									state: "failed" as const,
+									providerTurnId: undefined,
+									errorMessage: "provider unavailable",
+								}
+							: turn,
+					),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		const edits = screen.getAllByRole("button", { name: "Edit user message" });
+		expect(edits).toHaveLength(2);
+		await user.click(edits[1]!);
+		expect(screen.getByRole("textbox", { name: "Edit message" })).toBeVisible();
 	});
 
 	it("navigates prompt branches and explains that files are unchanged", async () => {
@@ -713,6 +973,10 @@ describe("ChatWorkspace message actions", () => {
 			...idleSnapshot(),
 			activeBranchId: "branch-current",
 			branchedFromEarlierMessage: true,
+			branchMaterialization: {
+				strategy: "approximate_context" as const,
+				replayTruncated: true,
+			},
 			branchPoints: [
 				{
 					turnId: "turn-1",
@@ -726,11 +990,49 @@ describe("ChatWorkspace message actions", () => {
 		render(<ChatWorkspace snapshot={snapshot} onActivateBranch={onActivateBranch} />);
 
 		expect(screen.getByText("2 / 3")).toBeVisible();
+		expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
+		expect(screen.getByRole("status")).toHaveAttribute("aria-atomic", "true");
 		await user.click(screen.getByRole("button", { name: "Previous conversation branch" }));
 		expect(onActivateBranch).toHaveBeenCalledWith("branch-previous");
-		expect(
-			screen.getByText("Conversation branched; worktree files were left unchanged."),
-		).toBeVisible();
+		expect(screen.getByText(/Reconstructed context/)).toHaveTextContent(
+			"Reconstructed context · Text messages were replayed. Some text was omitted to fit the context limit. Tool activity and workspace history were not replayed; current worktree files remain unchanged.",
+		);
+	});
+
+	it("labels a provider-native branch as exact context", () => {
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					branchedFromEarlierMessage: true,
+					branchMaterialization: { strategy: "native", replayTruncated: false },
+				}}
+			/>,
+		);
+
+		expect(screen.getByText(/Exact context/)).toHaveTextContent(
+			"Exact context · Provider history was preserved; current worktree files remain unchanged.",
+		);
+	});
+
+	it("localizes the active branch fidelity and truncation notice", async () => {
+		await act(() => appI18n.changeLanguage("zh-CN"));
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					branchedFromEarlierMessage: true,
+					branchMaterialization: {
+						strategy: "approximate_context",
+						replayTruncated: true,
+					},
+				}}
+			/>,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent(
+			"重建上下文 · 已重放文本消息。为符合上下文限制，部分文本已省略。未重放工具活动和工作区历史；当前工作树文件保持不变。",
+		);
 	});
 
 	it("copies an assistant message as the markdown the agent wrote", async () => {

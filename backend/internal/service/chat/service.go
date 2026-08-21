@@ -137,6 +137,10 @@ type StartConfig struct {
 	MCPServers            []ports.ChatMCPServerConfig
 	// ProviderConversationID resumes an existing provider conversation when set.
 	ProviderConversationID string
+	// ProviderScopeID reserves the opaque-id namespace for a provider boundary
+	// that ControllerReady will commit. Empty derives the namespace from the
+	// active branch, which is the ordinary initial-start and resume path.
+	ProviderScopeID string
 	// ControllerGeneration is supplied by a durable replacement saga that must
 	// fence the target before starting it. Ordinary starts leave it empty.
 	ControllerGeneration string
@@ -163,19 +167,27 @@ type ControllerCommit struct {
 	Conversation domain.ConversationRecord
 }
 
-func controllerStartResult(controller *Controller) StartResult {
+func controllerStartResult(
+	controller *Controller,
+	providerBoundary *domain.ConversationBranch,
+) StartResult {
 	return StartResult{
 		ProviderConversationID: controller.ProviderConversationID(),
 		ControllerGeneration:   controller.Generation(),
 		Conversation:           controller.conversation,
+		ProviderBoundary:       providerBoundary,
 	}
 }
 
-func notifyControllerReady(cfg StartConfig, controller *Controller) (ControllerCommit, error) {
+func notifyControllerReady(
+	cfg StartConfig,
+	controller *Controller,
+	providerBoundary *domain.ConversationBranch,
+) (ControllerCommit, error) {
 	if cfg.ControllerReady == nil {
 		return ControllerCommit{}, nil
 	}
-	commit, err := cfg.ControllerReady(controllerStartResult(controller))
+	commit, err := cfg.ControllerReady(controllerStartResult(controller, providerBoundary))
 	if err != nil {
 		return ControllerCommit{}, fmt.Errorf("commit chat controller: %w", err)
 	}
@@ -294,6 +306,50 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if err != nil {
 		return nil, fmt.Errorf("open conversation: %w", err)
 	}
+	repairedBranch, restoredProviderOwner, err := s.store.RepairIncompleteConversationEdit(
+		ctx, cfg.SessionID, conversation.ID, s.now())
+	if err != nil {
+		return nil, fmt.Errorf("repair incomplete conversation edit: %w", err)
+	}
+	if repairedBranch.ID != "" {
+		conversation.ActiveBranchID = repairedBranch.ID
+		// An ordinary restart was handed the abandoned child's provider handle.
+		// A coordinator-supplied scope belongs to a pending provider boundary (for
+		// example, agent switching) and must keep its independently reserved handle.
+		if restoredProviderOwner && cfg.ProviderScopeID == "" {
+			cfg.ProviderConversationID = repairedBranch.ProviderConversationID
+		}
+	}
+	activeBranch, err := s.store.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
+	if err != nil {
+		return nil, fmt.Errorf("load active conversation branch: %w", err)
+	}
+	providerScopeID := activeBranch.ProviderScopeID
+	providerHandleOwnedByActiveBranch := true
+	if cfg.ProviderScopeID != "" {
+		providerScopeID = cfg.ProviderScopeID
+		providerHandleOwnedByActiveBranch = providerScopeID == activeBranch.ProviderScopeID
+	}
+	providerBoundaryID := ""
+	if !providerHandleOwnedByActiveBranch {
+		providerBoundaryID = providerScopeID
+	} else if cfg.ProviderConversationID == "" && cfg.ProviderScopeID == "" &&
+		(conversation.LatestSequence > 0 || activeBranch.ProviderConversationID != "") {
+		// This conversation already owns provider history, but the caller proved it
+		// cannot resume that provider thread. Reserve the next provider boundary
+		// before connect so every opaque id emitted by the fresh process is born in
+		// the same namespace that ControllerReady will durably publish.
+		providerBoundaryID = s.newID()
+		providerScopeID = providerBoundaryID
+		providerHandleOwnedByActiveBranch = false
+	}
+	if cfg.ProviderConversationID != "" && providerHandleOwnedByActiveBranch {
+		if activeBranch.ProviderConversationID != "" &&
+			activeBranch.ProviderConversationID != cfg.ProviderConversationID {
+			return nil, fmt.Errorf("active conversation branch provider handle %q does not match session handle %q",
+				activeBranch.ProviderConversationID, cfg.ProviderConversationID)
+		}
+	}
 
 	var conv ports.ChatConversation
 	if cfg.ProviderConversationID != "" {
@@ -306,6 +362,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			Model:                  cfg.Model,
 			Permissions:            cfg.Permissions,
 			SystemPrompt:           cfg.SystemPrompt,
+			ProviderScopeID:        providerScopeID,
 			AdditionalDirectories:  cfg.AdditionalDirectories,
 			MCPServers:             cfg.MCPServers,
 		})
@@ -318,6 +375,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			Model:                 cfg.Model,
 			Permissions:           cfg.Permissions,
 			SystemPrompt:          cfg.SystemPrompt,
+			ProviderScopeID:       providerScopeID,
 			AdditionalDirectories: cfg.AdditionalDirectories,
 			MCPServers:            cfg.MCPServers,
 		})
@@ -326,18 +384,29 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		return nil, err
 	}
 
-	// Claim the durable fence before the controller starts consuming events. An
-	// older controller's projection transaction compares its generation with this
-	// session row and becomes a no-op after this point.
+	// Claim the durable fence before the controller starts consuming events. A
+	// pending provider boundary claims it in ControllerReady's atomic ownership
+	// commit instead, so a failed provider connect or callback cannot split the
+	// session owner from the conversation head.
 	generation := strings.TrimSpace(cfg.ControllerGeneration)
 	if generation == "" {
 		generation = s.newID()
 	}
-	if err := s.store.ClaimChatControllerGeneration(ctx, cfg.SessionID, generation, s.now()); err != nil {
-		_ = conv.Close()
-		return nil, fmt.Errorf("claim chat controller: %w", err)
+	if providerBoundaryID == "" {
+		if err := s.store.ClaimChatControllerGeneration(ctx, cfg.SessionID, generation, s.now()); err != nil {
+			_ = conv.Close()
+			return nil, fmt.Errorf("claim chat controller: %w", err)
+		}
 	}
-
+	providerBoundary := (*domain.ConversationBranch)(nil)
+	if providerBoundaryID != "" {
+		providerBoundary = &domain.ConversationBranch{
+			ID: providerBoundaryID, ConversationID: conversation.ID, SessionID: cfg.SessionID,
+			ProviderConversationID: conv.ProviderConversationID(), ParentBranchID: activeBranch.ID,
+			ForkAfterSequence: conversation.LatestSequence, ProviderScopeID: providerScopeID,
+			CreatedAt: s.now(),
+		}
+	}
 	// Whatever the previous controller left in flight is not this controller's, and
 	// it is not evidence that any work finished.
 	//
@@ -348,29 +417,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// it. Settling here covers every way a controller can come up, and is a no-op
 	// for a session that has none of it.
 	s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
-	if conversation.Scope == domain.ConversationScopeProject &&
-		conversation.LatestSequence > 0 && cfg.ProviderConversationID == "" {
-		detail, marshalErr := json.Marshal(map[string]string{
-			"event":  "context.reset",
-			"reason": "native conversation was unavailable",
-		})
-		if marshalErr != nil {
-			_ = conv.Close()
-			return nil, fmt.Errorf("encode fresh context boundary: %w", marshalErr)
-		}
-		if boundaryErr := s.store.UpsertActivity(ctx, conversation.ID, "", domain.ConversationActivity{
-			ID:             s.newID(),
-			Kind:           domain.ActivityKindSystem,
-			Status:         domain.ActivityStatusCompleted,
-			Summary:        "Started a fresh agent context. Earlier project history remains visible in AO but was not loaded into this agent.",
-			Detail:         detail,
-			ProviderItemID: "ao-context-reset:" + string(cfg.SessionID),
-		}, s.now()); boundaryErr != nil {
-			_ = conv.Close()
-			return nil, fmt.Errorf("record fresh context boundary: %w", boundaryErr)
-		}
-	}
-
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
@@ -406,10 +452,26 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, err
 		}
 	}
-	commit, err := notifyControllerReady(cfg, controller)
+	commit, err := notifyControllerReady(cfg, controller, providerBoundary)
 	if err != nil {
 		_ = conv.Close()
 		return nil, err
+	}
+	if providerBoundary != nil {
+		if cfg.ControllerReady == nil {
+			if err := s.store.CreateAndActivateConversationBranch(
+				ctx, cfg.SessionID, *providerBoundary, generation, s.now(),
+			); err != nil {
+				_ = conv.Close()
+				return nil, fmt.Errorf("commit fresh provider boundary: %w", err)
+			}
+			commit.Conversation = controller.conversation
+			commit.Conversation.ActiveBranchID = providerBoundary.ID
+			commit.Conversation.UpdatedAt = s.now()
+		} else if commit.Conversation.ActiveBranchID != providerBoundary.ID {
+			_ = conv.Close()
+			return nil, fmt.Errorf("commit chat controller: provider boundary %s was not activated", providerBoundary.ID)
+		}
 	}
 	if commit.Conversation.ID != "" {
 		// The controller has not been published and its projector has not started,
@@ -421,6 +483,28 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		controller.conversation.Settings = commit.Conversation.Settings
 		controller.conversation.UpdatedAt = commit.Conversation.UpdatedAt
 		controller.settings = commit.Conversation.Settings
+	}
+	if conversation.Scope == domain.ConversationScopeProject &&
+		conversation.LatestSequence > 0 && cfg.ProviderConversationID == "" {
+		detail, marshalErr := json.Marshal(map[string]string{
+			"event":  "context.reset",
+			"reason": "native conversation was unavailable",
+		})
+		if marshalErr != nil {
+			s.log.Error("chat start: encode fresh context boundary", "session", cfg.SessionID, "error", marshalErr)
+		} else if boundaryErr := s.store.UpsertActivity(ctx, conversation.ID, "", domain.ConversationActivity{
+			ID:             s.newID(),
+			Kind:           domain.ActivityKindSystem,
+			Status:         domain.ActivityStatusCompleted,
+			Summary:        "Started a fresh agent context. Earlier project history remains visible in AO but was not loaded into this agent.",
+			Detail:         detail,
+			ProviderItemID: "ao-context-reset:" + providerScopeID,
+		}, s.now()); boundaryErr != nil {
+			// ControllerReady already transferred durable ownership. This display-only
+			// marker must never turn a committed live controller into a reported
+			// launch failure with no process left to own it.
+			s.log.Error("chat start: record fresh context boundary", "session", cfg.SessionID, "error", boundaryErr)
+		}
 	}
 	s.mu.Lock()
 	s.controllers[cfg.SessionID] = controller
@@ -649,6 +733,8 @@ func (s *Service) StopAll(ctx context.Context) {
 // Snapshot is the durable read model a client bootstraps from.
 type Snapshot struct {
 	Conversation               domain.ConversationRecord
+	ActiveBranch               domain.ConversationBranch
+	EditFloorSequence          int64
 	SessionID                  domain.SessionID
 	Harness                    domain.AgentHarness
 	Mode                       domain.SessionMode
@@ -694,6 +780,8 @@ type SnapshotPageReader interface {
 // ConversationRows is the raw durable read.
 type ConversationRows struct {
 	Conversation               domain.ConversationRecord
+	ActiveBranch               domain.ConversationBranch
+	EditFloorSequence          int64
 	Turns                      []domain.ConversationTurn
 	Messages                   []domain.ConversationMessage
 	Activities                 []domain.ConversationActivity
@@ -745,6 +833,8 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 
 	return Snapshot{
 		Conversation:               rows.Conversation,
+		ActiveBranch:               rows.ActiveBranch,
+		EditFloorSequence:          rows.EditFloorSequence,
 		SessionID:                  id,
 		Harness:                    record.Harness,
 		Mode:                       domain.NormalizeSessionMode(record.Mode),
@@ -796,6 +886,8 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 	}
 	return Snapshot{
 		Conversation:               rows.Conversation,
+		ActiveBranch:               rows.ActiveBranch,
+		EditFloorSequence:          rows.EditFloorSequence,
 		SessionID:                  id,
 		Harness:                    record.Harness,
 		Mode:                       domain.NormalizeSessionMode(record.Mode),
@@ -892,7 +984,7 @@ func (s *Service) StartChat(ctx context.Context, cfg StartRequest) (StartResult,
 	if err != nil {
 		return StartResult{}, err
 	}
-	return controllerStartResult(controller), nil
+	return controllerStartResult(controller, nil), nil
 }
 
 // StartRequest mirrors session_manager.ChatStart. Duplicated rather than
@@ -912,6 +1004,7 @@ type StartRequest struct {
 	MCPServers            []ports.ChatMCPServerConfig
 	// ProviderConversationID resumes a stored conversation. Empty starts fresh.
 	ProviderConversationID  string
+	ProviderScopeID         string
 	ControllerGeneration    string
 	RequireNativeHistory    bool
 	SkipNativeHistoryImport bool
@@ -925,6 +1018,10 @@ type StartResult struct {
 	ProviderConversationID string
 	ControllerGeneration   string
 	Conversation           domain.ConversationRecord
+	// ProviderBoundary is non-nil when this launch owns a provider namespace
+	// that is not active yet. ControllerReady must commit it atomically with the
+	// session's provider handle and controller generation.
+	ProviderBoundary *domain.ConversationBranch
 }
 
 // StartChatTurn delivers the initial prompt as a normal turn.
