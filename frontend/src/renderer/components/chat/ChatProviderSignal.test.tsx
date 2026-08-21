@@ -279,6 +279,7 @@ describe("steer message", () => {
 	it("shows the user's own words and says they landed mid-turn", () => {
 		render(
 			<SteerMessage
+				sessionId="ao-1"
 				activity={activity({
 					activityKind: "system",
 					summary: "Skip the integration tests",

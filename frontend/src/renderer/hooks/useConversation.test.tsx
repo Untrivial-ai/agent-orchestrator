@@ -217,6 +217,32 @@ describe("conversation branching commands", () => {
 });
 
 describe("steering refusals", () => {
+	it("posts native image attachments with steer guidance", async () => {
+		postMock.mockResolvedValue({
+			data: { providerTurnId: "provider-1", activityId: "activity-1" },
+			error: undefined,
+		});
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await act(async () => {
+			await result.current.steer("inspect this", [
+				{ mimeType: "image/png", data: "aW1hZ2U=" },
+			]);
+		});
+
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/steer",
+			{
+				params: { path: { sessionId: "ao-1" } },
+				body: {
+					text: "inspect this",
+					attachments: [{ mimeType: "image/png", data: "aW1hZ2U=" }],
+					clientMessageId: expect.any(String),
+				},
+			},
+		);
+	});
+
 	it("promotes the selected durable queued turn through the turn-scoped route", async () => {
 		postMock.mockResolvedValue({
 			data: { sourceTurnId: "queued-2", providerTurnId: "provider-1", activityId: "activity-1" },

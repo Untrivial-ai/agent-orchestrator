@@ -22,6 +22,8 @@ const queuedTurnSteerPath = "/api/v1/sessions/{sessionId}/conversation/turns/{tu
 type SteerConversationRequest struct {
 	// Text is the correction to hand the agent mid-turn.
 	Text string `json:"text"`
+	// Attachments are native image prompt blocks delivered with the correction.
+	Attachments []ConversationImageContentRequest `json:"attachments,omitempty"`
 	// ClientMessageID makes a retry idempotent: the same handle updates the recorded
 	// guidance instead of adding a second copy of it, and the provider echoes it back
 	// on the item it replays so a client can recognize its own steer.
@@ -66,10 +68,19 @@ func (c *ConversationsController) steer(w http.ResponseWriter, r *http.Request) 
 	if !decodeConversationBody(w, r, &req) {
 		return
 	}
+	content, attachmentErr := conversationContent(SendConversationMessageRequest{
+		Attachments: req.Attachments,
+	})
+	if attachmentErr != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			attachmentErr.code, attachmentErr.message, nil)
+		return
+	}
 
 	result, err := c.Svc.Steer(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")),
 		ports.ChatUserMessage{
 			Text:            req.Text,
+			Content:         content,
 			ClientMessageID: req.ClientMessageID,
 			Origin:          domain.MessageOriginHuman,
 		})

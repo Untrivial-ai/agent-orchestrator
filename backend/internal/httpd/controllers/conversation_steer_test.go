@@ -157,6 +157,7 @@ func TestSteerRouteAcceptsGuidanceAndNamesTheTurn(t *testing.T) {
 	}
 	status, body, _ := postSteer(t, svc, map[string]any{
 		"text": "actually, just summarize", "clientMessageId": "steer-1",
+		"attachments": []map[string]string{{"mimeType": "image/png", "data": "aW1hZ2U="}},
 	})
 
 	if status != http.StatusAccepted {
@@ -177,6 +178,11 @@ func TestSteerRouteAcceptsGuidanceAndNamesTheTurn(t *testing.T) {
 	}
 	if svc.seen[0].ClientMessageID != "steer-1" {
 		t.Errorf("clientMessageId = %q", svc.seen[0].ClientMessageID)
+	}
+	if len(svc.seen[0].Content) != 1 || svc.seen[0].Content[0] != (ports.ChatContent{
+		Type: "image", Data: "aW1hZ2U=", MIMEType: "image/png",
+	}) {
+		t.Errorf("content = %#v, want native image", svc.seen[0].Content)
 	}
 	// A steer typed by a person is the person's, and the timeline attributes it that
 	// way rather than as something the daemon said.

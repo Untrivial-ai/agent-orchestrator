@@ -8385,6 +8385,10 @@ components:
       type: object
     SteerConversationRequest:
       properties:
+        attachments:
+          items:
+            $ref: '#/components/schemas/ConversationImageContentRequest'
+          type: array
         clientMessageId:
           type: string
         text:

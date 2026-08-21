@@ -93,7 +93,7 @@ const ATTACHMENT_REFERENCE_BLOCK =
 const STAGED_ATTACHMENT_PATH = /^\.ao\/attachments\/(?:attachment|image)-[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const IMAGE_ATTACHMENT_PATH = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 
-function humanMessageParts(text: string): { body: string; attachments: string[] } {
+function stagedAttachmentParts(text: string): { body: string; attachments: string[] } {
 	const match = ATTACHMENT_REFERENCE_BLOCK.exec(text);
 	if (!match?.[1]) return { body: text, attachments: [] };
 
@@ -121,6 +121,51 @@ function attachmentURL(apiBaseUrl: string, sessionId: string, path: string): str
 		.map(encodeURIComponent)
 		.join("/")}`;
 	return apiBaseUrl ? new URL(route, apiBaseUrl).toString() : route;
+}
+
+function StagedAttachmentItems({
+	paths,
+	sessionId,
+	apiBaseUrl,
+	ariaLabel,
+	className,
+}: {
+	paths: string[];
+	sessionId: string;
+	apiBaseUrl: string;
+	ariaLabel: string;
+	className?: string;
+}) {
+	if (paths.length === 0) return null;
+	return (
+		<ul aria-label={ariaLabel} className={cn("flex max-w-full flex-wrap gap-2", className)}>
+			{paths.map((path) => {
+				const name = attachmentName(path);
+				return IMAGE_ATTACHMENT_PATH.test(path) ? (
+					<li
+						key={path}
+						className="max-w-full overflow-hidden rounded-md border border-border bg-background"
+					>
+						<img
+							src={attachmentURL(apiBaseUrl, sessionId, path)}
+							alt={name}
+							loading="lazy"
+							className="block h-auto max-h-80 max-w-full object-contain"
+						/>
+					</li>
+				) : (
+					<li
+						key={path}
+						title={path}
+						className="flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground"
+					>
+						<FileIcon aria-hidden="true" className="size-3.5 shrink-0" />
+						<span className="truncate">{name}</span>
+					</li>
+				);
+			})}
+		</ul>
+	);
 }
 
 /** Collapse the home directory so a long absolute path does not eat the row. */
@@ -184,7 +229,7 @@ export function HumanMessage({
 	activateBranchPending?: boolean;
 	activateBranchError?: string;
 }) {
-	const { body, attachments } = humanMessageParts(message.text);
+	const { body, attachments } = stagedAttachmentParts(message.text);
 	return (
 		<div className="group/message flex flex-col items-end gap-1">
 			{/* A queued message reads as not-yet-sent rather than as sent-and-ignored:
@@ -213,23 +258,13 @@ export function HumanMessage({
 					)}
 				>
 					{body ? <p className="break-words whitespace-pre-wrap text-pretty">{body}</p> : null}
-					{attachments.length > 0 ? (
-						<ul aria-label="Attached files" className={cn("flex max-w-full flex-wrap gap-2", body && "mt-2")}>
-							{attachments.map((path) => {
-								const name = attachmentName(path);
-								return IMAGE_ATTACHMENT_PATH.test(path) ? (
-									<li key={path} className="max-w-full overflow-hidden rounded-md border border-border bg-background">
-										<img src={attachmentURL(apiBaseUrl, sessionId, path)} alt={name} loading="lazy" className="block h-auto max-h-80 max-w-full object-contain" />
-									</li>
-								) : (
-									<li key={path} title={path} className="flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground">
-										<FileIcon aria-hidden="true" className="size-3.5 shrink-0" />
-										<span className="truncate">{name}</span>
-									</li>
-								);
-							})}
-						</ul>
-					) : null}
+					<StagedAttachmentItems
+						paths={attachments}
+						sessionId={sessionId}
+						apiBaseUrl={apiBaseUrl}
+						ariaLabel="Attached files"
+						className={cn(body && "mt-2")}
+					/>
 				</div>
 			)}
 			{editing ? null : (
@@ -1397,18 +1432,40 @@ function ReauthRow({ activity }: { activity: ConversationActivity }) {
  * back needs to see that this arrived mid-turn, since it explains why the agent
  * changed course without a new exchange starting.
  */
-export function SteerMessage({ activity }: { activity: ConversationActivity }) {
+export function SteerMessage({
+	activity,
+	sessionId,
+	apiBaseUrl = getApiBaseUrl(),
+}: {
+	activity: ConversationActivity;
+	sessionId: string;
+	apiBaseUrl?: string;
+}) {
 	const text = activity.detail?.text ?? activity.summary;
+	const { body, attachments } = stagedAttachmentParts(text);
+	const hasStagedImage = attachments.some((path) => IMAGE_ATTACHMENT_PATH.test(path));
+	// Native image content and the staged path describe the same composer image.
+	// Prefer the durable preview URL when both exist so history shows it only once.
+	const remainingContent = hasStagedImage
+		? (activity.detail?.content ?? []).filter((item) => item.type !== "image")
+		: (activity.detail?.content ?? []);
 	return (
 		<div className="flex flex-col items-end gap-1">
 			<div className="w-fit max-w-[min(78%,560px)] break-words whitespace-pre-wrap rounded-[10px] border border-accent-dim bg-raised px-3 py-2.5 text-sm leading-[1.55] text-foreground">
-				{text ? <p>{text}</p> : null}
-				<ConversationContentItems
-					content={activity.detail?.content ?? []}
+				{body ? <p>{body}</p> : null}
+				<StagedAttachmentItems
+					paths={attachments}
+					sessionId={sessionId}
+					apiBaseUrl={apiBaseUrl}
 					ariaLabel="Steered attachments"
+					className={cn(body && "mt-2")}
+				/>
+				<ConversationContentItems
+					content={remainingContent}
+					ariaLabel={attachments.length > 0 ? "Steered content" : "Steered attachments"}
 					imageLabel="Image"
 					imageAlt={(position) => `Steered attachment ${position}`}
-					className={cn(text && "mt-2")}
+					className={cn((body || attachments.length > 0) && "mt-2")}
 				/>
 			</div>
 			<span className="flex items-center gap-1 text-[11px] text-muted-foreground">

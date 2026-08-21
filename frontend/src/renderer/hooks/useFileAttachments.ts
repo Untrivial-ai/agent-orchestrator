@@ -174,18 +174,26 @@ export function useFileAttachments() {
 		setError(null);
 	}, []);
 
-	const toPayload = useCallback(
-		(): FileAttachmentPayload[] =>
-			attachments.map(({ mimeType, data }) => ({ mimeType, data })),
-		[attachments],
-	);
-
 	const toSettledPayload = useCallback(async (): Promise<FileAttachmentPayload[]> => {
 		while (pendingReadsRef.current.size > 0) {
 			await Promise.allSettled(Array.from(pendingReadsRef.current));
 		}
 		return attachmentsRef.current.map(({ mimeType, data }) => ({ mimeType, data }));
 	}, []);
+	// Read from the same ref as toSettledPayload so a submit resumed after FileReader
+	// completion can cache staged paths without waiting for another React render.
+	const attachmentSignature = useCallback(
+		() => attachmentsRef.current.map((attachment) => attachment.id).join(":"),
+		[],
+	);
 
-	return { attachments, error, addFiles, remove, clear, toPayload, toSettledPayload };
+	return {
+		attachments,
+		error,
+		addFiles,
+		remove,
+		clear,
+		toSettledPayload,
+		attachmentSignature,
+	};
 }

@@ -301,12 +301,12 @@ export function useConversationCommands(sessionId: string | undefined) {
 	 * means "wait and try again", and one means this harness cannot do it at all.
 	 */
 	const steer = useMutation({
-		mutationFn: async (text: string) => {
+		mutationFn: async (input: { text: string; attachments?: WireImageContent[] }) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/steer",
 				{
 					params: { path: { sessionId: sessionId as string } },
-					body: { text, clientMessageId: crypto.randomUUID() },
+					body: { ...input, clientMessageId: crypto.randomUUID() },
 				},
 			);
 			if (error) throw error;
@@ -427,7 +427,11 @@ export function useConversationCommands(sessionId: string | undefined) {
 		activateBranchError: activateBranch.error
 			? apiErrorMessage(activateBranch.error)
 			: undefined,
-		steer: (text: string) => steer.mutateAsync(text),
+		steer: (text: string, attachments?: WireImageContent[]) =>
+			steer.mutateAsync({
+				text,
+				...(attachments?.length ? { attachments } : {}),
+			}),
 		promoteQueuedTurn: (turnId: string) => promoteQueuedTurn.mutateAsync(turnId),
 		steerPending: steer.isPending,
 		/**
