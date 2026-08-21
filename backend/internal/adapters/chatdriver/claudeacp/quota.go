@@ -80,7 +80,11 @@ func resolvePlanUsageRuntime(ctx context.Context) (runtimeLaunch, error) {
 	if len(launch.args) == 0 {
 		return runtimeLaunch{}, errors.New("AO_CLAUDE_ACP_COMMAND does not expose the packaged plan usage helper")
 	}
-	entry := filepath.Join(filepath.Dir(launch.args[0]), "ao-claude-plan-usage.mjs")
+	runtimeDir := strings.TrimSpace(os.Getenv("AO_ACP_RUNTIME_DIR"))
+	if runtimeDir == "" {
+		runtimeDir = runtimeDirectoryBesideExecutable()
+	}
+	entry := filepath.Join(runtimeDir, "ao-claude-plan-usage.mjs")
 	if err := requireFile(entry, "AO Claude plan usage entrypoint"); err != nil {
 		return runtimeLaunch{}, err
 	}

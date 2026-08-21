@@ -1046,12 +1046,6 @@ func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 		t.Fatalf("usage update without rate limit: %v", err)
 	}
 	_ = nextEvent(t, opened.Events())
-	placeholderEvent := nextEvent(t, opened.Events())
-	if quota := placeholderEvent.RateLimits; quota == nil || quota.Quota == nil ||
-		quota.Quota.Provider != "claude" || len(quota.Quota.Limits) != 0 ||
-		!quota.Quota.Capabilities.SupportsSubscribe {
-		t.Fatalf("Claude quota placeholder = %#v", quota)
-	}
 
 	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
 		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
@@ -1534,20 +1528,18 @@ func TestACPDriverPreservesEarlyConfigOptionUpdates(t *testing.T) {
 }
 
 func TestClaudePlanUsageNormalizesStructuredSDKResponse(t *testing.T) {
-	limits := claudePlanUsage(map[string]any{
-		"_claude/planUsage": map[string]any{
-			"subscription_type":     "max",
-			"rate_limits_available": true,
-			"rate_limits": map[string]any{
-				"five_hour": map[string]any{
-					"utilization": 28.0,
-					"resets_at":   "2026-08-21T12:00:00Z",
-				},
-				"seven_day":      map[string]any{"utilization": 41.0},
-				"seven_day_opus": map[string]any{"utilization": 9.0},
-				"model_scoped": []any{
-					map[string]any{"display_name": "Fable", "utilization": 12.0},
-				},
+	limits := NormalizeClaudePlanUsage(map[string]any{
+		"subscription_type":     "max",
+		"rate_limits_available": true,
+		"rate_limits": map[string]any{
+			"five_hour": map[string]any{
+				"utilization": 28.0,
+				"resets_at":   "2026-08-21T12:00:00Z",
+			},
+			"seven_day":      map[string]any{"utilization": 41.0},
+			"seven_day_opus": map[string]any{"utilization": 9.0},
+			"model_scoped": []any{
+				map[string]any{"display_name": "Fable", "utilization": 12.0},
 			},
 		},
 	})

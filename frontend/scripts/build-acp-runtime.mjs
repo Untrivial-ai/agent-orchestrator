@@ -33,7 +33,6 @@ const archiveName = `node-v${NODE_VERSION}-${platform}-${arch}.${extension}`;
 const baseURL = `https://nodejs.org/dist/v${NODE_VERSION}`;
 const buildSignature = createHash("sha256")
 	.update(readFileSync(join(sourceDir, "package-lock.json")))
-	.update(readFileSync(join(sourceDir, "ao-claude-agent-acp.mjs")))
 	.update(readFileSync(join(sourceDir, "ao-claude-plan-usage.mjs")))
 	.update(readFileSync(fileURLToPath(import.meta.url)))
 	.update(readFileSync(join(scriptsDir, "build-acp-runtime-helpers.mjs")))
@@ -60,7 +59,6 @@ rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 cpSync(join(sourceDir, "package.json"), join(outDir, "package.json"));
 cpSync(join(sourceDir, "package-lock.json"), join(outDir, "package-lock.json"));
-cpSync(join(sourceDir, "ao-claude-agent-acp.mjs"), join(outDir, "ao-claude-agent-acp.mjs"));
 cpSync(join(sourceDir, "ao-claude-plan-usage.mjs"), join(outDir, "ao-claude-plan-usage.mjs"));
 
 const npm = npmInvocation(["ci", "--omit=dev", "--omit=optional", "--ignore-scripts"]);

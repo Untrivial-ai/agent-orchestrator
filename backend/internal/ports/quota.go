@@ -32,9 +32,3 @@ type QuotaCollector interface {
 type ChatQuotaIdentity interface {
 	QuotaIdentity() (domain.QuotaProviderID, domain.QuotaAccountID)
 }
-
-// QuotaReader is implemented by providers that can return an authoritative
-// snapshot on demand. Push-only adapters publish partial snapshots instead.
-type QuotaReader interface {
-	ReadQuota(context.Context) (domain.QuotaSnapshot, error)
-}

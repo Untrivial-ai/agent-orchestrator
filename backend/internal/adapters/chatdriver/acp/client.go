@@ -481,10 +481,6 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		// when its configuration changes, so retaining absent entries is wrong.
 		c.replaceAvailableCommands(update.AvailableCommandsUpdate.AvailableCommands)
 	case update.UsageUpdate != nil:
-		if limits := claudePlanUsage(update.UsageUpdate.Meta); limits != nil {
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventRateLimits, RateLimits: limits})
-			return nil
-		}
 		usage := &ports.ChatUsage{
 			ContextUsed: int64(update.UsageUpdate.Used), ContextWindow: int64(update.UsageUpdate.Size),
 			ContextKnown: true,
@@ -495,11 +491,7 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 			usage.Currency = update.UsageUpdate.Cost.Currency
 		}
 		c.emit(ports.ChatEvent{Kind: ports.ChatEventUsage, Usage: usage})
-		limits := claudeRateLimits(update.UsageUpdate.Meta)
-		if limits == nil && c.harness == domain.HarnessClaudeCode {
-			limits = claudeQuotaPlaceholder(time.Now().UTC())
-		}
-		if limits != nil {
+		if limits := claudeRateLimits(update.UsageUpdate.Meta); limits != nil {
 			c.emit(ports.ChatEvent{Kind: ports.ChatEventRateLimits, RateLimits: limits})
 		}
 	}
@@ -764,14 +756,9 @@ func claudeRateLimits(meta map[string]any) *ports.ChatRateLimits {
 	return limits
 }
 
-func claudePlanUsage(meta map[string]any) *ports.ChatRateLimits {
-	value := nestedMap(meta, "_claude/planUsage")
-	return NormalizeClaudePlanUsage(value)
-}
-
 // NormalizeClaudePlanUsage converts the Claude SDK's structured get_usage
-// response into AO's provider-neutral quota model. It is exported so the
-// daemon's sessionless collector and the ACP event path share one normalizer.
+// response into AO's provider-neutral quota model for the daemon's sessionless
+// collector.
 func NormalizeClaudePlanUsage(value map[string]any) *ports.ChatRateLimits {
 	if value == nil {
 		return nil
@@ -833,23 +820,6 @@ func NormalizeClaudePlanUsage(value map[string]any) *ports.ChatRateLimits {
 		}
 	}
 	return &ports.ChatRateLimits{PrimaryUsedPercent: -1, SecondaryUsedPercent: -1, Quota: snapshot}
-}
-
-// claudeQuotaPlaceholder makes the provider visible as soon as Claude reports
-// ordinary Chat usage. Older Claude SDKs only emit rate_limit_event when their
-// subscription state changes, so a healthy session may otherwise remain absent
-// until the structured plan-usage control request completes. Unknown values stay
-// unknown; a later provider event merges the real buckets into this snapshot.
-func claudeQuotaPlaceholder(now time.Time) *ports.ChatRateLimits {
-	return &ports.ChatRateLimits{
-		PrimaryUsedPercent:   -1,
-		SecondaryUsedPercent: -1,
-		Quota: &domain.QuotaSnapshot{
-			Provider: "claude", AccountID: "default", Completeness: domain.QuotaPartial,
-			Capabilities: domain.QuotaCapabilities{SupportsSubscribe: true},
-			ObservedAt:   now,
-		},
-	}
 }
 
 func claudeWindowDuration(kind string) *time.Duration {
