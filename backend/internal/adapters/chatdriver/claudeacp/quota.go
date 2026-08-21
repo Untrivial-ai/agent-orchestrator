@@ -50,13 +50,13 @@ func (r *QuotaRefresher) RefreshQuota(ctx context.Context, provider domain.Quota
 	out, err := cmd.Output()
 	if err != nil {
 		if errors.Is(readCtx.Err(), context.DeadlineExceeded) {
-			return domain.QuotaSnapshot{}, fmt.Errorf("Claude plan usage read timed out: %w", readCtx.Err())
+			return domain.QuotaSnapshot{}, fmt.Errorf("claude plan usage read timed out: %w", readCtx.Err())
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			message := strings.TrimSpace(string(exitErr.Stderr))
 			if message != "" {
-				return domain.QuotaSnapshot{}, fmt.Errorf("Claude plan usage helper failed: %s", message)
+				return domain.QuotaSnapshot{}, fmt.Errorf("claude plan usage helper failed: %s", message)
 			}
 		}
 		return domain.QuotaSnapshot{}, fmt.Errorf("run Claude plan usage helper: %w", err)
@@ -67,7 +67,7 @@ func (r *QuotaRefresher) RefreshQuota(ctx context.Context, provider domain.Quota
 	}
 	limits := acpdriver.NormalizeClaudePlanUsage(raw)
 	if limits == nil || limits.Quota == nil {
-		return domain.QuotaSnapshot{}, errors.New("Claude plan usage helper returned no quota snapshot")
+		return domain.QuotaSnapshot{}, errors.New("claude plan usage helper returned no quota snapshot")
 	}
 	return domain.NormalizeQuotaSnapshot(*limits.Quota), nil
 }

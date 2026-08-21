@@ -105,7 +105,7 @@ func (d *Driver) RefreshQuota(ctx context.Context, provider domain.QuotaProvider
 		return domain.QuotaSnapshot{}, err
 	}
 	if limits.Quota == nil {
-		return domain.QuotaSnapshot{}, errors.New("Codex plan usage read returned no quota snapshot")
+		return domain.QuotaSnapshot{}, errors.New("codex plan usage read returned no quota snapshot")
 	}
 	return domain.NormalizeQuotaSnapshot(*limits.Quota), nil
 }
