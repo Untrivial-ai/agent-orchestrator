@@ -15,7 +15,6 @@ vi.mock("../../hooks/useProviderQuota", () => ({
 		isLoading: false,
 		isSuccess: true,
 	}),
-	useQuotaHistory: () => ({ data: [] }),
 	useRefreshAllProviderQuota: () => ({ mutate: hookState.refreshAll }),
 	useRefreshProviderQuota: () => ({
 		error: null,
@@ -67,9 +66,10 @@ describe("PlanUsagePage", () => {
 	});
 
 	it("renders Codex and Claude through the same provider-neutral card", () => {
-		hookState.providers = [
+			hookState.providers = [
 			quota({
 				accountLabel: "Codex Team",
+				balances: [{ id: "codex:credits", name: "Codex credits", unlimited: false, value: "50" }],
 				capabilities: {
 					supportsCredits: true,
 					supportsHistory: true,
@@ -113,6 +113,8 @@ describe("PlanUsagePage", () => {
 		expect(screen.getByText("8% remaining")).toHaveClass("text-status-exited");
 		expect(screen.getByText("72% remaining")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Refresh Codex Team usage" })).toBeInTheDocument();
+		expect(screen.queryByText("Credits and balances")).not.toBeInTheDocument();
+		expect(screen.queryByText("Observed usage history")).not.toBeInTheDocument();
 	});
 
 	it("renders an unknown future provider without frontend adapter code", () => {

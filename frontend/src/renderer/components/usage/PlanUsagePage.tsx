@@ -2,8 +2,8 @@ import { AlertTriangle, Gauge, RefreshCw } from "lucide-react";
 import type { TFunction } from "i18next";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import type { ProviderQuota, QuotaHistoryPoint } from "../../hooks/useProviderQuota";
-import { useProviderQuota, useQuotaHistory, useRefreshAllProviderQuota, useRefreshProviderQuota } from "../../hooks/useProviderQuota";
+import type { ProviderQuota } from "../../hooks/useProviderQuota";
+import { useProviderQuota, useRefreshAllProviderQuota, useRefreshProviderQuota } from "../../hooks/useProviderQuota";
 import { cn } from "../../lib/utils";
 import { CenterPanelShell } from "../CenterPanelShell";
 import { Button } from "../ui/button";
@@ -74,7 +74,6 @@ export function PlanUsagePage() {
 function ProviderQuotaCard({ quota }: { quota: ProviderQuota }) {
 	const { t } = useTranslation();
 	const refresh = useRefreshProviderQuota(quota.provider, quota.accountId);
-	const history = useQuotaHistory(quota.provider, quota.accountId, quota.capabilities.supportsHistory);
 	const title = quota.accountLabel || providerName(quota.provider);
 	return (
 		<Card className="gap-0 border border-border-strong bg-surface py-0 shadow-none ring-0">
@@ -105,15 +104,6 @@ function ProviderQuotaCard({ quota }: { quota: ProviderQuota }) {
 						{quota.limits.map((limit) => <QuotaLimitBar key={`${limit.id}:${limit.windowType}:${limit.scope}:${limit.scopeId ?? ""}`} limit={limit} />)}
 					</div>
 				)}
-				{quota.balances.length > 0 ? (
-					<div className="border-t border-border pt-3">
-						<p className="mb-2 text-xs font-medium text-muted-foreground">{t("planUsage.credits")}</p>
-						<div className="grid gap-2 sm:grid-cols-2">
-							{quota.balances.map((balance) => <div className="rounded-md bg-muted/50 px-3 py-2" key={balance.id}><p className="text-xs text-muted-foreground">{balance.name || balance.id}</p><p className="mt-0.5 text-sm font-medium tabular-nums">{balance.unlimited ? t("planUsage.unlimited") : balance.value || t("planUsage.unavailable")}</p></div>)}
-						</div>
-					</div>
-				) : null}
-				{quota.capabilities.supportsHistory ? <QuotaHistory points={history.data ?? []} /> : null}
 			</CardContent>
 		</Card>
 	);
@@ -140,15 +130,6 @@ function QuotaLimitBar({ limit }: { limit: ProviderQuota["limits"][number] }) {
 			{limit.reachedReason ? <p className="mt-2 flex items-center gap-1.5 text-xs text-status-exited"><AlertTriangle aria-hidden="true" className="size-3.5" />{humanize(limit.reachedReason)}</p> : null}
 		</div>
 	);
-}
-
-function QuotaHistory({ points }: { points: QuotaHistoryPoint[] }) {
-	const { t } = useTranslation();
-	const values = points.filter((point): point is QuotaHistoryPoint & { usedPercent: number } => typeof point.usedPercent === "number");
-	if (values.length < 2) return null;
-	const width = 320, height = 64;
-	const path = values.map((point, index) => `${index === 0 ? "M" : "L"}${(index / Math.max(1, values.length - 1)) * width},${height - (point.usedPercent / 100) * height}`).join(" ");
-	return <div className="border-t border-border pt-3"><p className="mb-2 text-xs font-medium text-passive">{t("planUsage.history")}</p><div className="rounded-lg border border-border bg-background/45 px-3 py-2"><svg aria-label={t("planUsage.historyAria")} className="h-16 w-full overflow-visible" role="img" viewBox={`0 0 ${width} ${height}`}><path d={path} fill="none" stroke="currentColor" strokeWidth="2" className="text-logo-accent" vectorEffect="non-scaling-stroke" /></svg></div></div>;
 }
 
 function EmptyPlanUsage() {

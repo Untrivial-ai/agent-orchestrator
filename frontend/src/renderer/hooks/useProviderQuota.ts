@@ -3,7 +3,6 @@ import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 
 export type ProviderQuota = components["schemas"]["ProviderQuotaResponse"];
-export type QuotaHistoryPoint = components["schemas"]["QuotaHistoryPointResponse"];
 export type QuotaAlert = components["schemas"]["QuotaAlertResponse"];
 
 export const providerQuotaQueryKey = ["provider-quota"] as const;
@@ -34,23 +33,6 @@ export function useRefreshAllProviderQuota() {
 		onSuccess: (providers) => {
 			queryClient.setQueryData(providerQuotaQueryKey, providers);
 		},
-	});
-}
-
-export function useQuotaHistory(provider: string, accountId: string, enabled = true) {
-	return useQuery({
-		queryKey: [...providerQuotaQueryKey, provider, accountId, "history"],
-		queryFn: async (): Promise<QuotaHistoryPoint[]> => {
-			const { data, error, response } = await apiClient.GET(
-				"/api/v1/usage/plans/{provider}/accounts/{accountId}/history",
-				{ params: { path: { provider, accountId }, query: { hours: 168, limit: 500 } } },
-			);
-			if (error) throw new Error(apiErrorMessage(error, `Unable to load usage history (${response.status})`));
-			return (data?.points ?? []).slice().reverse();
-		},
-		enabled,
-		retry: 1,
-		staleTime: 30_000,
 	});
 }
 
