@@ -45,6 +45,7 @@ type APIDeps struct {
 	Events              cdcSubscriber
 	Telemetry           ports.EventSink
 	Mobile              *controllers.MobileController
+	IOSDevice           *controllers.IOSDeviceController
 	Browser             controllers.BrowserService
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
@@ -105,6 +106,7 @@ type API struct {
 	dev           *controllers.DevController
 	browser       *controllers.BrowserController
 	events        *EventsController
+	iosDevice     *controllers.IOSDeviceController
 }
 
 // NewAPI constructs the API surface from its dependencies. cfg carries the
@@ -140,6 +142,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
+		iosDevice:     deps.IOSDevice,
 	}
 }
 
@@ -171,6 +174,7 @@ func (a *API) Register(root chi.Router) {
 			a.settings.Register(r)
 			a.dev.Register(r)
 			a.browser.Register(r)
+			a.iosDevice.Register(r)
 			// Sibling REST controllers plug in here.
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.

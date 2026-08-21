@@ -1218,6 +1218,23 @@ type PushPairingIDParam struct {
 	ID string `path:"id" description:"The phone's install id, or its push token for older builds."`
 }
 
+// StatusResponse is the response body of GET /api/v1/ios-device/toolchain/status.
+type StatusResponse struct {
+	XcodeDetected           bool   `json:"xcodeDetected"`
+	CLTOnly                 bool   `json:"cltOnly"`
+	SimctlAvailable         bool   `json:"simctlAvailable"`
+	DefaultRuntimeAvailable bool   `json:"defaultRuntimeAvailable"`
+	GuidanceAppStoreURL     string `json:"guidanceAppStoreURL,omitempty"`
+	GuidanceDeveloperURL    string `json:"guidanceDeveloperURL,omitempty"`
+	GuidanceWhyMissing      string `json:"guidanceWhyMissing,omitempty"`
+}
+
+// FetchRuntimeResponse is the response body of POST /api/v1/ios-device/toolchain/fetch-runtime.
+type FetchRuntimeResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
 // PushDeviceTokenParam is the {token} path parameter for push-device routes.
 type PushDeviceTokenParam struct {
 	Token string `path:"token" description:"Expo push token (URL-encoded) identifying the device."`

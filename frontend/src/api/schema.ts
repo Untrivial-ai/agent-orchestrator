@@ -175,6 +175,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ios-device/toolchain/fetch-runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Attempt to acquire the iOS Simulator runtime image (no-op; Xcode cannot be auto-downloaded) */
+        post: operations["fetchIOSDeviceRuntime"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ios-device/toolchain/recheck": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-evaluate Xcode install state and return updated status */
+        post: operations["recheckIOSDeviceToolchain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ios-device/toolchain/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Check Xcode and iOS Simulator toolchain availability */
+        get: operations["getIOSDeviceToolchainStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/mobile/devices": {
         parameters: {
             query?: never;
@@ -2215,6 +2266,10 @@ export interface components {
             state?: "queued" | "running" | "completed" | "interrupted" | "failed";
             turnId?: string;
         };
+        FetchRuntimeResponse: {
+            message: string;
+            success: boolean;
+        };
         ImportReport: {
             dryRun: boolean;
             notes?: string[];
@@ -2925,6 +2980,15 @@ export interface components {
             ok: boolean;
             sessionId: string;
             transition: components["schemas"]["SessionInterfaceTransition"];
+        };
+        StatusResponse: {
+            cltOnly: boolean;
+            defaultRuntimeAvailable: boolean;
+            guidanceAppStoreURL?: string;
+            guidanceDeveloperURL?: string;
+            guidanceWhyMissing?: string;
+            simctlAvailable: boolean;
+            xcodeDetected: boolean;
         };
         SteerConversationRequest: {
             clientMessageId?: string;
@@ -3660,6 +3724,120 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    fetchIOSDeviceRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FetchRuntimeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    recheckIOSDeviceToolchain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getIOSDeviceToolchainStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -463,6 +463,82 @@ paths:
       summary: Run the legacy AO project import through the daemon store
       tags:
       - import
+  /api/v1/ios-device/toolchain/fetch-runtime:
+    post:
+      operationId: fetchIOSDeviceRuntime
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FetchRuntimeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Attempt to acquire the iOS Simulator runtime image (no-op; Xcode cannot
+        be auto-downloaded)
+      tags:
+      - ios-device
+  /api/v1/ios-device/toolchain/recheck:
+    post:
+      operationId: recheckIOSDeviceToolchain
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Re-evaluate Xcode install state and return updated status
+      tags:
+      - ios-device
+  /api/v1/ios-device/toolchain/status:
+    get:
+      operationId: getIOSDeviceToolchainStatus
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+      summary: Check Xcode and iOS Simulator toolchain availability
+      tags:
+      - ios-device
   /api/v1/mobile/devices:
     get:
       operationId: listMobileDevices
@@ -6532,6 +6608,16 @@ components:
       - sourceBranchId
       - activeBranchId
       type: object
+    FetchRuntimeResponse:
+      properties:
+        message:
+          type: string
+        success:
+          type: boolean
+      required:
+      - success
+      - message
+      type: object
     ImportReport:
       properties:
         dryRun:
@@ -8382,6 +8468,28 @@ components:
       - ok
       - sessionId
       - transition
+      type: object
+    StatusResponse:
+      properties:
+        cltOnly:
+          type: boolean
+        defaultRuntimeAvailable:
+          type: boolean
+        guidanceAppStoreURL:
+          type: string
+        guidanceDeveloperURL:
+          type: string
+        guidanceWhyMissing:
+          type: string
+        simctlAvailable:
+          type: boolean
+        xcodeDetected:
+          type: boolean
+      required:
+      - xcodeDetected
+      - cltOnly
+      - simctlAvailable
+      - defaultRuntimeAvailable
       type: object
     SteerConversationRequest:
       properties:

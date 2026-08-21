@@ -333,8 +333,11 @@ var schemaNames = map[string]string{
 	"ControllersInstallIDParam":        "InstallIDParam",
 	"ControllersPushPairingIDParam":    "PushPairingIDParam",
 	// devimport report
-	"DevimportReport":   "DevImportProjectsReport",
-	"DevimportConflict": "DevImportProjectsConflict",
+	"DevimportReport": "DevImportProjectsReport",
+	// ios-device
+	"ControllersStatusResponse":       "StatusResponse",
+	"ControllersFetchRuntimeResponse": "FetchRuntimeResponse",
+	"DevimportConflict":               "DevImportProjectsConflict",
 	// httpd/controllers: push-device wire envelopes
 	"ControllersRegisterPushDeviceRequest":    "RegisterPushDeviceRequest",
 	"ControllersPushDeviceEnvelope":           "PushDeviceEnvelope",
@@ -445,6 +448,7 @@ func operations() []operation {
 	ops = append(ops, mobileOperations()...)
 	ops = append(ops, mobileDeviceOperations()...)
 	ops = append(ops, browserOperations()...)
+	ops = append(ops, iosDeviceOperations()...)
 	ops = append(ops, shellTerminalOperations()...)
 	return ops
 }
@@ -1013,6 +1017,43 @@ func devOperations() []operation {
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
+}
+
+// iosDeviceOperations declares the /api/v1/ios-device/* operations. These are
+// mounted on the loopback router (IOSDeviceController.Register) and are
+// reachable from the Electron renderer / desktop CLI. These operations are
+// gatekept by the loopback listener only — they 404 on the LAN listener via
+// lanControlBlock (same pattern as /api/v1/mobile).
+func iosDeviceOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/ios-device/toolchain/status", id: "getIOSDeviceToolchainStatus", tag: "ios-device",
+			summary: "Check Xcode and iOS Simulator toolchain availability",
+			resps: []respUnit{
+				{http.StatusOK, controllers.StatusResponse{}},
+				{http.StatusForbidden, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/ios-device/toolchain/recheck", id: "recheckIOSDeviceToolchain", tag: "ios-device",
+			summary: "Re-evaluate Xcode install state and return updated status",
+			resps: []respUnit{
+				{http.StatusOK, controllers.StatusResponse{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/ios-device/toolchain/fetch-runtime", id: "fetchIOSDeviceRuntime", tag: "ios-device",
+			summary: "Attempt to acquire the iOS Simulator runtime image (no-op; Xcode cannot be auto-downloaded)",
+			resps: []respUnit{
+				{http.StatusOK, controllers.FetchRuntimeResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},
 	}
