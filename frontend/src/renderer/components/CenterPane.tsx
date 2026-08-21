@@ -871,13 +871,17 @@ function SessionPaneTab({
 	const tabIcon = session ? <AgentAvatar className="size-terminal-agent-icon" decorative provider={session.provider} /> : icon;
 	const connected = appearance === "connected";
 	return (
-		<span
+		<button
+			ref={ref}
+			aria-current={isActive}
+			aria-label={activityLabel ? `${label} · ${activityLabel}` : label}
+			aria-selected={isActive}
 			data-terminal-role={connected ? undefined : "primary"}
 			className={cn(
-				"group relative inline-flex min-w-shell-tab-min shrink-0 self-stretch items-center gap-1.5 transition-colors",
+				"group relative inline-flex min-w-shell-tab-min shrink-0 self-stretch cursor-pointer items-center gap-1.5 truncate text-control leading-none transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
 				connected
-					? "w-shell-tab-connected border-x border-transparent px-2"
-					: "border-r border-border bg-surface px-3 text-foreground",
+					? "w-shell-tab-connected border-x border-transparent px-2 text-left font-normal"
+					: "max-w-shell-tab-max border-r border-border bg-surface px-3 font-medium text-foreground",
 				connected
 					? isActive
 						? "border-border-strong bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
@@ -885,42 +889,29 @@ function SessionPaneTab({
 					: isActive
 						? "bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
 						: "text-muted-foreground hover:bg-raised hover:text-foreground",
+				isActive ? "text-foreground" : "text-passive hover:text-foreground",
 			)}
+			onClick={onSelect}
+			role="tab"
+			tabIndex={isActive ? 0 : -1}
+			title={title ?? (isTruncated ? label : t("terminal.sessionAria"))}
+			type="button"
 		>
-			<button
-				ref={ref}
-				aria-current={isActive}
-				aria-label={activityLabel ? `${label} · ${activityLabel}` : label}
-				aria-selected={isActive}
-				className={cn(
-					"inline-flex items-center gap-1.5 truncate text-control leading-none transition-colors",
-					connected
-						? "min-w-0 w-full text-left font-normal"
-						: "min-w-flex-min max-w-shell-tab-max font-medium",
-					isActive ? "text-foreground" : "text-passive group-hover:text-foreground",
-				)}
-				onClick={onSelect}
-				role="tab"
-				tabIndex={isActive ? 0 : -1}
-				title={title ?? (isTruncated ? label : t("terminal.sessionAria"))}
-				type="button"
-			>
-				{tabIcon}
-				<span className="truncate">{label}</span>
-				{activityTone ? (
+			{tabIcon}
+			<span className="truncate">{label}</span>
+			{activityTone ? (
+				<span
+					aria-hidden="true"
+					className="inline-flex shrink-0 self-center items-center"
+					style={{ color: activityTone }}
+					title={activityLabel}
+				>
 					<span
-						aria-hidden="true"
-						className="inline-flex shrink-0 self-center items-center"
-						style={{ color: activityTone }}
-						title={activityLabel}
-					>
-						<span
-							className={cn("size-1.5 rounded-full", activityBreathe && "animate-status-pulse")}
-							style={{ background: activityTone }}
-						/>
-					</span>
-				) : null}
-			</button>
-		</span>
+						className={cn("size-1.5 rounded-full", activityBreathe && "animate-status-pulse")}
+						style={{ background: activityTone }}
+					/>
+				</span>
+			) : null}
+		</button>
 	);
 }

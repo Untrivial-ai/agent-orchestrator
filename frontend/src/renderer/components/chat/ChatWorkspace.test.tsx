@@ -783,6 +783,32 @@ describe("ChatWorkspace reviewer tabs", () => {
 		sessionId: chatSession.id,
 	};
 
+	it("makes each full-height tile its semantic click target", () => {
+		const onOpenReviewerTerminal = vi.fn();
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				session={chatSession}
+				reviewerTerminal={reviewerTerminal}
+				onOpenReviewerTerminal={onOpenReviewerTerminal}
+			/>,
+		);
+
+		const chatTab = screen.getByRole("tab", { name: chatFixture.sessionId });
+		const reviewerTab = screen.getByRole("tab", { name: "Reviewer" });
+		expect(chatTab).toHaveClass("self-stretch", "px-3", "cursor-pointer");
+		expect(reviewerTab).toHaveClass(
+			"self-stretch",
+			"px-3",
+			"cursor-pointer",
+			"focus-visible:outline-2",
+		);
+		expect(reviewerTab.querySelector("img")).toBeInTheDocument();
+
+		fireEvent.click(reviewerTab);
+		expect(onOpenReviewerTerminal).toHaveBeenCalledWith(reviewerTerminal);
+	});
+
 	it("keeps the chat draft, attachments, edit, and scroll state mounted while Reviewer is selected", async () => {
 		const user = userEvent.setup();
 		const common = {

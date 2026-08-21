@@ -75,10 +75,9 @@ export function ShellTerminalTab({
 		if (isDoubleClick) beginEdit();
 	};
 
-	// The rename gesture lives on the whole tab so it works anywhere on the tab,
-	// not just precisely on the label. Windows uses right-click; macOS/Linux use
-	// the click-timing double-click detector above.
-	const containerRenameHandlers = isEditing
+	// The selection button owns the whole visible tab surface. Windows uses
+	// right-click for rename; macOS/Linux use the click-timing detector above.
+	const tabRenameHandlers = isEditing
 		? {}
 		: renameViaRightClick
 			? {
@@ -107,19 +106,21 @@ export function ShellTerminalTab({
 			className={cn(
 				"group relative min-w-shell-tab-min shrink-0 items-center transition-colors",
 				appearance === "connected"
-					? "grid w-shell-tab-connected grid-cols-[auto_minmax(0,1fr)_auto] self-stretch border-x border-transparent pl-2 pr-0"
+					? cn(
+							"grid w-shell-tab-connected self-stretch border-x border-transparent pr-0",
+							isEditing ? "grid-cols-[auto_minmax(0,1fr)_auto] pl-2" : "grid-cols-[minmax(0,1fr)_auto]",
+						)
 					: "inline-flex gap-1 rounded-md px-2 py-1",
 				appearance === "connected"
 					? isActive
-						? "border-border-strong bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
+						? "border-border-strong bg-overlay text-foreground after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
 						: "border-transparent text-passive hover:bg-interactive-hover/60 hover:text-foreground"
 					: isActive
 						? "bg-interactive-active"
 						: "hover:bg-interactive-hover/60",
 			)}
-			{...containerRenameHandlers}
 		>
-			{appearance === "connected" ? (
+			{appearance === "connected" && isEditing ? (
 				<SquareTerminal aria-hidden="true" className="mr-1 size-icon-sm shrink-0 translate-y-px" />
 			) : null}
 			{isEditing ? (
@@ -149,11 +150,14 @@ export function ShellTerminalTab({
 					aria-current={isActive}
 					aria-selected={isActive}
 					className={cn(
-						"select-none truncate text-control transition-colors",
-						appearance === "connected" ? "min-w-0 w-full text-left" : "min-w-flex-min max-w-shell-tab-max",
+						"select-none truncate text-control transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
+						appearance === "connected"
+							? "grid h-full min-w-0 w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center pl-2 text-left"
+							: "min-w-flex-min max-w-shell-tab-max cursor-pointer",
 						appearance === "connected" ? "font-normal" : "font-mono font-semibold",
 						isActive ? "text-foreground" : "text-passive group-hover:text-foreground",
 					)}
+					{...tabRenameHandlers}
 					role="tab"
 					tabIndex={isActive ? 0 : -1}
 					title={
@@ -165,7 +169,10 @@ export function ShellTerminalTab({
 					}
 					type="button"
 				>
-					{shell.title}
+					{appearance === "connected" ? (
+						<SquareTerminal aria-hidden="true" className="mr-1 size-icon-sm shrink-0 translate-y-px" />
+					) : null}
+					<span className="truncate">{shell.title}</span>
 				</button>
 			)}
 			<button
