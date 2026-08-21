@@ -489,6 +489,40 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Project actions for Project One")).toBeInTheDocument();
 	});
 
+	it("shows the orchestrator activity dot in the project actions", () => {
+		const orchestrator: WorkspaceSession = {
+			...session,
+			id: "proj-1-orchestrator",
+			title: "Orchestrator",
+			kind: "orchestrator",
+			status: "working",
+			activity: { state: "waiting_input", lastActivityAt: "2026-06-30T00:00:00Z" },
+		};
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [orchestrator] }] });
+
+		const button = screen.getByRole("button", { name: "Open Project One orchestrator" });
+		const dot = button.querySelector<HTMLElement>("[data-session-status]");
+		expect(dot).toHaveClass("bg-status-needs-you");
+		expect(dot).not.toHaveClass("animate-status-pulse");
+	});
+
+	it("shows the latest orchestrator activity even when it has exited", () => {
+		const orchestrator: WorkspaceSession = {
+			...session,
+			id: "proj-1-orchestrator",
+			title: "Orchestrator",
+			kind: "orchestrator",
+			status: "exited",
+			isTerminated: true,
+			activity: { state: "exited", lastActivityAt: "2026-06-30T00:00:00Z" },
+		};
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [orchestrator] }] });
+
+		const button = screen.getByRole("button", { name: "Spawn Project One orchestrator" });
+		const dot = button.querySelector<HTMLElement>("[data-session-status]");
+		expect(dot).toHaveClass("bg-status-exited");
+	});
+
 	it("toggles project sessions from the folder icon without selecting the project first", async () => {
 		const user = userEvent.setup();
 		const other: WorkspaceSummary = {
