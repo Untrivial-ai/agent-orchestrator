@@ -54,7 +54,11 @@ type recordingLauncher struct {
 
 func (l *recordingLauncher) SupportsChat(_ domain.AgentHarness) bool { return true }
 
-func (l *recordingLauncher) PreflightChat(_ context.Context, harness domain.AgentHarness) error {
+func (l *recordingLauncher) PreflightChat(
+	_ context.Context,
+	harness domain.AgentHarness,
+	_ ports.PermissionMode,
+) error {
 	l.preflighted = append(l.preflighted, harness)
 	return l.preflightErr
 }

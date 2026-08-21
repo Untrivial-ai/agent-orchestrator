@@ -244,8 +244,10 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if err != nil {
 		return nil, err
 	}
-	if missing := ports.MissingProductionCapabilities(caps); len(missing) > 0 {
-		return nil, fmt.Errorf("%w: %s lacks %v", ports.ErrChatUnsupported, cfg.Harness, missing)
+	if cfg.ProviderConversationID == "" {
+		if missing := ports.MissingCapabilitiesForPermissions(caps, cfg.Permissions); len(missing) > 0 {
+			return nil, fmt.Errorf("%w: %s lacks %v", ports.ErrChatUnsupported, cfg.Harness, missing)
+		}
 	}
 
 	scope := domain.ConversationScopeSession
@@ -256,6 +258,19 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		ctx, s.newID(), scope, cfg.ProjectID, cfg.SessionID, s.now())
 	if err != nil {
 		return nil, fmt.Errorf("open conversation: %w", err)
+	}
+	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" {
+		cfg.Permissions = conversation.Settings.ApprovalMode
+	}
+	if missing := ports.MissingCapabilitiesForPermissions(caps, cfg.Permissions); len(missing) > 0 {
+		return nil, fmt.Errorf("%w: %s lacks %v", ports.ErrChatUnsupported, cfg.Harness, missing)
+	}
+	if cfg.ProviderConversationID == "" {
+		conversation.Settings.Model = cfg.Model
+		conversation.Settings.ApprovalMode = cfg.Permissions
+		if err := s.store.SetConversationSettings(ctx, conversation.ID, conversation.Settings, s.now()); err != nil {
+			return nil, fmt.Errorf("record initial conversation settings: %w", err)
+		}
 	}
 
 	var conv ports.ChatConversation
@@ -796,7 +811,11 @@ func (s *Service) SupportsChat(harness domain.AgentHarness) bool {
 // Called before any durable state exists, so an unsupported request costs nothing
 // — no terminated orphan row, no wasted worktree. It never downgrades to TUI:
 // that would put the user in a terminal they did not ask for.
-func (s *Service) PreflightChat(ctx context.Context, harness domain.AgentHarness) error {
+func (s *Service) PreflightChat(
+	ctx context.Context,
+	harness domain.AgentHarness,
+	permissions ports.PermissionMode,
+) error {
 	driver, err := s.drivers.Driver(harness)
 	if err != nil {
 		return fmt.Errorf("%w: %s has no chat driver", ports.ErrChatUnsupported, harness)
@@ -805,7 +824,7 @@ func (s *Service) PreflightChat(ctx context.Context, harness domain.AgentHarness
 	if err != nil {
 		return err
 	}
-	if missing := ports.MissingProductionCapabilities(caps); len(missing) > 0 {
+	if missing := ports.MissingCapabilitiesForPermissions(caps, permissions); len(missing) > 0 {
 		return fmt.Errorf("%w: %s lacks %v", ports.ErrChatUnsupported, harness, missing)
 	}
 	return nil

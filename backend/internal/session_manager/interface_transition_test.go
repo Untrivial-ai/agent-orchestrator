@@ -296,7 +296,11 @@ func (c *transitionChat) SupportsChat(_ domain.AgentHarness) bool {
 	return c.supportsChat
 }
 
-func (c *transitionChat) PreflightChat(ctx context.Context, _ domain.AgentHarness) error {
+func (c *transitionChat) PreflightChat(
+	ctx context.Context,
+	_ domain.AgentHarness,
+	_ ports.PermissionMode,
+) error {
 	if c.preflightStarted != nil {
 		select {
 		case c.preflightStarted <- struct{}{}:

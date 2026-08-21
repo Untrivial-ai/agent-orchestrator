@@ -6263,6 +6263,13 @@ components:
           - autohand
           - fake
           type: string
+        approvalMode:
+          enum:
+          - default
+          - accept-edits
+          - auto
+          - bypass-permissions
+          type: string
         attachments:
           items:
             $ref: '#/components/schemas/AttachmentInput'

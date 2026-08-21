@@ -148,6 +148,23 @@ func MissingProductionCapabilities(caps ChatCapabilities) []ChatCapability {
 	return missing
 }
 
+// MissingCapabilitiesForPermissions applies the production floor for a
+// specific session permission mode. An explicit bypass-permissions choice does
+// not require an approval channel because the user has opted out of approvals.
+func MissingCapabilitiesForPermissions(caps ChatCapabilities, permissions PermissionMode) []ChatCapability {
+	missing := MissingProductionCapabilities(caps)
+	if NormalizePermissionMode(permissions) != PermissionModeBypassPermissions {
+		return missing
+	}
+	out := missing[:0]
+	for _, capability := range missing {
+		if capability != ChatCapabilityApprovals {
+			out = append(out, capability)
+		}
+	}
+	return out
+}
+
 // ChatStartConfig is what a driver needs to open a new provider conversation.
 type ChatStartConfig struct {
 	SessionID domain.SessionID

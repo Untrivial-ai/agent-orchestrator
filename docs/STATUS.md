@@ -48,11 +48,11 @@ surface (`npm run sqlc`, `npm run api`).
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), OpenCode, Droid, and Kimchi. An unregistered Pi/pi-acp
-  binding is staged in the codebase, but pi-acp does not enforce approval modes,
-  so AO does not advertise Pi as Chat-capable or admit mutating Pi Chat sessions.
-  The binding requires a separately pre-installed adapter, reuses the existing
-  Pi config environment and auth probe, and is never downloaded by AO.
+  (claude-agent-acp), OpenCode, Droid, Kimchi, and Pi. Pi's independently
+  installed pi-acp adapter does not enforce approval modes, so AO admits Pi Chat
+  only after the user explicitly chooses the per-session bypass-permissions
+  fallback. The binding reuses the existing Pi config environment and auth
+  probe and is never downloaded by AO.
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
   `/prs/{id}/resolve-comments`.

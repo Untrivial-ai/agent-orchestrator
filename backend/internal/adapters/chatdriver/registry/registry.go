@@ -15,11 +15,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/droid"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimchi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencode"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/pi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/claudeacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/droidacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/kimchiacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/opencodeacp"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/piacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -48,9 +50,9 @@ func New(drivers ...ports.ChatDriver) *Registry {
 //
 // Codex uses its native app-server protocol. Claude Code uses AO's reusable ACP
 // transport plus claude-agent-acp, pointed at the user's own Claude executable.
-// OpenCode and Droid expose ACP themselves, so AO launches the exact executable
-// resolved by each existing agent plugin. No path scrapes terminal output or
-// auto-downloads a provider or protocol adapter.
+// OpenCode, Droid, and Pi expose ACP themselves, so AO launches the exact
+// executable resolved by each existing agent plugin. No path scrapes terminal
+// output or auto-downloads a provider or protocol adapter.
 //
 // Every other harness stays TUI-only until the same is true of it. The driver
 // reuses the harness's existing agent plugin for binary resolution and auth, so
@@ -62,6 +64,7 @@ func Build(log *slog.Logger) *Registry {
 		opencodeacp.New(opencode.New(), log),
 		droidacp.New(droid.New(), log),
 		kimchiacp.New(kimchi.New(), log),
+		piacp.New(pi.New(), log),
 	)
 }
 

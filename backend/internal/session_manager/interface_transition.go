@@ -472,7 +472,12 @@ func (m *Manager) preflightInterfaceTarget(
 		if m.chat == nil {
 			return ports.ErrChatUnsupported
 		}
-		return m.chat.PreflightChat(ctx, rec.Harness)
+		project, err := m.loadProject(ctx, rec.ProjectID)
+		if err != nil {
+			return err
+		}
+		permissions := effectiveAgentConfig(rec.Kind, project.Config).Permissions
+		return m.chat.PreflightChat(ctx, rec.Harness, permissions)
 	}
 	agent, ok := m.agents.Agent(rec.Harness)
 	if !ok {

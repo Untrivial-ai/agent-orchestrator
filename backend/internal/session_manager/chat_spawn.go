@@ -29,7 +29,7 @@ type ChatLauncher interface {
 	// PreflightChat reports whether a harness can start in chat mode right now.
 	// Called before any durable state exists so an unsupported request costs
 	// nothing.
-	PreflightChat(ctx context.Context, harness domain.AgentHarness) error
+	PreflightChat(ctx context.Context, harness domain.AgentHarness, permissions ports.PermissionMode) error
 	// StartChat launches the controller and returns the provider conversation
 	// handle to persist for resume. Implementations must call ControllerReady
 	// after the provider and generation exist but before consuming live events.

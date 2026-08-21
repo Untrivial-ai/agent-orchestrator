@@ -588,6 +588,9 @@ type DelegateTaskRequest struct {
 	Brief     string              `json:"brief" maxLength:"4096"`
 	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,prime-agent,autohand,fake"`
 	Model     string              `json:"model,omitempty" maxLength:"256"`
+	// ApprovalMode is an optional per-session override. The UI uses the explicit
+	// bypass value only after the user accepts an approval-less Chat fallback.
+	ApprovalMode domain.PermissionMode `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
 	// Mode is omitted for the daemon-owned default. The UI sends tui only when
 	// the user explicitly accepts the fallback after Chat preflight fails.
 	Mode domain.SessionMode `json:"mode,omitempty" enum:"tui,chat"`

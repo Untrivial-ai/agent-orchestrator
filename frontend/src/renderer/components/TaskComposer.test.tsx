@@ -48,7 +48,7 @@ vi.mock("../lib/api-client", () => ({
 		POST: h.post,
 	},
 	apiErrorCode: (error: { code?: string }) => error?.code,
-	apiErrorMessage: (_e: unknown, fallback = "err") => fallback,
+	apiErrorMessage: (error: { message?: string }, fallback = "err") => error?.message ?? fallback,
 }));
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: h.capture }));
@@ -314,6 +314,44 @@ describe("TaskComposer", () => {
 			"/api/v1/orchestrators/delegate",
 			expect.objectContaining({ body: expect.objectContaining({ mode: "tui" }) }),
 		);
+	});
+
+	it("offers an explicit approval-less retry for Pi Chat", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return { data: { agent: "pi", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			return { data: { status: "ok", project: { agent: "pi", config: {} } } };
+		});
+		h.post
+			.mockResolvedValueOnce({
+				error: {
+					code: "SESSION_MODE_UNSUPPORTED",
+					message: "spawn: chat mode unsupported for harness: pi lacks [approvals]",
+				},
+			})
+			.mockResolvedValueOnce({ data: { workerId: "sess-pi" } });
+		const onCreated = vi.fn();
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={onCreated} />
+			</Wrap>,
+		);
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "pi"));
+		fireEvent.change(task(), { target: { value: "Use Pi Chat" } });
+		fireEvent.click(screen.getByText("Start task"));
+
+		const fallback = await screen.findByRole("button", { name: "Start without approvals" });
+		fireEvent.click(fallback);
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("sess-pi"));
+		expect(h.post).toHaveBeenLastCalledWith(
+			"/api/v1/orchestrators/delegate",
+			expect.objectContaining({
+				body: expect.objectContaining({ approvalMode: "bypass-permissions" }),
+			}),
+		);
+		expect(h.post.mock.calls[1][1].body).not.toHaveProperty("mode");
 	});
 
 	it("reports dirty then clears it on unmount", () => {
