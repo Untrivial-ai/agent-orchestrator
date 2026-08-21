@@ -12,9 +12,13 @@ type UsageSourceKind string
 
 // UsageSourceKind values identify certified native usage artifact shapes.
 const (
-	UsageSourceClaudeMain     UsageSourceKind = "claude_main"
-	UsageSourceClaudeSubagent UsageSourceKind = "claude_subagent"
-	UsageSourceCodexRollout   UsageSourceKind = "codex_rollout"
+	UsageSourceClaudeMain      UsageSourceKind = "claude_main"
+	UsageSourceClaudeSubagent  UsageSourceKind = "claude_subagent"
+	UsageSourceCodexRollout    UsageSourceKind = "codex_rollout"
+	UsageSourceCopilotShutdown UsageSourceKind = "copilot_shutdown"
+	UsageSourceKimiWire        UsageSourceKind = "kimi_wire"
+	UsageSourcePiSession       UsageSourceKind = "pi_session"
+	UsageSourceQwenMonthly     UsageSourceKind = "qwen_monthly"
 )
 
 // UsageBindingState tracks the root native-session binding lifecycle.
@@ -117,6 +121,16 @@ type UsageTokenMetrics struct {
 	CacheWriteTokens    int64
 	OutputTokens        int64
 	ReasoningTokens     *int64
+}
+
+// UsageMetricCoverage describes which optional token buckets a harness's
+// certified native source can report. It is derived at read time so a source
+// that lacks a metric is not presented as a reported zero.
+type UsageMetricCoverage struct {
+	UncachedInput bool
+	CacheRead     bool
+	CacheWrite    bool
+	Reasoning     bool
 }
 
 // ModelUsageEvent is one append-only normalized usage fact.

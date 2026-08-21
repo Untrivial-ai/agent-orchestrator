@@ -300,7 +300,7 @@ func Run() error {
 		usageCollector *usagesvc.Collector
 		usagePipeline  *usagepipeline.Pipeline
 	)
-	if roots, rootsErr := usagesvc.DefaultSourceRoots(ctx); rootsErr != nil {
+	if roots, rootsErr := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir); rootsErr != nil {
 		log.Warn("usage collection disabled", "err", rootsErr)
 	} else {
 		usageCollector = usagesvc.NewCollector(store, roots, func(reconcile bool) {
@@ -318,6 +318,10 @@ func Run() error {
 			roots.ClaudeProjects,
 			roots.CodexSessions,
 			roots.CodexArchived,
+			roots.CopilotSessions,
+			roots.KimiHome,
+			roots.PiSessions,
+			roots.QwenUsage,
 		}, usagepipeline.CoordinatorConfig{
 			Logger:     log,
 			Initialize: usageCollector.BackfillActive,

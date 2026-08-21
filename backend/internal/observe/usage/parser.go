@@ -43,6 +43,8 @@ func parseRecordsWithState(
 	case domain.UsageSourceCodexRollout:
 		parseCodex(source, records, state.Codex, &result)
 		result.pendingCodexSpawnCalls = len(state.Codex.PendingSpawnCallIDs)
+	case domain.UsageSourceCopilotShutdown:
+		parseCopilot(source, records, state.Copilot, &result)
 	default:
 		result.Cursor.AnomalyCount++
 		result.Cursor.LastErrorCode = domain.UsageErrorUnsupportedSourceFormat
@@ -89,6 +91,7 @@ type parserStateEnvelope struct {
 	Integrity  *parserIntegrityStateV1 `json:"integrity,omitempty"`
 	Claude     *claudeParserStateV1    `json:"claude,omitempty"`
 	Codex      *codexParserStateV1     `json:"codex,omitempty"`
+	Copilot    *copilotParserStateV1   `json:"copilot,omitempty"`
 }
 
 type parserIntegrityStateV1 struct {
@@ -123,6 +126,18 @@ type codexParserStateV1 struct {
 	DirectParentID      string           `json:"direct_parent_id,omitempty"`
 	PendingSpawnCallIDs []string         `json:"pending_spawn_call_ids"`
 	DiscoveredChildIDs  []string         `json:"discovered_child_ids"`
+}
+
+type copilotTokenVector struct {
+	InputTokens      int64 `json:"input_tokens"`
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+	OutputTokens     int64 `json:"output_tokens"`
+	ReasoningTokens  int64 `json:"reasoning_tokens"`
+}
+
+type copilotParserStateV1 struct {
+	Models map[string]copilotTokenVector `json:"models"`
 }
 
 func decodeParserState(source domain.UsageSourceRecord) (*parserStateEnvelope, error) {
@@ -166,12 +181,12 @@ func decodeParserState(source domain.UsageSourceRecord) (*parserStateEnvelope, e
 	}
 	switch source.Kind {
 	case domain.UsageSourceClaudeMain, domain.UsageSourceClaudeSubagent:
-		if state.Claude == nil || state.Codex != nil {
+		if state.Claude == nil || state.Codex != nil || state.Copilot != nil {
 			return nil, errors.New("claude state has invalid parser payload")
 		}
 		state.Claude.LegacyProvider = ""
 	case domain.UsageSourceCodexRollout:
-		if state.Codex == nil || state.Claude != nil {
+		if state.Codex == nil || state.Claude != nil || state.Copilot != nil {
 			return nil, errors.New("codex state has invalid parser payload")
 		}
 		if state.Codex.PendingSpawnCallIDs == nil {
@@ -186,6 +201,18 @@ func decodeParserState(source domain.UsageSourceRecord) (*parserStateEnvelope, e
 		}
 		if err := validateCodexDirectParent(source, state.Codex); err != nil {
 			return nil, err
+		}
+	case domain.UsageSourceCopilotShutdown:
+		if state.Copilot == nil || state.Claude != nil || state.Codex != nil {
+			return nil, errors.New("copilot state has invalid parser payload")
+		}
+		if state.Copilot.Models == nil {
+			state.Copilot.Models = make(map[string]copilotTokenVector)
+		}
+		for model, total := range state.Copilot.Models {
+			if firstNonEmpty(model) == "" || !validCopilotTotal(total) {
+				return nil, errors.New("copilot state has invalid model baseline")
+			}
 		}
 	default:
 		return nil, fmt.Errorf("unsupported source kind %q", source.Kind)
@@ -206,6 +233,8 @@ func newParserState(kind domain.UsageSourceKind) (*parserStateEnvelope, error) {
 			PendingSpawnCallIDs: []string{},
 			DiscoveredChildIDs:  []string{},
 		}
+	case domain.UsageSourceCopilotShutdown:
+		state.Copilot = &copilotParserStateV1{Models: make(map[string]copilotTokenVector)}
 	default:
 		return nil, fmt.Errorf("unsupported source kind %q", kind)
 	}

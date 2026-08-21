@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1684,6 +1685,133 @@ func TestDiscoverCodexPathRequiresConfiguredRoots(t *testing.T) {
 	if got != "" {
 		t.Fatalf("unconfigured Codex roots discovered %q", got)
 	}
+}
+
+// TestDefaultSourceRootsIncludesFileBackedAgents catches launching the daemon
+// without watching a provider's actual durable usage directory.
+func TestDefaultSourceRootsIncludesFileBackedAgents(t *testing.T) {
+	home := t.TempDir()
+	dataDir := filepath.Join(home, ".ao", "data")
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+
+	got, err := DefaultSourceRoots(context.Background(), dataDir)
+	mustNoError(t, err)
+	want := SourceRoots{
+		ClaudeProjects:  filepath.Join(home, ".claude", "projects"),
+		CodexSessions:   filepath.Join(home, ".codex", "sessions"),
+		CodexArchived:   filepath.Join(home, ".codex", "archived_sessions"),
+		CopilotSessions: filepath.Join(home, ".copilot", "session-state"),
+		KimiHome:        filepath.Join(dataDir, "kimi"),
+		PiSessions:      filepath.Join(home, ".pi", "agent", "sessions"),
+		QwenUsage:       filepath.Join(home, ".qwen", "usage"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("roots = %+v, want %+v", got, want)
+	}
+}
+
+func TestValidateSourcePathAcceptsOnlyMatchingProviderRoot(t *testing.T) {
+	root := t.TempDir()
+	files := map[domain.AgentHarness]string{
+		domain.HarnessCopilot: filepath.Join(root, "copilot", "native", "events.jsonl"),
+		domain.HarnessKimi:    filepath.Join(root, "kimi", "sessions", "native", "agents", "main", "wire.jsonl"),
+		domain.HarnessPi:      filepath.Join(root, "pi", "worktree", "session.jsonl"),
+		domain.HarnessQwen:    filepath.Join(root, "qwen", "token-usage-2026-08.jsonl"),
+	}
+	for _, path := range files {
+		writeUsageFixture(t, path, "{}\n")
+	}
+	collector := NewCollector(collectorTestStore(t), SourceRoots{
+		CopilotSessions: filepath.Join(root, "copilot"),
+		KimiHome:        filepath.Join(root, "kimi"),
+		PiSessions:      filepath.Join(root, "pi"),
+		QwenUsage:       filepath.Join(root, "qwen"),
+	}, nil)
+
+	for harness, path := range files {
+		if _, _, _, err := collector.validateSourcePath(context.Background(), harness, path); err != nil {
+			t.Errorf("validate %s path: %v", harness, err)
+		}
+		if _, _, _, err := collector.validateSourcePath(context.Background(), harness, files[differentHarness(harness)]); err == nil {
+			t.Errorf("%s accepted another provider's root", harness)
+		}
+	}
+}
+
+// TestCollectorDiscoversCopilotShutdownSource catches accepting the native
+// Copilot hook ID without binding its per-session events file.
+func TestCollectorDiscoversCopilotShutdownSource(t *testing.T) {
+	const nativeID = "11111111-1111-4111-8111-111111111111"
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessCopilot, nativeID, false)
+	root := filepath.Join(t.TempDir(), "session-state")
+	path := filepath.Join(root, nativeID, "events.jsonl")
+	writeUsageFixture(t, path, `{"type":"session.shutdown","data":{"modelMetrics":{}}}`+"\n")
+	collector := NewCollector(store, SourceRoots{CopilotSessions: root}, nil)
+
+	mustNoError(t, collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness:         domain.HarnessCopilot,
+		Event:           "session-start",
+		NativeSessionID: nativeID,
+	}))
+	bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	if err != nil || len(bindings) != 1 {
+		t.Fatalf("bindings = %+v, err=%v", bindings, err)
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 1 {
+		t.Fatalf("sources = %+v, err=%v", sources, err)
+	}
+	if sources[0].Kind != domain.UsageSourceCopilotShutdown || sources[0].ArtifactPath != canonicalUsagePath(t, path) {
+		t.Fatalf("source = %+v", sources[0])
+	}
+}
+
+func TestCollectorRetriesCopilotSourceCreatedAfterSessionStart(t *testing.T) {
+	const nativeID = "11111111-1111-4111-8111-111111111111"
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessCopilot, nativeID, false)
+	root := filepath.Join(t.TempDir(), "session-state")
+	collector := NewCollector(store, SourceRoots{CopilotSessions: root}, nil)
+
+	mustNoError(t, collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness: domain.HarnessCopilot, Event: "session-start", NativeSessionID: nativeID,
+	}))
+	pending, err := store.HasPendingUsageDiscovery(context.Background())
+	if err != nil || !pending {
+		t.Fatalf("pending=%v err=%v, want durable discovery retry", pending, err)
+	}
+	path := filepath.Join(root, nativeID, "events.jsonl")
+	writeUsageFixture(t, path, `{"type":"session.shutdown","data":{"modelMetrics":{}}}`+"\n")
+	mustNoError(t, collector.ReconcileSources(context.Background(), -1))
+
+	bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	if err != nil || len(bindings) != 1 {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 1 || sources[0].ArtifactPath != canonicalUsagePath(t, path) {
+		t.Fatalf("sources=%+v err=%v", sources, err)
+	}
+}
+
+func TestCollectorRejectsCopilotSourceForDifferentNativeSession(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "session-state")
+	path := filepath.Join(root, "other-native", "events.jsonl")
+	writeUsageFixture(t, path, "{}\n")
+	binding := domain.UsageBindingRecord{Harness: domain.HarnessCopilot, NativeRootID: "bound-native"}
+	if err := validateSourceAttribution(binding, domain.UsageSourceCopilotShutdown, "bound-native", "", canonicalUsagePath(t, path), ""); err == nil {
+		t.Fatal("accepted Copilot events file from a different native session")
+	}
+}
+
+func differentHarness(harness domain.AgentHarness) domain.AgentHarness {
+	if harness == domain.HarnessCopilot {
+		return domain.HarnessKimi
+	}
+	return domain.HarnessCopilot
 }
 
 func TestDiscoverClaudePathRejectsGlobMetadata(t *testing.T) {
