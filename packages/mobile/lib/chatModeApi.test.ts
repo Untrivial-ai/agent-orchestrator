@@ -234,6 +234,27 @@ describe("mobile Chat API boundaries", () => {
 		expect(received).toEqual([1]);
 		expect(cursor).toBe(1);
 	});
+
+	it("surfaces an in-stream cursor reset to onCursorReset instead of onEvent", async () => {
+		vi.mocked(expoFetch).mockResolvedValue(new Response([
+			'event: events_cursor_reset\nid: 500\ndata: {"requested":5,"after":500}\n\n',
+			'id: 501\ndata: {"seq":501,"projectId":"p-1","sessionId":"w-1","type":"session_updated","payload":{"conversationId":"c-1"},"createdAt":"2026-08-11"}\n\n',
+		].join("")) as unknown as Awaited<ReturnType<typeof expoFetch>>);
+		const resets: number[] = [];
+		const events: number[] = [];
+
+		const cursor = await chatApi.streamGlobalConversationEvents(
+			cfg,
+			5,
+			new AbortController().signal,
+			(event) => events.push(event.seq),
+			(reset) => resets.push(reset),
+		);
+
+		expect(resets).toEqual([500]);
+		expect(events).toEqual([501]);
+		expect(cursor).toBe(501);
+	});
 });
 
 function response(body: unknown, status = 200): Response {

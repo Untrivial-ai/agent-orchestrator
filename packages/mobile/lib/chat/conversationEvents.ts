@@ -44,10 +44,14 @@ export function useConversationEventTransport(cfg: ServerConfig | null): void {
 							cursorPersister.update(cursor);
 							registry.publish(event);
 						},
-						(resetCursor) => {
-							cursor = resetCursor;
-							cursorPersister.replace(resetCursor);
-						},
+					(resetCursor) => {
+						cursor = resetCursor;
+						cursorPersister.replace(resetCursor);
+						// The snap skipped durable payloads for every session: fan a
+						// reset sentinel to all subscribers so active conversations
+						// refetch instead of waiting for the next event.
+						registry.publishReset(resetCursor);
+					},
 					);
 					delay = RECONNECT_MIN_MS;
 				} catch {

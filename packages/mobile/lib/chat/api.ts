@@ -20,7 +20,12 @@ import type {
 	DecisionOption,
 	TurnSettings,
 } from "./types";
-import { parseSseFrame, takeSseFrames, type ConversationEvent } from "./sse";
+import {
+	EVENTS_CURSOR_RESET,
+	parseSseFrame,
+	takeSseFrames,
+	type ConversationEvent,
+} from "./sse";
 import { mergeConversationPages, type ConversationPage } from "./snapshot";
 
 export { parseSseFrame } from "./sse";
@@ -333,6 +338,13 @@ export async function streamGlobalConversationEvents(
 				const parsed = parseSseFrame(frame);
 				if (parsed) {
 					cursor = Math.max(cursor, parsed.seq);
+					// A snapped cursor skipped durable payloads: surface the reset so
+					// subscribers refetch, and do not route it to session listeners
+					// as a conversation event.
+					if (parsed.event === EVENTS_CURSOR_RESET) {
+						onCursorReset?.(cursor);
+						continue;
+					}
 					onEvent(parsed);
 				}
 			}

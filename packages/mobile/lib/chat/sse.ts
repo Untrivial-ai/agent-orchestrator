@@ -3,13 +3,28 @@ export type ConversationEvent = {
 	projectId: string;
 	sessionId?: string;
 	type: string;
+	event?: string;
 	payload?: { conversationId?: string; [key: string]: unknown };
 	createdAt: string;
 };
 
+// Control event the daemon emits when it snapped our replay cursor: durable
+// payloads were skipped and every projection must refetch. Matches
+// backend/internal/httpd/events.go eventsCursorResetEvent.
+export const EVENTS_CURSOR_RESET = "events_cursor_reset";
+
+export const cursorResetEvent = (seq: number): ConversationEvent => ({
+	seq,
+	projectId: "",
+	type: EVENTS_CURSOR_RESET,
+	event: EVENTS_CURSOR_RESET,
+	createdAt: "",
+});
+
 export type ConversationEventRegistry = {
 	subscribe(sessionId: string, listener: (event: ConversationEvent) => void): () => void;
 	publish(event: ConversationEvent): void;
+	publishReset(cursor: number): void;
 };
 
 export function createConversationEventRegistry(): ConversationEventRegistry {
@@ -27,6 +42,14 @@ export function createConversationEventRegistry(): ConversationEventRegistry {
 		publish(event) {
 			if (!event.sessionId) return;
 			for (const listener of listeners.get(event.sessionId) ?? []) listener(event);
+		},
+		// A cursor reset skipped payloads for every session, so fan the sentinel
+		// out to all subscribers regardless of session routing.
+		publishReset(cursor) {
+			const event = cursorResetEvent(cursor);
+			for (const sessionListeners of listeners.values()) {
+				for (const listener of sessionListeners) listener(event);
+			}
 		},
 	};
 }
@@ -89,15 +112,18 @@ export function takeSseFrames(buffer: string): { frames: string[]; remainder: st
 
 export function parseSseFrame(frame: string): ConversationEvent | undefined {
 	let id = 0;
+	let eventName: string | undefined;
 	const data: string[] = [];
 	for (const raw of frame.replace(/\r/g, "").split("\n")) {
 		if (raw.startsWith("id:")) id = Number(raw.slice(3).trim());
+		else if (raw.startsWith("event:")) eventName = raw.slice(6).trim();
 		else if (raw.startsWith("data:")) data.push(raw.slice(5).trimStart());
 	}
 	if (data.length === 0) return undefined;
 	try {
 		const event = JSON.parse(data.join("\n")) as ConversationEvent;
 		if (!Number.isFinite(event.seq)) event.seq = id;
+		if (eventName) event.event = eventName;
 		return event;
 	} catch {
 		return undefined;

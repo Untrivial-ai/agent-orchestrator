@@ -143,6 +143,36 @@ describe("createEventTransport", () => {
 		}
 	});
 
+	it("invalidates conversation and interface-transition caches on a cursor reset", () => {
+		vi.useFakeTimers();
+		try {
+			const queryClient = fakeQueryClient();
+			createEventTransport(queryClient).connect();
+			const source = EventSourceStub.instances[0];
+
+			// The reset control event must be subscribed by name.
+			expect(source.listeners).toContain("events_cursor_reset");
+
+			source.emit(
+				"events_cursor_reset",
+				JSON.stringify({ requested: 5, after: 20000 }),
+			);
+
+			// Targeted projections whose invalidations rode on skipped payloads.
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+				queryKey: ["conversation"],
+			});
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+				queryKey: ["session-interface-transition"],
+			});
+			// Broad roots ride the same debounce as ordinary CDC events.
+			vi.advanceTimersByTime(200);
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["workspaces"] });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("invalidates only the named conversation for conversation CDC", () => {
 		vi.useFakeTimers();
 		try {

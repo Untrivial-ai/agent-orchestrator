@@ -20,6 +20,14 @@ describe("mobile conversation SSE", () => {
 		expect(parseSseFrame('id: 9\ndata: {"projectId":"p","type":"session_updated"}')?.seq).toBe(9);
 		expect(parseSseFrame("id: 10\ndata: nope")).toBeUndefined();
 	});
+
+	it("captures the event name of control frames", () => {
+		const parsed = parseSseFrame(
+			'event: events_cursor_reset\nid: 20000\ndata: {"requested":5,"after":20000}',
+		);
+		expect(parsed?.event).toBe("events_cursor_reset");
+		expect(parsed?.seq).toBe(20000);
+	});
 });
 
 describe("conversation cursor persistence", () => {
@@ -116,6 +124,20 @@ describe("conversation event subscriptions", () => {
 		registry?.publish(event("session-1", 5));
 
 		expect(received).toEqual([]);
+	});
+
+	it("fans a cursor reset out to every session's listeners", () => {
+		const registry = sse.createConversationEventRegistry();
+		const received: string[] = [];
+		registry.subscribe("session-1", (next) => received.push(`1:${next.type}:${next.seq}`));
+		registry.subscribe("session-2", (next) => received.push(`2:${next.type}:${next.seq}`));
+
+		registry.publishReset(20000);
+
+		expect(received).toEqual([
+			"1:events_cursor_reset:20000",
+			"2:events_cursor_reset:20000",
+		]);
 	});
 });
 

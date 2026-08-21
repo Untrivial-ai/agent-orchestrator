@@ -36,6 +36,11 @@ const CDC_EVENT_TYPES = [
 	"pr_review_thread_resolved",
 ] as const;
 
+// Control event the daemon emits when it snapped our replay cursor (missing,
+// future, or deep-gap): durable payloads were skipped, so every projection
+// whose targeted invalidations ride on those payloads must be refetched.
+const EVENTS_CURSOR_RESET = "events_cursor_reset";
+
 /**
  * Wires live server state into the TanStack Query cache. Two sources feed it:
  *   - daemon lifecycle over Electron IPC (coming up/down changes session availability)
@@ -126,6 +131,16 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				}, SSE_RETRY_MS);
 			};
 
+			// A cursor reset skipped durable payloads. Broad roots are covered by
+			// refreshWorkspaces, but conversation and interface-transition caches
+			// are normally targeted from CDC payload fields that will never arrive
+			// for the skipped range — invalidate them wholesale by key prefix.
+			const handleCursorReset = () => {
+				refreshWorkspaces();
+				void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+				void queryClient.invalidateQueries({ queryKey: ["session-interface-transition"] });
+			};
+
 			const connectSource = () => {
 				// EventSource is unavailable in jsdom (tests) and some preview surfaces; guard it.
 				if (typeof EventSource === "undefined") return;
@@ -157,10 +172,11 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						setEventsConnectionState("disconnected");
 						if (source?.readyState === EVENTSOURCE_CLOSED) scheduleRetry();
 					};
-					source.onmessage = refreshWorkspaces; // unnamed events, if any
+				source.onmessage = refreshWorkspaces; // unnamed events, if any
 					for (const type of CDC_EVENT_TYPES) {
 						source.addEventListener(type, refreshWorkspaces);
 					}
+					source.addEventListener(EVENTS_CURSOR_RESET, handleCursorReset);
 					// EventSource auto-reconnects and resumes via Last-Event-ID while
 					// CONNECTING; scheduleRetry only covers the terminal CLOSED state.
 				} catch {
