@@ -105,8 +105,8 @@ func seedKimiCredentials(targetHome string) error {
 	if !ok {
 		return nil
 	}
-	sourcePath := filepath.Join(sourceHome, "credentials", "kimi-code.json")
-	targetPath := filepath.Join(targetHome, "credentials", "kimi-code.json")
+	sourcePath := kimiCredentialsPath(sourceHome)
+	targetPath := kimiCredentialsPath(targetHome)
 	if sameKimiConfigPath(sourcePath, targetPath) {
 		return nil
 	}
@@ -167,9 +167,32 @@ func kimiSeedConfig(targetPath string, existing []byte) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("read source Kimi config %s: %w", sourcePath, err)
 	}
 	if !kimiConfigHasAPIKey(source) {
-		return nil, false, nil
+		// Device-code logins intentionally leave every api_key empty and keep the
+		// tokens in credentials/kimi-code.json instead. Seeding the whole source
+		// profile is what makes the isolated home usable: it carries
+		// default_model, the provider/OAuth mapping, model aliases, services, and
+		// permissions, which a credential file alone cannot supply.
+		authorized, err := kimiSourceOAuthAuthorized(sourceHome)
+		if err != nil {
+			return nil, false, err
+		}
+		if !authorized {
+			return nil, false, nil
+		}
 	}
 	return source, true, nil
+}
+
+// kimiSourceOAuthAuthorized reports whether the user's Kimi profile holds a
+// usable device-code login. An empty or token-less credential file means the
+// profile cannot drive a session, so AO must not seed it.
+func kimiSourceOAuthAuthorized(sourceHome string) (bool, error) {
+	path := kimiCredentialsPath(sourceHome)
+	status, ok, err := kimiCredentialsAuthStatus(path)
+	if err != nil {
+		return false, fmt.Errorf("read source Kimi credentials %s: %w", path, err)
+	}
+	return ok && status == ports.AgentAuthStatusAuthorized, nil
 }
 
 func kimiConfigCanSeed(existing []byte) bool {

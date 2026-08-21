@@ -51,7 +51,7 @@ func kimiLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, erro
 	if err != nil || configStatus == ports.AgentAuthStatusAuthorized {
 		return configStatus, configOK, err
 	}
-	credentialsStatus, credentialsOK, err := kimiCredentialsAuthStatus(filepath.Join(home, "credentials", "kimi-code.json"))
+	credentialsStatus, credentialsOK, err := kimiCredentialsAuthStatus(kimiCredentialsPath(home))
 	if err != nil || credentialsOK {
 		return credentialsStatus, credentialsOK, err
 	}
@@ -70,6 +70,13 @@ func kimiCodeHome() (string, bool) {
 		return "", false
 	}
 	return filepath.Join(home, ".kimi-code"), true
+}
+
+// kimiCredentialsPath returns the device-code OAuth credential file inside a
+// Kimi Code home. OAuth-authenticated profiles keep their tokens here and leave
+// every config.toml api_key empty.
+func kimiCredentialsPath(home string) string {
+	return filepath.Join(home, "credentials", "kimi-code.json")
 }
 
 var kimiAPIKeyLineRE = regexp.MustCompile(`(?m)^\s*api_key\s*=\s*("([^"]*)"|'([^']*)'|([^\s#]+))`)

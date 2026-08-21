@@ -232,7 +232,8 @@ var kimiBinarySpec = binaryutil.BinarySpec{
 }
 
 // ResolveKimiBinary finds the `kimi` binary, searching PATH then common install
-// locations (npm global dirs, ~/.local/bin, Homebrew, and ~/.cargo/bin).
+// locations (npm global dirs, the official ~/.kimi-code/bin install script
+// target, ~/.local/bin, Homebrew, and ~/.cargo/bin).
 func ResolveKimiBinary(ctx context.Context) (string, error) {
 	return binaryutil.ResolveBinary(ctx, kimiBinarySpec)
 }
