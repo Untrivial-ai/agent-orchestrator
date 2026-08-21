@@ -3,6 +3,7 @@ import { aoBridge } from "./bridge";
 import { isLoopbackHostname } from "./loopback";
 import { ORCHESTRATOR_SPAWN_SOURCES } from "./orchestrator-spawn-sources";
 import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "../../shared/posthog-config";
+import { captureExceptionToSentry, initSentry } from "./sentry";
 
 const POSTHOG_KEY = import.meta.env.VITE_AO_POSTHOG_KEY?.trim() || DEFAULT_POSTHOG_PROJECT_KEY;
 const POSTHOG_HOST = import.meta.env.VITE_AO_POSTHOG_HOST?.trim() || DEFAULT_POSTHOG_HOST;
@@ -654,15 +655,19 @@ export async function initTelemetry(): Promise<boolean> {
 		// unpackaged build that has not opted in. The client is never created.
 		if (!bootstrap) return false;
 		disabledEventMatchers = bootstrap.disabledEvents ?? [];
-		telemetryContext = buildTelemetryContext(
-			bootstrap.appVersion,
-			bootstrap.platform,
-			releaseChannelFrom(await readUpdateSettingsForTelemetry()),
-		);
+		const channel = releaseChannelFrom(await readUpdateSettingsForTelemetry());
+		telemetryContext = buildTelemetryContext(bootstrap.appVersion, bootstrap.platform, channel);
 		posthog.init(POSTHOG_KEY, buildPostHogConfig(bootstrap.distinctId));
 		posthog.register({
 			...telemetryContext,
 			surface: "renderer",
+		});
+		// Same consent gate as PostHog. No-op unless VITE_AO_SENTRY_DSN is set.
+		void initSentry({
+			release: bootstrap.appVersion,
+			channel,
+			platform: bootstrap.platform,
+			distinctId: bootstrap.distinctId,
 		});
 		bindErrorHandlers();
 		startDailyActiveHeartbeat({
@@ -730,6 +735,14 @@ export async function captureRendererException(error: unknown, properties?: Reco
 	if (!(await initTelemetry())) return;
 	const safeProperties = withTelemetryContext(await sanitizeRendererExceptionProperties(error, properties));
 	posthog.captureException(normalizeException(error), safeProperties);
+	// Mirror into Sentry (no-op unless a DSN is configured). Source drives the
+	// category so a boundary crash classifies as render_crash.
+	const source = typeof properties?.source === "string" ? properties.source : undefined;
+	captureExceptionToSentry(normalizeException(error), {
+		category: source === "react-error-boundary" ? "render_crash" : undefined,
+		operation: typeof properties?.operation === "string" ? properties.operation : undefined,
+		unhandled: properties?.unhandled === true,
+	});
 }
 
 export async function addRendererExceptionStep(message: string, properties?: Record<string, unknown>): Promise<void> {
