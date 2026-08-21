@@ -21,6 +21,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{agent}/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the current or last install job for one agent harness */
+        get: operations["getAgentInstallStatus"];
+        put?: never;
+        /** Start an asynchronous install for one fixed agent harness */
+        post: operations["startAgentInstall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{agent}/models": {
         parameters: {
             query?: never;
@@ -66,6 +84,23 @@ export interface paths {
         put?: never;
         /** Run a fresh local readiness probe for one agent adapter */
         post: operations["probeAgent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/installers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resolve the safe installation plan for every supported agent harness */
+        get: operations["listAgentInstallers"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1729,6 +1764,18 @@ export interface components {
             id: string;
             label: string;
         };
+        AgentInstallPlan: {
+            agentId: string;
+            automatic: boolean;
+            available: boolean;
+            command?: string;
+            documentationUrl: string;
+            method: string;
+            reason?: string;
+        };
+        AgentInstallerCatalogResponse: {
+            agents: components["schemas"]["AgentInstallPlan"][];
+        };
         AgentModelInfo: {
             id: string;
             isDefault?: boolean;
@@ -2233,6 +2280,28 @@ export interface components {
         };
         InitializeRepositoryResult: {
             path: string;
+        };
+        InstallJob: {
+            /** @description Human-readable fixed install command. */
+            command?: string;
+            /** @description Failure or unsupported reason. */
+            error?: string;
+            /**
+             * Format: date-time
+             * @description Absent until the job finishes.
+             */
+            finishedAt?: null | string;
+            /** @description Combined stdout and stderr, tail-capped to about 4000 bytes. */
+            output?: string;
+            /** Format: date-time */
+            startedAt?: null | string;
+            /**
+             * @description Current lifecycle state of the job.
+             * @enum {string}
+             */
+            status: "idle" | "running" | "succeeded" | "failed" | "unsupported";
+            /** @description Fixed agent harness this job ran (or is running) for. */
+            target: string;
         };
         KillReviewResponse: {
             reviewerHandleId: string;
@@ -3117,6 +3186,88 @@ export interface operations {
             };
         };
     };
+    getAgentInstallStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent adapter identifier. */
+                agent: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallJob"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    startAgentInstall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent adapter identifier. */
+                agent: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallJob"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     getAgentModels: {
         parameters: {
             query?: {
@@ -3271,6 +3422,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listAgentInstallers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentInstallerCatalogResponse"];
                 };
             };
             /** @description Internal Server Error */

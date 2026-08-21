@@ -13,6 +13,7 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 )
 
 // HTTP response envelopes for the projects surface — the SINGLE definition of
@@ -1007,6 +1008,14 @@ type SessionUsageResponse struct {
 	Totals     UsageTotalsResponse    `json:"totals"`
 	Harnesses  []UsageHarnessResponse `json:"harnesses"`
 }
+
+// AgentInstallerCatalogResponse is the body of GET /agents/installers.
+type AgentInstallerCatalogResponse struct {
+	Agents []systeminstall.AgentPlan `json:"agents"`
+}
+
+// AgentInstallResponse is shared by the start and status agent install routes.
+type AgentInstallResponse = systeminstall.Job
 
 // ListNotificationsQuery is the query string accepted by GET /api/v1/notifications.
 type ListNotificationsQuery struct {

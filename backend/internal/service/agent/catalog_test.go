@@ -464,6 +464,13 @@ func TestProbeBypassesRefreshRateLimitForOneAgent(t *testing.T) {
 	if probes != 2 {
 		t.Fatalf("probes = %d, want refresh plus fresh probe", probes)
 	}
+	listed, err := svc.List(context.Background())
+	if err != nil {
+		t.Fatalf("List after Probe: %v", err)
+	}
+	if len(listed.Installed) != 1 || listed.Installed[0].ID != "codex" {
+		t.Fatalf("installed after Probe = %#v, want codex", listed.Installed)
+	}
 }
 
 func TestProbeReportsUnsupportedAndMissingAgent(t *testing.T) {

@@ -5,8 +5,9 @@ import { ReportProblemDialog } from "./settings/ReportProblemDialog";
 import { SettingsLinkRow } from "./settings/SettingsRow";
 import { SettingsSection } from "./settings/SettingsSection";
 import { UpdatesSection } from "./settings/UpdatesSection";
+import { HarnessSettingsSection } from "./settings/HarnessSettingsSection";
 
-export type GlobalSettingsSection = "general" | "updates" | "help" | "all";
+export type GlobalSettingsSection = "general" | "harness" | "updates" | "help" | "all";
 
 export function GlobalSettingsForm({
 	section = "all",
@@ -45,6 +46,7 @@ export function GlobalSettingsForm({
 						</SettingsSection>
 					</>
 				)}
+				{(section === "all" || section === "harness") && <HarnessSettingsSection titleHidden={leadingTitleHidden} />}
 				{(section === "all" || section === "updates") && <UpdatesSection titleHidden={leadingTitleHidden} />}
 				{(section === "all" || section === "help") && (
 					<SettingsSection title={t("settings.getHelp")} titleHidden={leadingTitleHidden} grouped>

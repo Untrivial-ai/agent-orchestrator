@@ -226,6 +226,7 @@ func (s *Service) Probe(ctx context.Context, agentID string) (ProbeResult, error
 			continue
 		}
 		res := s.probeAgent(ctx, item)
+		s.recordProbeResult(res)
 		return ProbeResult{
 			Agent:     res.info,
 			Supported: true,
@@ -233,6 +234,31 @@ func (s *Service) Probe(ctx context.Context, agentID string) (ProbeResult, error
 		}, nil
 	}
 	return ProbeResult{Agent: Info{ID: agentID}, Supported: false, Installed: false}, nil
+}
+
+// recordProbeResult makes the user-initiated one-agent probe immediately
+// visible through List. This is especially important after an installer job:
+// the settings page verifies the exact harness, then invalidates the shared
+// agents query without waiting for the broader refresh throttle to expire.
+func (s *Service) recordProbeResult(res probeResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inventory.Installed = replaceInventoryInfo(s.inventory.Installed, res.info, res.installed)
+	s.inventory.Authorized = replaceInventoryInfo(s.inventory.Authorized, res.info, res.authorized)
+}
+
+func replaceInventoryInfo(items []Info, info Info, include bool) []Info {
+	out := make([]Info, 0, len(items)+1)
+	for _, item := range items {
+		if item.ID != info.ID {
+			out = append(out, item)
+		}
+	}
+	if include {
+		out = append(out, info)
+	}
+	sortInfos(out)
+	return out
 }
 
 // Models returns one normalized model catalog. Cached values survive daemon

@@ -33,6 +33,71 @@ paths:
       summary: Return cached supported and locally installed agent adapters
       tags:
       - agents
+  /api/v1/agents/{agent}/install:
+    get:
+      operationId: getAgentInstallStatus
+      parameters:
+      - description: Agent adapter identifier.
+        in: path
+        name: agent
+        required: true
+        schema:
+          description: Agent adapter identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstallJob'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get the current or last install job for one agent harness
+      tags:
+      - agents
+    post:
+      operationId: startAgentInstall
+      parameters:
+      - description: Agent adapter identifier.
+        in: path
+        name: agent
+        required: true
+        schema:
+          description: Agent adapter identifier.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstallJob'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Start an asynchronous install for one fixed agent harness
+      tags:
+      - agents
   /api/v1/agents/{agent}/models:
     get:
       operationId: getAgentModels
@@ -183,6 +248,31 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Run a fresh local readiness probe for one agent adapter
+      tags:
+      - agents
+  /api/v1/agents/installers:
+    get:
+      operationId: listAgentInstallers
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentInstallerCatalogResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Resolve the safe installation plan for every supported agent harness
       tags:
       - agents
   /api/v1/agents/refresh:
@@ -5191,6 +5281,38 @@ components:
       - id
       - label
       type: object
+    AgentInstallPlan:
+      properties:
+        agentId:
+          type: string
+        automatic:
+          type: boolean
+        available:
+          type: boolean
+        command:
+          type: string
+        documentationUrl:
+          type: string
+        method:
+          type: string
+        reason:
+          type: string
+      required:
+      - agentId
+      - available
+      - automatic
+      - method
+      - documentationUrl
+      type: object
+    AgentInstallerCatalogResponse:
+      properties:
+        agents:
+          items:
+            $ref: '#/components/schemas/AgentInstallPlan'
+          type: array
+      required:
+      - agents
+      type: object
     AgentModelInfo:
       properties:
         id:
@@ -6579,6 +6701,44 @@ components:
           type: string
       required:
       - path
+      type: object
+    InstallJob:
+      properties:
+        command:
+          description: Human-readable fixed install command.
+          type: string
+        error:
+          description: Failure or unsupported reason.
+          type: string
+        finishedAt:
+          description: Absent until the job finishes.
+          format: date-time
+          type:
+          - "null"
+          - string
+        output:
+          description: Combined stdout and stderr, tail-capped to about 4000 bytes.
+          type: string
+        startedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        status:
+          description: Current lifecycle state of the job.
+          enum:
+          - idle
+          - running
+          - succeeded
+          - failed
+          - unsupported
+          type: string
+        target:
+          description: Fixed agent harness this job ran (or is running) for.
+          type: string
+      required:
+      - target
+      - status
       type: object
     KillReviewResponse:
       properties:

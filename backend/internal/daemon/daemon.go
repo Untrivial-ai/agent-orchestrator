@@ -44,6 +44,7 @@ import (
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
@@ -268,6 +269,7 @@ func Run() error {
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, log)
 
 	agentSvc := agentsvc.NewWithDeps(agentsvc.Deps{Cache: store, Discoverer: modelcatalog.Discoverer{}, Projects: store})
+	installerSvc := systeminstall.New()
 	go func() {
 		if _, err := agentSvc.Refresh(ctx); err != nil {
 			log.Warn("initial agent catalog refresh failed", "err", err)
@@ -400,6 +402,7 @@ func Run() error {
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Projects:           projectSvc,
 		Agents:             agentSvc,
+		Installer:          installerSvc,
 		Sessions:           sessionSvc,
 		PRs:                prActions,
 		Reviews:            reviewSvc,

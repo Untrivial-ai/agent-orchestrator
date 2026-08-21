@@ -23,6 +23,7 @@ import (
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
 	Agents             controllers.AgentCatalog
+	Installer          controllers.Installer
 	Projects           projectsvc.Manager
 	Sessions           controllers.SessionService
 	Activity           controllers.ActivityRecorder
@@ -91,6 +92,7 @@ type API struct {
 	cfg           config.Config
 	deps          APIDeps
 	agents        *controllers.AgentsController
+	installer     *controllers.SystemInstallController
 	projects      *controllers.ProjectsController
 	sessions      *controllers.SessionsController
 	usage         *controllers.UsageController
@@ -117,6 +119,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		agents: &controllers.AgentsController{
 			Catalog: deps.Agents,
 		},
+		installer: &controllers.SystemInstallController{Installer: deps.Installer},
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
@@ -158,6 +161,7 @@ func (a *API) Register(root chi.Router) {
 			r.Use(middleware.Timeout(timeout))
 			r.Use(presenceMiddleware(a.deps.Presence))
 			a.agents.Register(r)
+			a.installer.Register(r)
 			a.projects.Register(r)
 			a.sessions.Register(r)
 			a.usage.Register(r)
