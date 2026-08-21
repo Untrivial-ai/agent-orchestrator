@@ -3022,6 +3022,8 @@ components:
           type: string
         author:
           type: string
+        authorAvatarUrl:
+          type: string
         sourceBranch:
           type: string
         targetBranch:

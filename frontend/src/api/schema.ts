@@ -2710,6 +2710,7 @@ export interface components {
         SessionPRSummary: {
             additions: number;
             author: string;
+            authorAvatarUrl?: string;
             changedFiles: number;
             ci: components["schemas"]["SessionPRCISummary"];
             /** Format: date-time */

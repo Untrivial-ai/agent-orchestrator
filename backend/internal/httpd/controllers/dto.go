@@ -652,6 +652,7 @@ type SessionPRSummary struct {
 	Provider         string                       `json:"provider" enum:"github,gitlab"`
 	Repo             string                       `json:"repo"`
 	Author           string                       `json:"author"`
+	AuthorAvatarURL  string                       `json:"authorAvatarUrl,omitempty"`
 	SourceBranch     string                       `json:"sourceBranch"`
 	TargetBranch     string                       `json:"targetBranch"`
 	HeadSHA          string                       `json:"headSha"`
@@ -754,6 +755,7 @@ func NewSessionPRSummary(in sessionsvc.PRSummary) SessionPRSummary {
 		Provider:         in.Provider,
 		Repo:             in.Repo,
 		Author:           in.Author,
+		AuthorAvatarURL:  in.AuthorAvatarURL,
 		SourceBranch:     in.SourceBranch,
 		TargetBranch:     in.TargetBranch,
 		HeadSHA:          in.HeadSHA,
