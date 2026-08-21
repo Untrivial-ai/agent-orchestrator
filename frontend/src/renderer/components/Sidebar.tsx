@@ -97,7 +97,7 @@ const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperti
 // a 20px square icon button that tints on hover, matching the old
 // SidebarMenuAction footprint.
 const HOVER_ACTION_CLASS =
-	"flex size-5 shrink-0 items-center justify-center rounded-md text-passive transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:text-foreground [&_svg]:size-icon-lg";
+	"grid size-5 shrink-0 place-items-center rounded-md text-passive transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:text-foreground [&_svg]:size-icon-lg";
 
 // Shared nav-row chrome (Codex-style): inset pill hover/selected, 14px type, no accent bar.
 const NAV_ROW_CLASS =
@@ -705,11 +705,13 @@ function ProjectItem({
 				<Folder className="size-5" strokeWidth={1.75} />
 			)}
 		</span>
-		<span
-			className="sidebar-expanded-chrome min-w-0 flex-1 translate-y-px truncate group-data-[collapsible=icon]:hidden"
-			data-project-label=""
-		>
-			{workspace.name}
+		{/* Orchestrator activity sits left of the project name, mirroring worker rows.
+		    gap-1.5 matches SessionRow's dot-to-title spacing (the row itself uses gap-2). */}
+		<span className="sidebar-expanded-chrome flex min-w-0 flex-1 items-center gap-1.5 group-data-[collapsible=icon]:hidden">
+			{orchestratorStatus ? <SessionStatusDot session={orchestratorStatus} /> : null}
+			<span className="min-w-0 flex-1 translate-y-px truncate" data-project-label="">
+				{workspace.name}
+			</span>
 		</span>
 	</SidebarMenuButton>
 	{/* Folder disclosure toggle: sibling of the nav button, absolutely positioned over
@@ -744,16 +746,11 @@ function ProjectItem({
 								? t("shell.openProjectOrchestrator", { name: workspace.name })
 								: t("shell.spawnProjectOrchestrator", { name: workspace.name })
 						}
-						className={cn(
-							HOVER_ACTION_CLASS,
-							orchestratorStatus && "w-7 gap-0.5",
-							orchestratorActive && "text-foreground",
-						)}
+						className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
 						disabled={isSpawning || isProjectRestarting}
 						onClick={() => void openOrchestrator()}
 						type="button"
 					>
-						{orchestratorStatus ? <SessionStatusDot session={orchestratorStatus} /> : null}
 						<OrchestratorIcon aria-hidden="true" strokeWidth={orchestratorActive ? 2.5 : 2} />
 					</button>
 				</TooltipTrigger>

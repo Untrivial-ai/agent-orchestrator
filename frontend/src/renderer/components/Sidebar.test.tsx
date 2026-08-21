@@ -489,7 +489,7 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Project actions for Project One")).toBeInTheDocument();
 	});
 
-	it("shows the orchestrator activity dot in the project actions", () => {
+	it("shows the orchestrator activity dot left of the project name", () => {
 		const orchestrator: WorkspaceSession = {
 			...session,
 			id: "proj-1-orchestrator",
@@ -500,10 +500,13 @@ describe("Sidebar", () => {
 		};
 		renderSidebar({ workspaces: [{ ...workspace, sessions: [orchestrator] }] });
 
-		const button = screen.getByRole("button", { name: "Open Project One orchestrator" });
-		const dot = button.querySelector<HTMLElement>("[data-session-status]");
+		const label = document.querySelector<HTMLElement>("[data-project-label]");
+		const dot = label?.previousElementSibling as HTMLElement | null;
+		expect(dot).toHaveAttribute("data-session-status");
 		expect(dot).toHaveClass("bg-status-needs-you");
 		expect(dot).not.toHaveClass("animate-status-pulse");
+		// Dot-to-name spacing matches SessionRow's gap-1.5.
+		expect(label?.parentElement).toHaveClass("gap-1.5");
 	});
 
 	it("shows the latest orchestrator activity even when it has exited", () => {
@@ -518,8 +521,9 @@ describe("Sidebar", () => {
 		};
 		renderSidebar({ workspaces: [{ ...workspace, sessions: [orchestrator] }] });
 
-		const button = screen.getByRole("button", { name: "Spawn Project One orchestrator" });
-		const dot = button.querySelector<HTMLElement>("[data-session-status]");
+		const label = document.querySelector<HTMLElement>("[data-project-label]");
+		const dot = label?.previousElementSibling as HTMLElement | null;
+		expect(dot).toHaveAttribute("data-session-status");
 		expect(dot).toHaveClass("bg-status-exited");
 	});
 
