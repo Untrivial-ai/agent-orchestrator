@@ -248,13 +248,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const setInspectorOpenForSession = useUiStore((state) => state.setInspectorOpen);
 	const toggleInspector = useUiStore((state) => state.toggleInspector);
 	const setInspectorViewForSession = useUiStore((state) => state.setInspectorView);
+	const initializeInspectorSession = useUiStore((state) => state.initializeInspectorSession);
 	const setBrowserContentRevealed = useUiStore((state) => state.setBrowserContentRevealed);
 	const setBrowserUnseen = useUiStore((state) => state.setBrowserUnseen);
 	const { daemonStatus } = useShell();
 	const previewBaselineRef = useRef<{ sessionId: string; key: string } | null>(null);
 	const sessionSplitRef = useRef<HTMLDivElement | null>(null);
 	const terminalLiveResizeTimerRef = useRef<number | null>(null);
-	const initializedInspectorSessionIdRef = useRef<string | null>(null);
 	const [inspectorSettledClosed, setInspectorSettledClosed] = useState(!isInspectorOpen);
 	const inspectorPanelVisible = isInspectorOpen || !inspectorSettledClosed;
 	const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>({ kind: "worker" });
@@ -587,26 +587,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// preview auto-opens Browser onto a view the hook has already torn down.
 	const hasBrowserContent = !terminated && Boolean(previewUrl || browserUrl);
 
-	// Entering a session always starts on Summary. Treat browser content that
+	// Entering a session for the first time ever always starts on Summary. This
+	// must fire exactly once per session's *lifetime*, not once per "was this
+	// the last session I looked at" or "is this view currently mounted" — so
+	// the initialized flag lives in the ui-store (inspectorSessions[sessionId])
+	// rather than a component-local ref, and survives both re-entering a
+	// different previously-visited session and unmounting/remounting this view
+	// entirely (e.g. across route transitions). Treat browser content that
 	// already existed when the route resolved as the baseline for that visit;
 	// only preview work arriving afterward may reveal Browser automatically.
 	useLayoutEffect(() => {
-		if (!session || initializedInspectorSessionIdRef.current === sessionId) return;
-		initializedInspectorSessionIdRef.current = sessionId;
-		if (!hasInspector) return;
-		const current = useUiStore.getState().inspectorSessions[sessionId];
-		setInspectorViewForSession(sessionId, "summary");
-		if (current?.browserContentRevealed === undefined) {
-			setBrowserContentRevealed(sessionId, hasBrowserContent);
-		}
-	}, [
-		hasBrowserContent,
-		hasInspector,
-		session,
-		sessionId,
-		setBrowserContentRevealed,
-		setInspectorViewForSession,
-	]);
+		if (!session) return;
+		initializeInspectorSession(sessionId, hasBrowserContent, hasInspector);
+	}, [hasBrowserContent, hasInspector, session, sessionId, initializeInspectorSession]);
 
 	useLayoutEffect(() => {
 		setTerminalTarget({ kind: "worker" });

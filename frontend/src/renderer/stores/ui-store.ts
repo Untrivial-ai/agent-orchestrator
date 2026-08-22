@@ -36,6 +36,8 @@ export type InspectorSessionState = {
 	browserContentRevealed?: boolean;
 	/** Real browser activity occurred while Browser was not visible. */
 	browserUnseen?: boolean;
+	/** The session-entry defaulting (Summary tab, baseline browser reveal) has already run once for this session's lifetime. */
+	initialized?: boolean;
 };
 
 // Selection (which project/session is open) now lives in the URL — the router
@@ -101,6 +103,14 @@ type UiState = {
 	setInspectorOpen: (sessionId: string, isOpen: boolean) => void;
 	toggleInspector: (sessionId: string) => void;
 	setInspectorView: (sessionId: string, view: InspectorView) => void;
+	/**
+	 * Runs the "entering this session" defaults — Summary tab, baseline browser
+	 * reveal — exactly once per session's lifetime. Backed by persisted store
+	 * state (not a component-local ref) so it stays a no-op across unmount and
+	 * remount of the session view, not just across re-renders of one mounted
+	 * instance.
+	 */
+	initializeInspectorSession: (sessionId: string, hasBrowserContent: boolean, hasInspector: boolean) => void;
 	setBrowserContentRevealed: (sessionId: string, revealed: boolean) => void;
 	setBrowserUnseen: (sessionId: string, unseen: boolean) => void;
 	setCommandPaletteOpen: (open: boolean) => void;
@@ -232,6 +242,26 @@ export const useUiStore = create<UiState>((set, get) => ({
 				inspectorSessions: {
 					...state.inspectorSessions,
 					[sessionId]: { ...current, view, browserUnseen },
+				},
+			};
+		}),
+	initializeInspectorSession: (sessionId, hasBrowserContent, hasInspector) =>
+		set((state) => {
+			// Sessions without an inspector (e.g. orchestrator sessions) must not
+			// gain a store entry at all — leave inspectorSessions[sessionId]
+			// undefined so callers that key off its presence stay correct.
+			if (!hasInspector) return state;
+			const current = inspectorState(state.inspectorSessions, sessionId);
+			if (current.initialized) return state;
+			return {
+				inspectorSessions: {
+					...state.inspectorSessions,
+					[sessionId]: {
+						...current,
+						initialized: true,
+						view: "summary",
+						browserContentRevealed: current.browserContentRevealed ?? hasBrowserContent,
+					},
 				},
 			};
 		}),

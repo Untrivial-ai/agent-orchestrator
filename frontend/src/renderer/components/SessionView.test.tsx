@@ -1360,6 +1360,44 @@ describe("SessionView", () => {
 		expect(browserUnseen("sess-2")).toBe(true);
 	});
 
+	// Regression: the session-entry effect that defaults a brand-new session to
+	// Summary tracked only the single most-recently-initialized session ID, so
+	// re-entering ANY session that was not the immediately preceding one looked
+	// identical to a first-ever visit and forced it back to Summary — silently
+	// discarding whatever tab (Files, Browser) the user had left it on.
+	it("remembers the tab a session was left on when returning to it after visiting another session", () => {
+		const { rerender } = render(<SessionView sessionId="sess-1" />);
+		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
+
+		fireEvent.click(screen.getByRole("button", { name: "open files" }));
+		expect(inspectorButton()).toHaveAttribute("data-view", "files");
+
+		rerender(<SessionView sessionId="sess-2" />);
+		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
+
+		rerender(<SessionView sessionId="sess-1" />);
+		expect(inspectorButton()).toHaveAttribute("data-view", "files");
+	});
+
+	// Regression: the "initialized" marker used to live in a component-local
+	// ref, which is recreated whenever SessionView unmounts. Remounting an
+	// already-visited session (e.g. across a route transition) then looked
+	// identical to a first-ever visit and forced the tab back to Summary. The
+	// marker now lives in the ui-store's persisted inspectorSessions state, so
+	// it survives unmount/remount, not just re-renders of one mounted instance.
+	it("remembers the tab a session was left on after unmounting and remounting the view", () => {
+		const view = render(<SessionView sessionId="sess-1" />);
+		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
+
+		fireEvent.click(screen.getByRole("button", { name: "open files" }));
+		expect(inspectorButton()).toHaveAttribute("data-view", "files");
+
+		view.unmount();
+
+		render(<SessionView sessionId="sess-1" />);
+		expect(inspectorButton()).toHaveAttribute("data-view", "files");
+	});
+
 	it("keeps Summary selected when preview content arrives with the async workspace response", () => {
 		const secondWorker = workerSession("sess-2");
 		secondWorker.previewUrl = "http://localhost:5173/";
