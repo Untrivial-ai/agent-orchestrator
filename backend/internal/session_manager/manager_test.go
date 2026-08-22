@@ -7976,3 +7976,32 @@ func (m *flipOnNudgeMessenger) Send(_ context.Context, _ domain.SessionID, msg s
 	}
 	return nil
 }
+
+// TestReconcileLive_InterruptedSpawnTerminated locks the fix for the orphaned
+// orchestrator: a daemon killed mid-Spawn leaves a non-terminated row with no
+// workspace and no runtime handle, and EnsureOrchestrator would return that row
+// forever instead of spawning a session with a real terminal. Boot reconcile
+// must terminate it, without stashing or destroying anything (there is nothing
+// on disk to stash).
+func TestReconcileLive_InterruptedSpawnTerminated(t *testing.T) {
+	st := newFakeStore()
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	m := New(Deps{Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st, Messenger: &fakeMessenger{}, Lifecycle: lcm, LookPath: lookPath})
+
+	rec := domain.SessionRecord{
+		ID: "s9", ProjectID: "p1", Kind: domain.KindOrchestrator, IsTerminated: false,
+	}
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if lcm.terminated["s9"] != 1 {
+		t.Fatalf("MarkTerminated(s9) = %d, want 1", lcm.terminated["s9"])
+	}
+	if ws.stashCalls != 0 || rt.destroyed != 0 {
+		t.Fatalf("nothing to tear down: stash=%d destroy=%d", ws.stashCalls, rt.destroyed)
+	}
+}

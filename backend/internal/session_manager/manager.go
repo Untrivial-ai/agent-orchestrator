@@ -2185,6 +2185,19 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 		return err
 	}
 	projectKind := project.Kind.WithDefault()
+	// An interrupted spawn: the seed row was written, then the daemon died before
+	// the workspace or the runtime existed, so Spawn's rollback never ran. There
+	// is nothing to adopt, nothing to preserve, and nothing to restore — but the
+	// row still counts as an active session, and for an orchestrator that is
+	// load-bearing: EnsureOrchestrator returns the newest active orchestrator
+	// instead of spawning, so the project is pinned forever to a session with no
+	// terminal ("Preparing the orchestrator terminal…"). Terminate it here so the
+	// next request spawns a real one. Safe at boot: reconcile runs before the API
+	// serves, so no in-flight spawn can be observed mid-write.
+	if rec.Metadata.WorkspacePath == "" && runtimeHandle(rec.Metadata).ID == "" {
+		m.logger.Warn("reconcile: terminating interrupted spawn with no workspace or runtime", "sessionID", rec.ID)
+		return m.lcm.MarkTerminated(ctx, rec.ID)
+	}
 	if rec.Metadata.WorkspacePath == "" || (rec.Metadata.Branch == "" && projectKind != domain.ProjectKindScratch) {
 		return nil
 	}
