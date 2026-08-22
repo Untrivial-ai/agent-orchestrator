@@ -1,7 +1,10 @@
 package autoreview
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,4 +228,37 @@ func TestCoordinatorPeriodicallyEvaluatesPersistedFacts(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+func TestSweepLogsAutoReviewDecisionOnlyWhenItChanges(t *testing.T) {
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{
+		session: domain.SessionRecord{ID: "s1", ProjectID: "p1", Kind: domain.KindWorker, Harness: domain.HarnessCodex, AutoReviewEnabled: true, Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: now}},
+		project: domain.ProjectRecord{ID: "p1"},
+		prs:     []domain.PullRequest{{URL: "pr1", Number: 1, HeadSHA: "sha1"}},
+	}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	coordinator := New(store, &fakeTrigger{}, Config{Clock: func() time.Time { return now }, Logger: logger})
+
+	if err := coordinator.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(logs.String(), "auto-review: decision"); got != 1 {
+		t.Fatalf("decision log count = %d, want 1; logs=%s", got, logs.String())
+	}
+	if !strings.Contains(logs.String(), "reason=not_idle") || !strings.Contains(logs.String(), "session_id=s1") {
+		t.Fatalf("decision log lacks skip evidence: %s", logs.String())
+	}
+
+	store.session.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}
+	if err := coordinator.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(logs.String(), "auto-review: decision"); got != 2 || !strings.Contains(logs.String(), "reason=triggered") {
+		t.Fatalf("changed decision was not logged once: %s", logs.String())
+	}
 }

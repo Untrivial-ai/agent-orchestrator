@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -51,6 +52,8 @@ type Coordinator struct {
 	idleThreshold time.Duration
 	sweepInterval time.Duration
 	logger        *slog.Logger
+	decisionMu    sync.Mutex
+	lastDecisions map[domain.SessionID]string
 }
 
 // Config customizes coordinator timing and logging.
@@ -63,7 +66,7 @@ type Config struct {
 
 // New constructs an auto-review coordinator.
 func New(store Store, reviews Trigger, cfg Config) *Coordinator {
-	c := &Coordinator{store: store, reviews: reviews, clock: cfg.Clock, idleThreshold: cfg.IdleThreshold, sweepInterval: cfg.SweepInterval, logger: cfg.Logger}
+	c := &Coordinator{store: store, reviews: reviews, clock: cfg.Clock, idleThreshold: cfg.IdleThreshold, sweepInterval: cfg.SweepInterval, logger: cfg.Logger, lastDecisions: make(map[domain.SessionID]string)}
 	if c.clock == nil {
 		c.clock = time.Now
 	}
@@ -254,14 +257,33 @@ func (c *Coordinator) Sweep(ctx context.Context) error {
 		return err
 	}
 	for _, session := range sessions {
-		if reason := sessionGate(session, c.clock(), c.idleThreshold); reason != "" {
+		if !session.AutoReviewEnabled {
 			continue
 		}
-		if _, err := c.EvaluateSession(ctx, session.ID); err != nil {
+		result, err := c.EvaluateSession(ctx, session.ID)
+		if err != nil {
 			c.logger.Error("auto-review: evaluate session failed", "session_id", session.ID, "err", err)
+			continue
 		}
+		c.logDecision(session, result)
 	}
 	return nil
+}
+
+func (c *Coordinator) logDecision(session domain.SessionRecord, result Result) {
+	c.decisionMu.Lock()
+	if c.lastDecisions[session.ID] == result.Reason {
+		c.decisionMu.Unlock()
+		return
+	}
+	c.lastDecisions[session.ID] = result.Reason
+	c.decisionMu.Unlock()
+	c.logger.Info("auto-review: decision",
+		"session_id", session.ID,
+		"reason", result.Reason,
+		"triggered", result.Triggered,
+		"activity", session.Activity.State,
+	)
 }
 
 // Start evaluates persisted session and PR facts on the configured cadence

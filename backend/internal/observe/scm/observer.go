@@ -1095,7 +1095,7 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 			// dropped (as is an empty head repo from a deleted fork), preserving
 			// the no-misattribution guarantee.
 			eligible := candidatesForHeadRepo(byRepo[repoKey], pr.HeadRepo)
-			sr, ok := matchSession(eligible, pr.SourceBranch)
+			sr, ok := matchSession(eligible, pr.SourceBranch, pr.TargetBranch)
 			if !ok {
 				continue
 			}
@@ -1224,7 +1224,7 @@ func candidatesForHeadRepo(candidates []sessionRepo, headRepo string) []sessionR
 	return out
 }
 
-func matchSession(candidates []sessionRepo, sourceBranch string) (sessionRepo, bool) {
+func matchSession(candidates []sessionRepo, sourceBranch, targetBranch string) (sessionRepo, bool) {
 	for _, sr := range candidates {
 		if sr.branch != "" && sr.branch == sourceBranch {
 			return sr, true
@@ -1245,7 +1245,19 @@ func matchSession(candidates []sessionRepo, sourceBranch string) (sessionRepo, b
 			}
 		}
 	}
-	return best, bestLen >= 0
+	if bestLen >= 0 {
+		return best, true
+	}
+	// A stacked child can use any source-branch name; its explicit stack edge is
+	// the base branch pointing at the parent session branch. Prefer source
+	// ownership above, then use this exact-only fallback so an unrelated branch
+	// cannot be captured merely because its name shares a prefix.
+	for _, sr := range candidates {
+		if sr.branch != "" && sr.branch == targetBranch {
+			return sr, true
+		}
+	}
+	return sessionRepo{}, false
 }
 
 func sessionBranchPrefixes(branch string) []string {

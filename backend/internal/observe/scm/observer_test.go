@@ -745,6 +745,31 @@ func TestPoll_DiscoversStackedChildByBranchPrefix(t *testing.T) {
 	}
 }
 
+func TestPoll_DiscoversSiblingNamedStackedChildByTargetBranch(t *testing.T) {
+	store := testStoreWithSession()
+	childObs := testObs(2)
+	childObs.PR.SourceBranch = "feat-aws-staging"
+	childObs.PR.TargetBranch = "feat"
+	provider := &fakeProvider{
+		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
+		openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {
+			{URL: "https://github.com/o/r/pull/2", Number: 2, SourceBranch: "feat-aws-staging", HeadRepo: "o/r", TargetBranch: "feat", HeadSHA: "sha2"},
+		}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 2): childObs},
+	}
+	lc := &fakeLifecycle{}
+	obs := newTestObserver(store, provider, lc, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) == 0 || store.writes[0].pr.Number != 2 {
+		t.Fatalf("stacked child was not attributed to the parent session: writes=%#v", store.writes)
+	}
+	if len(lc.observed) != 1 {
+		t.Fatalf("lifecycle observations = %d, want 1", len(lc.observed))
+	}
+}
+
 func TestPoll_DiscoversSiblingUnderRootSessionNamespace(t *testing.T) {
 	store := testStoreWithSession()
 	store.sessions[0].Metadata.Branch = "ao/p-1/root"
@@ -780,7 +805,7 @@ func TestPoll_DiscoversSiblingUnderRootSessionNamespace(t *testing.T) {
 func TestMatchSession_PrefersExactBranchOverNamespaceMatch(t *testing.T) {
 	exact := sessionRepo{session: domain.SessionRecord{ID: "exact"}, branch: "ao/p-1"}
 	namespace := sessionRepo{session: domain.SessionRecord{ID: "namespace"}, branch: "ao/p-1/root"}
-	got, ok := matchSession([]sessionRepo{namespace, exact}, "ao/p-1")
+	got, ok := matchSession([]sessionRepo{namespace, exact}, "ao/p-1", "main")
 	if !ok {
 		t.Fatal("expected a matching session")
 	}
