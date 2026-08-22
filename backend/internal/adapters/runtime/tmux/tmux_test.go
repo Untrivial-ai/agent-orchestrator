@@ -365,6 +365,28 @@ func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
 	}
 }
 
+func TestCreateLaunchCommandSupervisedParksOnBannerAndCat(t *testing.T) {
+	launchCmd := buildLaunchCommand(ports.RuntimeConfig{
+		WorkspacePath: "/tmp/ws",
+		Argv:          []string{"myagent", "--flag"},
+		Env:           map[string]string{"AO_SUPERVISED_PROCESS": "1"},
+	})
+
+	// A supervised pane must never fall back to an interactive shell: bytes
+	// racing the child's exit could become shell commands.
+	if strings.Contains(launchCmd, `exec "${SHELL:-/bin/sh}" -i`) {
+		t.Fatalf("supervised launch command must not exec an interactive shell: %q", launchCmd)
+	}
+	if !strings.HasSuffix(launchCmd, `exec cat >/dev/null`) {
+		t.Fatalf("supervised launch command missing keep-alive stdin sink: %q", launchCmd)
+	}
+	// The parked pane explains itself instead of silently swallowing keystrokes.
+	banner := `printf '\r\n[ao] agent exited - restore this session from the app to continue\r\n'; exec cat >/dev/null`
+	if !strings.Contains(launchCmd, banner) {
+		t.Fatalf("supervised launch command missing exit banner before keep-alive sink: %q", launchCmd)
+	}
+}
+
 func TestCreateLaunchCommandExportsEnvVars(t *testing.T) {
 	oldGetenv := getenv
 	getenv = func(key string) string {

@@ -967,6 +967,8 @@
 	"termination.confirmAria": "Ja, Sitzung beenden",
 	"termination.dialog": "Sitzung beenden?",
 	"termination.dialogNamed": "{{title}} beenden?",
+	"terminal.agentExited": "Agent beendet",
+	"terminal.agentExitedRestore": "Der Agent wurde beendet. Stelle die Sitzung wieder her, um ihn hier neu zu starten.",
 	"terminal.agent": "agent",
 	"terminal.backToAgent": "Zurück zum Agent-Terminal",
 	"terminal.close": "Terminal schließen",
