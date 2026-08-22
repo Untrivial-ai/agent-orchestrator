@@ -72,6 +72,14 @@ func New() *Plugin {
 	return &Plugin{}
 }
 
+// ExitDetectionMode opts opencode into AO's process supervisor. opencode's
+// launch command ends in an interactive keep-alive shell, so the tmux pane
+// outlives the agent process and runtime liveness alone reports a dead worker
+// as alive forever (#2089). Mirrors the codex adapter.
+func (p *Plugin) ExitDetectionMode() ports.AgentExitDetectionMode {
+	return ports.AgentExitDetectionSupervisor
+}
+
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
