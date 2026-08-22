@@ -1447,6 +1447,7 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.Usage != nil {
 			usageSignal.Harness = domain.AgentHarness(capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(string(in.Usage.Harness)))))
+			usageSignal.ProviderHint = capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.Usage.ProviderID)))
 			usageSignal.TranscriptPath = capUsagePath(domain.SanitizeControlChars(strings.TrimSpace(in.Usage.TranscriptPath)))
 			usageSignal.ModelID = capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.Usage.ModelID)))
 			usageSignal.SubagentID = capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.Usage.SubagentID)))

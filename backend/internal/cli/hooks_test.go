@@ -57,6 +57,9 @@ func capturedState(t *testing.T, capture *activityCapture) string {
 
 func TestHooks_ReportsUsageTranscriptMetadata(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "ao-7")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "")
+	t.Setenv("CLAUDE_CODE_USE_VERTEX", "")
 	cfg := setConfigEnv(t)
 	srv, capture := activityServer(t, http.StatusOK, `{"ok":true,"sessionId":"ao-7","state":""}`)
 	writeRunFileFor(t, cfg, srv)
@@ -83,6 +86,7 @@ func TestHooks_ReportsUsageTranscriptMetadata(t *testing.T) {
 		t.Fatalf("request = %+v", req)
 	}
 	if req.Usage.Harness != "claude-code" ||
+		req.Usage.ProviderID != "anthropic" ||
 		req.Usage.TranscriptPath != "/home/user/.claude/projects/p/native-7.jsonl" ||
 		req.Usage.SubagentID != "sub-2" ||
 		req.Usage.SubagentTranscriptPath != "/home/user/.claude/projects/p/agent-sub-2.jsonl" {
@@ -90,6 +94,49 @@ func TestHooks_ReportsUsageTranscriptMetadata(t *testing.T) {
 	}
 	if strings.Contains(capture.body, "sourceCliVersion") {
 		t.Fatalf("usage request retained obsolete CLI version metadata: %s", capture.body)
+	}
+}
+
+func TestClaudeHookUsageProviderHintUsesTrustedProcessRouting(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		bedrock string
+		vertex  string
+		want    string
+	}{
+		{name: "default anthropic", want: "anthropic"},
+		{name: "official anthropic api", baseURL: "https://api.anthropic.com/v1/messages", want: "anthropic"},
+		{name: "official zai api", baseURL: "https://api.z.ai/api/anthropic", want: "zai"},
+		{name: "bedrock precedence", baseURL: "https://custom.invalid", bedrock: "1", want: "bedrock"},
+		{name: "vertex precedence", baseURL: "https://api.z.ai", vertex: "true", want: "vertex_ai"},
+		{name: "conflicting flags", bedrock: "1", vertex: "1"},
+		{name: "unknown custom route", baseURL: "https://token:secret@custom.invalid/v1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_BASE_URL", test.baseURL)
+			t.Setenv("CLAUDE_CODE_USE_BEDROCK", test.bedrock)
+			t.Setenv("CLAUDE_CODE_USE_VERTEX", test.vertex)
+			t.Setenv("ANTHROPIC_API_KEY", "credential-must-not-persist")
+			got := hookUsageMetadata("claude-code", []byte(`{"transcript_path":"/tmp/transcript.jsonl"}`))
+			if got == nil || got.ProviderID != test.want {
+				t.Fatalf("usage metadata = %+v, want provider %q", got, test.want)
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.baseURL != "" && strings.Contains(string(encoded), test.baseURL) ||
+				strings.Contains(string(encoded), "credential-must-not-persist") || strings.Contains(string(encoded), "secret") {
+				t.Fatalf("usage metadata persisted routing secret or URL: %s", encoded)
+			}
+		})
+	}
+
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai")
+	if got := hookUsageMetadata("codex", []byte(`{"transcript_path":"/tmp/rollout.jsonl"}`)); got == nil || got.ProviderID != "" {
+		t.Fatalf("Codex inherited Claude routing hint: %+v", got)
 	}
 }
 

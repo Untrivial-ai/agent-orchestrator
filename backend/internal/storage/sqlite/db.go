@@ -134,6 +134,9 @@ func migrate(db *sql.DB) error {
 	if err := repairRenumberedChatMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered chat migration history: %w", err)
 	}
+	if err := prepareUsageCostMigration(db); err != nil {
+		return fmt.Errorf("prepare usage cost migration: %w", err)
+	}
 	if err := prepareAutoInjectReviewMigration(db); err != nil {
 		return fmt.Errorf("prepare auto-inject-review migration: %w", err)
 	}
@@ -160,6 +163,29 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return reconcileSchema(db)
+}
+
+// prepareUsageCostMigration releases a falsely-applied usage migration before
+// 0101 adds columns to its tables. Some field profiles recorded versions
+// 44-53 from a foreign build without ever creating the real 0052 usage schema.
+func prepareUsageCostMigration(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil || gooseTable == 0 {
+		return err
+	}
+	var usageTables int
+	if err := db.QueryRow(`
+SELECT COUNT(*) FROM sqlite_master
+WHERE type = 'table' AND name IN ('usage_bindings', 'usage_sources', 'model_usage_events')`).Scan(&usageTables); err != nil {
+		return err
+	}
+	if usageTables == 3 {
+		return nil
+	}
+	_, err := db.Exec(`DELETE FROM goose_db_version WHERE version_id = 52`)
+	return err
 }
 
 // prepareAutoInjectReviewMigration preserves development databases whose

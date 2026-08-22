@@ -290,12 +290,13 @@ describe("SessionsBoard", () => {
 		expect(within(idleCard).getByText("brand-font-pipeline")).toHaveClass("font-semibold", "line-clamp-2");
 	});
 
-	it("shows compact token usage on active and archived cards and hides empty totals", async () => {
+	it("shows coverage-aware cost with tokens on active and archived cards", async () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
 					boardSession({ id: "s-active", title: "active worker", status: "idle" }),
 					boardSession({ id: "s-empty", title: "empty worker", status: "idle" }),
+					boardSession({ id: "s-tokens", title: "tokens worker", status: "idle" }),
 					terminatedSession(),
 				]),
 			],
@@ -307,6 +308,13 @@ describe("SessionsBoard", () => {
 				[
 					"s-active",
 					{
+						estimatedCost: {
+							cachedInputNanos: 100_000_000,
+							coverage: "complete",
+							inputNanos: 540_000_000,
+							outputNanos: 600_000_000,
+							totalNanos: 1_240_000_000,
+						},
 						sessionId: "s-active",
 						processedTokens: 12_300,
 						totalTokens: 12_400,
@@ -316,6 +324,7 @@ describe("SessionsBoard", () => {
 				[
 					"s-empty",
 					{
+						estimatedCost: null,
 						sessionId: "s-empty",
 						processedTokens: 0,
 						totalTokens: 0,
@@ -323,8 +332,25 @@ describe("SessionsBoard", () => {
 					},
 				],
 				[
+					"s-tokens",
+					{
+						estimatedCost: null,
+						sessionId: "s-tokens",
+						processedTokens: 800,
+						totalTokens: 800,
+						incomplete: false,
+					},
+				],
+				[
 					"s-dead",
 					{
+						estimatedCost: {
+							cachedInputNanos: null,
+							coverage: "partial",
+							inputNanos: 5_000_000,
+							outputNanos: 15_000_000,
+							totalNanos: 20_000_000,
+						},
 						sessionId: "s-dead",
 						processedTokens: 1_900,
 						totalTokens: 2_000,
@@ -336,16 +362,73 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 
-		const activeUsage = screen.getByText("12.3K processed");
-		expect(activeUsage).toHaveAttribute("aria-label", "12,300 tokens processed");
-		expect(screen.queryByText("0 processed")).not.toBeInTheDocument();
+		// The card shows cost and tokens and nothing else. The word "processed"
+		// only survives where a screen reader needs the count named.
+		const activeUsage = screen.getByText("$1.24 · 12.3K");
+		expect(activeUsage).toHaveAttribute("aria-label", "$1.24 · 12,300 tokens");
+		expect(screen.queryByText(/processed/i)).not.toBeInTheDocument();
+		// A session with neither cost nor tokens carries no usage line at all.
+		const emptyCard = screen.getByText("empty worker").closest('[data-testid="board-session-card"]') as HTMLElement;
+		expect(within(emptyCard).queryByLabelText(/tokens$/)).not.toBeInTheDocument();
+		const tokensOnlyCard = screen.getByText("tokens worker").closest('[data-testid="board-session-card"]') as HTMLElement;
+		expect(within(tokensOnlyCard).getByText("800")).toHaveAttribute("aria-label", "800 tokens");
+		expect(tokensOnlyCard).not.toHaveTextContent(/[≈≥]\$/);
 		expect(usageQueryMock).toHaveBeenCalledWith("p1");
-		await userEvent.hover(activeUsage);
-		expect((await screen.findAllByText("12,300 tokens processed")).length).toBeGreaterThan(0);
 
 		const archive = await expandArchive();
-		const archivedUsage = within(archive).getByText("1.9K processed");
-		expect(archivedUsage).toHaveAttribute("aria-label", "1,900 tokens processed");
+		expect(within(archive).getByText("$0.02 · 1.9K")).toHaveAttribute("aria-label", "$0.02 · 1,900 tokens");
+	});
+
+	// The breakdown lived behind a tooltip whose trigger was a real button, so
+	// every priced card added a tab stop between the terminate control and the
+	// next card. A board is for scanning; the per-component figures belong on
+	// the session's own surface, so the metric is plain text again.
+	it("shows the usage metric as plain text without a tab stop or tooltip", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "s-keyboard", title: "keyboard worker", status: "idle" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		usageQueryMock.mockReturnValue({
+			data: new Map([
+				[
+					"s-keyboard",
+					{
+						estimatedCost: {
+							cachedInputNanos: 100_000_000,
+							coverage: "complete",
+							inputNanos: 540_000_000,
+							outputNanos: 600_000_000,
+							totalNanos: 1_240_000_000,
+						},
+						incomplete: false,
+						sessionId: "s-keyboard",
+						processedTokens: 12_400,
+						totalTokens: 12_400,
+					},
+				],
+			]),
+		});
+
+		renderBoard("p1");
+
+		const card = screen.getByText("keyboard worker").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const usage = within(card).getByText("$1.24 · 12.4K");
+		expect(usage.tagName).toBe("SPAN");
+		expect(usage).toHaveAttribute("aria-label", "$1.24 · 12,400 tokens");
+		expect(within(card).queryByRole("button", { name: /Estimated cost/ })).not.toBeInTheDocument();
+
+		within(card).getByRole("button", { name: "keyboard worker" }).focus();
+		await userEvent.tab();
+		expect(within(card).getByRole("button", { name: "Terminate keyboard worker" })).toHaveFocus();
+
+		await userEvent.hover(usage);
+		expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+		expect(card).not.toHaveTextContent("Cached input");
 	});
 
 	it("pulses the shared activity indicator on an actively working session card", () => {

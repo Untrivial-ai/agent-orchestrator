@@ -59,14 +59,6 @@ type AgentSwitch struct {
 	FinalHandoffHash        string
 }
 
-type AnthropicUsageEventDetail struct {
-	EventID                             int64
-	AnthropicDirectUncachedInputTokens  sql.NullInt64
-	AnthropicCacheCreationInputTokens   sql.NullInt64
-	AnthropicCacheCreation5mInputTokens sql.NullInt64
-	AnthropicCacheCreation1hInputTokens sql.NullInt64
-}
-
 type AppSetting struct {
 	ID                 int64
 	DefaultSessionMode domain.SessionMode
@@ -200,21 +192,26 @@ type ConversationTurn struct {
 }
 
 type ModelUsageEvent struct {
-	ID                      int64
-	BindingID               int64
-	UsageSourceID           int64
-	ProviderID              string
-	ModelID                 string
-	InputTokens             sql.NullInt64
-	InputProvenance         string
-	CachedInputTokens       sql.NullInt64
-	CachedInputProvenance   string
-	UncachedInputTokens     sql.NullInt64
-	UncachedInputProvenance string
-	OutputTokens            sql.NullInt64
-	OutputProvenance        string
-	SourceEventKey          string
-	CreatedAt               sql.NullTime
+	ID                    int64
+	BindingID             int64
+	UsageSourceID         int64
+	ProviderID            string
+	BillingProviderID     sql.NullString
+	ModelID               string
+	UsageMeasurementKind  string
+	InputTokens           sql.NullInt64
+	CachedInputTokens     sql.NullInt64
+	UncachedInputTokens   sql.NullInt64
+	OutputTokens          sql.NullInt64
+	ProviderUsageJson     sql.NullString
+	SourceEventKey        string
+	CreatedAt             sql.NullTime
+	InputCostNanos        sql.NullInt64
+	CachedInputCostNanos  sql.NullInt64
+	OutputCostNanos       sql.NullInt64
+	EstimatedCostNanos    sql.NullInt64
+	PricingVersion        string
+	BillingProviderSource sql.NullString
 }
 
 type Notification struct {
@@ -228,13 +225,6 @@ type Notification struct {
 	Status     domain.NotificationStatus
 	CreatedAt  time.Time
 	ResolvedAt sql.NullTime
-}
-
-type OpenaiUsageEventDetail struct {
-	EventID                     int64
-	OpenaiReasoningOutputTokens sql.NullInt64
-	OpenaiCacheWriteInputTokens sql.NullInt64
-	OpenaiReportedTotalTokens   sql.NullInt64
 }
 
 type PR struct {
@@ -501,6 +491,7 @@ type UsageBinding struct {
 	State          domain.UsageBindingState
 	LastErrorCode  string
 	UpdatedAt      time.Time
+	ProviderHint   string
 }
 
 type UsageCodexPendingChild struct {

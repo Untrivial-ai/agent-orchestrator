@@ -1,0 +1,94 @@
+name: Refresh pricing catalog
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The fork PAT can write only to whoisasx/agent-orchestrator, so the pull
+  # request against the canonical repository is opened with github.token, which
+  # needs this scope to create or edit it.
+  pull-requests: write
+
+jobs:
+  sync:
+    # Run only from the canonical repository. The PAT can write only to the
+    # personal fork used as the pull request head.
+    if: github.repository == 'Untrivial-ai/agent-orchestrator'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: whoisasx/agent-orchestrator
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.PRICING_CATALOG_PAT }}
+      - name: Base catalog refresh on canonical main
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/Untrivial-ai/agent-orchestrator.git
+          git fetch --no-tags upstream main
+          git switch --detach FETCH_HEAD
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - name: Resolve and download pinned LiteLLM catalog source
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.PRICING_CATALOG_PAT }}
+        run: |
+          set -euo pipefail
+          revision="$(gh api repos/BerriAI/litellm/commits/main --jq .sha)"
+          if ! [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "LiteLLM main did not resolve to a full SHA" >&2
+            exit 1
+          fi
+          curl --fail --location --max-filesize 33554432 \
+            --output "$RUNNER_TEMP/model_prices_and_context_window.json" \
+            "https://raw.githubusercontent.com/BerriAI/litellm/$revision/model_prices_and_context_window.json"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Generate and validate catalog
+        id: generate
+        env:
+          REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          (cd backend && go run ./cmd/pricingcatalog sync -root .. \
+            -source "$RUNNER_TEMP/model_prices_and_context_window.json" \
+            -revision "$REVISION")
+          (cd backend && go run ./cmd/pricingcatalog validate -root ..)
+          if git diff --quiet -- pricing/catalog/v1; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      # The branch push uses the fork PAT stored by the checkout step; the pull
+      # request lives in the canonical repository, which that PAT cannot write.
+      - name: Create or update catalog pull request
+        if: steps.generate.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "pricing-catalog[bot]"
+          git config user.email "pricing-catalog[bot]@users.noreply.github.com"
+          git switch -C automation/pricing-catalog
+          git add pricing/catalog/v1
+          git commit -m "chore(pricing): refresh LiteLLM catalog"
+          ./scripts/pricing-catalog-update-branch.sh origin automation/pricing-catalog
+          pr="$(gh pr list --repo Untrivial-ai/agent-orchestrator \
+            --head whoisasx:automation/pricing-catalog --base main --state open \
+            --json number --jq '.[0].number')"
+          if [ -z "$pr" ]; then
+            gh pr create --repo Untrivial-ai/agent-orchestrator \
+              --base main --head whoisasx:automation/pricing-catalog \
+              --title "chore(pricing): refresh LiteLLM catalog" \
+              --body "Automated refresh from pinned LiteLLM revision ${{ steps.source.outputs.revision }}."
+          else
+            gh pr edit "$pr" --repo Untrivial-ai/agent-orchestrator \
+              --title "chore(pricing): refresh LiteLLM catalog" \
+              --body "Automated refresh from pinned LiteLLM revision ${{ steps.source.outputs.revision }}."
+          fi

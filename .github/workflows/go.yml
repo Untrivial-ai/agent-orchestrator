@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - "pricing/**"
       - "frontend/src/api/schema.ts"
       - "package.json"
       - ".github/workflows/go.yml"

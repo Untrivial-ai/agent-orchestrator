@@ -769,17 +769,18 @@ describe("SessionInspector PR section", () => {
 });
 
 describe("SessionInspector usage", () => {
-	it("shows detailed token statistics only when Developer Mode is enabled", async () => {
-		useUiStore.getState().setDeveloperMode(true);
-		const totals = {
-			inputTokens: 1200,
-			cachedInputTokens: 1000,
-			uncachedInputTokens: 200,
-			outputTokens: 300,
-			processedTokens: 1500,
-			provenance: { inputTokens: "reported", cachedInputTokens: "reported", uncachedInputTokens: "derived", outputTokens: "reported" },
-			providerDetails: { openai: { openaiReasoningOutputTokens: 5, openaiCacheWriteInputTokens: 0 } },
-		};
+	const canonicalTotals = {
+		inputTokens: 1200,
+		cachedInputTokens: 1000,
+		uncachedInputTokens: 200,
+		outputTokens: 300,
+		processedTokens: 1500,
+	};
+
+	const tokenTotals = (estimatedCost: unknown) => ({ ...canonicalTotals, estimatedCost });
+
+	function mockUsage(estimatedCost: unknown, harnesses?: unknown[]) {
+		const totals = tokenTotals(estimatedCost);
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/usage/sessions/{sessionId}") {
 				return {
@@ -787,18 +788,34 @@ describe("SessionInspector usage", () => {
 						sessionId: "sess-1",
 						incomplete: false,
 						totals,
-						harnesses: [{ harness: "codex", totals, models: [{ modelId: "gpt-5.5", totals }, { modelId: "gpt-5.5-mini", totals }] }],
+						harnesses: harnesses ?? [
+							{
+								harness: "codex",
+								totals,
+								models: [
+									{ modelId: "gpt-5.5", totals },
+									{ modelId: "gpt-5.5-mini", totals },
+								],
+							},
+						],
 					},
 					error: undefined,
 				};
 			}
 			return { data: undefined };
 		});
+	}
+
+	it("shows detailed token statistics only when Developer Mode is enabled", async () => {
+		useUiStore.getState().setDeveloperMode(true);
+		mockUsage(null);
 
 		renderWithQuery(<SessionInspector session={session([])} />);
 		expect(await screen.findByText("Usage & cost")).toBeInTheDocument();
 		expect(screen.getByText("Tokens processed")).toBeInTheDocument();
 		expect(screen.getByLabelText("1,500 tokens processed")).toBeInTheDocument();
+		expect(screen.getByText("Estimated cost").parentElement?.nextElementSibling).toHaveTextContent("Unavailable");
+		expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
 		const metrics = screen.getAllByTestId("session-usage-metrics")[0];
 		expect(within(metrics).getAllByRole("term").map((term) => term.textContent)).toEqual([
 			"Fresh Input", "Cache Reads", "Output", "Cache Hit Rate",
@@ -822,32 +839,11 @@ describe("SessionInspector usage", () => {
 
 	it("shows icon disclosures without repeated metrics when multiple agents contributed", async () => {
 		useUiStore.getState().setDeveloperMode(true);
-		const totals = {
-			inputTokens: 1200,
-			cachedInputTokens: 1000,
-			uncachedInputTokens: 200,
-			outputTokens: 300,
-			processedTokens: 1500,
-			provenance: { inputTokens: "reported", cachedInputTokens: "reported", uncachedInputTokens: "derived", outputTokens: "reported" },
-			providerDetails: {},
-		};
-		getMock.mockImplementation(async (path: string) => {
-			if (path === "/api/v1/usage/sessions/{sessionId}") {
-				return {
-					data: {
-						sessionId: "sess-1",
-						incomplete: false,
-						totals,
-						harnesses: [
-							{ harness: "codex", totals, models: [{ modelId: "gpt-5.5", totals }] },
-							{ harness: "claude-code", totals, models: [{ modelId: "claude-haiku-4-5-20251001", totals }] },
-						],
-					},
-					error: undefined,
-				};
-			}
-			return { data: undefined };
-		});
+		const totals = { ...canonicalTotals, estimatedCost: null };
+		mockUsage(null, [
+			{ harness: "codex", totals, models: [{ modelId: "gpt-5.5", totals }] },
+			{ harness: "claude-code", totals, models: [{ modelId: "claude-haiku-4-5-20251001", totals }] },
+		]);
 
 		renderWithQuery(<SessionInspector session={session([])} />);
 		const codexDisclosure = await screen.findByRole("button", { name: "Codex usage details" });
@@ -868,6 +864,139 @@ describe("SessionInspector usage", () => {
 			"title",
 			"claude-haiku-4-5-20251001",
 		);
+	});
+
+	it("renders complete costs and provider/model attribution", async () => {
+		useUiStore.getState().setDeveloperMode(true);
+		const completeCost = {
+			cachedInputNanos: 100_000_000,
+			coverage: "complete",
+			inputNanos: 540_000_000,
+			outputNanos: 600_000_000,
+			totalNanos: 1_240_000_000,
+		};
+		mockUsage(completeCost, [
+			{
+				harness: "claude-code",
+				totals: tokenTotals(completeCost),
+				models: [
+					{
+						modelId: "claude-sonnet-4",
+						totals: tokenTotals({ ...completeCost, totalNanos: 600_000_000 }),
+					},
+				],
+			},
+		]);
+
+		renderWithQuery(<SessionInspector session={session([])} />);
+
+		const section = (await screen.findByText("Usage & cost")).closest(
+			"[data-testid='inspector-section']",
+		) as HTMLElement;
+		// The value carries no coverage qualifier, and the disclosure beside the
+		// heading explains the estimate without claiming it is billing.
+		expect(within(section).getAllByText("$1.24").length).toBeGreaterThan(0);
+		expect(section).not.toHaveTextContent(/[≈≥]\$/);
+		// The row already sits under its agent, so the billing provider is not
+		// repeated in the model name.
+		expect(within(section).getByText("Sonnet 4")).toBeInTheDocument();
+		expect(section).not.toHaveTextContent("anthropic ·");
+
+		await userEvent.hover(within(section).getByRole("button", { name: "About estimated cost" }));
+		const tooltip = await screen.findByRole("tooltip");
+		expect(tooltip).toHaveTextContent(/published API list prices/);
+		expect(tooltip).not.toHaveTextContent(/could not be priced/);
+	});
+
+	it("presents a partial total as a plain value and discloses the gap in words", async () => {
+		useUiStore.getState().setDeveloperMode(true);
+		mockUsage({
+			cachedInputNanos: null,
+			coverage: "partial",
+			inputNanos: 2_000_000,
+			outputNanos: 5_000_000,
+			totalNanos: 7_000_000,
+		});
+
+		renderWithQuery(<SessionInspector session={session([])} />);
+
+		const section = (await screen.findByText("Usage & cost")).closest(
+			"[data-testid='inspector-section']",
+		) as HTMLElement;
+		expect(within(section).getAllByText("$0.007").length).toBeGreaterThan(0);
+		expect(section).not.toHaveTextContent(/[≈≥]\$/);
+		expect(section).not.toHaveTextContent(/partial/i);
+
+		await userEvent.hover(within(section).getByRole("button", { name: "About estimated cost" }));
+		const tooltip = await screen.findByRole("tooltip");
+		expect(tooltip).toHaveTextContent(/Some usage could not be priced/);
+	});
+
+	// The column itself carries the "nothing here is priced" case: it disappears
+	// when no row has an estimate, so an install without pricing shows no empty
+	// column at all. Once any row is priced the column earns its place, and the
+	// rows that are not priced say so in words rather than trailing a dash.
+	it("drops the cost column only when no agent has an estimate", async () => {
+		useUiStore.getState().setDeveloperMode(true);
+		const totals = tokenTotals(null);
+		mockUsage(null, [
+			{ harness: "codex", totals, models: [{ modelId: "gpt-5.5", totals }] },
+			{ harness: "claude-code", totals, models: [{ modelId: "claude-sonnet-4", totals }] },
+		]);
+
+		renderWithQuery(<SessionInspector session={session([])} />);
+
+		const section = (await screen.findByText("Usage & cost")).closest(
+			"[data-testid='inspector-section']",
+		) as HTMLElement;
+		// The header row's parent is the list container holding every agent row.
+		const agentList = within(section).getByText("Agent").parentElement?.parentElement as HTMLElement;
+		expect(within(agentList).queryByText("Cost")).not.toBeInTheDocument();
+		expect(agentList).not.toHaveTextContent("Unavailable");
+	});
+
+	it("keeps the cost column and marks unpriced agents unavailable", async () => {
+		useUiStore.getState().setDeveloperMode(true);
+		const priced = tokenTotals({
+			cachedInputNanos: 100_000_000,
+			coverage: "complete",
+			inputNanos: 540_000_000,
+			outputNanos: 600_000_000,
+			totalNanos: 1_240_000_000,
+		});
+		const unpriced = tokenTotals(null);
+		mockUsage(null, [
+			{ harness: "codex", totals: priced, models: [{ modelId: "gpt-5.5", totals: priced }] },
+			{
+				harness: "claude-code",
+				totals: unpriced,
+				models: [{ modelId: "claude-sonnet-4", totals: unpriced }],
+			},
+		]);
+
+		renderWithQuery(<SessionInspector session={session([])} />);
+
+		const section = (await screen.findByText("Usage & cost")).closest(
+			"[data-testid='inspector-section']",
+		) as HTMLElement;
+		// The header row's parent is the list container holding every agent row.
+		const agentList = within(section).getByText("Agent").parentElement?.parentElement as HTMLElement;
+		expect(within(agentList).getByText("Cost")).toBeInTheDocument();
+		expect(within(agentList).getByText("$1.24")).toBeInTheDocument();
+		expect(within(agentList).getByText("Unavailable")).toBeInTheDocument();
+		expect(within(agentList).queryByText("—")).not.toBeInTheDocument();
+	});
+
+	it("shows an unavailable estimate as words rather than a dash", async () => {
+		useUiStore.getState().setDeveloperMode(true);
+		mockUsage(null);
+
+		renderWithQuery(<SessionInspector session={session([])} />);
+
+		const section = (await screen.findByText("Usage & cost")).closest(
+			"[data-testid='inspector-section']",
+		) as HTMLElement;
+		expect(within(section).getAllByText("Unavailable").length).toBeGreaterThan(0);
 	});
 });
 
@@ -1232,7 +1361,7 @@ describe("SessionInspector Activity section", () => {
     const activityRow = activitySection()
       .getByText("Working")
       .closest("[data-testid='inspector-timeline-event']") as HTMLElement;
-    expect(within(activityRow).getByText("2h ago")).toBeInTheDocument();
+    expect(within(activityRow).getByText("2h")).toBeInTheDocument();
   });
 
   it("aligns text-row dots lower while keeping the Activity chip dot centered", () => {
@@ -1403,7 +1532,7 @@ describe("SessionInspector Activity section", () => {
         draftLink.closest(
           "[data-testid='inspector-timeline-event']",
         ) as HTMLElement,
-      ).getByText("2h ago"),
+      ).getByText("2h"),
     ).toBeInTheDocument();
 
     const openLink = screen.getByRole("link", { name: "Opened PR #7" });
@@ -1412,7 +1541,7 @@ describe("SessionInspector Activity section", () => {
         openLink.closest(
           "[data-testid='inspector-timeline-event']",
         ) as HTMLElement,
-      ).getByText("1h ago"),
+      ).getByText("1h"),
     ).toBeInTheDocument();
 
     const mergedOpenedLink = screen.getByRole("link", { name: "Opened PR #6" });
@@ -1421,7 +1550,7 @@ describe("SessionInspector Activity section", () => {
         mergedOpenedLink.closest(
           "[data-testid='inspector-timeline-event']",
         ) as HTMLElement,
-      ).getByText("3h ago"),
+      ).getByText("3h"),
     ).toBeInTheDocument();
 
     const mergedLink = screen.getByRole("link", { name: "Merged PR #6" });
@@ -1430,12 +1559,12 @@ describe("SessionInspector Activity section", () => {
         mergedLink.closest(
           "[data-testid='inspector-timeline-event']",
         ) as HTMLElement,
-      ).getByText("30m ago"),
+      ).getByText("30m"),
     ).toBeInTheDocument();
     const doneRow = screen
       .getByText("Done")
       .closest("[data-testid='inspector-timeline-event']") as HTMLElement;
-    expect(within(doneRow).getByText("30m ago")).toBeInTheDocument();
+    expect(within(doneRow).getByText("30m")).toBeInTheDocument();
   });
 
   it("orders Activity timeline rows by timestamp with the latest event on top", () => {
@@ -1491,13 +1620,13 @@ describe("SessionInspector Activity section", () => {
       (row) => row.textContent?.replace(/\s+/g, " ").trim(),
     );
     expect(rows).toEqual([
-      "Opened PR #4130m ago",
-      "Merged PR #401h ago",
-      "Done1h ago",
-      "Idle2h ago",
-      "Opened PR #402h ago",
-      "Created workspace3h ago",
-      "Draft PR #424h ago",
+      "Opened PR #4130m",
+      "Merged PR #401h",
+      "Done1h",
+      "Idle2h",
+      "Opened PR #402h",
+      "Created workspace3h",
+      "Draft PR #424h",
     ]);
 
     const eventRows = section.querySelectorAll(
@@ -2324,7 +2453,7 @@ describe("SessionInspector summary reviews", () => {
     expect(within(summary).getByText("Ship it").tagName).toBe("LI");
     expect(summary).not.toHaveTextContent("**ready**");
     expect(
-      within(externalReview).getByText("Reviewed 3d ago"),
+      within(externalReview).getByText("Reviewed 3d"),
     ).toBeInTheDocument();
     expect(
       within(externalReview).queryByRole("link", { name: "View on PR" }),

@@ -7,7 +7,10 @@ vi.mock("../lib/api-client", () => ({
 }));
 
 import {
+	fetchSessionUsage,
 	fetchSessionUsageSummaries,
+	sessionUsageDetailQueryOptions,
+	sessionUsageQueryRoot,
 	sessionUsageQueryOptions,
 } from "./useSessionUsageSummaries";
 
@@ -24,5 +27,36 @@ describe("session usage summaries", () => {
 			params: { query: { projectId: "reverb" } },
 		});
 		expect(sessionUsageQueryOptions("reverb")).not.toHaveProperty("refetchInterval");
+	});
+
+	it("fetches detailed usage beneath the shared usage query root", async () => {
+		getMock.mockResolvedValueOnce({
+			data: {
+				harnesses: [],
+				incomplete: false,
+				sessionId: "sess-1",
+				totals: {
+					cacheReadTokens: 0,
+					cacheWriteTokens: 0,
+					estimatedCost: null,
+					inputTokens: 0,
+					outputTokens: 0,
+					reasoningTokens: 0,
+					uncachedInputTokens: 0,
+				},
+			},
+		});
+
+		const result = await fetchSessionUsage("sess-1");
+
+		expect(result.sessionId).toBe("sess-1");
+		expect(getMock).toHaveBeenCalledWith("/api/v1/usage/sessions/{sessionId}", {
+			params: { path: { sessionId: "sess-1" } },
+		});
+		expect(sessionUsageDetailQueryOptions("sess-1").queryKey).toEqual([
+			...sessionUsageQueryRoot,
+			"detail",
+			"sess-1",
+		]);
 	});
 });

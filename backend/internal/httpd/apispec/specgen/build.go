@@ -40,8 +40,10 @@ func Build() ([]byte, error) {
 	// required array. nonNullableSlices drops the spurious "null" type swaggest
 	// stamps on every Go slice.
 	r.DefaultOptions = append(r.DefaultOptions,
+		func(rc *jsonschema.ReflectContext) { rc.EnvelopNullability = true },
 		jsonschema.InterceptProp(requiredFromJSONTag),
 		jsonschema.InterceptNullability(nonNullableSlices),
+		jsonschema.InterceptNullability(validNullableReferenceUnions),
 		// Clean component schema names (which become the generated TS type names):
 		// swaggest defaults to PackageType, e.g. "ProjectProject", "EnvelopeAPIError".
 		jsonschema.InterceptDefName(schemaName),
@@ -302,12 +304,9 @@ var schemaNames = map[string]string{
 	"ControllersMarkAllNotificationsReadResponse": "MarkAllNotificationsReadResponse",
 	"ControllersUsageHookMetadata":                "UsageHookMetadata",
 	"ControllersListUsageSessionsQuery":           "ListUsageSessionsQuery",
+	"ControllersEstimatedCostResponse":            "EstimatedCostResponse",
 	"ControllersCompactSessionUsageResponse":      "CompactSessionUsageResponse",
 	"ControllersListCompactSessionUsageResponse":  "ListCompactSessionUsageResponse",
-	"ControllersUsageMetricProvenanceResponse":    "UsageMetricProvenanceResponse",
-	"ControllersOpenAIUsageDetailsResponse":       "OpenAIUsageDetailsResponse",
-	"ControllersAnthropicUsageDetailsResponse":    "AnthropicUsageDetailsResponse",
-	"ControllersUsageProviderDetailsResponse":     "UsageProviderDetailsResponse",
 	"ControllersUsageTotalsResponse":              "UsageTotalsResponse",
 	"ControllersUsageModelResponse":               "UsageModelResponse",
 	"ControllersUsageHarnessResponse":             "UsageHarnessResponse",
@@ -395,6 +394,21 @@ func nonNullableSlices(p jsonschema.InterceptNullabilityParams) {
 	}
 	p.Schema.TypeEns().WithSimpleTypes(jsonschema.Array)
 	p.Schema.Type.SliceOfSimpleTypeValues = nil
+}
+
+// validNullableReferenceUnions removes the original concrete type left beside
+// an enveloped null-or-reference anyOf. Keeping that sibling type would apply
+// it conjunctively and reject null despite the explicit null branch.
+func validNullableReferenceUnions(p jsonschema.InterceptNullabilityParams) {
+	if p.Schema.Type == nil || len(p.Schema.AnyOf) == 0 {
+		return
+	}
+	for _, option := range p.Schema.AnyOf {
+		if option.TypeObject != nil && option.TypeObject.HasType(jsonschema.Null) {
+			p.Schema.Type = nil
+			return
+		}
+	}
 }
 
 // requiredFromJSONTag marks a property required when its json tag lacks
@@ -549,7 +563,7 @@ func usageOperations() []operation {
 	return []operation{
 		{
 			method: http.MethodGet, path: "/api/v1/usage/sessions", id: "listCompactSessionUsage", tag: "usage",
-			summary:    "List compact token usage for session cards",
+			summary:    "List compact token and estimated cost usage for session cards",
 			pathParams: []any{controllers.ListUsageSessionsQuery{}},
 			resps: []respUnit{
 				{http.StatusOK, controllers.ListCompactSessionUsageResponse{}},
@@ -559,7 +573,7 @@ func usageOperations() []operation {
 		},
 		{
 			method: http.MethodGet, path: "/api/v1/usage/sessions/{sessionId}", id: "getSessionUsage", tag: "usage",
-			summary:    "Get detailed token usage for one session",
+			summary:    "Get detailed token and estimated cost usage for one session",
 			pathParams: []any{controllers.SessionIDParam{}},
 			resps: []respUnit{
 				{http.StatusOK, controllers.SessionUsageResponse{}},

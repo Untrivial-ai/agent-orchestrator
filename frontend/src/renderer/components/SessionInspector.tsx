@@ -49,6 +49,7 @@ import {
 import { useSessionUsage, type SessionUsage } from "../hooks/useSessionUsage";
 import { useSessionWorkspaceFilesChangedCount } from "../hooks/useSessionWorkspaceFiles";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
+import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
 import { prBrowserUrl, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
@@ -392,6 +393,8 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 	const { t } = useTranslation();
 	const processedTokens = usageProcessedTokens(usage.totals);
 	const exactProcessed = processedTokens?.toLocaleString("en-US");
+	const estimatedCost = formatEstimatedCost(usage.totals.estimatedCost);
+	const showsAgentCost = usage.harnesses.some((harness) => harness.totals.estimatedCost !== null);
 
 	return (
 		<div>
@@ -411,12 +414,12 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 					</p>
 				</div>
 				<div className="min-w-0 text-right">
-					<p className="text-2xs text-settings-muted">{t("inspector.usage.estimatedCost")}</p>
-					<p
-						className="mt-0.5 truncate text-sm-md text-settings-muted"
-						title={t("inspector.usage.costComingSoon")}
-					>
-						{t("inspector.usage.comingSoon")}
+					<div className="flex items-center justify-end gap-1">
+						<p className="text-2xs text-settings-muted">{t("inspector.usage.estimatedCost")}</p>
+						<EstimatedCostInfo cost={usage.totals.estimatedCost} />
+					</div>
+					<p className="mt-0.5 truncate font-mono text-sm-md font-medium text-settings-label">
+						{estimatedCost ?? t("usage.unavailable")}
 					</p>
 				</div>
 			</div>
@@ -434,15 +437,18 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 				<UsageAgentAttribution harness={usage.harnesses[0]} />
 			) : usage.harnesses.length > 1 ? (
 				<div className="mt-2 border-t border-(--color-border-settings-input) pt-1.5">
-					<div className="grid grid-cols-[minmax(0,1fr)_4.5rem_5.5rem] items-center gap-2 px-1 pb-0.5 text-2xs text-settings-muted">
+					<div
+						className={`grid ${usageRowColumns(showsAgentCost)} items-center gap-2 px-1 pb-0.5 text-2xs text-settings-muted`}
+					>
 						<span>{t("inspector.usage.agent")}</span>
 						<span className="text-right">{t("inspector.usage.tokens")}</span>
-						<span className="text-right">{t("inspector.usage.cost")}</span>
+						{showsAgentCost ? <span className="text-right">{t("inspector.usage.cost")}</span> : null}
 					</div>
 					{usage.harnesses.map((harness, index) => (
 						<UsageProviderRow
 							harness={harness}
 							key={`${harness.harness}:${index}`}
+							showCost={showsAgentCost}
 						/>
 					))}
 				</div>
@@ -459,7 +465,7 @@ function UsageAgentAttribution({ harness }: { harness: SessionUsage["harnesses"]
 	const canExpand = harness.models.length > 1;
 	const modelSummary =
 		harness.models.length === 1
-			? formatModelName(harness.models[0].modelId)
+			? billingModelName(harness.models[0])
 			: harness.models.length > 1
 				? t("inspector.usage.models", { count: harness.models.length })
 				: null;
@@ -575,7 +581,13 @@ function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	);
 }
 
-function UsageProviderRow({ harness }: { harness: SessionUsage["harnesses"][number] }) {
+function UsageProviderRow({
+	harness,
+	showCost,
+}: {
+	harness: SessionUsage["harnesses"][number];
+	showCost: boolean;
+}) {
 	const { t } = useTranslation();
 	const harnessName = formatHarnessName(harness.harness);
 
@@ -586,6 +598,7 @@ function UsageProviderRow({ harness }: { harness: SessionUsage["harnesses"][numb
 			name={harnessName}
 			nameClassName="text-sm-md"
 			regionLabel={t("inspector.usage.providerPeek", { name: harnessName })}
+			showCost={showCost}
 			totals={harness.totals}
 		>
 			<ProviderUsageDetails harness={harness} />
@@ -595,12 +608,17 @@ function UsageProviderRow({ harness }: { harness: SessionUsage["harnesses"][numb
 
 function ProviderUsageDetails({ harness }: { harness: SessionUsage["harnesses"][number] }) {
 	const { t } = useTranslation();
+	const showCost = harness.models.some((model) => model.totals.estimatedCost !== null);
 
 	return (
 		<div>
 			{harness.models.length > 0 ? (
 				harness.models.map((model, index) => (
-					<UsageModelRow key={`${model.modelId}:${index}`} model={model} />
+					<UsageModelRow
+						key={`${model.modelId}:${index}`}
+						model={model}
+						showCost={showCost}
+					/>
 				))
 			) : (
 				<p className="px-1 py-1 text-2xs text-settings-muted">{t("inspector.usage.noModelTelemetry")}</p>
@@ -671,11 +689,13 @@ function updateSessionAutoInjectCI(
 
 function UsageModelRow({
 	model,
+	showCost,
 }: {
 	model: SessionUsage["harnesses"][number]["models"][number];
+	showCost: boolean;
 }) {
 	const { t } = useTranslation();
-	const modelName = formatModelName(model.modelId);
+	const modelName = billingModelName(model);
 
 	return (
 		<UsageDisclosureRow
@@ -684,11 +704,19 @@ function UsageModelRow({
 			nameClassName="text-2xs"
 			nameTitle={model.modelId}
 			regionLabel={t("inspector.usage.modelPeek", { name: modelName })}
+			showCost={showCost}
 			totals={model.totals}
 		>
 			<UsageMetrics totals={model.totals} />
 		</UsageDisclosureRow>
 	);
+}
+
+// usageRowColumns keeps the disclosure rows aligned with their header. The cost
+// column is dropped entirely when no row in the list has an estimate, so an
+// install without pricing shows no empty column at all.
+function usageRowColumns(showCost: boolean): string {
+	return showCost ? "grid-cols-[minmax(0,1fr)_4.5rem_5.5rem]" : "grid-cols-[minmax(0,1fr)_4.5rem]";
 }
 
 function UsageDisclosureRow({
@@ -699,6 +727,7 @@ function UsageDisclosureRow({
 	nameClassName,
 	nameTitle,
 	regionLabel,
+	showCost,
 	totals,
 }: {
 	children: ReactNode;
@@ -708,6 +737,7 @@ function UsageDisclosureRow({
 	nameClassName: string;
 	nameTitle?: string;
 	regionLabel: string;
+	showCost: boolean;
 	totals: SessionUsage["totals"];
 }) {
 	const { t } = useTranslation();
@@ -722,7 +752,7 @@ function UsageDisclosureRow({
 				aria-controls={detailID}
 				aria-expanded={open}
 				aria-label={detailsLabel}
-				className="grid w-full grid-cols-[minmax(0,1fr)_4.5rem_5.5rem] items-center gap-2 rounded-md px-1 py-1 text-left outline-none transition-colors hover:bg-interactive-hover focus-visible:bg-interactive-hover focus-visible:ring-1 focus-visible:ring-ring"
+				className={`grid w-full ${usageRowColumns(showCost)} items-center gap-2 rounded-md px-1 py-1 text-left outline-none transition-colors hover:bg-interactive-hover focus-visible:bg-interactive-hover focus-visible:ring-1 focus-visible:ring-ring`}
 				onClick={() => setOpen((current) => !current)}
 				type="button"
 			>
@@ -741,7 +771,7 @@ function UsageDisclosureRow({
 				>
 					{processedTokens === null ? "—" : formatTelemetryTokenValue(processedTokens)}
 				</span>
-				<UsageCostPlaceholder />
+				{showCost ? <UsageCostValue cost={totals.estimatedCost} /> : null}
 			</button>
 			{open ? (
 				<div
@@ -757,13 +787,51 @@ function UsageDisclosureRow({
 	);
 }
 
-function UsageCostPlaceholder() {
+// UsageCostValue renders one row's cost inside a column that some sibling row
+// already justified. Once the column is on screen the absence is a real answer
+// about that agent, so it says so in words — a dash beside a priced neighbour
+// reads as a rendering gap rather than "this one could not be priced".
+function UsageCostValue({ cost }: { cost: EstimatedCost | null }) {
 	const { t } = useTranslation();
-	const label = t("inspector.usage.metricUnavailable", { label: t("inspector.usage.cost") });
+	const value = formatEstimatedCost(cost);
+	const label = value ?? t("inspector.usage.metricUnavailable", { label: t("inspector.usage.cost") });
 	return (
-		<span aria-label={label} className="text-right font-mono text-2xs text-settings-muted" title={label}>
-			—
+		<span aria-label={label} className="text-right font-mono text-2xs text-settings-label" title={label}>
+			{value ?? t("usage.unavailable")}
 		</span>
+	);
+}
+
+/**
+ * Contextual disclosure for the estimated-cost heading.
+ *
+ * Coverage never reaches the presented value as a qualifier, so this is where a
+ * partial estimate says so — in words, next to the heading, rather than as a `≥`
+ * the reader has to decode. Hover and keyboard focus both open it.
+ */
+function EstimatedCostInfo({ cost }: { cost: EstimatedCost | null }) {
+	const { t } = useTranslation();
+	const label = t("usage.estimatedCostInfoLabel");
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<button
+					aria-label={label}
+					className="rounded-sm text-settings-muted outline-none transition-colors hover:text-settings-label focus-visible:ring-1 focus-visible:ring-ring"
+					type="button"
+				>
+					<Info aria-hidden="true" className="size-3" />
+				</button>
+			</TooltipTrigger>
+			{/* Opens upward: the figure it explains sits directly under the heading,
+			    so a downward tooltip covers the very number the reader came for. */}
+			<TooltipContent className="max-w-64 text-left" side="top">
+				<p>{t("usage.estimatedCostInfo")}</p>
+				{cost?.coverage === "partial" ? (
+					<p className="mt-1.5">{t("usage.estimatedCostInfoPartial")}</p>
+				) : null}
+			</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -865,7 +933,7 @@ function usageScopes(usage: SessionUsage): SessionUsage["totals"][] {
 function hasMeaningfulSessionUsage(usage?: SessionUsage): usage is SessionUsage {
 	if (!usage) return false;
 	return usageScopes(usage).some((totals) =>
-		usageMetricKeys.some((key) => (totals[key] ?? 0) > 0),
+		totals.estimatedCost !== null || usageMetricKeys.some((key) => (totals[key] ?? 0) > 0),
 	);
 }
 
@@ -891,6 +959,13 @@ function formatHarnessName(harness: string): string {
 		.filter(Boolean)
 		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
 		.join(" ");
+}
+
+// billingModelName is the model's display name. The billing provider stays out
+// of it: the row already sits under its agent, so the prefix only repeated
+// context the reader had. The exact model id remains available as the title.
+function billingModelName(model: SessionUsage["harnesses"][number]["models"][number]): string {
+	return formatModelName(model.modelId);
 }
 
 function formatModelName(modelID: string): string {

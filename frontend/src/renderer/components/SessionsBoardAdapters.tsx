@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
 	SessionCardView,
-	SessionUsageMetricView,
 	type BoardPullRequestLabels,
 	type BoardSessionPresentation,
 	type BoardSplitLaneLabels,
@@ -15,6 +14,7 @@ import { Check, Copy, GitBranch, LoaderCircle, RotateCcw, Trash2 } from "lucide-
 import type { MessageKey } from "../i18n";
 import { aoBridge } from "../lib/bridge";
 import { formatTimeCompact } from "../lib/format-time";
+import { formatEstimatedCost } from "../lib/format-cost";
 import { formatTokenCount } from "../lib/format-token-count";
 import { prBrowserUrl, sessionPRDisplaySummaries } from "../lib/pr-display";
 import {
@@ -241,7 +241,6 @@ function DesktopSessionCard({
 				url: prBrowserUrl(pr),
 			}))}
 			renderAvatar={(provider) => <AgentAvatar className="mt-0.5" provider={provider} />}
-			renderUsage={(presentation) => <DesktopUsageMetric usage={presentation} />}
 			session={toBoardSessionPresentation(session, t)}
 			translate={translate}
 			usage={usagePresentation}
@@ -261,29 +260,30 @@ function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 	};
 }
 
+// toUsagePresentation builds the card's single usage line: cost, tokens, or
+// both. The card carries no cost breakdown — a board is for scanning, and the
+// per-component figures belong on the session's own surface — so the visible
+// text is bare while the accessible label still names what the count is.
 function toUsagePresentation(
 	usage: SessionUsageSummary | undefined,
 	t: TFunction,
 ): BoardUsagePresentation | undefined {
-	if (!usage || usage.processedTokens === null || usage.processedTokens <= 0) return undefined;
-	const compactCount = formatTokenCount(usage.processedTokens).replace(/ tok$/, "");
+	const processedTokens = usage?.processedTokens ?? null;
+	if (!usage || ((processedTokens === null || processedTokens <= 0) && !usage.estimatedCost)) {
+		return undefined;
+	}
+	const cost = formatEstimatedCost(usage.estimatedCost);
+	if (processedTokens === null || processedTokens <= 0) {
+		return { accessibleLabel: cost as string, compactLabel: cost as string };
+	}
+	const compactTokens = formatTokenCount(processedTokens).replace(/ tok$/, "");
+	const accessibleTokens = t("shell.usageTokens", {
+		count: processedTokens.toLocaleString("en-US"),
+	});
 	return {
-		accessibleLabel: t("shell.usageProcessed", {
-			count: usage.processedTokens.toLocaleString("en-US"),
-		}),
-		compactLabel: t("shell.usageProcessedCompact", { count: compactCount }),
+		accessibleLabel: cost ? `${cost} · ${accessibleTokens}` : accessibleTokens,
+		compactLabel: cost ? `${cost} · ${compactTokens}` : compactTokens,
 	};
-}
-
-function DesktopUsageMetric({ usage }: { usage: BoardUsagePresentation }) {
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<SessionUsageMetricView usage={usage} />
-			</TooltipTrigger>
-			<TooltipContent side="top">{usage.accessibleLabel}</TooltipContent>
-		</Tooltip>
-	);
 }
 
 function ArchiveRestoreButton({

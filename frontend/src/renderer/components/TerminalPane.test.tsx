@@ -644,6 +644,10 @@ describe("terminal link preview", () => {
 		const view = renderPane(worker);
 		try {
 			act(() => terminalLinkHandler?.("https://example.com/pull/42"));
+			expect(useUiStore.getState().inspectorSessions[worker.id]).toMatchObject({
+				isOpen: true,
+				view: "browser",
+			});
 			await waitFor(() =>
 				expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
 					params: { path: { sessionId: "sess-1" } },

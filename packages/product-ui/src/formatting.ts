@@ -15,11 +15,11 @@ const defaultRelativeTimeTranslator: RelativeTimeTranslator = (key, values) => {
 		case "time.justNow":
 			return "just now";
 		case "time.minutesAgo":
-			return `${count}m ago`;
+			return `${count}m`;
 		case "time.hoursAgo":
-			return `${count}h ago`;
+			return `${count}h`;
 		case "time.daysAgo":
-			return `${count}d ago`;
+			return `${count}d`;
 	}
 };
 

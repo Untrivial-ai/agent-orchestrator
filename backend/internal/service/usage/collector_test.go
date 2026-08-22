@@ -32,6 +32,7 @@ func TestCollectorRegistersFinalizesAndReactivatesSource(t *testing.T) {
 
 	err := collector.RecordHook(context.Background(), session.ID, HookSignal{
 		Harness:         domain.HarnessCodex,
+		ProviderHint:    " openai ",
 		Event:           "session-start",
 		NativeSessionID: "native-1",
 		TranscriptPath:  path,
@@ -48,11 +49,107 @@ func TestCollectorRegistersFinalizesAndReactivatesSource(t *testing.T) {
 	if err != nil || len(sources) != 1 {
 		t.Fatalf("sources=%+v err=%v", sources, err)
 	}
-	if bindings[0].State != domain.UsageBindingActive || bindings[0].InitialModelID != "gpt-5.6" ||
+	if bindings[0].State != domain.UsageBindingActive || bindings[0].InitialModelID != "gpt-5.6" || bindings[0].ProviderHint != "" ||
 		sources[0].State != domain.UsageSourceActive || wakes == 0 {
 		t.Fatalf("registered binding=%+v source=%+v wakes=%d", bindings[0], sources[0], wakes)
 	}
 
+}
+
+func TestCollectorPersistsOnlyCanonicalClaudeProviderHints(t *testing.T) {
+	tests := []struct {
+		name    string
+		harness domain.AgentHarness
+		raw     string
+		want    string
+	}{
+		{name: "canonical anthropic", harness: domain.HarnessClaudeCode, raw: "anthropic", want: "anthropic"},
+		{name: "trimmed canonical zai alias", harness: domain.HarnessClaudeCode, raw: " Z.AI ", want: "zai"},
+		{name: "canonical bedrock", harness: domain.HarnessClaudeCode, raw: "bedrock", want: "bedrock"},
+		{name: "canonical vertex", harness: domain.HarnessClaudeCode, raw: "VERTEX_AI", want: "vertex_ai"},
+		{name: "custom provider", harness: domain.HarnessClaudeCode, raw: "custom-provider"},
+		{name: "credential", harness: domain.HarnessClaudeCode, raw: "sk-secret-credential"},
+		{name: "url", harness: domain.HarnessClaudeCode, raw: "https://api.z.ai/v1?key=secret"},
+		{name: "codex hint", harness: domain.HarnessCodex, raw: "openai"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := collectorTestStore(t)
+			const nativeID = "native-provider-hint"
+			session := collectorTestSession(t, store, test.harness, nativeID, false)
+			signal := HookSignal{
+				Harness:         test.harness,
+				Event:           "session-start",
+				NativeSessionID: nativeID,
+				ModelID:         "source-model",
+				ProviderHint:    test.raw,
+			}
+			roots := SourceRoots{}
+			if test.harness == domain.HarnessCodex {
+				root := filepath.Join(t.TempDir(), "sessions")
+				path := filepath.Join(root, "rollout-native-provider-hint.jsonl")
+				writeUsageFixture(t, path, codexSessionMetaFixture(t, nativeID, ""))
+				roots.CodexSessions = root
+				signal.TranscriptPath = path
+			}
+			collector := NewCollector(store, roots, nil)
+			if err := collector.RecordHook(context.Background(), session.ID, signal); err != nil {
+				t.Fatalf("record hook: %v", err)
+			}
+			bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+			if err != nil || len(bindings) != 1 {
+				t.Fatalf("bindings=%+v err=%v", bindings, err)
+			}
+			if bindings[0].ProviderHint != test.want {
+				t.Fatalf("persisted provider hint = %q, want %q", bindings[0].ProviderHint, test.want)
+			}
+		})
+	}
+}
+
+// Break caught: a Claude binding that predates its first hook holds events that
+// can never be attributed, because a Claude transcript names no provider. The
+// hook's route hint is the only evidence, and it arrives long after those events
+// were stored — so the moment it lands has to reopen historical repair, or the
+// session stays unpriced until the next daemon start.
+func TestCollectorReopensHistoricalRepairWhenAClaudeRouteFirstArrives(t *testing.T) {
+	store := collectorTestStore(t)
+	const nativeID = "native-late-route"
+	session := collectorTestSession(t, store, domain.HarnessClaudeCode, nativeID, false)
+	collector := NewCollector(store, SourceRoots{}, nil)
+	resolved := 0
+	collector.OnRouteResolved(func() { resolved++ })
+
+	hook := func(hint string) {
+		t.Helper()
+		if err := collector.RecordHook(context.Background(), session.ID, HookSignal{
+			Harness:         domain.HarnessClaudeCode,
+			Event:           "session-start",
+			NativeSessionID: nativeID,
+			ModelID:         "claude-test",
+			ProviderHint:    hint,
+		}); err != nil {
+			t.Fatalf("record hook: %v", err)
+		}
+	}
+
+	// A binding created without a route has no history to reopen yet.
+	hook("")
+	if resolved != 0 {
+		t.Fatalf("route resolutions = %d after the first routeless hook, want 0", resolved)
+	}
+
+	hook("anthropic")
+	if resolved != 1 {
+		t.Fatalf("route resolutions = %d once the route arrives, want 1", resolved)
+	}
+
+	// Every later hook repeats the same route. Reopening repair on each one
+	// would rescan every legacy source on every turn.
+	hook("anthropic")
+	if resolved != 1 {
+		t.Fatalf("route resolutions = %d after a repeat route, want it to stay 1", resolved)
+	}
 }
 
 func TestCollectorSerializesFinalizationAgainstEarlierHook(t *testing.T) {

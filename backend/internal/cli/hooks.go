@@ -55,6 +55,7 @@ type setActivityAPIRequest struct {
 
 type usageHookMetadata struct {
 	Harness                string `json:"harness"`
+	ProviderID             string `json:"providerId,omitempty"`
 	TranscriptPath         string `json:"transcriptPath,omitempty"`
 	ModelID                string `json:"modelId,omitempty"`
 	SubagentID             string `json:"subagentId,omitempty"`
@@ -176,7 +177,56 @@ func hookUsageMetadata(agent string, payload []byte) *usageHookMetadata {
 	if meta.TranscriptPath == "" && meta.SubagentTranscriptPath == "" && meta.ModelID == "" {
 		return nil
 	}
+	meta.ProviderID = claudeHookProviderHint(harness)
 	return meta
+}
+
+func claudeHookProviderHint(harness domain.AgentHarness) string {
+	if harness != domain.HarnessClaudeCode {
+		return ""
+	}
+	bedrock := hookRouteFlagEnabled(os.Getenv("CLAUDE_CODE_USE_BEDROCK"))
+	vertex := hookRouteFlagEnabled(os.Getenv("CLAUDE_CODE_USE_VERTEX"))
+	if bedrock != vertex {
+		if bedrock {
+			return "bedrock"
+		}
+		return "vertex_ai"
+	}
+	if bedrock {
+		return ""
+	}
+	baseURL := strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL"))
+	if baseURL == "" {
+		return "anthropic"
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	if parsed.Hostname() == "" && !strings.Contains(baseURL, "://") {
+		parsed, err = url.Parse("https://" + baseURL)
+	}
+	if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	switch strings.ToLower(parsed.Hostname()) {
+	case "api.anthropic.com":
+		return "anthropic"
+	case "api.z.ai":
+		return "zai"
+	default:
+		return ""
+	}
+}
+
+func hookRouteFlagEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 type hookConversationSnapshot struct {
