@@ -59,6 +59,10 @@ type Config struct {
 	SessionMode func(ports.PermissionMode) string
 	// SessionOptions maps AO's per-turn choices onto ACP config option ids.
 	SessionOptions func(ports.ChatTurnSettings) []SessionOption
+	// ValidateTurnSettings lets a binding reject choices that its ACP server
+	// cannot change after process launch. Empty means every setting is handled by
+	// SessionMode, SessionOptions, or provider defaults.
+	ValidateTurnSettings func(ports.PermissionMode, ports.ChatTurnSettings) error
 }
 
 // SessionOption is one ACP session configuration selection.
@@ -149,7 +153,8 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 	conv.start(
 		string(resp.SessionId), conversationCapabilities(d.cfg.Capabilities, init),
-		d.cfg.SessionMode, d.cfg.SessionOptions, resp.ConfigOptions,
+		cfg.Permissions, d.cfg.SessionMode, d.cfg.SessionOptions,
+		d.cfg.ValidateTurnSettings, resp.ConfigOptions,
 	)
 	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Approval: cfg.Permissions}); err != nil {
 		// Initial model and permission mode may have been applied via launch-time
@@ -241,7 +246,8 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	}
 	conv.start(
 		cfg.ProviderConversationID, conversationCapabilities(d.cfg.Capabilities, init),
-		d.cfg.SessionMode, d.cfg.SessionOptions, configOptions,
+		cfg.Permissions, d.cfg.SessionMode, d.cfg.SessionOptions,
+		d.cfg.ValidateTurnSettings, configOptions,
 	)
 	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Approval: cfg.Permissions}); err != nil {
 		if !errors.Is(err, ErrACPSetterUnsupported) {

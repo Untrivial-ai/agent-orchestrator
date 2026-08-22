@@ -102,6 +102,8 @@ type conversation struct {
 	closed         bool
 	modeFor        func(ports.PermissionMode) string
 	optionsFor     func(ports.ChatTurnSettings) []SessionOption
+	initialMode    ports.PermissionMode
+	validateTurn   func(ports.PermissionMode, ports.ChatTurnSettings) error
 
 	eventMu      sync.RWMutex
 	events       chan ports.ChatEvent
@@ -147,8 +149,10 @@ func newConversation(proc *process, log *slog.Logger) *conversation {
 func (c *conversation) start(
 	sessionID string,
 	capabilities ports.ChatCapabilities,
+	initialMode ports.PermissionMode,
 	modeFor func(ports.PermissionMode) string,
 	optionsFor func(ports.ChatTurnSettings) []SessionOption,
+	validateTurn func(ports.PermissionMode, ports.ChatTurnSettings) error,
 	configOptions []acpsdk.SessionConfigOption,
 ) {
 	c.mu.Lock()
@@ -169,6 +173,8 @@ func (c *conversation) start(
 	}
 	c.modeFor = modeFor
 	c.optionsFor = optionsFor
+	c.initialMode = initialMode
+	c.validateTurn = validateTurn
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 }
@@ -232,9 +238,16 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 	sessionID := c.sessionID
 	modeFor := c.modeFor
 	optionsFor := c.optionsFor
+	initialMode := c.initialMode
+	validateTurn := c.validateTurn
 	c.mu.Unlock()
 	if sessionID == "" {
 		return errors.New("ACP session is not open")
+	}
+	if validateTurn != nil {
+		if err := validateTurn(initialMode, settings); err != nil {
+			return err
+		}
 	}
 	if modeFor != nil {
 		if mode := modeFor(settings.Approval); mode != "" {
