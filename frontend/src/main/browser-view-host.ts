@@ -179,6 +179,13 @@ type BrowserWindowLike = {
 	contentView: {
 		addChildView: (view: BrowserViewLike) => void;
 		removeChildView?: (view: BrowserViewLike) => void;
+		// Bounds of the content view itself, relative to its own origin
+		// ({x: 0, y: 0, width, height}) — the same coordinate space `view.setBounds()`
+		// expects for a child view. Prefer this over `getContentBounds()`, which
+		// returns the window's bounds in *screen* coordinates and is only
+		// coincidentally {0, 0, ...}-origin when the window sits at the display's
+		// top-left corner.
+		getBounds?: () => BrowserRect;
 	};
 	getContentBounds: () => BrowserRect;
 	webContents?: WebContents;
@@ -957,9 +964,14 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		// WebContentsView bounds are window coordinates. Convert before clamping so
 		// Cmd+/Cmd- page zoom does not detach the native view from its React slot.
 		session.rendererBounds = { ...rect };
+		// `contentView.getBounds()` is relative to the content view's own origin
+		// ({x: 0, y: 0, width, height}) — the same space child views are positioned
+		// in. `mainWindow.getContentBounds()` returns *screen* coordinates instead,
+		// which only happens to line up when the window sits at the display's
+		// top-left; anywhere else it silently offsets every native view (issue #2491).
 		session.bounds = clampBoundsToWindow(
 			scaleBoundsForZoom(rect, effectiveZoomFactor),
-			options.mainWindow.getContentBounds(),
+			options.mainWindow.contentView.getBounds?.() ?? options.mainWindow.getContentBounds(),
 		);
 		session.visible = true;
 		applySessionBounds(session, entry);

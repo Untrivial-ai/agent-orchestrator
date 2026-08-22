@@ -121,11 +121,18 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 	const sent: Array<{ channel: string; payload: unknown }> = [];
 	const shellFocus = vi.fn();
 	const shellSend = vi.fn((channel: string, payload?: unknown) => sent.push({ channel, payload }));
-	const mainContentView = { addChildView: vi.fn(), removeChildView: vi.fn() };
+	// The window sits away from the display's top-left corner (x/y both
+	// nonzero) so a regression that reads screen-coordinate window bounds
+	// instead of content-view-relative bounds shows up as an offset (#2491).
+	const mainContentView = {
+		addChildView: vi.fn(),
+		removeChildView: vi.fn(),
+		getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+	};
 	const host = createBrowserViewHost({
 		mainWindow: {
 			contentView: mainContentView,
-			getContentBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+			getContentBounds: () => ({ x: 200, y: 150, width: 800, height: 600 }),
 			webContents: {
 				id: 1,
 				focus: shellFocus,
@@ -1427,6 +1434,24 @@ describe("browser:setBounds", () => {
 
 		expect(view.setVisible).not.toHaveBeenCalledWith(true);
 		expect(view.setVisible).toHaveBeenLastCalledWith(false);
+	});
+
+	it("clamps against the content view's own bounds, not the window's screen position (#2491)", async () => {
+		// The mocked window sits at screen (200, 150) while its content view is
+		// (0, 0, 800, 600) in its own coordinate space — the space `setBounds`
+		// expects. A rect placed at the far edge of the content view must still
+		// clamp against the content view's 800x600, not get pushed further out
+		// (or clipped early) by the window's screen-space x/y.
+		const { emit, invoke, view } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+
+		emit("browser:setBounds", 1, {
+			viewId: "1:sess-1",
+			rect: { x: 750, y: 550, width: 320, height: 240 },
+			visible: true,
+		});
+
+		expect(view.setBounds).toHaveBeenLastCalledWith({ x: 750, y: 550, width: 50, height: 50 });
 	});
 
 	it("restores renderer-owned bounds when reloading after a failed load", async () => {
