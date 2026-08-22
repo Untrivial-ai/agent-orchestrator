@@ -4,6 +4,54 @@
  */
 
 export interface paths {
+    "/api/cloud/v1/auth/google": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["exchangeGoogleIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["refreshAOSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["logoutAOSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/me": {
         parameters: {
             query?: never;
@@ -905,7 +953,7 @@ export interface components {
     schemas: {
         EmptyObject: Record<string, never>;
         /** @enum {string} */
-        AuthProvider: "workos" | "local";
+        AuthProvider: "google" | "workos" | "local";
         /** @enum {string} */
         OrganizationRole: "owner" | "admin" | "member";
         CurrentUser: {
@@ -924,6 +972,23 @@ export interface components {
             role: components["schemas"]["OrganizationRole"];
         };
         CurrentAccount: {
+            user: components["schemas"]["CurrentUser"];
+            organizations: components["schemas"]["OrganizationMembership"][];
+        };
+        GoogleIdentityExchange: {
+            /** @description Google OpenID Connect ID token obtained through desktop PKCE. */
+            idToken: string;
+        };
+        RefreshTokenInput: {
+            refreshToken: string;
+        };
+        AOSession: {
+            /** @description Short-lived AO bearer token; never expose it to renderer storage. */
+            accessToken: string;
+            /** @description Rotating opaque token for protected Electron-main storage. */
+            refreshToken: string;
+            /** Format: date-time */
+            expiresAt: string;
             user: components["schemas"]["CurrentUser"];
             organizations: components["schemas"]["OrganizationMembership"][];
         };
@@ -1954,6 +2019,83 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    exchangeGoogleIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GoogleIdentityExchange"];
+            };
+        };
+        responses: {
+            /** @description Google identity verified and an AO session issued. */
+            200: {
+                headers: {
+                    /** @description Always `no-store`. */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AOSession"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    refreshAOSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefreshTokenInput"];
+            };
+        };
+        responses: {
+            /** @description The refresh token was consumed and replaced atomically without extending the session's absolute expiry. */
+            200: {
+                headers: {
+                    /** @description Always `no-store`. */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AOSession"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    logoutAOSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefreshTokenInput"];
+            };
+        };
+        responses: {
+            /** @description The refresh token was revoked. AO access tokens expire naturally. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getCurrentAccount: {
         parameters: {
             query?: never;

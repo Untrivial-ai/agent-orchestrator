@@ -9,6 +9,9 @@ export type OrganizationRole = Schemas["OrganizationRole"];
 export type CurrentUser = Schemas["CurrentUser"];
 export type OrganizationMembership = Schemas["OrganizationMembership"];
 export type CurrentAccount = Schemas["CurrentAccount"];
+export type GoogleIdentityExchange = Schemas["GoogleIdentityExchange"];
+export type RefreshTokenInput = Schemas["RefreshTokenInput"];
+export type AOSession = Schemas["AOSession"];
 
 export type AgentCapability = Schemas["AgentCapability"];
 export type AgentInstallationState = Schemas["AgentInstallationState"];

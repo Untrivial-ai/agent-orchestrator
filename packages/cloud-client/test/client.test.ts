@@ -11,6 +11,40 @@ import {
 } from "../src/index.js";
 
 describe("CloudClient", () => {
+  it("exchanges Google identity without sending an AO bearer token", async () => {
+    const session = {
+      accessToken: "ao-access-token",
+      refreshToken: "ao_refresh_token",
+      expiresAt: "2026-08-19T20:00:00Z",
+      user: {
+        id: "aa4c5117-d075-4a4e-a384-149e75f7dc45",
+        email: "alice@example.com",
+        displayName: "Alice",
+        authProvider: "google",
+      },
+      organizations: [],
+    } as const;
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse(session),
+    );
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => null,
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(
+      client.exchangeGoogleIdentity({ idToken: "google-id-token" }),
+    ).resolves.toEqual(session);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://cloud.example.com/api/cloud/v1/auth/google",
+    );
+    const init = fetchMock.mock.calls[0]?.[1];
+    expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+    expect(init?.cache).toBe("no-store");
+  });
+
   it("loads the authenticated account and organization memberships", async () => {
     const account = {
       user: {

@@ -1,4 +1,5 @@
 import type {
+  AOSession,
   AgentProfile,
   ClientEvent,
   ClientEventPage,
@@ -18,12 +19,14 @@ import type {
   GitHubRepositoryPage,
   GitHubUserAuthorizationStart,
   GitHubUserConnection,
+  GoogleIdentityExchange,
   IdempotentRequestOptions,
   PaginationOptions,
   Project,
   ProjectPage,
   PutAgentProviderConnectionInput,
   RedactedProviderConnection,
+  RefreshTokenInput,
   RequestOptions,
   Session,
   SessionPage,
@@ -113,6 +116,42 @@ export class CloudClient {
     this.baseUrl = baseUrl.toString().replace(/\/+$/, "");
     this.getAccessToken = config.getAccessToken;
     this.fetch = config.fetch ?? globalThis.fetch.bind(globalThis);
+  }
+
+  exchangeGoogleIdentity(
+    input: GoogleIdentityExchange,
+    options: RequestOptions = {},
+  ): Promise<AOSession> {
+    return this.unauthenticatedRequest("/api/cloud/v1/auth/google", {
+      method: "POST",
+      body: input,
+      cache: "no-store",
+      signal: options.signal,
+    });
+  }
+
+  refreshSession(
+    input: RefreshTokenInput,
+    options: RequestOptions = {},
+  ): Promise<AOSession> {
+    return this.unauthenticatedRequest("/api/cloud/v1/auth/refresh", {
+      method: "POST",
+      body: input,
+      cache: "no-store",
+      signal: options.signal,
+    });
+  }
+
+  async logoutSession(
+    input: RefreshTokenInput,
+    options: RequestOptions = {},
+  ): Promise<void> {
+    await this.unauthenticatedRequest<void>("/api/cloud/v1/auth/logout", {
+      method: "POST",
+      body: input,
+      cache: "no-store",
+      signal: options.signal,
+    });
   }
 
   getCurrentAccount(options: RequestOptions = {}): Promise<CurrentAccount> {
@@ -681,6 +720,33 @@ export class CloudClient {
     await this.throwIfError(response);
     if (response.status === 204) return undefined as T;
 
+    try {
+      return (await response.json()) as T;
+    } catch {
+      throw this.invalidResponse(
+        response.status,
+        "Cloud API returned an invalid JSON response.",
+      );
+    }
+  }
+
+  private async unauthenticatedRequest<T>(
+    path: string,
+    options: JSONRequestOptions,
+  ): Promise<T> {
+    const headers = new Headers({
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    });
+    const response = await this.fetch(`${this.baseUrl}${path}`, {
+      method: options.method ?? "POST",
+      headers,
+      body: JSON.stringify(options.body),
+      cache: options.cache,
+      signal: options.signal,
+    });
+    await this.throwIfError(response);
+    if (response.status === 204) return undefined as T;
     try {
       return (await response.json()) as T;
     } catch {

@@ -1,143 +1,55 @@
 # Cloud development
 
-## TL;DR
+AO desktop and AO Cloud now evolve in one repository. The local daemon remains
+a complete product and does not depend on hosted services. Cloud code lives
+under `backend/internal/cloud`, with shared client contracts and presentation
+packages remaining transport-independent.
 
-AO stays a complete public local product. The private `ao-cloud` repository
-implements the hosted control plane and can be checked out at
-`private/ao-cloud` as an optional submodule for developers who have access.
-Public builds, tests, and contributors must not depend on that checkout.
+## Current implementation
 
-The public repository owns stable contracts, generated client types, reusable
-product UI, and local desktop behavior. The private repository owns tenant data,
-authorization, hosted execution, infrastructure, and secrets.
+The first hosted slice contains only:
 
-## Using the private checkout
+- a PostgreSQL user, refresh-session, organization, and membership schema;
+- forced row-level security for tenant data;
+- Google OpenID Connect identity verification;
+- short-lived AO access tokens and rotating opaque refresh tokens;
+- `/healthz`, `/readyz`, Cloud auth, and current-account HTTP routes; and
+- migration and API binaries.
 
-After the optional submodule is added, an authorized developer initializes it
-with:
+See [cloud-control-plane.md](cloud-control-plane.md) for configuration and the
+exact trust boundaries.
 
-```bash
-gh auth setup-git
-git -c submodule.private/ao-cloud.update=checkout \
-  submodule update --init private/ao-cloud
-```
+The broader OpenAPI document remains the staged contract for projects,
+sessions, workers, SCM, terminal streaming, and workspace access. A route in
+that contract is not evidence that its hosted handler exists; the foundation
+document lists the implemented routes.
 
-Developers without access do nothing. A normal clone, build, and test of public
-AO—including `git clone --recursive`—continues to work because the submodule is
-configured with `update = none`. Only the explicit opt-in command above fails
-without private repository permission.
+## Verification
 
-The private web app consumes the public packages through the containing
-workspace. Install the public workspace first, then the private app:
+From the repository root:
 
 ```bash
-npm ci
-npm --prefix private/ao-cloud ci
+cd backend
+go test ./internal/cloud/... ./cmd/ao-cloud ./cmd/ao-cloud-migrate
+go build ./...
+go vet ./...
+
+cd ..
+npm run cloud:check
 ```
 
-Do not copy those package sources into the private repository. The private
-package links point to `packages/cloud-client` and `packages/product-ui`, while
-its build scripts compile the public packages before building the Next.js app.
+PostgreSQL acceptance requires an isolated database plus separate migration and
+runtime roles. Do not point migration tests at a shared environment.
 
-Work in the two repositories remains separate:
+## Implementation order
 
-1. Commit and push private implementation changes from `private/ao-cloud`.
-2. In the public repository, stage the `private/ao-cloud` path to record the
-   known-compatible private commit.
-3. Review the private code and the public submodule-pointer update in separate
-   pull requests.
+1. Land this PostgreSQL and authentication foundation.
+2. Add AWS infrastructure and a staging deployment for only this service.
+3. Add project placement and the Electron-main Google token broker.
+4. Add Daytona provisioning and the outbound worker lifecycle.
+5. Add durable session events and WAN terminal/workspace transport.
+6. Add GitHub App installation, SCM synchronization, and worker checkout grants.
 
-Never put credentials in `.gitmodules`. Public and fork CI must not initialize
-the private submodule. A future integration job should use a scoped GitHub App
-token with read access to `ao-cloud`.
-
-## Foundation implemented in public AO
-
-- Stable Go facts and pure rules for agents, sessions, status, PRs, reviews, and
-  stack position.
-- Shared Claude Code, Codex, and Cursor launch/restore policy plus Linux worker
-  process lifecycle primitives.
-- Organization-scoped account, project, session-policy, event, and GitHub
-  OpenAPI contracts with generated TypeScript schema types, including the
-  durable worker turn, credential, and checkout-grant boundary.
-- A typed Cloud client for bearer authentication, pagination, idempotent writes,
-  cursor-safe reconnecting SSE, GitHub App flows, terminal tickets, and
-  workspace reads.
-- Reusable board, composer, inspector, project-settings, agent, and SCM
-  presentation. The Cloud app now consumes the shared board, session-card,
-  status, and agent-identity exports instead of maintaining a second copy.
-- WorkOS desktop authentication with token custody in Electron main and a
-  token-free renderer account projection.
-
-These are shared-ready boundaries, not a hosted Cloud implementation.
-
-## Private implementation status
-
-The private repository now contains:
-
-- the 28-table PostgreSQL schema, tenant keys, forced RLS, organizations,
-  memberships, projects, sessions, turns/events, and future execution,
-  sharing, and GitHub records;
-- WorkOS access-token validation, organization authorization, idempotent
-  project/session/message APIs, durable workspace intent, and cross-replica
-  event replay/SSE;
-- secure GitHub App installation, OAuth verification, repository grants,
-  synchronization, disconnect, project import, and durable webhook processing;
-- an authenticated Next.js Cloud app for organization selection, project and
-  durable-session creation, search, chat history, and live event replay;
-- non-root control-plane and migration images;
-- separate staging and production RDS/ECS/ALB/secrets/logging environments; and
-- migration-first staging deployment plus exact-digest production promotion
-  with scanning, health checks, automatic rollback, guarded manual rollback,
-  CloudWatch alarms, and an operations dashboard.
-
-The public submodule pointer records the private `main` commit known to be
-compatible with this public branch. It is a development reference only; public
-builds and releases still do not initialize or package the private repository.
-
-## Environment modes
-
-1. **Local:** `npm run cloud:local` uses email/password local auth, local
-   PostgreSQL, the local control-plane container, and the private web app at
-   `http://127.0.0.1:3000`. WorkOS is used only for an optional hosted-account
-   session when managing GitHub; the app itself remains on local auth and never
-   loads GitHub App credentials. Docker workers are intended but are not
-   implemented yet.
-2. **Staging:** `npm run cloud:staging` runs the desktop locally against
-   `https://staging-api.aoagents.dev`, the hosted staging database, and the
-   shared WorkOS environment. `npm run cloud:web:staging` runs the private web
-   app against the same API, loading server-only AuthKit credentials from AWS
-   Secrets Manager. Future staging workers run remotely.
-3. **Production:** `https://api.aoagents.dev` uses the production database, the
-   same WorkOS environment, and the production-owned GitHub App. There is no
-   local-desktop-against-production development command.
-
-GitHub App credentials remain disabled outside production. The private web BFF
-brokers GitHub installation and repository requests to the production API using
-the user's WorkOS session, then rechecks active repository access before writing
-a project into the current environment. Callback and webhook state therefore
-stay in production. Worker checkout still needs a short-lived,
-environment-scoped broker grant before execution can be enabled.
-
-## Private implementation still required
-
-1. **Execution plane:** queues, leases, reconciliation, provisioning, sandbox
-   images, workers, heartbeats, terminal transport, and workspace RPC.
-2. **Cloud app completion:** files, terminal, review, and a production web
-   deployment. Worker/orchestrator execution controls remain hidden until the
-   execution plane exists.
-3. **SCM completion:** personal GitHub OAuth, scoped installation-token brokering for workers,
-   PR/issue/check/review synchronization, and stale-head guards.
-4. **Operations:** retire the empty internal ALBs after observation, move tasks
-   to private subnets, configure SNS alarm notifications, and complete billing,
-   backup restore drills, incident controls, and compatibility policy.
-
-## Recommended implementation order
-
-1. Add provisioning and the worker protocol for real hosted sessions.
-2. Add worker token brokering and SCM synchronization.
-3. Add terminal/files, sharing, review synchronization, and remaining operations
-   hardening.
-
-See [cloud-refactor.md](cloud-refactor.md) for package ownership, import rules,
-and the detailed public/private boundary.
+Each stage should remain independently reviewable. The renderer must continue
+to consume shared view models and injected actions rather than selecting local
+or Cloud transports inside components.

@@ -3,11 +3,10 @@ info:
   title: AO Cloud Public API
   version: 1.0.0
   description: |
-    Client-facing contract for a separate AO Cloud implementation. This
-    repository does not serve these routes. The worker surface documents the
-    exact outbound HTTP protocol used by sandbox workers, including one-time
-    bootstrap, rotating credentials, fenced turn execution, orchestration, and
-    durable workspace and terminal transport.
+    Client-facing contract for AO Cloud. The control-plane foundation in this
+    repository currently serves the Google authentication and current-account
+    routes. Project, session, worker, SCM, terminal, and workspace routes remain
+    staged contracts for later implementation.
 security:
   - bearerAuth: []
 tags:
@@ -27,6 +26,72 @@ tags:
   - name: Worker Orchestration
   - name: Worker Transport
 paths:
+  /api/cloud/v1/auth/google:
+    post:
+      operationId: exchangeGoogleIdentity
+      tags: [Account]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoogleIdentityExchange"
+      responses:
+        "200":
+          description: Google identity verified and an AO session issued.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Always `no-store`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AOSession"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/auth/refresh:
+    post:
+      operationId: refreshAOSession
+      tags: [Account]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshTokenInput"
+      responses:
+        "200":
+          description: The refresh token was consumed and replaced atomically without extending the session's absolute expiry.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Always `no-store`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AOSession"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/auth/logout:
+    post:
+      operationId: logoutAOSession
+      tags: [Account]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshTokenInput"
+      responses:
+        "204":
+          description: The refresh token was revoked. AO access tokens expire naturally.
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/me:
     get:
       operationId: getCurrentAccount
@@ -1530,7 +1595,7 @@ components:
       additionalProperties: false
     AuthProvider:
       type: string
-      enum: [workos, local]
+      enum: [google, workos, local]
     OrganizationRole:
       type: string
       enum: [owner, admin, member]
@@ -1569,6 +1634,45 @@ components:
       additionalProperties: false
       required: [user, organizations]
       properties:
+        user:
+          $ref: "#/components/schemas/CurrentUser"
+        organizations:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationMembership"
+    GoogleIdentityExchange:
+      type: object
+      additionalProperties: false
+      required: [idToken]
+      properties:
+        idToken:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: Google OpenID Connect ID token obtained through desktop PKCE.
+    RefreshTokenInput:
+      type: object
+      additionalProperties: false
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+          pattern: "^ao_refresh_"
+    AOSession:
+      type: object
+      additionalProperties: false
+      required: [accessToken, refreshToken, expiresAt, user, organizations]
+      properties:
+        accessToken:
+          type: string
+          description: Short-lived AO bearer token; never expose it to renderer storage.
+        refreshToken:
+          type: string
+          pattern: "^ao_refresh_"
+          description: Rotating opaque token for protected Electron-main storage.
+        expiresAt:
+          type: string
+          format: date-time
         user:
           $ref: "#/components/schemas/CurrentUser"
         organizations:
