@@ -22,7 +22,7 @@ func TestDeriverTokensAreKnownHarnesses(t *testing.T) {
 }
 
 func TestSupportsHarness(t *testing.T) {
-	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent} {
+	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessContinue, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent} {
 		if !SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = false, want true", h)
 		}
@@ -102,6 +102,33 @@ func TestGrokDerivesClaudeCompatibleActivity(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("Derive(grok, %q) = %q, want %q", tt.event, got, tt.want)
+			}
+		})
+	}
+}
+
+// Continue delegates GetAgentHooks to the claude-code plugin, so its deriver
+// must be claudecode.DeriveActivityState (same as grok's) and behave
+// identically.
+func TestContinueDerivesClaudeCompatibleActivity(t *testing.T) {
+	tests := []struct {
+		name    string
+		event   string
+		payload string
+		want    domain.ActivityState
+	}{
+		{"permission request", "permission-request", `{}`, domain.ActivityBlocked},
+		{"idle notification", "notification", `{"notification_type":"idle_prompt"}`, domain.ActivityIdle},
+		{"session end", "session-end", `{}`, domain.ActivityExited},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := Derive("continue", tt.event, []byte(tt.payload))
+			if !ok {
+				t.Fatalf("Derive(continue, %q) ok=false, want true", tt.event)
+			}
+			if got != tt.want {
+				t.Fatalf("Derive(continue, %q) = %q, want %q", tt.event, got, tt.want)
 			}
 		})
 	}
