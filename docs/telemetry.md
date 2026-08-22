@@ -19,6 +19,10 @@ AO sends structured events in a few broad categories:
   starting a task or agent session
 - Feature outcomes, such as whether creating a project, starting an agent,
   connecting the mobile app, or installing an update succeeded
+- The GitHub organization or account that owns a project's configured remote,
+  recorded on project-add events. Only the owner segment is sent, never the
+  repository name, path, or URL. For a personal repository this owner is the
+  user's own GitHub username, so this particular value is not anonymous
 - Reliability data, such as an error type and context, a crash message and
   stack trace after path redaction, an HTTP status, or an agent waiting for
   input
@@ -49,6 +53,10 @@ Product telemetry is designed not to include:
 - Repository names, project names, branch names, or plain-text file paths
 - API keys, access tokens, passwords, or other credentials
 - Names, email addresses, or account identities
+
+The GitHub owner segment described under "What AO sends" is the one
+GitHub-derived value AO does send. It is limited to the owning
+organization or account and never includes the repository, path, or URL.
 
 The optional website waitlist is separate from product telemetry. If you submit
 an email address there, it is used to manage that waitlist as described in the
