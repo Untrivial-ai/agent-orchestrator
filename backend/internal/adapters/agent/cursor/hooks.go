@@ -57,12 +57,23 @@ type cursorHookSpec struct {
 // cursorManagedHooks is the source of truth for the hooks AO installs. The
 // native-event → AO-subcommand contract is FIXED: the orchestrator's CLI hook
 // dispatch and activity.go agree on the sub-command names.
+//
+// The before*/after* pairs are dispatched as pre-tool-use/post-tool-use, the
+// same tokens claude-code uses for its own tool-use trio — NOT as
+// permission-request. cursor-agent is always launched with --trust
+// (cursor.go's GetLaunchCommand/GetRestoreCommand), so these hooks never
+// actually pause for a real permission decision; they fire on every
+// auto-approved tool call. Mapping them to permission-request's
+// waiting_input, with no paired after-hook to demote it, is what left the
+// activity badge stuck on "Input Needed" for the whole turn. See DeriveActivityState.
 var cursorManagedHooks = []cursorHookSpec{
 	{Event: "sessionStart", Command: cursorHookCommandPrefix + "session-start"},
 	{Event: "beforeSubmitPrompt", Command: cursorHookCommandPrefix + "user-prompt-submit"},
 	{Event: "stop", Command: cursorHookCommandPrefix + "stop"},
-	{Event: "beforeShellExecution", Command: cursorHookCommandPrefix + "permission-request"},
-	{Event: "beforeMCPExecution", Command: cursorHookCommandPrefix + "permission-request"},
+	{Event: "beforeShellExecution", Command: cursorHookCommandPrefix + "pre-tool-use"},
+	{Event: "afterShellExecution", Command: cursorHookCommandPrefix + "post-tool-use"},
+	{Event: "beforeMCPExecution", Command: cursorHookCommandPrefix + "pre-tool-use"},
+	{Event: "afterMCPExecution", Command: cursorHookCommandPrefix + "post-tool-use"},
 }
 
 // GetAgentHooks installs AO's Cursor hooks into the worktree-local
