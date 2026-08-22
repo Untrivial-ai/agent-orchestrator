@@ -641,6 +641,13 @@ func (s *Service) deliverSubmitted(ctx context.Context, workerID domain.SessionI
 }
 
 func (s *Service) deliverableRuns(ctx context.Context, workerID domain.SessionID, runs []domain.ReviewRun) ([]domain.ReviewRun, error) {
+	session, ok, err := s.store.GetSession(ctx, workerID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || !session.AutoInjectReview {
+		return nil, nil
+	}
 	currentHeads, err := s.currentHeadsByPR(ctx, workerID)
 	if err != nil {
 		return nil, err

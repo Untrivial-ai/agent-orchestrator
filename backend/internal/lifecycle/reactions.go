@@ -56,7 +56,7 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 	if err != nil || !ok {
 		return ReviewDeliveryNoop, err
 	}
-	if cannotNudge(rec) {
+	if cannotNudge(rec) || !rec.AutoInjectReview {
 		return ReviewDeliveryNoop, nil
 	}
 	if m.guard == nil {
@@ -214,7 +214,7 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 		}
 	}
 
-	if hasUnresolvedComments(o.Comments) {
+	if rec.AutoInjectReview && hasUnresolvedComments(o.Comments) {
 		comments := unresolvedReviewComments(o.Comments)
 		for _, comment := range comments {
 			if !comment.AutoInjectReview {
@@ -236,7 +236,7 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 		}
 	}
 
-	if o.Review == domain.ReviewChangesRequest {
+	if rec.AutoInjectReview && o.Review == domain.ReviewChangesRequest {
 		for _, review := range reviews {
 			if review.State != domain.ReviewChangesRequest || !review.AutoInjectReview {
 				continue

@@ -1867,6 +1867,28 @@ func TestPRObservation_ReviewFeedbackNotInjectedWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestPRObservation_ReviewFeedbackNotInjectedAfterSessionDisabled(t *testing.T) {
+	m, st, msg := newManager()
+	rec := working("mer-1")
+	rec.AutoInjectReview = false
+	st.sessions[rec.ID] = rec
+	st.comments["pr1"] = []domain.PullRequestComment{{ID: "1", Author: "alice", Body: "captured while enabled", AutoInjectReview: true}}
+	st.reviews["pr1"] = []domain.PullRequestReview{{ID: "r1", Author: "alice", State: domain.ReviewChangesRequest, Body: "also captured while enabled", AutoInjectReview: true}}
+	o := ports.PRObservation{
+		Fetched: true,
+		URL:     "pr1",
+		CI:      domain.CIFailing,
+		Checks:  []ports.PRCheckObservation{{Name: "build", Status: domain.PRCheckFailed, LogTail: "boom"}},
+		Review:  domain.ReviewChangesRequest,
+	}
+	if err := m.ApplyPRObservation(ctx, rec.ID, o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "boom") || strings.Contains(msg.msgs[0], "captured while enabled") {
+		t.Fatalf("messages = %v, want CI only after current session policy is disabled", msg.msgs)
+	}
+}
+
 func TestPRObservation_MixedPersistedCommentDecisions(t *testing.T) {
 	m, st, msg := newManager()
 	st.sessions["mer-1"] = working("mer-1")
@@ -2491,6 +2513,25 @@ func TestApplyReviewBatchSendsCombinedAndDedups(t *testing.T) {
 	}
 	if outcome != ReviewDeliverySent || len(msg.msgs) != 1 {
 		t.Fatalf("repeat should suppress duplicate send, outcome=%q msgs=%v", outcome, msg.msgs)
+	}
+}
+
+func TestApplyReviewBatchNoopsAfterSessionDisabled(t *testing.T) {
+	m, st, msg := newManager()
+	rec := working("mer-1")
+	rec.AutoInjectReview = false
+	st.sessions[rec.ID] = rec
+	result := ReviewResult{
+		RunID: "run-1", BatchID: "batch-1", WorkerID: rec.ID, PRURL: "https://github.com/o/r/pull/1",
+		TargetSHA: "sha1", Verdict: domain.VerdictChangesRequested, Body: "captured while enabled",
+	}
+
+	outcome, err := m.ApplyReviewBatch(ctx, rec.ID, result.BatchID, []ReviewResult{result})
+	if err != nil {
+		t.Fatalf("ApplyReviewBatch: %v", err)
+	}
+	if outcome != ReviewDeliveryNoop || len(msg.msgs) != 0 || st.signatureWrites != 0 {
+		t.Fatalf("disabled current policy should no-op, outcome=%q msgs=%v signatureWrites=%d", outcome, msg.msgs, st.signatureWrites)
 	}
 }
 
