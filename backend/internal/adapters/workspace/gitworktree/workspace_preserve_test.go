@@ -218,6 +218,126 @@ func TestWorkspaceIntegrationApplyPreservedConflict(t *testing.T) {
 	}
 }
 
+// TestWorkspaceIntegrationStashApplyPreservesTrackedIgnoredEdit is a
+// regression test for the data-loss bug where an uncommitted edit to a file
+// that is tracked in HEAD but ALSO matches a .gitignore pattern (a real
+// pattern: commit a config once, then gitignore it so local edits never get
+// pushed) was silently dropped by StashUncommitted and then deleted on
+// restore by ApplyPreserved.
+//
+// Root cause: StashUncommitted stages the preserve tree through a temp index
+// file that starts absent/empty. git's "an already-tracked path bypasses
+// .gitignore" rule keys off what is IN THE INDEX, not what is in HEAD, so
+// against an empty index `git add -A` cannot tell a tracked-but-ignored file
+// apart from a genuinely untracked-and-ignored one, and silently skips both
+// (no -f passed). The preserve tree then omits the tracked file; since the
+// preserve commit's parent is HEAD (which still has the file), the diff reads
+// as a deletion, and ApplyPreserved's cherry-pick faithfully replays that
+// deletion on restore.
+//
+// This test also covers the negative case in the same run: a genuinely
+// untracked file that matches .gitignore (never committed) must still be
+// excluded from the preserve/restore round trip. That is the main regression
+// risk of seeding the temp index from HEAD — it must not start capturing real
+// ignored junk (build output, node_modules, etc).
+func TestWorkspaceIntegrationStashApplyPreservesTrackedIgnoredEdit(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	root := filepath.Join(tmp, "managed")
+	ws, err := New(Options{Binary: git, ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx := context.Background()
+	cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess-tracked-ignored", Branch: "feature/tracked-ignored"}
+
+	info, err := ws.Create(ctx, cfg)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Commit config.yaml (tracked in HEAD), THEN add it to .gitignore and
+	// commit that too, so it stays tracked while also matching an ignore
+	// pattern going forward — the exact real-world shape the issue describes.
+	configPath := filepath.Join(info.Path, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	runGit(t, git, info.Path, "add", "config.yaml")
+	runGit(t, git, info.Path, "commit", "-m", "add config.yaml")
+
+	if err := os.WriteFile(filepath.Join(info.Path, ".gitignore"), []byte("config.yaml\nbuild/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	runGit(t, git, info.Path, "add", ".gitignore")
+	runGit(t, git, info.Path, "commit", "-m", "gitignore config.yaml and build/")
+
+	// Uncommitted edit to the tracked-but-now-ignored file: this is the edit
+	// that must survive preserve/restore.
+	if err := os.WriteFile(configPath, []byte("edited by agent\n"), 0o644); err != nil {
+		t.Fatalf("edit config.yaml: %v", err)
+	}
+
+	// Negative case: a genuinely untracked file that matches .gitignore (never
+	// committed). It must be excluded from the round trip, same as before
+	// this fix — seeding the temp index from HEAD must not start capturing
+	// real ignored junk.
+	buildDir := filepath.Join(info.Path, "build")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		t.Fatalf("mkdir build: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "output.log"), []byte("junk\n"), 0o644); err != nil {
+		t.Fatalf("write build/output.log: %v", err)
+	}
+
+	// StashUncommitted: must return a non-empty ref (there is real work to
+	// preserve: the config.yaml edit).
+	ref, err := ws.StashUncommitted(ctx, info)
+	if err != nil {
+		t.Fatalf("StashUncommitted: %v", err)
+	}
+	if ref == "" {
+		t.Fatal("StashUncommitted returned empty ref, want a preserve ref for the tracked-ignored edit")
+	}
+
+	// ForceDestroy: simulate session close.
+	if err := ws.ForceDestroy(ctx, info); err != nil {
+		t.Fatalf("ForceDestroy: %v", err)
+	}
+	if _, err := os.Stat(info.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree path still exists after ForceDestroy")
+	}
+
+	// Restore: simulate re-open / re-attach.
+	restored, err := ws.Restore(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	// ApplyPreserved: replay the captured state.
+	if err := ws.ApplyPreserved(ctx, restored, ref); err != nil {
+		t.Fatalf("ApplyPreserved: %v", err)
+	}
+
+	// The tracked-but-ignored file must still exist AND carry the edited
+	// content — not the original, and not deleted. This is the core assertion
+	// for the data-loss bug: before the fix, config.yaml did not exist here.
+	restoredConfig := filepath.Join(restored.Path, "config.yaml")
+	configBytes, err := os.ReadFile(restoredConfig)
+	if err != nil {
+		t.Fatalf("config.yaml missing after apply (data loss): %v", err)
+	}
+	if string(configBytes) != "edited by agent\n" {
+		t.Fatalf("config.yaml content = %q, want %q (edit lost or reverted to original)", string(configBytes), "edited by agent\n")
+	}
+
+	// Negative case: the genuinely untracked, ignored file must NOT reappear.
+	if _, err := os.Stat(filepath.Join(restored.Path, "build", "output.log")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("build/output.log exists after apply but must not (it was untracked and .gitignore-d)")
+	}
+}
+
 // TestWorkspaceIntegrationStashCleanWorktree proves that StashUncommitted on a
 // clean worktree returns an empty ref and no error (nothing to preserve).
 func TestWorkspaceIntegrationStashCleanWorktree(t *testing.T) {
