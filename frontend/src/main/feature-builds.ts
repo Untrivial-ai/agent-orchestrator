@@ -35,6 +35,13 @@ function resolveRepo(): { owner: string; repo: string } {
 // Marker embedded in feature-build release bodies by the CI workflow.
 const FEATURE_BUILD_MARKER = "<!-- ao-feature-build:";
 
+// The CI workflow titles feature releases "[feature] PR #<N>: <PR title>".
+// Strip that authored prefix so UI copy that composes its own "PR #<N>: <title>"
+// label does not render it twice.
+function stripReleaseTitlePrefix(name: string): string {
+	return name.replace(/^\[feature\]\s*PR #\d+:\s*/i, "");
+}
+
 // Feature builds older than this are dropped from the list, matching the
 // cleanup workflow's 7-day expiry sweep so the app and CI agree on liveness.
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -100,6 +107,10 @@ function parseMarker(body: string): MarkerPayload | null {
 	}
 }
 
+// Bounds every GitHub API call so a wedged connection cannot hang the
+// updates flow indefinitely for a user pinned to a feature build.
+const FETCH_TIMEOUT_MS = 10_000;
+
 async function fetchJson<T>(url: string): Promise<T> {
 	const res = await fetch(url, {
 		headers: {
@@ -107,6 +118,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 			"X-GitHub-Api-Version": "2022-11-28",
 			"User-Agent": `ao-desktop/${app.getVersion()}`,
 		},
+		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 	});
 	if (!res.ok) throw new Error(`GitHub API ${res.status}: ${url}`);
 	return res.json() as Promise<T>;
@@ -157,7 +169,7 @@ async function collectFeatureBuilds(): Promise<FeatureBuild[]> {
 		if (!marker) continue;
 		candidates.push({
 			pr: marker.pr,
-			title: rel.name,
+			title: stripReleaseTitlePrefix(rel.name),
 			base: marker.base,
 			sha: marker.sha,
 			slug: marker.slug,

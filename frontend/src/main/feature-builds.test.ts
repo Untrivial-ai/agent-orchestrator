@@ -189,6 +189,40 @@ describe("listFeatureBuilds", () => {
 		expect(result[0].pr).toBe(2270);
 	});
 
+	it("strips the workflow's [feature] PR #N: title prefix so UI labels do not double-prefix", async () => {
+		const publishedAt = new Date(Date.now() - DAY_MS).toISOString();
+		stubFetch(
+			[
+				makeRelease({
+					tag_name: "v0.2.0-pr2270.202607061200",
+					name: "[feature] PR #2270: feat: per-PR installable builds",
+					published_at: publishedAt,
+				}),
+			],
+			{ 2270: { state: "open" } },
+		);
+		const result = await listFeatureBuilds();
+		expect(result).toHaveLength(1);
+		expect(result[0].title).toBe("feat: per-PR installable builds");
+	});
+
+	it("keeps a release title without the authored prefix unchanged", async () => {
+		const publishedAt = new Date(Date.now() - DAY_MS).toISOString();
+		stubFetch(
+			[
+				makeRelease({
+					tag_name: "v0.2.0-pr2270.202607061200",
+					name: "Feature build pr2270",
+					published_at: publishedAt,
+				}),
+			],
+			{ 2270: { state: "open" } },
+		);
+		const result = await listFeatureBuilds();
+		expect(result).toHaveLength(1);
+		expect(result[0].title).toBe("Feature build pr2270");
+	});
+
 	it("returns a FeatureBuild with the expected shape fields", async () => {
 		const publishedAt = new Date(Date.now() - DAY_MS).toISOString();
 		stubFetch(
