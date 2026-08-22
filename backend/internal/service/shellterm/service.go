@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
 
 // ShellRuntime is the slice of the runtime adapter a shell terminal needs:
@@ -62,6 +64,11 @@ type Service struct {
 	// timestamps without a clock or entropy dependency.
 	now         func() time.Time
 	newHandleID func() (string, error)
+
+	// executable resolves the daemon's own binary (os.Executable in
+	// production); its directory is pinned to the front of every shell
+	// terminal's PATH. Tests inject a stub so they need not be named `ao`.
+	executable func() (string, error)
 
 	// gatesMu guards gates itself (the map), not the individual gate mutexes it
 	// holds.
@@ -160,8 +167,27 @@ func NewService(runtime ShellRuntime, store Store, projects ProjectRootLocator, 
 		log:         log,
 		now:         time.Now,
 		newHandleID: newShellTerminalHandleID,
+		executable:  os.Executable,
 		gates:       map[domain.SessionID]*sessionGate{},
 	}
+}
+
+// pinnedEnv is the environment handed to a shell terminal: PATH with the
+// daemon's own directory first, so a bare `ao` typed into the shell runs THIS
+// build's CLI rather than a foreign `ao` earlier on the inherited PATH (a stale
+// npm/Homebrew install is the usual one, and its older flags make in-app
+// commands look broken). Mirrors the worker-session pin in the session manager.
+//
+// Best-effort in two ways: an unpinnable daemon (not named "ao") keeps the
+// inherited PATH, and the shell still sources the user's rc files afterwards,
+// which are free to reorder PATH again.
+func (s *Service) pinnedEnv() map[string]string {
+	path, err := sessionmanager.HookPATH(s.executable, os.Getenv, nil)
+	if err != nil {
+		s.log.Warn("shell terminal PATH not pinned to the daemon binary; a bare `ao` may resolve to a different install", "err", err)
+		return nil
+	}
+	return map[string]string{"PATH": path}
 }
 
 // sessionGateFor returns the gate for id, creating it on first use.
@@ -240,6 +266,7 @@ func (s *Service) OpenShellTerminal(ctx context.Context, in OpenShellTerminalInp
 		SessionID:     domain.SessionID(handleID),
 		WorkspacePath: workingDir,
 		Argv:          argv,
+		Env:           s.pinnedEnv(),
 	})
 	if err != nil {
 		return ShellTerminal{}, fmt.Errorf("open shell terminal %s: runtime: %w", handleID, err)

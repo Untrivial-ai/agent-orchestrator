@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -234,6 +236,42 @@ func TestOpenShellTerminalStartsLoginShellInProjectRoot(t *testing.T) {
 	}
 	if len(st.records) != 1 || st.records[0].AppRunID != testAppRunID {
 		t.Fatalf("record not persisted against the current app run: %+v", st.records)
+	}
+}
+
+// TestOpenShellTerminalPinsPATHToDaemonBinary is issue #3562: a shell terminal
+// is where an operator types `ao` by hand, so it must start with the daemon's
+// own directory first on PATH. Otherwise a stale `ao` earlier on the inherited
+// PATH answers, and its older flags make current commands look broken.
+func TestOpenShellTerminalPinsPATHToDaemonBinary(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	daemonExe := filepath.Join(t.TempDir(), "ao")
+
+	cases := []struct {
+		name       string
+		executable func() (string, error)
+		want       string
+	}{
+		{"pins the daemon dir", func() (string, error) { return daemonExe, nil }, filepath.Dir(daemonExe) + string(os.PathListSeparator) + "/usr/bin"},
+		// An unpinnable daemon must not invent a PATH: the shell keeps the
+		// inherited one rather than being handed a wrong pin.
+		{"unpinnable daemon keeps the inherited PATH", func() (string, error) { return "/opt/aod/ao-daemon", nil }, ""},
+		{"unresolvable executable keeps the inherited PATH", func() (string, error) { return "", errors.New("no exe") }, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := newFakeShellRuntime()
+			projects := &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": "/repos/portfolio"}}
+			svc := newTestService(rt, &fakeShellTerminalStore{}, projects)
+			svc.executable = tc.executable
+
+			if _, err := svc.OpenShellTerminal(context.Background(), OpenShellTerminalInput{ProjectID: "portfolio"}); err != nil {
+				t.Fatalf("OpenShellTerminal: %v", err)
+			}
+			if got := rt.created[0].Env["PATH"]; got != tc.want {
+				t.Fatalf("shell terminal PATH = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
