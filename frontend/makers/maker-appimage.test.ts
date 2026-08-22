@@ -48,4 +48,16 @@ describe("MakerAppImage", () => {
 		expect(options.config.protocols).toEqual(protocols);
 		expect(options.config.publish).toBeNull();
 	});
+
+	// Pinned exactly rather than asserted "not legacy": app-builder-lib treats null
+	// the same as "0.0.0", so a looser check would stay green on a regression. See
+	// the rationale in maker-appimage.ts.
+	it("pins the appimage toolset so the artifact does not need libfuse2 (#4006)", async () => {
+		const maker = new MakerAppImage({ appId: "dev.agent-orchestrator.desktop" }, ["linux"]);
+		await maker.prepareConfig(makeOptions.targetArch);
+		await maker.make(makeOptions);
+
+		const [, options] = buildForge.mock.calls[0];
+		expect(options.config.toolsets?.appimage).toBe("1.0.3");
+	});
 });
