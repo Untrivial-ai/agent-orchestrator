@@ -25,6 +25,7 @@ import type { ChatConfigOption, ChatImage, ChatModel, ChatResource, ChatSkill, C
 import { cachedConversationState, createMobileConversationPageCache, discardHistoricalPages } from "./snapshot";
 import { conversationActionError, conversationErrorCode } from "./conversationErrors";
 import { subscribeConversationEvents } from "./conversationEvents";
+import { EVENTS_CURSOR_RESET } from "./sse";
 import { createAsyncValueCache } from "./asyncValueCache";
 import { createRequestGate } from "./requestGate";
 import { loadTurnOptionCatalog } from "./turnOptionsCatalog";
@@ -213,7 +214,9 @@ export function useMobileConversation(
 	useEffect(() => {
 		if (!cfg || unavailable) return;
 		return subscribeConversationEvents(sessionId, (event) => {
-			if (event.payload?.conversationId) scheduleRefresh();
+			// A cursor reset skipped payloads for this session too: refetch now,
+			// the missed invalidations will never arrive as events.
+			if (event.type === EVENTS_CURSOR_RESET || event.payload?.conversationId) scheduleRefresh();
 		});
 	}, [cfg, sessionId, scheduleRefresh, unavailable]);
 
