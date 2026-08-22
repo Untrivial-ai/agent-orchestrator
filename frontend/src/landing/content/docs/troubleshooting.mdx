@@ -32,6 +32,9 @@ ao doctor --json
 	<Accordion title="The UI looks stale after a daemon restart">
 		Leave the app open briefly so its SSE connection can reconnect and invalidate current queries. If it does not recover, restart the desktop app. The event stream supports replay, but a full app restart is the safest user-level recovery.
 	</Accordion>
+	<Accordion title="No agent-orchestrator.yaml appears in the project">
+		This is expected, not a bug. The rewrite stores project configuration in the daemon's SQLite database, not in a repository file, and `ao start` never writes one. See [Projects](/docs/configuration/projects) and [Migration](/docs/migration) for how project config works now, and use `ao project set-config` or the desktop settings UI to change it.
+	</Accordion>
 </Accordions>
 
 ## Agents And Sessions
