@@ -25,6 +25,7 @@ import { MAX_BROWSER_TABS } from "../shared/browser-tabs";
 import type { KeybindingOverrides } from "../shared/shortcuts";
 import type { AgentBrowserRuntime } from "./agent-browser-runtime";
 import type { AgentBrowserTarget, AgentBrowserTargetProvider } from "./agent-browser-cdp-bridge";
+import { matchInstruction } from "./browser-act-matcher";
 
 function isValidAnnotationContext(value: unknown): value is BrowserAnnotationContext {
 	if (typeof value !== "object" || value === null) return false;
@@ -1359,6 +1360,76 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 						untrustedExternalContent: true,
 					};
 				}
+				case "act": {
+					const instruction = stringArg(args, "instruction", "INVALID_ARGUMENT", "instruction is required");
+					const verb = typeof args.action === "string" && args.action.trim() ? args.action.trim() : "click";
+					if (!ACT_VERBS.has(verb)) {
+						throw browserError("INVALID_ARGUMENT", `Unsupported act verb: ${verb}`);
+					}
+					const value =
+						verb === "fill" || verb === "type"
+							? stringArg(args, "value", "INVALID_ARGUMENT", "value is required", true)
+							: undefined;
+					const nth = typeof args.nth === "number" && Number.isFinite(args.nth) ? Math.trunc(args.nth) : undefined;
+					const nativeArgsForRef = (ref: string) => (value !== undefined ? { ref, text: value } : { ref });
+					const snapshotOnce = async (): Promise<string> => {
+						const result = await runNative("snapshot", { interactive: true });
+						if (typeof result.snapshot !== "string") {
+							throw browserError("BROWSER_AUTOMATION_INVALID_OUTPUT", "Browser snapshot output was invalid");
+						}
+						return result.snapshot;
+					};
+					const unresolved = (outcome: "ambiguous" | "no-match", candidates: unknown, snapshot: string) => ({
+						outcome,
+						instruction,
+						...(outcome === "ambiguous" ? { candidates } : {}),
+						snapshot,
+						untrustedExternalContent: true as const,
+					});
+
+					const snapshot1 = await snapshotOnce();
+					const match1 = matchInstruction(instruction, snapshot1, { nth });
+					if (match1.outcome !== "matched") return unresolved(match1.outcome, "candidates" in match1 ? match1.candidates : undefined, snapshot1);
+
+					try {
+						const result = await runNative(verb, nativeArgsForRef(match1.candidate.ref));
+						return {
+							outcome: "matched",
+							resolvedRef: match1.candidate.ref,
+							candidate: match1.candidate,
+							result,
+							retried: false,
+							untrustedExternalContent: true,
+						};
+					} catch (error) {
+						// Element attributes/positions on real pages shift between the
+						// snapshot that resolved a ref and the action that uses it, going
+						// stale — this is the one case worth a single automatic retry
+						// (re-snapshot, re-match the *original* instruction, try once
+						// more) rather than making the agent notice and redo the whole
+						// snapshot->click chain itself, which is the entire point of this
+						// primitive. Any other failure, or a second stale ref, rethrows as
+						// itself — an honest failure beats silently doing nothing on a
+						// mutating action, and this must not become an unbounded loop
+						// (mirrors ensureNativeActiveTab's "retry once, then surface
+						// reality" convention elsewhere in this file).
+						if (!isStaleReferenceError(error)) throw error;
+						const snapshot2 = await snapshotOnce();
+						const match2 = matchInstruction(instruction, snapshot2, { nth });
+						if (match2.outcome !== "matched") {
+							return unresolved(match2.outcome, "candidates" in match2 ? match2.candidates : undefined, snapshot2);
+						}
+						const result = await runNative(verb, nativeArgsForRef(match2.candidate.ref));
+						return {
+							outcome: "matched",
+							resolvedRef: match2.candidate.ref,
+							candidate: match2.candidate,
+							result,
+							retried: true,
+							untrustedExternalContent: true,
+						};
+					}
+				}
 				case "click":
 				case "dblclick":
 				case "focus":
@@ -1590,6 +1661,29 @@ function isBlankBrowserEntry(entry: BrowserEntry): boolean {
 // fallback should NOT quietly swallow.
 function isAgentBrowserCommandFailure(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && "code" in error && error.code === "AGENT_BROWSER_COMMAND_FAILED");
+}
+
+// The `{ref[, text]}`-shaped action family "act" can resolve a target for and
+// then perform, matching every case in the switch above that only ever needs a
+// ref (or a ref plus text). "drag" (needs two independently-matched targets)
+// and "select" (needs matching an option's text within a resolved control, not
+// just the control) are harder matching problems and are deliberately excluded
+// from v1.
+const ACT_VERBS = new Set(["click", "dblclick", "focus", "hover", "fill", "type", "check", "uncheck"]);
+
+function isStaleReferenceError(error: unknown): boolean {
+	if (!error || typeof error !== "object" || !("code" in error)) return false;
+	if (error.code === "STALE_REFERENCE") return true;
+	// Defensive fallback: parseAgentBrowserJSON (agent-browser-runtime.ts) does
+	// not yet reliably preserve a structured error code from the real
+	// agent-browser binary's JSON output for every failure shape, so a genuine
+	// stale ref can still surface as the generic AGENT_BROWSER_COMMAND_FAILED.
+	return (
+		error.code === "AGENT_BROWSER_COMMAND_FAILED" &&
+		"message" in error &&
+		typeof error.message === "string" &&
+		/stale|no longer|expired/i.test(error.message)
+	);
 }
 
 function tabResult(entry: BrowserEntry, active: boolean): BrowserTabState & { untrustedExternalContent: true } {

@@ -61,6 +61,9 @@ func TestServiceRequiresOwningCapabilityAndLiveSession(t *testing.T) {
 	if _, action, err := service.Execute(context.Background(), "s1", token, "dblclick", nil); err != nil || action != "dblclick" || runtime.action != "dblclick" {
 		t.Fatalf("expanded action=%q runtime=%q err=%v", action, runtime.action, err)
 	}
+	if _, action, err := service.Execute(context.Background(), "s1", token, "act", nil); err != nil || action != "act" || runtime.action != "act" {
+		t.Fatalf("act action=%q runtime=%q err=%v", action, runtime.action, err)
+	}
 	if _, action, err := service.Execute(context.Background(), "s1", token, "DEVTOOLS-OPEN", nil); err != nil || action != "devtools-open" || runtime.action != "devtools-open" {
 		t.Fatalf("devtools action=%q runtime=%q err=%v", action, runtime.action, err)
 	}

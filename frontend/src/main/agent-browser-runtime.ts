@@ -733,7 +733,7 @@ export function parseAgentBrowserJSON(stdout: string): AgentBrowserJSONResult {
 	}
 	if (!isRecord(envelope)) throw runtimeError("AGENT_BROWSER_INVALID_OUTPUT", "Browser automation returned invalid output");
 	if (envelope.success === false) {
-		throw runtimeError("AGENT_BROWSER_COMMAND_FAILED", stringError(envelope.error) || "Browser automation failed");
+		throw runtimeError(errorCode(envelope.error) ?? "AGENT_BROWSER_COMMAND_FAILED", stringError(envelope.error) || "Browser automation failed");
 	}
 	const boundary = validContentBoundary(envelope._boundary);
 	const result: Record<string, unknown> = isRecord(envelope.data) ? { ...envelope.data } : { value: envelope.data };
@@ -782,6 +782,15 @@ function stringError(value: unknown): string {
 	if (typeof value === "string") return value;
 	if (isRecord(value) && typeof value.message === "string") return value.message;
 	return "";
+}
+
+// Preserves a structured error code (e.g. STALE_REFERENCE) from the real
+// agent-browser binary's JSON error envelope when one is present, instead of
+// always collapsing every failure to the generic AGENT_BROWSER_COMMAND_FAILED —
+// callers that need to distinguish failure kinds (e.g. the `act` primitive's
+// stale-ref retry) can only do that if the code survives this far.
+function errorCode(value: unknown): string | undefined {
+	return isRecord(value) && typeof value.code === "string" ? value.code : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
