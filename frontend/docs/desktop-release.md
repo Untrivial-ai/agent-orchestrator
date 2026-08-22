@@ -177,9 +177,11 @@ convincing false failure) and runs `codesign --verify --deep --strict`,
 
 Expected assets: versioned installers for every platform
 (`Agent.Orchestrator-darwin-{arm64,x64}-X.Y.Z.zip`, `Agent.Orchestrator.Setup.X.Y.Z.exe`,
-`Agent.Orchestrator-X.Y.Z.AppImage`, deb, rpm) plus `.blockmap` sidecars for
-Windows and Linux only (macOS ships none by policy since #3151, so mac clients
-always take the full-download path), the version-free aliases `ao start` fetches
+`Agent.Orchestrator-X.Y.Z.AppImage`, deb, rpm) plus a `.blockmap` sidecar for
+the Windows installer only (macOS ships none by policy since #3151, so mac
+clients always take the full-download path; Linux sidecars were retired in
+#3288 because `AppImageUpdater` never fetched one), the version-free aliases
+`ao start` fetches
 (`agent-orchestrator-darwin-arm64.zip`, `agent-orchestrator-darwin-x64.zip`,
 `agent-orchestrator-win32-x64.exe`, `agent-orchestrator-linux-x64.AppImage`,
 and the deb/rpm published under versioned names), and the electron-updater

@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
+// Smoke test for the pinned app-builder-lib internal import. Since #3288
+// workstream 3 the only caller is the windows installer branch of
+// feed.mjs's generateFeeds; mac and linux take hashFile instead.
 describe("writeBlockmap", () => {
 	it("writes a gzip sidecar and returns the file's base64 sha512 + size", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "bm-"));

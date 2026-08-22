@@ -167,17 +167,20 @@ describe("hashFile", () => {
 	});
 });
 
-// Regression coverage for #3034: mac zips must never produce a .blockmap
-// sidecar, since Squirrel.Mac's ShipIt `ditto` install step fails against
-// the AppleDouble-less format @electron-forge/maker-zip produces, and a
-// sidecar-driven differential update against it is the likely corruption
-// path. win/linux keep the existing blockmap sidecar behavior unchanged.
-describe("generateFeeds mac blockmap exclusion (#3034)", () => {
+// Windows is the only platform whose updater fetches a .blockmap sidecar.
+//   mac   is regression coverage for #3034: Squirrel.Mac's ShipIt `ditto`
+//         install step fails against a corrupt update cache, and a
+//         sidecar-driven differential update is the corruption path (#3151,
+//         #3267 decision 4).
+//   linux never had a reader: AppImageUpdater takes its blockmap from the
+//         AppImage tail and needs a blockMapSize feed.mjs does not emit, so a
+//         sidecar fed nothing. Generation retired in #3288 workstream 3.
+describe("generateFeeds blockmap sidecars are windows-only", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
 
-	it("does not call writeBlockmap or write a .blockmap sidecar for mac zips", async () => {
+	it("does not call writeBlockmap or write a .blockmap sidecar for mac zips (#3034)", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "feed-test-"));
 		const macZip = "Agent.Orchestrator-darwin-arm64-0.10.4.zip";
 		writeFileSync(join(dir, macZip), "fake mac zip");
@@ -194,7 +197,30 @@ describe("generateFeeds mac blockmap exclusion (#3034)", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("still calls writeBlockmap for win and linux installers", async () => {
+	it("does not call writeBlockmap or write a .blockmap sidecar for linux AppImages (#3288)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "feed-test-"));
+		const linuxAppImage = "Agent.Orchestrator-0.10.4.AppImage";
+		writeFileSync(join(dir, linuxAppImage), "fake linux installer");
+
+		await generateFeeds(dir, "0.10.4", "nightly", "2026-06-27T12:00:00.000Z");
+
+		expect(writeBlockmap).not.toHaveBeenCalled();
+		expect(existsSync(join(dir, `${linuxAppImage}.blockmap`))).toBe(false);
+
+		// The feed still lists the AppImage with a real hash; only the dead
+		// sidecar is gone, and blockMapSize stays absent so AppImageUpdater
+		// keeps falling back to a full download rather than erroring.
+		const yml = readFileSync(join(dir, "nightly-linux.yml"), "utf8");
+		expect(yml).not.toContain("blockMapSize");
+		expect(yml).toContain(`url: ${linuxAppImage}`);
+		expect(yml).toContain(
+			`sha512: ${createHash("sha512").update(Buffer.from("fake linux installer")).digest("base64")}`,
+		);
+
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("still calls writeBlockmap for the win installer", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "feed-test-"));
 		const winExe = "Agent.Orchestrator.Setup.0.10.4.exe";
 		const linuxAppImage = "Agent.Orchestrator-0.10.4.AppImage";
@@ -203,9 +229,8 @@ describe("generateFeeds mac blockmap exclusion (#3034)", () => {
 
 		await generateFeeds(dir, "0.10.4", "nightly", "2026-06-27T12:00:00.000Z");
 
-		expect(writeBlockmap).toHaveBeenCalledTimes(2);
+		expect(writeBlockmap).toHaveBeenCalledTimes(1);
 		expect(writeBlockmap).toHaveBeenCalledWith(join(dir, winExe));
-		expect(writeBlockmap).toHaveBeenCalledWith(join(dir, linuxAppImage));
 
 		rmSync(dir, { recursive: true, force: true });
 	});

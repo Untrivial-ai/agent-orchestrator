@@ -1,5 +1,6 @@
 // Generates electron-updater feed metadata (latest*.yml / nightly*.yml) plus
-// gzip sidecar blockmaps for a release's versioned installers. Dependency-free
+// gzip sidecar blockmaps for the Windows installer, the only artifact whose
+// updater actually fetches one (see generateFeeds). Dependency-free
 // ESM (mirrors nightly-version.mjs) so CI runs `node scripts/feed.mjs` directly
 // and vitest unit-tests the pure functions. The only non-stdlib reach is the
 // blockmap wrapper (Task 1).
@@ -51,9 +52,8 @@ export function feedFilename(channel, platform) {
 //          `fileSize - (blockMapSize + 4)` and therefore hard-requires
 //          blockMapSize in the yml. With it absent, linux differential updates
 //          cannot run at all and every client falls back to a full download.
-//          The linux .blockmap sidecars we publish are consumed by nothing (see
-//          the note in generateFeeds).
-//   mac:   no sidecar is generated at all (see hashFile), so MacUpdater always
+//          No linux sidecar is generated, since nothing would read it.
+//   mac:   no sidecar is generated either (see hashFile), so MacUpdater always
 //          takes the full-download path. Settled permanent baseline, #3151/#3267.
 //
 // When important is true, emits `important: true` after releaseDate so the
@@ -72,17 +72,18 @@ export function buildYml(version, files, releaseDate, important = false) {
 	return lines.join("\n") + "\n";
 }
 
-// generateFeeds writes the yml + sidecar blockmaps for every platform present in
-// dir. version may carry +build metadata (nightly); strip it for the yml.
-// mac zips skip the blockmap sidecar entirely (see hashFile); see #3034/#3151.
+// generateFeeds writes the yml for every platform present in dir, plus a
+// .blockmap sidecar for the windows installer only. version may carry +build
+// metadata (nightly); strip it for the yml.
 //
-// The linux sidecars this still writes are dead weight: AppImageUpdater reads
-// its blockmap from the AppImage tail, never from a sidecar, and needs a
-// blockMapSize we never emit (see buildYml). Generation is kept deliberately
-// rather than dropped, because the release publish guard lives in a separate
-// private pipeline that currently asserts on the linux sidecar filenames;
-// dropping the files here would red that guard out of band. Removing both
-// together is tracked as its own decision on #3288 workstream 3.
+// Windows is the only platform whose updater fetches a sidecar
+// (AppUpdater.differentialDownloadInstaller, reached from NsisUpdater). mac
+// skips it by policy so MacUpdater always takes the full download (#3034,
+// #3151, #3267 decision 4); linux never had a reader at all, since
+// AppImageUpdater takes its blockmap from the AppImage tail and needs a
+// blockMapSize buildYml does not emit. Linux generation was retired in #3288
+// workstream 3; the private publish guard treats linux sidecars as optional,
+// so their absence is not a publish failure.
 export async function generateFeeds(dir, rawVersion, channel, releaseDate, important = false) {
 	const version = rawVersion.split("+")[0];
 	const sel = selectInstallers(readdirSync(dir), version);
@@ -96,7 +97,7 @@ export async function generateFeeds(dir, rawVersion, channel, releaseDate, impor
 		const files = [];
 		for (const name of names) {
 			const { sha512, size } =
-				platform === "mac" ? hashFile(join(dir, name)) : await writeBlockmap(join(dir, name));
+				platform === "win" ? await writeBlockmap(join(dir, name)) : hashFile(join(dir, name));
 			files.push({ url: name, sha512, size });
 		}
 		writeFileSync(join(dir, feedFilename(channel, platform)), buildYml(version, files, releaseDate, important));
@@ -118,9 +119,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 }
 
 // hashFile computes the same {sha512, size} shape writeBlockmap returns, but
-// without writing a .blockmap sidecar file. Used for mac zips specifically:
-// Squirrel.Mac's ShipIt install step runs `ditto` against the extracted update
-// cache and fails on a corrupt one, which is the #3034 failure signature.
+// without writing a .blockmap sidecar file. Used for every platform except
+// windows. For linux the reason is simply that nothing reads the sidecar (see
+// generateFeeds). For mac it is a deliberate fix: Squirrel.Mac's ShipIt install
+// step runs `ditto` against the extracted update cache and fails on a corrupt
+// one, which is the #3034 failure signature.
 //
 // The original zip-format theory (that ShipIt failed because
 // @electron-forge/maker-zip's output lacked the AppleDouble "._*" entries
