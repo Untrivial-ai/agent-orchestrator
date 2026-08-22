@@ -5,9 +5,14 @@ package conpty
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 
 	gopty "github.com/aymanbagabas/go-pty"
+	"golang.org/x/sys/windows"
 )
 
 // conptyConn is the real ptyConn implementation backed by go-pty's ConPty
@@ -43,7 +48,7 @@ func newConPTY(cwd, shellCmd string, shellArgs []string) (ptyConn, error) {
 		return nil, fmt.Errorf("conpty: initial resize: %w", err)
 	}
 
-	cmd := cp.Command(shellCmd, shellArgs...)
+	cmd := conptyCommand(cp, shellCmd, shellArgs)
 	cmd.Dir = cwd
 	// Inherit parent env so PATH, HOME, etc. are available.
 	cmd.Env = os.Environ()
@@ -61,6 +66,54 @@ func newConPTY(cwd, shellCmd string, shellArgs []string) (ptyConn, error) {
 
 	go c.wait()
 	return c, nil
+}
+
+// conptyCommand builds the go-pty Cmd that runs shellCmd on the ConPTY.
+//
+// Non-batch executables run directly. Batch files (.cmd/.bat) are routed
+// through `cmd.exe /S /c "<command line>"` instead: CreateProcess executes
+// batch files via cmd.exe, and when the batch path contains spaces (e.g. an
+// npm global shim such as C:\Program Files\nodejs\claude.cmd) the program name
+// is split at the first space, failing with "'C:\Program' is not recognized".
+// Using cmd.exe (resolved via %ComSpec%, which has no spaces) as the
+// application name and passing the full command line verbatim through
+// SysProcAttr.CmdLine keeps the batch path intact. The /S switch makes cmd.exe
+// strip exactly the outer quote pair and run the inner command literally,
+// preserving the per-argument quoting windows.ComposeCommandLine applies.
+func conptyCommand(cp gopty.ConPty, shellCmd string, shellArgs []string) *gopty.Cmd {
+	if !isBatchFile(shellCmd) {
+		return cp.Command(shellCmd, shellArgs...)
+	}
+	inner := windows.ComposeCommandLine(append([]string{shellCmd}, shellArgs...))
+	cmd := cp.Command(comspecPath())
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CmdLine: `/S /c "` + inner + `"`,
+	}
+	return cmd
+}
+
+// isBatchFile reports whether path has a .cmd or .bat extension, ignoring case.
+func isBatchFile(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".cmd", ".bat":
+		return true
+	default:
+		return false
+	}
+}
+
+// comspecPath returns the absolute path to cmd.exe, preferring %ComSpec% and
+// falling back to a PATH lookup. A full path is required: go-pty resolves a
+// bare command name relative to the working directory, which would not find
+// cmd.exe there.
+func comspecPath() string {
+	if comspec := os.Getenv("ComSpec"); comspec != "" {
+		return comspec
+	}
+	if path, err := exec.LookPath("cmd.exe"); err == nil {
+		return path
+	}
+	return "cmd.exe"
 }
 
 func (c *conptyConn) wait() {
