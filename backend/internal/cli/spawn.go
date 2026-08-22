@@ -20,6 +20,8 @@ import (
 // daemon's spawn handler so a direct API call is held to the same limit.
 const maxDisplayNameLen = 20
 
+const fallbackSpawnDisplayName = "Untitled task"
+
 type spawnOptions struct {
 	project         string
 	harness         string
@@ -79,10 +81,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if opts.noTakeover && opts.claimPR == "" {
 				return usageError{fmt.Errorf("--no-takeover requires --claim-pr")}
 			}
-			name := strings.TrimSpace(opts.name)
-			if name == "" {
-				return usageError{fmt.Errorf("--name is required")}
-			}
+			name := spawnDisplayName(opts.name, opts.prompt, opts.issue)
 			if utf8.RuneCountInString(name) > maxDisplayNameLen {
 				return usageError{fmt.Errorf("--name must be %d characters or fewer", maxDisplayNameLen)}
 			}
@@ -198,11 +197,30 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")
 	f.StringVar(&opts.trackerProvider, "tracker-provider", "github", "Issue tracker provider: github or gitlab (default: github)")
-	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 20 characters)")
+	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (default: prompt or issue, max 20 characters)")
 	f.StringVar(&opts.claimPR, "claim-pr", "", "Immediately claim an existing PR for the spawned session")
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")
 	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip advisory agent catalog install/auth preflight before spawning")
 	return cmd
+}
+
+func spawnDisplayName(explicit, prompt, issue string) string {
+	if name := strings.TrimSpace(explicit); name != "" {
+		return name
+	}
+
+	name := strings.Join(strings.Fields(prompt), " ")
+	if name == "" {
+		if issue = strings.Join(strings.Fields(issue), " "); issue != "" {
+			name = "Issue " + issue
+		} else {
+			name = fallbackSpawnDisplayName
+		}
+	}
+	if utf8.RuneCountInString(name) <= maxDisplayNameLen {
+		return name
+	}
+	return strings.TrimSpace(string([]rune(name)[:maxDisplayNameLen]))
 }
 
 func (c *commandContext) fetchAgentInventory(ctx context.Context, refresh bool) (agentInventory, error) {

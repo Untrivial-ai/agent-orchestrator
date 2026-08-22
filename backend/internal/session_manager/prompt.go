@@ -189,8 +189,7 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 - `+"`ao session get <worker-session-id>`"+` - inspect a worker session's details.
 - `+"`ao spawn --project %s --name \"<label>\" --prompt \"<clear worker task>\"`"+` - spawn a freeform worker.
 - `+"`ao spawn --project %s --name \"<label>\" --issue <issue-id>`"+` - spawn a worker for an issue.
-- `+"`--name`"+` is required: a deliberate sidebar label so the user can see what each worker is working on at a glance; labels must be 20 characters or fewer.
-- Before running `+"`ao spawn`"+`, count the `+"`--name`"+` label yourself. It must be 20 characters or fewer. If your first label is longer, shorten it before executing the command.
+- `+"`--name`"+` is recommended as a deliberate sidebar label and must be 20 characters or fewer. If omitted, AO derives a concise label from the prompt or issue.
 - Add `+"`--agent <name>`"+` when a worker must use a specific agent.
 - Add `+"`--model <id>`"+` when the human or task explicitly requests a specific model.
 - If `+"`ao spawn --model ...`"+` fails because the model is unsupported, retry the same spawn without `+"`--model`"+` to use the agent default, then tell the human you fell back to the default model.

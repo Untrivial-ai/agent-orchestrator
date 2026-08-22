@@ -250,12 +250,26 @@ func TestSpawnNoTakeoverRequiresClaimPR(t *testing.T) {
 	}
 }
 
-// TestSpawnCommand_RequiresName asserts `ao spawn` rejects a missing --name
-// without contacting the daemon.
-func TestSpawnCommand_RequiresName(t *testing.T) {
-	_, _, err := executeCLI(t, Deps{}, "spawn", "--project", "demo", "--agent", "codex")
-	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--name is required") {
-		t.Fatalf("err=%v exit=%d, want --name is required", err, ExitCode(err))
+func TestSpawnDisplayNameFallback(t *testing.T) {
+	tests := []struct {
+		name     string
+		explicit string
+		prompt   string
+		issue    string
+		want     string
+	}{
+		{name: "explicit wins", explicit: "Chosen label", prompt: "ignored", issue: "12", want: "Chosen label"},
+		{name: "prompt", prompt: "  Fix   failing auth tests  ", want: "Fix failing auth tes"},
+		{name: "unicode prompt", prompt: strings.Repeat("界", 21), want: strings.Repeat("界", 20)},
+		{name: "issue", issue: "  3911  ", want: "Issue 3911"},
+		{name: "untitled", want: fallbackSpawnDisplayName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := spawnDisplayName(tt.explicit, tt.prompt, tt.issue); got != tt.want {
+				t.Fatalf("spawnDisplayName() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -293,7 +307,7 @@ func TestSpawnResolvesProjectFromEnvAndDefaultAgent(t *testing.T) {
 	writeRunFileFor(t, cfg, srv)
 	t.Setenv("AO_PROJECT_ID", "demo")
 
-	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--prompt", "Fix failing tests in auth", "--name", "worker")
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--prompt", "Fix failing tests in auth")
 	if err != nil {
 		t.Fatalf("spawn failed: %v stderr=%s", err, errOut)
 	}
@@ -303,7 +317,7 @@ func TestSpawnResolvesProjectFromEnvAndDefaultAgent(t *testing.T) {
 	if !strings.Contains(out, "[prompt 0 B, system 123 B]") {
 		t.Fatalf("output missing system-only prompt metrics: %s", out)
 	}
-	if req.ProjectID != "demo" || req.Harness != "codex" || req.DisplayName != "worker" {
+	if req.ProjectID != "demo" || req.Harness != "codex" || req.DisplayName != "Fix failing tests in" {
 		t.Fatalf("spawn request = %#v", req)
 	}
 	want := []string{"GET /api/v1/projects/demo", "POST /api/v1/agents/refresh", "POST /api/v1/sessions"}
@@ -879,9 +893,6 @@ func TestSpawnUnknownAuthRefreshesWarnsAndAllows(t *testing.T) {
 // TestSpawnCommand_RejectsInvalidKind asserts `ao spawn` rejects a --kind value
 // outside worker/orchestrator at the CLI boundary, without contacting the daemon.
 func TestSpawnCommand_RejectsInvalidKind(t *testing.T) {
-	// Pass a valid --name so this exercises the --kind boundary specifically:
-	// spawn validates the required --name before --kind, so omitting it would
-	// trip the "--name is required" error instead of the kind error.
 	_, _, err := executeCLI(t, Deps{}, "spawn", "--project", "demo", "--name", "orch", "--kind", "orchestartor")
 	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), `--kind must be "worker" or "orchestrator"`) {
 		t.Fatalf("err=%v exit=%d, want --kind validation error", err, ExitCode(err))
