@@ -1624,7 +1624,15 @@ func writeSessionPRError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func discoverPreviewEntry(workspacePath string) (string, bool) {
-	entry, ok := previewutil.DiscoverEntry(workspacePath)
+	// Use DiscoverWebEntrypoint (index.html variants only), not DiscoverEntry
+	// (which falls back to mostRecentPreviewable — the newest .md/.html in the
+	// workspace). Bare `ao preview` (no args) hits this path, and agent
+	// harnesses run that automatically on new sessions via the using-ao skill.
+	// With the .md fallback, every new session in a Markdown-rich repo opened
+	// its browser panel to an arbitrary repo doc (e.g. test/cli/README.md)
+	// instead of staying empty. Mirrors the poller fix from PR #2860.
+	// See issue #2859.
+	entry, ok := previewutil.DiscoverWebEntrypoint(workspacePath)
 	return entry.Path, ok
 }
 

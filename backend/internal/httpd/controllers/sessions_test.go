@@ -1327,6 +1327,26 @@ func TestSessionsAPI_SetPreviewEmptyURLAutodetectsIndex(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_SetPreviewEmptyURLDoesNotFallbackToMarkdown(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace := t.TempDir()
+	// A Markdown-rich repo with no index.html: the old behavior fell back to
+	// mostRecentPreviewable and picked README.md. The fix restricts bare
+	// ao preview to real static entrypoints, so this should 404.
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("# project"), 0o644); err != nil {
+		t.Fatalf("write readme: %v", err)
+	}
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/preview", `{}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("set preview with only .md = %d, want 404; body=%s", status, body)
+	}
+}
+
 func TestSessionsAPI_SetPreviewEmptyURLPrefersWorkspaceEntryOverExistingTarget(t *testing.T) {
 	svc := newFakeSessionService()
 	workspace := t.TempDir()
