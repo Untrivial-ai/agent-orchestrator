@@ -1192,7 +1192,7 @@
 	"zone.pending": "In review",
 	"zone.working": "Working",
 	"newTask.task": "Task",
-	"newTask.taskPlaceholder": "e.g. Fix the flaky checkout test (optional)…",
+	"newTask.taskPlaceholder": "Go through the backend files and let me know if there is any dead code in there",
 	"newTask.model": "Model",
 	"newTask.taskRequired": "Task is required.",
 	"shell.signIn": "Sign in",
