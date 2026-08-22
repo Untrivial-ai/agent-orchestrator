@@ -295,6 +295,26 @@ func TestSessionKill_SuccessWithProjectScope(t *testing.T) {
 	}
 }
 
+func TestSessionKill_JSONOutputDecodes(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "kill", "demo-1", "--json")
+	if err != nil {
+		t.Fatalf("session kill --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got killSessionResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("kill --json decode failed: %v\n%s", err, out)
+	}
+	if got.SessionID != "demo-1" || !got.Freed {
+		t.Fatalf("unexpected kill JSON: %#v", got)
+	}
+}
+
 // TestSessionKill_PreservedWorkspaceNote: freed=false means the daemon
 // terminated the session but kept the worktree (uncommitted changes are never
 // force-deleted) — the CLI must say so instead of implying a full teardown.
@@ -342,6 +362,26 @@ func TestSessionRestore_SuccessWithProjectScope(t *testing.T) {
 	}
 }
 
+func TestSessionRestore_JSONOutputDecodes(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "restore", "demo-1", "--json")
+	if err != nil {
+		t.Fatalf("session restore --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got restoreSessionResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("restore --json decode failed: %v\n%s", err, out)
+	}
+	if got.SessionID != "demo-1" || got.Session.ProjectID != "demo" {
+		t.Fatalf("unexpected restore JSON: %#v", got)
+	}
+}
+
 func TestSessionCleanup_YesSkipsPrompt(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, log := sessionCommandServer(t)
@@ -368,6 +408,26 @@ func TestSessionCleanup_YesSkipsPrompt(t *testing.T) {
 	}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionCleanup_JSONOutputDecodes(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "cleanup", "--project", "demo", "--yes", "--json")
+	if err != nil {
+		t.Fatalf("session cleanup --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got cleanupSessionsResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("cleanup --json decode failed: %v\n%s", err, out)
+	}
+	if len(got.Cleaned) != 2 {
+		t.Fatalf("unexpected cleanup JSON: %#v", got)
 	}
 }
 
@@ -485,6 +545,26 @@ func TestSessionRename_SuccessWithProjectScope(t *testing.T) {
 	want := []string{"GET /api/v1/sessions/demo-1", "PATCH /api/v1/sessions/demo-1"}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionRename_JSONOutputDecodes(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "rename", "demo-1", "JSON Name", "--json")
+	if err != nil {
+		t.Fatalf("session rename --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got renameSessionResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("rename --json decode failed: %v\n%s", err, out)
+	}
+	if got.SessionID != "demo-1" || got.DisplayName != "JSON Name" {
+		t.Fatalf("unexpected rename JSON: %#v", got)
 	}
 }
 
