@@ -17,6 +17,7 @@ import {
 
 const {
 	attachMock,
+	focusMock,
 	getMock,
 	postMock,
 	prepareForActivationMock,
@@ -29,6 +30,7 @@ const {
 } = vi.hoisted(
 	() => ({
 		attachMock: vi.fn(() => vi.fn()),
+		focusMock: vi.fn(),
 		getMock: vi.fn(async (_path: string, _options: unknown) => ({ data: undefined })),
 		postMock: vi.fn(),
 		prepareForActivationMock: vi.fn(async (): Promise<void> => undefined),
@@ -69,6 +71,7 @@ vi.mock("./XtermTerminal", () => ({
 			props.onReady?.({
 				cols: 80,
 				rows: 24,
+				focus: focusMock,
 				write: vi.fn((_data, done) => done?.()),
 				writeln: vi.fn(),
 				showLatestOutput: vi.fn(),
@@ -129,6 +132,7 @@ beforeEach(() => {
 	terminalLinkHandler = undefined;
 	terminalSessionOptions.length = 0;
 	attachMock.mockClear();
+	focusMock.mockClear();
 	prepareForActivationMock.mockReset();
 	prepareForActivationMock.mockResolvedValue(undefined);
 	xtermMounts.value = 0;
@@ -263,6 +267,44 @@ describe("TerminalPane empty states", () => {
 				),
 			).toBeInTheDocument();
 			expect(screen.queryByText(/worker terminal/i)).not.toBeInTheDocument();
+		} finally {
+			view.restore();
+		}
+	});
+});
+
+// Terminal keyboard focus (issue #2434): opening a session/agent view must
+// hand the terminal keyboard focus so the user can type immediately, but the
+// empty-state pane (no session/handle attached yet) must never have focus
+// stolen onto it.
+describe("TerminalPane terminal focus", () => {
+	it("focuses the terminal once a session handle is attached", async () => {
+		const view = renderPane({ ...worker, terminalHandleId: "term-1" });
+		try {
+			await waitFor(() => expect(attachMock).toHaveBeenCalled());
+			expect(focusMock).toHaveBeenCalled();
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("does not steal focus onto the empty-state pane when no session is selected", async () => {
+		const view = renderPane();
+		try {
+			expect(screen.getByText("No session selected. Pick a worker to attach its terminal.")).toBeInTheDocument();
+			await waitFor(() => expect(attachMock).toHaveBeenCalled());
+			expect(focusMock).not.toHaveBeenCalled();
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("does not focus while a session is starting but has no terminal handle yet", async () => {
+		const view = renderPane(worker);
+		try {
+			expect(screen.getByText("Starting session")).toBeInTheDocument();
+			await waitFor(() => expect(attachMock).toHaveBeenCalled());
+			expect(focusMock).not.toHaveBeenCalled();
 		} finally {
 			view.restore();
 		}

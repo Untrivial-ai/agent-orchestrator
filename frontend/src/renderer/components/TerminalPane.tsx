@@ -1006,6 +1006,11 @@ function AttachedTerminal({
 		void terminal.prepareForActivation().then(() => {
 			if (!current) return;
 			detach = attach(terminal);
+			// Focus the terminal the moment a session/handle is actually attached,
+			// so the user can type immediately without an extra click. Gated on
+			// handleId (not just `terminal`) so the empty-state pane — no session
+			// selected — never has focus stolen onto it.
+			if (handleId) terminal.focus();
 		});
 		return () => {
 			current = false;

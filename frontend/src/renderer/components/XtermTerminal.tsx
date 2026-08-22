@@ -920,6 +920,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			get rows() {
 				return term.rows;
 			},
+			focus: focusTerminal,
 			// Forward xterm's write callback: it fires once THIS chunk has been
 			// parsed into the buffer, which is what lets the attachment reveal the
 			// pane at the replay's settled scroll position (issue #3160).
