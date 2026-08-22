@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -353,6 +354,8 @@ timeout = 7
 		`command = "ao hooks kimi user-prompt-submit"`,
 		`event = "PermissionRequest"`,
 		`command = "ao hooks kimi permission-request"`,
+		`event = "PermissionResult"`,
+		`command = "ao hooks kimi permission-result"`,
 		`event = "Stop"`,
 		`command = "ao hooks kimi stop"`,
 		kimiHooksSentinelEnd,
@@ -363,6 +366,30 @@ timeout = 7
 	}
 	if _, err := os.Stat(kimiInstructionsPath(workspace)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("instructions path err = %v, want not exist", err)
+	}
+}
+
+func TestDeriveActivityState(t *testing.T) {
+	tests := []struct {
+		event  string
+		want   domain.ActivityState
+		wantOK bool
+	}{
+		{event: "session-start", want: domain.ActivityActive, wantOK: true},
+		{event: "user-prompt-submit", want: domain.ActivityActive, wantOK: true},
+		{event: "permission-request", want: domain.ActivityWaitingInput, wantOK: true},
+		{event: "permission-result", want: domain.ActivityActive, wantOK: true},
+		{event: "stop", want: domain.ActivityIdle, wantOK: true},
+		{event: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.event, func(t *testing.T) {
+			got, ok := DeriveActivityState(tt.event, nil)
+			if got != tt.want || ok != tt.wantOK {
+				t.Fatalf("DeriveActivityState(%q) = (%q, %v), want (%q, %v)", tt.event, got, ok, tt.want, tt.wantOK)
+			}
+		})
 	}
 }
 

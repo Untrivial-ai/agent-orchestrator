@@ -234,6 +234,7 @@ func kimiHooksConfigBlock() string {
 		kimiHookEntry("SessionStart", "startup", "ao hooks kimi session-start") +
 		kimiHookEntry("UserPromptSubmit", "", "ao hooks kimi user-prompt-submit") +
 		kimiHookEntry("PermissionRequest", "", "ao hooks kimi permission-request") +
+		kimiHookEntry("PermissionResult", "", "ao hooks kimi permission-result") +
 		kimiHookEntry("Stop", "", "ao hooks kimi stop") +
 		kimiHooksSentinelEnd + "\n"
 }
