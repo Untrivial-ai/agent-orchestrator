@@ -83,9 +83,11 @@ describe("ShellTerminalTab rename", () => {
 		expect(onSelect).toHaveBeenCalled();
 	});
 
-	it("selects from the full connected pill, not only its title", () => {
+	it("makes the full connected tile the semantic selection button", () => {
 		const { onSelect } = renderTab({ appearance: "connected" });
-		fireEvent.click(screen.getByRole("tab", { name: "ao" }).parentElement as HTMLElement);
+		const tab = screen.getByRole("tab", { name: "ao" });
+		expect(tab).toHaveClass("h-full", "w-full", "pl-2", "cursor-pointer", "focus-visible:outline-2");
+		fireEvent.click(tab);
 		expect(onSelect).toHaveBeenCalledOnce();
 	});
 
