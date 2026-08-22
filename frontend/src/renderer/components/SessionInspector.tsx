@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useState, type ReactNode } from "react";
@@ -38,6 +38,7 @@ import {
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { captureRendererEvent } from "../lib/telemetry";
 import { formatTimeCompact } from "../lib/format-time";
 import { AgentAvatar } from "./AgentAvatar";
 import { ProductExternalLink } from "./ProductExternalLink";
@@ -73,10 +74,12 @@ import {
 	openReviewStatesFor,
 	reviewIsRunning,
 	reviewRunDisabled,
+	reviewRunActionKind,
 	reviewSessionRunAction,
 	sessionReviewsQueryOptions,
 	type PRReviewState,
 	type ReviewRunFacts,
+	type ReviewsResponse,
 } from "../lib/session-reviews";
 
 type ProjectConfig = components["schemas"]["ProjectConfig"];
@@ -163,6 +166,7 @@ export function SessionInspector({
 	onViewChange?: (view: InspectorView) => void;
 }) {
 	const { t } = useTranslation();
+	const queryClient = useQueryClient();
 	const [internalView, setInternalView] = useState<InspectorView>("summary");
 	const requestedView = viewProp ?? internalView;
 	// Badge the Browser tab when a preview target arrived without us opening it.
@@ -174,6 +178,7 @@ export function SessionInspector({
 		setInternalView(next);
 		onViewChange?.(next);
 		if (next === "files") onOpenFiles?.();
+		if (next === "reviews" && session) reportReviewsTabOpened(queryClient, session);
 	};
 	// A persisted/controlled Reviews selection can outlive the last reviewable PR.
 	// Keep the shell on a real, visible tab instead of rendering an empty, unlabelled body.
@@ -238,6 +243,23 @@ export function SessionInspector({
 			/>
 		</div>
 	);
+}
+
+/**
+ * Reports a Reviews-tab open, describing what the reader was about to look at.
+ * Separating "opened the tab" from "ran a review" is what distinguishes reading
+ * the findings from trusting the verdict; the run counts come from the cache the
+ * Reviews tab itself populates, and are simply omitted when it is still cold, so
+ * a first-ever open is never miscounted as an empty one.
+ */
+function reportReviewsTabOpened(queryClient: QueryClient, session: WorkspaceSession) {
+	const cached = queryClient.getQueryData<ReviewsResponse>(["session-reviews", session.id]);
+	const runs = cached?.runs;
+	const latestVerdict = runs?.find((run) => run.verdict)?.verdict;
+	void captureRendererEvent("ao.renderer.review_tab_opened", {
+		...(runs ? { has_runs: runs.length > 0 } : {}),
+		...(latestVerdict ? { latest_verdict: latestVerdict } : {}),
+	});
 }
 
 function reviewsTabVisible(session: WorkspaceSession | undefined): boolean {
@@ -643,6 +665,7 @@ function AutoInjectReviewPolicyControl({ session }: { session: WorkspaceSession 
 				label={t("inspector.review.autoInject")}
 				onCheckedChange={(next) => {
 					setEnabled(next);
+					void captureRendererEvent("ao.renderer.review_auto_inject_toggled", { enabled: next });
 					save.mutate(next);
 				}}
 				tooltipClassName="max-w-60"
@@ -1412,6 +1435,10 @@ function ReviewsSection({
 	}, [session.id, session.reviewerHarness]);
 	const saveReviewer = useMutation({
 		mutationFn: async (harness: ReviewerHarness | "") => {
+			void captureRendererEvent("ao.renderer.review_reviewer_overridden", {
+				harness,
+				cleared: harness === "",
+			});
 			const { data, error } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/switch", {
 				params: { path: { sessionId: session.id } },
 				body: { harness: harness || undefined },
@@ -1426,6 +1453,7 @@ function ReviewsSection({
 	});
 	const saveAutoReview = useMutation({
 		mutationFn: async (enabled: boolean) => {
+			void captureRendererEvent("ao.renderer.review_auto_review_toggled", { enabled });
 			const { error } = await apiClient.PUT("/api/v1/sessions/{sessionId}/auto-review", {
 				params: { path: { sessionId: session.id } },
 				body: { enabled },
@@ -1438,6 +1466,10 @@ function ReviewsSection({
 	});
 	const triggerReview = useMutation({
 		mutationFn: async () => {
+			void captureRendererEvent("ao.renderer.review_triggered", {
+				action: reviewRunActionKind(openReviewStatesFor(session, reviewsQuery.data?.reviews ?? []), false),
+				has_override: reviewerOverride !== "",
+			});
 			// No override sends no body at all, leaving the default path on the wire
 			// exactly as it was.
 			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/trigger", {
@@ -1466,6 +1498,7 @@ function ReviewsSection({
 	});
 	const cancelReview = useMutation({
 		mutationFn: async () => {
+			void captureRendererEvent("ao.renderer.review_stopped", { action: "cancel" });
 			const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/cancel", {
 				params: { path: { sessionId: session.id } },
 			});
@@ -1479,6 +1512,7 @@ function ReviewsSection({
 	});
 	const killReview = useMutation({
 		mutationFn: async () => {
+			void captureRendererEvent("ao.renderer.review_stopped", { action: "kill" });
 			const { data, error } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/kill", {
 				params: { path: { sessionId: session.id } },
 			});
@@ -1601,6 +1635,7 @@ function MergedReviewsSection({
 		void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 	};
 	const sendInlineCommentToWorker = async (comment: InspectorInlineComment & { reviewerId?: string }) => {
+		void captureRendererEvent("ao.renderer.review_comment_sent_to_worker");
 		const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
 			params: { path: { sessionId: session.id } },
 			body: { message: formatInlineReviewCommentMessage(comment) },

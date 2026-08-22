@@ -2,6 +2,7 @@ import posthog from "posthog-js/dist/module.full.no-external";
 import { aoBridge } from "./bridge";
 import { isLoopbackHostname } from "./loopback";
 import { ORCHESTRATOR_SPAWN_SOURCES } from "./orchestrator-spawn-sources";
+import { KNOWN_REVIEWER_HARNESS_IDS } from "./reviewer-harnesses";
 import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "../../shared/posthog-config";
 
 const POSTHOG_KEY = import.meta.env.VITE_AO_POSTHOG_KEY?.trim() || DEFAULT_POSTHOG_PROJECT_KEY;
@@ -560,6 +561,66 @@ export async function sanitizeRendererProperties(
 			}
 			if (properties?.outcome === "succeeded" || properties?.outcome === "failed") safe.outcome = properties.outcome;
 			break;
+		case "ao.renderer.review_settings_changed": {
+			// Which review controls a user actually touches is the question behind
+			// simplifying this surface: a dropdown nobody changes is a checkpoint
+			// that can become a default. Harness ids come from AO's own reviewer
+			// registry (see reviewer-harnesses.ts), never from user input.
+			const projectIDHash = await hashedTelemetryID(properties?.project_id);
+			if (projectIDHash) safe.project_id_hash = projectIDHash;
+			if (typeof properties?.auto_review === "boolean") safe.auto_review = properties.auto_review;
+			if (typeof properties?.reviewer_harness === "string" && KNOWN_REVIEWER_HARNESS_IDS.has(properties.reviewer_harness)) {
+				safe.reviewer_harness = properties.reviewer_harness;
+			}
+			if (typeof properties?.harness_is_default === "boolean") {
+				safe.harness_is_default = properties.harness_is_default;
+			}
+			for (const key of ["auto_review_changed", "reviewer_harness_changed"] as const) {
+				if (typeof properties?.[key] === "boolean") safe[key] = properties[key];
+			}
+			break;
+		}
+		case "ao.renderer.review_auto_review_toggled":
+		case "ao.renderer.review_auto_inject_toggled":
+			// Session-scoped switches. Both duplicate a project-level setting, so
+			// whether anyone reaches for them decides if they stay separate controls.
+			if (typeof properties?.enabled === "boolean") safe.enabled = properties.enabled;
+			break;
+		case "ao.renderer.review_reviewer_overridden":
+			// A per-session reviewer override is the least discoverable review
+			// control there is; cleared separates "picked another agent" from
+			// "went back to the project default".
+			if (typeof properties?.harness === "string" && KNOWN_REVIEWER_HARNESS_IDS.has(properties.harness)) {
+				safe.harness = properties.harness;
+			}
+			if (typeof properties?.cleared === "boolean") safe.cleared = properties.cleared;
+			break;
+		case "ao.renderer.review_triggered":
+			// Manual review is the low-commitment on-ramp for users who will not
+			// enable the automatic pass, so its volume relative to auto runs is the
+			// adoption signal. action mirrors the button's own label.
+			if (properties?.action === "run" || properties?.action === "rerun" || properties?.action === "run_latest") {
+				safe.action = properties.action;
+			}
+			if (typeof properties?.has_override === "boolean") safe.has_override = properties.has_override;
+			break;
+		case "ao.renderer.review_stopped":
+			// Stopping a review mid-flight is a dissatisfaction signal: the user
+			// asked for it, watched it, and decided it was not worth finishing.
+			if (properties?.action === "cancel" || properties?.action === "kill") safe.action = properties.action;
+			break;
+		case "ao.renderer.review_tab_opened":
+			// Separates reading the findings from trusting the verdict. Capped by
+			// reserveCapture like every other name, which is fine for a rate here.
+			if (typeof properties?.has_runs === "boolean") safe.has_runs = properties.has_runs;
+			if (typeof properties?.latest_verdict === "string" && REVIEW_VERDICT_SET.has(properties.latest_verdict)) {
+				safe.latest_verdict = properties.latest_verdict;
+			}
+			break;
+		case "ao.renderer.review_comment_sent_to_worker":
+			// A human relaying one review comment to the agent by hand is the
+			// clearest evidence that automatic delivery did not do the job.
+			break;
 		case "ao.renderer.mobile_bridge_toggled":
 			// The host, port, and connection password in the QR never leave the
 			// machine: only the direction of the switch and whether it worked.
@@ -569,6 +630,9 @@ export async function sanitizeRendererProperties(
 	}
 	return safe;
 }
+
+// Closed verdict vocabulary, matching domain.ReviewVerdict on the daemon.
+const REVIEW_VERDICT_SET: ReadonlySet<string> = new Set(["approved", "changes_requested"]);
 
 function exceptionName(error: unknown): string {
 	if (error instanceof Error && error.name.trim() !== "") return error.name.trim();

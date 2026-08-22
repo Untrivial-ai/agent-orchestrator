@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,5 +265,78 @@ func TestPostHogSinkStampsAppVersionWhenSupplied(t *testing.T) {
 	}
 	if _, ok := props["ao_version"]; ok {
 		t.Fatalf("ao_version present without the option: %#v", props["ao_version"])
+	}
+}
+
+// An event name missing from remotePayloadAllowlist exports with no properties
+// at all rather than failing loudly, which is how ao.review.rereview_requested
+// and ao.review.comment_resolved shipped bare for as long as they existed.
+// These assertions are what a review-funnel dashboard actually reads, so a
+// renamed key here is a silently broken chart rather than a build failure.
+func TestReviewPayloadAllowlistCoversTheReviewFunnel(t *testing.T) {
+	want := map[string][]string{
+		"ao.review.triggered":          {"harness", "created_runs", "reused", "trigger"},
+		"ao.review.trigger_failed":     {"error_kind", "trigger"},
+		"ao.review.trigger_skipped":    {"reason", "trigger"},
+		"ao.review.submitted":          {"harness", "verdict", "duration_ms", "posted_to_provider", "trigger", "body_bytes", "auto_inject"},
+		"ao.review.cancelled":          {"cancelled_runs"},
+		"ao.review.rereview_requested": {"provider"},
+		"ao.review.comment_resolved":   {"provider"},
+		"ao.review.feedback_withheld":  {"reason", "runs"},
+		"ao.review.feedback_delivered": {"outcome", "results"},
+		"ao.review.auto_skipped":       {"reason"},
+		"ao.review.pr_closed":          {"merged", "was_reviewed", "review_rounds", "last_verdict", "changes_requested_outstanding", "harness"},
+	}
+	for name, keys := range want {
+		allowed, ok := remotePayloadAllowlist[name]
+		if !ok {
+			t.Errorf("%s has no allowlist entry, so it would export with no properties", name)
+			continue
+		}
+		for _, key := range keys {
+			if _, ok := allowed[key]; !ok {
+				t.Errorf("%s is missing allowlisted key %q", name, key)
+			}
+		}
+		if len(allowed) != len(keys) {
+			t.Errorf("%s allowlist has %d keys, want exactly %d (%v)", name, len(allowed), len(keys), keys)
+		}
+	}
+}
+
+// Review payloads carry counts, enums, and booleans. The review body is
+// reviewer prose about someone's code; the PR URL and SHA identify the
+// repository. None of them may survive into an exported property.
+func TestReviewPayloadAllowlistRejectsIdentifyingKeys(t *testing.T) {
+	forbidden := []string{"body", "pr_url", "url", "target_sha", "head_sha", "branch", "repo", "title", "review_body"}
+	for name, allowed := range remotePayloadAllowlist {
+		if !strings.HasPrefix(name, "ao.review.") {
+			continue
+		}
+		for _, key := range forbidden {
+			if _, ok := allowed[key]; ok {
+				t.Errorf("%s allowlists identifying key %q", name, key)
+			}
+		}
+	}
+}
+
+// The submitted event's own sanitizer pass has to drop an unknown key rather
+// than trust the emit site.
+func TestSanitizeRemotePayloadDropsUnlistedReviewKeys(t *testing.T) {
+	got := sanitizeRemotePayload("ao.review.submitted", map[string]any{
+		"verdict": "changes_requested",
+		"trigger": "auto",
+		"body":    "leaks credentials in src/config/prod.ts",
+		"pr_url":  "https://github.com/acme/secret-repo/pull/7",
+	})
+	if got["verdict"] != "changes_requested" || got["trigger"] != "auto" {
+		t.Fatalf("allowlisted keys were dropped: %#v", got)
+	}
+	if _, ok := got["body"]; ok {
+		t.Fatalf("body survived sanitization: %#v", got)
+	}
+	if _, ok := got["pr_url"]; ok {
+		t.Fatalf("pr_url survived sanitization: %#v", got)
 	}
 }

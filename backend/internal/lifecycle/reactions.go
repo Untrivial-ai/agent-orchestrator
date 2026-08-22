@@ -57,6 +57,9 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 		return ReviewDeliveryNoop, err
 	}
 	if cannotNudge(rec) {
+		// The worker is gone or cannot take a write: the review finished into a
+		// session that can no longer act on it.
+		m.emitReviewDelivery(ctx, workerID, "unnudgeable_session", len(results))
 		return ReviewDeliveryNoop, nil
 	}
 	if m.guard == nil {
@@ -91,15 +94,37 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 	sig := strings.Join(sigParts, "\x01")
 	outcome, err := m.sendOnce(ctx, workerID, anchorPR, key, sig, msg.String(), reviewMaxNudge)
 	if err != nil {
+		m.emitReviewDelivery(ctx, workerID, "error", len(results))
 		return ReviewDeliveryNoop, err
 	}
 	if outcome == sendOnceSuppressed {
 		// The worker went terminated/exited/needs-input between the entry guard and the
 		// paste: nothing reached it, so do NOT let the caller stamp the run
 		// delivered — it must re-fire once the session is workable again.
+		m.emitReviewDelivery(ctx, workerID, "suppressed", len(results))
 		return ReviewDeliveryNoop, nil
 	}
+	m.emitReviewDelivery(ctx, workerID, "sent", len(results))
 	return ReviewDeliverySent, nil
+}
+
+// emitReviewDelivery reports whether reviewer feedback actually reached the
+// worker agent. The review-loop funnel is otherwise blind at exactly the step
+// that decides whether the feature does anything: a changes-requested verdict
+// that never lands in the worker's pane looks identical, in telemetry, to one
+// the worker acted on.
+func (m *Manager) emitReviewDelivery(ctx context.Context, workerID domain.SessionID, outcome string, results int) {
+	m.emitTelemetry(ctx, ports.TelemetryEvent{
+		Name:       "ao.review.feedback_delivered",
+		Source:     "lifecycle",
+		OccurredAt: m.clock().UTC(),
+		Level:      ports.TelemetryLevelInfo,
+		SessionID:  &workerID,
+		Payload: map[string]any{
+			"outcome": outcome,
+			"results": results,
+		},
+	})
 }
 
 type reactionState struct {
@@ -149,6 +174,12 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	// PR row before calling lifecycle, so the store already reflects this
 	// transition when sessionComplete reads it.
 	if o.Merged || o.Closed {
+		// Report the review outcome of the finished PR before any early return
+		// below: whether AO reviewed it, how many rounds it took, and whether it
+		// was merged over an unaddressed changes-requested verdict. That last one
+		// is the strongest available signal that a user does not trust the
+		// reviewer, and nothing else in the product can observe it.
+		m.emitReviewPROutcome(ctx, id, o)
 		rec, ok, err := m.store.GetSession(ctx, id)
 		if err != nil || !ok {
 			return err
@@ -877,6 +908,117 @@ func (m *Manager) sendOnce(ctx context.Context, id domain.SessionID, prURL, key,
 		}
 	}
 	return sendOnceAccounted, nil
+}
+
+// reviewRunReader is the optional review-run read surface used for PR-outcome
+// telemetry. It stays off the broad lifecycle store so the focused reducer
+// fakes in lifecycle tests do not have to model review runs; production SQLite
+// implements it.
+type reviewRunReader interface {
+	ListReviewRunsBySession(ctx context.Context, id domain.SessionID) ([]domain.ReviewRun, error)
+}
+
+// emitReviewPROutcome reports the AO-review outcome of a PR that just reached a
+// terminal state. Emitted at most once per PR: the SCM observer re-observes a
+// merged PR on every poll, so without the durable claim below one merge would
+// report itself for as long as the session lived.
+func (m *Manager) emitReviewPROutcome(ctx context.Context, id domain.SessionID, o ports.PRObservation) {
+	if m.telemetry == nil || o.URL == "" {
+		return
+	}
+	reader, ok := m.store.(reviewRunReader)
+	if !ok {
+		return
+	}
+	claimed, err := m.claimOnce(ctx, o.URL, "review-pr-outcome:"+o.URL)
+	if err != nil || !claimed {
+		return
+	}
+	runs, err := reader.ListReviewRunsBySession(ctx, id)
+	if err != nil {
+		return
+	}
+	// The PR row is persisted by the observer before lifecycle runs, so its head
+	// is the commit that was merged or abandoned.
+	headSHA := ""
+	if pr, found, err := m.store.GetPR(ctx, o.URL); err == nil && found {
+		headSHA = pr.HeadSHA
+	}
+	payload := reviewPROutcomePayload(runs, o, headSHA)
+	m.emitTelemetry(ctx, ports.TelemetryEvent{
+		Name:       "ao.review.pr_closed",
+		Source:     "lifecycle",
+		OccurredAt: m.clock().UTC(),
+		Level:      ports.TelemetryLevelInfo,
+		SessionID:  &id,
+		Payload:    payload,
+	})
+}
+
+// reviewPROutcomePayload reduces a session's review runs to the outcome facts
+// for one finished PR. Enum-like and counted fields only: no PR URL, no commit,
+// no review text.
+func reviewPROutcomePayload(runs []domain.ReviewRun, o ports.PRObservation, headSHA string) map[string]any {
+	rounds := 0
+	harness := ""
+	lastVerdict := ""
+	var newest *domain.ReviewRun
+	for i := range runs {
+		run := runs[i]
+		if run.PRURL != o.URL {
+			continue
+		}
+		if run.Verdict != "" {
+			rounds++
+		}
+		if harness == "" {
+			harness = string(run.Harness)
+		}
+		if newest == nil || run.CreatedAt.After(newest.CreatedAt) {
+			newest = &runs[i]
+		}
+	}
+	// A changes-requested verdict on a commit the worker has since moved past was
+	// addressed by definition, so only a verdict standing on the merged head
+	// counts as merging over the reviewer.
+	outstanding := false
+	if newest != nil {
+		lastVerdict = string(newest.Verdict)
+		outstanding = newest.Verdict == domain.VerdictChangesRequested &&
+			(headSHA == "" || newest.TargetSHA == headSHA)
+	}
+	return map[string]any{
+		"merged":                        o.Merged,
+		"was_reviewed":                  rounds > 0,
+		"review_rounds":                 rounds,
+		"last_verdict":                  lastVerdict,
+		"changes_requested_outstanding": outstanding && o.Merged,
+		"harness":                       harness,
+	}
+}
+
+// claimOnce reserves a one-shot reaction key for prURL and reports whether this
+// caller won it. It reuses the nudge-dedup payload persisted on the PR row, so
+// a claim survives a daemon restart the way a sent nudge does.
+func (m *Manager) claimOnce(ctx context.Context, prURL, key string) (bool, error) {
+	m.react.mu.Lock()
+	defer m.react.mu.Unlock()
+	if !m.react.loaded[prURL] {
+		if err := m.loadPRSignaturesLocked(ctx, prURL); err != nil {
+			return false, err
+		}
+		m.react.loaded[prURL] = true
+	}
+	if _, seen := m.react.seen[key]; seen {
+		return false, nil
+	}
+	m.react.seen[key] = "1"
+	if err := m.persistPRSignaturesLocked(ctx, prURL); err != nil {
+		// The in-memory claim still holds for this process, so the event is not
+		// duplicated now; a restart may re-report it once.
+		return true, nil
+	}
+	return true, nil
 }
 
 // loadPRSignaturesLocked merges any previously persisted reaction-dedup state

@@ -6,9 +6,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 )
 
@@ -51,6 +53,14 @@ type Coordinator struct {
 	idleThreshold time.Duration
 	sweepInterval time.Duration
 	logger        *slog.Logger
+	telemetry     ports.EventSink
+
+	// lastReason is the most recently reported skip reason per session, so the
+	// once-a-minute sweep reports a *transition* rather than the same standing
+	// reason forever. Memory-only: after a restart each session reports its
+	// current reason once more, which is the correct behaviour for a gauge.
+	reasonMu   sync.Mutex
+	lastReason map[domain.SessionID]string
 }
 
 // Config customizes coordinator timing and logging.
@@ -59,11 +69,23 @@ type Config struct {
 	IdleThreshold time.Duration
 	SweepInterval time.Duration
 	Logger        *slog.Logger
+	// Telemetry records why an enabled auto-review is not producing reviews.
+	// Optional: unwired, the coordinator behaves exactly as before.
+	Telemetry ports.EventSink
 }
 
 // New constructs an auto-review coordinator.
 func New(store Store, reviews Trigger, cfg Config) *Coordinator {
-	c := &Coordinator{store: store, reviews: reviews, clock: cfg.Clock, idleThreshold: cfg.IdleThreshold, sweepInterval: cfg.SweepInterval, logger: cfg.Logger}
+	c := &Coordinator{
+		store:         store,
+		reviews:       reviews,
+		clock:         cfg.Clock,
+		idleThreshold: cfg.IdleThreshold,
+		sweepInterval: cfg.SweepInterval,
+		logger:        cfg.Logger,
+		telemetry:     cfg.Telemetry,
+		lastReason:    map[domain.SessionID]string{},
+	}
 	if c.clock == nil {
 		c.clock = time.Now
 	}
@@ -82,6 +104,81 @@ func New(store Store, reviews Trigger, cfg Config) *Coordinator {
 // EvaluateSession evaluates one worker against the current project, activity,
 // PR, and review-run facts.
 func (c *Coordinator) EvaluateSession(ctx context.Context, id domain.SessionID) (Result, error) {
+	result, err := c.evaluateSession(ctx, id)
+	if err == nil {
+		c.reportEvaluation(ctx, id, result)
+	}
+	return result, err
+}
+
+// reportEvaluation emits an auto-review skip reason when it changes for a
+// session. Auto-review is the only part of this feature a user turns on and
+// then expects to happen by itself, so "enabled but never produces a review"
+// is its central failure mode, and the reason is only knowable here. Reporting
+// transitions instead of every sweep keeps a standing reason (an approved PR
+// sitting open for a week) from emitting once a minute forever.
+func (c *Coordinator) reportEvaluation(ctx context.Context, id domain.SessionID, result Result) {
+	if c.telemetry == nil {
+		return
+	}
+	// Gate reasons describe a session auto-review is not meant to act on at all
+	// (disabled, not a worker, still busy). They are policy working as intended
+	// and would swamp the signal that matters.
+	if result.Triggered || gateReasons[result.Reason] {
+		c.forgetReason(id)
+		return
+	}
+	if !c.reasonChanged(id, result.Reason) {
+		return
+	}
+	session := id
+	c.telemetry.Emit(ctx, ports.TelemetryEvent{
+		Name:       "ao.review.auto_skipped",
+		Source:     "autoreview",
+		OccurredAt: c.clock().UTC(),
+		Level:      ports.TelemetryLevelInfo,
+		SessionID:  &session,
+		Payload:    map[string]any{"reason": result.Reason},
+	})
+}
+
+// gateReasons are the pre-policy reasons the sweep already filters on.
+var gateReasons = map[string]bool{
+	"":                       true,
+	"disabled":               true,
+	"not_worker":             true,
+	"terminated":             true,
+	"not_idle":               true,
+	"idle_threshold_not_met": true,
+	"session_not_found":      true,
+}
+
+func (c *Coordinator) reasonChanged(id domain.SessionID, reason string) bool {
+	c.reasonMu.Lock()
+	defer c.reasonMu.Unlock()
+	if c.lastReason[id] == reason {
+		return false
+	}
+	// Initialised lazily rather than relying on New's literal: this is the only
+	// write to a map on this struct, and a write to a nil one panics. Every other
+	// field here is nil-guarded despite New setting it, so a Coordinator built
+	// any other way must not be able to take the sweep down from telemetry.
+	if c.lastReason == nil {
+		c.lastReason = map[domain.SessionID]string{}
+	}
+	c.lastReason[id] = reason
+	return true
+}
+
+// forgetReason clears the remembered reason so a session that starts reviewing
+// again, then blocks on the same cause later, reports it as a fresh transition.
+func (c *Coordinator) forgetReason(id domain.SessionID) {
+	c.reasonMu.Lock()
+	defer c.reasonMu.Unlock()
+	delete(c.lastReason, id)
+}
+
+func (c *Coordinator) evaluateSession(ctx context.Context, id domain.SessionID) (Result, error) {
 	session, ok, err := c.store.GetSession(ctx, id)
 	if err != nil || !ok {
 		if err == nil {

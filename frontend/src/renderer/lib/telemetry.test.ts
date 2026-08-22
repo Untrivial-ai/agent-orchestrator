@@ -130,6 +130,113 @@ describe("telemetry sanitizers", () => {
 		expect(safe).toEqual({});
 	});
 
+	it("reports which review controls a project save actually changed", async () => {
+		const safe = await sanitizeRendererProperties("ao.renderer.review_settings_changed", {
+			project_id: "proj-1",
+			auto_review: true,
+			reviewer_harness: "claude-code",
+			harness_is_default: false,
+			auto_review_changed: true,
+			reviewer_harness_changed: false,
+			// Must be dropped: a project's own name and path are the user's, and the
+			// raw id is hashed rather than forwarded.
+			project_name: "secret-client",
+			repo: "/Users/me/work/secret-client",
+		});
+		expect(safe.auto_review).toBe(true);
+		expect(safe.reviewer_harness).toBe("claude-code");
+		expect(safe.harness_is_default).toBe(false);
+		expect(safe.auto_review_changed).toBe(true);
+		expect(safe.reviewer_harness_changed).toBe(false);
+		expect(safe.project_id_hash).toEqual(expect.any(String));
+		expect(safe.project_id).toBeUndefined();
+		expect(safe.project_name).toBeUndefined();
+		expect(safe.repo).toBeUndefined();
+	});
+
+	// Harness ids come from AO's own reviewer registry, so anything outside it is
+	// a caller mistake and must not be forwarded as a free-text property.
+	it("drops a reviewer harness outside AO's reviewer registry", async () => {
+		const safe = await sanitizeRendererProperties("ao.renderer.review_settings_changed", {
+			reviewer_harness: "my-internal-reviewer",
+			auto_review: false,
+		});
+		expect(safe.reviewer_harness).toBeUndefined();
+		expect(safe.auto_review).toBe(false);
+	});
+
+	it("reports the session review switches with only their direction", async () => {
+		for (const event of [
+			"ao.renderer.review_auto_review_toggled",
+			"ao.renderer.review_auto_inject_toggled",
+		] as const) {
+			const safe = await sanitizeRendererProperties(event, {
+				enabled: true,
+				session_id: "sess-1",
+				session_name: "fix the login bug",
+			});
+			expect(safe).toEqual({ enabled: true });
+		}
+	});
+
+	it("separates a reviewer override from a return to the project default", async () => {
+		const picked = await sanitizeRendererProperties("ao.renderer.review_reviewer_overridden", {
+			harness: "codex",
+			cleared: false,
+		});
+		expect(picked).toEqual({ harness: "codex", cleared: false });
+
+		const cleared = await sanitizeRendererProperties("ao.renderer.review_reviewer_overridden", {
+			harness: "",
+			cleared: true,
+		});
+		expect(cleared).toEqual({ cleared: true });
+	});
+
+	it("reports a manual review with the action offered and whether it was overridden", async () => {
+		const safe = await sanitizeRendererProperties("ao.renderer.review_triggered", {
+			action: "rerun",
+			has_override: true,
+			// Must be dropped: the button's translated label and the PR it targets.
+			label: "Re-review",
+			pr_url: "https://github.com/acme/secret-repo/pull/7",
+		});
+		expect(safe).toEqual({ action: "rerun", has_override: true });
+
+		const bogus = await sanitizeRendererProperties("ao.renderer.review_triggered", { action: "resume" });
+		expect(bogus.action).toBeUndefined();
+	});
+
+	it("reports stopping a review with only which stop it was", async () => {
+		expect(await sanitizeRendererProperties("ao.renderer.review_stopped", { action: "kill" })).toEqual({
+			action: "kill",
+		});
+		expect(await sanitizeRendererProperties("ao.renderer.review_stopped", { action: "abandon" })).toEqual({});
+	});
+
+	it("reports a reviews-tab open with only the verdict vocabulary", async () => {
+		const safe = await sanitizeRendererProperties("ao.renderer.review_tab_opened", {
+			has_runs: true,
+			latest_verdict: "changes_requested",
+			// Must be dropped: the review text itself.
+			body: "leaks credentials in src/config/prod.ts",
+		});
+		expect(safe).toEqual({ has_runs: true, latest_verdict: "changes_requested" });
+
+		const bogus = await sanitizeRendererProperties("ao.renderer.review_tab_opened", {
+			latest_verdict: "looks-fine-to-me",
+		});
+		expect(bogus.latest_verdict).toBeUndefined();
+	});
+
+	it("reports a hand-relayed review comment with no properties at all", async () => {
+		const safe = await sanitizeRendererProperties("ao.renderer.review_comment_sent_to_worker", {
+			body: "this rename is wrong",
+			file: "src/config/prod.ts",
+		});
+		expect(safe).toEqual({});
+	});
+
 	it("reports the mobile connect open with only the bridge state", async () => {
 		const safe = await sanitizeRendererProperties("ao.renderer.mobile_connect_opened", {
 			bridge_enabled: true,

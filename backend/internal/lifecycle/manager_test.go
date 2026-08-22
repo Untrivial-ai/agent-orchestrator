@@ -24,6 +24,10 @@ type fakeStore struct {
 	comments   map[string][]domain.PullRequestComment
 	prPolicies map[string]bool
 	signatures map[string]string
+	// reviewRuns backs the optional reviewRunReader surface used by PR-outcome
+	// review telemetry. Nil-safe: the reader is type-asserted, so a fake without
+	// runs behaves like a store that has none.
+	reviewRuns map[domain.SessionID][]domain.ReviewRun
 
 	listPRsErr        error
 	listReviewsErr    error
@@ -40,7 +44,12 @@ func newFakeStore() *fakeStore {
 		comments:   map[string][]domain.PullRequestComment{},
 		prPolicies: map[string]bool{},
 		signatures: map[string]string{},
+		reviewRuns: map[domain.SessionID][]domain.ReviewRun{},
 	}
+}
+
+func (f *fakeStore) ListReviewRunsBySession(_ context.Context, id domain.SessionID) ([]domain.ReviewRun, error) {
+	return f.reviewRuns[id], nil
 }
 
 func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
@@ -3640,4 +3649,203 @@ func TestActivitySignalRejectsStaleChatControllerGenerationAcrossHandoff(t *test
 	if got := st.sessions["mer-1"].Activity.State; got != domain.ActivityIdle {
 		t.Fatalf("old Chat controller changed TUI activity to %q", got)
 	}
+}
+
+// Whether reviewer feedback actually landed in the worker's pane is the step
+// that decides if the review loop does anything, and it was previously
+// unobservable: a suppressed nudge and a delivered one looked identical.
+func TestApplyReviewBatchReportsDeliveryOutcome(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = working("mer-1")
+	sink := &telemetrySink{}
+	m := New(st, &fakeMessenger{}, WithTelemetry(sink))
+	results := []ReviewResult{{
+		RunID: "run-1", BatchID: "batch-1", WorkerID: "mer-1",
+		PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1",
+		Verdict: domain.VerdictChangesRequested, Body: "fix auth",
+	}}
+
+	if _, err := m.ApplyReviewBatch(ctx, "mer-1", "batch-1", results); err != nil {
+		t.Fatalf("ApplyReviewBatch: %v", err)
+	}
+	got := namedEvents(sink, "ao.review.feedback_delivered")
+	if len(got) != 1 {
+		t.Fatalf("feedback_delivered count = %d, want 1", len(got))
+	}
+	if got[0].Payload["outcome"] != "sent" || got[0].Payload["results"] != 1 {
+		t.Fatalf("payload = %#v, want outcome=sent results=1", got[0].Payload)
+	}
+	for _, ev := range sink.events {
+		for key, value := range ev.Payload {
+			text, ok := value.(string)
+			if !ok {
+				continue
+			}
+			for _, forbidden := range []string{"fix auth", "github.com", "sha1"} {
+				if strings.Contains(text, forbidden) {
+					t.Fatalf("payload %q leaked %q: %q", key, forbidden, text)
+				}
+			}
+		}
+	}
+}
+
+func TestApplyReviewBatchReportsUnnudgeableSession(t *testing.T) {
+	st := newFakeStore()
+	rec := working("mer-1")
+	rec.IsTerminated = true
+	st.sessions["mer-1"] = rec
+	sink := &telemetrySink{}
+	m := New(st, &fakeMessenger{}, WithTelemetry(sink))
+
+	outcome, err := m.ApplyReviewBatch(ctx, "mer-1", "batch-1", []ReviewResult{{
+		RunID: "run-1", BatchID: "batch-1", WorkerID: "mer-1",
+		PRURL: "https://github.com/o/r/pull/1", Verdict: domain.VerdictChangesRequested,
+	}})
+	if err != nil {
+		t.Fatalf("ApplyReviewBatch: %v", err)
+	}
+	if outcome != ReviewDeliveryNoop {
+		t.Fatalf("outcome = %q, want no_op", outcome)
+	}
+	got := namedEvents(sink, "ao.review.feedback_delivered")
+	if len(got) != 1 || got[0].Payload["outcome"] != "unnudgeable_session" {
+		t.Fatalf("events = %#v, want one unnudgeable_session", got)
+	}
+}
+
+// Merging over a standing changes-requested verdict is the strongest signal
+// available that a user does not trust the reviewer, and nothing else in the
+// product can observe it.
+func TestReviewPROutcomePayloadFlagsMergingOverTheReviewer(t *testing.T) {
+	const url = "https://github.com/o/r/pull/1"
+	merged := ports.PRObservation{URL: url, Merged: true}
+	cases := []struct {
+		name            string
+		runs            []domain.ReviewRun
+		headSHA         string
+		wantReviewed    bool
+		wantRounds      int
+		wantOutstanding bool
+	}{
+		{
+			name:         "never reviewed",
+			runs:         nil,
+			headSHA:      "sha2",
+			wantReviewed: false,
+		},
+		{
+			name: "changes requested on the merged head",
+			runs: []domain.ReviewRun{{
+				PRURL: url, TargetSHA: "sha2", Verdict: domain.VerdictChangesRequested,
+				Harness: "claude-code", CreatedAt: time.Unix(20, 0),
+			}},
+			headSHA:         "sha2",
+			wantReviewed:    true,
+			wantRounds:      1,
+			wantOutstanding: true,
+		},
+		{
+			name: "changes requested on a commit the worker moved past",
+			runs: []domain.ReviewRun{{
+				PRURL: url, TargetSHA: "sha1", Verdict: domain.VerdictChangesRequested,
+				Harness: "claude-code", CreatedAt: time.Unix(10, 0),
+			}},
+			headSHA:      "sha2",
+			wantReviewed: true,
+			wantRounds:   1,
+		},
+		{
+			name: "newest verdict wins over an older one",
+			runs: []domain.ReviewRun{
+				{PRURL: url, TargetSHA: "sha1", Verdict: domain.VerdictChangesRequested, CreatedAt: time.Unix(10, 0)},
+				{PRURL: url, TargetSHA: "sha2", Verdict: domain.VerdictApproved, CreatedAt: time.Unix(20, 0)},
+			},
+			headSHA:      "sha2",
+			wantReviewed: true,
+			wantRounds:   2,
+		},
+		{
+			name: "runs for another PR are not counted",
+			runs: []domain.ReviewRun{{
+				PRURL: "https://github.com/o/r/pull/9", TargetSHA: "sha2",
+				Verdict: domain.VerdictChangesRequested, CreatedAt: time.Unix(20, 0),
+			}},
+			headSHA:      "sha2",
+			wantReviewed: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := reviewPROutcomePayload(c.runs, merged, c.headSHA)
+			if p["was_reviewed"] != c.wantReviewed {
+				t.Fatalf("was_reviewed = %#v, want %v", p["was_reviewed"], c.wantReviewed)
+			}
+			if p["review_rounds"] != c.wantRounds {
+				t.Fatalf("review_rounds = %#v, want %d", p["review_rounds"], c.wantRounds)
+			}
+			if p["changes_requested_outstanding"] != c.wantOutstanding {
+				t.Fatalf("changes_requested_outstanding = %#v, want %v",
+					p["changes_requested_outstanding"], c.wantOutstanding)
+			}
+		})
+	}
+}
+
+// A closed PR cannot have been merged over the reviewer, however its review
+// ended.
+func TestReviewPROutcomePayloadNeverFlagsAnUnmergedPR(t *testing.T) {
+	const url = "https://github.com/o/r/pull/1"
+	p := reviewPROutcomePayload(
+		[]domain.ReviewRun{{PRURL: url, TargetSHA: "sha1", Verdict: domain.VerdictChangesRequested}},
+		ports.PRObservation{URL: url, Closed: true},
+		"sha1",
+	)
+	if p["merged"] != false || p["changes_requested_outstanding"] != false {
+		t.Fatalf("payload = %#v, want merged=false outstanding=false", p)
+	}
+}
+
+// The SCM observer re-observes a merged PR on every poll, so without a durable
+// claim one merge would report itself for as long as the session lived.
+func TestPRClosedReviewOutcomeReportsOncePerPR(t *testing.T) {
+	const url = "https://github.com/o/r/pull/1"
+	st := newFakeStore()
+	rec := working("mer-1")
+	rec.TerminateOnPRMerge = false
+	st.sessions["mer-1"] = rec
+	st.prs["mer-1"] = []domain.PullRequest{{URL: url, Number: 1, HeadSHA: "sha2", Merged: true}}
+	st.reviewRuns["mer-1"] = []domain.ReviewRun{{
+		PRURL: url, TargetSHA: "sha2", Verdict: domain.VerdictChangesRequested,
+		Harness: "claude-code", CreatedAt: time.Unix(20, 0),
+	}}
+	sink := &telemetrySink{}
+	m := New(st, &fakeMessenger{}, WithTelemetry(sink))
+	obs := ports.PRObservation{Fetched: true, URL: url, Number: 1, Merged: true}
+
+	for i := 0; i < 3; i++ {
+		if err := m.ApplyPRObservation(ctx, "mer-1", obs); err != nil {
+			t.Fatalf("ApplyPRObservation %d: %v", i, err)
+		}
+	}
+	got := namedEvents(sink, "ao.review.pr_closed")
+	if len(got) != 1 {
+		t.Fatalf("pr_closed count = %d, want 1 across three observations", len(got))
+	}
+	if got[0].Payload["changes_requested_outstanding"] != true {
+		t.Fatalf("payload = %#v, want the override flagged", got[0].Payload)
+	}
+	if got[0].SessionID == nil || *got[0].SessionID != "mer-1" {
+		t.Fatalf("SessionID = %#v, want mer-1", got[0].SessionID)
+	}
+}
+
+func namedEvents(sink *telemetrySink, name string) []ports.TelemetryEvent {
+	var out []ports.TelemetryEvent
+	for _, ev := range sink.events {
+		if ev.Name == name {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
