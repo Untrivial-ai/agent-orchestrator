@@ -1,5 +1,5 @@
 /*
- * Syntax colours for chat code blocks.
+ * Syntax colours for chat code blocks and the file-diff review panel.
  *
  * Built on the terminal ANSI tokens rather than on product roles, for the reason
  * tokens.css gives for keeping that palette separate: a code block is closer to
@@ -10,8 +10,10 @@
  * Highlighting is class-based on purpose. Colours resolve at paint time from CSS
  * variables, so flipping the theme re-paints; it does not re-tokenize.
  *
- * Scoped under `.chat-code` so highlight.js class names cannot leak styling into
- * any other surface that happens to use them.
+ * Scoped under `.chat-code` and `.diff-code` so highlight.js class names cannot
+ * leak styling into any other surface that happens to use them — both are
+ * deliberate, chosen consumers of the same engine (code-highlight.ts) and the
+ * same colour mapping, not a leak.
  */
 
 .chat-code pre {
@@ -28,7 +30,9 @@
 }
 
 .chat-code .hljs-comment,
-.chat-code .hljs-quote {
+.chat-code .hljs-quote,
+.diff-code .hljs-comment,
+.diff-code .hljs-quote {
 	color: var(--color-text-passive);
 	font-style: italic;
 }
@@ -39,7 +43,14 @@
 .chat-code .hljs-section,
 .chat-code .hljs-name,
 .chat-code .hljs-tag,
-.chat-code .hljs-selector-tag {
+.chat-code .hljs-selector-tag,
+.diff-code .hljs-keyword,
+.diff-code .hljs-literal,
+.diff-code .hljs-doctag,
+.diff-code .hljs-section,
+.diff-code .hljs-name,
+.diff-code .hljs-tag,
+.diff-code .hljs-selector-tag {
 	color: var(--color-term-magenta);
 }
 
@@ -47,20 +58,32 @@
 .chat-code .hljs-regexp,
 .chat-code .hljs-char.escape_,
 .chat-code .hljs-addition,
-.chat-code .hljs-template-tag {
+.chat-code .hljs-template-tag,
+.diff-code .hljs-string,
+.diff-code .hljs-regexp,
+.diff-code .hljs-char.escape_,
+.diff-code .hljs-addition,
+.diff-code .hljs-template-tag {
 	color: var(--color-term-green);
 }
 
 .chat-code .hljs-number,
 .chat-code .hljs-symbol,
 .chat-code .hljs-bullet,
-.chat-code .hljs-link {
+.chat-code .hljs-link,
+.diff-code .hljs-number,
+.diff-code .hljs-symbol,
+.diff-code .hljs-bullet,
+.diff-code .hljs-link {
 	color: var(--color-term-yellow);
 }
 
 .chat-code .hljs-title,
 .chat-code .hljs-title.function_,
-.chat-code .hljs-function .hljs-title {
+.chat-code .hljs-function .hljs-title,
+.diff-code .hljs-title,
+.diff-code .hljs-title.function_,
+.diff-code .hljs-function .hljs-title {
 	color: var(--color-term-blue);
 }
 
@@ -68,7 +91,12 @@
 .chat-code .hljs-title.class_,
 .chat-code .hljs-class .hljs-title,
 .chat-code .hljs-built_in,
-.chat-code .hljs-formula {
+.chat-code .hljs-formula,
+.diff-code .hljs-type,
+.diff-code .hljs-title.class_,
+.diff-code .hljs-class .hljs-title,
+.diff-code .hljs-built_in,
+.diff-code .hljs-formula {
 	color: var(--color-term-cyan);
 }
 
@@ -80,11 +108,21 @@
 .chat-code .hljs-selector-attr,
 .chat-code .hljs-selector-class,
 .chat-code .hljs-selector-id,
-.chat-code .hljs-selector-pseudo {
+.chat-code .hljs-selector-pseudo,
+.diff-code .hljs-attr,
+.diff-code .hljs-attribute,
+.diff-code .hljs-property,
+.diff-code .hljs-variable,
+.diff-code .hljs-template-variable,
+.diff-code .hljs-selector-attr,
+.diff-code .hljs-selector-class,
+.diff-code .hljs-selector-id,
+.diff-code .hljs-selector-pseudo {
 	color: var(--color-term-red);
 }
 
-.chat-code .hljs-deletion {
+.chat-code .hljs-deletion,
+.diff-code .hljs-deletion {
 	color: var(--color-term-red);
 }
 
@@ -93,14 +131,21 @@
 .chat-code .hljs-meta .hljs-keyword,
 .chat-code .hljs-punctuation,
 .chat-code .hljs-operator,
-.chat-code .hljs-params {
+.chat-code .hljs-params,
+.diff-code .hljs-meta,
+.diff-code .hljs-meta .hljs-keyword,
+.diff-code .hljs-punctuation,
+.diff-code .hljs-operator,
+.diff-code .hljs-params {
 	color: var(--color-text-muted);
 }
 
-.chat-code .hljs-emphasis {
+.chat-code .hljs-emphasis,
+.diff-code .hljs-emphasis {
 	font-style: italic;
 }
 
-.chat-code .hljs-strong {
+.chat-code .hljs-strong,
+.diff-code .hljs-strong {
 	font-weight: var(--font-weight-semibold);
 }
