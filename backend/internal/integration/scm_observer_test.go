@@ -99,6 +99,10 @@ func (p *cannedSCMProvider) ParseRepository(remote string) (ports.SCMRepo, bool)
 	return p.parsedRepo, true
 }
 
+func (p *cannedSCMProvider) AuthenticatedIdentity(context.Context) (ports.SCMIdentity, error) {
+	return ports.SCMIdentity{Login: "octocat", Human: true}, nil
+}
+
 func (p *cannedSCMProvider) RepoPRListGuard(_ context.Context, _ ports.SCMRepo, _ string) (ports.SCMGuardResult, error) {
 	return ports.SCMGuardResult{ETag: "repo-etag"}, nil
 }
@@ -108,6 +112,9 @@ func (p *cannedSCMProvider) ListPRsByRepo(_ context.Context, _ ports.SCMRepo, _ 
 	defer p.mu.Unlock()
 	out := make([]ports.SCMPRObservation, 0, len(p.detected))
 	for _, pr := range p.detected {
+		if pr.Author == "" {
+			pr.Author = "octocat"
+		}
 		out = append(out, pr)
 	}
 	return out, nil
@@ -214,9 +221,10 @@ func newSCMFixture(t *testing.T, branch string) *scmFixture {
 	lcm.SetCompletionTerminator(lifecycleMarkTerminator{lcm: lcm})
 	provider := newCannedSCMProvider()
 	observer := scmobserve.New(provider, store, lcm, scmobserve.Config{
-		Tick:   time.Hour,
-		Clock:  func() time.Time { return now },
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Tick:             time.Hour,
+		Clock:            func() time.Time { return now },
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		IdentityResolver: provider,
 	})
 	return &scmFixture{
 		store:    store,

@@ -255,8 +255,8 @@ func TestPoll_ScopedIdentityFallbackToSingleResolver(t *testing.T) {
 }
 
 // TestPoll_ScopedIdentityPartialFailure verifies that when identity resolution
-// fails for one provider, PRs from the other provider are still discovered
-// against their matching identity (finding #7).
+// fails for one provider, only that provider fails closed while PRs from the
+// other provider are still discovered against their matching identity.
 func TestPoll_ScopedIdentityPartialFailure(t *testing.T) {
 	store := testStoreWithTwoSessions()
 	provider := &hostAwareProvider{fakeProvider: &fakeProvider{
@@ -303,11 +303,10 @@ func TestPoll_ScopedIdentityPartialFailure(t *testing.T) {
 		t.Fatalf("github PR #1 should be fetched (identity resolved), got fetched=%v", fetched)
 	}
 
-	// GitLab PR #3 should also be fetched — identity resolution failed for
-	// GitLab, so PRs from that provider fall back to branch-based discovery
-	// (no identity check, so any matching branch is accepted).
-	if !fetched[3] {
-		t.Fatalf("gitlab PR #3 should be fetched (identity failure → branch-based discovery), got fetched=%v", fetched)
+	// GitLab PR #3 must not be fetched: without the authenticated owner there
+	// is no proof that the matching branch belongs to this AO session.
+	if fetched[3] {
+		t.Fatalf("gitlab PR #3 was fetched without identity provenance, got fetched=%v", fetched)
 	}
 
 	// Both providers should have been queried.

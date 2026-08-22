@@ -166,7 +166,8 @@ type Config struct {
 	Logger *slog.Logger
 	// CacheMax bounds each in-memory ETag/review cache. Zero uses DefaultCacheMax.
 	CacheMax int
-	// IdentityResolver resolves the active SCM account lazily. Nil preserves branch-based discovery.
+	// IdentityResolver resolves the active SCM account lazily. Automatic PR
+	// attribution is disabled when neither identity resolver is available.
 	IdentityResolver ports.SCMIdentityResolver
 	// ScopedIdentityResolver resolves the authenticated identity per provider key.
 	// When set, the observer resolves identities for all providers upfront in
@@ -750,14 +751,7 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 			if !found || !p.ArchivedAt.IsZero() {
 				continue
 			}
-			if p.RepoOriginURL == "" && p.Path != "" {
-				if url := resolveGitOriginURL(p.Path); url != "" {
-					p.RepoOriginURL = url
-					if err := o.store.UpsertProject(ctx, p); err != nil {
-						o.logger.Warn("scm observer: backfill origin URL persist failed", "project", p.ID, "err", err)
-					}
-				}
-			}
+			p = o.refreshProjectOriginURL(ctx, p)
 			projects[sess.ProjectID] = p
 			proj = p
 			if origin, ok := o.provider.ParseRepository(p.RepoOriginURL); ok {
@@ -806,6 +800,39 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		}
 	}
 	return out, sessionRepos, nil
+}
+
+// refreshProjectOriginURL keeps the durable project identity aligned with the
+// checkout's current push origin. Repository transfers commonly leave the
+// stored owner/name stale while git remote origin has already followed the
+// provider redirect; using that stale identity makes the head-repo provenance
+// guard reject legitimate PRs from the transferred repository.
+func (o *Observer) refreshProjectOriginURL(ctx context.Context, p domain.ProjectRecord) domain.ProjectRecord {
+	if strings.TrimSpace(p.Path) == "" {
+		return p
+	}
+	url := resolveGitOriginURL(p.Path)
+	if strings.TrimSpace(url) == "" {
+		return p
+	}
+	current, currentOK := o.provider.ParseRepository(url)
+	if !currentOK {
+		return p
+	}
+	if persisted, persistedOK := o.provider.ParseRepository(p.RepoOriginURL); persistedOK && sameRepoIdentity(persisted, current) {
+		return p
+	}
+	p.RepoOriginURL = url
+	if err := o.store.UpsertProject(ctx, p); err != nil {
+		o.logger.Warn("scm observer: refresh origin URL persist failed", "project", p.ID, "err", err)
+	}
+	return p
+}
+
+func sameRepoIdentity(a, b ports.SCMRepo) bool {
+	return strings.EqualFold(a.Provider, b.Provider) &&
+		strings.EqualFold(a.Host, b.Host) &&
+		strings.EqualFold(repoFullName(a), repoFullName(b))
 }
 
 // resolveScanRepos returns the deduped set of repos whose open-PR lists should be
@@ -974,11 +1001,12 @@ func pendingRepoRefreshes(guards map[string]repoGuardState) map[string]bool {
 // NotModified against a known ETag are skipped, since nothing new can have
 // appeared since the last poll.
 func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRepo, subjects map[string]*subject, guards map[string]repoGuardState, now time.Time, markRepoFailed func(ports.SCMRepo)) (listedPRs, listedRepos map[string]bool) {
-	// Resolve identities per-provider when a ScopedIdentityResolver is wired.
-	// This ensures GitHub PRs are checked against the GitHub identity and
-	// GitLab PRs against the GitLab identity. Falls back to the single-
-	// provider IdentityResolver path for backward compatibility.
-	identities, identityKnown := o.resolveIdentities(ctx, sessionRepos)
+	// Resolve identities per provider. Branch and head-repository matches are
+	// necessary provenance signals, but are not ownership proof in a shared
+	// repository: another user can create the same branch name. Discovery
+	// therefore fails closed for a provider whose authenticated owner cannot be
+	// resolved; an explicitly claimed PR remains tracked independently.
+	identities := o.resolveIdentities(ctx, sessionRepos)
 	byRepo := map[string][]sessionRepo{}
 	repos := map[string]ports.SCMRepo{}
 	for _, sr := range sessionRepos {
@@ -1062,14 +1090,12 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 			if pr.Number <= 0 || pr.SourceBranch == "" {
 				continue
 			}
-			if identityKnown {
-				id, ok := identities[identityKey(repo.Provider, repo.Host)]
-				if !ok {
-					id, ok = identities[fallbackIdentityKey] // fallback single-identity
-				}
-				if ok && !strings.EqualFold(strings.TrimSpace(pr.Author), id.Login) {
-					continue
-				}
+			id, ok := identities[identityKey(repo.Provider, repo.Host)]
+			if !ok {
+				id, ok = identities[fallbackIdentityKey]
+			}
+			if !ok || !strings.EqualFold(strings.TrimSpace(pr.Author), id.Login) {
+				continue
 			}
 			if _, ok := subjects[prKey(repo, pr.Number)]; ok {
 				continue
@@ -1107,6 +1133,7 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 				SourceBranch: pr.SourceBranch,
 				TargetBranch: pr.TargetBranch,
 				HeadSHA:      pr.HeadSHA,
+				Author:       pr.Author,
 				Provider:     repo.Provider,
 				Host:         repo.Host,
 				Repo:         repoFullName(repo),
@@ -1144,12 +1171,12 @@ func (o *Observer) authenticatedIdentity(ctx context.Context) (ports.SCMIdentity
 	}
 	identity, err := o.identityResolver.AuthenticatedIdentity(ctx)
 	if err != nil {
-		o.logger.Debug("scm observer: authenticated identity unavailable; preserving branch-based discovery", "err", err)
+		o.logger.Debug("scm observer: authenticated identity unavailable; skipping automatic attribution", "err", err)
 		return ports.SCMIdentity{}, false
 	}
 	identity.Login = strings.TrimSpace(identity.Login)
-	if !identity.Human || identity.Login == "" {
-		o.logger.Debug("scm observer: authenticated human identity unavailable; preserving branch-based discovery")
+	if identity.Login == "" {
+		o.logger.Debug("scm observer: authenticated identity has no login; skipping automatic attribution")
 		return ports.SCMIdentity{}, false
 	}
 	return identity, true
@@ -1160,15 +1187,14 @@ func (o *Observer) authenticatedIdentity(ctx context.Context) (ports.SCMIdentity
 // are resolved upfront (one call per unique provider+host pair) and cached in
 // a map keyed by identityKey(provider, host). This ensures a self-managed
 // GitLab host gets its own identity, distinct from gitlab.com. If identity
-// resolution fails for one provider+host, PRs from that provider+host fall
-// back to branch-based discovery while other providers continue normally.
+// resolution fails for one provider+host, automatic attribution is skipped for
+// that provider+host while other providers continue normally.
 // When no ScopedIdentityResolver is available, it falls back to the
 // single-provider IdentityResolver path.
-func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []sessionRepo) (map[string]ports.SCMIdentity, bool) {
+func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []sessionRepo) map[string]ports.SCMIdentity {
 	if o.scopedIdentityResolver != nil {
 		seen := map[string]bool{}
 		identities := make(map[string]ports.SCMIdentity)
-		anyKnown := false
 		for _, sr := range sessionRepos {
 			ik := identityKey(sr.repo.Provider, sr.repo.Host)
 			if seen[ik] {
@@ -1177,25 +1203,24 @@ func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []session
 			seen[ik] = true
 			id, err := o.scopedIdentityResolver.AuthenticatedIdentityForProvider(ctx, sr.repo.Provider, sr.repo.Host)
 			if err != nil {
-				o.logger.Debug("scm observer: per-provider identity unavailable; preserving branch-based discovery for provider", "provider", sr.repo.Provider, "host", sr.repo.Host, "err", err)
+				o.logger.Debug("scm observer: per-provider identity unavailable; skipping automatic attribution for provider", "provider", sr.repo.Provider, "host", sr.repo.Host, "err", err)
 				continue
 			}
 			id.Login = strings.TrimSpace(id.Login)
-			if !id.Human || id.Login == "" {
-				o.logger.Debug("scm observer: per-provider human identity unavailable; preserving branch-based discovery for provider", "provider", sr.repo.Provider, "host", sr.repo.Host)
+			if id.Login == "" {
+				o.logger.Debug("scm observer: per-provider identity has no login; skipping automatic attribution for provider", "provider", sr.repo.Provider, "host", sr.repo.Host)
 				continue
 			}
 			identities[ik] = id
-			anyKnown = true
 		}
-		return identities, anyKnown
+		return identities
 	}
 	// Fallback: single-provider IdentityResolver path.
 	identity, ok := o.authenticatedIdentity(ctx)
 	if !ok {
-		return nil, false
+		return nil
 	}
-	return map[string]ports.SCMIdentity{fallbackIdentityKey: identity}, true
+	return map[string]ports.SCMIdentity{fallbackIdentityKey: identity}
 }
 
 // matchSession picks the session that owns sourceBranch. A session owns the

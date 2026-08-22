@@ -164,6 +164,9 @@ func (p *fakeProvider) AuthenticatedIdentity(context.Context) (ports.SCMIdentity
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.identityCalls++
+	if p.identity.Login == "" && p.identityErr == nil {
+		return ports.SCMIdentity{Login: "alice", Human: true}, nil
+	}
 	return p.identity, p.identityErr
 }
 
@@ -204,7 +207,16 @@ func (p *fakeProvider) ListPRsByRepo(_ context.Context, repo ports.SCMRepo, _ ti
 	if p.listErr != nil {
 		return nil, p.listErr
 	}
-	return p.openPRs[prKey(repo, 0)], nil
+	pulls := append([]ports.SCMPRObservation(nil), p.openPRs[prKey(repo, 0)]...)
+	for i := range pulls {
+		// Real provider list responses always carry an author. Most observer
+		// fixtures predate ownership-aware attribution, so default their omitted
+		// author to the fake provider's authenticated account.
+		if pulls[i].Author == "" {
+			pulls[i].Author = "alice"
+		}
+	}
+	return pulls, nil
 }
 func (p *fakeProvider) CommitChecksGuard(_ context.Context, repo ports.SCMRepo, sha, _ string) (ports.SCMGuardResult, error) {
 	return p.checkGuards[commitKey(repo, sha)], nil
@@ -329,7 +341,7 @@ func testStoreWithSession() *fakeStore {
 func testObs(num int) ports.SCMObservation {
 	return ports.SCMObservation{
 		Fetched: true, Provider: "github", Host: "github.com", Repo: "o/r",
-		PR:           ports.SCMPRObservation{URL: "https://github.com/o/r/pull/" + fmt.Sprint(num), Number: num, State: "open", SourceBranch: "feat", TargetBranch: "main", HeadSHA: "sha" + fmt.Sprint(num), Title: "PR"},
+		PR:           ports.SCMPRObservation{URL: "https://github.com/o/r/pull/" + fmt.Sprint(num), Number: num, State: "open", SourceBranch: "feat", TargetBranch: "main", HeadSHA: "sha" + fmt.Sprint(num), Title: "PR", Author: "alice"},
 		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing), HeadSHA: "sha" + fmt.Sprint(num), Checks: []ports.SCMCheckObservation{{Name: "build", Status: string(domain.PRCheckPassed), Conclusion: "success", URL: "ci"}}},
 		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewNone)},
 		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable), Mergeable: true},
@@ -650,7 +662,7 @@ func TestPoll_RepoETag200DiscoversPRAndRefreshesSamePoll(t *testing.T) {
 	}
 }
 
-func TestPoll_DiscoversOnlyPRsFromAuthenticatedHuman(t *testing.T) {
+func TestPoll_ForeignPRNotAttributed(t *testing.T) {
 	store := testStoreWithSession()
 	provider := &fakeProvider{
 		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
@@ -684,21 +696,21 @@ func TestPoll_DiscoversOnlyPRsFromAuthenticatedHuman(t *testing.T) {
 	}
 }
 
-func TestPoll_PreservesBranchDiscoveryWithoutHumanIdentity(t *testing.T) {
+func TestPoll_SkipsAutomaticAttributionWithoutIdentityProvenance(t *testing.T) {
 	tests := []struct {
 		name        string
 		identity    ports.SCMIdentity
 		identityErr error
 	}{
 		{name: "lookup error", identityErr: errors.New("identity unavailable")},
-		{name: "bot account", identity: ports.SCMIdentity{Login: "ao-bot", Human: false}},
+		{name: "empty login", identity: ports.SCMIdentity{Login: " ", Human: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := testStoreWithSession()
 			provider := &fakeProvider{
 				repoGuards:   map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
-				openPRs:      map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1", Author: "other"}}},
+				openPRs:      map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1", Author: "alice"}}},
 				observations: map[string]ports.SCMObservation{prKey(testRepo, 1): testObs(1)},
 				identity:     tt.identity,
 				identityErr:  tt.identityErr,
@@ -707,10 +719,35 @@ func TestPoll_PreservesBranchDiscoveryWithoutHumanIdentity(t *testing.T) {
 			if err := obs.Poll(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if len(provider.fetchBatches) != 1 || provider.fetchBatches[0][0].Number != 1 {
-				t.Fatalf("branch fallback did not discover PR: %#v", provider.fetchBatches)
+			if len(provider.fetchBatches) != 0 {
+				t.Fatalf("PR was fetched without owner provenance: %#v", provider.fetchBatches)
+			}
+			if len(store.writes) != 0 {
+				t.Fatalf("PR was persisted without owner provenance: %#v", store.writes)
 			}
 		})
+	}
+}
+
+func TestPoll_DiscoversPRFromAuthenticatedBot(t *testing.T) {
+	store := testStoreWithSession()
+	botObs := testObs(1)
+	botObs.PR.Author = "ao-bot"
+	provider := &fakeProvider{
+		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
+		openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {{
+			URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "feat", HeadRepo: "o/r",
+			TargetBranch: "main", HeadSHA: "sha1", Author: "ao-bot",
+		}}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): botObs},
+		identity:     ports.SCMIdentity{Login: "ao-bot", Human: false},
+	}
+	obs := newTestObserver(store, provider, &fakeLifecycle{}, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) == 0 || store.writes[0].pr.SessionID != "p-1" {
+		t.Fatalf("authenticated bot's PR was not attributed: %#v", store.writes)
 	}
 }
 
@@ -995,6 +1032,80 @@ func TestPoll_DiscoversCrossForkPRFromUpstreamRemote(t *testing.T) {
 	}
 	if !fetched {
 		t.Fatalf("cross-fork PR must be refreshed against upstream, batches=%#v", provider.fetchBatches)
+	}
+}
+
+func TestPoll_DiscoversPRAfterRepositoryTransfer(t *testing.T) {
+	dir := t.TempDir()
+	mustGit(t, "init", dir)
+	mustGit(t, "-C", dir, "remote", "add", "origin", "https://github.com/new-owner/r.git")
+
+	movedRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "new-owner", Name: "r", Repo: "new-owner/r"}
+	store := &fakeStore{
+		sessions: []domain.SessionRecord{{ID: "p-1", ProjectID: "p", Metadata: domain.SessionMetadata{Branch: "ao/p-1/root"}}},
+		projects: map[string]domain.ProjectRecord{"p": {
+			ID:            "p",
+			Path:          dir,
+			RepoOriginURL: "https://github.com/old-owner/r.git",
+		}},
+		prs:    map[domain.SessionID][]domain.PullRequest{},
+		checks: map[string][]domain.PullRequestCheck{},
+	}
+	movedObs := ports.SCMObservation{
+		Fetched: true, Provider: "github", Host: "github.com", Repo: "new-owner/r",
+		PR: ports.SCMPRObservation{
+			URL: "https://github.com/new-owner/r/pull/3250", Number: 3250, State: "open",
+			SourceBranch: "ao/p-1/fix", HeadRepo: "new-owner/r", TargetBranch: "main",
+			HeadSHA: "sha1", Title: "PR", Author: "alice",
+		},
+		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing), HeadSHA: "sha1"},
+		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewNone)},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable), Mergeable: true},
+	}
+	provider := &fakeProvider{
+		repoGuards: map[string]ports.SCMGuardResult{prKey(movedRepo, 0): {ETag: "moved"}},
+		openPRs: map[string][]ports.SCMPRObservation{prKey(movedRepo, 0): {{
+			URL: "https://github.com/new-owner/r/pull/3250", Number: 3250,
+			SourceBranch: "ao/p-1/fix", HeadRepo: "new-owner/r", TargetBranch: "main",
+			HeadSHA: "sha1", Author: "alice",
+		}}},
+		observations: map[string]ports.SCMObservation{prKey(movedRepo, 3250): movedObs},
+	}
+	obs := newTestObserver(store, provider, &fakeLifecycle{}, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.projects["p"].RepoOriginURL; got != "https://github.com/new-owner/r.git" {
+		t.Fatalf("project origin = %q, want moved origin", got)
+	}
+	if len(store.writes) == 0 || store.writes[0].pr.SessionID != "p-1" || store.writes[0].pr.Repo != "new-owner/r" {
+		t.Fatalf("transferred-repo PR was not attributed: %#v", store.writes)
+	}
+}
+
+// Codex can invoke the real gh binary directly, so discovery must come from
+// durable session/repository facts rather than wrapper interception.
+func TestPoll_DiscoversCodexSessionPRWithoutGHWrapper(t *testing.T) {
+	store := testStoreWithSession()
+	store.sessions[0].Harness = domain.HarnessCodex
+	store.sessions[0].Metadata.Branch = "ao/p-1/root"
+	prObs := testObs(17)
+	prObs.PR.SourceBranch = "ao/p-1/fix"
+	prObs.PR.Author = "alice"
+	provider := &fakeProvider{
+		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
+		openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {{
+			URL: "https://github.com/o/r/pull/17", Number: 17, SourceBranch: "ao/p-1/fix",
+			HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha17", Author: "alice",
+		}}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 17): prObs},
+	}
+	obs := newTestObserver(store, provider, &fakeLifecycle{}, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) == 0 || store.writes[0].pr.SessionID != "p-1" || store.writes[0].pr.Number != 17 {
+		t.Fatalf("Codex PR was not discovered by observer polling: %#v", store.writes)
 	}
 }
 
