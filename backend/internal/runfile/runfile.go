@@ -11,9 +11,42 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
+)
+
+// Reading running.json races transient Windows handle state. Right after the
+// daemon writes the file (or replaces it via MoveFileEx), an external
+// consumer — antivirus real-time scan, async handle release during process
+// teardown — can briefly hold it without FILE_SHARE_READ, and os.ReadFile
+// fails with ERROR_SHARING_VIOLATION ("The process cannot access the file
+// because it is being used by another process"). A retry a moment later
+// succeeds; `ao stop` hitting this window is what flaked TestE2E_Lifecycle on
+// windows-latest. gitworktree.removeAllWithRetry documents the same class on
+// the delete path and solves it the same way.
+//
+// These are vars, not consts, so tests can drive the loop without sleeping
+// for real and can exercise the retry on every platform CI runs.
+var (
+	// readAttempts × the capped backoff below bounds the extra wait at ~1.4s
+	// (25+50+100+200×6 across 10 tries, 9 sleeps). Reads are cheap and the
+	// callers (`ao status`, `ao stop`, daemon startup) are interactive paths
+	// where a sub-second stall is invisible, while a failed stop is not.
+	readAttempts   = 10
+	readBackoff    = 25 * time.Millisecond
+	readBackoffCap = 200 * time.Millisecond
+	// readRetryEnabled gates the retry to the platform whose handle semantics
+	// need it. Elsewhere a read error is real and immediate, and sleeping out
+	// the budget before returning the identical error only makes every genuine
+	// failure slower. A var, not a bare runtime.GOOS check at the call site,
+	// so tests exercise the retry loop on every platform.
+	readRetryEnabled = runtime.GOOS == "windows"
+	// readFile is os.ReadFile in production; tests substitute a stub to drive
+	// the retry loop deterministically (the real sharing violation only
+	// reproduces on Windows).
+	readFile = os.ReadFile
 )
 
 // Info is the on-disk handshake payload.
@@ -79,8 +112,30 @@ func Write(path string, info Info) error {
 
 // Read loads running.json. A missing file returns (nil, nil) — that is the
 // normal "no daemon recorded" state, not an error.
+//
+// On Windows the initial read is retried briefly (see the vars above) to ride
+// out the transient sharing violation. The retry decision is deliberately
+// unconditional on error identity rather than sniffing for a Windows errno:
+// the syscall surface differs across Windows versions and filesystems, and
+// every error os.ReadFile can return there is either
+// transient-and-worth-retrying or permanent-and-still-an-error after the
+// budget. os.ErrNotExist is never retried — a missing run-file is the normal
+// stopped state, and sleeping out the budget would slow every `ao status` on
+// a stopped daemon for nothing.
 func Read(path string) (*Info, error) {
-	data, err := os.ReadFile(path)
+	data, err := readFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) && readRetryEnabled {
+		backoff := readBackoff
+		for range readAttempts - 1 {
+			time.Sleep(backoff)
+			if backoff *= 2; backoff > readBackoffCap {
+				backoff = readBackoffCap
+			}
+			if data, err = readFile(path); err == nil || errors.Is(err, os.ErrNotExist) {
+				break
+			}
+		}
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

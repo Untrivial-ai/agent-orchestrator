@@ -47,6 +47,30 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+  # Windows-only Go checks. build-test runs on ubuntu, so windows build-tagged
+  # units (pidalive_windows.go, process_windows.go) are never compiled or run
+  # there. This job covers the real Windows liveness probes (#3327, #3080) and
+  # confirms the backend still builds for windows.
+  windows-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test windows-tagged packages
+        run: go test ./internal/processalive/... ./internal/adapters/runtime/conpty/...
+
   lint:
     runs-on: ubuntu-latest
     steps:
