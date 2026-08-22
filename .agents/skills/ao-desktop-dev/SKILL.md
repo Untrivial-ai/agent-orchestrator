@@ -11,8 +11,8 @@ Run the Electron application from the current checkout and verify it in the nati
 
 Ask only when the request does not make the desired data source clear.
 
-- Use **isolated mode** by default for implementation and destructive testing. Electron uses port `3002`, `~/.ao/dev/running.json`, `~/.ao/dev/data`, and `~/.ao/dev/electron`.
-- Use **real-data mode** only when the user explicitly asks to see this machine's actual AO projects or sessions. Start the checkout's dev daemon on the isolated dev port/run file while pointing `AO_DATA_DIR` at the real AO data directory. This is a separate daemon process using real data; do not describe it as the installed app's daemon.
+- Use **isolated mode** by default for implementation and destructive testing. Set `ISOLATE_DEV=true` (dev no longer isolates by default — see `frontend/src/shared/daemon-attach.ts`). Electron then uses port `3002`, `~/.ao/dev/running.json`, `~/.ao/dev/data`, and `~/.ao/dev/electron`.
+- Use **real-data mode** only when the user explicitly asks to see this machine's actual AO projects or sessions. Start the checkout's dev daemon on the isolated dev port/run file (`ISOLATE_DEV=true`) while pointing `AO_DATA_DIR` at the real AO data directory. This is a separate daemon process using real data; do not describe it as the installed app's daemon.
 - Never try to attach an unpackaged Electron app directly to a packaged daemon from another checkout. The supervisor intentionally rejects daemon identity mismatches.
 - Warn before actions in real-data mode that create, terminate, rename, or otherwise mutate sessions. Merely opening and inspecting the UI is expected.
 
@@ -42,7 +42,7 @@ On macOS/Linux:
 
 ```bash
 cd frontend
-env -u AO_DATA_DIR -u AO_RUN_FILE -u AO_PORT npm run dev
+env -u AO_DATA_DIR -u AO_RUN_FILE -u AO_PORT ISOLATE_DEV=true npm run dev
 ```
 
 On PowerShell:
@@ -50,6 +50,7 @@ On PowerShell:
 ```powershell
 Set-Location frontend
 Remove-Item Env:AO_DATA_DIR, Env:AO_RUN_FILE, Env:AO_PORT -ErrorAction SilentlyContinue
+$env:ISOLATE_DEV = "true"
 npm run dev
 ```
 
@@ -57,11 +58,11 @@ npm run dev
 
 First resolve and report the actual data directory. In an AO worker session, `AO_DATA_DIR` normally already identifies it. Otherwise the repository default is the absolute path corresponding to `~/.ao/data`.
 
-Keep the real data directory but remove inherited port/run-file overrides so the dev app retains its own daemon handshake and port:
+Keep the real data directory but set `ISOLATE_DEV=true` (with port/run-file overrides removed) so the dev app retains its own daemon handshake and port instead of colliding with an installed app's daemon on the shared default port:
 
 ```bash
 cd frontend
-env -u AO_RUN_FILE -u AO_PORT AO_DATA_DIR="${AO_DATA_DIR:-$HOME/.ao/data}" npm run dev
+env -u AO_RUN_FILE -u AO_PORT ISOLATE_DEV=true AO_DATA_DIR="${AO_DATA_DIR:-$HOME/.ao/data}" npm run dev
 ```
 
 PowerShell equivalent:
@@ -70,18 +71,19 @@ PowerShell equivalent:
 Set-Location frontend
 $realAoData = if ($env:AO_DATA_DIR) { $env:AO_DATA_DIR } else { Join-Path $HOME ".ao/data" }
 Remove-Item Env:AO_RUN_FILE, Env:AO_PORT -ErrorAction SilentlyContinue
+$env:ISOLATE_DEV = "true"
 $env:AO_DATA_DIR = $realAoData
 npm run dev
 ```
 
-Do not print unrelated environment variables: AO sessions may carry credentials. It is safe to report only `AO_DATA_DIR`, `AO_RUN_FILE`, and `AO_PORT`.
+Do not print unrelated environment variables: AO sessions may carry credentials. It is safe to report only `AO_DATA_DIR`, `AO_RUN_FILE`, `AO_PORT`, and `ISOLATE_DEV`.
 
 ## Confirm the correct app is ready
 
 Wait for all of these signals:
 
 - Electron Forge reports `Launched Electron app`.
-- The daemon reports `daemon listening`, normally on `127.0.0.1:3002` unless it explicitly reports another bound port.
+- The daemon reports `daemon listening`, normally on `127.0.0.1:3002` in isolated mode (`ISOLATE_DEV=true`) or `127.0.0.1:3001` in real-data/shared mode, unless it explicitly reports another bound port.
 - The renderer makes successful requests such as `/api/v1/projects` and `/api/v1/sessions`.
 - The native Electron window shows the checkout's UI. A Vite URL opened in a normal browser is not equivalent because it lacks the Electron preload bridge.
 
@@ -129,6 +131,7 @@ Once one PR merges, prefer rebasing the remaining PR onto current `main`; the no
 - Renderer URLs can move from `5173` when a port is occupied. Trust Forge's printed URL rather than assuming one.
 - Multiple dev instances share `~/.ao/dev/electron`; avoid running them concurrently because Chromium profile state can collide.
 - An inherited `AO_DATA_DIR` changes dev mode from isolated data to real data. Always choose and report the mode instead of inheriting it accidentally.
+- Dev no longer isolates by default: omitting `ISOLATE_DEV=true` makes `npm run dev` share the installed app's port (3001) and state dir (`~/.ao`) instead of the sandboxed `3002`/`~/.ao/dev` setup. Always set it explicitly for isolated or real-data mode; do not assume isolation from unset `AO_PORT`/`AO_RUN_FILE`/`AO_DATA_DIR` alone.
 - Repeated `/healthz/` 404 entries from external probes can be noisy; readiness is determined by Electron's daemon status and successful API traffic, not by log volume.
 
 ## Completion report

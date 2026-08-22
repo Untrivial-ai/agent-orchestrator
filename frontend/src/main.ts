@@ -72,6 +72,8 @@ import {
 import {
 	type DaemonProbe,
 	expectedDaemonPort,
+	ISOLATED_DEV_DAEMON_PORT,
+	isDevIsolationEnabled,
 	parseDaemonProbe,
 	resolveDaemonFromPort,
 	resolveDaemonFromRunFile,
@@ -147,8 +149,10 @@ if (disableGpu === "1" || disableGpu === "true" || disableGpu === "yes" || disab
 // Must run before app ready.
 // Dev runs get their own profile under the same ~/.ao root: the packaged app
 // keeps this directory open, and two Chromium instances sharing one profile
-// corrupt its LevelDB stores. Mirrors how dev already isolates running.json and
-// the daemon data dir into ~/.ao/dev.
+// corrupt its LevelDB stores. This split always applies, independent of
+// ISOLATE_DEV below — it protects the packaged app's live Chromium profile,
+// not the daemon's port/rundir/datadir, which now default to the shared
+// (non-isolated) values instead.
 app.setPath(
 	"userData",
 	app.isPackaged ? path.join(os.homedir(), ".ao", "electron") : path.join(os.homedir(), ".ao", "dev", "electron"),
@@ -204,12 +208,20 @@ let soundNotificationsEnabled = DEFAULT_UI_SETTINGS.soundNotificationsEnabled;
 
 const isDev = !app.isPackaged;
 
-// Dev mode uses a separate port and state subdirectory so it never collides with
-// a concurrently running installed-app daemon. The subdir also isolates supervise.sock
-// on Unix (backend derives it as dir(RunFilePath)/supervise.sock) and the named pipe
-// on Windows (supervisorPipeFromRunFile derives it from the same dir basename).
-const DEV_DAEMON_PORT = 3002;
-const DEV_STATE_SUBDIR = "dev"; // ~/.ao/dev/
+// Dev shares the installed app's port and state dir (3001, ~/.ao) by default,
+// so projects/sessions/settings from the installed app are visible in dev
+// too. Set ISOLATE_DEV=true (or "1"/"yes"/"on") to opt into a sandboxed dev
+// daemon instead: its own port and ~/.ao/dev state subdirectory that never
+// collides with a concurrently running installed-app daemon. The subdir also
+// isolates supervise.sock on Unix (backend derives it as
+// dir(RunFilePath)/supervise.sock) and the named pipe on Windows
+// (supervisorPipeFromRunFile derives it from the same dir basename).
+// ISOLATED_DEV_DAEMON_PORT and isDevIsolationEnabled live in
+// ./shared/daemon-attach so vite.renderer.config.ts's dev-server proxy
+// target is derived from the exact same source instead of hardcoding its
+// own value (#2845).
+const devIsolationEnabled = isDev && isDevIsolationEnabled(process.env);
+const DEV_STATE_SUBDIR = "dev"; // ~/.ao/dev/, used only when ISOLATE_DEV is set.
 
 // Traffic lights stay fixed across sidebar expand/collapse. Y matches the
 // natural macOS titlebar band (TitlebarNav is h-traffic-light-clearance).
@@ -589,7 +601,7 @@ const DAEMON_PROBE_TIMEOUT_MS = 2_000;
 
 function runFilePath(): string | null {
 	if (process.env.AO_RUN_FILE) return process.env.AO_RUN_FILE;
-	if (isDev) return path.join(os.homedir(), ".ao", DEV_STATE_SUBDIR, "running.json");
+	if (devIsolationEnabled) return path.join(os.homedir(), ".ao", DEV_STATE_SUBDIR, "running.json");
 	return defaultRunFilePath(process.platform, process.env, os.homedir());
 }
 
@@ -724,11 +736,14 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 				? path.join(process.resourcesPath, "acp-runtime")
 				: path.join(app.getAppPath(), "resources", "acp-runtime")),
 	};
-	// In dev mode, inject isolation defaults so the dev daemon never collides with
-	// the installed app. User-set env vars take priority (checked first).
+	// Under ISOLATE_DEV, inject isolation defaults so the dev daemon never
+	// collides with the installed app. Without it, dev intentionally spawns
+	// against the same port/rundir/datadir as the packaged app (no overrides
+	// added here), so it shares the installed app's state. User-set env vars
+	// take priority (checked first) either way.
 	const devExtras: Record<string, string> = {};
-	if (isDev) {
-		if (!process.env.AO_PORT) devExtras.AO_PORT = String(DEV_DAEMON_PORT);
+	if (devIsolationEnabled) {
+		if (!process.env.AO_PORT) devExtras.AO_PORT = String(ISOLATED_DEV_DAEMON_PORT);
 		if (!process.env.AO_RUN_FILE) devExtras.AO_RUN_FILE = runFilePath() ?? "";
 		if (!process.env.AO_DATA_DIR) devExtras.AO_DATA_DIR = path.join(os.homedir(), ".ao", DEV_STATE_SUBDIR, "data");
 	}
@@ -971,11 +986,12 @@ async function startDaemon(): Promise<DaemonStatus> {
 	return daemonStartPromise;
 }
 
-// The port this Electron instance expects the daemon to bind. In dev mode a
-// separate port isolates the dev daemon from the installed-app daemon.
-// AO_PORT always wins if set explicitly.
+// The port this Electron instance expects the daemon to bind. Under
+// ISOLATE_DEV a separate port isolates the dev daemon from the
+// installed-app daemon; otherwise dev expects the same default port as the
+// packaged app. AO_PORT always wins if set explicitly.
 function resolvedDaemonPort(): number {
-	return isDev && !process.env.AO_PORT ? DEV_DAEMON_PORT : expectedDaemonPort(process.env);
+	return devIsolationEnabled && !process.env.AO_PORT ? ISOLATED_DEV_DAEMON_PORT : expectedDaemonPort(process.env);
 }
 
 function daemonLaunchEnv(): NodeJS.ProcessEnv {

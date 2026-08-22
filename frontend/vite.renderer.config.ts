@@ -8,6 +8,7 @@ import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { DEFAULT_POSTHOG_HOST } from "./src/shared/posthog-config";
+import { DEFAULT_DAEMON_PORT, ISOLATED_DEV_DAEMON_PORT, isDevIsolationEnabled } from "./src/shared/daemon-attach";
 
 const POSTHOG_ORIGINS = (() => {
 	const configured = process.env.VITE_AO_POSTHOG_HOST?.trim() || DEFAULT_POSTHOG_HOST;
@@ -57,6 +58,18 @@ const CONTENT_SECURITY_POLICY = [
 	"base-uri 'self'",
 	"frame-src 'none'",
 ].join("; ");
+
+// The dev daemon's port, derived the same way main.ts derives it: the
+// installed app's default port (3001) unless ISOLATE_DEV opts into the
+// isolated dev-only port (3002). Both read isDevIsolationEnabled/
+// ISOLATED_DEV_DAEMON_PORT/DEFAULT_DAEMON_PORT from src/shared/daemon-attach
+// — a single source of truth — so this proxy target and the daemon's actual
+// bound port can't independently hardcode a value and drift apart (#2845).
+// AO_DEV_API_TARGET still overrides the whole target (host + port) for
+// pointing the proxy at a daemon running somewhere else entirely.
+const DEV_DAEMON_PROXY_TARGET =
+	process.env.AO_DEV_API_TARGET ??
+	`http://127.0.0.1:${isDevIsolationEnabled(process.env) ? ISOLATED_DEV_DAEMON_PORT : DEFAULT_DAEMON_PORT}`;
 
 const injectCspMeta: Plugin = {
 	name: "inject-csp-meta",
@@ -125,11 +138,11 @@ export default defineConfig({
 	server: {
 		proxy: {
 			"/api": {
-				target: process.env.AO_DEV_API_TARGET ?? "http://127.0.0.1:3001",
+				target: DEV_DAEMON_PROXY_TARGET,
 				changeOrigin: false,
 			},
 			"/mux": {
-				target: process.env.AO_DEV_API_TARGET ?? "http://127.0.0.1:3001",
+				target: DEV_DAEMON_PROXY_TARGET,
 				changeOrigin: false,
 				ws: true,
 			},

@@ -6,6 +6,8 @@ import {
 	type DaemonProbe,
 	type DaemonProber,
 	expectedDaemonPort,
+	ISOLATED_DEV_DAEMON_PORT,
+	isDevIsolationEnabled,
 	parseDaemonProbe,
 	resolveDaemonFromPort,
 	resolveDaemonFromRunFile,
@@ -44,6 +46,61 @@ describe("expectedDaemonPort", () => {
 		expect(expectedDaemonPort({ AO_PORT: "3001.5" })).toBe(3001);
 		expect(expectedDaemonPort({ AO_PORT: "not-a-number" })).toBe(3001);
 		expect(expectedDaemonPort({ AO_PORT: "-1" })).toBe(3001);
+	});
+});
+
+// #2845: dev used to default to an isolated port/rundir/datadir (ISOLATE_DEV
+// off by default in spirit, but there was no such flag — isolation was
+// unconditional in dev), which broke the Vite proxy's hardcoded
+// http://127.0.0.1:3001 target and silently forked app state into
+// ~/.ao/dev. isDevIsolationEnabled/ISOLATED_DEV_DAEMON_PORT are the single
+// source of truth main.ts and vite.renderer.config.ts both read, so a dev
+// daemon's actual port and the Vite proxy's target port can never
+// independently drift: they are always exactly one of DEFAULT_DAEMON_PORT
+// (3001, the default) or ISOLATED_DEV_DAEMON_PORT (3002, under ISOLATE_DEV).
+describe("isDevIsolationEnabled", () => {
+	it("is disabled by default so dev shares the installed app's port/state", () => {
+		expect(isDevIsolationEnabled({})).toBe(false);
+		expect(isDevIsolationEnabled({ ISOLATE_DEV: "" })).toBe(false);
+	});
+
+	it.each(["1", "true", "TRUE", "yes", "on", "ON", "Yes"])("is enabled for truthy value %j", (value) => {
+		expect(isDevIsolationEnabled({ ISOLATE_DEV: value })).toBe(true);
+	});
+
+	// Matches the allowlist convention used by AO_KEEP_DAEMON (daemon-owner.ts):
+	// conventional falsy values and unrecognized strings must NOT opt into
+	// isolation.
+	it.each(["0", "false", "FALSE", "off", "OFF", "no", "No"])("is disabled for conventional off value %j", (value) => {
+		expect(isDevIsolationEnabled({ ISOLATE_DEV: value })).toBe(false);
+	});
+
+	it.each(["2", "random", "yep", "disable"])("is disabled for unrecognized value %j (allowlist, not truthiness)", (value) => {
+		expect(isDevIsolationEnabled({ ISOLATE_DEV: value })).toBe(false);
+	});
+
+	it("trims surrounding whitespace before evaluating", () => {
+		expect(isDevIsolationEnabled({ ISOLATE_DEV: "  0  " })).toBe(false);
+		expect(isDevIsolationEnabled({ ISOLATE_DEV: "  1  " })).toBe(true);
+	});
+
+	it("keeps the isolated dev port distinct from the shared default port", () => {
+		expect(ISOLATED_DEV_DAEMON_PORT).toBe(3002);
+		expect(ISOLATED_DEV_DAEMON_PORT).not.toBe(DEFAULT_DAEMON_PORT);
+	});
+
+	// The structural fix: both main.ts (daemon spawn/expect) and
+	// vite.renderer.config.ts (dev-server proxy target) resolve their port by
+	// calling isDevIsolationEnabled and choosing between DEFAULT_DAEMON_PORT
+	// and ISOLATED_DEV_DAEMON_PORT from this module — never a locally
+	// hardcoded literal — so the two cannot independently drift apart.
+	it("resolves the same effective port from the same inputs, matching main.ts and vite.renderer.config.ts's derivation", () => {
+		const resolvePort = (env: Record<string, string | undefined>): number =>
+			isDevIsolationEnabled(env) ? ISOLATED_DEV_DAEMON_PORT : DEFAULT_DAEMON_PORT;
+
+		expect(resolvePort({})).toBe(3001);
+		expect(resolvePort({ ISOLATE_DEV: "true" })).toBe(3002);
+		expect(resolvePort({ ISOLATE_DEV: "false" })).toBe(3001);
 	});
 });
 

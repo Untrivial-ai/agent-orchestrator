@@ -25,6 +25,33 @@ export const DEFAULT_DAEMON_PORT = 3001;
 // The `service` field every genuine AO daemon stamps on its health payloads.
 export const DAEMON_SERVICE_NAME = "agent-orchestrator-daemon";
 
+// The dev daemon's port when ISOLATE_DEV is enabled (see isDevIsolationEnabled
+// below). Distinct from DEFAULT_DAEMON_PORT so a sandboxed dev daemon never
+// collides with a concurrently running installed-app daemon.
+export const ISOLATED_DEV_DAEMON_PORT = 3002;
+
+/**
+ * Whether dev (`app.isPackaged === false`) should run an isolated daemon —
+ * its own port and `~/.ao/dev` rundir/datadir — instead of sharing the
+ * installed app's port and state by default. Opt in with ISOLATE_DEV set to
+ * an explicit truthy value ("1", "true", "yes", "on"); any other value,
+ * including conventional falsy ones and unset, keeps the default: dev shares
+ * the installed app's port/state so projects/sessions/settings from the
+ * installed app are visible in dev too.
+ *
+ * This lives here, next to DEFAULT_DAEMON_PORT and ISOLATED_DEV_DAEMON_PORT,
+ * so it is the single source of truth for both the Electron main process
+ * (main.ts, which spawns/expects the daemon on this port) and the Vite dev
+ * server config (vite.renderer.config.ts, which proxies /api and /mux to the
+ * same port). Hardcoding the port independently in those two files is what
+ * let them silently drift apart (#2845); both reading this module instead
+ * makes that class of bug structurally impossible.
+ */
+export function isDevIsolationEnabled(env: Record<string, string | undefined>): boolean {
+	const raw = env.ISOLATE_DEV?.trim().toLowerCase();
+	return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 export type DaemonProbe = {
 	status: string;
 	service: string;
