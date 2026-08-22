@@ -302,8 +302,8 @@ vi.mock("./BrowserPanel", () => ({
 		retryQueued: vi.fn(),
 	}),
 }));
-vi.mock("./SessionFilesView", () => ({
-	SessionFilesView: ({
+vi.mock("./SessionFileExplorer", () => ({
+	SessionFileExplorer: ({
 		isMaximized,
 		onToggleMaximized,
 	}: {

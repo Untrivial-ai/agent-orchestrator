@@ -21,7 +21,7 @@ import { CenterPane } from "./CenterPane";
 import { SessionChatSurface } from "./chat/SessionChatSurface";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
-import { SessionFilesView } from "./SessionFilesView";
+import { SessionFileExplorer } from "./SessionFileExplorer";
 import { SessionInspector } from "./SessionInspector";
 import {
 	SessionInterfaceActionGroup,
@@ -906,7 +906,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							browserPoppedOut={browserPoppedOut}
 							filesView={
 								session ? (
-									<SessionFilesView onToggleMaximized={handleToggleFilesPopOut} sessionId={session.id} />
+									<SessionFileExplorer onToggleMaximized={handleToggleFilesPopOut} sessionId={session.id} />
 								) : null
 							}
 							isInspectorVisible={inspectorPanelVisible}
@@ -954,7 +954,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								shellTopbarHiddenByPlatform && !isNativeFullScreen && "files-popout-overlay--mac-windowed",
 							)}
 						>
-							<SessionFilesView
+							<SessionFileExplorer
 								isMaximized
 								onToggleMaximized={handleToggleFilesPopOut}
 								sessionId={session.id}

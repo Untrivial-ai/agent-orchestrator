@@ -44,6 +44,7 @@ type fakeSessionService struct {
 	workspaceFiles      sessionsvc.WorkspaceFiles
 	workspaceFile       sessionsvc.WorkspaceFileDetail
 	workspaceBlob       sessionsvc.WorkspaceFileBlob
+	workspaceTree       sessionsvc.WorkspaceTree
 	workspacePaths      []string
 	spawnErr            error
 	lastSpawn           ports.SpawnConfig
@@ -585,6 +586,19 @@ func (f *fakeSessionService) GetWorkspaceFileBlob(_ context.Context, id domain.S
 		return blob, nil
 	}
 	return sessionsvc.WorkspaceFileBlob{Path: path, Side: side, MediaType: "image/png"}, nil
+}
+
+func (f *fakeSessionService) ListWorkspaceTree(_ context.Context, id domain.SessionID, path string) (sessionsvc.WorkspaceTree, error) {
+	if f.workspaceErr != nil {
+		return sessionsvc.WorkspaceTree{}, f.workspaceErr
+	}
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceTree{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if f.workspaceTree.SessionID != "" {
+		return f.workspaceTree, nil
+	}
+	return sessionsvc.WorkspaceTree{SessionID: id, Path: path}, nil
 }
 
 func TestSessionsAPI_AgentSwitchLifecycle(t *testing.T) {

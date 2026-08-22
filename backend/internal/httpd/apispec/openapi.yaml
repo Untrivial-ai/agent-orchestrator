@@ -4851,6 +4851,54 @@ paths:
       summary: List files in a session workspace with git change status
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/workspace/tree:
+    get:
+      operationId: listSessionWorkspaceTree
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Directory path relative to the session workspace root. Empty
+          or omitted lists the root.
+        in: query
+        name: path
+        schema:
+          description: Directory path relative to the session workspace root. Empty
+            or omitted lists the root.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWorkspaceTreeResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List one directory level of a session workspace's full file tree, git-status
+        decorated
+      tags:
+      - sessions
   /api/v1/sessions/cleanup:
     post:
       operationId: cleanupSessions
@@ -7026,6 +7074,24 @@ components:
       - files
       - truncated
       type: object
+    ListWorkspaceTreeResponse:
+      properties:
+        entries:
+          items:
+            $ref: '#/components/schemas/WorkspaceTreeEntry'
+          type: array
+        path:
+          type: string
+        sessionId:
+          type: string
+        truncated:
+          type: boolean
+      required:
+      - sessionId
+      - path
+      - entries
+      - truncated
+      type: object
     MarkAllNotificationsReadRequest:
       properties:
         ids:
@@ -9173,6 +9239,37 @@ components:
       - name
       - relativePath
       - repo
+      type: object
+    WorkspaceTreeEntry:
+      properties:
+        binary:
+          type: boolean
+        hasChanges:
+          type: boolean
+        name:
+          type: string
+        path:
+          type: string
+        size:
+          format: int64
+          type: integer
+        status:
+          enum:
+          - unmodified
+          - modified
+          - added
+          - deleted
+          - renamed
+          type: string
+        type:
+          enum:
+          - file
+          - dir
+          type: string
+      required:
+      - name
+      - path
+      - type
       type: object
 tags:
 - description: Supported and locally runnable agent adapters

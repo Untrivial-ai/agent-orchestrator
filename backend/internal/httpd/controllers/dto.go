@@ -150,6 +150,36 @@ type WorkspaceFileBlobQuery struct {
 	V    string `query:"v,omitempty" description:"Cache-busting token. Ignored by the server; the response is never cached."`
 }
 
+// WorkspaceTreeQuery is the query string accepted by GET /api/v1/sessions/{sessionId}/workspace/tree.
+type WorkspaceTreeQuery struct {
+	Path string `query:"path,omitempty" description:"Directory path relative to the session workspace root. Empty or omitted lists the root."`
+}
+
+// ListWorkspaceTreeResponse is the body of GET /api/v1/sessions/{sessionId}/workspace/tree.
+// Unlike ListWorkspaceFilesResponse (every changed file, whole worktree), this
+// is one directory level of the full worktree — tracked and
+// untracked-but-not-ignored — for lazily expanding a file explorer.
+type ListWorkspaceTreeResponse struct {
+	SessionID domain.SessionID     `json:"sessionId"`
+	Path      string               `json:"path"`
+	Entries   []WorkspaceTreeEntry `json:"entries"`
+	Truncated bool                 `json:"truncated"`
+}
+
+// WorkspaceTreeEntry is one immediate child of a listed directory.
+type WorkspaceTreeEntry struct {
+	Name string                            `json:"name"`
+	Path string                            `json:"path"`
+	Type sessionsvc.WorkspaceTreeEntryType `json:"type" enum:"file,dir"`
+	// Status is set for files only; omitted for directories.
+	Status sessionsvc.WorkspaceFileStatus `json:"status,omitempty" enum:"unmodified,modified,added,deleted,renamed"`
+	// HasChanges is set for directories only: true when a descendant file is
+	// non-unmodified, so a collapsed folder can still show it contains changes.
+	HasChanges bool  `json:"hasChanges,omitempty"`
+	Size       int64 `json:"size,omitempty"`
+	Binary     bool  `json:"binary,omitempty"`
+}
+
 // SessionView is the session wire shape: the domain read model plus the
 // display-safe branch name and the session's attributed pull requests in the
 // curated SessionPRFacts shape. One session can own many PRs (e.g. a stack), so

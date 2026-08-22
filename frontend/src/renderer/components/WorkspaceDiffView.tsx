@@ -5,58 +5,34 @@ import {
 	useMemo,
 	useRef,
 	useState,
-	type KeyboardEvent,
 	type MouseEvent,
 	type ReactNode,
 	type RefObject,
 } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
+import { Check, Plus, Send as SendIcon } from "lucide-react";
+import type { FileAnnotationTarget } from "../../shared/file-annotations";
 import {
-	Check,
-	ChevronDown,
-	ChevronRight,
-	ChevronsDownUp,
-	ChevronsUpDown,
-	Columns2,
-	Maximize2,
-	Minimize2,
-	Plus,
-	Rows3,
-	Search,
-	Send as SendIcon,
-} from "lucide-react";
-import type { components } from "../../api/schema";
-import { formatFileAnnotationMessage, type FileAnnotationTarget } from "../../shared/file-annotations";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
-import {
-	isChangedWorkspaceFile,
-	sessionWorkspaceFilesQueryOptions,
 	type WorkspaceCompareMode,
+	type WorkspaceFileDetail,
 	type WorkspaceFileSummary,
 } from "../hooks/useSessionWorkspaceFiles";
 import { useParsedDiff } from "../hooks/useParsedDiff";
 import { cn } from "../lib/utils";
+import { statusLabel, statusTone } from "../lib/workspace-file-status";
 import type { DiffRow, DiffRowKind, DiffSegment } from "../lib/diff-parser";
 import type { DiffSelectionLine } from "../../shared/diff-selection";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./ui/accordion";
-import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { Button } from "./ui/button";
 import { DiffSelectionMenu } from "./DiffSelectionMenu";
 import { ImageDiffView } from "./ImageDiffView";
-import { Input } from "./ui/input";
 
-type WorkspaceFileDetail = components["schemas"]["WorkspaceFileResponse"] & {
-	previousPath?: string;
-	compareMode?: WorkspaceCompareMode;
-};
 type WorkspaceFileStatus = WorkspaceFileSummary["status"];
 
-type ActiveFileAnnotationTarget = FileAnnotationTarget & { rowIndex?: number };
-type FileAnnotationStatus = "idle" | "sending" | "sent" | "error";
-type FileAnnotationModel = {
+export type ActiveFileAnnotationTarget = FileAnnotationTarget & { rowIndex?: number };
+export type FileAnnotationStatus = "idle" | "sending" | "sent" | "error";
+export type FileAnnotationModel = {
 	target: ActiveFileAnnotationTarget | null;
 	draft: string;
 	status: FileAnnotationStatus;
@@ -67,485 +43,21 @@ type FileAnnotationModel = {
 	submit: () => Promise<void>;
 };
 
-type SessionFilesViewProps = {
-	sessionId: string;
-	isMaximized?: boolean;
-	onToggleMaximized?: (next: boolean) => void;
-};
-
-const emptyFiles: WorkspaceFileSummary[] = [];
-
-const statusLabel: Record<WorkspaceFileStatus, string> = {
-	added: "A",
-	deleted: "D",
-	modified: "M",
-	renamed: "R",
-	unmodified: "",
-};
-
-const statusTone: Record<WorkspaceFileStatus, string> = {
-	added: "text-success",
-	deleted: "text-error",
-	modified: "text-warning",
-	renamed: "text-accent",
-	unmodified: "text-passive",
-};
-
 // Split (old | new) view only means something when both sides have content to
 // compare. Added files have nothing on the old side; deleted files have
 // nothing on the new side — splitting them just wastes half the pane on an
 // empty column, so those always render unified regardless of the toggle.
-function canSplitCompare(status: WorkspaceFileStatus): boolean {
+export function canSplitCompare(status: WorkspaceFileStatus): boolean {
 	return status === "modified" || status === "renamed";
 }
 
-export function SessionFilesView({
-	sessionId,
-	isMaximized = false,
-	onToggleMaximized,
-}: SessionFilesViewProps) {
-	const { t } = useTranslation();
-	const queryClient = useQueryClient();
-	const [filter, setFilter] = useState("");
-	const [split, setSplit] = useState(false);
-	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
-	const [annotationTarget, setAnnotationTarget] = useState<ActiveFileAnnotationTarget | null>(null);
-	const [annotationDraft, setAnnotationDraft] = useState("");
-	const [annotationStatus, setAnnotationStatus] = useState<FileAnnotationStatus>("idle");
-	const [annotationError, setAnnotationError] = useState("");
-	const annotationGenerationRef = useRef(0);
-	const annotationSentTimerRef = useRef<number | null>(null);
-	const rootRef = useRef<HTMLElement>(null);
-
-	const filesQuery = useQuery(sessionWorkspaceFilesQueryOptions(sessionId, t("files.error.loadWorkspace")));
-	useEffect(() => subscribeWorkspaceFileChanges(sessionId, queryClient), [queryClient, sessionId]);
-	const files = filesQuery.data?.files ?? emptyFiles;
-	const changedFiles = useMemo(() => files.filter(isChangedWorkspaceFile), [files]);
-
-	useEffect(() => {
-		annotationGenerationRef.current += 1;
-		setExpandedPaths(new Set());
-		setFilter("");
-		setAnnotationTarget(null);
-		setAnnotationDraft("");
-		setAnnotationStatus("idle");
-		setAnnotationError("");
-	}, [sessionId]);
-
-	useEffect(
-		() => () => {
-			if (annotationSentTimerRef.current !== null) window.clearTimeout(annotationSentTimerRef.current);
-		},
-		[],
-	);
-
-	useEffect(() => {
-		const root = rootRef.current;
-		if (!root) return;
-		const routeDiffWheel = (event: WheelEvent) => {
-			if (event.ctrlKey || event.metaKey || event.shiftKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
-			const target = event.target;
-			if (!(target instanceof Element) || !target.closest(".session-files-diff-scrollbar")) return;
-			const scrollRoot = root.querySelector<HTMLElement>("[data-files-scroll-root]");
-			if (!scrollRoot) return;
-			const delta =
-				event.deltaMode === WheelEvent.DOM_DELTA_LINE
-					? event.deltaY * 16
-					: event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-						? event.deltaY * scrollRoot.clientHeight
-						: event.deltaY;
-			if (delta === 0) return;
-			event.preventDefault();
-			scrollRoot.scrollTop += delta;
-		};
-		root.addEventListener("wheel", routeDiffWheel, { capture: true, passive: false });
-		return () => root.removeEventListener("wheel", routeDiffWheel, { capture: true });
-	}, []);
-
-	const beginAnnotation = (target: ActiveFileAnnotationTarget) => {
-		annotationGenerationRef.current += 1;
-		if (annotationSentTimerRef.current !== null) window.clearTimeout(annotationSentTimerRef.current);
-		annotationSentTimerRef.current = null;
-		setAnnotationTarget(target);
-		setAnnotationDraft("");
-		setAnnotationStatus("idle");
-		setAnnotationError("");
-	};
-	const cancelAnnotation = () => {
-		annotationGenerationRef.current += 1;
-		setAnnotationTarget(null);
-		setAnnotationDraft("");
-		setAnnotationStatus("idle");
-		setAnnotationError("");
-	};
-	const submitAnnotation = async () => {
-		if (!annotationTarget || !annotationDraft.trim() || annotationStatus === "sending") return;
-		const sendGeneration = annotationGenerationRef.current;
-		const sendTarget = annotationTarget;
-		const sendFeedback = annotationDraft;
-		setAnnotationStatus("sending");
-		setAnnotationError("");
-		try {
-			const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
-				params: { path: { sessionId } },
-				body: { message: formatFileAnnotationMessage(sendTarget, sendFeedback) },
-			});
-			if (sendGeneration !== annotationGenerationRef.current) return;
-			if (error) throw new Error(apiErrorMessage(error, t("files.feedbackError")));
-			setAnnotationStatus("sent");
-			annotationSentTimerRef.current = window.setTimeout(() => {
-				annotationSentTimerRef.current = null;
-				cancelAnnotation();
-			}, 1_200);
-		} catch (error) {
-			if (sendGeneration !== annotationGenerationRef.current) return;
-			setAnnotationStatus("error");
-			setAnnotationError(apiErrorMessage(error, t("files.feedbackError")));
-		}
-	};
-	const annotation: FileAnnotationModel = {
-		target: annotationTarget,
-		draft: annotationDraft,
-		status: annotationStatus,
-		error: annotationError,
-		begin: beginAnnotation,
-		setDraft: setAnnotationDraft,
-		cancel: cancelAnnotation,
-		submit: submitAnnotation,
-	};
-
-	const normalizedFilter = filter.trim().toLowerCase();
-	const visibleFiles = useMemo(
-		() =>
-			normalizedFilter
-				? changedFiles.filter((file) => fileSearchText(file).includes(normalizedFilter))
-				: changedFiles,
-		[changedFiles, normalizedFilter],
-	);
-	const changedCount = changedFiles.length;
-	const expandedVisibleCount = visibleFiles.filter((file) => expandedPaths.has(file.path)).length;
-
-	const toggleVisibleFiles = () => {
-		setExpandedPaths((current) => {
-			const next = new Set(current);
-			if (expandedVisibleCount > 0) {
-				for (const file of visibleFiles) next.delete(file.path);
-				return next;
-			}
-			for (const file of visibleFiles) next.add(file.path);
-			return next;
-		});
-	};
-
-	// j / k move focus between file rows (Vim-style), unless the user is typing
-	// in the search box. The rows themselves handle Enter/Space to expand.
-	const onFilesKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-		if (event.key !== "j" && event.key !== "k") return;
-		const active = document.activeElement;
-		if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
-		const toggles = Array.from(rootRef.current?.querySelectorAll<HTMLButtonElement>("[data-file-toggle]") ?? []);
-		if (toggles.length === 0) return;
-		event.preventDefault();
-		const current = toggles.findIndex((button) => button === active);
-		if (current === -1) {
-			toggles[0].focus();
-			return;
-		}
-		const next = event.key === "j" ? Math.min(toggles.length - 1, current + 1) : Math.max(0, current - 1);
-		toggles[next].focus();
-	};
-
-	return (
-		<section
-			ref={rootRef}
-			onKeyDown={onFilesKeyDown}
-			className="flex h-full min-h-0 flex-col bg-background text-foreground"
-			aria-label={t("files.sessionFiles")}
-		>
-			<header className="flex h-10 shrink-0 items-center gap-0.5 border-b border-border bg-surface px-2">
-				<label className="relative mr-1 min-w-0 flex-1">
-					<Search className="pointer-events-none absolute left-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive" />
-					<Input
-						aria-label={t("files.search")}
-						className="h-8 pl-8 font-mono text-xs"
-						onChange={(event) => setFilter(event.target.value)}
-						placeholder={
-							filesQuery.isPending
-								? t("files.loading")
-								: t("files.searchCountPlaceholder", { count: changedCount })
-						}
-						value={filter}
-					/>
-				</label>
-				<Button
-					aria-label={expandedVisibleCount > 0 ? t("files.collapseAll") : t("files.expandAll")}
-					className="shrink-0"
-					disabled={visibleFiles.length === 0}
-					onClick={toggleVisibleFiles}
-					size="icon-sm"
-					type="button"
-					variant="ghost"
-				>
-					{expandedVisibleCount > 0 ? (
-						<ChevronsDownUp className="size-icon-sm" aria-hidden="true" />
-					) : (
-						<ChevronsUpDown className="size-icon-sm" aria-hidden="true" />
-					)}
-				</Button>
-				<Button
-					aria-label={split ? t("files.unifiedDiff") : t("files.splitDiff")}
-					aria-pressed={split}
-					className="shrink-0"
-					onClick={() => setSplit((current) => !current)}
-					size="icon-sm"
-					type="button"
-					variant="ghost"
-				>
-					{split ? (
-						<Columns2 className="size-icon-sm" aria-hidden="true" />
-					) : (
-						<Rows3 className="size-icon-sm" aria-hidden="true" />
-					)}
-				</Button>
-				{onToggleMaximized ? (
-					<Button
-						aria-label={isMaximized ? t("files.minimize") : t("files.maximize")}
-						className="shrink-0"
-						onClick={() => onToggleMaximized(!isMaximized)}
-						size="icon-sm"
-						type="button"
-						variant="ghost"
-					>
-						{isMaximized ? (
-							<Minimize2 className="size-icon-sm" aria-hidden="true" />
-						) : (
-							<Maximize2 className="size-icon-sm" aria-hidden="true" />
-						)}
-					</Button>
-				) : null}
-			</header>
-
-			<div
-				className="board-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-background"
-				data-files-scroll-root=""
-			>
-				<div className={cn("flex w-full flex-col px-0", !isMaximized && "mx-auto max-w-[1200px]")}>
-					<ReviewFileList
-						annotation={annotation}
-						compareMode={filesQuery.data?.compareMode}
-						error={filesQuery.error}
-						expandedPaths={expandedPaths}
-						files={visibleFiles}
-						isLoading={filesQuery.isPending}
-						onExpandedPathsChange={setExpandedPaths}
-						onRetry={() => void filesQuery.refetch()}
-						sessionId={sessionId}
-						split={split}
-						wrap={true}
-					/>
-				</div>
-			</div>
-		</section>
-	);
-}
-
-function ReviewFileList({
-	annotation,
-	compareMode,
-	error,
-	expandedPaths,
-	files,
-	isLoading,
-	onExpandedPathsChange,
-	onRetry,
-	sessionId,
-	split,
-	wrap,
-}: {
-	annotation: FileAnnotationModel;
-	compareMode?: WorkspaceCompareMode;
-	error: Error | null;
-	expandedPaths: Set<string>;
-	files: WorkspaceFileSummary[];
-	isLoading: boolean;
-	onExpandedPathsChange: (next: Set<string>) => void;
-	onRetry: () => void;
-	sessionId: string;
-	split: boolean;
-	wrap: boolean;
-}) {
-	const { t } = useTranslation();
-	if (isLoading) {
-		return <PanelMessage>{t("files.loading")}</PanelMessage>;
-	}
-	if (error) {
-		return (
-			<PanelMessage action={<RetryButton onClick={onRetry} />}>{error.message || t("files.error.load")}</PanelMessage>
-		);
-	}
-	if (files.length === 0) {
-		return <PanelMessage>{emptyFilesMessage(compareMode, t)}</PanelMessage>;
-	}
-	return (
-		<Accordion
-			asChild
-			onValueChange={(next: string[]) => onExpandedPathsChange(new Set(next))}
-			type="multiple"
-			value={Array.from(expandedPaths)}
-		>
-			<ul className="session-files-review-list flex flex-col gap-0.5">
-				{files.map((file) => (
-					<ReviewFileCard
-						annotation={annotation}
-						expanded={expandedPaths.has(file.path)}
-						file={file}
-						key={file.path}
-						sessionId={sessionId}
-						split={split}
-						wrap={wrap}
-					/>
-				))}
-			</ul>
-		</Accordion>
-	);
-}
-
-function ReviewFileCard({
-	annotation,
-	expanded,
-	file,
-	sessionId,
-	split,
-	wrap,
-}: {
-	annotation: FileAnnotationModel;
-	expanded: boolean;
-	file: WorkspaceFileSummary;
-	sessionId: string;
-	split: boolean;
-	wrap: boolean;
-}) {
-	const { t } = useTranslation();
-	// While the user has an active text selection (or the context menu it opens)
-	// in this file's diff, a background refetch would re-render the diff body
-	// out from under them and blow away the browser's native selection.
-	const [selectionOrMenuActive, setSelectionOrMenuActive] = useState(false);
-	const detailQuery = useQuery({
-		queryKey: ["session-workspace-file", sessionId, file.path],
-		enabled: expanded && !selectionOrMenuActive,
-		queryFn: () => loadWorkspaceFile(sessionId, file.path, t),
-	});
-
-	return (
-		<AccordionItem asChild value={file.path}>
-			<li className="session-files-review-row overflow-hidden bg-transparent">
-				<AccordionTrigger
-					aria-label={t(expanded ? "files.collapseFile" : "files.expandFile", { file: fileLabel(file) })}
-					className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left"
-					data-file-toggle=""
-					headerClassName="min-h-9 hover:bg-interactive-hover/50 data-[state=open]:bg-interactive-active/35"
-					trailing={
-						<FileFeedbackButton
-							active={annotation.target?.path === file.path && annotation.target.side === "file"}
-							file={file}
-							onClick={() => annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file" })}
-						/>
-					}
-				>
-					{expanded ? (
-						<ChevronDown className="size-icon-sm shrink-0 text-passive" aria-hidden="true" />
-					) : (
-						<ChevronRight className="size-icon-sm shrink-0 text-passive" aria-hidden="true" />
-					)}
-					<StatusMark status={file.status} />
-					<FilePathLabel file={file} />
-					<ChangeBadges additions={file.additions} deletions={file.deletions} />
-				</AccordionTrigger>
-				{annotation.target?.path === file.path && annotation.target.side === "file" ? (
-					<FileAnnotationComposer annotation={annotation} />
-				) : null}
-				<AccordionContent className="border-t border-border/60 bg-background/40">
-					{detailQuery.isPending ? <PanelMessage compact>{t("files.loadingDiff")}</PanelMessage> : null}
-					{!detailQuery.isPending && detailQuery.error ? (
-						<PanelMessage compact action={<RetryButton onClick={() => void detailQuery.refetch()} />}>
-							{detailQuery.error.message || t("files.error.loadFile")}
-						</PanelMessage>
-					) : null}
-					{!detailQuery.isPending && !detailQuery.error && detailQuery.data ? (
-						<ReviewDiffBody
-							annotation={annotation}
-							detail={detailQuery.data}
-							detailLoadedAt={detailQuery.dataUpdatedAt}
-							filePath={file.path}
-							onActiveSelectionChange={setSelectionOrMenuActive}
-							sessionId={sessionId}
-							split={split && canSplitCompare(file.status)}
-							wrap={wrap}
-						/>
-					) : null}
-				</AccordionContent>
-			</li>
-		</AccordionItem>
-	);
-}
-
-function FileFeedbackButton({ active, file, onClick }: { active: boolean; file: WorkspaceFileSummary; onClick: () => void }) {
-	const { t } = useTranslation();
-	if (active) return <span className="size-7 shrink-0" aria-hidden="true" />;
-	return (
-		<Button
-			aria-label={t("files.addFileFeedback", { file: file.path })}
-			className="size-7 shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/row:opacity-100"
-			onClick={onClick}
-			size={null}
-			type="button"
-			variant="ghost"
-		>
-			<Plus className="size-icon-sm" aria-hidden="true" />
-		</Button>
-	);
-}
-function FilePathLabel({ file }: { file: WorkspaceFileSummary }) {
-	if (!file.previousPath) {
-		return <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium text-foreground">{file.path}</span>;
-	}
-	return (
-		<span className="min-w-0 flex-1 truncate font-mono text-xs font-medium text-foreground">
-			<span className="text-passive line-through decoration-border">{file.previousPath}</span>
-			<span className="px-1 text-passive">-&gt;</span>
-			<span>{file.path}</span>
-		</span>
-	);
-}
-
-function fileLabel(file: WorkspaceFileSummary): string {
-	return file.previousPath ? `${file.previousPath} -> ${file.path}` : file.path;
-}
-
-function fileSearchText(file: WorkspaceFileSummary): string {
-	return fileLabel(file).toLowerCase();
-}
-
-function emptyFilesMessage(compareMode: WorkspaceCompareMode | undefined, t: TFunction): string {
-	if (compareMode === "head_fallback") return t("files.noChangesHead");
-	if (compareMode === "base") return t("files.noChangesBase");
-	return t("files.noneChanged");
-}
 
 function emptyDiffMessage(compareMode: WorkspaceCompareMode | undefined, t: TFunction): string {
 	return compareMode === "base" ? t("files.noChangesBase") : t("files.noChangesHead");
 }
 
-async function loadWorkspaceFile(sessionId: string, path: string, t: TFunction) {
-	const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/workspace/file", {
-		params: { path: { sessionId }, query: { path } },
-	});
-	if (error) throw new Error(apiErrorMessage(error, t("files.error.loadWorkspaceFile")));
-	if (!data) throw new Error(t("files.error.emptyResponse"));
-	return data;
-}
 
-function ReviewDiffBody({
+export function ReviewDiffBody({
 	annotation,
 	detail,
 	detailLoadedAt,
@@ -1270,7 +782,7 @@ function DiffLineSegments({ add, segments }: { add: boolean; segments: DiffSegme
 	);
 }
 
-function ChangeBadges({ additions, deletions }: { additions: number; deletions: number }) {
+export function ChangeBadges({ additions, deletions }: { additions: number; deletions: number }) {
 	return (
 		<span className="flex shrink-0 items-center gap-1 font-mono text-caption font-medium">
 			{additions > 0 ? <span className="px-0.5 text-success">+{additions}</span> : null}
@@ -1279,7 +791,7 @@ function ChangeBadges({ additions, deletions }: { additions: number; deletions: 
 	);
 }
 
-function PanelMessage({ action, children, compact = false }: { action?: ReactNode; children: ReactNode; compact?: boolean }) {
+export function PanelMessage({ action, children, compact = false }: { action?: ReactNode; children: ReactNode; compact?: boolean }) {
 	return (
 		<div
 			className={cn(
@@ -1295,7 +807,7 @@ function PanelMessage({ action, children, compact = false }: { action?: ReactNod
 	);
 }
 
-function RetryButton({ onClick }: { onClick: () => void }) {
+export function RetryButton({ onClick }: { onClick: () => void }) {
 	const { t } = useTranslation();
 	return (
 		<Button onClick={onClick} size="sm" type="button" variant="outline">
@@ -1304,7 +816,7 @@ function RetryButton({ onClick }: { onClick: () => void }) {
 	);
 }
 
-function StatusMark({ status }: { status: WorkspaceFileStatus }) {
+export function StatusMark({ status }: { status: WorkspaceFileStatus }) {
 	const { t } = useTranslation();
 	const label = statusLabel[status];
 	return (
