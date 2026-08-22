@@ -31,7 +31,7 @@ import {
 	sortedWorkerSessions,
 	workerSessions,
 } from "../types/workspace";
-import { getAgentActivityView } from "../lib/session-presentation";
+import { getAgentActivityView, getBoardStatusDotTone } from "../lib/session-presentation";
 import { deriveSessionAgentSwitchPresentation } from "../lib/agent-switch-presentation";
 import { aoBridge } from "../lib/bridge";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
@@ -155,15 +155,17 @@ function useSelection() {
 	};
 }
 
-// Agent activity is the shared source for both color and motion. PR and CI
-// state is presented on cards and board lanes instead of repainting this dot.
+// The sidebar mirrors the Kanban lane color for session status. Raw agent
+// activity remains the motion source; its class also provides a fallback
+// background while the status color variable resolves.
 function SessionStatusDot({ session }: { session: WorkspaceSession }) {
 	const activity = getAgentActivityView(session.activity);
 	return (
 		<span
 			aria-hidden="true"
 			className={cn("size-2 shrink-0 rounded-full", activity.indicatorClassName)}
-			data-session-status=""
+			data-session-status={session.status}
+			style={{ background: getBoardStatusDotTone(session.status) }}
 		/>
 	);
 }

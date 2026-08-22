@@ -3,6 +3,7 @@ import {
 	attentionZone,
 	getAgentActivityView,
 	getAttentionZoneView,
+	getBoardStatusDotTone,
 	getSessionStatusView,
 	getSessionTimelinePillView,
 	isAgentActivityWorking,
@@ -106,6 +107,18 @@ describe("session presentation", () => {
 	] as const)("maps %s to the %s attention zone", (status, zone, label) => {
 		expect(attentionZone(sessionWith({ status }))).toBe(zone);
 		expect(getAttentionZoneView(status)).toMatchObject({ zone, label });
+	});
+
+	it.each([
+		["idle", "var(--color-status-idle)"],
+		["working", "var(--color-status-working)"],
+		["changes_requested", "var(--color-status-needs-you)"],
+		["pr_open", "var(--color-status-in-review)"],
+		["mergeable", "var(--color-status-ready)"],
+		["merged", "var(--color-status-merged)"],
+		["terminated", "var(--color-status-terminated)"],
+	] as const)("matches the Kanban dot tone for %s", (status, tone) => {
+		expect(getBoardStatusDotTone(status)).toBe(tone);
 	});
 
 	it("keeps activity indicator color independent from PR and CI presentation", () => {

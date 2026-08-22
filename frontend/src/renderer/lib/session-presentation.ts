@@ -53,6 +53,15 @@ export function getAttentionZoneViewForZone(
 	return getPortableAttentionZoneViewForZone(zone, translator(t));
 }
 
+// The board has two split-lane tones that are more specific than their parent
+// attention zones: idle is gray inside Working, and merged has its own green
+// inside Ready to merge. Every other status uses its attention-zone dot tone.
+export function getBoardStatusDotTone(status: SessionStatus): string {
+	if (status === "idle") return "var(--color-status-idle)";
+	if (status === "merged") return "var(--color-status-merged)";
+	return getAttentionZoneView(status).dot;
+}
+
 export function getSessionTimelinePillView(
 	status: SessionTimelinePillStatus,
 	t: TFunction = appI18n.t,
