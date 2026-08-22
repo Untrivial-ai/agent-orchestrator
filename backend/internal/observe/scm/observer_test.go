@@ -789,6 +789,101 @@ func TestMatchSession_PrefersExactBranchOverNamespaceMatch(t *testing.T) {
 	}
 }
 
+// A merge-terminated session (TerminateOnPRMerge) must stay eligible for
+// branch-prefix discovery so a follow-up PR the worker pushed around the
+// merge/termination instant is still attributed and enriched instead of
+// vanishing from the board (#2879).
+func TestPoll_AttributesPostTerminationPRForMergeTerminatedSession(t *testing.T) {
+	store := testStoreWithSession()
+	store.sessions[0].Metadata.Branch = "ao/p-1/root"
+	store.sessions[0].IsTerminated = true
+	store.sessions[0].TerminateOnPRMerge = true
+	prObs := testObs(1)
+	prObs.PR.SourceBranch = "ao/p-1/fix"
+	prObs.PR.TargetBranch = "main"
+	provider := &fakeProvider{
+		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
+		openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {
+			{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "ao/p-1/fix", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1"},
+		}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): prObs},
+	}
+	lc := &fakeLifecycle{}
+	obs := newTestObserver(store, provider, lc, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("expected post-termination PR write")
+	}
+	if got := store.writes[0].pr.SessionID; got != "p-1" {
+		t.Fatalf("attributed session id = %q, want p-1", got)
+	}
+	if got := store.writes[0].pr.SourceBranch; got != "ao/p-1/fix" {
+		t.Fatalf("source branch = %q, want ao/p-1/fix", got)
+	}
+	fetched := map[int]bool{}
+	for _, batch := range provider.fetchBatches {
+		for _, ref := range batch {
+			fetched[ref.Number] = true
+		}
+	}
+	if !fetched[1] {
+		t.Fatalf("post-termination PR was not refreshed, fetched %#v", fetched)
+	}
+	if len(lc.observed) != 1 {
+		t.Fatalf("lifecycle observations = %d, want 1", len(lc.observed))
+	}
+}
+
+// A session terminated deliberately (not via TerminateOnPRMerge) keeps the
+// pre-existing cutoff: its namespace is not scanned, so no PR row is created.
+func TestPoll_DoesNotAttributePostTerminationPRForManualTermination(t *testing.T) {
+	store := testStoreWithSession()
+	store.sessions[0].Metadata.Branch = "ao/p-1/root"
+	store.sessions[0].IsTerminated = true
+	provider := &fakeProvider{
+		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
+		openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {
+			{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "ao/p-1/fix", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1"},
+		}},
+	}
+	lc := &fakeLifecycle{}
+	obs := newTestObserver(store, provider, lc, time.Unix(1, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) != 0 {
+		t.Fatalf("expected no PR writes for manually terminated session, got %#v", store.writes)
+	}
+	if len(lc.observed) != 0 {
+		t.Fatalf("expected no lifecycle observations for manually terminated session, got %d", len(lc.observed))
+	}
+}
+
+// A merge-terminated session does not yield refresh subjects for its
+// already-tracked PRs, only late-PR discovery. An open PR it already owned
+// before termination is not re-fetched.
+func TestDiscoverSubjects_MergeTerminatedSessionSkipsTrackedPRSubjects(t *testing.T) {
+	store := testStoreWithSession()
+	store.sessions[0].Metadata.Branch = "ao/p-1/root"
+	store.sessions[0].IsTerminated = true
+	store.sessions[0].TerminateOnPRMerge = true
+	store.prs["p-1"] = []domain.PullRequest{{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "ao/p-1/fix", SessionID: "p-1"}}
+	provider := &fakeProvider{}
+	obs := newTestObserver(store, provider, &fakeLifecycle{}, time.Unix(1, 0).UTC())
+	subjects, sessionRepos, err := obs.discoverSubjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subjects) != 0 {
+		t.Fatalf("merge-terminated session must not yield refresh subjects, got %d", len(subjects))
+	}
+	if len(sessionRepos) == 0 {
+		t.Fatal("merge-terminated session must stay eligible for late-PR discovery")
+	}
+}
+
 func TestPoll_DiscoversWorkspaceChildRepoPR(t *testing.T) {
 	store := testStoreWithSession()
 	store.sessions[0].Metadata.Branch = "ao/p-1/root"

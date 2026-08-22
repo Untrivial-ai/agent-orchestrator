@@ -723,6 +723,15 @@ func (o *Observer) checkCredentials(ctx context.Context) (bool, error) {
 // session may own several PRs, so each open tracked PR becomes its own subject.
 // Terminal PRs stay eligible only for an opted-in live session, allowing an
 // unacknowledged teardown failure to be delivered again on a later poll.
+//
+// Merge-terminated sessions (TerminateOnPRMerge) are an exception to the
+// termination cutoff: they stay eligible for branch-prefix discovery of new
+// PRs (#2879). When a session's first PR merges, lifecycle can mark it
+// terminated (and tear down its worker) before a follow-up PR the worker had
+// already pushed is observed. If the session's namespace stops being scanned
+// at that instant, that follow-up PR is never attributed, enriched, or
+// surfaced. Keeping only the branch prefix alive lets the observer claim such
+// a late PR; its already-tracked PRs are not refreshed (see below).
 func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, []sessionRepo, error) {
 	sessions, err := o.store.ListAllSessions(ctx)
 	if err != nil {
@@ -734,7 +743,7 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 	out := map[string]*subject{}
 	var sessionRepos []sessionRepo
 	for _, sess := range sessions {
-		if sess.IsTerminated {
+		if sess.IsTerminated && !sess.TerminateOnPRMerge {
 			continue
 		}
 		branch := strings.TrimSpace(sess.Metadata.Branch)
@@ -782,6 +791,12 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		}
 		if len(repos) == 0 {
 			o.logger.Debug("scm observer: project has no supported SCM origins", "project", proj.ID)
+			continue
+		}
+		// A terminated session contributes its branch namespace for late-PR
+		// attribution only (#2879); its already-tracked PRs are not refreshed
+		// here, so a dead session never keeps the poll hot.
+		if sess.IsTerminated {
 			continue
 		}
 		prs, err := o.store.ListPRsBySession(ctx, sess.ID)
@@ -1098,6 +1113,9 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 			sr, ok := matchSession(eligible, pr.SourceBranch)
 			if !ok {
 				continue
+			}
+			if sr.session.IsTerminated {
+				o.logger.Info("scm observer: attributed post-termination PR to session", "session", sr.session.ID, "pr", firstNonEmpty(pr.URL, pr.HTMLURL), "branch", pr.SourceBranch)
 			}
 			known := domain.PullRequest{
 				URL:          firstNonEmpty(pr.URL, pr.HTMLURL),
