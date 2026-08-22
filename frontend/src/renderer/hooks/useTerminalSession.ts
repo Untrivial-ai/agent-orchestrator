@@ -139,6 +139,17 @@ const REPLAY_WRITE_BATCH_BYTES = 256 * 1024;
 // copyOut, so the first byte is imminent but not instant, and a value near
 // QUIET_MS would uncover panes that were about to draw.
 const REPLAY_FIRST_BYTE_MS = 250;
+// Steady-state batching: coalesce bytes that arrive within the same
+// animation frame into a single term.write() call. Mirrors the initial-
+// replay buffering above, but bounded to one frame instead of a quiet
+// window — an actively streaming pane must not wait for a lull. Without
+// this, a PTY output burst (several WS frames landing in separate browser
+// tasks) triggers a separate term.write() + xterm repaint per frame, and
+// the browser can paint BETWEEN those writes — the same frame-boundary
+// tearing the replay gate exists to avoid, but during live activity
+// instead of only at attach. Bounded so a never-idle stream still flushes
+// regularly instead of growing the buffer without limit.
+const STEADY_WRITE_MAX_BYTES = 256 * 1024;
 
 function defaultCreateMux(): TerminalMux {
 	// Resolved per connect, not per hook: a daemon restart can change the port.
@@ -196,6 +207,12 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// The current attachment's flush, published so teardown can land buffered
 		// bytes instead of discarding them (the closure lives inside connect).
 		flushReplay: null as ((preserveBeforeTeardown?: boolean) => void) | null,
+		// Steady-state write coalescing (see STEADY_WRITE_MAX_BYTES). Runs for
+		// the whole life of an attachment, not just the initial replay burst.
+		steadyWriteChunks: [] as Uint8Array[],
+		steadyWriteBytes: 0,
+		steadyWriteRaf: null as number | null,
+		flushSteadyWrite: null as (() => void) | null,
 	});
 
 	const transition = useCallback((next: TerminalSessionState) => {
@@ -242,6 +259,14 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// closed or already superseded.
 		r.flushReplay?.(true);
 		r.flushReplay = null;
+		r.flushSteadyWrite?.();
+		r.flushSteadyWrite = null;
+		if (r.steadyWriteRaf !== null) {
+			cancelAnimationFrame(r.steadyWriteRaf);
+			r.steadyWriteRaf = null;
+		}
+		r.steadyWriteChunks = [];
+		r.steadyWriteBytes = 0;
 		clearReplayTimers();
 		r.replayBuffering = false;
 		r.replayChunks = [];
@@ -323,6 +348,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// Flush the outgoing attachment BEFORE bumping the generation: past that
 		// point its own guard rejects the flush and its buffered bytes are lost.
 		r.flushReplay?.(true);
+		r.flushSteadyWrite?.();
 		const generation = r.generation + 1;
 		r.generation = generation;
 		r.inputReady = false;
@@ -515,6 +541,32 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		};
 		r.flushReplay = (preserveBeforeTeardown = false) =>
 			flushReplay(false, preserveBeforeTeardown);
+		// See STEADY_WRITE_MAX_BYTES. mux.onData feeds this instead of writing
+		// directly once the replay gate is no longer buffering.
+		const flushSteadyWrite = () => {
+			if (r.steadyWriteRaf !== null) {
+				cancelAnimationFrame(r.steadyWriteRaf);
+				r.steadyWriteRaf = null;
+			}
+			const chunks = r.steadyWriteChunks;
+			if (chunks.length === 0) return;
+			r.steadyWriteChunks = [];
+			r.steadyWriteBytes = 0;
+			if (chunks.length === 1) {
+				terminal.write(chunks[0]);
+				return;
+			}
+			let total = 0;
+			for (const chunk of chunks) total += chunk.length;
+			const merged = new Uint8Array(total);
+			let offset = 0;
+			for (const chunk of chunks) {
+				merged.set(chunk, offset);
+				offset += chunk.length;
+			}
+			terminal.write(merged);
+		};
+		r.flushSteadyWrite = flushSteadyWrite;
 
 		r.disposers.push(
 			mux.onData(handle, (bytes) => {
@@ -546,7 +598,15 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 					drainPostReplayWrites();
 					return;
 				}
-				terminal.write(bytes);
+				r.steadyWriteChunks.push(bytes);
+				r.steadyWriteBytes += bytes.length;
+				if (r.steadyWriteBytes >= STEADY_WRITE_MAX_BYTES) {
+					flushSteadyWrite();
+					return;
+				}
+				if (r.steadyWriteRaf === null) {
+					r.steadyWriteRaf = requestAnimationFrame(flushSteadyWrite);
+				}
 			}),
 			mux.onOpened(handle, () => {
 				if (!isCurrentAttachment(generation, handle, mux)) return;
@@ -582,6 +642,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				// Land whatever was buffered before the notice, and lift the cover:
 				// a pane that exits mid-replay must never be left behind it.
 				flushReplay(false, true);
+				flushSteadyWrite();
 				terminal.writeln("\r\n\x1b[2m[process exited]\x1b[0m");
 				transition("exited");
 				// Preserve xterm scrollback, but release the attachment: an exited
@@ -594,6 +655,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				clearOpenTimer(generation);
 				r.inputReady = false;
 				flushReplay(false, true);
+				flushSteadyWrite();
 				terminal.writeln(`\r\n\x1b[2m[terminal error] ${message}\x1b[0m`);
 				setError(message);
 				transition("error");
@@ -614,7 +676,8 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 					// so without this the pane is stranded behind the cover with no
 					// timer left to lift it (and stays there for a whole reconnect
 					// storm). The cap cannot cover this: it is armed from `opened`.
-					flushReplay(false, true);
+				flushReplay(false, true);
+				flushSteadyWrite();
 					clearOpenTimer(generation);
 					r.inputReady = false;
 					scheduleReattach();
