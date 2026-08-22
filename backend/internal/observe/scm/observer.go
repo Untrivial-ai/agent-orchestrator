@@ -27,6 +27,10 @@ import (
 const (
 	// DefaultTickInterval is the SCM observer's PR/CI polling cadence.
 	DefaultTickInterval = 30 * time.Second
+	// DefaultNudgeDebounce coalesces turn-end signals before an out-of-band
+	// poll. This keeps discovery responsive without issuing one provider scan
+	// per agent hook when several sessions finish together.
+	DefaultNudgeDebounce = 2 * time.Second
 	// DefaultReviewInterval is the minimum interval between review-thread polls
 	// for a PR whose review state warrants thread refresh.
 	DefaultReviewInterval = 2 * time.Minute
@@ -158,6 +162,9 @@ func defaultRateLimitCooldown(now time.Time) time.Duration {
 type Config struct {
 	// Tick is the fast PR/CI polling interval. Zero uses DefaultTickInterval.
 	Tick time.Duration
+	// NudgeDebounce is the coalescing window for out-of-band polls. Zero uses
+	// DefaultNudgeDebounce.
+	NudgeDebounce time.Duration
 	// ReviewInterval is the slower review-thread refresh interval.
 	ReviewInterval time.Duration
 	// Clock supplies timestamps for observations and tests. Nil uses time.Now.
@@ -234,6 +241,11 @@ type Observer struct {
 	lifecycle Lifecycle
 	// tick is the active PR/CI polling cadence.
 	tick time.Duration
+	// nudgeDebounce is the coalescing window for out-of-band polls.
+	nudgeDebounce time.Duration
+	// nudges is a level-triggered, non-blocking wake signal. Its single slot
+	// coalesces concurrent callers before the poll loop observes them.
+	nudges chan struct{}
 	// reviewInterval is the minimum duration between review-thread fetches per PR.
 	reviewInterval time.Duration
 	// clock supplies observation timestamps.
@@ -260,9 +272,12 @@ type Observer struct {
 // New constructs an Observer with default cadence/cache settings for zero
 // values in cfg.
 func New(provider Provider, store Store, lifecycle Lifecycle, cfg Config) *Observer {
-	o := &Observer{provider: provider, store: store, lifecycle: lifecycle, tick: cfg.Tick, reviewInterval: cfg.ReviewInterval, clock: cfg.Clock, logger: cfg.Logger, identityResolver: cfg.IdentityResolver, scopedIdentityResolver: cfg.ScopedIdentityResolver, Cache: newCache(cfg.CacheMax), rateLimitUntil: map[string]time.Time{}}
+	o := &Observer{provider: provider, store: store, lifecycle: lifecycle, tick: cfg.Tick, nudgeDebounce: cfg.NudgeDebounce, nudges: make(chan struct{}, 1), reviewInterval: cfg.ReviewInterval, clock: cfg.Clock, logger: cfg.Logger, identityResolver: cfg.IdentityResolver, scopedIdentityResolver: cfg.ScopedIdentityResolver, Cache: newCache(cfg.CacheMax), rateLimitUntil: map[string]time.Time{}}
 	if o.tick <= 0 {
 		o.tick = DefaultTickInterval
+	}
+	if o.nudgeDebounce <= 0 {
+		o.nudgeDebounce = DefaultNudgeDebounce
 	}
 	if o.reviewInterval <= 0 {
 		o.reviewInterval = DefaultReviewInterval
@@ -274,6 +289,15 @@ func New(provider Provider, store Store, lifecycle Lifecycle, cfg Config) *Obser
 		o.logger = slog.Default()
 	}
 	return o
+}
+
+// Nudge requests one debounced out-of-band poll. It is safe for concurrent
+// callers and never blocks the lifecycle hook delivering the signal.
+func (o *Observer) Nudge() {
+	select {
+	case o.nudges <- struct{}{}:
+	default:
+	}
 }
 
 // Start launches the observer loop. The first Poll runs immediately inside the
@@ -296,7 +320,65 @@ func (o *Observer) Start(ctx context.Context) <-chan struct{} {
 		})
 		return o.Poll(ctx)
 	}
-	return observe.StartPollLoop(ctx, o.tick, poll, o.logger, "scm observer")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runPoll := func(label string) {
+			if err := poll(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				o.logger.Error("scm observer: "+label+" poll failed", "err", err)
+			}
+		}
+		runPoll("initial")
+
+		ticker := time.NewTicker(o.tick)
+		defer ticker.Stop()
+		var (
+			nudgeTimer *time.Timer
+			nudgeC     <-chan time.Time
+		)
+		defer func() {
+			if nudgeTimer != nil {
+				nudgeTimer.Stop()
+			}
+		}()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// A scheduled poll satisfies any pending wake request. Cancel the
+				// debounce timer so a nudge just before the tick cannot cause two
+				// provider scans a few seconds apart.
+				if nudgeTimer != nil {
+					nudgeTimer.Stop()
+					nudgeTimer = nil
+					nudgeC = nil
+					select {
+					case <-o.nudges:
+					default:
+					}
+				}
+				runPoll("scheduled")
+			case <-o.nudges:
+				if nudgeTimer == nil {
+					nudgeTimer = time.NewTimer(o.nudgeDebounce)
+					nudgeC = nudgeTimer.C
+				}
+			case <-nudgeC:
+				nudgeTimer = nil
+				nudgeC = nil
+				// A concurrent caller may have filled the one-slot channel after
+				// the loop armed the timer. It belongs to this same debounce
+				// window, so consume it before polling.
+				select {
+				case <-o.nudges:
+				default:
+				}
+				runPoll("nudged")
+			}
+		}
+	}()
+	return done
 }
 
 type subject struct {

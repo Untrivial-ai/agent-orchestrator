@@ -332,6 +332,12 @@ type fakeCompletionTerminator struct {
 	err   error
 }
 
+type fakeSCMNudger struct {
+	calls int
+}
+
+func (f *fakeSCMNudger) Nudge() { f.calls++ }
+
 func (f *fakeCompletionTerminator) Kill(_ context.Context, _ domain.SessionID) (bool, error) {
 	f.calls++
 	return true, f.err
@@ -910,6 +916,41 @@ func TestActivity_MissingSessionReturnsNotFound(t *testing.T) {
 	err := m.ApplyActivitySignal(ctx, "missing-1", ports.ActivitySignal{Valid: true, State: domain.ActivityWaitingInput})
 	if !errors.Is(err, ports.ErrSessionNotFound) {
 		t.Fatalf("err = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestActivity_StopSignalNudgesSCMObserver(t *testing.T) {
+	m, st, _ := newManager()
+	nudger := &fakeSCMNudger{}
+	m.SetSCMNudger(nudger)
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-2"
+	st.sessions[rec.ID] = rec
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop", LaunchID: "launch-2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Repeated stop hooks are still useful signals even when activity is
+	// already idle; the observer owns coalescing them.
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop", LaunchID: "launch-2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, Event: "post-tool-use", LaunchID: "launch-2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop", LaunchID: "stale-launch",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if nudger.calls != 2 {
+		t.Fatalf("SCM nudge calls = %d, want 2 accepted stop signals only", nudger.calls)
 	}
 }
 

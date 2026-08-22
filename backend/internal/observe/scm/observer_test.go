@@ -41,6 +41,10 @@ type fakeStore struct {
 
 	listEntered chan struct{}
 	listRelease chan struct{}
+	pollDelay   time.Duration
+	listCalls   int
+	pollActive  int
+	maxActive   int
 }
 
 type fakeWrite struct {
@@ -53,6 +57,19 @@ type fakeWrite struct {
 }
 
 func (s *fakeStore) ListAllSessions(ctx context.Context) ([]domain.SessionRecord, error) {
+	s.mu.Lock()
+	s.listCalls++
+	s.pollActive++
+	if s.pollActive > s.maxActive {
+		s.maxActive = s.pollActive
+	}
+	delay := s.pollDelay
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.pollActive--
+		s.mu.Unlock()
+	}()
 	if s.listEntered != nil {
 		select {
 		case <-s.listEntered:
@@ -67,9 +84,43 @@ func (s *fakeStore) ListAllSessions(ctx context.Context) ([]domain.SessionRecord
 		case <-s.listRelease:
 		}
 	}
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]domain.SessionRecord(nil), s.sessions...), nil
+}
+
+func (s *fakeStore) pollStats() (calls, maxActive int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listCalls, s.maxActive
+}
+
+func (s *fakeStore) latestWrite() (fakeWrite, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.writes) == 0 {
+		return fakeWrite{}, false
+	}
+	return s.writes[len(s.writes)-1], true
+}
+
+func (s *fakeStore) trackPRAndClearWrites(sessionID domain.SessionID, pr domain.PullRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.prs == nil {
+		s.prs = map[domain.SessionID][]domain.PullRequest{}
+	}
+	s.prs[sessionID] = []domain.PullRequest{pr}
+	s.writes = nil
 }
 
 func (s *fakeStore) GetProject(_ context.Context, id string) (domain.ProjectRecord, bool, error) {
@@ -275,6 +326,151 @@ func (l *fakeLifecycle) ApplySCMObservation(_ context.Context, _ domain.SessionI
 func newTestObserver(store *fakeStore, provider *fakeProvider, lc Lifecycle, now time.Time) *Observer {
 	cfg := Config{Clock: func() time.Time { return now }, Tick: time.Hour, Logger: quietSlog(), CacheMax: 128, IdentityResolver: provider}
 	return New(provider, store, lc, cfg)
+}
+
+func waitForPollCalls(t *testing.T, store *fakeStore, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if calls, _ := store.pollStats(); calls >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	calls, _ := store.pollStats()
+	t.Fatalf("poll calls = %d, want at least %d", calls, want)
+}
+
+func waitForWrite(t *testing.T, store *fakeStore, matches func(fakeWrite) bool) fakeWrite {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if write, ok := store.latestWrite(); ok && matches(write) {
+			return write
+		}
+		time.Sleep(time.Millisecond)
+	}
+	write, _ := store.latestWrite()
+	t.Fatalf("timed out waiting for matching SCM write; latest = %#v", write)
+	return fakeWrite{}
+}
+
+func TestObserverNudgeCoalescesConcurrentCalls(t *testing.T) {
+	store := &fakeStore{}
+	provider := &fakeProvider{}
+	observer := New(provider, store, &fakeLifecycle{}, Config{
+		Tick:          time.Hour,
+		NudgeDebounce: 25 * time.Millisecond,
+		Logger:        quietSlog(),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := observer.Start(ctx)
+	waitForPollCalls(t, store, 1)
+
+	var callers sync.WaitGroup
+	for range 32 {
+		callers.Add(1)
+		go func() {
+			defer callers.Done()
+			observer.Nudge()
+		}()
+	}
+	callers.Wait()
+	waitForPollCalls(t, store, 2)
+	time.Sleep(2 * observer.nudgeDebounce)
+	if calls, _ := store.pollStats(); calls != 2 {
+		t.Fatalf("poll calls after concurrent nudges = %d, want initial + one nudged poll", calls)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("observer did not stop")
+	}
+}
+
+func TestObserverNudgeDoesNotRacePollAndTickerContinues(t *testing.T) {
+	store := &fakeStore{pollDelay: 20 * time.Millisecond}
+	provider := &fakeProvider{}
+	observer := New(provider, store, &fakeLifecycle{}, Config{
+		Tick:          70 * time.Millisecond,
+		NudgeDebounce: 5 * time.Millisecond,
+		Logger:        quietSlog(),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := observer.Start(ctx)
+	waitForPollCalls(t, store, 1)
+
+	for range 16 {
+		observer.Nudge()
+	}
+	waitForPollCalls(t, store, 2)
+	// The regular ticker is not reset by the out-of-band poll.
+	waitForPollCalls(t, store, 3)
+	if _, maxActive := store.pollStats(); maxActive != 1 {
+		t.Fatalf("maximum concurrent polls = %d, want 1", maxActive)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("observer did not stop")
+	}
+}
+
+func TestObserverNudgeRefreshesDraftPRBecomingReady(t *testing.T) {
+	store := testStoreWithSession()
+	draft := testObs(1)
+	draft.PR.Draft = true
+	draft.PR.State = "draft"
+	draft.PR.HeadRepo = "o/r"
+	provider := &fakeProvider{
+		repoGuards:   map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "draft-v1"}},
+		openPRs:      map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {draft.PR}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): draft},
+	}
+	observer := New(provider, store, &fakeLifecycle{}, Config{
+		Tick:          time.Hour,
+		NudgeDebounce: 5 * time.Millisecond,
+		Logger:        quietSlog(),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := observer.Start(ctx)
+
+	// Establish the draft baseline from the observer's immediate startup poll.
+	draftWrite := waitForWrite(t, store, func(write fakeWrite) bool {
+		return write.pr.Draft && write.pr.MetadataHash == metadataSemanticHash(draft)
+	})
+	store.trackPRAndClearWrites("p-1", draftWrite.pr)
+
+	ready := draft
+	ready.PR.Draft = false
+	ready.PR.State = "open"
+	provider.mu.Lock()
+	provider.repoGuards[prKey(testRepo, 0)] = ports.SCMGuardResult{ETag: "ready-v2"}
+	provider.openPRs[prKey(testRepo, 0)] = []ports.SCMPRObservation{ready.PR}
+	provider.observations[prKey(testRepo, 1)] = ready
+	provider.mu.Unlock()
+
+	observer.Nudge()
+	readyWrite := waitForWrite(t, store, func(write fakeWrite) bool {
+		return !write.pr.Draft && write.pr.MetadataHash == metadataSemanticHash(ready)
+	})
+	if readyWrite.pr.Draft || readyWrite.pr.ProviderState == "draft" {
+		t.Fatalf("nudged poll kept PR in draft state: %#v", readyWrite.pr)
+	}
+	if calls, _ := store.pollStats(); calls != 2 {
+		t.Fatalf("poll calls = %d, want startup + one nudged ready-state refresh", calls)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("observer did not stop")
+	}
 }
 
 func TestDispatchOrderIsDeterministic(t *testing.T) {
