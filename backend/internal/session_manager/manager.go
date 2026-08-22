@@ -4369,9 +4369,23 @@ func (m *Manager) validateRuntimePrerequisites() error {
 		return nil
 	}
 	if path, err := m.lookPath("tmux"); err != nil || path == "" {
-		return fmt.Errorf("%w: tmux required on macOS/Linux but not in PATH", ports.ErrRuntimePrerequisite)
+		return fmt.Errorf("%w: tmux required on macOS/Linux but not in PATH — install it: %s", ports.ErrRuntimePrerequisite, tmuxInstallHint(runtime.GOOS))
 	}
 	return nil
+}
+
+// tmuxInstallHint returns the package-manager command to install tmux on the
+// current platform. Included in the prerequisite-missing error so users get an
+// actionable instruction instead of a bare "not in PATH" message.
+func tmuxInstallHint(goos string) string {
+	switch goos {
+	case "darwin":
+		return "brew install tmux"
+	case "linux":
+		return "sudo apt install tmux  # Debian/Ubuntu — or: dnf install tmux (Fedora) / pacman -S tmux (Arch)"
+	default:
+		return "install tmux via your package manager"
+	}
 }
 
 func (m *Manager) superviseAgentProcess(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string) ([]string, string, error) {
