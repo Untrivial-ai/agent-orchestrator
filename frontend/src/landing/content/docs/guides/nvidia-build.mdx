@@ -1,0 +1,65 @@
+---
+title: NVIDIA Build models
+description: Use NVIDIA-hosted models with supported AO agents without storing API keys in the repository.
+---
+
+# NVIDIA Build models
+
+NVIDIA Build is a model provider, not a standalone coding-agent binary. Use it through a supported agent that integrates
+with NVIDIA, while AO continues to provide worktrees, sessions, terminals, activity tracking, pull-request workflows,
+and, where the agent supports it, native session resume.
+
+## Recommended: OpenCode
+
+OpenCode provides the most complete NVIDIA-backed AO experience because both NVIDIA provider support and native session
+resume are available.
+
+1. Install OpenCode and configure its NVIDIA provider/model using OpenCode's normal provider flow.
+2. Export the key from your shell profile:
+
+   ```bash
+   export NVIDIA_API_KEY="<your-key>"
+   ```
+
+3. Select OpenCode in AO:
+
+   ```yaml title="agent-orchestrator.yaml"
+   agent: opencode
+   ```
+
+AO's desktop app imports the login-shell environment at startup, forwards it to the daemon, and the local agent session
+inherits it. Restart AO after changing the shell profile. AO's authentication-status check only tests whether the variable
+is non-empty; it never logs or returns the value. The selected agent uses the inherited key to authenticate directly with
+NVIDIA.
+
+## Other supported agents
+
+| Agent | Environment variable | Notes |
+| --- | --- | --- |
+| OpenCode | `NVIDIA_API_KEY` | Recommended; supports AO session discovery and resume. |
+| Kilo Code | `NVIDIA_API_KEY` | Configure an NVIDIA `provider/model-id` using Kilo's normal model settings. |
+| Goose | `NVIDIA_API_KEY` | Select NVIDIA as the provider and choose a model in Goose. |
+| Aider | `NVIDIA_NIM_API_KEY` | Uses LiteLLM's NVIDIA NIM variable name; Aider does not support native session resume. |
+
+The key value is supplied directly to the selected agent through its inherited process environment. AO does not copy it
+into the worktree or add it to an agent command line.
+
+## Keep the key secret
+
+- Never put the key in `agent-orchestrator.yaml`, prompts, issues, command-line arguments, source files, or tracked config.
+- Do not symlink a credential-bearing `.env` file into AO worktrees.
+- Keep `.env` files ignored and review staged changes before every push.
+- If a key is ever exposed, revoke and rotate it immediately in NVIDIA Build.
+
+AO redacts `NVIDIA_API_KEY=...`, `NVIDIA_NIM_API_KEY=...`, and raw `nvapi-...` values from support-report drafts. This is
+defense in depth, not a substitute for keeping credentials out of repository content and prompts.
+
+## Verify without revealing the key
+
+Run the agent catalog command:
+
+```bash
+ao agent ls
+```
+
+The selected agent should report as authenticated. AO displays only authentication status, never the credential value.

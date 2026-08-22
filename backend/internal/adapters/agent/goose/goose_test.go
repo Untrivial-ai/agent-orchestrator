@@ -240,6 +240,20 @@ func TestAuthStatusAuthorizedFromEnv(t *testing.T) {
 	}
 }
 
+func TestAuthStatusAuthorizedFromNVIDIAEnv(t *testing.T) {
+	clearGooseAuthEnv(t)
+	t.Setenv("NVIDIA_API_KEY", "test-only-placeholder")
+	plugin := &Plugin{resolvedBinary: "goose"}
+
+	got, err := plugin.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	}
+}
+
 func TestAuthStatusAuthorizedFromGooseConfig(t *testing.T) {
 	clearGooseAuthEnv(t)
 	home := t.TempDir()

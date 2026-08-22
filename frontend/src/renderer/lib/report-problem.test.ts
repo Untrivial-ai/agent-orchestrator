@@ -67,10 +67,11 @@ describe("report problem drafts", () => {
 		expect(draft).not.toContain("hunter2");
 	});
 
-	it("redacts JSON secrets, authorization headers, and GitHub token forms", () => {
+	it("redacts JSON secrets, authorization headers, NVIDIA keys, and GitHub token forms", () => {
 		const githubToken = `ghp_${"abcdefghijklmnopqrstuvwxyz"}${"1234567890AB"}`;
 		const githubOauthToken = `gho_${"abcdefghijklmnopqrstuvwxyz"}${"1234567890AB"}`;
 		const fineGrainedGithubToken = `github_pat_11${"AAAAAAAAAAAAAAAAAAAA"}_${"B".repeat(74)}`;
+		const nvidiaKey = `nvapi-${"N".repeat(48)}`;
 
 		const draft = formatReportProblemDraft(
 			{
@@ -79,6 +80,8 @@ describe("report problem drafts", () => {
 					'{"token": "json-token-secret", "api_key": "json-api-key-secret"}',
 					`Authorization: token ${githubOauthToken}`,
 					"authorization: Bearer header-token-secret",
+					`NVIDIA_API_KEY=${nvidiaKey}`,
+					`Raw NVIDIA key: ${nvidiaKey}`,
 					fineGrainedGithubToken,
 				].join("\n"),
 			},
@@ -92,6 +95,7 @@ describe("report problem drafts", () => {
 		expect(draft).not.toContain(githubToken);
 		expect(draft).not.toContain(githubOauthToken);
 		expect(draft).not.toContain("header-token-secret");
+		expect(draft).not.toContain(nvidiaKey);
 		expect(draft).not.toContain(fineGrainedGithubToken);
 	});
 

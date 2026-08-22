@@ -1,5 +1,5 @@
 {
 	"title": "Guides",
 	"defaultOpen": false,
-	"pages": ["per-role-agents", "parallel-issues", "ci-recovery", "review-loop", "reactions", "multi-project"]
+	"pages": ["per-role-agents", "nvidia-build", "parallel-issues", "ci-recovery", "review-loop", "reactions", "multi-project"]
 }

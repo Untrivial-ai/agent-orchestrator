@@ -37,6 +37,7 @@ const ASSIGNMENT_SECRET_PATTERN =
 	/(\b[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|ACCESS[_-]?TOKEN|REFRESH[_-]?TOKEN|AUTH)[A-Z0-9_]*\s*[:=]\s*)(["']?)[^\s"',)]+/gi;
 const BEARER_SECRET_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi;
 const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9_-]+/g;
+const NVIDIA_KEY_PATTERN = /\bnvapi-[A-Za-z0-9_-]{8,}\b/g;
 const GITHUB_TOKEN_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
 
 export function sanitizeReportText(value: string): string {
@@ -50,6 +51,7 @@ export function sanitizeReportText(value: string): string {
 		.replace(ASSIGNMENT_SECRET_PATTERN, `$1$2${REDACTED_SECRET}`)
 		.replace(BEARER_SECRET_PATTERN, `$1${REDACTED_SECRET}`)
 		.replace(OPENAI_KEY_PATTERN, REDACTED_SECRET)
+		.replace(NVIDIA_KEY_PATTERN, REDACTED_SECRET)
 		.replace(GITHUB_TOKEN_PATTERN, REDACTED_SECRET);
 }
 

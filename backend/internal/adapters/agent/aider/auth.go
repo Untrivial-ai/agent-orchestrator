@@ -38,6 +38,7 @@ var aiderAPIKeyEnvVars = []string{
 	"XAI_API_KEY",
 	"MISTRAL_API_KEY",
 	"COHERE_API_KEY",
+	"NVIDIA_NIM_API_KEY",
 }
 
 func aiderLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {

@@ -40,6 +40,7 @@ var gooseAPIKeyEnvVars = []string{
 	"XAI_API_KEY",
 	"MISTRAL_API_KEY",
 	"COHERE_API_KEY",
+	"NVIDIA_API_KEY",
 }
 
 func gooseLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
