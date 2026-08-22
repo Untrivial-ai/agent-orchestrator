@@ -3641,3 +3641,79 @@ func TestActivitySignalRejectsStaleChatControllerGenerationAcrossHandoff(t *test
 		t.Fatalf("old Chat controller changed TUI activity to %q", got)
 	}
 }
+
+func TestActivitySignalRejectsHookWithoutChatControllerGeneration(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+	rec := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{
+			AgentSessionID:         "parent-native-session",
+			NativeTranscriptPath:   "/transcripts/parent.jsonl",
+			ProviderConversationID: "parent-native-session",
+			ControllerGeneration:   "chat-generation-1",
+		},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+	st.sessions[rec.ID] = rec
+	m := New(st, nil)
+
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+		Valid:          true,
+		State:          domain.ActivityExited,
+		Event:          "session-end",
+		AgentSessionID: "nested-native-session",
+		TranscriptPath: "/transcripts/nested.jsonl",
+	}); err != nil {
+		t.Fatalf("foreign hook signal: %v", err)
+	}
+
+	if got := st.sessions[rec.ID]; got != rec {
+		t.Fatalf("foreign hook mutated Chat session:\n got: %+v\nwant: %+v", got, rec)
+	}
+}
+
+func TestActivitySignalCurrentChatControllerResurrectsExitedSession(t *testing.T) {
+	tests := []struct {
+		name  string
+		state domain.ActivityState
+		event string
+	}{
+		{name: "turn started", state: domain.ActivityActive, event: "chat.turn.started"},
+		{name: "turn completed", state: domain.ActivityIdle, event: "chat.turn.completed"},
+		{name: "approval requested", state: domain.ActivityWaitingInput, event: "chat.approval.requested"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := newFakeStore()
+			rec := domain.SessionRecord{
+				ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+				Metadata: domain.SessionMetadata{ControllerGeneration: "chat-generation-1"},
+				Activity: domain.Activity{State: domain.ActivityExited},
+			}
+			st.sessions[rec.ID] = rec
+			m := New(st, nil)
+			signalAt := time.Unix(123, 0).UTC()
+
+			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
+				Valid:                true,
+				State:                test.state,
+				Event:                test.event,
+				Timestamp:            signalAt,
+				ControllerGeneration: "chat-generation-1",
+			}); err != nil {
+				t.Fatalf("current Chat controller signal: %v", err)
+			}
+
+			got := st.sessions[rec.ID]
+			if got.Activity.State != test.state {
+				t.Fatalf("live Chat controller left activity at %q, want %q", got.Activity.State, test.state)
+			}
+			if !got.Activity.LastActivityAt.Equal(signalAt) {
+				t.Fatalf("last activity = %v, want %v", got.Activity.LastActivityAt, signalAt)
+			}
+		})
+	}
+}

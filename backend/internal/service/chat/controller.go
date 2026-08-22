@@ -1429,6 +1429,11 @@ func (c *Controller) Interrupt(ctx context.Context) error {
 	c.sendMu.Lock()
 	cutoff := c.now()
 	c.mu.Lock()
+	if c.state == ports.ChatControllerStopped {
+		c.mu.Unlock()
+		c.sendMu.Unlock()
+		return ErrNoActiveTurn
+	}
 	turn := c.pendingTurnID
 	if turn != "" {
 		// Publish the queue cutoff before releasing sendMu. A completion can then
@@ -1476,10 +1481,18 @@ func (c *Controller) Interrupt(ctx context.Context) error {
 			c.sendMu.Lock()
 			defer c.sendMu.Unlock()
 
+			// The event stream may have ended while the provider's interrupt answer
+			// was in flight. Shutdown owns the terminal transition; a stale refusal
+			// from this generation must not reconcile the dead controller to ready.
+			c.mu.Lock()
+			if c.state == ports.ChatControllerStopped {
+				c.mu.Unlock()
+				return ErrNoActiveTurn
+			}
+
 			// A committed completion may have won the sendMu race after the
 			// provider answered. It already consumed the cutoff and drained the
 			// queue, so do not overwrite its terminal state or a successor turn.
-			c.mu.Lock()
 			stillPending := c.pendingTurnID == turn
 			c.mu.Unlock()
 			if !stillPending {
@@ -1704,7 +1717,9 @@ func (c *Controller) project() {
 		// A lifecycle event and a concurrent Send must agree on whether the root
 		// conversation is busy. Holding the same lock Send/dispatch use closes the
 		// window between the durable projection and the in-memory ownership update.
-		lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted
+		lifecycle := event.Kind == ports.ChatEventTurnStarted ||
+			event.Kind == ports.ChatEventTurnCompleted ||
+			(event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerStopped)
 		if lifecycle {
 			c.sendMu.Lock()
 		}
@@ -1723,6 +1738,11 @@ func (c *Controller) project() {
 		}
 	}
 
+	// Ending the stream is the terminal command for this controller generation.
+	// Serialize it with Send, Interrupt, and lifecycle projection so every command
+	// that won the lock first finishes before exited, while every command that
+	// arrives later observes stopped and cannot resurrect the controller.
+	c.sendMu.Lock()
 	c.mu.Lock()
 	c.state = ports.ChatControllerStopped
 	c.mu.Unlock()
@@ -1752,6 +1772,7 @@ func (c *Controller) project() {
 	if err := c.store.FailPendingInputs(ctx, c.conversation.ID, now); err != nil {
 		c.log.Error("failed to close pending input requests", "session", c.sessionID, "error", err)
 	}
+	c.sendMu.Unlock()
 }
 
 // projectEvent archives one normalized provider event and applies its durable

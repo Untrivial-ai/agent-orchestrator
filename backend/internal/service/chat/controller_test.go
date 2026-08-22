@@ -3080,6 +3080,65 @@ func TestProviderRefusalReconcilesTheDurableTurnAsInterrupted(t *testing.T) {
 	}
 }
 
+// A provider stream can end while Interrupt is waiting for the provider to
+// answer. Once shutdown has reported exited, the stale refusal must not reconcile
+// the same controller generation back to ready/idle. In production the service
+// drops this controller after Wait, but an Interrupt that already obtained the
+// pointer is still allowed to finish concurrently.
+func TestStreamClosureWinsAgainstConcurrentInterruptReconciliation(t *testing.T) {
+	conv := newBlockingInterruptRefusalConversation()
+	t.Cleanup(conv.unblock)
+	h := newHarnessWithConversation(t, conv)
+	ctx := context.Background()
+
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "running", ClientMessageID: "shutdown-race",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
+	})
+
+	interruptDone := make(chan error, 1)
+	go func() { interruptDone <- h.svc.Interrupt(ctx, testSession) }()
+	select {
+	case <-conv.started:
+	case <-time.After(4 * time.Second):
+		t.Fatal("provider interrupt did not start")
+	}
+
+	// The provider dies while its interrupt response is in flight. Waiting for the
+	// projector proves exited has already been emitted before the stale refusal is
+	// allowed to continue.
+	if err := conv.Close(); err != nil {
+		t.Fatalf("Close provider stream: %v", err)
+	}
+	h.ctrl.Wait()
+	conv.unblock()
+	if err := <-interruptDone; err != nil && !errors.Is(err, chatsvc.ErrNoActiveTurn) {
+		t.Fatalf("Interrupt after shutdown: %v", err)
+	}
+
+	if got := h.ctrl.State(); got != ports.ChatControllerStopped {
+		t.Errorf("controller state after shutdown race = %q, want stopped", got)
+	}
+	signals := h.activity.snapshot()
+	exited := -1
+	for i, signal := range signals {
+		if signal.State == domain.ActivityExited && signal.Event == "chat.controller.stopped" {
+			exited = i
+		}
+	}
+	if exited < 0 {
+		t.Fatalf("shutdown emitted no exited signal: %+v", signals)
+	}
+	if exited != len(signals)-1 {
+		t.Fatalf("activity emitted after exited: %+v", signals[exited+1:])
+	}
+}
+
 // The recovery path must keep the same cutoff as the Stop request. The composer
 // remains available while provider cancellation is pending, and a later prompt
 // is new user intent rather than part of the queue that Stop was asked to clear.
