@@ -585,7 +585,7 @@ const RUN_FILE_POLL_MS = 300;
 // Accept run-files stamped slightly before our spawn timestamp: the daemon's
 // clock reading and ours race within normal scheduling jitter.
 const RUN_FILE_FRESHNESS_SKEW_MS = 2_000;
-const DAEMON_PROBE_TIMEOUT_MS = 2_000;
+const DAEMON_PROBE_TIMEOUT_MS = process.platform === "win32" ? 500 : 2_000;
 
 function runFilePath(): string | null {
 	if (process.env.AO_RUN_FILE) return process.env.AO_RUN_FILE;
@@ -1125,7 +1125,6 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	// killed here), and a foreign non-AO process holding the port with a dead
 	// run-file PID is not replaced (out of scope). When no holder is detectable,
 	// skip straight to spawn.
-	const orphanProbe = await readDaemonProbe(resolvedDaemonPort(), "healthz");
 	const runFilePath_ = runFilePath();
 	let runFilePid: number | null = null;
 	if (runFilePath_) {
@@ -1135,6 +1134,13 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 			// run-file absent or unreadable; proceed without a PID.
 		}
 	}
+
+	// On Windows, skip the orphan probe when there is no run-file PID. Without a
+	// run-file there is no evidence a daemon was ever running, so the probe would
+	// just burn another timeout on a cold start.
+	const skipOrphanProbe = process.platform === "win32" && !runFilePid;
+	const orphanProbe = skipOrphanProbe ? null : await readDaemonProbe(resolvedDaemonPort(), "healthz");
+
 	// process.kill(pid, 0) does not kill; it throws iff the PID is not live.
 	let holderPidAlive = false;
 	if (runFilePid) {
