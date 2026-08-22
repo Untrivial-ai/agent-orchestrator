@@ -198,6 +198,8 @@
 	"createProject.workspace": "Workspace",
 	"createProject.workspaceAgents": "Workspace agents",
 	"createProject.workspaceDesc": "Several Git repos that live under one parent folder.",
+	"createProject.workspaceNoReadyRepos": "No fully resolved repositories found. At least one child repository must have an origin remote configured.",
+	"createProject.workspaceNoRepos": "No repositories detected in this folder. A workspace must contain at least one child git repository.",
 	"createProject.workspaceRoot": "Workspace root",
 	"daemon.hint.binaryMissing": "Run npm run build:daemon to rebuild the daemon.",
 	"daemon.hint.conflict": "Stop the conflicting daemon, then restart the desktop app.",

@@ -198,6 +198,8 @@
 	"createProject.workspace": "워크스페이스",
 	"createProject.workspaceAgents": "워크스페이스 에이전트",
 	"createProject.workspaceDesc": "하나의 상위 폴더 아래에 있는 여러 Git 저장소.",
+	"createProject.workspaceNoReadyRepos": "완전히 해결된 리포지토리를 찾을 수 없습니다. 하나 이상의 하위 리포지토리에 origin 원격이 구성되어 있어야 합니다.",
+	"createProject.workspaceNoRepos": "이 폴더에서 리포지토리가 감지되지 않았습니다. 워크스페이스에는 하나 이상의 하위 git 리포지토리가 포함되어야 합니다.",
 	"createProject.workspaceRoot": "워크스페이스 루트",
 	"daemon.hint.binaryMissing": "npm run build:daemon을 실행하여 데몬을 다시 빌드하세요.",
 	"daemon.hint.conflict": "충돌하는 데몬을 중지한 뒤 데스크톱 앱을 다시 시작하세요.",

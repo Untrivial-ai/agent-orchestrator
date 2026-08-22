@@ -198,6 +198,8 @@
 	"createProject.workspace": "工作区",
 	"createProject.workspaceAgents": "工作区代理",
 	"createProject.workspaceDesc": "位于同一父文件夹下的多个 Git 仓库。",
+	"createProject.workspaceNoReadyRepos": "未找到完全解析的仓库。至少一个子仓库必须配置 origin 远程。",
+	"createProject.workspaceNoRepos": "此文件夹中未检测到仓库。工作区必须包含至少一个子 git 仓库。",
 	"createProject.workspaceRoot": "工作区根目录",
 	"daemon.hint.binaryMissing": "请运行 npm run build:daemon 重新构建守护进程。",
 	"daemon.hint.conflict": "请先停止冲突的守护进程，然后重启桌面应用。",

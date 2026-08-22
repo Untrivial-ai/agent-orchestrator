@@ -141,6 +141,27 @@ export function CreateProjectFlow({
 				} catch {
 					// Ancestor check failed — proceed without warning
 				}
+				// Preflight: scan workspace children and require at least one
+				// fully resolved repo before advancing to harness selection.
+				try {
+					const scan = await aoBridge.app.scanImportFolder({ path, mode: "workspace" });
+					const hasReadyRepo = scan.repos.some(
+						(repo) => repo.status !== "error" && repo.hasRemote && !repo.needsGitInit,
+					);
+					if (!hasReadyRepo) {
+						setError(
+							scan.repos.length === 0
+								? t("createProject.workspaceNoRepos")
+								: t("createProject.workspaceNoReadyRepos"),
+						);
+						setValidationScan(scan);
+						setModePickerOpen(false);
+						setFolderPickerOpen(true);
+						return;
+					}
+				} catch {
+					// Scan failed — fall through and let the backend validate.
+				}
 			}
 			if (path) {
 				setModePickerOpen(false);

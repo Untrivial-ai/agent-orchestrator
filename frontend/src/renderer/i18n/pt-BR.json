@@ -200,6 +200,8 @@
 	"createProject.workspace": "Workspace",
 	"createProject.workspaceAgents": "Agentes do workspace",
 	"createProject.workspaceDesc": "Vários repositórios Git em uma pasta pai.",
+	"createProject.workspaceNoReadyRepos": "Nenhum repositório totalmente resolvido encontrado. Pelo menos um repositório filho deve ter um remote origin configurado.",
+	"createProject.workspaceNoRepos": "Nenhum repositório detectado nesta pasta. Um workspace deve conter pelo menos um repositório git filho.",
 	"createProject.workspaceRoot": "Raiz do workspace",
 	"daemon.hint.binaryMissing": "Execute npm run build:daemon para recompilar o daemon.",
 	"daemon.hint.conflict": "Pare o daemon em conflito e reinicie o app desktop.",

@@ -200,6 +200,8 @@
 	"createProject.workspace": "Espace de travail",
 	"createProject.workspaceAgents": "Agents de l'espace de travail",
 	"createProject.workspaceDesc": "Plusieurs dépôts Git sous un même dossier parent.",
+	"createProject.workspaceNoReadyRepos": "Aucun dépôt entièrement résolu trouvé. Au moins un dépôt enfant doit avoir un remote origin configuré.",
+	"createProject.workspaceNoRepos": "Aucun dépôt détecté dans ce dossier. Un espace de travail doit contenir au moins un dépôt git enfant.",
 	"createProject.workspaceRoot": "Racine de l'espace de travail",
 	"daemon.hint.binaryMissing": "Exécutez npm run build:daemon pour recompiler le daemon.",
 	"daemon.hint.conflict": "Arrêtez le daemon en conflit, puis redémarrez l'application de bureau.",

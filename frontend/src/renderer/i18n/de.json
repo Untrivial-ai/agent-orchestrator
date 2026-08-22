@@ -198,6 +198,8 @@
 	"createProject.workspace": "Workspace",
 	"createProject.workspaceAgents": "Workspace-Agenten",
 	"createProject.workspaceDesc": "Mehrere Git-Repos unter einem übergeordneten Ordner.",
+	"createProject.workspaceNoReadyRepos": "Keine vollständig aufgelösten Repositories gefunden. Mindestens ein untergeordnetes Repository muss einen Origin-Remote konfiguriert haben.",
+	"createProject.workspaceNoRepos": "Keine Repositories in diesem Ordner erkannt. Ein Workspace muss mindestens ein untergeordnetes Git-Repository enthalten.",
 	"createProject.workspaceRoot": "Workspace-Root",
 	"daemon.hint.binaryMissing": "Führen Sie npm run build:daemon aus, um den Daemon neu zu bauen.",
 	"daemon.hint.conflict": "Stoppen Sie den konfliktierenden Daemon und starten Sie die Desktop-App neu.",

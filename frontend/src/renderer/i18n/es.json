@@ -200,6 +200,8 @@
 	"createProject.workspace": "Espacio de trabajo",
 	"createProject.workspaceAgents": "Agentes del espacio de trabajo",
 	"createProject.workspaceDesc": "Varios repos Git bajo una carpeta principal.",
+	"createProject.workspaceNoReadyRepos": "No se encontraron repositorios completamente resueltos. Al menos un repositorio secundario debe tener un remoto de origen configurado.",
+	"createProject.workspaceNoRepos": "No se detectaron repositorios en esta carpeta. Un espacio de trabajo debe contener al menos un repositorio git secundario.",
 	"createProject.workspaceRoot": "Raíz del espacio de trabajo",
 	"daemon.hint.binaryMissing": "Ejecuta npm run build:daemon para recompilar el daemon.",
 	"daemon.hint.conflict": "Detén el daemon en conflicto y reinicia la aplicación de escritorio.",
