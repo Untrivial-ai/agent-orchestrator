@@ -112,6 +112,8 @@ function loadRenderer(term: Terminal): void {
 
 // xterm palette tracks the app theme (see lib/terminal-themes.ts + tokens.css).
 const SUPPRESS_NATIVE_PASTE_MS = 100;
+/** Long enough to notice, short enough that a second copy reads as a second copy. */
+const COPY_TOAST_MS = 1400;
 
 function preparePastedText(text: string): string {
 	return text.replace(/\r?\n/g, "\r");
@@ -275,6 +277,7 @@ function removeHiddenScrollbarReservation(term: Terminal): void {
 export function XtermTerminal(props: XtermTerminalProps) {
 	const { t } = useTranslation();
 	const themeStyle = useUiStore((state) => state.themeStyle);
+	const shellRef = useRef<HTMLDivElement | null>(null);
 	const hostRef = useRef<HTMLDivElement | null>(null);
 	const termRef = useRef<Terminal | null>(null);
 	const fitRef = useRef<(() => void) | null>(null);
@@ -286,6 +289,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		y: 0,
 		link: null,
 	});
+	const [copiedToast, setCopiedToast] = useState(false);
+	const copiedToastTimerRef = useRef<number | undefined>(undefined);
+	const showCopiedToastRef = useRef<() => void>(() => undefined);
 	// The web link currently under the cursor, tracked via the link providers'
 	// hover/leave callbacks so the right-click menu can offer "Open in system
 	// browser" for it.
@@ -308,6 +314,23 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	);
 
 	callbacksRef.current = props;
+	showCopiedToastRef.current = () => {
+		// Hidden retained terminals keep parsing output but expose no UI overlays.
+		if (callbacksRef.current.isVisible === false) return;
+		setCopiedToast(true);
+		if (copiedToastTimerRef.current !== undefined) window.clearTimeout(copiedToastTimerRef.current);
+		copiedToastTimerRef.current = window.setTimeout(() => {
+			setCopiedToast(false);
+			copiedToastTimerRef.current = undefined;
+		}, COPY_TOAST_MS);
+	};
+
+	useEffect(
+		() => () => {
+			if (copiedToastTimerRef.current !== undefined) window.clearTimeout(copiedToastTimerRef.current);
+		},
+		[],
+	);
 
 	useEffect(() => {
 		// buildTerminalThemes() reads live CSS vars from :root. Parent shell effects
@@ -332,8 +355,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	}, [props.fontSize]);
 
 	useEffect(() => {
+		const shell = shellRef.current;
 		const host = hostRef.current;
-		if (!host) return undefined;
+		if (!shell || !host) return undefined;
 		let reportedFocused = false;
 		const reportFocused = (focused: boolean) => {
 			const next = focused && Boolean(callbacksRef.current.onChangeFontSize);
@@ -388,7 +412,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				// but powerline separators and file-type icons are real PUA codepoints
 				// that must come from a system-installed Nerd Font.
 				fontFamily:
-					getComputedStyle(host).getPropertyValue("--font-mono").trim() ||
+					getComputedStyle(shell).getPropertyValue("--font-mono").trim() ||
 					'ui-monospace, Menlo, Monaco, "Courier New", monospace',
 				fontSize: props.fontSize ?? TERMINAL_FONT_SIZE_DEFAULT,
 				lineHeight: 1.35,
@@ -456,6 +480,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				.writeText(selection)
 				.then(() => {
 					lastCopiedSelection = selection;
+					showCopiedToastRef.current();
 				})
 				.catch((error) => {
 					console.warn("Unable to copy terminal selection", error);
@@ -529,7 +554,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				link: hoveredLinkRef.current,
 			});
 		};
-		host.addEventListener("contextmenu", openContextMenu);
+		shell.addEventListener("contextmenu", openContextMenu);
 		term.attachCustomKeyEventHandler((event) => {
 			// xterm invokes this same handler on keydown, keyup, AND keypress (see
 			// Terminal.ts _keyDown/_keyUp/_keyPress). Only keydown should trigger our
@@ -591,11 +616,11 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			event.preventDefault();
 		};
 		const copyShortcut = (event: KeyboardEvent) => {
-			if (!isTerminalCopyShortcut(event) || !terminalHasFocus(host) || !copySelection()) return;
+			if (!isTerminalCopyShortcut(event) || !terminalHasFocus(shell) || !copySelection()) return;
 			event.preventDefault();
 			event.stopPropagation();
 		};
-		host.addEventListener("copy", copyInput);
+		shell.addEventListener("copy", copyInput);
 		window.addEventListener("keydown", copyShortcut, true);
 		const selectionChange = term.onSelectionChange(() => {
 			if (!term.hasSelection()) {
@@ -816,8 +841,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		const compositionInput = (event: CompositionEvent) => {
 			emitUserInput(event.data, "composition");
 		};
-		host.addEventListener("paste", pasteInput, true);
-		host.addEventListener("compositionend", compositionInput, true);
+		shell.addEventListener("paste", pasteInput, true);
+		shell.addEventListener("compositionend", compositionInput, true);
 
 		// A file dropped on the pane inserts its path, mirroring a native terminal
 		// so an agent (e.g. Claude Code) attaches it. The sandboxed renderer cannot
@@ -860,8 +885,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				pasteText(`${paths.map((p) => (/\s/.test(p) ? `'${p}'` : p)).join(" ")} `);
 			})();
 		};
-		host.addEventListener("dragover", dragOverInput);
-		host.addEventListener("drop", dropInput);
+		shell.addEventListener("dragover", dragOverInput);
+		shell.addEventListener("drop", dropInput);
 
 		const showLatestOutput = () => {
 			term.scrollToBottom();
@@ -952,14 +977,14 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			observer.disconnect();
 			stabilizer.dispose();
 			window.removeEventListener("resize", scheduleVisibleFit);
-			host.removeEventListener("copy", copyInput);
+			shell.removeEventListener("copy", copyInput);
 			window.removeEventListener("keydown", copyShortcut, true);
 			selectionChange.dispose();
-			host.removeEventListener("contextmenu", openContextMenu);
-			host.removeEventListener("paste", pasteInput, true);
-			host.removeEventListener("compositionend", compositionInput, true);
-			host.removeEventListener("dragover", dragOverInput);
-			host.removeEventListener("drop", dropInput);
+			shell.removeEventListener("contextmenu", openContextMenu);
+			shell.removeEventListener("paste", pasteInput, true);
+			shell.removeEventListener("compositionend", compositionInput, true);
+			shell.removeEventListener("dragover", dragOverInput);
+			shell.removeEventListener("drop", dropInput);
 			contextMenuActionsRef.current = null;
 			cancelActivationPreparation?.();
 			clearSuppressNativePaste();
@@ -985,7 +1010,14 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	}, [props.focusRequested, props.isVisible]);
 
 	useLayoutEffect(() => {
-		if (props.isVisible === false) setContextMenuOpen(false);
+		if (props.isVisible === false) {
+			setContextMenuOpen(false);
+			setCopiedToast(false);
+			if (copiedToastTimerRef.current !== undefined) {
+				window.clearTimeout(copiedToastTimerRef.current);
+				copiedToastTimerRef.current = undefined;
+			}
+		}
 	}, [props.isVisible, setContextMenuOpen]);
 
 	const wasVisibleRef = useRef(props.isVisible !== false);
@@ -1012,16 +1044,35 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	return (
 		<>
 			<div
-				ref={hostRef}
+				ref={shellRef}
 				aria-label={props.ariaLabel}
 				className={props.className}
 				style={{
-					backgroundColor: "var(--color-bg-terminal-opaque)",
 					height: "100%",
 					overflow: "hidden",
+					position: "relative",
 					width: "100%",
 				}}
-			/>
+			>
+				<div
+					ref={hostRef}
+					style={{
+						backgroundColor: "var(--color-bg-terminal-opaque)",
+						height: "100%",
+						overflow: "hidden",
+						width: "100%",
+					}}
+				/>
+				{copiedToast && props.isVisible !== false ? (
+					<div
+						aria-live="polite"
+						className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-md border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)] px-3 py-1.5 text-xs text-[var(--color-text-import-title)] shadow-[var(--shadow-import-modal)]"
+						role="status"
+					>
+						{t("terminal.copiedToClipboard")}
+					</div>
+				) : null}
+			</div>
 			<DropdownMenu modal={false} open={contextMenu.open} onOpenChange={setContextMenuOpen}>
 				<DropdownMenuTrigger asChild>
 					<button

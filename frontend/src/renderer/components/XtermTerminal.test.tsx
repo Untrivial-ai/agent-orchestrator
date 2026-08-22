@@ -524,6 +524,48 @@ describe("XtermTerminal", () => {
 		expect(writeText).toHaveBeenLastCalledWith("retry me");
 	});
 
+	it("shows a copied toast after a successful selection auto-copy", async () => {
+		render(<XtermTerminal theme="dark" />);
+		state.lastTerminal!.selection = "toast selection";
+		state.lastTerminal!.selectionListeners.forEach((listener) => listener());
+		await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+		expect(await screen.findByRole("status")).toHaveTextContent("Copied to clipboard");
+	});
+
+	it("does not show a copied toast when clipboard write fails", async () => {
+		window.ao!.clipboard.writeText = vi.fn().mockRejectedValue(new Error("clipboard failed"));
+		render(<XtermTerminal theme="dark" />);
+		state.lastTerminal!.selection = "failed selection";
+		state.lastTerminal!.selectionListeners.forEach((listener) => listener());
+		await new Promise((resolve) => window.setTimeout(resolve, 0));
+		await Promise.resolve();
+
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("hides the copied toast after a short delay", async () => {
+		vi.useFakeTimers();
+		try {
+			render(<XtermTerminal theme="dark" />);
+			state.lastTerminal!.selection = "timed selection";
+			await act(async () => {
+				state.lastTerminal!.selectionListeners.forEach((listener) => listener());
+				await vi.advanceTimersByTimeAsync(0);
+				await Promise.resolve();
+			});
+
+			expect(screen.getByRole("status")).toHaveTextContent("Copied to clipboard");
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1600);
+			});
+			expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("leaves plain Ctrl+C as terminal input on non-Windows even when text is selected", () => {
 		render(<XtermTerminal theme="dark" />);
 		state.lastTerminal!.selection = "selected text";

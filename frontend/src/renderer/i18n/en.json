@@ -974,6 +974,7 @@
 	"termination.dialogNamed": "Terminate {{title}}?",
 	"terminal.agent": "agent",
 	"terminal.backToAgent": "Back to agent terminal",
+	"terminal.copiedToClipboard": "Copied to clipboard",
 	"terminal.close": "Close terminal",
 	"terminal.closeNamed": "Close terminal {{title}}",
 	"terminal.closeSessionTab": "Close session tab {{label}}",

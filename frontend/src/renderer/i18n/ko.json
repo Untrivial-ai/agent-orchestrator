@@ -969,6 +969,7 @@
 	"termination.dialogNamed": "{{title}}을(를) 종료하시겠습니까?",
 	"terminal.agent": "agent",
 	"terminal.backToAgent": "에이전트 터미널로 돌아가기",
+	"terminal.copiedToClipboard": "클립보드에 복사됨",
 	"terminal.close": "터미널 닫기",
 	"terminal.closeNamed": "터미널 {{title}} 닫기",
 	"terminal.closeSessionTab": "세션 탭 {{label}} 닫기",

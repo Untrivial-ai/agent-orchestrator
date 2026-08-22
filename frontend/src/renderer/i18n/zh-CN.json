@@ -957,6 +957,7 @@
 	"termination.dialogNamed": "终止 {{title}}？",
 	"terminal.agent": "代理",
 	"terminal.backToAgent": "返回代理终端",
+	"terminal.copiedToClipboard": "已复制到剪贴板",
 	"terminal.close": "关闭终端",
 	"terminal.closeNamed": "关闭终端 {{title}}",
 	"terminal.closeSessionTab": "关闭会话标签页 {{label}}",

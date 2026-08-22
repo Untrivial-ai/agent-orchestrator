@@ -969,6 +969,7 @@
 	"termination.dialogNamed": "{{title}} beenden?",
 	"terminal.agent": "agent",
 	"terminal.backToAgent": "Zurück zum Agent-Terminal",
+	"terminal.copiedToClipboard": "In die Zwischenablage kopiert",
 	"terminal.close": "Terminal schließen",
 	"terminal.closeNamed": "Terminal {{title}} schließen",
 	"terminal.closeSessionTab": "Sitzungs-Tab {{label}} schließen",

@@ -980,6 +980,7 @@
 	"termination.dialogNamed": "¿Terminar {{title}}?",
 	"terminal.agent": "agente",
 	"terminal.backToAgent": "Volver al terminal del agente",
+	"terminal.copiedToClipboard": "Copiado al portapapeles",
 	"terminal.close": "Cerrar terminal",
 	"terminal.closeNamed": "Cerrar terminal {{title}}",
 	"terminal.closeSessionTab": "Cerrar pestaña de sesión {{label}}",
