@@ -603,7 +603,8 @@ func TestProjectRepoResolver_ResolvesRegisteredProject(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	ctx := context.Background()
-	if err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "mer", Path: "/repo/mer", RegisteredAt: time.Now()}); err != nil {
+	repoPath := t.TempDir()
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "mer", Path: repoPath, RegisteredAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -612,8 +613,8 @@ func TestProjectRepoResolver_ResolvesRegisteredProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RepoPath(mer): %v", err)
 	}
-	if got != "/repo/mer" {
-		t.Fatalf("RepoPath(mer) = %q, want /repo/mer", got)
+	if got != repoPath {
+		t.Fatalf("RepoPath(mer) = %q, want %q", got, repoPath)
 	}
 	_, err = r.RepoPath("nope")
 	if err == nil {
@@ -622,6 +623,41 @@ func TestProjectRepoResolver_ResolvesRegisteredProject(t *testing.T) {
 	// Guard the sentinel wrapping so the HTTP 400 mapping can't silently regress.
 	if !errors.Is(err, sessionmanager.ErrProjectNotResolvable) {
 		t.Fatalf("unregistered-project error should wrap ErrProjectNotResolvable, got %v", err)
+	}
+}
+
+func TestProjectRepoResolver_RejectsUnavailableProjectPaths(t *testing.T) {
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	filePath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(filePath, []byte("not a repo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []domain.ProjectRecord{
+		{ID: "missing", Path: filepath.Join(t.TempDir(), "renamed")},
+		{ID: "file", Path: filePath},
+		{ID: "empty"},
+		{ID: "archived", Path: t.TempDir(), ArchivedAt: time.Now()},
+	}
+	ctx := context.Background()
+	for _, rec := range cases {
+		if err := store.UpsertProject(ctx, rec); err != nil {
+			t.Fatalf("UpsertProject(%s): %v", rec.ID, err)
+		}
+	}
+
+	resolver := projectRepoResolver{store: store}
+	for _, rec := range cases {
+		t.Run(rec.ID, func(t *testing.T) {
+			_, err := resolver.RepoPath(domain.ProjectID(rec.ID))
+			if !errors.Is(err, sessionmanager.ErrProjectNotResolvable) {
+				t.Fatalf("RepoPath(%s) err = %v, want ErrProjectNotResolvable", rec.ID, err)
+			}
+		})
 	}
 }
 

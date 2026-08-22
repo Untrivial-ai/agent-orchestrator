@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -436,6 +437,13 @@ func (r projectRepoResolver) RepoPath(projectID domain.ProjectID) (string, error
 	}
 	if rec.Path == "" {
 		return "", fmt.Errorf("project %q has no repo path on record: %w", projectID, sessionmanager.ErrProjectNotResolvable)
+	}
+	info, err := os.Stat(rec.Path)
+	if err != nil {
+		return "", fmt.Errorf("project %q repo path %q is unavailable: %w: %w", projectID, rec.Path, err, sessionmanager.ErrProjectNotResolvable)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("project %q repo path %q is not a directory: %w", projectID, rec.Path, sessionmanager.ErrProjectNotResolvable)
 	}
 	return rec.Path, nil
 }

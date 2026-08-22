@@ -4904,8 +4904,8 @@ func TestSpawn_EarlyFailurePreservesNonEmptyScratchWorkspace(t *testing.T) {
 	})
 
 	_, _, _, err = m.Spawn(ctx, ports.SpawnConfig{ProjectID: "scratch", Kind: domain.KindOrchestrator})
-	if err == nil || !strings.Contains(err.Error(), "provision") {
-		t.Fatalf("Spawn err = %v, want provisioning failure", err)
+	if !errors.Is(err, ErrWorkspaceProvisionFailed) {
+		t.Fatalf("Spawn err = %v, want ErrWorkspaceProvisionFailed", err)
 	}
 	failed, ok := st.sessions["scratch-1"]
 	if !ok {

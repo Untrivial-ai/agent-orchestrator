@@ -54,6 +54,11 @@ var (
 	// ErrScratchBranchUnsupported means a caller tried to force git branch
 	// semantics onto a scratch project.
 	ErrScratchBranchUnsupported = errors.New("session: scratch projects do not support branches")
+	// ErrWorkspaceProvisionFailed means the workspace was materialized but its
+	// configured symlinks or post-create commands could not be applied. The
+	// underlying error remains available in logs while the API maps this
+	// sentinel to a stable, actionable spawn error.
+	ErrWorkspaceProvisionFailed = errors.New("session: workspace provisioning failed")
 	// ErrNotResumable means a terminated session cannot be relaunched: its adapter
 	// cannot natively resume it AND it has no prompt to fresh-launch from, and it is
 	// not an orchestrator (orchestrators are promptless by design and relaunch fresh
@@ -3769,9 +3774,12 @@ func HookPATH(executable func() (string, error), getenv func(string) string, pro
 // workspace never launches an agent.
 func (m *Manager) provisionWorkspace(ctx context.Context, project domain.ProjectRecord, workspacePath string) error {
 	if err := applySymlinks(project.Path, workspacePath, project.Config.Symlinks); err != nil {
-		return err
+		return fmt.Errorf("%w: symlinks: %w", ErrWorkspaceProvisionFailed, err)
 	}
-	return runPostCreate(ctx, workspacePath, project.Config.PostCreate)
+	if err := runPostCreate(ctx, workspacePath, project.Config.PostCreate); err != nil {
+		return fmt.Errorf("%w: postCreate: %w", ErrWorkspaceProvisionFailed, err)
+	}
+	return nil
 }
 
 // applySymlinks links each repo-relative path into the workspace. A source that
