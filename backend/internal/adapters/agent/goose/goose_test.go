@@ -440,13 +440,48 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	}
 	want := []string{
 		"env", "GOOSE_MODE=auto",
-		"goose", "run", "--system", "restore inline wins", "--resume", "--session-id", "20260720_1",
+		"goose", "run", "--system", "restore inline wins", "-t", "", "--interactive", "--resume", "--session-id", "20260720_1",
 	}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
 	}
-	if contains(cmd, "-t") || contains(cmd, "restore original task") {
+	if contains(cmd, "restore original task") {
 		t.Fatalf("restore command %#v unexpectedly replays the original task", cmd)
+	}
+}
+
+func TestGetRestoreCommandSatisfiesGoosesMandatoryInstructionsFlag(t *testing.T) {
+	// Regression for #3581: as of Goose 1.45, `goose run` unconditionally
+	// requires one of --instructions/-i, --text/-t, or --recipe. Without it,
+	// the restored process exits immediately on a usage error while AO's
+	// pty-host wrapper stays alive, silently reducing the session to a
+	// zombie that never receives another turn.
+	plugin := &Plugin{resolvedBinary: "goose"}
+
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "sess-1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if !containsSubsequence(cmd, []string{"-t", ""}) {
+		t.Fatalf("restore command %#v missing the mandatory -t flag Goose 1.45+ requires", cmd)
+	}
+	if !contains(cmd, "--interactive") {
+		t.Fatalf("restore command %#v missing --interactive; the empty -t alone would run headless and exit immediately", cmd)
+	}
+	// -t must land before --resume: Goose parses positional/flag arguments
+	// left to right, and the mandatory-instructions check happens before
+	// --resume is considered.
+	tIndex := indexOf(cmd, "-t")
+	resumeIndex := indexOf(cmd, "--resume")
+	if tIndex == -1 || resumeIndex == -1 || tIndex > resumeIndex {
+		t.Fatalf("restore command %#v must place -t before --resume", cmd)
 	}
 }
 
@@ -554,6 +589,15 @@ func contains(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func indexOf(values []string, needle string) int {
+	for i, value := range values {
+		if value == needle {
+			return i
+		}
+	}
+	return -1
 }
 
 func containsSubsequence(values []string, needle []string) bool {

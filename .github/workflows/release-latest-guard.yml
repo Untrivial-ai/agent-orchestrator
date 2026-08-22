@@ -27,7 +27,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          release_json="$(gh release view --repo "$REPO" --json tagName,isPrerelease,isDraft,assets)"
+          release_err_file="$(mktemp /tmp/latest-release-guard.XXXXXX)"
+          if ! release_json="$(gh release view --repo "$REPO" --json tagName,isPrerelease,isDraft,assets 2>"$release_err_file")"; then
+            if grep -Fq "release not found" "$release_err_file"; then
+              rm -f "$release_err_file"
+              echo "No published releases found for $REPO yet; skipping latest release validation."
+              exit 0
+            fi
+            cat "$release_err_file" >&2
+            rm -f "$release_err_file"
+            exit 1
+          fi
+          rm -f "$release_err_file"
           tag="$(jq -r '.tagName' <<<"$release_json")"
           prerelease="$(jq -r '.isPrerelease' <<<"$release_json")"
           draft="$(jq -r '.isDraft' <<<"$release_json")"

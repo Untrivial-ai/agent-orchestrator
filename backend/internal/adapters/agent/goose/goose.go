@@ -135,13 +135,20 @@ func (p *Plugin) GetPromptDeliveryStrategy(ctx context.Context, _ ports.LaunchCo
 
 // GetRestoreCommand rebuilds the argv that continues an existing Goose session:
 //
-//	[env GOOSE_MODE=<mode>] goose run --system <text> --resume --session-id <agentSessionId>
+//	[env GOOSE_MODE=<mode>] goose run --system <text> -t "" --interactive --resume --session-id <agentSessionId>
 //
 // ok is false when the hook-derived native session id has not landed yet, so
 // callers can fall back to fresh launch behavior. AO deliberately uses run
 // rather than session here: run supports --system alongside --resume, so the
 // current derived system instructions are reapplied without replaying the
 // original task or relying on Goose to persist invocation-level instructions.
+//
+// As of Goose 1.45, `goose run` unconditionally requires one of
+// --instructions/-i, --text/-t, or --recipe -- the same requirement
+// GetLaunchCommand already satisfies with `-t "" --interactive`. Without it,
+// restore fails immediately with a usage error and the session is left a
+// zombie: AO's pty-host wrapper stays alive and reports the session as
+// restored/idle, but no goose process is actually running.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) (cmd []string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
@@ -165,7 +172,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		cmd = append(cmd, "--system", systemPrompt)
 	}
 	appendModelFlag(&cmd, cfg.Config)
-	cmd = append(cmd, "--resume", "--session-id", agentSessionID)
+	cmd = append(cmd, "-t", "", "--interactive", "--resume", "--session-id", agentSessionID)
 	return cmd, true, nil
 }
 
