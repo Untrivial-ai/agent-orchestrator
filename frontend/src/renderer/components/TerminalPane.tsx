@@ -71,6 +71,7 @@ type CachedTerminalEntry = TerminalCacheDescriptor & {
 	activationPhase: "parked" | "preparing" | "ready" | "revealed" | "visible";
 	container: HTMLDivElement;
 	discardOnDeactivate?: boolean;
+	lastActivatedAt: number;
 	props: TerminalPaneProps;
 	terminal?: AttachableTerminal;
 };
@@ -87,6 +88,16 @@ type TerminalCacheController = {
 };
 
 const TerminalCacheContext = createContext<TerminalCacheController | null>(null);
+
+// Bound retained xterm buffers, renderer contexts and mux writers. The active
+// terminal is always retained; opening a seventh terminal evicts the oldest
+// parked entry, which can use the covered replay path when opened again.
+//
+// Without this bound every visited session keeps a mounted xterm — and with it
+// a WebGL context — for the lifetime of the renderer process. Chromium caps
+// live WebGL contexts and force-loses the oldest ones past that cap, so a
+// long-running window accumulates renderer failures until panes latch black.
+const MAX_RETAINED_TERMINALS = 6;
 
 function terminalTargetMatches(left?: TerminalTarget, right?: TerminalTarget): boolean {
 	if (left === right) return true;
@@ -245,8 +256,15 @@ function CachedTerminalPortal({
 		if (!active || entry.activationPhase !== "preparing" || !terminal) return;
 		const activationId = entry.activationId;
 		let current = true;
-		void terminal.prepareForActivation().then(() => {
+		// Advance the phase even when preparation rejects. An entry left in
+		// "preparing" keeps visibility:hidden forever, which reads as a black pane
+		// over a perfectly healthy session.
+		const advance = () => {
 			if (current) onPrepared(entry.cacheKey, activationId);
+		};
+		void terminal.prepareForActivation().then(advance, (error) => {
+			console.warn("Terminal activation preparation failed", error);
+			advance();
 		});
 		return () => {
 			current = false;
@@ -307,6 +325,7 @@ export function TerminalCacheProvider({
 	const workspaceQuery = useWorkspaceQuery();
 	const shellTerminalsQuery = useShellTerminals();
 	const entriesRef = useRef(new Map<string, CachedTerminalEntry>());
+	const activationClockRef = useRef(0);
 	const activeRef = useRef<ActiveTerminalEntry | null>(null);
 	const parkingRef = useRef<HTMLDivElement | null>(null);
 	const muxPoolRef = useRef<TerminalMuxPool | null>(null);
@@ -335,6 +354,22 @@ export function TerminalCacheProvider({
 		},
 		[rerender],
 	);
+
+	// Deleting the entry drops its portal on the next render, which unmounts the
+	// XtermTerminal and releases both the terminal instance and its mux lease;
+	// removing the host node only cleans up the externally-created container.
+	const evictParkedBeyondCap = useCallback((keepCacheKey: string) => {
+		if (entriesRef.current.size <= MAX_RETAINED_TERMINALS) return;
+		const parked = [...entriesRef.current.values()]
+			.filter((candidate) => candidate.cacheKey !== keepCacheKey)
+			.sort((left, right) => left.lastActivatedAt - right.lastActivatedAt);
+		while (entriesRef.current.size > MAX_RETAINED_TERMINALS) {
+			const oldest = parked.shift();
+			if (!oldest) break;
+			entriesRef.current.delete(oldest.cacheKey);
+			oldest.container.remove();
+		}
+	}, []);
 
 	const activate = useCallback(
 		(descriptor: TerminalCacheDescriptor, props: TerminalPaneProps, slot: HTMLDivElement) => {
@@ -380,17 +415,20 @@ export function TerminalCacheProvider({
 					activationId: 0,
 					activationPhase: "parked",
 					container,
+					lastActivatedAt: 0,
 					props: cachedProps,
 				};
 				entriesRef.current.set(entry.cacheKey, entry);
 			} else {
 				entry.props = cachedProps;
 			}
+			entry.lastActivatedAt = ++activationClockRef.current;
 			showTerminal(entry, slot);
 			activeRef.current = { key: entry.cacheKey, slot };
+			evictParkedBeyondCap(entry.cacheKey);
 			rerender();
 		},
-		[muxPool, rerender],
+		[evictParkedBeyondCap, muxPool, rerender],
 	);
 
 	const deactivate = useCallback(
@@ -941,8 +979,14 @@ function AttachedTerminal({
 		}
 		if (!replayPaintPending || !terminal) return;
 		let current = true;
-		void terminal.prepareForActivation().then(() => {
+		// Lift the cover even when preparation rejects. The cover is opaque, so a
+		// stuck one hides a working terminal behind a permanent blank surface.
+		const lift = () => {
 			if (current) setReplayPaintPending(false);
+		};
+		void terminal.prepareForActivation().then(lift, (error) => {
+			console.warn("Terminal replay paint preparation failed", error);
+			lift();
 		});
 		return () => {
 			current = false;
@@ -1003,9 +1047,15 @@ function AttachedTerminal({
 		// before FitAddon has measured its real slot makes full-screen worker TUIs
 		// redraw once at 80×24 and again at the actual grid. Settle that first fit
 		// before attaching so the daemon receives only the authoritative size.
-		void terminal.prepareForActivation().then(() => {
+		// Attach even if preparation fails: a settled-fit error must cost one
+		// redraw at the wrong grid, never the whole session's output.
+		const attachNow = () => {
 			if (!current) return;
 			detach = attach(terminal);
+		};
+		void terminal.prepareForActivation().then(attachNow, (error) => {
+			console.warn("Terminal activation preparation failed", error);
+			attachNow();
 		});
 		return () => {
 			current = false;
