@@ -93,3 +93,70 @@ func TestAgentListJSONEmitsRawCatalog(t *testing.T) {
 		t.Fatalf("inventory = %#v", inv)
 	}
 }
+
+func TestAgentProbe_Success(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		appendPrimaryRequest(&requests, r)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/codex/probe" {
+			_, _ = io.WriteString(w, `{"agent":{"id":"codex","label":"Codex","authStatus":"authorized"},"supported":true,"installed":true}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "agent", "probe", "codex")
+	if err != nil {
+		t.Fatalf("agent probe failed: %v stderr=%s", err, errOut)
+	}
+	for _, want := range []string{"agent: codex", "label: Codex", "supported: supported", "install: installed", "auth: authorized"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("probe output missing %q:\n%s", want, out)
+		}
+	}
+	want := []string{"POST /api/v1/agents/codex/probe"}
+	if !reflect.DeepEqual(requests, want) {
+		t.Fatalf("requests=%#v want %#v", requests, want)
+	}
+}
+
+func TestAgentProbe_JSON(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/codex/probe" {
+			_, _ = io.WriteString(w, `{"agent":{"id":"codex","label":"Codex","authStatus":"unauthorized"},"supported":true,"installed":true}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "agent", "probe", "codex", "--json")
+	if err != nil {
+		t.Fatalf("agent probe --json failed: %v stderr=%s", err, errOut)
+	}
+	var got agentProbeResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("probe json decode failed: %v\n%s", err, out)
+	}
+	if !got.Supported || !got.Installed || got.Agent.ID != "codex" || got.Agent.AuthStatus != "unauthorized" {
+		t.Fatalf("unexpected probe JSON: %#v", got)
+	}
+}
+
+func TestAgentProbe_MissingAgentIsUsageError(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, Deps{}, "agent", "probe")
+	if err == nil {
+		t.Fatal("expected missing agent id to fail")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (err=%v)", got, err)
+	}
+}

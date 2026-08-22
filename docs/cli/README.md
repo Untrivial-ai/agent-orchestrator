@@ -45,6 +45,7 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | `ao project rm <id>`                | `DELETE /api/v1/projects/{id}`                 |
 | `ao agent ls`                       | `GET /api/v1/agents`                           |
 | `ao agent ls --refresh`             | `POST /api/v1/agents/refresh`                  |
+| `ao agent probe <agent>`            | `POST /api/v1/agents/{agent}/probe`            |
 | `ao spawn`                          | `POST /api/v1/sessions`                        |
 | `ao session ls`                     | `GET /api/v1/sessions`                         |
 | `ao session get <id>`               | `GET /api/v1/sessions/{id}`                    |
@@ -65,7 +66,8 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 
 `ao agent ls` prints the daemon-supported agent catalog with local install/auth
 readiness. Use `--refresh` to rerun the bounded local probes and `--json` to
-print the raw inventory response.
+print the raw inventory response. `ao agent probe <agent>` runs a fresh probe
+for one agent (also advisory; spawn remains authoritative).
 
 `ao spawn` resolves project context in this order: explicit `--project`,
 `AO_PROJECT_ID`, `AO_SESSION_ID` (by fetching the current session from the
