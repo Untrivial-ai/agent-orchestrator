@@ -246,3 +246,178 @@ func waitForOutput(t *testing.T, r *Runtime, h ports.RuntimeHandle, want string,
 	}
 	return out
 }
+
+// startPrivateTmuxServerWithDetachOnDestroyOff brings up a tmux server that
+// belongs to this test alone, with the user-config hazard set globally, plus a
+// bystander session standing in for one of the user's own.
+//
+// Isolation is load-bearing in two directions. `-f /dev/null` skips the
+// developer's tmux.conf, so the global set below is the only one in play and the
+// test reproduces on a default machine and on CI rather than passing by accident
+// of how the developer configured tmux. And clearing TMUX matters more than it
+// looks: tmux only honours TMUX_TMPDIR when it is not already inside a session,
+// so `go test` run from inside tmux — likely, for tests about tmux — would
+// otherwise point every call below at the developer's real server, flip its
+// global detach-on-destroy, and let the cleanup kill-server destroy their
+// sessions, AO's own agent sessions included.
+func startPrivateTmuxServerWithDetachOnDestroyOff(t *testing.T) {
+	t.Helper()
+
+	// os.MkdirTemp rather than t.TempDir: the tmux socket is a unix path capped
+	// near 108 bytes and t.TempDir embeds the (long) test name.
+	tmuxTmp, err := os.MkdirTemp("", "aotmux")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", tmuxTmp)
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-server").Run()
+		_ = os.RemoveAll(tmuxTmp)
+	})
+
+	// "bystander" stands in for a session of the user's own — the session tmux
+	// would hand our client to — and is also what holds the server open long
+	// enough to set the global option.
+	if out, err := exec.Command("tmux", "-f", "/dev/null", "new-session", "-d", "-s", "ao-dod-bystander", "sh", "-c", "sleep 120").CombinedOutput(); err != nil {
+		t.Skipf("cannot start private tmux server: %v: %s", err, out)
+	}
+	if out, err := exec.Command("tmux", "set-option", "-g", "detach-on-destroy", "off").CombinedOutput(); err != nil {
+		t.Fatalf("set detach-on-destroy off: %v: %s", err, out)
+	}
+}
+
+// assertAttachEndsOnDestroy attaches through the runtime, destroys the session,
+// and requires the stream to end with no tmux client left behind. A client that
+// survives is one tmux moved onto another session — AO's terminal now reading
+// and writing a pane AO does not own.
+func assertAttachEndsOnDestroy(t *testing.T, r *Runtime, h ports.RuntimeHandle) {
+	t.Helper()
+	ctx := context.Background()
+
+	stream, err := r.Attach(ctx, h, 50, 220)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+
+	readErr := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := stream.Read(buf); err != nil {
+				readErr <- err
+				return
+			}
+		}
+	}()
+
+	// Wait for the client to actually be attached before destroying, otherwise
+	// the test could pass simply by racing the attach.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		out, _ := exec.Command("tmux", "list-clients", "-F", "#{client_session}").Output()
+		if strings.Contains(string(out), h.ID) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("attach client never appeared; clients = %q", out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if err := r.Destroy(ctx, h); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	select {
+	case <-readErr:
+	case <-time.After(5 * time.Second):
+		out, _ := exec.Command("tmux", "list-clients", "-F", "#{client_session}").Output()
+		t.Fatalf("attach stream never ended after Destroy; tmux clients now on: %q", strings.TrimSpace(string(out)))
+	}
+
+	out, err := exec.Command("tmux", "list-clients", "-F", "#{client_session}").Output()
+	if err != nil {
+		t.Fatalf("list-clients: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "" {
+		t.Fatalf("client survived on session %q, want no attached clients — tmux reparented AO's terminal onto another session", got)
+	}
+}
+
+// TestRuntimeIntegrationDestroyDetachesClientUnderDetachOnDestroyOff pins the
+// fix for a config-dependent cross-session leak.
+//
+// tmux's `detach-on-destroy off` — a common tmux.conf line, because it keeps you
+// inside tmux when you kill a session — makes tmux move an attached client to
+// another session instead of detaching it. AO's terminal attachment is such a
+// client, so destroying an AO session silently reparented AO's PTY onto one of
+// the user's own sessions: the stream never EOF'd (so the attachment never saw
+// the session end), the other session's output streamed into AO's terminal
+// view, and anything typed there executed in that session's pane.
+//
+// Create now sets detach-on-destroy back to `on` for AO's own sessions only.
+func TestRuntimeIntegrationDestroyDetachesClientUnderDetachOnDestroyOff(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux unavailable")
+	}
+	// tmux refuses to attach a client without a usable TERM.
+	t.Setenv("TERM", "xterm-256color")
+	startPrivateTmuxServerWithDetachOnDestroyOff(t)
+
+	r := New(Options{Timeout: 5 * time.Second})
+	h, err := r.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     domain.SessionID("ao-dod-" + strings.ReplaceAll(t.Name(), "/", "_")),
+		WorkspacePath: t.TempDir(),
+		Argv:          []string{"sh", "-c", "echo agent-running"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Destroy(context.Background(), h) })
+
+	assertAttachEndsOnDestroy(t, r, h)
+}
+
+// TestRuntimeIntegrationAttachRetrofitsSessionCreatedBeforeFix covers the
+// sessions Create cannot reach.
+//
+// tmux sessions outlive the app, so upgrading AO does not re-create them: a
+// session made by a build without the Create-side option still carries the
+// user's global `detach-on-destroy off` and would keep leaking on every
+// teardown until the user happened to recreate it. Attaching is the exact
+// precondition for the leak — with no client of ours attached there is nothing
+// for tmux to reparent — so Attach retrofits the option, which covers those
+// sessions for every way they can end rather than only the ones AO destroys.
+//
+// Forcing the option back to `off` after Create is what an old session looks
+// like from here.
+func TestRuntimeIntegrationAttachRetrofitsSessionCreatedBeforeFix(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux unavailable")
+	}
+	t.Setenv("TERM", "xterm-256color")
+	startPrivateTmuxServerWithDetachOnDestroyOff(t)
+
+	r := New(Options{Timeout: 5 * time.Second})
+	h, err := r.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     domain.SessionID("ao-dod-old-" + strings.ReplaceAll(t.Name(), "/", "_")),
+		WorkspacePath: t.TempDir(),
+		Argv:          []string{"sh", "-c", "echo agent-running"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Destroy(context.Background(), h) })
+
+	// Age the session: this is exactly the state a pre-fix build left behind.
+	if out, err := exec.Command("tmux", "set-option", "-t", h.ID, "detach-on-destroy", "off").CombinedOutput(); err != nil {
+		t.Fatalf("aging the session: %v: %s", err, out)
+	}
+	if out, _ := exec.Command("tmux", "show-options", "-t", h.ID, "-v", "detach-on-destroy").Output(); strings.TrimSpace(string(out)) != "off" {
+		t.Fatalf("session option = %q, want off — the test did not actually age the session", strings.TrimSpace(string(out)))
+	}
+
+	assertAttachEndsOnDestroy(t, r, h)
+}

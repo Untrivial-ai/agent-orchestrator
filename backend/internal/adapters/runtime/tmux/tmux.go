@@ -332,6 +332,14 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: set window-size %s: %w", id, err)
 	}
 
+	// Make sure destroying this session detaches AO's terminal client rather
+	// than moving it to one of the user's own sessions (see
+	// setDetachOnDestroyOnArgs).
+	if _, err := r.run(ctx, setDetachOnDestroyOnArgs(id)...); err != nil {
+		_ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: id})
+		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: set detach-on-destroy %s: %w", id, err)
+	}
+
 	handle := ports.RuntimeHandle{ID: id}
 	alive, err := r.IsAlive(ctx, handle)
 	if err != nil {
@@ -703,6 +711,18 @@ func (r *Runtime) Attach(ctx context.Context, handle ports.RuntimeHandle, rows, 
 	argv, err := r.attachCommand(handle)
 	if err != nil {
 		return nil, err
+	}
+	// Create already sets this on sessions it makes, but tmux sessions outlive
+	// the app: one created by an older build still carries the user's global
+	// `detach-on-destroy off`, and would keep handing this client to one of
+	// their own sessions on every teardown until it was recreated. Attaching is
+	// the exact precondition for that leak — with no client of ours attached
+	// there is nothing for tmux to reparent — so retrofitting here covers those
+	// sessions for every way they can end, not just the ones AO destroys.
+	// Best-effort: a session we cannot set an option on is one that is already
+	// gone, and Spawn below will report that far more usefully than this would.
+	if id, idErr := handleID(handle); idErr == nil {
+		_, _ = r.run(ctx, setDetachOnDestroyOnArgs(id)...)
 	}
 	return ptyexec.Spawn(ctx, argv, attachEnv(os.Environ()), rows, cols)
 }

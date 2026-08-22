@@ -273,9 +273,10 @@ func TestCreateRejectsInvalidEnvKeys(t *testing.T) {
 
 func TestCreateIssuesNewSessionAndStatusOff(t *testing.T) {
 	// new-session, display-message cwd verification, set-option status,
-	// set-option mouse, set-option window-size, has-session (exit 0 = alive)
+	// set-option mouse, set-option window-size, set-option detach-on-destroy,
+	// has-session (exit 0 = alive)
 	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
+	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil, nil}
 
 	h, err := r.Create(context.Background(), ports.RuntimeConfig{
 		SessionID:     "sess-1",
@@ -289,10 +290,11 @@ func TestCreateIssuesNewSessionAndStatusOff(t *testing.T) {
 	if h.ID != "sess-1" {
 		t.Fatalf("handle ID = %q, want sess-1", h.ID)
 	}
-	// Expect 6 calls: new-session, display-message cwd verification,
-	// set-option status, set-option mouse, set-option window-size, has-session.
-	if len(fr.calls) != 6 {
-		t.Fatalf("calls = %d, want 6", len(fr.calls))
+	// Expect 7 calls: new-session, display-message cwd verification,
+	// set-option status, set-option mouse, set-option window-size,
+	// set-option detach-on-destroy, has-session.
+	if len(fr.calls) != 7 {
+		t.Fatalf("calls = %d, want 7", len(fr.calls))
 	}
 
 	// Call 0: new-session
@@ -333,9 +335,16 @@ func TestCreateIssuesNewSessionAndStatusOff(t *testing.T) {
 		t.Fatalf("call[4] = %#v, want %#v", got, want)
 	}
 
-	// Call 5: has-session (IsAlive, uses exact-match target =sess-1).
-	if got, want := fr.calls[5].args, hasSessionArgs("sess-1"); !reflect.DeepEqual(got, want) {
+	// Call 5: set-option detach-on-destroy on, so destroying this session
+	// detaches AO's terminal client instead of moving it to one of the user's
+	// own sessions (see setDetachOnDestroyOnArgs).
+	if got, want := fr.calls[5].args, setDetachOnDestroyOnArgs("sess-1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("call[5] = %#v, want %#v", got, want)
+	}
+
+	// Call 6: has-session (IsAlive, uses exact-match target =sess-1).
+	if got, want := fr.calls[6].args, hasSessionArgs("sess-1"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("call[6] = %#v, want %#v", got, want)
 	}
 }
 

@@ -55,6 +55,18 @@ func setWindowSizeLargestArgs(id string) []string {
 	return []string{"set-option", "-t", id, "window-size", "largest"}
 }
 
+// setDetachOnDestroyOnArgs restores tmux's default detach-on-destroy for one AO
+// session. A user config that sets `detach-on-destroy off` globally makes tmux
+// move an attached client to another session when its own is destroyed, instead
+// of detaching it. AO's terminal attachment is such a client, so on destroy it
+// silently lands in an unrelated session: it never sees EOF, keeps streaming
+// that session's output into AO's terminal view, and — worse — routes the user's
+// keystrokes into that session's pane. Scoped to the AO session with -t, so the
+// user's own sessions keep their configured behaviour.
+func setDetachOnDestroyOnArgs(id string) []string {
+	return []string{"set-option", "-t", id, "detach-on-destroy", "on"}
+}
+
 // panePIDArgs returns the pid of tmux's direct pane process. AO walks its
 // descendants to find the exact supervisor for the current launch.
 func panePIDArgs(id string) []string {
