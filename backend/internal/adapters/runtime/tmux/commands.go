@@ -16,12 +16,23 @@ func newSessionArgs(id, cwd, shellPath, launchCmd string) []string {
 	}
 }
 
-// respawnPaneArgs replaces the process in the session's only pane while keeping
+// respawnPaneArgs replaces the process in the session's agent pane while keeping
 // the tmux session and terminal handle intact.
+//
+// The target must be both index-independent and deterministic, which rules out
+// the two obvious spellings. A literal ":0.0" assumes tmux's default base-index
+// and pane-base-index of 0, so it fails with "can't find pane: 0" for anyone
+// whose tmux.conf sets them to 1. The bare session name is index-independent but
+// resolves to whatever pane is *currently active*, so once the user opens a
+// second window or splits one (AO hands out a normal attach client with the
+// default prefix key), respawn -k would kill the user's shell and leave the dead
+// agent pane behind. ":^.{top-left}" names the lowest-numbered window's top-left
+// pane by position rather than by index — the pane AO launched the agent in —
+// under any base-index. Both tokens predate AO's minimum tmux 3.2.
 func respawnPaneArgs(id, cwd, shellPath, launchCmd string) []string {
 	return []string{
 		"respawn-pane", "-k",
-		"-t", id + ":0.0",
+		"-t", agentPaneTarget(id),
 		"-c", cwd,
 		shellPath, "-c", launchCmd,
 	}
@@ -55,10 +66,25 @@ func setWindowSizeLargestArgs(id string) []string {
 	return []string{"set-option", "-t", id, "window-size", "largest"}
 }
 
+// agentPaneTarget addresses the pane AO launched the agent in: the lowest-
+// numbered window's top-left pane, named by position so it holds under any
+// base-index/pane-base-index (see respawnPaneArgs for why the alternatives do
+// not). Known ceiling: a user who splits the agent pane with `split-window -b`
+// puts a new pane above/left of it, which would move the anchor. Addressing the
+// pane by the id tmux assigns at creation would be exact, but that means
+// persisting new per-session state; positional targeting covers the splits
+// users actually make.
+func agentPaneTarget(id string) string {
+	return id + ":^.{top-left}"
+}
+
 // panePIDArgs returns the pid of tmux's direct pane process. AO walks its
-// descendants to find the exact supervisor for the current launch.
+// descendants to find the exact supervisor for the current launch, so this must
+// name the agent's pane specifically: resolving to a user-opened pane instead
+// yields a pid with no agent descendants, and IsSupervisedProcessAlive then
+// reports a perfectly healthy agent as dead.
 func panePIDArgs(id string) []string {
-	return []string{"display-message", "-p", "-t", id + ":0.0", "#{pane_pid}"}
+	return []string{"display-message", "-p", "-t", agentPaneTarget(id), "#{pane_pid}"}
 }
 
 // paneCurrentPathArgs prints tmux's cwd for the session's active pane. Create

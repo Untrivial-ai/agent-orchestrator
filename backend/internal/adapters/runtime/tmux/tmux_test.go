@@ -167,8 +167,12 @@ func TestCommandBuilders(t *testing.T) {
 		[]string{"new-session", "-d", "-s", "sess-1", "-x", "220", "-y", "50", "-c", "/tmp/ws", "/bin/sh", "-c", `echo hi; exec "${SHELL:-/bin/sh}" -i`}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("newSessionArgs = %#v, want %#v", got, want)
 	}
+	// respawn-pane must name the agent's pane by position: ":0.0" hardcodes
+	// tmux's default base-index/pane-base-index of 0 and fails wherever they are
+	// 1, while a bare session name follows the user's active pane into a window
+	// or split they opened themselves.
 	if got, want := respawnPaneArgs("sess-1", "/tmp/ws", "/bin/sh", "echo hi"),
-		[]string{"respawn-pane", "-k", "-t", "sess-1:0.0", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
+		[]string{"respawn-pane", "-k", "-t", "sess-1:^.{top-left}", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("respawnPaneArgs = %#v, want %#v", got, want)
 	}
 	// set-option uses pane-targeting (no = prefix).
@@ -191,7 +195,9 @@ func TestCommandBuilders(t *testing.T) {
 	if got, want := hasSessionArgs("sess-1"), []string{"has-session", "-t", "=sess-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("hasSessionArgs = %#v, want %#v", got, want)
 	}
-	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1:0.0", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
+	// Same positional target as respawnPaneArgs above: the supervisor scan roots
+	// at this pid, so a user-opened pane here would look like a dead agent.
+	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1:^.{top-left}", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("panePIDArgs = %#v, want %#v", got, want)
 	}
 	// list-panes reaps whole-session (-s) with exact-match target and prints pane pids.
@@ -642,7 +648,7 @@ func TestRestartRespawnsExistingPaneAndPreservesHandle(t *testing.T) {
 	if len(fr.calls) != 2 {
 		t.Fatalf("calls = %d, want respawn + liveness probe", len(fr.calls))
 	}
-	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "sess-1:0.0" || args[5] != "/tmp/ws" {
+	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "sess-1:^.{top-left}" || args[5] != "/tmp/ws" {
 		t.Fatalf("respawn args = %#v", args)
 	}
 	if args := fr.calls[1].args; !reflect.DeepEqual(args, hasSessionArgs("sess-1")) {
