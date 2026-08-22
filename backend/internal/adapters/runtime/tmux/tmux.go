@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/inputdelay"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/ptyexec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -618,11 +619,11 @@ func (r *Runtime) SendMessage(ctx context.Context, handle ports.RuntimeHandle, m
 		// Errors reported by tmux after it accepts a chunk still return to the
 		// caller; they are not retried because AO cannot safely distinguish
 		// whether tmux applied the failed command.
-		if r.enterDelay > 0 {
+		if delay := inputdelay.ForMessage(message, r.enterDelay); delay > 0 {
 			select {
 			case <-enterCtx.Done():
 				return enterCtx.Err()
-			case <-time.After(r.enterDelay):
+			case <-time.After(delay):
 			}
 		}
 	}
