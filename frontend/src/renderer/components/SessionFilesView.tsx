@@ -2,6 +2,7 @@ import {
 	memo,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -445,6 +446,8 @@ function ReviewFileCard({
 	// Keyed by file.path in ReviewFileList's .map(), so this naturally resets to
 	// "source" for a different file while surviving this file's own re-renders.
 	const [viewMode, setViewMode] = useState<"source" | "rendered">("source");
+	const tabsRef = useRef<HTMLDivElement>(null);
+	const { onViewModeChange } = useViewModeScrollAnchor(tabsRef, viewMode, setViewMode);
 	const detailQuery = useQuery({
 		queryKey: ["session-workspace-file", sessionId, file.path],
 		enabled: expanded && !selectionOrMenuActive,
@@ -493,9 +496,10 @@ function ReviewFileCard({
 							detailLoadedAt={detailQuery.dataUpdatedAt}
 							file={file}
 							onActiveSelectionChange={setSelectionOrMenuActive}
-							onViewModeChange={setViewMode}
+							onViewModeChange={onViewModeChange}
 							sessionId={sessionId}
 							split={split}
+							tabsRef={tabsRef}
 							viewMode={viewMode}
 							wrap={wrap}
 						/>
@@ -562,7 +566,84 @@ async function loadWorkspaceFile(sessionId: string, path: string, t: TFunction) 
 	return data;
 }
 
-// A markdown file gets a "Source diff" / "Rendered" tab pair above its diff
+type FileViewMode = "source" | "rendered";
+
+/**
+ * Keeps a file card where the eye left it when its diff/rendered tab changes.
+ *
+ * There is no per-file scroll box — the Files panel is one shared scroller
+ * (`[data-files-scroll-root]`, see `useSharedScrollRowVirtualizer`), so "scroll
+ * position" is that panel's `scrollTop`, and nothing about switching tabs resets
+ * it directly. What moves the content is the height swap: a 4,000-line diff and
+ * its rendered form are wildly different heights, and when the shorter one mounts
+ * the browser clamps `scrollTop` to the now-smaller maximum. Switching back
+ * restores the height but not the clamped-away offset, which is why a long diff
+ * came back parked near its top.
+ *
+ * Note this is NOT solved by `forceMount` on both tabs: a hidden `TabsContent`
+ * is `display: none`, contributes zero height, and clamps identically — it would
+ * only add the cost of keeping a large diff permanently mounted.
+ *
+ * So: remember where the card sat when a mode was left, and put it back when that
+ * mode returns. Re-run after a frame as well, because virtualized rows measure
+ * their real heights one frame after mounting and shift everything below them.
+ */
+function useViewModeScrollAnchor(
+	tabsRef: RefObject<HTMLDivElement | null>,
+	viewMode: FileViewMode,
+	setViewMode: (mode: FileViewMode) => void,
+) {
+	// Offset of the tab strip's top edge from the scroll root's, per mode.
+	// Negative once it has scrolled up out of view, which is the case that
+	// mattered. The tab strip rather than the whole card because it sits at the
+	// top of the body being swapped, and it is an element this component owns
+	// outright — no ref composition through `asChild` to depend on.
+	const offsets = useRef<Partial<Record<FileViewMode, number>>>({});
+	const pending = useRef<{ root: HTMLElement; offset: number } | null>(null);
+
+	const currentOffset = useCallback(
+		(root: HTMLElement) => {
+			const tabs = tabsRef.current;
+			if (!tabs) return null;
+			return tabs.getBoundingClientRect().top - root.getBoundingClientRect().top;
+		},
+		[tabsRef],
+	);
+
+	const onViewModeChange = useCallback(
+		(next: FileViewMode) => {
+			const root = tabsRef.current?.closest<HTMLElement>("[data-files-scroll-root]") ?? null;
+			const offset = root ? currentOffset(root) : null;
+			if (root && offset !== null) {
+				offsets.current[viewMode] = offset;
+				// Fall back to holding the card still when the incoming mode has no
+				// remembered offset yet — the first switch in either direction.
+				pending.current = { root, offset: offsets.current[next] ?? offset };
+			}
+			setViewMode(next);
+		},
+		[currentOffset, setViewMode, tabsRef, viewMode],
+	);
+
+	useLayoutEffect(() => {
+		const target = pending.current;
+		pending.current = null;
+		if (!target) return;
+		const settle = () => {
+			const offset = currentOffset(target.root);
+			if (offset === null) return;
+			const delta = offset - target.offset;
+			if (delta) target.root.scrollTop += delta;
+		};
+		settle();
+		const frame = requestAnimationFrame(settle);
+		return () => cancelAnimationFrame(frame);
+	}, [currentOffset, viewMode]);
+
+	return { onViewModeChange };
+}
+
+// A markdown file gets a "Diff" / "Preview" tab pair above its diff
 // body; every other file (and a deleted markdown file, which has no current
 // content to render) falls straight through to the diff body unchanged.
 function FileDetailBody({
@@ -574,6 +655,7 @@ function FileDetailBody({
 	onViewModeChange,
 	sessionId,
 	split,
+	tabsRef,
 	viewMode,
 	wrap,
 }: {
@@ -582,10 +664,11 @@ function FileDetailBody({
 	detailLoadedAt: number;
 	file: WorkspaceFileSummary;
 	onActiveSelectionChange: (active: boolean) => void;
-	onViewModeChange: (mode: "source" | "rendered") => void;
+	onViewModeChange: (mode: FileViewMode) => void;
 	sessionId: string;
 	split: boolean;
-	viewMode: "source" | "rendered";
+	tabsRef: RefObject<HTMLDivElement | null>;
+	viewMode: FileViewMode;
 	wrap: boolean;
 }) {
 	const { t } = useTranslation();
@@ -603,14 +686,27 @@ function FileDetailBody({
 	);
 	if (!canRenderMarkdown(file.path, file.status)) return diffBody;
 	return (
-		<Tabs value={viewMode} onValueChange={(next) => onViewModeChange(next as "source" | "rendered")}>
-			<TabsList className="mx-2.5 mt-2">
-				<TabsTrigger value="source">{t("files.sourceDiff")}</TabsTrigger>
-				<TabsTrigger value="rendered">{t("files.rendered")}</TabsTrigger>
+		<Tabs ref={tabsRef} value={viewMode} onValueChange={(next) => onViewModeChange(next as FileViewMode)}>
+			{/* Sized down from the app-wide default towards GitHub's own Edit/Preview
+			    control: this sits inside a file row, not on a page header, and the
+			    full-size pill dwarfs the diff it labels. */}
+			<TabsList className="mx-2.5 mt-2 h-6 gap-0.5 rounded-md p-0.5">
+				<TabsTrigger value="source" className="h-5 flex-none rounded-[5px] px-2 text-xs">
+					{t("files.diff")}
+				</TabsTrigger>
+				<TabsTrigger value="rendered" className="h-5 flex-none rounded-[5px] px-2 text-xs">
+					{t("files.preview")}
+				</TabsTrigger>
 			</TabsList>
 			<TabsContent value="source">{diffBody}</TabsContent>
 			<TabsContent value="rendered">
-				<MarkdownFileView content={detail.content} filePath={file.path} sessionId={sessionId} />
+				<MarkdownFileView
+					content={detail.content}
+					filePath={file.path}
+					sessionId={sessionId}
+					truncated={detail.contentTruncated}
+					version={detailLoadedAt}
+				/>
 			</TabsContent>
 		</Tabs>
 	);
@@ -846,6 +942,10 @@ function DiffView({
 	const menuOpen = menuState?.open ?? false;
 	useEffect(() => {
 		onActiveSelectionChange(hasSelection || menuOpen);
+		// Unmounting takes the selection with it. Without this the guard sticks on
+		// after a tab switch away from the diff, and the file's detail query stays
+		// disabled — the rendered view would then show content that never refreshes.
+		return () => onActiveSelectionChange(false);
 	}, [hasSelection, menuOpen, onActiveSelectionChange]);
 
 	const onContextMenu = useCallback(

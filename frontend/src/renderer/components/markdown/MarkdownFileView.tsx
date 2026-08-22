@@ -1,7 +1,7 @@
 /**
  * GitHub-accurate rendered view of a `.md` file's current worktree content.
  *
- * Shown as the "Rendered" tab alongside a markdown file's "Source diff" in
+ * Shown as the "Preview" tab alongside a markdown file's "Diff" in
  * `SessionFilesView.tsx`. Styled with `github-markdown-css` (`.markdown-body`)
  * rather than AO's own design system — a deliberate, scoped exception for this
  * one view, since the whole point is to look like GitHub, not like AO chrome.
@@ -20,7 +20,8 @@
  * combined stylesheet follows `prefers-color-scheme`, and `main.ts` already
  * drives Electron's `nativeTheme.themeSource` from AO's own theme preference,
  * so this renderer's `prefers-color-scheme` already tracks AO's theme, not the
- * raw OS setting.
+ * raw OS setting. (In `npm run dev:web` there is no `nativeTheme`, so it follows
+ * the OS directly.)
  */
 
 import Markdown, { type Components } from "react-markdown";
@@ -29,10 +30,11 @@ import remarkGfm from "remark-gfm";
 import { rehypeGithubAlerts } from "rehype-github-alerts";
 import rehypeSlug from "rehype-slug";
 import rehypeAutolinkHeadings from "rehype-autolink-headings";
-import { isValidElement, type ReactNode } from "react";
+import { useCallback, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { canonicalLanguage } from "../../lib/code-highlight";
+import { fenceOf } from "../../lib/markdown-fence";
 import { isWebLink } from "../../lib/external-link-policy";
-import { aoBridge } from "../../lib/bridge";
 import { HighlightedCode } from "../chat/HighlightedCode";
 import "../chat/code-theme.css";
 import "github-markdown-css/github-markdown.css";
@@ -58,87 +60,100 @@ const REHYPE_PLUGINS: PluggableList = [
 	],
 ];
 
-/** The text inside a node, for language sniffing on a fenced block. */
-function textOf(children: ReactNode): string {
-	if (typeof children === "string") return children;
-	if (typeof children === "number") return String(children);
-	if (Array.isArray(children)) return children.map(textOf).join("");
-	if (children && typeof children === "object" && "props" in children) {
-		return textOf((children as { props?: { children?: ReactNode } }).props?.children);
-	}
-	return "";
-}
-
-const LANGUAGE_CLASS = /language-([\w+#-]+)/;
-
-/** The fence inside a `pre`, or undefined if this is not a fenced block. */
-function fenceOf(children: ReactNode): { code: string; language?: string } | undefined {
-	if (!isValidElement<{ className?: string; children?: ReactNode }>(children)) return undefined;
-	return {
-		code: textOf(children.props.children).replace(/\n$/, ""),
-		language: LANGUAGE_CLASS.exec(children.props.className ?? "")?.[1],
-	};
-}
-
-const COMPONENTS: Components = {
-	pre: ({ children }) => {
-		const fence = fenceOf(children);
-		if (!fence) return <>{children}</>;
-		return (
-			<pre className="markdown-code">
-				<code>
-					<HighlightedCode code={fence.code} language={canonicalLanguage(fence.language)} />
-				</code>
-			</pre>
-		);
-	},
-
-	img: ({ src, alt }) => <MarkdownImage src={typeof src === "string" ? src : undefined} alt={alt} />,
-
-	// A dispatcher, not a single link renderer: a same-page heading fragment
-	// scrolls and copies its own link; a genuine http(s)/mailto link opens
-	// externally; a relative link to another repo file (`./OTHER.md`) has no
-	// in-app navigation target today, so it renders as inert text rather than a
-	// link that would silently do nothing (or worse, navigate the app shell).
-	a: ({ href, children, ...rest }) => {
-		if (!href) return <>{children}</>;
-		if (href.startsWith("#")) {
-			return (
-				<a
-					href={href}
-					{...rest}
-					onClick={(event) => {
-						event.preventDefault();
-						document.getElementById(href.slice(1))?.scrollIntoView({ behavior: "smooth", block: "start" });
-						void aoBridge.clipboard.writeText(href);
-					}}
-				>
-					{children}
-				</a>
-			);
-		}
-		if (isWebLink(href) || href.startsWith("mailto:")) {
-			return <MarkdownExternalLink href={href}>{children}</MarkdownExternalLink>;
-		}
-		return <span>{children}</span>;
-	},
-};
 
 export function MarkdownFileView({
 	sessionId,
 	filePath,
 	content,
+	truncated,
+	version,
 }: {
 	sessionId: string;
 	filePath: string;
 	content: string;
+	/** The daemon capped the file it sent; what renders below is a prefix of it. */
+	truncated: boolean;
+	/** The file detail's load timestamp, for cache-busting relative images. */
+	version: number;
 }) {
+	const { t } = useTranslation();
+	const bodyRef = useRef<HTMLDivElement>(null);
+	const contextValue = useMemo(() => ({ sessionId, filePath, version }), [sessionId, filePath, version]);
+
+	// Heading slugs are unique per rendered file, not per document, and the Files
+	// tab expands many files at once — two open READMEs both containing
+	// "## Overview" put two `id="overview"` in the same DOM. Resolving inside this
+	// file's own container is what keeps a fragment link on the file it was
+	// written in; `document.getElementById` would hand back whichever came first.
+	// It also leaves a hand-written `[x](#overview)` working, which prefixing the
+	// slugs would have broken.
+	const onFragmentClick = useCallback((fragment: string) => {
+		const id = fragment.slice(1);
+		if (!id) return;
+		bodyRef.current
+			?.querySelector(`[id="${CSS.escape(id)}"]`)
+			?.scrollIntoView({ behavior: "smooth", block: "start" });
+	}, []);
+
+	const components = useMemo<Components>(
+		() => ({
+			pre: ({ children }) => {
+				const fence = fenceOf(children);
+				if (!fence) return <>{children}</>;
+				return (
+					<pre className="markdown-code">
+						<code>
+							<HighlightedCode code={fence.code} language={canonicalLanguage(fence.language)} />
+						</code>
+					</pre>
+				);
+			},
+
+			img: ({ src, alt }) => <MarkdownImage src={typeof src === "string" ? src : undefined} alt={alt} />,
+
+			// A dispatcher, not a single link renderer: a same-page heading fragment
+			// scrolls to that heading; a genuine http(s)/mailto link opens
+			// externally; a relative link to another repo file (`./OTHER.md`) has no
+			// in-app navigation target today, so it renders as inert text rather than
+			// a link that would silently do nothing (or worse, navigate the app
+			// shell).
+			a: ({ href, children, ...rest }) => {
+				if (!href) return <>{children}</>;
+				if (href.startsWith("#")) {
+					return (
+						<a
+							href={href}
+							{...rest}
+							onClick={(event) => {
+								event.preventDefault();
+								onFragmentClick(href);
+							}}
+						>
+							{children}
+						</a>
+					);
+				}
+				if (isWebLink(href) || href.startsWith("mailto:")) {
+					return <MarkdownExternalLink href={href}>{children}</MarkdownExternalLink>;
+				}
+				return <span>{children}</span>;
+			},
+		}),
+		[onFragmentClick],
+	);
 	return (
-		<MarkdownFileContext.Provider value={{ sessionId, filePath }}>
-			<div className="markdown-body p-4">
-				<Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={COMPONENTS}>
-					{content}
-				</Markdown>
+		<MarkdownFileContext.Provider value={contextValue}>
+			<div>
+				{truncated ? (
+					<div className="shrink-0 border-b border-border bg-warning/10 px-3 py-1.5 text-xs text-warning">
+						{t("files.contentTruncated")}
+					</div>
+				) : null}
+				<div className="markdown-body p-4" ref={bodyRef}>
+					<Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
+						{content}
+					</Markdown>
+				</div>
 			</div>
 		</MarkdownFileContext.Provider>
 	);

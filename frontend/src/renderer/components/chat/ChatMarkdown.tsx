@@ -26,7 +26,6 @@
 import {
 	createContext,
 	Fragment,
-	isValidElement,
 	memo,
 	useContext,
 	useState,
@@ -38,6 +37,7 @@ import { WrapText } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { aoBridge } from "../../lib/bridge";
 import { canonicalLanguage } from "../../lib/code-highlight";
+import { fenceOf } from "../../lib/markdown-fence";
 import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
 import {
 	ContextMenu,
@@ -167,29 +167,8 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
 	);
 }
 
-/** The text inside a node, for the copy button and language sniffing. */
-function textOf(children: ReactNode): string {
-	if (typeof children === "string") return children;
-	if (typeof children === "number") return String(children);
-	if (Array.isArray(children)) return children.map(textOf).join("");
-	if (children && typeof children === "object" && "props" in children) {
-		return textOf((children as { props?: { children?: ReactNode } }).props?.children);
-	}
-	return "";
-}
-
-const LANGUAGE_CLASS = /language-([\w+#-]+)/;
 const EMOJI_GRAPHEME = /\p{Extended_Pictographic}|\p{Regional_Indicator}|[#*0-9]\uFE0F?\u20E3/u;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-/** The fence inside a `pre`, or undefined if this is not a fenced block. */
-function fenceOf(children: ReactNode): { code: string; language?: string } | undefined {
-	if (!isValidElement<{ className?: string; children?: ReactNode }>(children)) return undefined;
-	return {
-		code: textOf(children.props.children).replace(/\n$/, ""),
-		language: LANGUAGE_CLASS.exec(children.props.className ?? "")?.[1],
-	};
-}
 
 function compactEmoji(children: ReactNode): ReactNode {
 	if (typeof children === "string") {

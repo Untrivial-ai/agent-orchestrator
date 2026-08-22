@@ -48,9 +48,17 @@ export function resolveMarkdownAssetPath(markdownFilePath: string, rawSrc: strin
 	return normalizeSegments(joined);
 }
 
-/** Matches `ImageDiffView.tsx`'s `workspaceImageUrl` — the same blob route, `side=after` for current content. */
-export function buildWorkspaceBlobUrl(sessionId: string, path: string): string {
-	const query = new URLSearchParams({ path, side: "after" });
+/**
+ * Matches `ImageDiffView.tsx`'s `workspaceImageUrl` — the same blob route,
+ * `side=after` for current content.
+ *
+ * `version` is not decoration. The blob route sets `no-store`, so as
+ * `ImageDiffView` puts it: without a changing URL the element never refetches at
+ * all. Pass the file detail's load timestamp so an image the agent rewrites
+ * actually reloads instead of sitting on the copy the browser already has.
+ */
+export function buildWorkspaceBlobUrl(sessionId: string, path: string, version: number): string {
+	const query = new URLSearchParams({ path, side: "after", v: String(version) });
 	return `${getApiBaseUrl()}/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/file/blob?${query}`;
 }
 
@@ -59,8 +67,9 @@ export function resolveMarkdownImageSrc(
 	sessionId: string,
 	markdownFilePath: string,
 	rawSrc: string | undefined,
+	version: number,
 ): string | undefined {
 	if (!rawSrc) return undefined;
 	if (isAbsoluteMarkdownAssetSrc(rawSrc)) return rawSrc;
-	return buildWorkspaceBlobUrl(sessionId, resolveMarkdownAssetPath(markdownFilePath, rawSrc));
+	return buildWorkspaceBlobUrl(sessionId, resolveMarkdownAssetPath(markdownFilePath, rawSrc), version);
 }
