@@ -524,6 +524,18 @@ func (w *Workspace) StashUncommitted(ctx context.Context, info ports.WorkspaceIn
 	// Deferred remove is a best-effort cleanup in case git leaves the file.
 	defer func() { _ = os.Remove(tmpIdxPath) }()
 
+	// Seed the temp index from HEAD so `git add -A` knows which paths are already
+	// tracked. Without this the index starts empty, and git's "already-tracked
+	// files bypass .gitignore" rule can't fire: a file committed in HEAD that also
+	// matches a .gitignore pattern is treated as an untracked-ignored file and
+	// silently skipped, so its uncommitted edit is dropped from the preserve tree
+	// (which then reads as a deletion on restore, losing the agent's work). An
+	// unborn HEAD has nothing to seed, so a read-tree failure is expected and
+	// ignored there — `add -A` then behaves as before for a fresh repo.
+	seedCmd := exec.CommandContext(ctx, w.binary, readTreeHeadArgs(info.Path)...)
+	seedCmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmpIdxPath)
+	_ = seedCmd.Run()
+
 	// Stage all tracked and non-ignored untracked files into the temp index.
 	// GIT_INDEX_FILE overrides the index so the real index is never touched.
 	addCmd := aoprocess.CommandContext(ctx, w.binary, addAllTempIndexArgs(path)...)
