@@ -112,6 +112,8 @@ type SessionService interface {
 	InvalidateWorkspaceCache(id domain.SessionID)
 	Pin(ctx context.Context, id domain.SessionID) (domain.Session, error)
 	Unpin(ctx context.Context, id domain.SessionID) (domain.Session, error)
+	ListEditors(ctx context.Context) ([]sessionsvc.EditorInfo, error)
+	OpenInEditor(ctx context.Context, id domain.SessionID, req sessionsvc.OpenEditorRequest) (sessionsvc.OpenEditorResult, error)
 }
 
 // ActivityRecorder applies an agent activity-state signal to a session. It is
@@ -170,6 +172,8 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/attachments", c.stageAttachments)
 	r.Get("/sessions/{sessionId}/workspace/files", c.listWorkspaceFiles)
 	r.Get("/sessions/{sessionId}/workspace/file", c.getWorkspaceFile)
+	r.Post("/sessions/{sessionId}/open-editor", c.openInEditor)
+	r.Get("/editors", c.listEditors)
 	r.Get("/sessions/{sessionId}/workspace/file/blob", c.getWorkspaceFileBlob)
 	r.Get("/sessions/{sessionId}/pr", c.listPRs)
 	r.Post("/sessions/{sessionId}/pr/claim", c.claimPR)
@@ -551,6 +555,57 @@ func (c *SessionsController) listWorkspaceFiles(w http.ResponseWriter, r *http.R
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, workspaceFilesResponse(files))
+}
+
+// listEditors reports which external editors are installed. The renderer uses
+// it to label the topbar button and populate its editor picker; an empty list
+// means the button stays disabled with an install hint.
+func (c *SessionsController) listEditors(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/editors")
+		return
+	}
+	found, err := c.Svc.ListEditors(r.Context())
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	editors := make([]EditorSummary, 0, len(found))
+	for _, ed := range found {
+		editors = append(editors, EditorSummary{ID: ed.ID, Name: ed.Name})
+	}
+	envelope.WriteJSON(w, http.StatusOK, ListEditorsResponse{Editors: editors})
+}
+
+// openInEditor launches an external editor on the session's workspace. The
+// daemon resolves the directory and the file to focus, so no filesystem path
+// crosses the API in either direction.
+func (c *SessionsController) openInEditor(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/open-editor")
+		return
+	}
+	var in OpenSessionEditorRequest
+	if err := decodeJSON(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_BODY", "invalid JSON body", nil)
+		return
+	}
+	out, err := c.Svc.OpenInEditor(r.Context(), sessionID(r), sessionsvc.OpenEditorRequest{
+		EditorID: strings.TrimSpace(in.EditorID),
+		Path:     strings.TrimSpace(in.Path),
+	})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, OpenSessionEditorResponse{
+		OK:         true,
+		SessionID:  sessionID(r),
+		EditorID:   out.EditorID,
+		EditorName: out.EditorName,
+		File:       out.File,
+		Scope:      out.Scope,
+	})
 }
 
 func (c *SessionsController) getWorkspaceFile(w http.ResponseWriter, r *http.Request) {

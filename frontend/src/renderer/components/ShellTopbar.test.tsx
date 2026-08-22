@@ -34,7 +34,12 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		POST: postMock,
+		// The open-in-editor button probes for installed editors on mount.
+		GET: vi.fn(async () => ({ data: { editors: [] } })),
 	},
+	// No trusted daemon in the topbar tests: editor detection stays disabled, so
+	// the open button renders nothing and the actions row is unchanged.
+	hasTrustedApiBaseUrl: () => false,
 	apiErrorMessage: (error: unknown, fallback = "Request failed") => {
 		if (error instanceof Error) return error.message;
 		if (typeof error === "object" && error !== null && "message" in error) {

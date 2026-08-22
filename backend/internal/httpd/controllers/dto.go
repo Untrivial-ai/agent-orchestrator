@@ -344,6 +344,38 @@ type WorkspaceFileResponse struct {
 	CompareMode      sessionsvc.WorkspaceCompareMode `json:"compareMode,omitempty" enum:"base,head_fallback"`
 }
 
+// ListEditorsResponse is the body of GET /api/v1/editors: the external editors
+// AO can launch on this machine, in preference order.
+type ListEditorsResponse struct {
+	Editors []EditorSummary `json:"editors"`
+}
+
+// EditorSummary is one launchable external editor.
+type EditorSummary struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// OpenSessionEditorRequest is the body of POST /api/v1/sessions/{sessionId}/open-editor.
+type OpenSessionEditorRequest struct {
+	// EditorID names a detected editor. Omit to use the first one found.
+	EditorID string `json:"editorId,omitempty"`
+	// Path is a workspace-relative file to focus. Omit to auto-pick the file the
+	// session changed most recently; "." opens the folder with no files.
+	Path string `json:"path,omitempty"`
+}
+
+// OpenSessionEditorResponse reports what was opened. It carries no filesystem
+// path: only the workspace-relative file, matching the rest of the session API.
+type OpenSessionEditorResponse struct {
+	OK         bool             `json:"ok"`
+	SessionID  domain.SessionID `json:"sessionId"`
+	EditorID   string           `json:"editorId"`
+	EditorName string           `json:"editorName"`
+	File       string           `json:"file"`
+	Scope      string           `json:"scope" enum:"workspace,project"`
+}
+
 // SessionPreviewResponse is the body of GET /api/v1/sessions/{sessionId}/preview.
 type SessionPreviewResponse struct {
 	SessionID  domain.SessionID `json:"sessionId"`

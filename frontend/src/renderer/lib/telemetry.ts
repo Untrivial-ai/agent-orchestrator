@@ -441,6 +441,35 @@ async function sanitizeRendererContextProperties(properties?: TelemetryPropertie
 
 const ORCHESTRATOR_SPAWN_SOURCE_SET = new Set<string>(ORCHESTRATOR_SPAWN_SOURCES);
 
+// Mirrors the editor package's candidate table on the daemon
+// (backend/internal/service/editor/editor.go) plus the renderer's own request
+// sentinel ("auto") and response fallback ("unknown"). None of these come from
+// user input, so they carry no user data.
+const EDITOR_ID_SET = new Set<string>([
+	"vscode",
+	"cursor",
+	"windsurf",
+	"zed",
+	"trae",
+	"kiro",
+	"positron",
+	"vscodium",
+	"vscode-insiders",
+	"sublime",
+	"intellij",
+	"webstorm",
+	"pycharm",
+	"goland",
+	"phpstorm",
+	"rubymine",
+	"clion",
+	"rider",
+	"android-studio",
+	"fleet",
+	"auto",
+	"unknown",
+]);
+
 export async function sanitizeRendererProperties(
 	event: string,
 	properties?: TelemetryProperties,
@@ -517,6 +546,34 @@ export async function sanitizeRendererProperties(
 			if (typeof properties?.authorized_agents === "string") {
 				safe.authorized_agents = properties.authorized_agents;
 			}
+			break;
+		}
+		case "ao.renderer.open_in_editor_requested": {
+			const projectIDHash = await hashedTelemetryID(properties?.project_id);
+			if (projectIDHash) safe.project_id_hash = projectIDHash;
+			if (typeof properties?.editor_id === "string" && EDITOR_ID_SET.has(properties.editor_id)) {
+				safe.editor_id = properties.editor_id;
+			}
+			if (properties?.target === "folder" || properties?.target === "file" || properties?.target === "auto") {
+				safe.target = properties.target;
+			}
+			break;
+		}
+		case "ao.renderer.open_in_editor_succeeded": {
+			const projectIDHash = await hashedTelemetryID(properties?.project_id);
+			if (projectIDHash) safe.project_id_hash = projectIDHash;
+			if (typeof properties?.editor_id === "string" && EDITOR_ID_SET.has(properties.editor_id)) {
+				safe.editor_id = properties.editor_id;
+			}
+			if (properties?.scope === "workspace" || properties?.scope === "project" || properties?.scope === "unknown") {
+				safe.scope = properties.scope;
+			}
+			if (typeof properties?.focused_file === "boolean") safe.focused_file = properties.focused_file;
+			break;
+		}
+		case "ao.renderer.open_in_editor_failed": {
+			const projectIDHash = await hashedTelemetryID(properties?.project_id);
+			if (projectIDHash) safe.project_id_hash = projectIDHash;
 			break;
 		}
 		case "ao.renderer.session_state_unknown":

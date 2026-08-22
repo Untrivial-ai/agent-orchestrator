@@ -2358,6 +2358,26 @@ body.is-resizing-x [data-slot="inspector-container"] {
 	padding-inline: var(--space-2_5);
 }
 
+/* Split "Open in editor" control. The generic .topbar-control rule above rounds
+   all four corners and clamps every control to a square minimum, which makes the
+   two halves read as separate chips crammed together rather than one button.
+   Square the joining edge, let the label half breathe, and keep the chevron half
+   narrower than a full square so the pair stays compact. */
+.workspace-topbar-actions .topbar-control--split-main {
+	padding-inline: var(--space-3);
+	gap: var(--space-1_5);
+	border-start-end-radius: 0;
+	border-end-end-radius: 0;
+}
+
+.workspace-topbar-actions .topbar-control--split-trigger {
+	min-width: var(--space-5_5);
+	width: var(--space-5_5);
+	padding-inline: 0;
+	border-start-start-radius: 0;
+	border-end-start-radius: 0;
+}
+
 .workspace-topbar-actions [data-compact-label] {
 	display: inline-block;
 	inline-size: max-content;

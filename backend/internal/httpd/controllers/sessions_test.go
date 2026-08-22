@@ -62,6 +62,9 @@ type fakeSessionService struct {
 	handoffSource       domain.AgentGenerationID
 	autoInjectCISession domain.SessionID
 	autoInjectCIEnabled bool
+	editors             []sessionsvc.EditorInfo
+	openEditorReq       sessionsvc.OpenEditorRequest
+	openEditorErr       error
 }
 
 type fakeInterfaceTransitionSessionService struct {
@@ -515,6 +518,21 @@ func (f *fakeSessionService) ClaimPR(_ context.Context, id domain.SessionID, ref
 	}
 	prs, _ := f.ListPRs(context.Background(), id)
 	return sessionsvc.ClaimPRResult{PRs: prs, TakenOverFrom: []domain.SessionID{}, BranchChanged: true}, nil
+}
+
+func (f *fakeSessionService) ListEditors(context.Context) ([]sessionsvc.EditorInfo, error) {
+	return f.editors, nil
+}
+
+func (f *fakeSessionService) OpenInEditor(_ context.Context, id domain.SessionID, req sessionsvc.OpenEditorRequest) (sessionsvc.OpenEditorResult, error) {
+	if f.openEditorErr != nil {
+		return sessionsvc.OpenEditorResult{}, f.openEditorErr
+	}
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.OpenEditorResult{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	f.openEditorReq = req
+	return sessionsvc.OpenEditorResult{EditorID: "vscode", EditorName: "VS Code", File: "src/download.ts", Scope: "workspace"}, nil
 }
 
 func (f *fakeSessionService) StageAttachments(
@@ -2103,6 +2121,60 @@ func TestSessionsAPI_KillLeavesPreviewTeardownToSessionLifecycle(t *testing.T) {
 	if managed.stopCalls != 0 {
 		t.Fatalf("controller duplicated managed preview teardown: stop calls = %d", managed.stopCalls)
 	}
+}
+
+func TestSessionsAPI_ListEditors(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.editors = []sessionsvc.EditorInfo{{ID: "vscode", Name: "VS Code"}, {ID: "cursor", Name: "Cursor"}}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, "GET", "/api/v1/editors", "")
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("GET editors = %d, want 200; body=%s", status, body)
+	}
+	var got struct {
+		Editors []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"editors"`
+	}
+	mustJSON(t, body, &got)
+	if len(got.Editors) != 2 || got.Editors[0].ID != "vscode" || got.Editors[1].Name != "Cursor" {
+		t.Fatalf("editors = %+v, want vscode then Cursor", got.Editors)
+	}
+}
+
+func TestSessionsAPI_OpenInEditorPassesRequestAndOmitsPaths(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/open-editor", `{"editorId":"cursor","path":"src/download.ts"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("POST open-editor = %d, want 200; body=%s", status, body)
+	}
+	if svc.openEditorReq.EditorID != "cursor" || svc.openEditorReq.Path != "src/download.ts" {
+		t.Fatalf("service received %+v, want editorId=cursor path=src/download.ts", svc.openEditorReq)
+	}
+	var raw map[string]any
+	mustJSON(t, body, &raw)
+	if raw["file"] != "src/download.ts" || raw["scope"] != "workspace" {
+		t.Fatalf("response = %v, want the relative file and workspace scope", raw)
+	}
+	// Filesystem paths must never cross the API, same rule the list endpoint holds.
+	for _, leak := range []string{"workspacePath", "path", "dir"} {
+		if _, ok := raw[leak]; ok {
+			t.Fatalf("response leaked %q: %s", leak, body)
+		}
+	}
+}
+
+func TestSessionsAPI_OpenInEditorNotFound(t *testing.T) {
+	srv := newSessionTestServer(t, newFakeSessionService())
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/missing-1/open-editor", `{}`)
+	assertErrorCode(t, body, status, http.StatusNotFound, "SESSION_NOT_FOUND")
 }
 
 func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {

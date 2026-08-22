@@ -21,6 +21,16 @@ const topbarButtonVariants = cva(
 					"h-control-lg gap-1.5 rounded-md border border-error/40 bg-error/10 px-3 text-control font-semibold leading-none text-error hover:bg-error/16",
 				killCancel:
 					"h-control-lg rounded-md px-2.5 text-control font-semibold leading-none text-muted-foreground hover:text-foreground",
+				// Split-button halves: the same surface as `accent`, but squared on
+				// the joining edge so the pair reads as one control with a divider.
+				// The corner radii and widths live in styles.css alongside the other
+				// topbar controls: `.workspace-topbar-actions .topbar-control` sets a
+				// radius on all four corners at higher specificity than a Tailwind
+				// `rounded-l-md`, so squaring the join has to happen there.
+				splitMain:
+					"topbar-control--split-main topbar-control--labeled h-control-lg gap-1.5 rounded-l-md border border-r-0 border-border text-sm font-semibold leading-none bg-raised text-muted-foreground hover:bg-surface hover:text-foreground",
+				splitTrigger:
+					"topbar-control--split-trigger grid h-control-lg place-items-center rounded-r-md border border-border bg-raised text-muted-foreground hover:bg-surface hover:text-foreground data-[state=open]:bg-surface data-[state=open]:text-foreground",
 			},
 		},
 		defaultVariants: { variant: "primary" },

@@ -430,6 +430,48 @@ describe("telemetry sanitizers", () => {
 		).toEqual({});
 	});
 
+	it("keeps a hashed project id, the fixed editor id, and the target enum on open_in_editor_requested", async () => {
+		const props = await sanitizeRendererProperties("ao.renderer.open_in_editor_requested", {
+			project_id: "demo-project",
+			editor_id: "vscode",
+			target: "file",
+		});
+		expect(Object.keys(props).sort()).toEqual(["editor_id", "project_id_hash", "target"]);
+		expect(props.editor_id).toBe("vscode");
+		expect(props.target).toBe("file");
+
+		const bogus = await sanitizeRendererProperties("ao.renderer.open_in_editor_requested", {
+			project_id: "demo-project",
+			// Not a real editor id — must not be forwarded as-is.
+			editor_id: "/Users/alice/bin/notepad",
+			target: "everything",
+		});
+		expect(bogus).not.toHaveProperty("editor_id");
+		expect(bogus).not.toHaveProperty("target");
+	});
+
+	it("keeps the editor id, scope enum, and focused_file flag on open_in_editor_succeeded", async () => {
+		const props = await sanitizeRendererProperties("ao.renderer.open_in_editor_succeeded", {
+			project_id: "demo-project",
+			editor_id: "cursor",
+			scope: "workspace",
+			focused_file: true,
+		});
+		expect(Object.keys(props).sort()).toEqual(["editor_id", "focused_file", "project_id_hash", "scope"]);
+		expect(props.editor_id).toBe("cursor");
+		expect(props.scope).toBe("workspace");
+		expect(props.focused_file).toBe(true);
+	});
+
+	it("reports open_in_editor_failed with only the hashed project id", async () => {
+		const props = await sanitizeRendererProperties("ao.renderer.open_in_editor_failed", {
+			project_id: "demo-project",
+			// Never part of the contract; must not leak through.
+			error: "EDITOR_LAUNCH_FAILED: Could not launch VS Code",
+		});
+		expect(Object.keys(props)).toEqual(["project_id_hash"]);
+	});
+
 	it("whitelists coarse daemon failure fields and drops messages", async () => {
 		const props = await sanitizeRendererProperties("ao.renderer.daemon_failure", {
 			daemon_state: "error",
