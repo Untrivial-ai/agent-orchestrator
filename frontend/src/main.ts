@@ -316,7 +316,9 @@ function applyRuntimeAppIcon(): void {
 	if (!iconPath) return;
 	const icon = nativeImage.createFromPath(iconPath);
 	if (!icon.isEmpty()) {
-		app.dock.setIcon(icon);
+		// app.dock is macOS-only, so it is always set under the darwin guard above;
+		// the optional call is for the type, which TypeScript cannot narrow from it.
+		app.dock?.setIcon(icon);
 	}
 }
 
