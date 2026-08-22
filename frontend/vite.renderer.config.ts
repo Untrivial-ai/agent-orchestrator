@@ -97,7 +97,15 @@ const productUiReactBoundary: Plugin = {
 	},
 };
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+	// `dev:web` asks for the Electron-free browser preview with `--mode web`, and
+	// the flag is injected here rather than as a `VITE_NO_ELECTRON=1` shell
+	// prefix in package.json: npm runs scripts through cmd.exe on Windows, which
+	// has no env-prefix syntax, so the prefix form fails before vite ever starts.
+	// An .env file would be the other option, but .gitignore excludes .env* so it
+	// could not be tracked. Only "web" defines the key; every other mode
+	// (electron-forge dev/package, vitest) leaves it undefined exactly as before.
+	define: mode === "web" ? { "import.meta.env.VITE_NO_ELECTRON": '"1"' } : {},
 	// "@/" → the renderer root (src/renderer), the shadcn/ui import convention.
 	resolve: {
 		alias: {
@@ -158,4 +166,4 @@ export default defineConfig({
 		globals: true,
 		setupFiles: "./src/renderer/test/setup.ts",
 	},
-});
+}));
