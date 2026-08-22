@@ -17,6 +17,8 @@ sudo apt install tmux
 
 Then run `ao doctor`. The desktop app starts and owns the daemon; there is no `runtime: tmux` YAML setting.
 
+`ao doctor` resolves tmux for the CLI process that runs the check. A separately running desktop daemon resolves tmux relative to its own executable, so a Homebrew-installed CLI may report system tmux while an app-bundled daemon uses bundled tmux, or vice versa. Sessions use the daemon's resolution.
+
 ## Desktop terminal
 
 The desktop xterm surface connects through AO's WebSocket terminal mux. On macOS/Linux the daemon opens a PTY-backed `tmux attach` stream for that client. Closing the desktop terminal view does not discard the underlying agent session.

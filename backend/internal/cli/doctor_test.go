@@ -74,8 +74,38 @@ func TestDoctorChecksTmuxVersion(t *testing.T) {
 	})
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "tmux")
-	if check.Level != doctorPass || !strings.Contains(check.Message, "3.3a") {
-		t.Fatalf("tmux check = %+v, want PASS with version", check)
+	if check.Level != doctorPass || !strings.Contains(check.Message, "3.3a") || !strings.Contains(check.Message, "system for this ao doctor process") {
+		t.Fatalf("tmux check = %+v, want PASS with system source and version", check)
+	}
+}
+
+func TestDoctorPrefersAndReportsBundledTmux(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ao doctor emits a conpty check on Windows, not tmux")
+	}
+	setConfigEnv(t)
+	self := filepath.Join(t.TempDir(), "AO.app", "Contents", "Resources", "daemon", "ao")
+	bundled := filepath.Join(filepath.Dir(self), "tmux")
+	paths := map[string]string{"git": "/bin/git", bundled: bundled, "tmux": "/bin/tmux"}
+	c := doctorContext(t, paths, func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "/bin/git":
+			return []byte("git version 2.43.0\n"), nil
+		case bundled:
+			if len(args) != 1 || args[0] != "-V" {
+				t.Fatalf("unexpected tmux command: %s %v", name, args)
+			}
+			return []byte("tmux 3.5a\n"), nil
+		default:
+			t.Fatalf("unexpected command: %s %v", name, args)
+			return nil, nil
+		}
+	})
+	c.deps.Executable = func() (string, error) { return self, nil }
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "tmux")
+	if check.Level != doctorPass || !strings.Contains(check.Message, bundled) || !strings.Contains(check.Message, "bundled for this ao doctor process") || !strings.Contains(check.Message, "3.5a") {
+		t.Fatalf("tmux check = %+v, want PASS with bundled source and version", check)
 	}
 }
 
@@ -111,6 +141,12 @@ func TestDoctorWarnsWhenTmuxMissing(t *testing.T) {
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "tmux")
 	if check.Level != doctorWarn {
 		t.Fatalf("tmux check = %+v, want WARN", check)
+	}
+	if !strings.Contains(check.Message, "no bundled or system tmux found") {
+		t.Fatalf("tmux check = %+v, want both lookup locations reported missing", check)
+	}
+	if !strings.Contains(check.Message, "this ao doctor process") {
+		t.Fatalf("tmux check = %+v, want process-local lookup scope", check)
 	}
 }
 

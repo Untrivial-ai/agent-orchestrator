@@ -26,6 +26,7 @@ import (
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
+	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
 )
 
 // Sentinel errors returned by the Session Manager; callers match them with
@@ -4368,8 +4369,8 @@ func (m *Manager) validateRuntimePrerequisites() error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
-	if path, err := m.lookPath("tmux"); err != nil || path == "" {
-		return fmt.Errorf("%w: tmux required on macOS/Linux but not in PATH", ports.ErrRuntimePrerequisite)
+	if resolution, err := tmuxbin.ResolveWith(m.executable, m.lookPath); err != nil || resolution.Path == "" {
+		return fmt.Errorf("%w: tmux required on macOS/Linux but no bundled or system tmux was found", ports.ErrRuntimePrerequisite)
 	}
 	return nil
 }

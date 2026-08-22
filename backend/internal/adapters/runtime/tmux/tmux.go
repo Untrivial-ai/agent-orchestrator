@@ -20,6 +20,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/ptyexec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
 )
 
 const (
@@ -49,7 +50,7 @@ var getenv = os.Getenv
 // Options configures a tmux Runtime. Every field has a sensible default (see
 // New), so the zero value is usable.
 type Options struct {
-	Binary     string        // default "tmux" (resolved via exec.LookPath)
+	Binary     string        // default bundled tmux next to ao, then tmux from PATH
 	Shell      string        // default $SHELL else /bin/sh
 	Timeout    time.Duration // default 5s
 	ChunkSize  int           // default 16*1024
@@ -237,13 +238,13 @@ func stableRunDir() string {
 }
 
 // New builds a tmux Runtime, filling unset Options with defaults: binary "tmux"
-// (resolved via exec.LookPath), shell from $SHELL (else /bin/sh), and the
+// (bundled next to ao, then PATH), shell from $SHELL (else /bin/sh), and the
 // default timeout and output chunk size.
 func New(opts Options) *Runtime {
 	binary := opts.Binary
 	if binary == "" {
-		if path, err := exec.LookPath("tmux"); err == nil {
-			binary = path
+		if resolution, err := tmuxbin.Resolve(); err == nil {
+			binary = resolution.Path
 		} else {
 			binary = "tmux"
 		}
