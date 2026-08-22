@@ -154,6 +154,7 @@ describe("useConversation snapshot mapping", () => {
 			waitingOn: ["user_input"],
 			archivedAt: undefined,
 			closedAt: undefined,
+			connectionLostAt: undefined,
 		});
 		expect(snapshot.mcpServers).toHaveLength(2);
 		expect(snapshot.turns[0]!.plan?.steps).toEqual([

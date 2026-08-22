@@ -441,6 +441,10 @@ type ChatThreadState struct {
 	Archived *bool
 	// Closed is set only by a report that the thread was closed.
 	Closed bool
+	// ConnectionLost is tri-state. True means the last turn failed because the
+	// provider lost its network connection but the thread remains reusable. False
+	// clears an earlier report; nil says nothing about it.
+	ConnectionLost *bool
 }
 
 // ChatMCPServer is one tool server's startup state.

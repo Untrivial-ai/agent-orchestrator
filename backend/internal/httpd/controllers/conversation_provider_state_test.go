@@ -160,14 +160,16 @@ func TestSnapshotExposesAccountAndReauthDemand(t *testing.T) {
 // be read from one snapshot, which is why they must not be conflated.
 func TestSnapshotExposesThreadState(t *testing.T) {
 	archived := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	connectionLost := time.Date(2026, 8, 2, 12, 1, 0, 0, time.UTC)
 	body := conversationSnapshotBody(t, chatsvc.Snapshot{
 		SessionID: domain.SessionID("p1-1"),
 		Mode:      domain.SessionModeChat,
 		Conversation: domain.ConversationRecord{
 			ThreadState: &domain.ConversationThreadState{
-				Status:     domain.ThreadStatusActive,
-				WaitingOn:  []string{"waiting_on_approval"},
-				ArchivedAt: &archived,
+				Status:           domain.ThreadStatusActive,
+				WaitingOn:        []string{"waiting_on_approval"},
+				ArchivedAt:       &archived,
+				ConnectionLostAt: &connectionLost,
 			},
 		},
 	})
@@ -185,6 +187,9 @@ func TestSnapshotExposesThreadState(t *testing.T) {
 	}
 	if state["archivedAt"] != "2026-08-02T12:00:00Z" {
 		t.Errorf("archivedAt = %#v", state["archivedAt"])
+	}
+	if state["connectionLostAt"] != "2026-08-02T12:01:00Z" {
+		t.Errorf("connectionLostAt = %#v", state["connectionLostAt"])
 	}
 	if _, present := state["closedAt"]; present {
 		t.Error("a thread that was never closed reported a closedAt")

@@ -751,6 +751,7 @@ function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 					waitingOn: wire.threadState.waitingOn?.length ? wire.threadState.waitingOn : undefined,
 					archivedAt: wire.threadState.archivedAt ?? undefined,
 					closedAt: wire.threadState.closedAt ?? undefined,
+					connectionLostAt: wire.threadState.connectionLostAt ?? undefined,
 				}
 			: undefined,
 		mcpServers: wire.mcpServers?.length

@@ -373,6 +373,35 @@ func TestThreadStateReportsAreTriState(t *testing.T) {
 	}
 }
 
+func TestRecoverableConnectionLossLeavesThreadHealthyUntilNextTurn(t *testing.T) {
+	h := newHarness(t)
+
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventThreadState,
+		ThreadState: &ports.ChatThreadState{Status: domain.ThreadStatusSystemError}})
+	connectionLost := true
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventThreadState,
+		ThreadState: &ports.ChatThreadState{
+			Status: domain.ThreadStatusIdle, ConnectionLost: &connectionLost,
+		}})
+
+	lost := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.ThreadState != nil && s.Conversation.ThreadState.ConnectionLostAt != nil
+	})
+	if lost.Conversation.ThreadState.Status != domain.ThreadStatusIdle {
+		t.Fatalf("status = %q, want healthy idle", lost.Conversation.ThreadState.Status)
+	}
+
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventThreadState,
+		ThreadState: &ports.ChatThreadState{Status: domain.ThreadStatusActive}})
+	recovered := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.ThreadState.Status == domain.ThreadStatusActive &&
+			s.Conversation.ThreadState.ConnectionLostAt == nil
+	})
+	if recovered.Conversation.ThreadState.ConnectionLostAt != nil {
+		t.Fatal("the next active turn did not clear the connection-loss notice")
+	}
+}
+
 // A closed thread is recorded, not acted on. Tearing a controller down on a
 // notification no probe has ever seen would turn a provider quirk into a lost
 // session.

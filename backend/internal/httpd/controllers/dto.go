@@ -1764,6 +1764,9 @@ type ConversationThreadStatePayload struct {
 	// on: the daemon has never observed this, so tearing a controller down on the
 	// strength of it would be a guess.
 	ClosedAt *string `json:"closedAt,omitempty"`
+	// ConnectionLostAt marks a recoverable transport failure in the most recent
+	// turn. The thread remains healthy and the next turn clears the notice.
+	ConnectionLostAt *string `json:"connectionLostAt,omitempty"`
 }
 
 // ConversationMCPServerPayload is one tool server's startup state.

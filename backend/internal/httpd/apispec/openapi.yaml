@@ -6450,6 +6450,10 @@ components:
           type:
           - "null"
           - string
+        connectionLostAt:
+          type:
+          - "null"
+          - string
         status:
           enum:
           - active

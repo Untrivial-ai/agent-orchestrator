@@ -348,8 +348,8 @@ const (
 	ThreadStatusClosed      ThreadStatus = "closed"
 )
 
-// ConversationThreadState is what the provider says about the thread itself, as
-// opposed to about a turn.
+// ConversationThreadState is what the provider says about the thread itself, plus
+// AO's interpretation when a provider status is explained by a turn-level failure.
 type ConversationThreadState struct {
 	Status ThreadStatus `json:"status,omitempty"`
 	// WaitingOn are the provider's active flags, e.g. "waiting_on_approval". A
@@ -362,8 +362,12 @@ type ConversationThreadState struct {
 	// ClosedAt is when the provider dropped the thread. Recorded rather than acted
 	// on: AO has never observed this notification, so tearing a controller down on
 	// the strength of it would be guessing.
-	ClosedAt  *time.Time `json:"closedAt,omitempty"`
-	UpdatedAt time.Time  `json:"updatedAt"`
+	ClosedAt *time.Time `json:"closedAt,omitempty"`
+	// ConnectionLostAt is the recoverable failure of the most recent attempted
+	// turn. Unlike system_error it says nothing is wrong with the thread itself;
+	// the next turn may proceed and clears this notice when it starts.
+	ConnectionLostAt *time.Time `json:"connectionLostAt,omitempty"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 // ConversationMCPServer is one tool server's startup state.

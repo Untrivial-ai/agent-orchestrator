@@ -554,6 +554,12 @@ func TestNormalizeThreadStatusChanged(t *testing.T) {
 		t.Fatalf("status = %q", idle.ThreadState.Status)
 	}
 
+	systemError := normalizeOne(t, codexproto.MethodThreadStatusChanged,
+		`{"threadId":"019fc432","status":{"type":"systemError"}}`)
+	if systemError.ThreadState.Status != domain.ThreadStatusSystemError {
+		t.Fatalf("status = %q", systemError.ThreadState.Status)
+	}
+
 	// A thread can be working AND blocked on a person; those are different states.
 	blocked := normalizeOne(t, codexproto.MethodThreadStatusChanged,
 		`{"threadId":"th","status":{"type":"active","activeFlags":["waitingOnApproval"]}}`)

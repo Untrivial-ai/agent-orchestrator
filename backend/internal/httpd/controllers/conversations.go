@@ -1002,10 +1002,11 @@ func threadStatePayload(state *domain.ConversationThreadState) *ConversationThre
 		return nil
 	}
 	return &ConversationThreadStatePayload{
-		Status:     string(state.Status),
-		WaitingOn:  state.WaitingOn,
-		ArchivedAt: optionalTimestamp(state.ArchivedAt),
-		ClosedAt:   optionalTimestamp(state.ClosedAt),
+		Status:           string(state.Status),
+		WaitingOn:        state.WaitingOn,
+		ArchivedAt:       optionalTimestamp(state.ArchivedAt),
+		ClosedAt:         optionalTimestamp(state.ClosedAt),
+		ConnectionLostAt: optionalTimestamp(state.ConnectionLostAt),
 	}
 }
 

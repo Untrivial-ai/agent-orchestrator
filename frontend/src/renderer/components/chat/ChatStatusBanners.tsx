@@ -101,9 +101,8 @@ function signInCommand(harness: string): string | undefined {
  * healthy controller can be attached to a thread the provider has already given up
  * on, and that combination is precisely the one a user cannot diagnose unaided.
  *
- * Only `system_error` and `closed` are drawn. `active`, `idle` and `not_loaded` are
- * the ordinary run of a session and a banner for each would be noise that teaches
- * readers to ignore this row.
+ * `system_error`, `closed`, and recoverable connection loss are drawn. Ordinary
+ * `active`, `idle` and `not_loaded` states remain silent.
  */
 export const ThreadStateBanner = memo(function ThreadStateBanner({
 	threadState,
@@ -111,10 +110,15 @@ export const ThreadStateBanner = memo(function ThreadStateBanner({
 	threadState: ConversationThreadState;
 }) {
 	const status = threadState.status;
-	if (status !== "system_error" && status !== "closed") return null;
+	if (!threadState.connectionLostAt && status !== "system_error" && status !== "closed") return null;
 
 	const copy =
-		status === "system_error"
+		threadState.connectionLostAt
+			? {
+					title: "Connection lost during this turn",
+					body: "The turn failed after Codex lost its network connection. The thread is still healthy — send your message again to retry.",
+				}
+			: status === "system_error"
 			? {
 					title: "The agent's thread hit an internal error",
 					body: "The provider reported a fault in this thread, not in AO's connection to it. New turns will usually fail; the conversation and the worktree are kept.",

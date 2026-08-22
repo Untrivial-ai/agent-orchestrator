@@ -155,6 +155,17 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		}
 		if p.Turn.Error != nil && p.Turn.Error.Message != "" {
 			ev.Err = fmt.Errorf("%s", p.Turn.Error.Message)
+			if isTransientTransportFailure(p.Turn.Error.Message) {
+				connectionLost := true
+				connectionEvent := ports.ChatEvent{
+					Kind: ports.ChatEventThreadState,
+					ThreadState: &ports.ChatThreadState{
+						Status:         domain.ThreadStatusIdle,
+						ConnectionLost: &connectionLost,
+					},
+				}
+				return []ports.ChatEvent{ev, connectionEvent}
+			}
 		}
 		return []ports.ChatEvent{ev}
 
@@ -959,6 +970,23 @@ func threadStatusFrom(status codexproto.ThreadStatusType) domain.ThreadStatus {
 	default:
 		return ""
 	}
+}
+
+// isTransientTransportFailure identifies failures that end one response stream
+// without invalidating its thread. Codex precedes these with a systemError thread
+// report, then accepts another turn normally once the network returns. Keep the
+// match deliberately narrow: an unclassified provider error retains systemError
+// rather than being optimistically called recoverable.
+func isTransientTransportFailure(message string) bool {
+	lower := strings.ToLower(message)
+	if !strings.Contains(lower, "stream disconnected before completion") {
+		return false
+	}
+	return strings.Contains(lower, "failed to lookup address information") ||
+		strings.Contains(lower, "error sending request for url") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "connection closed") ||
+		strings.Contains(lower, "timed out")
 }
 
 // waitingOnFrom maps the provider's active flags onto AO's spelling.

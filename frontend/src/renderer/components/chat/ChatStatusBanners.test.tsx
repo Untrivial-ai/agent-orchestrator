@@ -54,6 +54,18 @@ describe("ReauthBanner", () => {
 });
 
 describe("ThreadStateBanner", () => {
+	it("reports transient connection loss without condemning the thread", () => {
+		render(
+			<ThreadStateBanner
+				threadState={{ status: "idle", connectionLostAt: "2026-08-20T22:24:33Z" }}
+			/>,
+		);
+		expect(screen.getByText(/connection lost during this turn/i)).toBeInTheDocument();
+		expect(screen.getByText(/thread is still healthy/i)).toBeInTheDocument();
+		expect(screen.getByText(/send your message again to retry/i)).toBeInTheDocument();
+		expect(screen.queryByText(/new turns will usually fail/i)).not.toBeInTheDocument();
+	});
+
 	it("reports a provider-side fault as the provider's, not AO's connection", () => {
 		render(<ThreadStateBanner threadState={{ status: "system_error" }} />);
 		expect(screen.getByText(/thread hit an internal error/i)).toBeInTheDocument();

@@ -639,6 +639,8 @@ export interface ConversationThreadState {
 	waitingOn?: string[];
 	archivedAt?: string;
 	closedAt?: string;
+	/** The last turn lost its network connection; the thread itself remains reusable. */
+	connectionLostAt?: string;
 }
 
 /** One tool server's startup state. */

@@ -2363,6 +2363,9 @@ func (c *Controller) applyThreadState(
 		// that is no longer waiting on an approval reports active with no flags, and
 		// keeping the old list would leave it looking blocked forever.
 		c.threadState.WaitingOn = update.WaitingOn
+		if update.Status == domain.ThreadStatusActive {
+			c.threadState.ConnectionLostAt = nil
+		}
 	}
 	if update.Archived != nil {
 		if *update.Archived {
@@ -2375,6 +2378,14 @@ func (c *Controller) applyThreadState(
 	if update.Closed && c.threadState.ClosedAt == nil {
 		at := now
 		c.threadState.ClosedAt = &at
+	}
+	if update.ConnectionLost != nil {
+		if *update.ConnectionLost {
+			at := now
+			c.threadState.ConnectionLostAt = &at
+		} else {
+			c.threadState.ConnectionLostAt = nil
+		}
 	}
 	c.threadState.UpdatedAt = now
 	state := c.threadState

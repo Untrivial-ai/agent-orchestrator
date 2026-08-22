@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -46,6 +47,57 @@ func TestNormalizeTurnLifecycle(t *testing.T) {
 	if done.Kind != ports.ChatEventTurnCompleted || done.TurnState != domain.TurnStateCompleted ||
 		done.ProviderConversationID != "th1" {
 		t.Fatalf("turn/completed -> %+v", done)
+	}
+}
+
+// Captured from a real turn after clamshell sleep dropped Wi-Fi. Codex reports a
+// systemError immediately before this completion, but the same thread accepts the
+// next turn once connectivity returns.
+func TestNormalizeTransientTransportFailureKeepsThreadReusable(t *testing.T) {
+	events := normalizeNotification(notification{Method: codexproto.MethodTurnCompleted, Params: json.RawMessage(
+		`{"threadId":"th1","turn":{"id":"tu1","status":"failed","items":[],"error":{"message":"stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)","codexErrorInfo":"other"}}}`,
+	)}, testNow)
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want failed turn and recoverable thread state", len(events))
+	}
+	if events[0].Kind != ports.ChatEventTurnCompleted || events[0].TurnState != domain.TurnStateFailed || events[0].Err == nil {
+		t.Fatalf("turn event = %+v", events[0])
+	}
+	state := events[1].ThreadState
+	if events[1].Kind != ports.ChatEventThreadState || state == nil ||
+		state.Status != domain.ThreadStatusIdle || state.ConnectionLost == nil || !*state.ConnectionLost {
+		t.Fatalf("thread event = %+v", events[1])
+	}
+}
+
+func TestNormalizeUnclassifiedFailureDoesNotRepairSystemError(t *testing.T) {
+	events := normalizeNotification(notification{Method: codexproto.MethodTurnCompleted, Params: json.RawMessage(
+		`{"threadId":"th1","turn":{"id":"tu1","status":"failed","items":[],"error":{"message":"provider database corrupted"}}}`,
+	)}, testNow)
+	if len(events) != 1 || events[0].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("events = %+v, want only failed turn", events)
+	}
+}
+
+func TestTransientTransportFailureSignatures(t *testing.T) {
+	for _, message := range []string{
+		"stream disconnected before completion: failed to lookup address information: nodename nor servname provided",
+		"stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+		"stream disconnected before completion: connection reset by peer",
+		"stream disconnected before completion: operation timed out",
+	} {
+		if !isTransientTransportFailure(message) {
+			t.Errorf("did not classify %q", message)
+		}
+	}
+	for _, message := range []string{
+		"provider database corrupted",
+		"stream disconnected before completion: You have no credits remaining",
+		"error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+	} {
+		if isTransientTransportFailure(message) {
+			t.Errorf("misclassified %q", message)
+		}
 	}
 }
 
