@@ -92,6 +92,15 @@ export function FileCodeIcon(props: IconProps) {
 	);
 }
 
+export function PlusIcon(props: IconProps) {
+	return (
+		<Icon name="plus" {...props}>
+			<path d="M5 12h14" />
+			<path d="M12 5v14" />
+		</Icon>
+	);
+}
+
 export function FileTextIcon(props: IconProps) {
 	return (
 		<Icon name="file-text" {...props}>
