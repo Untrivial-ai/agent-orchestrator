@@ -1,0 +1,44 @@
+---
+title: GitLab SCM
+description: Merge request observation, lifecycle feedback, and self-managed instance support.
+---
+
+AO observes GitLab merge requests through the same provider-neutral SCM lane as GitHub. Both providers run side by side: a repository is routed by its remote, and a provider without usable credentials is skipped rather than breaking the other.
+
+The provider tracks merge request identity and state (including drafts), CI pipeline status and failing job names, approval state, and mergeability with conflict reasons. Explicit actions are merge, request review, and resolve review threads.
+
+Use `ao doctor` to inspect local GitLab readiness.
+
+## Authentication
+
+For gitlab.com the token is resolved in order from `AO_GITLAB_TOKEN`, `GITLAB_TOKEN`, then the credential `glab` holds for gitlab.com. A personal access token needs `api` scope.
+
+For an allowlisted self-managed host the order is the other way around: the host's `AO_GITLAB_HOST_TOKENS` entry first, then the credential `glab` holds for that host, and only then `AO_GITLAB_TOKEN`/`GITLAB_TOKEN`. Those env vars are a global default — the same value is offered to every instance — so the credential you bound to the instance wins, and a gitlab.com token is never sent to an internal server that has its own.
+
+## Self-managed instances
+
+gitlab.com works with no configuration. Self-managed hosts must be allowlisted — an unlisted host is rejected before any credential is attached, so AO never sends your gitlab.com token to an arbitrary server:
+
+```bash
+export AO_GITLAB_ALLOWED_HOSTS="gitlab.example.com,gitlab.internal:8443"
+```
+
+Each host may carry a port. When one instance needs its own token, map it per host; a host without an entry uses whatever `glab` holds for it, and falls back to the global default only when `glab` has nothing:
+
+```bash
+export AO_GITLAB_HOST_TOKENS="gitlab.example.com=glpat-xxx,gitlab.internal:8443=glpat-yyy"
+```
+
+Both variables are read once at daemon startup, so restart the daemon after changing them. Export them from your shell profile (`~/.zshrc`, `~/.zprofile`, or the equivalent): the desktop app resolves your login-shell environment before spawning the daemon, so a profile export reaches a Finder or Dock launch too. Setting them only in an ad-hoc terminal leaves a desktop-launched daemon without them.
+
+`ao doctor` reports one check per instance — `gitlab-token` for gitlab.com and `gitlab-token:<host>` for each allowlisted host — so a token that is valid on one instance and rejected on another is visible per host. A self-managed host that is unreachable from where you are (VPN down, split DNS) is a warning, not a failure: it says nothing about the credential. A `gitlab-host-tokens` warning means the opposite problem: an `AO_GITLAB_HOST_TOKENS` entry that no GitLab client ever reads — because the host is missing from `AO_GITLAB_ALLOWED_HOSTS`, because it is gitlab.com (served by the default chain), or because the entry has no token value at all (`host=`, typically a shell variable that expanded to nothing).
+
+A token is only ever sent to the instance it belongs to — by AO at runtime and by `ao doctor` when it probes. A credential belongs to an instance when it comes from that host's `AO_GITLAB_HOST_TOKENS` entry, from `glab auth status --hostname <host>`, or from a `glab` status block that names the host as the token's owner (which keeps a `glab` too old for `--hostname` working). `AO_GITLAB_TOKEN`/`GITLAB_TOKEN` are offered to every instance at runtime, because that is what declaring a global default means. Anything else — notably `glab`'s own default host when it is a different instance — is used for nothing: AO leaves that host without a token rather than disclosing another instance's credential to it, and doctor reports the probe as skipped.
+
+`ao doctor` is stricter than the daemon in one direction: it probes an instance only with a credential attributable to that instance. A self-managed host reached solely by the global default is reported, not probed, because that value is most likely gitlab.com's and sending it would hand it to whoever operates the server. The reverse also holds — when an allowlisted host binds the same value the global default carries, gitlab.com cannot claim it either and its probe is reported instead. In both cases the remedy is the same: give each instance its own credential with `glab auth login --hostname <host>` or an `AO_GITLAB_HOST_TOKENS` entry, and every host is validated.
+
+<Callout type="warn">
+	Self-managed API traffic is always `https://<host>/api/v4`. Instances served over plain HTTP, or under a path prefix such as `https://host/gitlab`, are not supported. A private certificate authority must be trusted by the operating system — AO has no separate CA setting.
+</Callout>
+
+Agents running inside a worker use their own tooling. If your agent shells out to `glab`, configure it for your instance (`glab auth login --hostname gitlab.example.com`, or export `GLAB_HOST`); AO does not set that for the session.

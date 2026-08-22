@@ -1,9 +1,9 @@
 ---
 title: Source control and pull requests
-description: GitHub PR, CI, review, and mergeability support built into AO.
+description: GitHub and GitLab PR, CI, review, and mergeability support built into AO.
 ---
 
-AO's current SCM provider is GitHub. It observes pull requests associated with active sessions and feeds concise facts into the lifecycle engine and desktop UI.
+AO ships two SCM providers, GitHub and GitLab. Both observe the pull or merge requests associated with active sessions and feed concise facts into the lifecycle engine and desktop UI. They run side by side: each repository is routed by its remote, and a provider without usable credentials is skipped rather than disabling the other.
 
 The provider tracks:
 
@@ -12,6 +12,4 @@ The provider tracks:
 - mergeability and merge-conflict reasons;
 - review decisions and unresolved human-review comment counts.
 
-GitLab merge requests are not supported by the Go rewrite.
-
-See [GitHub SCM](/docs/plugins/scm/github) for authentication and the current action surface.
+See [GitHub SCM](/docs/plugins/scm/github) and [GitLab SCM](/docs/plugins/scm/gitlab) for authentication and each provider's action surface. GitLab SCM also covers self-managed instances.

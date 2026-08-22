@@ -17,11 +17,11 @@ description: Common questions about the current Agent Orchestrator desktop produ
 	</Accordion>
 
 	<Accordion title="Which source-control systems are supported?">
-		GitHub is the shipped SCM observer in the current Go rewrite. It supplies pull-request, CI, review, and mergeability facts. Historical docs listed broader GitLab and tracker plugins; those integrations are not all active in the current daemon lifecycle.
+		GitHub and GitLab are the shipped SCM observers in the current Go rewrite. Both supply pull/merge-request, CI, review, and mergeability facts, and both are polled side by side. GitLab covers self-managed instances once their hosts are allowlisted — see [GitLab SCM](/docs/plugins/scm/gitlab).
 	</Accordion>
 
 	<Accordion title="Does AO need webhooks?">
-		No. The current GitHub SCM observer polls with authentication, ETag guards, and semantic diffing. Live desktop updates come from the daemon's SQLite CDC event stream.
+		No. The SCM observers poll with authentication, ETag guards, and semantic diffing. Live desktop updates come from the daemon's SQLite CDC event stream.
 	</Accordion>
 
 	<Accordion title="Does it work on Windows?">

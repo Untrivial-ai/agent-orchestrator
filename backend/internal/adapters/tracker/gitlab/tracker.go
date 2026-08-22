@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	scmgitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/gitlab"
@@ -108,14 +110,14 @@ type Tracker struct {
 }
 
 // New returns a Tracker. It fails fast when no token can be obtained so
-// daemons crash at startup rather than at first issue lookup.
+// daemons crash at startup rather than at first issue lookup. "No token" means
+// no instance can authenticate: a self-managed-only setup keeps its credential
+// in HostTokens and has nothing for gitlab.com, and disabling the tracker there
+// would leave issue lookup dead for the only instance the user talks to.
 func New(opts Options) (*Tracker, error) {
 	src := opts.Token
 	if src == nil {
 		return nil, ErrNoToken
-	}
-	if _, err := src.Token(context.Background()); err != nil {
-		return nil, err
 	}
 	baseURL := opts.BaseURL
 	if baseURL == "" {
@@ -143,6 +145,13 @@ func New(opts Options) (*Tracker, error) {
 		hosts[h] = he
 	}
 
+	// Fail fast only when no instance can authenticate. When gitlab.com has no
+	// credential but an allowlisted host does, the tracker stays up and
+	// gitlab.com lookups fail per request instead.
+	if _, err := resolveTokenAtStartup(src); err != nil && !anyHostUsable(hosts) {
+		return nil, err
+	}
+
 	t := &Tracker{
 		http:        opts.HTTPClient,
 		userAgent:   ua,
@@ -153,6 +162,54 @@ func New(opts Options) (*Tracker, error) {
 		t.http = &http.Client{Timeout: 30 * time.Second}
 	}
 	return t, nil
+}
+
+// anyHostUsable reports whether at least one allowlisted self-managed host can
+// authenticate. Consulted only when the default (gitlab.com) source yields
+// nothing, so the common path still costs a single token resolution.
+//
+// The hosts are probed concurrently under one deadline. Each probe can shell
+// out to `glab auth status`, and New blocks daemon startup, so a serial sweep
+// would make boot wait for the sum of the hosts' timeouts rather than for the
+// slowest one. The first host that answers cancels the rest — one usable
+// instance is all this needs to know.
+func anyHostUsable(hosts map[string]hostEntry) bool {
+	if len(hosts) == 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), startupTokenProbeTimeout)
+	defer cancel()
+
+	var usable atomic.Bool
+	var wg sync.WaitGroup
+	for _, he := range hosts {
+		if he.tokens == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(src scmgitlab.TokenSource) {
+			defer wg.Done()
+			if tok, err := src.Token(ctx); err == nil && tok != "" {
+				usable.Store(true)
+				cancel()
+			}
+		}(he.tokens)
+	}
+	wg.Wait()
+	return usable.Load()
+}
+
+// startupTokenProbeTimeout bounds credential resolution during New: one budget
+// for the default source, one shared by the per-host probes.
+const startupTokenProbeTimeout = 5 * time.Second
+
+// resolveTokenAtStartup resolves the default token source under its own
+// deadline. Resolution can shell out to `glab auth status`, and New runs during
+// daemon startup, so a glab that hangs must not hang boot.
+func resolveTokenAtStartup(src scmgitlab.TokenSource) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), startupTokenProbeTimeout)
+	defer cancel()
+	return src.Token(ctx)
 }
 
 // configForHost returns the per-host config (base URL + token) for the given

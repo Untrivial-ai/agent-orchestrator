@@ -104,6 +104,49 @@ func TestNewRejectsMissingToken(t *testing.T) {
 	}
 }
 
+// TestNewKeepsTrackerWhenOnlyHostTokenConfigured covers a self-managed-only
+// setup: the credential lives in AO_GITLAB_HOST_TOKENS and there is no
+// gitlab.com token at all. The tracker must stay enabled — the allowlisted
+// host has a usable credential, and disabling the whole provider would leave
+// issue intake dead for the only instance the user actually talks to.
+func TestNewKeepsTrackerWhenOnlyHostTokenConfigured(t *testing.T) {
+	tr, err := New(Options{
+		Token:        scmgitlab.StaticTokenSource(""),
+		AllowedHosts: []string{"gitlab.internal"},
+		HostTokens: map[string]scmgitlab.TokenSource{
+			"gitlab.internal": scmgitlab.StaticTokenSource("glpat-internal"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New with a per-host token only = %v, want a usable tracker", err)
+	}
+	entry, err := tr.configForHost("gitlab.internal")
+	if err != nil {
+		t.Fatalf("configForHost(gitlab.internal) = %v", err)
+	}
+	tok, err := entry.tokens.Token(ctx())
+	if err != nil || tok != "glpat-internal" {
+		t.Fatalf("host token = %q, %v, want the configured per-host token", tok, err)
+	}
+}
+
+// TestNewRejectsHostTokensWithoutAnyUsableCredential covers the other side:
+// an allowlisted host whose token source can never yield a token is not a
+// reason to keep the tracker alive, so the daemon still reports it disabled
+// instead of failing every issue lookup later.
+func TestNewRejectsHostTokensWithoutAnyUsableCredential(t *testing.T) {
+	_, err := New(Options{
+		Token:        scmgitlab.StaticTokenSource(""),
+		AllowedHosts: []string{"gitlab.internal"},
+		HostTokens: map[string]scmgitlab.TokenSource{
+			"gitlab.internal": scmgitlab.StaticTokenSource("  "),
+		},
+	})
+	if !errors.Is(err, ErrNoToken) {
+		t.Fatalf("New with no usable credential = %v, want ErrNoToken", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ID parsing
 // ---------------------------------------------------------------------------
@@ -945,5 +988,98 @@ func TestGet_HostCaseInsensitive(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+	}
+}
+
+// deadlineRecordingTokenSource records whether the context it was resolved
+// with carried a deadline.
+type deadlineRecordingTokenSource struct {
+	token       string
+	err         error
+	hasDeadline bool
+}
+
+func (s *deadlineRecordingTokenSource) Token(ctx context.Context) (string, error) {
+	_, ok := ctx.Deadline()
+	s.hasDeadline = ok
+	return s.token, s.err
+}
+
+// TestNewBoundsTheStartupTokenProbe covers daemon startup: resolving a token
+// can shell out to `glab auth status`, and New runs before the daemon is
+// serving. An unbounded probe would hang boot forever if glab hangs, once per
+// allowlisted host.
+func TestNewBoundsTheStartupTokenProbe(t *testing.T) {
+	src := &deadlineRecordingTokenSource{token: "glpat-default"}
+	if _, err := New(Options{Token: src}); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !src.hasDeadline {
+		t.Fatal("New resolved the default token with an unbounded context")
+	}
+}
+
+// TestNewBoundsTheStartupProbeOfEveryHost covers the same hazard on the
+// per-host fallback path, which resolves one token source per allowlisted host.
+func TestNewBoundsTheStartupProbeOfEveryHost(t *testing.T) {
+	host := &deadlineRecordingTokenSource{token: "glpat-internal"}
+	if _, err := New(Options{
+		Token:        scmgitlab.StaticTokenSource(""),
+		AllowedHosts: []string{"gitlab.internal"},
+		HostTokens:   map[string]scmgitlab.TokenSource{"gitlab.internal": host},
+	}); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !host.hasDeadline {
+		t.Fatal("New resolved a host token with an unbounded context")
+	}
+}
+
+// barrierTokenSource reports whether its peer had already started resolving by
+// the time this source ran. Serial probing leaves the first source waiting for
+// a peer that has not started yet.
+type barrierTokenSource struct {
+	started chan struct{}
+	peer    chan struct{}
+	err     error
+}
+
+func (s *barrierTokenSource) Token(ctx context.Context) (string, error) {
+	close(s.started)
+	select {
+	case <-s.peer:
+		// Report "no credential" so the probe of the other host is never
+		// cancelled out from under this assertion.
+		return "", nil
+	case <-time.After(2 * time.Second):
+		s.err = errors.New("peer host never started: host probes ran serially")
+		return "", s.err
+	case <-ctx.Done():
+		s.err = ctx.Err()
+		return "", s.err
+	}
+}
+
+// TestNewProbesEveryHostConcurrently covers daemon startup latency: New runs on
+// the synchronous boot path, and resolving a host credential can shell out to
+// glab. Probing the allowlisted hosts one after another makes boot wait for the
+// sum of their timeouts instead of the slowest one.
+func TestNewProbesEveryHostConcurrently(t *testing.T) {
+	first := &barrierTokenSource{started: make(chan struct{})}
+	second := &barrierTokenSource{started: make(chan struct{})}
+	first.peer, second.peer = second.started, first.started
+
+	if _, err := New(Options{
+		Token:        scmgitlab.StaticTokenSource(""),
+		AllowedHosts: []string{"gitlab.one", "gitlab.two"},
+		HostTokens: map[string]scmgitlab.TokenSource{
+			"gitlab.one": first,
+			"gitlab.two": second,
+		},
+	}); !errors.Is(err, ErrNoToken) {
+		t.Fatalf("New err = %v, want ErrNoToken when no host has a credential", err)
+	}
+	if first.err != nil || second.err != nil {
+		t.Fatalf("host probes = (%v, %v), want both resolved concurrently", first.err, second.err)
 	}
 }

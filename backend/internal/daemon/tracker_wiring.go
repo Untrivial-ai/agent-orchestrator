@@ -3,9 +3,7 @@ package daemon
 import (
 	"errors"
 	"log/slog"
-	"strings"
 
-	scmgitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/gitlab"
 	trackergithub "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/github"
 	trackergitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/gitlab"
 	trackermulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/multi"
@@ -22,17 +20,10 @@ func newGitHubTracker() (ports.Tracker, error) {
 // self-managed GitLab issue lookups to the correct host with the correct
 // token. This mirrors the SCM provider's wiring in newGitLabSCMProvider.
 func newGitLabTracker(gitlabCfg config.GitLabConfig) (ports.Tracker, error) {
-	hostTokens := make(map[string]scmgitlab.TokenSource, len(gitlabCfg.HostTokens))
-	for host, token := range gitlabCfg.HostTokens {
-		host = strings.ToLower(strings.TrimSpace(host))
-		if host != "" {
-			hostTokens[host] = scmgitlab.StaticTokenSource(token)
-		}
-	}
 	return trackergitlab.New(trackergitlab.Options{
-		Token:        trackergitlab.DefaultTokenSource(),
+		Token:        gitlabDotComTokenSource(),
 		AllowedHosts: gitlabCfg.AllowedHosts,
-		HostTokens:   hostTokens,
+		HostTokens:   gitlabHostTokenSources(gitlabCfg),
 	})
 }
 

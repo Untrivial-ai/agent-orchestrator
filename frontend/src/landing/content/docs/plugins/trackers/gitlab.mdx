@@ -1,0 +1,24 @@
+---
+title: GitLab issue intake
+description: Read-only GitLab issue lookup for spawn bootstrap.
+---
+
+The GitLab tracker reads issues from gitlab.com and from allowlisted self-managed instances. It shares the SCM provider's credentials: `AO_GITLAB_TOKEN`, `GITLAB_TOKEN`, then `glab`, with per-host precedence as described in [GitLab SCM](/docs/plugins/scm/gitlab#authentication).
+
+A self-managed-only setup works too: with credentials only in `AO_GITLAB_HOST_TOKENS` and nothing for gitlab.com, the tracker stays enabled for the allowlisted hosts and only gitlab.com lookups fail.
+
+## Hydrate a worker from an issue
+
+```bash
+ao spawn --project my-app --name fix-login --tracker-provider gitlab --issue 42
+```
+
+The issue snapshot is read once to seed the agent prompt.
+
+## Opt-in intake is GitHub-only today
+
+Tracker intake — polling a project's tracker scope and creating workers for matching issues — currently runs against GitHub only. Setting `trackerIntake.provider` to `gitlab` is accepted by `ao project set-config` but no intake adapter is wired for it, so the poll finds no provider and nothing is spawned. Use `ao spawn --tracker-provider gitlab --issue <iid>` above to pull a GitLab issue into a worker.
+
+## Current boundary
+
+The adapter is read-only: it fetches and lists issues, and never comments, transitions, or closes them. It backs `ao spawn` issue hydration, not intake. Unlike the GitHub tracker it does no conditional revalidation, so every list is a fresh fetch. Merge requests, CI, and reviews belong to the separate [GitLab SCM capability](/docs/plugins/scm/gitlab).

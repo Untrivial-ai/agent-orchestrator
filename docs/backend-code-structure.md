@@ -705,6 +705,9 @@ graph LR
 - `AO_DATA_DIR` — SQLite data directory (default: ~/.ao/data)
 - `AO_AGENT` — Compatibility agent adapter (default: claude-code)
 - `GITHUB_TOKEN` — GitHub authentication
+- `AO_GITLAB_TOKEN` / `GITLAB_TOKEN` — GitLab authentication (falls back to `glab auth status --show-token`)
+- `AO_GITLAB_ALLOWED_HOSTS` — Comma-separated self-managed GitLab hosts, each optionally with a port (gitlab.com is always allowed)
+- `AO_GITLAB_HOST_TOKENS` — `host=token,host=token` per-host token overrides for self-managed GitLab
 
 ---
 
