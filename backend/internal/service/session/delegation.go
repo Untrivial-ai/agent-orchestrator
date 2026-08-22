@@ -70,7 +70,7 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		Attachments:   in.Attachments,
 	})
 	if err != nil {
-		return DelegateTaskOutcome{}, toAPIError(err)
+		return DelegateTaskOutcome{}, toSpawnAPIError(err)
 	}
 
 	// The worker spawn is the commit point. Coordinator startup and title

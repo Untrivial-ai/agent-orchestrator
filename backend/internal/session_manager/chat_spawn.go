@@ -182,14 +182,14 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
 			m.markSpawnFailedTerminated(ctx, id)
 			if completionErr != nil {
-				return domain.SessionRecord{}, fmt.Errorf("spawn %s: completed: %w", id, completionErr)
+				return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnCommit, completionErr)
 			}
-			return domain.SessionRecord{}, fmt.Errorf("spawn %s: chat controller: %w", id, err)
+			return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
 		}
 		// No controller exists, so nothing provider-side needs closing. The
 		// runtime was never touched, hence runtimeDestroyed=false.
 		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false)
-		return domain.SessionRecord{}, fmt.Errorf("spawn %s: chat controller: %w", id, err)
+		return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
 	}
 
 	// The initial prompt is a normal turn through the controller. There is no
@@ -200,7 +200,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 			m.stopChatBestEffort(ctx, id)
 			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
 			m.markSpawnFailedTerminated(ctx, id)
-			return domain.SessionRecord{}, fmt.Errorf("spawn %s: deliver prompt: %w", id, err)
+			return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err)
 		}
 	}
 

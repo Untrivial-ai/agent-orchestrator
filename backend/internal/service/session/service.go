@@ -251,8 +251,9 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	cfg = s.withIssueContext(ctx, cfg, project)
 	rec, promptBytes, systemPromptBytes, err := s.manager.Spawn(ctx, cfg)
 	if err != nil {
-		s.emitSpawnFailed(cfg, err, s.now().Sub(start).Milliseconds())
-		return domain.Session{}, 0, 0, toAPIError(err)
+		apiErr := toSpawnAPIError(err)
+		s.emitSpawnFailed(cfg, apiErr, s.now().Sub(start).Milliseconds())
+		return domain.Session{}, 0, 0, apiErr
 	}
 	s.emitSpawned(rec, s.now().Sub(start).Milliseconds())
 	if firstSession {
@@ -346,7 +347,7 @@ func (s *Service) emitSpawnFailed(cfg ports.SpawnConfig, err error, durationMs i
 		return
 	}
 	projectID := cfg.ProjectID
-	apiErr := toAPIError(err)
+	apiErr := toSpawnAPIError(err)
 	errorKind, errorCode := telemetrymeta.ErrorKindAndCode(apiErr)
 	payload := map[string]any{
 		"component":   "session_service",
@@ -1017,6 +1018,64 @@ func toAPIError(err error) error {
 		return apierr.Conflict("WORKSPACE_LOCKED", err.Error(), nil)
 	default:
 		return err
+	}
+}
+
+// toSpawnAPIError maps spawn failures to structured API errors so telemetry and
+// clients never land in the unclassified internal bucket when a stage sentinel
+// is present. Known inner sentinels (branch state, agent binary, chat
+// preflight) still win via toAPIError. Already-mapped *apierr.Error values are
+// returned as-is so emitSpawnFailed can classify raw or pre-mapped errors.
+func toSpawnAPIError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var already *apierr.Error
+	if errors.As(err, &already) {
+		return already
+	}
+	if mapped := toAPIError(err); !errors.Is(mapped, err) {
+		return mapped
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return apierr.Conflict("SPAWN_TIMEOUT", "Session spawn timed out before the agent could start", nil)
+	case errors.Is(err, context.Canceled):
+		return apierr.Conflict("SPAWN_CANCELLED", "Session spawn was cancelled", nil)
+	case errors.Is(err, sessionmanager.ErrSpawnPrompt):
+		return apierr.Internal("SPAWN_PROMPT_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrSpawnCreate):
+		return apierr.Internal("SPAWN_CREATE_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrSpawnSystemPrompt):
+		return apierr.Internal("SPAWN_SYSTEM_PROMPT_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrWorkspaceCreate):
+		return apierr.Conflict("WORKSPACE_CREATE_FAILED", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrWorkspaceProvision):
+		return apierr.Conflict("WORKSPACE_PROVISION_FAILED", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrSpawnAttachments):
+		return apierr.Invalid("SPAWN_ATTACHMENTS_FAILED", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrSpawnBrowser):
+		return apierr.Internal("SPAWN_BROWSER_CAPABILITY_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrSpawnPrepare):
+		return apierr.Internal("SPAWN_PREPARE_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrSpawnPromptDelivery):
+		return apierr.Internal("SPAWN_PROMPT_DELIVERY_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrSpawnLaunchCommand):
+		return apierr.Internal("SPAWN_LAUNCH_COMMAND_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrSpawnSupervisor):
+		return apierr.Internal("SPAWN_SUPERVISOR_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrSpawnPrepareLaunch):
+		return apierr.Internal("SPAWN_PREPARE_LAUNCH_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrRuntimeCreate):
+		return apierr.Internal("RUNTIME_CREATE_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrSpawnCommit):
+		return apierr.Internal("SPAWN_COMMIT_FAILED", err.Error())
+	case errors.Is(err, sessionmanager.ErrSpawnDeliverPrompt):
+		return apierr.Conflict("SPAWN_DELIVER_PROMPT_FAILED", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrChatController):
+		return apierr.Conflict("CHAT_CONTROLLER_FAILED", err.Error(), nil)
+	default:
+		return apierr.Internal("SPAWN_INTERNAL", err.Error())
 	}
 }
 

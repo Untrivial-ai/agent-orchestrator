@@ -140,7 +140,44 @@ var (
 	// would answer it on the user's behalf. The API maps it to a 409; the
 	// caller retries once the user has answered in the terminal.
 	ErrAwaitingDecision = errors.New("session: awaiting a user decision")
+
+	// Spawn-stage sentinels. Each is the existing log word after "spawn" /
+	// "spawn <id>:" so wrapping them does not change daemon-log wording, while
+	// errors.Is can tell the service which stage failed. More specific wrapped
+	// sentinels (branch, agent binary, chat preflight) still match first.
+	ErrSpawnPrompt         = errors.New("prompt")
+	ErrSpawnCreate         = errors.New("create")
+	ErrSpawnSystemPrompt   = errors.New("system prompt file")
+	ErrWorkspaceCreate     = errors.New("workspace")
+	ErrWorkspaceProvision  = errors.New("provision")
+	ErrSpawnAttachments    = errors.New("attachments")
+	ErrSpawnBrowser        = errors.New("browser capability")
+	ErrSpawnPrepare        = errors.New("prepare")
+	ErrSpawnPromptDelivery = errors.New("prompt delivery")
+	ErrSpawnLaunchCommand  = errors.New("launch command")
+	ErrSpawnSupervisor     = errors.New("supervisor")
+	ErrSpawnPrepareLaunch  = errors.New("prepare launch")
+	ErrRuntimeCreate       = errors.New("runtime")
+	ErrSpawnCommit         = errors.New("completed")
+	ErrSpawnDeliverPrompt  = errors.New("deliver prompt")
+	ErrChatController      = errors.New("chat controller")
 )
+
+// wrapSpawnStage annotates a spawn failure with a stage sentinel. The original
+// error stays in the chain so errors.Is still matches inner sentinels.
+func wrapSpawnStage(id domain.SessionID, stage, err error) error {
+	if err == nil {
+		return fmt.Errorf("spawn %s: %w", id, stage)
+	}
+	return fmt.Errorf("spawn %s: %w: %w", id, stage, err)
+}
+
+func wrapSpawnStageEarly(stage, err error) error {
+	if err == nil {
+		return fmt.Errorf("spawn: %w", stage)
+	}
+	return fmt.Errorf("spawn: %w: %w", stage, err)
+}
 
 // Env vars a spawned process reads to learn who it is. A worker that starts
 // its own Docker containers (a database, a queue, any ad-hoc service) should
@@ -758,20 +795,20 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 
 	prompt, systemPrompt, err := m.buildSpawnTexts(ctx, cfg)
 	if err != nil {
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: prompt: %w", err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStageEarly(ErrSpawnPrompt, err)
 	}
 	promptBytes := len(prompt)
 	systemPromptBytes := len(systemPrompt)
 
 	rec, err := m.store.CreateSession(ctx, seedRecord(cfg, project.Config, m.clock()))
 	if err != nil {
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: create: %w", err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStageEarly(ErrSpawnCreate, err)
 	}
 	id := rec.ID
 	systemPromptFile, err := m.prepareSystemPromptFile(id, cfg.Harness, systemPrompt)
 	if err != nil {
 		m.rollbackSpawnSeedRow(ctx, id)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: system prompt file: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnSystemPrompt, err)
 	}
 
 	branch := cfg.Branch
@@ -785,14 +822,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		// row is deleted outright instead of accumulating as a terminated orphan
 		// in session lists (e.g. when gitworktree refuses the branch).
 		m.rollbackSpawnSeedRow(ctx, id)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: workspace: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrWorkspaceCreate, err)
 	}
 
 	// Per-project workspace provisioning: symlink shared files, then run any
 	// post-create commands (e.g. `pnpm install`) before the agent launches.
 	if err := m.provisionWorkspace(ctx, project, ws.Path); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: provision: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrWorkspaceProvision, err)
 	}
 
 	// CLI agents receive the prompt as text and cannot consume inline binary
@@ -804,7 +841,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		refs, err := m.writeSpawnAttachments(ctx, id, ws.Path, cfg.Attachments)
 		if err != nil {
 			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false)
-			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: attachments: %w", id, err)
+			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnAttachments, err)
 		}
 		// Keep the attachments dir out of git status. Best-effort: the images are
 		// already written and usable, so an exclude failure must not fail the spawn.
@@ -837,22 +874,22 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	agent, ok := m.agents.Agent(cfg.Harness)
 	if !ok {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: no agent adapter for harness %q", id, cfg.Harness)
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w: no agent adapter for harness %q", id, ErrUnknownHarness, cfg.Harness)
 	}
 	env, browserCapabilityVerifier, err := m.launchRuntimeEnv(id, cfg.ProjectID, cfg.IssueID, project.Config.Env)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: browser capability: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnBrowser, err)
 	}
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, browserCapabilityVerifier)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: persist browser capability: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnBrowser, err)
 	}
 	m.augmentAgentRuntimeEnv(agent, env)
 	if err := m.prepareWorkspace(ctx, agent, id, ws.Path, systemPrompt, systemPromptFile, adapterConfig, env); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepare, err)
 	}
 	launchCfg := ports.LaunchConfig{
 		DataDir:          m.dataDir,
@@ -869,7 +906,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	delivery, err := agent.GetPromptDeliveryStrategy(ctx, launchCfg)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: prompt delivery: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPromptDelivery, err)
 	}
 	if delivery == ports.PromptDeliveryAfterStart {
 		launchCfg.Prompt = ""
@@ -877,7 +914,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	argv, err := agent.GetLaunchCommand(ctx, launchCfg)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: launch command: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnLaunchCommand, err)
 	}
 	// Pre-flight: confirm argv[0] actually exists on PATH (or as an absolute
 	// path the adapter returned) BEFORE handing the launch to the runtime.
@@ -891,11 +928,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	argv, launchID, err := m.superviseAgentProcess(agent, id, env, argv)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: supervisor: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnSupervisor, err)
 	}
 	if err := m.lcm.PrepareLaunch(id, launchID); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: prepare launch: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepareLaunch, err)
 	}
 	defer m.lcm.CancelLaunch(id, launchID)
 	handle, err := m.runtime.Create(ctx, ports.RuntimeConfig{
@@ -906,7 +943,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	})
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: runtime: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrRuntimeCreate, err)
 	}
 
 	metadata := domain.SessionMetadata{
@@ -930,7 +967,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		runtimeDestroyed := m.runtime.Destroy(ctx, handle) == nil
 		m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject, runtimeDestroyed)
 		m.markSpawnFailedTerminated(ctx, id)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: completed: %w", id, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCommit, err)
 	}
 	if delivery == ports.PromptDeliveryAfterStart && prompt != "" {
 		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, id, prompt); err != nil {
@@ -941,7 +978,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			} else {
 				m.markSpawnFailedTerminated(ctx, id)
 			}
-			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: deliver prompt: %w", id, err)
+			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err)
 		}
 	}
 	rec, err = m.getRecord(ctx, id)

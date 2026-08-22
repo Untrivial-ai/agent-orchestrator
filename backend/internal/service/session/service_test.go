@@ -2501,6 +2501,9 @@ func TestSpawnFailedEmitsDuration(t *testing.T) {
 	if got := sink.events[0].Payload["error_kind"]; got != "internal" {
 		t.Fatalf("spawn_failed error_kind = %#v, want internal", got)
 	}
+	if got := sink.events[0].Payload["error_code"]; got != "SPAWN_INTERNAL" {
+		t.Fatalf("spawn_failed error_code = %#v, want SPAWN_INTERNAL", got)
+	}
 	if got := sink.events[0].Payload["component"]; got != "session_service" {
 		t.Fatalf("spawn_failed component = %#v, want session_service", got)
 	}
@@ -2567,6 +2570,9 @@ func TestSpawnEmitsTelemetryOnFailure(t *testing.T) {
 	}
 	if got := ev.Payload["error_kind"]; got != "internal" {
 		t.Fatalf("event payload error_kind = %#v, want internal", got)
+	}
+	if got := ev.Payload["error_code"]; got != "SPAWN_INTERNAL" {
+		t.Fatalf("event payload error_code = %#v, want SPAWN_INTERNAL", got)
 	}
 	if got := ev.Payload["component"]; got != "session_service" {
 		t.Fatalf("event payload component = %#v, want session_service", got)
@@ -2679,6 +2685,150 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 				t.Fatalf("mapped = %v, want %s %s", mapped, tc.wantCode, e)
 			}
 		})
+	}
+}
+
+func TestToSpawnAPIErrorMapsSpawnStageSentinels(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantKind apierr.Kind
+		wantCode string
+	}{
+		{
+			"workspace create",
+			fmt.Errorf("spawn mer-1: %w: git worktree add failed", sessionmanager.ErrWorkspaceCreate),
+			apierr.KindConflict,
+			"WORKSPACE_CREATE_FAILED",
+		},
+		{
+			"workspace provision",
+			fmt.Errorf("spawn mer-1: %w: postCreate \"pnpm install\": exit 1", sessionmanager.ErrWorkspaceProvision),
+			apierr.KindConflict,
+			"WORKSPACE_PROVISION_FAILED",
+		},
+		{
+			"runtime create",
+			fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: context deadline exceeded", sessionmanager.ErrRuntimeCreate),
+			apierr.KindInternal,
+			"RUNTIME_CREATE_FAILED",
+		},
+		{
+			"chat controller",
+			fmt.Errorf("spawn mer-1: %w: app-server exited", sessionmanager.ErrChatController),
+			apierr.KindConflict,
+			"CHAT_CONTROLLER_FAILED",
+		},
+		{
+			"spawn timeout",
+			context.DeadlineExceeded,
+			apierr.KindConflict,
+			"SPAWN_TIMEOUT",
+		},
+		{
+			"timeout wins over runtime stage",
+			fmt.Errorf("spawn mer-1: %w: %w", sessionmanager.ErrRuntimeCreate, context.DeadlineExceeded),
+			apierr.KindConflict,
+			"SPAWN_TIMEOUT",
+		},
+		{
+			"spawn cancelled",
+			context.Canceled,
+			apierr.KindConflict,
+			"SPAWN_CANCELLED",
+		},
+		{
+			"branch sentinel wins over workspace stage",
+			fmt.Errorf("spawn mer-1: %w: %w", sessionmanager.ErrWorkspaceCreate, ports.ErrWorkspaceBranchNotFetched),
+			apierr.KindInvalid,
+			"BRANCH_NOT_FETCHED",
+		},
+		{
+			"unclassified fallback",
+			errors.New("boom"),
+			apierr.KindInternal,
+			"SPAWN_INTERNAL",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mapped := toSpawnAPIError(tc.err)
+			var e *apierr.Error
+			if !errors.As(mapped, &e) || e.Kind != tc.wantKind || e.Code != tc.wantCode {
+				t.Fatalf("mapped = %v, want kind=%v code=%s", mapped, tc.wantKind, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestSpawnEmitsTypedErrorCodeForRuntimeFailure(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	fc := &fakeCommander{
+		spawnErr: fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: boom", sessionmanager.ErrRuntimeCreate),
+	}
+	ts := &fakeTelemetrySink{}
+	svc := NewWithDeps(Deps{Manager: fc, Store: st, Telemetry: ts, Clock: func() time.Time { return time.Unix(1700000000, 0).UTC() }})
+
+	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+	})
+	if err == nil {
+		t.Fatal("Spawn error = nil, want failure")
+	}
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Code != "RUNTIME_CREATE_FAILED" {
+		t.Fatalf("err = %v, want RUNTIME_CREATE_FAILED", err)
+	}
+	if len(ts.events) != 1 {
+		t.Fatalf("telemetry events = %d, want 1", len(ts.events))
+	}
+	if got := ts.events[0].Payload["error_code"]; got != "RUNTIME_CREATE_FAILED" {
+		t.Fatalf("event payload error_code = %#v, want RUNTIME_CREATE_FAILED", got)
+	}
+	if got := ts.events[0].Payload["error_kind"]; got != "internal" {
+		t.Fatalf("event payload error_kind = %#v, want internal", got)
+	}
+}
+
+func TestEmitSpawnFailedClassifiesRawStageSentinel(t *testing.T) {
+	ts := &fakeTelemetrySink{}
+	svc := NewWithDeps(Deps{
+		Telemetry: ts,
+		Clock:     func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	})
+
+	raw := fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: boom", sessionmanager.ErrRuntimeCreate)
+	svc.emitSpawnFailed(ports.SpawnConfig{
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+	}, raw, 42)
+
+	if len(ts.events) != 1 {
+		t.Fatalf("telemetry events = %d, want 1", len(ts.events))
+	}
+	if got := ts.events[0].Payload["error_code"]; got != "RUNTIME_CREATE_FAILED" {
+		t.Fatalf("event payload error_code = %#v, want RUNTIME_CREATE_FAILED", got)
+	}
+	if got := ts.events[0].Payload["error_kind"]; got != "internal" {
+		t.Fatalf("event payload error_kind = %#v, want internal", got)
+	}
+}
+
+func TestToSpawnAPIErrorIsIdempotentForMappedErrors(t *testing.T) {
+	raw := fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: boom", sessionmanager.ErrRuntimeCreate)
+	first := toSpawnAPIError(raw)
+	second := toSpawnAPIError(first)
+
+	var firstErr, secondErr *apierr.Error
+	if !errors.As(first, &firstErr) || !errors.As(second, &secondErr) {
+		t.Fatalf("mapped = %v / %v, want *apierr.Error", first, second)
+	}
+	if firstErr.Code != "RUNTIME_CREATE_FAILED" || secondErr.Code != "RUNTIME_CREATE_FAILED" {
+		t.Fatalf("codes = %q / %q, want RUNTIME_CREATE_FAILED", firstErr.Code, secondErr.Code)
 	}
 }
 
