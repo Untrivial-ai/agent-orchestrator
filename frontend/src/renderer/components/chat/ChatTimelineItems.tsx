@@ -1705,10 +1705,17 @@ export function TurnOutcome({
 	state,
 	durationMs,
 	error,
+	onRetry,
+	retryPending,
+	retryError,
 }: {
 	state: "completed" | "interrupted" | "failed";
 	durationMs?: number;
 	error?: string;
+	/** Re-dispatch this failed turn's prompt. Absent for any non-failed turn. */
+	onRetry?: () => void;
+	retryPending?: boolean;
+	retryError?: string;
 }) {
 	const copy = {
 		completed: { label: "Done", tone: "text-muted-foreground/70" },
@@ -1731,6 +1738,19 @@ export function TurnOutcome({
 				<span className="max-w-[40%] shrink truncate text-[10px] text-destructive" title={error}>
 					{error}
 				</span>
+			) : null}
+			{onRetry ? (
+				<button
+					type="button"
+					onClick={onRetry}
+					disabled={retryPending}
+					aria-label="Retry this turn"
+					title={retryError ?? "Send this prompt again as a new turn"}
+					data-testid="retry-turn"
+					className="shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50"
+				>
+					{retryPending ? "Retrying…" : "Retry"}
+				</button>
 			) : null}
 			<span aria-hidden="true" className="h-px min-w-0 flex-1 bg-border" />
 		</div>

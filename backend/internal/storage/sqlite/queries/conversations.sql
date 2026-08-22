@@ -1048,3 +1048,29 @@ WHERE conversation_provider_events.conversation_id = sqlc.arg(conversation_id)
   AND conversation_provider_events.id > sqlc.arg(id)
 ORDER BY conversation_provider_events.id
 LIMIT sqlc.arg(page_limit);
+-- A retry re-dispatches a failed turn's durable prompt as a NEW turn. Content is
+-- loaded from AO's own rows, never from the caller, so the daemon owns what gets
+-- sent again.
+-- name: SelectRetryableConversationPrompt :one
+SELECT conversation_turns.id,
+       conversation_messages.text,
+       conversation_messages.client_message_id,
+       conversation_messages.origin,
+       conversation_messages.delivery_content_json
+FROM conversation_turns
+JOIN conversation_messages
+    ON conversation_messages.turn_id = conversation_turns.id
+    AND conversation_messages.role = 'user'
+WHERE conversation_turns.id = sqlc.arg(id)
+  AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.state = 'failed'
+LIMIT 1;
+
+-- A retry re-dispatches a failed turn's durable prompt as a NEW turn. Returns
+-- the turn id (if any) that is already associated with a given clientMessageId,
+-- so the controller can derive a free idempotency key without races.
+-- name: SelectConversationTurnIDByClientMessageID :one
+SELECT turn_id FROM conversation_messages
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND client_message_id = sqlc.arg(client_message_id)
+LIMIT 1;

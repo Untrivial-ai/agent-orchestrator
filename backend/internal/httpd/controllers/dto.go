@@ -1391,6 +1391,15 @@ type EditConversationMessageResponse struct {
 	State          domain.TurnState `json:"state,omitempty" enum:"queued,running,completed,interrupted,failed"`
 }
 
+// RetryTurnResponse reports the new turn a retry dispatched. The original failed
+// turn is not referenced here: it stays failed and unchanged, and both attempts
+// remain separately visible in history.
+type RetryTurnResponse struct {
+	TurnID         string           `json:"turnId,omitempty"`
+	ProviderTurnID string           `json:"providerTurnId,omitempty"`
+	State          domain.TurnState `json:"state,omitempty" enum:"queued,running,completed,interrupted,failed"`
+}
+
 // ActivateConversationBranchResponse reports the durable head after switching.
 type ActivateConversationBranchResponse struct {
 	ActiveBranchID string `json:"activeBranchId"`

@@ -1074,6 +1074,28 @@ func (s *Service) ReloadMCPServers(
 	return controller.ReloadMCPServers(ctx)
 }
 
+// RetryTurn re-dispatches a failed turn's durable prompt as a new turn.
+// The content is loaded from AO's own rows, never from the caller, so the daemon
+// owns what gets sent again. The current next-turn settings apply.
+func (s *Service) RetryTurn(
+	ctx context.Context,
+	id domain.SessionID,
+	turnID string,
+) (domain.ConversationTurn, error) {
+	if _, err := s.requireChatSession(ctx, id); err != nil {
+		return domain.ConversationTurn{}, err
+	}
+	controller, err := s.Controller(id)
+	if err != nil {
+		return domain.ConversationTurn{}, err
+	}
+	result, err := controller.RetryTurn(ctx, turnID)
+	if err != nil {
+		return domain.ConversationTurn{}, err
+	}
+	return result, nil
+}
+
 // SetTurnSettings records the provider choices for this session's next turn.
 //
 // Applied per turn, so nothing restarts: the running turn keeps whatever it was

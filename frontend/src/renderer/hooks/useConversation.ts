@@ -359,6 +359,18 @@ export function useConversationCommands(sessionId: string | undefined) {
 		onSuccess: invalidate,
 	});
 
+	const retryTurn = useMutation({
+		mutationFn: async (turnId: string) => {
+			const { data, error } = await apiClient.POST(
+				"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/retry",
+				{ params: { path: { sessionId: sessionId as string, turnId } } },
+			);
+			if (error) throw error;
+			return data;
+		},
+		onSuccess: invalidate,
+	});
+
 	const editMessage = useMutation({
 		mutationFn: async ({ turnId, text }: { turnId: string; text: string }) => {
 			const { data, error } = await apiClient.POST(
@@ -419,6 +431,9 @@ export function useConversationCommands(sessionId: string | undefined) {
 		rollback: (turnId: string) => rollback.mutateAsync(turnId),
 		rollbackPending: rollback.isPending,
 		rollbackError: rollback.error ? apiErrorMessage(rollback.error) : undefined,
+		retryTurn: (turnId: string) => retryTurn.mutateAsync(turnId),
+		retryTurnPending: retryTurn.isPending,
+		retryTurnError: retryTurn.error ? apiErrorMessage(retryTurn.error) : undefined,
 		editMessage: (turnId: string, text: string) => editMessage.mutateAsync({ turnId, text }),
 		editMessagePending: editMessage.isPending,
 		editMessageError: editMessage.error ? apiErrorMessage(editMessage.error) : undefined,

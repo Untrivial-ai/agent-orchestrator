@@ -1909,6 +1909,28 @@ func (q *Queries) SelectConversationTurnByProviderID(ctx context.Context, arg Se
 	return i, err
 }
 
+const selectConversationTurnIDByClientMessageID = `-- name: SelectConversationTurnIDByClientMessageID :one
+SELECT turn_id FROM conversation_messages
+WHERE conversation_id = ?1
+  AND client_message_id = ?2
+LIMIT 1
+`
+
+type SelectConversationTurnIDByClientMessageIDParams struct {
+	ConversationID  string
+	ClientMessageID string
+}
+
+// A retry re-dispatches a failed turn's durable prompt as a NEW turn. Returns
+// the turn id (if any) that is already associated with a given clientMessageId,
+// so the controller can derive a free idempotency key without races.
+func (q *Queries) SelectConversationTurnIDByClientMessageID(ctx context.Context, arg SelectConversationTurnIDByClientMessageIDParams) (sql.NullString, error) {
+	row := q.db.QueryRowContext(ctx, selectConversationTurnIDByClientMessageID, arg.ConversationID, arg.ClientMessageID)
+	var turn_id sql.NullString
+	err := row.Scan(&turn_id)
+	return turn_id, err
+}
+
 const selectConversationTurns = `-- name: SelectConversationTurns :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
@@ -2246,6 +2268,51 @@ type SelectReservedConversationTurnForPromotionRow struct {
 func (q *Queries) SelectReservedConversationTurnForPromotion(ctx context.Context, arg SelectReservedConversationTurnForPromotionParams) (SelectReservedConversationTurnForPromotionRow, error) {
 	row := q.db.QueryRowContext(ctx, selectReservedConversationTurnForPromotion, arg.ID, arg.ConversationID)
 	var i SelectReservedConversationTurnForPromotionRow
+	err := row.Scan(
+		&i.ID,
+		&i.Text,
+		&i.ClientMessageID,
+		&i.Origin,
+		&i.DeliveryContentJson,
+	)
+	return i, err
+}
+
+const selectRetryableConversationPrompt = `-- name: SelectRetryableConversationPrompt :one
+SELECT conversation_turns.id,
+       conversation_messages.text,
+       conversation_messages.client_message_id,
+       conversation_messages.origin,
+       conversation_messages.delivery_content_json
+FROM conversation_turns
+JOIN conversation_messages
+    ON conversation_messages.turn_id = conversation_turns.id
+    AND conversation_messages.role = 'user'
+WHERE conversation_turns.id = ?1
+  AND conversation_turns.conversation_id = ?2
+  AND conversation_turns.state = 'failed'
+LIMIT 1
+`
+
+type SelectRetryableConversationPromptParams struct {
+	ID             string
+	ConversationID string
+}
+
+type SelectRetryableConversationPromptRow struct {
+	ID                  string
+	Text                string
+	ClientMessageID     string
+	Origin              domain.MessageOrigin
+	DeliveryContentJson string
+}
+
+// A retry re-dispatches a failed turn's durable prompt as a NEW turn. Content is
+// loaded from AO's own rows, never from the caller, so the daemon owns what gets
+// sent again.
+func (q *Queries) SelectRetryableConversationPrompt(ctx context.Context, arg SelectRetryableConversationPromptParams) (SelectRetryableConversationPromptRow, error) {
+	row := q.db.QueryRowContext(ctx, selectRetryableConversationPrompt, arg.ID, arg.ConversationID)
+	var i SelectRetryableConversationPromptRow
 	err := row.Scan(
 		&i.ID,
 		&i.Text,

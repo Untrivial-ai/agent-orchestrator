@@ -71,6 +71,9 @@ type Store interface {
 	CancelQueuedTurns(ctx context.Context, conversationID string, cutoff, now time.Time) error
 	CancelAllQueuedTurns(ctx context.Context, conversationID string, now time.Time) error
 
+	RetryPrompt(ctx context.Context, conversationID, turnID string) (domain.QueuedTurn, error)
+	TurnIDForClientMessage(ctx context.Context, conversationID, clientMessageID string) (string, bool, error)
+
 	TurnByID(ctx context.Context, turnID string) (domain.ConversationTurn, error)
 	RollbackTurns(ctx context.Context, conversationID, turnID string, now time.Time) (int, error)
 
@@ -215,6 +218,12 @@ var ErrNoActiveTurn = errors.New("no active turn")
 // closed source intake. The client should retain the draft and retry after the
 // session_updated event announces the target mode.
 var ErrControllerHandoff = errors.New("chat controller is switching interfaces")
+
+// ErrTurnNotRetryable reports a turn that cannot be retried: it is not part of
+// this conversation, not failed, was rolled back, or carries no durable prompt
+// the user authored. A retry is only ever offered for an eligible failed human
+// turn.
+var ErrTurnNotRetryable = errors.New("turn is not retryable")
 
 func newController(
 	sessionID domain.SessionID,
@@ -883,6 +892,102 @@ func (c *Controller) Send(ctx context.Context, msg ports.ChatUserMessage) (domai
 	}
 
 	return c.dispatch(ctx, turnID, msg, now)
+}
+
+// RetryTurn re-dispatches a failed turn's durable prompt as a new turn.
+//
+// The content is loaded from AO's own rows, never from the caller, so the daemon
+// owns what gets sent again. The original failed turn is never mutated or
+// relabeled: the retry is a brand-new turn and both attempts stay in history.
+//
+// Idempotency: each attempt derives a deterministic client message id from the
+// source prompt's key plus an attempt number. A double-click derives the same id
+// for the same attempt and is deduped by AppendUserMessage, so one click records
+// exactly one new turn. The current next-turn settings apply.
+func (c *Controller) RetryTurn(ctx context.Context, turnID string) (domain.ConversationTurn, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.handoffActive() {
+		return domain.ConversationTurn{}, ErrControllerHandoff
+	}
+
+	source, err := c.store.TurnByID(ctx, turnID)
+	if err != nil {
+		return domain.ConversationTurn{}, err
+	}
+	if source.ConversationID != c.conversation.ID {
+		return domain.ConversationTurn{}, fmt.Errorf("%w: %s", domain.ErrNoConversationTurn, turnID)
+	}
+	if source.State != domain.TurnStateFailed || source.RolledBackAt != nil {
+		return domain.ConversationTurn{}, fmt.Errorf("%w: %s", ErrTurnNotRetryable, turnID)
+	}
+	if c.busy() {
+		return domain.ConversationTurn{}, ErrTurnRunning
+	}
+
+	prompt, err := c.store.RetryPrompt(ctx, c.conversation.ID, turnID)
+	if err != nil {
+		return domain.ConversationTurn{}, fmt.Errorf("%w: %s", ErrTurnNotRetryable, turnID)
+	}
+	if prompt.Origin != domain.MessageOriginHuman {
+		return domain.ConversationTurn{}, fmt.Errorf("%w: %s", ErrTurnNotRetryable, turnID)
+	}
+
+	var content []ports.ChatContent
+	if prompt.DeliveryContentJSON != "" {
+		if err := json.Unmarshal([]byte(prompt.DeliveryContentJSON), &content); err != nil {
+			return domain.ConversationTurn{}, fmt.Errorf("decode retried chat content: %w", err)
+		}
+	}
+
+	keyBase := prompt.ClientMessageID
+	if keyBase == "" {
+		keyBase = "turn-" + turnID
+	}
+	// Derive a free idempotency key by probing existing attempts, so a double-click
+	// and an earlier retry of the same source can never collide.
+	attempt := 1
+	for {
+		key := fmt.Sprintf("%s/retry/%d", keyBase, attempt)
+		if _, found, probeErr := c.store.TurnIDForClientMessage(ctx, c.conversation.ID, key); probeErr != nil {
+			return domain.ConversationTurn{}, probeErr
+		} else if !found {
+			break
+		}
+		attempt++
+	}
+	key := fmt.Sprintf("%s/retry/%d", keyBase, attempt)
+
+	now := c.now()
+	newTurnID := c.newID()
+	created, err := c.store.AppendUserMessage(ctx, c.conversation.ID, c.sessionID, c.generation,
+		domain.ConversationMessage{
+			ID:                  c.newID(),
+			Text:                prompt.Text,
+			Origin:              prompt.Origin,
+			ClientMessageID:     key,
+			DeliveryContentJSON: prompt.DeliveryContentJSON,
+		}, newTurnID, now)
+	if err != nil {
+		return domain.ConversationTurn{}, fmt.Errorf("record retried message: %w", err)
+	}
+	if !created {
+		// A concurrent click already recorded this exact attempt. Report the turn it
+		// created rather than opening a second one.
+		if existingID, found, lookupErr := c.store.TurnIDForClientMessage(ctx, c.conversation.ID, key); lookupErr == nil && found {
+			if existing, existingErr := c.store.TurnByID(ctx, existingID); existingErr == nil {
+				return existing, nil
+			}
+		}
+		return domain.ConversationTurn{}, ErrTurnNotRetryable
+	}
+
+	return c.dispatch(ctx, newTurnID, ports.ChatUserMessage{
+		Text:            prompt.Text,
+		Content:         content,
+		Origin:          prompt.Origin,
+		ClientMessageID: key,
+	}, now)
 }
 
 // Settings reports the provider choices for the next turn.

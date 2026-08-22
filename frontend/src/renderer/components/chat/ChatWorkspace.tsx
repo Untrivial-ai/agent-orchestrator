@@ -227,6 +227,14 @@ export interface ChatWorkspaceProps {
 	onRollback?: (turnId: string) => void | Promise<unknown>;
 	rollbackPending?: boolean;
 	rollbackError?: string;
+	/**
+	 * Re-dispatch a failed turn's durable prompt as a new turn. Offered only for
+	 * eligible failed human turns, so the affordance is drawn on the failed-turn
+	 * boundary and never for a turn that is running or already succeeded.
+	 */
+	onRetryTurn?: (turnId: string) => void | Promise<unknown>;
+	retryTurnPending?: boolean;
+	retryTurnError?: string;
 	/** Create a conversation branch by replacing a prior human prompt. */
 	onEditMessage?: (turnId: string, text: string) => void | Promise<unknown>;
 	editMessagePending?: boolean;
@@ -314,6 +322,9 @@ export function ChatWorkspace({
 	onRollback,
 	rollbackPending,
 	rollbackError,
+	onRetryTurn,
+	retryTurnPending,
+	retryTurnError,
 	onEditMessage,
 	editMessagePending,
 	editMessageError,
@@ -729,6 +740,9 @@ export function ChatWorkspace({
 							onResolveInput={onResolveInput}
 							busy={busy}
 							onRollback={rollbackTarget}
+							onRetryTurn={onRetryTurn}
+							retryTurnPending={retryTurnPending}
+							retryTurnError={retryTurnError}
 							onEditHumanMessage={editHumanMessage}
 							editPending={editMessagePending}
 							editBusy={Boolean(turn)}
@@ -1217,6 +1231,9 @@ function Timeline({
 	onResolveInput,
 	busy,
 	onRollback,
+	onRetryTurn,
+	retryTurnPending,
+	retryTurnError,
 	onEditHumanMessage,
 	editPending,
 	editBusy,
@@ -1233,6 +1250,9 @@ function Timeline({
 	onResolveInput?: ChatWorkspaceProps["onResolveInput"];
 	busy?: boolean;
 	onRollback?: (turnId: string) => void;
+	onRetryTurn?: (turnId: string) => void;
+	retryTurnPending?: boolean;
+	retryTurnError?: string;
 	onEditHumanMessage?: (turnId: string, text: string) => Promise<unknown> | void;
 	editPending?: boolean;
 	editBusy?: boolean;
@@ -1265,6 +1285,7 @@ function Timeline({
 	const decide = useStableCallback(onDecide);
 	const resolveInput = useStableCallback(onResolveInput);
 	const rollback = useStableCallback(onRollback);
+	const retryTurn = useStableCallback(onRetryTurn);
 	const apiBaseUrl = useSyncExternalStore(subscribeApiBaseUrl, getApiBaseUrl, getApiBaseUrl);
 	const editHumanMessage = useStableCallback(onEditHumanMessage);
 	const activateBranch = useStableCallback(onActivateBranch);
@@ -1566,6 +1587,10 @@ function Timeline({
 								onDecide={decide}
 								onResolveInput={resolveInput}
 								onRollback={rollback}
+								onRetryTurn={retryTurn}
+								canRetry={Boolean(onRetryTurn)}
+								retryTurnPending={retryTurnPending}
+								retryTurnError={retryTurnError}
 								onEditHumanMessage={canEditHumanMessage ? editHumanMessage : undefined}
 								messageEdit={messageEdit}
 								onStartMessageEdit={startMessageEdit}
@@ -1745,6 +1770,10 @@ const TurnGroup = memo(function TurnGroup({
 	activateBranchPending,
 	activateBranchError,
 	canRollback,
+	onRetryTurn,
+	canRetry,
+	retryTurnPending,
+	retryTurnError,
 	busy,
 	queued,
 }: {
@@ -1770,6 +1799,12 @@ const TurnGroup = memo(function TurnGroup({
 	activateBranchError?: string;
 	/** The daemon would accept a rollback of this turn, so offer the affordance. */
 	canRollback: boolean;
+	/** Re-dispatch this failed turn's prompt as a new turn. */
+	onRetryTurn?: (turnId: string) => void;
+	/** The daemon offers retry for this turn, so draw the affordance. */
+	canRetry: boolean;
+	retryTurnPending?: boolean;
+	retryTurnError?: string;
 	busy?: boolean;
 	/** This turn was recorded but not sent, so its message can say so. */
 	queued: boolean;
@@ -1856,6 +1891,13 @@ const TurnGroup = memo(function TurnGroup({
 					state={group.outcome.state}
 					durationMs={group.outcome.durationMs}
 					error={group.outcome.error}
+					onRetry={
+						group.outcome.state === "failed" && canRetry && group.turnId
+							? () => onRetryTurn?.(group.turnId as string)
+							: undefined
+					}
+					retryPending={retryTurnPending}
+					retryError={retryTurnError}
 				/>
 			) : null}
 		</div>
