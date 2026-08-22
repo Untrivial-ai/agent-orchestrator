@@ -31,6 +31,8 @@ type fakeChatService struct {
 	editErr     error
 	activate    string
 	activateErr error
+	retryTurn   domain.ConversationTurn
+	retryErr    error
 
 	gotTurnID      string
 	gotTitle       string
@@ -90,6 +92,14 @@ func (f *fakeChatService) Rollback(_ context.Context, _ domain.SessionID, turnID
 		return 0, f.rollback
 	}
 	return f.discarded, nil
+}
+
+func (f *fakeChatService) RetryTurn(_ context.Context, _ domain.SessionID, turnID string) (domain.ConversationTurn, error) {
+	f.gotTurnID = turnID
+	if f.retryErr != nil {
+		return domain.ConversationTurn{}, f.retryErr
+	}
+	return f.retryTurn, nil
 }
 
 // Compaction belongs to a sibling slice; this fake only has to satisfy the

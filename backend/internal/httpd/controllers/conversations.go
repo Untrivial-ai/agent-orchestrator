@@ -42,6 +42,7 @@ type ConversationService interface {
 	SetTurnSettings(ctx context.Context, session domain.SessionID, settings domain.ConversationSettings) (domain.ConversationSettings, error)
 	Compact(ctx context.Context, session domain.SessionID) (ports.ChatCompactionResult, error)
 	Rollback(ctx context.Context, session domain.SessionID, turnID string) (int, error)
+	RetryTurn(ctx context.Context, session domain.SessionID, turnID string) (domain.ConversationTurn, error)
 	SetTitle(ctx context.Context, session domain.SessionID, title string) (string, error)
 	ReloadMCPServers(ctx context.Context, session domain.SessionID) ([]domain.ConversationMCPServer, error)
 }
@@ -76,6 +77,7 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Patch("/sessions/{sessionId}/conversation/settings", c.setSettings)
 	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/rollback", c.rollback)
 	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/edit", c.editMessage)
+	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/retry", c.retryTurn)
 	r.Post("/sessions/{sessionId}/conversation/branches/{branchId}/activate", c.activateBranch)
 	r.Put("/sessions/{sessionId}/conversation/title", c.setTitle)
 	r.Post("/sessions/{sessionId}/conversation/mcp/reload", c.reloadMCPServers)
@@ -111,6 +113,46 @@ func (c *ConversationsController) editMessage(w http.ResponseWriter, r *http.Req
 		ProviderTurnID: result.Turn.ProviderTurnID,
 		State:          result.Turn.State,
 	})
+}
+
+// retryTurn re-dispatches a failed turn's durable prompt as a new turn. The
+// content is read from AO's rows rather than the request, so the daemon owns
+// what gets sent again and the original failed turn stays failed.
+func (c *ConversationsController) retryTurn(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST",
+			"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/retry")
+		return
+	}
+	turn, err := c.Svc.RetryTurn(r.Context(),
+		domain.SessionID(chi.URLParam(r, "sessionId")), chi.URLParam(r, "turnId"))
+	if err != nil {
+		writeConversationRetryError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, RetryTurnResponse{
+		TurnID:         turn.ID,
+		ProviderTurnID: turn.ProviderTurnID,
+		State:          turn.State,
+	})
+}
+
+// writeConversationRetryError maps retry refusals to their HTTP meanings.
+func writeConversationRetryError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, chatsvc.ErrTurnNotRetryable):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_RETRY_NOT_RETRYABLE",
+			"this turn cannot be retried: it is not a failed human turn in this conversation", nil)
+	case errors.Is(err, chatsvc.ErrTurnRunning), errors.Is(err, chatsvc.ErrControllerHandoff):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_RETRY_BUSY", "stop the current turn before retrying this one", nil)
+	case errors.Is(err, domain.ErrNoConversationTurn):
+		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found",
+			"CHAT_RETRY_TURN_NOT_FOUND", "that turn is not in this conversation", nil)
+	default:
+		writeConversationError(w, r, err)
+	}
 }
 
 func (c *ConversationsController) activateBranch(w http.ResponseWriter, r *http.Request) {

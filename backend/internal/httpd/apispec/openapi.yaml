@@ -3014,6 +3014,59 @@ paths:
       summary: Branch before and replace an earlier human prompt
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/turns/{turnId}/retry:
+    post:
+      operationId: retrySessionConversationTurn
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: AO conversation turn identifier, from the snapshot's turns array.
+        in: path
+        name: turnId
+        required: true
+        schema:
+          description: AO conversation turn identifier, from the snapshot's turns
+            array.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersRetryTurnResponse'
+          description: Accepted
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Re-dispatch a failed turn's durable prompt as a new turn
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/turns/{turnId}/rollback:
     post:
       operationId: rollbackSessionConversation
@@ -5785,6 +5838,21 @@ components:
           type: boolean
       required:
       - ok
+      type: object
+    ControllersRetryTurnResponse:
+      properties:
+        providerTurnId:
+          type: string
+        state:
+          enum:
+          - queued
+          - running
+          - completed
+          - interrupted
+          - failed
+          type: string
+        turnId:
+          type: string
       type: object
     ControllersSecurePairingStatus:
       properties:

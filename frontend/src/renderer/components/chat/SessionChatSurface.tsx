@@ -306,6 +306,9 @@ export function SessionChatSurface({
 				onRollback={commands.rollback}
 				rollbackPending={commands.rollbackPending}
 				rollbackError={commands.rollbackError}
+				onRetryTurn={commands.retryTurn}
+				retryTurnPending={commands.retryTurnPending}
+				retryTurnError={commands.retryTurnError}
 				onEditMessage={commands.editMessage}
 				editMessagePending={commands.editMessagePending}
 				editMessageError={commands.editMessageError}

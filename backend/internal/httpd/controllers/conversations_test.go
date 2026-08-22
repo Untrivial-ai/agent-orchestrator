@@ -105,6 +105,10 @@ func (f *fakeConversationService) Rollback(context.Context, domain.SessionID, st
 	return 0, nil
 }
 
+func (f *fakeConversationService) RetryTurn(context.Context, domain.SessionID, string) (domain.ConversationTurn, error) {
+	return domain.ConversationTurn{}, nil
+}
+
 func (f *fakeConversationService) SetTitle(context.Context, domain.SessionID, string) (string, error) {
 	return "", nil
 }

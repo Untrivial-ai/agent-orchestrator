@@ -2319,3 +2319,42 @@ func (s *Store) ProviderEventsSince(
 	}
 	return rows, nil
 }
+
+// RetryPrompt returns the durable human prompt of a failed turn, for
+// re-dispatching it as a new turn. The content is loaded from AO's own rows
+// rather than from a client request that could be stale or substituted.
+func (s *Store) RetryPrompt(ctx context.Context, conversationID, turnID string) (domain.QueuedTurn, error) {
+	row, err := s.qr.SelectRetryableConversationPrompt(ctx, gen.SelectRetryableConversationPromptParams{
+		ID: turnID, ConversationID: conversationID,
+	})
+	if err != nil {
+		return domain.QueuedTurn{}, err
+	}
+	return domain.QueuedTurn{
+		TurnID:              row.ID,
+		Text:                row.Text,
+		ClientMessageID:     row.ClientMessageID,
+		Origin:              row.Origin,
+		DeliveryContentJSON: row.DeliveryContentJson,
+	}, nil
+}
+
+// TurnIDForClientMessage returns the turn id (if any) that is already
+// associated with a given clientMessageId, so the controller can derive a
+// free idempotency key for a retry attempt without races.
+func (s *Store) TurnIDForClientMessage(ctx context.Context, conversationID, clientMessageID string) (string, bool, error) {
+	row, err := s.qr.SelectConversationTurnIDByClientMessageID(ctx, gen.SelectConversationTurnIDByClientMessageIDParams{
+		ConversationID:  conversationID,
+		ClientMessageID: clientMessageID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if !row.Valid {
+		return "", false, nil
+	}
+	return row.String, true, nil
+}
