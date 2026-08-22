@@ -37,8 +37,18 @@ type sessionClaimPROptions struct {
 	noTakeover bool
 }
 
+type sessionMergePolicyOptions struct {
+	project            string
+	json               bool
+	terminateOnPRMerge bool
+}
+
 type sessionRenameRequest struct {
 	DisplayName string `json:"displayName"`
+}
+
+type sessionMergePolicyRequest struct {
+	TerminateOnPRMerge bool `json:"terminateOnPrMerge"`
 }
 
 type sessionDTO struct {
@@ -81,6 +91,13 @@ type restoreSessionResponse struct {
 type renameSessionResponse struct {
 	SessionID   string `json:"sessionId"`
 	DisplayName string `json:"displayName"`
+}
+
+type setMergePolicyResponse struct {
+	OK                 bool       `json:"ok"`
+	SessionID          string     `json:"sessionId"`
+	TerminateOnPRMerge bool       `json:"terminateOnPrMerge"`
+	Session            sessionDTO `json:"session"`
 }
 
 type cleanupSkippedSession struct {
@@ -148,6 +165,7 @@ func newSessionCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newSessionKillCommand(ctx))
 	cmd.AddCommand(newSessionRestoreCommand(ctx))
 	cmd.AddCommand(newSessionRenameCommand(ctx))
+	cmd.AddCommand(newSessionSetMergePolicyCommand(ctx))
 	cmd.AddCommand(newSessionCleanupCommand(ctx))
 	cmd.AddCommand(newSessionClaimPRCommand(ctx))
 	cmd.AddCommand(newSessionSwitchAgentCommand(ctx))
@@ -245,6 +263,30 @@ func newSessionRenameCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	return cmd
+}
+
+func newSessionSetMergePolicyCommand(ctx *commandContext) *cobra.Command {
+	var opts sessionMergePolicyOptions
+	cmd := &cobra.Command{
+		Use:   "set-merge-policy <id>",
+		Short: "Set whether the session auto-terminates when its PR merges",
+		Args:  oneSessionIDArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cmd.Flags().Changed("terminate-on-pr-merge") {
+				return usageError{errors.New("--terminate-on-pr-merge is required (true or false)")}
+			}
+			id, err := normalizeSessionID(args[0])
+			if err != nil {
+				return err
+			}
+			return ctx.setSessionMergePolicy(cmd.Context(), cmd, id, opts)
+		},
+	}
+	f := cmd.Flags()
+	addSessionProjectFlag(f, &opts.project, "Project id to scope the lookup")
+	f.BoolVar(&opts.terminateOnPRMerge, "terminate-on-pr-merge", false, "Terminate the session when its claimed PR merges (required)")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -531,6 +573,32 @@ func (c *commandContext) renameSession(ctx context.Context, cmd *cobra.Command, 
 		name = res.DisplayName
 	}
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s renamed to %q\n", sessionID, name)
+	return err
+}
+
+func (c *commandContext) setSessionMergePolicy(ctx context.Context, cmd *cobra.Command, id string, opts sessionMergePolicyOptions) error {
+	if opts.project != "" {
+		if _, err := c.fetchScopedSession(ctx, id, opts.project); err != nil {
+			return err
+		}
+	}
+	var res setMergePolicyResponse
+	req := sessionMergePolicyRequest{TerminateOnPRMerge: opts.terminateOnPRMerge}
+	if err := c.patchJSON(ctx, "sessions/"+url.PathEscape(id)+"/merge-policy", req, &res); err != nil {
+		return err
+	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), res)
+	}
+	sessionID := res.SessionID
+	if sessionID == "" {
+		sessionID = id
+	}
+	policy := "keep session after PR merge"
+	if res.TerminateOnPRMerge {
+		policy = "terminate session when PR merges"
+	}
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s merge policy: %s\n", sessionID, policy)
 	return err
 }
 

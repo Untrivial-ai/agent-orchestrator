@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -95,6 +96,13 @@ func sessionCommandServer(t *testing.T) (*httptest.Server, *sessionRequestLog) {
 				return
 			}
 			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","displayName":`+jsonQuote(req.DisplayName)+`}`)
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/sessions/demo-1/merge-policy":
+			var req sessionMergePolicyRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","terminateOnPrMerge":`+fmt.Sprintf("%t", req.TerminateOnPRMerge)+`,"session":`+sessionJSON("demo-1", "demo", "worker", "working", false)+`}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -488,9 +496,60 @@ func TestSessionRename_SuccessWithProjectScope(t *testing.T) {
 	}
 }
 
+func TestSessionSetMergePolicy_Success(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, log := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "set-merge-policy", "demo-1", "--terminate-on-pr-merge", "-p", "demo")
+	if err != nil {
+		t.Fatalf("session set-merge-policy failed: %v\nstderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "session demo-1 merge policy: terminate session when PR merges") {
+		t.Fatalf("unexpected set-merge-policy output:\n%s", out)
+	}
+	want := []string{"GET /api/v1/sessions/demo-1", "PATCH /api/v1/sessions/demo-1/merge-policy"}
+	if got := log.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionSetMergePolicy_DisableAndJSON(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "set-merge-policy", "demo-1", "--terminate-on-pr-merge=false", "--json")
+	if err != nil {
+		t.Fatalf("session set-merge-policy --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got setMergePolicyResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("set-merge-policy --json output is not decodable: %v\noutput=%s", err, out)
+	}
+	if !got.OK || got.SessionID != "demo-1" || got.TerminateOnPRMerge {
+		t.Fatalf("unexpected merge policy JSON: %#v", got)
+	}
+}
+
+func TestSessionSetMergePolicy_MissingFlagIsUsageError(t *testing.T) {
+	setConfigEnv(t)
+	_, errOut, err := executeCLI(t, Deps{}, "session", "set-merge-policy", "demo-1")
+	if err == nil {
+		t.Fatal("expected missing --terminate-on-pr-merge to fail")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (err=%v stderr=%s)", got, err, errOut)
+	}
+}
+
 func TestSessionCommands_MissingIDIsUsageError(t *testing.T) {
 	setConfigEnv(t)
-	for _, sub := range []string{"get", "kill", "restore"} {
+	for _, sub := range []string{"get", "kill", "restore", "set-merge-policy"} {
 		t.Run(sub, func(t *testing.T) {
 			_, _, err := executeCLI(t, Deps{}, "session", sub)
 			if err == nil {
