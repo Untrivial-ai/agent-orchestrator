@@ -1,0 +1,75 @@
+---
+title: "Agent Orchestrator 0.12.1"
+description: "Nine color themes including Nord, Gruvbox and Solarized, per-agent model selection with a real catalog, new tasks that can go through the project orchestrator, and a merge button for a PR that is ready. Also fixes a macOS file descriptor leak from 0.12.0."
+date: "2026-08-05T18:28:27Z"
+---
+
+> Covers everything since **v0.12.0**.
+>
+> **On macOS, update and then reboot.** 0.12.0 leaked file descriptors, and relaunching the app is not always enough to stop the old daemon binary from serving. See [the postmortem](https://github.com/Untrivial-ai/agent-orchestrator/discussions/3646).
+
+A same-day follow-up to 0.12.0. Most of it is finishing work that 0.12.0 started: the token palette now has themes on top of it, the sidebar it redesigned has animation, and the reviews and browser surfaces it reworked got their rough edges taken off. Two larger pieces landed alongside, per-agent model selection and orchestrator task delegation, and the macOS descriptor leak that prompted the release is fixed.
+
+28 commits, 6 features and 17 fixes, no breaking changes.
+
+---
+
+## Highlights
+
+### Nine color themes
+
+0.12.0 shipped the oklch token foundation. This turns it into something you can pick from: a **Color Theme** row above the light/dark Mode row in Settings > General, listing nine themes. Nord, Gruvbox and Solarized are new, each with dark and light variants built on the same contrast curve as the existing ones. The theme-style plumbing had been declared but never actually wired to anything, so the stored choice is now applied at startup instead of being ignored.
+
+Switching a theme also stopped looking broken. The swap happens under a View Transitions snapshot so colors change in one cut rather than every element tweening its own background at its own pace, and the terminal palette now syncs on the toggle instead of showing stale colors until the next remount. (#3585, #3620, #3587)
+
+### Model selection that knows what the agent supports
+
+Model configuration went from a text field you had to get right to a real picker. Each agent's models are discovered from its own config files and cached in a local catalog, then offered in a searchable combobox in project settings, per agent. The catalog is served cache-first and revalidated in the background, with indexed search so a large model list stays responsive. (#3386)
+
+### Hand a new task to the project orchestrator
+
+New Task can now delegate to the project's orchestrator session instead of always spawning a worker directly, so a task can be routed and broken down by the orchestrator that already has the project's context. The dialog's fields were simplified around the choice. (#3443)
+
+### Merge a PR that is ready, from the app
+
+The session inspector gained a merge action for a PR in the ready state, going through a guarded merge path rather than a raw merge call, and it now says why a merge is blocked instead of just refusing. The merged status chip also has enough contrast to read. (#3599, #3589)
+
+### Browser annotations, rebuilt
+
+The annotate overlay was rebuilt on the same tokens and copy conventions as the diff viewer's inline feedback box, and it can select multiple elements by holding shift. Annotations reflow when the embedded viewport changes rather than stranding a prompt off-screen, and the inspector no longer shrinks to an unusable clipped width.
+
+The overlay's font also renders correctly now. It used to load Geist through an `@font-face` `src: url(data:...)` rule, which the annotated page's own content security policy could silently block, quietly falling back to the OS font. It is registered as a `FontFace` on the shadow root instead, which fetches nothing and so is not subject to the page's policy. (#3549)
+
+### The sidebar moves
+
+Project lists animate open and closed, the sidebar itself opens and closes on a spring, and the topbar's project label animates with it. Project rows have a right-click context menu, session rows have a kill button, and the redesign respects the OS reduced-motion setting rather than animating regardless. (#3490)
+
+---
+
+## Fixes
+
+**The macOS descriptor leak.** On 0.12.0, the live Files view leaked file descriptors on macOS and never released them, so after a few hours of use the Files view came up blank and creating a task started failing with a 500. The cause was fsnotify v1.9.0's kqueue backend; 0.12.1 bumps it and adds a regression test on descriptor counts after teardown. Linux and Windows were never affected. [Postmortem](https://github.com/Untrivial-ai/agent-orchestrator/discussions/3646). (#3624)
+
+**Terminals.** A terminal keeps its viewport across navigation instead of resetting scroll position when you come back, and shows the latest output on return. (#3371)
+
+**Browser.** Switching tabs could leave the previous tab's content on screen, because the native overlay was not explicitly torn down on selection. Overlay cleanup is explicit now, with a test covering repeated activation of the same tab. (#3579)
+
+**Agents.** Kimi installs that are authenticated through credential tokens rather than an API key are detected as authenticated, instead of being reported as needing setup. (#3603)
+
+**Storage.** The 0044 review-batch backfill was missing from the shipped-migrations ledger, the gap that the 0.12.0 repair work exists to prevent. (#3611)
+
+**Reviews.** Review summaries render only when a summary is actually present, so an empty pass no longer leaves a blank block, and the review controls row lays out its actions inline. An obsolete review result reducer was removed. (#3608, #3559)
+
+**Chrome.** Dev settings use circular minus and plus steppers instead of native number spinners, which behaved differently on every platform. Alongside that: terminal tabs flush to the topbar edge, pinned session rows aligned, the terminal gutter preserved, modal footer buttons unified with equal edge padding, the session page topbar fixed, the import mode picker illustration restyled, and the report problem button on the primary footer style. (#3588, #3590, #3592, #3586, #3584, #3560, #3583, #3578)
+
+**Landing.** The feedback loop demo was rebuilt to mirror the session view and its chrome matched to it, the Feature 4 project mockup improved, and the trusted-agents marquee widened so its heading stays on one line. (#3605, #3616, #3561, #3457)
+
+---
+
+## Upgrading
+
+GitHub Releases and Homebrew are the supported install paths. Existing installs update in place.
+
+On macOS, reboot after updating. When a daemon is already running and was not started by the app, the app attaches to it instead of owning it, so quitting and reopening leaves the old binary serving requests. Rebooting is the reliable way to be sure you are actually on 0.12.1. That attach behavior is being tracked as its own issue.
+
+**Full changelog:** https://github.com/Untrivial-ai/agent-orchestrator/compare/v0.12.0...v0.12.1
