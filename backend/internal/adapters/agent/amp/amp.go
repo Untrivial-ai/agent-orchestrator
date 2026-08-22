@@ -1,9 +1,8 @@
 // Package amp implements the Amp agent adapter: launching new interactive Amp
 // sessions and resuming sessions when a native Amp thread id is known.
 //
-// AO injects standing session instructions through a workspace-local Amp
-// TypeScript plugin. Activity hooks and SessionInfo derivation will likely
-// require more Amp-specific plugin work, so SessionInfo remains a no-op.
+// AO injects standing session instructions and reports Amp lifecycle activity
+// through a workspace-local TypeScript plugin.
 package amp
 
 import (
@@ -146,6 +145,17 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 	cmd = append(cmd, "--resume", agentSessionID)
 	return cmd, true, nil
+}
+
+// SessionInfo surfaces the native Amp thread id captured by the managed
+// session-start callback. Other standard hook-derived metadata is forwarded
+// when present.
+func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (ports.SessionInfo, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ports.SessionInfo{}, false, err
+	}
+	info, ok := agentbase.StandardSessionInfo(session)
+	return info, ok, nil
 }
 
 var ampBinarySpec = binaryutil.BinarySpec{

@@ -22,17 +22,39 @@ func TestDeriverTokensAreKnownHarnesses(t *testing.T) {
 }
 
 func TestSupportsHarness(t *testing.T) {
-	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent} {
+	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent, domain.HarnessAmp, domain.HarnessPi, domain.HarnessAuggie} {
 		if !SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = false, want true", h)
 		}
 	}
 	// Harnesses whose adapters install no hooks must read as unsupported so
 	// their silence never derives no_signal.
-	for _, h := range []domain.AgentHarness{domain.HarnessAmp, domain.HarnessAider, domain.HarnessCrush, domain.AgentHarness("")} {
+	for _, h := range []domain.AgentHarness{domain.HarnessAider, domain.HarnessCrush, domain.AgentHarness("")} {
 		if SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = true, want false", h)
 		}
+	}
+}
+
+func TestAmpPiAndAuggieDispatchActivity(t *testing.T) {
+	tests := []struct {
+		agent   string
+		event   string
+		payload string
+		want    domain.ActivityState
+	}{
+		{agent: "amp", event: "thread-state", payload: `{"state":"awaiting-approval"}`, want: domain.ActivityWaitingInput},
+		{agent: "pi", event: "user-prompt-submit", payload: `{}`, want: domain.ActivityActive},
+		{agent: "auggie", event: "stop", payload: `{"agent_stop_cause":"error"}`, want: domain.ActivityWaitingInput},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.agent, func(t *testing.T) {
+			got, ok := Derive(tt.agent, tt.event, []byte(tt.payload))
+			if !ok || got != tt.want {
+				t.Fatalf("Derive(%q, %q) = (%q, %v), want (%q, true)", tt.agent, tt.event, got, ok, tt.want)
+			}
+		})
 	}
 }
 
