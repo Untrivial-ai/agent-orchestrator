@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -10,7 +12,7 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	// Clear every recognised var so we observe pure defaults regardless of the
 	// surrounding environment.
-	for _, k := range []string{"AO_PORT", "AO_REQUEST_TIMEOUT", "AO_SHUTDOWN_TIMEOUT", "AO_RUN_FILE", "AO_DATA_DIR", "AO_AGENT", "AO_ALLOWED_ORIGINS", "AO_TELEMETRY_EVENTS", "AO_TELEMETRY_METRICS", "AO_TELEMETRY_REMOTE", "AO_TELEMETRY_POSTHOG_KEY", "AO_TELEMETRY_POSTHOG_HOST", "AO_TELEMETRY_DISABLED_EVENTS", "AO_TELEMETRY_APP_VERSION"} {
+	for _, k := range []string{"AO_PORT", "AO_REQUEST_TIMEOUT", "AO_SHUTDOWN_TIMEOUT", "AO_RUN_FILE", "AO_DATA_DIR", "AO_AGENT", "AO_PROCESS_CONTAINMENT", "AO_ALLOWED_ORIGINS", "AO_TELEMETRY_EVENTS", "AO_TELEMETRY_METRICS", "AO_TELEMETRY_REMOTE", "AO_TELEMETRY_POSTHOG_KEY", "AO_TELEMETRY_POSTHOG_HOST", "AO_TELEMETRY_DISABLED_EVENTS", "AO_TELEMETRY_APP_VERSION"} {
 		t.Setenv(k, "")
 	}
 
@@ -29,6 +31,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ShutdownTimeout != DefaultShutdownTimeout {
 		t.Errorf("ShutdownTimeout = %s, want %s", cfg.ShutdownTimeout, DefaultShutdownTimeout)
+	}
+	if cfg.ProcessContainment != ProcessContainmentNone {
+		t.Fatalf("ProcessContainment = %q, want unset", cfg.ProcessContainment)
 	}
 	if cfg.RunFilePath == "" {
 		t.Error("RunFilePath is empty, want a resolved default path")
@@ -90,6 +95,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("AO_PORT", "4002")
 	t.Setenv("AO_REQUEST_TIMEOUT", "5s")
 	t.Setenv("AO_SHUTDOWN_TIMEOUT", "3s")
+	t.Setenv("AO_PROCESS_CONTAINMENT", "")
 	t.Setenv("AO_RUN_FILE", runFilePath)
 	t.Setenv("AO_DATA_DIR", dataDir)
 	t.Setenv("AO_TELEMETRY_EVENTS", "on")
@@ -125,6 +131,64 @@ func TestLoadOverrides(t *testing.T) {
 	}
 }
 
+func TestParseProcessContainment(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		goos    string
+		want    ProcessContainment
+		wantErr string
+	}{
+		{name: "empty on linux", goos: "linux", want: ProcessContainmentNone},
+		{name: "empty on darwin", goos: "darwin", want: ProcessContainmentNone},
+		{name: "empty on windows", goos: "windows", want: ProcessContainmentNone},
+		{name: "systemd on linux", raw: "systemd", goos: "linux", want: ProcessContainmentSystemd},
+		{name: "normalized systemd on linux", raw: " SystemD ", goos: "linux", want: ProcessContainmentSystemd},
+		{name: "systemd on darwin", raw: "systemd", goos: "darwin", wantErr: "systemd is Linux-only (GOOS=darwin)"},
+		{name: "systemd on windows", raw: "systemd", goos: "windows", wantErr: "systemd is Linux-only (GOOS=windows)"},
+		{name: "invalid on linux", raw: "cgroup", goos: "linux", wantErr: "must be unset|systemd"},
+		{name: "invalid on darwin", raw: "cgroup", goos: "darwin", wantErr: "must be unset|systemd"},
+		{name: "invalid on windows", raw: "cgroup", goos: "windows", wantErr: "must be unset|systemd"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseProcessContainment(tc.raw, tc.goos)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseProcessContainment(%q, %q) = %q, nil; want error containing %q", tc.raw, tc.goos, got, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("parseProcessContainment(%q, %q) error = %q; want substring %q", tc.raw, tc.goos, err, tc.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("parseProcessContainment(%q, %q): %v", tc.raw, tc.goos, err)
+			}
+			if got != tc.want {
+				t.Errorf("parseProcessContainment(%q, %q) = %q, want %q", tc.raw, tc.goos, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadProcessContainmentSystemd(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("systemd process containment is Linux-only")
+	}
+	t.Setenv("AO_PROCESS_CONTAINMENT", " SystemD ")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ProcessContainment != ProcessContainmentSystemd {
+		t.Errorf("ProcessContainment = %q, want systemd", cfg.ProcessContainment)
+	}
+}
+
 func TestLoadInvalid(t *testing.T) {
 	tests := []struct {
 		name string
@@ -134,6 +198,7 @@ func TestLoadInvalid(t *testing.T) {
 		{"port out of range", map[string]string{"AO_PORT": "70000"}},
 		{"bad request timeout", map[string]string{"AO_REQUEST_TIMEOUT": "soon"}},
 		{"bad shutdown timeout", map[string]string{"AO_SHUTDOWN_TIMEOUT": "later"}},
+		{"bad process containment", map[string]string{"AO_PROCESS_CONTAINMENT": "cgroup"}},
 		{"zero request timeout", map[string]string{"AO_REQUEST_TIMEOUT": "0s"}},
 		{"negative request timeout", map[string]string{"AO_REQUEST_TIMEOUT": "-1s"}},
 		{"zero shutdown timeout", map[string]string{"AO_SHUTDOWN_TIMEOUT": "0s"}},

@@ -179,7 +179,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	if err != nil {
 		if completionErr != nil || controllerCommitted {
 			m.stopChatBestEffort(ctx, id)
-			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
+			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject)
 			m.markSpawnFailedTerminated(ctx, id)
 			if completionErr != nil {
 				return domain.SessionRecord{}, fmt.Errorf("spawn %s: completed: %w", id, completionErr)
@@ -198,7 +198,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	if in.prompt != "" {
 		if _, err := m.chat.StartChatTurn(ctx, id, in.prompt); err != nil {
 			m.stopChatBestEffort(ctx, id)
-			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
+			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject)
 			m.markSpawnFailedTerminated(ctx, id)
 			return domain.SessionRecord{}, fmt.Errorf("spawn %s: deliver prompt: %w", id, err)
 		}

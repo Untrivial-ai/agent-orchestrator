@@ -85,19 +85,23 @@ func New(opts Options) *Runtime {
 func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	id := string(cfg.SessionID)
 	if !validSessionID.MatchString(id) {
-		return ports.RuntimeHandle{}, fmt.Errorf("conpty: invalid session id %q: must match ^[a-zA-Z0-9_-]+$", id)
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(fmt.Errorf("conpty: invalid session id %q: must match ^[a-zA-Z0-9_-]+$", id))
 	}
 	if cfg.WorkspacePath == "" {
-		return ports.RuntimeHandle{}, fmt.Errorf("conpty: workspace path required")
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(errors.New("conpty: workspace path required"))
 	}
 	if len(cfg.Argv) == 0 {
-		return ports.RuntimeHandle{}, fmt.Errorf("conpty: argv required")
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(errors.New("conpty: argv required"))
 	}
 
 	r.mu.Lock()
-	if _, dup := r.sessions[id]; dup {
+	if existing, dup := r.sessions[id]; dup {
 		r.mu.Unlock()
-		return ports.RuntimeHandle{}, fmt.Errorf("conpty: session %q already exists; destroy before re-creating", id)
+		handle := ports.RuntimeHandle{ID: id}
+		if existing != nil {
+			handle.RuntimeLaunchID = existing.launchID
+		}
+		return handle, ports.NewRuntimeCreatePreserveError(handle, fmt.Errorf("conpty: session %q already exists; destroy before re-creating", id))
 	}
 	// Reserve the slot before the async spawn so a concurrent Create for the
 	// same id fails immediately (no gap between check and set).
@@ -109,11 +113,15 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		r.mu.Lock()
 		delete(r.sessions, id)
 		r.mu.Unlock()
-		return ports.RuntimeHandle{}, fmt.Errorf("conpty: spawn pty-host for %q: %w", id, err)
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(fmt.Errorf("conpty: spawn pty-host for %q: %w", id, err))
 	}
 
+	launchID := cfg.RuntimeLaunchID
+	if launchID == "" {
+		launchID = cfg.Env[runtimeLaunchIDEnv]
+	}
 	sess := &hostSession{
-		addr: addr, pid: pid, launchID: cfg.Env[runtimeLaunchIDEnv],
+		addr: addr, pid: pid, launchID: launchID,
 		protocolVersion: conPTYHostProtocolVersion, protocolResolved: true,
 	}
 
@@ -130,7 +138,7 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
 	})
 
-	return ports.RuntimeHandle{ID: id}, nil
+	return ports.RuntimeHandle{ID: id, RuntimeLaunchID: launchID}, nil
 }
 
 // Destroy gracefully kills the pty-host, then force-kills it when necessary.

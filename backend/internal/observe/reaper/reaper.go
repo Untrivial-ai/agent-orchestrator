@@ -253,5 +253,5 @@ func handleFromRecord(rec domain.SessionRecord) (ports.RuntimeHandle, bool) {
 	if id == "" {
 		return ports.RuntimeHandle{}, false
 	}
-	return ports.RuntimeHandle{ID: id}, true
+	return ports.RuntimeHandle{ID: id, RuntimeLaunchID: rec.Metadata.RuntimeLaunchID}, true
 }

@@ -35,6 +35,9 @@ jobs:
           go-version: "1.25"
           cache: false
 
+      - name: Config unit tests
+        run: go test -count=1 ./internal/config
+
       - name: CLI E2E (native)
         run: go test -tags e2e -v ./internal/cli/...
 

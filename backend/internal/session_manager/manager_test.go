@@ -164,10 +164,11 @@ func (f *fakeStore) DeleteSessionWorktrees(_ context.Context, id domain.SessionI
 }
 
 type fakeLCM struct {
-	store     *fakeStore
-	completed int
-	prepared  []string
-	cancelled []string
+	store          *fakeStore
+	completed      int
+	prepared       []string
+	cancelled      []string
+	markSpawnedErr error
 	// terminated counts MarkTerminated calls per session id.
 	terminated map[domain.SessionID]int
 }
@@ -184,6 +185,9 @@ func (l *fakeLCM) ReleaseLaunch(id domain.SessionID, launchID string) {
 }
 func (l *fakeLCM) MarkSpawned(_ context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
 	l.completed++
+	if l.markSpawnedErr != nil {
+		return l.markSpawnedErr
+	}
 	rec := l.store.sessions[id]
 	rec.IsTerminated = false
 	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()}
@@ -255,6 +259,7 @@ func (l *fakeLCM) MarkTerminated(_ context.Context, id domain.SessionID) error {
 
 type fakeRuntime struct {
 	createErr          error
+	createHandle       ports.RuntimeHandle
 	createIDs          []string
 	destroyErr         error
 	destroyErrSequence []error
@@ -322,6 +327,7 @@ func (r *fakeRestartRuntime) Restart(_ context.Context, handle ports.RuntimeHand
 	if r.restartErr != nil {
 		return ports.RuntimeHandle{}, r.restartErr
 	}
+	handle.RuntimeLaunchID = cfg.RuntimeLaunchID
 	if r.aliveByHandle == nil {
 		r.aliveByHandle = map[string]bool{}
 	}
@@ -376,17 +382,22 @@ func (r *blockingRestartRuntime) Destroy(ctx context.Context, handle ports.Runti
 }
 
 func (r *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
-	if r.createErr != nil {
-		return ports.RuntimeHandle{}, r.createErr
-	}
 	r.lastCfg = cfg
-	r.created++
-	handleID := "h1"
-	if len(r.createIDs) > 0 {
-		handleID = r.createIDs[0]
-		r.createIDs = r.createIDs[1:]
+	if r.createErr != nil {
+		return r.createHandle, r.createErr
 	}
-	handle := ports.RuntimeHandle{ID: handleID}
+	r.created++
+	handle := r.createHandle
+	if handle.ID == "" {
+		handle.ID = "h1"
+		if len(r.createIDs) > 0 {
+			handle.ID = r.createIDs[0]
+			r.createIDs = r.createIDs[1:]
+		}
+	}
+	if handle.RuntimeLaunchID == "" {
+		handle.RuntimeLaunchID = cfg.RuntimeLaunchID
+	}
 	if r.aliveByHandle == nil {
 		r.aliveByHandle = map[string]bool{}
 	}
@@ -2023,6 +2034,65 @@ func TestSpawn_AfterStartPromptFailureCleansUpSpawn(t *testing.T) {
 	}
 }
 
+func TestSpawn_MarkSpawnedFailurePreservesWhenExactRuntimeReleaseFails(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{destroyErr: errors.New("scope still active")}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st, markSpawnedErr: errors.New("database busy")}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: lcm,
+		LookPath:    func(string) (string, error) { return "/bin/true", nil },
+		NewLaunchID: func() string { return "launch-7" },
+	})
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+	if err == nil || !strings.Contains(err.Error(), "database busy") || !strings.Contains(err.Error(), "scope still active") {
+		t.Fatalf("Spawn error = %v", err)
+	}
+	if ws.destroyed != 0 {
+		t.Fatalf("workspace destroyed after unconfirmed runtime release: %d", ws.destroyed)
+	}
+	rec := st.sessions["mer-1"]
+	if rec.IsTerminated || lcm.terminated["mer-1"] != 0 {
+		t.Fatalf("unconfirmed runtime release claimed termination: %#v", rec)
+	}
+	if rec.Metadata.WorkspacePath != "/ws/mer-1" || rec.Metadata.RuntimeHandleID != "h1" || rec.Metadata.RuntimeLaunchID != "launch-7" {
+		t.Fatalf("preserved lifecycle facts = %#v", rec.Metadata)
+	}
+}
+
+func TestSpawn_AfterStartFailurePreservesWhenExactRuntimeReleaseFails(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{destroyErr: errors.New("scope still active")}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    singleAgent{agent: afterStartAgent{recordingAgent: &recordingAgent{}}},
+		Workspace: ws, Store: st, Messenger: &fakeMessenger{err: errors.New("pane unavailable")}, Lifecycle: lcm,
+		LookPath:    func(string) (string, error) { return "/bin/true", nil },
+		NewLaunchID: func() string { return "launch-7" },
+	})
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "fix it"})
+	if err == nil || !strings.Contains(err.Error(), "pane unavailable") || !strings.Contains(err.Error(), "scope still active") {
+		t.Fatalf("Spawn error = %v", err)
+	}
+	if ws.destroyed != 0 {
+		t.Fatalf("workspace destroyed after unconfirmed runtime release: %d", ws.destroyed)
+	}
+	rec := st.sessions["mer-1"]
+	if rec.IsTerminated || lcm.terminated["mer-1"] != 0 {
+		t.Fatalf("unconfirmed runtime release claimed termination: %#v", rec)
+	}
+	if rec.Metadata.WorkspacePath != "/ws/mer-1" || rec.Metadata.RuntimeHandleID != "h1" || rec.Metadata.RuntimeLaunchID != "launch-7" {
+		t.Fatalf("preserved lifecycle facts = %#v", rec.Metadata)
+	}
+}
+
 func TestSpawn_AfterStartPromptFailureCleansUpWorkspaceProjectRows(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{
@@ -2192,7 +2262,7 @@ func TestSpawn_StampsUTCTimestamps(t *testing.T) {
 
 func TestSpawn_RollsBackOnRuntimeFailure(t *testing.T) {
 	m, st, _, ws := newManager()
-	m.runtime = &fakeRuntime{createErr: errors.New("boom")}
+	m.runtime = &fakeRuntime{createErr: ports.NewRuntimeCreateRollbackSafeError(errors.New("boom"))}
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer"}); err == nil {
 		t.Fatal("expected failure")
 	}
@@ -2204,10 +2274,38 @@ func TestSpawn_RollsBackOnRuntimeFailure(t *testing.T) {
 	}
 }
 
+func TestSpawn_PreservesWorkspaceAndExactRuntimeOnUncertainCreate(t *testing.T) {
+	m, st, _, ws := newManager()
+	m.newLaunchID = func() string { return "launch-7" }
+	handle := ports.RuntimeHandle{ID: "mer-1", RuntimeLaunchID: "launch-7"}
+	m.runtime = &fakeRuntime{
+		createHandle: handle,
+		createErr:    ports.NewRuntimeCreatePreserveError(handle, errors.New("create response lost")),
+	}
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+	if err == nil || !strings.Contains(err.Error(), "create response lost") {
+		t.Fatalf("Spawn error = %v", err)
+	}
+	if ws.destroyed != 0 {
+		t.Fatalf("workspace destroy calls = %d, want 0", ws.destroyed)
+	}
+	rec, ok := st.sessions["mer-1"]
+	if !ok {
+		t.Fatal("preserve-required Create removed the session row")
+	}
+	if rec.IsTerminated {
+		t.Fatalf("preserved session marked terminated: %#v", rec)
+	}
+	if rec.Metadata.WorkspacePath != "/ws/mer-1" || rec.Metadata.RuntimeHandleID != "mer-1" || rec.Metadata.RuntimeLaunchID != "launch-7" {
+		t.Fatalf("preserved lifecycle facts = %#v", rec.Metadata)
+	}
+}
+
 func TestSpawn_RuntimeFailureCleansAgentWorkspaceAfterDestroy(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
-	rt := &fakeRuntime{createErr: errors.New("boom")}
+	rt := &fakeRuntime{createErr: ports.NewRuntimeCreateRollbackSafeError(errors.New("boom"))}
 	var sharedLog []string
 	ws := &loggingDestroyWorkspace{
 		fakeWorkspace: fakeWorkspace{path: "/ws/mer-1"},
@@ -2437,7 +2535,7 @@ func TestSpawn_WorkspaceProjectRollsBackAllWorktreesOnRuntimeFailure(t *testing.
 		Config: testRoleAgents(),
 	}
 	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
-	m.runtime = &fakeRuntime{createErr: errors.New("boom")}
+	m.runtime = &fakeRuntime{createErr: ports.NewRuntimeCreateRollbackSafeError(errors.New("boom"))}
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err == nil {
 		t.Fatal("expected failure")
 	}
@@ -3198,6 +3296,28 @@ func TestCleanup_SkipsWorkspaceReleaseWhenShellTerminalsWontClose(t *testing.T) 
 	}
 	if ws.destroyed != 0 {
 		t.Fatal("workspace must not be destroyed while a scoped shell is still alive")
+	}
+}
+
+func TestCleanup_SkipsWorkspaceWhenExactRuntimeReleaseFails(t *testing.T) {
+	m, st, rt, ws := newManager()
+	rt.destroyErr = errors.New("scope still active")
+	seedTerminal(st, "mer-1", domain.SessionMetadata{
+		WorkspacePath: "/ws/mer-1", RuntimeHandleID: "h1", RuntimeLaunchID: "launch-7",
+	})
+
+	res, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Cleaned) != 0 || len(res.Skipped) != 1 || res.Skipped[0].SessionID != "mer-1" {
+		t.Fatalf("cleanup result = %+v", res)
+	}
+	if res.Skipped[0].Reason != "runtime teardown failed" {
+		t.Fatalf("skip reason = %q", res.Skipped[0].Reason)
+	}
+	if ws.destroyed != 0 {
+		t.Fatal("workspace destroyed after exact runtime release failed")
 	}
 }
 
@@ -5509,6 +5629,37 @@ func TestSaveAndTeardownAll_CaptureOrderAndMarker(t *testing.T) {
 	// The session must be marked terminated.
 	if !st.sessions["mer-1"].IsTerminated {
 		t.Fatal("session must be terminated after SaveAndTeardownAll")
+	}
+}
+
+func TestSaveAndTeardownAll_PreservesWorkspaceWhenRuntimeReleaseFails(t *testing.T) {
+	m, st, rt, ws := newLifecycleManager()
+	rt.destroyErr = errors.New("scope still active")
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root",
+			RuntimeHandleID: "h1", RuntimeLaunchID: "launch-7",
+		},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+
+	if err := m.SaveAndTeardownAll(ctx); err != nil {
+		t.Fatalf("SaveAndTeardownAll err = %v", err)
+	}
+	for _, call := range ws.calls {
+		if strings.HasPrefix(call, "ForceDestroy:") {
+			t.Fatalf("ForceDestroy ran after unconfirmed runtime release: %v", ws.calls)
+		}
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatal("runtime release failure claimed termination")
+	}
+	if len(st.worktrees["mer-1"]) == 0 {
+		t.Fatal("captured restore marker was not preserved for retry")
+	}
+	if len(rt.destroyedIDs) != 1 || rt.destroyedIDs[0] != "h1" {
+		t.Fatalf("runtime destroy calls = %#v", rt.destroyedIDs)
 	}
 }
 

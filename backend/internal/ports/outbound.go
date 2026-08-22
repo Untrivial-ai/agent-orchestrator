@@ -115,16 +115,20 @@ type RuntimeRestarter interface {
 // shell-quotes it for its own shell, so the command survives args with spaces
 // (e.g. a prompt) without the caller guessing the target shell's quoting.
 type RuntimeConfig struct {
-	SessionID     domain.SessionID
-	WorkspacePath string
-	Argv          []string
-	Env           map[string]string
+	SessionID       domain.SessionID
+	RuntimeLaunchID string
+	WorkspacePath   string
+	Argv            []string
+	Env             map[string]string
 }
 
-// RuntimeHandle identifies a live runtime instance. Its ID is opaque outside
-// the concrete runtime adapter.
+// RuntimeHandle identifies one runtime generation. ID is the stable terminal
+// identity and RuntimeLaunchID fences destructive lifecycle operations to the
+// managed agent generation that owns it. Legacy callers leave RuntimeLaunchID
+// empty and retain their existing terminal-only behavior.
 type RuntimeHandle struct {
-	ID string
+	ID              string
+	RuntimeLaunchID string
 }
 
 // SupervisedProcessRef identifies the AO-owned supervisor belonging to one

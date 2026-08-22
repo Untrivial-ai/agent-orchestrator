@@ -899,12 +899,23 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	defer m.lcm.CancelLaunch(id, launchID)
 	handle, err := m.runtime.Create(ctx, ports.RuntimeConfig{
-		SessionID:     id,
-		WorkspacePath: ws.Path,
-		Argv:          argv,
-		Env:           env,
+		SessionID:       id,
+		RuntimeLaunchID: launchID,
+		WorkspacePath:   ws.Path,
+		Argv:            argv,
+		Env:             env,
 	})
 	if err != nil {
+		disposition, failureHandle := ports.RuntimeCreateFailureOf(err)
+		if disposition == ports.RuntimeCreatePreserve {
+			if strings.TrimSpace(failureHandle.ID) == "" && strings.TrimSpace(handle.ID) != "" {
+				failureHandle = handle
+			}
+			if preserveErr := m.preserveFailedSpawnState(ctx, rec.ID, ws, failureHandle, launchID, false); preserveErr != nil {
+				err = errors.Join(err, preserveErr)
+			}
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: runtime: %w", id, err)
+		}
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: runtime: %w", id, err)
 	}
@@ -927,16 +938,24 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		metadata.DiffBaseSHA, metadata.DiffBaseRef = resolveSpawnDiffBase(ctx, ws.Path, ws.BaseRef)
 	}
 	if err := m.lcm.MarkSpawned(ctx, id, metadata); err != nil {
-		runtimeDestroyed := m.runtime.Destroy(ctx, handle) == nil
-		m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject, runtimeDestroyed)
+		destroyErr := m.runtime.Destroy(context.WithoutCancel(ctx), handle)
+		if destroyErr != nil {
+			preserveErr := m.preserveFailedSpawnState(ctx, id, ws, handle, launchID, false)
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: completed: %w", id, errors.Join(err, destroyErr, preserveErr))
+		}
+		m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject)
 		m.markSpawnFailedTerminated(ctx, id)
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: completed: %w", id, err)
 	}
 	if delivery == ports.PromptDeliveryAfterStart && prompt != "" {
 		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, id, prompt); err != nil {
-			runtimeDestroyed := m.runtime.Destroy(ctx, handle) == nil
-			workspaceDestroyed := m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject, runtimeDestroyed)
-			if runtimeDestroyed && workspaceDestroyed {
+			destroyErr := m.runtime.Destroy(context.WithoutCancel(ctx), handle)
+			if destroyErr != nil {
+				preserveErr := m.preserveFailedSpawnState(ctx, id, ws, handle, launchID, false)
+				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: deliver prompt: %w", id, errors.Join(err, destroyErr, preserveErr))
+			}
+			workspaceDestroyed := m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject)
+			if workspaceDestroyed {
 				m.markSpawnFailedTerminatedWithoutWorkspace(ctx, id)
 			} else {
 				m.markSpawnFailedTerminated(ctx, id)
@@ -1186,12 +1205,12 @@ func (m *Manager) destroySpawnWorkspace(ctx context.Context, ws ports.WorkspaceI
 	return err == nil
 }
 
-func (m *Manager) rollbackPreparedSpawnWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, workspaceProject *ports.WorkspaceProjectInfo, runtimeDestroyed bool) bool {
+func (m *Manager) rollbackPreparedSpawnWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, workspaceProject *ports.WorkspaceProjectInfo) bool {
 	if m.destroySpawnWorkspace(ctx, ws, workspaceProject) {
 		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
 		return true
 	}
-	m.preserveFailedSpawnWorkspace(ctx, rec.ID, ws, runtimeDestroyed)
+	_ = m.preserveFailedSpawnState(ctx, rec.ID, ws, ports.RuntimeHandle{}, "", true)
 	return false
 }
 
@@ -1203,19 +1222,21 @@ func (m *Manager) rollbackSeedSpawnWorkspace(ctx context.Context, rec domain.Ses
 		m.rollbackSpawnSeedRow(ctx, rec.ID)
 		return
 	}
-	m.preserveFailedSpawnWorkspace(ctx, rec.ID, ws, true)
+	_ = m.preserveFailedSpawnState(ctx, rec.ID, ws, ports.RuntimeHandle{}, "", true)
 	m.markSpawnFailedTerminated(ctx, rec.ID)
 }
 
-func (m *Manager) preserveFailedSpawnWorkspace(ctx context.Context, id domain.SessionID, ws ports.WorkspaceInfo, runtimeDestroyed bool) {
+// preserveFailedSpawnState records every runtime/workspace fact known after an
+// uncertain lifecycle operation. It deliberately leaves the row
+// non-terminated: termination is a fact about released execution, not a retry
+// request for cleanup.
+func (m *Manager) preserveFailedSpawnState(ctx context.Context, id domain.SessionID, ws ports.WorkspaceInfo, handle ports.RuntimeHandle, launchID string, runtimeDestroyed bool) error {
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
-		m.logger.Warn("spawn rollback: failed to load session for preserved workspace", "sessionID", id, "workspacePath", ws.Path, "error", err)
-		return
+		return fmt.Errorf("record preserved spawn: load session: %w", err)
 	}
 	if !ok {
-		m.logger.Warn("spawn rollback: session missing for preserved workspace", "sessionID", id, "workspacePath", ws.Path)
-		return
+		return fmt.Errorf("record preserved spawn: session %s missing", id)
 	}
 	rec.Metadata.Branch = ws.Branch
 	rec.Metadata.WorkspacePath = ws.Path
@@ -1223,10 +1244,20 @@ func (m *Manager) preserveFailedSpawnWorkspace(ctx context.Context, id domain.Se
 	if runtimeDestroyed {
 		rec.Metadata.RuntimeHandleID = ""
 		rec.Metadata.RuntimeLaunchID = ""
+	} else {
+		if strings.TrimSpace(handle.ID) != "" {
+			rec.Metadata.RuntimeHandleID = handle.ID
+		}
+		if strings.TrimSpace(handle.RuntimeLaunchID) != "" {
+			rec.Metadata.RuntimeLaunchID = handle.RuntimeLaunchID
+		} else if strings.TrimSpace(launchID) != "" {
+			rec.Metadata.RuntimeLaunchID = launchID
+		}
 	}
 	if err := m.store.UpdateSession(ctx, rec); err != nil {
-		m.logger.Warn("spawn rollback: failed to record preserved workspace", "sessionID", id, "workspacePath", ws.Path, "error", err)
+		return fmt.Errorf("record preserved spawn: update session: %w", err)
 	}
+	return nil
 }
 
 // effectiveHarness resolves the harness for a spawn: an explicit harness wins;
@@ -1874,7 +1905,7 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 	if mode == domain.SessionModeChat {
 		return m.relaunchSession(ctx, "resume agent", rec, project, ws, nil)
 	}
-	handle := ports.RuntimeHandle{ID: meta.RuntimeHandleID}
+	handle := runtimeHandle(meta)
 	return m.relaunchSession(ctx, "resume agent", rec, project, ws, &handle)
 }
 
@@ -1960,10 +1991,11 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 	}
 	defer m.lcm.CancelLaunch(rec.ID, launchID)
 	runtimeCfg := ports.RuntimeConfig{
-		SessionID:     rec.ID,
-		WorkspacePath: ws.Path,
-		Argv:          argv,
-		Env:           env,
+		SessionID:       rec.ID,
+		RuntimeLaunchID: launchID,
+		WorkspacePath:   ws.Path,
+		Argv:            argv,
+		Env:             env,
 	}
 	var handle ports.RuntimeHandle
 	if restartHandle == nil {
@@ -1972,6 +2004,18 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 		handle, err = m.restartRuntime(ctx, *restartHandle, runtimeCfg)
 	}
 	if err != nil {
+		if restartHandle == nil {
+			disposition, failureHandle := ports.RuntimeCreateFailureOf(err)
+			if disposition == ports.RuntimeCreatePreserve {
+				if strings.TrimSpace(failureHandle.ID) == "" && strings.TrimSpace(handle.ID) != "" {
+					failureHandle = handle
+				}
+				if preserveErr := m.preserveFailedSpawnState(ctx, rec.ID, ws, failureHandle, launchID, false); preserveErr != nil {
+					err = errors.Join(err, preserveErr)
+				}
+				return RestoreResult{}, fmt.Errorf("%s %s: runtime: %w", operation, rec.ID, err)
+			}
+		}
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: runtime: %w", operation, rec.ID, err)
 	}
@@ -1996,7 +2040,10 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 		metadata.AgentSessionIDLaunchID = launchID
 	}
 	if err := m.lcm.MarkSpawned(ctx, rec.ID, metadata); err != nil {
-		_ = m.runtime.Destroy(ctx, handle)
+		if destroyErr := m.runtime.Destroy(context.WithoutCancel(ctx), handle); destroyErr != nil {
+			preserveErr := m.preserveFailedSpawnState(ctx, rec.ID, ws, handle, launchID, false)
+			return RestoreResult{}, fmt.Errorf("%s %s: completed: %w", operation, rec.ID, errors.Join(err, destroyErr, preserveErr))
+		}
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: completed: %w", operation, rec.ID, err)
 	}
@@ -2013,7 +2060,10 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 			Permissions:      agentConfig.Permissions,
 		}
 		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, rec.ID, rec.Metadata.Prompt); err != nil {
-			_ = m.runtime.Destroy(ctx, handle)
+			if destroyErr := m.runtime.Destroy(context.WithoutCancel(ctx), handle); destroyErr != nil {
+				preserveErr := m.preserveFailedSpawnState(ctx, rec.ID, ws, handle, launchID, false)
+				return RestoreResult{}, fmt.Errorf("%s %s: deliver prompt: %w", operation, rec.ID, errors.Join(err, destroyErr, preserveErr))
+			}
 			_ = m.lcm.MarkTerminated(ctx, rec.ID)
 			m.cleanupSystemPromptDir(rec.ID)
 			return RestoreResult{}, fmt.Errorf("%s %s: deliver prompt: %w", operation, rec.ID, err)
@@ -2146,17 +2196,19 @@ func (m *Manager) saveAndTeardownOne(ctx context.Context, rec domain.SessionReco
 		return fmt.Errorf("save %s: teardown reviewer: %w", rec.ID, err)
 	}
 
-	// 4. Mark terminal via the LCM (same path Kill uses).
-	if err := m.lcm.MarkTerminated(ctx, rec.ID); err != nil {
-		return fmt.Errorf("save %s: mark terminated: %w", rec.ID, err)
-	}
-
-	// 5. Runtime teardown (best-effort; same pattern as Kill).
+	// 4. Release the exact worker generation before claiming termination or
+	// removing its workspace. A failed release preserves the row and worktree;
+	// the committed stash marker remains available for a later retry.
 	handle := runtimeHandle(rec.Metadata)
 	if destroyRuntime && handle.ID != "" {
 		if err := m.runtime.Destroy(ctx, handle); err != nil {
-			m.logger.Warn("save-teardown-all: runtime destroy failed", "sessionID", rec.ID, "error", err)
+			return fmt.Errorf("save %s: runtime release: %w", rec.ID, err)
 		}
+	}
+
+	// 5. Mark terminal via the LCM (same path Kill uses).
+	if err := m.lcm.MarkTerminated(ctx, rec.ID); err != nil {
+		return fmt.Errorf("save %s: mark terminated: %w", rec.ID, err)
 	}
 
 	// 6. Force-remove the worktree (safe: work is captured in step 1 and the
@@ -2714,14 +2766,14 @@ func (m *Manager) saveAndTeardownWorkspaceProject(ctx context.Context, rec domai
 	if err := m.teardownReviewerTerminal(ctx, rec.ID); err != nil {
 		return fmt.Errorf("save %s: teardown reviewer: %w", rec.ID, err)
 	}
-	if err := m.lcm.MarkTerminated(ctx, rec.ID); err != nil {
-		return fmt.Errorf("save %s: mark terminated: %w", rec.ID, err)
-	}
 	handle := runtimeHandle(rec.Metadata)
 	if destroyRuntime && handle.ID != "" {
 		if err := m.runtime.Destroy(ctx, handle); err != nil {
-			m.logger.Warn("save-teardown-all: runtime destroy failed", "sessionID", rec.ID, "error", err)
+			return fmt.Errorf("save %s: runtime release: %w", rec.ID, err)
 		}
+	}
+	if err := m.lcm.MarkTerminated(ctx, rec.ID); err != nil {
+		return fmt.Errorf("save %s: mark terminated: %w", rec.ID, err)
 	}
 	rootDestroyed := false
 	for i := len(rows) - 1; i >= 0; i-- {
@@ -3168,7 +3220,11 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 			continue
 		}
 		if h := runtimeHandle(rec.Metadata); h.ID != "" {
-			_ = m.runtime.Destroy(ctx, h) // best effort; usually already gone
+			if err := m.runtime.Destroy(ctx, h); err != nil {
+				m.logger.Warn("cleanup: runtime release unconfirmed", "sessionID", rec.ID, "error", err)
+				result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: "runtime teardown failed"})
+				continue
+			}
 		}
 		if reason := m.cleanupOne(ctx, rec, ws); reason != "" {
 			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: reason})
@@ -4432,7 +4488,7 @@ func (m *Manager) wrapAgentProcessWithLaunchID(agent ports.Agent, id domain.Sess
 }
 
 func runtimeHandle(meta domain.SessionMetadata) ports.RuntimeHandle {
-	return ports.RuntimeHandle{ID: meta.RuntimeHandleID}
+	return ports.RuntimeHandle{ID: meta.RuntimeHandleID, RuntimeLaunchID: meta.RuntimeLaunchID}
 }
 
 func workspaceInfo(rec domain.SessionRecord) ports.WorkspaceInfo {

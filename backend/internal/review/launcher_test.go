@@ -63,6 +63,9 @@ func TestLauncherSpawnEnvCannotOverrideWorkerContext(t *testing.T) {
 	if rt.createCfg.Env["AO_REVIEW_HARNESS"] != string(domain.ReviewerClaudeCode) {
 		t.Fatalf("AO_REVIEW_HARNESS = %q, want %q", rt.createCfg.Env["AO_REVIEW_HARNESS"], domain.ReviewerClaudeCode)
 	}
+	if rt.createCfg.RuntimeLaunchID != "" {
+		t.Fatalf("reviewer opted into worker containment generation %q", rt.createCfg.RuntimeLaunchID)
+	}
 	if rt.createCfg.Env[sessionmanager.EnvProjectID] != "mer" {
 		t.Fatalf("%s = %q, want mer", sessionmanager.EnvProjectID, rt.createCfg.Env[sessionmanager.EnvProjectID])
 	}

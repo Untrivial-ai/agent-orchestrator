@@ -24,6 +24,15 @@ Start with [architecture.md](architecture.md) for the current backend model and
 | [telemetry.md](telemetry.md)                           | User-facing overview of product telemetry, privacy safeguards, and opt-out controls.                                    |
 | [posthog-cost-controls.md](posthog-cost-controls.md)   | PostHog event-name migration, ingestion drop rules, and dashboard queries for reducing telemetry spend.              |
 
+## Active worker containment design
+
+| Doc | Authority |
+| --- | --- |
+| [ADR 0003](adr/0003-worker-process-containment.md) | Opt-in Linux systemd scope for worker process-tree containment. |
+| [ADR 0004](adr/0004-worker-runtime-lifecycle-outcomes.md) | Accepted exact-generation runtime identity and conservative cleanup decision. |
+| [tmux/systemd lifecycle research](compatibility/20260811-v1.0-tmux-systemd-worker-lifecycle-research.md) | Verified external behavior, source attribution, and C/D boundary evidence. |
+| [PR #3550 C plan](plans/2026-08-11-pr-3550-c-exact-generation-lifecycle.md) | Active implementation and test plan for bounded lifecycle hardening. |
+
 ## Mental model
 
 Persist durable facts, derive display status:

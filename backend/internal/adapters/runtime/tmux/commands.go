@@ -1,6 +1,14 @@
 package tmux
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+const (
+	runtimeLaunchIDOption     = "@ao-runtime-launch-id"
+	runtimeLaunchReportPrefix = "__AO_RUNTIME_LAUNCH__:"
+)
 
 // newSessionArgs builds args for `tmux new-session -d -s <id> -x 220 -y 50
 // -c <cwd> <shell> -c <launchCmd>`. The shell -c form runs the launch command
@@ -16,6 +24,14 @@ func newSessionArgs(id, cwd, shellPath, launchCmd string) []string {
 	}
 }
 
+// scopedNewSessionArgs creates a session and records its managed launch in the
+// same tmux command queue. If new-session fails, tmux does not execute the
+// marker write, so a duplicate creator cannot overwrite the winner's identity.
+func scopedNewSessionArgs(id, cwd, shellPath, launchCmd, launchID string) []string {
+	return append(newSessionArgs(id, cwd, shellPath, launchCmd),
+		";", "set-option", "-t", id, runtimeLaunchIDOption, launchID)
+}
+
 // respawnPaneArgs replaces the process in the session's only pane while keeping
 // the tmux session and terminal handle intact.
 func respawnPaneArgs(id, cwd, shellPath, launchCmd string) []string {
@@ -25,6 +41,62 @@ func respawnPaneArgs(id, cwd, shellPath, launchCmd string) []string {
 		"-c", cwd,
 		shellPath, "-c", launchCmd,
 	}
+}
+
+// scopedRespawnPaneArgs replaces the pane and advances its generation marker
+// in one ordered tmux command queue.
+func scopedRespawnPaneArgs(id, cwd, shellPath, launchCmd, launchID string) []string {
+	return append(respawnPaneArgs(id, cwd, shellPath, launchCmd),
+		";", "set-option", "-t", id, runtimeLaunchIDOption, launchID)
+}
+
+// fencedRespawnPaneArgs advances a pane only if tmux still records the
+// caller's old launch generation. The comparison, respawn, and marker update
+// execute in one server-side command queue, closing the check-then-respawn
+// race with a concurrent creator.
+func fencedRespawnPaneArgs(id, oldLaunchID, cwd, shellPath, launchCmd, newLaunchID string) []string {
+	condition := fmt.Sprintf("#{==:#{%s},%s}", runtimeLaunchIDOption, oldLaunchID)
+	respawn := tmuxCommandString(scopedRespawnPaneArgs(id, cwd, shellPath, launchCmd, newLaunchID))
+	report := fmt.Sprintf("display-message -p -t %s \"%s#{%s}\"", id, runtimeLaunchReportPrefix, runtimeLaunchIDOption)
+	return []string{"if-shell", "-F", "-t", id, condition, respawn, report}
+}
+
+func tmuxCommandString(args []string) string {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		if arg == ";" {
+			quoted[i] = arg
+			continue
+		}
+		quoted[i] = shellQuote(arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func showRuntimeLaunchIDArgs(id string) []string {
+	return []string{"show-option", "-v", "-t", id, runtimeLaunchIDOption}
+}
+
+// fencedRestoreRuntimeLaunchIDArgs restores a failed replacement's previous
+// marker only while the session still records that exact replacement. The
+// compare and write execute in one server-side command queue so cleanup cannot
+// overwrite a concurrent owner's newer generation.
+func fencedRestoreRuntimeLaunchIDArgs(id, failedLaunchID, previousLaunchID string) []string {
+	condition := fmt.Sprintf("#{==:#{%s},%s}", runtimeLaunchIDOption, failedLaunchID)
+	restore := tmuxCommandString([]string{"set-option", "-t", id, runtimeLaunchIDOption, previousLaunchID})
+	report := fmt.Sprintf("display-message -p -t %s \"%s#{%s}\"", id, runtimeLaunchReportPrefix, runtimeLaunchIDOption)
+	return []string{"if-shell", "-F", "-t", id, condition, restore, report}
+}
+
+// killRuntimeGenerationArgs checks the session marker and kills only the
+// matching generation inside one tmux command queue. On mismatch it prints the
+// observed marker so the caller can distinguish a foreign generation from an
+// unmarked session without a check-then-kill race.
+func killRuntimeGenerationArgs(id, launchID string) []string {
+	condition := fmt.Sprintf("#{==:#{%s},%s}", runtimeLaunchIDOption, launchID)
+	kill := "kill-session -t " + exactSessionTarget(id)
+	report := fmt.Sprintf("display-message -p -t %s \"%s#{%s}\"", id, runtimeLaunchReportPrefix, runtimeLaunchIDOption)
+	return []string{"if-shell", "-F", "-t", id, condition, kill, report}
 }
 
 // setStatusOffArgs hides the tmux status bar for the given session.
@@ -53,6 +125,12 @@ func setMouseOnArgs(id string) []string {
 // (see setStatusOffArgs).
 func setWindowSizeLargestArgs(id string) []string {
 	return []string{"set-option", "-t", id, "window-size", "largest"}
+}
+
+// setRemainOnExitArgs keeps the scoped pane available for inspection and
+// respawn after systemd stops the old process group during Restart.
+func setRemainOnExitArgs(id string) []string {
+	return []string{"set-option", "-t", id, "remain-on-exit", "on"}
 }
 
 // panePIDArgs returns the pid of tmux's direct pane process. AO walks its

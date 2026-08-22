@@ -42,7 +42,10 @@ const (
 	reapPollInterval = 50 * time.Millisecond
 )
 
-var sessionIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+var (
+	sessionIDPattern       = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	runtimeLaunchIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+)
 
 var getenv = os.Getenv
 
@@ -55,6 +58,10 @@ type Options struct {
 	ChunkSize  int           // default 16*1024
 	EnterDelay time.Duration // pause after pasting a non-empty message before pressing Enter; default defaultEnterDelay. Conpty already does this (ptyInputEnterDelay); tmux lacked it, so a large multiline paste could absorb the trailing Enter and leave the prompt unsubmitted (issue #2342).
 	ReapGrace  time.Duration // grace between SIGTERM and SIGKILL when reaping a pane's leftover background processes on Destroy; default defaultReapGrace.
+	// ProcessContainment selects an optional worker process boundary. The empty
+	// value preserves the historical tmux session-id reaper; "systemd" is an
+	// explicit Linux user-scope opt-in.
+	ProcessContainment string
 }
 
 // Runtime runs agent sessions inside tmux sessions, driving them via the tmux
@@ -68,6 +75,7 @@ type Runtime struct {
 	reapGrace    time.Duration
 	runner       runner
 	reapSessions func(ctx context.Context, pids []int, grace time.Duration)
+	containment  processContainment
 }
 
 var _ ports.Runtime = (*Runtime)(nil)
@@ -271,7 +279,7 @@ func New(opts Options) *Runtime {
 	if reapGrace <= 0 {
 		reapGrace = defaultReapGrace
 	}
-	return &Runtime{
+	r := &Runtime{
 		binary:       binary,
 		shell:        shellPath,
 		timeout:      timeout,
@@ -281,6 +289,12 @@ func New(opts Options) *Runtime {
 		runner:       execRunner{},
 		reapSessions: killSessionsByPID,
 	}
+	if strings.TrimSpace(opts.ProcessContainment) == processContainmentSystemd {
+		r.containment = newSystemdContainment(r.runner, timeout, reapGrace)
+	} else if strings.TrimSpace(opts.ProcessContainment) != "" {
+		r.containment = unavailableContainment{reason: fmt.Sprintf("unknown process containment %q", opts.ProcessContainment)}
+	}
+	return r
 }
 
 // Create starts a new tmux session in the workspace, running the agent's
@@ -288,61 +302,124 @@ func New(opts Options) *Runtime {
 func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	id, err := tmuxSessionName(cfg.SessionID)
 	if err != nil {
-		return ports.RuntimeHandle{}, err
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(err)
+	}
+	launchID := strings.TrimSpace(cfg.RuntimeLaunchID)
+	handle := ports.RuntimeHandle{ID: id, RuntimeLaunchID: launchID}
+	if cfg.RuntimeLaunchID != "" && !runtimeLaunchIDPattern.MatchString(launchID) {
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(fmt.Errorf("tmux runtime: invalid runtime launch id %q", cfg.RuntimeLaunchID))
 	}
 	if cfg.WorkspacePath == "" {
-		return ports.RuntimeHandle{}, errors.New("tmux runtime: workspace path is required")
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(errors.New("tmux runtime: workspace path is required"))
 	}
 	if len(cfg.Argv) == 0 {
-		return ports.RuntimeHandle{}, errors.New("tmux runtime: launch command is required")
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(errors.New("tmux runtime: launch command is required"))
 	}
 	if err := validateEnvKeys(cfg.Env); err != nil {
-		return ports.RuntimeHandle{}, err
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(err)
+	}
+	contained := r.containment != nil && launchID != ""
+	if contained {
+		if err := r.containment.Validate(ctx); err != nil {
+			return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(fmt.Errorf("tmux runtime: process containment unavailable: %w", err))
+		}
 	}
 
 	launchCmd := buildLaunchCommand(cfg)
+	unit := ""
+	if contained {
+		unit = containmentUnitName(id, launchID)
+		launchCmd = r.containment.WrapCommand(r.shell, launchCmd, unit, r.reapGrace)
+	}
 	args := newSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd)
-	if _, err := r.run(ctx, args...); err != nil {
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: create session %s: %w", id, err)
+	if contained {
+		args = scopedNewSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd, launchID)
+	}
+	if out, err := r.run(ctx, args...); err != nil {
+		cause := fmt.Errorf("tmux runtime: create session %s: %w", id, err)
+		if contained {
+			if duplicateSessionOutput(string(out)) {
+				return handle, ports.NewRuntimeCreatePreserveError(handle, cause)
+			}
+			return r.reconcileFailedCreate(ctx, handle, unit, cause)
+		}
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(cause)
+	}
+	if contained {
+		if _, err := r.run(ctx, setRemainOnExitArgs(id)...); err != nil {
+			cause := fmt.Errorf("tmux runtime: set remain-on-exit %s: %w", id, err)
+			return r.cleanupFailedCreate(ctx, handle, unit, cause)
+		}
+		if err := r.containment.WaitActive(ctx, unit); err != nil {
+			cause := fmt.Errorf("tmux runtime: verify process containment %s: %w", id, err)
+			return r.cleanupFailedCreate(ctx, handle, unit, cause)
+		}
 	}
 	if err := r.verifyPaneWorkingDirectory(ctx, id, cfg.WorkspacePath); err != nil {
-		_ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: id})
-		return ports.RuntimeHandle{}, err
+		return r.cleanupFailedCreate(ctx, handle, unit, err)
 	}
 
 	// Hide the status bar in the embedded terminal: it clutters the view and
 	// was not designed for the in-browser display context.
 	if _, err := r.run(ctx, setStatusOffArgs(id)...); err != nil {
-		_ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: id})
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: set status %s: %w", id, err)
+		cause := fmt.Errorf("tmux runtime: set status %s: %w", id, err)
+		return r.cleanupFailedCreate(ctx, handle, unit, cause)
 	}
 
 	// Enable mouse mode so the embedded terminal's SGR wheel reports scroll the
 	// pane (see setMouseOnArgs). Without it, wheel scrolling silently no-ops.
 	if _, err := r.run(ctx, setMouseOnArgs(id)...); err != nil {
-		_ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: id})
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: set mouse %s: %w", id, err)
+		cause := fmt.Errorf("tmux runtime: set mouse %s: %w", id, err)
+		return r.cleanupFailedCreate(ctx, handle, unit, cause)
 	}
 
 	// Size the shared window to the largest attached client, not the most recent
 	// one, so a small secondary viewer (e.g. the phone) can't strip down a larger
 	// client's view (see setWindowSizeLargestArgs).
 	if _, err := r.run(ctx, setWindowSizeLargestArgs(id)...); err != nil {
-		_ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: id})
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: set window-size %s: %w", id, err)
+		cause := fmt.Errorf("tmux runtime: set window-size %s: %w", id, err)
+		return r.cleanupFailedCreate(ctx, handle, unit, cause)
 	}
 
-	handle := ports.RuntimeHandle{ID: id}
 	alive, err := r.IsAlive(ctx, handle)
 	if err != nil {
-		_ = r.Destroy(context.Background(), handle)
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: verify session %s: %w", id, err)
+		cause := fmt.Errorf("tmux runtime: verify session %s: %w", id, err)
+		return r.cleanupFailedCreate(ctx, handle, unit, cause)
 	}
 	if !alive {
-		_ = r.Destroy(context.Background(), handle)
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: session %s exited before ready", id)
+		cause := fmt.Errorf("tmux runtime: session %s exited before ready", id)
+		return r.cleanupFailedCreate(ctx, handle, unit, cause)
 	}
 	return handle, nil
+}
+
+// reconcileFailedCreate uses the server-side generation fence before removing
+// a session whose new-session result was not authoritative. The cleanup context
+// outlives caller cancellation but remains bounded by the adapter operations.
+func (r *Runtime) reconcileFailedCreate(ctx context.Context, handle ports.RuntimeHandle, unit string, cause error) (ports.RuntimeHandle, error) {
+	cleanupCtx := context.WithoutCancel(ctx)
+	outcome, tmuxErr := r.destroyGenerationSession(cleanupCtx, handle)
+	releaseErr := r.containment.Release(cleanupCtx, unit)
+	if tmuxErr != nil || releaseErr != nil {
+		return handle, ports.NewRuntimeCreatePreserveError(handle, errors.Join(cause, tmuxErr, releaseErr))
+	}
+	if outcome == generationForeign || outcome == generationUnmarked {
+		return handle, ports.NewRuntimeCreatePreserveError(handle, cause)
+	}
+	return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(cause)
+}
+
+// cleanupFailedCreate removes a session after Create had positively established
+// the generation marker. Any failed or mismatched cleanup preserves the exact
+// reference instead of authorizing caller rollback.
+func (r *Runtime) cleanupFailedCreate(ctx context.Context, handle ports.RuntimeHandle, unit string, cause error) (ports.RuntimeHandle, error) {
+	if r.containment == nil || handle.RuntimeLaunchID == "" {
+		if err := r.Destroy(context.WithoutCancel(ctx), handle); err != nil {
+			return handle, ports.NewRuntimeCreatePreserveError(handle, errors.Join(cause, fmt.Errorf("tmux runtime: cleanup failed session %s: %w", handle.ID, err)))
+		}
+		return ports.RuntimeHandle{}, ports.NewRuntimeCreateRollbackSafeError(cause)
+	}
+	return r.reconcileFailedCreate(ctx, handle, unit, cause)
 }
 
 // Restart replaces the command in an existing pane while preserving the tmux
@@ -369,19 +446,107 @@ func (r *Runtime) Restart(ctx context.Context, handle ports.RuntimeHandle, cfg p
 	if err := validateEnvKeys(cfg.Env); err != nil {
 		return ports.RuntimeHandle{}, err
 	}
+	newLaunchID := strings.TrimSpace(cfg.RuntimeLaunchID)
+	contained := r.containment != nil && newLaunchID != ""
+	oldLaunchID := strings.TrimSpace(handle.RuntimeLaunchID)
+	if contained {
+		if !runtimeLaunchIDPattern.MatchString(newLaunchID) || !runtimeLaunchIDPattern.MatchString(oldLaunchID) {
+			return ports.RuntimeHandle{}, errors.New("tmux runtime: contained restart requires valid old and new runtime launch ids")
+		}
+	}
 
 	launchCmd := buildLaunchCommand(cfg)
-	if _, err := r.run(ctx, respawnPaneArgs(id, cfg.WorkspacePath, r.shell, launchCmd)...); err != nil {
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: restart session %s: %w", id, err)
+	newUnit := ""
+	if contained {
+		oldUnit := containmentUnitName(id, oldLaunchID)
+		if err := r.containment.Release(ctx, oldUnit); err != nil {
+			return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: release process containment %s: %w", id, err)
+		}
+		newUnit = containmentUnitName(id, newLaunchID)
+		launchCmd = r.containment.WrapCommand(r.shell, launchCmd, newUnit, r.reapGrace)
 	}
-	alive, err := r.IsAlive(ctx, handle)
+	args := respawnPaneArgs(id, cfg.WorkspacePath, r.shell, launchCmd)
+	if contained {
+		args = fencedRespawnPaneArgs(id, oldLaunchID, cfg.WorkspacePath, r.shell, launchCmd, newLaunchID)
+	}
+	out, err := r.run(ctx, args...)
 	if err != nil {
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: verify restarted session %s: %w", id, err)
+		cause := fmt.Errorf("tmux runtime: restart session %s: %w", id, err)
+		return ports.RuntimeHandle{}, r.cleanupFailedRestart(ctx, id, oldLaunchID, newLaunchID, newUnit, cause)
+	}
+	if contained {
+		report := strings.TrimSpace(string(out))
+		if report != "" {
+			if strings.HasPrefix(report, runtimeLaunchReportPrefix) {
+				observed := strings.TrimSpace(strings.TrimPrefix(report, runtimeLaunchReportPrefix))
+				return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: restart generation %s changed: observed %q, want %q", id, observed, oldLaunchID)
+			}
+			return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: unexpected restart generation fence output for %s: %q", id, report)
+		}
+	}
+	if contained {
+		if err := r.containment.WaitActive(ctx, newUnit); err != nil {
+			cause := fmt.Errorf("tmux runtime: verify restarted process containment %s: %w", id, err)
+			return ports.RuntimeHandle{}, r.cleanupFailedRestart(ctx, id, oldLaunchID, newLaunchID, newUnit, cause)
+		}
+	}
+	result := ports.RuntimeHandle{ID: id, RuntimeLaunchID: newLaunchID}
+	alive, err := r.IsAlive(ctx, result)
+	if err != nil {
+		cause := fmt.Errorf("tmux runtime: verify restarted session %s: %w", id, err)
+		return ports.RuntimeHandle{}, r.cleanupFailedRestart(ctx, id, oldLaunchID, newLaunchID, newUnit, cause)
 	}
 	if !alive {
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: session %s exited during restart", id)
+		cause := fmt.Errorf("tmux runtime: session %s exited during restart", id)
+		return ports.RuntimeHandle{}, r.cleanupFailedRestart(ctx, id, oldLaunchID, newLaunchID, newUnit, cause)
 	}
-	return handle, nil
+	return result, nil
+}
+
+// cleanupFailedRestart releases a replacement scope when Restart cannot prove
+// that the new pane is ready. The caller never receives a successful runtime
+// result on these paths, so leaving the scope active would strand an unowned
+// worker. The tmux session itself remains available through remain-on-exit and
+// can be respawned by a subsequent Restart.
+func (r *Runtime) cleanupFailedRestart(ctx context.Context, id, oldLaunchID, newLaunchID, unit string, cause error) error {
+	if r.containment == nil || newLaunchID == "" {
+		return cause
+	}
+	cleanupCtx := context.WithoutCancel(ctx)
+	if err := r.containment.Release(cleanupCtx, unit); err != nil {
+		// Keep the new marker when its exact scope may still be active. Reverting
+		// it would hide the only generation reference that can safely retry the
+		// cleanup.
+		return errors.Join(cause, fmt.Errorf("tmux runtime: cleanup restarted process containment %s: %w", id, err))
+	}
+	out, err := r.run(cleanupCtx, fencedRestoreRuntimeLaunchIDArgs(id, newLaunchID, oldLaunchID)...)
+	if err != nil {
+		return errors.Join(cause, fmt.Errorf("tmux runtime: fence failed restart generation %s: %w", id, err))
+	}
+	report := strings.TrimSpace(string(out))
+	if report == "" {
+		return cause
+	}
+	if !strings.HasPrefix(report, runtimeLaunchReportPrefix) {
+		return errors.Join(cause, fmt.Errorf("tmux runtime: unexpected failed restart generation fence output for %s: %q", id, report))
+	}
+	observed := strings.TrimSpace(strings.TrimPrefix(report, runtimeLaunchReportPrefix))
+	if observed == oldLaunchID {
+		return cause
+	}
+	return errors.Join(cause, fmt.Errorf("tmux runtime: failed restart generation %s changed to %q; marker preserved", id, observed))
+}
+
+func (r *Runtime) observedRuntimeLaunchID(ctx context.Context, id string) (string, bool, error) {
+	out, err := r.run(ctx, showRuntimeLaunchIDArgs(id)...)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && runtimeLaunchIDMissingOutput(string(out)) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return strings.TrimSpace(string(out)), true, nil
 }
 
 // paneCwdVerifyAttempts and paneCwdVerifyRetryDelay bound how long Create
@@ -434,6 +599,41 @@ func (r *Runtime) verifyPaneWorkingDirectory(ctx context.Context, id, want strin
 	return lastErr
 }
 
+type generationDestroyOutcome uint8
+
+const (
+	generationDestroyed generationDestroyOutcome = iota
+	generationAbsent
+	generationForeign
+	generationUnmarked
+)
+
+// destroyGenerationSession performs the marker comparison and kill inside one
+// tmux command queue. This is the destructive ownership fence: a separate
+// show-option followed by kill-session would reintroduce a TOCTOU race.
+func (r *Runtime) destroyGenerationSession(ctx context.Context, handle ports.RuntimeHandle) (generationDestroyOutcome, error) {
+	out, err := r.run(ctx, killRuntimeGenerationArgs(handle.ID, handle.RuntimeLaunchID)...)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && sessionMissingOutput(string(out)) {
+			return generationAbsent, nil
+		}
+		return generationUnmarked, fmt.Errorf("tmux runtime: fence generation %s/%s: %w", handle.ID, handle.RuntimeLaunchID, err)
+	}
+	report := strings.TrimSpace(string(out))
+	if report == "" {
+		return generationDestroyed, nil
+	}
+	if !strings.HasPrefix(report, runtimeLaunchReportPrefix) {
+		return generationUnmarked, fmt.Errorf("tmux runtime: unexpected generation fence output for %s: %q", handle.ID, report)
+	}
+	observed := strings.TrimSpace(strings.TrimPrefix(report, runtimeLaunchReportPrefix))
+	if observed == "" {
+		return generationUnmarked, nil
+	}
+	return generationForeign, nil
+}
+
 // Destroy kills the handle's tmux session and reaps the pane processes it
 // leaves behind. `tmux kill-session` only SIGHUPs each pane's foreground
 // process, so a worker's backgrounded children (e.g. a dev server started with
@@ -446,25 +646,51 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 	if err != nil {
 		return err
 	}
+	launchID := strings.TrimSpace(handle.RuntimeLaunchID)
+	contained := r.containment != nil && launchID != ""
+	if contained {
+		if !runtimeLaunchIDPattern.MatchString(launchID) {
+			return fmt.Errorf("tmux runtime: invalid runtime launch id %q", handle.RuntimeLaunchID)
+		}
+		handle.RuntimeLaunchID = launchID
+		outcome, tmuxErr := r.destroyGenerationSession(ctx, handle)
+		releaseErr := r.containment.Release(context.WithoutCancel(ctx), containmentUnitName(id, launchID))
+		if releaseErr != nil {
+			return errors.Join(tmuxErr, fmt.Errorf("tmux runtime: release process containment %s/%s: %w", id, launchID, releaseErr))
+		}
+		if tmuxErr != nil {
+			return tmuxErr
+		}
+		if outcome == generationUnmarked {
+			return fmt.Errorf("tmux runtime: session %s has no generation marker; exact teardown is unconfirmed", id)
+		}
+		if outcome == generationForeign {
+			// The requested exact scope is gone, but a newer/concurrent generation
+			// still owns the stable terminal and may use the same workspace. Report
+			// ownership change so lifecycle callers preserve that workspace.
+			return fmt.Errorf("tmux runtime: session %s generation changed; foreign runtime preserved", id)
+		}
+		return nil
+	}
 	// Capture pane session ids while the session still exists; a missing
-	// session lists no panes and reaps nothing. Best-effort: failures here must
-	// not block the kill-session below.
+	// session lists no panes and reaps nothing. Best-effort: failures here
+	// must not block the kill-session below.
 	sessionIDs := r.paneSessionIDs(ctx, id)
-
 	out, err := r.run(ctx, killSessionArgs(id)...)
-	// Reap regardless of the kill-session result: orphaned children outlive the
-	// session, so they must be cleaned up even when the session was already
+	// Reap regardless of the kill-session result: orphaned children outlive
+	// the session, so they must be cleaned up even when the session was already
 	// gone (a benign double-kill).
 	r.reapSessions(ctx, sessionIDs, r.reapGrace)
+	var tmuxErr error
 
 	if err != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && killSessionMissingOutput(string(out)) {
-			return nil
+		missing := errors.As(err, &exitErr) && killSessionMissingOutput(string(out))
+		if !missing {
+			tmuxErr = fmt.Errorf("tmux runtime: destroy session %s: %w", id, err)
 		}
-		return fmt.Errorf("tmux runtime: destroy session %s: %w", id, err)
 	}
-	return nil
+	return tmuxErr
 }
 
 // paneSessionIDs lists the pid of every pane in the session. tmux launches each
@@ -963,8 +1189,27 @@ func sessionMissingOutput(out string) bool {
 // session's liveness.
 func serverUnreachableOutput(out string) bool {
 	s := strings.ToLower(out)
-	return strings.Contains(s, "no server running") ||
+	return serverDefinitelyAbsentOutput(s) ||
 		strings.Contains(s, "error connecting")
+}
+
+// serverDefinitelyAbsentOutput is the narrow subset of server failures that
+// proves no tmux server socket exists. Ordinary liveness probes still classify
+// it as infrastructure-unreachable rather than per-session death.
+func serverDefinitelyAbsentOutput(out string) bool {
+	s := strings.ToLower(out)
+	return strings.Contains(s, "no server running") ||
+		(strings.Contains(s, "error connecting") && strings.Contains(s, "no such file or directory"))
+}
+
+// duplicateSessionOutput identifies a concurrent/pre-existing creator. Even
+// when the command context also expires, cleanup must not destroy that session.
+func duplicateSessionOutput(out string) bool {
+	return strings.Contains(strings.ToLower(out), "duplicate session")
+}
+
+func runtimeLaunchIDMissingOutput(out string) bool {
+	return strings.Contains(strings.ToLower(out), "invalid option: "+runtimeLaunchIDOption)
 }
 
 // killSessionMissingOutput reports whether a non-zero `tmux kill-session`

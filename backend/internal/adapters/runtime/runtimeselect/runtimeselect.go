@@ -25,6 +25,14 @@ type Runtime interface {
 	GetOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error)
 }
 
+// Options configures the selected runtime backend. The zero value preserves
+// the historical runtime behavior.
+type Options struct {
+	// ProcessContainment is forwarded to the tmux backend on Unix. Windows uses
+	// ConPTY and ignores this option.
+	ProcessContainment string
+}
+
 // Compile-time assertions: both adapters must implement the union interface.
 var _ Runtime = (*tmux.Runtime)(nil)
 var _ Runtime = (*conpty.Runtime)(nil)
@@ -36,9 +44,13 @@ var _ Runtime = (*conpty.Runtime)(nil)
 // registry to the same instance, so two AO daemons on one machine with
 // different AO_RUN_FILE/AO_DATA_DIR overrides never share one registry — see
 // ptyregistry.SetRunFilePath.
-func New(_ *slog.Logger, runFilePath string) Runtime {
+func New(_ *slog.Logger, runFilePath string, options ...Options) Runtime {
 	if runtime.GOOS != "windows" {
-		return tmux.New(tmux.Options{})
+		opts := tmux.Options{}
+		if len(options) > 0 {
+			opts.ProcessContainment = options[0].ProcessContainment
+		}
+		return tmux.New(opts)
 	}
 	return conpty.New(conpty.Options{RunFilePath: runFilePath})
 }

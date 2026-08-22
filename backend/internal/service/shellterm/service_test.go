@@ -226,6 +226,9 @@ func TestOpenShellTerminalStartsLoginShellInProjectRoot(t *testing.T) {
 	if len(rt.created[0].Argv) == 0 {
 		t.Error("argv is empty; a shell terminal must launch a resolved shell")
 	}
+	if rt.created[0].RuntimeLaunchID != "" {
+		t.Fatalf("shell terminal opted into worker containment generation %q", rt.created[0].RuntimeLaunchID)
+	}
 	if term.WorkingDir != "/repos/portfolio" {
 		t.Errorf("working dir = %q, want the project root", term.WorkingDir)
 	}

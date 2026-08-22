@@ -232,16 +232,17 @@ func TestCreate_RegistersSession(t *testing.T) {
 
 	ctx := context.Background()
 	handle, err := rt.Create(ctx, ports.RuntimeConfig{
-		SessionID:     domain.SessionID("sess-abc"),
-		WorkspacePath: "/tmp/workspace",
-		Argv:          []string{"claude-code"},
+		SessionID:       domain.SessionID("sess-abc"),
+		WorkspacePath:   "/tmp/workspace",
+		Argv:            []string{"claude-code"},
+		RuntimeLaunchID: "launch-1",
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if handle.ID != "sess-abc" {
-		t.Fatalf("handle.ID = %q, want %q", handle.ID, "sess-abc")
+	if handle != (ports.RuntimeHandle{ID: "sess-abc", RuntimeLaunchID: "launch-1"}) {
+		t.Fatalf("handle = %+v", handle)
 	}
 
 	// In-memory map must have the entry.
@@ -318,7 +319,7 @@ func TestCreate_DuplicateErrors(t *testing.T) {
 		t.Fatalf("first Create: %v", err)
 	}
 
-	_, err := rt.Create(ctx, ports.RuntimeConfig{
+	handle, err := rt.Create(ctx, ports.RuntimeConfig{
 		SessionID:     "sess-dup",
 		WorkspacePath: "/tmp/w",
 		Argv:          []string{"sh"},
@@ -328,6 +329,9 @@ func TestCreate_DuplicateErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("error %q should contain 'already exists'", err.Error())
+	}
+	if disposition, ref := ports.RuntimeCreateFailureOf(err); disposition != ports.RuntimeCreatePreserve || ref != handle || handle.ID != "sess-dup" {
+		t.Fatalf("duplicate classification = %v, ref %+v, handle %+v", disposition, ref, handle)
 	}
 
 	hosts["sess-dup"].cleanup(t)
@@ -348,6 +352,26 @@ func TestCreate_InvalidIDErrors(t *testing.T) {
 		if err == nil {
 			t.Fatalf("Create(%q): expected error for invalid id, got nil", bad)
 		}
+		if disposition, _ := ports.RuntimeCreateFailureOf(err); disposition != ports.RuntimeCreateRollbackSafe {
+			t.Fatalf("Create(%q) disposition = %v", bad, disposition)
+		}
+	}
+}
+
+func TestCreate_SpawnFailureIsRollbackSafe(t *testing.T) {
+	isolateRegistry(t)
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+		return "", 0, errors.New("host rejected launch")
+	}})
+
+	_, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID: "sess-spawn", WorkspacePath: "/tmp/w", Argv: []string{"sh"}, RuntimeLaunchID: "launch-1",
+	})
+	if err == nil {
+		t.Fatal("Create error = nil")
+	}
+	if disposition, ref := ports.RuntimeCreateFailureOf(err); disposition != ports.RuntimeCreateRollbackSafe || ref != (ports.RuntimeHandle{}) {
+		t.Fatalf("spawn failure classification = %v, ref %+v", disposition, ref)
 	}
 }
 
