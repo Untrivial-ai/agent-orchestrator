@@ -102,7 +102,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 	for key, value := range map[string]string{
 		"CONTEXT_FILE_NAMES":           "[]",
 		"GOOSE_DISABLE_SESSION_NAMING": "true",
-		"GOOSE_MODE":                   "smart_approve",
+		"GOOSE_MODE":                   "auto",
 		"GOOSE_TELEMETRY_OFF":          "1",
 	} {
 		env[key] = value

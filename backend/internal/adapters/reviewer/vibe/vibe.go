@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	pinnedVersion = "2.23.2"
-	reviewerAgent = "plan"
+	pinnedVersion            = "2.23.2"
+	hostTrustedReviewerAgent = "auto-approve"
+	containedReviewerAgent   = "plan"
 )
 
 // HarnessID identifies the Vibe reviewer adapter.
@@ -78,7 +79,7 @@ var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 var _ ports.ReviewerReusePolicy = (*Reviewer)(nil)
 
-// ReviewCommand launches Vibe's persistent plan-agent TUI over the worker
+// ReviewCommand launches Vibe's persistent auto-approve TUI over the worker
 // checkout. The profile and terminal escape surfaces remain host-trusted.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	if err := ctx.Err(); err != nil {
@@ -114,7 +115,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 	if strings.TrimSpace(inv.TaskPromptRoot) != "" {
 		argv = append(argv, "--add-dir", inv.TaskPromptRoot)
 	}
-	argv = append(argv, "--agent", reviewerAgent)
+	argv = append(argv, "--agent", hostTrustedReviewerAgent)
 	if strings.TrimSpace(inv.Prompt) != "" {
 		argv = append(argv, inv.Prompt)
 	}
@@ -234,7 +235,7 @@ func (r *Reviewer) containedInteractiveSpec(ctx context.Context, inv ports.Revie
 	}
 	return stagedCommandSpec{
 		Command: ports.ReviewCommandSpec{
-			Argv:             []string{binary, "--trust", "--workdir", workingDir, "--agent", reviewerAgent},
+			Argv:             []string{binary, "--trust", "--workdir", workingDir, "--agent", containedReviewerAgent},
 			Env:              env,
 			InitialMessage:   inv.Prompt,
 			WorkingDirectory: workingDir,
