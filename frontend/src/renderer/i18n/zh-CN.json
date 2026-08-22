@@ -1193,5 +1193,21 @@
 	"settings.project.autoReview": "Auto review",
 	"settings.project.autoReviewToggle": "Enable for new sessions",
 	"settings.project.autoReviewDescription": "When enabled, new worker sessions will automatically review their pull requests. This can still be toggled per session after spawn.",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"shell.cloudProject": "云项目",
+	"shell.createCloudProject": "创建云项目",
+	"shell.createLocalProject": "创建本地项目",
+	"shell.useLocalProjects": "使用本地项目",
+	"cloudWorkspace.title": "创建云项目",
+	"cloudWorkspace.description": "AO 会将此仓库克隆到 Daytona 沙盒中，并在其中运行常规 AO 守护进程和 Claude Code。",
+	"cloudWorkspace.repositoryUrl": "仓库 URL",
+	"cloudWorkspace.repositoryRef": "分支或标签",
+	"cloudWorkspace.requesting": "正在请求 Daytona 工作区…",
+	"cloudWorkspace.installing": "正在 Daytona 中安装 AO 和 Claude…",
+	"cloudWorkspace.provisioningFailed": "云工作区预配失败。",
+	"cloudWorkspace.provisioningTimedOut": "云工作区预配超时。",
+	"cloudWorkspace.missingConnectionUrl": "云工作区未返回 AO 连接 URL。",
+	"cloudWorkspace.createFailed": "无法创建云工作区。",
+	"cloudWorkspace.creating": "正在创建…",
+	"cloudWorkspace.create": "在云端创建"
 }

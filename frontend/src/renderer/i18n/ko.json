@@ -1211,5 +1211,21 @@
 	"settings.project.autoReview": "Auto review",
 	"settings.project.autoReviewToggle": "Enable for new sessions",
 	"settings.project.autoReviewDescription": "When enabled, new worker sessions will automatically review their pull requests. This can still be toggled per session after spawn.",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"shell.cloudProject": "클라우드 프로젝트",
+	"shell.createCloudProject": "클라우드 프로젝트 만들기",
+	"shell.createLocalProject": "로컬 프로젝트 만들기",
+	"shell.useLocalProjects": "로컬 프로젝트 사용",
+	"cloudWorkspace.title": "클라우드 프로젝트 만들기",
+	"cloudWorkspace.description": "AO가 이 저장소를 Daytona 샌드박스에 복제하고 일반 AO 데몬과 Claude Code를 실행합니다.",
+	"cloudWorkspace.repositoryUrl": "저장소 URL",
+	"cloudWorkspace.repositoryRef": "브랜치 또는 태그",
+	"cloudWorkspace.requesting": "Daytona 작업 공간을 요청하는 중…",
+	"cloudWorkspace.installing": "Daytona에 AO와 Claude를 설치하는 중…",
+	"cloudWorkspace.provisioningFailed": "클라우드 작업 공간 프로비저닝에 실패했습니다.",
+	"cloudWorkspace.provisioningTimedOut": "클라우드 작업 공간 프로비저닝 시간이 초과되었습니다.",
+	"cloudWorkspace.missingConnectionUrl": "클라우드 작업 공간에서 AO 연결 URL을 반환하지 않았습니다.",
+	"cloudWorkspace.createFailed": "클라우드 작업 공간을 만들 수 없습니다.",
+	"cloudWorkspace.creating": "만드는 중…",
+	"cloudWorkspace.create": "클라우드에 만들기"
 }

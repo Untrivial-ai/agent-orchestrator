@@ -24,7 +24,7 @@ import (
 // "simple" cross-origin POSTs (no-cors mode, text/plain body) that handlers
 // would otherwise execute. Same philosophy as localControlRequest on
 // /shutdown, applied to the whole surface.
-func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
+func corsMiddleware(allowedOrigins []string, headersManagedByProxy bool) func(http.Handler) http.Handler {
 	allowed := make(map[string]struct{}, len(allowedOrigins))
 	for _, origin := range allowedOrigins {
 		origin = strings.TrimSpace(origin)
@@ -42,11 +42,22 @@ func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 				return
 			}
 			// Cache keys must split on Origin even for rejected values, or a
-			// 403 could be replayed to an allowed origin.
-			w.Header().Add("Vary", "Origin")
+			// 403 could be replayed to an allowed origin. In proxy-managed mode
+			// the upstream owns this header along with the rest of CORS.
+			if !headersManagedByProxy {
+				w.Header().Add("Vary", "Origin")
+			}
 			if _, ok := allowed[origin]; !ok && !isLoopbackOrigin(origin) {
 				envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "ORIGIN_FORBIDDEN",
 					"Origin is not allowed to access this daemon", nil)
+				return
+			}
+			// A trusted preview proxy can own the response headers while AO still
+			// enforces the origin boundary before any state-changing handler runs.
+			// Emitting ACAO at both layers produces duplicate values, which
+			// Chromium correctly rejects as an invalid CORS response.
+			if headersManagedByProxy {
+				next.ServeHTTP(w, r)
 				return
 			}
 

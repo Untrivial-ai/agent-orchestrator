@@ -69,3 +69,30 @@ func TestRefreshTokensAreOpaqueAndHashed(t *testing.T) {
 		t.Fatal("refresh token was reused")
 	}
 }
+
+func TestWorkspaceTokenCannotBeUsedAsDesktopAccessToken(t *testing.T) {
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	manager, err := NewAccessTokenManager([]byte("0123456789abcdef0123456789abcdef"), "issuer", "desktop", 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.now = func() time.Time { return now }
+	token, err := manager.IssueWorkspace("user-1", "org-1", "workspace-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := manager.VerifyWorkspace(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Subject != "user-1" || claims.OrgID != "org-1" || claims.WorkspaceID != "workspace-1" {
+		t.Fatalf("claims = %#v", claims)
+	}
+	if _, err = manager.Verify(token); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("workspace token accepted as access token: %v", err)
+	}
+	manager.now = func() time.Time { return now.Add(2 * time.Hour) }
+	if _, err = manager.VerifyWorkspace(token); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expired workspace token error = %v", err)
+	}
+}

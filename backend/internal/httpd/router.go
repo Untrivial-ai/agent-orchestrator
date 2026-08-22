@@ -53,7 +53,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.Use(middleware.RealIP)
 	r.Use(requestLogger(log, deps.Telemetry))
 	r.Use(recoverTelemetry(log, deps.Telemetry))
-	r.Use(corsMiddleware(cfg.AllowedOrigins))
+	r.Use(corsMiddleware(cfg.AllowedOrigins, cfg.CORSHeadersManagedByProxy))
 	r.Use(previewOriginMiddleware(api.sessions))
 
 	// JSON envelopes for unmatched routes / methods — chi's defaults are

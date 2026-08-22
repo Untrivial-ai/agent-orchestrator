@@ -78,6 +78,7 @@ import {
 	registerCloudProtocol,
 	showCloudSignInFailure,
 } from "./main/cloud-auth";
+import { installCloudWorkspaceIPC } from "./main/cloud-workspace";
 import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/posthog-config";
 import { buildTelemetryBootstrap } from "./shared/telemetry";
 import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view-host";
@@ -1821,6 +1822,7 @@ function notifyRenderersOfCloudSession(account: import("./shared/cloud-account")
 }
 
 installCloudIPC(cloudDataDir, notifyRenderersOfCloudSession);
+installCloudWorkspaceIPC(cloudDataDir);
 
 function focusCloudWindow(): void {
 	const window = BaseWindow.getAllWindows()[0];

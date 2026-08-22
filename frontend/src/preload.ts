@@ -371,6 +371,10 @@ const api = {
 				ipcRenderer.off("cloud:sessionChanged", wrapped);
 			};
 		},
+		createWorkspace: (input: { repositoryUrl: string; repositoryRef?: string }) =>
+			ipcRenderer.invoke("cloud:createWorkspace", input) as Promise<import("./shared/cloud-workspace").CloudWorkspaceResponse>,
+		getWorkspace: (input: { orgId: string; workspaceId: string }) =>
+			ipcRenderer.invoke("cloud:getWorkspace", input) as Promise<import("./shared/cloud-workspace").CloudWorkspaceResponse>,
 	},
 };
 

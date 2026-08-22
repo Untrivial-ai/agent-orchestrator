@@ -21,6 +21,7 @@ import {
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { agentsQueryKey } from "../hooks/useAgentsQuery";
 import { useUiStore } from "../stores/ui-store";
+import { setCloudApiBaseUrl } from "../lib/api-client";
 
 const { getMock, navigateMock, mockParams, renameSessionMock, spawnMock, updateStatusMock, commandPaletteEnabled } = vi.hoisted(
 	() => ({
@@ -64,6 +65,11 @@ vi.mock("../lib/bridge", async (importOriginal) => {
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: getMock },
+	activateCloudApi: () => true,
+	clearCloudApiBaseUrl: vi.fn(),
+	isCloudApiActive: () => false,
+	setCloudApiBaseUrl: vi.fn(),
+	subscribeApiBaseUrl: () => () => undefined,
 	apiErrorMessage: (error: unknown) => {
 		if (error instanceof Error) return error.message;
 		if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
@@ -270,9 +276,32 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 });
 
 describe("Sidebar", () => {
+	it("offers local and cloud project creation from the project button", async () => {
+		vi.stubEnv("VITE_AO_CLOUD_GOOGLE_CLIENT_ID", "desktop.apps.googleusercontent.com");
+		vi.stubEnv("VITE_AO_CLOUD_API_URL", "https://cloud.example");
+		vi.spyOn(window.ao!.cloud, "getSession").mockResolvedValue({
+			authProvider: "google",
+			user: { id: "user-1", email: "person@example.com", displayName: "Person" },
+			organizations: [],
+			storedAt: new Date().toISOString(),
+		});
+		const user = userEvent.setup();
+		renderSidebar();
+
+		await waitFor(() => expect(screen.getByLabelText("New project")).toBeEnabled());
+		await user.click(screen.getByLabelText("New project"));
+
+		expect(screen.getByRole("menuitem", { name: "Create local project" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Create cloud project" })).toBeInTheDocument();
+		await user.click(screen.getByRole("menuitem", { name: "Create local project" }));
+		expect(setCloudApiBaseUrl).toHaveBeenCalledWith(null);
+		expect(screen.getByRole("dialog", { name: "Add code to Agent Orchestrator" })).toBeInTheDocument();
+	});
+
 	it("suppresses focus chrome without removing keyboard focusability", () => {
 		renderSidebar();
 

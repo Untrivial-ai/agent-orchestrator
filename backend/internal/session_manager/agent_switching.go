@@ -651,7 +651,7 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 	}
 
 	runtimeCfg := ports.RuntimeConfig{
-		SessionID: id, WorkspacePath: rec.Metadata.WorkspacePath, Argv: target.argv, Env: target.env,
+		SessionID: id, WorkspacePath: rec.Metadata.WorkspacePath, Branch: rec.Metadata.Branch, Argv: target.argv, Env: target.env,
 	}
 	handle, createErr := m.runtime.Create(ctx, runtimeCfg)
 	if strings.TrimSpace(handle.ID) == "" {

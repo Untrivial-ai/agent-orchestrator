@@ -76,7 +76,8 @@ func (s *Store) validateRuntimeRole(ctx context.Context) error {
 		            WHERE namespace.nspname = 'public'
 		              AND relation.relname IN (
 		                  'ao_users', 'ao_auth_sessions',
-		                  'ao_organizations', 'ao_org_memberships'
+			              'ao_organizations', 'ao_org_memberships',
+			              'ao_cloud_workspaces', 'ao_cloud_session_runtimes'
 		              )
 		              AND relation.relowner = role.oid
 		        )

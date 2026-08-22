@@ -19,6 +19,9 @@ func TestAccountFoundationAgainstPostgres(t *testing.T) {
 		t.Skip("set AO_CLOUD_TEST_DATABASE_URL, AO_CLOUD_TEST_MIGRATION_DATABASE_URL, and AO_CLOUD_TEST_RUNTIME_DATABASE_ROLE")
 	}
 	ctx := context.Background()
+	if err := EnsureRuntimeRole(ctx, migrationURL, runtimeRole, "integration-runtime-password"); err != nil {
+		t.Fatal(err)
+	}
 	if err := Migrate(ctx, migrationURL, runtimeRole); err != nil {
 		t.Fatal(err)
 	}

@@ -1227,5 +1227,21 @@
 	"settings.project.autoReview": "Auto review",
 	"settings.project.autoReviewToggle": "Enable for new sessions",
 	"settings.project.autoReviewDescription": "When enabled, new worker sessions will automatically review their pull requests. This can still be toggled per session after spawn.",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"shell.cloudProject": "Projet cloud",
+	"shell.createCloudProject": "Créer un projet cloud",
+	"shell.createLocalProject": "Créer un projet local",
+	"shell.useLocalProjects": "Utiliser les projets locaux",
+	"cloudWorkspace.title": "Créer un projet cloud",
+	"cloudWorkspace.description": "AO clonera ce dépôt dans un bac à sable Daytona et y exécutera le daemon AO normal et Claude Code.",
+	"cloudWorkspace.repositoryUrl": "URL du dépôt",
+	"cloudWorkspace.repositoryRef": "Branche ou tag",
+	"cloudWorkspace.requesting": "Demande d’un espace de travail Daytona…",
+	"cloudWorkspace.installing": "Installation d’AO et Claude dans Daytona…",
+	"cloudWorkspace.provisioningFailed": "Le provisionnement de l’espace de travail cloud a échoué.",
+	"cloudWorkspace.provisioningTimedOut": "Le provisionnement de l’espace de travail cloud a expiré.",
+	"cloudWorkspace.missingConnectionUrl": "L’espace de travail cloud n’a renvoyé aucune URL de connexion AO.",
+	"cloudWorkspace.createFailed": "Impossible de créer l’espace de travail cloud.",
+	"cloudWorkspace.creating": "Création…",
+	"cloudWorkspace.create": "Créer dans le cloud"
 }

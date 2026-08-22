@@ -1211,5 +1211,21 @@
 	"settings.project.autoReview": "Auto review",
 	"settings.project.autoReviewToggle": "Enable for new sessions",
 	"settings.project.autoReviewDescription": "When enabled, new worker sessions will automatically review their pull requests. This can still be toggled per session after spawn.",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"shell.cloudProject": "クラウドプロジェクト",
+	"shell.createCloudProject": "クラウドプロジェクトを作成",
+	"shell.createLocalProject": "ローカルプロジェクトを作成",
+	"shell.useLocalProjects": "ローカルプロジェクトを使用",
+	"cloudWorkspace.title": "クラウドプロジェクトを作成",
+	"cloudWorkspace.description": "AO はこのリポジトリを Daytona サンドボックスにクローンし、通常の AO デーモンと Claude Code をそこで実行します。",
+	"cloudWorkspace.repositoryUrl": "リポジトリ URL",
+	"cloudWorkspace.repositoryRef": "ブランチまたはタグ",
+	"cloudWorkspace.requesting": "Daytona ワークスペースをリクエストしています…",
+	"cloudWorkspace.installing": "Daytona に AO と Claude をインストールしています…",
+	"cloudWorkspace.provisioningFailed": "クラウドワークスペースのプロビジョニングに失敗しました。",
+	"cloudWorkspace.provisioningTimedOut": "クラウドワークスペースのプロビジョニングがタイムアウトしました。",
+	"cloudWorkspace.missingConnectionUrl": "クラウドワークスペースから AO 接続 URL が返されませんでした。",
+	"cloudWorkspace.createFailed": "クラウドワークスペースを作成できませんでした。",
+	"cloudWorkspace.creating": "作成中…",
+	"cloudWorkspace.create": "クラウドに作成"
 }

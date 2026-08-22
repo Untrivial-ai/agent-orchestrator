@@ -25,11 +25,18 @@ type Config struct {
 	GoogleIssuer        string
 	GoogleJWKSURL       string
 	GoogleClientIDs     []string
+	AllowedEmails       []string
 	AccessTokenKey      []byte
 	AccessTokenIssuer   string
 	AccessTokenAudience string
 	AccessTokenTTL      time.Duration
 	RefreshTokenTTL     time.Duration
+	DaytonaAPIKey       string
+	DaytonaAPIURL       string
+	DaytonaTarget       string
+	SandboxAOBinaryPath string
+	GitHubToken         []byte
+	PublicURL           string
 }
 
 // Load reads control-plane configuration from the process environment.
@@ -50,17 +57,28 @@ func load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("AO_CLOUD_ACCESS_TOKEN_KEY_BASE64: %w", err)
 	}
+	githubToken, err := optionalBase64(getenv("AO_CLOUD_GITHUB_TOKEN_BASE64"))
+	if err != nil {
+		return Config{}, fmt.Errorf("AO_CLOUD_GITHUB_TOKEN_BASE64: %w", err)
+	}
 	cfg := Config{
 		Address:             valueOrDefault(getenv("AO_CLOUD_ADDR"), defaultAddress),
 		DatabaseURL:         strings.TrimSpace(getenv("AO_CLOUD_DATABASE_URL")),
 		GoogleIssuer:        valueOrDefault(getenv("AO_CLOUD_GOOGLE_ISSUER"), auth.GoogleIssuer),
 		GoogleJWKSURL:       valueOrDefault(getenv("AO_CLOUD_GOOGLE_JWKS_URL"), auth.GoogleJWKSURL),
 		GoogleClientIDs:     splitValues(getenv("AO_CLOUD_GOOGLE_CLIENT_IDS")),
+		AllowedEmails:       normalizedEmails(getenv("AO_CLOUD_ALLOWED_EMAILS")),
 		AccessTokenKey:      key,
 		AccessTokenIssuer:   valueOrDefault(getenv("AO_CLOUD_ACCESS_TOKEN_ISSUER"), "ao-cloud"),
 		AccessTokenAudience: valueOrDefault(getenv("AO_CLOUD_ACCESS_TOKEN_AUDIENCE"), "ao-desktop"),
 		AccessTokenTTL:      accessTTL,
 		RefreshTokenTTL:     refreshTTL,
+		DaytonaAPIKey:       strings.TrimSpace(getenv("DAYTONA_API_KEY")),
+		DaytonaAPIURL:       valueOrDefault(getenv("DAYTONA_API_URL"), "https://app.daytona.io/api"),
+		DaytonaTarget:       valueOrDefault(getenv("DAYTONA_TARGET"), "us"),
+		SandboxAOBinaryPath: valueOrDefault(getenv("AO_CLOUD_SANDBOX_AO_BINARY"), "/ao"),
+		GitHubToken:         githubToken,
+		PublicURL:           strings.TrimRight(strings.TrimSpace(getenv("AO_CLOUD_PUBLIC_URL")), "/"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("AO_CLOUD_DATABASE_URL is required")
@@ -68,10 +86,36 @@ func load(getenv func(string) string) (Config, error) {
 	if len(cfg.GoogleClientIDs) == 0 {
 		return Config{}, errors.New("AO_CLOUD_GOOGLE_CLIENT_IDS is required")
 	}
+	if len(cfg.AllowedEmails) == 0 {
+		return Config{}, errors.New("AO_CLOUD_ALLOWED_EMAILS is required")
+	}
 	if len(cfg.AccessTokenKey) < 32 {
 		return Config{}, errors.New("AO_CLOUD_ACCESS_TOKEN_KEY_BASE64 must decode to at least 32 bytes")
 	}
+	if cfg.DaytonaAPIKey != "" && cfg.PublicURL == "" {
+		return Config{}, errors.New("AO_CLOUD_PUBLIC_URL is required when Daytona is configured")
+	}
 	return cfg, nil
+}
+
+func normalizedEmails(raw string) []string {
+	values := splitValues(raw)
+	for index := range values {
+		values[index] = strings.ToLower(values[index])
+	}
+	return values
+}
+
+func optionalBase64(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, errors.New("must be valid base64")
+	}
+	return value, nil
 }
 
 func durationValue(raw string, fallback time.Duration) (time.Duration, error) {

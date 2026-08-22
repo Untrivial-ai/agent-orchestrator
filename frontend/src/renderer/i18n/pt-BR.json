@@ -1227,5 +1227,21 @@
 	"settings.project.autoReview": "Auto review",
 	"settings.project.autoReviewToggle": "Enable for new sessions",
 	"settings.project.autoReviewDescription": "When enabled, new worker sessions will automatically review their pull requests. This can still be toggled per session after spawn.",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"shell.cloudProject": "Projeto na nuvem",
+	"shell.createCloudProject": "Criar projeto na nuvem",
+	"shell.createLocalProject": "Criar projeto local",
+	"shell.useLocalProjects": "Usar projetos locais",
+	"cloudWorkspace.title": "Criar projeto na nuvem",
+	"cloudWorkspace.description": "O AO clonará este repositório em um sandbox do Daytona e executará nele o daemon normal do AO e o Claude Code.",
+	"cloudWorkspace.repositoryUrl": "URL do repositório",
+	"cloudWorkspace.repositoryRef": "Branch ou tag",
+	"cloudWorkspace.requesting": "Solicitando um workspace do Daytona…",
+	"cloudWorkspace.installing": "Instalando AO e Claude no Daytona…",
+	"cloudWorkspace.provisioningFailed": "Falha ao provisionar o workspace na nuvem.",
+	"cloudWorkspace.provisioningTimedOut": "O provisionamento do workspace na nuvem expirou.",
+	"cloudWorkspace.missingConnectionUrl": "O workspace na nuvem não retornou uma URL de conexão do AO.",
+	"cloudWorkspace.createFailed": "Não foi possível criar o workspace na nuvem.",
+	"cloudWorkspace.creating": "Criando…",
+	"cloudWorkspace.create": "Criar na nuvem"
 }

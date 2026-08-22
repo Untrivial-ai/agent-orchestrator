@@ -65,6 +65,10 @@ func (s *Server) exchangeGoogle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnauthorized, "unauthorized", "INVALID_GOOGLE_ID_TOKEN", "Google identity could not be verified")
 		return
 	}
+	if !s.emailAllowed(principal.Email) {
+		writeError(w, r, http.StatusForbidden, "forbidden", "SIGNUP_NOT_ALLOWED", "This Google account is not allowed to access AO Cloud")
+		return
+	}
 	principal, err = s.store.UpsertGoogleUser(r.Context(), principal)
 	if err != nil {
 		if errors.Is(err, postgres.ErrConflict) {
@@ -130,6 +134,10 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.internalError(w, r, "rotate refresh token", err)
+		return
+	}
+	if !s.emailAllowed(principal.Email) {
+		writeError(w, r, http.StatusForbidden, "forbidden", "SIGNUP_NOT_ALLOWED", "This Google account is not allowed to access AO Cloud")
 		return
 	}
 	accessToken, expiresAt, err := s.accessTokens.Issue(principal.UserID)

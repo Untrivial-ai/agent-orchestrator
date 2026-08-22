@@ -1193,5 +1193,21 @@
 	"inspector.usage.totalTokensAria": "{{count}} total tokens",
 	"inspector.usage.totalTokensUnavailable": "Total tokens unavailable",
 	"inspector.usage.uncachedInputTokens": "Uncached input tokens",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"shell.cloudProject": "Cloud project",
+	"shell.createCloudProject": "Create cloud project",
+	"shell.createLocalProject": "Create local project",
+	"shell.useLocalProjects": "Use local projects",
+	"cloudWorkspace.title": "Create cloud project",
+	"cloudWorkspace.description": "AO will clone this repository into a Daytona sandbox and run the normal AO daemon and Claude Code there.",
+	"cloudWorkspace.repositoryUrl": "Repository URL",
+	"cloudWorkspace.repositoryRef": "Branch or tag",
+	"cloudWorkspace.requesting": "Requesting a Daytona workspace…",
+	"cloudWorkspace.installing": "Installing AO and Claude in Daytona…",
+	"cloudWorkspace.provisioningFailed": "Cloud workspace provisioning failed.",
+	"cloudWorkspace.provisioningTimedOut": "Cloud workspace provisioning timed out.",
+	"cloudWorkspace.missingConnectionUrl": "Cloud workspace returned no AO connection URL.",
+	"cloudWorkspace.createFailed": "Could not create cloud workspace.",
+	"cloudWorkspace.creating": "Creating…",
+	"cloudWorkspace.create": "Create in cloud"
 }

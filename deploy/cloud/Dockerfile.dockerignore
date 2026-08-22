@@ -1,0 +1,11 @@
+**/.git
+**/.terraform
+**/node_modules
+**/dist
+**/build
+**/*.tfstate
+**/*.tfstate.*
+frontend
+packages
+docs
+test

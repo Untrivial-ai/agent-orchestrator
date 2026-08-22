@@ -187,5 +187,11 @@ export const aoBridge: AoBridge =
 			signIn: async () => undefined,
 			signOut: async () => undefined,
 			onSessionChanged: () => () => undefined,
+			createWorkspace: async () => {
+				throw new Error("Cloud workspaces are unavailable in browser preview mode.");
+			},
+			getWorkspace: async () => {
+				throw new Error("Cloud workspaces are unavailable in browser preview mode.");
+			},
 		},
 	} satisfies AoBridge);

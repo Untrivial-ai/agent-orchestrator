@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"runtime"
 
+	cloudruntime "github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/cloud"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/conpty"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/tmux"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -36,9 +37,15 @@ var _ Runtime = (*conpty.Runtime)(nil)
 // registry to the same instance, so two AO daemons on one machine with
 // different AO_RUN_FILE/AO_DATA_DIR overrides never share one registry — see
 // ptyregistry.SetRunFilePath.
-func New(_ *slog.Logger, runFilePath string) Runtime {
-	if runtime.GOOS != "windows" {
-		return tmux.New(tmux.Options{})
+func New(_ *slog.Logger, runFilePath string) (Runtime, error) {
+	if remote, configured, err := cloudruntime.FromEnvironment(); configured {
+		if err != nil {
+			return nil, err
+		}
+		return remote, nil
 	}
-	return conpty.New(conpty.Options{RunFilePath: runFilePath})
+	if runtime.GOOS != "windows" {
+		return tmux.New(tmux.Options{}), nil
+	}
+	return conpty.New(conpty.Options{RunFilePath: runFilePath}), nil
 }

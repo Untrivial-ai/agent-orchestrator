@@ -237,6 +237,12 @@ if (typeof window !== "undefined") {
 			signIn: async () => undefined,
 			signOut: async () => undefined,
 			onSessionChanged: () => () => undefined,
+			createWorkspace: async () => {
+				throw new Error("not configured");
+			},
+			getWorkspace: async () => {
+				throw new Error("not configured");
+			},
 		},
 	};
 } // end if (typeof window !== "undefined")

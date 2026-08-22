@@ -185,7 +185,10 @@ func TestWiring_StartSessionBuildsSessionService(t *testing.T) {
 	lcm := lifecycle.New(store, nil)
 	cfg := config.Config{DataDir: t.TempDir()}
 
-	rt := runtimeselect.New(nil, cfg.RunFilePath)
+	rt, err := runtimeselect.New(nil, cfg.RunFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	messenger := newSessionMessenger(store, rt, log)
 	agents, err := buildAgentResolver(config.DefaultAgent, log)
 	if err != nil {
@@ -301,7 +304,10 @@ func TestStartSession_SpawnDoesNotPanicWhenNoTrackerToken(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	lcm := lifecycle.New(store, nil)
 	cfg := config.Config{DataDir: t.TempDir()}
-	rt := runtimeselect.New(nil, cfg.RunFilePath)
+	rt, err := runtimeselect.New(nil, cfg.RunFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	messenger := newSessionMessenger(store, rt, log)
 	agents, agentsErr := buildAgentResolver(config.DefaultAgent, log)
 	if agentsErr != nil {
@@ -360,7 +366,10 @@ func TestStartTrackerIntake_RunsEvenWithoutEnabledProjects(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	lcm := lifecycle.New(store, nil)
 	cfg := config.Config{DataDir: t.TempDir()}
-	rt := runtimeselect.New(nil, cfg.RunFilePath)
+	rt, err := runtimeselect.New(nil, cfg.RunFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	messenger := newSessionMessenger(store, rt, log)
 	agents, agentsErr := buildAgentResolver(config.DefaultAgent, log)
 	if agentsErr != nil {

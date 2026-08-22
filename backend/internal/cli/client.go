@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
@@ -118,15 +121,26 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	if err != nil {
 		return err
 	}
-	info, err := runfile.Read(cfg.RunFilePath)
-	if err != nil {
-		return err
-	}
-	if info == nil {
-		return fmt.Errorf("AO daemon is not running — start it with `ao start`")
-	}
-	if !c.deps.ProcessAlive(info.PID) {
-		return fmt.Errorf("AO daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath)
+	var requestURL string
+	if cloudURL := strings.TrimSpace(os.Getenv("AO_CLOUD_COORDINATOR_URL")); cloudURL != "" {
+		parsed, parseErr := url.Parse(cloudURL)
+		if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			return errors.New("AO_CLOUD_COORDINATOR_URL must be a valid HTTPS URL")
+		}
+		parsed.Path = strings.TrimRight(parsed.Path, "/") + path
+		requestURL = parsed.String()
+	} else {
+		info, readErr := runfile.Read(cfg.RunFilePath)
+		if readErr != nil {
+			return readErr
+		}
+		if info == nil {
+			return fmt.Errorf("AO daemon is not running — start it with `ao start`")
+		}
+		if !c.deps.ProcessAlive(info.PID) {
+			return fmt.Errorf("AO daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath)
+		}
+		requestURL = fmt.Sprintf("http://%s:%d%s", config.LoopbackHost, info.Port, path)
 	}
 
 	var reader io.Reader = http.NoBody
@@ -137,8 +151,7 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		}
 		reader = bytes.NewReader(payload)
 	}
-	url := fmt.Sprintf("http://%s:%d%s", config.LoopbackHost, info.Port, path)
-	req, err := http.NewRequestWithContext(ctx, method, url, reader) // #nosec G704 -- daemon host is fixed loopback; path is an internal API route.
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, reader) // #nosec G704 -- target is fixed loopback or the validated cloud coordinator capability.
 	if err != nil {
 		return err
 	}

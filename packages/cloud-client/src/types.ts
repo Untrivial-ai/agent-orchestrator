@@ -12,6 +12,9 @@ export type CurrentAccount = Schemas["CurrentAccount"];
 export type GoogleIdentityExchange = Schemas["GoogleIdentityExchange"];
 export type RefreshTokenInput = Schemas["RefreshTokenInput"];
 export type AOSession = Schemas["AOSession"];
+export type CloudWorkspace = Schemas["CloudWorkspace"];
+export type CloudWorkspaceResponse = Schemas["CloudWorkspaceResponse"];
+export type CreateCloudWorkspaceInput = Schemas["CreateCloudWorkspaceInput"];
 
 export type AgentCapability = Schemas["AgentCapability"];
 export type AgentInstallationState = Schemas["AgentInstallationState"];

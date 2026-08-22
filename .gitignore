@@ -45,6 +45,15 @@ frontend/.tanstack/
 .env.*
 !.env.example
 
+# Terraform local state and provider cache
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+
 # Editor / IDE
 .vscode/
 .idea/

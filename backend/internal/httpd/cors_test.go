@@ -185,3 +185,44 @@ func TestCORSPreflightHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestCORSHeadersManagedByProxy(t *testing.T) {
+	cfg := config.Config{
+		AllowedOrigins:            []string{"app://renderer"},
+		CORSHeadersManagedByProxy: true,
+	}
+	router := newTestRouter(cfg, discardLogger(), nil)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, tt := range []struct {
+		name       string
+		origin     string
+		wantStatus int
+	}{
+		{name: "allowed origin passes without AO CORS headers", origin: "app://renderer", wantStatus: http.StatusOK},
+		{name: "unknown origin remains rejected", origin: "https://evil.example", wantStatus: http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/healthz", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Origin", tt.origin)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+				t.Fatalf("Access-Control-Allow-Origin = %q, want proxy to own it", got)
+			}
+			if got := resp.Header.Get("Vary"); got != "" {
+				t.Fatalf("Vary = %q, want proxy to own it", got)
+			}
+		})
+	}
+}

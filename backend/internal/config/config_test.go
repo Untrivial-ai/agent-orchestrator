@@ -10,7 +10,7 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	// Clear every recognised var so we observe pure defaults regardless of the
 	// surrounding environment.
-	for _, k := range []string{"AO_PORT", "AO_REQUEST_TIMEOUT", "AO_SHUTDOWN_TIMEOUT", "AO_RUN_FILE", "AO_DATA_DIR", "AO_AGENT", "AO_ALLOWED_ORIGINS", "AO_TELEMETRY_EVENTS", "AO_TELEMETRY_METRICS", "AO_TELEMETRY_REMOTE", "AO_TELEMETRY_POSTHOG_KEY", "AO_TELEMETRY_POSTHOG_HOST", "AO_TELEMETRY_DISABLED_EVENTS", "AO_TELEMETRY_APP_VERSION"} {
+	for _, k := range []string{"AO_PORT", "AO_REQUEST_TIMEOUT", "AO_SHUTDOWN_TIMEOUT", "AO_RUN_FILE", "AO_DATA_DIR", "AO_AGENT", "AO_ALLOWED_ORIGINS", "AO_CORS_HEADERS_MANAGED_BY_PROXY", "AO_TELEMETRY_EVENTS", "AO_TELEMETRY_METRICS", "AO_TELEMETRY_REMOTE", "AO_TELEMETRY_POSTHOG_KEY", "AO_TELEMETRY_POSTHOG_HOST", "AO_TELEMETRY_DISABLED_EVENTS", "AO_TELEMETRY_APP_VERSION"} {
 		t.Setenv(k, "")
 	}
 
@@ -97,6 +97,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("AO_TELEMETRY_REMOTE", "posthog")
 	t.Setenv("AO_TELEMETRY_POSTHOG_KEY", "phc_test")
 	t.Setenv("AO_TELEMETRY_POSTHOG_HOST", "https://eu.i.posthog.com")
+	t.Setenv("AO_CORS_HEADERS_MANAGED_BY_PROXY", "on")
 
 	cfg, err := Load()
 	if err != nil {
@@ -120,6 +121,9 @@ func TestLoadOverrides(t *testing.T) {
 	if !cfg.Telemetry.Events || cfg.Telemetry.Metrics {
 		t.Fatalf("Telemetry toggles = %+v", cfg.Telemetry)
 	}
+	if !cfg.CORSHeadersManagedByProxy {
+		t.Fatal("CORSHeadersManagedByProxy = false, want true")
+	}
 	if cfg.Telemetry.Remote != TelemetryRemotePostHog || cfg.Telemetry.PostHogKey != "phc_test" || cfg.Telemetry.PostHogHost != "https://eu.i.posthog.com" {
 		t.Fatalf("Telemetry remote = %+v", cfg.Telemetry)
 	}
@@ -140,6 +144,7 @@ func TestLoadInvalid(t *testing.T) {
 		{"negative shutdown timeout", map[string]string{"AO_SHUTDOWN_TIMEOUT": "-5s"}},
 		{"null origin", map[string]string{"AO_ALLOWED_ORIGINS": "app://renderer,null"}},
 		{"wildcard origin", map[string]string{"AO_ALLOWED_ORIGINS": "*"}},
+		{"bad proxy CORS toggle", map[string]string{"AO_CORS_HEADERS_MANAGED_BY_PROXY": "maybe"}},
 		{"bad telemetry events", map[string]string{"AO_TELEMETRY_EVENTS": "maybe"}},
 		{"bad telemetry metrics", map[string]string{"AO_TELEMETRY_METRICS": "maybe"}},
 		{"bad telemetry remote", map[string]string{"AO_TELEMETRY_REMOTE": "otlp"}},

@@ -192,6 +192,27 @@ func TestGoogleExchangeRejectsUnverifiedIdentity(t *testing.T) {
 	}
 }
 
+func TestGoogleExchangeRejectsAccountOutsideAllowlist(t *testing.T) {
+	store := &memoryAccountStore{refreshes: make(map[string]string)}
+	server := newTestServer(t, store, &staticIdentityVerifier{principal: domain.Principal{
+		ExternalID: "google-subject",
+		Email:      "outsider@example.com",
+	}})
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/cloud/v1/auth/google",
+		bytes.NewBufferString(`{"idToken":"google-id-token"}`),
+	)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	if store.principal.UserID != "" {
+		t.Fatal("disallowed Google account was persisted")
+	}
+}
+
 func TestGoogleExchangeReturnsConflictForDuplicateAccountState(t *testing.T) {
 	store := &memoryAccountStore{
 		refreshes: make(map[string]string),
@@ -269,6 +290,7 @@ func newTestServer(t *testing.T, store AccountStore, verifier IdentityVerifier) 
 		Google:          verifier,
 		AccessTokens:    tokens,
 		RefreshTokenTTL: time.Hour,
+		AllowedEmails:   []string{"person@example.com"},
 	})
 	if err != nil {
 		t.Fatal(err)

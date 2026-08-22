@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import {
 	ChevronRight,
+	Cloud,
 	Folder,
 	FolderOpen,
 	LogIn,
@@ -21,7 +22,7 @@ import {
 	Trash2,
 	User,
 } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { UpdateStatus } from "../../main/update-settings";
 import {
@@ -85,6 +86,8 @@ import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } fr
 import { ResizeHandle } from "./ResizeHandle";
 import { isMacPlatform, isWindowsPlatform } from "../lib/platform";
 import { useCloudSession } from "../lib/cloud-session";
+import { activateCloudApi, clearCloudApiBaseUrl, isCloudApiActive, setCloudApiBaseUrl, subscribeApiBaseUrl } from "../lib/api-client";
+import { CloudWorkspaceDialog } from "./CloudWorkspaceDialog";
 
 // macOS paints framed chrome: the fixed TitlebarNav cluster carries the
 // sidebar toggle + history arrows above this surface. Windows hangs the sidebar
@@ -115,6 +118,8 @@ const MAX_DISPLAY_NAME_LEN = 20;
 export const SIDEBAR_DEFAULT_WIDTH = 240;
 export const SIDEBAR_MIN_WIDTH = 200;
 export const SIDEBAR_MAX_WIDTH = 420;
+
+type ApiSource = "local" | "cloud";
 
 type SidebarProps = {
 	/** Hide the sidebar's right edge stroke on the welcome board inset chrome. */
@@ -198,6 +203,38 @@ export function Sidebar({
 	const daemonStatus = useShellMaybe()?.daemonStatus ?? null;
 	const commandPaletteEnabled = useCommandPaletteEnabled();
 	const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
+	const queryClient = useQueryClient();
+	const activeApiSource = useSyncExternalStore(
+		subscribeApiBaseUrl,
+		() => (isCloudApiActive() ? "cloud" : "local"),
+		() => "local",
+	);
+	// The active backend owns the center panel, while the sidebar retains the
+	// last successful tree from both backends. Selecting a row switches the
+	// transport before navigating, so local and cloud projects coexist without
+	// forking any board, session, terminal, or PR components.
+	const [localWorkspaces, setLocalWorkspaces] = useState<WorkspaceSummary[]>(() =>
+		activeApiSource === "local" ? workspaces : [],
+	);
+	const [cloudWorkspaces, setCloudWorkspaces] = useState<WorkspaceSummary[]>(() =>
+		activeApiSource === "cloud" ? workspaces : [],
+	);
+	useEffect(() => {
+		if (workspaces.length === 0) return;
+		if (activeApiSource === "cloud") setCloudWorkspaces(workspaces);
+		else setLocalWorkspaces(workspaces);
+	}, [activeApiSource, workspaces]);
+	const sourcedWorkspaces = [
+		...localWorkspaces.map((workspace) => ({ source: "local" as const, workspace })),
+		...cloudWorkspaces.map((workspace) => ({ source: "cloud" as const, workspace })),
+	];
+	const activateSource = useCallback((source: ApiSource) => {
+		if (source === activeApiSource) return true;
+		if (source === "cloud" && !activateCloudApi()) return false;
+		if (source === "local") setCloudApiBaseUrl(null);
+		queryClient.clear();
+		return true;
+	}, [activeApiSource, queryClient]);
 
 	useLayoutEffect(() => {
 		// Offcanvas: the panel slides off-screen on collapse — no need to hide content.
@@ -247,12 +284,12 @@ export function Sidebar({
 		onExpand: () => setOpen(true),
 	});
 
-	const pinnedSessions = workspaces
-		.flatMap((w) => workerSessions(w.sessions))
-		.filter((s) => s.isPinned && s.isTerminated !== true)
+	const pinnedSessions = sourcedWorkspaces
+		.flatMap(({ source, workspace }) => workerSessions(workspace.sessions).map((session) => ({ source, session })))
+		.filter(({ session }) => session.isPinned && session.isTerminated !== true)
 		.sort((a, b) => {
-			const aTime = a.pinnedAt ? new Date(a.pinnedAt).getTime() : 0;
-			const bTime = b.pinnedAt ? new Date(b.pinnedAt).getTime() : 0;
+			const aTime = a.session.pinnedAt ? new Date(a.session.pinnedAt).getTime() : 0;
+			const bTime = b.session.pinnedAt ? new Date(b.session.pinnedAt).getTime() : 0;
 			return bTime - aTime;
 		});
 
@@ -364,13 +401,16 @@ export function Sidebar({
 								className="sidebar-expanded-chrome mx-0 ml-0 translate-x-0 gap-0.5 border-l-0 px-0 py-0.5 mb-2"
 								data-testid="pinned-session-list"
 							>
-								{pinnedSessions.map((session) => (
+								{pinnedSessions.map(({ source, session }) => (
 									<SessionRow
-										key={session.id}
+										key={`${source}:${session.id}`}
 										session={session}
 										active={selection.activeSessionId === session.id}
 										indented={false}
-										onOpen={() => selection.goSession(session.workspaceId, session.id)}
+										onActivate={() => activateSource(source)}
+										onOpen={() => {
+											if (activateSource(source)) selection.goSession(session.workspaceId, session.id);
+										}}
 									/>
 								))}
 							</SidebarMenuSub>
@@ -385,7 +425,7 @@ export function Sidebar({
 						collapsible={false}
 						trailing={
 							<CreateProjectButton
-								hideTrigger={workspaces.length === 0}
+								hideTrigger={sourcedWorkspaces.length === 0}
 								onCloneProject={onCloneProject}
 								onCreateProject={onCreateProject}
 								onInitializeProject={onInitializeProject}
@@ -399,20 +439,22 @@ export function Sidebar({
 				<SidebarGroup className="p-0">
 					{/* Tree (project-sidebar__tree) */}
 					<SidebarGroupContent>
-						{workspaceError ? (
+						{workspaceError && sourcedWorkspaces.length === 0 ? (
 							<div className="sidebar-expanded-chrome px-2.5 py-3 group-data-[collapsible=icon]:hidden">
 								<p className="text-sm text-foreground">{t("shell.couldNotLoadProjects")}</p>
 								<p className="mt-1 text-caption text-passive">{workspaceError}</p>
 							</div>
-						) : workspaces.length === 0 ? null : (
+						) : sourcedWorkspaces.length === 0 ? null : (
 							<SidebarMenu className="gap-0.5 rounded-lg overflow-hidden group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:rounded-none group-data-[collapsible=icon]:overflow-visible">
-								{workspaces.map((workspace) => (
+								{sourcedWorkspaces.map(({ source, workspace }) => (
 									<ProjectItem
-										key={workspace.id}
+										key={`${source}:${workspace.id}`}
 										workspace={workspace}
-										expanded={!collapsedIds.has(workspace.id)}
+										source={source}
+										expanded={!collapsedIds.has(`${source}:${workspace.id}`)}
 										selection={selection}
-										onToggle={() => toggleCollapsed(workspace.id)}
+										onActivateSource={() => activateSource(source)}
+										onToggle={() => toggleCollapsed(`${source}:${workspace.id}`)}
 										onRemoveProject={onRemoveProject}
 									/>
 								))}
@@ -507,14 +549,18 @@ type Selection = ReturnType<typeof useSelection>;
 
 function ProjectItem({
 	workspace,
+	source,
 	expanded,
 	selection,
+	onActivateSource,
 	onToggle,
 	onRemoveProject,
 }: {
 	workspace: WorkspaceSummary;
+	source: ApiSource;
 	expanded: boolean;
 	selection: Selection;
+	onActivateSource: () => boolean;
 	onToggle: () => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
 }) {
@@ -560,6 +606,7 @@ function ProjectItem({
 	// session list — otherwise the tree stays shut while you're inside it.
 	const openOrchestrator = async () => {
 		if (isProjectRestarting) return;
+		if (!onActivateSource()) return;
 		if (!expanded) onToggle();
 		if (orchestrator) {
 			selection.goSession(workspace.id, orchestrator.id);
@@ -586,6 +633,7 @@ function ProjectItem({
 	// Do not treat orchestratorActive like the board: the project row is the
 	// one-click path back from the orchestrator button.
 	const onProjectClick = () => {
+		if (!onActivateSource()) return;
 		if (!expanded) {
 			onToggle();
 			selection.goProject(workspace.id);
@@ -616,6 +664,7 @@ function ProjectItem({
 	};
 
 	const handleConfirmRemove = async () => {
+		if (!onActivateSource()) return;
 		setConfirmOpen(false);
 		setIsRemoving(true);
 		// Teardown can take a while when a project owns several sessions. Leave
@@ -710,6 +759,9 @@ function ProjectItem({
 		>
 			{workspace.name}
 		</span>
+		{source === "cloud" ? (
+			<Cloud aria-label={t("shell.cloudProject")} className="sidebar-expanded-chrome size-3.5! shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+		) : null}
 	</SidebarMenuButton>
 	{/* Folder disclosure toggle: sibling of the nav button, absolutely positioned over
 	    the icon area so it intercepts clicks there without nesting buttons. */}
@@ -768,12 +820,16 @@ function ProjectItem({
 					</button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent side="right" align="start" className="min-w-44">
-					<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+					<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => {
+						if (onActivateSource()) requestNewTask(workspace.id);
+					}}>
 						<Plus aria-hidden="true" />
 						{t("shell.newSession")}
 					</DropdownMenuItem>
 					<DropdownMenuSeparator />
-					<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+					<DropdownMenuItem onSelect={() => {
+						if (onActivateSource()) selection.goSettings(workspace.id);
+					}}>
 						<Settings aria-hidden="true" />
 						{t("shell.projectSettings")}
 					</DropdownMenuItem>
@@ -824,7 +880,10 @@ function ProjectItem({
 									key={session.id}
 									session={session}
 									active={selection.activeSessionId === session.id}
-									onOpen={() => selection.goSession(workspace.id, session.id)}
+									onActivate={onActivateSource}
+									onOpen={() => {
+										if (onActivateSource()) selection.goSession(workspace.id, session.id);
+									}}
 								/>
 							))}
 						</SidebarMenuSub>
@@ -851,12 +910,16 @@ function ProjectItem({
 		</SidebarMenuItem>
 		</ContextMenuTrigger>
 		<ContextMenuContent className="min-w-44">
-			<ContextMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+			<ContextMenuItem disabled={isProjectRestarting} onSelect={() => {
+				if (onActivateSource()) requestNewTask(workspace.id);
+			}}>
 				<Plus aria-hidden="true" />
 				{t("shell.newSession")}
 			</ContextMenuItem>
 			<ContextMenuSeparator />
-			<ContextMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+			<ContextMenuItem onSelect={() => {
+				if (onActivateSource()) selection.goSettings(workspace.id);
+			}}>
 				<Settings aria-hidden="true" />
 				{t("shell.projectSettings")}
 			</ContextMenuItem>
@@ -881,11 +944,13 @@ function SessionRow({
 	session,
 	active,
 	indented = true,
+	onActivate = () => true,
 	onOpen,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
 	indented?: boolean;
+	onActivate?: () => boolean;
 	onOpen: () => void;
 }) {
 	const { t } = useTranslation();
@@ -906,6 +971,7 @@ function SessionRow({
 	const { mutate: terminateSession, isPending: isKilling } = useTerminateSession();
 
 	const startEditing = () => {
+		if (!onActivate()) return;
 		setDraft(session.title);
 		setIsEditing(true);
 	};
@@ -919,6 +985,7 @@ function SessionRow({
 		setIsEditing(false);
 		const name = draft.trim();
 		if (!name || name === session.title) return;
+		if (!onActivate()) return;
 		try {
 			await renameSession(session.id, name);
 			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
@@ -1007,6 +1074,7 @@ function SessionRow({
 					)}
 					onClick={(e) => {
 						e.stopPropagation();
+						if (!onActivate()) return;
 						session.isPinned ? unpinSession(session) : pinSession(session);
 					}}
 					type="button"
@@ -1040,6 +1108,7 @@ function SessionRow({
 				disabled={isKilling}
 				onClick={(e) => {
 					e.stopPropagation();
+					if (!onActivate()) return;
 					terminateSession(session);
 				}}
 					type="button"
@@ -1056,6 +1125,7 @@ function SessionRow({
 // email with a sign-out action in a dropdown.
 function CloudAccountRow({ tabIndex }: { tabIndex: number }) {
 	const { t } = useTranslation();
+	const queryClient = useQueryClient();
 	const { configured, session, status, signIn, signOut } = useCloudSession();
 	if (!configured || status === "loading") return null;
 
@@ -1085,6 +1155,7 @@ function CloudAccountRow({ tabIndex }: { tabIndex: number }) {
 	}
 
 	return (
+		<>
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
 				<button
@@ -1105,19 +1176,25 @@ function CloudAccountRow({ tabIndex }: { tabIndex: number }) {
 			<DropdownMenuContent side="top" align="start" className="min-w-44">
 				<DropdownMenuItem
 					className="text-destructive focus:text-destructive [&_svg]:text-destructive"
-					onSelect={() => void signOut()}
+					onSelect={() => {
+						clearCloudApiBaseUrl();
+						queryClient.clear();
+						void signOut();
+					}}
 				>
 					<LogOut aria-hidden="true" />
 					{t("shell.signOut")}
 				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
+		</>
 	);
 }
 
 // Icon-rail variant for collapsed sidebar.
 function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
 	const { t } = useTranslation();
+	const queryClient = useQueryClient();
 	const { configured, session, status, signIn, signOut } = useCloudSession();
 	if (!configured || status === "loading") return null;
 
@@ -1146,7 +1223,11 @@ function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
 				<button
 					aria-label={t("shell.signedInAs", { email: session?.user.email ?? "AO Cloud" })}
 					className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
-					onClick={() => void signOut()}
+					onClick={() => {
+						clearCloudApiBaseUrl();
+						queryClient.clear();
+						void signOut();
+					}}
 					tabIndex={tabIndex}
 					type="button"
 				>
@@ -1360,6 +1441,9 @@ function CreateProjectButton({
 	onInitializeProject,
 }: Pick<SidebarProps, "onCloneProject" | "onCreateProject" | "onInitializeProject"> & { hideTrigger?: boolean }) {
 	const { t } = useTranslation();
+	const queryClient = useQueryClient();
+	const { configured, status, signIn } = useCloudSession();
+	const [cloudWorkspaceOpen, setCloudWorkspaceOpen] = useState(false);
 	// Single CreateProjectFlow owner for the sidebar: the header "+" stays mounted
 	// (CSS-hidden when collapsed or on the empty start page) so it can own
 	// openSignal for ⌘N on every shell route. The collapsed rail button below
@@ -1373,25 +1457,62 @@ function CreateProjectButton({
 			onInitializeProject={onInitializeProject}
 			openSignal={createProjectNonce}
 		>
-			{({ disabled, choosePath, label }) => (
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<button
+			{({ disabled, choosePath, label }) => {
+				const trigger = (
+					<button
 							aria-label={t("shell.newProject")}
 							className={cn(
 								"grid size-icon-xl shrink-0 place-items-center rounded-sm text-passive transition-colors hover:bg-interactive-hover hover:text-foreground",
 								hideTrigger && "hidden",
 							)}
-							disabled={disabled}
-							onClick={choosePath}
+							disabled={disabled || (configured && status === "loading")}
+							onClick={configured ? undefined : choosePath}
 							type="button"
 						>
 							<Plus className="size-icon-sm" aria-hidden="true" />
 						</button>
-					</TooltipTrigger>
-					<TooltipContent>{label}</TooltipContent>
-				</Tooltip>
-			)}
+				);
+				return (
+					<>
+						{configured ? (
+							<DropdownMenu>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+									</TooltipTrigger>
+									<TooltipContent>{label}</TooltipContent>
+								</Tooltip>
+								<DropdownMenuContent align="end" className="min-w-44">
+									<DropdownMenuItem onSelect={() => {
+										setCloudApiBaseUrl(null);
+										queryClient.clear();
+										choosePath();
+									}}>
+										<Folder aria-hidden="true" />
+										{t("shell.createLocalProject")}
+									</DropdownMenuItem>
+									<DropdownMenuItem
+										onSelect={() => status === "authenticated" ? setCloudWorkspaceOpen(true) : signIn()}
+									>
+										<Cloud aria-hidden="true" />
+										{t("shell.createCloudProject")}
+									</DropdownMenuItem>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						) : (
+							<Tooltip>
+								<TooltipTrigger asChild>{trigger}</TooltipTrigger>
+								<TooltipContent>{label}</TooltipContent>
+							</Tooltip>
+						)}
+						<CloudWorkspaceDialog
+							onConnected={() => undefined}
+							onOpenChange={setCloudWorkspaceOpen}
+							open={cloudWorkspaceOpen}
+						/>
+					</>
+				);
+			}}
 		</CreateProjectFlow>
 	);
 }

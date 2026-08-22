@@ -900,6 +900,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	handle, err := m.runtime.Create(ctx, ports.RuntimeConfig{
 		SessionID:     id,
 		WorkspacePath: ws.Path,
+		Branch:        ws.Branch,
 		Argv:          argv,
 		Env:           env,
 	})
@@ -1961,6 +1962,7 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 	runtimeCfg := ports.RuntimeConfig{
 		SessionID:     rec.ID,
 		WorkspacePath: ws.Path,
+		Branch:        ws.Branch,
 		Argv:          argv,
 		Env:           env,
 	}

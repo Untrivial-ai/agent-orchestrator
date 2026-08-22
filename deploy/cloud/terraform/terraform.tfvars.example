@@ -1,0 +1,4 @@
+aws_region              = "us-west-2"
+environment             = "staging"
+database_instance_class = "db.t4g.micro"
+deployment_enabled      = false

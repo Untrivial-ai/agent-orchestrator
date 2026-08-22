@@ -34,6 +34,15 @@ type AccessClaims struct {
 	jwt.RegisteredClaims
 }
 
+// WorkspaceClaims authorize exactly one cloud project's coordinator daemon to
+// manage session-scoped runtimes. They deliberately use a different audience
+// from desktop access tokens, so a sandbox credential cannot call user APIs.
+type WorkspaceClaims struct {
+	OrgID       string `json:"org_id"`
+	WorkspaceID string `json:"workspace_id"`
+	jwt.RegisteredClaims
+}
+
 // NewAccessTokenManager validates the signing configuration and constructs a
 // manager. HMAC keys shorter than 256 bits are rejected.
 func NewAccessTokenManager(key []byte, issuer, audience string, ttl time.Duration) (*AccessTokenManager, error) {
@@ -102,6 +111,55 @@ func (m *AccessTokenManager) Verify(token string) (AccessClaims, error) {
 	)
 	if err != nil || !parsed.Valid || strings.TrimSpace(claims.Subject) == "" {
 		return AccessClaims{}, ErrInvalidToken
+	}
+	return claims, nil
+}
+
+// IssueWorkspace signs a capability for one coordinator daemon. The token's
+// subject remains the owning AO user so ordinary tenant RLS can be applied
+// after verification without adding a privileged database path.
+func (m *AccessTokenManager) IssueWorkspace(userID, orgID, workspaceID string, ttl time.Duration) (string, error) {
+	userID = strings.TrimSpace(userID)
+	orgID = strings.TrimSpace(orgID)
+	workspaceID = strings.TrimSpace(workspaceID)
+	if userID == "" || orgID == "" || workspaceID == "" || ttl <= 0 {
+		return "", errors.New("workspace token subject, organization, workspace, and lifetime are required")
+	}
+	now := m.now().UTC()
+	claims := WorkspaceClaims{
+		OrgID: orgID, WorkspaceID: workspaceID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: m.issuer, Subject: userID,
+			Audience: jwt.ClaimStrings{m.audience + ":workspace"},
+			IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-30 * time.Second)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(m.key)
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// VerifyWorkspace validates a coordinator capability minted by IssueWorkspace.
+func (m *AccessTokenManager) VerifyWorkspace(token string) (WorkspaceClaims, error) {
+	claims := WorkspaceClaims{}
+	parsed, err := jwt.ParseWithClaims(
+		strings.TrimSpace(token), &claims,
+		func(candidate *jwt.Token) (any, error) {
+			if candidate.Method != jwt.SigningMethodHS256 {
+				return nil, ErrInvalidToken
+			}
+			return m.key, nil
+		},
+		jwt.WithAudience(m.audience+":workspace"), jwt.WithExpirationRequired(), jwt.WithIssuedAt(),
+		jwt.WithIssuer(m.issuer), jwt.WithLeeway(30*time.Second), jwt.WithTimeFunc(m.now),
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+	)
+	if err != nil || !parsed.Valid || strings.TrimSpace(claims.Subject) == "" ||
+		strings.TrimSpace(claims.OrgID) == "" || strings.TrimSpace(claims.WorkspaceID) == "" {
+		return WorkspaceClaims{}, ErrInvalidToken
 	}
 	return claims, nil
 }

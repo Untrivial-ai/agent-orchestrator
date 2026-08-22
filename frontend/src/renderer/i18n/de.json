@@ -1211,5 +1211,21 @@
 	"settings.project.autoReview": "Auto review",
 	"settings.project.autoReviewToggle": "Enable for new sessions",
 	"settings.project.autoReviewDescription": "When enabled, new worker sessions will automatically review their pull requests. This can still be toggled per session after spawn.",
-	"settings.project.reviewer": "Reviewer"
+	"settings.project.reviewer": "Reviewer",
+	"shell.cloudProject": "Cloud-Projekt",
+	"shell.createCloudProject": "Cloud-Projekt erstellen",
+	"shell.createLocalProject": "Lokales Projekt erstellen",
+	"shell.useLocalProjects": "Lokale Projekte verwenden",
+	"cloudWorkspace.title": "Cloud-Projekt erstellen",
+	"cloudWorkspace.description": "AO klont dieses Repository in eine Daytona-Sandbox und führt dort den normalen AO-Daemon und Claude Code aus.",
+	"cloudWorkspace.repositoryUrl": "Repository-URL",
+	"cloudWorkspace.repositoryRef": "Branch oder Tag",
+	"cloudWorkspace.requesting": "Daytona-Workspace wird angefordert…",
+	"cloudWorkspace.installing": "AO und Claude werden in Daytona installiert…",
+	"cloudWorkspace.provisioningFailed": "Bereitstellung des Cloud-Workspace fehlgeschlagen.",
+	"cloudWorkspace.provisioningTimedOut": "Zeitüberschreitung bei der Bereitstellung des Cloud-Workspace.",
+	"cloudWorkspace.missingConnectionUrl": "Der Cloud-Workspace hat keine AO-Verbindungs-URL zurückgegeben.",
+	"cloudWorkspace.createFailed": "Cloud-Workspace konnte nicht erstellt werden.",
+	"cloudWorkspace.creating": "Wird erstellt…",
+	"cloudWorkspace.create": "In der Cloud erstellen"
 }

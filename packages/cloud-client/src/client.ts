@@ -10,6 +10,8 @@ import type {
   CreateProjectInput,
   CreateSessionInput,
   CurrentAccount,
+  CloudWorkspaceResponse,
+  CreateCloudWorkspaceInput,
   DeleteProjectResponse,
   DeleteSessionResponse,
   ErrorEnvelope,
@@ -156,6 +158,29 @@ export class CloudClient {
 
   getCurrentAccount(options: RequestOptions = {}): Promise<CurrentAccount> {
     return this.request("/api/cloud/v1/me", options);
+  }
+
+  createCloudWorkspace(
+    orgId: string,
+    input: CreateCloudWorkspaceInput,
+    options: RequestOptions = {},
+  ): Promise<CloudWorkspaceResponse> {
+    return this.request(this.orgPath(orgId, "/workspaces"), {
+      method: "POST",
+      body: input,
+      signal: options.signal,
+    });
+  }
+
+  getCloudWorkspace(
+    orgId: string,
+    workspaceId: string,
+    options: RequestOptions = {},
+  ): Promise<CloudWorkspaceResponse> {
+    return this.request(
+      this.orgPath(orgId, `/workspaces/${encodeURIComponent(workspaceId)}`),
+      options,
+    );
   }
 
   async listAgents(

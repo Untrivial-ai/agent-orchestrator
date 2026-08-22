@@ -197,6 +197,12 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					signIn: async () => undefined,
 					signOut: async () => undefined,
 					onSessionChanged: unsubscribe,
+					createWorkspace: async () => {
+						throw new Error("Cloud workspaces are unavailable in browser preview mode.");
+					},
+					getWorkspace: async () => {
+						throw new Error("Cloud workspaces are unavailable in browser preview mode.");
+					},
 				},
 			} satisfies AoBridge;
 			(window as unknown as { ao: unknown }).ao = ao;
@@ -620,6 +626,12 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					signIn: async () => undefined,
 					signOut: async () => undefined,
 					onSessionChanged: unsubscribe,
+					createWorkspace: async () => {
+						throw new Error("Cloud workspaces are unavailable in browser preview mode.");
+					},
+					getWorkspace: async () => {
+						throw new Error("Cloud workspaces are unavailable in browser preview mode.");
+					},
 				},
 			} satisfies AoBridge;
 			(window as unknown as { ao: unknown }).ao = ao;
