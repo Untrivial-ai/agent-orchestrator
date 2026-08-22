@@ -26,6 +26,7 @@ import type { UpdateStatus } from "../../main/update-settings";
 import {
 	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
+	newestOrchestrator,
 	type WorkspaceSession,
 	type WorkspaceSummary,
 	sortedWorkerSessions,
@@ -552,6 +553,7 @@ function ProjectItem({
 	// The project's live orchestrator (if any) backs the hover Orchestrator
 	// button: navigate to it when present, otherwise spawn one first.
 	const orchestrator = newestActiveOrchestrator(workspace.sessions);
+	const orchestratorStatus = newestOrchestrator(workspace.sessions);
 
 	// Mirrors ShellTopbar's launcher: attach to the running orchestrator, or
 	// spawn one via the daemon and follow it once the workspace refetches.
@@ -703,11 +705,13 @@ function ProjectItem({
 				<Folder className="size-5" strokeWidth={1.75} />
 			)}
 		</span>
-		<span
-			className="sidebar-expanded-chrome min-w-0 flex-1 translate-y-px truncate group-data-[collapsible=icon]:hidden"
-			data-project-label=""
-		>
-			{workspace.name}
+		{/* Orchestrator activity sits left of the project name, mirroring worker rows.
+		    gap-1.5 matches SessionRow's dot-to-title spacing (the row itself uses gap-2). */}
+		<span className="sidebar-expanded-chrome flex min-w-0 flex-1 items-center gap-1.5 group-data-[collapsible=icon]:hidden">
+			{orchestratorStatus ? <SessionStatusDot session={orchestratorStatus} /> : null}
+			<span className="min-w-0 flex-1 translate-y-px truncate" data-project-label="">
+				{workspace.name}
+			</span>
 		</span>
 	</SidebarMenuButton>
 	{/* Folder disclosure toggle: sibling of the nav button, absolutely positioned over
