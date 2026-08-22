@@ -364,3 +364,76 @@ describe("reconcileFeaturePin", () => {
 		expect(r.settings.feature).toEqual({ pr: 2270 });
 	});
 });
+
+// ---------------------------------------------------------------------------
+// GitHub token: raises the 60 req/hr unauthenticated cap to 5000 req/hr when
+// AO_GITHUB_TOKEN/GITHUB_TOKEN is set, purely best-effort.
+// ---------------------------------------------------------------------------
+
+describe("GitHub requests carry an Authorization header when a token is configured", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+
+	/** Stubs fetch to return an empty release list and records every call's headers. */
+	function stubFetchRecordingHeaders() {
+		const calls: { url: string; headers: Record<string, string> }[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+				calls.push({ url: String(url), headers: init?.headers ?? {} });
+				return { ok: true, json: async () => [] };
+			}),
+		);
+		return calls;
+	}
+
+	it("omits Authorization when no token env var is set", async () => {
+		const calls = stubFetchRecordingHeaders();
+		await listFeatureBuilds();
+		expect(calls).toHaveLength(1);
+		expect(calls[0].headers.Authorization).toBeUndefined();
+	});
+
+	it("adds Authorization: Bearer <token> when GITHUB_TOKEN is set", async () => {
+		vi.stubEnv("GITHUB_TOKEN", "gh-token-from-env");
+		const calls = stubFetchRecordingHeaders();
+		await listFeatureBuilds();
+		expect(calls[0].headers.Authorization).toBe("Bearer gh-token-from-env");
+	});
+
+	it("prefers AO_GITHUB_TOKEN over GITHUB_TOKEN when both are set", async () => {
+		vi.stubEnv("AO_GITHUB_TOKEN", "ao-specific-token");
+		vi.stubEnv("GITHUB_TOKEN", "ambient-token");
+		const calls = stubFetchRecordingHeaders();
+		await listFeatureBuilds();
+		expect(calls[0].headers.Authorization).toBe("Bearer ao-specific-token");
+	});
+
+	it("treats a blank/whitespace-only token as unset", async () => {
+		vi.stubEnv("GITHUB_TOKEN", "   ");
+		const calls = stubFetchRecordingHeaders();
+		await listFeatureBuilds();
+		expect(calls[0].headers.Authorization).toBeUndefined();
+	});
+
+	it("still authenticates the per-PR pulls lookup, not just the releases call", async () => {
+		vi.stubEnv("GITHUB_TOKEN", "gh-token-from-env");
+		const calls: { url: string; headers: Record<string, string> }[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+				calls.push({ url: String(url), headers: init?.headers ?? {} });
+				if (calls.length === 1) {
+					return { ok: true, json: async () => [makeRelease()] };
+				}
+				return { ok: true, json: async () => ({ state: "open" }) };
+			}),
+		);
+		await listFeatureBuilds();
+		expect(calls).toHaveLength(2);
+		expect(calls[1].url).toMatch(/\/pulls\/2270$/);
+		expect(calls[1].headers.Authorization).toBe("Bearer gh-token-from-env");
+	});
+});

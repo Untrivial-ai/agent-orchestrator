@@ -100,12 +100,29 @@ function parseMarker(body: string): MarkerPayload | null {
 	}
 }
 
+// Optional token for the GitHub REST calls below. AO_GITHUB_TOKEN takes
+// priority as the AO-specific override, falling back to the ambient
+// GITHUB_TOKEN a dev shell or CI runner commonly already exports -- the same
+// two-name precedence backend/internal/adapters/scm/github/auth.go's
+// EnvTokenSource uses for the daemon's own GitHub calls, kept in sync here so
+// the two independent GitHub clients agree on which env var wins. Purely
+// best-effort: unset means every call below stays unauthenticated exactly as
+// before, at the 60 req/hr limit rather than 5000. Read fresh (not cached)
+// since it's a cheap process.env lookup, not the daemon's `gh auth token`
+// shell-out that TTL caching exists to amortize.
+function resolveGitHubToken(): string | undefined {
+	const token = (process.env.AO_GITHUB_TOKEN || process.env.GITHUB_TOKEN || "").trim();
+	return token || undefined;
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
+	const token = resolveGitHubToken();
 	const res = await fetch(url, {
 		headers: {
 			Accept: "application/vnd.github+json",
 			"X-GitHub-Api-Version": "2022-11-28",
 			"User-Agent": `ao-desktop/${app.getVersion()}`,
+			...(token ? { Authorization: `Bearer ${token}` } : {}),
 		},
 	});
 	if (!res.ok) throw new Error(`GitHub API ${res.status}: ${url}`);
@@ -118,10 +135,11 @@ async function isPrOpen(pr: number): Promise<boolean> {
 		const data = await fetchJson<{ state: string }>(`${GITHUB_API}/repos/${owner}/${repo}/pulls/${pr}`);
 		return data.state === "open";
 	} catch {
-		// ponytail: unauthenticated GitHub API hits the 60 req/hr limit; per-PR-state
-		// calls are batched/deduped below but could still be exhausted on large lists.
-		// Upgrade path: pass the app's OAuth token (if one exists) in the Authorization
-		// header to raise the limit to 5000 req/hr.
+		// Every call in this file goes through fetchJson, which attaches
+		// AO_GITHUB_TOKEN/GITHUB_TOKEN when set (5000 req/hr) and falls back to
+		// unauthenticated (60 req/hr) otherwise -- per-PR-state calls here are
+		// batched/deduped below but could still be exhausted on large lists when
+		// no token is configured.
 		//
 		// On any error keep the entry rather than incorrectly filtering it out.
 		return true;
