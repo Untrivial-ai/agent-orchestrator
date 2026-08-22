@@ -932,6 +932,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				return { dispose: () => userInputListeners.delete(listener) };
 			},
 			onResize: (listener) => term.onResize(listener),
+			focus: () => term.focus(),
 		};
 		callbacksRef.current.onReady?.(handle);
 

@@ -1005,6 +1005,11 @@ function AttachedTerminal({
 		// before attaching so the daemon receives only the authoritative size.
 		void terminal.prepareForActivation().then(() => {
 			if (!current) return;
+			// Focus once the terminal is actually attached to a session — not the
+			// empty-state pane when nothing is selected (handleId tells us which).
+			if (handleId) {
+				terminal.focus();
+			}
 			detach = attach(terminal);
 		});
 		return () => {
