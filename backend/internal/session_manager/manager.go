@@ -1938,7 +1938,7 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 			systemPrompt, systemPromptFile, agentConfig, rec.Kind, m.dataDir, true)
 	} else {
 		argv, delivery, mode, err = restoreArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata,
-			systemPrompt, systemPromptFile, agentConfig, rec.Kind, rec.Harness, m.dataDir)
+			systemPrompt, systemPromptFile, agentConfig, rec.Kind, rec.Harness, m.dataDir, env)
 	}
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
@@ -4068,7 +4068,7 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // signals via ok=false (e.g. no native session id captured yet). Returns
 // ErrNotResumable when transcript-preserving restore is required but unavailable,
 // or when a promptless, unresumable worker has nothing to restore from.
-func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, _ domain.AgentHarness, dataDir string) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
+func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, _ domain.AgentHarness, dataDir string, env map[string]string) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
 	ref := ports.SessionRef{
 		ID:            string(id),
 		WorkspacePath: workspacePath,
@@ -4078,11 +4078,34 @@ func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, wo
 	if err != nil {
 		return nil, "", "", fmt.Errorf("restore command: %w", err)
 	}
-	if ok {
+	// The id is real but the provider never persisted a conversation under it —
+	// a session torn down before its first turn, or one whose switch away failed
+	// after the source stopped. Resuming that id fails with "No conversation
+	// found" every time, so the id alone must not gate restore.
+	conversationLost := ok && nativeConversationMissing(ctx, agent, ref, meta.AgentSessionID, env)
+	if ok && !conversationLost {
 		return cmd, ports.PromptDeliveryInCommand, RestoreModeNative, nil
 	}
+	// A lost conversation is not the same as nothing to restore: the session
+	// reached the point of reserving an id, and its workspace holds whatever
+	// branch and commits it produced. Relaunch into that workspace even without
+	// a saved prompt, rather than stranding the work behind ErrNotResumable. A
+	// worker that never got that far (no id, no prompt) still stays unresumable.
 	return freshLaunchArgv(ctx, agent, id, workspacePath, meta, systemPrompt,
-		systemPromptFile, agentConfig, kind, dataDir, false)
+		systemPromptFile, agentConfig, kind, dataDir, conversationLost)
+}
+
+// nativeConversationMissing reports whether the agent can see a persisted
+// conversation behind the id AO would resume. Agents that cannot answer (no
+// probe, or a failed probe) are treated as present: a restore that might work
+// beats refusing one that would.
+func nativeConversationMissing(ctx context.Context, agent ports.Agent, ref ports.SessionRef, conversationID string, env map[string]string) bool {
+	probe, ok := agent.(ports.AgentInterfaceHandoffHistoryProbe)
+	if !ok || strings.TrimSpace(conversationID) == "" {
+		return false
+	}
+	exists, err := probe.NativeConversationExists(ctx, ref, conversationID, env)
+	return err == nil && !exists
 }
 
 // freshLaunchArgv builds the non-resume half of restoreArgv. Interface
