@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Restore Test"
+  short_description: "Batch-test AO session restore reliability"
+  default_prompt: "Use $test-agent-restore to run a three-agent restore test and summarize failures."
