@@ -284,6 +284,8 @@ type SCMReviewCommentObservation struct {
 	Body string
 	// URL is a provider link to the comment.
 	URL string
+	// ReviewURL is the provider link to the submitted review that owns this comment.
+	ReviewURL string
 	// IsBot is true when the provider identifies the author as a bot.
 	IsBot bool
 }

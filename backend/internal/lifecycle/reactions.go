@@ -99,7 +99,100 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 		// delivered — it must re-fire once the session is workable again.
 		return ReviewDeliveryNoop, nil
 	}
+	for _, r := range results {
+		if err := m.markSCMReviewCovered(ctx, r); err != nil {
+			return ReviewDeliveryNoop, err
+		}
+	}
 	return ReviewDeliverySent, nil
+}
+
+// markSCMReviewCovered records that AO already delivered the provider review
+// represented by an internal reviewer result. A later SCM observation of the
+// same GitHub review must therefore not wake the worker a second time.
+//
+// GithubReviewID is GitHub's numeric review/database ID. The SCM observer uses
+// an opaque GraphQL node ID for PullRequestReview.ID, so the two lanes are
+// correlated through the numeric ID embedded in the provider review URL.
+func (m *Manager) markSCMReviewCovered(ctx context.Context, r ReviewResult) error {
+	prURL := strings.TrimSpace(r.PRURL)
+	reviewID := strings.TrimSpace(r.GithubReviewID)
+	if prURL == "" || reviewID == "" {
+		return nil
+	}
+
+	key := reviewDeliveryCoverageKey(prURL, reviewID)
+	sig := string(domain.ReviewChangesRequest)
+
+	m.react.mu.Lock()
+	defer m.react.mu.Unlock()
+
+	if !m.react.loaded[prURL] {
+		if err := m.loadPRSignaturesLocked(ctx, prURL); err != nil {
+			return err
+		}
+		m.react.loaded[prURL] = true
+	}
+
+	m.react.seen[key] = sig
+	return m.persistPRSignaturesLocked(ctx, prURL)
+}
+
+// scmReviewCoveredByInternalReview reports whether an SCM review is another
+// representation of feedback already delivered through AO's internal
+// reviewer lane.
+func (m *Manager) scmReviewCoveredByInternalReview(
+	ctx context.Context,
+	prURL string,
+	review domain.PullRequestReview,
+) (bool, error) {
+	reviewID := githubReviewDatabaseIDFromURL(review.URL)
+	if strings.TrimSpace(prURL) == "" || reviewID == "" {
+		return false, nil
+	}
+
+	key := reviewDeliveryCoverageKey(prURL, reviewID)
+	sig := string(domain.ReviewChangesRequest)
+
+	m.react.mu.Lock()
+	defer m.react.mu.Unlock()
+
+	if !m.react.loaded[prURL] {
+		if err := m.loadPRSignaturesLocked(ctx, prURL); err != nil {
+			return false, err
+		}
+		m.react.loaded[prURL] = true
+	}
+
+	return m.react.seen[key] == sig, nil
+}
+
+func reviewDeliveryCoverageKey(prURL, reviewID string) string {
+	return "review-delivered:" + prURL + ":" + reviewID
+}
+
+// githubReviewDatabaseIDFromURL extracts the numeric database ID from a GitHub
+// review URL such as ".../pull/7#pullrequestreview-4949207965".
+func githubReviewDatabaseIDFromURL(reviewURL string) string {
+	const marker = "#pullrequestreview-"
+
+	i := strings.LastIndex(reviewURL, marker)
+	if i < 0 {
+		return ""
+	}
+
+	id := strings.TrimSpace(reviewURL[i+len(marker):])
+	if id == "" {
+		return ""
+	}
+
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+
+	return id
 }
 
 type reactionState struct {
@@ -172,6 +265,15 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	if cannotNudge(rec) {
 		return nil
 	}
+	reviewURLByCommentID := make(map[string]string, len(o.Comments))
+	for _, comment := range o.Comments {
+		commentID := strings.TrimSpace(comment.ID)
+		reviewURL := strings.TrimSpace(comment.ReviewURL)
+		if commentID != "" && reviewURL != "" {
+			reviewURLByCommentID[commentID] = reviewURL
+		}
+	}
+
 	reviews, err := m.store.ListPRReviews(ctx, o.URL)
 	if err != nil {
 		return fmt.Errorf("list persisted reviews for %s: %w", o.URL, err)
@@ -181,6 +283,12 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 		return fmt.Errorf("list persisted comments for %s: %w", o.URL, err)
 	}
 	o.Comments = prCommentObservations(comments)
+	for i := range o.Comments {
+		commentID := strings.TrimSpace(o.Comments[i].ID)
+		if reviewURL := reviewURLByCommentID[commentID]; reviewURL != "" {
+			o.Comments[i].ReviewURL = reviewURL
+		}
+	}
 	// A single PR can trip several actionable conditions at once (failing CI,
 	// unresolved review comments, a merge conflict). Queue every applicable nudge
 	// and send them together, so each surfaces independently instead of one
@@ -220,6 +328,32 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			if !comment.AutoInjectReview {
 				continue
 			}
+			covered, coverageErr := m.scmReviewCoveredByInternalReview(
+				ctx,
+				o.URL,
+				domain.PullRequestReview{URL: comment.ReviewURL},
+			)
+			if coverageErr != nil {
+				slog.Default().Warn(
+					"lifecycle: failed to check internal review coverage for comment",
+					"pr", o.URL,
+					"comment", comment.ID,
+					"error", coverageErr,
+				)
+			} else if covered {
+				key, sig := reviewCommentReactionDedup(o.URL, comment, o.Review)
+				if markErr := m.markPRReactionCovered(ctx, o.URL, key, sig); markErr != nil {
+					slog.Default().Warn(
+						"lifecycle: failed to persist covered review-comment identity",
+						"pr", o.URL,
+						"comment", comment.ID,
+						"thread", comment.ThreadID,
+						"error", markErr,
+					)
+				}
+				continue
+			}
+
 			commentSlice := []ports.PRCommentObservation{comment}
 			msg := formatReviewCommentsMessage(commentSlice)
 			if ident != "your PR" {
@@ -228,11 +362,17 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			if o.URL != "" {
 				msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
 			}
-			sig := reviewCommentsSignature(commentSlice)
-			if sig == "" {
-				sig = string(o.Review)
-			}
-			nudges = append(nudges, pendingNudge{key: "comment:" + o.URL, sig: sig, msg: msg, maxAttempts: reviewMaxNudge})
+			// A review thread represents one actionable finding. Replies inside
+			// that same thread must not create a fresh lifecycle nudge merely
+			// because the provider assigned the reply a new comment ID.
+			key, sig := reviewCommentReactionDedup(o.URL, comment, o.Review)
+
+			nudges = append(nudges, pendingNudge{
+				key:         key,
+				sig:         sig,
+				msg:         msg,
+				maxAttempts: reviewMaxNudge,
+			})
 		}
 	}
 
@@ -241,6 +381,21 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			if review.State != domain.ReviewChangesRequest || !review.AutoInjectReview {
 				continue
 			}
+
+			covered, coverageErr := m.scmReviewCoveredByInternalReview(ctx, o.URL, review)
+			if coverageErr != nil {
+				// Coverage lookup failures fail open: risking one duplicate nudge
+				// is safer than silently swallowing genuine review feedback.
+				slog.Default().Warn(
+					"lifecycle: failed to check internal review coverage",
+					"pr", o.URL,
+					"review", review.ID,
+					"error", coverageErr,
+				)
+			} else if covered {
+				continue
+			}
+
 			msg := formatReviewChangesRequestedMessage(review)
 			if ident != "your PR" {
 				msg = strings.Replace(msg, "your PR", ident, 1)
@@ -506,6 +661,21 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 			LogTail:    logTail,
 		})
 	}
+	for _, thread := range o.Review.Threads {
+		for _, comment := range thread.Comments {
+			pr.Comments = append(pr.Comments, ports.PRCommentObservation{
+				ID:        comment.ID,
+				ThreadID:  thread.ID,
+				Author:    comment.Author,
+				File:      thread.Path,
+				Line:      thread.Line,
+				Body:      comment.Body,
+				URL:       comment.URL,
+				ReviewURL: comment.ReviewURL,
+				Resolved:  thread.Resolved,
+			})
+		}
+	}
 	return pr
 }
 
@@ -717,6 +887,55 @@ func unresolvedReviewComments(comments []ports.PRCommentObservation) []ports.PRC
 	return unresolved
 }
 
+func reviewCommentReactionDedup(
+	prURL string,
+	comment ports.PRCommentObservation,
+	review domain.ReviewDecision,
+) (key, sig string) {
+	dedupID := strings.TrimSpace(comment.ThreadID)
+	if dedupID != "" {
+		dedupID = "thread:" + dedupID
+	} else if commentID := strings.TrimSpace(comment.ID); commentID != "" {
+		dedupID = "comment:" + commentID
+	}
+
+	sig = dedupID
+	if sig == "" {
+		sig = reviewCommentsSignature([]ports.PRCommentObservation{comment})
+	}
+	if sig == "" {
+		sig = string(review)
+	}
+
+	key = "comment:" + prURL
+	if dedupID != "" {
+		key += ":" + dedupID
+	}
+	return key, sig
+}
+
+func (m *Manager) markPRReactionCovered(
+	ctx context.Context,
+	prURL, key, sig string,
+) error {
+	prURL = strings.TrimSpace(prURL)
+	if prURL == "" || strings.TrimSpace(key) == "" || sig == "" {
+		return nil
+	}
+
+	m.react.mu.Lock()
+	defer m.react.mu.Unlock()
+
+	if !m.react.loaded[prURL] {
+		if err := m.loadPRSignaturesLocked(ctx, prURL); err != nil {
+			return err
+		}
+		m.react.loaded[prURL] = true
+	}
+
+	m.react.seen[key] = sig
+	return m.persistPRSignaturesLocked(ctx, prURL)
+}
 func reviewCommentsSignature(comments []ports.PRCommentObservation) string {
 	parts := make([]string, 0, len(comments))
 	for _, c := range comments {

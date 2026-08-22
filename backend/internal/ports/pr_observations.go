@@ -48,13 +48,15 @@ type PRCheckObservation struct {
 
 // PRCommentObservation is one review comment observed on the PR.
 type PRCommentObservation struct {
-	ID               string
-	ThreadID         string
-	Author           string
-	File             string
-	Line             int
-	Body             string
-	URL              string
+	ID       string
+	ThreadID string
+	Author   string
+	File     string
+	Line     int
+	Body     string
+	URL      string
+	// ReviewURL links this comment to its submitted review when known.
+	ReviewURL        string
 	Resolved         bool
 	AutoInjectReview bool
 }
