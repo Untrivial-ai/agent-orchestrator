@@ -297,8 +297,8 @@ export function AgentModelCombobox({
 						{showSearch && (
 							<p className="px-2 py-1.5 text-xs text-settings-muted" aria-live="polite">
 								{t("settings.models.matchingCount", {
-									visible: visibleModels.length.toLocaleString(),
-									total: rankedModels.length.toLocaleString(),
+									visible: visibleModels.length.toLocaleString("en-US"),
+									total: rankedModels.length.toLocaleString("en-US"),
 								})}
 								{normalizedSearch === "" && rankedModels.length > MAX_VISIBLE_MODELS
 									? t("settings.models.typeToNarrow")

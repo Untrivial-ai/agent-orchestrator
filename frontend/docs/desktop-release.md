@@ -169,11 +169,15 @@ Verify the macOS artifacts with the shared script rather than by hand:
 gh release download vX.Y.Z -R AgentWrapper/agent-orchestrator \
   --pattern 'agent-orchestrator-darwin-*.zip' --dir /tmp/relcheck
 frontend/scripts/verify-mac-artifact.sh /tmp/relcheck/agent-orchestrator-darwin-arm64.zip
+frontend/scripts/verify-mac-artifact.sh /tmp/relcheck/agent-orchestrator-darwin-x64.zip
 ```
 
 It extracts with `ditto -x -k` (plain `unzip` breaks the seal and produces a
 convincing false failure) and runs `codesign --verify --deep --strict`,
-`spctl -a -vv -t exec` and `xcrun stapler validate`.
+`spctl -a -vv -t exec` and `xcrun stapler validate`. It also inspects the
+bundled ACP Node entitlements and executes JavaScript with that exact nested
+binary, because a valid outer signature does not prove the Intel V8 runtime can
+allocate executable memory (#3879).
 
 Expected assets: versioned installers for every platform
 (`Agent.Orchestrator-darwin-{arm64,x64}-X.Y.Z.zip`, `Agent.Orchestrator.Setup.X.Y.Z.exe`,
