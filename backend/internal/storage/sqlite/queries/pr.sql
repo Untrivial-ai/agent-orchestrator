@@ -211,8 +211,50 @@ LIMIT 1;
 
 -- name: ListPRFactsBySession :many
 -- All PR snapshots for a session (every state), with source/target branch for
--- stack derivation and the unresolved-comment flag. The status aggregator
--- filters open vs merged/closed in Go and derives stacks from the branches.
+-- stack derivation, the unresolved-comment flag, and the human review verdicts
+-- AO did not author. The status aggregator filters open vs merged/closed in Go
+-- and derives stacks from the branches; the Kanban reducer needs the
+-- AO/external split because the aggregate review_decision mixes both sources.
+WITH external_review AS (
+    -- Each human reviewer's CURRENT verdict: their most recent decisive review,
+    -- with AO's own provider reviews removed by the id AO recorded when it
+    -- posted. Raw existence would be wrong: a reviewer who requests changes and
+    -- later approves leaves both rows behind, and the superseded changes request
+    -- would outlive the approval that replaced it. Only another human review
+    -- supersedes a human verdict, so AO's reviews are excluded from both sides.
+    -- Keep this query body ASCII. A multi-byte character anywhere in it makes
+    -- sqlc 1.31 truncate the tail of the generated SQL by the extra byte count
+    -- (an em dash here silently cut `DESC` to `DE`), the same class of parser
+    -- bug documented in queries/sessions.sql and queries/changelog.sql.
+    SELECT pr_reviews.pr_url, pr_reviews.state
+    FROM pr_reviews
+    WHERE pr_reviews.is_bot = 0
+      AND pr_reviews.state IN ('approved', 'changes_requested')
+      AND NOT EXISTS (
+          SELECT 1
+          FROM review_run
+          WHERE review_run.github_review_id != ''
+            AND review_run.github_review_id = pr_reviews.review_id
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM pr_reviews newer
+          WHERE newer.pr_url = pr_reviews.pr_url
+            AND newer.author = pr_reviews.author
+            AND newer.is_bot = 0
+            AND newer.state IN ('approved', 'changes_requested')
+            AND (
+                newer.submitted_at > pr_reviews.submitted_at
+                OR (newer.submitted_at = pr_reviews.submitted_at AND newer.review_id > pr_reviews.review_id)
+            )
+            AND NOT EXISTS (
+                SELECT 1
+                FROM review_run
+                WHERE review_run.github_review_id != ''
+                  AND review_run.github_review_id = newer.review_id
+            )
+      )
+)
 SELECT
     pr.url,
     pr.number,
@@ -230,7 +272,19 @@ SELECT
         WHERE pr_comment.pr_url = pr.url
           AND pr_comment.resolved = 0
           AND pr_comment.is_bot = 0
-    ) AS review_comments
+    ) AS review_comments,
+    EXISTS (
+        SELECT 1
+        FROM external_review
+        WHERE external_review.pr_url = pr.url
+          AND external_review.state = 'approved'
+    ) AS external_approved,
+    EXISTS (
+        SELECT 1
+        FROM external_review
+        WHERE external_review.pr_url = pr.url
+          AND external_review.state = 'changes_requested'
+    ) AS external_changes_requested
 FROM pr
 WHERE pr.session_id = ?
 ORDER BY pr.updated_at DESC;

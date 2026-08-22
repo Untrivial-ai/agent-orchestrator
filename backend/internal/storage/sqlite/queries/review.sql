@@ -75,3 +75,14 @@ FROM review_run WHERE session_id = ? AND status = 'running' AND verdict = '' ORD
 -- name: ListReviewRunsByBatch :many
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id, auto_inject_review, trigger_source
 FROM review_run WHERE session_id = ? AND batch_id = ? ORDER BY created_at ASC, id ASC;
+
+-- name: ListCurrentHeadReviewRunsBySession :many
+-- AO review passes recorded against each PR's CURRENT head commit. Passes for
+-- an earlier head are excluded here so a stale run can never decide the
+-- session's Kanban column.
+SELECT review_run.pr_url, review_run.status, review_run.verdict
+FROM review_run
+JOIN pr ON pr.url = review_run.pr_url
+WHERE review_run.session_id = ?
+  AND pr.head_sha != ''
+  AND review_run.target_sha = pr.head_sha;

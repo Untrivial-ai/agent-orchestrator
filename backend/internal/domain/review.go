@@ -96,3 +96,11 @@ const (
 	VerdictApproved         = contract.AOReviewVerdictApproved
 	VerdictChangesRequested = contract.AOReviewVerdictChangesRequested
 )
+
+// CurrentHeadReviewRun is one AO review pass recorded against a PR's current
+// head commit, reduced to the fields a derived read model needs.
+type CurrentHeadReviewRun struct {
+	PRURL   string
+	Status  ReviewRunStatus
+	Verdict ReviewVerdict
+}

@@ -5837,6 +5837,14 @@ components:
           type: boolean
         issueId:
           type: string
+        kanbanColumn:
+          enum:
+          - building
+          - validating
+          - needs_review
+          - ready
+          - archive
+          type: string
         kind:
           type: string
         mode:
@@ -5940,6 +5948,7 @@ components:
       - updatedAt
       - isPinned
       - status
+      - kanbanColumn
       - prs
       type: object
     ControllersSetSecurePairingRequest:

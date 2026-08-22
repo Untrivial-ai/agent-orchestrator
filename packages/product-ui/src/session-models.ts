@@ -34,6 +34,25 @@ export type SessionActivity = {
 	lastActivityAt: string;
 };
 
+export const KANBAN_COLUMNS = [
+	"building",
+	"validating",
+	"needs_review",
+	"ready",
+	"archive",
+] as const;
+
+/**
+ * Where the daemon placed a session in its delivery lifecycle, and who owns the
+ * next step. Derived server-side from durable facts, independently of
+ * {@link SessionStatus}.
+ */
+export type KanbanColumn = (typeof KANBAN_COLUMNS)[number];
+
+export function isKanbanColumn(value: string): value is KanbanColumn {
+	return KANBAN_COLUMNS.some((column) => column === value);
+}
+
 export type SessionStatusModel = {
 	status: SessionStatus;
 };

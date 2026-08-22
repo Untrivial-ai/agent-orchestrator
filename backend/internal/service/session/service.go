@@ -36,6 +36,7 @@ type Store interface {
 	SetSessionAutoReview(ctx context.Context, id domain.SessionID, enabled bool, updatedAt time.Time) (bool, error)
 	GetDisplayPRFactsForSession(ctx context.Context, id domain.SessionID) (domain.PRFacts, bool, error)
 	ListPRFactsForSession(ctx context.Context, id domain.SessionID) ([]domain.PRFacts, error)
+	ListCurrentHeadReviewRunsForSession(ctx context.Context, id domain.SessionID) ([]domain.CurrentHeadReviewRun, error)
 	ListPRsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.PullRequest, error)
 	ListSessionWorktrees(ctx context.Context, id domain.SessionID) ([]domain.SessionWorktreeRecord, error)
 	ListChecks(ctx context.Context, prURL string) ([]domain.PullRequestCheck, error)
@@ -1026,13 +1027,33 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 		return domain.Session{}, fmt.Errorf("pr facts %s: %w", rec.ID, err)
 	}
 	prs = deduplicatePRFacts(prs)
+	runs, err := s.currentHeadReviewRuns(ctx, rec, prs)
+	if err != nil {
+		return domain.Session{}, err
+	}
 	return domain.Session{
 		SessionRecord:    rec,
 		Status:           deriveStatus(rec, prs, s.now(), s.harnessSignals(rec.Harness)),
 		SCMStatus:        deriveSCMStatus(prs),
+		KanbanColumn:     deriveKanbanColumn(rec, prs, runs),
 		TerminalHandleID: rec.Metadata.RuntimeHandleID,
 		PRs:              prs,
 	}, nil
+}
+
+// currentHeadReviewRuns reads the session's AO review passes for the Kanban
+// reducer. Sessions the reducer already decides without them — terminated ones
+// and ones with no PR yet — skip the query, so listing a board of building
+// workers stays one read per session.
+func (s *Service) currentHeadReviewRuns(ctx context.Context, rec domain.SessionRecord, prs []domain.PRFacts) ([]domain.CurrentHeadReviewRun, error) {
+	if rec.IsTerminated || len(prs) == 0 {
+		return nil, nil
+	}
+	runs, err := s.store.ListCurrentHeadReviewRunsForSession(ctx, rec.ID)
+	if err != nil {
+		return nil, fmt.Errorf("review runs %s: %w", rec.ID, err)
+	}
+	return runs, nil
 }
 
 // now tolerates a zero-value Service (tests construct the struct literally

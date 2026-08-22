@@ -340,3 +340,19 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		AutoInjectReview: r.AutoInjectReview,
 	}
 }
+
+// ListCurrentHeadReviewRunsForSession returns AO's review passes against the
+// current head commit of each PR the session owns. Passes recorded for an
+// earlier head are filtered out in SQL, so callers cannot let a stale run
+// decide a derived column.
+func (s *Store) ListCurrentHeadReviewRunsForSession(ctx context.Context, id domain.SessionID) ([]domain.CurrentHeadReviewRun, error) {
+	rows, err := s.qr.ListCurrentHeadReviewRunsBySession(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("list current-head review runs for %s: %w", id, err)
+	}
+	out := make([]domain.CurrentHeadReviewRun, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, domain.CurrentHeadReviewRun{PRURL: r.PRURL, Status: r.Status, Verdict: r.Verdict})
+	}
+	return out, nil
+}

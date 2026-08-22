@@ -10,6 +10,7 @@ import {
 	type PRState,
 	type PullRequestFacts,
 	toAgentProvider,
+	toKanbanColumn,
 	toProjectKind,
 	toSessionActivity,
 	toSessionStatus,
@@ -90,6 +91,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 				.map((session) => {
 					const status = toSessionStatus(session.status, session.isTerminated);
 					const scmStatus = session.scmStatus ? toSessionStatus(session.scmStatus) : undefined;
+					const kanbanColumn = toKanbanColumn(session.kanbanColumn, status);
 					const activity = toSessionActivity(session.activity);
 					if (status === "unknown") reportUnknownSessionField("status", session.status);
 					if (!activity || activity.state === "unknown") {
@@ -113,6 +115,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 						branch: session.branch || undefined,
 						status,
 						scmStatus,
+						kanbanColumn,
 						isTerminated: session.isTerminated,
 						terminateOnPrMerge: session.terminateOnPrMerge ?? false,
 						autoInjectReview: session.autoInjectReview ?? true,

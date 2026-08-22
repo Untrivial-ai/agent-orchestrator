@@ -48,6 +48,9 @@ func (s *Store) ListPRFactsForSession(ctx context.Context, id domain.SessionID) 
 			TargetBranch:   r.TargetBranch,
 			HeadSHA:        r.HeadSha,
 			UpdatedAt:      r.UpdatedAt,
+
+			ExternalApproved:         r.ExternalApproved,
+			ExternalChangesRequested: r.ExternalChangesRequested,
 		})
 	}
 	return out, nil

@@ -1960,6 +1960,8 @@ export interface components {
             isPinned: boolean;
             isTerminated: boolean;
             issueId?: string;
+            /** @enum {string} */
+            kanbanColumn: "building" | "validating" | "needs_review" | "ready" | "archive";
             kind: string;
             /** @enum {string} */
             mode: "chat" | "tui";

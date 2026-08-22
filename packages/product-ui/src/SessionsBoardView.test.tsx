@@ -9,11 +9,11 @@ import {
 	archiveToggleHeightClassName,
 	archiveToggleOffsetClassName,
 	type BoardSessionPresentation,
-	type BoardSplitLaneLabels,
+	type BoardColumnLabels,
 } from "./SessionsBoardView";
 import {
-	boardAttentionZoneOrder,
-	getAttentionZoneViewForZone,
+	boardKanbanColumnOrder,
+	getKanbanColumnView,
 } from "./session-presentation";
 import type { ExternalLinkProps } from "./external-link";
 
@@ -47,22 +47,13 @@ function ExternalLink({ ariaLabel, children, stopPropagation, ...props }: Extern
 	);
 }
 
-const splitLabels: BoardSplitLaneLabels = {
+const columnLabels: BoardColumnLabels = {
 	columnAria: (label) => `${label} sessions`,
-	countSessions: (count, label) => `${count} ${label} session${count === 1 ? "" : "s"}`,
-	idleWorkingAria: "Idle / Working sessions",
-	laneSummary: (primary, secondary) => `${primary} / ${secondary} lane summary`,
-	readyMergedAria: "Ready / Merged sessions",
-	tones: {
-		idle: { countLabel: "idle", label: "Idle", regionLabel: "Idle sessions" },
-		working: { countLabel: "working", label: "Working", regionLabel: "Working sessions" },
-		ready: { countLabel: "ready", label: "Ready", regionLabel: "Ready sessions" },
-		merged: { countLabel: "merged", label: "Merged", regionLabel: "Merged sessions" },
-	},
 };
 
 const baseSession: BoardSessionPresentation = {
 	id: "session-1",
+	kanbanColumn: "building",
 	provider: "codex",
 	status: "idle",
 	title: "portable task",
@@ -75,30 +66,39 @@ describe("SessionsBoardView", () => {
 		lastArchiveMotionTransition.current = undefined;
 	});
 
-	it("renders portable split lanes with one shared scroller", () => {
+	it("renders one lane per Kanban column, newest first, with one scroller each", () => {
 		const sessions: BoardSessionPresentation[] = [
 			baseSession,
-			{ ...baseSession, id: "working", status: "working", title: "working task" },
-			{ ...baseSession, id: "ready", status: "mergeable", title: "ready task" },
-			{ ...baseSession, id: "merged", status: "merged", title: "merged task" },
+			{ ...baseSession, id: "later", title: "later task", updatedAt: "2026-08-09T12:00:00Z" },
+			{
+				...baseSession,
+				id: "ready",
+				kanbanColumn: "ready",
+				status: "mergeable",
+				title: "ready task",
+			},
 		];
 		render(
 			<SessionsBoardGridView
-				columns={boardAttentionZoneOrder.map((zone) => getAttentionZoneViewForZone(zone))}
-				labels={splitLabels}
+				columns={boardKanbanColumnOrder.map((column) => getKanbanColumnView(column))}
+				labels={columnLabels}
 				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
 				sessions={sessions}
 			/>,
 		);
 
-		const workLane = screen.getByRole("region", { name: "Idle / Working sessions" });
-		expect(within(workLane).getByRole("region", { name: "Idle sessions" })).toHaveTextContent("portable task");
-		expect(within(workLane).getByRole("region", { name: "Working sessions" })).toHaveTextContent("working task");
-		expect(workLane.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
+		const buildingLane = screen.getByRole("region", { name: "Building sessions" });
+		expect(
+			within(buildingLane)
+				.getAllByTestId(/^card-/)
+				.map((card) => card.textContent),
+		).toEqual(["later task", "portable task"]);
+		expect(buildingLane.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
 
-		const mergeLane = screen.getByRole("region", { name: "Ready / Merged sessions" });
-		expect(within(mergeLane).getByLabelText("1 ready session")).toHaveTextContent("1");
-		expect(within(mergeLane).getByLabelText("1 merged session")).toHaveTextContent("1");
+		expect(within(screen.getByRole("region", { name: "Ready sessions" })).getByTestId("card-ready")).toBeInTheDocument();
+		// Empty lanes still render, so the four-column grid never collapses.
+		expect(screen.getByRole("region", { name: "Validating sessions" })).toBeInTheDocument();
+		expect(screen.getByRole("region", { name: "In review sessions" })).toBeInTheDocument();
 		expect(screen.getByTestId("board-horizontal-scroll")).toHaveClass("board-horizontal-scrollbar");
 	});
 
