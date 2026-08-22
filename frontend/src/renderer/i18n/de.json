@@ -1113,6 +1113,8 @@
 	"files.expandAll": "Alle Dateien ausklappen",
 	"files.unifiedDiff": "Unified-Diff-Ansicht",
 	"files.splitDiff": "Geteilte Diff-Ansicht",
+	"files.sourceDiff": "Quelldiff",
+	"files.rendered": "Gerendert",
 	"files.addFileFeedback": "Feedback für Datei {{file}} hinzufügen",
 	"files.addLineFeedback": "Feedback zu {{side}}-Zeile {{line}} in {{file}} hinzufügen",
 	"files.oldSide": "alt",

@@ -1127,6 +1127,8 @@
 	"files.expandAll": "Expandir todos os arquivos",
 	"files.unifiedDiff": "Visualização de diff unificado",
 	"files.splitDiff": "Visualização de diff dividido",
+	"files.sourceDiff": "Diff de origem",
+	"files.rendered": "Renderizado",
 	"files.addFileFeedback": "Adicionar feedback para o arquivo {{file}}",
 	"files.addLineFeedback": "Adicionar feedback na linha {{side}} {{line}} em {{file}}",
 	"files.oldSide": "antiga",

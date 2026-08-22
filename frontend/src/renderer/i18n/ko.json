@@ -1113,6 +1113,8 @@
 	"files.expandAll": "모든 파일 펼치기",
 	"files.unifiedDiff": "통합 diff 보기",
 	"files.splitDiff": "분할 diff 보기",
+	"files.sourceDiff": "소스 diff",
+	"files.rendered": "미리보기",
 	"files.addFileFeedback": "파일 {{file}}에 피드백 추가",
 	"files.addLineFeedback": "{{file}}의 {{side}} 쪽 {{line}}행에 피드백 추가",
 	"files.oldSide": "이전",

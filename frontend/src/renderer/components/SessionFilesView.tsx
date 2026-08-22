@@ -47,6 +47,8 @@ import { Button } from "./ui/button";
 import { DiffSelectionMenu } from "./DiffSelectionMenu";
 import { ImageDiffView } from "./ImageDiffView";
 import { Input } from "./ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+import { MarkdownFileView } from "./markdown/MarkdownFileView";
 
 type WorkspaceFileDetail = components["schemas"]["WorkspaceFileResponse"] & {
 	previousPath?: string;
@@ -97,6 +99,16 @@ const statusTone: Record<WorkspaceFileStatus, string> = {
 // empty column, so those always render unified regardless of the toggle.
 function canSplitCompare(status: WorkspaceFileStatus): boolean {
 	return status === "modified" || status === "renamed";
+}
+
+const MARKDOWN_EXTENSIONS = [".md", ".markdown"];
+
+// A deleted file has no current worktree content — the Rendered view shows the
+// file as it stands now, not a historical revision — so there's nothing for it
+// to render and the toggle stays hidden.
+function canRenderMarkdown(path: string, status: WorkspaceFileStatus): boolean {
+	const lower = path.toLowerCase();
+	return status !== "deleted" && MARKDOWN_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
 export function SessionFilesView({
@@ -430,6 +442,9 @@ function ReviewFileCard({
 	// in this file's diff, a background refetch would re-render the diff body
 	// out from under them and blow away the browser's native selection.
 	const [selectionOrMenuActive, setSelectionOrMenuActive] = useState(false);
+	// Keyed by file.path in ReviewFileList's .map(), so this naturally resets to
+	// "source" for a different file while surviving this file's own re-renders.
+	const [viewMode, setViewMode] = useState<"source" | "rendered">("source");
 	const detailQuery = useQuery({
 		queryKey: ["session-workspace-file", sessionId, file.path],
 		enabled: expanded && !selectionOrMenuActive,
@@ -472,14 +487,16 @@ function ReviewFileCard({
 						</PanelMessage>
 					) : null}
 					{!detailQuery.isPending && !detailQuery.error && detailQuery.data ? (
-						<ReviewDiffBody
+						<FileDetailBody
 							annotation={annotation}
 							detail={detailQuery.data}
 							detailLoadedAt={detailQuery.dataUpdatedAt}
-							filePath={file.path}
+							file={file}
 							onActiveSelectionChange={setSelectionOrMenuActive}
+							onViewModeChange={setViewMode}
 							sessionId={sessionId}
-							split={split && canSplitCompare(file.status)}
+							split={split}
+							viewMode={viewMode}
 							wrap={wrap}
 						/>
 					) : null}
@@ -543,6 +560,60 @@ async function loadWorkspaceFile(sessionId: string, path: string, t: TFunction) 
 	if (error) throw new Error(apiErrorMessage(error, t("files.error.loadWorkspaceFile")));
 	if (!data) throw new Error(t("files.error.emptyResponse"));
 	return data;
+}
+
+// A markdown file gets a "Source diff" / "Rendered" tab pair above its diff
+// body; every other file (and a deleted markdown file, which has no current
+// content to render) falls straight through to the diff body unchanged.
+function FileDetailBody({
+	annotation,
+	detail,
+	detailLoadedAt,
+	file,
+	onActiveSelectionChange,
+	onViewModeChange,
+	sessionId,
+	split,
+	viewMode,
+	wrap,
+}: {
+	annotation: FileAnnotationModel;
+	detail: WorkspaceFileDetail;
+	detailLoadedAt: number;
+	file: WorkspaceFileSummary;
+	onActiveSelectionChange: (active: boolean) => void;
+	onViewModeChange: (mode: "source" | "rendered") => void;
+	sessionId: string;
+	split: boolean;
+	viewMode: "source" | "rendered";
+	wrap: boolean;
+}) {
+	const { t } = useTranslation();
+	const diffBody = (
+		<ReviewDiffBody
+			annotation={annotation}
+			detail={detail}
+			detailLoadedAt={detailLoadedAt}
+			filePath={file.path}
+			onActiveSelectionChange={onActiveSelectionChange}
+			sessionId={sessionId}
+			split={split && canSplitCompare(file.status)}
+			wrap={wrap}
+		/>
+	);
+	if (!canRenderMarkdown(file.path, file.status)) return diffBody;
+	return (
+		<Tabs value={viewMode} onValueChange={(next) => onViewModeChange(next as "source" | "rendered")}>
+			<TabsList className="mx-2.5 mt-2">
+				<TabsTrigger value="source">{t("files.sourceDiff")}</TabsTrigger>
+				<TabsTrigger value="rendered">{t("files.rendered")}</TabsTrigger>
+			</TabsList>
+			<TabsContent value="source">{diffBody}</TabsContent>
+			<TabsContent value="rendered">
+				<MarkdownFileView content={detail.content} filePath={file.path} sessionId={sessionId} />
+			</TabsContent>
+		</Tabs>
+	);
 }
 
 function ReviewDiffBody({

@@ -1113,6 +1113,8 @@
 	"files.expandAll": "すべてのファイルを展開",
 	"files.unifiedDiff": "統合 diff 表示",
 	"files.splitDiff": "分割 diff 表示",
+	"files.sourceDiff": "ソース diff",
+	"files.rendered": "プレビュー",
 	"files.addFileFeedback": "ファイル {{file}} にフィードバックを追加",
 	"files.addLineFeedback": "{{file}} の {{side}} 側 {{line}} 行にフィードバックを追加",
 	"files.oldSide": "旧",
