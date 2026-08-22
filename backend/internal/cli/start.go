@@ -703,15 +703,19 @@ func (c *commandContext) openApp(ctx context.Context, appPath string) (bool, err
 		return true, nil
 	case "windows", "linux":
 		// No `open`-style launcher on these platforms; exec the bundle directly,
-		// detached, so `ao start` does not block on the app. StartProcess uses
-		// cmd.Start() + a detached SysProcAttr (see process.go).
+		// detached, so `ao start` does not block on or supervise the app. The
+		// child gets its own session/process group, detached stdio, and is
+		// released so it survives after the CLI exits.
 		//
 		// ponytail: on some Linux hosts the AppImage may need --no-sandbox; not
 		// added here without evidence the bundled Electron requires it. If sandbox
 		// launch failures appear, append "--no-sandbox" as the follow-up.
 		err := c.deps.StartProcess(processStartConfig{
-			Path: appPath,
-			Args: []string{"--installed-via=npm-bootstrap"},
+			Path:         appPath,
+			Args:         []string{"--installed-via=npm-bootstrap"},
+			Detach:       true,
+			DetachStdio:  true,
+			ReleaseAfter: true,
 		})
 		if err != nil {
 			// Treat a launch failure as "not opened" so the caller prints the

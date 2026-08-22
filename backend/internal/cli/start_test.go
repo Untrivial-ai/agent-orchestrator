@@ -362,6 +362,15 @@ func TestOpenApp_DetachedSpawnOnWinLinux(t *testing.T) {
 	if !reflect.DeepEqual(gotCfg.Args, wantArgs) {
 		t.Fatalf("spawn args = %v, want %v", gotCfg.Args, wantArgs)
 	}
+	if !gotCfg.Detach {
+		t.Fatal("spawn should request a separate session/process group")
+	}
+	if !gotCfg.DetachStdio {
+		t.Fatal("spawn should detach stdio from the CLI")
+	}
+	if !gotCfg.ReleaseAfter {
+		t.Fatal("spawn should release the app process instead of waiting on it")
+	}
 }
 
 func TestOpenApp_SpawnFailureFallsBackToManual(t *testing.T) {
