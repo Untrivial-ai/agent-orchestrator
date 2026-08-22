@@ -42,6 +42,7 @@ const handleC = `${sessionC.id}/terminal_0`;
 const handleD = `${sessionD.id}/terminal_0`;
 const handleE = `${sessionE.id}/terminal_0`;
 const handleF = `${sessionF.id}/terminal_0`;
+const replacementHandleA = `${sessionA.id}/terminal_replacement`;
 const orchestratorHandle = "fake-proj-orchestrator/terminal_0";
 
 const longReplay = [
@@ -189,6 +190,7 @@ async function installHarness(page: Page): Promise<void> {
 		[handleD]: "D short replay",
 		[handleE]: "E short replay",
 		[handleF]: "F short replay",
+		[replacementHandleA]: "A replacement replay",
 		[orchestratorHandle]: "Orchestrator ready",
 	});
 	await page.goto(`/#/projects/fake-proj/sessions/${sessionA.id}`);
@@ -197,6 +199,23 @@ async function installHarness(page: Page): Promise<void> {
 }
 
 test.describe("retained terminal viewport", () => {
+	test("replaces an active session handle without an uncaught xterm viewport error", async ({ page }) => {
+		const pageErrors: string[] = [];
+		page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
+		await installHarness(page);
+
+		await page.evaluate(
+			({ sessionId, handleId }) => window.__aoFakeAgent!.setTerminalHandle(sessionId, handleId),
+			{ sessionId: sessionA.id, handleId: replacementHandleA },
+		);
+		await expect(
+			page.locator(`[data-terminal-cache-key^="session:${sessionA.id}:worker|handle:${replacementHandleA}"]`),
+		).toHaveAttribute("data-terminal-activation-phase", "visible");
+
+		await page.waitForTimeout(250);
+		expect(pageErrors).toEqual([]);
+	});
+
 	test("retains the first of six live sessions with zero reopen and reveals its latest output", async ({
 		page,
 	}) => {
