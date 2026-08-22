@@ -12,6 +12,12 @@ function viewSubmenu(): readonly SubmenuItem[] {
 	return viewMenu.submenu;
 }
 
+function allSubmenuItems(): readonly SubmenuItem[] {
+	return buildWindowsAppMenuTemplate().flatMap((item) =>
+		Array.isArray(item.submenu) ? item.submenu : [],
+	);
+}
+
 describe("buildWindowsAppMenuTemplate", () => {
 	it("registers both plus key forms for zoom in", () => {
 		const zoomInItems = viewSubmenu().filter((item) => item.role === "zoomIn");
@@ -26,5 +32,12 @@ describe("buildWindowsAppMenuTemplate", () => {
 
 	it("keeps the direct minus accelerator for zoom out", () => {
 		expect(viewSubmenu()).toContainEqual(expect.objectContaining({ accelerator: "Ctrl+-", role: "zoomOut" }));
+	});
+
+	it("does not bind copy/paste roles so Ctrl+C/Ctrl+V reach terminal panes", () => {
+		const roles = allSubmenuItems().map((item) => item.role);
+
+		expect(roles).not.toContain("copy");
+		expect(roles).not.toContain("paste");
 	});
 });

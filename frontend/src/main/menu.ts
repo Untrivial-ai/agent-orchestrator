@@ -16,8 +16,6 @@ export function buildWindowsAppMenuTemplate(onToggleDevTools?: () => void): Menu
 				{ role: "redo" },
 				{ type: "separator" },
 				{ role: "cut" },
-				{ role: "copy" },
-				{ role: "paste" },
 				{ role: "selectAll" },
 			],
 		},
