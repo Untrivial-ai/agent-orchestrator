@@ -1868,6 +1868,39 @@ func TestSpawn_ReturnsFinalPromptByteMetrics(t *testing.T) {
 	}
 }
 
+func TestSpawn_PromptByteMetricsIncludeAttachmentReferences(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	ws := &fakeWorkspace{path: t.TempDir()}
+	agent := &recordingAgent{}
+	m := New(Deps{
+		Runtime:   &fakeRuntime{},
+		Agents:    singleAgent{agent: agent},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: &fakeLCM{store: st},
+		DataDir:   t.TempDir(),
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	const basePrompt = "do it"
+	_, promptBytes, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		Prompt:      basePrompt,
+		Attachments: []ports.SpawnAttachment{{Ext: ".png", Data: []byte("image")}},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if promptBytes <= len(basePrompt) {
+		t.Fatalf("promptBytes = %d, want more than the bare prompt %d", promptBytes, len(basePrompt))
+	}
+	if got := len(agent.lastLaunch.Prompt); promptBytes != got {
+		t.Fatalf("promptBytes = %d, want the delivered prompt length %d", promptBytes, got)
+	}
+}
+
 func TestSpawn_DeliversPromptAfterStartWhenAgentRequestsIt(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
