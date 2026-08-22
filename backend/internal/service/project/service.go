@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -116,7 +117,10 @@ func NewWithDeps(d Deps) *Service {
 func (m *Service) List(ctx context.Context) ([]Summary, error) {
 	projects, err := m.store.ListProjects(ctx)
 	if err != nil {
-		return nil, apierr.Internal("PROJECTS_LIST_FAILED", "Failed to load projects")
+		// Keep the storage cause in the error chain for request-correlated daemon
+		// logs, while the apierr keeps filesystem paths and SQLite details out of
+		// the wire response.
+		return nil, fmt.Errorf("list projects: %w: %w", apierr.Internal("PROJECTS_LIST_FAILED", "Failed to load projects"), err)
 	}
 	out := make([]Summary, 0, len(projects))
 	for _, row := range projects {
