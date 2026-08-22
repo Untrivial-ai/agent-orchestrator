@@ -18,7 +18,7 @@
 		"@expo/vector-icons": "^15.0.3",
 		"@fressh/react-native-xtermjs-webview": "^0.0.8",
 		"@react-native-async-storage/async-storage": "2.2.0",
-		"expo": "^54.0.0",
+		"expo": "^57.0.12",
 		"expo-application": "~7.0.8",
 		"expo-build-properties": "~1.0.10",
 		"expo-camera": "~17.0.10",
