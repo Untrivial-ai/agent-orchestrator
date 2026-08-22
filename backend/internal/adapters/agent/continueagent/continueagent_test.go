@@ -2,6 +2,8 @@ package continueagent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -358,8 +360,6 @@ func TestSessionInfoFalseWhenNoHookMetadata(t *testing.T) {
 }
 
 func TestGetAgentHooksDelegates(t *testing.T) {
-	// We don't exercise the full hook merge here (claude tests cover it); just
-	// ensure delegation is wired and succeeds against a temp workspace.
 	plugin := &Plugin{resolvedBinary: "cn"}
 	ws := t.TempDir()
 	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
@@ -367,6 +367,32 @@ func TestGetAgentHooksDelegates(t *testing.T) {
 		SessionID:     "continue-test-1",
 	}); err != nil {
 		t.Fatalf("GetAgentHooks: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(ws, ".claude", "settings.local.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	for _, want := range []string{
+		"ao hooks continue session-start",
+		"ao hooks continue user-prompt-submit",
+		"ao hooks continue notification",
+		"ao hooks continue stop",
+		"ao hooks continue session-end",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("settings missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "ao hooks claude-code") {
+		t.Fatalf("Continue hooks must use the Continue token, got: %s", body)
+	}
+}
+
+func TestDeriveActivityStateUsesClaudeCompatiblePayload(t *testing.T) {
+	got, ok := DeriveActivityState("notification", []byte(`{"notification_type":"agent_needs_input"}`))
+	if !ok || got != domain.ActivityWaitingInput {
+		t.Fatalf("DeriveActivityState(notification) = (%q, %v), want (%q, true)", got, ok, domain.ActivityWaitingInput)
 	}
 }
 
