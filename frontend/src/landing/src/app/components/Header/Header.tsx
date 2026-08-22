@@ -50,7 +50,9 @@ export function Header({ ctaButtons }: HeaderProps) {
     >
       <div className="px-4 sm:px-8 lg:px-[30px]">
         <div className="max-w-7xl mx-auto">
-          <div className="flex items-center justify-between h-14">
+          {/* Height comes from the same token that drives `scroll-padding-top`,
+              so anchor landings stay clear of the header if this ever changes. */}
+          <div className="flex items-center justify-between h-(--header-height)">
             <div className="flex items-center">
               <Link
                 href="/"

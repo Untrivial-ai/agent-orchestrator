@@ -35,6 +35,19 @@
   --brand: #d25611;
   --brand-light: #e8804a;
   --brand-dark: #9e400a;
+
+  /* Single source of truth for the fixed/sticky header height. The header sizes
+     itself from this and `scroll-padding-top` below offsets every anchor jump by
+     it, so an anchor can never land underneath the header again. Changing the
+     header height here keeps both in sync — no per-section `scroll-mt-*`. */
+  --header-height: 3.5rem;
+
+  --scrollbar-thumb: oklch(1 0 0 / 18%);
+  --scrollbar-thumb-hover: oklch(1 0 0 / 32%);
+
+  /* Dark form controls and, on Safari/iOS, dark native overlay scrollbars in the
+     places WebKit refuses to hand over to `::-webkit-scrollbar`. */
+  color-scheme: dark;
 }
 
 @theme {
@@ -78,15 +91,51 @@
 }
 
 @layer base {
-  html,
-  body {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
+  html {
+    /* Anchor targets clear the fixed header. Applies to `#hash` landings and to
+       `scrollIntoView()`, so no element needs its own scroll margin. */
+    scroll-padding-top: var(--header-height);
+    scroll-behavior: smooth;
   }
 
-  html::-webkit-scrollbar,
-  body::-webkit-scrollbar {
-    display: none;
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+
+  /* Themed scrollbars. Firefox (and Chrome 121+) take the standard properties;
+     WebKit/Blink take the pseudo-elements below. Both are declared so Chrome,
+     Edge, Firefox and Safari all render the same dark bar instead of the light
+     platform default. `.scrollbar-hide` still wins over these: it lives in the
+     utilities layer and its selectors outrank a bare `*` / `::-webkit-*`. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scrollbar-thumb-hover);
   }
 
   body {

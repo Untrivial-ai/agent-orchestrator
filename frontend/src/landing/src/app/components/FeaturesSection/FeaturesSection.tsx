@@ -26,7 +26,10 @@ const FEATURE_BACKGROUNDS = [
 
 export function FeaturesSection() {
 	return (
-		<section className="relative px-4 py-16 sm:px-8 sm:py-20 lg:px-[30px] lg:py-24">
+		<section
+			id="features"
+			className="relative px-4 py-16 sm:px-8 sm:py-20 lg:px-[30px] lg:py-24"
+		>
 			<div className="max-w-7xl mx-auto">
 				{/* Feature Rows */}
 				<div className="space-y-20 sm:space-y-24 lg:space-y-32">
