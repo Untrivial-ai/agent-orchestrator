@@ -2,6 +2,7 @@ package continueagent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,12 +12,40 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
+var _ ports.AgentAuthChecker = (*Plugin)(nil)
+
+// AuthStatus reports Continue credentials that can be checked without sending
+// a model prompt. Continue has no non-interactive status command.
+func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
+	if _, err := p.ResolveBinary(ctx); err != nil {
+		if errors.Is(err, ports.ErrAgentBinaryNotFound) {
+			return ports.AgentAuthStatusUnknown, nil
+		}
+		return ports.AgentAuthStatusUnknown, err
+	}
+	status, ok, err := continueLocalAuthStatus(ctx)
+	if err != nil {
+		return ports.AgentAuthStatusUnknown, err
+	}
+	if ok {
+		return status, nil
+	}
+	return ports.AgentAuthStatusUnknown, nil
+}
+
+var continueAPIKeyEnvVars = []string{
+	"CONTINUE_API_KEY",
+	"ANTHROPIC_API_KEY",
+}
+
 func continueLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
-	if strings.TrimSpace(os.Getenv("CONTINUE_API_KEY")) != "" {
-		return ports.AgentAuthStatusAuthorized, true, nil
+	for _, name := range continueAPIKeyEnvVars {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return ports.AgentAuthStatusAuthorized, true, nil
+		}
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		status, ok, err := continueConfigAuthStatus(filepath.Join(home, ".continue", "config.yaml"))
@@ -64,7 +93,7 @@ func continueConfigHasCredential(node *yaml.Node) bool {
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			key := strings.ToLower(strings.TrimSpace(node.Content[i].Value))
 			value := strings.Trim(strings.TrimSpace(node.Content[i+1].Value), `"'`)
-			if (strings.Contains(key, "apikey") || strings.Contains(key, "api_key") || strings.Contains(key, "token")) &&
+			if continueConfigKeyIsCredential(key) &&
 				value != "" &&
 				!strings.EqualFold(value, "null") &&
 				!strings.EqualFold(value, "none") {
@@ -76,4 +105,9 @@ func continueConfigHasCredential(node *yaml.Node) bool {
 		}
 	}
 	return false
+}
+
+func continueConfigKeyIsCredential(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	return key == "apikey" || key == "api_key" || strings.HasSuffix(key, "token")
 }

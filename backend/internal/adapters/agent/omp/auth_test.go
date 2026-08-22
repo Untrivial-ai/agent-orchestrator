@@ -1,15 +1,38 @@
 package omp
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestOMPAuthStatusUsesDocumentedStatusCommand(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
+	previous := authprobe.CmdRunner
+	authprobe.CmdRunner = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "omp" || !reflect.DeepEqual(args, []string{"auth", "status"}) {
+			t.Fatalf("command = %q %#v, want omp auth status", name, args)
+		}
+		return []byte("Logged in"), nil
+	}
+	t.Cleanup(func() { authprobe.CmdRunner = previous })
+
+	status, err := (&Plugin{resolvedBinary: "omp"}).AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusAuthorized)
+	}
+}
 
 func TestOMPAuthJSONStatusAuthorizedWithKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
@@ -24,7 +47,7 @@ func TestOMPAuthJSONStatusAuthorizedWithKey(t *testing.T) {
 	}
 }
 
-func TestOMPAuthJSONStatusUnauthorizedWhenEmpty(t *testing.T) {
+func TestOMPAuthJSONStatusUnknownWhenEmpty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	writeFile(t, path, `{}`)
 
@@ -32,8 +55,8 @@ func TestOMPAuthJSONStatusUnauthorizedWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("status=%q ok=%v, want unauthorized true", status, ok)
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status=%q ok=%v, want unknown false", status, ok)
 	}
 }
 

@@ -40,6 +40,22 @@ func TestAiderLocalAuthStatusAuthorizedWithConfigFile(t *testing.T) {
 	}
 }
 
+func TestAiderLocalAuthStatusAuthorizedWithDocumentedAPIKeyList(t *testing.T) {
+	clearAiderAuthEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(home, ".aider.conf.yml"), []byte("api-key:\n  - openrouter=sk-test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, ok, err := aiderLocalAuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	}
+}
+
 func TestAiderLocalAuthStatusAuthorizedWithDotEnv(t *testing.T) {
 	clearAiderAuthEnv(t)
 	home := t.TempDir()

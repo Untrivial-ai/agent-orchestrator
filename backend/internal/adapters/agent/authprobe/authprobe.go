@@ -9,15 +9,6 @@ import (
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
-// DefaultCommands are cheap local auth/status probes common across agent CLIs.
-// Unsupported commands usually exit quickly with help text and are treated as
-// unknown rather than unauthorized.
-var DefaultCommands = [][]string{
-	{"auth", "status"},
-	{"login", "status"},
-	{"providers", "list"},
-}
-
 // CmdRunner runs the command and returns the combined stdout/stderr.
 // It is exposed as a package variable to allow mocking in tests.
 var CmdRunner = func(ctx context.Context, name string, arg ...string) ([]byte, error) {
@@ -25,6 +16,8 @@ var CmdRunner = func(ctx context.Context, name string, arg ...string) ([]byte, e
 }
 
 // CLIStatus runs bounded local CLI probes and classifies their output.
+// Callers must pass adapter-specific commands; catalog refresh should not run
+// a generic sequence of auth-like commands against every installed binary.
 func CLIStatus(ctx context.Context, binary string, commands [][]string) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -33,7 +26,7 @@ func CLIStatus(ctx context.Context, binary string, commands [][]string) (ports.A
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	if len(commands) == 0 {
-		commands = DefaultCommands
+		return ports.AgentAuthStatusUnknown, nil
 	}
 	for _, args := range commands {
 		status, err := commandStatus(ctx, binary, args)
@@ -53,6 +46,9 @@ func commandStatus(ctx context.Context, binary string, args []string) (ports.Age
 
 	out, err := CmdRunner(probeCtx, binary, args...)
 	if probeCtx.Err() != nil {
+		if probeCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return ports.AgentAuthStatusUnknown, nil
+		}
 		return ports.AgentAuthStatusUnknown, probeCtx.Err()
 	}
 	status := StatusFromText(string(out))

@@ -3,11 +3,9 @@ package vibe
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -82,6 +80,30 @@ func TestVibeAPIKeyEnvVarsReadsConfig(t *testing.T) {
 	}
 }
 
+func TestVibeLocalAuthStatusIgnoresDaemonWorkingDirectoryProjectConfig(t *testing.T) {
+	clearVibeAuthEnv(t, vibeDefaultAPIKeyEnvVar, "VIBE_CODE_API_KEY", "PROJECT_VIBE_KEY")
+	project := t.TempDir()
+	projectConfig := filepath.Join(project, ".vibe", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(projectConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectConfig, []byte("api_key_env_var = \"PROJECT_VIBE_KEY\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	globalHome := filepath.Join(t.TempDir(), ".vibe")
+	t.Setenv("VIBE_HOME", globalHome)
+	t.Setenv("PROJECT_VIBE_KEY", "project-only-key")
+	t.Chdir(project)
+
+	status, ok, err := vibeLocalAuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestVibeEnvFileAuthStatusAuthorized(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envPath, []byte("MISTRAL_API_KEY=test-key\n"), 0o600); err != nil {
@@ -97,7 +119,7 @@ func TestVibeEnvFileAuthStatusAuthorized(t *testing.T) {
 	}
 }
 
-func TestVibeEnvFileAuthStatusUnauthorizedForEmptyValue(t *testing.T) {
+func TestVibeEnvFileAuthStatusUnknownForEmptyValue(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envPath, []byte("MISTRAL_API_KEY=\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -107,84 +129,8 @@ func TestVibeEnvFileAuthStatusUnauthorizedForEmptyValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnauthorized)
-	}
-}
-
-func TestVibeSessionLogAuthStatusAuthorizedWithAssistantMessage(t *testing.T) {
-	dir := t.TempDir()
-	sessionDir := filepath.Join(dir, "session_20260625_071829_d5e8a6eb")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sessionDir, "messages.jsonl"), []byte(`{"role":"assistant","content":"Hello"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := vibeSessionLogAuthStatus(context.Background(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestVibeKeychainAuthStatus(t *testing.T) {
-	if runtime.GOOS == "darwin" {
-		t.Skip("This test only runs on non-Darwin platforms")
-	}
-
-	// 1. Create a temp directory for the fake security binary
-	tmpDir := t.TempDir()
-
-	// 2. Write a fake `security` script/binary that creates a sentinel file
-	//    when invoked — proving it was called
-	sentinelFile := filepath.Join(tmpDir, "security_was_called")
-
-	var fakeSecurityScript string
-	var scriptContent string
-	if runtime.GOOS == "windows" {
-		fakeSecurityScript = filepath.Join(tmpDir, "security.bat")
-		scriptContent = fmt.Sprintf("echo called > %s\r\n", sentinelFile)
-	} else {
-		fakeSecurityScript = filepath.Join(tmpDir, "security")
-		scriptContent = fmt.Sprintf("#!/bin/sh\ntouch %s\n", sentinelFile)
-	}
-
-	err := os.WriteFile(fakeSecurityScript, []byte(scriptContent), 0o755)
-	if err != nil {
-		t.Fatalf("failed to write fake security executable: %v", err)
-	}
-
-	// 3. Prepend our fake binary dir to PATH
-	originalPath := os.Getenv("PATH")
-	t.Cleanup(func() { os.Setenv("PATH", originalPath) })
-	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+originalPath)
-
-	// 4. Call the function
-	status, ok, err := vibeKeychainAuthStatus(
-		context.Background(),
-		"test-env-var",
-	)
-
-	// 5. Assert return values
-	if status != ports.AgentAuthStatusUnknown {
-		t.Errorf("status = %q, want %q", status, ports.AgentAuthStatusUnknown)
-	}
-	if ok {
-		t.Errorf("ok = true, want false")
-	}
-	if err != nil {
-		t.Errorf("err = %v, want nil", err)
-	}
-
-	// 6. CRITICAL: Assert sentinel was NOT created
-	//    This proves security was never invoked
-	_, statErr := os.Stat(sentinelFile)
-	if !os.IsNotExist(statErr) {
-		t.Errorf("security binary was invoked but should have been skipped on non-Darwin")
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
 

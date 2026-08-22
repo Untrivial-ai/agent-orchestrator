@@ -406,8 +406,10 @@ func claudeLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, er
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
-	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) != "" {
-		return ports.AgentAuthStatusAuthorized, true, nil
+	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return ports.AgentAuthStatusAuthorized, true, nil
+		}
 	}
 	cfgPath, err := claudeConfigPath()
 	if err != nil {

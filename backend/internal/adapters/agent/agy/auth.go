@@ -13,5 +13,8 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	return ports.AgentAuthStatusAuthorized, nil
+	// Antigravity authenticates through its OS keyring and browser sign-in. The
+	// official CLI does not expose a documented non-interactive credential file
+	// or status command, so local auth cannot safely be inferred here.
+	return ports.AgentAuthStatusUnknown, nil
 }

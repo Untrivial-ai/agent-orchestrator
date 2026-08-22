@@ -3,10 +3,8 @@ package devin
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -14,7 +12,7 @@ var _ ports.AgentAuthChecker = (*Plugin)(nil)
 
 // AuthStatus returns the plugin's local authentication status.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
-	binary, err := p.ResolveBinary(ctx)
+	_, err := p.ResolveBinary(ctx)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
@@ -23,39 +21,14 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	} else if ok {
 		return status, nil
 	}
-	return authprobe.CLIStatus(ctx, binary, [][]string{{"auth", "status"}})
+	return ports.AgentAuthStatusUnknown, nil
 }
 
 func devinLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if home == "" {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	return devinCredentialsAuthStatus(filepath.Join(home, ".local", "share", "devin", "credentials.toml"))
-}
-
-func devinCredentialsAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	text := strings.TrimSpace(string(data))
-	if text == "" {
-		return ports.AgentAuthStatusUnauthorized, true, nil
-	}
-	lower := strings.ToLower(text)
-	if strings.Contains(lower, "windsurf_api_key") ||
-		strings.Contains(lower, "devin_api_url") ||
-		strings.Contains(lower, "devin_webapp_host") {
+	if key := strings.TrimSpace(os.Getenv("DEVIN_API_KEY")); strings.HasPrefix(key, "cog_") && len(key) > len("cog_") {
 		return ports.AgentAuthStatusAuthorized, true, nil
 	}
 	return ports.AgentAuthStatusUnknown, false, nil

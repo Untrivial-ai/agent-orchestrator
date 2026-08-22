@@ -351,14 +351,23 @@ func assertRawJSONEqual(t *testing.T, want, got json.RawMessage) {
 }
 
 func TestAuthStatus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	adcPath := filepath.Join(t.TempDir(), "application-default-credentials.json")
+	if err := os.WriteFile(adcPath, []byte(`{"type":"authorized_user"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// ADC authenticates Google Cloud clients, but is not an Antigravity CLI
+	// credential according to the official auth flow.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adcPath)
 	plugin := &Plugin{resolvedBinary: "agy"}
 
 	status, err := plugin.AuthStatus(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if status != ports.AgentAuthStatusAuthorized {
-		t.Errorf("AuthStatus() = %v, want AgentAuthStatusAuthorized", status)
+	if status != ports.AgentAuthStatusUnknown {
+		t.Errorf("AuthStatus() = %v, want AgentAuthStatusUnknown", status)
 	}
 }
 

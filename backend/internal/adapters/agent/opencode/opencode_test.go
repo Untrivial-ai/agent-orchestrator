@@ -232,6 +232,25 @@ func TestOpenCodeAuthStatusUnknownWithZeroCredentials(t *testing.T) {
 	}
 }
 
+func TestOpenCodeAuthStatusUnknownWithNoCredentials(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OPENCODE_DATA_DIR", filepath.Join(dir, "missing-data"))
+	for _, name := range opencodeAPIKeyEnvVars {
+		t.Setenv(name, "")
+	}
+	binary := filepath.Join(dir, "opencode")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf 'No credentials found\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	status, err := (&Plugin{resolvedBinary: binary}).AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("AuthStatus = %q, want %q", status, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestOpenCodeLocalAuthStatusUnknownWhenMissing(t *testing.T) {
 	clearOpenCodeAuthEnv(t)
 	home := t.TempDir()
