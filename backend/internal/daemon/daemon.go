@@ -65,6 +65,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
+	"github.com/aoagents/agent-orchestrator/backend/internal/websession"
 )
 
 // sentryEnvironment maps the daemon's app version to a Sentry environment so a
@@ -176,6 +177,24 @@ func Run() error {
 		return err
 	}
 	ignoreBrokenPipeSignal()
+
+	// Hard invariant (ADR-0005 R7): trusted-tailnet-identity auth is trustworthy only
+	// when the LAN listener's bind host is loopback — a header is spoofable by
+	// anyone who can reach the socket directly. Check this unconditionally, at
+	// the very start of boot, before opening any durable resource — not only
+	// when the bridge happens to be enabled — so a misconfigured
+	// AO_CONNECT_TRUST_TAILSCALE_IDENTITY=1 with a non-loopback
+	// AO_CONNECT_BIND_HOST refuses to start the daemon outright, rather than
+	// silently deferring the check to whenever someone next enables the bridge.
+	// LANManager.Start enforces the same invariant again as a second,
+	// defense-in-depth layer for that path.
+	connectCfg := loadConnectConfig()
+	if connectCfg.TrustTailscaleIdentity && connectCfg.BindHost != "127.0.0.1" && connectCfg.BindHost != "::1" {
+		return fmt.Errorf(
+			"refusing to start: AO_CONNECT_TRUST_TAILSCALE_IDENTITY=1 requires AO_CONNECT_BIND_HOST=127.0.0.1 (or ::1); got %q",
+			connectCfg.BindHost,
+		)
+	}
 
 	log := newLogger()
 	var browserRuntimeToken string
@@ -578,6 +597,40 @@ func Run() error {
 	}
 	// HostID is assigned below, once the identity file has been read.
 	mc := &controllers.MobileController{Bridge: bs}
+
+	// Web session auth (see docs/adr/0005-web-ui-on-the-lan-listener.md): the login route and
+	// authMiddleware must validate against the SAME authState/lockout/session
+	// store instance, so they are constructed here — before the router — and
+	// threaded into both NewWithDeps (for the shared-router login route) and
+	// NewMobileLAN below (for the LAN listener's authMiddleware). connectCfg was
+	// already loaded and validated (the loopback-bind invariant) at the top of
+	// Run.
+	webAuthState := httpd.NewAuthState()
+	webLoginLockout := httpd.NewLoginLockout()
+	// sessions.json lives at ~/.ao/web (a sibling of cfg.DataDir's ~/.ao/data),
+	// matching the CLAUDE.md rule that all app state
+	// stays under the ~/.ao root selected by AO_DATA_DIR.
+	webSessionStore, err := websession.NewStore(
+		filepath.Join(filepath.Dir(cfg.DataDir), "web"),
+		30*24*time.Hour, 90*24*time.Hour,
+	)
+	if err != nil {
+		log.Warn("web session store unavailable; cookie login disabled", "err", err)
+	}
+	bs.RevokeAllSessions = func() {
+		if webSessionStore != nil {
+			webSessionStore.RevokeAll()
+		}
+	}
+	var identityConfig *httpd.IdentityAuthConfig
+	if connectCfg.TrustTailscaleIdentity {
+		identityConfig = &httpd.IdentityAuthConfig{
+			Enabled:       true,
+			AllowedLogins: connectCfg.AllowedLogins,
+		}
+	}
+	trustXFF := connectCfg.BindHost == "127.0.0.1" || connectCfg.BindHost == "::1"
+	webSession := httpd.NewWebSessionHandlers(webAuthState, webLoginLockout, trustXFF, webSessionStore)
 	browserService := browsersvc.New(sessionSvc, browserBroker, browserAuthority)
 
 	// Standalone shell terminals: user-opened shells with no agent session
@@ -812,7 +865,7 @@ func Run() error {
 		PreviewServer:       managedPreview,
 		SessionCapabilities: browserAuthority,
 		AgentSwitchPolicy:   policyCoordinator,
-	})
+	}, httpd.ControlDeps{WebSession: webSession})
 	if err != nil {
 		stop()
 		lcStack.Stop()
@@ -840,8 +893,21 @@ func Run() error {
 	var usageDone <-chan struct{}
 
 	// Late-bind: the LAN listener shares the exact loopback router instance so
-	// the LAN surface and loopback surface never drift apart.
-	lan := httpd.NewMobileLAN(srv.Handler(), mobilebridge.DefaultPort, log, telemetrySink)
+	// the LAN surface and loopback surface never drift apart. BindHost/StrictPort
+	// and identity trust come from connectCfg (AO_CONNECT_* — see
+	// loadConnectConfig); AuthState/Lockout are the same instances webSession
+	// (mounted on the shared router above) already validates against, so a
+	// brute-force attempt against POST /api/v1/web/session trips the identical
+	// per-source lockout whether it's observed via the loopback or LAN path.
+	lan := httpd.NewMobileLAN(srv.Handler(), httpd.LANManagerConfig{
+		DefaultPort:    mobilebridge.DefaultPort,
+		BindHost:       connectCfg.BindHost,
+		StrictPort:     connectCfg.StrictPort,
+		SessionStore:   webSessionStore,
+		IdentityConfig: identityConfig,
+		AuthState:      webAuthState,
+		Lockout:        webLoginLockout,
+	}, log, telemetrySink)
 	bs.LAN = lan
 
 	// Restore Connect Mobile across a daemon restart: if the bridge was left

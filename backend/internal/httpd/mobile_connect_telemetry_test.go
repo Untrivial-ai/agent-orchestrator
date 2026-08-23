@@ -172,7 +172,7 @@ func TestLANListenerReportsOnlyAuthenticatedRequests(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	st := &authState{}
 	st.setHash(mobilebridge.HashPassword("secret12"))
-	m := NewLANManager(inner, st, 0, slog.Default(), sink)
+	m := NewLANManager(inner, st, LANManagerConfig{DefaultPort: 0}, slog.Default(), sink)
 	port, err := m.Start(0)
 	if err != nil {
 		t.Fatalf("start: %v", err)

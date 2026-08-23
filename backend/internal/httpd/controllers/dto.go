@@ -2642,3 +2642,17 @@ type MuteDeviceRequest struct {
 type InstallIDParam struct {
 	InstallID string `path:"installId" description:"The device's stable install id."`
 }
+
+// WebSessionLoginRequest is the body of POST /api/v1/web/session.
+type WebSessionLoginRequest struct {
+	Password string `json:"password" minLength:"1" description:"Connection password for the daemon."`
+}
+
+// WebSessionResponse is the body of GET /api/v1/web/session.
+type WebSessionResponse struct {
+	Authenticated bool `json:"authenticated" description:"Whether the current request is authenticated (has a valid session cookie)."`
+}
+
+// WebSessionLogoutRequest is the body of DELETE /api/v1/web/session.
+// Currently empty; present for symmetry and future extension.
+type WebSessionLogoutRequest struct{}

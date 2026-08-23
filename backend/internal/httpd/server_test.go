@@ -144,7 +144,7 @@ func TestServerLifecycle(t *testing.T) {
 		RunFilePath:     runPath,
 	}
 
-	srv, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{})
+	srv, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{}, ControlDeps{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestServerRunWithReadyPublishesBeforeCallback(t *testing.T) {
 		ShutdownTimeout: 5 * time.Second,
 		RunFilePath:     runPath,
 	}
-	srv, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{})
+	srv, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{}, ControlDeps{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestServerShutdownEndpoint(t *testing.T) {
 		RunFilePath:     runPath,
 	}
 
-	srv, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{})
+	srv, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{}, ControlDeps{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -291,7 +291,7 @@ func waitForHealth(t *testing.T, base string) {
 func TestNewFallsBackOnPortConflict(t *testing.T) {
 	cfg := config.Config{Host: "127.0.0.1", Port: 0, RunFilePath: filepath.Join(t.TempDir(), "r.json")}
 
-	first, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{})
+	first, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{}, ControlDeps{})
 	if err != nil {
 		t.Fatalf("first New: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestNewFallsBackOnPortConflict(t *testing.T) {
 	// Request the exact port the first server took; the second server should
 	// fall back to a different, ephemeral port rather than error out.
 	conflict := config.Config{Host: "127.0.0.1", Port: first.boundPort(), RunFilePath: cfg.RunFilePath}
-	second, err := NewWithDeps(conflict, discardLogger(), nil, APIDeps{})
+	second, err := NewWithDeps(conflict, discardLogger(), nil, APIDeps{}, ControlDeps{})
 	if err != nil {
 		t.Fatalf("New on an already-bound port = %v, want ephemeral fallback", err)
 	}

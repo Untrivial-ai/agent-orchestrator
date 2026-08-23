@@ -34,6 +34,16 @@ type Server struct {
 // caller owns the returned Server's lifecycle via Run. termMgr may be nil, in
 // which case the /mux terminal surface is not mounted.
 //
+// control carries additional router wiring (e.g. WebSession, for the web login
+// route) that the caller wants mounted on the SAME router instance the LAN
+// listener will later reuse via Handler() — this is what makes the static SPA
+// handler and the session routes reachable on both the loopback listener
+// (unauthenticated, per today's trust model) and the LAN listener (behind
+// authMiddleware). control.RequestShutdown is always overwritten with this
+// Server's own shutdown hook, regardless of what the caller passes, since that
+// wiring is intrinsic to the Server being constructed here — a caller-supplied
+// value would either be ignored or (worse) shut down the wrong server.
+//
 // If the configured port is already held, it falls back to an OS-assigned
 // ephemeral port rather than failing. A genuine peer AO daemon is ruled out
 // upstream (the running.json + /healthz check in daemon.Run), so a conflict here
@@ -41,7 +51,7 @@ type Server struct {
 // supervisor stuck on "daemon not ready". The actual bound port is logged
 // ("daemon listening") and written to running.json, both of which the supervisor
 // reads, so the fallback propagates to the renderer with no UI changes.
-func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager, deps APIDeps) (*Server, error) {
+func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager, deps APIDeps, control ControlDeps) (*Server, error) {
 	log = loggerOrDefault(log)
 	ln, err := net.Listen("tcp", cfg.Addr())
 	if err != nil {
@@ -64,11 +74,15 @@ func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager,
 		listen:            ln,
 		shutdownRequested: make(chan struct{}),
 	}
+	control.RequestShutdown = srv.requestShutdown
+	// The agent-switch policy control travels on APIDeps, not ControlDeps, so
+	// callers that build a ControlDeps for the web-session wiring alone still
+	// get the telemetry policy routes mounted. An explicit value wins.
+	if control.AgentSwitchPolicy == nil {
+		control.AgentSwitchPolicy = deps.AgentSwitchPolicy
+	}
 	srv.http = &http.Server{
-		Handler: NewRouterWithControl(cfg, log, termMgr, deps, ControlDeps{
-			RequestShutdown:   srv.requestShutdown,
-			AgentSwitchPolicy: deps.AgentSwitchPolicy,
-		}),
+		Handler: NewRouterWithControl(cfg, log, termMgr, deps, control),
 		// ReadHeaderTimeout guards against slow-loris even on loopback;
 		// per-request body/handler timeouts are applied per-surface.
 		ReadHeaderTimeout: 10 * time.Second,

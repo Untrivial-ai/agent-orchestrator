@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -33,10 +34,26 @@ func mountTerminalMux(r chi.Router, mgr *terminal.Manager, log *slog.Logger) {
 // all stream logic lives in internal/terminal.
 func terminalMuxHandler(mgr *terminal.Manager, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// InsecureSkipVerify disables coder/websocket's same-origin check: the
-		// daemon binds loopback only and the desktop renderer's origin differs
-		// from the loopback host, mirroring the legacy Node mux server.
-		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		// Same-origin check for ambient credentials (cookie, identity).
+		// Bearer auth and the loopback-only desktop renderer both use InsecureSkipVerify.
+		insecure := true
+		authKind := AuthKind(r)
+		if authKind == authKindWebSession || authKind == authKindTailscaleIdentity {
+			// These are ambient credentials with no SameSite protection.
+			// Enforce same-origin to prevent cross-site WebSocket attacks.
+			insecure = false
+		}
+
+		opts := &websocket.AcceptOptions{InsecureSkipVerify: insecure}
+
+		// Subprotocol handling: if the client sent ao.bearer.<token>, echo it
+		// back as the selected subprotocol. This is the escape hatch if
+		// cookies don't survive the proxy.
+		if raw := r.Header.Get("Sec-WebSocket-Protocol"); bearerFromSubprotocol(raw) != "" {
+			opts.Subprotocols = []string{raw}
+		}
+
+		c, err := websocket.Accept(w, r, opts)
 		if err != nil {
 			log.Warn("terminal mux: websocket upgrade failed", "err", err)
 			return
@@ -44,6 +61,15 @@ func terminalMuxHandler(mgr *terminal.Manager, log *slog.Logger) http.HandlerFun
 		c.SetReadLimit(terminalMuxReadLimit)
 		mgr.Serve(r.Context(), &terminalMuxConn{c: c})
 	}
+}
+
+// bearerFromSubprotocol extracts the bearer token from a Sec-WebSocket-Protocol
+// header value. The format is "ao.bearer.<token>". Returns empty if not present.
+func bearerFromSubprotocol(proto string) string {
+	if strings.HasPrefix(proto, "ao.bearer.") {
+		return strings.TrimPrefix(proto, "ao.bearer.")
+	}
+	return ""
 }
 
 // terminalMuxConn adapts a coder/websocket connection to terminal.wsConn. JSON framing

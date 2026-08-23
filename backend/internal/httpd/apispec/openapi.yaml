@@ -7388,6 +7388,65 @@ paths:
       summary: Get detailed token and estimated cost usage for one session
       tags:
       - usage
+  /api/v1/web/session:
+    delete:
+      operationId: deleteWebSession
+      responses:
+        "204":
+          description: No Content
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unauthorized
+      summary: Log out, revoking the current session
+      tags:
+      - web-session
+    get:
+      operationId: getWebSession
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersWebSessionResponse'
+          description: OK
+      summary: Report whether the current request is authenticated
+      tags:
+      - web-session
+    post:
+      operationId: createWebSession
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersWebSessionLoginRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unauthorized
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+      summary: Log in with the connection password and receive a session cookie
+      tags:
+      - web-session
 components:
   schemas:
     APIError:
@@ -8854,6 +8913,24 @@ components:
           - boolean
       required:
       - enabled
+      type: object
+    ControllersWebSessionLoginRequest:
+      properties:
+        password:
+          description: Connection password for the daemon.
+          minLength: 1
+          type: string
+      required:
+      - password
+      type: object
+    ControllersWebSessionResponse:
+      properties:
+        authenticated:
+          description: Whether the current request is authenticated (has a valid session
+            cookie).
+          type: boolean
+      required:
+      - authenticated
       type: object
     ConversationAccountPayload:
       properties:

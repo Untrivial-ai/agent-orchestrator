@@ -91,6 +91,65 @@ func TestMobileEnableRollsBackListenerWhenSaveFails(t *testing.T) {
 	}
 }
 
+// TestRegenerateInvokesRevokeAllSessions closes a gap found while verifying
+// ADR-0005 R6 ("Password regeneration ... revokes all sessions"): the existing
+// httpd-level tests (web_session_test.go's
+// TestSessionRevocationOnPasswordRegeneration) only prove that
+// websession.Store.RevokeAll() invalidates a cookie — they call RevokeAll()
+// directly and would pass identically even if BridgeService never wired it up.
+// This test proves the actual causal link the requirement depends on: calling
+// the real Regenerate() (and Enable(), which shares the same
+// enableWithPassword path) must invoke RevokeAllSessions, matching the wiring
+// daemon.go installs (bs.RevokeAllSessions = func(){ webSessionStore.RevokeAll() }).
+func TestRegenerateInvokesRevokeAllSessions(t *testing.T) {
+	lan := &fakeLAN{}
+	revoked := 0
+	b := &BridgeService{
+		LAN:               lan,
+		ConfigPath:        filepath.Join(t.TempDir(), "mobile", "config.json"),
+		DefaultPort:       3011,
+		RevokeAllSessions: func() { revoked++ },
+	}
+
+	if _, err := b.Enable(); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if revoked != 1 {
+		t.Fatalf("Enable should call RevokeAllSessions exactly once, got %d calls", revoked)
+	}
+
+	if _, err := b.Regenerate(); err != nil {
+		t.Fatalf("Regenerate: %v", err)
+	}
+	if revoked != 2 {
+		t.Fatalf("Regenerate must call RevokeAllSessions to invalidate pre-existing web session cookies (ADR-0005 R6), got %d total calls", revoked)
+	}
+}
+
+// TestDisableInvokesRevokeAllSessions is the other half of the ADR-0005 R6 wiring
+// claim ("... or disabling the bridge revokes all sessions").
+func TestDisableInvokesRevokeAllSessions(t *testing.T) {
+	lan := &fakeLAN{}
+	revoked := 0
+	b := &BridgeService{
+		LAN:               lan,
+		ConfigPath:        filepath.Join(t.TempDir(), "mobile", "config.json"),
+		DefaultPort:       3011,
+		RevokeAllSessions: func() { revoked++ },
+	}
+	if _, err := b.Enable(); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	revoked = 0
+
+	if err := b.Disable(); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if revoked != 1 {
+		t.Fatalf("Disable must call RevokeAllSessions, got %d calls", revoked)
+	}
+}
+
 func TestMobileEnableReturnsPassword(t *testing.T) {
 	c := &MobileController{Bridge: &fakeBridge{}}
 	w := httptest.NewRecorder()

@@ -160,6 +160,14 @@ type BridgeService struct {
 	// until AO was restarted. Nil in tests that set Tunnel directly.
 	ResolveTunnel func() TunnelController
 
+	// RevokeAllSessions, when set, is called whenever the connection password
+	// changes (Enable/Regenerate) or the bridge is disabled — every existing web
+	// session cookie is invalidated (websession/session.go's Store.RevokeAll),
+	// Password regeneration or disabling the bridge revokes all sessions.
+	// Nil when the web login route isn't wired
+	// (identity-only deployments, or tests that don't exercise it).
+	RevokeAllSessions func()
+
 	// transitionMu serializes every operation that changes persisted bridge
 	// state, listener state, or connector state. Status deliberately does not
 	// take it, so a slow listener or connector operation cannot freeze polling.
@@ -438,6 +446,11 @@ func (b *BridgeService) enableWithPasswordLocked(pw string) (MobileStatusRespons
 	// this same post-Start apply. A failure is recorded, never fatal: the
 	// bridge stays up in plaintext mode and Status reports serve_failed.
 	b.startConnectorsLocked(port, prevSt.SecurePairing)
+	// A new password invalidates every browser session minted against the old
+	// one; both fresh enables and rotations funnel through here.
+	if b.RevokeAllSessions != nil {
+		b.RevokeAllSessions()
+	}
 	return b.Status(), nil
 }
 
@@ -569,7 +582,14 @@ func (b *BridgeService) Disable() error {
 		_ = b.clearServe()
 	}
 	st.Enabled = false
-	return errors.Join(stopErr, mobilebridge.Save(b.ConfigPath, st))
+	saveErr := mobilebridge.Save(b.ConfigPath, st)
+	// Disabling the bridge revokes every web session. Done
+	// even when persisting failed: the listener is down, so no cookie minted
+	// against it may outlive it.
+	if b.RevokeAllSessions != nil {
+		b.RevokeAllSessions()
+	}
+	return errors.Join(stopErr, saveErr)
 }
 
 // ShutdownTunnel stops the managed connector on the way out.

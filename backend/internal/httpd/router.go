@@ -19,6 +19,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/webui"
 	agentswitchobs "github.com/aoagents/agent-orchestrator/backend/internal/observe/agentswitch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
@@ -30,6 +31,14 @@ import (
 type ControlDeps struct {
 	RequestShutdown   func()
 	AgentSwitchPolicy AgentSwitchPolicyControl
+
+	// WebSession, when non-nil, wires POST/GET/DELETE /api/v1/web/session onto
+	// the shared router. Constructed by the daemon so it can share the exact
+	// authState/lockout instance the LAN listener's authMiddleware uses (a
+	// brute-force attempt against the login route must trip the same per-source
+	// lockout as any other failed credential). Nil in tests that don't exercise
+	// the web login path.
+	WebSession *webSessionHandlers
 }
 
 // AgentSwitchPolicyControl coordinates the daemon side of desktop telemetry
@@ -72,7 +81,10 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 
 	// JSON envelopes for unmatched routes / methods — chi's defaults are
 	// text/plain, which would break consumers that parse every response as
-	// the locked APIError shape.
+	// the locked APIError shape. mountWebUI, if wired, replaces NotFound with a
+	// handler that falls back to the embedded SPA for non-API paths and to
+	// notFoundJSON for API-shaped or explicitly-blocked ones, so this default
+	// stays the behavior for every route the SPA handler declines.
 	r.NotFound(notFoundJSON)
 	r.MethodNotAllowed(methodNotAllowedJSON)
 
@@ -80,10 +92,12 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	mountTerminalMux(r, termMgr, log)
 	mountControl(r, control)
 	mountAgentSwitchPolicyControl(r, control.AgentSwitchPolicy)
+	mountWebSession(r, control.WebSession)
 	mountTelemetry(r, cfg, deps.Telemetry)
 	mountMobile(r, deps.Mobile)
 	mountMobileDevices(r, &controllers.MobileDevicesController{Registry: deps.DeviceRoster, Presence: deps.DeviceLive})
 	api.Register(r)
+	mountWebUI(r)
 
 	return r
 }
@@ -144,6 +158,19 @@ func mountAgentSwitchPolicyControl(r chi.Router, policy AgentSwitchPolicyControl
 		}
 		writeAck(w, acknowledgement)
 	})
+}
+
+// mountWebSession registers the web session login/logout/status routes on the
+// shared router (not under a LAN-blocked prefix), so
+// they are reachable identically on the loopback and LAN listeners. A nil h
+// (no web login configured) mounts nothing; the routes then simply 404.
+func mountWebSession(r chi.Router, h *webSessionHandlers) {
+	if h == nil {
+		return
+	}
+	r.Post("/api/v1/web/session", h.Login)
+	r.Get("/api/v1/web/session", h.Status)
+	r.Delete("/api/v1/web/session", h.Logout)
 }
 
 func previewOriginMiddleware(sessions *controllers.SessionsController) func(http.Handler) http.Handler {
@@ -362,6 +389,32 @@ func mountTelemetry(r chi.Router, cfg config.Config, sink ports.EventSink) {
 			},
 		})
 		w.WriteHeader(http.StatusAccepted)
+	})
+}
+
+// mountWebUI serves the self-contained /login page and, for every other
+// unmatched GET, the embedded SPA with history fallback. It replaces chi's
+// NotFound so API-shaped 404s still get the JSON envelope contract, while
+// genuine SPA routes (e.g. a client-side path with no server route) get
+// index.html. Static assets and API routes registered above always win: chi
+// only falls through to NotFound for paths nothing else matched.
+func mountWebUI(r chi.Router) {
+	r.Get("/login", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(webui.LoginPage()))
+	})
+
+	spa := webui.Handler()
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet && req.Method != http.MethodHead {
+			notFoundJSON(w, req)
+			return
+		}
+		if webui.IsAPIShapedPath(req.URL.Path) {
+			notFoundJSON(w, req)
+			return
+		}
+		spa.ServeHTTP(w, req)
 	})
 }
 
