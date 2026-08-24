@@ -38,13 +38,11 @@ export function PRSummaryMeta({
 	className?: string;
 	countNounLabel?: CountNounLabel;
 	externalLink: ExternalLinkComponent;
-	leading?: string;
+	leading?: ReactNode;
 	pr: PRSummaryMetadata;
 }) {
 	const branchRange = prBranchRange(pr);
-	const hasDiff = hasDiffMetadata(pr);
 	const authorHandle = pr.author?.replace(/^@/, "") ?? "";
-	const primary: ReactNode[] = [leading, branchRange].filter(Boolean);
 	let author: ReactNode = null;
 	if (authorHandle) {
 		author =
@@ -64,34 +62,35 @@ export function PRSummaryMeta({
 				<span>{authorHandle}</span>
 			);
 	}
-	if (primary.length === 0 && !hasDiff && !author) {
+	const metadata: ReactNode[] = [];
+	if (leading) metadata.push(leading);
+	if (branchRange) metadata.push(branchRange);
+	if (author) metadata.push(author);
+	metadata.push(...prDiffMetaParts(countNounLabel, pr));
+	if (metadata.length === 0) {
 		return null;
 	}
 	return (
-		<div className={cn("min-w-0 font-mono text-2xs leading-4", className)}>
-			{primary.length > 0 ? (
-				<div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-muted-foreground">
-					{primary.map((part, index) => (
-						<Fragment key={index}>
-							{index > 0 ? <span className="shrink-0 text-passive">·</span> : null}
-							<span className="min-w-0 break-words [overflow-wrap:anywhere]">{part}</span>
-						</Fragment>
-					))}
-				</div>
-			) : null}
-			{author ? <div className="mt-0.5 min-w-0 break-words [overflow-wrap:anywhere] text-muted-foreground">{author}</div> : null}
-			{hasDiff ? <PRDiffMeta countNounLabel={countNounLabel} pr={pr} /> : null}
+		<div
+			className={cn(
+				"flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-2xs leading-4 text-muted-foreground",
+				className,
+			)}
+		>
+			{metadata.map((part, index) => (
+				<Fragment key={index}>
+					{index > 0 ? <span className="shrink-0 text-passive">·</span> : null}
+					<span className="min-w-0 break-words [overflow-wrap:anywhere]">{part}</span>
+				</Fragment>
+			))}
 		</div>
 	);
 }
 
-function PRDiffMeta({
-	countNounLabel,
-	pr,
-}: {
-	countNounLabel: CountNounLabel;
-	pr: PRSummaryMetadata;
-}) {
+function prDiffMetaParts(
+	countNounLabel: CountNounLabel,
+	pr: PRSummaryMetadata,
+): ReactNode[] {
 	const parts: ReactNode[] = [];
 	if (pr.changedFiles > 0) {
 		parts.push(
@@ -114,16 +113,7 @@ function PRDiffMeta({
 			</span>,
 		);
 	}
-	return (
-		<div className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-muted-foreground">
-			{parts.map((part, index) => (
-				<Fragment key={index}>
-					{index > 0 ? <span className="text-passive">·</span> : null}
-					{part}
-				</Fragment>
-			))}
-		</div>
-	);
+	return parts;
 }
 
 export function PRCardStatusSummary({

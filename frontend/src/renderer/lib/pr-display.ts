@@ -213,27 +213,6 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 			supporting.push(cardStatus("ci", "pr.card.checksLoading", "passive", undefined, [], prChecksUrl(pr), true));
 		}
 	}
-	if (pr.state === "open") {
-		const statusRows: PRCardStatus[] = [];
-		if (pr.mergeability.state === "conflicting") {
-			statusRows.push(cardStatus("merge", "pr.card.mergeConflict", "error", "Resolve before merging", mergeLinks(pr)));
-		}
-		if (pr.ci.state === "passing") {
-			statusRows.push(cardStatus("ci", "pr.card.checksPassing", "success", undefined, [], prChecksUrl(pr)));
-		} else if (pr.ci.state === "failing") {
-			statusRows.push(cardStatus("ci", "pr.card.checksFailing", "error", undefined, [], prChecksUrl(pr)));
-		} else if (pr.ci.state === "pending" || pr.ci.state === "unknown") {
-			statusRows.push(cardStatus("ci", pr.ci.state === "pending" ? "pr.card.checksPending" : "pr.card.checksLoading", "neutral", undefined, [], prChecksUrl(pr), true));
-		}
-		statusRows.push(cardStatus("review", "pr.card.reviewStatus", reviewTone(pr.review.decision, pr.review.hasUnresolvedHumanComments), reviewStatusDetail(pr)));
-		const mergeable = prCanMerge(pr);
-		const checkingReadiness = pr.ci.state === "pending" || pr.ci.state === "unknown" || pr.mergeability.state === "unknown";
-		return { primary, supporting, statusRows, readiness: {
-			label: appI18n.t(checkingReadiness ? "pr.merge.checkingReadiness" : mergeable ? "pr.merge.mergeable" : "pr.merge.notMergeableYet"),
-			detail: checkingReadiness ? appI18n.t("pr.merge.checkingDetail") : mergeReadinessDetail(pr),
-			tone: checkingReadiness ? "neutral" : mergeable ? "success" : "error",
-		} };
-	}
 	return { primary, supporting };
 }
 
@@ -263,42 +242,6 @@ function cardStatus(
 	breathe = false,
 ): PRCardStatus {
 	return { key, label: appI18n.t(labelKey), detail, href, breathe, links, tone };
-}
-
-export function prCanMerge(pr: SessionPRSummary): boolean {
-	return (
-		pr.state === "open" &&
-		pr.ci.state === "passing" &&
-		pr.mergeability.state === "mergeable" &&
-		reviewAllowsMerge(pr.review.decision) &&
-		!pr.review.hasUnresolvedHumanComments
-	);
-}
-
-function reviewAllowsMerge(decision: SessionPRSummary["review"]["decision"]): boolean {
-	return decision === "approved" || decision === "none";
-}
-
-function reviewStatusDetail(pr: SessionPRSummary): string {
-	switch (pr.review.decision) {
-		case "approved": return appI18n.t("pr.review.requirementSatisfied");
-		case "changes_requested": return appI18n.t("pr.review.changesActive");
-		case "review_required": return appI18n.t("pr.review.requiredNotSubmitted");
-		case "none": return appI18n.t("pr.review.notRequired");
-	}
-}
-
-function mergeReadinessDetail(pr: SessionPRSummary): string {
-	if (pr.mergeability.state === "conflicting") return appI18n.t("pr.merge.reasonConflict");
-	if (pr.ci.state === "failing") return appI18n.t("pr.merge.reasonChecksFailing");
-	if (!reviewAllowsMerge(pr.review.decision)) return appI18n.t("pr.merge.reasonReview");
-	if (pr.review.hasUnresolvedHumanComments) return appI18n.t("pr.merge.reasonComments");
-	if (pr.mergeability.state !== "mergeable") return providerBlockedDetail(pr);
-	return appI18n.t("pr.merge.reasonReady");
-}
-
-function providerBlockedDetail(pr: SessionPRSummary): string {
-	return appI18n.t("pr.merge.providerBlocked", { provider: pr.provider === "gitlab" ? "GitLab" : "GitHub" });
 }
 
 export function prSummaryParts(pr: SessionPRSummary): PRSummaryPart[] {
@@ -414,7 +357,7 @@ function mergeSummary(pr: SessionPRSummary): string | undefined {
 		return mergeLinks(pr).length === 0 ? appI18n.t("pr.merge.conflictsWithBase") : undefined;
 	}
 	if (pr.mergeability.state === "blocked" || pr.mergeability.state === "unstable") {
-		return mergeLinks(pr).length === 0 ? providerBlockedDetail(pr) : undefined;
+		return mergeLinks(pr).length === 0 ? appI18n.t("pr.merge.providerBlocked") : undefined;
 	}
 	return formatDiffSummary(pr);
 }

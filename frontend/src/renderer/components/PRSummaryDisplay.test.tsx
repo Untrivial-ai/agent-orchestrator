@@ -66,8 +66,8 @@ describe("PRSummaryParts", () => {
 			/>,
 		);
 
-		expect(screen.getByText("Review status")).toBeInTheDocument();
-		expect(screen.getByText("Required review not submitted")).toBeInTheDocument();
+		expect(screen.getByText("Review required")).toBeInTheDocument();
+		expect(screen.getByText("Merge blocked until a required review is submitted.")).toBeInTheDocument();
 		expect(screen.getByRole("link", { name: "Checks running" })).toHaveAttribute(
 			"href",
 			"https://github.com/acme/repo/pull/7/checks",
@@ -75,12 +75,12 @@ describe("PRSummaryParts", () => {
 		expect(container.querySelector(".animate-status-pulse")).toBeInTheDocument();
 	});
 
-	it("optically centers the primary status marker with its text line", () => {
+	it("aligns the primary status marker with the first status line", () => {
 		const { container } = render(<PRCardStatusSummary pr={summary()} />);
 
 		const marker = container.querySelector(".size-dot-sm");
 		expect(marker).toHaveClass("size-dot-sm");
-		expect(marker).not.toHaveClass("mt-1");
+		expect(marker).toHaveClass("mt-1");
 	});
 
 	it("centers a supplied primary action beside the compact status stack", () => {
@@ -90,8 +90,8 @@ describe("PRSummaryParts", () => {
 		const supportingStatus = screen.getByRole("link", { name: "Checks passing" });
 		expect(action.parentElement).toHaveClass("shrink-0", "self-center");
 		expect(action.parentElement?.parentElement).toHaveClass("items-center");
-		expect(container.querySelector(".grid")).toContainElement(supportingStatus);
-		expect(screen.getByText("Mergeable")).toBeInTheDocument();
+		expect(container).toContainElement(supportingStatus);
+		expect(screen.getByText("Ready to merge")).toBeInTheDocument();
 	});
 
 	it("renders failing check links with visible error contrast", () => {
@@ -110,7 +110,7 @@ describe("PRSummaryParts", () => {
 		);
 
 		expect(screen.getByText("Checks failing")).toBeInTheDocument();
-		expect(screen.queryByRole("link", { name: "renderer-smoke" })).not.toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "renderer-smoke" })).toHaveClass("text-error");
 	});
 
 	it("localizes changed-file plurals instead of rebuilding English nouns", async () => {
