@@ -51,15 +51,15 @@ describe("PRSummaryParts", () => {
 		);
 	});
 
-	it("keeps running checks visible and pulsing beneath a higher-priority review blocker", () => {
+	it("keeps pending merge status compact beside a higher-priority review blocker", () => {
 		const { container } = render(
 			<PRCardStatusSummary
 				pr={summary({
-					ci: { autoInjectCI: true, state: "pending", failingChecks: [] },
+					ci: { autoInjectCI: true, state: "unknown", failingChecks: [] },
 					review: { decision: "review_required", hasUnresolvedHumanComments: false, unresolvedBy: [] },
 					mergeability: {
-						state: "blocked",
-						reasons: ["review_required"],
+						state: "unknown",
+						reasons: [],
 						prUrl: "https://github.com/acme/repo/pull/7",
 					},
 				})}
@@ -68,11 +68,19 @@ describe("PRSummaryParts", () => {
 
 		expect(screen.getByText("Review required")).toBeInTheDocument();
 		expect(screen.getByText("Merge blocked until a required review is submitted.")).toBeInTheDocument();
-		expect(screen.getByRole("link", { name: "Checks running" })).toHaveAttribute(
+		const pendingStatus = screen.getByRole("link", { name: "Merge pending" });
+		expect(pendingStatus).toHaveAttribute(
 			"href",
-			"https://github.com/acme/repo/pull/7/checks",
+			"https://github.com/acme/repo/pull/7",
 		);
-		expect(container.querySelector(".animate-status-pulse")).toBeInTheDocument();
+		const statusLayout = pendingStatus.closest('[data-slot="pr-status-layout"]');
+		expect(statusLayout).toContainElement(screen.getByText("Review required"));
+		expect(statusLayout).toContainElement(screen.getByRole("link", { name: "Checks pending" }));
+		expect(pendingStatus.closest('[data-slot="pr-secondary-statuses"]')).not.toContainElement(
+			screen.getByText("Review required"),
+		);
+		expect(container.querySelector("svg.animate-spin")).not.toBeInTheDocument();
+		expect(container.querySelector(".animate-status-pulse")).not.toBeInTheDocument();
 	});
 
 	it("aligns the primary status marker with the first status line", () => {
@@ -91,7 +99,8 @@ describe("PRSummaryParts", () => {
 		expect(action.parentElement).toHaveClass("shrink-0", "self-center");
 		expect(action.parentElement?.parentElement).toHaveClass("items-center");
 		expect(container).toContainElement(supportingStatus);
-		expect(screen.getByText("Ready to merge")).toBeInTheDocument();
+		expect(screen.getByText("Review approved")).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "Ready to merge" })).toBeInTheDocument();
 	});
 
 	it("renders failing check links with visible error contrast", () => {
