@@ -36,6 +36,8 @@ export const ReauthBanner = memo(function ReauthBanner({
 }) {
 	if (!account.reauthRequiredAt) return null;
 	const command = signInCommand(harness);
+	const nextStep =
+		harness === "codex" ? "resume the agent and resend your message" : "send your message again";
 
 	return (
 		<div
@@ -59,7 +61,7 @@ export const ReauthBanner = memo(function ReauthBanner({
 							<code className="rounded bg-background px-1 py-0.5 font-mono text-[10.5px] text-foreground">
 								{command}
 							</code>{" "}
-							in a terminal, then send your message again. AO holds no credentials of its own.
+							in a terminal, then {nextStep}. AO holds no credentials of its own.
 						</>
 					) : (
 						<>

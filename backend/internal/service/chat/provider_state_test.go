@@ -11,6 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
@@ -386,6 +387,161 @@ func TestAccountReportsMergeRatherThanReplace(t *testing.T) {
 	if n := countActivities(again, domain.ActivityKindSystem); n != 1 {
 		t.Fatalf("system rows = %d, want the notice to be updated in place", n)
 	}
+}
+
+// The reauthentication banner describes the stale controller, not the lifetime
+// of the conversation. TurnStarted is too early to clear it: only a successful
+// root completion proves the replacement controller authenticated real work.
+func TestSuccessfulTurnAfterResumeClearsReauthState(t *testing.T) {
+	h := newHarness(t)
+	h.conv.emit(ports.ChatEvent{
+		Kind:    ports.ChatEventAccountChanged,
+		Account: &ports.ChatAccount{ReauthRequired: true, ReauthReason: "stale credentials"},
+	})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt != nil
+	})
+
+	h.conv.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnStarted, ProviderConversationID: "thread-1", ProviderTurnID: "pt-after-login",
+	})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		if s.Conversation.Account == nil || s.Conversation.Account.ReauthRequiredAt == nil {
+			return false
+		}
+		for _, turn := range s.Turns {
+			if turn.ProviderTurnID == "pt-after-login" {
+				return turn.State == domain.TurnStateRunning
+			}
+		}
+		return false
+	})
+
+	h.conv.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderConversationID: "thread-1",
+		ProviderTurnID: "pt-after-login", TurnState: domain.TurnStateFailed,
+		Err: errors.New("still unauthorized"),
+	})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		if s.Conversation.Account == nil || s.Conversation.Account.ReauthRequiredAt == nil {
+			return false
+		}
+		for _, turn := range s.Turns {
+			if turn.ProviderTurnID == "pt-after-login" {
+				return turn.State == domain.TurnStateFailed
+			}
+		}
+		return false
+	})
+
+	h.conv.emit(
+		ports.ChatEvent{
+			Kind: ports.ChatEventTurnStarted, ProviderConversationID: "thread-1",
+			ProviderTurnID: "pt-after-login-2",
+		},
+		ports.ChatEvent{
+			Kind: ports.ChatEventTurnCompleted, ProviderConversationID: "thread-1",
+			ProviderTurnID: "pt-after-login-2", TurnState: domain.TurnStateCompleted,
+		},
+	)
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt == nil
+	})
+	if snapshot.Conversation.Account.ReauthReason != "" {
+		t.Fatalf("reauth reason = %q, want cleared", snapshot.Conversation.Account.ReauthReason)
+	}
+	if n := countActivities(snapshot, domain.ActivityKindSystem); n != 1 {
+		t.Fatalf("system rows = %d, want the historical reauth notice retained", n)
+	}
+}
+
+type failFirstReauthClearStore struct {
+	chatsvc.Store
+	mu       sync.Mutex
+	armed    bool
+	failed   bool
+	failedCh chan struct{}
+}
+
+func (s *failFirstReauthClearStore) arm() {
+	s.mu.Lock()
+	s.armed = true
+	s.mu.Unlock()
+}
+
+func (s *failFirstReauthClearStore) RecordAccount(
+	ctx context.Context,
+	conversationID string,
+	account domain.ConversationAccount,
+	now time.Time,
+) error {
+	s.mu.Lock()
+	if s.armed && account.ReauthRequiredAt == nil && !s.failed {
+		s.failed = true
+		close(s.failedCh)
+		s.mu.Unlock()
+		return errors.New("injected reauth clear failure")
+	}
+	s.mu.Unlock()
+	return s.Store.RecordAccount(ctx, conversationID, account, now)
+}
+
+// A transient SQLite failure must not clear only the controller's memory. Keeping
+// both layers on the old state lets the next proven-successful turn retry the
+// durable clear instead of leaving the banner stuck forever.
+func TestSuccessfulTurnRetriesFailedReauthClear(t *testing.T) {
+	var fault *failFirstReauthClearStore
+	h := newHarnessWithConversationAndStore(t, nil, func(st *sqlite.Store) chatsvc.Store {
+		fault = &failFirstReauthClearStore{Store: st, failedCh: make(chan struct{})}
+		return fault
+	})
+	h.conv.emit(ports.ChatEvent{
+		Kind:    ports.ChatEventAccountChanged,
+		Account: &ports.ChatAccount{ReauthRequired: true, ReauthReason: "stale credentials"},
+	})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt != nil
+	})
+	fault.arm()
+
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "proof-1"},
+		ports.ChatEvent{
+			Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "proof-1",
+			TurnState: domain.TurnStateCompleted,
+		},
+	)
+	select {
+	case <-fault.failedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for injected reauth clear failure")
+	}
+	stillRequired, err := h.st.LoadConversationSnapshot(context.Background(), h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatalf("load after failed clear: %v", err)
+	}
+	if stillRequired.Conversation.Account == nil ||
+		stillRequired.Conversation.Account.ReauthRequiredAt == nil {
+		t.Fatal("failed transaction cleared durable reauthentication state")
+	}
+
+	// Replay the terminal provider event, as native history recovery does after a
+	// projection failure. The retained in-memory warning makes this retry the clear.
+	h.conv.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "proof-1",
+		TurnState: domain.TurnStateCompleted,
+	})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		if s.Conversation.Account == nil || s.Conversation.Account.ReauthRequiredAt != nil {
+			return false
+		}
+		for _, turn := range s.Turns {
+			if turn.ProviderTurnID == "proof-1" {
+				return turn.State == domain.TurnStateCompleted
+			}
+		}
+		return false
+	})
 }
 
 /* ---- thread state ----------------------------------------------------- */

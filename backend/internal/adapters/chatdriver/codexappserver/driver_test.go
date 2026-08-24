@@ -617,6 +617,34 @@ func TestNotificationsBecomeNeutralEvents(t *testing.T) {
 	}
 }
 
+// Reauthentication is deliberately a manual recovery boundary. The structured
+// error kind, not the mutable provider prose, stops the stale app-server so Resume
+// agent can launch a process that re-reads Codex's credential file.
+func TestUnauthorizedTurnStopsTheStaleController(t *testing.T) {
+	d, srv := newTestDriver(t)
+	conv, err := d.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: "/tmp/ws"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = conv.Close() }()
+
+	const message = "Provider wording may change without breaking recovery."
+	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"` + message + `","codexErrorInfo":"unauthorized"}}}}`)
+
+	failed := nextEvent(t, conv.Events(), ports.ChatEventTurnCompleted)
+	if failed.TurnState != domain.TurnStateFailed || failed.Err == nil || failed.Err.Error() != message {
+		t.Fatalf("failed turn = %+v", failed)
+	}
+	reauth := nextEvent(t, conv.Events(), ports.ChatEventAccountChanged)
+	if reauth.Account == nil || !reauth.Account.ReauthRequired || reauth.Account.ReauthReason != message {
+		t.Fatalf("reauth event = %+v", reauth)
+	}
+	stopped := nextEvent(t, conv.Events(), ports.ChatEventControllerState)
+	if stopped.ControllerState != ports.ChatControllerStopped {
+		t.Fatalf("controller state = %q, want stopped", stopped.ControllerState)
+	}
+}
+
 // app-server multiplexes child-agent thread notifications over the root
 // connection. The adapter's fallback target must remain the root turn; otherwise
 // an interrupt without an explicit id can stop a child and leave the requested

@@ -1068,6 +1068,13 @@ func TestResumeImportsNativeHistoryBeforeTheChatControllerStarts(t *testing.T) {
 	if err := st.SettleTurn(context.Background(), existing.ID, "native-turn-1", domain.TurnStateCompleted, "", now); err != nil {
 		t.Fatalf("SettleTurn: %v", err)
 	}
+	reauthAt := now.Add(time.Minute)
+	if err := st.RecordAccount(context.Background(), existing.ID, domain.ConversationAccount{
+		ReauthRequiredAt: &reauthAt,
+		ReauthReason:     "the previous controller used stale credentials",
+	}, reauthAt); err != nil {
+		t.Fatalf("RecordAccount: %v", err)
+	}
 
 	base := newFakeConversation()
 	conv := &nativeHistoryConversation{
@@ -1139,6 +1146,14 @@ func TestResumeImportsNativeHistoryBeforeTheChatControllerStarts(t *testing.T) {
 	snapshot, err := st.LoadConversationSnapshot(context.Background(), ctrl.ConversationID())
 	if err != nil {
 		t.Fatalf("LoadConversationSnapshot: %v", err)
+	}
+	// Native history replays the old successful completion above. It restores
+	// timeline facts, but cannot prove that this replacement controller's current
+	// credentials work; only a newly completed live turn may clear this warning.
+	if snapshot.Conversation.Account == nil ||
+		snapshot.Conversation.Account.ReauthRequiredAt == nil ||
+		snapshot.Conversation.Account.ReauthReason != "the previous controller used stale credentials" {
+		t.Fatalf("native history cleared current reauthentication state: %+v", snapshot.Conversation.Account)
 	}
 	// The turn already existed from an earlier Chat interval. Codex can omit its
 	// persisted item ids, so the replay uses synthetic item ids even though the

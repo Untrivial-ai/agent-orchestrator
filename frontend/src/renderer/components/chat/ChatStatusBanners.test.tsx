@@ -21,6 +21,7 @@ describe("ReauthBanner", () => {
 		expect(screen.getByRole("alert")).toBeInTheDocument();
 		expect(screen.getByText("codex login")).toBeInTheDocument();
 		expect(screen.getByText(/The stored session expired/)).toBeInTheDocument();
+		expect(screen.getByText(/resume the agent and resend/i)).toBeInTheDocument();
 	});
 
 	it("says the worktree is untouched, since nothing else about the session works", () => {

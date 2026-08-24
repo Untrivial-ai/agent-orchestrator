@@ -626,7 +626,7 @@ func (c *Controller) readNativeHistory(
 // ProjectProviderEvent deduplicates archive+projection together.
 func (c *Controller) projectNativeHistory(ctx context.Context, events []ports.ChatEvent) error {
 	for _, event := range events {
-		if _, _, err := c.projectEvent(ctx, event); err != nil {
+		if _, _, err := c.projectEvent(ctx, event, false); err != nil {
 			return fmt.Errorf("import native history event %s: %w", event.Kind, err)
 		}
 	}
@@ -2133,7 +2133,7 @@ func (c *Controller) project() {
 		if lifecycle {
 			c.sendMu.Lock()
 		}
-		projected, primaryTurn, err := c.projectEvent(ctx, event)
+		projected, primaryTurn, err := c.projectEvent(ctx, event, true)
 		if err != nil {
 			// A projection failure must not kill the provider stream. The store
 			// rolls the archive back with its projection, so durable state remains
@@ -2184,7 +2184,11 @@ func (c *Controller) project() {
 
 // projectEvent archives one normalized provider event and applies its durable
 // projection in the same SQLite transaction.
-func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (bool, bool, error) {
+func (c *Controller) projectEvent(
+	ctx context.Context,
+	event ports.ChatEvent,
+	live bool,
+) (bool, bool, error) {
 	record := map[string]any{
 		"kind":                   event.Kind,
 		"providerEventId":        event.ProviderEventID,
@@ -2237,7 +2241,7 @@ func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (b
 	}
 	projected, err := c.store.ProjectProviderEvent(ctx, c.conversation.ID, c.sessionID,
 		c.generation, event.ProviderEventID, string(event.Kind), string(payload), c.now(),
-		func(txCtx context.Context) error { return c.apply(txCtx, event) })
+		func(txCtx context.Context) error { return c.apply(txCtx, event, live) })
 	if err != nil || !projected {
 		return projected, false, err
 	}
@@ -2285,7 +2289,7 @@ func (c *Controller) applyCommittedTurnLifecycle(event ports.ChatEvent) bool {
 	}
 }
 
-func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
+func (c *Controller) apply(ctx context.Context, event ports.ChatEvent, live bool) error {
 	now := c.now()
 
 	switch event.Kind {
@@ -2340,6 +2344,18 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		if err := c.store.SettleTurn(
 			ctx, c.conversation.ID, event.ProviderTurnID, state, message, now); err != nil {
 			return err
+		}
+		rootConversation := event.ProviderConversationID == "" ||
+			event.ProviderConversationID == c.conv.ProviderConversationID()
+		if live && rootConversation && state == domain.TurnStateCompleted && event.Err == nil {
+			// TurnStarted only proves that the provider accepted the request envelope.
+			// A successful live root completion proves the replacement controller could
+			// use its credentials for real work, so only then is the warning no longer
+			// current. Replayed historical successes prove nothing about current
+			// credentials, and the historical timeline notice remains.
+			if err := c.clearReauth(ctx, now); err != nil {
+				return err
+			}
 		}
 		return nil
 
@@ -2666,6 +2682,32 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 	}
 }
 
+// clearReauth removes the current warning after a controller completes real work.
+// The historical timeline notice remains: it records that the earlier controller
+// really did fail authentication.
+func (c *Controller) clearReauth(ctx context.Context, now time.Time) error {
+	c.mu.Lock()
+	if c.account.ReauthRequiredAt == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	account := c.account
+	account.ReauthRequiredAt = nil
+	account.ReauthReason = ""
+	c.mu.Unlock()
+
+	// This runs inside ProjectProviderEvent's transaction. Volatile memory is
+	// cleared in afterProject only after that outer transaction commits.
+	return c.store.RecordAccount(ctx, c.conversation.ID, account, now)
+}
+
+func (c *Controller) clearReauthMemory() {
+	c.mu.Lock()
+	c.account.ReauthRequiredAt = nil
+	c.account.ReauthReason = ""
+	c.mu.Unlock()
+}
+
 // afterProject performs effects that intentionally live outside the SQLite
 // archive/projection transaction. Lifecycle writes touch the sessions table and
 // draining may call the provider, so either one inside the store transaction
@@ -2678,6 +2720,13 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 			c.reportActivity(ctx, domain.ActivityActive, "chat.turn.started", now)
 		}
 	case ports.ChatEventTurnCompleted:
+		rootConversation := event.ProviderConversationID == "" ||
+			event.ProviderConversationID == c.conv.ProviderConversationID()
+		if rootConversation && event.TurnState == domain.TurnStateCompleted && event.Err == nil {
+			// apply cleared SQLite in the provider-event transaction. Mirror it in
+			// memory only after that transaction committed.
+			c.clearReauthMemory()
+		}
 		if !primaryTurn {
 			return
 		}

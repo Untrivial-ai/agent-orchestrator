@@ -148,6 +148,7 @@ func (c *conversation) pump() {
 	defer close(c.events)
 
 	for n := range c.conn.notifs() {
+		stopForReauth := false
 		// Before normalizing, because a token-usage report is the only place the
 		// context position is stated and a compaction event that arrives in the same
 		// batch has to be able to read it.
@@ -186,6 +187,20 @@ func (c *conversation) pump() {
 				c.discardPending(ev.RequestID)
 			}
 			c.emit(ev)
+			if ev.Kind == ports.ChatEventAccountChanged && ev.Account != nil &&
+				ev.Account.ReauthRequired {
+				stopForReauth = true
+			}
+		}
+		if stopForReauth {
+			// Signing in rewrites Codex's credential file, but this app-server has
+			// already proved that the credentials it holds in memory are stale. End
+			// only this controller; the existing Resume agent flow can then open a new
+			// process against the same thread after the user signs in. This is
+			// intentionally not an automatic retry: retrying before the user fixes auth
+			// would create a process loop and repeatedly fail queued work.
+			_ = c.Close()
+			break
 		}
 	}
 
