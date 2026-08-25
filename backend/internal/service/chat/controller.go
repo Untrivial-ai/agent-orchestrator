@@ -979,6 +979,22 @@ func (c *Controller) readRateLimits() {
 // ProviderConversationID is the handle to persist for resume.
 func (c *Controller) ProviderConversationID() string { return c.conv.ProviderConversationID() }
 
+// conversationForReplacement snapshots launch state together with mutable
+// account state for an edit/branch controller. The durable conversation record
+// stored on the controller is its launch-time seed; account reports are merged in
+// memory afterward. Copying that stale seed directly can resurrect a cleared
+// reauthentication warning when the replacement receives an ordinary account
+// update.
+func (c *Controller) conversationForReplacement() domain.ConversationRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	conversation := c.conversation
+	account := c.account
+	conversation.Account = &account
+	return conversation
+}
+
 // ConversationID is the durable conversation this controller writes to.
 func (c *Controller) ConversationID() string { return c.conversation.ID }
 
@@ -2133,7 +2149,7 @@ func (c *Controller) project() {
 		if lifecycle {
 			c.sendMu.Lock()
 		}
-		projected, primaryTurn, err := c.projectEvent(ctx, event, true)
+		projected, primaryTurn, err := c.projectEvent(ctx, event)
 		if err != nil {
 			// A projection failure must not kill the provider stream. The store
 			// rolls the archive back with its projection, so durable state remains
@@ -2187,7 +2203,6 @@ func (c *Controller) project() {
 func (c *Controller) projectEvent(
 	ctx context.Context,
 	event ports.ChatEvent,
-	live bool,
 ) (bool, bool, error) {
 	record := map[string]any{
 		"kind":                   event.Kind,
@@ -2241,7 +2256,7 @@ func (c *Controller) projectEvent(
 	}
 	projected, err := c.store.ProjectProviderEvent(ctx, c.conversation.ID, c.sessionID,
 		c.generation, event.ProviderEventID, string(event.Kind), string(payload), c.now(),
-		func(txCtx context.Context) error { return c.apply(txCtx, event, live) })
+		func(txCtx context.Context) error { return c.apply(txCtx, event) })
 	if err != nil || !projected {
 		return projected, false, err
 	}
@@ -2289,7 +2304,7 @@ func (c *Controller) applyCommittedTurnLifecycle(event ports.ChatEvent) bool {
 	}
 }
 
-func (c *Controller) apply(ctx context.Context, event ports.ChatEvent, live bool) error {
+func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 	now := c.now()
 
 	switch event.Kind {
@@ -2344,18 +2359,6 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent, live bool
 		if err := c.store.SettleTurn(
 			ctx, c.conversation.ID, event.ProviderTurnID, state, message, now); err != nil {
 			return err
-		}
-		rootConversation := event.ProviderConversationID == "" ||
-			event.ProviderConversationID == c.conv.ProviderConversationID()
-		if live && rootConversation && state == domain.TurnStateCompleted && event.Err == nil {
-			// TurnStarted only proves that the provider accepted the request envelope.
-			// A successful live root completion proves the replacement controller could
-			// use its credentials for real work, so only then is the warning no longer
-			// current. Replayed historical successes prove nothing about current
-			// credentials, and the historical timeline notice remains.
-			if err := c.clearReauth(ctx, now); err != nil {
-				return err
-			}
 		}
 		return nil
 
@@ -2683,8 +2686,9 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent, live bool
 }
 
 // clearReauth removes the current warning after a controller completes real work.
-// The historical timeline notice remains: it records that the earlier controller
-// really did fail authentication.
+// It deliberately runs after the provider-event transaction commits: banner
+// cleanup is auxiliary state and must never roll back authoritative turn
+// settlement or leave the controller busy after the provider finished.
 func (c *Controller) clearReauth(ctx context.Context, now time.Time) error {
 	c.mu.Lock()
 	if c.account.ReauthRequiredAt == nil {
@@ -2696,16 +2700,18 @@ func (c *Controller) clearReauth(ctx context.Context, now time.Time) error {
 	account.ReauthReason = ""
 	c.mu.Unlock()
 
-	// This runs inside ProjectProviderEvent's transaction. Volatile memory is
-	// cleared in afterProject only after that outer transaction commits.
-	return c.store.RecordAccount(ctx, c.conversation.ID, account, now)
-}
-
-func (c *Controller) clearReauthMemory() {
+	if err := c.store.RecordAccount(ctx, c.conversation.ID, account, now); err != nil {
+		return err
+	}
 	c.mu.Lock()
-	c.account.ReauthRequiredAt = nil
-	c.account.ReauthReason = ""
+	c.account = account
+	// c.conversation is the launch-time seed copied into branch replacement
+	// controllers. Keep it aligned with current account state so an edit or branch
+	// activation cannot resurrect the warning this write just cleared.
+	accountSeed := account
+	c.conversation.Account = &accountSeed
 	c.mu.Unlock()
+	return nil
 }
 
 // afterProject performs effects that intentionally live outside the SQLite
@@ -2723,9 +2729,14 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		rootConversation := event.ProviderConversationID == "" ||
 			event.ProviderConversationID == c.conv.ProviderConversationID()
 		if rootConversation && event.TurnState == domain.TurnStateCompleted && event.Err == nil {
-			// apply cleared SQLite in the provider-event transaction. Mirror it in
-			// memory only after that transaction committed.
-			c.clearReauthMemory()
+			// TurnStarted only proves that the provider accepted the request envelope.
+			// A successful live root completion proves the replacement controller used
+			// valid credentials for real work. Native history never reaches afterProject,
+			// so replayed successes cannot clear current authentication state.
+			if err := c.clearReauth(ctx, now); err != nil {
+				c.log.Error("failed to clear chat reauthentication warning after successful turn",
+					"session", c.sessionID, "error", err)
+			}
 		}
 		if !primaryTurn {
 			return

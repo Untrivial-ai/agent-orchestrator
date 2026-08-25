@@ -21,14 +21,16 @@ describe("ReauthBanner", () => {
 		expect(screen.getByRole("alert")).toBeInTheDocument();
 		expect(screen.getByText("codex login")).toBeInTheDocument();
 		expect(screen.getByText(/The stored session expired/)).toBeInTheDocument();
-		expect(screen.getByText(/resume the agent and resend/i)).toBeInTheDocument();
+		expect(screen.getByText(/resume the agent, then inspect/i)).toBeInTheDocument();
 	});
 
-	it("says the worktree is untouched, since nothing else about the session works", () => {
+	it("warns that the failed turn may have already produced side effects", () => {
 		render(
 			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="codex" />,
 		);
-		expect(screen.getByText(/worktree is untouched/i)).toBeInTheDocument();
+		expect(screen.getByText(/may have already changed files or run commands/i)).toBeInTheDocument();
+		expect(screen.getByText(/before deciding whether to resend/i)).toBeInTheDocument();
+		expect(screen.queryByText(/worktree is untouched/i)).not.toBeInTheDocument();
 	});
 
 	it("names Claude Code's non-interactive authentication command", () => {

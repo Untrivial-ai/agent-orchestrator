@@ -354,7 +354,7 @@ func (s *Service) EditMessage(
 		branch.ReplayCutoffSequence = anchor.ForkAfterSequence
 		branch.ReplayTruncated = replayTruncated
 	}
-	conversation := source.conversation
+	conversation := source.conversationForReplacement()
 	conversation.ActiveBranchID = branchID
 	replacement := newController(id, conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
 	if err := s.store.CreateAndActivateConversationBranch(
@@ -675,7 +675,7 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 		return "", resumeErr
 	}
 	generation := s.newID()
-	conversation := source.conversation
+	conversation := source.conversationForReplacement()
 	conversation.ActiveBranchID = branch.ID
 	replacement := newController(id, conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
 	if err := s.store.ActivateConversationBranch(operationCtx, id, conversation.ID, branch.ID,

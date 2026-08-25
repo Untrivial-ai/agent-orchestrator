@@ -240,7 +240,8 @@ func TestNormalizeStructuredErrorNotificationRequiresReauth(t *testing.T) {
 	if len(events) != 2 || events[0].Kind != ports.ChatEventError ||
 		events[0].ProviderTurnID != "tu" || events[0].ProviderConversationID != "th" ||
 		events[1].Kind != ports.ChatEventAccountChanged || events[1].Account == nil ||
-		!events[1].Account.ReauthRequired {
+		!events[1].Account.ReauthRequired || events[1].ProviderTurnID != "tu" ||
+		events[1].ProviderConversationID != "th" {
 		t.Fatalf("events = %+v, want provider error plus reauthentication", events)
 	}
 }
@@ -249,13 +250,8 @@ func TestNormalizeStructuredErrorNotificationRequiresReauth(t *testing.T) {
 // it will retry. AO waits for Codex's terminal decision instead of pre-empting
 // provider-managed recovery.
 func TestNormalizeRetryingUnauthorizedErrorDoesNotRequireReauthYet(t *testing.T) {
-	events := normalizeNotification(notification{
-		Method: codexproto.MethodError,
-		Params: json.RawMessage(`{"threadId":"th","turnId":"tu","willRetry":true,"error":{"message":"Refreshing credentials.","codexErrorInfo":"unauthorized"}}`),
-	}, testNow)
-	if len(events) != 1 || events[0].Kind != ports.ChatEventError {
-		t.Fatalf("events = %+v, want only the retrying provider error", events)
-	}
+	normalizeNone(t, codexproto.MethodError,
+		`{"threadId":"th","turnId":"tu","willRetry":true,"error":{"message":"Refreshing credentials.","codexErrorInfo":"unauthorized"}}`)
 }
 
 // An item type this build does not model must produce nothing rather than an

@@ -664,10 +664,11 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			Err:                    fmt.Errorf("%s", message),
 		}
 		if p.WillRetry {
-			// Codex still owns recovery while it says it will retry. Stopping here
-			// would turn a provider-managed transient failure into a user-visible
-			// manual recovery flow before the provider has made a terminal decision.
-			return []ports.ChatEvent{ev}
+			// Codex still owns recovery while it says it will retry, and explicitly
+			// defines this notification as non-terminal. Projecting it as an error would
+			// leave a permanent failed row even when the retry succeeds. The terminal
+			// completion remains the authoritative outcome.
+			return nil
 		}
 		return appendStructuredReauthEvent([]ports.ChatEvent{ev}, &p.Error)
 
@@ -1061,8 +1062,14 @@ func codexUnauthorized(info *codexproto.CodexErrorInfo) bool {
 // Authentication explains why the work failed; it does not erase that work from
 // the timeline.
 func appendReauthEvent(events []ports.ChatEvent, reason string) []ports.ChatEvent {
+	correlation := ports.ChatEvent{}
+	if len(events) > 0 {
+		correlation = events[len(events)-1]
+	}
 	return append(events, ports.ChatEvent{
-		Kind: ports.ChatEventAccountChanged,
+		Kind:                   ports.ChatEventAccountChanged,
+		ProviderTurnID:         correlation.ProviderTurnID,
+		ProviderConversationID: correlation.ProviderConversationID,
 		Account: &ports.ChatAccount{
 			ReauthRequired: true,
 			ReauthReason:   reason,

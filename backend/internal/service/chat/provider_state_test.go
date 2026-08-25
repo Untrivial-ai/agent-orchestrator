@@ -486,9 +486,9 @@ func (s *failFirstReauthClearStore) RecordAccount(
 	return s.Store.RecordAccount(ctx, conversationID, account, now)
 }
 
-// A transient SQLite failure must not clear only the controller's memory. Keeping
-// both layers on the old state lets the next proven-successful turn retry the
-// durable clear instead of leaving the banner stuck forever.
+// Banner cleanup is auxiliary to the provider's terminal fact. A transient clear
+// failure keeps the warning for a later successful turn to retry, but must not
+// roll back settlement or leave the completed controller busy.
 func TestSuccessfulTurnRetriesFailedReauthClear(t *testing.T) {
 	var fault *failFirstReauthClearStore
 	h := newHarnessWithConversationAndStore(t, nil, func(st *sqlite.Store) chatsvc.Store {
@@ -522,21 +522,39 @@ func TestSuccessfulTurnRetriesFailedReauthClear(t *testing.T) {
 	}
 	if stillRequired.Conversation.Account == nil ||
 		stillRequired.Conversation.Account.ReauthRequiredAt == nil {
-		t.Fatal("failed transaction cleared durable reauthentication state")
+		t.Fatal("failed cleanup cleared durable reauthentication state")
+	}
+	settled := false
+	for _, turn := range stillRequired.Turns {
+		if turn.ProviderTurnID == "proof-1" && turn.State != domain.TurnStateCompleted {
+			t.Fatalf("successful turn state = %q, want completed", turn.State)
+		}
+		if turn.ProviderTurnID == "proof-1" {
+			settled = true
+		}
+	}
+	if !settled {
+		t.Fatal("successful turn was not durably settled")
+	}
+	if state := h.ctrl.State(); state != ports.ChatControllerReady {
+		t.Fatalf("controller state = %q, want ready after authoritative completion", state)
 	}
 
-	// Replay the terminal provider event, as native history recovery does after a
-	// projection failure. The retained in-memory warning makes this retry the clear.
-	h.conv.emit(ports.ChatEvent{
-		Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "proof-1",
-		TurnState: domain.TurnStateCompleted,
-	})
+	// A later live success retries only the warning cleanup. Native history is
+	// deliberately insufficient proof of the replacement controller's credentials.
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "proof-2"},
+		ports.ChatEvent{
+			Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "proof-2",
+			TurnState: domain.TurnStateCompleted,
+		},
+	)
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		if s.Conversation.Account == nil || s.Conversation.Account.ReauthRequiredAt != nil {
 			return false
 		}
 		for _, turn := range s.Turns {
-			if turn.ProviderTurnID == "proof-1" {
+			if turn.ProviderTurnID == "proof-2" {
 				return turn.State == domain.TurnStateCompleted
 			}
 		}

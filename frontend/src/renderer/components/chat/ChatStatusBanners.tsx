@@ -37,7 +37,9 @@ export const ReauthBanner = memo(function ReauthBanner({
 	if (!account.reauthRequiredAt) return null;
 	const command = signInCommand(harness);
 	const nextStep =
-		harness === "codex" ? "resume the agent and resend your message" : "send your message again";
+		harness === "codex"
+			? "resume the agent, then inspect the timeline and worktree before deciding whether to resend"
+			: "inspect the timeline and worktree before deciding whether to send again";
 
 	return (
 		<div
@@ -52,7 +54,8 @@ export const ReauthBanner = memo(function ReauthBanner({
 				<p className="text-[11px] leading-relaxed text-foreground">
 					{account.reauthReason ??
 						"The provider rejected this session's credentials."}{" "}
-					Nothing will run until it is fixed, and the worktree is untouched.
+					Nothing else will run until it is fixed. The failed turn may have already changed files
+					or run commands.
 				</p>
 				<p className="text-[11px] leading-relaxed text-muted-foreground">
 					{command ? (
@@ -65,8 +68,8 @@ export const ReauthBanner = memo(function ReauthBanner({
 						</>
 					) : (
 						<>
-							Sign in with the agent&rsquo;s own CLI, then send your message again. AO holds no
-							credentials of its own.
+							Sign in with the agent&rsquo;s own CLI, then {nextStep}. AO holds no credentials of
+							its own.
 						</>
 					)}
 				</p>
