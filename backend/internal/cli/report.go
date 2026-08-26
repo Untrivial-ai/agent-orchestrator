@@ -14,6 +14,7 @@ import (
 
 type reportOptions struct {
 	note                                                     string
+	noteSet                                                  bool
 	prCreated, artifact, checkpoint, needsInput, stuck, done bool
 }
 
@@ -30,7 +31,10 @@ type reportAPIResponse struct {
 
 func newReportCommand(ctx *commandContext) *cobra.Command {
 	var o reportOptions
-	cmd := &cobra.Command{Use: "report <free-form text>", Short: "Report worker progress to the orchestrator", Args: cobra.ArbitraryArgs, RunE: func(cmd *cobra.Command, args []string) error { return ctx.report(cmd.Context(), args, o) }}
+	cmd := &cobra.Command{Use: "report <free-form text>", Short: "Report worker progress to the orchestrator", Args: cobra.ArbitraryArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		o.noteSet = cmd.Flags().Changed("note")
+		return ctx.report(cmd.Context(), args, o)
+	}}
 	f := cmd.Flags()
 	f.StringVar(&o.note, "note", "", "Structured report note")
 	f.BoolVar(&o.prCreated, "pr-created", false, "Report a created pull request")
@@ -63,7 +67,7 @@ func (c *commandContext) report(ctx context.Context, args []string, o reportOpti
 		if strings.TrimSpace(freeForm) == "" {
 			return usageError{errors.New("usage: free-form text or one structured report flag is required")}
 		}
-		if o.note != "" {
+		if o.noteSet {
 			return usageError{errors.New("usage: --note requires a structured report flag")}
 		}
 		selected = domain.ReportFreeForm

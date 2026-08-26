@@ -54,3 +54,32 @@ func TestReportStoreRejectsInvalidRecord(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestReportStoreClaimAcknowledgeAndTokenFence(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "ao")
+	sess, err := s.CreateSession(ctx, sampleRecord("ao"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	rec := domain.ReportRecord{ID: "rpt_lease", SessionID: sess.ID, ProjectID: sess.ProjectID, Type: domain.ReportDone, Note: "done", CreatedAt: now, DeliveryState: domain.ReportPending, AvailableAt: now}
+	if _, err = s.CreateReport(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := s.ClaimReport(ctx, rec.ID, "lease-1", now)
+	if err != nil || !ok || claimed.DeliveryAttempts != 1 || claimed.DeliveryState != domain.ReportClaimed {
+		t.Fatalf("claimed=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, ok, err = s.ClaimReport(ctx, rec.ID, "lease-2", now); err != nil || ok {
+		t.Fatalf("second claim ok=%v err=%v", ok, err)
+	}
+	if _, ok, err = s.AcknowledgeReport(ctx, rec.ID, "wrong", now.Add(time.Second)); err != nil || ok {
+		t.Fatalf("wrong ack ok=%v err=%v", ok, err)
+	}
+	acked, ok, err := s.AcknowledgeReport(ctx, rec.ID, "lease-1", now.Add(time.Second))
+	if err != nil || !ok || acked.DeliveryState != domain.ReportAcknowledged {
+		t.Fatalf("acked=%+v ok=%v err=%v", acked, ok, err)
+	}
+}

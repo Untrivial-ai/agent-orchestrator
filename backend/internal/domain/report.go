@@ -8,10 +8,13 @@ import (
 	"unicode/utf8"
 )
 
+// MaxReportNoteCharacters is the hard limit for free-form and structured notes.
 const MaxReportNoteCharacters = 1000
 
+// ReportType identifies the worker progress fact being reported.
 type ReportType string
 
+// Supported report types.
 const (
 	ReportFreeForm   ReportType = "free_form"
 	ReportPRCreated  ReportType = "pr_created"
@@ -22,6 +25,7 @@ const (
 	ReportDone       ReportType = "done"
 )
 
+// Valid reports whether t is a supported report type.
 func (t ReportType) Valid() bool {
 	switch t {
 	case ReportFreeForm, ReportPRCreated, ReportArtifact, ReportCheckpoint, ReportNeedsInput, ReportStuck, ReportDone:
@@ -31,14 +35,17 @@ func (t ReportType) Valid() bool {
 	}
 }
 
+// ReportDeliveryState is the durable outbox lifecycle of a report.
 type ReportDeliveryState string
 
+// Report delivery states.
 const (
 	ReportPending      ReportDeliveryState = "pending"
 	ReportClaimed      ReportDeliveryState = "claimed"
 	ReportAcknowledged ReportDeliveryState = "acknowledged"
 )
 
+// ReportRecord is the durable report and outbox persistence shape.
 type ReportRecord struct {
 	ID               string
 	SessionID        SessionID
@@ -55,8 +62,10 @@ type ReportRecord struct {
 	LastError        string
 }
 
+// ErrInvalidReport reports an invalid report or delivery transition input.
 var ErrInvalidReport = errors.New("invalid report")
 
+// Validate checks report content, ownership fields, and delivery-state invariants.
 func (r ReportRecord) Validate() error {
 	if r.ID == "" || r.SessionID == "" || r.ProjectID == "" || !r.Type.Valid() || r.CreatedAt.IsZero() || r.AvailableAt.IsZero() {
 		return ErrInvalidReport
@@ -86,6 +95,7 @@ func (r ReportRecord) Validate() error {
 	return nil
 }
 
+// ValidateReportNote checks the common note rules and type-specific PR URL rule.
 func ValidateReportNote(typ ReportType, note string) error {
 	if !typ.Valid() || strings.TrimSpace(note) == "" || utf8.RuneCountInString(note) > MaxReportNoteCharacters {
 		return ErrInvalidReport
@@ -96,9 +106,13 @@ func ValidateReportNote(typ ReportType, note string) error {
 	return nil
 }
 
+// IsGitHubPullRequestURL reports whether raw is an HTTP(S) github.com PR URL.
 func IsGitHubPullRequestURL(raw string) bool {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !strings.EqualFold(u.Hostname(), "github.com") || u.User != nil {
+	if strings.TrimSpace(raw) != raw {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !strings.EqualFold(u.Hostname(), "github.com") || u.Port() != "" || u.User != nil {
 		return false
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")

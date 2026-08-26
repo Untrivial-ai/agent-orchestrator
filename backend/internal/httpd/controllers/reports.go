@@ -12,12 +12,15 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 )
 
+// ReportService is the controller-facing report creation contract.
 type ReportService interface {
 	Create(context.Context, domain.SessionID, domain.ReportType, string) (domain.ReportRecord, error)
 }
 
+// ReportsController owns the /reports routes.
 type ReportsController struct{ Svc ReportService }
 
+// Register mounts report routes on r.
 func (c *ReportsController) Register(r chi.Router) { r.Post("/reports", c.create) }
 
 func (c *ReportsController) create(w http.ResponseWriter, r *http.Request) {

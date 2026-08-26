@@ -24,6 +24,7 @@ type CreateReportRequest struct {
 	Note      string `json:"note" maxLength:"1000"`
 }
 
+// ReportResponse is the created durable report returned to a worker.
 type ReportResponse struct {
 	ID            string    `json:"id"`
 	SessionID     string    `json:"sessionId"`
@@ -34,6 +35,7 @@ type ReportResponse struct {
 	DeliveryState string    `json:"deliveryState"`
 }
 
+// CreateReportResponse wraps a newly created report.
 type CreateReportResponse struct {
 	Report ReportResponse `json:"report"`
 }

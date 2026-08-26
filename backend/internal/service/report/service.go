@@ -5,27 +5,33 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
-	"github.com/google/uuid"
 )
 
+// Store is the report service's persistence and ownership boundary.
 type Store interface {
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	CreateReport(context.Context, domain.ReportRecord) (domain.ReportRecord, error)
 }
 
+// Service validates and creates durable worker reports.
 type Service struct {
 	store Store
 	now   func() time.Time
 	newID func() string
 }
+
+// Deps configures a Service.
 type Deps struct {
 	Store Store
 	Now   func() time.Time
 	NewID func() string
 }
 
+// New constructs a report Service.
 func New(d Deps) *Service {
 	if d.Now == nil {
 		d.Now = time.Now
@@ -36,6 +42,7 @@ func New(d Deps) *Service {
 	return &Service{store: d.Store, now: d.Now, newID: d.NewID}
 }
 
+// Create validates ownership and persists one pending report.
 func (s *Service) Create(ctx context.Context, sessionID domain.SessionID, typ domain.ReportType, note string) (domain.ReportRecord, error) {
 	if s == nil || s.store == nil {
 		return domain.ReportRecord{}, errors.New("report: store is required")

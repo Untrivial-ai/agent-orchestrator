@@ -20,6 +20,7 @@ func TestReportValidation(t *testing.T) {
 		{"structured missing note", []string{"report", "--done"}},
 		{"mutually exclusive", []string{"report", "--done", "--stuck", "--note", "x"}},
 		{"free form with note", []string{"report", "hello", "--note", "x"}},
+		{"free form with empty note flag", []string{"report", "hello", "--note="}},
 		{"free form with flag", []string{"report", "hello", "--done", "--note", "x"}},
 		{"free form too long", []string{"report", long}},
 		{"note too long", []string{"report", "--checkpoint", "--note", long}},
