@@ -171,6 +171,11 @@ type StartConfig struct {
 	// provider boundary does not exist until ControllerReady commits; AO already
 	// retains the unified timeline and the finalized continuation separately.
 	SkipNativeHistoryImport bool
+	// ResumeRetainedQueue is set only by the explicit Resume agent action after an
+	// authentication stop. It lifts the replacement controller's credential fence
+	// and dispatches the oldest queued message; automatic daemon recovery leaves
+	// retained work untouched.
+	ResumeRetainedQueue bool
 	// ControllerReady commits the controller's durable generation before event
 	// consumption starts. A controller that exits immediately must report after
 	// the launch has been marked live, so its exited signal cannot be overwritten
@@ -246,10 +251,21 @@ func cloneStartConfig(cfg StartConfig) StartConfig {
 // Best-effort by design: a failure here must not stop a session from coming back,
 // because a session the user cannot reopen is worse than a stale row. Both
 // failures are logged rather than swallowed.
-func (s *Service) settleOrphanedWork(ctx context.Context, session domain.SessionID, conversationID string) {
+func (s *Service) settleOrphanedWork(
+	ctx context.Context,
+	session domain.SessionID,
+	conversationID string,
+	retainQueued bool,
+) {
 	now := s.now()
-	if err := s.store.SettleOrphanedTurns(ctx, session, now); err != nil {
-		s.log.Error("chat start: settle orphaned turns", "session", session, "error", err)
+	var settleErr error
+	if retainQueued {
+		settleErr = s.store.SettleOrphanedRunningTurns(ctx, session, now)
+	} else {
+		settleErr = s.store.SettleOrphanedTurns(ctx, session, now)
+	}
+	if settleErr != nil {
+		s.log.Error("chat start: settle orphaned turns", "session", session, "error", settleErr)
 	}
 	// An approval left pending can never be answered: the provider call it was
 	// blocking died with the process that was holding it.
@@ -537,8 +553,9 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// behind a controller that no longer existed. Nothing would ever have corrected
 	// it. Settling here covers every way a controller can come up, and is a no-op
 	// for a session that has none of it.
+	retainQueued := conversation.Account != nil && conversation.Account.ReauthRequiredAt != nil
 	if !liveReconnect {
-		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
+		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID, retainQueued)
 	}
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
@@ -646,6 +663,23 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	s.startConfigs[cfg.SessionID] = cloneStartConfig(cfg)
 	controller.start()
 	s.mu.Unlock()
+	switch {
+	case cfg.ResumeRetainedQueue:
+		controller.resumeRetainedQueue(context.WithoutCancel(ctx))
+	case retainQueued:
+		// A daemon restart recreates every non-terminated Chat controller. Keeping a
+		// controller with a durable credential warning alive would make it look ready
+		// while its delivery fence prevents all work, and would hide Resume agent.
+		// Close only the fresh process; orphan cleanup retains the queue, and the
+		// explicit Resume agent path above is the sole authority to release it.
+		closeCtx := context.WithoutCancel(ctx)
+		go func() {
+			if err := controller.Close(closeCtx); err != nil {
+				s.log.Warn("chat start: close controller awaiting reauthentication",
+					"session", cfg.SessionID, "error", err)
+			}
+		}()
+	}
 
 	// Drop the registry entry when the provider stream ends, so a later command
 	// reports ErrNoController instead of writing into a dead controller.
@@ -1196,6 +1230,7 @@ type StartRequest struct {
 	ControllerGeneration    string
 	RequireNativeHistory    bool
 	SkipNativeHistoryImport bool
+	ResumeRetainedQueue     bool
 	// ControllerReady runs after the provider and generation exist but before
 	// live event projection starts.
 	ControllerReady func(StartResult) (ControllerCommit, error)

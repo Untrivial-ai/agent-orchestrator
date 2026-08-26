@@ -455,7 +455,7 @@ func (m *Manager) ensureCodexSwitchChatController(ctx context.Context, rec domai
 		return rec, nil
 	}
 	result, err := m.resumeAgentRecordWithReservedGeneration(
-		ctx, "Codex account switch recovery", rec, false, true, generation,
+		ctx, "Codex account switch recovery", rec, false, true, generation, false,
 	)
 	if err != nil {
 		return rec, err
@@ -903,7 +903,7 @@ func (m *Manager) restartCodexSwitchSessions(ctx context.Context, store ports.Co
 				forceFresh, requireNativeHistory := codexAccountSwitchRestartPolicy(*item)
 				var result RestoreResult
 				result, workerErr = m.resumeAgentRecordWithReservedGeneration(
-					ctx, "Codex account switch", rec, forceFresh, requireNativeHistory, generation,
+					ctx, "Codex account switch", rec, forceFresh, requireNativeHistory, generation, false,
 				)
 				// An interrupted Codex Chat turn can take slightly longer than the
 				// first bounded history-read window to flush its native checkpoint.
@@ -912,7 +912,7 @@ func (m *Manager) restartCodexSwitchSessions(ctx context.Context, store ports.Co
 				// and avoids requiring a manual recovery click for the common race.
 				if workerErr != nil && item.InterfaceMode == domain.SessionModeChat && errors.Is(workerErr, ports.ErrChatHistoryUnsettled) && ctx.Err() == nil {
 					result, workerErr = m.resumeAgentRecordWithReservedGeneration(
-						ctx, "Codex account switch", rec, forceFresh, requireNativeHistory, generation,
+						ctx, "Codex account switch", rec, forceFresh, requireNativeHistory, generation, false,
 					)
 				}
 				if workerErr == nil && result.Session.ID != item.SessionID {

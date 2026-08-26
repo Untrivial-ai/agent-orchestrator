@@ -545,6 +545,18 @@ WHERE status = 'running'
         AND state IN ('queued', 'running')
   );
 
+-- Authentication recovery retains queued turns for an explicit controller
+-- resume. Only work that actually reached the stale provider is orphaned.
+-- name: FailOrphanedRunningConversationActivities :exec
+UPDATE conversation_activities
+SET status = 'failed', revision = revision + 1, updated_at = sqlc.arg(updated_at)
+WHERE status = 'running'
+  AND turn_id IN (
+      SELECT id FROM conversation_turns
+      WHERE handled_by_session_id = sqlc.arg(handled_by_session_id)
+        AND state = 'running'
+  );
+
 -- Restart reconciliation: a turn left running by a dead controller is not
 -- evidence the work finished, so it is settled honestly rather than silently
 -- completed.
@@ -554,6 +566,14 @@ SET state = 'failed',
     error_message = 'controller ended before the turn completed',
     completed_at = ?
 WHERE handled_by_session_id = ? AND state IN ('queued', 'running');
+
+-- Authentication recovery preserves queued work because it was never delivered.
+-- name: SettleOrphanedRunningConversationTurns :exec
+UPDATE conversation_turns
+SET state = 'failed',
+    error_message = 'controller ended before the turn completed',
+    completed_at = ?
+WHERE handled_by_session_id = ? AND state = 'running';
 
 -- The running turns visible on the active branch, in the same order as the
 -- snapshot. Interrupt uses this exact projection when in-memory turn tracking

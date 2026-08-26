@@ -542,6 +542,7 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		ControllerGeneration:    cfg.ControllerGeneration,
 		RequireNativeHistory:    cfg.RequireNativeHistory,
 		SkipNativeHistoryImport: cfg.SkipNativeHistoryImport,
+		ResumeRetainedQueue:     cfg.ResumeRetainedQueue,
 		ControllerReady: func(out chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if cfg.ControllerReady == nil {
 				return chatsvc.ControllerCommit{}, nil

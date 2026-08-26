@@ -583,6 +583,9 @@ func TestResumeExitedChatSessionDoesNotRequireTerminalRuntimeHandle(t *testing.T
 	if got := launcher.started[0].ProviderConversationID; got != "thread-existing" {
 		t.Fatalf("provider conversation id = %q, want thread-existing", got)
 	}
+	if !launcher.started[0].ResumeRetainedQueue {
+		t.Fatal("explicit Resume agent did not authorize the retained chat queue")
+	}
 	if runtime.created != 0 || runtime.destroyed != 0 {
 		t.Fatalf("chat resume touched terminal runtime: created=%d destroyed=%d", runtime.created, runtime.destroyed)
 	}
@@ -1222,6 +1225,9 @@ func TestRestoreResumesChatRatherThanRelaunchingATerminal(t *testing.T) {
 	if resumed.ProviderConversationID != stored.Metadata.ProviderConversationID {
 		t.Errorf("restore passed provider conversation %q, want the stored %q — without it this is a new conversation, not a resume",
 			resumed.ProviderConversationID, stored.Metadata.ProviderConversationID)
+	}
+	if resumed.ResumeRetainedQueue {
+		t.Fatal("ordinary restore authorized retained chat delivery without explicit Resume agent")
 	}
 	// The provider still holds the history, so continuity is native rather than a
 	// replayed prompt.

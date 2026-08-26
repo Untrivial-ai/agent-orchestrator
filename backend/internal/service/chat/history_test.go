@@ -690,6 +690,9 @@ func newEditHarnessFull(
 	if initialAccount != nil {
 		startCfg.ProviderConversationID = "thread-1"
 		startCfg.SkipNativeHistoryImport = true
+		// This harness is exercising work after the user resumed a controller whose
+		// persisted account warning came from the previous process.
+		startCfg.ResumeRetainedQueue = true
 	}
 	ctrl, err := svc.Start(context.Background(), startCfg)
 	if err != nil {
@@ -1495,7 +1498,10 @@ func TestEditMessageReplacementDoesNotResurrectClearedReauthState(t *testing.T) 
 		return s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt == nil
 	})
 	second := completeTurn(t, h, "B", "provider-turn-2")
-	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Messages) == 4 && turnStateByText(t, s)["B"] == domain.TurnStateCompleted &&
+			h.ctrl.State() == ports.ChatControllerReady
+	})
 
 	if _, err := h.svc.EditMessage(context.Background(), testSession, second, ports.ChatUserMessage{
 		Text: "B edited", ClientMessageID: "edit-b", Origin: domain.MessageOriginHuman,
