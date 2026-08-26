@@ -17,6 +17,27 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 )
 
+// CreateReportRequest is the worker-to-daemon report submission contract.
+type CreateReportRequest struct {
+	SessionID string `json:"sessionId"`
+	Type      string `json:"type" enum:"free_form,pr_created,artifact,checkpoint,needs_input,stuck,done"`
+	Note      string `json:"note" maxLength:"1000"`
+}
+
+type ReportResponse struct {
+	ID            string    `json:"id"`
+	SessionID     string    `json:"sessionId"`
+	ProjectID     string    `json:"projectId"`
+	Type          string    `json:"type"`
+	Note          string    `json:"note"`
+	CreatedAt     time.Time `json:"createdAt"`
+	DeliveryState string    `json:"deliveryState"`
+}
+
+type CreateReportResponse struct {
+	Report ReportResponse `json:"report"`
+}
+
 // HTTP response envelopes for the projects surface — the SINGLE definition of
 // each wire shape. The handlers encode these (envelope.WriteJSON), and
 // apispec.Build reflects these same types into openapi.yaml, so the served

@@ -605,6 +605,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Persist a worker report for later orchestrator delivery */
+        post: operations["createReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/reviews/{reviewSessionID}/activity": {
         parameters: {
             query?: never;
@@ -2255,6 +2272,15 @@ export interface components {
             /** Format: int64 */
             totalTokens: number;
         };
+        CreateReportRequest: {
+            note: string;
+            sessionId: string;
+            /** @enum {string} */
+            type: "free_form" | "pr_created" | "artifact" | "checkpoint" | "needs_input" | "stuck" | "done";
+        };
+        CreateReportResponse: {
+            report: components["schemas"]["ReportResponse"];
+        };
         DegradedProject: {
             id: string;
             /** @enum {string} */
@@ -2663,6 +2689,16 @@ export interface components {
             displayName: string;
             ok: boolean;
             sessionId: string;
+        };
+        ReportResponse: {
+            /** Format: date-time */
+            createdAt: string;
+            deliveryState: string;
+            id: string;
+            note: string;
+            projectId: string;
+            sessionId: string;
+            type: string;
         };
         ResolveCommentsResponse: {
             ok: boolean;
@@ -5304,6 +5340,66 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    createReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateReportRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateReportResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
             };
             /** @description Internal Server Error */
             500: {
