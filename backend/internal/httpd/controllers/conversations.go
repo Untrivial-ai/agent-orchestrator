@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -175,8 +176,12 @@ func (c *ConversationsController) activateBranch(w http.ResponseWriter, r *http.
 			"/api/v1/sessions/{sessionId}/conversation/branches/{branchId}/activate")
 		return
 	}
+	branchID := chi.URLParam(r, "branchId")
+	if decoded, decodeErr := url.PathUnescape(branchID); decodeErr == nil {
+		branchID = decoded
+	}
 	active, err := c.Svc.ActivateBranch(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")),
-		chi.URLParam(r, "branchId"))
+		branchID)
 	if errors.Is(err, domain.ErrNoConversationBranch) {
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found",
 			"CHAT_BRANCH_NOT_FOUND", "that conversation branch does not exist", nil)

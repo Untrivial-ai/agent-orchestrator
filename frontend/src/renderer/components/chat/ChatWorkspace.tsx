@@ -599,7 +599,10 @@ export function ChatWorkspace({
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
-	const editHumanMessage = can(snapshot, "fork") ? onEditMessage : undefined;
+	// Editing the first provider prompt starts a fresh conversation and therefore
+	// does not require provider-side history forking. Later prompts remain gated on
+	// the provider's anchored-fork capability.
+	const editHumanMessage = onEditMessage;
 	const pendingApproval = useMemo(
 		() =>
 			snapshot.items.reduce<ConversationActivity | undefined>((latest, item) => {
@@ -1382,10 +1385,21 @@ function Timeline({
 		() => new Map((snapshot.branchPoints ?? []).map((point) => [point.turnId, point])),
 		[snapshot.branchPoints],
 	);
-	const editableTurns = useMemo(
-		() => new Set(snapshot.turns.filter((turn) => turn.providerTurnId).map((turn) => turn.id)),
-		[snapshot.turns],
-	);
+	const editableTurns = useMemo(() => {
+		const canForkHistory = can(snapshot, "fork");
+		const firstProviderTurnId = snapshot.hasMoreBefore
+			? undefined
+			: snapshot.turns.find((turn) => turn.providerTurnId)?.id;
+		return new Set(
+			snapshot.turns
+				.filter(
+					(turn) =>
+						Boolean(turn.providerTurnId) &&
+						(canForkHistory || turn.id === firstProviderTurnId),
+				)
+				.map((turn) => turn.id),
+		);
+	}, [snapshot.capabilities, snapshot.hasMoreBefore, snapshot.turns]);
 	const consumedRetrySources = useMemo(() => retrySourceTurnIds(snapshot), [snapshot]);
 	const retryableTurns = useMemo(
 		() =>

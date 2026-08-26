@@ -1103,6 +1103,42 @@ describe("ChatWorkspace message actions", () => {
 		expect(composer).toHaveTextContent("unsent composer draft");
 	});
 
+	it("offers only the first prompt when the provider cannot fork history", async () => {
+		const user = userEvent.setup();
+		const onEditMessage = vi.fn(async () => undefined);
+		const snapshot = idleSnapshot({
+			...chatFixture,
+			harness: "cursor",
+			capabilities: chatFixture.capabilities?.filter((capability) => capability !== "fork"),
+		});
+
+		render(<ChatWorkspace snapshot={snapshot} onEditMessage={onEditMessage} />);
+
+		const editButton = screen.getByRole("button", { name: "Edit user message" });
+		await user.click(editButton);
+		const editor = screen.getByRole("textbox", { name: "Edit message" });
+		await user.clear(editor);
+		await user.type(editor, "Start with the staged changes.");
+		fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
+
+		await waitFor(() =>
+			expect(onEditMessage).toHaveBeenCalledWith("turn-1", "Start with the staged changes."),
+		);
+	});
+
+	it("withholds first-prompt editing when older history has not loaded", () => {
+		const snapshot = idleSnapshot({
+			...chatFixture,
+			harness: "cursor",
+			hasMoreBefore: true,
+			capabilities: chatFixture.capabilities?.filter((capability) => capability !== "fork"),
+		});
+
+		render(<ChatWorkspace snapshot={snapshot} onEditMessage={vi.fn(async () => undefined)} />);
+
+		expect(screen.queryByRole("button", { name: "Edit user message" })).not.toBeInTheDocument();
+	});
+
 	it("keeps edit available while another turn is active", async () => {
 		const user = userEvent.setup();
 		render(
