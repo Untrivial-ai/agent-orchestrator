@@ -121,6 +121,20 @@ type PullRequestReviewSummary struct {
 	Reviews                    []PullRequestSubmittedReview    `json:"reviews"`
 }
 
+// PullRequestAOReviewSummary is AO's current review result for this exact PR
+// head. Unlike provider review state, it is keyed to the immutable target SHA.
+type PullRequestAOReviewSummary struct {
+	State                AOReviewState   `json:"state"`
+	Verdict              AOReviewVerdict `json:"verdict"`
+	RunID                string          `json:"runId,omitempty"`
+	TargetSHA            string          `json:"targetSha,omitempty"`
+	Harness              string          `json:"harness,omitempty"`
+	Model                string          `json:"model,omitempty"`
+	RequestedBySessionID string          `json:"requestedBySessionId,omitempty"`
+	Body                 string          `json:"body,omitempty"`
+	CreatedAt            time.Time       `json:"createdAt,omitempty"`
+}
+
 // PullRequestConflictFile is one file involved in a merge conflict.
 type PullRequestConflictFile struct {
 	Path string `json:"path"`
@@ -153,6 +167,7 @@ type PullRequestSummary struct {
 	ChangedFiles     int                            `json:"changedFiles"`
 	CI               PullRequestCISummary           `json:"ci"`
 	Review           PullRequestReviewSummary       `json:"review"`
+	AOReview         PullRequestAOReviewSummary     `json:"aoReview"`
 	Mergeability     PullRequestMergeabilitySummary `json:"mergeability"`
 	StateChangedAt   time.Time                      `json:"stateChangedAt,omitempty"`
 	CreatedAt        time.Time                      `json:"createdAt,omitempty"`

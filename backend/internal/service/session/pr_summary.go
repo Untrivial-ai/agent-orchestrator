@@ -24,6 +24,9 @@ type PRFailingCheck = contract.PullRequestFailingCheck
 // PRReviewSummary describes the latest review decision and unresolved comments.
 type PRReviewSummary = contract.PullRequestReviewSummary
 
+// PRAOReviewSummary describes AO's exact-head review state for a PR.
+type PRAOReviewSummary = contract.PullRequestAOReviewSummary
+
 // PRReviewEntry is one submitted provider review summary: a reviewer's decisive
 // verdict and the body they submitted with it.
 type PRReviewEntry = contract.PullRequestSubmittedReview
@@ -49,6 +52,10 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 		return nil, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
 	prs, err := s.store.ListPRsBySession(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	runs, err := s.store.ListReviewRunsBySession(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -81,13 +88,13 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 			}
 			comments = append(comments, prComments...)
 		}
-		out = append(out, summarizePR(group.primary, checks, reviews, threads, comments))
+		out = append(out, summarizePR(group.primary, checks, reviews, threads, comments, runs))
 	}
 	sortPRSummaries(out)
 	return out, nil
 }
 
-func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment) PRSummary {
+func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment, runs []domain.ReviewRun) PRSummary {
 	return PRSummary{
 		URL:              pr.URL,
 		HTMLURL:          firstNonEmpty(pr.HTMLURL, pr.URL),
@@ -105,6 +112,7 @@ func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, review
 		ChangedFiles:     pr.ChangedFiles,
 		CI:               summarizeCI(pr, checks),
 		Review:           summarizeReview(pr, comments, reviews),
+		AOReview:         summarizeAOReview(pr, runs),
 		Mergeability:     summarizeMergeability(pr, threads),
 		StateChangedAt:   summarizePRStateChangedAt(pr),
 		CreatedAt:        pr.CreatedAtProvider,
@@ -113,6 +121,44 @@ func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, review
 		CIObservedAt:     pr.CIObservedAt,
 		ReviewObservedAt: pr.ReviewObservedAt,
 	}
+}
+
+func summarizeAOReview(pr domain.PullRequest, runs []domain.ReviewRun) PRAOReviewSummary {
+	out := PRAOReviewSummary{State: contract.AOReviewNeedsReview, TargetSHA: pr.HeadSHA}
+	if pr.URL == "" || pr.HeadSHA == "" || pr.Merged || pr.Closed {
+		out.State = contract.AOReviewIneligible
+		return out
+	}
+	var latest *domain.ReviewRun
+	for i := range runs {
+		run := &runs[i]
+		if run.PRURL != pr.URL || !strings.EqualFold(run.TargetSHA, pr.HeadSHA) {
+			continue
+		}
+		if latest == nil || run.CreatedAt.After(latest.CreatedAt) {
+			latest = run
+		}
+	}
+	if latest == nil {
+		return out
+	}
+	out.RunID = latest.ID
+	out.Verdict = latest.Verdict
+	out.TargetSHA = latest.TargetSHA
+	out.Harness = string(latest.Harness)
+	out.Model = latest.Model
+	out.RequestedBySessionID = string(latest.RequestedBySessionID)
+	out.Body = latest.Body
+	out.CreatedAt = latest.CreatedAt
+	switch {
+	case latest.Status == domain.ReviewRunRunning:
+		out.State = contract.AOReviewRunning
+	case latest.Verdict == domain.VerdictApproved && (latest.Status == domain.ReviewRunComplete || latest.Status == domain.ReviewRunDelivered):
+		out.State = contract.AOReviewUpToDate
+	case latest.Verdict == domain.VerdictChangesRequested && (latest.Status == domain.ReviewRunComplete || latest.Status == domain.ReviewRunDelivered):
+		out.State = contract.AOReviewChangesRequested
+	}
+	return out
 }
 
 func summarizePRStateChangedAt(pr domain.PullRequest) time.Time {

@@ -32,6 +32,9 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 	return domain.ReviewerCursor
 }
 
+// SupportsReviewModelSelection reports that this adapter forwards model overrides.
+func (r *Reviewer) SupportsReviewModelSelection() bool { return true }
+
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 
@@ -55,6 +58,7 @@ func (r *Reviewer) PreLaunch(ctx context.Context, inv ports.ReviewInvocation) er
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	prompt := cursorPrompt(inv)
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
+		Config:        ports.AgentConfig{Model: inv.Model},
 		SessionID:     inv.ReviewerID,
 		WorkspacePath: inv.WorkspacePath,
 		Prompt:        prompt,

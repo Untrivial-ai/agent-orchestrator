@@ -36,6 +36,84 @@ func reviewServer(t *testing.T, status int, respBody string) (*httptest.Server, 
 
 func aliveDeps() Deps { return Deps{ProcessAlive: func(int) bool { return true }} }
 
+func TestReviewRequestDefaultsToOriginAndForwardsOverrides(t *testing.T) {
+	cfg := setConfigEnv(t)
+	t.Setenv("AO_SESSION_ID", "mer-7")
+	t.Setenv("AO_REVIEW_SESSION_ID", "")
+	srv, capture := reviewServer(t, http.StatusCreated, `{"created":true,"reviews":[{"prNumber":42,"targetSha":"abc123","status":"running"}]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "review", "request", "--reviewer", "codex", "--model", "gpt-5.6")
+	if err != nil {
+		t.Fatalf("review request: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodPost || capture.path != "/api/v1/sessions/mer-7/reviews/trigger" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	var req requestReviewRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if req.Harness != "codex" || req.Model != "gpt-5.6" || req.RequestedBySessionID != "mer-7" {
+		t.Fatalf("request = %+v", req)
+	}
+	if !strings.Contains(out, "started AO review for PR #42 at abc123 (running)") {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+func TestReviewRequestRejectsRecursiveReviewer(t *testing.T) {
+	setConfigEnv(t)
+	t.Setenv("AO_SESSION_ID", "mer-7")
+	t.Setenv("AO_REVIEW_SESSION_ID", "review-7")
+
+	_, _, err := executeCLI(t, aliveDeps(), "review", "request")
+	if ExitCode(err) != 2 || err == nil || !strings.Contains(err.Error(), "cannot run inside an AO reviewer session") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReviewTriggerRejectsRecursiveReviewer(t *testing.T) {
+	setConfigEnv(t)
+	t.Setenv("AO_REVIEW_SESSION_ID", "review-7")
+
+	_, _, err := executeCLI(t, aliveDeps(), "review", "trigger", "mer-7")
+	if ExitCode(err) != 2 || err == nil || !strings.Contains(err.Error(), "cannot run inside an AO reviewer session") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReviewRequestWorkerCannotTargetAnotherSession(t *testing.T) {
+	setConfigEnv(t)
+	t.Setenv("AO_SESSION_ID", "mer-7")
+	t.Setenv("AO_REVIEW_SESSION_ID", "")
+
+	_, _, err := executeCLI(t, aliveDeps(), "review", "request", "mer-8")
+	if ExitCode(err) != 2 || err == nil || !strings.Contains(err.Error(), "only request review for its own") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReviewStatusShowsFindingsForOrigin(t *testing.T) {
+	cfg := setConfigEnv(t)
+	t.Setenv("AO_SESSION_ID", "mer-7")
+	srv, capture := reviewServer(t, http.StatusOK, `{"reviewerHarness":"codex","reviews":[{"prNumber":42,"title":"Fix race","targetSha":"abc123","status":"changes_requested","latestRun":{"id":"run-1","status":"complete","verdict":"changes_requested","body":"guard the transaction"}}]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "review", "status")
+	if err != nil {
+		t.Fatalf("review status: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodGet || capture.path != "/api/v1/sessions/mer-7/reviews" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	for _, want := range []string{"#42", "changes_requested", "guard the transaction"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q: %s", want, out)
+		}
+	}
+}
+
 func TestReviewSubmitReadsBodyFile(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"verdict":"changes_requested"}}`)

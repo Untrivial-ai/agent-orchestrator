@@ -245,7 +245,14 @@ function SettingsBody({
 							...sharedAgentConfig,
 							permissions: form.permissions || undefined,
 						}),
-						reviewers: form.reviewerHarness ? [{ harness: form.reviewerHarness }] : undefined,
+						reviewers: form.reviewerHarness
+							? [{
+									harness: form.reviewerHarness,
+									model: form.reviewerHarness === initialReviewerHarness
+										? config.reviewers?.[0]?.model
+										: undefined,
+								}]
+							: undefined,
 						trackerIntake: buildIntake(intakeForm),
 						autoReview: form.autoReview,
 					};

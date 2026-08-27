@@ -15,6 +15,7 @@ import (
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 )
 
 // HTTP response envelopes for the projects surface — the SINGLE definition of
@@ -731,6 +732,7 @@ type SessionPRSummary struct {
 	ChangedFiles     int                          `json:"changedFiles"`
 	CI               SessionPRCISummary           `json:"ci"`
 	Review           SessionPRReviewSummary       `json:"review"`
+	AOReview         *SessionPRAOReviewSummary    `json:"aoReview,omitempty"`
 	Mergeability     SessionPRMergeabilitySummary `json:"mergeability"`
 	StateChangedAt   *time.Time                   `json:"stateChangedAt,omitempty"`
 	CreatedAt        *time.Time                   `json:"createdAt,omitempty"`
@@ -762,6 +764,19 @@ type SessionPRReviewSummary struct {
 	UnresolvedBy               []SessionPRUnresolvedReviewer `json:"unresolvedBy"`
 	ResolvedBy                 []SessionPRUnresolvedReviewer `json:"resolvedBy,omitempty"`
 	Reviews                    []SessionPRReviewEntry        `json:"reviews,omitempty"`
+}
+
+// SessionPRAOReviewSummary is AO's exact-head review state for a session PR.
+type SessionPRAOReviewSummary struct {
+	State                contract.AOReviewState   `json:"state" enum:"needs_review,running,up_to_date,changes_requested,ineligible"`
+	Verdict              contract.AOReviewVerdict `json:"verdict" enum:",approved,changes_requested"`
+	RunID                string                   `json:"runId,omitempty"`
+	TargetSHA            string                   `json:"targetSha,omitempty"`
+	Harness              string                   `json:"harness,omitempty"`
+	Model                string                   `json:"model,omitempty"`
+	RequestedBySessionID string                   `json:"requestedBySessionId,omitempty"`
+	Body                 string                   `json:"body,omitempty"`
+	CreatedAt            *time.Time               `json:"createdAt,omitempty"`
 }
 
 // SessionPRReviewEntry is one submitted provider review summary: a reviewer's
@@ -834,6 +849,7 @@ func NewSessionPRSummary(in sessionsvc.PRSummary) SessionPRSummary {
 		ChangedFiles:     in.ChangedFiles,
 		CI:               newSessionPRCISummary(in.CI),
 		Review:           newSessionPRReviewSummary(in.Review),
+		AOReview:         newSessionPRAOReviewSummary(in.AOReview),
 		Mergeability:     newSessionPRMergeabilitySummary(in.Mergeability),
 		StateChangedAt:   optionalTime(in.StateChangedAt),
 		CreatedAt:        optionalTime(in.CreatedAt),
@@ -841,6 +857,14 @@ func NewSessionPRSummary(in sessionsvc.PRSummary) SessionPRSummary {
 		ObservedAt:       in.ObservedAt,
 		CIObservedAt:     in.CIObservedAt,
 		ReviewObservedAt: in.ReviewObservedAt,
+	}
+}
+
+func newSessionPRAOReviewSummary(in sessionsvc.PRAOReviewSummary) *SessionPRAOReviewSummary {
+	return &SessionPRAOReviewSummary{
+		State: in.State, Verdict: in.Verdict, RunID: in.RunID, TargetSHA: in.TargetSHA,
+		Harness: in.Harness, Model: in.Model, RequestedBySessionID: in.RequestedBySessionID,
+		Body: in.Body, CreatedAt: optionalTime(in.CreatedAt),
 	}
 }
 
@@ -1982,7 +2006,9 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 // it for this pass only, without editing project config, so one session's choice
 // cannot change what another session in the project runs.
 type TriggerReviewRequest struct {
-	Harness domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	Harness              domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	Model                string                 `json:"model,omitempty" maxLength:"256" description:"Request-scoped reviewer model override; empty uses the configured/default model."`
+	RequestedBySessionID domain.SessionID       `json:"requestedBySessionId,omitempty" description:"Originating worker session. Set by the worker CLI; omitted by UI/orchestrator actions."`
 }
 
 // ResolveReviewCommentRequest is the body of POST /api/v1/sessions/{sessionId}/reviews/comments/resolve.

@@ -31,6 +31,9 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 	return domain.ReviewerKiloCode
 }
 
+// SupportsReviewModelSelection reports that this adapter forwards model overrides.
+func (r *Reviewer) SupportsReviewModelSelection() bool { return true }
+
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 
@@ -40,6 +43,7 @@ var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 // AO reuses reviewer panes and injects later review tasks into them.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
+		Config:           ports.AgentConfig{Model: inv.Model},
 		SessionID:        inv.ReviewerID,
 		WorkspacePath:    inv.WorkspacePath,
 		Prompt:           inv.Prompt,

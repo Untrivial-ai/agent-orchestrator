@@ -30,6 +30,9 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 	return domain.ReviewerOpenCode
 }
 
+// SupportsReviewModelSelection reports that this adapter forwards model overrides.
+func (r *Reviewer) SupportsReviewModelSelection() bool { return true }
+
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 var _ ports.ReviewerRestorer = (*Reviewer)(nil)
@@ -44,6 +47,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 		prompt = strings.TrimSpace(inv.SystemPrompt + "\n\n" + inv.Prompt)
 	}
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
+		Config:           ports.AgentConfig{Model: inv.Model},
 		SessionID:        inv.ReviewerID,
 		WorkspacePath:    inv.WorkspacePath,
 		Prompt:           prompt,
@@ -104,7 +108,7 @@ func (r *Reviewer) ReviewMessage(_ context.Context, inv ports.ReviewInvocation) 
 // ReviewRestoreCommand resumes the reviewer OpenCode conversation captured
 // from hooks, reapplying the same read-only reviewer config as a fresh launch.
 func (r *Reviewer) ReviewRestoreCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, bool, error) {
-	cmd, ok, err := agentrestore.Command(ctx, r.agent, inv, agentrestore.Options{Permissions: ports.PermissionModeAuto})
+	cmd, ok, err := agentrestore.Command(ctx, r.agent, inv, agentrestore.Options{Config: ports.AgentConfig{Model: inv.Model}, Permissions: ports.PermissionModeAuto})
 	if err != nil || !ok {
 		return cmd, ok, err
 	}

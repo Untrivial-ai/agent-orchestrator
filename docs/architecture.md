@@ -473,6 +473,8 @@ erDiagram
     conversations ||--o{ conversation_messages : contains
     conversations ||--o{ conversation_activities : contains
     sessions ||--o{ pull_requests : owns
+    sessions ||--o{ reviews : owns_reviewer
+    reviews ||--o{ review_runs : records_head_pinned_passes
     pull_requests ||--o{ pr_checks : has
     pull_requests ||--o{ pr_review_threads : has
     pull_requests ||--o{ pr_comments : has
@@ -480,6 +482,7 @@ erDiagram
     change_log }|--|| projects : tracks
     change_log }|--|| sessions : tracks
     change_log }|--|| pull_requests : tracks
+    change_log }|--|| review_runs : tracks
 
     projects {
         string id PK
@@ -584,7 +587,8 @@ flowchart TD
     PRState -->|draft| Draft[draft]
     PRState -->|changes requested| Changes[changes_requested]
     PRState -->|not mergeable| Conflict[merge_conflict]
-    PRState -->|mergeable| Mergeable[mergeable]
+    PRState -->|mergeable + AO approved<br/>for current head| Mergeable[mergeable]
+    PRState -->|mergeable + AO review pending| ReviewPending
     PRState -->|approved| Approved[approved]
     PRState -->|review pending| ReviewPending[review_pending]
     PRState -->|open| PROpen[pr_open]

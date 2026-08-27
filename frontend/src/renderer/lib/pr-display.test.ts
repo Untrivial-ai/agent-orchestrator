@@ -27,6 +27,7 @@ const summary = (overrides: Partial<SessionPRSummary> = {}): SessionPRSummary =>
 	changedFiles: 2,
 	ci: { autoInjectCI: true, state: "passing", failingChecks: [] },
 	review: { decision: "approved", hasUnresolvedHumanComments: false, unresolvedBy: [] },
+	aoReview: { state: "up_to_date", verdict: "approved", targetSha: "abc123" },
 	mergeability: { state: "mergeable", reasons: [], prUrl: "https://github.com/acme/repo/pull/7" },
 	updatedAt: "2026-06-15T00:00:00Z",
 	observedAt: "2026-06-15T00:00:00Z",
@@ -235,6 +236,15 @@ describe("prCardPresentation", () => {
 			tone: "review",
 		});
 		expect(presentation.supporting.map((status) => status.label)).toEqual(["Checks passing"]);
+	});
+
+	it("requires AO approval for the current head before showing mergeable", () => {
+		const presentation = prCardPresentation(summary({
+			aoReview: { state: "needs_review", verdict: "", targetSha: "abc123" },
+		}));
+
+		expect(presentation.primary).toMatchObject({ key: "review", label: "Review required" });
+		expect(presentation.readiness?.label).toBe("Not mergeable yet");
 	});
 
 	it("shows checking merge readiness while provider state is pending", () => {

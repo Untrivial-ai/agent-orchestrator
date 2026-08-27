@@ -139,6 +139,7 @@ const prSummary = (
       hasUnresolvedHumanComments: false,
       unresolvedBy: [],
     },
+    aoReview: { state: "up_to_date", verdict: "approved", targetSha: `sha-${number}` },
     mergeability: {
       state: "mergeable",
       reasons: [],
@@ -551,6 +552,23 @@ describe("SessionInspector PR section", () => {
     expect(
       screen.queryByRole("button", { name: "Merge PR #7" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not offer Merge until AO approves the current head", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open")])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+          prSummary(7, "open", {
+            review: { decision: "approved", hasUnresolvedHumanComments: false, unresolvedBy: [] },
+            aoReview: { state: "needs_review", verdict: "", targetSha: "sha-7" },
+          }),
+        ]);
+      },
+    );
+
+    expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
   });
 
   it.each(["unknown", "blocked", "unstable"] as const)(

@@ -10,8 +10,16 @@ import (
 )
 
 type fakeActionStore struct {
-	pr domain.PullRequest
-	ok bool
+	pr         domain.PullRequest
+	ok         bool
+	aoApproved bool
+}
+
+func (f *fakeActionStore) ListReviewRunsBySession(context.Context, domain.SessionID) ([]domain.ReviewRun, error) {
+	if !f.aoApproved {
+		return nil, nil
+	}
+	return []domain.ReviewRun{{PRURL: f.pr.URL, TargetSHA: f.pr.HeadSHA, Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved}}, nil
 }
 
 func (f *fakeActionStore) GetPR(context.Context, string) (domain.PullRequest, bool, error) {
@@ -61,7 +69,7 @@ func mergeableActionFixture() (domain.PullRequest, *fakeSCMAction) {
 
 func TestActionServiceMerge_GuardsAndSquashMergesExactHead(t *testing.T) {
 	pr, scm := mergeableActionFixture()
-	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true}, Reader: scm, Merger: scm})
+	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true, aoApproved: true}, Reader: scm, Merger: scm})
 	result, err := svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: pr.HeadSHA})
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +84,7 @@ func TestActionServiceMerge_GuardsAndSquashMergesExactHead(t *testing.T) {
 
 func TestActionServiceMerge_FailsClosedForStaleHeadOrReadiness(t *testing.T) {
 	pr, scm := mergeableActionFixture()
-	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true}, Reader: scm, Merger: scm})
+	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true, aoApproved: true}, Reader: scm, Merger: scm})
 	_, err := svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})
 	if !errors.Is(err, ErrPRHeadChanged) || scm.mergeCalls != 0 {
 		t.Fatalf("stale head error = %v, calls = %d", err, scm.mergeCalls)
@@ -84,10 +92,20 @@ func TestActionServiceMerge_FailsClosedForStaleHeadOrReadiness(t *testing.T) {
 
 	pr, scm = mergeableActionFixture()
 	scm.observation.CI.Summary = string(domain.CIPending)
-	svc = NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true}, Reader: scm, Merger: scm})
+	svc = NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true, aoApproved: true}, Reader: scm, Merger: scm})
 	_, err = svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: pr.HeadSHA})
 	if !errors.Is(err, ErrPRPreconditions) || scm.mergeCalls != 0 {
 		t.Fatalf("pending CI error = %v, calls = %d", err, scm.mergeCalls)
+	}
+}
+
+func TestActionServiceMergeRequiresCurrentHeadAOApproval(t *testing.T) {
+	pr, scm := mergeableActionFixture()
+	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true}, Reader: scm, Merger: scm})
+
+	_, err := svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: pr.HeadSHA})
+	if !errors.Is(err, ErrPRPreconditions) || scm.mergeCalls != 0 {
+		t.Fatalf("missing AO approval error = %v, calls = %d", err, scm.mergeCalls)
 	}
 }
 
@@ -153,7 +171,7 @@ func TestScmRepoForPR_NestedNamespace(t *testing.T) {
 func TestActionServiceMerge_MapsProviderConflict(t *testing.T) {
 	pr, scm := mergeableActionFixture()
 	scm.mergeErr = ports.ErrSCMHeadChanged
-	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true}, Reader: scm, Merger: scm})
+	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true, aoApproved: true}, Reader: scm, Merger: scm})
 	_, err := svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: pr.HeadSHA})
 	if !errors.Is(err, ErrPRHeadChanged) {
 		t.Fatalf("error = %v", err)

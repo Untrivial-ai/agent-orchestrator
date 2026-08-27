@@ -21,6 +21,10 @@ type fakeReviewer struct {
 	env              map[string]string
 }
 
+type fakeModelReviewer struct{ fakeReviewer }
+
+func (*fakeModelReviewer) SupportsReviewModelSelection() bool { return true }
+
 func (f *fakeReviewer) ReviewCommand(_ context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	f.gotInv = inv
 	return ports.ReviewCommandSpec{Argv: []string{"greptile", "review"}, Env: f.env, WorkingDirectory: f.workingDirectory}, nil
@@ -452,6 +456,24 @@ func TestLauncherSpawnReturnsStableHandle(t *testing.T) {
 	}
 	if !strings.Contains(string(system), "Code reviewer role") || !strings.Contains(string(system), "exact file path in that request") || strings.Contains(string(system), filepath.ToSlash(taskPath)) {
 		t.Fatalf("system prompt = %q", system)
+	}
+}
+
+func TestLauncherModelSelectionIsForwardedOrRejectedExplicitly(t *testing.T) {
+	spec := launchSpec()
+	spec.Model = "model-a"
+	unsupported := NewLauncher(fakeReviewerResolver{reviewer: &fakeReviewer{}, ok: true}, &fakeRuntime{}, t.TempDir())
+	if _, err := unsupported.Spawn(context.Background(), spec); err == nil || !strings.Contains(err.Error(), "does not support model selection") {
+		t.Fatalf("unsupported model selection err = %v", err)
+	}
+
+	reviewer := &fakeModelReviewer{}
+	supported := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{}, t.TempDir())
+	if _, err := supported.Spawn(context.Background(), spec); err != nil {
+		t.Fatalf("supported model selection: %v", err)
+	}
+	if reviewer.gotInv.Model != "model-a" {
+		t.Fatalf("invocation model = %q, want model-a", reviewer.gotInv.Model)
 	}
 }
 

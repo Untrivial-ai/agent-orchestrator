@@ -42,6 +42,7 @@ type Store interface {
 	ListPRReviews(ctx context.Context, prURL string) ([]domain.PullRequestReview, error)
 	ListPRReviewThreads(ctx context.Context, prURL string) ([]domain.PullRequestReviewThread, error)
 	ListPRComments(ctx context.Context, prURL string) ([]domain.PullRequestComment, error)
+	ListReviewRunsBySession(ctx context.Context, id domain.SessionID) ([]domain.ReviewRun, error)
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
 }
 
@@ -1103,6 +1104,11 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 		return domain.Session{}, fmt.Errorf("pr facts %s: %w", rec.ID, err)
 	}
 	prs = deduplicatePRFacts(prs)
+	runs, err := s.store.ListReviewRunsBySession(ctx, rec.ID)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("review runs %s: %w", rec.ID, err)
+	}
+	applyAOReviewFacts(prs, runs)
 	return domain.Session{
 		SessionRecord:    rec,
 		Status:           deriveStatus(rec, prs, s.now(), s.harnessSignals(rec.Harness)),
@@ -1110,6 +1116,24 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 		TerminalHandleID: rec.Metadata.RuntimeHandleID,
 		PRs:              prs,
 	}, nil
+}
+
+func applyAOReviewFacts(prs []domain.PRFacts, runs []domain.ReviewRun) {
+	for i := range prs {
+		var latest *domain.ReviewRun
+		for j := range runs {
+			run := &runs[j]
+			if run.PRURL != prs[i].URL || run.TargetSHA == "" || !strings.EqualFold(run.TargetSHA, prs[i].HeadSHA) {
+				continue
+			}
+			if latest == nil || run.CreatedAt.After(latest.CreatedAt) {
+				latest = run
+			}
+		}
+		if latest != nil && (latest.Status == domain.ReviewRunComplete || latest.Status == domain.ReviewRunDelivered) {
+			prs[i].AOReview = latest.Verdict
+		}
+	}
 }
 
 // now tolerates a zero-value Service (tests construct the struct literally

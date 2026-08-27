@@ -24,6 +24,7 @@ import (
 var (
 	ErrInvalid             = reviewcore.ErrInvalid
 	ErrNotFound            = reviewcore.ErrNotFound
+	ErrStaleHead           = errors.New("review: pull request head changed")
 	ErrAgentBinaryNotFound = ports.ErrAgentBinaryNotFound
 )
 
@@ -52,6 +53,7 @@ func reviewErrorKind(err error) string {
 // Manager is the reviews surface the HTTP controller depends on.
 type Manager interface {
 	Trigger(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (reviewcore.TriggerResult, error)
+	Request(ctx context.Context, workerID domain.SessionID, request reviewcore.Request) (reviewcore.TriggerResult, error)
 	RequestRereview(ctx context.Context, workerID domain.SessionID, prURL, reviewer string) error
 	ResolveReviewComment(ctx context.Context, workerID domain.SessionID, prURL, commentURL string) error
 	TriggerAuto(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (reviewcore.TriggerResult, error)
@@ -78,7 +80,7 @@ type Service struct {
 	// engineTrigger indirects the engine's source-tagged trigger so the
 	// instrumented path can be exercised without standing up a full engine and
 	// its eighteen-method store. Defaulted in New; only tests replace it.
-	engineTrigger func(context.Context, domain.SessionID, domain.ReviewerHarness, domain.ReviewTriggerSource) (reviewcore.TriggerResult, error)
+	engineTrigger func(context.Context, domain.SessionID, reviewcore.Request, domain.ReviewTriggerSource) (reviewcore.TriggerResult, error)
 }
 
 var _ Manager = (*Service)(nil)
@@ -90,6 +92,7 @@ type Store interface {
 	GetReviewRun(ctx context.Context, id string) (domain.ReviewRun, bool, error)
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error)
+	CompleteReviewRunIfHeadCurrent(ctx context.Context, id string, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error)
 	MarkReviewRunDelivered(ctx context.Context, id string, deliveredAt time.Time) (bool, error)
 	ListPRsBySession(ctx context.Context, id domain.SessionID) ([]domain.PullRequest, error)
 	ListPRReviews(ctx context.Context, prURL string) ([]domain.PullRequestReview, error)
@@ -171,10 +174,13 @@ func New(engine *reviewcore.Engine, store Store, opts ...Option) *Service {
 		s.engineTrigger = func(
 			ctx context.Context,
 			workerID domain.SessionID,
-			harness domain.ReviewerHarness,
+			request reviewcore.Request,
 			source domain.ReviewTriggerSource,
 		) (reviewcore.TriggerResult, error) {
-			return s.engine.TriggerWithSource(ctx, workerID, harness, source)
+			if source == domain.ReviewTriggerAuto {
+				return s.engine.TriggerWithSource(ctx, workerID, request.Harness, source)
+			}
+			return s.engine.Request(ctx, workerID, request)
 		}
 	}
 	return s
@@ -391,12 +397,18 @@ func (s *Service) Trigger(
 	workerID domain.SessionID,
 	harness domain.ReviewerHarness,
 ) (reviewcore.TriggerResult, error) {
-	return s.triggerWithSource(ctx, workerID, harness, domain.ReviewTriggerManual)
+	return s.Request(ctx, workerID, reviewcore.Request{Harness: harness})
+}
+
+// Request starts a manual review using the operation shared by the UI,
+// orchestrator automation, and the worker-facing CLI.
+func (s *Service) Request(ctx context.Context, workerID domain.SessionID, request reviewcore.Request) (reviewcore.TriggerResult, error) {
+	return s.triggerWithSource(ctx, workerID, request, domain.ReviewTriggerManual)
 }
 
 // TriggerAuto starts a daemon-initiated review pass.
 func (s *Service) TriggerAuto(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (reviewcore.TriggerResult, error) {
-	return s.triggerWithSource(ctx, workerID, harness, domain.ReviewTriggerAuto)
+	return s.triggerWithSource(ctx, workerID, reviewcore.Request{Harness: harness}, domain.ReviewTriggerAuto)
 }
 
 // triggerWithSource is the single instrumented trigger path. Both entry points
@@ -407,10 +419,10 @@ func (s *Service) TriggerAuto(ctx context.Context, workerID domain.SessionID, ha
 func (s *Service) triggerWithSource(
 	ctx context.Context,
 	workerID domain.SessionID,
-	harness domain.ReviewerHarness,
+	request reviewcore.Request,
 	source domain.ReviewTriggerSource,
 ) (reviewcore.TriggerResult, error) {
-	result, err := s.engineTrigger(ctx, workerID, harness, source)
+	result, err := s.engineTrigger(ctx, workerID, request, source)
 	if err != nil {
 		s.emit("ao.review.trigger_failed", workerID, map[string]any{
 			"error_kind": reviewErrorKind(err),
@@ -610,11 +622,19 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 		if !found {
 			return domain.ReviewRun{}, fmt.Errorf("%w: worker session %q", ErrNotFound, workerID)
 		}
-		updated, err := s.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunComplete, verdict, body, githubReviewID, session.AutoInjectReview)
+		updated, err := s.store.CompleteReviewRunIfHeadCurrent(ctx, run.ID, verdict, body, githubReviewID, session.AutoInjectReview)
 		if err != nil {
 			return domain.ReviewRun{}, err
 		}
 		if !updated {
+			current, found, getErr := s.store.GetReviewRun(ctx, runID)
+			if getErr != nil {
+				return domain.ReviewRun{}, getErr
+			}
+			if found && current.Status == domain.ReviewRunRunning {
+				_, _ = s.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunCancelled, domain.VerdictNone, "cancelled because the pull request head changed", "", session.AutoInjectReview)
+				return domain.ReviewRun{}, fmt.Errorf("%w: review run %q targeted %s", ErrStaleHead, runID, run.TargetSHA)
+			}
 			return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", ErrInvalid, runID)
 		}
 		run.Status = domain.ReviewRunComplete

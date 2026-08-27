@@ -50,6 +50,7 @@ func toContractPRFacts(prs []domain.PRFacts) []contract.PRFacts {
 			Closed:         pr.Closed,
 			CI:             pr.CI,
 			Review:         pr.Review,
+			AOReview:       pr.AOReview,
 			Mergeability:   pr.Mergeability,
 			ReviewComments: pr.ReviewComments,
 			SourceBranch:   pr.SourceBranch,

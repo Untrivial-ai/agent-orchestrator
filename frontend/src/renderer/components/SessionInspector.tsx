@@ -1109,7 +1109,7 @@ function PRSummaryCard({
 	const canMerge =
 		pr.state === "open" &&
 		pr.ci.state === "passing" &&
-		pr.review.decision === "approved" &&
+		pr.aoReview?.state === "up_to_date" &&
 		pr.mergeability.state === "mergeable" &&
 		Boolean(pr.url && pr.headSha);
 	const mergePr = useMutation({

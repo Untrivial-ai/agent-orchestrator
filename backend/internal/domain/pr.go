@@ -18,6 +18,7 @@ type PRFacts struct {
 	Closed         bool
 	CI             CIState
 	Review         ReviewDecision
+	AOReview       ReviewVerdict
 	Mergeability   Mergeability
 	ReviewComments bool // has unresolved review comments (any author) to address
 	SourceBranch   string
@@ -209,6 +210,7 @@ type MergeReadiness struct {
 	Closed             bool
 	CI                 CIState
 	Review             ReviewDecision
+	AOReview           ReviewVerdict
 	Mergeability       Mergeability
 	UnresolvedComments bool
 }
@@ -228,7 +230,7 @@ func (r MergeReadiness) ReadyToMerge() bool {
 	case CIFailing, CIPending, CIUnknown:
 		return false
 	}
-	if r.Review == ReviewChangesRequest || r.UnresolvedComments {
+	if r.AOReview != VerdictApproved || r.Review == ReviewChangesRequest || r.UnresolvedComments {
 		return false
 	}
 	return r.Mergeability == MergeMergeable

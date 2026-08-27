@@ -22,6 +22,13 @@ type Reviewer interface {
 	ReviewMessage(ctx context.Context, inv ReviewInvocation) (string, error)
 }
 
+// ReviewerModelSelector marks adapters that forward ReviewInvocation.Model to
+// their underlying agent. The launcher rejects non-empty model overrides for
+// adapters without this capability instead of silently running another model.
+type ReviewerModelSelector interface {
+	SupportsReviewModelSelection() bool
+}
+
 // ReviewCancelMode names how AO should stop a running reviewer.
 type ReviewCancelMode string
 
@@ -87,6 +94,9 @@ type ReviewInvocation struct {
 	RunID string
 	// WorkerSessionID is the worker whose PR is under review.
 	WorkerSessionID domain.SessionID
+	// Model is the request-scoped model override. Empty delegates to the
+	// configured reviewer or harness-native default.
+	Model string
 	// AgentSessionID is the reviewer's native agent conversation id, used only
 	// to resume a destroyed/recreated reviewer terminal.
 	AgentSessionID string

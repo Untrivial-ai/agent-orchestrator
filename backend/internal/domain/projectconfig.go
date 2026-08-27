@@ -85,6 +85,9 @@ type ContainerReapConfig struct {
 // AgentHarness set.
 type ReviewerConfig struct {
 	Harness ReviewerHarness `json:"harness"`
+	// Model optionally pins this reviewer to one model. An explicit review
+	// request may override it for that pass without editing project config.
+	Model string `json:"model,omitempty"`
 }
 
 // FallbackReviewerHarness is the reviewer used when a project configures none
@@ -96,22 +99,27 @@ const FallbackReviewerHarness = ReviewerClaudeCode
 // inherited from the worker. Every other reviewer requires explicit selection,
 // so adding an experimental adapter never silently changes an existing project.
 func (c ProjectConfig) ResolveReviewerHarness(worker AgentHarness) ReviewerHarness {
+	return c.ResolveReviewerConfig(worker).Harness
+}
+
+// ResolveReviewerConfig picks the configured reviewer and its default model.
+func (c ProjectConfig) ResolveReviewerConfig(worker AgentHarness) ReviewerConfig {
 	if len(c.Reviewers) > 0 {
-		return c.Reviewers[0].Harness
+		return c.Reviewers[0]
 	}
 	switch worker {
 	case HarnessClaudeCode:
-		return ReviewerClaudeCode
+		return ReviewerConfig{Harness: ReviewerClaudeCode}
 	case HarnessCodex:
-		return ReviewerCodex
+		return ReviewerConfig{Harness: ReviewerCodex}
 	case HarnessOpenCode:
-		return ReviewerOpenCode
+		return ReviewerConfig{Harness: ReviewerOpenCode}
 	case HarnessMuse:
-		return ReviewerMuse
+		return ReviewerConfig{Harness: ReviewerMuse}
 	case HarnessKimchi:
-		return ReviewerKimchi
+		return ReviewerConfig{Harness: ReviewerKimchi}
 	}
-	return FallbackReviewerHarness
+	return ReviewerConfig{Harness: FallbackReviewerHarness}
 }
 
 // RoleOverride overrides the harness and/or agent config for a session role.
@@ -194,6 +202,9 @@ func (c ProjectConfig) Validate() error {
 	for i, rv := range c.Reviewers {
 		if !rv.Harness.IsKnown() {
 			return fmt.Errorf("reviewers[%d].harness: unknown harness %q", i, rv.Harness)
+		}
+		if len(strings.TrimSpace(rv.Model)) > 256 || strings.ContainsAny(rv.Model, "\r\n\x00") {
+			return fmt.Errorf("reviewers[%d].model: must be a single line of at most 256 characters", i)
 		}
 	}
 	if err := c.TrackerIntake.Validate(); err != nil {

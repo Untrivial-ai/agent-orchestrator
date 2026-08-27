@@ -341,6 +341,20 @@ func TestNotificationStore_ReconcileAppliesFullReadyToMergePredicate(t *testing.
 			if err := s.WritePR(ctx, pr, nil, tt.comments); err != nil {
 				t.Fatalf("WritePR: %v", err)
 			}
+			review := domain.Review{
+				ID: "rev_ready", SessionID: sess.ID, ProjectID: sess.ProjectID,
+				Harness: "codex", CreatedAt: now, UpdatedAt: now,
+			}
+			if err := s.UpsertReview(ctx, review); err != nil {
+				t.Fatalf("UpsertReview: %v", err)
+			}
+			if err := s.InsertReviewRun(ctx, domain.ReviewRun{
+				ID: "run_ready", ReviewID: review.ID, SessionID: sess.ID, PRURL: prURL,
+				TargetSHA: pr.HeadSHA, Status: domain.ReviewRunComplete,
+				Verdict: domain.VerdictApproved, CreatedAt: now,
+			}); err != nil {
+				t.Fatalf("InsertReviewRun: %v", err)
+			}
 			rec := domain.NotificationRecord{
 				ID: "ntf_ready", SessionID: sess.ID, ProjectID: sess.ProjectID, PRURL: prURL,
 				Type: domain.NotificationReadyToMerge, Title: "ready", Status: domain.NotificationUnread, CreatedAt: now,

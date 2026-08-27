@@ -46,7 +46,7 @@ func TestDeriveStatusWorstWinsAcrossIndependentPRs(t *testing.T) {
 	// Two independent open PRs (both target main): mergeable vs ci_failed.
 	// CI failure is more urgent, so the session reports ci_failed.
 	prs := []domain.PRFacts{
-		{URL: "a", SourceBranch: "ao/a", TargetBranch: "main", Mergeability: domain.MergeMergeable},
+		{URL: "a", SourceBranch: "ao/a", TargetBranch: "main", Mergeability: domain.MergeMergeable, AOReview: domain.VerdictApproved},
 		{URL: "b", SourceBranch: "ao/b", TargetBranch: "main", CI: domain.CIFailing},
 	}
 	if got := deriveStatus(live(), prs, statusNow, true); got != domain.StatusCIFailed {
@@ -56,8 +56,8 @@ func TestDeriveStatusWorstWinsAcrossIndependentPRs(t *testing.T) {
 
 func TestDeriveStatusAllMergeableReportsMergeable(t *testing.T) {
 	prs := []domain.PRFacts{
-		{URL: "a", SourceBranch: "ao/a", TargetBranch: "main", Mergeability: domain.MergeMergeable},
-		{URL: "b", SourceBranch: "ao/b", TargetBranch: "main", Mergeability: domain.MergeMergeable},
+		{URL: "a", SourceBranch: "ao/a", TargetBranch: "main", Mergeability: domain.MergeMergeable, AOReview: domain.VerdictApproved},
+		{URL: "b", SourceBranch: "ao/b", TargetBranch: "main", Mergeability: domain.MergeMergeable, AOReview: domain.VerdictApproved},
 	}
 	if got := deriveStatus(live(), prs, statusNow, true); got != domain.StatusMergeable {
 		t.Fatalf("got %q want mergeable", got)
@@ -68,7 +68,7 @@ func TestDeriveStatusStackedChildExemptFromAggregation(t *testing.T) {
 	// Root mergeable; blocked child is pr_open. Child is exempt, so the session
 	// reports mergeable rather than being dragged down to pr_open.
 	prs := []domain.PRFacts{
-		{URL: "root", SourceBranch: "ao/abc", TargetBranch: "main", Mergeability: domain.MergeMergeable},
+		{URL: "root", SourceBranch: "ao/abc", TargetBranch: "main", Mergeability: domain.MergeMergeable, AOReview: domain.VerdictApproved},
 		{URL: "child", SourceBranch: "ao/abc/x", TargetBranch: "ao/abc"},
 	}
 	if got := deriveStatus(live(), prs, statusNow, true); got != domain.StatusMergeable {

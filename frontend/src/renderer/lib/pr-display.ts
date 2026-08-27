@@ -177,9 +177,9 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 		primary = cardStatus("ci", "pr.card.checksFailing", "error", ciSummary(pr), ciLinks(pr));
 	} else if (pr.mergeability.state === "conflicting") {
 		primary = cardStatus("merge", "pr.card.mergeConflict", "error", mergeSummary(pr), mergeLinks(pr));
-	} else if (pr.review.decision === "changes_requested" || pr.review.hasUnresolvedHumanComments) {
+	} else if (pr.aoReview?.state === "changes_requested" || pr.review.decision === "changes_requested" || pr.review.hasUnresolvedHumanComments) {
 		primary = cardStatus("review", "pr.card.changesRequested", "warning", reviewSummary(pr), reviewLinks(pr));
-	} else if (pr.review.decision === "review_required") {
+	} else if (pr.aoReview?.state !== "up_to_date" || pr.review.decision === "review_required") {
 		primary = cardStatus("review", "pr.card.reviewRequired", "review", appI18n.t("pr.card.reviewRequiredDetail"));
 	} else if (pr.ci.state === "pending") {
 		primary = cardStatus("ci", "pr.card.checksPending", "neutral", undefined, [], prChecksUrl(pr), true);
@@ -195,7 +195,7 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 		);
 	} else if (pr.state === "draft") {
 		primary = cardStatus("lifecycle", "pr.card.draft", "neutral");
-	} else if (pr.mergeability.state === "mergeable") {
+	} else if (pr.mergeability.state === "mergeable" && pr.aoReview?.state === "up_to_date") {
 		primary = cardStatus("merge", "pr.card.readyToMerge", "success");
 	} else if (pr.review.decision === "approved") {
 		primary = cardStatus("review", "pr.card.reviewApproved", "success");
@@ -226,7 +226,7 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 			statusRows.push(cardStatus("ci", pr.ci.state === "pending" ? "pr.card.checksPending" : "pr.card.checksLoading", "neutral", undefined, [], prChecksUrl(pr), true));
 		}
 		statusRows.push(cardStatus("review", "pr.card.reviewStatus", reviewTone(pr.review.decision, pr.review.hasUnresolvedHumanComments), reviewStatusDetail(pr)));
-		const mergeable = pr.mergeability.state !== "conflicting" && pr.ci.state === "passing" && pr.review.decision === "approved";
+		const mergeable = pr.mergeability.state !== "conflicting" && pr.ci.state === "passing" && pr.aoReview?.state === "up_to_date";
 		const checkingReadiness = pr.ci.state === "pending" || pr.ci.state === "unknown" || pr.mergeability.state === "unknown";
 		return { primary, supporting, statusRows, readiness: {
 			label: appI18n.t(checkingReadiness ? "pr.merge.checkingReadiness" : mergeable ? "pr.merge.mergeable" : "pr.merge.notMergeableYet"),
@@ -277,7 +277,7 @@ function reviewStatusDetail(pr: SessionPRSummary): string {
 function mergeReadinessDetail(pr: SessionPRSummary): string {
 	if (pr.mergeability.state === "conflicting") return appI18n.t("pr.merge.reasonConflict");
 	if (pr.ci.state === "failing") return appI18n.t("pr.merge.reasonChecksFailing");
-	if (pr.review.decision !== "approved") return appI18n.t("pr.merge.reasonReview");
+	if (pr.aoReview?.state !== "up_to_date") return appI18n.t("pr.merge.reasonReview");
 	return appI18n.t("pr.merge.reasonReady");
 }
 

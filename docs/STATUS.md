@@ -59,8 +59,12 @@ surface (`npm run sqlc`, `npm run api`).
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
   `/prs/{id}/resolve-comments`.
-- Review routes registered: `GET /reviews`, `POST /reviews/execute`,
-  `POST /reviews/{id}/send`.
+- First-class AO review requests share one daemon/service operation across the
+  CLI and desktop. Requests persist the originating worker, configured or
+  overridden reviewer/model, PR, and immutable head SHA; active/duplicate
+  requests are reused, stale-head results are rejected, findings are exposed on
+  the session PR summary, and merge readiness requires an approved AO result
+  for the current head.
 - Interactive reviewer panes for Aider, Agy, Amp, Auggie, Autohand,
   Claude Code, Cline, Codex, Continue, GitHub Copilot, Crush, Cursor, Devin,
   Droid, Goose, Grok, Kilo Code, Kimchi, Kiro, Kimi, OpenCode, Pi, Qwen, and Vibe. Pi uses an AO-data-owned extension with built-in/project

@@ -20,28 +20,31 @@ import (
 
 type fakeReviewService struct {
 	// triggeredHarness records the override the controller forwarded.
-	triggeredHarness  domain.ReviewerHarness
-	triggerErr        error
-	cancelErr         error
-	trigger           reviewcore.TriggerResult
-	cancel            reviewcore.CancelResult
-	list              reviewcore.SessionReviews
-	submitted         []reviewsvc.SubmittedReview
-	activityID        string
-	activitySignal    reviewsvc.ActivitySignal
-	activityErr       error
-	killed            bool
-	teardown          bool
-	restored          bool
-	switchedHarness   domain.ReviewerHarness
-	rereviewSession   domain.SessionID
-	rereviewPRURL     string
-	rereviewReviewer  string
-	rereviewErr       error
-	resolveSession    domain.SessionID
-	resolvePRURL      string
-	resolveCommentURL string
-	resolveErr        error
+	triggeredHarness   domain.ReviewerHarness
+	triggeredModel     string
+	triggeredRequester domain.SessionID
+	triggerErr         error
+	submitErr          error
+	cancelErr          error
+	trigger            reviewcore.TriggerResult
+	cancel             reviewcore.CancelResult
+	list               reviewcore.SessionReviews
+	submitted          []reviewsvc.SubmittedReview
+	activityID         string
+	activitySignal     reviewsvc.ActivitySignal
+	activityErr        error
+	killed             bool
+	teardown           bool
+	restored           bool
+	switchedHarness    domain.ReviewerHarness
+	rereviewSession    domain.SessionID
+	rereviewPRURL      string
+	rereviewReviewer   string
+	rereviewErr        error
+	resolveSession     domain.SessionID
+	resolvePRURL       string
+	resolveCommentURL  string
+	resolveErr         error
 }
 
 func (f *fakeReviewService) Trigger(
@@ -57,6 +60,12 @@ func (f *fakeReviewService) Trigger(
 		return f.trigger, nil
 	}
 	return reviewcore.TriggerResult{Run: domain.ReviewRun{ID: "run-1"}, Created: true}, nil
+}
+
+func (f *fakeReviewService) Request(ctx context.Context, workerID domain.SessionID, request reviewcore.Request) (reviewcore.TriggerResult, error) {
+	f.triggeredModel = request.Model
+	f.triggeredRequester = request.RequestedBy
+	return f.Trigger(ctx, workerID, request.Harness)
 }
 
 func (f *fakeReviewService) RequestRereview(_ context.Context, workerID domain.SessionID, prURL, reviewer string) error {
@@ -78,7 +87,7 @@ func (f *fakeReviewService) TriggerAuto(context.Context, domain.SessionID, domai
 }
 
 func (f *fakeReviewService) Submit(context.Context, domain.SessionID, string, domain.ReviewVerdict, string, string) (domain.ReviewRun, error) {
-	return domain.ReviewRun{}, nil
+	return domain.ReviewRun{}, f.submitErr
 }
 
 func (f *fakeReviewService) ApplyReviewActivitySignal(_ context.Context, reviewSessionID string, signal reviewsvc.ActivitySignal) error {
@@ -127,6 +136,9 @@ func (f *fakeReviewService) SwitchReviewer(_ context.Context, _ domain.SessionID
 }
 
 func (f *fakeReviewService) SubmitMany(_ context.Context, _ domain.SessionID, reviews []reviewsvc.SubmittedReview) ([]domain.ReviewRun, error) {
+	if f.submitErr != nil {
+		return nil, f.submitErr
+	}
 	f.submitted = append([]reviewsvc.SubmittedReview(nil), reviews...)
 	runs := make([]domain.ReviewRun, 0, len(reviews))
 	for _, review := range reviews {
@@ -233,6 +245,27 @@ func TestReviewsTriggerIncludesBatchFields(t *testing.T) {
 			t.Fatalf("body contains deprecated field %s: %s", unwanted, body)
 		}
 	}
+}
+
+func TestReviewsTriggerForwardsRequestOriginAndOverrides(t *testing.T) {
+	svc := &fakeReviewService{}
+	srv := newReviewTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/trigger", `{"harness":"codex","model":"gpt-5.6","requestedBySessionId":"mer-1"}`)
+	assertJSON(t, headers)
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if svc.triggeredHarness != domain.ReviewerCodex || svc.triggeredModel != "gpt-5.6" || svc.triggeredRequester != "mer-1" {
+		t.Fatalf("forwarded harness/model/requester = %q/%q/%q", svc.triggeredHarness, svc.triggeredModel, svc.triggeredRequester)
+	}
+}
+
+func TestReviewsSubmitStaleHeadReturnsConflict(t *testing.T) {
+	srv := newReviewTestServer(t, &fakeReviewService{submitErr: reviewsvc.ErrStaleHead})
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/submit", `{"runId":"run-1","verdict":"approved"}`)
+	assertJSON(t, headers)
+	assertErrorCode(t, body, status, http.StatusConflict, "REVIEW_HEAD_CHANGED")
 }
 
 func TestReviewsResolveCommentForwardsPRAndComment(t *testing.T) {

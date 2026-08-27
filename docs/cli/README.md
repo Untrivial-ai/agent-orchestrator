@@ -61,6 +61,8 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | `ao preview [url]`                  | `POST /api/v1/sessions/{id}/preview`           |
 | `ao preview start/status/stop`      | `POST/GET/DELETE /api/v1/sessions/{id}/preview/server` |
 | `ao browser ...`                    | `GET /api/v1/browser/status`, `POST /api/v1/browser/commands` |
+| `ao review request [<id>]`          | `POST /api/v1/sessions/{id}/reviews/trigger` |
+| `ao review status [<id>]`           | `GET /api/v1/sessions/{id}/reviews` |
 | `ao hooks <agent> <event>`          | `POST /api/v1/sessions/{id}/activity` (hidden) |
 
 `ao agent ls` prints the daemon-supported agent catalog with local install/auth
@@ -171,10 +173,15 @@ query values are redacted.
 
 `go run .` in `backend/` remains a compatibility wrapper around the daemon.
 
-PR actions are available through `ao pr merge` and
-`ao pr resolve-comments`. Review actions are available through `ao review ls`,
-`ao review trigger` (also `execute` and `restart`), `ao review cancel` (also
-`stop`), and `ao review submit`.
+PR actions are available through `ao pr merge` and `ao pr resolve-comments`.
+Workers request the configured AO reviewer with `ao review request` and read
+current-head status/findings with `ao review status`; both default to
+`AO_SESSION_ID`. Optional `--reviewer` and `--model` flags request an explicit
+second opinion; adapters that cannot apply a model override reject it rather
+than silently using another model. The request uses the same daemon operation as `ao review
+trigger` (also `execute` and `restart`). Reviewers report through `ao review
+submit`, and operators can use `ao review ls` or `ao review cancel` (also
+`stop`).
 
 ## Configuration
 

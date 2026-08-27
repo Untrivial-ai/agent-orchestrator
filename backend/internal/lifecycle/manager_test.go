@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ type fakeStore struct {
 	prs        map[domain.SessionID][]domain.PullRequest
 	reviews    map[string][]domain.PullRequestReview
 	comments   map[string][]domain.PullRequestComment
+	reviewRuns map[domain.SessionID][]domain.ReviewRun
 	prPolicies map[string]bool
 	signatures map[string]string
 
@@ -38,9 +40,26 @@ func newFakeStore() *fakeStore {
 		prs:        map[domain.SessionID][]domain.PullRequest{},
 		reviews:    map[string][]domain.PullRequestReview{},
 		comments:   map[string][]domain.PullRequestComment{},
+		reviewRuns: map[domain.SessionID][]domain.ReviewRun{},
 		prPolicies: map[string]bool{},
 		signatures: map[string]string{},
 	}
+}
+
+func (f *fakeStore) ListReviewRunsBySession(_ context.Context, id domain.SessionID) ([]domain.ReviewRun, error) {
+	return append([]domain.ReviewRun(nil), f.reviewRuns[id]...), nil
+}
+
+func approveSCMHead(st *fakeStore, id domain.SessionID, obs ports.SCMObservation) {
+	st.reviewRuns[id] = []domain.ReviewRun{{
+		ID:        fmt.Sprintf("approved-%s", id),
+		SessionID: id,
+		PRURL:     obs.PR.URL,
+		TargetSHA: obs.PR.HeadSHA,
+		Status:    domain.ReviewRunComplete,
+		Verdict:   domain.VerdictApproved,
+		CreatedAt: time.Unix(1, 0),
+	}}
 }
 
 func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
@@ -3219,6 +3238,7 @@ func TestSCMObservation_Notifications(t *testing.T) {
 			sink := &fakeNotificationSink{}
 			m := New(st, nil, WithNotificationSink(sink))
 			st.sessions["mer-1"] = working("mer-1")
+			approveSCMHead(st, "mer-1", tc.obs)
 			if err := m.ApplySCMObservation(ctx, "mer-1", tc.obs); err != nil {
 				t.Fatal(err)
 			}
@@ -3261,6 +3281,7 @@ func TestSCMObservation_ResolvesReadyToMergeWhenNoLongerReady(t *testing.T) {
 			sink := &fakeNotificationSink{}
 			m := New(st, nil, WithNotificationSink(sink))
 			st.sessions["mer-1"] = working("mer-1")
+			approveSCMHead(st, "mer-1", tt.obs)
 
 			if err := m.ApplySCMObservation(ctx, "mer-1", tt.obs); err != nil {
 				t.Fatal(err)
@@ -3276,6 +3297,33 @@ func TestSCMObservation_ResolvesReadyToMergeWhenNoLongerReady(t *testing.T) {
 				t.Fatalf("resolution = %+v", got)
 			}
 		})
+	}
+}
+
+func TestSCMObservation_ReadyToMergeRequiresCurrentHeadAOApproval(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+	obs := ports.SCMObservation{
+		Fetched: true,
+		PR: ports.SCMPRObservation{
+			URL: "https://github.com/o/r/pull/1", Number: 1, HeadSHA: "new-head",
+		},
+		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewApproved)},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)},
+	}
+	st.reviewRuns["mer-1"] = []domain.ReviewRun{{
+		ID: "stale", SessionID: "mer-1", PRURL: obs.PR.URL, TargetSHA: "old-head",
+		Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, CreatedAt: time.Unix(1, 0),
+	}}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("stale AO approval emitted ready notification: %+v", sink.intents)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func TestInsertReviewRunDuplicatePRSHAMapsToSentinel(t *testing.T) {
@@ -98,6 +99,12 @@ func TestInsertReviewRunAllowsADifferentHarnessForTheSameCommit(t *testing.T) {
 	other.Harness = domain.ReviewerCodex
 	if err := s.InsertReviewRun(ctx, other); err != nil {
 		t.Fatalf("a different harness on the same commit should insert: %v", err)
+	}
+	otherModel := first
+	otherModel.ID = "run-other-model"
+	otherModel.Model = "model-b"
+	if err := s.InsertReviewRun(ctx, otherModel); err != nil {
+		t.Fatalf("a different model on the same commit should insert: %v", err)
 	}
 
 	// ...but the same harness twice is still a duplicate.
@@ -273,6 +280,7 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 	// A run inserts running and updates to complete/changes_requested.
 	if err := s.InsertReviewRun(ctx, domain.ReviewRun{
 		ID: "run-1", ReviewID: got.ID, SessionID: rec.ID, BatchID: "batch-1", Harness: domain.ReviewerHarness("greptile"),
+		Model: "model-a", RequestedBySessionID: rec.ID,
 		PRURL: got.PRURL, TargetSHA: "sha1", Status: domain.ReviewRunRunning, Verdict: domain.VerdictNone,
 		CreatedAt: now,
 	}); err != nil {
@@ -288,7 +296,7 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get run: ok=%v err=%v", ok, err)
 	}
-	if gotRun.ID != "run-1" || gotRun.SessionID != rec.ID || gotRun.BatchID != "batch-1" || gotRun.TargetSHA != "sha1" {
+	if gotRun.ID != "run-1" || gotRun.SessionID != rec.ID || gotRun.BatchID != "batch-1" || gotRun.TargetSHA != "sha1" || gotRun.Model != "model-a" || gotRun.RequestedBySessionID != rec.ID {
 		t.Fatalf("get run = %+v", gotRun)
 	}
 
@@ -332,6 +340,41 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 		t.Fatalf("second update: %v", err)
 	} else if ok {
 		t.Fatal("second update completed an already-complete run")
+	}
+}
+
+func TestCompleteReviewRunIfHeadCurrentFencesStaleAndDuplicateResults(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	prURL := "https://example/pr/1"
+	if err := s.WriteSCMObservation(ctx, domain.PullRequest{URL: prURL, SessionID: rec.ID, HeadSHA: "sha1", UpdatedAt: now}, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertReview(ctx, domain.Review{ID: "rev-1", SessionID: rec.ID, ProjectID: rec.ProjectID, Harness: domain.ReviewerCodex, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(id, sha string) {
+		t.Helper()
+		if err := s.InsertReviewRun(ctx, domain.ReviewRun{ID: id, ReviewID: "rev-1", SessionID: rec.ID, Harness: domain.ReviewerCodex, PRURL: prURL, TargetSHA: sha, Status: domain.ReviewRunRunning, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("current", "sha1")
+	if ok, err := s.CompleteReviewRunIfHeadCurrent(ctx, "current", domain.VerdictApproved, "ok", "101", true); err != nil || !ok {
+		t.Fatalf("current completion ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.CompleteReviewRunIfHeadCurrent(ctx, "current", domain.VerdictChangesRequested, "late", "102", true); err != nil || ok {
+		t.Fatalf("duplicate completion ok=%v err=%v", ok, err)
+	}
+	insert("stale", "old-sha")
+	if ok, err := s.CompleteReviewRunIfHeadCurrent(ctx, "stale", domain.VerdictApproved, "stale", "103", true); err != nil || ok {
+		t.Fatalf("stale completion ok=%v err=%v", ok, err)
 	}
 }
 

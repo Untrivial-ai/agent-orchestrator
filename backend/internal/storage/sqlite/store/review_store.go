@@ -21,6 +21,7 @@ func (s *Store) UpsertReview(ctx context.Context, r domain.Review) error {
 		SessionID:        r.SessionID,
 		ProjectID:        r.ProjectID,
 		Harness:          r.Harness,
+		Model:            r.Model,
 		PRURL:            r.PRURL,
 		ReviewerHandleID: r.ReviewerHandleID,
 		AgentSessionID:   r.AgentSessionID,
@@ -119,20 +120,22 @@ func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 		r.TriggerSource = domain.ReviewTriggerManual
 	}
 	err := s.qw.InsertReviewRun(ctx, gen.InsertReviewRunParams{
-		ID:               r.ID,
-		ReviewID:         r.ReviewID,
-		SessionID:        r.SessionID,
-		BatchID:          r.BatchID,
-		Harness:          r.Harness,
-		TriggerSource:    r.TriggerSource,
-		PRURL:            r.PRURL,
-		TargetSha:        r.TargetSHA,
-		Status:           r.Status,
-		Verdict:          r.Verdict,
-		Body:             r.Body,
-		GithubReviewID:   r.GithubReviewID,
-		CreatedAt:        r.CreatedAt,
-		AutoInjectReview: r.AutoInjectReview,
+		ID:                   r.ID,
+		ReviewID:             r.ReviewID,
+		SessionID:            r.SessionID,
+		BatchID:              r.BatchID,
+		Harness:              r.Harness,
+		Model:                r.Model,
+		RequestedBySessionID: string(r.RequestedBySessionID),
+		TriggerSource:        r.TriggerSource,
+		PRURL:                r.PRURL,
+		TargetSha:            r.TargetSHA,
+		Status:               r.Status,
+		Verdict:              r.Verdict,
+		Body:                 r.Body,
+		GithubReviewID:       r.GithubReviewID,
+		CreatedAt:            r.CreatedAt,
+		AutoInjectReview:     r.AutoInjectReview,
 	})
 	if isSQLiteUnique(err) {
 		return fmt.Errorf("insert review run for session %s pr %s sha %s: %w", r.SessionID, r.PRURL, r.TargetSHA, domain.ErrDuplicateReviewRun)
@@ -147,6 +150,27 @@ func (s *Store) UpdateReviewRunResult(ctx context.Context, id string, status dom
 	defer s.writeMu.Unlock()
 	n, err := s.qw.UpdateReviewRunResult(ctx, gen.UpdateReviewRunResultParams{
 		Status:           status,
+		Verdict:          verdict,
+		Body:             body,
+		GithubReviewID:   githubReviewID,
+		AutoInjectReview: autoInjectReview,
+		ID:               id,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// CompleteReviewRunIfHeadCurrent accepts a result only while AO's tracked PR
+// still points at the immutable head captured by the run. The status and head
+// predicates execute in one SQLite statement, fencing both concurrent submits
+// and observer updates.
+func (s *Store) CompleteReviewRunIfHeadCurrent(ctx context.Context, id string, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.CompleteReviewRunIfHeadCurrent(ctx, gen.CompleteReviewRunIfHeadCurrentParams{
+		Status:           domain.ReviewRunComplete,
 		Verdict:          verdict,
 		Body:             body,
 		GithubReviewID:   githubReviewID,
@@ -237,17 +261,32 @@ func (s *Store) GetReviewRunBySessionPRAndSHA(ctx context.Context, id domain.Ses
 	return reviewRunFromRow(row), true, nil
 }
 
-// GetReviewRunBySessionPRSHAAndHarness returns the most recent review pass for
-// a worker session, PR, commit, and reviewer harness, ok=false if none.
-func (s *Store) GetReviewRunBySessionPRSHAAndHarness(ctx context.Context, id domain.SessionID, prURL, targetSHA string, harness domain.ReviewerHarness) (domain.ReviewRun, bool, error) {
-	row, err := s.qr.GetReviewRunBySessionPRSHAAndHarness(ctx, gen.GetReviewRunBySessionPRSHAAndHarnessParams{SessionID: id, PRURL: prURL, TargetSha: targetSHA, Harness: harness})
+// GetReviewRunBySessionPRSHAHarnessAndModel returns the most recent pass for one
+// worker, PR, commit, reviewer, and model selection.
+func (s *Store) GetReviewRunBySessionPRSHAHarnessAndModel(ctx context.Context, id domain.SessionID, prURL, targetSHA string, harness domain.ReviewerHarness, model string) (domain.ReviewRun, bool, error) {
+	row, err := s.qr.GetReviewRunBySessionPRSHAHarnessAndModel(ctx, gen.GetReviewRunBySessionPRSHAHarnessAndModelParams{SessionID: id, PRURL: prURL, TargetSha: targetSHA, Harness: harness, Model: model})
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ReviewRun{}, false, nil
 	}
 	if err != nil {
-		return domain.ReviewRun{}, false, fmt.Errorf("get review run for session %s pr %s sha %s harness %s: %w", id, prURL, targetSHA, harness, err)
+		return domain.ReviewRun{}, false, fmt.Errorf("get review run for session %s pr %s sha %s harness %s model %s: %w", id, prURL, targetSHA, harness, model, err)
 	}
 	return reviewRunFromRow(row), true, nil
+}
+
+// GetReviewRunBySessionPRSHAAndHarness preserves the pre-model lookup across
+// every model selection.
+func (s *Store) GetReviewRunBySessionPRSHAAndHarness(ctx context.Context, id domain.SessionID, prURL, targetSHA string, harness domain.ReviewerHarness) (domain.ReviewRun, bool, error) {
+	r, err := s.qr.GetReviewRunBySessionPRSHAAndHarness(ctx, gen.GetReviewRunBySessionPRSHAAndHarnessParams{
+		SessionID: id, PRURL: prURL, TargetSha: targetSHA, Harness: harness,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ReviewRun{}, false, nil
+	}
+	if err != nil {
+		return domain.ReviewRun{}, false, err
+	}
+	return reviewRunFromRow(r), true, nil
 }
 
 // ListReviewRunsBySession returns all review passes for a worker session, newest first.
@@ -308,6 +347,7 @@ func reviewFromReview(r gen.Review) domain.Review {
 		SessionID:        r.SessionID,
 		ProjectID:        r.ProjectID,
 		Harness:          r.Harness,
+		Model:            r.Model,
 		PRURL:            r.PRURL,
 		ReviewerHandleID: r.ReviewerHandleID,
 		AgentSessionID:   r.AgentSessionID,
@@ -323,20 +363,22 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		deliveredAt = &t
 	}
 	return domain.ReviewRun{
-		ID:               r.ID,
-		ReviewID:         r.ReviewID,
-		SessionID:        r.SessionID,
-		BatchID:          r.BatchID,
-		Harness:          r.Harness,
-		TriggerSource:    r.TriggerSource,
-		PRURL:            r.PRURL,
-		TargetSHA:        r.TargetSha,
-		Status:           r.Status,
-		Verdict:          r.Verdict,
-		Body:             r.Body,
-		GithubReviewID:   r.GithubReviewID,
-		CreatedAt:        r.CreatedAt,
-		DeliveredAt:      deliveredAt,
-		AutoInjectReview: r.AutoInjectReview,
+		ID:                   r.ID,
+		ReviewID:             r.ReviewID,
+		SessionID:            r.SessionID,
+		BatchID:              r.BatchID,
+		Harness:              r.Harness,
+		Model:                r.Model,
+		RequestedBySessionID: domain.SessionID(r.RequestedBySessionID),
+		TriggerSource:        r.TriggerSource,
+		PRURL:                r.PRURL,
+		TargetSHA:            r.TargetSha,
+		Status:               r.Status,
+		Verdict:              r.Verdict,
+		Body:                 r.Body,
+		GithubReviewID:       r.GithubReviewID,
+		CreatedAt:            r.CreatedAt,
+		DeliveredAt:          deliveredAt,
+		AutoInjectReview:     r.AutoInjectReview,
 	}
 }

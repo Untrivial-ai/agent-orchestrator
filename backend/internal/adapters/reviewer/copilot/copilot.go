@@ -56,6 +56,9 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 	return domain.ReviewerCopilot
 }
 
+// SupportsReviewModelSelection reports that this adapter forwards model overrides.
+func (r *Reviewer) SupportsReviewModelSelection() bool { return true }
+
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 
@@ -75,6 +78,7 @@ func (r *Reviewer) PreLaunch(ctx context.Context, inv ports.ReviewInvocation) er
 // adapter maps auto to --allow-all-tools, which would defeat this policy.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
+		Config:           ports.AgentConfig{Model: inv.Model},
 		DataDir:          inv.DataDir,
 		SessionID:        inv.ReviewerID,
 		WorkspacePath:    inv.WorkspacePath,

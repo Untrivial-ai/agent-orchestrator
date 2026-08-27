@@ -363,12 +363,16 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 	if err := m.ApplyPRObservation(ctx, id, scmToPRObservation(o)); err != nil {
 		return err
 	}
-	intent, err := m.notificationIntentForCurrentSCM(ctx, id, o)
+	aoApproved, err := m.currentHeadAOApproved(ctx, id, firstSCMNonEmpty(o.PR.URL, o.PR.HTMLURL), o.PR.HeadSHA)
+	if err != nil {
+		return err
+	}
+	intent, err := m.notificationIntentForCurrentSCM(ctx, id, o, aoApproved)
 	if err != nil {
 		return err
 	}
 	m.emitNotification(ctx, intent)
-	m.resolveNotifications(ctx, readyToMergeResolutions(id, o, m.clock())...)
+	m.resolveNotifications(ctx, readyToMergeResolutions(id, o, aoApproved, m.clock())...)
 	return nil
 }
 
@@ -376,8 +380,8 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 // observation made stale. The PR either got merged/closed, or stopped being
 // mergeable — either way the "this is ready for you to merge" ping no longer
 // describes anything the user can act on.
-func readyToMergeResolutions(id domain.SessionID, o ports.SCMObservation, now time.Time) []ports.NotificationResolution {
-	if scmObservationIsReadyToMerge(o) {
+func readyToMergeResolutions(id domain.SessionID, o ports.SCMObservation, aoApproved bool, now time.Time) []ports.NotificationResolution {
+	if scmObservationIsReadyToMerge(o, aoApproved) {
 		return nil
 	}
 	return []ports.NotificationResolution{{
@@ -388,7 +392,7 @@ func readyToMergeResolutions(id domain.SessionID, o ports.SCMObservation, now ti
 	}}
 }
 
-func (m *Manager) notificationIntentForCurrentSCM(ctx context.Context, id domain.SessionID, o ports.SCMObservation) (*ports.NotificationIntent, error) {
+func (m *Manager) notificationIntentForCurrentSCM(ctx context.Context, id domain.SessionID, o ports.SCMObservation, aoApproved bool) (*ports.NotificationIntent, error) {
 	// Serialize the session snapshot with activity transitions so ready-to-merge
 	// notifications do not race against a simultaneous waiting_input update.
 	m.mu.Lock()
@@ -400,10 +404,10 @@ func (m *Manager) notificationIntentForCurrentSCM(ctx context.Context, id domain
 	if !ok {
 		return nil, nil
 	}
-	return m.notificationIntentForSCM(rec, o), nil
+	return m.notificationIntentForSCM(rec, o, aoApproved), nil
 }
 
-func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCMObservation) *ports.NotificationIntent {
+func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCMObservation, aoApproved bool) *ports.NotificationIntent {
 	prURL := firstSCMNonEmpty(o.PR.URL, o.PR.HTMLURL)
 	base := ports.NotificationIntent{
 		SessionID:          rec.ID,
@@ -426,7 +430,7 @@ func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCM
 		base.Type = domain.NotificationPRClosedUnmerged
 		return &base
 	}
-	if rec.IsTerminated || rec.Activity.State.NeedsInput() || !scmObservationIsReadyToMerge(o) {
+	if rec.IsTerminated || rec.Activity.State.NeedsInput() || !scmObservationIsReadyToMerge(o, aoApproved) {
 		return nil
 	}
 	base.Type = domain.NotificationReadyToMerge
@@ -437,16 +441,47 @@ func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCM
 // readiness rule (domain.MergeReadiness). Startup reconciliation applies the
 // same rule to the stored facts, so the two paths cannot disagree about what
 // "ready to merge" means.
-func scmObservationIsReadyToMerge(o ports.SCMObservation) bool {
+func scmObservationIsReadyToMerge(o ports.SCMObservation, aoApproved bool) bool {
+	aoReview := domain.VerdictNone
+	if aoApproved {
+		aoReview = domain.VerdictApproved
+	}
 	return domain.MergeReadiness{
 		Draft:              o.PR.Draft,
 		Merged:             o.PR.Merged,
 		Closed:             o.PR.Closed,
 		CI:                 domain.CIState(o.CI.Summary),
 		Review:             domain.ReviewDecision(o.Review.Decision),
+		AOReview:           aoReview,
 		Mergeability:       domain.Mergeability(o.Mergeability.State),
 		UnresolvedComments: hasUnresolvedSCMComments(o.Review.Threads),
 	}.ReadyToMerge()
+}
+
+type reviewRunReader interface {
+	ListReviewRunsBySession(context.Context, domain.SessionID) ([]domain.ReviewRun, error)
+}
+
+func (m *Manager) currentHeadAOApproved(ctx context.Context, id domain.SessionID, prURL, headSHA string) (bool, error) {
+	reader, ok := m.store.(reviewRunReader)
+	if !ok {
+		return false, nil
+	}
+	runs, err := reader.ListReviewRunsBySession(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	var latest *domain.ReviewRun
+	for i := range runs {
+		run := &runs[i]
+		if run.PRURL != prURL || !strings.EqualFold(run.TargetSHA, headSHA) {
+			continue
+		}
+		if latest == nil || run.CreatedAt.After(latest.CreatedAt) {
+			latest = run
+		}
+	}
+	return latest != nil && (latest.Status == domain.ReviewRunComplete || latest.Status == domain.ReviewRunDelivered) && latest.Verdict == domain.VerdictApproved, nil
 }
 
 func hasUnresolvedSCMComments(threads []ports.SCMReviewThreadObservation) bool {

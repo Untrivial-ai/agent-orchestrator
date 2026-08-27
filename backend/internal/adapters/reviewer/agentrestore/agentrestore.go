@@ -13,6 +13,7 @@ import (
 // Options carries reviewer policy that must be reapplied when resuming a native
 // agent conversation.
 type Options struct {
+	Config          ports.AgentConfig
 	Permissions     ports.PermissionMode
 	AllowedTools    []string
 	DisallowedTools []string
@@ -28,6 +29,7 @@ func Command(ctx context.Context, agent ports.Agent, inv ports.ReviewInvocation,
 		metadata[ports.MetadataKeyAgentSessionID] = agentSessionID
 	}
 	argv, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{
+		Config: opts.Config,
 		Session: ports.SessionRef{
 			ID:            inv.ReviewerID,
 			WorkspacePath: inv.WorkspacePath,

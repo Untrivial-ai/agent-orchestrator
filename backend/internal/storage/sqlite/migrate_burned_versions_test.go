@@ -113,6 +113,7 @@ var shippedMigrations = map[int64]string{
 	107: "0107_recovered_conversation_turns.sql",
 	108: "0108_conversation_retry_source.sql",
 	109: "0109_session_latest_user_prompt_at.sql",
+	110: "0110_review_request_workflow.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

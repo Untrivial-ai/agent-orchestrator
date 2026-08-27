@@ -2316,6 +2316,7 @@ export interface components {
         };
         DomainReviewerConfig: {
             harness: string;
+            model?: string;
         };
         EditConversationMessageRequest: {
             clientMessageId?: string;
@@ -2717,7 +2718,9 @@ export interface components {
             githubReviewId: string;
             harness: string;
             id: string;
+            model?: string;
             prUrl: string;
+            requestedBySessionId?: string;
             reviewId: string;
             sessionId: string;
             status: string;
@@ -2796,6 +2799,20 @@ export interface components {
             targetMode: "chat" | "tui";
             transition?: components["schemas"]["SessionInterfaceTransition"];
         };
+        SessionPRAOReviewSummary: {
+            body?: string;
+            /** Format: date-time */
+            createdAt?: null | string;
+            harness?: string;
+            model?: string;
+            requestedBySessionId?: string;
+            runId?: string;
+            /** @enum {string} */
+            state: "needs_review" | "running" | "up_to_date" | "changes_requested" | "ineligible";
+            targetSha?: string;
+            /** @enum {string} */
+            verdict: "" | "approved" | "changes_requested";
+        };
         SessionPRCISummary: {
             autoInjectCI: boolean;
             failingChecks: components["schemas"]["SessionPRFailingCheck"][];
@@ -2864,6 +2881,7 @@ export interface components {
         };
         SessionPRSummary: {
             additions: number;
+            aoReview?: components["schemas"]["SessionPRAOReviewSummary"];
             author: string;
             changedFiles: number;
             ci: components["schemas"]["SessionPRCISummary"];
@@ -3159,6 +3177,10 @@ export interface components {
         TriggerReviewRequest: {
             /** @enum {string} */
             harness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "kiro" | "pi" | "qwen" | "agy" | "continue" | "goose" | "vibe" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
+            /** @description Request-scoped reviewer model override; empty uses the configured/default model. */
+            model?: string;
+            /** @description Originating worker session. Set by the worker CLI; omitted by UI/orchestrator actions. */
+            requestedBySessionId?: string;
         };
         TriggerReviewResponse: {
             /** @description True when a new review pass was started; false when an existing run for the same commit was reused. */
@@ -3597,15 +3619,6 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Conflict */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8717,6 +8730,15 @@ export interface operations {
                     "application/json": components["schemas"]["APIError"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
             /** @description Unprocessable Entity */
             422: {
                 headers: {
@@ -8936,6 +8958,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

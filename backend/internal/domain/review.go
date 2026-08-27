@@ -21,7 +21,10 @@ type Review struct {
 	SessionID SessionID       `json:"sessionId"`
 	ProjectID ProjectID       `json:"projectId"`
 	Harness   ReviewerHarness `json:"harness"`
-	PRURL     string          `json:"prUrl"`
+	// Model is the model selected for the live reviewer runtime. Empty delegates
+	// to the reviewer harness's configured/native default.
+	Model string `json:"model,omitempty"`
+	PRURL string `json:"prUrl"`
 	// ReviewerHandleID is the runtime handle of the live reviewer pane, reused
 	// across passes and exposed so the UI can attach its terminal.
 	ReviewerHandleID string    `json:"reviewerHandleId"`
@@ -40,6 +43,12 @@ type ReviewRun struct {
 	// legacy/single-run delivery.
 	BatchID string          `json:"batchId"`
 	Harness ReviewerHarness `json:"harness"`
+	// Model is the immutable per-request model selection. Empty delegates to the
+	// configured reviewer model or the harness's native default.
+	Model string `json:"model,omitempty"`
+	// RequestedBySessionID identifies a worker-originated request. It is empty
+	// for UI/orchestrator manual triggers and daemon automatic review.
+	RequestedBySessionID SessionID `json:"requestedBySessionId,omitempty"`
 	// TriggerSource records whether this pass was requested by a user or by the
 	// daemon auto-review coordinator.
 	TriggerSource ReviewTriggerSource `json:"triggerSource" enum:"manual,auto"`

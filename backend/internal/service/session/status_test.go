@@ -54,7 +54,8 @@ func TestServiceDerivesStatusFromSessionFactsAndPR(t *testing.T) {
 		{"ci-failed", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{CI: domain.CIFailing}), false, domain.StatusCIFailed},
 		{"draft", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Draft: true}), false, domain.StatusDraft},
 		{"changes-requested", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Review: domain.ReviewChangesRequest}), false, domain.StatusChangesRequested},
-		{"mergeable", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), false, domain.StatusMergeable},
+		{"mergeable", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable, AOReview: domain.VerdictApproved}), false, domain.StatusMergeable},
+		{"mergeable-awaits-ao-review", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), false, domain.StatusReviewPending},
 		{"approved", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Review: domain.ReviewApproved}), false, domain.StatusApproved},
 		{"merge-blocked-approved", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Mergeability: domain.MergeBlocked, Review: domain.ReviewApproved}), false, domain.StatusPROpen},
 		{"merge-blocked-no-review", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Mergeability: domain.MergeBlocked}), false, domain.StatusPROpen},
@@ -139,7 +140,7 @@ func TestDeriveSCMStatusRemainsAvailableWhileAgentIsActive(t *testing.T) {
 		{"changes-requested", statusPR(domain.PRFacts{Review: domain.ReviewChangesRequest}), domain.StatusChangesRequested},
 		{"review-pending", statusPR(domain.PRFacts{Review: domain.ReviewRequired}), domain.StatusReviewPending},
 		{"approved", statusPR(domain.PRFacts{Review: domain.ReviewApproved}), domain.StatusApproved},
-		{"mergeable", statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), domain.StatusMergeable},
+		{"mergeable", statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable, AOReview: domain.VerdictApproved}), domain.StatusMergeable},
 		{"merge-blocked", statusPR(domain.PRFacts{Mergeability: domain.MergeBlocked}), domain.StatusPROpen},
 		{"merged", statusPR(domain.PRFacts{Merged: true}), domain.StatusMerged},
 	}
@@ -161,7 +162,7 @@ func TestDeriveSCMStatusRemainsAvailableWhileAgentIsActive(t *testing.T) {
 // signals are suppressed, but its problem signals (failing CI, draft,
 // requested-changes/unresolved-comments) must still surface for the session.
 func TestAggregateStackedChildSignals(t *testing.T) {
-	parent := domain.PRFacts{URL: "parent", SourceBranch: "feat", Mergeability: domain.MergeMergeable}
+	parent := domain.PRFacts{URL: "parent", SourceBranch: "feat", Mergeability: domain.MergeMergeable, AOReview: domain.VerdictApproved}
 	child := func(f domain.PRFacts) domain.PRFacts {
 		f.URL = "child"
 		f.SourceBranch = "feat/child"
@@ -186,8 +187,8 @@ func TestAggregateStackedChildSignals(t *testing.T) {
 		{
 			"all-blocked-no-actionable-falls-back",
 			[]domain.PRFacts{
-				{URL: "a", SourceBranch: "feat/a", TargetBranch: "feat/b", Mergeability: domain.MergeMergeable},
-				{URL: "b", SourceBranch: "feat/b", TargetBranch: "feat/a", Mergeability: domain.MergeMergeable},
+				{URL: "a", SourceBranch: "feat/a", TargetBranch: "feat/b", Mergeability: domain.MergeMergeable, AOReview: domain.VerdictApproved},
+				{URL: "b", SourceBranch: "feat/b", TargetBranch: "feat/a", Mergeability: domain.MergeMergeable, AOReview: domain.VerdictApproved},
 			},
 			domain.StatusMergeable,
 		},

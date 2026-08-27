@@ -39,6 +39,7 @@ type fakeStore struct {
 	worktrees           map[domain.SessionID][]domain.SessionWorktreeRecord
 	checks              map[string][]domain.PullRequestCheck
 	reviews             map[string][]domain.PullRequestReview
+	reviewRuns          map[domain.SessionID][]domain.ReviewRun
 	reviewsErr          error
 	threads             map[string][]domain.PullRequestReviewThread
 	comments            map[string][]domain.PullRequestComment
@@ -56,6 +57,7 @@ func newFakeStore() *fakeStore {
 		worktrees:      map[domain.SessionID][]domain.SessionWorktreeRecord{},
 		checks:         map[string][]domain.PullRequestCheck{},
 		reviews:        map[string][]domain.PullRequestReview{},
+		reviewRuns:     map[domain.SessionID][]domain.ReviewRun{},
 		threads:        map[string][]domain.PullRequestReviewThread{},
 		comments:       map[string][]domain.PullRequestComment{},
 	}
@@ -284,6 +286,10 @@ func (f *fakeStore) ListPRReviews(_ context.Context, prURL string) ([]domain.Pul
 		return nil, f.reviewsErr
 	}
 	return append([]domain.PullRequestReview(nil), f.reviews[prURL]...), nil
+}
+
+func (f *fakeStore) ListReviewRunsBySession(_ context.Context, id domain.SessionID) ([]domain.ReviewRun, error) {
+	return append([]domain.ReviewRun(nil), f.reviewRuns[id]...), nil
 }
 
 func (f *fakeStore) ListPRReviewThreads(_ context.Context, prURL string) ([]domain.PullRequestReviewThread, error) {
@@ -3879,6 +3885,10 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 		{Author: "reviewer-a", File: "main.go", Line: 14, Body: "resolved body", URL: "https://github.com/acme/repo/pull/7#discussion_r4", Resolved: true},
 		{Author: "reviewer-a", File: "test.go", Line: 22, Body: "another raw body", URL: "https://github.com/acme/repo/pull/7#discussion_r3", AutoInjectReview: true},
 	}
+	st.reviewRuns["mer-1"] = []domain.ReviewRun{
+		{ID: "stale-run", SessionID: "mer-1", PRURL: prURL, TargetSHA: "old", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, CreatedAt: now.Add(-time.Minute)},
+		{ID: "ao-run", SessionID: "mer-1", PRURL: prURL, TargetSHA: "abc123", Harness: domain.ReviewerCodex, Model: "gpt-5.6", RequestedBySessionID: "mer-1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested, Body: "guard the transaction", CreatedAt: now},
+	}
 
 	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
 	if err != nil {
@@ -3896,6 +3906,9 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	}
 	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || len(pr.Review.UnresolvedBy) != 1 {
 		t.Fatalf("review = %+v", pr.Review)
+	}
+	if pr.AOReview.State != "changes_requested" || pr.AOReview.RunID != "ao-run" || pr.AOReview.TargetSHA != "abc123" || pr.AOReview.Body != "guard the transaction" || pr.AOReview.RequestedBySessionID != "mer-1" || pr.AOReview.Model != "gpt-5.6" {
+		t.Fatalf("AO review = %+v", pr.AOReview)
 	}
 	if reviewer := pr.Review.UnresolvedBy[0]; reviewer.ReviewerID != "reviewer-a" || reviewer.Count != 2 || len(reviewer.Links) != 2 {
 		t.Fatalf("reviewer = %+v", reviewer)
