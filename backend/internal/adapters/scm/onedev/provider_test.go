@@ -3,6 +3,7 @@ package onedev
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -412,4 +413,200 @@ func TestClientForRepo(t *testing.T) {
 			t.Fatalf("err = %v, want ErrHostNotAllowed", err)
 		}
 	})
+}
+
+// TestNewProviderRejectsConflictingSchemes: the same instance listed twice is
+// harmless, but listed twice under different schemes it would let config order
+// decide whether the connection is encrypted.
+func TestNewProviderRejectsConflictingSchemes(t *testing.T) {
+	tests := []struct {
+		name       string
+		hosts      []string
+		wantHosts  []string
+		wantSubstr string
+	}{
+		{
+			name:      "exact duplicate is deduped",
+			hosts:     []string{"od.test:6610", "od.test:6610"},
+			wantHosts: []string{"https://od.test:6610"},
+		},
+		{
+			name:      "duplicate differing only in case",
+			hosts:     []string{"OD.test:6610", "od.TEST:6610"},
+			wantHosts: []string{"https://od.test:6610"},
+		},
+		{
+			name:      "same scheme written explicitly and implicitly",
+			hosts:     []string{"od.test:6610", "https://od.test:6610"},
+			wantHosts: []string{"https://od.test:6610"},
+		},
+		{
+			name:       "conflicting schemes",
+			hosts:      []string{"od.test:6610", "http://od.test:6610"},
+			wantSubstr: "conflicting schemes",
+		},
+		{
+			// The same conflict in the other order must be rejected too —
+			// that is the whole point.
+			name:       "conflicting schemes, reversed",
+			hosts:      []string{"http://od.test:6610", "od.test:6610"},
+			wantSubstr: "conflicting schemes",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := NewProvider(ProviderOptions{
+				AllowedHosts: tt.hosts,
+				Token:        StaticTokenSource("od-token"),
+			})
+			if tt.wantSubstr != "" {
+				if err == nil {
+					t.Fatalf("NewProvider(%v) succeeded, want error", tt.hosts)
+				}
+				if !strings.Contains(err.Error(), tt.wantSubstr) {
+					t.Fatalf("err = %v, want it to mention %q", err, tt.wantSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewProvider: %v", err)
+			}
+			if got := p.AllowedHosts(); !reflect.DeepEqual(got, tt.wantHosts) {
+				t.Fatalf("AllowedHosts() = %v, want %v", got, tt.wantHosts)
+			}
+		})
+	}
+}
+
+// TestPerHostTokenKeyResolution: a per-host token key is resolved the same way
+// a git remote is, so a key that omits the port (or names the SSH port) still
+// selects the allowlisted instance instead of being silently dropped.
+func TestPerHostTokenKeyResolution(t *testing.T) {
+	tests := []struct {
+		name       string
+		allowed    string
+		tokenKey   string
+		wantAuth   string
+		wantWarn   bool
+		wantSubstr string
+	}{
+		{
+			name: "exact authority", allowed: "http://od.test:6610", tokenKey: "od.test:6610",
+			wantAuth: "Bearer host-token",
+		},
+		{
+			name: "key omits the port", allowed: "http://od.test:6610", tokenKey: "od.test",
+			wantAuth: "Bearer host-token",
+		},
+		{
+			name: "key names the git ssh port", allowed: "http://od.test:6610", tokenKey: "od.test:6611",
+			wantAuth: "Bearer host-token",
+		},
+		{
+			name: "scheme-qualified key", allowed: "http://od.test:6610", tokenKey: "http://od.test:6610",
+			wantAuth: "Bearer host-token",
+		},
+		{
+			name: "key case is normalized", allowed: "http://od.test:6610", tokenKey: "OD.TEST:6610",
+			wantAuth: "Bearer host-token",
+		},
+		{
+			// A surplus entry is not fatal, but it must not pass unremarked:
+			// that is exactly what a typo looks like from the outside.
+			name: "key names no configured host", allowed: "http://od.test:6610", tokenKey: "other.test",
+			wantAuth: "Bearer default-token", wantWarn: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs strings.Builder
+			logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+			p, err := NewProvider(ProviderOptions{
+				AllowedHosts: []string{tt.allowed},
+				Logger:       logger,
+				Token:        StaticTokenSource("default-token"),
+				HostTokens:   map[string]TokenSource{tt.tokenKey: StaticTokenSource("host-token")},
+			})
+			if err != nil {
+				t.Fatalf("NewProvider: %v", err)
+			}
+
+			c, err := p.clientForAuthority("od.test:6610")
+			if err != nil {
+				t.Fatalf("clientForAuthority: %v", err)
+			}
+			req, err := c.newRequest(context.Background(), "/projects", nil)
+			if err != nil {
+				t.Fatalf("newRequest: %v", err)
+			}
+			if got := req.Header.Get("Authorization"); got != tt.wantAuth {
+				t.Fatalf("Authorization = %q, want %q", got, tt.wantAuth)
+			}
+
+			warned := strings.Contains(logs.String(), "names no configured host")
+			if warned != tt.wantWarn {
+				t.Fatalf("warning logged = %v, want %v (logs: %s)", warned, tt.wantWarn, logs.String())
+			}
+			if tt.wantWarn && !strings.Contains(logs.String(), tt.tokenKey) {
+				t.Fatalf("warning does not name the offending key %q: %s", tt.tokenKey, logs.String())
+			}
+		})
+	}
+}
+
+// TestNewProviderRejectsCollidingPerHostTokens: two keys resolving to one
+// instance means one of the two overrides would be discarded, and which one
+// is not something to decide by map order.
+func TestNewProviderRejectsCollidingPerHostTokens(t *testing.T) {
+	_, err := NewProvider(ProviderOptions{
+		AllowedHosts: []string{"http://od.test:6610"},
+		HostTokens: map[string]TokenSource{
+			"od.test":      StaticTokenSource("a"),
+			"od.test:6610": StaticTokenSource("b"),
+		},
+	})
+	if err == nil {
+		t.Fatal("NewProvider succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "both resolve to host") {
+		t.Fatalf("err = %v, want it to report the collision", err)
+	}
+}
+
+// TestAnyCredentialIsOrderIndependent pins that construction does not depend
+// on map iteration order: with one working and one broken per-host source the
+// result must be the same every time, and a working source must win.
+func TestAnyCredentialIsOrderIndependent(t *testing.T) {
+	boom := errors.New("keyring is locked")
+	hostTokens := map[string]TokenSource{
+		"a.test": errSource{boom},
+		"b.test": StaticTokenSource("od-token"),
+		"c.test": errSource{boom},
+		"d.test": StaticTokenSource(""),
+	}
+	for i := 0; i < 50; i++ {
+		if err := anyCredential(context.Background(), nil, hostTokens); err != nil {
+			t.Fatalf("iteration %d: anyCredential = %v, want nil (a working source exists)", i, err)
+		}
+	}
+
+	// With nothing working, the hard error is what surfaces — every time.
+	onlyBroken := map[string]TokenSource{
+		"a.test": errSource{boom},
+		"b.test": StaticTokenSource(""),
+		"c.test": errSource{boom},
+	}
+	for i := 0; i < 50; i++ {
+		if err := anyCredential(context.Background(), nil, onlyBroken); !errors.Is(err, boom) {
+			t.Fatalf("iteration %d: anyCredential = %v, want boom", i, err)
+		}
+	}
+
+	// And with nothing configured at all it is ErrNoToken, not a hard error.
+	if err := anyCredential(context.Background(), nil, map[string]TokenSource{
+		"a.test": StaticTokenSource(""),
+	}); !errors.Is(err, ErrNoToken) {
+		t.Fatalf("anyCredential = %v, want ErrNoToken", err)
+	}
 }

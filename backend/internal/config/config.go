@@ -351,15 +351,7 @@ func Load() (Config, error) {
 	}
 
 	if raw, ok := os.LookupEnv("AO_GITLAB_ALLOWED_HOSTS"); ok && raw != "" {
-		hosts := make([]string, 0, 4)
-		for _, h := range strings.Split(raw, ",") {
-			h = strings.TrimSpace(h)
-			if h == "" {
-				continue
-			}
-			hosts = append(hosts, h)
-		}
-		cfg.GitLab.AllowedHosts = hosts
+		cfg.GitLab.AllowedHosts = parseHostList(raw)
 	}
 
 	if raw, ok := os.LookupEnv("AO_GITLAB_HOST_TOKENS"); ok && raw != "" {

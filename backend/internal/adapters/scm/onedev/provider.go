@@ -109,7 +109,17 @@ func NewProvider(opts ProviderOptions) (*Provider, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, dup := allowed[h.authority]; dup {
+		if prev, dup := allowed[h.authority]; dup {
+			// The same instance listed twice is harmless, but listed twice
+			// under different schemes it is not: whichever entry came first
+			// would decide the transport, so config order would silently
+			// decide whether the connection is encrypted. Refuse rather than
+			// pick.
+			if prev.scheme != h.scheme {
+				return nil, fmt.Errorf(
+					"onedev scm: host %q is listed with conflicting schemes %q and %q; list it once",
+					h.authority, prev.scheme, h.scheme)
+			}
 			continue
 		}
 		allowed[h.authority] = h
@@ -129,18 +139,41 @@ func NewProvider(opts ProviderOptions) (*Provider, error) {
 		sort.Strings(byHostname[name])
 	}
 
-	hostTokens := make(map[string]TokenSource, len(opts.HostTokens))
-	for host, src := range opts.HostTokens {
-		key := normalizeHostKey(host)
-		if key == "" || src == nil {
-			continue
-		}
-		hostTokens[key] = src
-	}
-
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
+	}
+
+	// Per-host token keys go through the same resolution as a git remote, so
+	// an entry written as "10.0.0.30" still selects the allowlisted
+	// "10.0.0.30:6610". Matching exactly here while tolerating a port
+	// mismatch everywhere else would turn a near-miss into a silently
+	// dropped override, surfacing much later as ErrNoToken with nothing
+	// pointing at the typo.
+	hostTokens := make(map[string]TokenSource, len(opts.HostTokens))
+	claimedBy := make(map[string]string, len(opts.HostTokens))
+	for _, raw := range sortedKeys(opts.HostTokens) {
+		src := opts.HostTokens[raw]
+		if src == nil {
+			continue
+		}
+		h, ok := resolveAllowedHost(allowed, byHostname, raw)
+		if !ok {
+			// Not fatal — a surplus entry for a host this daemon does not
+			// serve is a normal way to share one environment across
+			// deployments — but it is never what a typo'd key looks like from
+			// the outside, so say so once at construction.
+			logger.Warn("onedev scm: per-host token names no configured host; the override will not be used",
+				"host", raw, "allowed_hosts", allowedHostStrings(allowed, order))
+			continue
+		}
+		if prev, dup := claimedBy[h.authority]; dup {
+			return nil, fmt.Errorf(
+				"onedev scm: per-host tokens %q and %q both resolve to host %q; keep one",
+				prev, raw, h.authority)
+		}
+		claimedBy[h.authority] = raw
+		hostTokens[h.authority] = src
 	}
 
 	if !opts.SkipTokenPreflight {
@@ -163,37 +196,49 @@ func NewProvider(opts ProviderOptions) (*Provider, error) {
 }
 
 // anyCredential reports whether the default source or any per-host source can
-// yield a credential. A source failing with anything other than ErrNoToken is
-// surfaced immediately: that is a misconfiguration the operator should see,
-// not an absent credential.
+// yield a credential. The default source is tried first, then the per-host
+// sources in sorted order, so the outcome does not depend on map iteration
+// order — this gates construction, and a coin-flipping daemon start is worse
+// than either verdict.
+//
+// A source failing with anything other than ErrNoToken is remembered and
+// returned only if no later source succeeds, so one broken credential helper
+// does not mask a working token elsewhere.
 func anyCredential(ctx context.Context, def TokenSource, hostTokens map[string]TokenSource) error {
-	sources := make([]TokenSource, 0, len(hostTokens)+1)
+	chain := make(FallbackTokenSource, 0, len(hostTokens)+1)
 	if def != nil {
-		sources = append(sources, def)
+		chain = append(chain, def)
 	}
-	for _, src := range hostTokens {
-		sources = append(sources, src)
+	for _, key := range sortedKeys(hostTokens) {
+		chain = append(chain, hostTokens[key])
 	}
-	for _, src := range sources {
-		_, err := src.Token(ctx)
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, ErrNoToken) {
-			return err
-		}
+	_, err := chain.Token(ctx)
+	return err
+}
+
+// sortedKeys returns a map's keys in a deterministic order.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-	return ErrNoToken
+	sort.Strings(keys)
+	return keys
+}
+
+// allowedHostStrings renders the allowlist for a log line.
+func allowedHostStrings(allowed map[string]allowedHost, order []string) []string {
+	out := make([]string, 0, len(order))
+	for _, authority := range order {
+		out = append(out, allowed[authority].String())
+	}
+	return out
 }
 
 // AllowedHosts returns the configured allowlist in stable order, rendered as
 // scheme-qualified entries.
 func (p *Provider) AllowedHosts() []string {
-	out := make([]string, 0, len(p.order))
-	for _, authority := range p.order {
-		out = append(out, p.allowed[authority].String())
-	}
-	return out
+	return allowedHostStrings(p.allowed, p.order)
 }
 
 // SCMCredentialsAvailable reports whether usable OneDev credentials exist,
@@ -241,18 +286,24 @@ func (p *Provider) Preflight(ctx context.Context) error {
 // entry is an allowlisted instance, and it — not the remote's authority — is
 // what the credential is ever sent to.
 func (p *Provider) resolveHost(authority string) (allowedHost, bool) {
+	return resolveAllowedHost(p.allowed, p.byHostname, authority)
+}
+
+// resolveAllowedHost is resolveHost's logic as a free function, so NewProvider
+// can resolve per-host token keys the same way before the Provider exists.
+func resolveAllowedHost(allowed map[string]allowedHost, byHostname map[string][]string, authority string) (allowedHost, bool) {
 	key := normalizeHostKey(authority)
 	if key == "" {
 		return allowedHost{}, false
 	}
-	if h, ok := p.allowed[key]; ok {
+	if h, ok := allowed[key]; ok {
 		return h, true
 	}
-	matches := p.byHostname[hostnameOf(key)]
+	matches := byHostname[hostnameOf(key)]
 	if len(matches) != 1 {
 		return allowedHost{}, false
 	}
-	return p.allowed[matches[0]], true
+	return allowed[matches[0]], true
 }
 
 // clientForRepo returns the client for a repository's host, or an error when

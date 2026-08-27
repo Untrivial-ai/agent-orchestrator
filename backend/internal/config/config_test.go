@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -610,6 +611,44 @@ func TestLoadOneDevHostTokens(t *testing.T) {
 				if cfg.OneDev.HostTokens[h] != tok {
 					t.Errorf("HostTokens[%q] = %q, want %q", h, cfg.OneDev.HostTokens[h], tok)
 				}
+			}
+		})
+	}
+}
+
+// TestParseHostListSharedByProviders pins the contract of the helper that both
+// AO_GITLAB_ALLOWED_HOSTS and AO_ONEDEV_ALLOWED_HOSTS parse through, so the
+// two cannot drift apart again.
+func TestParseHostListSharedByProviders(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"single", "a.test", []string{"a.test"}},
+		{"comma-separated", "a.test,b.test", []string{"a.test", "b.test"}},
+		{"trimmed", " a.test , b.test ", []string{"a.test", "b.test"}},
+		{"empty entries skipped", "a.test,,b.test,", []string{"a.test", "b.test"}},
+		{"only separators yields nil", ",,,", nil},
+		{"only whitespace yields nil", "  ,  ", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseHostList(tc.raw); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseHostList(%q) = %#v, want %#v", tc.raw, got, tc.want)
+			}
+			// Both providers must observe that same result.
+			t.Setenv("AO_GITLAB_ALLOWED_HOSTS", tc.raw)
+			t.Setenv("AO_ONEDEV_ALLOWED_HOSTS", tc.raw)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !reflect.DeepEqual(cfg.GitLab.AllowedHosts, tc.want) {
+				t.Errorf("GitLab.AllowedHosts = %#v, want %#v", cfg.GitLab.AllowedHosts, tc.want)
+			}
+			if !reflect.DeepEqual(cfg.OneDev.AllowedHosts, tc.want) {
+				t.Errorf("OneDev.AllowedHosts = %#v, want %#v", cfg.OneDev.AllowedHosts, tc.want)
 			}
 		})
 	}
