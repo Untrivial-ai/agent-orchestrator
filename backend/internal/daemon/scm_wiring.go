@@ -8,17 +8,18 @@ import (
 	scmgithub "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/github"
 	scmgitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/gitlab"
 	scmmulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/multi"
+	scmonedev "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/onedev"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	scmobserve "github.com/aoagents/agent-orchestrator/backend/internal/observe/scm"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
-// startSCMObserver wires the provider-neutral SCM observer with both GitHub
-// and GitLab providers via a multi Provider dispatcher. Missing credentials
-// for one provider do not prevent the other from starting; the observer is
-// disabled only when no provider has usable credentials.
-func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.Manager, gitlabCfg config.GitLabConfig, logger *slog.Logger) <-chan struct{} {
+// startSCMObserver wires the provider-neutral SCM observer with the GitHub,
+// GitLab and OneDev providers via a multi Provider dispatcher. Missing
+// credentials for one provider do not prevent the others from starting; the
+// observer is disabled only when no provider has usable credentials.
+func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.Manager, gitlabCfg config.GitLabConfig, onedevCfg config.OneDevConfig, logger *slog.Logger) <-chan struct{} {
 	var named []scmmulti.NamedProvider
 
 	ghProvider, ghErr := newGitHubSCMProvider(logger)
@@ -33,6 +34,13 @@ func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.M
 		logSCMProviderDisabled(logger, "gitlab", glErr)
 	} else {
 		named = append(named, scmmulti.NamedProvider{Key: "gitlab", Provider: glProvider})
+	}
+
+	odProvider, odErr := newOneDevSCMProvider(onedevCfg, logger)
+	if odErr != nil {
+		logSCMProviderDisabled(logger, "onedev", odErr)
+	} else {
+		named = append(named, scmmulti.NamedProvider{Key: scmonedev.ProviderKey, Provider: odProvider})
 	}
 
 	if len(named) == 0 {
@@ -70,11 +78,47 @@ func newGitLabSCMProvider(gitlabCfg config.GitLabConfig, logger *slog.Logger) (*
 	})
 }
 
+// newOneDevSCMProvider builds the OneDev provider from its boot configuration.
+//
+// OneDev is always self-hosted, so an operator who has not set
+// AO_ONEDEV_ALLOWED_HOSTS has no OneDev instance for AO to observe. That is
+// the common case, and NewProvider reports it as ErrNoAllowedHosts — which the
+// caller logs and steps over, exactly as it does a missing GitHub or GitLab
+// token, so an unconfigured OneDev never blocks the other providers.
+//
+// SkipTokenPreflight matches the GitHub and GitLab wiring: the credential is
+// resolved lazily on first use rather than at construction, so a credential
+// helper that is momentarily unavailable at daemon boot does not disable the
+// provider for the life of the process.
+func newOneDevSCMProvider(onedevCfg config.OneDevConfig, logger *slog.Logger) (*scmonedev.Provider, error) {
+	tokens := scmonedev.FallbackTokenSource{
+		scmonedev.StaticTokenSource(onedevCfg.Token),
+		scmonedev.EnvTokenSource{EnvVars: []string{"AO_ONEDEV_TOKEN"}},
+	}
+	hostTokens := make(map[string]scmonedev.TokenSource, len(onedevCfg.HostTokens))
+	for host, token := range onedevCfg.HostTokens {
+		hostTokens[host] = scmonedev.StaticTokenSource(token)
+	}
+	return scmonedev.NewProvider(scmonedev.ProviderOptions{
+		Token:              tokens,
+		SkipTokenPreflight: true,
+		Logger:             logger,
+		AllowedHosts:       onedevCfg.AllowedHosts,
+		HostTokens:         hostTokens,
+	})
+}
+
 func logSCMProviderDisabled(logger *slog.Logger, provider string, err error) {
-	if errors.Is(err, scmgithub.ErrNoToken) || errors.Is(err, scmgithub.ErrAuthFailed) ||
-		errors.Is(err, scmgitlab.ErrNoToken) || errors.Is(err, scmgitlab.ErrAuthFailed) {
+	switch {
+	case errors.Is(err, scmgithub.ErrNoToken) || errors.Is(err, scmgithub.ErrAuthFailed) ||
+		errors.Is(err, scmgitlab.ErrNoToken) || errors.Is(err, scmgitlab.ErrAuthFailed) ||
+		errors.Is(err, scmonedev.ErrNoToken) || errors.Is(err, scmonedev.ErrAuthFailed):
 		logger.Warn("scm provider disabled: no usable token", "provider", provider, "err", err)
-	} else {
+	case errors.Is(err, scmonedev.ErrNoAllowedHosts):
+		// Not a misconfiguration: OneDev has no public instance, so a
+		// deployment that does not use OneDev simply never sets the allowlist.
+		logger.Debug("scm provider disabled: no hosts configured", "provider", provider, "err", err)
+	default:
 		logger.Warn("scm provider disabled: setup failed", "provider", provider, "err", err)
 	}
 }

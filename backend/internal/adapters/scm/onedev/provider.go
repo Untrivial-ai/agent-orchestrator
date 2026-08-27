@@ -52,12 +52,9 @@ type ProviderOptions struct {
 	HostTokens map[string]TokenSource
 }
 
-// Provider is the OneDev SCM adapter.
-//
-// Slice 1 provides construction, host resolution, repository-URL parsing, and
-// an authenticated preflight. It does not yet implement the seven
-// scm.Provider observer methods, and is not registered with the daemon's
-// observer — that is Slice 2.
+// Provider is the OneDev SCM adapter. It satisfies the observer's
+// scm.Provider contract; see observer_provider.go for those methods and
+// doc.go for the API-shape decisions behind them.
 //
 // Every host the provider talks to must appear in the configured allowlist. A
 // host that is not in the allowlist is rejected before any credential is
@@ -86,6 +83,11 @@ type Provider struct {
 
 	mu      sync.Mutex
 	clients map[string]*Client
+
+	// cache memoizes OneDev's id lookups (PR number to request id, user id to
+	// login, project id to path) that the observer methods would otherwise
+	// repeat on every poll.
+	cache *cache
 }
 
 // NewProvider creates a OneDev SCM provider.
@@ -192,6 +194,7 @@ func NewProvider(opts ProviderOptions) (*Provider, error) {
 		httpClient:   opts.HTTPClient,
 		userAgent:    opts.UserAgent,
 		clients:      map[string]*Client{},
+		cache:        newCache(),
 	}, nil
 }
 

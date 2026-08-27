@@ -184,6 +184,32 @@ func (c *Client) doGET(ctx context.Context, path string, q url.Values) (APIRespo
 	return APIResponse{StatusCode: resp.StatusCode, Body: body}, nil
 }
 
+// doGETStream performs an authenticated GET and hands the caller the still-open
+// response body.
+//
+// It exists for /~api/streaming/build-logs/{buildId}, whose response is an
+// unbounded length-prefixed frame stream rather than a document. doGET would
+// buffer the whole thing before the caller saw a byte; here the caller decodes
+// incrementally and closes the body when it has what it needs. The caller owns
+// the returned ReadCloser and must close it.
+func (c *Client) doGETStream(ctx context.Context, path string, q url.Values) (io.ReadCloser, error) {
+	req, err := c.newRequest(ctx, path, q)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "*/*")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("onedev scm: GET %s: %w", path, err)
+	}
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyMaxBytes))
+		_ = resp.Body.Close()
+		return nil, c.noteAuthFailure(classifyError(resp, body))
+	}
+	return resp.Body, nil
+}
+
 // doGETPaginated walks a OneDev listing endpoint with offset/count paging,
 // invoking handler once per page with that page's raw JSON body. The handler
 // returns how many items the page held; a page shorter than the requested
