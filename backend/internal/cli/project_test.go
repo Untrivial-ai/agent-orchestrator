@@ -2,11 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 type projectCapture struct {
@@ -97,6 +100,105 @@ func TestBuildProjectConfigTrackerIntakeFlags(t *testing.T) {
 	// Provider is omitted: the daemon infers it from the project's git origin.
 	if !got.TrackerIntake.Enabled || got.TrackerIntake.Provider != "" || got.TrackerIntake.Repo != "acme/demo" || got.TrackerIntake.Assignee != "alice" {
 		t.Fatalf("tracker intake config = %#v", got.TrackerIntake)
+	}
+}
+
+func TestProjectSetConfig_TrackerProviderFlag(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusOK, `{"project":{"id":"demo","path":"/repo/demo"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "set-config", "demo", "--tracker-intake", "--tracker-provider", "onedev", "--tracker-repo", "productone", "--tracker-assignee", "alice")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var got setConfigRequest
+	if err := json.Unmarshal(capture.body, &got); err != nil {
+		t.Fatalf("decode request: %v\nbody=%s", err, capture.body)
+	}
+	if !got.Config.TrackerIntake.Enabled || got.Config.TrackerIntake.Provider != "onedev" || got.Config.TrackerIntake.Repo != "productone" {
+		t.Fatalf("tracker intake request = %#v", got.Config.TrackerIntake)
+	}
+}
+
+func TestBuildProjectConfigTrackerProviderFlag(t *testing.T) {
+	for _, provider := range domain.SupportedIntakeProviders() {
+		got, err := buildProjectConfig(projectSetConfigOptions{
+			trackerIntake:   true,
+			trackerProvider: string(provider),
+			trackerAssignee: "alice",
+		})
+		if err != nil {
+			t.Fatalf("provider %q: %v", provider, err)
+		}
+		if got.TrackerIntake.Provider != string(provider) {
+			t.Fatalf("provider %q: tracker intake config = %#v", provider, got.TrackerIntake)
+		}
+	}
+}
+
+func TestBuildProjectConfigTrackerProviderDefaultsToGitHub(t *testing.T) {
+	got, err := buildProjectConfig(projectSetConfigOptions{
+		trackerIntake:   true,
+		trackerAssignee: "alice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TrackerIntake.Provider != "github" {
+		t.Fatalf("tracker intake provider = %q, want github", got.TrackerIntake.Provider)
+	}
+}
+
+func TestBuildProjectConfigTrackerProviderRejectsUnsupported(t *testing.T) {
+	_, err := buildProjectConfig(projectSetConfigOptions{
+		trackerIntake:   true,
+		trackerProvider: "linear",
+		trackerAssignee: "alice",
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unsupported provider")
+	}
+	var usage usageError
+	if !errors.As(err, &usage) {
+		t.Fatalf("error = %v, want a usage error", err)
+	}
+	for _, want := range []string{"linear", "github", "gitlab", "onedev"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// The provider is only defaulted alongside another tracker flag, so unrelated
+// config flags must not smuggle a tracker intake block into the request.
+func TestBuildProjectConfigTrackerProviderEmptyWithoutTrackerFlags(t *testing.T) {
+	got, err := buildProjectConfig(projectSetConfigOptions{sessionPrefix: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TrackerIntake != (trackerIntakeConfig{}) {
+		t.Fatalf("tracker intake config = %#v, want zero", got.TrackerIntake)
+	}
+}
+
+func TestProjectGet_ShowsTrackerIntakeProvider(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := projectServer(t, http.StatusOK, `{"project":{"id":"demo","path":"/repo/demo","config":{"trackerIntake":{"enabled":true,"provider":"onedev","repo":"productone","assignee":"alice"}}},"status":"ok"}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "get", "demo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	for _, want := range []string{`"provider":"onedev"`, `"repo":"productone"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("project get output %q does not contain %q", out, want)
+		}
 	}
 }
 

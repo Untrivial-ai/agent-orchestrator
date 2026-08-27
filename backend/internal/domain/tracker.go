@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -115,6 +116,34 @@ type TrackerIntakeConfig struct {
 	// Assignee narrows eligible issues to one assignee. Provider-specific values
 	// such as "*" are passed through unchanged.
 	Assignee string `json:"assignee,omitempty"`
+}
+
+// supportedIntakeProviders is the set of providers issue intake can resolve an
+// adapter for. It is a set rather than a chain of comparisons so adding a
+// provider is one line and cannot be half-added.
+var supportedIntakeProviders = map[TrackerProvider]bool{
+	TrackerProviderGitHub: true,
+	TrackerProviderGitLab: true,
+	TrackerProviderOneDev: true,
+}
+
+// SupportedIntakeProviders returns the providers issue intake can resolve an
+// adapter for, sorted so callers can render a stable list in help text and
+// error messages. It reads supportedIntakeProviders so adding a provider stays
+// a one-line change there.
+func SupportedIntakeProviders() []TrackerProvider {
+	providers := make([]TrackerProvider, 0, len(supportedIntakeProviders))
+	for provider := range supportedIntakeProviders {
+		providers = append(providers, provider)
+	}
+	sort.Slice(providers, func(i, j int) bool { return providers[i] < providers[j] })
+	return providers
+}
+
+// IsSupportedIntakeProvider reports whether issue intake can resolve an adapter
+// for the given provider.
+func IsSupportedIntakeProvider(provider TrackerProvider) bool {
+	return supportedIntakeProviders[provider]
 }
 
 // WithDefaults leaves the provider empty when not explicitly set so the

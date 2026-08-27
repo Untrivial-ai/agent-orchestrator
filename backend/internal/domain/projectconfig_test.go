@@ -217,3 +217,27 @@ func TestProjectConfigIsZero(t *testing.T) {
 		t.Fatal("config with autoReview enabled should not be zero")
 	}
 }
+
+// The exported accessors must stay in step with Validate, so a provider added
+// to supportedIntakeProviders shows up in CLI help and error text too.
+func TestSupportedIntakeProviders(t *testing.T) {
+	providers := SupportedIntakeProviders()
+	if len(providers) == 0 {
+		t.Fatal("no supported intake providers")
+	}
+	for i, provider := range providers {
+		if i > 0 && providers[i-1] >= provider {
+			t.Fatalf("providers = %v, want sorted", providers)
+		}
+		if !IsSupportedIntakeProvider(provider) {
+			t.Fatalf("IsSupportedIntakeProvider(%q) = false", provider)
+		}
+		cfg := TrackerIntakeConfig{Enabled: true, Provider: provider, Assignee: "alice"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() for %q: %v", provider, err)
+		}
+	}
+	if IsSupportedIntakeProvider("linear") {
+		t.Fatal(`IsSupportedIntakeProvider("linear") = true`)
+	}
+}
