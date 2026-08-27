@@ -471,3 +471,146 @@ func TestLoadGitLabInvalidHostTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadOneDevDefaults(t *testing.T) {
+	// Clear the OneDev config vars so we observe pure defaults. OneDev is
+	// always self-hosted, so an unconfigured allowlist is the normal state and
+	// must stay nil — the adapter, not Load, decides that empty is fatal.
+	for _, k := range []string{"AO_ONEDEV_TOKEN", "AO_ONEDEV_ALLOWED_HOSTS", "AO_ONEDEV_HOST_TOKENS"} {
+		t.Setenv(k, "")
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.OneDev.Token != "" {
+		t.Errorf("OneDev.Token = %q, want empty", cfg.OneDev.Token)
+	}
+	if cfg.OneDev.AllowedHosts != nil {
+		t.Errorf("OneDev.AllowedHosts = %v, want nil", cfg.OneDev.AllowedHosts)
+	}
+	if cfg.OneDev.HostTokens != nil {
+		t.Errorf("OneDev.HostTokens = %v, want nil", cfg.OneDev.HostTokens)
+	}
+}
+
+func TestLoadOneDevToken(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want string
+	}{
+		{"plain token", "od-token", "od-token"},
+		{"trimmed whitespace", "  od-token \n", "od-token"},
+		{"blank stays empty", "   ", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_ONEDEV_TOKEN", tc.env)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.OneDev.Token != tc.want {
+				t.Fatalf("OneDev.Token = %q, want %q", cfg.OneDev.Token, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadOneDevAllowedHosts(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want []string
+	}{
+		{"single host", "onedev.mycompany.com", []string{"onedev.mycompany.com"}},
+		{"with port", "onedev.internal:6610", []string{"onedev.internal:6610"}},
+		// Self-hosted OneDev is commonly reached over plain HTTP on a private
+		// network, so a scheme-qualified entry must survive Load unchanged.
+		{"scheme qualified", "http://192.168.1.30:6610", []string{"http://192.168.1.30:6610"}},
+		{
+			"comma-separated",
+			"http://192.168.1.30:6610,onedev.internal:6610",
+			[]string{"http://192.168.1.30:6610", "onedev.internal:6610"},
+		},
+		{"trimmed whitespace", " a.test , b.test ", []string{"a.test", "b.test"}},
+		{"empty entries skipped", "a.test,,b.test,", []string{"a.test", "b.test"}},
+		{"only separators yields nil", ",,,", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_ONEDEV_ALLOWED_HOSTS", tc.env)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(cfg.OneDev.AllowedHosts) != len(tc.want) {
+				t.Fatalf("AllowedHosts = %v, want %v", cfg.OneDev.AllowedHosts, tc.want)
+			}
+			for i, h := range tc.want {
+				if cfg.OneDev.AllowedHosts[i] != h {
+					t.Errorf("AllowedHosts[%d] = %q, want %q", i, cfg.OneDev.AllowedHosts[i], h)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadOneDevHostTokens(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		want    map[string]string
+		wantErr bool
+	}{
+		{
+			name: "single host=token",
+			env:  "onedev.mycompany.com=token-1",
+			want: map[string]string{"onedev.mycompany.com": "token-1"},
+		},
+		{
+			name: "multiple pairs",
+			env:  "a.test=token-1,b.test:6610=token-2",
+			want: map[string]string{"a.test": "token-1", "b.test:6610": "token-2"},
+		},
+		{
+			name: "scheme-qualified host key",
+			env:  "http://192.168.1.30:6610=token-1",
+			want: map[string]string{"http://192.168.1.30:6610": "token-1"},
+		},
+		{
+			name: "trimmed whitespace",
+			env:  " a.test = token-1 ",
+			want: map[string]string{"a.test": "token-1"},
+		},
+		{
+			name:    "token containing an equals sign is rejected",
+			env:     "a.test=token=with=equals",
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_ONEDEV_HOST_TOKENS", tc.env)
+			cfg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Load() = nil error, want error for malformed AO_ONEDEV_HOST_TOKENS")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(cfg.OneDev.HostTokens) != len(tc.want) {
+				t.Fatalf("HostTokens = %v, want %v", cfg.OneDev.HostTokens, tc.want)
+			}
+			for h, tok := range tc.want {
+				if cfg.OneDev.HostTokens[h] != tok {
+					t.Errorf("HostTokens[%q] = %q, want %q", h, cfg.OneDev.HostTokens[h], tok)
+				}
+			}
+		})
+	}
+}
