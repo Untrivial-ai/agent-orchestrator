@@ -84,6 +84,13 @@ type Provider struct {
 	mu      sync.Mutex
 	clients map[string]*Client
 
+	// identityMu guards identities, which memoizes the authenticated account
+	// per instance. OneDev identity is per-host — two allowlisted instances
+	// are two unrelated user databases — so the cache is keyed by authority
+	// rather than held as a single value. See identity.go.
+	identityMu sync.Mutex
+	identities map[string]ports.SCMIdentity
+
 	// cache memoizes OneDev's id lookups (PR number to request id, user id to
 	// login, project id to path) that the observer methods would otherwise
 	// repeat on every poll.
@@ -194,6 +201,7 @@ func NewProvider(opts ProviderOptions) (*Provider, error) {
 		httpClient:   opts.HTTPClient,
 		userAgent:    opts.UserAgent,
 		clients:      map[string]*Client{},
+		identities:   map[string]ports.SCMIdentity{},
 		cache:        newCache(),
 	}, nil
 }
