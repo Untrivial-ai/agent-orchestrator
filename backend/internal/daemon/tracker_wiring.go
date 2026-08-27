@@ -11,6 +11,7 @@ import (
 	scmgitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/gitlab"
 	trackergithub "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/github"
 	trackergitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/gitlab"
+	trackeronedev "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/onedev"
 	trackermulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/multi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -85,6 +86,37 @@ func newGitLabTracker(gitlabCfg config.GitLabConfig) (ports.Tracker, error) {
 	})
 }
 
+// newOneDevTracker constructs a host-aware OneDev tracker from the same
+// OneDevConfig the SCM provider uses, plus the two issue-specific knobs.
+//
+// OneDev has no public instance, so an operator who has not set
+// AO_ONEDEV_ALLOWED_HOSTS has no OneDev to read issues from. That is the
+// common case and the tracker reports it as ErrNoAllowedHosts, which the
+// caller logs and steps over exactly as it does a missing GitHub or GitLab
+// token — an unconfigured OneDev never disables the other trackers.
+//
+// A malformed AO_ONEDEV_ISSUE_STATES value is a different thing entirely: it
+// is a configuration error, and it disables the OneDev tracker with an error
+// naming the offending state rather than silently falling back to defaults
+// the operator explicitly overrode.
+func newOneDevTracker(onedevCfg config.OneDevConfig) (ports.Tracker, error) {
+	states, err := trackeronedev.NewStateMap(onedevCfg.IssueStates)
+	if err != nil {
+		return nil, err
+	}
+	hostTokens := make(map[string]trackeronedev.TokenSource, len(onedevCfg.HostTokens))
+	for host, token := range onedevCfg.HostTokens {
+		hostTokens[host] = trackeronedev.StaticTokenSource(token)
+	}
+	return trackeronedev.New(trackeronedev.Options{
+		Token:         trackeronedev.DefaultTokenSource(onedevCfg.Token),
+		AllowedHosts:  onedevCfg.AllowedHosts,
+		HostTokens:    hostTokens,
+		States:        states,
+		AssigneeField: onedevCfg.IssueAssigneeField,
+	})
+}
+
 // newMultiTracker builds a multi-tracker dispatching to both GitHub and
 // GitLab sub-trackers. The daemon builds it once (in Run) and shares the
 // instance between the session service and the intake observer. A GitHub
@@ -96,7 +128,7 @@ func newGitLabTracker(gitlabCfg config.GitLabConfig) (ports.Tracker, error) {
 // same degrade-gracefully pattern used by newMultiSCMProvider. Callers must
 // tolerate a nil ports.Tracker (the session service's nil-guard handles
 // this).
-func newMultiTracker(gitlabCfg config.GitLabConfig, logger *slog.Logger) ports.Tracker {
+func newMultiTracker(gitlabCfg config.GitLabConfig, onedevCfg config.OneDevConfig, logger *slog.Logger) ports.Tracker {
 	var named []trackermulti.NamedTracker
 
 	// Probing the environment is a cheap read — no subprocess. Only when no
@@ -118,6 +150,11 @@ func newMultiTracker(gitlabCfg config.GitLabConfig, logger *slog.Logger) ports.T
 		named = append(named, trackermulti.NamedTracker{Key: "gitlab", Tracker: t})
 	}
 
+	if t, err := newOneDevTracker(onedevCfg); err != nil {
+		logTrackerDisabled(logger, "onedev", err)
+	} else {
+		named = append(named, trackermulti.NamedTracker{Key: "onedev", Tracker: t})
+	}
 	if len(named) == 0 {
 		return nil
 	}
