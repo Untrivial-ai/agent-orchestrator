@@ -125,6 +125,23 @@ type OneDevConfig struct {
 	// HostTokens maps an allowed host to an access-token override. Hosts
 	// without an explicit entry fall back to Token.
 	HostTokens map[string]string
+	// IssueStates maps this estate's OneDev issue state names onto AO's
+	// normalized issue-state vocabulary ("open", "in_progress", "review",
+	// "done", "cancelled"), e.g. "Blocked=open,Verifying=review".
+	//
+	// OneDev issue states are configured per instance rather than fixed by the
+	// product, so there is no correct mapping to hardcode. Entries merge onto
+	// the tracker's defaults, matching an existing name case-insensitively, and
+	// a state named by neither normalizes to "open" — see the OneDev tracker's
+	// package doc for why the default leans open rather than done. The value is
+	// validated by the tracker adapter, which owns the normalized vocabulary.
+	IssueStates map[string]string
+	// IssueAssigneeField names the OneDev custom field carrying issue
+	// assignees. Empty uses the tracker's default ("Assignees", the field
+	// OneDev's stock issue template defines). OneDev has no built-in assignee,
+	// so an instance that renamed the field must say so here or assignee-scoped
+	// issue intake will not match.
+	IssueAssigneeField string
 }
 
 // DefaultAllowedOrigins are the browser origins the daemon's CORS boundary
@@ -236,6 +253,8 @@ func (c Config) Addr() string {
 //	AO_ONEDEV_TOKEN            default OneDev access token
 //	AO_ONEDEV_ALLOWED_HOSTS    comma-separated OneDev hosts (host[:port] or http://host:port)
 //	AO_ONEDEV_HOST_TOKENS      host=token,host=token per-host token overrides
+//	AO_ONEDEV_ISSUE_STATES     OneDevState=normalized,... issue-state mapping overrides
+//	AO_ONEDEV_ISSUE_ASSIGNEE_FIELD  OneDev custom field holding issue assignees
 //
 // The bind host is not configurable: the daemon is loopback-only by design.
 func Load() (Config, error) {
@@ -407,6 +426,18 @@ func Load() (Config, error) {
 		cfg.OneDev.HostTokens = tokens
 	}
 
+	if raw, ok := os.LookupEnv("AO_ONEDEV_ISSUE_STATES"); ok && raw != "" {
+		states, err := parseHostTokenMap("AO_ONEDEV_ISSUE_STATES", raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.OneDev.IssueStates = states
+	}
+
+	if raw, ok := os.LookupEnv("AO_ONEDEV_ISSUE_ASSIGNEE_FIELD"); ok {
+		cfg.OneDev.IssueAssigneeField = strings.TrimSpace(raw)
+	}
+
 	runFile, err := resolveRunFilePath()
 	if err != nil {
 		return Config{}, err
@@ -480,11 +511,12 @@ func parseHostList(raw string) []string {
 	return hosts
 }
 
-// parseHostTokenMap parses a host=token,host=token map. Whitespace around
-// entries, hosts, and tokens is trimmed. Empty entries and entries without an
-// equals sign are skipped. A token containing an equals sign is rejected as
-// ambiguous (a token value with embedded '=' would be indistinguishable from
-// a malformed entry).
+// parseHostTokenMap parses a key=value,key=value map. It is named for its
+// first caller (the per-host token overrides) but carries no host semantics,
+// so AO_ONEDEV_ISSUE_STATES uses it too. Whitespace around entries, keys and
+// values is trimmed. Empty entries and entries without an equals sign are
+// skipped. A value containing an equals sign is rejected as ambiguous (it
+// would be indistinguishable from a malformed entry).
 func parseHostTokenMap(name, raw string) (map[string]string, error) {
 	tokens := make(map[string]string, 4)
 	for _, entry := range strings.Split(raw, ",") {
@@ -501,10 +533,10 @@ func parseHostTokenMap(name, raw string) (map[string]string, error) {
 		if host == "" {
 			continue
 		}
-		// Reject tokens containing '=' — they would be ambiguous on re-parse
+		// Reject values containing '=' — they would be ambiguous on re-parse
 		// and likely indicate a malformed entry (e.g. host=token=with=equals).
 		if strings.ContainsRune(token, '=') {
-			return nil, fmt.Errorf("invalid %s entry %q: token contains '='", name, entry)
+			return nil, fmt.Errorf("invalid %s entry %q: value contains '='", name, entry)
 		}
 		tokens[host] = token
 	}

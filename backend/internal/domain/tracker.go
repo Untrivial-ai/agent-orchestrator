@@ -9,24 +9,26 @@ import (
 // TrackerProvider identifies an issue-tracker provider implementation.
 type TrackerProvider string
 
-// TrackerProviderGitHub and TrackerProviderGitLab are the supported issue-tracker
-// providers.
+// The supported issue-tracker providers.
 const (
 	TrackerProviderGitHub TrackerProvider = "github"
 	TrackerProviderGitLab TrackerProvider = "gitlab"
+	TrackerProviderOneDev TrackerProvider = "onedev"
 )
 
 // TrackerID identifies one issue. Native is the provider's own canonical form
-// ("owner/repo#123" for GitHub, "group/project#123" for GitLab) and is
-// parsed by the adapter.
+// ("owner/repo#123" for GitHub, "group/project#123" for GitLab,
+// "project/path#123" for OneDev) and is parsed by the adapter.
 //
-// Host is the GitLab instance host (e.g. "gitlab.example.com"). The zero value
-// "" means the default host gitlab.com, so all existing call sites that
-// construct TrackerID without setting Host continue to work unchanged.
+// Host is the self-hosted instance host (e.g. "gitlab.example.com"). For
+// GitLab the zero value "" means gitlab.com, so all existing call sites that
+// construct TrackerID without setting Host continue to work unchanged. OneDev
+// has no public instance, so a OneDev id carries a real host unless exactly
+// one instance is configured.
 type TrackerID struct {
 	Provider TrackerProvider `json:"provider"`
 	Native   string          `json:"native"`
-	// Host is the GitLab instance host; "" means gitlab.com.
+	// Host is the self-hosted instance host; "" means gitlab.com for GitLab.
 	Host string `json:"host,omitempty"`
 }
 
@@ -58,15 +60,17 @@ type Issue struct {
 
 // TrackerRepo identifies a repository for cross-issue queries like Tracker.List.
 // Native is the provider's canonical owner/project form, e.g. "owner/repo"
-// for GitHub or "group/project" for GitLab.
+// for GitHub, "group/project" for GitLab, or a OneDev project path — which
+// may be a single segment ("productone") because OneDev projects form a tree
+// rather than an owner/repo pair.
 //
-// Host is the GitLab instance host (e.g. "gitlab.example.com"). The zero value
-// "" means the default host gitlab.com, so all existing call sites that
+// Host is the self-hosted instance host (e.g. "gitlab.example.com"). For
+// GitLab the zero value "" means gitlab.com, so all existing call sites that
 // construct TrackerRepo without setting Host continue to work unchanged.
 type TrackerRepo struct {
 	Provider TrackerProvider `json:"provider"`
 	Native   string          `json:"native"`
-	// Host is the GitLab instance host; "" means gitlab.com.
+	// Host is the self-hosted instance host; "" means gitlab.com for GitLab.
 	Host string `json:"host,omitempty"`
 }
 

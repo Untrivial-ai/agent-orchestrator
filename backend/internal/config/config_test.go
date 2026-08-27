@@ -477,7 +477,10 @@ func TestLoadOneDevDefaults(t *testing.T) {
 	// Clear the OneDev config vars so we observe pure defaults. OneDev is
 	// always self-hosted, so an unconfigured allowlist is the normal state and
 	// must stay nil — the adapter, not Load, decides that empty is fatal.
-	for _, k := range []string{"AO_ONEDEV_TOKEN", "AO_ONEDEV_ALLOWED_HOSTS", "AO_ONEDEV_HOST_TOKENS"} {
+	for _, k := range []string{
+		"AO_ONEDEV_TOKEN", "AO_ONEDEV_ALLOWED_HOSTS", "AO_ONEDEV_HOST_TOKENS",
+		"AO_ONEDEV_ISSUE_STATES", "AO_ONEDEV_ISSUE_ASSIGNEE_FIELD",
+	} {
 		t.Setenv(k, "")
 	}
 	cfg, err := Load()
@@ -492,6 +495,75 @@ func TestLoadOneDevDefaults(t *testing.T) {
 	}
 	if cfg.OneDev.HostTokens != nil {
 		t.Errorf("OneDev.HostTokens = %v, want nil", cfg.OneDev.HostTokens)
+	}
+	// The state mapping and the assignee field must both stay empty so the
+	// tracker adapter applies its own defaults. Load must not bake a mapping
+	// in: OneDev issue states are per-instance, and a default that lived here
+	// could not be overridden per adapter.
+	if cfg.OneDev.IssueStates != nil {
+		t.Errorf("OneDev.IssueStates = %v, want nil", cfg.OneDev.IssueStates)
+	}
+	if cfg.OneDev.IssueAssigneeField != "" {
+		t.Errorf("OneDev.IssueAssigneeField = %q, want empty", cfg.OneDev.IssueAssigneeField)
+	}
+}
+
+func TestLoadOneDevIssueStates(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		want    map[string]string
+		wantErr bool
+	}{
+		{
+			name: "single mapping",
+			env:  "Blocked=open",
+			want: map[string]string{"Blocked": "open"},
+		},
+		{
+			name: "multi-word state names with whitespace",
+			env:  " In Triage = open , Won't Fix = cancelled ",
+			want: map[string]string{"In Triage": "open", "Won't Fix": "cancelled"},
+		},
+		{
+			name:    "value containing an equals sign is rejected",
+			env:     "Blocked=open=ish",
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_ONEDEV_ISSUE_STATES", tc.env)
+			cfg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Load() = nil error, want error for malformed AO_ONEDEV_ISSUE_STATES")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(cfg.OneDev.IssueStates) != len(tc.want) {
+				t.Fatalf("IssueStates = %v, want %v", cfg.OneDev.IssueStates, tc.want)
+			}
+			for state, normalized := range tc.want {
+				if cfg.OneDev.IssueStates[state] != normalized {
+					t.Errorf("IssueStates[%q] = %q, want %q", state, cfg.OneDev.IssueStates[state], normalized)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadOneDevIssueAssigneeField(t *testing.T) {
+	t.Setenv("AO_ONEDEV_ISSUE_ASSIGNEE_FIELD", "  Owner  ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.OneDev.IssueAssigneeField != "Owner" {
+		t.Errorf("IssueAssigneeField = %q, want %q", cfg.OneDev.IssueAssigneeField, "Owner")
 	}
 }
 
