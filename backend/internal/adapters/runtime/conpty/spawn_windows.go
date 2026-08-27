@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -24,43 +23,9 @@ var readyRE = regexp.MustCompile(`READY:(\d+) (\d+)`)
 
 const spawnReadyTimeout = 10 * time.Second
 
-// maxCapturedStderr bounds how much pty-host stderr we retain for diagnostics.
-const maxCapturedStderr = 8192
-
-// boundedBuffer is a thread-safe io.Writer that retains up to max bytes of what
-// is written and discards the rest. It always consumes its input (never blocks
-// or errors), so it is a safe stderr sink for the detached pty-host — matching
-// the previous io.Discard behavior while keeping a capped copy so a startup
-// failure (e.g. newConPTY) can be reported instead of only "exited without
-// printing READY".
-type boundedBuffer struct {
-	mu  sync.Mutex
-	buf []byte
-	max int
-}
-
-func (b *boundedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if room := b.max - len(b.buf); room > 0 {
-		if len(p) < room {
-			room = len(p)
-		}
-		b.buf = append(b.buf, p[:room]...)
-	}
-	return len(p), nil
-}
-
-func (b *boundedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return string(b.buf)
-}
-
 // defaultSpawnHost resolves the current executable, builds the pty-host argv,
 // and spawns it detached on Windows. It reads stdout for "READY:<pid> <port>"
-// with a 10s timeout, then unrefs (detaches) the child. Returns the loopback
-// address and the pty-host OS PID.
+// with a 10s timeout. Returns the loopback address and the pty-host OS PID.
 func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string) (string, int, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -86,7 +51,13 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	}
 	merged = append(merged, envAssignments...)
 
-	cmd := exec.CommandContext(ctx, exe, args...)
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
+	// Do not bind the long-lived pty-host to ctx with exec.CommandContext. The
+	// caller's startup/request context is canceled after the spawn response is
+	// written; after READY, the host must keep running until the session exits.
+	cmd := exec.Command(exe, args...)
 	cmd.Dir = cwd
 	cmd.Env = merged
 
@@ -99,17 +70,12 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 		HideWindow:    true,
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", 0, fmt.Errorf("conpty spawn: stdout pipe: %w", err)
-	}
 	// Capture a bounded copy of the pty-host's stderr. It writes its startup
 	// diagnostics there (listen/newConPTY failures) before exiting without
 	// printing READY; retaining them lets us report the real cause below.
 	stderr := &boundedBuffer{max: maxCapturedStderr}
-	cmd.Stderr = stderr
-
-	if err := cmd.Start(); err != nil {
+	proc, err := startManagedHostProcess(cmd, stderr)
+	if err != nil {
 		return "", 0, fmt.Errorf("conpty spawn: start: %w", err)
 	}
 
@@ -121,7 +87,8 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	}, 1)
 
 	go func() {
-		scanner := bufio.NewScanner(stdout)
+		defer proc.closeStdout()
+		scanner := bufio.NewScanner(proc.stdout)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			m := readyRE.FindStringSubmatch(line)
@@ -153,19 +120,18 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	select {
 	case r := <-readyC:
 		if r.err != nil {
-			_ = cmd.Process.Kill()
+			_ = proc.killAndWait()
 			return "", 0, r.err
 		}
-		// Unref: detach stdout so the child is not blocked, then release reference
-		// so our process can exit while the child keeps running.
-		stdout.Close()
-		cmd.Process.Release() // nolint: errcheck - best-effort detach
+		// Detach stdout so the child is not blocked. The process handle remains
+		// owned by proc's waiter goroutine so cmd.Wait runs when pty-host exits.
+		proc.closeStdout()
 		return r.addr, cmd.Process.Pid, nil
 	case <-timer.C:
-		_ = cmd.Process.Kill()
+		_ = proc.killAndWait()
 		return "", 0, fmt.Errorf("conpty spawn: pty-host startup timeout (%s)", spawnReadyTimeout)
 	case <-ctx.Done():
-		_ = cmd.Process.Kill()
+		_ = proc.killAndWait()
 		return "", 0, ctx.Err()
 	}
 }
