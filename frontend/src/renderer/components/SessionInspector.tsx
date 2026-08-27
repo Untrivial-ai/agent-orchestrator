@@ -1633,6 +1633,7 @@ function ReviewsSection({
 				onKill={() => killReview.mutate()}
 				onTrigger={() => triggerReview.mutate()}
 				reviewerHandleId={reviewsQuery.data?.reviewerHandleId ?? ""}
+				reviewerActivityState={reviewsQuery.data?.reviewerActivityState}
 				reviewStates={reviewStates}
 				notice={reviewNotice}
 				agentCatalog={agentsQuery.data}
@@ -2076,6 +2077,7 @@ function ReviewPanel({
 	config,
 	reviewStates,
 	reviewerHandleId,
+	reviewerActivityState,
 	isLoading,
 	isTriggering,
 	isCancelling,
@@ -2097,6 +2099,7 @@ function ReviewPanel({
 	config?: ProjectConfig;
 	reviewStates: PRReviewState[];
 	reviewerHandleId: string;
+	reviewerActivityState?: components["schemas"]["ListReviewsResponse"]["reviewerActivityState"];
 	isLoading: boolean;
 	isTriggering: boolean;
 	isCancelling: boolean;
@@ -2157,7 +2160,7 @@ function ReviewPanel({
 		latestAutoFailure && latestAutoFailure.id !== dismissedAutoFailureId ? latestAutoFailure.body.trim() : null;
 	const hasReviewerSession = reviewerHandleId.trim() !== "";
 	const reviewRunning = reviewIsRunning(openReviewStates);
-	const reviewLive = reviewHasLiveActivity(openReviewStates, reviewsQuery.data?.reviewerActivityState, hasReviewerSession);
+	const reviewLive = reviewHasLiveActivity(openReviewStates, reviewerActivityState, hasReviewerSession);
 	const reviewHasRun = reviewRunning || Boolean(latest);
 	const runAction = reviewSessionRunAction(openReviewStates, isTriggering);
 	const runDisabled = isKilling || isSwitchingReviewer || reviewRunDisabled(openReviewStates, isTriggering);
