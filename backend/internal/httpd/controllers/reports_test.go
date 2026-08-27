@@ -42,6 +42,9 @@ func TestReportsAPI_CreateAndEnvelope(t *testing.T) {
 	if status != http.StatusCreated || svc.session != "ao-7" || svc.typ != domain.ReportDone || svc.note != "finished" {
 		t.Fatalf("status=%d body=%s svc=%+v", status, body, svc)
 	}
+	if string(body) != `{"id":"rpt_1"}`+"\n" {
+		t.Fatalf("response body = %s", body)
+	}
 	svc.err = apierr.Invalid("INVALID_REPORT", "bad report", nil)
 	body, status, _ = doRequest(t, srv, "POST", "/api/v1/reports", `{"sessionId":"ao-7","type":"done","note":"x"}`)
 	if status != http.StatusBadRequest || !reportContainsAll(string(body), "INVALID_REPORT", "requestId") {

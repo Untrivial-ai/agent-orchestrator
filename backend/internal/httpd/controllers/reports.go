@@ -40,9 +40,5 @@ func (c *ReportsController) create(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusCreated, CreateReportResponse{Report: reportResponse(rec)})
-}
-
-func reportResponse(rec domain.ReportRecord) ReportResponse {
-	return ReportResponse{ID: rec.ID, SessionID: string(rec.SessionID), ProjectID: string(rec.ProjectID), Type: string(rec.Type), Note: rec.Note, CreatedAt: rec.CreatedAt, DeliveryState: string(rec.DeliveryState)}
+	envelope.WriteJSON(w, http.StatusCreated, CreateReportResponse{ID: rec.ID})
 }

@@ -63,7 +63,7 @@ func TestReportModesAndBoundaries(t *testing.T) {
 					_ = json.NewDecoder(r.Body).Decode(&got)
 				}
 				w.WriteHeader(http.StatusCreated)
-				_, _ = io.WriteString(w, `{"report":{"id":"rpt_1"}}`)
+				_, _ = io.WriteString(w, `{"id":"rpt_1"}`)
 			}))
 			defer srv.Close()
 			writeRunFileFor(t, cfg, srv)

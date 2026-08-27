@@ -24,9 +24,7 @@ type reportAPIRequest struct {
 	Note      string `json:"note"`
 }
 type reportAPIResponse struct {
-	Report struct {
-		ID string `json:"id"`
-	} `json:"report"`
+	ID string `json:"id"`
 }
 
 func newReportCommand(ctx *commandContext) *cobra.Command {

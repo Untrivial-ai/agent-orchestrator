@@ -17,27 +17,20 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 )
 
-// CreateReportRequest is the worker-to-daemon report submission contract.
+// CreateReportRequest is the local caller-to-daemon report submission contract.
+// SessionID attributes the report; like the rest of AO's unauthenticated
+// loopback API, it is not cryptographic proof of worker authorship. Reports do
+// not mutate or derive authoritative session status.
 type CreateReportRequest struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type" enum:"free_form,pr_created,artifact,checkpoint,needs_input,stuck,done"`
 	Note      string `json:"note" maxLength:"1000"`
 }
 
-// ReportResponse is the created durable report returned to a worker.
-type ReportResponse struct {
-	ID            string    `json:"id"`
-	SessionID     string    `json:"sessionId"`
-	ProjectID     string    `json:"projectId"`
-	Type          string    `json:"type"`
-	Note          string    `json:"note"`
-	CreatedAt     time.Time `json:"createdAt"`
-	DeliveryState string    `json:"deliveryState"`
-}
-
-// CreateReportResponse wraps a newly created report.
+// CreateReportResponse returns only the durable identifier needed to correlate
+// a successful submission without echoing report contents.
 type CreateReportResponse struct {
-	Report ReportResponse `json:"report"`
+	ID string `json:"id"`
 }
 
 // HTTP response envelopes for the projects surface — the SINGLE definition of

@@ -6825,10 +6825,10 @@ components:
       type: object
     CreateReportResponse:
       properties:
-        report:
-          $ref: '#/components/schemas/ReportResponse'
+        id:
+          type: string
       required:
-      - report
+      - id
       type: object
     DegradedProject:
       properties:
@@ -7906,32 +7906,6 @@ components:
       - ok
       - sessionId
       - displayName
-      type: object
-    ReportResponse:
-      properties:
-        createdAt:
-          format: date-time
-          type: string
-        deliveryState:
-          type: string
-        id:
-          type: string
-        note:
-          type: string
-        projectId:
-          type: string
-        sessionId:
-          type: string
-        type:
-          type: string
-      required:
-      - id
-      - sessionId
-      - projectId
-      - type
-      - note
-      - createdAt
-      - deliveryState
       type: object
     ResolveCommentsResponse:
       properties:

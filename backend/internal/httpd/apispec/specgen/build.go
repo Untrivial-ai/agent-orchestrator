@@ -316,7 +316,6 @@ var schemaNames = map[string]string{
 	"ControllersMarkAllNotificationsReadRequest":  "MarkAllNotificationsReadRequest",
 	"ControllersMarkAllNotificationsReadResponse": "MarkAllNotificationsReadResponse",
 	"ControllersCreateReportRequest":              "CreateReportRequest",
-	"ControllersReportResponse":                   "ReportResponse",
 	"ControllersCreateReportResponse":             "CreateReportResponse",
 	"ControllersUsageHookMetadata":                "UsageHookMetadata",
 	"ControllersListUsageSessionsQuery":           "ListUsageSessionsQuery",
