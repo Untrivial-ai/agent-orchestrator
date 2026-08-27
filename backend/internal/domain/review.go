@@ -24,10 +24,14 @@ type Review struct {
 	PRURL     string          `json:"prUrl"`
 	// ReviewerHandleID is the runtime handle of the live reviewer pane, reused
 	// across passes and exposed so the UI can attach its terminal.
-	ReviewerHandleID string    `json:"reviewerHandleId"`
-	AgentSessionID   string    `json:"agentSessionId"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ReviewerHandleID string `json:"reviewerHandleId"`
+	AgentSessionID   string `json:"agentSessionId"`
+	// ReviewerActivityState is the latest activity hook reported by the review
+	// pane itself. It is separate from ReviewRun.Status so the UI can distinguish
+	// "review pass exists" from "reviewer is actively working right now".
+	ReviewerActivityState ActivityState `json:"reviewerActivityState,omitempty"`
+	CreatedAt             time.Time     `json:"createdAt"`
+	UpdatedAt             time.Time     `json:"updatedAt"`
 }
 
 // ReviewRun is one review pass against a worker's PR.

@@ -75,6 +75,7 @@ import type { MessageKey } from "../i18n";
 import { usesPreviewWorkspaceData as usePreviewData } from "../lib/preview-mode";
 import {
 	openReviewStatesFor,
+	reviewHasLiveActivity,
 	reviewIsRunning,
 	reviewRunDisabled,
 	reviewSessionRunAction,
@@ -2198,6 +2199,7 @@ function ReviewPanel({
 		latestAutoFailure && latestAutoFailure.id !== dismissedAutoFailureId ? latestAutoFailure.body.trim() : null;
 	const hasReviewerSession = reviewerHandleId.trim() !== "";
 	const reviewRunning = reviewIsRunning(openReviewStates);
+	const reviewLive = reviewHasLiveActivity(openReviewStates, reviewsQuery.data?.reviewerActivityState, hasReviewerSession);
 	const reviewHasRun = reviewRunning || Boolean(latest);
 	const runAction = reviewSessionRunAction(openReviewStates, isTriggering);
 	const runDisabled = isKilling || isSwitchingReviewer || reviewRunDisabled(openReviewStates, isTriggering);
@@ -2323,7 +2325,7 @@ function ReviewPanel({
 						</div>
 					</div>
 				</div>
-				{reviewRunning ? (
+				{reviewLive ? (
 					<div className="mt-3 flex items-center gap-2 border-t border-border pt-3">
 						<Loader2 aria-hidden="true" className="size-icon-sm shrink-0 animate-spin text-muted-foreground" />
 						<span className="min-w-0 flex-1 truncate text-2xs font-medium text-muted-foreground">

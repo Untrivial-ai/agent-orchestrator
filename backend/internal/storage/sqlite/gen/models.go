@@ -476,15 +476,16 @@ type Project struct {
 }
 
 type Review struct {
-	ID               string
-	SessionID        domain.SessionID
-	ProjectID        domain.ProjectID
-	Harness          domain.ReviewerHarness
-	PRURL            string
-	ReviewerHandleID string
-	AgentSessionID   string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                    string
+	SessionID             domain.SessionID
+	ProjectID             domain.ProjectID
+	Harness               domain.ReviewerHarness
+	PRURL                 string
+	ReviewerHandleID      string
+	AgentSessionID        string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	ReviewerActivityState string
 }
 
 type ReviewRun struct {
