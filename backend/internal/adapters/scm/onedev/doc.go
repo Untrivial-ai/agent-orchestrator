@@ -83,6 +83,26 @@
 // deployment that path never fires. It is defence for the proxy case, not a
 // claim that OneDev reports quota.
 //
+// # Identity is host-scoped
+//
+// OneDev's user database is per-instance, so identity is host-scoped:
+// AuthenticatedIdentityForHost is the primary method and the multi provider
+// prefers it, exactly as it does for self-managed GitLab. The unscoped
+// AuthenticatedIdentity resolves only when the allowlist names one instance;
+// with several configured it refuses rather than guessing which account the
+// caller meant. GET /~api/users/me is the lookup — /~api/users/{id} needs an
+// id the caller does not have, and listing /~api/users is admin-only.
+//
+// # Merging is deliberately unsupported
+//
+// The adapter is read-only. MergePullRequest exists only to return
+// ports.ErrSCMUnsupported, because OneDev's merge endpoint has no
+// compare-and-swap: POST /~api/pulls/{requestId}/merge takes an optional note,
+// accepts no expected-head precondition, and returns no merge commit. Honouring
+// SCMMergeRequest.ExpectedHeadSHA would mean checking the head and then
+// merging, and a push landing in that window would have AO merge an unreviewed
+// revision. See merge.go for the full reasoning before implementing it.
+//
 // # Inline review threads are not available
 //
 // OneDev exposes code comments only as GET /~api/code-comments/{commentId}:

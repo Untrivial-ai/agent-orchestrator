@@ -12,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	scmobserve "github.com/aoagents/agent-orchestrator/backend/internal/observe/scm"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
@@ -20,36 +21,88 @@ import (
 // credentials for one provider do not prevent the others from starting; the
 // observer is disabled only when no provider has usable credentials.
 func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.Manager, gitlabCfg config.GitLabConfig, onedevCfg config.OneDevConfig, logger *slog.Logger) <-chan struct{} {
-	var named []scmmulti.NamedProvider
-
-	ghProvider, ghErr := newGitHubSCMProvider(logger)
-	if ghErr != nil {
-		logSCMProviderDisabled(logger, "github", ghErr)
-	} else {
-		named = append(named, scmmulti.NamedProvider{Key: "github", Provider: ghProvider})
-	}
-
-	glProvider, glErr := newGitLabSCMProvider(gitlabCfg, logger)
-	if glErr != nil {
-		logSCMProviderDisabled(logger, "gitlab", glErr)
-	} else {
-		named = append(named, scmmulti.NamedProvider{Key: "gitlab", Provider: glProvider})
-	}
-
-	odProvider, odErr := newOneDevSCMProvider(onedevCfg, logger)
-	if odErr != nil {
-		logSCMProviderDisabled(logger, "onedev", odErr)
-	} else {
-		named = append(named, scmmulti.NamedProvider{Key: scmonedev.ProviderKey, Provider: odProvider})
-	}
-
-	if len(named) == 0 {
+	// This is the only construction path that logs. The other two run at the
+	// same daemon boot from the same configuration, so logging there would
+	// repeat every "provider disabled" line three times.
+	subs := scmSubProviders(gitlabCfg, onedevCfg, logger, func(key string, err error) {
+		logSCMProviderDisabled(logger, key, err)
+	})
+	if len(subs) == 0 {
 		logger.Warn("scm observer disabled: no usable SCM provider")
 		return closedDone()
 	}
-	provider := scmmulti.New(named...)
+	provider := scmmulti.New(namedSCMProviders(subs)...)
 	observer := scmobserve.New(provider, store, lcm, scmobserve.Config{Logger: logger, ScopedIdentityResolver: provider})
 	return observer.Start(ctx)
+}
+
+// scmSubProvider is the capability set every AO SCM adapter satisfies: the
+// observer's Provider contract, plus merge dispatch for `ao pr merge`. A
+// provider that cannot merge (OneDev) still satisfies ports.SCMMerger by
+// returning ports.ErrSCMUnsupported, so "cannot merge" reaches the caller as a
+// capability answer rather than as an unknown-provider failure.
+type scmSubProvider interface {
+	scmobserve.Provider
+	ports.SCMMerger
+}
+
+// namedSCMSubProvider pairs an SCM adapter with the routing key its
+// ParseRepository stamps on repositories.
+type namedSCMSubProvider struct {
+	Key      string
+	Provider scmSubProvider
+}
+
+// scmSubProviders builds every configured SCM adapter, in a stable order.
+//
+// All three multi-provider constructors go through here so they cannot drift
+// apart: OneDev shipped registered in the observer but missing from the
+// session PR claimer and the merger, which surfaced live as `ao session
+// claim-pr` failing with SCM_UNAVAILABLE on a OneDev pull request. Adding a
+// provider is now one edit, not three.
+//
+// A provider whose credentials or configuration are missing is reported to
+// onDisabled (which may be nil) and omitted; it never blocks the others.
+func scmSubProviders(gitlabCfg config.GitLabConfig, onedevCfg config.OneDevConfig, logger *slog.Logger, onDisabled func(key string, err error)) []namedSCMSubProvider {
+	disabled := func(key string, err error) {
+		if onDisabled != nil {
+			onDisabled(key, err)
+		}
+	}
+
+	var subs []namedSCMSubProvider
+	if gh, err := newGitHubSCMProvider(logger); err != nil {
+		disabled("github", err)
+	} else {
+		subs = append(subs, namedSCMSubProvider{Key: "github", Provider: gh})
+	}
+	if gl, err := newGitLabSCMProvider(gitlabCfg, logger); err != nil {
+		disabled("gitlab", err)
+	} else {
+		subs = append(subs, namedSCMSubProvider{Key: "gitlab", Provider: gl})
+	}
+	if od, err := newOneDevSCMProvider(onedevCfg, logger); err != nil {
+		disabled(scmonedev.ProviderKey, err)
+	} else {
+		subs = append(subs, namedSCMSubProvider{Key: scmonedev.ProviderKey, Provider: od})
+	}
+	return subs
+}
+
+func namedSCMProviders(subs []namedSCMSubProvider) []scmmulti.NamedProvider {
+	named := make([]scmmulti.NamedProvider, 0, len(subs))
+	for _, sub := range subs {
+		named = append(named, scmmulti.NamedProvider{Key: sub.Key, Provider: sub.Provider})
+	}
+	return named
+}
+
+func namedSCMMergers(subs []namedSCMSubProvider) []scmmulti.NamedMerger {
+	named := make([]scmmulti.NamedMerger, 0, len(subs))
+	for _, sub := range subs {
+		named = append(named, scmmulti.NamedMerger{Key: sub.Key, Merger: sub.Provider})
+	}
+	return named
 }
 
 func newGitHubSCMProvider(logger *slog.Logger) (*scmgithub.Provider, error) {
@@ -124,39 +177,34 @@ func logSCMProviderDisabled(logger *slog.Logger, provider string, err error) {
 }
 
 // newMultiSCMProvider builds a multi-provider for use outside the polling
-// observer (e.g. session service PR claiming). Returns nil when no provider
-// has usable credentials — callers must tolerate a nil SCM.
-func newMultiSCMProvider(gitlabCfg config.GitLabConfig, logger *slog.Logger) *scmmulti.Provider {
-	var named []scmmulti.NamedProvider
-	if gh, err := newGitHubSCMProvider(logger); err == nil {
-		named = append(named, scmmulti.NamedProvider{Key: "github", Provider: gh})
-	}
-	if gl, err := newGitLabSCMProvider(gitlabCfg, logger); err == nil {
-		named = append(named, scmmulti.NamedProvider{Key: "gitlab", Provider: gl})
-	}
-	if len(named) == 0 {
+// observer (e.g. session service PR claiming), registering the same providers
+// the observer gets. Returns nil when no provider has usable credentials —
+// callers must tolerate a nil SCM.
+func newMultiSCMProvider(gitlabCfg config.GitLabConfig, onedevCfg config.OneDevConfig, logger *slog.Logger) *scmmulti.Provider {
+	subs := scmSubProviders(gitlabCfg, onedevCfg, logger, nil)
+	if len(subs) == 0 {
 		return nil
 	}
-	return scmmulti.New(named...)
+	return scmmulti.New(namedSCMProviders(subs)...)
 }
 
 // newMultiSCMMerger builds a multi-merger for PR merge actions, registering
-// both GitHub and GitLab providers. When one provider is unavailable (missing
-// token), the multi-merger still routes to the healthy one — same
+// the same providers the observer gets. When one provider is unavailable
+// (missing token), the multi-merger still routes to the healthy one — same
 // degrade-gracefully pattern as newMultiSCMProvider. Returns nil when no
 // provider has usable credentials.
-func newMultiSCMMerger(gitlabCfg config.GitLabConfig, logger *slog.Logger) *scmmulti.Merger {
-	var named []scmmulti.NamedMerger
-	if gh, err := newGitHubSCMProvider(logger); err == nil {
-		named = append(named, scmmulti.NamedMerger{Key: "github", Merger: gh})
-	}
-	if gl, err := newGitLabSCMProvider(gitlabCfg, logger); err == nil {
-		named = append(named, scmmulti.NamedMerger{Key: "gitlab", Merger: gl})
-	}
-	if len(named) == 0 {
+//
+// OneDev is registered here even though it cannot merge. Its
+// MergePullRequest returns ports.ErrSCMUnsupported, so a merge attempt on a
+// OneDev pull request reports that OneDev does not support the operation
+// rather than "unknown provider" — see the OneDev adapter's merge.go for why
+// it cannot merge safely.
+func newMultiSCMMerger(gitlabCfg config.GitLabConfig, onedevCfg config.OneDevConfig, logger *slog.Logger) *scmmulti.Merger {
+	subs := scmSubProviders(gitlabCfg, onedevCfg, logger, nil)
+	if len(subs) == 0 {
 		return nil
 	}
-	return scmmulti.NewMerger(named...)
+	return scmmulti.NewMerger(namedSCMMergers(subs)...)
 }
 
 func closedDone() <-chan struct{} {
