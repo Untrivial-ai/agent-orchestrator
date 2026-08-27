@@ -7531,6 +7531,14 @@ components:
       type: object
     ListReviewsResponse:
       properties:
+        reviewerActivityState:
+          enum:
+          - active
+          - idle
+          - waiting_input
+          - blocked
+          - exited
+          type: string
         reviewerHandleId:
           type: string
         reviewerHarness:
@@ -9021,8 +9029,8 @@ components:
           description: AO process generation that produced the signal.
           type: string
         state:
-          description: Reviewer activity state reported by a hook. Accepted for forward
-            compatibility, not used for session display state.
+          description: Reviewer activity state reported by a hook. Used for reviewer-pane
+            live status, not worker session state.
           enum:
           - active
           - idle

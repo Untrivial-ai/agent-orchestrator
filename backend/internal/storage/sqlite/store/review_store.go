@@ -18,15 +18,16 @@ func (s *Store) UpsertReview(ctx context.Context, r domain.Review) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.qw.UpsertReview(ctx, gen.UpsertReviewParams{
-		ID:               r.ID,
-		SessionID:        r.SessionID,
-		ProjectID:        r.ProjectID,
-		Harness:          r.Harness,
-		PRURL:            r.PRURL,
-		ReviewerHandleID: r.ReviewerHandleID,
-		AgentSessionID:   r.AgentSessionID,
-		CreatedAt:        r.CreatedAt,
-		UpdatedAt:        r.UpdatedAt,
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: string(r.ReviewerActivityState),
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
 	})
 }
 
@@ -98,12 +99,18 @@ func (s *Store) ClearReviewerHandleByHarness(ctx context.Context, id domain.Sess
 	return s.qw.ClearReviewerHandleByHarness(ctx, gen.ClearReviewerHandleByHarnessParams{SessionID: id, Harness: harness})
 }
 
-// UpdateReviewAgentSessionID records the native reviewer conversation id
-// reported by the reviewer harness hooks.
-func (s *Store) UpdateReviewAgentSessionID(ctx context.Context, id, agentSessionID string) (bool, error) {
+// UpdateReviewActivity records the native reviewer conversation id and/or
+// reviewer activity reported by the reviewer harness hooks.
+func (s *Store) UpdateReviewActivity(ctx context.Context, id string, state domain.ActivityState, agentSessionID string) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	n, err := s.qw.UpdateReviewAgentSessionID(ctx, gen.UpdateReviewAgentSessionIDParams{ID: id, AgentSessionID: agentSessionID})
+	n, err := s.qw.UpdateReviewActivity(ctx, gen.UpdateReviewActivityParams{
+		Column1:               agentSessionID,
+		AgentSessionID:        agentSessionID,
+		Column3:               state,
+		ReviewerActivityState: string(state),
+		ID:                    id,
+	})
 	if err != nil {
 		return false, err
 	}
@@ -291,29 +298,63 @@ func (s *Store) ListReviewRunsByBatch(ctx context.Context, id domain.SessionID, 
 	return out, nil
 }
 
-func reviewFromGetReviewBySessionRow(r gen.Review) domain.Review {
-	return reviewFromReview(r)
-}
-
-func reviewFromGetReviewBySessionAndHarnessRow(r gen.Review) domain.Review {
-	return reviewFromReview(r)
-}
-
-func reviewFromListReviewsBySessionRow(r gen.Review) domain.Review {
-	return reviewFromReview(r)
-}
-
-func reviewFromReview(r gen.Review) domain.Review {
+func reviewFromGetReviewBySessionRow(r gen.GetReviewBySessionRow) domain.Review {
 	return domain.Review{
-		ID:               r.ID,
-		SessionID:        r.SessionID,
-		ProjectID:        r.ProjectID,
-		Harness:          r.Harness,
-		PRURL:            r.PRURL,
-		ReviewerHandleID: r.ReviewerHandleID,
-		AgentSessionID:   r.AgentSessionID,
-		CreatedAt:        r.CreatedAt,
-		UpdatedAt:        r.UpdatedAt,
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
+	}
+}
+
+func reviewFromGetReviewBySessionAndHarnessRow(r gen.GetReviewBySessionAndHarnessRow) domain.Review {
+	return domain.Review{
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
+	}
+}
+
+func reviewFromListReviewsBySessionRow(r gen.ListReviewsBySessionRow) domain.Review {
+	return domain.Review{
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
+	}
+}
+
+func reviewFromReview(r gen.GetReviewByIDRow) domain.Review {
+	return domain.Review{
+		ID:                    r.ID,
+		SessionID:             r.SessionID,
+		ProjectID:             r.ProjectID,
+		Harness:               r.Harness,
+		PRURL:                 r.PRURL,
+		ReviewerHandleID:      r.ReviewerHandleID,
+		AgentSessionID:        r.AgentSessionID,
+		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		CreatedAt:             r.CreatedAt,
+		UpdatedAt:             r.UpdatedAt,
 	}
 }
 

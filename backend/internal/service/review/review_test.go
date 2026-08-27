@@ -28,7 +28,7 @@ type fakeStore struct {
 	sessionAutoInjectReview *bool
 
 	updateCalls        int
-	agentSessionUpdate int
+	activityUpdates    int
 	markCalls          int
 	markedIDs          []string
 	resolvedCommentIDs []string
@@ -41,12 +41,17 @@ func (f *fakeStore) GetReviewByID(_ context.Context, id string) (domain.Review, 
 	return domain.Review{}, false, nil
 }
 
-func (f *fakeStore) UpdateReviewAgentSessionID(_ context.Context, id, agentSessionID string) (bool, error) {
+func (f *fakeStore) UpdateReviewActivity(_ context.Context, id string, state domain.ActivityState, agentSessionID string) (bool, error) {
 	if !f.reviewOK || f.review.ID != id {
 		return false, nil
 	}
-	f.agentSessionUpdate++
-	f.review.AgentSessionID = agentSessionID
+	f.activityUpdates++
+	if agentSessionID != "" {
+		f.review.AgentSessionID = agentSessionID
+	}
+	if state != "" {
+		f.review.ReviewerActivityState = state
+	}
 	return true, nil
 }
 
@@ -313,11 +318,29 @@ func TestApplyReviewActivitySignalPersistsNativeReviewerSessionID(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("ApplyReviewActivitySignal: %v", err)
 	}
-	if st.agentSessionUpdate != 1 || st.review.AgentSessionID != "opencode-native-2" {
-		t.Fatalf("agent session update calls=%d review=%+v", st.agentSessionUpdate, st.review)
+	if st.activityUpdates != 1 || st.review.AgentSessionID != "opencode-native-2" {
+		t.Fatalf("activity update calls=%d review=%+v", st.activityUpdates, st.review)
 	}
 	if st.review.SessionID != "worker-1" {
 		t.Fatalf("worker session id changed: %+v", st.review)
+	}
+}
+
+func TestApplyReviewActivitySignalPersistsReviewerActivityState(t *testing.T) {
+	st := &fakeStore{
+		reviewOK: true,
+		review:   domain.Review{ID: "review-1", SessionID: "worker-1", Harness: domain.ReviewerOpenCode},
+	}
+	svc := New(nil, st)
+
+	if err := svc.ApplyReviewActivitySignal(context.Background(), "review-1", ActivitySignal{
+		Event: "stop",
+		State: domain.ActivityIdle,
+	}); err != nil {
+		t.Fatalf("ApplyReviewActivitySignal: %v", err)
+	}
+	if st.activityUpdates != 1 || st.review.ReviewerActivityState != domain.ActivityIdle {
+		t.Fatalf("activity update calls=%d review=%+v", st.activityUpdates, st.review)
 	}
 }
 
