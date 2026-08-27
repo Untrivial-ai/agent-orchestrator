@@ -107,7 +107,7 @@ type TrackerIntakeConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// Provider defaults to github when Enabled is true. Supported values:
 	// "github" and "gitlab".
-	Provider TrackerProvider `json:"provider,omitempty" enum:"github,gitlab"`
+	Provider TrackerProvider `json:"provider,omitempty" enum:"github,gitlab,onedev"`
 	// Repo is the provider-native repository key ("owner/repo" for GitHub,
 	// "group/project" for GitLab). When empty, the intake loop derives it from
 	// the project's repo origin URL.
@@ -159,7 +159,7 @@ func (c TrackerIntakeConfig) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	if c.Provider != "" && c.Provider != TrackerProviderGitHub && c.Provider != TrackerProviderGitLab {
+	if c.Provider != "" && c.Provider != TrackerProviderGitHub && c.Provider != TrackerProviderGitLab && c.Provider != TrackerProviderOneDev {
 		return fmt.Errorf("trackerIntake.provider: unsupported provider %q", c.Provider)
 	}
 	if err := validateNoWhitespaceField("trackerIntake.repo", c.Repo); err != nil {
