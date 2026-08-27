@@ -67,6 +67,8 @@ func Build() ([]byte, error) {
 			"Code-review runs and findings"),
 		*(&openapi31.Tag{Name: "notifications"}).WithDescription(
 			"Durable dashboard notifications"),
+		*(&openapi31.Tag{Name: "reports"}).WithDescription(
+			"Durable worker reports"),
 		*(&openapi31.Tag{Name: "usage"}).WithDescription(
 			"Token usage telemetry for AO sessions"),
 		*(&openapi31.Tag{Name: "push"}).WithDescription(
@@ -313,6 +315,8 @@ var schemaNames = map[string]string{
 	"ControllersNotificationEnvelope":             "NotificationEnvelope",
 	"ControllersMarkAllNotificationsReadRequest":  "MarkAllNotificationsReadRequest",
 	"ControllersMarkAllNotificationsReadResponse": "MarkAllNotificationsReadResponse",
+	"ControllersCreateReportRequest":              "CreateReportRequest",
+	"ControllersCreateReportResponse":             "CreateReportResponse",
 	"ControllersUsageHookMetadata":                "UsageHookMetadata",
 	"ControllersListUsageSessionsQuery":           "ListUsageSessionsQuery",
 	"ControllersCompactSessionUsageResponse":      "CompactSessionUsageResponse",
@@ -468,6 +472,7 @@ func operations() []operation {
 	ops = append(ops, prOperations()...)
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
+	ops = append(ops, reportOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
@@ -478,6 +483,21 @@ func operations() []operation {
 	ops = append(ops, shellTerminalOperations()...)
 	ops = append(ops, systemOperations()...)
 	return ops
+}
+
+func reportOperations() []operation {
+	return []operation{{
+		method: http.MethodPost, path: "/api/v1/reports", id: "createReport", tag: "reports",
+		summary: "Persist a worker report for later orchestrator delivery",
+		reqBody: controllers.CreateReportRequest{},
+		resps: []respUnit{
+			{http.StatusCreated, controllers.CreateReportResponse{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}}
 }
 
 // systemOperations declares the startup requirements gate the desktop loading
