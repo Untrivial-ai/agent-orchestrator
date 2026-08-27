@@ -610,3 +610,52 @@ func TestAnyCredentialIsOrderIndependent(t *testing.T) {
 		t.Fatalf("anyCredential = %v, want ErrNoToken", err)
 	}
 }
+
+// TestNewProviderFailsWhenOnlyCredentialIsMisKeyed covers the second half of
+// the mis-keyed per-host token problem: a deployment whose only credential
+// names no configured host must fail at construction, naming the cause, rather
+// than constructing fine and returning ErrNoToken on its first request.
+func TestNewProviderFailsWhenOnlyCredentialIsMisKeyed(t *testing.T) {
+	tests := []struct {
+		name     string
+		tokenKey string
+		wantErr  bool
+	}{
+		{
+			// A key that merely omits the API port is not mis-keyed — it
+			// resolves, and construction succeeds.
+			name: "port omitted still resolves", tokenKey: "10.0.0.30", wantErr: false,
+		},
+		{
+			name: "key names the git ssh port", tokenKey: "10.0.0.30:6611", wantErr: false,
+		},
+		{
+			name: "key names no configured host", tokenKey: "10.0.0.99:6610", wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs strings.Builder
+			logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+			_, err := NewProvider(ProviderOptions{
+				AllowedHosts: []string{"http://10.0.0.30:6610"},
+				Logger:       logger,
+				// No default token: the per-host entry is the only credential.
+				HostTokens: map[string]TokenSource{tt.tokenKey: StaticTokenSource("host-token")},
+			})
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("NewProvider: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrNoToken) {
+				t.Fatalf("err = %v, want ErrNoToken at construction", err)
+			}
+			if !strings.Contains(logs.String(), tt.tokenKey) {
+				t.Fatalf("nothing named the offending key %q: %s", tt.tokenKey, logs.String())
+			}
+		})
+	}
+}
