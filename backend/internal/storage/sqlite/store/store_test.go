@@ -797,7 +797,7 @@ func TestPRCRUD(t *testing.T) {
 	}
 }
 
-func TestPRAutoInjectCISnapshotsSessionDefaultAtCreation(t *testing.T) {
+func TestPRAutoInjectCITracksSessionPolicyChanges(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	seedProject(t, s, "mer")
@@ -817,37 +817,47 @@ func TestPRAutoInjectCISnapshotsSessionDefaultAtCreation(t *testing.T) {
 	changedAt := now.Add(time.Minute)
 	ok, err := s.SetSessionAutoInjectCI(ctx, owner.ID, false, changedAt)
 	if err != nil || !ok {
-		t.Fatalf("disable session CI default: ok=%v err=%v", ok, err)
+		t.Fatalf("disable session CI policy: ok=%v err=%v", ok, err)
 	}
 	session, found, err := s.GetSession(ctx, owner.ID)
 	if err != nil || !found || session.AutoInjectCI {
-		t.Fatalf("disabled session default = found:%v err:%v session:%+v", found, err, session)
+		t.Fatalf("disabled session policy = found:%v err:%v session:%+v", found, err, session)
 	}
 
 	events, err := s.EventsAfter(ctx, base, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || string(events[0].Type) != "session_updated" {
-		t.Fatalf("policy change events = %+v, want one session_updated", events)
+	if len(events) != 2 {
+		t.Fatalf("policy change events = %+v, want session and PR updates", events)
+	}
+	var sessionPayload []byte
+	for i := range events {
+		if string(events[i].Type) == "session_updated" {
+			sessionPayload = events[i].Payload
+			break
+		}
+	}
+	if sessionPayload == nil {
+		t.Fatalf("policy change events = %+v, want session_updated", events)
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+	if err := json.Unmarshal(sessionPayload, &payload); err != nil {
 		t.Fatal(err)
 	}
 	if enabled, ok := payload["autoInjectCI"].(bool); !ok || enabled {
 		t.Fatalf("autoInjectCI payload = %#v, want false", payload["autoInjectCI"])
 	}
 
-	// Re-observing the first PR after changing the session default must preserve
-	// the value captured when that PR was first inserted.
+	// Re-observing the first PR after changing the session policy must preserve
+	// the currently selected policy.
 	first.UpdatedAt = changedAt.Add(time.Minute)
 	if err := s.WritePR(ctx, first, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, _, _ = s.GetPR(ctx, first.URL)
-	if !got.AutoInjectCI {
-		t.Fatal("session toggle rewrote the first PR's enabled snapshot")
+	if got.AutoInjectCI {
+		t.Fatal("session toggle did not rewrite the first PR's enabled policy")
 	}
 
 	second := domain.PullRequest{URL: "https://github.com/o/r/pull/2", SessionID: owner.ID, Number: 2, UpdatedAt: changedAt}
@@ -856,19 +866,19 @@ func TestPRAutoInjectCISnapshotsSessionDefaultAtCreation(t *testing.T) {
 	}
 	got, _, _ = s.GetPR(ctx, second.URL)
 	if got.AutoInjectCI {
-		t.Fatal("PR created while disabled did not capture the disabled default")
+		t.Fatal("PR created while disabled did not inherit the disabled session policy")
 	}
 
 	if ok, err := s.SetSessionAutoInjectCI(ctx, owner.ID, true, changedAt.Add(time.Minute)); err != nil || !ok {
-		t.Fatalf("enable session CI default: ok=%v err=%v", ok, err)
+		t.Fatalf("enable session CI policy: ok=%v err=%v", ok, err)
 	}
 	second.UpdatedAt = changedAt.Add(2 * time.Minute)
 	if err := s.WritePR(ctx, second, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, _, _ = s.GetPR(ctx, second.URL)
-	if got.AutoInjectCI {
-		t.Fatal("later session enable rewrote the second PR's disabled snapshot")
+	if !got.AutoInjectCI {
+		t.Fatal("later session enable did not rewrite the second PR's disabled policy")
 	}
 }
 

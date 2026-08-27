@@ -185,6 +185,9 @@ SELECT last_nudge_signature FROM pr WHERE url = ?;
 -- name: UpdatePRLastNudgeSignature :exec
 UPDATE pr SET last_nudge_signature = ? WHERE url = ?;
 
+-- name: SetPRAutoInjectCIBySession :exec
+UPDATE pr SET auto_inject_ci = ? WHERE session_id = ?;
+
 -- name: GetDisplayPRFactsBySession :one
 SELECT
     pr.url,

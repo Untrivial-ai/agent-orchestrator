@@ -773,7 +773,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Set the automatic CI-failure injection default for new session PRs */
+        /** Set automatic CI-failure injection for a session and its PRs */
         patch: operations["setSessionAutoInjectCI"];
         trace?: never;
     };

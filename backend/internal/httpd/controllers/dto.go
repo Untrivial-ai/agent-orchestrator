@@ -590,13 +590,13 @@ type SetSessionAutoInjectReviewResponse struct {
 	Session          SessionView      `json:"session"`
 }
 
-// SetSessionAutoInjectCIRequest updates the default automatic CI delivery
-// policy captured by PRs created after the change.
+// SetSessionAutoInjectCIRequest updates automatic CI delivery for a session
+// and every PR currently owned by it.
 type SetSessionAutoInjectCIRequest struct {
 	AutoInjectCI bool `json:"autoInjectCI"`
 }
 
-// SetSessionAutoInjectCIResponse confirms the persisted session default.
+// SetSessionAutoInjectCIResponse confirms the persisted session policy.
 type SetSessionAutoInjectCIResponse struct {
 	OK           bool             `json:"ok"`
 	SessionID    domain.SessionID `json:"sessionId"`

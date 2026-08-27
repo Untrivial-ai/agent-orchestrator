@@ -243,7 +243,7 @@
 	"inspector.aria": "会话检查器",
 	"inspector.branch": "分支",
 	"inspector.ci.autoInject": "Automatically fix CI failures",
-	"inspector.ci.autoInjectDescription": "设置新创建拉取请求的默认值。禁用后，CI 失败不会发送给 worker 代理进行修复。",
+	"inspector.ci.autoInjectDescription": "将此会话的拉取请求 CI 失败发送给 worker 代理。",
 	"inspector.ci.autoInjectError": "无法更新 CI 自动注入设置（{{status}}）",
 	"inspector.ci.notInjected": "CI 失败未注入",
 	"inspector.browser": "浏览器",

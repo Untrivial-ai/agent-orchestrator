@@ -243,7 +243,7 @@
 	"inspector.aria": "セッションインスペクター",
 	"inspector.branch": "ブランチ",
 	"inspector.ci.autoInject": "Automatically fix CI failures",
-	"inspector.ci.autoInjectDescription": "新しく作成されたプルリクエストのデフォルトを設定します。無効にすると、CI 失敗は修正のためにワーカーエージェントへ送信されません。",
+	"inspector.ci.autoInjectDescription": "このセッションのプルリクエストの CI 失敗をワーカーエージェントへ送信します。",
 	"inspector.ci.autoInjectError": "CI の自動注入を更新できませんでした ({{status}})",
 	"inspector.ci.notInjected": "CI 失敗は注入されていません",
 	"inspector.browser": "ブラウザ",

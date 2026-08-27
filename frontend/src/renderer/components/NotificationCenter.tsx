@@ -353,7 +353,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 				) : (
 					<div
 						aria-busy={allQuery.isFetchingNextPage}
-						className="max-h-notification-max-height overflow-y-auto overscroll-contain py-1.5"
+						className="board-scrollbar max-h-notification-max-height overflow-y-auto overscroll-contain py-1.5"
 						onScroll={loadEarlierOnScroll}
 						role="list"
 					>

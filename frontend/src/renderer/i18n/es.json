@@ -245,7 +245,7 @@
 	"inspector.aria": "Inspector de sesión",
 	"inspector.branch": "Rama",
 	"inspector.ci.autoInject": "Automatically fix CI failures",
-	"inspector.ci.autoInjectDescription": "Define el valor predeterminado para los pull requests nuevos. Cuando está desactivado, los fallos de CI no se envían al agente de trabajo para corregirlos.",
+	"inspector.ci.autoInjectDescription": "Envía los fallos de CI de los pull requests de esta sesión al agente de trabajo.",
 	"inspector.ci.autoInjectError": "No se pudo actualizar la inyección automática de CI ({{status}})",
 	"inspector.ci.notInjected": "Fallos de CI no enviados",
 	"inspector.browser": "Navegador",

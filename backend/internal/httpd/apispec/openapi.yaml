@@ -2130,7 +2130,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Set the automatic CI-failure injection default for new session PRs
+      summary: Set automatic CI-failure injection for a session and its PRs
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/auto-inject-review:

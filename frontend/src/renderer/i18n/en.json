@@ -243,7 +243,7 @@
 	"inspector.aria": "Session inspector",
 	"inspector.branch": "Branch",
 	"inspector.ci.autoInject": "Automatically fix CI failures",
-	"inspector.ci.autoInjectDescription": "Sends CI failures to the worker.",
+	"inspector.ci.autoInjectDescription": "Sends CI failures to the worker for this session's PRs.",
 	"inspector.ci.autoInjectError": "Unable to update automatic CI injection ({{status}})",
 	"inspector.ci.notInjected": "CI failures not injected",
 	"inspector.browser": "Browser",

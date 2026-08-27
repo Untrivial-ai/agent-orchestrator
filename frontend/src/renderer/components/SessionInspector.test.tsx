@@ -663,7 +663,7 @@ describe("SessionInspector PR section", () => {
     }
     expect(
       screen.getByRole("button", {
-        name: "Sends CI failures to the worker.",
+        name: "Sends CI failures to the worker for this session's PRs.",
       }),
     ).toBeInTheDocument();
     expect(
@@ -683,7 +683,7 @@ describe("SessionInspector PR section", () => {
 
   });
 
-  it("persists the CI injection default before a PR exists", async () => {
+  it("persists the CI injection policy before a PR exists", async () => {
     renderWithQuery(<SessionInspector session={session([])} />);
 
     const toggle = screen.getByRole("switch", {

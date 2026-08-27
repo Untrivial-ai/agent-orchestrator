@@ -289,6 +289,7 @@ describe("NotificationCenter", () => {
 		await clickOpen();
 
 		const panel = within(screen.getByRole("dialog", { name: "Notifications" }));
+		expect(panel.getByRole("list")).toHaveClass("board-scrollbar", "overflow-y-auto");
 		expect(panel.queryByRole("tab", { name: "Unread" })).not.toBeInTheDocument();
 		expect(panel.queryByRole("tab", { name: "All" })).not.toBeInTheDocument();
 		expect(panel.queryByText("Unseen")).not.toBeInTheDocument();

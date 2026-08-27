@@ -243,7 +243,7 @@
 	"inspector.aria": "세션 인스펙터",
 	"inspector.branch": "브랜치",
 	"inspector.ci.autoInject": "Automatically fix CI failures",
-	"inspector.ci.autoInjectDescription": "새로 생성된 PR의 기본값을 설정합니다. 비활성화하면 CI 실패가 수정을 위해 워커 에이전트에 전송되지 않습니다.",
+	"inspector.ci.autoInjectDescription": "이 세션의 PR에서 발생한 CI 실패를 워커 에이전트에게 보냅니다.",
 	"inspector.ci.autoInjectError": "CI 자동 주입을 업데이트할 수 없습니다 ({{status}})",
 	"inspector.ci.notInjected": "CI 실패가 주입되지 않음",
 	"inspector.browser": "브라우저",

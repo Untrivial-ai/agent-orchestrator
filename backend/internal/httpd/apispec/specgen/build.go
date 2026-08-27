@@ -1739,7 +1739,7 @@ func sessionOperations() []operation {
 		},
 		{
 			method: http.MethodPatch, path: "/api/v1/sessions/{sessionId}/auto-inject-ci", id: "setSessionAutoInjectCI", tag: "sessions",
-			summary:    "Set the automatic CI-failure injection default for new session PRs",
+			summary:    "Set automatic CI-failure injection for a session and its PRs",
 			pathParams: []any{controllers.SessionIDParam{}},
 			reqBody:    controllers.SetSessionAutoInjectCIRequest{},
 			resps: []respUnit{

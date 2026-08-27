@@ -684,6 +684,20 @@ func (q *Queries) ResolveConflictingPRAliasNotifications(ctx context.Context, ar
 	return err
 }
 
+const setPRAutoInjectCIBySession = `-- name: SetPRAutoInjectCIBySession :exec
+UPDATE pr SET auto_inject_ci = ? WHERE session_id = ?
+`
+
+type SetPRAutoInjectCIBySessionParams struct {
+	AutoInjectCI bool
+	SessionID    domain.SessionID
+}
+
+func (q *Queries) SetPRAutoInjectCIBySession(ctx context.Context, arg SetPRAutoInjectCIBySessionParams) error {
+	_, err := q.db.ExecContext(ctx, setPRAutoInjectCIBySession, arg.AutoInjectCI, arg.SessionID)
+	return err
+}
+
 const updatePRLastNudgeSignature = `-- name: UpdatePRLastNudgeSignature :exec
 UPDATE pr SET last_nudge_signature = ? WHERE url = ?
 `
