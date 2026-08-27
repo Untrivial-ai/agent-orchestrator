@@ -196,14 +196,22 @@ func NewProvider(opts ProviderOptions) (*Provider, error) {
 }
 
 // anyCredential reports whether the default source or any per-host source can
-// yield a credential. The default source is tried first, then the per-host
-// sources in sorted order, so the outcome does not depend on map iteration
-// order — this gates construction, and a coin-flipping daemon start is worse
-// than either verdict.
+// yield a credential. It gates NewProvider, so its verdict must not vary
+// between runs on identical configuration.
 //
-// A source failing with anything other than ErrNoToken is remembered and
-// returned only if no later source succeeds, so one broken credential helper
-// does not mask a working token elsewhere.
+// The default source is tried first, then the per-host sources in sorted key
+// order. FallbackTokenSource.Token then does the rest: it returns the first
+// success wherever it appears, and remembers a hard (non-ErrNoToken) failure
+// but returns it only if nothing later succeeds — so one broken credential
+// helper cannot mask a working token elsewhere, whatever the order.
+//
+// Sorting is therefore not what makes a working source win; that holds
+// regardless. What it decides is *which* hard failure is reported when several
+// sources fail and none succeeds. Without it that error is chosen by Go's map
+// iteration order, and a daemon that refuses to start with a different reason
+// each time is far harder to diagnose than one that always names the same
+// host. TestCredentialResolutionIsOrderIndependent pins this; it fails if
+// sortedKeys stops sorting.
 func anyCredential(ctx context.Context, def TokenSource, hostTokens map[string]TokenSource) error {
 	chain := make(FallbackTokenSource, 0, len(hostTokens)+1)
 	if def != nil {
@@ -216,7 +224,8 @@ func anyCredential(ctx context.Context, def TokenSource, hostTokens map[string]T
 	return err
 }
 
-// sortedKeys returns a map's keys in a deterministic order.
+// sortedKeys returns a map's keys in a deterministic order. Load-bearing, not
+// cosmetic: see anyCredential for what varies without it.
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

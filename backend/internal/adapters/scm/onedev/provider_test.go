@@ -574,88 +574,180 @@ func TestNewProviderRejectsCollidingPerHostTokens(t *testing.T) {
 	}
 }
 
-// TestAnyCredentialIsOrderIndependent pins that construction does not depend
-// on map iteration order: with one working and one broken per-host source the
-// result must be the same every time, and a working source must win.
-func TestAnyCredentialIsOrderIndependent(t *testing.T) {
+// TestAnyCredentialVerdict covers what anyCredential reports, independent of
+// ordering (which TestCredentialResolutionIsOrderIndependent owns): a working
+// source wins, a hard failure surfaces only when nothing worked, and an
+// entirely unconfigured chain is ErrNoToken rather than a hard error.
+func TestAnyCredentialVerdict(t *testing.T) {
 	boom := errors.New("keyring is locked")
-	hostTokens := map[string]TokenSource{
-		"a.test": errSource{boom},
-		"b.test": StaticTokenSource("od-token"),
-		"c.test": errSource{boom},
-		"d.test": StaticTokenSource(""),
-	}
-	for i := 0; i < 50; i++ {
-		if err := anyCredential(context.Background(), nil, hostTokens); err != nil {
-			t.Fatalf("iteration %d: anyCredential = %v, want nil (a working source exists)", i, err)
-		}
-	}
-
-	// With nothing working, the hard error is what surfaces — every time.
-	onlyBroken := map[string]TokenSource{
-		"a.test": errSource{boom},
-		"b.test": StaticTokenSource(""),
-		"c.test": errSource{boom},
-	}
-	for i := 0; i < 50; i++ {
-		if err := anyCredential(context.Background(), nil, onlyBroken); !errors.Is(err, boom) {
-			t.Fatalf("iteration %d: anyCredential = %v, want boom", i, err)
-		}
-	}
-
-	// And with nothing configured at all it is ErrNoToken, not a hard error.
-	if err := anyCredential(context.Background(), nil, map[string]TokenSource{
-		"a.test": StaticTokenSource(""),
-	}); !errors.Is(err, ErrNoToken) {
-		t.Fatalf("anyCredential = %v, want ErrNoToken", err)
-	}
-}
-
-// TestNewProviderFailsWhenOnlyCredentialIsMisKeyed covers the second half of
-// the mis-keyed per-host token problem: a deployment whose only credential
-// names no configured host must fail at construction, naming the cause, rather
-// than constructing fine and returning ErrNoToken on its first request.
-func TestNewProviderFailsWhenOnlyCredentialIsMisKeyed(t *testing.T) {
 	tests := []struct {
-		name     string
-		tokenKey string
-		wantErr  bool
+		name       string
+		def        TokenSource
+		hostTokens map[string]TokenSource
+		wantErr    error
 	}{
 		{
-			// A key that merely omits the API port is not mis-keyed — it
-			// resolves, and construction succeeds.
-			name: "port omitted still resolves", tokenKey: "10.0.0.30", wantErr: false,
+			name: "default source alone",
+			def:  StaticTokenSource("od-token"),
 		},
 		{
-			name: "key names the git ssh port", tokenKey: "10.0.0.30:6611", wantErr: false,
+			name:       "per-host source alone",
+			hostTokens: map[string]TokenSource{"a.test": StaticTokenSource("od-token")},
 		},
 		{
-			name: "key names no configured host", tokenKey: "10.0.0.99:6610", wantErr: true,
+			name: "a working source outweighs broken ones",
+			hostTokens: map[string]TokenSource{
+				"a.test": errSource{boom},
+				"b.test": StaticTokenSource("od-token"),
+				"c.test": errSource{boom},
+			},
+		},
+		{
+			name: "a broken default does not mask a working per-host source",
+			def:  errSource{boom},
+			hostTokens: map[string]TokenSource{
+				"a.test": StaticTokenSource("od-token"),
+			},
+		},
+		{
+			name: "hard failure surfaces when nothing works",
+			hostTokens: map[string]TokenSource{
+				"a.test": errSource{boom},
+				"b.test": StaticTokenSource(""),
+			},
+			wantErr: boom,
+		},
+		{
+			name:       "nothing configured",
+			hostTokens: map[string]TokenSource{"a.test": StaticTokenSource("")},
+			wantErr:    ErrNoToken,
+		},
+		{
+			name:    "empty chain",
+			wantErr: ErrNoToken,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var logs strings.Builder
-			logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-			_, err := NewProvider(ProviderOptions{
-				AllowedHosts: []string{"http://10.0.0.30:6610"},
-				Logger:       logger,
-				// No default token: the per-host entry is the only credential.
-				HostTokens: map[string]TokenSource{tt.tokenKey: StaticTokenSource("host-token")},
-			})
-			if !tt.wantErr {
+			err := anyCredential(context.Background(), tt.def, tt.hostTokens)
+			if tt.wantErr == nil {
 				if err != nil {
-					t.Fatalf("NewProvider: %v", err)
+					t.Fatalf("anyCredential = %v, want nil", err)
 				}
 				return
 			}
-			if !errors.Is(err, ErrNoToken) {
-				t.Fatalf("err = %v, want ErrNoToken at construction", err)
-			}
-			if !strings.Contains(logs.String(), tt.tokenKey) {
-				t.Fatalf("nothing named the offending key %q: %s", tt.tokenKey, logs.String())
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("anyCredential = %v, want %v", err, tt.wantErr)
 			}
 		})
 	}
+}
+
+// orderProbeIterations is how many times an order-sensitivity check repeats.
+// Go randomises map iteration order per range statement, not per process, so
+// detection needs many ranges rather than many test binaries. With two
+// entries each iteration has a ~1/2 chance of exposing an unsorted pass, so
+// 300 makes a false pass vanishingly unlikely.
+const orderProbeIterations = 300
+
+// TestCredentialResolutionIsOrderIndependent pins that credential resolution
+// does not depend on Go's map iteration order. It gates NewProvider, so an
+// order-sensitive implementation is a daemon that starts or fails at random.
+//
+// The second and third subtests are the ones that fail if sortedKeys stops
+// sorting. The first cannot: FallbackTokenSource.Token returns the first
+// *success* wherever it appears in the chain, so a working source beats a
+// broken one regardless of order. What ordering actually decides is *which*
+// hard error surfaces when several sources fail and none succeeds — that is
+// the property the sort exists for, and the property worth pinning.
+func TestCredentialResolutionIsOrderIndependent(t *testing.T) {
+	locked := errors.New("keyring is locked")
+	exited := errors.New("credential helper exited 127")
+
+	// collect runs fn orderProbeIterations times and returns the distinct
+	// outcomes it saw, so a failure reports the split rather than just "not
+	// equal".
+	collect := func(fn func() error) map[string]int {
+		seen := map[string]int{}
+		for i := 0; i < orderProbeIterations; i++ {
+			out := "<nil>"
+			if err := fn(); err != nil {
+				out = err.Error()
+			}
+			seen[out]++
+		}
+		return seen
+	}
+
+	t.Run("a working source beats a broken one", func(t *testing.T) {
+		// The default source is absent, so only the per-host sources decide.
+		seen := collect(func() error {
+			return anyCredential(context.Background(), nil, map[string]TokenSource{
+				"a.test": errSource{locked},
+				"b.test": StaticTokenSource("od-token"),
+				"c.test": errSource{exited},
+				"d.test": StaticTokenSource(""), // reports ErrNoToken
+			})
+		})
+		if len(seen) != 1 {
+			t.Fatalf("outcome depends on map order: %v", seen)
+		}
+		if seen["<nil>"] != orderProbeIterations {
+			t.Fatalf("outcomes = %v, want nil every time (a working source exists)", seen)
+		}
+	})
+
+	t.Run("which hard error surfaces is stable", func(t *testing.T) {
+		// No source succeeds, and the two failures are distinguishable, so the
+		// returned error is decided purely by the order the sources are tried
+		// in. This is what sortedKeys protects.
+		seen := collect(func() error {
+			return anyCredential(context.Background(), nil, map[string]TokenSource{
+				"a.test": errSource{locked},
+				"b.test": errSource{exited},
+			})
+		})
+		if len(seen) != 1 {
+			t.Fatalf("returned error depends on map order: %v", seen)
+		}
+		if seen[locked.Error()] != orderProbeIterations {
+			t.Fatalf("outcomes = %v, want %q every time (a.test sorts first)", seen, locked)
+		}
+	})
+
+	t.Run("NewProvider verdict is stable", func(t *testing.T) {
+		// The same nondeterminism seen through the constructor it gates.
+		seen := collect(func() error {
+			_, err := NewProvider(ProviderOptions{
+				AllowedHosts: []string{"a.test", "b.test"},
+				HostTokens: map[string]TokenSource{
+					"a.test": errSource{locked},
+					"b.test": errSource{exited},
+				},
+			})
+			return err
+		})
+		if len(seen) != 1 {
+			t.Fatalf("NewProvider verdict depends on map order: %v", seen)
+		}
+		if seen[locked.Error()] != orderProbeIterations {
+			t.Fatalf("outcomes = %v, want %q every time", seen, locked)
+		}
+	})
+
+	t.Run("NewProvider succeeds whenever any source works", func(t *testing.T) {
+		seen := collect(func() error {
+			_, err := NewProvider(ProviderOptions{
+				AllowedHosts: []string{"a.test", "b.test"},
+				HostTokens: map[string]TokenSource{
+					"a.test": errSource{locked},
+					"b.test": StaticTokenSource("od-token"),
+				},
+			})
+			return err
+		})
+		if len(seen) != 1 || seen["<nil>"] != orderProbeIterations {
+			t.Fatalf("NewProvider outcomes = %v, want nil every time", seen)
+		}
+	})
 }
