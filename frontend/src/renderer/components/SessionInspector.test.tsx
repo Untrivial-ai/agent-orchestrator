@@ -3491,7 +3491,7 @@ describe("SessionInspector summary reviews", () => {
       screen.queryByText("Review in progress · Codex"),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Cancel review" }),
+      screen.getByRole("button", { name: "Stop review" }),
     ).toBeInTheDocument();
   });
 
