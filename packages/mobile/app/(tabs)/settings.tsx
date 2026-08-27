@@ -1,10 +1,12 @@
+import * as Application from "expo-application";
 import Constants from "expo-constants";
 import { useFocusEffect, useRouter } from "expo-router";
+import * as Updates from "expo-updates";
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Platform, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ApiError, pingServer } from "../../lib/api";
-import { bugReportBody, formatVersion, type BuildInfo } from "../../lib/appInfo";
+import { bugReportBody, formatVersionLine, type BuildInfo } from "../../lib/appInfo";
 import { DEFAULT_CONFIG, isConfigured, loadConfig, type ServerConfig } from "../../lib/config";
 import { classifyConnectionFailure, describeConnectionFailure } from "../../lib/connectionError";
 import { forgetServer } from "../../lib/disconnect";
@@ -16,6 +18,7 @@ import { getPushStatus, openNotificationSettings, registerForPush, unregisterFro
 import { describePushToggle, describeRegisterFailure, type PushStatus } from "../../lib/pushStatus";
 import { openGitHub } from "../../lib/openGitHub";
 import { useApp } from "../../lib/store";
+import { checkAndDownload, describeUpdateRow, type UpdateOutcome } from "../../lib/updates";
 import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
 import { Dot, ScreenHeader, SettingsGroup, SettingsRow, SettingsToggle } from "../../lib/ui";
 import { useTheme, useThemedStyles, useThemeState } from "../../lib/ThemeProvider";
@@ -260,12 +263,14 @@ function NotificationsSection() {
 function AboutSection({ onForget }: { onForget: () => Promise<void> }) {
 	const [forgetting, setForgetting] = useState(false);
 
+	// From the binary: with EAS-managed build numbers app.json has no buildNumber.
 	const build: BuildInfo = {
-		version: Constants.expoConfig?.version,
-		build:
-			Platform.OS === "ios"
-				? Constants.expoConfig?.ios?.buildNumber
-				: (Constants.expoConfig?.android?.versionCode?.toString() ?? null),
+		version: Application.nativeApplicationVersion ?? Constants.expoConfig?.version,
+		build: Application.nativeBuildVersion,
+		updateId: Updates.updateId,
+		channel: Updates.channel,
+		runtimeVersion: Updates.runtimeVersion,
+		embedded: Updates.isEnabled ? Updates.isEmbeddedLaunch : undefined,
 	};
 
 	// Routed through openGitHub for consistency, though this one always lands in
@@ -300,7 +305,8 @@ function AboutSection({ onForget }: { onForget: () => Promise<void> }) {
 
 	return (
 		<SettingsGroup title="About">
-			<SettingsRow icon="info" label="Version" value={formatVersion(build)} />
+			<SettingsRow icon="info" label="Version" value={formatVersionLine(build)} />
+			<UpdateRow />
 			<SettingsRow icon="mail" label="Report a problem" onPress={report} />
 			<SettingsRow
 				icon="power"
@@ -310,6 +316,53 @@ function AboutSection({ onForget }: { onForget: () => Promise<void> }) {
 				onPress={confirmForget}
 			/>
 		</SettingsGroup>
+	);
+}
+
+// Check on demand, or restart into a downloaded update.
+function UpdateRow() {
+	const t = useTheme();
+	const { isUpdatePending, isChecking, isDownloading } = Updates.useUpdates();
+	const [manual, setManual] = useState<UpdateOutcome | null>(null);
+	const [busy, setBusy] = useState(false);
+
+	const row = describeUpdateRow({
+		enabled: Updates.isEnabled,
+		pending: isUpdatePending,
+		phase: isDownloading ? "downloading" : isChecking || busy ? "checking" : "idle",
+		lastManual: manual,
+	});
+
+	async function onPress() {
+		if (row.action === "restart") {
+			try {
+				await Updates.reloadAsync();
+			} catch (e) {
+				console.warn("[updates] reload failed", e);
+			}
+			return;
+		}
+		setBusy(true);
+		setManual(null);
+		try {
+			const outcome = await checkAndDownload(Updates);
+			setManual(outcome);
+			if (outcome.kind === "error") haptics.error();
+			else haptics.success();
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	return (
+		<SettingsRow
+			icon="download-cloud"
+			label="App updates"
+			value={row.value}
+			valueColor={row.tone === "good" ? t.green : row.tone === "bad" ? t.red : undefined}
+			loading={row.busy}
+			onPress={row.action ? onPress : undefined}
+		/>
 	);
 }
 

@@ -116,7 +116,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
 FROM sessions WHERE id = ?
 `
 
@@ -156,6 +156,7 @@ type GetSessionRow struct {
 	ControllerGeneration      string
 	BrowserCapabilityVerifier string
 	LatestUserPrompt          string
+	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
 	NativeTranscriptPath      string
 	AutoInjectReview          bool
@@ -203,6 +204,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.ControllerGeneration,
 		&i.BrowserCapabilityVerifier,
 		&i.LatestUserPrompt,
+		&i.LatestUserPromptAt,
 		&i.LatestAssistantUpdate,
 		&i.NativeTranscriptPath,
 		&i.AutoInjectReview,
@@ -219,7 +221,7 @@ INSERT INTO sessions (
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
     runtime_launch_id, agent_session_id, agent_session_id_launch_id, prompt,
-    latest_user_prompt, latest_assistant_update, native_transcript_path,
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
@@ -227,7 +229,7 @@ INSERT INTO sessions (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -256,6 +258,7 @@ type InsertSessionParams struct {
 	AgentSessionIDLaunchID    string
 	Prompt                    string
 	LatestUserPrompt          string
+	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
 	NativeTranscriptPath      string
 	PreviewURL                string
@@ -301,6 +304,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.AgentSessionIDLaunchID,
 		arg.Prompt,
 		arg.LatestUserPrompt,
+		arg.LatestUserPromptAt,
 		arg.LatestAssistantUpdate,
 		arg.NativeTranscriptPath,
 		arg.PreviewURL,
@@ -331,7 +335,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
 FROM sessions ORDER BY project_id, num
 `
 
@@ -371,6 +375,7 @@ type ListAllSessionsRow struct {
 	ControllerGeneration      string
 	BrowserCapabilityVerifier string
 	LatestUserPrompt          string
+	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
 	NativeTranscriptPath      string
 	AutoInjectReview          bool
@@ -424,6 +429,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.ControllerGeneration,
 			&i.BrowserCapabilityVerifier,
 			&i.LatestUserPrompt,
+			&i.LatestUserPromptAt,
 			&i.LatestAssistantUpdate,
 			&i.NativeTranscriptPath,
 			&i.AutoInjectReview,
@@ -453,7 +459,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
 FROM sessions WHERE project_id = ? ORDER BY num
 `
 
@@ -493,6 +499,7 @@ type ListSessionsByProjectRow struct {
 	ControllerGeneration      string
 	BrowserCapabilityVerifier string
 	LatestUserPrompt          string
+	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
 	NativeTranscriptPath      string
 	AutoInjectReview          bool
@@ -546,6 +553,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.ControllerGeneration,
 			&i.BrowserCapabilityVerifier,
 			&i.LatestUserPrompt,
+			&i.LatestUserPromptAt,
 			&i.LatestAssistantUpdate,
 			&i.NativeTranscriptPath,
 			&i.AutoInjectReview,
@@ -577,9 +585,37 @@ func (q *Queries) NextSessionNum(ctx context.Context, projectID domain.ProjectID
 	return next, err
 }
 
+const recordSessionHumanMessage = `-- name: RecordSessionHumanMessage :execrows
+UPDATE sessions SET
+    latest_user_prompt = ?1,
+    latest_user_prompt_at = ?2,
+    updated_at = MAX(updated_at, ?2)
+WHERE id = ?3
+  AND is_terminated = 0
+  AND (latest_user_prompt_at IS NULL OR latest_user_prompt_at <= ?2)
+`
+
+type RecordSessionHumanMessageParams struct {
+	LatestUserPrompt   string
+	LatestUserPromptAt sql.NullTime
+	ID                 domain.SessionID
+}
+
+// Chat message insertion already owns controller/idempotency fencing. Compare
+// against the dedicated fact timestamp here so unrelated lifecycle writes do
+// not suppress a newer human message.
+func (q *Queries) RecordSessionHumanMessage(ctx context.Context, arg RecordSessionHumanMessageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recordSessionHumanMessage, arg.LatestUserPrompt, arg.LatestUserPromptAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const recordSessionLatestUserPrompt = `-- name: RecordSessionLatestUserPrompt :execrows
 UPDATE sessions SET
     latest_user_prompt = ?1,
+    latest_user_prompt_at = ?2,
     updated_at = ?2
 WHERE id = ?3
   AND is_terminated = 0
@@ -588,7 +624,7 @@ WHERE id = ?3
 
 type RecordSessionLatestUserPromptParams struct {
 	LatestUserPrompt string
-	UpdatedAt        time.Time
+	UpdatedAt        sql.NullTime
 	ID               domain.SessionID
 }
 
@@ -786,7 +822,7 @@ UPDATE sessions SET
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
     branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
     runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
-    latest_user_prompt = ?, latest_assistant_update = ?, native_transcript_path = ?,
+    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, native_transcript_path = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
@@ -816,6 +852,7 @@ type UpdateSessionParams struct {
 	AgentSessionIDLaunchID    string
 	Prompt                    string
 	LatestUserPrompt          string
+	LatestUserPromptAt        sql.NullTime
 	LatestAssistantUpdate     string
 	NativeTranscriptPath      string
 	PreviewURL                string
@@ -857,6 +894,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.AgentSessionIDLaunchID,
 		arg.Prompt,
 		arg.LatestUserPrompt,
+		arg.LatestUserPromptAt,
 		arg.LatestAssistantUpdate,
 		arg.NativeTranscriptPath,
 		arg.PreviewURL,

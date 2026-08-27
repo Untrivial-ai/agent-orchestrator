@@ -44,7 +44,7 @@ export default function SessionPreviewScreen() {
 const makeStyles = (t: Theme) => StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgBase },
 	web: { flex: 1, backgroundColor: t.bgBase },
-	webLoading: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: t.bgBase },
+	webLoading: { ...StyleSheet.absoluteFill, alignItems: "center", justifyContent: "center", backgroundColor: t.bgBase },
 	webError: { position: "absolute", left: 12, right: 12, bottom: 16, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 9, borderRadius: 11, borderWidth: 1, borderColor: t.tintRed, backgroundColor: t.bgElevated, paddingHorizontal: 12, paddingVertical: 9 },
 	webErrorText: { flex: 1, color: t.textSecondary, fontSize: 11, lineHeight: 15 },
 	center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 11, paddingHorizontal: 36, backgroundColor: t.bgBase },

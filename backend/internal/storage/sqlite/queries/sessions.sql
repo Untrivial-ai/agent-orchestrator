@@ -7,7 +7,7 @@ INSERT INTO sessions (
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
     runtime_launch_id, agent_session_id, agent_session_id_launch_id, prompt,
-    latest_user_prompt, latest_assistant_update, native_transcript_path,
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
@@ -15,7 +15,7 @@ INSERT INTO sessions (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 );
 
 -- name: UpdateSession :exec
@@ -24,7 +24,7 @@ UPDATE sessions SET
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
     branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
     runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
-    latest_user_prompt = ?, latest_assistant_update = ?, native_transcript_path = ?,
+    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, native_transcript_path = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
@@ -34,10 +34,23 @@ WHERE id = ?;
 -- name: RecordSessionLatestUserPrompt :execrows
 UPDATE sessions SET
     latest_user_prompt = sqlc.arg(latest_user_prompt),
+    latest_user_prompt_at = sqlc.arg(updated_at),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND is_terminated = 0
   AND updated_at <= sqlc.arg(updated_at);
+
+-- name: RecordSessionHumanMessage :execrows
+-- Chat message insertion already owns controller/idempotency fencing. Compare
+-- against the dedicated fact timestamp here so unrelated lifecycle writes do
+-- not suppress a newer human message.
+UPDATE sessions SET
+    latest_user_prompt = sqlc.arg(latest_user_prompt),
+    latest_user_prompt_at = sqlc.arg(latest_user_prompt_at),
+    updated_at = MAX(updated_at, sqlc.arg(latest_user_prompt_at))
+WHERE id = sqlc.arg(id)
+  AND is_terminated = 0
+  AND (latest_user_prompt_at IS NULL OR latest_user_prompt_at <= sqlc.arg(latest_user_prompt_at));
 
 -- name: ClaimChatControllerGeneration :execrows
 -- A Chat controller claims ownership before its event goroutine starts. Provider
@@ -79,7 +92,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
 FROM sessions WHERE id = ?;
 
 -- name: ListSessionsByProject :many
@@ -91,7 +104,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
 FROM sessions WHERE project_id = ? ORDER BY num;
 
 -- name: ListAllSessions :many
@@ -103,7 +116,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
 FROM sessions ORDER BY project_id, num;
 
 

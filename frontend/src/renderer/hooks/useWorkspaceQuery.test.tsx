@@ -100,6 +100,7 @@ describe("useWorkspaceQuery", () => {
 								targetStartMode: "resumed",
 								updatedAt: "2026-06-10T15:32:00Z",
 							},
+							lastUserMessageAt: "2026-06-10T16:10:00Z",
 							updatedAt: "2026-06-10T16:15:04Z",
 						},
 						{
@@ -143,6 +144,7 @@ describe("useWorkspaceQuery", () => {
 			status: "mergeable",
 			scmStatus: "review_pending",
 			activity: { state: "idle", lastActivityAt: "2026-06-10T15:30:00Z" },
+			lastUserMessageAt: "2026-06-10T16:10:00Z",
 			autoInjectReview: false,
 			autoInjectCI: false,
 		});

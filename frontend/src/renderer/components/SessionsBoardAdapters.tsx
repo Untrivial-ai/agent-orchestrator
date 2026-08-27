@@ -57,7 +57,7 @@ export function toBoardSessionPresentation(
 				: undefined,
 		title: session.title,
 		trackerIssueId: canonicalTrackerIssueId(session.issueId),
-		updatedAt: session.updatedAt,
+		lastUserMessageAt: session.lastUserMessageAt,
 	};
 }
 
@@ -231,7 +231,7 @@ function DesktopSessionCard({
 				formatTime: formatTimeCompact,
 				intakeIssue: (id) => t("shell.intakeIssue", { id }),
 				pr: pullRequestLabels(t),
-				updatedAt: (time) => t("shell.updatedAt", { time }),
+				lastUserMessageAt: (time) => t("shell.lastMessageAt", { time }),
 			}}
 			onOpen={onOpen}
 			overlay={terminationOverlay}

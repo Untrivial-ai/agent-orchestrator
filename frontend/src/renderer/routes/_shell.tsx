@@ -107,8 +107,11 @@ function ShellLayout() {
 	const daemonStatus = useDaemonStatus(queryClient);
 	const [workspaceStartupState, setWorkspaceStartupState] = useState<"loading" | "ready" | "error">("loading");
 	const workspaceStartupBaselineRef = useRef(0);
-	const { themePreference, resolvedTheme, themeStyle, toggleSidebar } = useUiStore();
+	const themePreference = useUiStore((state) => state.themePreference);
+	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
+	const themeStyle = useUiStore((state) => state.themeStyle);
 	const isSidebarOpen = useUiStore(sidebarIsVisible);
+	const toggleSidebar = useUiStore((state) => state.toggleSidebar);
 	const isSidebarCompact = useUiStore(sidebarIsCompact);
 	const sidebarHasLayout = useUiStore(sidebarOccupiesLayout);
 	const sidebarWorkspaceDemandPx = useUiStore((state) => state.sidebarWorkspaceDemandPx);

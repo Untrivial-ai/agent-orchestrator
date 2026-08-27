@@ -94,6 +94,8 @@ export type WorkspaceSession = {
 	createdAt?: string;
 	/** ISO timestamp from the daemon. */
 	updatedAt: string;
+	/** ISO timestamp of the latest real user-authored message, when known. */
+	lastUserMessageAt?: string;
 	isPinned?: boolean;
 	pinnedAt?: string;
 	/** Raw agent lifecycle activity from the daemon. */

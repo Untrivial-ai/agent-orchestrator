@@ -177,6 +177,7 @@ vi.mock("./chat/SessionChatSurface", () => ({
 		shellTerminals = [],
 		shellTarget,
 		onSelectShellTerminal,
+		workspaceTabs,
 	}: {
 		onOpenShell?: () => void;
 		headerActions?: ReactNode;
@@ -187,10 +188,12 @@ vi.mock("./chat/SessionChatSurface", () => ({
 		shellTerminals?: Array<{ handleId: string; title: string }>;
 		shellTarget?: { kind: "shell"; handleId: string };
 		onSelectShellTerminal?: (handleId: string) => void;
+		workspaceTabs?: ReactNode;
 	}) => (
 		<div data-testid="chat-surface">
 			chat surface
 			{headerActions}
+			<div role="tablist">{workspaceTabs}</div>
 			{reviewerTerminal ? (
 				<button type="button" onClick={() => onOpenReviewerTerminal?.(reviewerTerminal)}>
 					Reviewer
@@ -236,6 +239,7 @@ vi.mock("./CenterPane", () => ({
 		onSelectSessionTerminal,
 		onSelectReviewerTerminal,
 		topbarActions,
+		workspaceTabs,
 		reviewerTerminal,
 		terminalTarget,
 	}: {
@@ -246,12 +250,14 @@ vi.mock("./CenterPane", () => ({
 		onSelectSessionTerminal?: () => void;
 		onSelectReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
 		topbarActions?: ReactNode;
+		workspaceTabs?: ReactNode;
 		reviewerTerminal?: { handleId: string; harness: string };
 		terminalTarget?: { kind: string; handleId?: string };
 	}) => (
 		<div>
 			terminal center
 			{topbarActions}
+			<div role="tablist">{workspaceTabs}</div>
 			<div data-testid="terminal-target">
 				{terminalTarget?.kind === "shell" ? terminalTarget.handleId : (terminalTarget?.kind ?? "worker")}
 			</div>
@@ -302,24 +308,30 @@ vi.mock("./BrowserPanel", () => ({
 		retryQueued: vi.fn(),
 	}),
 }));
-vi.mock("./SessionFilesView", () => ({
-	SessionFilesView: ({
+vi.mock("./SessionFileExplorer", () => ({
+	SessionFileExplorer: ({
 		isMaximized,
+		onOpenFile,
 		onToggleMaximized,
-		revealFile,
 	}: {
 		isMaximized?: boolean;
+		onOpenFile?: (path: string) => void;
 		onToggleMaximized?: (next: boolean) => void;
-		revealFile?: { line?: number; path: string };
 	}) => (
-		<button
-			data-reveal-file={revealFile ? `${revealFile.path}:${revealFile.line ?? ""}` : undefined}
-			type="button"
-			onClick={() => onToggleMaximized?.(!isMaximized)}
-		>
-			{isMaximized ? "files center" : "files rail"}
-		</button>
+		<div>
+			<button type="button" onClick={() => onToggleMaximized?.(!isMaximized)}>
+				{isMaximized ? "files center" : "files rail"}
+			</button>
+			{!isMaximized && onOpenFile ? (
+				<button type="button" onClick={() => onOpenFile("src/App.tsx")}>
+					open src/App.tsx
+				</button>
+			) : null}
+		</div>
 	),
+}));
+vi.mock("./SessionFileWorkspace", () => ({
+	SessionFileWorkspace: ({ path }: { path: string }) => <div data-testid="session-file-workspace">{path}</div>,
 }));
 const { browserDestroy, browserViewOptions, browserViewState } = vi.hoisted(() => ({
 	browserDestroy: vi.fn(),
@@ -1439,14 +1451,30 @@ describe("SessionView", () => {
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
 	});
 
-	it("opens a review file target in the Files inspector", () => {
+	it("opens docked files as center tabs while preserving the agent surface", () => {
+		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
+		render(<SessionView sessionId="sess-1" />);
+
+		fireEvent.click(screen.getByRole("button", { name: "open files" }));
+		fireEvent.click(screen.getByRole("button", { name: "open src/App.tsx" }));
+
+		expect(screen.getByRole("tab", { name: "App.tsx" })).toHaveAttribute("aria-selected", "true");
+		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("src/App.tsx");
+		expect(screen.getByText("terminal center")).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "select agent tab" }));
+		expect(screen.queryByTestId("session-file-workspace")).not.toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "App.tsx" })).toHaveAttribute("aria-selected", "false");
+	});
+
+	it("opens a review file target in a center tab and keeps the Files inspector visible", () => {
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
 
-		const files = within(screen.getByTestId("panel-inspector")).getByRole("button", { name: "files rail" });
-		expect(files).toHaveAttribute("data-reveal-file", "src/panel.tsx:42");
+		expect(screen.getByRole("tab", { name: "panel.tsx" })).toHaveAttribute("aria-selected", "true");
+		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("src/panel.tsx");
 		expect(useUiStore.getState().inspectorSessions["sess-1"]?.view).toBe("files");
 		expect(screen.queryByRole("button", { name: "files center" })).not.toBeInTheDocument();
 	});

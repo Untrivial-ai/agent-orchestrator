@@ -12,6 +12,7 @@ import {
 	chatFixtureSettled,
 	chatFixtureThreadError,
 } from "../../lib/chat-fixture";
+import { appI18n } from "../../i18n";
 import type { ConversationMessage, ConversationSnapshot } from "../../types/conversation";
 import { setApiBaseUrl } from "../../lib/api-client";
 import { useUiStore } from "../../stores/ui-store";
@@ -81,25 +82,50 @@ function idleSnapshot(snapshot: ConversationSnapshot = chatFixture): Conversatio
 		controller: { state: "ready" },
 		items: snapshot.items.filter(
 			(item) =>
-				!(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
 		),
 		turns: snapshot.turns.map((turn) =>
 			turn.state === "running"
-				? { ...turn, state: "completed" as const, completedAt: turn.requestedAt }
+				? {
+						...turn,
+						state: "completed" as const,
+						completedAt: turn.requestedAt,
+					}
 				: turn,
 		),
 	};
 }
 
 /** jsdom has no layout, so the scroller's geometry has to be stated. */
-function stubGeometry(node: HTMLElement, { scrollHeight, clientHeight, scrollTop }: {
-	scrollHeight: number;
-	clientHeight: number;
-	scrollTop: number;
-}) {
-	Object.defineProperty(node, "scrollHeight", { configurable: true, value: scrollHeight });
-	Object.defineProperty(node, "clientHeight", { configurable: true, value: clientHeight });
-	Object.defineProperty(node, "scrollTop", { configurable: true, writable: true, value: scrollTop });
+function stubGeometry(
+	node: HTMLElement,
+	{
+		scrollHeight,
+		clientHeight,
+		scrollTop,
+	}: {
+		scrollHeight: number;
+		clientHeight: number;
+		scrollTop: number;
+	},
+) {
+	Object.defineProperty(node, "scrollHeight", {
+		configurable: true,
+		value: scrollHeight,
+	});
+	Object.defineProperty(node, "clientHeight", {
+		configurable: true,
+		value: clientHeight,
+	});
+	Object.defineProperty(node, "scrollTop", {
+		configurable: true,
+		writable: true,
+		value: scrollTop,
+	});
 }
 
 beforeEach(() => {
@@ -115,7 +141,10 @@ beforeEach(() => {
 	useUiStore.setState({ isSidebarOpen: true, inspectorSessions: {} });
 });
 
-afterEach(() => setApiBaseUrl(null));
+afterEach(async () => {
+	setApiBaseUrl(null);
+	await appI18n.changeLanguage("en");
+});
 
 function humanMessage(text: string): ConversationMessage {
 	return {
@@ -159,7 +188,9 @@ describe("HumanMessage attachments", () => {
 			`http://127.0.0.1:3001/api/v1/sessions/ao%20session%2F1/preview/files/.ao/attachments/${name}`,
 		);
 		expect(screen.getByText("check again")).toBeInTheDocument();
-		expect(screen.queryByText(/Attached (?:files|images) \(read these files/)).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(/Attached (?:files|images) \(read these files/),
+		).not.toBeInTheDocument();
 	}
 
 	it("renders staged image references in human messages as images", () => {
@@ -195,7 +226,9 @@ describe("HumanMessage attachments", () => {
 			/>,
 		);
 
-		expect(container.querySelector(".cursor-chat-human-message > p")?.textContent).toBe(authoredBody);
+		expect(container.querySelector(".cursor-chat-human-message > p")?.textContent).toBe(
+			authoredBody,
+		);
 	});
 
 	it("shows non-image attachments as file labels instead of internal prompt text", () => {
@@ -253,8 +286,16 @@ describe("Chat message timestamps", () => {
 			return date.toISOString();
 		};
 		const messages = [
-			{ ...humanMessage("yesterday"), id: "yesterday", createdAt: relativeDate(1) },
-			{ ...humanMessage("older"), id: "older", createdAt: relativeDate(3) },
+			{
+				...humanMessage("yesterday"),
+				id: "yesterday",
+				createdAt: relativeDate(1),
+			},
+			{
+				...humanMessage("older"),
+				id: "older",
+				createdAt: relativeDate(3),
+			},
 		];
 		render(
 			<>
@@ -312,8 +353,12 @@ describe("ChatWorkspace timeline", () => {
 
 		const terminalRegion = screen.getByTestId("session-terminal-region");
 		expect(terminalRegion).toContainElement(screen.getByRole("tablist", { name: "Chat tabs" }));
-		expect(terminalRegion).not.toContainElement(screen.queryByRole("button", { name: "New terminal" }));
-		expect(screen.queryByRole("toolbar", { name: "Chat display controls" })).not.toBeInTheDocument();
+		expect(terminalRegion).not.toContainElement(
+			screen.queryByRole("button", { name: "New terminal" }),
+		);
+		expect(
+			screen.queryByRole("toolbar", { name: "Chat display controls" }),
+		).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Decrease font size" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Fullscreen" })).not.toBeInTheDocument();
 	});
@@ -336,7 +381,12 @@ describe("ChatWorkspace timeline", () => {
 		const onInterrupt = vi.fn();
 		const snapshot = structuredClone(chatFixture);
 		snapshot.items = snapshot.items.filter(
-			(item) => !(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+			(item) =>
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
 		);
 
 		render(<ChatWorkspace snapshot={snapshot} onInterrupt={onInterrupt} />);
@@ -358,11 +408,18 @@ describe("ChatWorkspace timeline", () => {
 		const onInterrupt = vi.fn();
 		const snapshot = structuredClone(chatFixture);
 		snapshot.items = snapshot.items.filter(
-			(item) => !(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+			(item) =>
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
 		);
 
 		render(<ChatWorkspace snapshot={snapshot} onInterrupt={onInterrupt} />);
-		fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Escape" });
+		fireEvent.keyDown(screen.getByLabelText("Message the agent"), {
+			key: "Escape",
+		});
 
 		expect(onInterrupt).toHaveBeenCalledOnce();
 	});
@@ -371,7 +428,12 @@ describe("ChatWorkspace timeline", () => {
 		const user = userEvent.setup();
 		const snapshot = structuredClone(chatFixture);
 		snapshot.items = snapshot.items.filter(
-			(item) => !(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+			(item) =>
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
 		);
 
 		render(<ChatWorkspace snapshot={snapshot} onInterrupt={vi.fn()} />);
@@ -387,7 +449,12 @@ describe("ChatWorkspace timeline", () => {
 	it("does not steal focus from a text selection in the conversation", () => {
 		const snapshot = structuredClone(chatFixture);
 		snapshot.items = snapshot.items.filter(
-			(item) => !(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+			(item) =>
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
 		);
 		render(<ChatWorkspace snapshot={snapshot} onInterrupt={vi.fn()} />);
 
@@ -409,7 +476,12 @@ describe("ChatWorkspace timeline", () => {
 		const snapshot = structuredClone(chatFixture);
 		snapshot.turns[0] = { ...snapshot.turns[0], state: "running" };
 		snapshot.items = snapshot.items.filter(
-			(item) => !(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+			(item) =>
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
 		);
 		snapshot.items.push({
 			kind: "activity",
@@ -425,7 +497,9 @@ describe("ChatWorkspace timeline", () => {
 			createdAt: "2026-08-24T00:00:00Z",
 		});
 		render(<ChatWorkspace snapshot={snapshot} onInterrupt={onInterrupt} />);
-		fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Escape" });
+		fireEvent.keyDown(screen.getByLabelText("Message the agent"), {
+			key: "Escape",
+		});
 		expect(onInterrupt).not.toHaveBeenCalled();
 	});
 
@@ -434,14 +508,21 @@ describe("ChatWorkspace timeline", () => {
 		const snapshot = structuredClone(chatFixture);
 		snapshot.turns[0] = { ...snapshot.turns[0], state: "running" };
 		snapshot.items = snapshot.items.filter(
-			(item) => !(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+			(item) =>
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
 		);
 		render(<ChatWorkspace snapshot={snapshot} onInterrupt={onInterrupt} />);
 		const menu = document.createElement("div");
 		menu.setAttribute("role", "menu");
 		menu.setAttribute("data-state", "open");
 		document.body.appendChild(menu);
-		fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Escape" });
+		fireEvent.keyDown(screen.getByLabelText("Message the agent"), {
+			key: "Escape",
+		});
 		expect(onInterrupt).not.toHaveBeenCalled();
 		menu.remove();
 	});
@@ -463,7 +544,11 @@ describe("ChatWorkspace timeline", () => {
 			decisions: [
 				{ id: "deny", label: "Deny", kind: "reject_once" },
 				{ id: "allow_once", label: "Allow Once", kind: "allow_once" },
-				{ id: "always_allow", label: "Always Allow", kind: "allow_always" },
+				{
+					id: "always_allow",
+					label: "Always Allow",
+					kind: "allow_always",
+				},
 			],
 			detail: { command: "npm test" },
 			createdAt: "2026-08-08T00:00:00Z",
@@ -475,7 +560,9 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByText("Do you want to run this command?")).toBeInTheDocument();
 		expect(screen.queryByText("Waiting for your decision")).not.toBeInTheDocument();
 		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
-		const approval = screen.getByRole("group", { name: "Approval request approval-1" });
+		const approval = screen.getByRole("group", {
+			name: "Approval request approval-1",
+		});
 		const composer = approval.closest("form");
 		expect(composer).toHaveClass("cursor-chat-composer", "border-border-strong");
 		expect(screen.getByRole("log", { name: "Conversation" })).not.toContainElement(approval);
@@ -483,11 +570,21 @@ describe("ChatWorkspace timeline", () => {
 		expect(within(approval).queryByText("Terminal")).not.toBeInTheDocument();
 		expect(within(approval).getByRole("button", { name: /Deny/ })).toHaveTextContent("DenyEsc");
 		expect(within(approval).getByRole("button", { name: /Allow once/ })).toBeInTheDocument();
-		expect(within(approval).getByRole("button", { name: "More approval options" })).toBeInTheDocument();
+		expect(
+			within(approval).getByRole("button", {
+				name: "More approval options",
+			}),
+		).toBeInTheDocument();
 		expect(within(approval).queryByRole("button", { name: "Allow Once" })).not.toBeInTheDocument();
-		expect(within(approval).queryByRole("button", { name: "Always Allow" })).not.toBeInTheDocument();
+		expect(
+			within(approval).queryByRole("button", { name: "Always Allow" }),
+		).not.toBeInTheDocument();
 		expect(within(approval).queryByRole("button", { name: "Deny" })).not.toBeInTheDocument();
-		await user.click(within(approval).getByRole("button", { name: "More approval options" }));
+		await user.click(
+			within(approval).getByRole("button", {
+				name: "More approval options",
+			}),
+		);
 		await user.keyboard("{Escape}");
 		expect(onDecide).not.toHaveBeenCalled();
 
@@ -513,7 +610,11 @@ describe("ChatWorkspace timeline", () => {
 		await user.click(within(approval).getByRole("button", { name: /Allow once/ }));
 		expect(onDecide).toHaveBeenCalledWith("approval-1", "allow_once");
 
-		await user.click(within(approval).getByRole("button", { name: "More approval options" }));
+		await user.click(
+			within(approval).getByRole("button", {
+				name: "More approval options",
+			}),
+		);
 		await user.click(screen.getByRole("menuitem", { name: "Always allow this command" }));
 		expect(onDecide).toHaveBeenCalledWith("approval-1", "always_allow");
 	});
@@ -539,7 +640,9 @@ describe("ChatWorkspace timeline", () => {
 
 		render(<ChatWorkspace snapshot={snapshot} onDecide={vi.fn()} onInterrupt={vi.fn()} />);
 
-		const approval = screen.getByRole("group", { name: "Approval request 0" });
+		const approval = screen.getByRole("group", {
+			name: "Approval request 0",
+		});
 		expect(approval.closest("form")).toHaveClass("cursor-chat-composer");
 		expect(screen.queryByLabelText("Message the agent")).not.toBeInTheDocument();
 	});
@@ -570,7 +673,9 @@ describe("ChatWorkspace timeline", () => {
 
 		expect(screen.getByText("Do you want to allow these file changes?")).toBeInTheDocument();
 		expect(screen.queryByText("Do you want to run this command?")).not.toBeInTheDocument();
-		const approval = screen.getByRole("group", { name: "Approval request opaque-request" });
+		const approval = screen.getByRole("group", {
+			name: "Approval request opaque-request",
+		});
 		approval.focus();
 		fireEvent.keyDown(approval, { key: "Enter" });
 		expect(onDecide).toHaveBeenCalledWith("opaque-request", "option-a");
@@ -590,7 +695,10 @@ describe("ChatWorkspace timeline", () => {
 			summary: "Unknown provider decision",
 			requestId: "unknown-request",
 			decisions: [
-				{ id: "acceptWithDifferentSemantics", label: "acceptWithDifferentSemantics" },
+				{
+					id: "acceptWithDifferentSemantics",
+					label: "acceptWithDifferentSemantics",
+				},
 				{ id: "cancel", label: "Cancel", kind: "reject_once" },
 			],
 			detail: { subjectKind: "command" },
@@ -599,7 +707,9 @@ describe("ChatWorkspace timeline", () => {
 
 		render(<ChatWorkspace snapshot={snapshot} onDecide={onDecide} onInterrupt={vi.fn()} />);
 
-		const approval = screen.getByRole("group", { name: "Approval request unknown-request" });
+		const approval = screen.getByRole("group", {
+			name: "Approval request unknown-request",
+		});
 		expect(within(approval).queryByRole("button", { name: /Allow once/ })).not.toBeInTheDocument();
 		const providerDecision = within(approval).getByRole("button", {
 			name: "acceptWithDifferentSemantics",
@@ -640,7 +750,9 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByText(label)).toBeInTheDocument();
 		expect(screen.getByText("Run gh pr create --base main --head ao/example")).toBeInTheDocument();
 		expect(screen.queryByText(/req approval-resolved-1/)).not.toBeInTheDocument();
-		expect(screen.queryByText("Already answered. This card is kept for the record.")).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("Already answered. This card is kept for the record."),
+		).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
 	});
 
@@ -720,7 +832,10 @@ describe("ChatWorkspace timeline", () => {
 		const openShell = vi.fn();
 		render(
 			<ChatWorkspace
-				snapshot={{ ...chatFixtureSettled, controller: { state: "stopped" } }}
+				snapshot={{
+					...chatFixtureSettled,
+					controller: { state: "stopped" },
+				}}
 				onResumeAgent={resume}
 				onOpenShell={openShell}
 			/>,
@@ -736,7 +851,10 @@ describe("ChatWorkspace timeline", () => {
 	it("does not report the intentional controller gap during an interface handoff as a crash", () => {
 		render(
 			<ChatWorkspace
-				snapshot={{ ...chatFixtureSettled, controller: { state: "stopped" } }}
+				snapshot={{
+					...chatFixtureSettled,
+					controller: { state: "stopped" },
+				}}
 				controllerTransitioning
 				onResumeAgent={vi.fn()}
 				onOpenShell={vi.fn()}
@@ -757,13 +875,25 @@ describe("ChatWorkspace timeline", () => {
 
 	it("provides an interactive conversation minimap", () => {
 		useUiStore.setState({
-			inspectorSessions: { "ao-long": { isOpen: false, view: "summary" } },
+			inspectorSessions: {
+				"ao-long": { isOpen: false, view: "summary" },
+			},
 		});
 		render(<ChatWorkspace snapshot={chatFixtureLongHistory(8)} />);
 		const log = screen.getByRole("log");
-		const scrollbar = screen.getByRole("scrollbar", { name: "Conversation scrollbar" });
-		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 1000 });
-		stubGeometry(scrollbar, { scrollHeight: 800, clientHeight: 800, scrollTop: 0 });
+		const scrollbar = screen.getByRole("scrollbar", {
+			name: "Conversation scrollbar",
+		});
+		stubGeometry(log, {
+			scrollHeight: 4000,
+			clientHeight: 800,
+			scrollTop: 1000,
+		});
+		stubGeometry(scrollbar, {
+			scrollHeight: 800,
+			clientHeight: 800,
+			scrollTop: 0,
+		});
 
 		fireEvent.scroll(log);
 		expect(scrollbar).toHaveAttribute("aria-valuenow", "31");
@@ -771,9 +901,9 @@ describe("ChatWorkspace timeline", () => {
 			scrollbar.querySelectorAll<HTMLElement>("[data-chat-scroll-marker]"),
 		);
 		expect(markers.length).toBeGreaterThan(1);
-		expect(Number.parseFloat(markers[1]!.style.top) - Number.parseFloat(markers[0]!.style.top)).toBeLessThanOrEqual(
-			8,
-		);
+		expect(
+			Number.parseFloat(markers[1]!.style.top) - Number.parseFloat(markers[0]!.style.top),
+		).toBeLessThanOrEqual(8);
 
 		fireEvent.wheel(scrollbar, { deltaY: 200 });
 		expect(log.scrollTop).toBe(1200);
@@ -790,9 +920,19 @@ describe("ChatWorkspace timeline", () => {
 		});
 		render(<ChatWorkspace snapshot={chatFixtureLongHistory(8)} />);
 		const log = screen.getByRole("log");
-		const scrollbar = screen.getByRole("scrollbar", { name: "Conversation scrollbar" });
-		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 1000 });
-		stubGeometry(scrollbar, { scrollHeight: 800, clientHeight: 800, scrollTop: 0 });
+		const scrollbar = screen.getByRole("scrollbar", {
+			name: "Conversation scrollbar",
+		});
+		stubGeometry(log, {
+			scrollHeight: 4000,
+			clientHeight: 800,
+			scrollTop: 1000,
+		});
+		stubGeometry(scrollbar, {
+			scrollHeight: 800,
+			clientHeight: 800,
+			scrollTop: 0,
+		});
 		fireEvent.scroll(log);
 
 		expect(scrollbar.querySelectorAll("[data-chat-scroll-marker]")).toHaveLength(0);
@@ -800,13 +940,25 @@ describe("ChatWorkspace timeline", () => {
 
 	it("previews the request and response for a hovered conversation marker", () => {
 		useUiStore.setState({
-			inspectorSessions: { "ao-long": { isOpen: false, view: "summary" } },
+			inspectorSessions: {
+				"ao-long": { isOpen: false, view: "summary" },
+			},
 		});
 		render(<ChatWorkspace snapshot={chatFixtureLongHistory(4)} />);
 		const log = screen.getByRole("log");
-		const scrollbar = screen.getByRole("scrollbar", { name: "Conversation scrollbar" });
-		stubGeometry(log, { scrollHeight: 2400, clientHeight: 600, scrollTop: 0 });
-		stubGeometry(scrollbar, { scrollHeight: 600, clientHeight: 600, scrollTop: 0 });
+		const scrollbar = screen.getByRole("scrollbar", {
+			name: "Conversation scrollbar",
+		});
+		stubGeometry(log, {
+			scrollHeight: 2400,
+			clientHeight: 600,
+			scrollTop: 0,
+		});
+		stubGeometry(scrollbar, {
+			scrollHeight: 600,
+			clientHeight: 600,
+			scrollTop: 0,
+		});
 		fireEvent.scroll(log);
 
 		const markers = Array.from(
@@ -842,13 +994,25 @@ describe("ChatWorkspace timeline", () => {
 			createdAt: "2026-08-08T00:00:00Z",
 		});
 		useUiStore.setState({
-			inspectorSessions: { [snapshot.sessionId]: { isOpen: false, view: "summary" } },
+			inspectorSessions: {
+				[snapshot.sessionId]: { isOpen: false, view: "summary" },
+			},
 		});
 		render(<ChatWorkspace snapshot={snapshot} />);
 		const log = screen.getByRole("log");
-		const scrollbar = screen.getByRole("scrollbar", { name: "Conversation scrollbar" });
-		stubGeometry(log, { scrollHeight: 1800, clientHeight: 600, scrollTop: 0 });
-		stubGeometry(scrollbar, { scrollHeight: 600, clientHeight: 600, scrollTop: 0 });
+		const scrollbar = screen.getByRole("scrollbar", {
+			name: "Conversation scrollbar",
+		});
+		stubGeometry(log, {
+			scrollHeight: 1800,
+			clientHeight: 600,
+			scrollTop: 0,
+		});
+		stubGeometry(scrollbar, {
+			scrollHeight: 600,
+			clientHeight: 600,
+			scrollTop: 0,
+		});
 		fireEvent.scroll(log);
 
 		const markers = Array.from(
@@ -865,14 +1029,18 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.queryByRole("log")).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Message the agent")).toBeInTheDocument();
 		expect(
-			screen.getByTestId("chat-conversation-panel").querySelector("[data-composer-placement='center']"),
+			screen
+				.getByTestId("chat-conversation-panel")
+				.querySelector("[data-composer-placement='center']"),
 		).not.toBeNull();
 	});
 
 	it("docks the composer once the conversation has content", () => {
 		render(<ChatWorkspace snapshot={chatFixture} />);
 		expect(
-			screen.getByTestId("chat-conversation-panel").querySelector("[data-composer-placement='dock']"),
+			screen
+				.getByTestId("chat-conversation-panel")
+				.querySelector("[data-composer-placement='dock']"),
 		).not.toBeNull();
 	});
 
@@ -903,9 +1071,15 @@ describe("ChatWorkspace timeline", () => {
 
 		expect(screen.queryByRole("button", { name: /jump to latest/i })).not.toBeInTheDocument();
 
-		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 100 });
+		stubGeometry(log, {
+			scrollHeight: 4000,
+			clientHeight: 800,
+			scrollTop: 100,
+		});
 		log.dispatchEvent(new Event("scroll"));
-		const jump = await screen.findByRole("button", { name: /jump to latest/i });
+		const jump = await screen.findByRole("button", {
+			name: /jump to latest/i,
+		});
 		expect(jump).toHaveAttribute("title", "Jump to latest");
 		expect(jump).not.toHaveTextContent("Jump to latest");
 		expect(jump).toHaveClass("rounded-full", "size-12", "bg-raised", "dark:bg-raised");
@@ -925,7 +1099,11 @@ describe("ChatWorkspace timeline", () => {
 		const { rerender } = render(<ChatWorkspace snapshot={snapshot} />);
 		const log = screen.getByRole("log");
 
-		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 1200 });
+		stubGeometry(log, {
+			scrollHeight: 4000,
+			clientHeight: 800,
+			scrollTop: 1200,
+		});
 		log.dispatchEvent(new Event("scroll"));
 		await screen.findByRole("button", { name: /jump to latest/i });
 
@@ -937,7 +1115,11 @@ describe("ChatWorkspace timeline", () => {
 		const snapshot = chatFixtureLongHistory(8);
 		const { rerender } = render(<ChatWorkspace snapshot={snapshot} />);
 		const log = screen.getByRole("log");
-		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 0 });
+		stubGeometry(log, {
+			scrollHeight: 4000,
+			clientHeight: 800,
+			scrollTop: 0,
+		});
 
 		rerender(<ChatWorkspace snapshot={{ ...poll(snapshot), latestSequence: 999 }} />);
 		expect(log.scrollTop).toBe(4000);
@@ -957,12 +1139,19 @@ describe("ChatWorkspace timeline", () => {
 			configurable: true,
 			get: () => Number.parseFloat(spacer.style.height || "0") || 0,
 		});
-		Object.defineProperty(log, "clientHeight", { configurable: true, value: 800 });
+		Object.defineProperty(log, "clientHeight", {
+			configurable: true,
+			value: 800,
+		});
 		Object.defineProperty(log, "scrollHeight", {
 			configurable: true,
 			get: () => contentHeight + (Number.parseFloat(spacer.style.height || "0") || 0),
 		});
-		Object.defineProperty(log, "scrollTop", { configurable: true, writable: true, value: 0 });
+		Object.defineProperty(log, "scrollTop", {
+			configurable: true,
+			writable: true,
+			value: 0,
+		});
 		log.getBoundingClientRect = () =>
 			({
 				x: 0,
@@ -993,7 +1182,14 @@ describe("ChatWorkspace timeline", () => {
 			}) as DOMRect;
 
 		await act(async () => {
-			rerender(<ChatWorkspace snapshot={{ ...snapshot, latestSequence: snapshot.latestSequence + 1 }} />);
+			rerender(
+				<ChatWorkspace
+					snapshot={{
+						...snapshot,
+						latestSequence: snapshot.latestSequence + 1,
+					}}
+				/>,
+			);
 		});
 
 		expect(Number.parseFloat(spacer.style.height)).toBe(
@@ -1056,6 +1252,251 @@ describe("automation reports", () => {
 });
 
 describe("ChatWorkspace message actions", () => {
+	it("hides first-message editing until the conversation controller is ready", () => {
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					controller: { state: "stopped" },
+					capabilities: ["fork", "prompt_replay", "embedded_context"],
+					hasMoreBefore: false,
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		expect(screen.queryByRole("button", { name: "Edit user message" })).not.toBeInTheDocument();
+	});
+
+	it("offers exact first-message edits even when the provider cannot branch or replay history", async () => {
+		const user = userEvent.setup();
+		const onEditMessage = vi.fn(async () => undefined);
+		const view = render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					capabilities: [],
+					hasMoreBefore: true,
+				}}
+				onEditMessage={onEditMessage}
+			/>,
+		);
+
+		// The earliest loaded prompt is not necessarily the first provider prompt
+		// until every older page has been loaded.
+		expect(screen.queryByRole("button", { name: "Edit user message" })).not.toBeInTheDocument();
+		view.rerender(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					capabilities: [],
+					hasMoreBefore: false,
+				}}
+				onEditMessage={onEditMessage}
+			/>,
+		);
+
+		const editButtons = screen.getAllByRole("button", {
+			name: "Edit user message",
+		});
+		expect(editButtons).toHaveLength(1);
+		await user.click(editButtons[0]!);
+		expect(screen.queryByText(/Reconstructed context:/)).not.toBeInTheDocument();
+
+		const editor = screen.getByRole("textbox", { name: "Edit message" });
+		await user.clear(editor);
+		await user.type(editor, "Replace the first prompt exactly.");
+		await user.click(screen.getByRole("button", { name: "Send edited message" }));
+
+		expect(onEditMessage).toHaveBeenCalledWith("turn-1", "Replace the first prompt exactly.");
+	});
+
+	it("uses the server's first eligible prompt after a provider boundary", () => {
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					capabilities: [],
+					hasMoreBefore: false,
+					items: snapshot.items.map((item) =>
+						item.kind === "message" && item.turnId === "turn-1"
+							? { ...item, editAvailable: false }
+							: item,
+					),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		const edits = screen.getAllByRole("button", {
+			name: "Edit user message",
+		});
+		expect(edits).toHaveLength(1);
+	});
+
+	it("offers reconstructed historical edits only when text replay and embedded context are both negotiated", async () => {
+		const user = userEvent.setup();
+		const onEditMessage = vi.fn(async () => undefined);
+		const promptReplayOnly = {
+			...idleSnapshot(),
+			capabilities: ["prompt_replay"],
+		};
+		const view = render(
+			<ChatWorkspace snapshot={promptReplayOnly} onEditMessage={onEditMessage} />,
+		);
+
+		// The first prompt is still exactly reconstructable in a fresh provider session.
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(1);
+
+		view.rerender(
+			<ChatWorkspace
+				snapshot={{
+					...promptReplayOnly,
+					capabilities: ["prompt_replay", "embedded_context"],
+				}}
+				onEditMessage={onEditMessage}
+			/>,
+		);
+
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(2);
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[1]!);
+		const disclosure = screen.getByText(/Reconstructed context:/);
+		expect(disclosure).toHaveTextContent(
+			"Reconstructed context: text messages will be replayed into a new agent session. Tool calls, approvals, and workspace history will not be replayed; current worktree files stay as they are.",
+		);
+		expect(screen.getByRole("textbox", { name: "Edit message" })).toHaveAttribute(
+			"aria-describedby",
+			disclosure.id,
+		);
+	});
+
+	it("keeps replay available when the provider also supports native forks", async () => {
+		const user = userEvent.setup();
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					capabilities: ["fork", "prompt_replay", "embedded_context"],
+					branchedFromEarlierMessage: true,
+					branchMaterialization: {
+						strategy: "approximate_context",
+						replayTruncated: false,
+					},
+					turns: snapshot.turns.map((turn) => ({
+						...turn,
+						providerTurnId: undefined,
+					})),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(2);
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[1]!);
+		expect(screen.getByText(/Reconstructed context:/)).toBeVisible();
+	});
+
+	it("requires a prior visible provider turn before offering a native historical fork", () => {
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					capabilities: ["fork"],
+					turns: snapshot.turns.map((turn) =>
+						turn.id === "turn-1" ? { ...turn, providerTurnId: undefined } : turn,
+					),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		// The first provider prompt can always be restarted fresh. The second needs
+		// either a prior provider turn to fork or negotiated reconstructed replay.
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(1);
+	});
+
+	it("does not warn about reconstruction when a native fork anchor is visible", async () => {
+		const user = userEvent.setup();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					capabilities: ["fork", "prompt_replay", "embedded_context"],
+					nativeForkAvailableAfterSequence: 1,
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[1]!);
+		expect(screen.queryByText(/Reconstructed context:/)).not.toBeInTheDocument();
+	});
+
+	it("keeps reconstructed ancestor prompts editable when their provider ids belong to the source scope", () => {
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					capabilities: ["prompt_replay", "embedded_context"],
+					branchedFromEarlierMessage: true,
+					branchMaterialization: {
+						strategy: "approximate_context",
+						replayTruncated: false,
+					},
+					turns: snapshot.turns.map((turn) =>
+						turn.id === "turn-1" ? { ...turn, providerTurnId: undefined } : turn,
+					),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(2);
+	});
+
+	it("treats the earliest loaded prompt as historical while older pages remain", async () => {
+		const user = userEvent.setup();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					hasMoreBefore: true,
+					capabilities: ["prompt_replay", "embedded_context"],
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[0]!);
+		expect(screen.getByText(/Reconstructed context:/)).toBeVisible();
+	});
+
+	it("uses the durable native anchor when its prompt is on an older page", async () => {
+		const user = userEvent.setup();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					hasMoreBefore: true,
+					capabilities: ["fork"],
+					nativeForkAvailableAfterSequence: 1,
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		const editButtons = screen.getAllByRole("button", {
+			name: "Edit user message",
+		});
+		expect(editButtons).toHaveLength(1);
+		await user.click(editButtons[0]!);
+		expect(screen.queryByText(/Reconstructed context:/)).not.toBeInTheDocument();
+	});
+
 	it("copies a human message as the exact text the user sent", async () => {
 		const user = userEvent.setup();
 		render(<ChatWorkspace snapshot={chatFixture} />);
@@ -1087,7 +1528,9 @@ describe("ChatWorkspace message actions", () => {
 
 		const editor = screen.getByRole("textbox", { name: "Edit message" });
 		expect(editor).toHaveFocus();
-		expect(editor).toHaveValue("Check the worktree state and tell me what changed since the base commit.");
+		expect(editor).toHaveValue(
+			"Check the worktree state and tell me what changed since the base commit.",
+		);
 
 		await user.clear(editor);
 		await user.type(editor, "Check worktree state, including staged files.");
@@ -1103,24 +1546,10 @@ describe("ChatWorkspace message actions", () => {
 		expect(composer).toHaveTextContent("unsent composer draft");
 	});
 
-	it("keeps edit available while another turn is active", async () => {
-		const user = userEvent.setup();
-		render(
-			<ChatWorkspace
-				snapshot={chatFixture}
-				onEditMessage={vi.fn(async () => undefined)}
-			/>,
-		);
+	it("hides editing while another turn is active", () => {
+		render(<ChatWorkspace snapshot={chatFixture} onEditMessage={vi.fn(async () => undefined)} />);
 
-		const editButtons = screen.getAllByRole("button", { name: "Edit user message" });
-		expect(editButtons.length).toBeGreaterThan(0);
-
-		await user.click(editButtons[0]!);
-		expect(screen.getByRole("textbox", { name: "Edit message" })).toHaveValue(
-			"Check the worktree state and tell me what changed since the base commit.",
-		);
-		expect(screen.getByRole("button", { name: "Send edited message" })).toBeDisabled();
-		expect(screen.getByText("Stop the current turn before branching")).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Edit user message" })).not.toBeInTheDocument();
 	});
 
 	it("retains the inline draft when branch creation fails", async () => {
@@ -1128,30 +1557,33 @@ describe("ChatWorkspace message actions", () => {
 		const onEditMessage = vi.fn(async () => {
 			throw new Error("branch failed");
 		});
+		const approximateSnapshot = {
+			...idleSnapshot(),
+			capabilities: ["prompt_replay", "embedded_context"],
+		};
 		const view = render(
 			<ChatWorkspace
-				snapshot={idleSnapshot()}
+				snapshot={approximateSnapshot}
 				onEditMessage={onEditMessage}
 				editMessageError="branch failed"
 			/>,
 		);
 
-		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[0]!);
+		await user.click(screen.getAllByRole("button", { name: "Edit user message" })[1]!);
 		const editor = screen.getByRole("textbox", { name: "Edit message" });
 		await user.clear(editor);
 		await user.type(editor, "keep this draft");
 		fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
 
-		await waitFor(() => expect(onEditMessage).toHaveBeenCalledWith("turn-1", "keep this draft"));
+		await waitFor(() => expect(onEditMessage).toHaveBeenCalledWith("turn-2", "keep this draft"));
 		expect(screen.getByRole("textbox", { name: "Edit message" })).toHaveValue("keep this draft");
 		expect(screen.getByRole("alert")).toHaveTextContent("branch failed");
+		expect(screen.getByText(/Reconstructed context:/)).toBeVisible();
 
 		view.rerender(
 			<ChatWorkspace
 				snapshot={{
-					...idleSnapshot(),
-					activeBranchId: "branch-failed",
-					branchedFromEarlierMessage: true,
+					...approximateSnapshot,
 					items: [],
 					turns: [],
 				}}
@@ -1161,6 +1593,63 @@ describe("ChatWorkspace message actions", () => {
 		);
 		expect(screen.getByRole("textbox", { name: "Edit message" })).toHaveValue("keep this draft");
 		expect(screen.getByRole("alert")).toHaveTextContent("branch failed");
+		expect(screen.getByText(/Reconstructed context:/)).toBeVisible();
+
+		// An ambiguous provider failure can durably activate the replacement branch.
+		// Once that refetch arrives, the source-branch draft is stale and must close.
+		view.rerender(
+			<ChatWorkspace
+				snapshot={{
+					...approximateSnapshot,
+					activeBranchId: "branch-failed",
+					branchedFromEarlierMessage: true,
+					items: [],
+					turns: [],
+				}}
+				onEditMessage={onEditMessage}
+				editMessageError="branch failed"
+			/>,
+		);
+		await waitFor(() =>
+			expect(screen.queryByRole("textbox", { name: "Edit message" })).not.toBeInTheDocument(),
+		);
+	});
+
+	it("lets the user retry a failed replacement on the active approximate branch", async () => {
+		const user = userEvent.setup();
+		const snapshot = idleSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...snapshot,
+					activeBranchId: "branch-failed",
+					branchedFromEarlierMessage: true,
+					branchMaterialization: {
+						strategy: "approximate_context",
+						replayTruncated: false,
+					},
+					capabilities: ["prompt_replay", "embedded_context"],
+					turns: snapshot.turns.map((turn) =>
+						turn.id === "turn-2"
+							? {
+									...turn,
+									state: "failed" as const,
+									providerTurnId: undefined,
+									errorMessage: "provider unavailable",
+								}
+							: turn,
+					),
+				}}
+				onEditMessage={vi.fn(async () => undefined)}
+			/>,
+		);
+
+		const edits = screen.getAllByRole("button", {
+			name: "Edit user message",
+		});
+		expect(edits).toHaveLength(2);
+		await user.click(edits[1]!);
+		expect(screen.getByRole("textbox", { name: "Edit message" })).toBeVisible();
 	});
 
 	it("navigates prompt branches and explains that files are unchanged", async () => {
@@ -1170,6 +1659,10 @@ describe("ChatWorkspace message actions", () => {
 			...idleSnapshot(),
 			activeBranchId: "branch-current",
 			branchedFromEarlierMessage: true,
+			branchMaterialization: {
+				strategy: "approximate_context" as const,
+				replayTruncated: true,
+			},
 			branchPoints: [
 				{
 					turnId: "turn-1",
@@ -1183,11 +1676,56 @@ describe("ChatWorkspace message actions", () => {
 		render(<ChatWorkspace snapshot={snapshot} onActivateBranch={onActivateBranch} />);
 
 		expect(screen.getByText("2 / 3")).toBeVisible();
-		await user.click(screen.getByRole("button", { name: "Previous conversation branch" }));
+		expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
+		expect(screen.getByRole("status")).toHaveAttribute("aria-atomic", "true");
+		await user.click(
+			screen.getByRole("button", {
+				name: "Previous conversation branch",
+			}),
+		);
 		expect(onActivateBranch).toHaveBeenCalledWith("branch-previous");
-		expect(
-			screen.getByText("Conversation branched; worktree files were left unchanged."),
-		).toBeVisible();
+		expect(screen.getByText(/Reconstructed context/)).toHaveTextContent(
+			"Reconstructed context · Text messages were replayed. Some text was omitted to fit the context limit. Tool activity and workspace history were not replayed; current worktree files remain unchanged.",
+		);
+	});
+
+	it("labels a provider-native branch as exact context", () => {
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					branchedFromEarlierMessage: true,
+					branchMaterialization: {
+						strategy: "native",
+						replayTruncated: false,
+					},
+				}}
+			/>,
+		);
+
+		expect(screen.getByText(/Exact context/)).toHaveTextContent(
+			"Exact context · Provider history was preserved; current worktree files remain unchanged.",
+		);
+	});
+
+	it("localizes the active branch fidelity and truncation notice", async () => {
+		await act(() => appI18n.changeLanguage("zh-CN"));
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...idleSnapshot(),
+					branchedFromEarlierMessage: true,
+					branchMaterialization: {
+						strategy: "approximate_context",
+						replayTruncated: true,
+					},
+				}}
+			/>,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent(
+			"重建上下文 · 已重放文本消息。为符合上下文限制，部分文本已省略。未重放工具活动和工作区历史；当前工作树文件保持不变。",
+		);
 	});
 
 	it("copies an assistant message as the markdown the agent wrote", async () => {
@@ -1203,7 +1741,9 @@ describe("ChatWorkspace message actions", () => {
 		});
 		render(<ChatWorkspace snapshot={snapshot} />);
 
-		const copies = screen.getAllByRole("button", { name: /copy message as markdown/i });
+		const copies = screen.getAllByRole("button", {
+			name: /copy message as markdown/i,
+		});
 		expect(copies).toHaveLength(1);
 		const copy = copies[0]!;
 		await user.click(copy);
@@ -1252,11 +1792,17 @@ describe("ChatWorkspace reviewer tabs", () => {
 			onStageAttachments: vi.fn(async () => []),
 		};
 		const view = render(<ChatWorkspace {...common} />);
-		const composer = screen.getByRole("combobox", { name: "Message the agent" });
+		const composer = screen.getByRole("combobox", {
+			name: "Message the agent",
+		});
 		await typeInLexicalEditor(composer, "unsent reviewer-switch draft");
 		fireEvent.paste(composer, {
 			clipboardData: {
-				files: [new File([new Uint8Array([137, 80, 78, 71])], "review.png", { type: "image/png" })],
+				files: [
+					new File([new Uint8Array([137, 80, 78, 71])], "review.png", {
+						type: "image/png",
+					}),
+				],
 				items: [],
 			},
 		});
@@ -1267,7 +1813,11 @@ describe("ChatWorkspace reviewer tabs", () => {
 		await user.clear(editor);
 		await user.type(editor, "in-progress branch edit");
 		const timeline = screen.getByRole("log", { name: "Conversation" });
-		stubGeometry(timeline, { scrollHeight: 2_000, clientHeight: 500, scrollTop: 417 });
+		stubGeometry(timeline, {
+			scrollHeight: 2_000,
+			clientHeight: 500,
+			scrollTop: 417,
+		});
 
 		view.rerender(<ChatWorkspace {...common} reviewerTarget={reviewerTarget} />);
 
@@ -1316,7 +1866,10 @@ describe("ChatWorkspace reviewer tabs", () => {
 			/>,
 		);
 
-		expect(terminalPaneState.props).toMatchObject({ fontSize: 14, isFullscreen: false });
+		expect(terminalPaneState.props).toMatchObject({
+			fontSize: 14,
+			isFullscreen: false,
+		});
 		expect(terminalPaneState.props?.onChangeFontSize).toEqual(expect.any(Function));
 		expect(terminalPaneState.props?.onToggleFullscreen).toEqual(expect.any(Function));
 
@@ -1333,7 +1886,10 @@ describe("ChatWorkspace reviewer tabs", () => {
 
 		const surface = screen.getByLabelText("Chat");
 		const requestFullscreen = vi.fn(async () => undefined);
-		Object.defineProperty(surface, "requestFullscreen", { configurable: true, value: requestFullscreen });
+		Object.defineProperty(surface, "requestFullscreen", {
+			configurable: true,
+			value: requestFullscreen,
+		});
 		await act(async () => terminalPaneState.props?.onToggleFullscreen?.());
 		expect(requestFullscreen).toHaveBeenCalledOnce();
 	});
@@ -1349,7 +1905,9 @@ describe("ChatWorkspace reviewer tabs", () => {
 			onSelectChat,
 		};
 		const view = render(<ChatWorkspace {...common} />);
-		const chatTab = screen.getByRole("tab", { name: chatFixture.sessionId });
+		const chatTab = screen.getByRole("tab", {
+			name: "Codex",
+		});
 		const reviewerTab = screen.getByRole("tab", { name: "Reviewer" });
 		expect(chatTab).toHaveAttribute("tabindex", "0");
 		expect(reviewerTab).toHaveAttribute("tabindex", "-1");
@@ -1372,13 +1930,16 @@ describe("ChatWorkspace reviewer tabs", () => {
 
 		view.rerender(<ChatWorkspace {...common} reviewerTarget={reviewerTarget} />);
 		const activeReviewerTab = screen.getByRole("tab", { name: "Reviewer" });
-		expect(screen.getByRole("tab", { name: chatFixture.sessionId })).toHaveAttribute("tabindex", "-1");
+		expect(screen.getByRole("tab", { name: "Codex" })).toHaveAttribute(
+			"tabindex",
+			"-1",
+		);
 		expect(activeReviewerTab).toHaveAttribute("tabindex", "0");
 
 		activeReviewerTab.focus();
 		fireEvent.keyDown(activeReviewerTab, { key: "Home" });
 		expect(onSelectChat).toHaveBeenCalledOnce();
-		expect(screen.getByRole("tab", { name: chatFixture.sessionId })).toHaveFocus();
+		expect(screen.getByRole("tab", { name: "Codex" })).toHaveFocus();
 
 		onSelectChat.mockClear();
 		activeReviewerTab.focus();
@@ -1483,7 +2044,9 @@ describe("ChatWorkspace shell tabs", () => {
 				shellTarget={shellTarget("shell-2")}
 			/>,
 		);
-		expect(terminalPaneState.props).toMatchObject({ terminalTarget: shellTarget("shell-2") });
+		expect(terminalPaneState.props).toMatchObject({
+			terminalTarget: shellTarget("shell-2"),
+		});
 	});
 
 	it("cycles chat → reviewer → shells → chat on the desktop next-tab shortcut", () => {
@@ -1544,7 +2107,7 @@ describe("ChatWorkspace shell tabs", () => {
 			/>,
 		);
 
-		const workerTab = screen.getByRole("tab", { name: "ao-14" });
+		const workerTab = screen.getByRole("tab", { name: "Codex" });
 		workerTab.focus();
 		fireEvent.keyDown(workerTab, { key: "Tab", ctrlKey: true });
 
@@ -1567,7 +2130,10 @@ describe("ChatWorkspace shell tabs", () => {
 		const view = render(<ChatWorkspace {...common} shellTarget={shellTarget("shell-1")} />);
 
 		act(() => [...previousTabListeners][0]?.());
-		expect(onOpenReviewerTerminal).toHaveBeenCalledWith({ handleId: "review-1", harness: "codex" });
+		expect(onOpenReviewerTerminal).toHaveBeenCalledWith({
+			handleId: "review-1",
+			harness: "codex",
+		});
 
 		view.rerender(
 			<ChatWorkspace

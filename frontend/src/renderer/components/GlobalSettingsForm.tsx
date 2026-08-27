@@ -58,7 +58,7 @@ export function GlobalSettingsForm({
 			)}
 
 			{(all || section === "updates") && (
-				<Suspense fallback={<UpdatesSectionSkeleton titleHidden={titleHidden} />}>
+				<Suspense fallback={null}>
 					<UpdatesSection titleHidden={titleHidden} />
 				</Suspense>
 			)}
@@ -71,14 +71,5 @@ export function GlobalSettingsForm({
 				</SettingsSection>
 			)}
 		</div>
-	);
-}
-
-function UpdatesSectionSkeleton({ titleHidden }: { titleHidden: boolean }) {
-	return (
-		<section className="flex w-full flex-col gap-(--size-settings-section-inner-gap)" aria-busy="true">
-			{!titleHidden && <div className="mx-3 h-4 w-16 animate-pulse rounded bg-foreground/8 motion-reduce:animate-none" />}
-			<div className="h-32 w-full animate-pulse rounded-(--radius-settings-panel) border border-[var(--color-border-settings-dialog)] bg-[var(--color-bg-settings-input)] motion-reduce:animate-none" />
-		</section>
 	);
 }

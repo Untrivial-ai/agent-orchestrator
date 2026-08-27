@@ -265,21 +265,51 @@ describe("GlobalSettingsForm", () => {
 	it("shows the nightly warning when the nightly channel is loaded", async () => {
 		getUpdate.mockResolvedValue({ enabled: true, channel: "nightly", nightlyAck: true, feature: null });
 		renderForm();
-		expect(await screen.findByText(/Nightly builds are cut every day/i)).toBeInTheDocument();
+		expect(await screen.findByText(/Nightly updates daily and may be unstable or cause data loss/i)).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
 	});
 
-	it("auto-saves when the updates channel changes while automatic updates are enabled", async () => {
+	it("auto-saves the updates channel while automatic updates are disabled", async () => {
 		renderForm();
+		await userEvent.click(await screen.findByRole("switch", { name: "Automatic Updates" }));
+		await waitFor(() =>
+			expect(setUpdate).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, channel: "latest" })),
+		);
 		await screen.findByLabelText("Updates channel");
 		await userEvent.click(screen.getByLabelText("Updates channel"));
 		await userEvent.click(await screen.findByRole("menuitem", { name: "Nightly (Pre-release)" }));
 		await waitFor(() =>
 			expect(setUpdate).toHaveBeenCalledWith(
-				expect.objectContaining({ channel: "nightly", enabled: true, nightlyAck: true, feature: null }),
+				expect.objectContaining({ channel: "nightly", enabled: false, nightlyAck: true, feature: null }),
 			),
 		);
-		expect(await screen.findByText(/Nightly builds are cut every day/i)).toBeInTheDocument();
+		expect(screen.getByTestId("installed-update-channel")).toHaveTextContent("Stable");
+		expect(await screen.findByText(/Nightly updates daily and may be unstable or cause data loss/i)).toBeInTheDocument();
+	});
+
+	it("checks the newly selected channel and explains how to switch after an update", async () => {
+		let emit: (s: { state: string; version?: string; requestId?: string }) => void = () => undefined;
+		updOnStatus.mockImplementation((cb: (s: unknown) => void) => {
+			emit = cb as typeof emit;
+			return () => undefined;
+		});
+		renderForm();
+		await userEvent.click(await screen.findByLabelText("Updates channel"));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Nightly (Pre-release)" }));
+
+		await waitFor(() =>
+			expect(updCheck).toHaveBeenCalledWith(
+				expect.objectContaining({
+					settings: expect.objectContaining({ channel: "nightly" }),
+					requestId: expect.stringMatching(/^channel-update-/),
+				}),
+			),
+		);
+		const requestId = updCheck.mock.calls.at(-1)?.[0]?.requestId;
+		expect(requestId).toMatch(/^channel-update-/);
+		act(() => emit({ state: "available", version: "1.5.0-nightly.202608271200", requestId }));
+		expect(await screen.findByText("Update and restart to switch to Nightly (Pre-release)."))
+			.toBeInTheDocument();
 	});
 
 	it("auto-saves when automatic updates are toggled", async () => {
@@ -288,24 +318,31 @@ describe("GlobalSettingsForm", () => {
 		await waitFor(() =>
 			expect(setUpdate).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, channel: "latest" })),
 		);
-		expect(screen.queryByLabelText("Updates channel")).not.toBeInTheDocument();
+		expect(screen.getByLabelText("Updates channel")).toBeInTheDocument();
 	});
 
 	it("hides the nightly warning on the stable channel", async () => {
 		renderForm();
 		await screen.findByText("Updates");
-		expect(screen.queryByText(/Nightly builds are cut every day/i)).not.toBeInTheDocument();
+		expect(screen.queryByText(/Nightly updates daily and may be unstable or cause data loss/i)).not.toBeInTheDocument();
 	});
 
 	it("shows the current app version", async () => {
 		renderForm();
-		expect(await screen.findByText(/Current version - v1\.4\.0/)).toBeInTheDocument();
+		expect(await screen.findByTestId("app-version")).toHaveTextContent("v1.4.0");
+		expect(screen.getByTestId("installed-update-channel")).toHaveTextContent("Stable");
+	});
+
+	it("shows the installed Nightly channel separately from the selected update feed", async () => {
+		getVersion.mockResolvedValue("1.4.0-nightly.202608271030");
+		renderForm();
+		expect(await screen.findByTestId("installed-update-channel")).toHaveTextContent("Nightly (Pre-release)");
 	});
 
 	it("shows an explicit idle update state and triggers a manual check", async () => {
 		renderForm();
-		expect(await screen.findByText(/Current version - v1\.4\.0/)).toBeInTheDocument();
-		expect(screen.getByText("No update check yet.")).toBeInTheDocument();
+		expect(await screen.findByTestId("app-version")).toHaveTextContent("v1.4.0");
+		expect(screen.getByText("Updates haven't been checked yet.")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
 		expect(updCheck).toHaveBeenCalled();
 	});
@@ -328,7 +365,7 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.getByRole("status")).toHaveTextContent("Checking for updates…");
 
 		act(() => finishCheck());
-		await waitFor(() => expect(button).toBeEnabled());
+		await waitFor(() => expect(button).toBeEnabled(), { timeout: 1_500 });
 	});
 
 	it("stops manual loading when the updater completes before the check invocation settles", async () => {
@@ -350,7 +387,7 @@ describe("GlobalSettingsForm", () => {
 
 		act(() => emit({ state: "not-available", checkedAt: Date.now(), requestId }));
 
-		expect(screen.getByRole("status")).toHaveTextContent("You're on the latest version.");
+		await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("You're on the latest version."), { timeout: 1_500 });
 		expect(button).toBeEnabled();
 	});
 
@@ -373,8 +410,11 @@ describe("GlobalSettingsForm", () => {
 			emit({ state: "downloaded", version: "1.2.3", requestId: "earlier-download" });
 		});
 
-		expect(screen.getByRole("status")).toHaveTextContent("Downloaded. Restart to finish updating.");
-		expect(screen.getByRole("button", { name: "Check for updates" })).toBeEnabled();
+		await waitFor(
+			() => expect(screen.getByRole("status")).toHaveTextContent("Downloaded. Restart to finish updating."),
+			{ timeout: 1_500 },
+		);
+		expect(screen.queryByRole("button", { name: "Check for updates" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Restart & install" })).toBeInTheDocument();
 	});
 

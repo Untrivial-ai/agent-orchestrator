@@ -45,6 +45,8 @@ type fakeSessionService struct {
 	workspaceFile        sessionsvc.WorkspaceFileDetail
 	workspaceFileSection sessionsvc.WorkspaceFileSection
 	workspaceBlob        sessionsvc.WorkspaceFileBlob
+	workspaceTree        sessionsvc.WorkspaceTree
+	workspaceTreePath    string
 	workspacePaths       []string
 	spawnErr             error
 	lastSpawn            ports.SpawnConfig
@@ -587,6 +589,73 @@ func (f *fakeSessionService) GetWorkspaceFileBlob(_ context.Context, id domain.S
 		return blob, nil
 	}
 	return sessionsvc.WorkspaceFileBlob{Path: path, Side: side, MediaType: "image/png"}, nil
+}
+
+func (f *fakeSessionService) ListWorkspaceTree(_ context.Context, id domain.SessionID, path string) (sessionsvc.WorkspaceTree, error) {
+	f.workspaceTreePath = path
+	if f.workspaceErr != nil {
+		return sessionsvc.WorkspaceTree{}, f.workspaceErr
+	}
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceTree{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if f.workspaceTree.SessionID != "" {
+		return f.workspaceTree, nil
+	}
+	return sessionsvc.WorkspaceTree{SessionID: id, Path: path}, nil
+}
+
+func TestSessionsAPI_ListWorkspaceTree(t *testing.T) {
+	t.Run("lists the requested directory", func(t *testing.T) {
+		svc := newFakeSessionService()
+		svc.workspaceTree = sessionsvc.WorkspaceTree{
+			SessionID: "ao-1",
+			Path:      "src",
+			Entries: []sessionsvc.WorkspaceTreeEntry{{
+				Name: "main.go", Path: "src/main.go", Type: sessionsvc.WorkspaceTreeFile,
+			}},
+		}
+		srv := newSessionTestServer(t, svc)
+		body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/workspace/tree?path=src", "")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", status, body)
+		}
+		if svc.workspaceTreePath != "src" {
+			t.Fatalf("service path = %q, want src", svc.workspaceTreePath)
+		}
+		var got controllers.ListWorkspaceTreeResponse
+		mustJSON(t, body, &got)
+		if got.Path != "src" || len(got.Entries) != 1 || got.Entries[0].Path != "src/main.go" {
+			t.Fatalf("response = %+v", got)
+		}
+	})
+
+	t.Run("returns not found for an unknown session", func(t *testing.T) {
+		srv := newSessionTestServer(t, newFakeSessionService())
+		body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/missing/workspace/tree", "")
+		if status != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404; body=%s", status, body)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "invalid path", err: apierr.Invalid("INVALID_WORKSPACE_PATH", "invalid workspace path", nil), want: http.StatusBadRequest},
+		{name: "service failure", err: errors.New("tree unavailable"), want: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newFakeSessionService()
+			svc.workspaceErr = tc.err
+			srv := newSessionTestServer(t, svc)
+			body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/workspace/tree?path=src", "")
+			if status != tc.want {
+				t.Fatalf("status = %d, want %d; body=%s", status, tc.want, body)
+			}
+		})
+	}
 }
 
 func TestSessionsAPI_AgentSwitchLifecycle(t *testing.T) {

@@ -117,6 +117,10 @@ const (
 	ChatCapabilityRollback ChatCapability = "rollback"
 	// ChatCapabilityFork means a conversation can be branched.
 	ChatCapabilityFork ChatCapability = "fork"
+	// ChatCapabilityPromptReplay means AO can open a fresh provider session with
+	// a durable textual transcript supplied as context. This is an approximation
+	// of fork for providers whose protocol cannot fork from a historical turn.
+	ChatCapabilityPromptReplay ChatCapability = "prompt_replay"
 	// ChatCapabilityRename means the thread carries a title AO can set.
 	ChatCapabilityRename ChatCapability = "rename"
 	// ChatCapabilitySkills means named skills can be enumerated and invoked.
@@ -218,6 +222,9 @@ type ChatStartConfig struct {
 	Permissions PermissionMode
 	// SystemPrompt carries AO's standing instructions for the session.
 	SystemPrompt string
+	// ProviderScopeID identifies the AO ownership boundary for opaque provider
+	// identifiers. Fresh approximate branches receive a new value.
+	ProviderScopeID string
 	// AdditionalDirectories are extra absolute workspace roots the provider may
 	// access alongside WorkspacePath. Workspace projects use this for child repo
 	// worktrees; it is not a replacement for AO's worktree ownership.
@@ -239,7 +246,10 @@ type ChatResumeConfig struct {
 	Permissions PermissionMode
 	// SystemPrompt is recomputed by the session manager on restore and reapplied
 	// to the provider process. It is not persisted in the conversation transcript.
-	SystemPrompt          string
+	SystemPrompt string
+	// ProviderScopeID identifies AO's provider ownership boundary. A fresh
+	// approximate branch must never inherit the parent's opaque-id scope.
+	ProviderScopeID       string
 	AdditionalDirectories []string
 	MCPServers            []ChatMCPServerConfig
 }
@@ -258,6 +268,9 @@ type ChatMCPServerConfig struct {
 	Headers map[string]string
 }
 
+// ChatInternalReplayResourceURI is reserved for AO's reconstructed edit context.
+const ChatInternalReplayResourceURI = "ao://conversation/edit-replay"
+
 // ChatContent is structured prompt context. Text remains on ChatUserMessage so
 // the durable transcript has an ordinary readable message; these blocks enrich
 // what the provider receives without leaking protocol DTOs above the adapter.
@@ -268,6 +281,16 @@ type ChatContent struct {
 	URI      string `json:"uri,omitempty"`
 	Name     string `json:"name,omitempty"`
 	Text     string `json:"text,omitempty"`
+	// Internal distinguishes AO-owned prompt context from a user attachment.
+	// Public request DTOs never expose this bit; it is durable so edit/retry and
+	// snapshot reconstruction can hide only content AO actually synthesized.
+	Internal bool `json:"internal,omitempty"`
+}
+
+// IsInternalReplayContent reports whether content is AO's reconstructed-history
+// seed rather than a resource supplied by the user.
+func IsInternalReplayContent(content ChatContent) bool {
+	return content.Internal && content.Type == "resource" && content.URI == ChatInternalReplayResourceURI
 }
 
 // ChatUserMessage is one inbound request to the agent.
@@ -785,6 +808,10 @@ type ChatEvent struct {
 	ProviderConversationID string
 	// ProviderItemID identifies the message or activity being reported.
 	ProviderItemID string
+	// ProviderItemAliases carries replay-only historical identities that referred
+	// to the same item before an adapter introduced stronger namespacing. They are
+	// reconciliation hints, not new durable provider identities.
+	ProviderItemAliases []string
 	// ClientMessageID is the provider-carried idempotency key for a recovered user
 	// message, when one exists. History adapters synthesize a stable value when the
 	// native protocol has no client identity.

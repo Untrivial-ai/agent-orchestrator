@@ -658,6 +658,7 @@ func (s *Store) ActivateChatAgentSwitchTarget(ctx context.Context, activation do
 		ProviderConversationID: activation.ProviderConversationID,
 		ParentBranchID:         conversationRow.ActiveBranchID,
 		ForkAfterSequence:      conversationRow.LatestSequence,
+		ProviderScopeID:        providerBoundaryID,
 		CreatedAt:              activation.ActivatedAt,
 	}, activation.ActivatedAt); err != nil {
 		return false, fmt.Errorf("activate Chat agent switch target %s: create provider boundary: %w", activation.SwitchID, err)

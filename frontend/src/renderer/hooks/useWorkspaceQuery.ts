@@ -119,6 +119,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 						autoInjectCI: session.autoInjectCI ?? true,
 						createdAt: session.createdAt,
 						updatedAt: session.updatedAt,
+						lastUserMessageAt: session.lastUserMessageAt ?? undefined,
 						activity,
 						activeAgentSwitch: session.activeAgentSwitch
 							? toAgentSwitchSummary(session.activeAgentSwitch)

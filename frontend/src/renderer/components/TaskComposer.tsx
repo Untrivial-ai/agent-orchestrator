@@ -85,7 +85,7 @@ export function TaskComposer({
 			: "";
 	}, [t]);
 	const queryClient = useQueryClient();
-	const [prompt, setPrompt] = useState("");
+	const [isPromptDirty, setIsPromptDirty] = useState(false);
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
 	const [agent, setAgent] = useState("");
@@ -236,7 +236,11 @@ export function TaskComposer({
 		}
 	}, [defaultModelForSelectedAgent, defaultModeForSelectedAgent, modelTouched]);
 
-	const isDirty = prompt.trim() !== "" || modelTouched || attachments.length > 0;
+	const isDirty = isPromptDirty || modelTouched || attachments.length > 0;
+	const handlePromptChange = useCallback((value: string) => {
+		const nextDirty = value.trim() !== "";
+		setIsPromptDirty((wasDirty) => (wasDirty === nextDirty ? wasDirty : nextDirty));
+	}, []);
 	useEffect(() => {
 		onDirtyChange?.(isDirty);
 	}, [isDirty, onDirtyChange]);
@@ -249,6 +253,7 @@ export function TaskComposer({
 	useEffect(() => () => clearAttachments(), [clearAttachments]);
 
 	const submitTask = async (
+		brief: string,
 		interfaceMode?: "tui",
 		approvalMode?: "bypass-permissions",
 	) => {
@@ -268,7 +273,7 @@ export function TaskComposer({
 			const attachmentPayloads = await toSettledPayload();
 			const sessionId = await createTask({
 				projectId,
-				brief: prompt,
+				brief,
 				// The visible selection is authoritative: it is either the user's pick
 				// or the resolved default, so spawning names it explicitly.
 				agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
@@ -303,8 +308,7 @@ export function TaskComposer({
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
 			canSubmit={Boolean(projectId)}
-			prompt={prompt}
-			onPromptChange={setPrompt}
+			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),
 				fallbackAction: fallbackAction === "bypass-permissions"
@@ -367,11 +371,11 @@ export function TaskComposer({
 				error,
 				isSubmitting,
 				modelWarning,
-				onFallbackAction: () =>
+				onFallbackAction: (brief) =>
 					void (fallbackAction === "bypass-permissions"
-						? submitTask(undefined, "bypass-permissions")
-						: submitTask("tui")),
-				onSubmit: () => void submitTask(requiresTuiFallback ? "tui" : undefined),
+						? submitTask(brief, undefined, "bypass-permissions")
+						: submitTask(brief, "tui")),
+				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
 			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
 			renderModelControl={(control) => <TaskModelPicker {...control} />}

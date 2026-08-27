@@ -74,6 +74,10 @@ type ChatStart struct {
 	// ProviderConversationID resumes a stored conversation instead of opening a
 	// new one. Empty means start fresh.
 	ProviderConversationID string
+	// ProviderScopeID reserves a provider boundary that is not active yet. Agent
+	// switching supplies its durable boundary before the target provider starts;
+	// ordinary starts leave it empty for Chat Service to derive or reserve.
+	ProviderScopeID string
 	// ControllerGeneration lets a durable coordinator reserve the generation
 	// before launch. Empty keeps the ordinary spawn/restore behavior where Chat
 	// Service allocates it.
@@ -96,6 +100,7 @@ type ChatStarted struct {
 	ProviderConversationID string
 	ControllerGeneration   string
 	Conversation           domain.ConversationRecord
+	ProviderBoundary       *domain.ConversationBranch
 }
 
 // ChatControllerCommit carries the post-commit conversation state back to Chat
@@ -171,9 +176,12 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 				ControllerGeneration:   started.ControllerGeneration,
 				Model:                  agentConfig.Model,
 			}
-			completionErr = m.lcm.MarkSpawned(ctx, id, metadata)
+			committedConversation, commitErr := m.markChatControllerSpawned(
+				ctx, id, metadata, started.Conversation, started.ProviderBoundary,
+			)
+			completionErr = commitErr
 			controllerCommitted = completionErr == nil
-			return ChatControllerCommit{Conversation: started.Conversation}, completionErr
+			return ChatControllerCommit{Conversation: committedConversation}, completionErr
 		},
 	})
 	if err != nil {
@@ -349,8 +357,11 @@ func (m *Manager) resumeChatController(
 			// controller this one replaced carry the old one and are rejected.
 			metadata.ControllerGeneration = started.ControllerGeneration
 
-			completionErr = m.lcm.MarkSpawned(ctx, rec.ID, metadata)
-			return ChatControllerCommit{Conversation: started.Conversation}, completionErr
+			committedConversation, commitErr := m.markChatControllerSpawned(
+				ctx, rec.ID, metadata, started.Conversation, started.ProviderBoundary,
+			)
+			completionErr = commitErr
+			return ChatControllerCommit{Conversation: committedConversation}, completionErr
 		},
 	})
 	if err != nil {
@@ -368,6 +379,24 @@ func (m *Manager) resumeChatController(
 	// Native continuity: the provider still holds the conversation, so the agent
 	// resumes with its own history rather than a replayed prompt.
 	return RestoreResult{Session: restored, Mode: RestoreModeNative}, nil
+}
+
+func (m *Manager) markChatControllerSpawned(
+	ctx context.Context,
+	id domain.SessionID,
+	metadata domain.SessionMetadata,
+	conversation domain.ConversationRecord,
+	providerBoundary *domain.ConversationBranch,
+) (domain.ConversationRecord, error) {
+	if providerBoundary == nil {
+		return conversation, m.lcm.MarkSpawned(ctx, id, metadata)
+	}
+	if err := m.lcm.MarkChatSpawned(ctx, id, metadata, *providerBoundary); err != nil {
+		return domain.ConversationRecord{}, err
+	}
+	conversation.ActiveBranchID = providerBoundary.ID
+	conversation.UpdatedAt = providerBoundary.CreatedAt
+	return conversation, nil
 }
 
 func workspaceProjectDirectories(root string, project *ports.WorkspaceProjectInfo) []string {

@@ -152,6 +152,25 @@ func requireMessageTexts(t *testing.T, messages []domain.ConversationMessage, wa
 	}
 }
 
+func requireBranchPoint(
+	t *testing.T,
+	snapshot chatsvc.Snapshot,
+	turnID, previousBranchID, nextBranchID string,
+) {
+	t.Helper()
+	for _, point := range snapshot.BranchPoints {
+		if point.TurnID != turnID {
+			continue
+		}
+		if point.PreviousBranchID != previousBranchID || point.NextBranchID != nextBranchID || point.Total != 2 {
+			t.Fatalf("branch point for %s = %+v, want previous=%q next=%q total=2",
+				turnID, point, previousBranchID, nextBranchID)
+		}
+		return
+	}
+	t.Fatalf("snapshot has no branch point for turn %s: %+v", turnID, snapshot.BranchPoints)
+}
+
 // The end-to-end shape of an undo: the provider is asked to forget, and AO's timeline
 // stops showing what it forgot.
 func TestRollbackDiscardsTheTurnAndEverythingAfterIt(t *testing.T) {
@@ -507,20 +526,30 @@ func TestForkClassifiesAProviderRefusal(t *testing.T) {
 }
 
 type editDriverState struct {
-	mu          sync.Mutex
-	startCalls  int
-	resumeCalls []ports.ChatResumeConfig
-	fresh       *fakeConversation
-	resumed     map[string]*fakeConversation
+	mu           sync.Mutex
+	startCalls   int
+	startConfigs []ports.ChatStartConfig
+	resumeCalls  []ports.ChatResumeConfig
+	fresh        *fakeConversation
+	resumed      map[string]*fakeConversation
 }
 
-func newEditHarness(t *testing.T) (*harness, *historyRecorder, *editDriverState) {
+func newEditHarness(t *testing.T, supportsPromptReplay bool) (*harness, *historyRecorder, *editDriverState) {
 	t.Helper()
 	st := openStore(t)
 	source := newHistoryRecorder()
+	if supportsPromptReplay {
+		sourceCapabilities := productionCaps()
+		sourceCapabilities[ports.ChatCapabilityPromptReplay] = true
+		sourceCapabilities[ports.ChatCapabilityEmbeddedContext] = true
+		source.setCapabilities(sourceCapabilities)
+	}
 	fresh := newFakeConversation()
 	fresh.providerConversationID = "thread-fresh"
 	fresh.turnSeq = 100
+	if supportsPromptReplay {
+		fresh.setCapabilities(source.Capabilities())
+	}
 	forked := newFakeConversation()
 	forked.providerConversationID = "thread-forked"
 	forked.turnSeq = 200
@@ -534,15 +563,32 @@ func newEditHarness(t *testing.T) (*harness, *historyRecorder, *editDriverState)
 			"thread-1":      root,
 		},
 	}
-	driver := fakeDriver{conv: source.fakeConversation}
-	driver.start = func(ports.ChatStartConfig) (ports.ChatConversation, error) {
+	initial := ports.ChatConversation(source)
+	if supportsPromptReplay {
+		// Use the plain conversation for this scenario: historyRecorder implements
+		// native fork, while the real Claude path does not.
+		initial = source.fakeConversation
+	}
+	driver := fakeDriver{conv: initial}
+	driver.start = func(cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
 		state.mu.Lock()
 		defer state.mu.Unlock()
+		state.startConfigs = append(state.startConfigs, cfg)
 		state.startCalls++
 		if state.startCalls == 1 {
-			return source, nil
+			return initial, nil
 		}
-		return state.fresh, nil
+		if state.startCalls == 2 {
+			return state.fresh, nil
+		}
+		freshBranch := newFakeConversation()
+		freshBranch.providerConversationID = fmt.Sprintf("thread-fresh-%d", state.startCalls)
+		freshBranch.turnSeq = state.startCalls * 100
+		if supportsPromptReplay {
+			freshBranch.setCapabilities(source.Capabilities())
+		}
+		state.fresh = freshBranch
+		return freshBranch, nil
 	}
 	driver.resume = func(cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
 		state.mu.Lock()
@@ -560,6 +606,18 @@ func newEditHarness(t *testing.T) (*harness, *historyRecorder, *editDriverState)
 	nextID := 0
 	svc := chatsvc.New(chatsvc.Options{
 		Store: st, Sessions: st,
+		Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+			snapshot, err := st.LoadConversationSnapshot(ctx, conversationID)
+			if err != nil {
+				return chatsvc.ConversationRows{}, err
+			}
+			return chatsvc.ConversationRows{
+				Conversation: snapshot.Conversation, ActiveBranch: snapshot.ActiveBranch,
+				Turns: snapshot.Turns, Messages: snapshot.Messages,
+				Activities: snapshot.Activities, BranchPoints: snapshot.BranchPoints,
+				BranchedFromEarlierMessage: snapshot.BranchedFromEarlierMessage,
+			}, nil
+		}),
 		Drivers: fakeRegistry{driver: driver},
 		Log:     slog.New(slog.DiscardHandler),
 		NewID: func() string {
@@ -592,15 +650,456 @@ func newEditHarness(t *testing.T) (*harness, *historyRecorder, *editDriverState)
 	return &harness{svc: svc, st: st, conv: source.fakeConversation, ctrl: ctrl, clock: clock}, source, state
 }
 
+func TestEditMessageReplaysDurableContextWhenNativeForkIsUnavailable(t *testing.T) {
+	h, _, driver := newEditHarness(t, true)
+	ctx := context.Background()
+	completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	second, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "B", Origin: domain.MessageOriginHuman})
+	if err != nil {
+		t.Fatalf("Send B: %v", err)
+	}
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-2"},
+		ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "provider-turn-2", ProviderItemID: "answer-b", Text: "answer B"},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-2", TurnState: domain.TurnStateCompleted},
+	)
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+
+	if _, err := h.svc.EditMessage(ctx, testSession, second.ID, ports.ChatUserMessage{
+		Text: "B edited", Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("EditMessage: %v", err)
+	}
+	driver.mu.Lock()
+	starts := append([]ports.ChatStartConfig(nil), driver.startConfigs...)
+	driver.mu.Unlock()
+	if len(starts) != 2 {
+		t.Fatalf("start calls = %d, want initial plus replay", len(starts))
+	}
+	if starts[0].ProviderScopeID == "" {
+		t.Fatalf("initial start has no provider scope: %#v", starts[0])
+	}
+	if starts[1].SystemPrompt != "preserved prompt" || starts[1].ProviderScopeID == "" ||
+		starts[1].ProviderScopeID == starts[0].ProviderScopeID {
+		t.Fatalf("approximate start config = %#v", starts[1])
+	}
+	sent := driver.fresh.sentMessages()
+	if len(sent) != 1 || len(sent[0].Content) != 1 || !strings.Contains(sent[0].Content[0].Text, "reply to A") || strings.Contains(sent[0].Content[0].Text, "answer B") {
+		t.Fatalf("replay content = %#v", sent)
+	}
+}
+
+func TestEditMessageRejectsReplayWhenFreshProviderNegotiatesFewerCapabilities(t *testing.T) {
+	h, _, driver := newEditHarness(t, true)
+	ctx := context.Background()
+	completeTurn(t, h, "A", "provider-turn-1")
+	second := completeTurn(t, h, "B", "provider-turn-2")
+	h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
+		for _, turn := range snapshot.Turns {
+			if turn.ID == second {
+				return turn.State == domain.TurnStateCompleted
+			}
+		}
+		return false
+	})
+	before, err := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatalf("LoadConversationSnapshot before edit: %v", err)
+	}
+
+	capabilities := driver.fresh.Capabilities()
+	delete(capabilities, ports.ChatCapabilityEmbeddedContext)
+	driver.fresh.setCapabilities(capabilities)
+
+	_, err = h.svc.EditMessage(ctx, testSession, second, ports.ChatUserMessage{
+		Text: "B edited", Origin: domain.MessageOriginHuman,
+	})
+	if !errors.Is(err, chatsvc.ErrForkUnsupported) {
+		t.Fatalf("EditMessage error = %v, want ErrForkUnsupported", err)
+	}
+	after, snapshotErr := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+	if snapshotErr != nil {
+		t.Fatalf("LoadConversationSnapshot after edit: %v", snapshotErr)
+	}
+	if after.ActiveBranch.ID != before.ActiveBranch.ID {
+		t.Fatalf("active branch = %q, want source %q", after.ActiveBranch.ID, before.ActiveBranch.ID)
+	}
+	if sent := driver.fresh.sentMessages(); len(sent) != 0 {
+		t.Fatalf("fresh provider received %d replay sends, want none: %#v", len(sent), sent)
+	}
+	branches, branchErr := h.st.ConversationBranches(ctx, h.ctrl.ConversationID())
+	if branchErr != nil {
+		t.Fatalf("ConversationBranches: %v", branchErr)
+	}
+	if len(branches) != 1 {
+		t.Fatalf("branches = %d, want only source after capability refusal: %#v", len(branches), branches)
+	}
+}
+
+func TestEditMessageKeepsReplacementPrivateUntilEditedPromptIsRecorded(t *testing.T) {
+	h, _, driver := newEditHarness(t, true)
+	ctx := context.Background()
+	completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	second := completeTurn(t, h, "B", "provider-turn-2")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	var startedOnce sync.Once
+	driver.fresh.mu.Lock()
+	driver.fresh.onSend = func(providerTurnID string) {
+		driver.fresh.emit(
+			ports.ChatEvent{
+				Kind: ports.ChatEventApprovalRequested, ProviderTurnID: providerTurnID,
+				ProviderItemID: "replacement-approval", RequestID: "replacement-approval-request",
+				ActivityKind: domain.ActivityKindCommand, ActivityStatus: domain.ActivityStatusPending,
+				Summary: "Approve replacement",
+			},
+			ports.ChatEvent{
+				Kind: ports.ChatEventInputRequested, ProviderTurnID: providerTurnID,
+				ProviderItemID: "replacement-input", RequestID: "replacement-input-request",
+				Input: &ports.ChatInputRequest{
+					Mode: ports.ChatInputModeForm, Message: "Replacement input",
+					Schema: map[string]any{"type": "object"},
+				},
+			},
+		)
+		startedOnce.Do(func() { close(sendStarted) })
+		<-releaseSend
+	}
+	driver.fresh.mu.Unlock()
+
+	type editOutcome struct {
+		result chatsvc.EditMessageResult
+		err    error
+	}
+	editDone := make(chan editOutcome, 1)
+	go func() {
+		result, err := h.svc.EditMessage(ctx, testSession, second, ports.ChatUserMessage{
+			Text: "B edited", ClientMessageID: "edit-private-bootstrap", Origin: domain.MessageOriginHuman,
+		})
+		editDone <- editOutcome{result: result, err: err}
+	}()
+	select {
+	case <-sendStarted:
+	case <-time.After(3 * time.Second):
+		close(releaseSend)
+		t.Fatal("edited prompt did not reach the replacement provider")
+	}
+
+	concurrentDone := make(chan error, 1)
+	go func() {
+		_, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+			Text: "unrelated prompt", ClientMessageID: "concurrent-during-edit", Origin: domain.MessageOriginHuman,
+		})
+		concurrentDone <- err
+	}()
+	select {
+	case err := <-concurrentDone:
+		if !errors.Is(err, chatsvc.ErrControllerHandoff) {
+			close(releaseSend)
+			t.Fatalf("concurrent send error = %v, want ErrControllerHandoff", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(releaseSend)
+		<-editDone
+		<-concurrentDone
+		t.Fatal("concurrent send reached the unpublished replacement controller")
+	}
+
+	close(releaseSend)
+	outcome := <-editDone
+	if outcome.err != nil {
+		t.Fatalf("EditMessage: %v", outcome.err)
+	}
+	if got := driver.fresh.sentTexts(); len(got) != 1 || got[0] != "B edited" {
+		t.Fatalf("replacement provider received %v, want only edited prompt", got)
+	}
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		for _, activity := range s.Activities {
+			if activity.RequestID == "replacement-input-request" {
+				return true
+			}
+		}
+		return false
+	})
+	if got := turnStateByText(t, snapshot)["B edited"]; got != domain.TurnStateRunning {
+		t.Fatalf("replacement turn after source shutdown = %q, want running", got)
+	}
+	for _, requestID := range []string{"replacement-approval-request", "replacement-input-request"} {
+		found := false
+		for _, activity := range snapshot.Activities {
+			if activity.RequestID != requestID {
+				continue
+			}
+			found = true
+			if activity.Status != domain.ActivityStatusPending {
+				t.Errorf("replacement request %s status = %q, want pending", requestID, activity.Status)
+			}
+		}
+		if !found {
+			t.Errorf("replacement request %s is missing", requestID)
+		}
+	}
+}
+
+func TestStartRestoresSourceAfterCrashBeforeEditedPromptWasRecorded(t *testing.T) {
+	h, _, _ := newEditHarness(t, true)
+	ctx := context.Background()
+	completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	second := completeTurn(t, h, "B", "provider-turn-2")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+
+	conversation, err := h.st.ConversationForSession(ctx, testSession)
+	if err != nil {
+		t.Fatalf("ConversationForSession: %v", err)
+	}
+	anchor, err := h.st.ConversationEditAnchor(ctx, conversation.ID, second)
+	if err != nil {
+		t.Fatalf("ConversationEditAnchor: %v", err)
+	}
+	child := domain.ConversationBranch{
+		ID: "crashed-empty-edit", ConversationID: conversation.ID, SessionID: testSession,
+		ProviderConversationID: "thread-crashed-empty", ProviderScopeID: "crashed-empty-scope",
+		ParentBranchID: anchor.SourceBranchID, ReplacedTurnID: second,
+		ForkAfterSequence: anchor.ForkAfterSequence, Strategy: domain.ConversationBranchStrategyApproximateContext,
+		ReplayCutoffSequence: anchor.ForkAfterSequence, CreatedAt: h.clock,
+	}
+	if err := h.st.CreateAndActivateConversationBranch(
+		ctx, testSession, child, "crashed-empty-generation", h.clock); err != nil {
+		t.Fatalf("CreateAndActivateConversationBranch: %v", err)
+	}
+	if err := h.svc.Stop(ctx, testSession); err != nil {
+		t.Fatalf("Stop before restart: %v", err)
+	}
+	record, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession: found=%v err=%v", found, err)
+	}
+
+	var resumed ports.ChatResumeConfig
+	restartDriver := fakeDriver{conv: newFakeConversation()}
+	restartDriver.resume = func(cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+		resumed = cfg
+		conv := newFakeConversation()
+		conv.providerConversationID = cfg.ProviderConversationID
+		return conv, nil
+	}
+	restarted := newRestartedEditService(t, h, restartDriver, "empty-edit-restart-id")
+	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ProviderConversationID: record.Metadata.ProviderConversationID,
+	}); err != nil {
+		t.Fatalf("Start after empty edit crash: %v", err)
+	}
+	if resumed.ProviderConversationID != "thread-1" {
+		t.Fatalf("resumed provider conversation = %q, want source thread-1", resumed.ProviderConversationID)
+	}
+	after, err := h.st.ConversationForSession(ctx, testSession)
+	if err != nil || after.ActiveBranchID != anchor.SourceBranchID {
+		t.Fatalf("active branch after recovery = %q, want source %q, err=%v",
+			after.ActiveBranchID, anchor.SourceBranchID, err)
+	}
+	afterRecord, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found || afterRecord.Metadata.ProviderConversationID != "thread-1" {
+		t.Fatalf("session provider after recovery = %q, found=%v err=%v",
+			afterRecord.Metadata.ProviderConversationID, found, err)
+	}
+}
+
+func TestStartLinksDurableEditedPromptAfterCrashBeforeBranchLink(t *testing.T) {
+	h, _, _ := newEditHarness(t, true)
+	ctx := context.Background()
+	completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	second := completeTurn(t, h, "B", "provider-turn-2")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+
+	conversation, err := h.st.ConversationForSession(ctx, testSession)
+	if err != nil {
+		t.Fatalf("ConversationForSession: %v", err)
+	}
+	anchor, err := h.st.ConversationEditAnchor(ctx, conversation.ID, second)
+	if err != nil {
+		t.Fatalf("ConversationEditAnchor: %v", err)
+	}
+	child := domain.ConversationBranch{
+		ID: "crashed-linked-edit", ConversationID: conversation.ID, SessionID: testSession,
+		ProviderConversationID: "thread-crashed-linked", ProviderScopeID: "crashed-linked-scope",
+		ParentBranchID: anchor.SourceBranchID, ReplacedTurnID: second,
+		ForkAfterSequence: anchor.ForkAfterSequence, Strategy: domain.ConversationBranchStrategyApproximateContext,
+		ReplayCutoffSequence: anchor.ForkAfterSequence, CreatedAt: h.clock,
+	}
+	const replacementTurnID = "durable-unlinked-edit-turn"
+	if err := h.st.CreateAndActivateConversationBranch(
+		ctx, testSession, child, "crashed-linked-generation", h.clock); err != nil {
+		t.Fatalf("CreateAndActivateConversationBranch: %v", err)
+	}
+	created, err := h.st.AppendUserMessage(ctx, conversation.ID, testSession,
+		"crashed-linked-generation", domain.ConversationMessage{
+			ID: "durable-unlinked-edit-message", Text: "B edited", Origin: domain.MessageOriginHuman,
+			ClientMessageID: "durable-unlinked-edit-client",
+		}, replacementTurnID, h.clock)
+	if err != nil || !created {
+		t.Fatalf("AppendUserMessage: created=%v err=%v", created, err)
+	}
+	if err := h.svc.Stop(ctx, testSession); err != nil {
+		t.Fatalf("Stop before restart: %v", err)
+	}
+	record, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession: found=%v err=%v", found, err)
+	}
+
+	var resumed ports.ChatResumeConfig
+	restartDriver := fakeDriver{conv: newFakeConversation()}
+	restartDriver.resume = func(cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+		resumed = cfg
+		conv := newFakeConversation()
+		conv.providerConversationID = cfg.ProviderConversationID
+		return conv, nil
+	}
+	restarted := newRestartedEditService(t, h, restartDriver, "linked-edit-restart-id")
+	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ProviderConversationID: record.Metadata.ProviderConversationID,
+	}); err != nil {
+		t.Fatalf("Start after unlinked edit crash: %v", err)
+	}
+	if resumed.ProviderConversationID != child.ProviderConversationID {
+		t.Fatalf("resumed provider conversation = %q, want child %q",
+			resumed.ProviderConversationID, child.ProviderConversationID)
+	}
+	repaired, err := h.st.ConversationBranch(ctx, conversation.ID, child.ID)
+	if err != nil || repaired.ReplacementTurnID != replacementTurnID || !repaired.Active {
+		t.Fatalf("repaired child = %+v, err=%v", repaired, err)
+	}
+}
+
+func newRestartedEditService(
+	t *testing.T,
+	h *harness,
+	driver ports.ChatDriver,
+	newID string,
+) *chatsvc.Service {
+	t.Helper()
+	restarted := chatsvc.New(chatsvc.Options{
+		Store: h.st, Sessions: h.st,
+		Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+			snapshot, err := h.st.LoadConversationSnapshot(ctx, conversationID)
+			if err != nil {
+				return chatsvc.ConversationRows{}, err
+			}
+			return chatsvc.ConversationRows{
+				Conversation: snapshot.Conversation, ActiveBranch: snapshot.ActiveBranch,
+				Turns: snapshot.Turns, Messages: snapshot.Messages,
+				Activities: snapshot.Activities, BranchPoints: snapshot.BranchPoints,
+				BranchedFromEarlierMessage: snapshot.BranchedFromEarlierMessage,
+			}, nil
+		}),
+		Drivers: fakeRegistry{driver: driver}, Log: slog.New(slog.DiscardHandler),
+		NewID: func() string { return newID },
+		Now:   func() time.Time { return h.clock },
+	})
+	t.Cleanup(func() { _ = restarted.Stop(context.Background(), testSession) })
+	return restarted
+}
+
+func TestEditMessageAmbiguousApproximateFailureRemainsNavigableAcrossRestart(t *testing.T) {
+	h, _, driver := newEditHarness(t, true)
+	ctx := context.Background()
+	completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	second := completeTurn(t, h, "B", "provider-turn-2")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+
+	driver.fresh.mu.Lock()
+	driver.fresh.sendErr = errors.New("provider unavailable")
+	driver.fresh.mu.Unlock()
+	failed, err := h.svc.EditMessage(ctx, testSession, second, ports.ChatUserMessage{
+		Text: "B edited", ClientMessageID: "edit-b-failed-replay", Origin: domain.MessageOriginHuman,
+	})
+	if err == nil {
+		t.Fatal("EditMessage succeeded after approximate provider send failure")
+	}
+	if failed.Turn.ID == "" {
+		t.Fatalf("failed edit has no durable turn: %+v", failed)
+	}
+	failedSnapshot, err := h.svc.Snapshot(ctx, testSession)
+	if err != nil {
+		t.Fatalf("Snapshot failed edit: %v", err)
+	}
+	requireMessageTexts(t, failedSnapshot.Messages, []string{"A", "reply to A", "B edited"})
+	requireBranchPoint(t, failedSnapshot, failed.Turn.ID, failed.SourceBranchID, "")
+
+	if err := h.svc.Stop(ctx, testSession); err != nil {
+		t.Fatalf("Stop before restart: %v", err)
+	}
+	record, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession: found=%v err=%v", found, err)
+	}
+	restartDriver := fakeDriver{conv: newFakeConversation()}
+	restartDriver.resume = func(cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+		resumed := newFakeConversation()
+		resumed.providerConversationID = cfg.ProviderConversationID
+		return resumed, nil
+	}
+	restarted := chatsvc.New(chatsvc.Options{
+		Store: h.st, Sessions: h.st,
+		Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+			snapshot, loadErr := h.st.LoadConversationSnapshot(ctx, conversationID)
+			if loadErr != nil {
+				return chatsvc.ConversationRows{}, loadErr
+			}
+			return chatsvc.ConversationRows{
+				Conversation: snapshot.Conversation, ActiveBranch: snapshot.ActiveBranch,
+				Turns: snapshot.Turns, Messages: snapshot.Messages,
+				Activities: snapshot.Activities, BranchPoints: snapshot.BranchPoints,
+				BranchedFromEarlierMessage: snapshot.BranchedFromEarlierMessage,
+			}, nil
+		}),
+		Drivers: fakeRegistry{driver: restartDriver}, Log: slog.New(slog.DiscardHandler),
+		NewID: func() string { return "failed-edit-restart-id" },
+		Now:   func() time.Time { return h.clock },
+	})
+	t.Cleanup(func() { _ = restarted.Stop(context.Background(), testSession) })
+	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ProviderConversationID: record.Metadata.ProviderConversationID,
+	}); err != nil {
+		t.Fatalf("Start after failed edit: %v", err)
+	}
+	restartedSnapshot, err := restarted.Snapshot(ctx, testSession)
+	if err != nil {
+		t.Fatalf("Snapshot after restart: %v", err)
+	}
+	if restartedSnapshot.ActiveBranch.ID != failed.ActiveBranchID {
+		t.Fatalf("active branch after restart = %q, want %q", restartedSnapshot.ActiveBranch.ID, failed.ActiveBranchID)
+	}
+	requireMessageTexts(t, restartedSnapshot.Messages, []string{"A", "reply to A", "B edited"})
+	requireBranchPoint(t, restartedSnapshot, failed.Turn.ID, failed.SourceBranchID, "")
+}
+
 func TestEditMessageForksBeforeMiddlePromptAndReusesStoredContent(t *testing.T) {
-	h, source, driver := newEditHarness(t)
+	h, source, driver := newEditHarness(t, false)
 	ctx := context.Background()
 	first := completeTurn(t, h, "A", "provider-turn-1")
 	_ = first
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
 	second, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
 		Text: "B", Origin: domain.MessageOriginHuman, ClientMessageID: "original-b",
-		Content: []ports.ChatContent{{Type: "image", Data: "data:image/png;base64,AA==", MIMEType: "image/png", Name: "diagram.png"}},
+		Content: []ports.ChatContent{
+			{Type: "resource", URI: ports.ChatInternalReplayResourceURI, MIMEType: "application/json", Text: `{"userSupplied":true}`},
+			{Type: "resource", URI: ports.ChatInternalReplayResourceURI, MIMEType: "application/json", Text: `{"internal":true}`, Internal: true},
+			{Type: "image", Data: "data:image/png;base64,AA==", MIMEType: "image/png", Name: "diagram.png"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Send B: %v", err)
@@ -632,21 +1131,29 @@ func TestEditMessageForksBeforeMiddlePromptAndReusesStoredContent(t *testing.T) 
 	resumes := append([]ports.ChatResumeConfig(nil), driver.resumeCalls...)
 	driver.mu.Unlock()
 	sent := replacement.sentMessages()
-	if len(sent) != 1 || sent[0].Text != "B edited" || len(sent[0].Content) != 1 || sent[0].Content[0].Data != "data:image/png;base64,AA==" {
+	if len(sent) != 1 || sent[0].Text != "B edited" || len(sent[0].Content) != 2 ||
+		sent[0].Content[0].Text != `{"userSupplied":true}` ||
+		sent[0].Content[1].Data != "data:image/png;base64,AA==" {
 		t.Fatalf("replacement send = %#v", sent)
 	}
-	if len(resumes) != 1 || resumes[0].WorkspacePath == "" || resumes[0].Env["AO_EDIT_TEST"] != "yes" || resumes[0].SystemPrompt != "preserved prompt" {
+	driver.mu.Lock()
+	starts := append([]ports.ChatStartConfig(nil), driver.startConfigs...)
+	driver.mu.Unlock()
+	if len(resumes) != 1 || resumes[0].WorkspacePath == "" || resumes[0].Env["AO_EDIT_TEST"] != "yes" ||
+		resumes[0].SystemPrompt != "preserved prompt" || resumes[0].ProviderScopeID == "" ||
+		len(starts) != 1 || resumes[0].ProviderScopeID != starts[0].ProviderScopeID {
 		t.Fatalf("resume config = %#v", resumes)
 	}
 }
 
 func TestEditMessageFirstPromptStartsFreshConversation(t *testing.T) {
-	h, source, driver := newEditHarness(t)
+	h, source, driver := newEditHarness(t, false)
 	first := completeTurn(t, h, "A", "provider-turn-1")
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
-	if _, err := h.svc.EditMessage(context.Background(), testSession, first, ports.ChatUserMessage{
+	result, err := h.svc.EditMessage(context.Background(), testSession, first, ports.ChatUserMessage{
 		Text: "A edited", ClientMessageID: "edit-a", Origin: domain.MessageOriginHuman,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("EditMessage first: %v", err)
 	}
 	driver.mu.Lock()
@@ -661,10 +1168,62 @@ func TestEditMessageFirstPromptStartsFreshConversation(t *testing.T) {
 	if sent := driver.fresh.sentTexts(); len(sent) != 1 || sent[0] != "A edited" {
 		t.Fatalf("fresh provider sends = %v", sent)
 	}
+	branch, err := h.st.ConversationBranch(context.Background(), h.ctrl.ConversationID(), result.ActiveBranchID)
+	if err != nil {
+		t.Fatalf("ConversationBranch: %v", err)
+	}
+	if branch.ProviderScopeID == "" {
+		t.Fatal("fresh first-prompt branch reused the source provider scope")
+	}
+}
+
+func TestEditOfEditedFirstPromptDoesNotReplayExcludedSiblingHistory(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
+	ctx := context.Background()
+	first := completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	firstEdit, err := h.svc.EditMessage(ctx, testSession, first, ports.ChatUserMessage{
+		Text: "A edited", ClientMessageID: "edit-a-first", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("first EditMessage: %v", err)
+	}
+	firstFresh := driver.fresh
+	firstFresh.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-101"},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-101", TurnState: domain.TurnStateCompleted},
+	)
+	h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
+		for _, turn := range snapshot.Turns {
+			if turn.ID == firstEdit.Turn.ID {
+				return turn.State.Terminal()
+			}
+		}
+		return false
+	})
+	secondEdit, err := h.svc.EditMessage(ctx, testSession, firstEdit.Turn.ID, ports.ChatUserMessage{
+		Text: "A edited again", ClientMessageID: "edit-a-second", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("second EditMessage: %v", err)
+	}
+	branch, err := h.st.ConversationBranch(ctx, h.ctrl.ConversationID(), secondEdit.ActiveBranchID)
+	if err != nil {
+		t.Fatalf("ConversationBranch: %v", err)
+	}
+	if branch.Strategy != domain.ConversationBranchStrategyNative {
+		t.Fatalf("second first-prompt edit strategy = %q, want native", branch.Strategy)
+	}
+	driver.mu.Lock()
+	startCalls := driver.startCalls
+	driver.mu.Unlock()
+	if startCalls != 3 {
+		t.Fatalf("provider starts = %d, want initial plus two exact first-prompt branches", startCalls)
+	}
 }
 
 func TestEditMessageRefusesBusyControllerAndLeavesSourceActive(t *testing.T) {
-	h, source, driver := newEditHarness(t)
+	h, source, driver := newEditHarness(t, false)
 	turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
 		Text: "running", Origin: domain.MessageOriginHuman,
 	})
@@ -695,7 +1254,7 @@ func TestEditMessageRefusesBusyControllerAndLeavesSourceActive(t *testing.T) {
 }
 
 func TestEditMessageForkFailureReopensSource(t *testing.T) {
-	h, source, _ := newEditHarness(t)
+	h, source, _ := newEditHarness(t, false)
 	first := completeTurn(t, h, "A", "provider-turn-1")
 	_ = first
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
@@ -721,8 +1280,8 @@ func TestEditMessageForkFailureReopensSource(t *testing.T) {
 	}
 }
 
-func TestEditMessageSendFailureKeepsAnEmptyBranchForRetry(t *testing.T) {
-	h, source, driver := newEditHarness(t)
+func TestEditMessageExplicitRefusalRestoresSourceBranch(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
 	ctx := context.Background()
 	completeTurn(t, h, "A", "provider-turn-1")
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
@@ -732,7 +1291,7 @@ func TestEditMessageSendFailureKeepsAnEmptyBranchForRetry(t *testing.T) {
 	driver.mu.Lock()
 	replacement := driver.resumed["thread-forked"]
 	replacement.mu.Lock()
-	replacement.sendErr = errors.New("provider unavailable")
+	replacement.sendErr = refusedError{msg: "provider declined edit"}
 	replacement.mu.Unlock()
 	driver.mu.Unlock()
 
@@ -742,48 +1301,68 @@ func TestEditMessageSendFailureKeepsAnEmptyBranchForRetry(t *testing.T) {
 	if err == nil {
 		t.Fatal("EditMessage succeeded after replacement send failure")
 	}
+	if !errors.Is(err, chatsvc.ErrProviderRefused) {
+		t.Fatalf("EditMessage error = %v, want ErrProviderRefused", err)
+	}
 	if failed.ActiveBranchID == "" || failed.ActiveBranchID == failed.SourceBranchID {
 		t.Fatalf("failed edit branch result = %+v", failed)
 	}
-	snapshot, err := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+	snapshot, err := h.svc.Snapshot(ctx, testSession)
 	if err != nil {
 		t.Fatalf("LoadConversationSnapshot failed branch: %v", err)
 	}
-	requireMessageTexts(t, snapshot.Messages, []string{"A", "reply to A"})
+	requireMessageTexts(t, snapshot.Messages, []string{"A", "reply to A", "B", "reply to B"})
+	requireBranchPoint(t, snapshot, second, "", failed.ActiveBranchID)
+	if snapshot.ActiveBranch.ID != failed.SourceBranchID {
+		t.Fatalf("active branch after explicit refusal = %q, want source %q", snapshot.ActiveBranch.ID, failed.SourceBranchID)
+	}
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "source remains usable"}); err != nil {
+		t.Fatalf("Send on restored source: %v", err)
+	}
+}
 
-	replacement.mu.Lock()
-	replacement.sendErr = nil
-	replacement.mu.Unlock()
-	retried, err := h.svc.EditMessage(ctx, testSession, second, ports.ChatUserMessage{
-		Text: "B edited", ClientMessageID: "edit-b-retry", Origin: domain.MessageOriginHuman,
+func TestEditMessageUndispatchedAttemptRestoresSourceBranch(t *testing.T) {
+	h, _, _ := newEditHarness(t, false)
+	ctx := context.Background()
+	completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	second, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "B", ClientMessageID: "duplicate-edit-delivery", Origin: domain.MessageOriginHuman,
 	})
 	if err != nil {
-		t.Fatalf("retry EditMessage: %v", err)
+		t.Fatalf("Send B: %v", err)
 	}
-	if retried.SourceBranchID != failed.SourceBranchID || retried.ActiveBranchID != failed.ActiveBranchID {
-		t.Fatalf("retry created another branch: failed=%+v retried=%+v", failed, retried)
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-2"},
+		ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "provider-turn-2", ProviderItemID: "answer-b", Text: "reply to B"},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-2", TurnState: domain.TurnStateCompleted},
+	)
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+
+	failed, err := h.svc.EditMessage(ctx, testSession, second.ID, ports.ChatUserMessage{
+		Text: "B edited", ClientMessageID: "duplicate-edit-delivery", Origin: domain.MessageOriginHuman,
+	})
+	if err == nil {
+		t.Fatal("EditMessage accepted an attempt that was never dispatched")
 	}
-	source.mu.Lock()
-	forkCount := len(source.forkAnchors)
-	source.mu.Unlock()
-	driver.mu.Lock()
-	resumeCount := len(driver.resumeCalls)
-	driver.mu.Unlock()
-	if forkCount != 1 || resumeCount != 1 {
-		t.Fatalf("retry provider setup: forks=%d resumes=%d, want one of each", forkCount, resumeCount)
+	if failed.Turn.ID != "" {
+		t.Fatalf("undispatched edit turn = %+v, want empty", failed.Turn)
 	}
-	if sent := replacement.sentTexts(); len(sent) != 1 || sent[0] != "B edited" {
-		t.Fatalf("replacement provider sends = %v", sent)
-	}
-	snapshot, err = h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+	snapshot, err := h.svc.Snapshot(ctx, testSession)
 	if err != nil {
-		t.Fatalf("LoadConversationSnapshot retried branch: %v", err)
+		t.Fatalf("Snapshot after undispatched edit: %v", err)
 	}
-	requireMessageTexts(t, snapshot.Messages, []string{"A", "reply to A", "B edited"})
+	if snapshot.ActiveBranch.ID != failed.SourceBranchID {
+		t.Fatalf("active branch after undispatched edit = %q, want source %q", snapshot.ActiveBranch.ID, failed.SourceBranchID)
+	}
+	requireMessageTexts(t, snapshot.Messages, []string{"A", "reply to A", "B", "reply to B"})
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "source remains usable"}); err != nil {
+		t.Fatalf("Send on restored source: %v", err)
+	}
 }
 
 func TestEditMessageRejectsMalformedStoredContentBeforeFork(t *testing.T) {
-	h, source, _ := newEditHarness(t)
+	h, source, _ := newEditHarness(t, false)
 	created, err := h.st.AppendUserMessage(context.Background(), h.ctrl.ConversationID(), testSession,
 		h.ctrl.Generation(), domain.ConversationMessage{
 			ID: "legacy-message", Text: "legacy", Origin: domain.MessageOriginHuman,
@@ -802,7 +1381,7 @@ func TestEditMessageRejectsMalformedStoredContentBeforeFork(t *testing.T) {
 }
 
 func TestActivateBranchResumesWithoutSending(t *testing.T) {
-	h, _, driver := newEditHarness(t)
+	h, _, driver := newEditHarness(t, false)
 	first := completeTurn(t, h, "A", "provider-turn-1")
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
 	result, err := h.svc.EditMessage(context.Background(), testSession, first, ports.ChatUserMessage{
@@ -841,6 +1420,228 @@ func TestActivateBranchResumesWithoutSending(t *testing.T) {
 	}
 }
 
+func TestActivateBranchResumeFailureKeepsCurrentControllerActive(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
+	ctx := context.Background()
+	first := completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	edited, err := h.svc.EditMessage(ctx, testSession, first, ports.ChatUserMessage{
+		Text: "A edited", ClientMessageID: "edit-a-resume-failure", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("EditMessage: %v", err)
+	}
+	driver.fresh.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-101"},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-101", TurnState: domain.TurnStateCompleted},
+	)
+	h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
+		for _, turn := range snapshot.Turns {
+			if turn.ID == edited.Turn.ID {
+				return turn.State.Terminal()
+			}
+		}
+		return false
+	})
+	current, err := h.svc.Controller(testSession)
+	if err != nil {
+		t.Fatalf("Controller before activation: %v", err)
+	}
+	driver.mu.Lock()
+	delete(driver.resumed, "thread-1")
+	driver.mu.Unlock()
+	if _, err := h.svc.ActivateBranch(ctx, testSession, edited.SourceBranchID); err == nil {
+		t.Fatal("ActivateBranch succeeded after target resume failure")
+	}
+	after, err := h.svc.Controller(testSession)
+	if err != nil || after != current {
+		t.Fatalf("controller after resume failure = %p, want current %p, err=%v", after, current, err)
+	}
+	conversation, err := h.st.ConversationForSession(ctx, testSession)
+	if err != nil || conversation.ActiveBranchID != edited.ActiveBranchID {
+		t.Fatalf("durable branch after resume failure = %q, want %q, err=%v",
+			conversation.ActiveBranchID, edited.ActiveBranchID, err)
+	}
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "continue edited branch", ClientMessageID: "continue-after-resume-failure", Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("Send on retained controller: %v", err)
+	}
+}
+
+func TestActivateBranchSwitchesBetweenCompatibleApproximateProviderScopes(t *testing.T) {
+	h, _, driver := newEditHarness(t, true)
+	ctx := context.Background()
+	completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	second := completeTurn(t, h, "B", "provider-turn-2")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+
+	edited, err := h.svc.EditMessage(ctx, testSession, second, ports.ChatUserMessage{
+		Text: "B edited", ClientMessageID: "edit-b", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("EditMessage: %v", err)
+	}
+	driver.fresh.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-101"},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-101", TurnState: domain.TurnStateCompleted},
+	)
+	h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
+		for _, turn := range snapshot.Turns {
+			if turn.ID == edited.Turn.ID {
+				return turn.State.Terminal()
+			}
+		}
+		return false
+	})
+
+	if _, err := h.svc.ActivateBranch(ctx, testSession, edited.SourceBranchID); err != nil {
+		t.Fatalf("activate original branch: %v", err)
+	}
+	originalSnapshot, err := h.svc.Snapshot(ctx, testSession)
+	if err != nil {
+		t.Fatalf("Snapshot original branch: %v", err)
+	}
+	requireBranchPoint(t, originalSnapshot, second, "", edited.ActiveBranchID)
+	resumedEdit := newFakeConversation()
+	resumedEdit.providerConversationID = "thread-fresh"
+	driver.mu.Lock()
+	driver.resumed["thread-fresh"] = resumedEdit
+	driver.mu.Unlock()
+	if _, err := h.svc.ActivateBranch(ctx, testSession, edited.ActiveBranchID); err != nil {
+		t.Fatalf("reactivate edited branch: %v", err)
+	}
+	editedSnapshot, err := h.svc.Snapshot(ctx, testSession)
+	if err != nil {
+		t.Fatalf("Snapshot edited branch: %v", err)
+	}
+	requireBranchPoint(t, editedSnapshot, edited.Turn.ID, edited.SourceBranchID, "")
+	resumedOriginal := newFakeConversation()
+	resumedOriginal.providerConversationID = "thread-1"
+	driver.mu.Lock()
+	driver.resumed["thread-1"] = resumedOriginal
+	driver.mu.Unlock()
+	if _, err := h.svc.ActivateBranch(ctx, testSession, edited.SourceBranchID); err != nil {
+		t.Fatalf("reactivate original branch: %v", err)
+	}
+	originalSnapshot, err = h.svc.Snapshot(ctx, testSession)
+	if err != nil {
+		t.Fatalf("Snapshot original branch again: %v", err)
+	}
+	requireBranchPoint(t, originalSnapshot, second, "", edited.ActiveBranchID)
+	resumedEditAgain := newFakeConversation()
+	resumedEditAgain.providerConversationID = "thread-fresh"
+	driver.mu.Lock()
+	driver.resumed["thread-fresh"] = resumedEditAgain
+	driver.mu.Unlock()
+	if active, err := h.svc.ActivateBranch(ctx, testSession, edited.ActiveBranchID); err != nil {
+		t.Fatalf("reactivate edited branch again: %v", err)
+	} else if active != edited.ActiveBranchID {
+		t.Fatalf("active branch = %q, want %q", active, edited.ActiveBranchID)
+	}
+	editedSnapshot, err = h.svc.Snapshot(ctx, testSession)
+	if err != nil {
+		t.Fatalf("Snapshot edited branch again: %v", err)
+	}
+	requireBranchPoint(t, editedSnapshot, edited.Turn.ID, edited.SourceBranchID, "")
+}
+
+func TestApproximateBranchScopePersistsAcrossServiceRestartAndSwitching(t *testing.T) {
+	h, _, driver := newEditHarness(t, true)
+	ctx := context.Background()
+	completeTurn(t, h, "A", "provider-turn-1")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+	second := completeTurn(t, h, "B", "provider-turn-2")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+	edited, err := h.svc.EditMessage(ctx, testSession, second, ports.ChatUserMessage{
+		Text: "B edited", ClientMessageID: "edit-b-restart", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("EditMessage: %v", err)
+	}
+	driver.fresh.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-101"},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-101", TurnState: domain.TurnStateCompleted},
+	)
+	h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
+		for _, turn := range snapshot.Turns {
+			if turn.ID == edited.Turn.ID {
+				return turn.State.Terminal()
+			}
+		}
+		return false
+	})
+	activeBranch, err := h.st.ConversationBranch(ctx, h.ctrl.ConversationID(), edited.ActiveBranchID)
+	if err != nil {
+		t.Fatalf("ConversationBranch: %v", err)
+	}
+	if activeBranch.ProviderScopeID == "" {
+		t.Fatal("approximate branch has no durable provider scope")
+	}
+	if err := h.svc.Stop(ctx, testSession); err != nil {
+		t.Fatalf("Stop before restart: %v", err)
+	}
+	record, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession: found=%v err=%v", found, err)
+	}
+
+	restartDriver := fakeDriver{conv: newFakeConversation()}
+	restartDriver.resume = func(cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+		resumed := newFakeConversation()
+		resumed.providerConversationID = cfg.ProviderConversationID
+		return resumed, nil
+	}
+	nextID := 0
+	restarted := chatsvc.New(chatsvc.Options{
+		Store: h.st, Sessions: h.st,
+		Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+			snapshot, err := h.st.LoadConversationSnapshot(ctx, conversationID)
+			if err != nil {
+				return chatsvc.ConversationRows{}, err
+			}
+			return chatsvc.ConversationRows{
+				Conversation: snapshot.Conversation, ActiveBranch: snapshot.ActiveBranch,
+				Turns: snapshot.Turns, Messages: snapshot.Messages,
+				Activities: snapshot.Activities, BranchPoints: snapshot.BranchPoints,
+				BranchedFromEarlierMessage: snapshot.BranchedFromEarlierMessage,
+			}, nil
+		}),
+		Drivers: fakeRegistry{driver: restartDriver}, Log: slog.New(slog.DiscardHandler),
+		NewID: func() string {
+			nextID++
+			return fmt.Sprintf("restart-edit-id-%d", nextID)
+		},
+		Now: func() time.Time { return h.clock },
+	})
+	t.Cleanup(func() { _ = restarted.Stop(context.Background(), testSession) })
+	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ProviderConversationID: record.Metadata.ProviderConversationID,
+	}); err != nil {
+		t.Fatalf("Start after restart: %v", err)
+	}
+	restartedSnapshot, err := restarted.Snapshot(ctx, testSession)
+	if err != nil {
+		t.Fatalf("Snapshot after restart: %v", err)
+	}
+	if restartedSnapshot.ActiveBranch.ID != edited.ActiveBranchID ||
+		restartedSnapshot.ActiveBranch.ProviderScopeID != activeBranch.ProviderScopeID {
+		t.Fatalf("active branch after restart = %+v, want id=%q scope=%q",
+			restartedSnapshot.ActiveBranch, edited.ActiveBranchID, activeBranch.ProviderScopeID)
+	}
+	if _, err := restarted.ActivateBranch(ctx, testSession, edited.SourceBranchID); err != nil {
+		t.Fatalf("activate source after restart: %v", err)
+	}
+	if active, err := restarted.ActivateBranch(ctx, testSession, edited.ActiveBranchID); err != nil {
+		t.Fatalf("reactivate edit after restart: %v", err)
+	} else if active != edited.ActiveBranchID {
+		t.Fatalf("active branch = %q, want %q", active, edited.ActiveBranchID)
+	}
+}
+
 func TestProviderBoundaryRejectsSourceProviderBranchAndEdit(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
@@ -874,7 +1675,6 @@ func TestProviderBoundaryRejectsSourceProviderBranchAndEdit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload source conversation: %v", err)
 	}
-
 	target := newHistoryRecorder()
 	target.providerConversationID = "target-provider-thread"
 	startCalls := 0
@@ -907,7 +1707,7 @@ func TestProviderBoundaryRejectsSourceProviderBranchAndEdit(t *testing.T) {
 	_, err = svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
 		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
-		ControllerGeneration: "target-generation",
+		ProviderScopeID: "target-provider-boundary", ControllerGeneration: "target-generation",
 		ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if err := st.CreateAndActivateConversationBranch(ctx, testSession, domain.ConversationBranch{
 				ID: "target-provider-boundary", ConversationID: conversation.ID, SessionID: testSession,

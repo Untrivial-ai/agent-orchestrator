@@ -922,7 +922,7 @@ export async function checkForUpdatesNow(
 ): Promise<void> {
   escalationStateDir = stateDir;
   wireUpdaterEvents();
-  if (!app.isPackaged) {
+	if (!app.isPackaged) {
     emitUpdateOutcome({
       event: "ao.renderer.update_unsupported",
       phase: activeUpdaterPhase,
@@ -1036,7 +1036,7 @@ export async function returnToHome(
 // downloadUpdateNow starts downloading the update found by checkForUpdatesNow.
 export async function downloadUpdateNow(requestId?: string): Promise<void> {
   wireUpdaterEvents();
-  if (!app.isPackaged) {
+	if (!app.isPackaged) {
     emitUpdateOutcome({
       event: "ao.renderer.update_unsupported",
       phase: activeUpdaterPhase,
@@ -1148,7 +1148,7 @@ function applyInstallOnQuitPolicy(): void {
 // quitAndInstallUpdate installs a downloaded update and relaunches. isSilent
 // false keeps the installer UI on Windows; isForceRunAfter relaunches the app.
 export function quitAndInstallUpdate(): void {
-  if (!app.isPackaged) return;
+	if (!app.isPackaged) return;
   const blocker = getMacInstallBlocker();
   if (blocker !== undefined) {
     console.warn("update install blocked:", blocker);

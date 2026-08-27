@@ -22,9 +22,22 @@ import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { agentsQueryKey } from "../hooks/useAgentsQuery";
 import { useUiStore } from "../stores/ui-store";
 
+type DragOverTestEvent = {
+	active: {
+		id: string;
+		rect: { current: { initial: null; translated: null } };
+	};
+	activatorEvent: null;
+	delta: { x: number; y: number };
+	over: { id: string; rect: { height: number; top: number } } | null;
+};
+
 const {
 	checkUpdateMock,
 	cloudSessionState,
+	dragEnds,
+	dragOvers,
+	dragStarts,
 	downloadUpdateMock,
 	getMock,
 	navigateMock,
@@ -42,6 +55,9 @@ const {
 			signIn: vi.fn(),
 			signOut: vi.fn().mockResolvedValue(undefined),
 		},
+		dragEnds: new Map<string, (event: { active: { id: string }; over: { id: string } | null }) => void>(),
+		dragOvers: new Map<string, (event: DragOverTestEvent) => void>(),
+		dragStarts: new Map<string, (event: { active: { id: string } }) => void>(),
 		getMock: vi.fn(),
 		navigateMock: vi.fn(),
 		mockParams: { projectId: undefined as string | undefined, sessionId: undefined as string | undefined },
@@ -53,6 +69,26 @@ const {
 		commandPaletteEnabled: { current: true },
 	}),
 );
+
+vi.mock("@dnd-kit/core", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@dnd-kit/core")>();
+	return {
+		...actual,
+		DndContext: ({ children, id, onDragEnd, onDragOver, onDragStart }: {
+			children: React.ReactNode;
+			id?: string;
+			onDragEnd?: (event: { active: { id: string }; over: { id: string } | null }) => void;
+			onDragOver?: (event: DragOverTestEvent) => void;
+			onDragStart?: (event: { active: { id: string } }) => void;
+		}) => {
+			if (id && onDragEnd) dragEnds.set(id, onDragEnd);
+			if (id && onDragOver) dragOvers.set(id, onDragOver);
+			if (id && onDragStart) dragStarts.set(id, onDragStart);
+			return children;
+		},
+		DragOverlay: ({ children }: { children: React.ReactNode }) => children,
+	};
+});
 
 vi.mock("../lib/rename-session", () => ({ renameSession: renameSessionMock }));
 vi.mock("../lib/spawn-orchestrator", () => ({ spawnOrchestrator: spawnMock }));
@@ -275,6 +311,9 @@ async function openCreateProjectDialog(
 
 beforeEach(() => {
 	window.localStorage.clear();
+	dragEnds.clear();
+	dragOvers.clear();
+	dragStarts.clear();
 	document.documentElement.style.removeProperty("--ao-sidebar-w");
 	commandPaletteEnabled.current = true;
 	cloudSessionState.configured = false;
@@ -509,6 +548,86 @@ describe("Sidebar", () => {
 		expect(screen.queryByLabelText("Open Project One dashboard")).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Spawn Project One orchestrator")).toBeInTheDocument();
 		expect(screen.getByLabelText("Project actions for Project One")).toBeInTheDocument();
+	});
+
+	it("keeps project disclosure and row actions in the keyboard tab order", () => {
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		const disclosure = screen.getByRole("button", { name: "Toggle Project One sessions" });
+		expect(disclosure.tagName).toBe("BUTTON");
+		expect(disclosure).toHaveProperty("tabIndex", 0);
+		expect(screen.getByLabelText("Spawn Project One orchestrator")).toHaveProperty("tabIndex", 0);
+		expect(screen.getByLabelText("Project actions for Project One")).toHaveProperty("tabIndex", 0);
+		expect(screen.getByLabelText("Pin session")).toHaveProperty("tabIndex", 0);
+		expect(screen.queryByRole("button", { name: "Rename fix login" })).not.toBeInTheDocument();
+		expect(screen.getByLabelText("Kill session")).toHaveProperty("tabIndex", 0);
+	});
+
+	it("keeps the message age visible while the label yields only the hover action space", () => {
+		const lastUserMessageAt = "2026-06-29T23:55:00Z";
+		renderSidebar({
+			workspaces: [{ ...workspace, sessions: [{ ...session, lastUserMessageAt }] }],
+		});
+
+		const openSession = screen.getByLabelText("Open fix login");
+		const label = within(openSession).getByText("fix login");
+		const actions = screen.getByLabelText("Pin session").closest("[data-session-actions]");
+		const actionButtons = screen.getByLabelText("Pin session").parentElement;
+		const time = actions?.querySelector("time");
+
+		expect(openSession).toHaveClass("pr-[34px]");
+		expect(openSession).toHaveClass(
+			"group-hover/session-row:pr-[78px]",
+			"group-focus-within/session-row:pr-[78px]",
+		);
+		expect(label).toHaveClass("min-w-0", "flex-1", "truncate");
+		expect(actions).toHaveAttribute("data-session-actions");
+		expect(actionButtons).toHaveClass(
+			"opacity-0",
+			"group-hover/session-row:pointer-events-auto",
+			"group-hover/session-row:opacity-100",
+			"group-focus-within/session-row:pointer-events-auto",
+			"group-focus-within/session-row:opacity-100",
+		);
+		expect(time).toHaveAttribute("datetime", lastUserMessageAt);
+		expect(time).not.toHaveClass("opacity-0");
+		expect(openSession).toHaveClass("pl-1.5");
+		expect(openSession.closest("li")).toHaveClass("pl-0.5");
+	});
+
+	it("keeps session status and actions stable when an action receives keyboard focus", async () => {
+		const user = userEvent.setup();
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		const openSession = screen.getByLabelText("Open fix login");
+		const row = openSession.closest<HTMLElement>("[data-session-row]");
+		const status = openSession.querySelector("[data-session-status]");
+
+		if (!row) throw new Error("Session row not found");
+		expect(status).toBeInTheDocument();
+		openSession.focus();
+		await user.tab();
+
+		expect(screen.getByLabelText("Pin session")).toHaveFocus();
+		expect(row).toContainElement(openSession);
+		expect(row).toContainElement(status as HTMLElement);
+		expect(row).toContainElement(screen.getByLabelText("Pin session"));
+	});
+
+	it("keeps action pointer presses from triggering the session press surface", () => {
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		const openSession = screen.getByLabelText("Open fix login");
+		const row = openSession.closest<HTMLElement>("[data-session-row]");
+		if (!row) throw new Error("Session row not found");
+
+		fireEvent.pointerDown(openSession);
+		expect(row).toHaveClass("scale-[0.97]");
+		fireEvent.pointerUp(openSession);
+		expect(row).not.toHaveClass("scale-[0.97]");
+
+		fireEvent.pointerDown(screen.getByLabelText("Pin session"));
+		expect(row).not.toHaveClass("scale-[0.97]");
 	});
 
 	it("toggles project sessions from the folder icon without selecting the project first", async () => {
@@ -1304,12 +1423,12 @@ describe("Sidebar", () => {
 		expect(dialog).toHaveTextContent("repository folder");
 	});
 
-	it("renames a session inline and persists via the daemon", async () => {
+	it("renames a session inline by double-clicking its name", async () => {
 		const user = userEvent.setup();
 		const workspaceWithSession = { ...workspace, sessions: [session] };
 		renderSidebar({ workspaces: [workspaceWithSession] });
 
-		await user.click(screen.getByLabelText("Rename fix login"));
+		await user.dblClick(screen.getByText("fix login"));
 		const input = screen.getByLabelText("Rename fix login");
 		await user.clear(input);
 		await user.type(input, "polish login{Enter}");
@@ -1322,8 +1441,51 @@ describe("Sidebar", () => {
 		const workspaceWithSession = { ...workspace, sessions: [session] };
 		renderSidebar({ workspaces: [workspaceWithSession] });
 
-		await user.click(screen.getByLabelText("Rename fix login"));
+		await user.dblClick(screen.getByText("fix login"));
 		expect(screen.getByLabelText("Rename fix login")).toHaveAttribute("maxlength", "20");
+	});
+
+	it("renders rename as an unboxed inline label editor", async () => {
+		const user = userEvent.setup();
+		const lastUserMessageAt = "2026-06-29T23:55:00Z";
+		mockParams.sessionId = session.id;
+		renderSidebar({
+			workspaces: [{ ...workspace, sessions: [{ ...session, lastUserMessageAt }] }],
+		});
+
+		await user.dblClick(screen.getByText("fix login"));
+		const input = screen.getByLabelText("Rename fix login");
+		const time = input.parentElement?.querySelector("time");
+
+		expect(input).toHaveAttribute("data-session-inline-editor");
+		expect(input).toHaveClass("border-0", "bg-transparent!", "p-0", "ring-0");
+		expect(input).not.toHaveClass("rounded-xs", "border-accent", "px-1", "focus-visible:ring-1");
+		expect(input.parentElement).toHaveAttribute("data-session-row");
+		expect(input.parentElement).toHaveClass("bg-interactive-active", "text-foreground", "pr-1");
+		expect(time).toHaveAttribute("data-session-message-age", "");
+		expect(time).toHaveAttribute("datetime", lastUserMessageAt);
+	});
+
+	it("offers F2 as a keyboard rename path", async () => {
+		const user = userEvent.setup();
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		const openSession = screen.getByLabelText("Open fix login");
+		expect(openSession).toHaveAttribute("aria-keyshortcuts", "F2");
+		openSession.focus();
+		await user.keyboard("{F2}");
+
+		expect(screen.getByLabelText("Rename fix login")).toHaveFocus();
+	});
+
+	it("retains a double-tap rename path for touch", () => {
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		const label = screen.getByText("fix login");
+		fireEvent.pointerUp(label, { pointerType: "touch" });
+		fireEvent.pointerUp(label, { pointerType: "touch" });
+
+		expect(screen.getByLabelText("Rename fix login")).toBeInTheDocument();
 	});
 
 	it("cancels the inline rename on Escape without calling the daemon", async () => {
@@ -1331,7 +1493,7 @@ describe("Sidebar", () => {
 		const workspaceWithSession = { ...workspace, sessions: [session] };
 		renderSidebar({ workspaces: [workspaceWithSession] });
 
-		await user.click(screen.getByLabelText("Rename fix login"));
+		await user.dblClick(screen.getByText("fix login"));
 		const input = screen.getByLabelText("Rename fix login");
 		await user.clear(input);
 		await user.type(input, "discard me{Escape}");
@@ -1803,8 +1965,116 @@ describe("Sidebar", () => {
 		const buttons = await screen.findAllByLabelText("Restart to install update v9.9.9");
 		expect(buttons.length).toBeGreaterThan(0);
 		for (const button of buttons) {
-			expect(button).toHaveClass("text-working", "bg-working/12");
+		expect(button).toHaveClass("text-working");
 		}
 		expect(screen.getByText("v9.9.9 ready")).toBeInTheDocument();
+	});
+
+	it("commits a project drop", () => {
+		renderSidebar({
+			workspaces: [
+				{ ...workspace, id: "alpha", name: "Alpha" },
+				{ ...workspace, id: "bravo", name: "Bravo" },
+			],
+		});
+
+		act(() => dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } }));
+
+		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
+	});
+
+	it("commits a session drop within its project", () => {
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					{ ...session, id: "first", title: "First", updatedAt: "2026-06-30T01:00:00Z" },
+					{ ...session, id: "second", title: "Second", updatedAt: "2026-06-30T00:00:00Z" },
+				],
+			}],
+		});
+
+		act(() => dragEnds.get("sidebar-sessions-proj-1")?.({ active: { id: "second" }, over: { id: "first" } }));
+
+		expect(Array.from(document.querySelectorAll('[data-testid="session-list-proj-1"] button[aria-label^="Open "]'), (node) => node.getAttribute("aria-label"))).toEqual([
+			"Open Second",
+			"Open First",
+		]);
+	});
+
+	it("does not toggle disclosure from the click synthesized after a folder drag", () => {
+		vi.useFakeTimers();
+		try {
+			renderSidebar({ workspaces: [{ ...workspace, id: "alpha", name: "Alpha" }] });
+			const projectRow = screen.getByText("Alpha").closest("button");
+			const initialDisclosure = projectRow?.getAttribute("aria-expanded");
+
+			act(() => dragEnds.get("sidebar-projects")?.({ active: { id: "alpha" }, over: null }));
+			act(() => fireEvent.click(screen.getByRole("button", { name: "Toggle Alpha sessions" })));
+
+			expect(projectRow).toHaveAttribute("aria-expanded", initialDisclosure ?? "false");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps reordered sessions in an expanded project drag preview", () => {
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					{ ...session, id: "first", title: "First", updatedAt: "2026-06-30T01:00:00Z" },
+					{ ...session, id: "second", title: "Second", updatedAt: "2026-06-30T00:00:00Z" },
+				],
+			}],
+		});
+
+		act(() => dragEnds.get("sidebar-sessions-proj-1")?.({ active: { id: "second" }, over: { id: "first" } }));
+		act(() => dragStarts.get("sidebar-projects")?.({ active: { id: "proj-1" } }));
+
+		expect(document.querySelector("[data-project-drag-overlay]")).toHaveTextContent(/Project One.*Second.*First/);
+	});
+
+	it("keeps hidden sessions out of compact project drag previews", () => {
+		renderSidebar({
+			autoCompact: true,
+			initialOpen: false,
+			workspaces: [{ ...workspace, sessions: [session] }],
+		});
+
+		act(() => dragStarts.get("sidebar-projects")?.({ active: { id: "proj-1" } }));
+
+		const overlay = document.querySelector("[data-project-drag-overlay]");
+		expect(overlay).toHaveTextContent("Project One");
+		expect(overlay).not.toHaveTextContent("fix login");
+	});
+
+	it.each(["light", "dark"] as const)("uses a visible project drop indicator in the %s theme", (theme) => {
+		document.documentElement.classList.toggle("dark", theme === "dark");
+		try {
+			renderSidebar({
+				workspaces: [
+					{ ...workspace, id: "alpha", name: "Alpha" },
+					{ ...workspace, id: "bravo", name: "Bravo" },
+				],
+			});
+
+			act(() => dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } }));
+			act(() => dragOvers.get("sidebar-projects")?.({
+				active: {
+					id: "bravo",
+					rect: { current: { initial: null, translated: null } },
+				},
+				activatorEvent: null,
+				delta: { x: 0, y: 0 },
+				over: { id: "alpha", rect: { height: 32, top: 0 } },
+			}));
+
+			const indicator = document.querySelector("[data-project-drop-indicator]");
+			expect(indicator).toHaveClass("bg-foreground");
+			expect(indicator).not.toHaveClass("bg-white");
+		} finally {
+			document.documentElement.classList.remove("dark");
+		}
 	});
 });

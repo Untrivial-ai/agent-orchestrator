@@ -867,7 +867,9 @@ func (r *Runtime) socketForSession(ctx context.Context, id string) (string, erro
 	// Only cross the migration boundary when the private server definitively
 	// lacks this session. An ambiguous probe stays on the private socket so a
 	// transient error cannot redirect a live session elsewhere.
-	if !sessionMissingOutput(string(out)) && !serverNotRunningOutput(string(out)) {
+	if !sessionMissingOutput(string(out)) &&
+		!serverNotRunningOutput(string(out)) &&
+		!migrationSocketAbsentOutput(string(out)) {
 		return r.socketName, nil
 	}
 	if r.legacyBinary == "" {
@@ -1115,6 +1117,16 @@ func serverUnreachableOutput(out string) bool {
 func serverNotRunningOutput(out string) bool {
 	s := strings.ToLower(out)
 	return strings.Contains(s, "no server running")
+}
+
+// migrationSocketAbsentOutput identifies a named migration target whose Unix
+// socket does not exist. This is definitive only for choosing whether to
+// inspect the legacy default socket; it must not become per-session evidence
+// of death, because the session may still be alive on that legacy server.
+func migrationSocketAbsentOutput(out string) bool {
+	s := strings.ToLower(out)
+	return strings.Contains(s, "error connecting") &&
+		strings.Contains(s, "no such file or directory")
 }
 
 func transientServerFailureOutput(out string) bool {

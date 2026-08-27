@@ -172,9 +172,9 @@ describe("CenterPane toolbar session label", () => {
 			createdAt: "2026-07-22T00:00:00Z",
 		}));
 
-	it("shows the session display name for a worker", () => {
+	it("shows the agent surface name for a worker", () => {
 		renderCenterPane({ session: worker });
-		expect(screen.getByText("do the thing")).toBeInTheDocument();
+		expect(screen.getByText("Claude Code")).toBeInTheDocument();
 		expect(screen.queryByText("sess-1")).not.toBeInTheDocument();
 		expect(screen.getByTestId("terminal-interaction-surface")).not.toHaveAttribute("inert");
 		expect(screen.queryByTestId("agent-switch-terminal-overlay")).not.toBeInTheDocument();
@@ -309,7 +309,7 @@ describe("CenterPane toolbar session label", () => {
 		const status = screen.getByRole("status", { name: "Switching from Claude Code to Codex" });
 		expect(within(status).getByText("Switching from Claude Code to Codex")).toBeInTheDocument();
 		expect(within(status).getAllByText(description).length).toBeGreaterThan(0);
-		expect(screen.getByRole("tab", { name: "do the thing · Working" })).toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Claude Code · Working" })).toBeInTheDocument();
 	});
 
 	it("keeps the preparation stage active while the source handoff is requested", () => {
@@ -556,7 +556,7 @@ describe("CenterPane toolbar session label", () => {
 	it("renders only this session's own tab, never a sibling session", () => {
 		renderCenterPane({ session: worker });
 
-		const sessionTab = screen.getByRole("tab", { name: /^do the thing/ });
+		const sessionTab = screen.getByRole("tab", { name: /^Claude Code/ });
 		expect(sessionTab).toHaveAttribute("aria-selected", "true");
 		expect(sessionTab.parentElement).toHaveClass(
 			"self-stretch",
@@ -566,7 +566,7 @@ describe("CenterPane toolbar session label", () => {
 		);
 		expect(sessionTab.parentElement).not.toHaveClass("session-primary-tab");
 		expect(sessionTab.parentElement).not.toHaveClass("rounded-md");
-		expect(sessionTab).toHaveAccessibleName("do the thing · Working");
+		expect(sessionTab).toHaveAccessibleName("Claude Code · Working");
 		expect(sessionTab.querySelector('[title="Working"]')).toBeInTheDocument();
 		expect(sessionTab.parentElement?.querySelector('img[aria-hidden="true"]')).toBeInTheDocument();
 		expect(screen.queryByRole("tab", { name: "review the change" })).not.toBeInTheDocument();
@@ -575,7 +575,7 @@ describe("CenterPane toolbar session label", () => {
 	it("places the active session indicator along the bottom edge", () => {
 		renderCenterPane({ session: worker });
 
-		const classes = screen.getByRole("tab", { name: /^do the thing/ }).parentElement?.classList;
+		const classes = screen.getByRole("tab", { name: /^Claude Code/ }).parentElement?.classList;
 		expect(classes?.contains("after:bottom-0")).toBe(true);
 		expect(classes?.contains("after:top-0")).toBe(false);
 	});
@@ -593,7 +593,7 @@ describe("CenterPane toolbar session label", () => {
 			},
 		});
 
-		const mainTab = screen.getByRole("tab", { name: /^do the thing/ });
+		const mainTab = screen.getByRole("tab", { name: /^Claude Code/ });
 		const mainContainer = mainTab.parentElement;
 		expect(mainContainer).toHaveAttribute("data-terminal-role", "primary");
 		expect(mainContainer).toHaveClass("self-stretch", "bg-surface");
@@ -619,13 +619,18 @@ describe("CenterPane toolbar session label", () => {
 		const [shell] = makeShells(1);
 		renderCenterPane({ session: worker, shellTerminals: [shell] });
 
-		const ownerTab = screen.getByRole("tab", { name: /^do the thing/ });
+		const ownerTab = screen.getByRole("tab", { name: /^Claude Code/ });
 		const ownerCard = ownerTab.parentElement;
 		const scrollRegion = document.querySelector(".overflow-x-auto");
 		const avatar = ownerCard?.querySelector('img[aria-hidden="true"]');
 
 		expect(ownerCard).toHaveClass("min-w-0", "shrink", "overflow-hidden");
+		expect(ownerCard).not.toHaveClass("w-full", "max-w-full");
 		expect(ownerCard).not.toHaveClass("min-w-shell-tab-min", "shrink-0");
+		expect(ownerTab).toHaveClass("min-w-0");
+		expect(ownerTab).not.toHaveClass("min-w-flex-min");
+		expect(ownerCard?.parentElement).toHaveClass("min-w-0");
+		expect(ownerCard?.parentElement).not.toHaveClass("min-w-flex-min");
 		expect(scrollRegion?.contains(ownerCard)).toBe(false);
 		expect(avatar?.classList.contains("size-terminal-agent-icon")).toBe(true);
 	});
@@ -728,7 +733,7 @@ describe("CenterPane toolbar session label", () => {
 			"w-shell-tab-connected",
 		);
 		expect(reviewerTab.parentElement).not.toHaveAttribute("data-terminal-role", "primary");
-		expect(screen.getByRole("tab", { name: /^do the thing/ })).not.toHaveAttribute("aria-current", "true");
+		expect(screen.getByRole("tab", { name: /^Claude Code/ })).not.toHaveAttribute("aria-current", "true");
 		expect(reviewerTab.querySelector("img")).toHaveAttribute("src");
 		expect(screen.queryByRole("button", { name: "Back to agent" })).not.toBeInTheDocument();
 	});
@@ -832,7 +837,7 @@ describe("CenterPane toolbar session label", () => {
 		expect(scrollRegion?.classList.contains("terminal-tabs-scrollbar")).toBe(false);
 		expect(scrollRegion?.classList.contains("min-w-flex-min")).toBe(true);
 		expect(scrollRegion?.classList.contains("flex-1")).toBe(true);
-		expect(scrollRegion?.contains(screen.getByRole("tab", { name: /^do the thing/ }).parentElement)).toBe(false);
+		expect(scrollRegion?.contains(screen.getByRole("tab", { name: /^Claude Code/ }).parentElement)).toBe(false);
 		for (const tab of screen.getAllByTitle(/^\/tmp\/ws/)) {
 			expect(tab.parentElement?.classList.contains("min-w-shell-tab-min")).toBe(true);
 			expect(tab.parentElement?.classList.contains("shrink-0")).toBe(true);
@@ -883,12 +888,12 @@ describe("CenterPane toolbar session label", () => {
 			Array.from(screen.getByRole("tablist", { name: "Open terminals" }).querySelectorAll('[role="tab"]')).map(
 				(tab) => tab.textContent,
 			);
-		expect(tabLabels()).toEqual(["do the thing", "Reviewer", "agent-orchestrator-0", "agent-orchestrator-1"]);
+		expect(tabLabels()).toEqual(["Claude Code", "Reviewer", "agent-orchestrator-0", "agent-orchestrator-1"]);
 		expect(reorderMocks.onReorder).toBeTypeOf("function");
 
 		act(() => reorderMocks.onReorder?.(["h-0", "reviewer:review-sess-1", "h-1"]));
 
-		expect(tabLabels()).toEqual(["do the thing", "agent-orchestrator-0", "Reviewer", "agent-orchestrator-1"]);
+		expect(tabLabels()).toEqual(["Claude Code", "agent-orchestrator-0", "Reviewer", "agent-orchestrator-1"]);
 	});
 
 	it("drops a session's remembered terminal order after navigating away", () => {
@@ -900,7 +905,7 @@ describe("CenterPane toolbar session label", () => {
 			);
 
 		act(() => reorderMocks.onReorder?.(["h-1", "h-0"]));
-		expect(tabLabels()).toEqual(["do the thing", "agent-orchestrator-1", "agent-orchestrator-0"]);
+		expect(tabLabels()).toEqual(["Claude Code", "agent-orchestrator-1", "agent-orchestrator-0"]);
 
 		view.rerender(
 			<TooltipProvider>
@@ -913,7 +918,7 @@ describe("CenterPane toolbar session label", () => {
 			</TooltipProvider>,
 		);
 
-		expect(tabLabels()).toEqual(["do the thing", "agent-orchestrator-0", "agent-orchestrator-1"]);
+		expect(tabLabels()).toEqual(["Claude Code", "agent-orchestrator-0", "agent-orchestrator-1"]);
 	});
 
 	it("scrolls the tab strip horizontally with the mouse wheel", () => {
@@ -997,7 +1002,7 @@ describe("CenterPane toolbar session label", () => {
 			onRenameShellTerminal,
 		});
 
-		const sessionTab = screen.getByRole("tab", { name: /^do the thing/ });
+		const sessionTab = screen.getByRole("tab", { name: /^Claude Code/ });
 		const firstShellTab = screen.getByRole("tab", {
 			name: "agent-orchestrator-0",
 		});

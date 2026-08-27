@@ -109,6 +109,7 @@ type SessionService interface {
 	ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (sessionsvc.WorkspaceFiles, error)
 	GetWorkspaceFile(ctx context.Context, id domain.SessionID, path string, section sessionsvc.WorkspaceFileSection) (sessionsvc.WorkspaceFileDetail, error)
 	GetWorkspaceFileBlob(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide) (sessionsvc.WorkspaceFileBlob, error)
+	ListWorkspaceTree(ctx context.Context, id domain.SessionID, path string) (sessionsvc.WorkspaceTree, error)
 	InvalidateWorkspaceCache(id domain.SessionID)
 	Pin(ctx context.Context, id domain.SessionID) (domain.Session, error)
 	Unpin(ctx context.Context, id domain.SessionID) (domain.Session, error)
@@ -171,6 +172,7 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Get("/sessions/{sessionId}/workspace/files", c.listWorkspaceFiles)
 	r.Get("/sessions/{sessionId}/workspace/file", c.getWorkspaceFile)
 	r.Get("/sessions/{sessionId}/workspace/file/blob", c.getWorkspaceFileBlob)
+	r.Get("/sessions/{sessionId}/workspace/tree", c.listWorkspaceTree)
 	r.Get("/sessions/{sessionId}/pr", c.listPRs)
 	r.Post("/sessions/{sessionId}/pr/claim", c.claimPR)
 	r.Patch("/sessions/{sessionId}", c.rename)
@@ -570,6 +572,24 @@ func (c *SessionsController) getWorkspaceFile(w http.ResponseWriter, r *http.Req
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, workspaceFileResponse(file))
+}
+
+// listWorkspaceTree returns one directory level of the session workspace's
+// full file tree, git-status decorated. Unlike listWorkspaceFiles (changed
+// files only), path is optional: an empty or missing path lists the
+// workspace root.
+func (c *SessionsController) listWorkspaceTree(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/workspace/tree")
+		return
+	}
+	relPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	tree, err := c.Svc.ListWorkspaceTree(r.Context(), sessionID(r), relPath)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, workspaceTreeResponse(tree))
 }
 
 // getWorkspaceFileBlob streams one side of an image file's diff. The renderer
@@ -1791,7 +1811,14 @@ func sessionView(s domain.Session) SessionView {
 		PreviewURL:      s.Metadata.PreviewURL,
 		PreviewRevision: s.Metadata.PreviewRevision,
 		Model:           s.Metadata.Model,
-		PRs:             sessionPRFacts(s.PRs),
+		LastUserMessageAt: func() *time.Time {
+			if s.Metadata.LatestUserPromptAt.IsZero() {
+				return nil
+			}
+			at := s.Metadata.LatestUserPromptAt
+			return &at
+		}(),
+		PRs: sessionPRFacts(s.PRs),
 	}
 	if s.ActiveAgentSwitch != nil {
 		active := agentSwitchView(*s.ActiveAgentSwitch)
@@ -1926,6 +1953,27 @@ func workspaceFileResponse(file sessionsvc.WorkspaceFileDetail) WorkspaceFileRes
 		CompareBaseSHA:   file.CompareBaseSHA,
 		CompareBaseRef:   file.CompareBaseRef,
 		CompareMode:      file.CompareMode,
+	}
+}
+
+func workspaceTreeResponse(tree sessionsvc.WorkspaceTree) ListWorkspaceTreeResponse {
+	out := make([]WorkspaceTreeEntry, 0, len(tree.Entries))
+	for _, entry := range tree.Entries {
+		out = append(out, WorkspaceTreeEntry{
+			Name:       entry.Name,
+			Path:       entry.Path,
+			Type:       entry.Type,
+			Status:     entry.Status,
+			HasChanges: entry.HasChanges,
+			Size:       entry.Size,
+			Binary:     entry.Binary,
+		})
+	}
+	return ListWorkspaceTreeResponse{
+		SessionID: tree.SessionID,
+		Path:      tree.Path,
+		Entries:   out,
+		Truncated: tree.Truncated,
 	}
 }
 

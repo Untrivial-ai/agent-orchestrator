@@ -43,6 +43,10 @@ type SessionMetadata struct {
 	// for this AO session. Internal AO coordination messages (for example an
 	// agent-switch handoff request) must not replace it.
 	LatestUserPrompt string `json:"latestUserPrompt,omitempty"`
+	// LatestUserPromptAt is when LatestUserPrompt was submitted. It is kept as a
+	// separate durable fact because SessionRecord.UpdatedAt also changes for
+	// lifecycle, SCM, preview, and preference updates.
+	LatestUserPromptAt time.Time `json:"-"`
 	// LatestAssistantUpdate is the latest user-facing assistant update observed
 	// before any internal agent-switch coordination turn.
 	LatestAssistantUpdate string `json:"latestAssistantUpdate,omitempty"`

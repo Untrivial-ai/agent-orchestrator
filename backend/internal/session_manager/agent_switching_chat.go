@@ -305,6 +305,7 @@ func (m *Manager) executeChatAgentSwitch(
 		SystemPrompt:            finalSystemPrompt,
 		AdditionalDirectories:   additionalDirectories,
 		ProviderConversationID:  providerConversationID,
+		ProviderScopeID:         chatSwitchProviderBoundaryID(result.ID),
 		ControllerGeneration:    string(targetGeneration),
 		SkipNativeHistoryImport: resumable,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
@@ -445,11 +446,15 @@ func committedChatSwitchConversation(
 	if conversation.ID == "" {
 		return domain.ConversationRecord{}
 	}
-	conversation.ActiveBranchID = string(switchID) + ":provider"
+	conversation.ActiveBranchID = chatSwitchProviderBoundaryID(switchID)
 	conversation.Settings.Model = ""
 	conversation.Settings.ReasoningEffort = ""
 	conversation.UpdatedAt = activatedAt
 	return conversation
+}
+
+func chatSwitchProviderBoundaryID(switchID domain.AgentSwitchID) string {
+	return string(switchID) + ":provider"
 }
 
 func chatSwitchActivationMessageID(switchID domain.AgentSwitchID) string {

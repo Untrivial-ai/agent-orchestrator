@@ -197,6 +197,66 @@ func TestRuntimeIntegrationLegacyDefaultSocketIgnoresInheritedTMUX(t *testing.T)
 	}
 }
 
+func TestRuntimeIntegrationAdoptsLegacyDefaultWhenNamedSocketDoesNotExist(t *testing.T) {
+	systemTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+
+	// Isolate both socket names so the test starts with a live legacy default
+	// server and no named AO server, matching an untouched pre-cutover install.
+	tmuxTmpDir, err := os.MkdirTemp("/tmp", "ao-tmux-migration-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxTmpDir) })
+	t.Setenv("TMUX_TMPDIR", tmuxTmpDir)
+	legacyID := strings.ReplaceAll(t.Name(), "/", "_") + "_legacy"
+	for _, socketName := range []string{"default", "ao"} {
+		t.Cleanup(func() {
+			_ = exec.Command(systemTmux, "-L", socketName, "kill-server").Run()
+		})
+	}
+	if out, startErr := exec.Command(
+		systemTmux,
+		"-L", "default",
+		"new-session", "-d", "-s", legacyID,
+		"sh",
+	).CombinedOutput(); startErr != nil {
+		t.Fatalf("start legacy tmux session: %v: %s", startErr, out)
+	}
+	missingOut, missingErr := exec.Command(systemTmux, "-L", "ao", "has-session", "-t", legacyID).CombinedOutput()
+	if missingErr == nil {
+		t.Fatal("test setup unexpectedly found a named AO server")
+	}
+	if !migrationSocketAbsentOutput(string(missingOut)) {
+		t.Fatalf("named AO probe = %q, want missing-socket diagnostic", missingOut)
+	}
+
+	r := New(Options{
+		Binary:       systemTmux,
+		LegacyBinary: systemTmux,
+		SocketName:   "ao",
+		Timeout:      5 * time.Second,
+	})
+	r.enterDelay = 0
+	handle := ports.RuntimeHandle{ID: legacyID}
+	alive, err := r.IsAlive(context.Background(), handle)
+	if err != nil || !alive {
+		t.Fatalf("legacy default-socket session = (%v, %v), want (true, nil)", alive, err)
+	}
+	if err := r.SendMessage(context.Background(), handle, "echo legacy-send-ok"); err != nil {
+		t.Fatalf("SendMessage to adopted legacy session: %v", err)
+	}
+	out := waitForOutput(t, r, handle, "legacy-send-ok", 5*time.Second)
+	if !strings.Contains(out, "legacy-send-ok") {
+		t.Fatalf("legacy output = %q, want legacy-send-ok", out)
+	}
+	if out, probeErr := exec.Command(systemTmux, "-L", "ao", "list-sessions").CombinedOutput(); probeErr == nil {
+		t.Fatalf("legacy discovery unexpectedly created named AO server: %s", out)
+	}
+}
+
 func TestRuntimeIntegrationSupervisedExitKeepsInteractiveShell(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux unavailable")

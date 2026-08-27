@@ -183,6 +183,7 @@ func TestActivateChatAgentSwitchTargetKeepsRuntimeEmptyAcrossNativeSwitchBack(t 
 	if targetBranch.ProviderConversationID != "target-chat-native" ||
 		targetBranch.ParentBranchID != sourceEditBranch.ID ||
 		targetBranch.ReplacedTurnID != "" ||
+		targetBranch.ProviderScopeID != targetBranch.ID ||
 		targetBranch.ForkAfterSequence != conversation.LatestSequence {
 		t.Fatalf("target provider boundary = %+v, conversation = %+v", targetBranch, conversation)
 	}

@@ -5009,6 +5009,60 @@ paths:
       summary: List files in a session workspace with git change status
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/workspace/tree:
+    get:
+      operationId: listSessionWorkspaceTree
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Directory path relative to the session workspace root. Empty
+          or omitted lists the root.
+        in: query
+        name: path
+        schema:
+          description: Directory path relative to the session workspace root. Empty
+            or omitted lists the root.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWorkspaceTreeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List one directory level of a session workspace's full file tree, git-status
+        decorated
+      tags:
+      - sessions
   /api/v1/sessions/cleanup:
     post:
       operationId: cleanupSessions
@@ -5997,6 +6051,11 @@ components:
           type: string
         kind:
           type: string
+        lastUserMessageAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         mode:
           enum:
           - chat
@@ -6187,6 +6246,19 @@ components:
       - status
       - summary
       - createdAt
+      type: object
+    ConversationBranchMaterializationResponse:
+      properties:
+        replayTruncated:
+          type: boolean
+        strategy:
+          enum:
+          - native
+          - approximate_context
+          type: string
+      required:
+      - strategy
+      - replayTruncated
       type: object
     ConversationBranchPointResponse:
       properties:
@@ -6521,6 +6593,8 @@ components:
           items:
             $ref: '#/components/schemas/ConversationActivityResponse'
           type: array
+        branchMaterialization:
+          $ref: '#/components/schemas/ConversationBranchMaterializationResponse'
         branchPoints:
           items:
             $ref: '#/components/schemas/ConversationBranchPointResponse'
@@ -6567,6 +6641,9 @@ components:
           type: string
         modelReroute:
           $ref: '#/components/schemas/ConversationModelReroutePayload'
+        nativeForkAvailableAfterSequence:
+          format: int64
+          type: integer
         oldestSequence:
           format: int64
           type: integer
@@ -6594,6 +6671,7 @@ components:
       - controller
       - latestSequence
       - hasMoreBefore
+      - nativeForkAvailableAfterSequence
       - turns
       - messages
       - activities
@@ -7256,6 +7334,24 @@ components:
       - sections
       - commits
       - summary
+      type: object
+    ListWorkspaceTreeResponse:
+      properties:
+        entries:
+          items:
+            $ref: '#/components/schemas/WorkspaceTreeEntry'
+          type: array
+        path:
+          type: string
+        sessionId:
+          type: string
+        truncated:
+          type: boolean
+      required:
+      - sessionId
+      - path
+      - entries
+      - truncated
       type: object
     MarkAllNotificationsReadRequest:
       properties:
@@ -9504,6 +9600,37 @@ components:
       - files
       - additions
       - deletions
+      type: object
+    WorkspaceTreeEntry:
+      properties:
+        binary:
+          type: boolean
+        hasChanges:
+          type: boolean
+        name:
+          type: string
+        path:
+          type: string
+        size:
+          format: int64
+          type: integer
+        status:
+          enum:
+          - unmodified
+          - modified
+          - added
+          - deleted
+          - renamed
+          type: string
+        type:
+          enum:
+          - file
+          - dir
+          type: string
+      required:
+      - name
+      - path
+      - type
       type: object
 tags:
 - description: Supported and locally runnable agent adapters

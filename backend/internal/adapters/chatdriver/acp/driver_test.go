@@ -654,6 +654,7 @@ func TestACPDriverNegotiatesRichClientCapabilitiesAndNativePromptContent(t *test
 			{Type: "image", Data: "aW1hZ2U=", MIMEType: "image/png"},
 			{Type: "resource_link", URI: "file:///repo/README.md", Name: "README.md"},
 			{Type: "resource", URI: "file:///repo/notes.txt", Name: "notes.txt", MIMEType: "text/plain", Text: "notes"},
+			{Type: "resource", URI: ports.ChatInternalReplayResourceURI, Name: "replay", MIMEType: "application/json", Text: `{}`, Internal: true},
 		},
 	})
 	if err != nil {
@@ -671,8 +672,13 @@ func TestACPDriverNegotiatesRichClientCapabilitiesAndNativePromptContent(t *test
 	prompt := agent.promptParams.Prompt
 	promptMessageID := agent.promptParams.MessageId
 	agent.mu.Unlock()
-	if len(prompt) != 4 || prompt[1].Image == nil || prompt[2].ResourceLink == nil || prompt[3].Resource == nil {
+	if len(prompt) != 5 || prompt[1].Image == nil || prompt[2].ResourceLink == nil ||
+		prompt[3].Resource == nil || prompt[4].Resource == nil {
 		t.Fatalf("native prompt = %#v", prompt)
+	}
+	internalResource := prompt[4].Resource.Resource.TextResourceContents
+	if internalResource == nil || internalResource.Meta[aoInternalReplayMetaKey] != true {
+		t.Fatalf("internal replay ACP metadata = %#v", internalResource)
 	}
 	if promptMessageID == nil || *promptMessageID != "ao-client-message-1" {
 		t.Fatalf("ACP prompt message id = %v, want AO's durable client id", promptMessageID)
@@ -749,6 +755,14 @@ func TestACPDriverClosesReplayTurnsAsRecoveredWithoutBlockingResume(t *testing.T
 	answerTwoID := "44444444-4444-4444-8444-444444444444"
 	userOne := acpsdk.UpdateUserMessageText("Inspect the repository")
 	userOne.UserMessageChunk.MessageId = &userOneID
+	replayBlock := acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
+		TextResourceContents: &acpsdk.TextResourceContents{
+			Uri: ports.ChatInternalReplayResourceURI, Text: `{"kind":"approximate_conversation_context"}`,
+			Meta: map[string]any{aoInternalReplayMetaKey: true},
+		},
+	})
+	replaySeed := acpsdk.UpdateUserMessage(replayBlock)
+	replaySeed.UserMessageChunk.MessageId = &userOneID
 	answerOneA := acpsdk.UpdateAgentMessageText("The repository ")
 	answerOneA.AgentMessageChunk.MessageId = &answerOneID
 	answerOneB := acpsdk.UpdateAgentMessageText("is ready.")
@@ -766,7 +780,9 @@ func TestACPDriverClosesReplayTurnsAsRecoveredWithoutBlockingResume(t *testing.T
 		capabilities: &acpsdk.AgentCapabilities{
 			LoadSession: true,
 		},
-		loadUpdates: []acpsdk.SessionUpdate{userOne, answerOneA, answerOneB, userTwo, answerTwo, pendingTool},
+		loadUpdates: []acpsdk.SessionUpdate{
+			userOne, replaySeed, answerOneA, answerOneB, userTwo, answerTwo, pendingTool,
+		},
 	}
 	driver := New(Config{
 		Harness:      domain.HarnessClaudeCode,
@@ -783,6 +799,7 @@ func TestACPDriverClosesReplayTurnsAsRecoveredWithoutBlockingResume(t *testing.T
 		ProviderConversationID: "provider-session-1",
 		WorkspacePath:          t.TempDir(),
 		SystemPrompt:           "AO load instructions",
+		ProviderScopeID:        "history-scope",
 	})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -815,7 +832,8 @@ func TestACPDriverClosesReplayTurnsAsRecoveredWithoutBlockingResume(t *testing.T
 		if event.Kind == ports.ChatEventTurnCompleted {
 			states = append(states, event.TurnState)
 		}
-		if event.ProviderItemID == "history-tool" && event.Kind == ports.ChatEventActivityCompleted {
+		if event.ProviderItemID == (&conversation{providerScopeID: "history-scope"}).providerItemID("history-tool") &&
+			event.Kind == ports.ChatEventActivityCompleted {
 			recoveredActivity = event.ActivityStatus == domain.ActivityStatusRecovered
 		}
 	}
@@ -825,6 +843,16 @@ func TestACPDriverClosesReplayTurnsAsRecoveredWithoutBlockingResume(t *testing.T
 	}
 	if !recoveredActivity {
 		t.Fatalf("history = %#v, want pending replay tool settled as recovered", history)
+	}
+	if history[0].ProviderTurnID != historyTurnID("history-scope", userOneID) ||
+		history[1].ProviderItemID != (&conversation{providerScopeID: "history-scope"}).providerItemID(userOneID) ||
+		history[1].ClientMessageID != (&conversation{providerScopeID: "history-scope"}).providerItemID(userOneID) ||
+		history[2].ProviderItemID != (&conversation{providerScopeID: "history-scope"}).providerItemID(answerOneID) {
+		t.Fatalf("history ids do not use the durable provider scope: %#v", history[:3])
+	}
+	if len(history[1].ProviderItemAliases) != 1 || history[1].ProviderItemAliases[0] != userOneID ||
+		len(history[2].ProviderItemAliases) != 1 || history[2].ProviderItemAliases[0] != answerOneID {
+		t.Fatalf("history does not preserve legacy raw item aliases: %#v", history[:3])
 	}
 	if !conv.Capabilities().Has(ports.ChatCapabilityHistory) {
 		t.Fatal("session/load conversation did not advertise replayable history")
@@ -838,6 +866,22 @@ func TestACPDriverClosesReplayTurnsAsRecoveredWithoutBlockingResume(t *testing.T
 	case event := <-conv.Events():
 		t.Fatalf("history leaked onto the live event stream: %#v", event)
 	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func TestHistoricalUserContentSuppressesOnlyMarkedInternalReplayResources(t *testing.T) {
+	resource := acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
+		TextResourceContents: &acpsdk.TextResourceContents{
+			Uri: ports.ChatInternalReplayResourceURI, Text: `{"kind":"approximate_conversation_context"}`,
+		},
+	})
+	if got := historicalUserContent(resource); got != "[Embedded context]" {
+		t.Fatalf("unmarked reserved resource = %q, want visible embedded context", got)
+	}
+
+	resource.Resource.Resource.TextResourceContents.Meta = map[string]any{aoInternalReplayMetaKey: true}
+	if got := historicalUserContent(resource); got != "" {
+		t.Fatalf("marked internal replay resource = %q, want hidden", got)
 	}
 }
 
@@ -1133,6 +1177,147 @@ func TestACPDriverPreservesNestedToolAndTerminalMetadata(t *testing.T) {
 	}
 	if detail["parentProviderItemId"] != "agent-tool" || detail["terminalId"] != "child-tool" || detail["output"] != "ok\n" {
 		t.Fatalf("tool detail = %#v", detail)
+	}
+}
+
+func TestACPDriverNamespacesOpaqueItemIDsByProviderScope(t *testing.T) {
+	type observed struct {
+		messageID string
+		toolID    string
+		parentID  string
+	}
+	open := func(t *testing.T, providerScopeID string) observed {
+		t.Helper()
+		agent := &fakeAgent{}
+		driver := New(Config{
+			Harness:      domain.HarnessClaudeCode,
+			Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+			Probe:        func(context.Context) error { return nil },
+			Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		driver.spawn = fakeSpawn(agent)
+		opened, err := driver.Start(context.Background(), ports.ChatStartConfig{
+			SessionID: domain.SessionID("session-1"), WorkspacePath: t.TempDir(),
+			ProviderScopeID: providerScopeID,
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		t.Cleanup(func() { _ = opened.Close() })
+		_ = nextEvent(t, opened.Events())
+		conv := opened.(*conversation)
+		conv.mu.Lock()
+		conv.activeTurn = "turn-1"
+		conv.mu.Unlock()
+
+		messageID := "reused-message"
+		message := acpsdk.UpdateAgentMessageText("working")
+		message.AgentMessageChunk.MessageId = &messageID
+		if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+			SessionId: acpsdk.SessionId(opened.ProviderConversationID()), Update: message,
+		}); err != nil {
+			t.Fatalf("message update: %v", err)
+		}
+		messageEvent := nextEvent(t, opened.Events())
+
+		if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+			SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
+			Update: acpsdk.SessionUpdate{ToolCall: &acpsdk.SessionUpdateToolCall{
+				SessionUpdate: "tool_call", ToolCallId: "reused-tool", Title: "Run tests",
+				Kind: acpsdk.ToolKindExecute, Status: acpsdk.ToolCallStatusPending,
+				Meta: map[string]any{"claudeCode": map[string]any{"parentToolUseId": "reused-parent"}},
+			}},
+		}); err != nil {
+			t.Fatalf("tool update: %v", err)
+		}
+		toolEvent := nextEvent(t, opened.Events())
+		var detail map[string]any
+		if err := json.Unmarshal(toolEvent.Detail, &detail); err != nil {
+			t.Fatalf("tool detail: %v", err)
+		}
+		parentID, _ := detail["parentProviderItemId"].(string)
+		return observed{
+			messageID: messageEvent.ProviderItemID,
+			toolID:    toolEvent.ProviderItemID,
+			parentID:  parentID,
+		}
+	}
+
+	first := open(t, "scope-one")
+	second := open(t, "scope-two")
+	if first.messageID == second.messageID || first.toolID == second.toolID || first.parentID == second.parentID {
+		t.Fatalf("provider scopes reused opaque ids: first=%+v second=%+v", first, second)
+	}
+	firstScope := &conversation{providerScopeID: "scope-one"}
+	if first.messageID != firstScope.providerItemID("reused-message") ||
+		first.toolID != firstScope.providerItemID("reused-tool") ||
+		first.parentID != firstScope.providerItemID("reused-parent") {
+		t.Fatalf("first scoped ids = %+v", first)
+	}
+	secondScope := &conversation{providerScopeID: "scope-two"}
+	if second.messageID != secondScope.providerItemID("reused-message") ||
+		second.toolID != secondScope.providerItemID("reused-tool") ||
+		second.parentID != secondScope.providerItemID("reused-parent") {
+		t.Fatalf("second scoped ids = %+v", second)
+	}
+}
+
+func TestACPOpaqueIDNamespaceIsUnambiguous(t *testing.T) {
+	first := &conversation{providerScopeID: "a"}
+	second := &conversation{providerScopeID: "a:b"}
+
+	firstID := first.providerItemID("b:c")
+	secondID := second.providerItemID("c")
+	if firstID == secondID {
+		t.Fatalf("distinct scope/id pairs collided at %q", firstID)
+	}
+
+	firstTurn := historyTurnID("a", "b:c")
+	secondTurn := historyTurnID("a:b", "c")
+	if firstTurn == secondTurn {
+		t.Fatalf("distinct history scope/id pairs collided at %q", firstTurn)
+	}
+}
+
+func TestACPLegacyUnscopedHistoryIdentityRemainsCompatible(t *testing.T) {
+	conv := &conversation{
+		history: &historyCapture{
+			sessionID: "legacy-session", occurrences: make(map[string]int),
+		},
+	}
+	conv.startHistoryTurn("legacy-user")
+	if got := conv.history.turnID; got != "acp-history-turn:legacy-session:legacy-user" {
+		t.Fatalf("legacy history turn = %q", got)
+	}
+	if got := conv.providerItemID("legacy-item"); got != "legacy-item" {
+		t.Fatalf("legacy provider item = %q, want raw identity", got)
+	}
+}
+
+func TestACPHistoryEventIdentityIsUnambiguousWithNULInOpaqueIDs(t *testing.T) {
+	capture := func(event ports.ChatEvent) string {
+		t.Helper()
+		conv := &conversation{
+			providerScopeID: "scope",
+			history: &historyCapture{
+				sessionID:   "session",
+				occurrences: make(map[string]int),
+			},
+		}
+		if !conv.captureHistoryEvent(event) {
+			t.Fatal("captureHistoryEvent did not capture replay event")
+		}
+		return conv.history.events[0].ProviderEventID
+	}
+
+	first := capture(ports.ChatEvent{
+		Kind: ports.ChatEventMessageDelta, ProviderTurnID: "a", ProviderItemID: "b\x00c",
+	})
+	second := capture(ports.ChatEvent{
+		Kind: ports.ChatEventMessageDelta, ProviderTurnID: "a\x00b", ProviderItemID: "c",
+	})
+	if first == second {
+		t.Fatalf("distinct history events collided at %q", first)
 	}
 }
 

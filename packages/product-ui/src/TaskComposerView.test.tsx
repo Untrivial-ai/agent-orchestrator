@@ -1,14 +1,33 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { createElement, type ComponentProps } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	TaskComposerView,
 	type TaskComposerViewProps,
 } from "./TaskComposerView";
 
+const useReducedMotionMock = vi.hoisted(() => vi.fn(() => false));
+const lastAttachmentTransition = vi.hoisted(() => ({
+	current: undefined as { duration?: number } | undefined,
+}));
+
+vi.mock("motion/react", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("motion/react")>();
+	function MotionDiv(props: ComponentProps<typeof actual.motion.div>) {
+		lastAttachmentTransition.current = props.transition as { duration?: number } | undefined;
+		return createElement(actual.motion.div, props);
+	}
+	return {
+		...actual,
+		useReducedMotion: useReducedMotionMock,
+		motion: { ...actual.motion, div: MotionDiv },
+	};
+});
+
 function viewProps(overrides: Partial<TaskComposerViewProps> = {}): TaskComposerViewProps {
 	return {
 		canSubmit: true,
-		prompt: "",
+		initialPrompt: "",
 		onPromptChange: vi.fn(),
 		labels: {
 			addFile: "Add file",
@@ -72,6 +91,11 @@ function viewProps(overrides: Partial<TaskComposerViewProps> = {}): TaskComposer
 }
 
 describe("TaskComposerView", () => {
+	beforeEach(() => {
+		useReducedMotionMock.mockReturnValue(false);
+		lastAttachmentTransition.current = undefined;
+	});
+
 	it("renders controlled project, agent, model, and prompt state", () => {
 		const props = viewProps();
 		render(<TaskComposerView {...props} />);
@@ -86,6 +110,16 @@ describe("TaskComposerView", () => {
 		fireEvent.change(screen.getByRole("textbox", { name: "Model" }), { target: { value: "gpt-5.1" } });
 		expect(props.model.onModelChange).toHaveBeenCalledWith("gpt-5.1");
 		expect(screen.getByRole("group", { name: "Runs with" })).toHaveClass("composer-run-controls");
+	});
+
+	it("keeps the surrounding controls stable while typing", () => {
+		const renderAgentControl = vi.fn((control) => <button type="button">{control.value}</button>);
+		render(<TaskComposerView {...viewProps({ renderAgentControl })} />);
+		renderAgentControl.mockClear();
+
+		fireEvent.change(screen.getByRole("textbox", { name: "Task" }), { target: { value: "Fast draft" } });
+
+		expect(renderAgentControl).not.toHaveBeenCalled();
 	});
 
 	it("submits on the button or unmodified Enter and respects project availability", () => {
@@ -138,6 +172,45 @@ describe("TaskComposerView", () => {
 			dataTransfer: { files: [file] },
 		});
 		expect(onAddFiles).toHaveBeenLastCalledWith([file]);
+	});
+
+	it("keeps attachment previews hidden until a file is selected", () => {
+		const { container, rerender } = render(<TaskComposerView {...viewProps()} />);
+
+		const addFile = screen.getByRole("button", { name: "Add file" });
+		expect(addFile.closest(".composer-toolbar")).not.toBeNull();
+		expect(container.querySelector("ul")).toBeNull();
+
+		rerender(
+			<TaskComposerView
+				{...viewProps({
+					attachments: {
+						items: [{ id: "attachment-1", name: "notes.txt" }],
+						onAddFiles: vi.fn(),
+						onRemove: vi.fn(),
+					},
+				})}
+			/>,
+		);
+
+		expect(container.querySelector("ul")).not.toBeNull();
+	});
+
+	it("makes the attachment transition instant when reduced motion is preferred", () => {
+		useReducedMotionMock.mockReturnValue(true);
+		render(
+			<TaskComposerView
+				{...viewProps({
+					attachments: {
+						items: [{ id: "attachment-1", name: "notes.txt" }],
+						onAddFiles: vi.fn(),
+						onRemove: vi.fn(),
+					},
+				})}
+			/>,
+		);
+
+		expect(lastAttachmentTransition.current).toEqual({ duration: 0 });
 	});
 
 	it("shows attachment and submission errors with a fallback action", () => {

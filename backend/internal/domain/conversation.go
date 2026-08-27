@@ -200,20 +200,51 @@ type ConversationRecord struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
+// ConversationBranchStrategy records how a provider branch was materialized.
+// Native branches preserve provider-owned history; approximate branches seed a
+// fresh provider session with bounded AO-owned textual context.
+type ConversationBranchStrategy string
+
+const (
+	// ConversationBranchStrategyNative preserves the provider's exact history.
+	ConversationBranchStrategyNative ConversationBranchStrategy = "native"
+	// ConversationBranchStrategyApproximateContext starts a fresh provider
+	// session from bounded AO-owned context.
+	ConversationBranchStrategyApproximateContext ConversationBranchStrategy = "approximate_context"
+)
+
+// NormalizeConversationBranchStrategy keeps pre-strategy rows compatible. Only
+// the empty legacy value means native; unknown nonempty values are preserved so
+// a newer materialization strategy is never misreported as exact history.
+func NormalizeConversationBranchStrategy(strategy ConversationBranchStrategy) ConversationBranchStrategy {
+	if strategy == "" {
+		return ConversationBranchStrategyNative
+	}
+	return strategy
+}
+
 // ConversationBranch is one durable provider-thread lineage node.
 type ConversationBranch struct {
 	ID                     string    `json:"id"`
 	ConversationID         string    `json:"conversationId"`
 	SessionID              SessionID `json:"sessionId"`
 	ProviderConversationID string    `json:"-"`
-	// ProviderScopeID is the root created for one provider ownership epoch. Agent
-	// switches start a new scope while keeping older AO history visible.
+	ParentBranchID         string    `json:"parentBranchId,omitempty"`
+	ForkAfterTurnID        string    `json:"forkAfterTurnId,omitempty"`
+	ReplacedTurnID         string    `json:"replacedTurnId,omitempty"`
+	ReplacementTurnID      string    `json:"replacementTurnId,omitempty"`
+	ForkAfterSequence      int64     `json:"-"`
+	// Strategy distinguishes native anchored forks from approximate user-context
+	// branches.
+	Strategy             ConversationBranchStrategy `json:"strategy,omitempty"`
+	ReplayCutoffSequence int64                      `json:"-"`
+	ReplayTruncated      bool                       `json:"replayTruncated,omitempty"`
+	// ProviderBindingID identifies the durable adapter/configuration epoch that
+	// can reopen this branch. It is deliberately separate from ProviderScopeID:
+	// approximate siblings own different opaque-id namespaces while remaining
+	// reopenable by the same provider binding.
+	ProviderBindingID string    `json:"-"`
 	ProviderScopeID   string    `json:"-"`
-	ParentBranchID    string    `json:"parentBranchId,omitempty"`
-	ForkAfterTurnID   string    `json:"forkAfterTurnId,omitempty"`
-	ReplacedTurnID    string    `json:"replacedTurnId,omitempty"`
-	ReplacementTurnID string    `json:"replacementTurnId,omitempty"`
-	ForkAfterSequence int64     `json:"-"`
 	Active            bool      `json:"active"`
 	CreatedAt         time.Time `json:"createdAt"`
 }
@@ -238,6 +269,8 @@ type ConversationEditAnchor struct {
 	ReplacedTurnID              string
 	PreviousProviderTurnID      string
 	ForkAfterSequence           int64
+	ReplayFloorSequence         int64
+	HasPriorContext             bool
 	OriginalDeliveryContentJSON string
 	RetryActiveBranch           bool
 }

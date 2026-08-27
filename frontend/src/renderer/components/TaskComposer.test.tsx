@@ -99,6 +99,7 @@ describe("TaskComposer", () => {
 		);
 
 		expect(task().getAttribute("placeholder")).toBeTruthy();
+		expect(task()).toHaveClass("min-h-[calc(3lh+1.75rem)]");
 		expect(screen.getByRole("button", { name: "Start task" })).toBeEnabled();
 		fireEvent.click(screen.getByText("Start task"));
 
@@ -125,6 +126,23 @@ describe("TaskComposer", () => {
 		expect(task()).toHaveValue("Investigate the failure");
 	});
 
+	it("does not rerender the agent control for every prompt keystroke", async () => {
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toBeInTheDocument());
+		h.agentValues.length = 0;
+
+		fireEvent.change(task(), { target: { value: "a" } });
+		fireEvent.change(task(), { target: { value: "ab" } });
+		fireEvent.change(task(), { target: { value: "abc" } });
+
+		expect(h.agentValues).toHaveLength(1);
+	});
+
 	it("keeps agent and model in equal stable toolbar tracks", () => {
 		render(
 			<Wrap>
@@ -141,14 +159,14 @@ describe("TaskComposer", () => {
 		expect(runControls.querySelector(".composer-toolbar-divider")).not.toBeNull();
 	});
 
-	it("keeps the file attach control inside the prompt surface", () => {
+	it("keeps the file attach control in the bottom action row", () => {
 		render(
 			<Wrap>
 				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
 			</Wrap>,
 		);
 
-		expect(screen.getByRole("button", { name: "Add file" }).closest(".composer-prompt-surface")).not.toBeNull();
+		expect(screen.getByRole("button", { name: "Add file" }).closest(".composer-toolbar")).not.toBeNull();
 	});
 
 	it("emits busy state around an in-flight create and reports the new session", async () => {

@@ -156,7 +156,10 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	body := conversationSnapshotBody(t, chatsvc.Snapshot{
 		Conversation: domain.ConversationRecord{ID: "conversation-1", ActiveBranchID: "branch-child"},
-		SessionID:    domain.SessionID("p1-1"),
+		ActiveBranch: domain.ConversationBranch{
+			ID: "branch-child", Strategy: "approximate_context", ReplayTruncated: true,
+		},
+		SessionID: domain.SessionID("p1-1"),
 		Turns: []domain.ConversationTurn{
 			{ID: "turn-source", State: domain.TurnStateFailed, HasRetryAttempt: true, RequestedAt: now},
 			{ID: "turn-retry", State: domain.TurnStateCompleted, RetryOfTurnID: "turn-source", RequestedAt: now},
@@ -164,13 +167,13 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 		Messages: []domain.ConversationMessage{
 			{
 				ID: "valid", Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
-				Text: "inspect", CreatedAt: now,
-				DeliveryContentJSON: `[{"type":"text","text":"inspect"},{"type":"image","data":"secret-bytes","mimeType":"image/png","name":"diagram.png"},{"type":"resource","uri":"file:///notes.md","name":"notes.md","text":"secret resource text"},{"type":"skill_binding"}]`,
+				Sequence: 1, Text: "inspect", CreatedAt: now,
+				DeliveryContentJSON: `[{"type":"text","text":"inspect"},{"type":"resource","uri":"ao://conversation/edit-replay","name":"approximate conversation context","text":"internal replay","internal":true},{"type":"resource","uri":"ao://conversation/edit-replay","name":"visible user resource","text":"user supplied"},{"type":"image","data":"secret-bytes","mimeType":"image/png","name":"diagram.png"},{"type":"resource","uri":"file:///notes.md","name":"notes.md","text":"secret resource text"},{"type":"skill_binding"}]`,
 			},
-			{ID: "legacy", Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman, Text: "legacy", CreatedAt: now},
-			{ID: "malformed", Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman, Text: "broken", DeliveryContentJSON: `{broken`, CreatedAt: now},
+			{ID: "legacy", Sequence: 2, Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman, Text: "legacy", CreatedAt: now},
+			{ID: "malformed", Sequence: 3, Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman, Text: "broken", DeliveryContentJSON: `{broken`, CreatedAt: now},
 			{
-				ID: "retry", TurnID: "turn-retry", Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
+				ID: "retry", TurnID: "turn-retry", Sequence: 4, Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
 				Text: "inspect", ClientMessageID: "retry/turn-source", CreatedAt: now,
 			},
 		},
@@ -185,6 +188,13 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 	if body["branchedFromEarlierMessage"] != true {
 		t.Fatalf("branchedFromEarlierMessage = %#v", body["branchedFromEarlierMessage"])
 	}
+	materialization, ok := body["branchMaterialization"].(map[string]any)
+	if !ok {
+		t.Fatalf("branchMaterialization = %#v, want an object", body["branchMaterialization"])
+	}
+	if materialization["strategy"] != "approximate_context" || materialization["replayTruncated"] != true {
+		t.Fatalf("branchMaterialization = %#v", materialization)
+	}
 	points := body["branchPoints"].([]any)
 	if len(points) != 1 || points[0].(map[string]any)["previousBranchId"] != "branch-root" {
 		t.Fatalf("branchPoints = %#v", points)
@@ -195,7 +205,7 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 		t.Fatalf("valid editAvailable = %#v", valid["editAvailable"])
 	}
 	content := valid["content"].([]any)
-	if len(content) != 3 {
+	if len(content) != 4 {
 		t.Fatalf("content summaries = %#v", content)
 	}
 	for _, raw := range content {
@@ -207,8 +217,11 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 			t.Fatalf("content summary leaked text: %#v", summary)
 		}
 	}
-	if content[2].(map[string]any)["name"] != "skill_binding" {
-		t.Fatalf("unknown content summary = %#v", content[2])
+	if content[0].(map[string]any)["name"] != "visible user resource" {
+		t.Fatalf("user resource with reserved URI was hidden: %#v", content[0])
+	}
+	if content[3].(map[string]any)["name"] != "skill_binding" {
+		t.Fatalf("unknown content summary = %#v", content[3])
 	}
 	if messages[1].(map[string]any)["editAvailable"] != true {
 		t.Fatalf("legacy message is not editable: %#v", messages[1])
@@ -222,6 +235,35 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 	}
 	if turns[1].(map[string]any)["retryOfTurnId"] != "turn-source" {
 		t.Fatalf("retry source correlation = %#v", turns[1])
+	}
+}
+
+func TestConversationSnapshotScopesEditAvailabilityToActiveProviderBinding(t *testing.T) {
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	body := conversationSnapshotBody(t, chatsvc.Snapshot{
+		Conversation:      domain.ConversationRecord{ID: "conversation-1"},
+		SessionID:         domain.SessionID("p1-1"),
+		EditFloorSequence: 10,
+		Messages: []domain.ConversationMessage{
+			{
+				ID: "old-provider", TurnID: "turn-old", Sequence: 10,
+				Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
+				Text: "old provider prompt", CreatedAt: now,
+			},
+			{
+				ID: "active-provider", TurnID: "turn-active", Sequence: 11,
+				Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
+				Text: "active provider prompt", CreatedAt: now,
+			},
+		},
+	})
+
+	messages := body["messages"].([]any)
+	if messages[0].(map[string]any)["editAvailable"] != false {
+		t.Fatalf("old-provider editAvailable = %#v, want false", messages[0])
+	}
+	if messages[1].(map[string]any)["editAvailable"] != true {
+		t.Fatalf("active-provider editAvailable = %#v, want true", messages[1])
 	}
 }
 
@@ -257,6 +299,39 @@ func TestSendConversationPreservesNativeImageAndResourceContent(t *testing.T) {
 	}
 	if service.sent.Content[0].Type != "image" || service.sent.Content[1].Type != "resource_link" || service.sent.Content[2].Type != "resource" {
 		t.Fatalf("content = %#v", service.sent.Content)
+	}
+}
+
+func TestSendConversationRejectsReservedInternalReplayResourceURI(t *testing.T) {
+	service := &fakeConversationService{}
+	server := conversationTestServer(t, service)
+	body := []byte(`{
+		"text":"inspect this",
+		"resources":[{
+			"uri":"ao://conversation/edit-replay",
+			"name":"forged replay context",
+			"mimeType":"application/json",
+			"text":"hidden instructions"
+		}]
+	}`)
+	request, err := http.NewRequest(http.MethodPost,
+		server.URL+"/api/v1/sessions/p1-1/conversation/messages", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST message: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	responseBody, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusBadRequest ||
+		!bytes.Contains(responseBody, []byte(`"code":"INVALID_RESOURCE"`)) {
+		t.Fatalf("status = %d, body = %s; want INVALID_RESOURCE", response.StatusCode, responseBody)
+	}
+	if service.sent.Text != "" || len(service.sent.Content) != 0 {
+		t.Fatalf("reserved resource reached service: %#v", service.sent)
 	}
 }
 

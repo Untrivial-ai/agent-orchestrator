@@ -627,36 +627,6 @@
 	border-block-start: 0 !important;
 }
 
-/* Keep updater state legible without tinting the whole surface. The glyph is
- * the single state-colored affordance; the panel otherwise matches Settings. */
-.update-status-panel {
-	--update-status-tone: var(--muted-foreground);
-	box-shadow: inset 0 1px 0 color-mix(in oklch, var(--foreground) 5%, transparent);
-}
-
-.update-status-panel[data-tone="accent"] {
-	--update-status-tone: var(--primary);
-}
-
-.update-status-panel[data-tone="success"] {
-	--update-status-tone: var(--color-success);
-}
-
-.update-status-panel[data-tone="warning"] {
-	--update-status-tone: var(--color-warning);
-}
-
-.update-status-panel[data-tone="error"] {
-	--update-status-tone: var(--color-error);
-}
-
-.update-status-glyph {
-	border: 1px solid color-mix(in oklch, var(--update-status-tone) 30%, transparent);
-	background: color-mix(in oklch, var(--update-status-tone) 11%, transparent);
-	color: var(--update-status-tone);
-	box-shadow: inset 0 1px 0 color-mix(in oklch, var(--foreground) 5%, transparent);
-}
-
 /* Tailwind preflight clears button backgrounds; keep settings rows filled. */
 button.settings-row-bar {
 	background-color: var(--color-bg-settings-row);
@@ -676,6 +646,11 @@ button.settings-link-row:active {
 	padding-block: var(--space-2);
 	padding-inline: var(--space-3);
 	border-radius: 0;
+}
+
+/* The update summary is a content row, not a compact control row. */
+.settings-grouped-rows .update-status-row {
+	padding-block: var(--space-4);
 }
 
 /* Button/link rows (e.g. Connect Mobile, Keyboard Shortcuts) keep rounded
@@ -1881,6 +1856,13 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	background-color: var(--color-interactive-hover) !important;
 	outline: none !important;
 	box-shadow: none !important;
+}
+
+/* A reorder can leave its source row, so lock the renderer cursor until the
+   drag ends or is cancelled. */
+html.sidebar-reordering,
+html.sidebar-reordering * {
+	cursor: grabbing !important;
 }
 
 /* No blue focus rings anywhere — hover/active carry interaction feedback.

@@ -127,16 +127,16 @@ describe("ChatWorkspace rollback", () => {
 		expect(screen.getByRole("alert").textContent).toContain("stop the agent");
 	});
 
-	// The thread's name is what the header shows once the provider has one, so the
-	// header and the sidebar label agree instead of each inventing a title.
-	it("shows the thread title in the header when there is one", () => {
+	it("shows the agent surface in the header when the thread has a title", () => {
 		render(<ChatWorkspace snapshot={{ ...chatFixture, title: "Fix OAuth Return URL Loss" }} />);
-		expect(screen.getByText("Fix OAuth Return URL Loss")).toBeInTheDocument();
+		expect(screen.getByText("Codex")).toBeInTheDocument();
+		expect(screen.queryByText("Fix OAuth Return URL Loss")).toBeNull();
 		expect(screen.queryByText(chatFixture.sessionId)).toBeNull();
 	});
 
-	it("falls back to the session id when the thread has no name", () => {
+	it("shows the agent surface when the thread has no name", () => {
 		render(<ChatWorkspace snapshot={chatFixture} />);
-		expect(screen.getByText(chatFixture.sessionId)).toBeInTheDocument();
+		expect(screen.getByText("Codex")).toBeInTheDocument();
+		expect(screen.queryByText(chatFixture.sessionId)).toBeNull();
 	});
 });

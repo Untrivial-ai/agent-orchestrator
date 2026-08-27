@@ -17,12 +17,12 @@ test("downloaded update keeps the full version readable and actions aligned", as
 	await page.goto("/#/settings");
 	await page.getByRole("button", { name: "Updates" }).click();
 
-	await expect(page.getByRole("status")).toContainText("Downloaded. Restart to finish updating.");
+	await expect(page.locator("#update-status-line")).toContainText("Downloaded. Restart to finish updating.");
 	const version = page.getByTestId("app-version");
 	await expect(version).toContainText("v0.12.7-nightly.202608240525");
 	await expect(page.getByRole("button", { name: "Restart & install" })).toBeVisible();
-	await expect(page.getByRole("button", { name: "Check for updates" })).toBeVisible();
-	await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
+	await expect(page.getByRole("button", { name: "Check for updates" })).toBeHidden();
+	await expect(page.getByRole("switch", { name: "Automatic Updates" })).toBeChecked();
 	await expect(page.getByRole("button", { name: "Updates channel" })).toContainText("Nightly");
 	await expect(page.locator(".nightly-warning")).toBeVisible();
 

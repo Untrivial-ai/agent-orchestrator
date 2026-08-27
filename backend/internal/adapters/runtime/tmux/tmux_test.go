@@ -780,6 +780,80 @@ func TestIsAliveAdoptsSessionFromLegacyDefaultSocket(t *testing.T) {
 	}
 }
 
+func TestIsAliveAdoptsLegacyDefaultSessionWhenNamedSocketDoesNotExist(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+		{
+			out: []byte("error connecting to /private/tmp/tmux-501/ao (No such file or directory)"),
+			err: &exec.ExitError{},
+		},
+		{}, // legacy default-socket discovery
+		{}, // has-session on the adopted legacy socket
+	}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if err != nil || !alive {
+		t.Fatalf("IsAlive = (%v, %v), want (true, nil)", alive, err)
+	}
+	want := [][]string{
+		append([]string{"-L", "ao"}, hasSessionArgs("sess-1")...),
+		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
+		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
+	}
+	wantBinaries := []string{"bundled-tmux-test", "system-tmux-test", "system-tmux-test"}
+	if len(fr.calls) != len(want) {
+		t.Fatalf("calls = %d, want %d: %+v", len(fr.calls), len(want), fr.calls)
+	}
+	for i := range want {
+		if fr.calls[i].name != wantBinaries[i] {
+			t.Fatalf("call %d binary = %q, want %q", i, fr.calls[i].name, wantBinaries[i])
+		}
+		if !reflect.DeepEqual(fr.calls[i].args, want[i]) {
+			t.Fatalf("call %d args = %#v, want %#v", i, fr.calls[i].args, want[i])
+		}
+	}
+}
+
+func TestIsAliveKeepsAmbiguousNamedSocketFailureInNamedNamespace(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	connectionRefused := fakeRunnerResult{
+		out: []byte("error connecting to /private/tmp/tmux-501/ao (Connection refused)"),
+		err: &exec.ExitError{},
+	}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{connectionRefused, connectionRefused}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false with inconclusive error")
+	}
+	if len(fr.calls) != 2 {
+		t.Fatalf("calls = %d, want named discovery and named liveness probe", len(fr.calls))
+	}
+	for i, call := range fr.calls {
+		if call.name != "bundled-tmux-test" {
+			t.Fatalf("call %d binary = %q, want bundled-tmux-test", i, call.name)
+		}
+		if len(call.args) < 2 || call.args[0] != "-L" || call.args[1] != "ao" {
+			t.Fatalf("call %d args = %#v, want named ao socket", i, call.args)
+		}
+	}
+}
+
 func TestIsAliveReportsMissingLegacyClientAsProbeInconclusive(t *testing.T) {
 	r := New(Options{Binary: "bundled-tmux-test", SocketName: "ao", Timeout: time.Second})
 	r.legacyBinary = ""

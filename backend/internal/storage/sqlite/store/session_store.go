@@ -53,6 +53,7 @@ func (s *Store) UpdateSessionFromActivitySignal(ctx context.Context, rec domain.
 		AgentSessionID:               rec.Metadata.AgentSessionID,
 		AgentSessionIDLaunchID:       rec.Metadata.AgentSessionIDLaunchID,
 		LatestUserPrompt:             rec.Metadata.LatestUserPrompt,
+		LatestUserPromptAt:           timeToNullTime(rec.Metadata.LatestUserPromptAt),
 		LatestAssistantUpdate:        rec.Metadata.LatestAssistantUpdate,
 		NativeTranscriptPath:         rec.Metadata.NativeTranscriptPath,
 		UpdatedAt:                    rec.UpdatedAt,
@@ -75,7 +76,7 @@ func (s *Store) RecordSessionLatestUserPrompt(ctx context.Context, id domain.Ses
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.RecordSessionLatestUserPrompt(ctx, gen.RecordSessionLatestUserPromptParams{
 		LatestUserPrompt: prompt,
-		UpdatedAt:        updatedAt,
+		UpdatedAt:        timeToNullTime(updatedAt),
 		ID:               id,
 	})
 	if err != nil {
@@ -395,6 +396,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			AgentSessionIDLaunchID:    row.AgentSessionIDLaunchID,
 			Prompt:                    row.Prompt,
 			LatestUserPrompt:          row.LatestUserPrompt,
+			LatestUserPromptAt:        nullTimeToTime(row.LatestUserPromptAt),
 			LatestAssistantUpdate:     row.LatestAssistantUpdate,
 			NativeTranscriptPath:      row.NativeTranscriptPath,
 			PreviewURL:                row.PreviewURL,
@@ -451,6 +453,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		AgentSessionIDLaunchID:    rec.Metadata.AgentSessionIDLaunchID,
 		Prompt:                    rec.Metadata.Prompt,
 		LatestUserPrompt:          rec.Metadata.LatestUserPrompt,
+		LatestUserPromptAt:        timeToNullTime(rec.Metadata.LatestUserPromptAt),
 		LatestAssistantUpdate:     rec.Metadata.LatestAssistantUpdate,
 		NativeTranscriptPath:      rec.Metadata.NativeTranscriptPath,
 		PreviewURL:                rec.Metadata.PreviewURL,
@@ -496,6 +499,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		AgentSessionIDLaunchID:    rec.Metadata.AgentSessionIDLaunchID,
 		Prompt:                    rec.Metadata.Prompt,
 		LatestUserPrompt:          rec.Metadata.LatestUserPrompt,
+		LatestUserPromptAt:        timeToNullTime(rec.Metadata.LatestUserPromptAt),
 		LatestAssistantUpdate:     rec.Metadata.LatestAssistantUpdate,
 		NativeTranscriptPath:      rec.Metadata.NativeTranscriptPath,
 		PreviewURL:                rec.Metadata.PreviewURL,

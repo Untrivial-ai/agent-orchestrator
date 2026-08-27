@@ -21,7 +21,10 @@ import { CenterPane } from "./CenterPane";
 import { SessionChatSurface } from "./chat/SessionChatSurface";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
-import { SessionFilesView, type ReviewFileTarget } from "./SessionFilesView";
+import { SessionFileExplorer } from "./SessionFileExplorer";
+import { SessionFileTabs } from "./SessionFileTabs";
+import { SessionFileWorkspace } from "./SessionFileWorkspace";
+import { SessionBranchBadge } from "./SessionBranchBadge";
 import { SessionInspector } from "./SessionInspector";
 import {
 	SessionInterfaceActionGroup,
@@ -33,6 +36,7 @@ import { ShellTopbar } from "./ShellTopbar";
 import { SessionTopbarHost } from "./SessionTopbarPortal";
 import { TopbarButton } from "./TopbarButton";
 import { useBrowserView } from "../hooks/useBrowserView";
+import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useResizable } from "../hooks/useResizable";
 import {
 	useCloseShellTerminal,
@@ -49,6 +53,14 @@ import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { SHELL_PANEL_SPRING } from "../lib/motion-spring";
+import {
+	activateSessionFile,
+	closeAllSessionFiles,
+	closeSessionFile,
+	EMPTY_SESSION_FILE_TABS,
+	openSessionFile,
+	type SessionFileTabState,
+} from "../lib/session-file-tabs";
 import { hidesShellTopbar, isMacPlatform } from "../lib/platform";
 import { useShell } from "../lib/shell-context";
 import { cn } from "../lib/utils";
@@ -378,9 +390,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		phase: "docked",
 	});
 	const [filesPoppedOut, setFilesPoppedOut] = useState(false);
-	const [reviewFileTarget, setReviewFileTarget] = useState<ReviewFileTarget | undefined>();
-	useEffect(() => setReviewFileTarget(undefined), [sessionId]);
-	const [filesFocusPath, setFilesFocusPath] = useState<string | null>(null);
+	const [fileTabsBySession, setFileTabsBySession] = useState<Record<string, SessionFileTabState>>({});
+	const fileTabs = fileTabsBySession[sessionId] ?? EMPTY_SESSION_FILE_TABS;
 	const browserPopOutPhase = browserPopOutState.sessionId === sessionId ? browserPopOutState.phase : "docked";
 	const browserPoppedOut = browserPopOutPhase !== "docked";
 	const [interfaceSwitchDialogOpen, setInterfaceSwitchDialogOpen] = useState(false);
@@ -483,6 +494,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			const shell = shellTerminals.find((s) => s.handleId === handleId);
 			if (!shell) return;
 			setActiveShellTerminal(shell.handleId);
+			setFileTabsBySession((current) => ({
+				...current,
+				[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+			}));
 			setTerminalTarget({
 				generation: shell.createdAt,
 				kind: "shell",
@@ -491,7 +506,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				title: shell.title,
 			});
 		},
-		[shellTerminals, setActiveShellTerminal],
+		[sessionId, shellTerminals, setActiveShellTerminal],
 	);
 
 	const closeShellTerminalByHandle = useCallback(
@@ -535,11 +550,40 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const selectSessionTerminal = useCallback(() => {
 		setActiveShellTerminal(null);
 		setTerminalTarget({ kind: "worker" });
-	}, [setActiveShellTerminal]);
+		setFileTabsBySession((current) => ({
+			...current,
+			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+		}));
+	}, [sessionId, setActiveShellTerminal]);
 	const selectReviewerTerminal = useCallback((target: ReviewerTerminalTarget) => {
 		setActiveShellTerminal(null);
 		setTerminalTarget({ kind: "reviewer", handleId: target.handleId, harness: target.harness, sessionId });
+		setFileTabsBySession((current) => ({
+			...current,
+			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+		}));
 	}, [sessionId, setActiveShellTerminal]);
+	const openCenterFile = useCallback((path: string) => {
+		setFileTabsBySession((current) => ({
+			...current,
+			[sessionId]: openSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, path),
+		}));
+	}, [sessionId]);
+	const activateCenterFile = useCallback((path: string) => {
+		setFileTabsBySession((current) => ({
+			...current,
+			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, path),
+		}));
+	}, [sessionId]);
+	const closeCenterFile = useCallback((path: string) => {
+		setFileTabsBySession((current) => ({
+			...current,
+			[sessionId]: closeSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, path),
+		}));
+	}, [sessionId]);
+	const closeAllCenterFiles = useCallback(() => {
+		setFileTabsBySession((current) => ({ ...current, [sessionId]: closeAllSessionFiles() }));
+	}, [sessionId]);
 
 	// The shell layout owns opening (it is mounted on every route, so the button
 	// and ⌘T / Ctrl+T work everywhere); this view only follows the result. When a new
@@ -761,7 +805,22 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			{interfaceSwitchAction}
 		</SessionInterfaceActionGroup>
 	) : null;
-	const sessionHeaderActions = <ShellTopbar embedded sessionAction={sessionLocalActions} />;
+	const sessionHeaderActions = (
+		<>
+			<SessionBranchBadge branch={session?.branch} />
+			<ShellTopbar embedded sessionAction={sessionLocalActions} />
+		</>
+	);
+	const fileAnnotation = useFileAnnotation(sessionId);
+	const centerFileTabs = (
+		<SessionFileTabs
+			state={fileTabs}
+			onAddFeedback={(path) => fileAnnotation.begin({ path, side: "file" })}
+			onActivateFile={activateCenterFile}
+			onCloseFile={closeCenterFile}
+			onCloseAll={closeAllCenterFiles}
+		/>
+	);
 	const previewUrl = session?.previewUrl?.trim() || undefined;
 	const previewRevision = session?.previewRevision;
 	const browserSlotVisible = Boolean(
@@ -805,7 +864,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		setTerminalTarget({ kind: "worker" });
 		setBrowserPopOutState({ sessionId, phase: "docked" });
 		setFilesPoppedOut(false);
-		setFilesFocusPath(null);
 	}, [sessionId]);
 
 	// Route props change one render before the passive reset above. Reject the
@@ -844,22 +902,20 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	}, [sessionId, setInspectorOpenForSession, transitionInspectorView]);
 
 	const handleOpenReviewFile = useCallback((target: { line?: number; path: string }) => {
-		setReviewFileTarget((current) => ({ ...target, requestId: (current?.requestId ?? 0) + 1 }));
 		setBrowserPopOutState({ sessionId, phase: "docked" });
 		setFilesPoppedOut(false);
 		transitionInspectorView("files");
 		setInspectorOpenForSession(sessionId, true);
-	}, [sessionId, setInspectorOpenForSession, transitionInspectorView]);
+		openCenterFile(target.path);
+	}, [openCenterFile, sessionId, setInspectorOpenForSession, transitionInspectorView]);
 
 	const handleOpenFile = useCallback(
 		(path: string) => {
 			handleOpenFiles();
-			setFilesFocusPath(path);
+			openCenterFile(path);
 		},
-		[handleOpenFiles, setFilesFocusPath],
+		[handleOpenFiles, openCenterFile],
 	);
-
-	const handleFilesFocusConsumed = useCallback(() => setFilesFocusPath(null), []);
 
 	const handleToggleFilesPopOut = useCallback(
 		(next: boolean) => {
@@ -1139,6 +1195,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						<div className="relative min-h-0 flex-1">
 							{/* The committed mode owns the agent surface. Auxiliary shell and
 							    reviewer targets remain terminal surfaces in either mode. */}
+							<div
+								className={cn("h-full min-h-0", fileTabs.activePath && "invisible pointer-events-none")}
+								inert={fileTabs.activePath ? true : undefined}
+							>
 							{showChatSurface ? (
 								<SessionChatSurface
 									session={session}
@@ -1158,6 +1218,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									daemonReady={daemonStatus.state === "ready"}
 									theme={theme}
 									headerActions={sessionHeaderActions}
+									workspaceTabs={centerFileTabs}
+									workspaceFileActive={Boolean(fileTabs.activePath)}
 									controllerTransitioning={chatControllerTransitioning}
 									onOpenShell={addShellTerminal}
 									openingShell={openShellTerminal.isPending}
@@ -1184,8 +1246,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									terminalTarget={routedTerminalTarget}
 									theme={theme}
 									topbarActions={sessionHeaderActions}
+									workspaceTabs={centerFileTabs}
+									workspaceFileActive={Boolean(fileTabs.activePath)}
 								/>
 							)}
+							</div>
+							{fileTabs.activePath ? (
+								<div className="absolute inset-0">
+									<SessionFileWorkspace annotation={fileAnnotation} path={fileTabs.activePath} sessionId={sessionId} />
+								</div>
+							) : null}
 							{interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition) ? (
 								<SessionInterfaceTransitionNotice
 									transition={interfaceSwitch.transition}
@@ -1219,11 +1289,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							browserPoppedOut={browserPoppedOut}
 							filesView={
 								session ? (
-									<SessionFilesView
-										focusPath={filesFocusPath}
-										onFocusPathConsumed={handleFilesFocusConsumed}
+									<SessionFileExplorer
+										activePath={fileTabs.activePath}
+										onOpenFile={openCenterFile}
 										onToggleMaximized={handleToggleFilesPopOut}
-										revealFile={reviewFileTarget}
 										sessionId={session.id}
 									/>
 								) : null
@@ -1274,10 +1343,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								shellTopbarHiddenByPlatform && !isNativeFullScreen && "files-popout-overlay--mac-windowed",
 							)}
 						>
-							<SessionFilesView
+							<SessionFileExplorer
 								isMaximized
 								onToggleMaximized={handleToggleFilesPopOut}
-								revealFile={reviewFileTarget}
 								sessionId={session.id}
 							/>
 						</div>,

@@ -1,6 +1,11 @@
 {
 	"extends": "expo/tsconfig.base",
 	"compilerOptions": {
-		"strict": true
+		"strict": true,
+		// Node-side tests (vitest) read fixtures off disk. Until SDK 57 these types
+		// arrived transitively; the slimmer dependency tree no longer provides them.
+		// "react" is listed explicitly because setting "types" at all disables the
+		// automatic inclusion of every other @types package.
+		"types": ["node", "react"]
 	}
 }

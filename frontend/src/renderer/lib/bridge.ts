@@ -2,6 +2,7 @@ import type { AoBridge } from "../../preload";
 import { coerceUiSettings, DEFAULT_UI_SETTINGS } from "../../shared/ui-locale";
 export type { FeatureBuild } from "../../main/feature-builds";
 
+
 export const aoBridge: AoBridge =
 	window.ao ??
 	({

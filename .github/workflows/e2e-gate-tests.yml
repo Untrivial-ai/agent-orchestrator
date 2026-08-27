@@ -19,10 +19,9 @@ on:
       - ".github/workflows/e2e-gate-tests.yml"
       # The gate runner's verdict parser is a contract against what the pod
       # harness emits (AO_VERDICT lines from boot-real.sh) and what the release
-      # workflow invokes. Re-run the contract tests when either boundary moves,
-      # so a harness/consumer change that breaks the contract can't slip past.
+      # conductor invokes. Re-run the contract tests when the harness moves so
+      # a producer change that breaks the contract cannot slip past.
       - "test/e2e-pod/**"
-      - ".github/workflows/frontend-release.yml"
 
 permissions:
   contents: read

@@ -949,6 +949,11 @@ func TestSwitchAgentChatSessionKeepsChatModeAndNeedsNoRuntime(t *testing.T) {
 		t.Fatalf("Chat target identity = provider %q generation %q",
 			got.Metadata.ProviderConversationID, got.Metadata.ControllerGeneration)
 	}
+	if len(launcher.started) != 1 ||
+		launcher.started[0].ProviderScopeID != chatSwitchProviderBoundaryID(sw.ID) {
+		t.Fatalf("fresh Chat target scope = %+v, want reserved boundary %q",
+			launcher.started, chatSwitchProviderBoundaryID(sw.ID))
+	}
 	if len(launcher.armed) != 1 || len(launcher.prepared) != 1 || len(launcher.stopped) != 1 {
 		t.Fatalf("Chat ownership boundaries: armed=%v prepared=%v stopped=%v",
 			launcher.armed, launcher.prepared, launcher.stopped)
@@ -1006,6 +1011,10 @@ func TestSwitchAgentChatSwitchBackResumesVerifiedNativeConversation(t *testing.T
 	}
 	if launcher.started[0].Model != "selected-target-model" {
 		t.Fatalf("resumed Chat target model = %q, want selected-target-model", launcher.started[0].Model)
+	}
+	if launcher.started[0].ProviderScopeID != chatSwitchProviderBoundaryID(sw.ID) {
+		t.Fatalf("resumed Chat target scope = %q, want reserved boundary %q",
+			launcher.started[0].ProviderScopeID, chatSwitchProviderBoundaryID(sw.ID))
 	}
 	if !launcher.started[0].SkipNativeHistoryImport {
 		t.Fatal("switch-back projected target-native history into the source provider branch before activation")

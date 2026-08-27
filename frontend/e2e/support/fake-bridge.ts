@@ -53,6 +53,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 	await page.addInitScript(
 		({ version, daemonState, daemonPort, updateStatus, updateSettings }) => {
 			const unsubscribe = () => () => undefined;
+			let currentUpdateSettings = updateSettings;
 			const status: DaemonStatus =
 				daemonState === "ready" ? { state: "ready", port: daemonPort } : { state: daemonState };
 			const navState = (viewId: string) => ({
@@ -189,8 +190,10 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					setMigration: async () => undefined,
 				},
 				updateSettings: {
-					get: async () => updateSettings,
-					set: async () => undefined,
+					get: async () => currentUpdateSettings,
+					set: async (next: UpdateSettings) => {
+						currentUpdateSettings = next;
+					},
 				},
 				uiSettings: {
 					get: async () => ({ ...DEFAULT_UI_SETTINGS }),

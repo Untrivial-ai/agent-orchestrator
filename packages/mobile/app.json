@@ -3,15 +3,18 @@
 		"name": "AO",
 		"slug": "ao-mobile",
 		"version": "1.2.1",
+		"runtimeVersion": {
+			"policy": "fingerprint"
+		},
 		"orientation": "portrait",
 		"icon": "./assets/icon.png",
 		"userInterfaceStyle": "automatic",
 		"backgroundColor": "#0a0b0d",
 		"scheme": "aomobile",
-		"splash": {
-			"image": "./assets/splash-icon.png",
-			"resizeMode": "contain",
-			"backgroundColor": "#0a0b0d"
+		"updates": {
+			"url": "https://u.expo.dev/2d7dec61-2206-4943-8582-a37e160907ea",
+			"checkAutomatically": "ON_LOAD",
+			"fallbackToCacheTimeout": 0
 		},
 		"ios": {
 			"icon": "./assets/AO.icon",
@@ -82,7 +85,17 @@
 					"color": "#4d8dff"
 				}
 			],
-			"expo-secure-store"
+			"expo-secure-store",
+			"expo-status-bar",
+			"expo-font",
+			[
+				"expo-splash-screen",
+				{
+					"image": "./assets/splash-icon.png",
+					"resizeMode": "contain",
+					"backgroundColor": "#0a0b0d"
+				}
+			]
 		],
 		"extra": {
 			"router": {},

@@ -83,8 +83,8 @@ jobs:
             echo "::error::Repository variable VITE_WORKOS_CLIENT_ID is required for desktop artifacts." >&2
             exit 1
           fi
-      # Same stamping mechanism as frontend-nightly.yml: rewrite package.json
-      # to the caller's version, dropping any +build metadata.
+      # Stamp the conductor-supplied version into package.json for this build,
+      # dropping any +build metadata.
       - name: Stamp version
         shell: bash
         env:

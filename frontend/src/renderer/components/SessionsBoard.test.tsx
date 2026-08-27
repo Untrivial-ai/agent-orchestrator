@@ -70,6 +70,7 @@ vi.mock("../lib/platform", async (importOriginal) => {
 
 import { archiveToggleHeightClassName, archiveToggleOffsetClassName } from "@aoagents/product-ui";
 import { SessionsBoard } from "./SessionsBoard";
+import { toBoardSessionPresentation } from "./SessionsBoardAdapters";
 import { TooltipProvider } from "./ui/tooltip";
 
 function renderBoard(projectId?: string) {
@@ -105,6 +106,20 @@ beforeEach(() => {
 });
 
 describe("SessionsBoard", () => {
+	it("uses the last human message time rather than generic session updatedAt", () => {
+		const presentation = toBoardSessionPresentation(
+			boardSession({
+				id: "timestamp-session",
+				lastUserMessageAt: "2026-01-01T09:00:00Z",
+				status: "idle",
+				title: "timestamp task",
+				updatedAt: "2026-01-01T10:00:00Z",
+			}),
+		);
+
+		expect(presentation.lastUserMessageAt).toBe("2026-01-01T09:00:00Z");
+	});
+
 	it("localizes dynamic card actions and pull request lifecycle labels", async () => {
 		await appI18n.changeLanguage("zh-CN");
 		workspaceQueryMock.mockReturnValue({

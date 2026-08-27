@@ -1,4 +1,5 @@
 -- +goose Up
+-- Reports are the durable outbox; orchestrator memory is populated only after acknowledged delivery.
 -- +goose StatementBegin
 CREATE TABLE reports (
     id TEXT PRIMARY KEY,

@@ -482,7 +482,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	centerCopy: { color: t.textSecondary, fontSize: 13, lineHeight: 19, textAlign: "center" },
 	centerAction: { minHeight: 42, justifyContent: "center", backgroundColor: t.blue, borderRadius: 11, paddingHorizontal: 15, marginTop: 4 },
 	centerActionText: { color: t.onAccent, fontSize: 13, fontWeight: "700" },
-	menuScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: t.scrim },
+	menuScrim: { ...StyleSheet.absoluteFill, backgroundColor: t.scrim },
 	menu: { ...centeredConversationMenu, top: 76, maxHeight: "75%", backgroundColor: t.bgSurface, borderRadius: 16, borderWidth: 1, borderColor: t.borderDefault, overflow: "hidden" },
 	menuHeading: { color: t.textPrimary, fontSize: 14, fontWeight: "700", paddingHorizontal: 14, paddingTop: 14, paddingBottom: 8 },
 	menuRow: { minHeight: 57, flexDirection: "row", alignItems: "center", gap: 11, paddingHorizontal: 14, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },

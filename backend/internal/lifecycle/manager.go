@@ -60,6 +60,13 @@ type controllerEpochStore interface {
 	) (bool, error)
 }
 
+// chatSpawnStore commits the lifecycle facts and the provider boundary in one
+// transaction. A fresh provider must never become the durable session owner
+// while the conversation head still names the provider it replaced.
+type chatSpawnStore interface {
+	CommitChatSpawn(context.Context, domain.SessionRecord, domain.ConversationBranch) error
+}
+
 // agentSwitchSourceStopStore and agentSwitchTargetActivationStore are the
 // atomic persistence primitives used at the two agent-switch ownership
 // boundaries. They remain optional so focused lifecycle reducer fakes do not
@@ -550,9 +557,11 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	// rule, while their tracking side effects still land. Untagged signals
 	// (old CLIs, adapters without tool identity) pass through untouched —
 	// last-writer-wins, exactly as before.
+	promptAt := timeOr(s.Timestamp, now)
 	metadataChanged := (s.AgentSessionID != "" && rec.Metadata.AgentSessionID != s.AgentSessionID) ||
 		(s.AgentSessionID != "" && rec.Metadata.AgentSessionIDLaunchID != s.LaunchID) ||
-		(s.LatestUserPrompt != "" && rec.Metadata.LatestUserPrompt != s.LatestUserPrompt) ||
+		(s.LatestUserPrompt != "" && (rec.Metadata.LatestUserPrompt != s.LatestUserPrompt ||
+			(s.Event == "user-prompt-submit" && promptAt.After(rec.Metadata.LatestUserPromptAt)))) ||
 		(s.LatestAssistantUpdate != "" && rec.Metadata.LatestAssistantUpdate != s.LatestAssistantUpdate) ||
 		(s.TranscriptPath != "" && rec.Metadata.NativeTranscriptPath != s.TranscriptPath)
 	if s.Valid {
@@ -563,7 +572,7 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		return nil
 	}
 	if !s.Valid {
-		applyActivityMetadata(&rec.Metadata, s)
+		applyActivityMetadata(&rec.Metadata, s, now)
 		rec.UpdatedAt = now
 		_, err := m.store.UpdateSessionFromActivitySignal(ctx, rec)
 		m.mu.Unlock()
@@ -572,7 +581,7 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	if metadataChanged {
 		// Fold metadata into rec before copying it into next below, so the
 		// activity and resume handle land in one store update.
-		applyActivityMetadata(&rec.Metadata, s)
+		applyActivityMetadata(&rec.Metadata, s, now)
 	}
 	prevState := rec.Activity.State
 	prevAt := rec.Activity.LastActivityAt
@@ -973,6 +982,32 @@ func (m *Manager) resolveNotifications(ctx context.Context, resolutions ...ports
 
 // MarkSpawned marks a newly spawned or restored session live and stores runtime/workspace handles.
 func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
+	return m.markSpawned(ctx, id, metadata, nil)
+}
+
+// MarkChatSpawned atomically marks a Chat controller live and publishes the
+// fresh provider boundary reserved before the provider process connected.
+func (m *Manager) MarkChatSpawned(
+	ctx context.Context,
+	id domain.SessionID,
+	metadata domain.SessionMetadata,
+	boundary domain.ConversationBranch,
+) error {
+	if boundary.ID == "" || boundary.ConversationID == "" || boundary.SessionID != id ||
+		boundary.ProviderConversationID == "" || boundary.ProviderScopeID != boundary.ID ||
+		metadata.ProviderConversationID != boundary.ProviderConversationID ||
+		strings.TrimSpace(metadata.ControllerGeneration) == "" {
+		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
+	}
+	return m.markSpawned(ctx, id, metadata, &boundary)
+}
+
+func (m *Manager) markSpawned(
+	ctx context.Context,
+	id domain.SessionID,
+	metadata domain.SessionMetadata,
+	boundary *domain.ConversationBranch,
+) error {
 	launchID := strings.TrimSpace(metadata.RuntimeLaunchID)
 	reactivator, err := func() (sessionUsageReactivator, error) {
 		m.mu.Lock()
@@ -994,8 +1029,18 @@ func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata
 		rec.FirstSignalAt = time.Time{}
 		rec.Metadata = mergeMetadata(rec.Metadata, metadata)
 		rec.UpdatedAt = now
-		if err := m.store.UpdateSession(ctx, rec); err != nil {
-			return nil, err
+		if boundary == nil {
+			if err := m.store.UpdateSession(ctx, rec); err != nil {
+				return nil, err
+			}
+		} else {
+			writer, ok := m.store.(chatSpawnStore)
+			if !ok {
+				return nil, errors.New("lifecycle: atomic Chat spawn persistence is unavailable")
+			}
+			if err := writer.CommitChatSpawn(ctx, rec, *boundary); err != nil {
+				return nil, err
+			}
 		}
 		return m.usageReactivator, nil
 	}()
@@ -1294,6 +1339,9 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	set(&base.AgentSessionIDLaunchID, in.AgentSessionIDLaunchID)
 	set(&base.Prompt, in.Prompt)
 	set(&base.LatestUserPrompt, in.LatestUserPrompt)
+	if !in.LatestUserPromptAt.IsZero() {
+		base.LatestUserPromptAt = in.LatestUserPromptAt
+	}
 	set(&base.LatestAssistantUpdate, in.LatestAssistantUpdate)
 	set(&base.NativeTranscriptPath, in.NativeTranscriptPath)
 	set(&base.BrowserCapabilityVerifier, in.BrowserCapabilityVerifier)
@@ -1308,13 +1356,14 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	return base
 }
 
-func applyActivityMetadata(meta *domain.SessionMetadata, signal ports.ActivitySignal) {
+func applyActivityMetadata(meta *domain.SessionMetadata, signal ports.ActivitySignal, receivedAt time.Time) {
 	if signal.AgentSessionID != "" {
 		meta.AgentSessionID = signal.AgentSessionID
 		meta.AgentSessionIDLaunchID = signal.LaunchID
 	}
 	if signal.LatestUserPrompt != "" {
 		meta.LatestUserPrompt = signal.LatestUserPrompt
+		meta.LatestUserPromptAt = timeOr(signal.Timestamp, receivedAt)
 	}
 	if signal.LatestAssistantUpdate != "" {
 		meta.LatestAssistantUpdate = signal.LatestAssistantUpdate

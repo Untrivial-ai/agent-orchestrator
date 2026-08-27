@@ -302,6 +302,19 @@ func TestActivateConversationBranchRouteResumesWithoutBody(t *testing.T) {
 	}
 }
 
+func TestActivateConversationBranchRouteDecodesEscapedBranchID(t *testing.T) {
+	svc := &fakeChatService{activate: "conversation-1:root"}
+	srv := newChatTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, http.MethodPost,
+		"/api/v1/sessions/ao-1/conversation/branches/conversation-1%3Aroot/activate", "")
+	if status != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", status, body)
+	}
+	if svc.gotBranchID != "conversation-1:root" {
+		t.Fatalf("branch id = %q, want decoded root id", svc.gotBranchID)
+	}
+}
+
 func TestActivateConversationBranchRouteReportsMissingBranch(t *testing.T) {
 	svc := &fakeChatService{activateErr: domain.ErrNoConversationBranch}
 	srv := newChatTestServer(t, svc)

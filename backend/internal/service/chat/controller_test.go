@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
@@ -525,6 +526,388 @@ func TestServicePassesRecomputedSystemPromptToResume(t *testing.T) {
 	if resumed.ProviderConversationID != "thread-1" || resumed.DataDir != dataDir || resumed.WorkspacePath != workspace ||
 		resumed.SystemPrompt != "Recomputed AO orchestrator instructions" {
 		t.Fatalf("resume config = %#v", resumed)
+	}
+}
+
+func TestPendingAgentSwitchFreshStartUsesReservedProviderScope(t *testing.T) {
+	st := openStore(t)
+	now := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	record, found, err := st.GetSession(context.Background(), testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession: found=%v err=%v", found, err)
+	}
+	record.Metadata.ProviderConversationID = "source-provider-thread"
+	if err := st.UpdateSession(context.Background(), record); err != nil {
+		t.Fatalf("seed source provider handle: %v", err)
+	}
+	if _, err := st.CreateConversation(context.Background(), "switch-fresh-conversation",
+		domain.ConversationScopeSession, testProject, testSession, now); err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	var started ports.ChatStartConfig
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: newFakeConversation(), startCfg: &started}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "unused-switch-fresh-conversation" },
+		Now:     func() time.Time { return now.Add(time.Minute) },
+	})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+
+	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ProviderScopeID: "switch-fresh:provider",
+	})
+	if err != nil {
+		t.Fatalf("Start pending fresh target: %v", err)
+	}
+	if started.ProviderScopeID != "switch-fresh:provider" {
+		t.Fatalf("fresh target provider scope = %q, want reserved switch boundary", started.ProviderScopeID)
+	}
+}
+
+func TestPendingAgentSwitchResumeUsesReservedProviderScope(t *testing.T) {
+	st := openStore(t)
+	now := time.Date(2026, 8, 21, 11, 0, 0, 0, time.UTC)
+	record, found, err := st.GetSession(context.Background(), testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession: found=%v err=%v", found, err)
+	}
+	record.Metadata.ProviderConversationID = "source-provider-thread"
+	if err := st.UpdateSession(context.Background(), record); err != nil {
+		t.Fatalf("seed source provider handle: %v", err)
+	}
+	if _, err := st.CreateConversation(context.Background(), "switch-resume-conversation",
+		domain.ConversationScopeSession, testProject, testSession, now); err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	resumedConversation := newFakeConversation()
+	resumedConversation.providerConversationID = "target-provider-thread"
+	var resumed ports.ChatResumeConfig
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: resumedConversation, resumeCfg: &resumed}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "unused-switch-resume-conversation" },
+		Now:     func() time.Time { return now.Add(time.Minute) },
+	})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+
+	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ProviderConversationID:  "target-provider-thread",
+		ProviderScopeID:         "switch-resume:provider",
+		SkipNativeHistoryImport: true,
+	})
+	if err != nil {
+		t.Fatalf("Start pending resumed target: %v", err)
+	}
+	if resumed.ProviderConversationID != "target-provider-thread" ||
+		resumed.ProviderScopeID != "switch-resume:provider" {
+		t.Fatalf("resumed target config = %#v, want target handle in reserved switch scope", resumed)
+	}
+}
+
+func TestOrdinaryResumeRejectsProviderHandleOutsideActiveBranch(t *testing.T) {
+	st := openStore(t)
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	record, found, err := st.GetSession(context.Background(), testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession: found=%v err=%v", found, err)
+	}
+	record.Metadata.ProviderConversationID = "active-provider-thread"
+	if err := st.UpdateSession(context.Background(), record); err != nil {
+		t.Fatalf("seed active provider handle: %v", err)
+	}
+	if _, err := st.CreateConversation(context.Background(), "ordinary-resume-conversation",
+		domain.ConversationScopeSession, testProject, testSession, now); err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	resumeCalls := 0
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{
+			conv: newFakeConversation(),
+			resume: func(ports.ChatResumeConfig) (ports.ChatConversation, error) {
+				resumeCalls++
+				return newFakeConversation(), nil
+			},
+		}},
+		Log:   slog.New(slog.DiscardHandler),
+		NewID: func() string { return "unused-ordinary-resume-conversation" },
+	})
+
+	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ProviderConversationID:  "unowned-provider-thread",
+		SkipNativeHistoryImport: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match session handle") {
+		t.Fatalf("ordinary resume error = %v, want active-branch handle mismatch", err)
+	}
+	if resumeCalls != 0 {
+		t.Fatalf("driver resume calls = %d, want mismatch rejected before provider launch", resumeCalls)
+	}
+}
+
+func seedProjectConversationWithProviderHistory(
+	t *testing.T,
+	st *sqlite.Store,
+	conversationID string,
+	now time.Time,
+) (domain.ConversationRecord, domain.ConversationBranch) {
+	t.Helper()
+	ctx := context.Background()
+	record, found, err := st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession: found=%v err=%v", found, err)
+	}
+	record.Metadata.ProviderConversationID = "source-provider-thread"
+	record.Metadata.ControllerGeneration = "source-generation"
+	if err := st.UpdateSession(ctx, record); err != nil {
+		t.Fatalf("seed source provider owner: %v", err)
+	}
+	conversation, err := st.CreateConversation(ctx, conversationID,
+		domain.ConversationScopeProject, testProject, testSession, now)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	if err := st.UpsertActivity(ctx, conversation.ID, "", domain.ConversationActivity{
+		ID: "source-history", Kind: domain.ActivityKindSystem,
+		Status: domain.ActivityStatusCompleted, Summary: "prior provider history",
+		ProviderItemID: "source-provider-history",
+	}, now.Add(time.Second)); err != nil {
+		t.Fatalf("seed provider history: %v", err)
+	}
+	conversation, err = st.ConversationForSession(ctx, testSession)
+	if err != nil {
+		t.Fatalf("ConversationForSession: %v", err)
+	}
+	active, err := st.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
+	if err != nil {
+		t.Fatalf("ConversationBranch: %v", err)
+	}
+	return conversation, active
+}
+
+func TestFreshProjectStartPersistsNewProviderScopeForSubsequentResume(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 21, 13, 0, 0, 0, time.UTC)
+	before, sourceBranch := seedProjectConversationWithProviderHistory(
+		t, st, "fresh-project-conversation", now)
+	targetSession, err := st.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		Mode: domain.SessionModeChat, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("Create target session: %v", err)
+	}
+
+	freshConversation := newFakeConversation()
+	freshConversation.providerConversationID = "fresh-provider-thread"
+	var started ports.ChatStartConfig
+	nextID := 0
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: freshConversation, startCfg: &started}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID: func() string {
+			nextID++
+			return fmt.Sprintf("fresh-project-%d", nextID)
+		},
+		Now: func() time.Time { return now.Add(2 * time.Second) },
+	})
+	lifecycleManager := lifecycle.New(st, nil)
+
+	controller, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: targetSession.ID, ProjectID: testProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			if result.ProviderBoundary == nil {
+				return chatsvc.ControllerCommit{}, errors.New("fresh provider boundary was not reserved")
+			}
+			if err := lifecycleManager.MarkChatSpawned(ctx, targetSession.ID, domain.SessionMetadata{
+				ProviderConversationID: result.ProviderConversationID,
+				ControllerGeneration:   result.ControllerGeneration,
+			}, *result.ProviderBoundary); err != nil {
+				return chatsvc.ControllerCommit{}, err
+			}
+			committed := result.Conversation
+			committed.ActiveBranchID = result.ProviderBoundary.ID
+			committed.UpdatedAt = result.ProviderBoundary.CreatedAt
+			return chatsvc.ControllerCommit{Conversation: committed}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start fresh project provider: %v", err)
+	}
+	if started.ProviderScopeID == "" || started.ProviderScopeID == sourceBranch.ProviderScopeID {
+		t.Fatalf("fresh provider scope = %q, want new scope distinct from source %q",
+			started.ProviderScopeID, sourceBranch.ProviderScopeID)
+	}
+	after, err := st.ConversationForSession(ctx, targetSession.ID)
+	if err != nil {
+		t.Fatalf("ConversationForSession after fresh start: %v", err)
+	}
+	if after.ActiveBranchID == before.ActiveBranchID || after.ActiveBranchID != started.ProviderScopeID {
+		t.Fatalf("active branch = %q, want reserved provider scope %q (source %q)",
+			after.ActiveBranchID, started.ProviderScopeID, before.ActiveBranchID)
+	}
+	freshBranch, err := st.ConversationBranch(ctx, after.ID, after.ActiveBranchID)
+	if err != nil {
+		t.Fatalf("fresh ConversationBranch: %v", err)
+	}
+	if freshBranch.ProviderScopeID != started.ProviderScopeID ||
+		freshBranch.ProviderConversationID != "fresh-provider-thread" ||
+		freshBranch.ParentBranchID != before.ActiveBranchID ||
+		freshBranch.SessionID != targetSession.ID {
+		t.Fatalf("fresh provider boundary = %+v", freshBranch)
+	}
+	if controller.ProviderConversationID() != "fresh-provider-thread" {
+		t.Fatalf("fresh controller provider handle = %q", controller.ProviderConversationID())
+	}
+	if err := svc.Stop(ctx, targetSession.ID); err != nil {
+		t.Fatalf("Stop fresh controller: %v", err)
+	}
+
+	resumedConversation := newFakeConversation()
+	resumedConversation.providerConversationID = "fresh-provider-thread"
+	var resumed ports.ChatResumeConfig
+	restarted := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: resumedConversation, resumeCfg: &resumed}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "fresh-project-resume-generation" },
+		Now:     func() time.Time { return now.Add(3 * time.Second) },
+	})
+	t.Cleanup(func() { _ = restarted.Stop(context.Background(), targetSession.ID) })
+	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
+		SessionID: targetSession.ID, ProjectID: testProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ProviderConversationID:  "fresh-provider-thread",
+		SkipNativeHistoryImport: true,
+	}); err != nil {
+		t.Fatalf("Resume fresh project provider: %v", err)
+	}
+	if resumed.ProviderScopeID != freshBranch.ProviderScopeID {
+		t.Fatalf("resumed provider scope = %q, want persisted %q",
+			resumed.ProviderScopeID, freshBranch.ProviderScopeID)
+	}
+}
+
+func TestFreshProjectProviderStartFailurePreservesSourceHeadAndOwner(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 21, 14, 0, 0, 0, time.UTC)
+	before, sourceBranch := seedProjectConversationWithProviderHistory(
+		t, st, "failed-fresh-project-conversation", now)
+	providerErr := errors.New("provider unavailable")
+	var attemptedScope string
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{
+			start: func(cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+				attemptedScope = cfg.ProviderScopeID
+				return nil, providerErr
+			},
+		}},
+		Log:   slog.New(slog.DiscardHandler),
+		NewID: func() string { return "failed-fresh-project-boundary" },
+		Now:   func() time.Time { return now.Add(2 * time.Second) },
+	})
+
+	_, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+	})
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("Start error = %v, want provider failure", err)
+	}
+	if attemptedScope == "" || attemptedScope == sourceBranch.ProviderScopeID {
+		t.Fatalf("attempted provider scope = %q, want reserved fresh scope", attemptedScope)
+	}
+	after, err := st.ConversationForSession(ctx, testSession)
+	if err != nil {
+		t.Fatalf("ConversationForSession after failure: %v", err)
+	}
+	if after.ActiveBranchID != before.ActiveBranchID {
+		t.Fatalf("active branch after provider failure = %q, want source %q",
+			after.ActiveBranchID, before.ActiveBranchID)
+	}
+	record, found, err := st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession after failure: found=%v err=%v", found, err)
+	}
+	if record.Metadata.ProviderConversationID != "source-provider-thread" ||
+		record.Metadata.ControllerGeneration != "source-generation" {
+		t.Fatalf("provider owner after failure = handle %q generation %q",
+			record.Metadata.ProviderConversationID, record.Metadata.ControllerGeneration)
+	}
+}
+
+func TestFreshProjectControllerReadyFailurePreservesSourceHeadAndOwner(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 21, 15, 0, 0, 0, time.UTC)
+	before, sourceBranch := seedProjectConversationWithProviderHistory(
+		t, st, "failed-fresh-project-ready-conversation", now)
+	readyErr := errors.New("lifecycle ownership commit failed")
+	var reservedBoundary *domain.ConversationBranch
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: func() *fakeConversation {
+			conversation := newFakeConversation()
+			conversation.providerConversationID = "fresh-provider-thread"
+			return conversation
+		}()}},
+		Log:   slog.New(slog.DiscardHandler),
+		NewID: func() string { return "failed-ready-provider-boundary" },
+		Now:   func() time.Time { return now.Add(2 * time.Second) },
+	})
+
+	_, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			reservedBoundary = result.ProviderBoundary
+			return chatsvc.ControllerCommit{}, readyErr
+		},
+	})
+	if !errors.Is(err, readyErr) {
+		t.Fatalf("Start error = %v, want ControllerReady failure", err)
+	}
+	if reservedBoundary == nil || reservedBoundary.ID == "" ||
+		reservedBoundary.ID == sourceBranch.ProviderScopeID ||
+		reservedBoundary.ProviderScopeID != reservedBoundary.ID {
+		t.Fatalf("reserved provider boundary = %+v, source scope %q",
+			reservedBoundary, sourceBranch.ProviderScopeID)
+	}
+	after, err := st.ConversationForSession(ctx, testSession)
+	if err != nil {
+		t.Fatalf("ConversationForSession after callback failure: %v", err)
+	}
+	if after.ActiveBranchID != before.ActiveBranchID {
+		t.Fatalf("active branch after callback failure = %q, want source %q",
+			after.ActiveBranchID, before.ActiveBranchID)
+	}
+	record, found, err := st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession after callback failure: found=%v err=%v", found, err)
+	}
+	if record.Metadata.ProviderConversationID != "source-provider-thread" ||
+		record.Metadata.ControllerGeneration != "source-generation" {
+		t.Fatalf("provider owner after callback failure = handle %q generation %q",
+			record.Metadata.ProviderConversationID, record.Metadata.ControllerGeneration)
+	}
+	if _, err := st.ConversationBranch(ctx, before.ID, reservedBoundary.ID); !errors.Is(err, domain.ErrNoConversationBranch) {
+		t.Fatalf("failed callback boundary lookup error = %v, want ErrNoConversationBranch", err)
 	}
 }
 
@@ -1468,9 +1851,15 @@ func TestFreshProjectControllerRecordsNativeContextBoundary(t *testing.T) {
 
 	var idMu sync.Mutex
 	nextID := 0
+	driver := fakeDriver{}
+	driver.start = func(cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+		conv := newFakeConversation()
+		conv.providerConversationID = "thread-" + cfg.ProviderScopeID
+		return conv, nil
+	}
 	svc := chatsvc.New(chatsvc.Options{
 		Store: st, Sessions: st,
-		Drivers: fakeRegistry{driver: fakeDriver{conv: newFakeConversation()}},
+		Drivers: fakeRegistry{driver: driver},
 		Log:     slog.New(slog.DiscardHandler),
 		NewID: func() string {
 			idMu.Lock()
@@ -1480,13 +1869,13 @@ func TestFreshProjectControllerRecordsNativeContextBoundary(t *testing.T) {
 		},
 		Now: func() time.Time { return now.Add(time.Minute) },
 	})
-	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+	start := chatsvc.StartConfig{
 		SessionID: replacement, ProjectID: testProject, Kind: domain.KindOrchestrator,
 		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
-	}); err != nil {
+	}
+	if _, err := svc.Start(ctx, start); err != nil {
 		t.Fatalf("Start replacement: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Stop(context.Background(), replacement) })
 
 	rebound, err := st.ConversationForSession(ctx, replacement)
 	if err != nil {
@@ -1502,6 +1891,7 @@ func TestFreshProjectControllerRecordsNativeContextBoundary(t *testing.T) {
 	if len(snapshot.Activities) != 2 {
 		t.Fatalf("activities = %#v, want old history plus context boundary", snapshot.Activities)
 	}
+	firstScope := snapshot.ActiveBranch.ProviderScopeID
 	boundary := snapshot.Activities[1]
 	if boundary.Kind != domain.ActivityKindSystem ||
 		boundary.ProviderItemID != domain.ConversationContextResetProviderItemID(replacement) {
@@ -1513,6 +1903,43 @@ func TestFreshProjectControllerRecordsNativeContextBoundary(t *testing.T) {
 	}
 	if detail["event"] != "context.reset" {
 		t.Fatalf("boundary event = %q", detail["event"])
+	}
+	firstTurn, err := svc.Send(ctx, replacement, ports.ChatUserMessage{
+		Text: "first prompt in fresh context", ClientMessageID: "fresh-context-first-prompt",
+	})
+	if err != nil {
+		t.Fatalf("Send first fresh-context prompt: %v", err)
+	}
+	anchor, err := st.ConversationEditAnchor(ctx, rebound.ID, firstTurn.ID)
+	if err != nil {
+		t.Fatalf("ConversationEditAnchor first fresh-context prompt: %v", err)
+	}
+	if anchor.HasPriorContext {
+		t.Fatalf("first fresh-context prompt sees display-only reset marker as prior context: %+v", anchor)
+	}
+
+	if err := svc.Stop(ctx, replacement); err != nil {
+		t.Fatalf("Stop first replacement: %v", err)
+	}
+	if _, err := svc.Start(ctx, start); err != nil {
+		t.Fatalf("Start second fresh provider: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), replacement) })
+	secondSnapshot, err := st.LoadConversationSnapshot(ctx, rebound.ID)
+	if err != nil {
+		t.Fatalf("LoadConversationSnapshot second boundary: %v", err)
+	}
+	if len(secondSnapshot.Activities) != 2 {
+		t.Fatalf("activities after second start = %#v, want the session-scoped boundary to remain unique",
+			secondSnapshot.Activities)
+	}
+	secondScope := secondSnapshot.ActiveBranch.ProviderScopeID
+	if secondScope == firstScope {
+		t.Fatalf("second provider scope = %q, reused first scope", secondScope)
+	}
+	if secondSnapshot.Activities[1].ProviderItemID != boundary.ProviderItemID {
+		t.Fatalf("session boundary changed across provider scopes: second = %#v, first = %#v",
+			secondSnapshot.Activities[1], boundary)
 	}
 }
 
@@ -4198,6 +4625,21 @@ type failingProjectStore struct {
 	failOnce   sync.Once
 }
 
+type recordingCleanupStore struct {
+	chatsvc.Store
+	called chan struct{}
+}
+
+func (s *recordingCleanupStore) CleanupOwnedControllerWork(
+	ctx context.Context,
+	session domain.SessionID,
+	conversationID, generation string,
+	now time.Time,
+) (bool, error) {
+	s.called <- struct{}{}
+	return s.Store.CleanupOwnedControllerWork(ctx, session, conversationID, generation, now)
+}
+
 func (s *failingProjectStore) ProjectProviderEvent(
 	ctx context.Context, conversationID string, session domain.SessionID,
 	generation, providerEventID, method, payloadJSON string, now time.Time,
@@ -4339,6 +4781,23 @@ func TestControllerStateChangesOnlyAfterProjectionCommits(t *testing.T) {
 	}
 	if got := h.ctrl.State(); got != want {
 		t.Fatalf("controller state after rolled-back projection = %q, want committed %q", got, want)
+	}
+}
+
+func TestControllerStoppedEventUsesGenerationOwnedCleanup(t *testing.T) {
+	var recordingStore *recordingCleanupStore
+	h := newHarnessWithConversationAndStore(t, nil, func(st *sqlite.Store) chatsvc.Store {
+		recordingStore = &recordingCleanupStore{Store: st, called: make(chan struct{}, 2)}
+		return recordingStore
+	})
+
+	h.conv.emit(ports.ChatEvent{
+		Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped,
+	})
+	select {
+	case <-recordingStore.called:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("explicit controller-stopped event did not use generation-owned cleanup")
 	}
 }
 

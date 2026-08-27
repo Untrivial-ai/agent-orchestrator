@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { ArrowUp, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ConversationContentSummary } from "../../types/conversation";
@@ -11,6 +11,7 @@ export interface HumanMessageEditorProps {
 	content: ConversationContentSummary[];
 	pending: boolean;
 	busy: boolean;
+	reconstructedContext?: boolean;
 	error?: string;
 	onDraftChange?: (text: string) => void;
 	onCancel: () => void;
@@ -22,6 +23,7 @@ export function HumanMessageEditor({
 	content,
 	pending,
 	busy,
+	reconstructedContext = false,
 	error,
 	onDraftChange,
 	onCancel,
@@ -30,6 +32,7 @@ export function HumanMessageEditor({
 	const { t } = useTranslation();
 	const [draft, setDraft] = useState(text);
 	const textarea = useRef<HTMLTextAreaElement>(null);
+	const reconstructedContextId = useId();
 	const sendDisabled = pending || busy || draft.trim().length === 0;
 	const busyMessage = busy ? t("chat.edit.stopCurrentTurn") : undefined;
 
@@ -68,6 +71,7 @@ export function HumanMessageEditor({
 			}}
 			onKeyDown={onKeyDown}
 			aria-label={t("chat.edit.label")}
+			aria-describedby={reconstructedContext ? reconstructedContextId : undefined}
 			autoFocus
 			rows={2}
 			className="chat-composer-scrollbar max-h-56 min-h-[3.25rem] w-full resize-none overflow-y-auto overscroll-contain bg-transparent px-0 py-1 text-sm leading-relaxed text-foreground outline-none"
@@ -78,6 +82,11 @@ export function HumanMessageEditor({
 			imageLabel={t("chat.edit.image")}
 			className="mt-2"
 		/>
+		{reconstructedContext ? (
+			<p id={reconstructedContextId} className="px-1.5 text-pretty text-[11px] text-muted-foreground">
+				{t("chat.edit.reconstructedContext")}
+			</p>
+		) : null}
 		<div className="mt-2 flex min-h-7 items-center justify-end gap-1.5">
 			{error ? (
 				<span role="alert" className="mr-auto text-[11px] text-destructive">

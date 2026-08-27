@@ -43,11 +43,12 @@ func (d fixedSessionModeDefaults) DefaultSessionMode(context.Context) domain.Ses
 // chat launcher. Anything else means two writers on one conversation.
 
 type recordingLauncher struct {
-	preflightErr error
-	startErr     error
-	turnErr      error
-	live         bool
-	afterReady   func()
+	preflightErr     error
+	startErr         error
+	turnErr          error
+	live             bool
+	afterReady       func()
+	providerBoundary *domain.ConversationBranch
 
 	preflighted          []domain.AgentHarness
 	preflightPermissions []ports.PermissionMode
@@ -83,6 +84,7 @@ func (l *recordingLauncher) StartChat(_ context.Context, cfg ChatStart) (ChatSta
 	started := ChatStarted{
 		ProviderConversationID: "thread-1",
 		ControllerGeneration:   "gen-1",
+		ProviderBoundary:       l.providerBoundary,
 	}
 	if cfg.ControllerGeneration != "" {
 		started.ControllerGeneration = cfg.ControllerGeneration
@@ -560,6 +562,30 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 
 	if len(launcher.turns) != 1 || launcher.turns[0] == "" {
 		t.Fatalf("initial prompt was not delivered as a turn: %v", launcher.turns)
+	}
+}
+
+func TestChatSpawnCommitsReservedProviderBoundaryWithLifecycleOwner(t *testing.T) {
+	boundary := &domain.ConversationBranch{
+		ID: "fresh-provider-boundary", ConversationID: "project-conversation", SessionID: "mer-1",
+		ProviderConversationID: "thread-1", ParentBranchID: "source-provider-boundary",
+		ProviderScopeID: "fresh-provider-boundary",
+	}
+	launcher := &recordingLauncher{providerBoundary: boundary}
+	mgr, _, _ := newChatManager(launcher)
+	lcm := mgr.lcm.(*fakeLCM)
+
+	if _, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: chatTestProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		RequestedMode: domain.SessionModeChat,
+	}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if len(lcm.chatBoundaries) != 1 || lcm.chatBoundaries[0].ID != boundary.ID {
+		t.Fatalf("lifecycle Chat boundaries = %+v, want %q", lcm.chatBoundaries, boundary.ID)
+	}
+	if lcm.completed != 1 {
+		t.Fatalf("completed lifecycle launches = %d, want 1 atomic Chat commit", lcm.completed)
 	}
 }
 
