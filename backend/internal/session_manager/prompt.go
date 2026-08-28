@@ -35,8 +35,18 @@ type systemPromptConfig struct {
 	OrchestratorSessionID string
 	ProjectRules          string
 	OrchestratorRules     string
+	StartupInstructions   string
 	AdditionalSections    []string
 }
+
+// DelegatedTaskTitleStartupPrompt is the trusted startup instruction for a
+// direct delegated task with a nonblank brief. It deliberately refers to the
+// worker's environment instead of embedding the allocated session id or task
+// brief in a later message.
+const DelegatedTaskTitleStartupPrompt = `Before beginning implementation, choose a concise title of at most 20 characters and run:
+ao session rename "$AO_SESSION_ID" "<title>"
+
+If self-renaming is unavailable, continue implementation; the provisional display name remains the fallback.`
 
 type projectRulesConfig struct {
 	ProjectPath    string
@@ -84,6 +94,9 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 		sections = append(sections, workerMultiPRPrompt(), workerContainerLabelPrompt())
 		if rules := strings.TrimSpace(cfg.ProjectRules); rules != "" {
 			sections = append(sections, "## Project Rules\n"+rules)
+		}
+		if instructions := strings.TrimSpace(cfg.StartupInstructions); instructions != "" {
+			sections = append(sections, instructions)
 		}
 	default:
 		return ""

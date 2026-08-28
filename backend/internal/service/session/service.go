@@ -156,8 +156,6 @@ type Service struct {
 	dataDir             string
 	telemetry           ports.EventSink
 	logger              *slog.Logger
-	backgroundContext   context.Context
-	runBackground       func(func())
 	orchestratorLocksMu sync.Mutex
 	orchestratorLocks   map[domain.ProjectID]*sync.Mutex
 	workspaceCache      *workspaceCache
@@ -191,10 +189,6 @@ type Deps struct {
 	DataDir   string
 	Telemetry ports.EventSink
 	Logger    *slog.Logger
-	// BackgroundContext owns best-effort work that must survive an HTTP request
-	// returning but stop with the daemon. It defaults to context.Background for
-	// focused service tests and non-daemon callers.
-	BackgroundContext context.Context
 	// SignalCapable gates the no_signal status downgrade per harness; daemon
 	// wiring passes activitydispatch.SupportsHarness. Left nil, no session is
 	// ever downgraded to no_signal.
@@ -203,11 +197,7 @@ type Deps struct {
 
 // NewWithDeps wires a session service with optional PR-claim dependencies.
 func NewWithDeps(d Deps) *Service {
-	backgroundContext := d.BackgroundContext
-	if backgroundContext == nil {
-		backgroundContext = context.Background()
-	}
-	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext}
+	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger}
 	if s.prClaimer == nil {
 		if w, ok := d.Store.(ports.PRClaimer); ok {
 			s.prClaimer = w

@@ -245,7 +245,6 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Tracker:           tracker,
 		Telemetry:         telemetry,
 		Logger:            log,
-		BackgroundContext: ctx,
 		// no_signal only makes sense for harnesses whose adapters install
 		// activity hooks; the deriver registry is the source of truth for that.
 		SignalCapable: activitydispatch.SupportsHarness,

@@ -3363,9 +3363,6 @@ func TestDelegateTaskPassesAttachmentsToSpawnConfig(t *testing.T) {
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
 	fc := &fakeCommander{}
 	svc := NewWithDeps(Deps{Manager: fc, Store: st})
-	// This test only inspects the worker spawn. Keep asynchronous title
-	// refinement from issuing a second Spawn against the recording fake.
-	svc.runBackground = func(func()) {}
 
 	_, err := svc.DelegateTask(context.Background(), DelegateTaskInput{
 		ProjectID:      "mer",
