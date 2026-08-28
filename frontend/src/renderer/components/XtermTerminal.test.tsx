@@ -13,6 +13,14 @@ const state = vi.hoisted(() => ({
 	lifecycle: [] as string[],
 	linkHandler: null as null | ((event: MouseEvent, uri: string) => void),
 	queueViewportSyncOnOpen: false,
+	sessionLinkProvider: null as null | {
+		provideLinks: (
+			line: number,
+			callback: (
+				links?: Array<{ text: string; activate: (event: MouseEvent) => void }>,
+			) => void,
+		) => void;
+	},
 	searchAddon: null as null | {
 		clearDecorations: ReturnType<typeof vi.fn>;
 		findNext: ReturnType<typeof vi.fn>;
@@ -22,17 +30,18 @@ const state = vi.hoisted(() => ({
 	mouseMoveListener: vi.fn(),
 	lastTerminal: null as null | {
 		write(data: Uint8Array, done?: () => void): void;
+		cols: number;
 		keyHandler?: (event: KeyboardEvent) => boolean;
 		wheelHandler?: (event: WheelEvent) => boolean;
 		selection: string;
 		options: Record<string, unknown>;
-		cols: number;
 		modes: { bracketedPasteMode: boolean; mouseTrackingMode: string };
 		buffer: {
 			active: {
 				baseY: number;
 				type: string;
 				viewportY: number;
+				length: number;
 				getLine: (
 					row: number,
 				) =>
@@ -101,6 +110,7 @@ vi.mock("@xterm/xterm", () => ({
 				baseY: 0,
 				type: "normal",
 				viewportY: 0,
+				length: 0,
 				getLine: (row: number) => this.bufferLines[row],
 			},
 		};
@@ -210,6 +220,10 @@ vi.mock("@xterm/xterm", () => ({
 		attachCustomWheelEventHandler(listener: (event: WheelEvent) => boolean) {
 			this.wheelHandler = listener;
 		}
+		registerLinkProvider(provider: typeof state.sessionLinkProvider) {
+			state.sessionLinkProvider = provider;
+			return { dispose: () => undefined };
+		}
 		unicode = { activeVersion: "" };
 	},
 }));
@@ -281,6 +295,7 @@ describe("XtermTerminal", () => {
 		state.lastTerminal = null;
 		state.linkHandler = null;
 		state.queueViewportSyncOnOpen = false;
+		state.sessionLinkProvider = null;
 		state.searchAddon = null;
 		state.mouseMoveListener.mockClear();
 		setNavigatorPlatform("Linux x86_64");
@@ -2345,6 +2360,75 @@ describe("XtermTerminal", () => {
 		expect(onLinkOpen).toHaveBeenCalledWith("http://localhost:3000");
 		expect(open).not.toHaveBeenCalled();
 		open.mockRestore();
+	});
+
+	it.each(["plain", "OSC 8"])("activates %s session links inside AO", (kind) => {
+		const onSessionLinkOpen = vi.fn();
+		render(<XtermTerminal onSessionLinkOpen={onSessionLinkOpen} theme="dark" />);
+		state.lastTerminal!.modes.mouseTrackingMode = "none";
+		const osc = state.lastTerminal!.options.linkHandler as {
+			activate: (event: MouseEvent, uri: string) => void;
+		};
+		if (kind === "OSC 8") {
+			osc.activate({} as MouseEvent, "ao://sessions/project/session");
+		} else {
+			state.lastTerminal!.buffer.active.getLine = () => ({
+				isWrapped: false,
+				translateToString: () => "ao://sessions/project/session",
+			});
+			state.sessionLinkProvider!.provideLinks(1, (links) =>
+				links![0]!.activate({} as MouseEvent),
+			);
+		}
+		expect(onSessionLinkOpen).toHaveBeenCalledWith("ao://sessions/project/session");
+	});
+
+	it("requires Ctrl for a session link while an application captures mouse input", () => {
+		const onSessionLinkOpen = vi.fn();
+		render(<XtermTerminal onSessionLinkOpen={onSessionLinkOpen} theme="dark" />);
+		state.lastTerminal!.modes.mouseTrackingMode = "any";
+		const handler = (state.lastTerminal!.options.linkHandler as {
+			activate: (event: MouseEvent, uri: string) => void;
+		}).activate;
+		handler({ ctrlKey: false } as MouseEvent, "ao://sessions/project/session");
+		expect(onSessionLinkOpen).not.toHaveBeenCalled();
+		handler({ ctrlKey: true } as MouseEvent, "ao://sessions/project/session");
+		expect(onSessionLinkOpen).toHaveBeenCalledTimes(1);
+	});
+
+	it("routes malformed AO OSC links to in-app feedback without external dispatch", () => {
+		const open = vi.spyOn(window, "open").mockReturnValue(null);
+		const onSessionLinkOpen = vi.fn();
+		render(<XtermTerminal onSessionLinkOpen={onSessionLinkOpen} theme="dark" />);
+		state.lastTerminal!.modes.mouseTrackingMode = "none";
+		const handler = (state.lastTerminal!.options.linkHandler as {
+			activate: (event: MouseEvent, uri: string) => void;
+		}).activate;
+		handler({} as MouseEvent, "ao://sessions/project/session/kill");
+		expect(onSessionLinkOpen).toHaveBeenCalledWith("ao://sessions/project/session/kill");
+		expect(open).not.toHaveBeenCalled();
+		open.mockRestore();
+	});
+
+	it("detects a session URL wrapped across terminal rows without consuming punctuation", () => {
+		const onSessionLinkOpen = vi.fn();
+		render(<XtermTerminal onSessionLinkOpen={onSessionLinkOpen} theme="dark" />);
+		state.lastTerminal!.modes.mouseTrackingMode = "none";
+		state.lastTerminal!.cols = 16;
+		const rows = ["ao://sessions/pr", "oject/session)."];
+		state.lastTerminal!.buffer.active.length = rows.length;
+		state.lastTerminal!.buffer.active.getLine = (line) =>
+			line >= rows.length
+				? undefined
+				: {
+						isWrapped: line === 1,
+						translateToString: () => rows[line]!,
+					};
+		state.sessionLinkProvider!.provideLinks(2, (links) => {
+			expect(links?.[0]?.text).toBe("ao://sessions/project/session");
+			links?.[0]?.activate({} as MouseEvent);
+		});
+		expect(onSessionLinkOpen).toHaveBeenCalledWith("ao://sessions/project/session");
 	});
 
 	it.each([

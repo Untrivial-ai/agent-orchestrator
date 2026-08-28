@@ -684,6 +684,7 @@
 	"notify.clearOneShort": "清除通知",
 	"notify.couldNotClearAll": "无法清除通知",
 	"notify.couldNotClearOne": "无法清除通知",
+	"sessionLink.dismissError": "关闭会话链接错误",
 	"notify.couldNotMarkAllRead": "无法将通知全部标为已读",
 	"notify.earlierLoadFailed": "无法加载更早的通知。",
 	"notify.emptyAll": "暂无通知。",

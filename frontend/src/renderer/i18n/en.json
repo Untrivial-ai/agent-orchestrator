@@ -666,6 +666,7 @@
 	"notify.clearOneShort": "Clear notification",
 	"notify.couldNotClearAll": "Could not clear notifications",
 	"notify.couldNotClearOne": "Could not clear notification",
+	"sessionLink.dismissError": "Dismiss session link error",
 	"notify.couldNotMarkAllRead": "Could not mark notifications read",
 	"notify.earlierLoadFailed": "Couldn’t load earlier notifications.",
 	"notify.emptyAll": "No notifications yet.",
