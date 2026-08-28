@@ -32,6 +32,8 @@ import type {
 	ChatConfigOptionValue,
 	ChatModel,
 	ChatSkill,
+	ChatEditOutcome,
+	ChatSteerOutcome,
 	PlanStep,
 	PlanStepStatus,
 	SessionMode,
@@ -50,6 +52,8 @@ export interface ConversationSendInput {
 	text: string;
 	attachments?: WireImageContent[];
 	resources?: WireResourceContent[];
+	/** Caller-owned durable idempotency key used for crash-safe retries. */
+	clientMessageId?: string;
 }
 
 export const conversationQueryRoot = ["conversation"] as const;
@@ -179,7 +183,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 					params: { path: { sessionId: sessionId as string } },
 					// A stable id per attempt makes a retry idempotent: the daemon
 					// answers `duplicate` instead of opening a second provider turn.
-					body: { ...input, clientMessageId: crypto.randomUUID() },
+					body: { ...input, clientMessageId: input.clientMessageId ?? crypto.randomUUID() },
 				},
 			);
 			if (error) throw error;
@@ -328,12 +332,12 @@ export function useConversationCommands(sessionId: string | undefined) {
 	 * means "wait and try again", and one means this harness cannot do it at all.
 	 */
 	const steer = useMutation({
-		mutationFn: async (text: string) => {
+		mutationFn: async ({ text, clientMessageId }: { text: string; clientMessageId?: string }) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/steer",
 				{
 					params: { path: { sessionId: sessionId as string } },
-					body: { text, clientMessageId: crypto.randomUUID() },
+					body: { text, clientMessageId: clientMessageId ?? crypto.randomUUID() },
 				},
 			);
 			if (error) throw error;
@@ -413,14 +417,20 @@ export function useConversationCommands(sessionId: string | undefined) {
 	});
 
 	const editMessage = useMutation({
-		mutationFn: async ({ turnId, text }: { turnId: string; text: string }) => {
+		mutationFn: async ({
+			turnId,
+			text,
+			clientMessageId,
+		}: {
+			turnId: string;
+			text: string;
+			clientMessageId?: string;
+		}) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/edit",
 				{
-					params: {
-						path: { sessionId: sessionId as string, turnId },
-					},
-					body: { text, clientMessageId: crypto.randomUUID() },
+					params: { path: { sessionId: sessionId as string, turnId } },
+					body: { text, clientMessageId: clientMessageId ?? crypto.randomUUID() },
 				},
 			);
 			if (error) throw error;
@@ -484,13 +494,37 @@ export function useConversationCommands(sessionId: string | undefined) {
 			error: retryTurn.error ? apiErrorMessage(retryTurn.error) : undefined,
 			turnId: retryTurn.variables,
 		},
-		editMessage: (turnId: string, text: string) => editMessage.mutateAsync({ turnId, text }),
+		editMessage: async (
+			turnId: string,
+			text: string,
+			clientMessageId?: string,
+		): Promise<ChatEditOutcome> => {
+			try {
+				await editMessage.mutateAsync({ turnId, text, clientMessageId });
+				return { status: "accepted" };
+			} catch (error) {
+				const outcome = editNonAcceptance(error);
+				if (outcome) return outcome;
+				throw error;
+			}
+		},
 		editMessagePending: editMessage.isPending,
 		editMessageError: editMessage.error ? apiErrorMessage(editMessage.error) : undefined,
 		activateBranch: (branchId: string) => activateBranch.mutateAsync(branchId),
 		activateBranchPending: activateBranch.isPending,
-		activateBranchError: activateBranch.error ? apiErrorMessage(activateBranch.error) : undefined,
-		steer: (text: string) => steer.mutateAsync(text),
+		activateBranchError: activateBranch.error
+			? apiErrorMessage(activateBranch.error)
+			: undefined,
+		steer: async (text: string, clientMessageId?: string): Promise<ChatSteerOutcome> => {
+			try {
+				await steer.mutateAsync({ text, clientMessageId });
+				return { status: "accepted" };
+			} catch (error) {
+				const outcome = steerNonAcceptance(error);
+				if (outcome) return outcome;
+				throw error;
+			}
+		},
 		promoteQueuedTurn: (turnId: string) => promoteQueuedTurn.mutateAsync(turnId),
 		steerPending: steer.isPending,
 		/**
@@ -533,6 +567,8 @@ function steerRefusal(error: unknown): string | undefined {
 	switch (code) {
 		case "CHAT_NO_ACTIVE_TURN":
 			return "The turn finished before this landed. Send it as a message instead.";
+		case "CHAT_INTERFACE_TRANSITION":
+			return "The session is switching interfaces. This guidance was not delivered; send it after the switch finishes.";
 		case "CHAT_TURN_NOT_STEERABLE":
 			return `${apiErrorMessage(error)} Try again once it finishes.`;
 		case "CHAT_STEER_UNSUPPORTED":
@@ -543,6 +579,47 @@ function steerRefusal(error: unknown): string | undefined {
 		default:
 			return apiErrorMessage(error);
 	}
+}
+
+const DEFINITIVE_STEER_NON_ACCEPTANCE_CODES = new Set([
+	"CHAT_NO_ACTIVE_TURN",
+	"CHAT_INTERFACE_TRANSITION",
+	"CHAT_TURN_NOT_STEERABLE",
+	"CHAT_STEER_UNSUPPORTED",
+	"CHAT_STEER_TEXT_REQUIRED",
+	"CHAT_UNSUPPORTED_STEER_CONTENT",
+	"CHAT_PROVIDER_REFUSED",
+	"SESSION_MODE_MISMATCH",
+	"SESSION_NOT_FOUND",
+	"CHAT_CONTROLLER_NOT_READY",
+	"CHAT_AUTH_REQUIRED",
+]);
+
+function steerNonAcceptance(error: unknown): ChatSteerOutcome | undefined {
+	const code = apiErrorCode(error);
+	if (!code || !DEFINITIVE_STEER_NON_ACCEPTANCE_CODES.has(code)) return undefined;
+	return {
+		status: "not-accepted",
+		reason: steerRefusal(error) ?? apiErrorMessage(error),
+	};
+}
+
+const DEFINITIVE_EDIT_NON_ACCEPTANCE_CODES = new Set([
+	"CHAT_EDIT_REJECTED",
+	"CHAT_EDIT_UNSUPPORTED",
+	"CHAT_EDIT_BUSY",
+	"CHAT_EDIT_TURN_INVALID",
+	"CHAT_PROVIDER_REFUSED",
+	"SESSION_MODE_MISMATCH",
+	"SESSION_NOT_FOUND",
+	"CHAT_CONTROLLER_NOT_READY",
+	"CHAT_AUTH_REQUIRED",
+]);
+
+function editNonAcceptance(error: unknown): ChatEditOutcome | undefined {
+	const code = apiErrorCode(error);
+	if (!code || !DEFINITIVE_EDIT_NON_ACCEPTANCE_CODES.has(code)) return undefined;
+	return { status: "not-accepted", reason: apiErrorMessage(error) };
 }
 
 /**

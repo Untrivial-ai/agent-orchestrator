@@ -22,9 +22,9 @@ const queuedTurnSteerPath = "/api/v1/sessions/{sessionId}/conversation/turns/{tu
 type SteerConversationRequest struct {
 	// Text is the correction to hand the agent mid-turn.
 	Text string `json:"text"`
-	// ClientMessageID makes a retry idempotent: the same handle updates the recorded
-	// guidance instead of adding a second copy of it, and the provider echoes it back
-	// on the item it replays so a client can recognize its own steer.
+	// ClientMessageID makes a retry idempotent at AO's durable daemon boundary. The
+	// provider does not promise to honor this handle, so AO reserves it before I/O
+	// and replays only a known result on every later request.
 	ClientMessageID string `json:"clientMessageId,omitempty"`
 }
 
@@ -151,6 +151,16 @@ func writeSteerError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"CHAT_UNSUPPORTED_STEER_CONTENT",
 			"this agent cannot steer every attachment in that message", nil)
+
+	case errors.Is(err, chatsvc.ErrSteerDeliveryUncertain):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_STEER_UNCERTAIN",
+			"the provider may have received this guidance; retry only with the same recovery action", nil)
+
+	case errors.Is(err, chatsvc.ErrSteerIdempotencyConflict):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_STEER_IDEMPOTENCY_CONFLICT",
+			"this delivery handle belongs to different guidance", nil)
 
 	case errors.Is(err, chatsvc.ErrNoActiveTurn):
 		// Ordinary: the turn finished while the user was typing. Steering has nothing

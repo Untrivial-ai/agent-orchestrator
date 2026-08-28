@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { conversationQueryKey } from "./useConversation";
@@ -194,9 +194,19 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 		};
 	}, [queryClient, sessionId, transitionActive, transitionID]);
 
+	const refreshStatus = useCallback(
+		async (): Promise<SessionInterfaceTransitionStatus | undefined> => {
+			const refreshed = await query.refetch();
+			if (refreshed.error) throw refreshed.error;
+			return refreshed.data;
+		},
+		[query.refetch],
+	);
+
 	return {
 		status: query.data,
 		transition,
+		refreshStatus,
 		settling,
 		isLoading: query.isLoading,
 		statusError: query.error ? apiErrorMessage(query.error) : undefined,

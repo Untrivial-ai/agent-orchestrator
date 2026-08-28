@@ -213,6 +213,30 @@ describe("useConversation snapshot mapping", () => {
 });
 
 describe("conversation branching commands", () => {
+	it("threads caller-owned idempotency ids through send, steer, and inline edit", async () => {
+		postMock.mockResolvedValue({ data: {}, error: undefined });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await act(async () => {
+			await result.current.send({ text: "send once", clientMessageId: "send-stable-1" });
+			await result.current.steer("steer once", "steer-stable-1");
+			await result.current.editMessage("turn-2", "edit once", "edit-stable-1");
+		});
+
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/messages",
+			expect.objectContaining({ body: expect.objectContaining({ clientMessageId: "send-stable-1" }) }),
+		);
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/steer",
+			expect.objectContaining({ body: { text: "steer once", clientMessageId: "steer-stable-1" } }),
+		);
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/edit",
+			expect.objectContaining({ body: { text: "edit once", clientMessageId: "edit-stable-1" } }),
+		);
+	});
+
 	it("edits through the dedicated endpoint without rolling back", async () => {
 		postMock.mockResolvedValue({ data: {}, error: undefined });
 		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
@@ -231,6 +255,42 @@ describe("conversation branching commands", () => {
 		expect(
 			postMock.mock.calls.some(([path]) => String(path).endsWith("/rollback")),
 		).toBe(false);
+	});
+
+	it("returns a typed non-acceptance for a durably rejected inline edit", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_EDIT_REJECTED");
+		apiErrorMessageMock.mockReturnValue("provider rejected edited prompt");
+		postMock.mockResolvedValue({ data: undefined, error: { code: "CHAT_EDIT_REJECTED" } });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(
+			result.current.editMessage("turn-2", "keep this edit", "edit-rejected-1"),
+		).resolves.toEqual({
+			status: "not-accepted",
+			reason: "provider rejected edited prompt",
+		});
+	});
+
+	it("keeps an uncertain inline edit rejected for same-id recovery", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_EDIT_UNCERTAIN");
+		const failure = { code: "CHAT_EDIT_UNCERTAIN" };
+		postMock.mockResolvedValue({ data: undefined, error: failure });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(
+			result.current.editMessage("turn-2", "do not redispatch", "edit-uncertain-1"),
+		).rejects.toBe(failure);
+	});
+
+	it("keeps an idempotency-conflicted inline edit locked for same-id recovery", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_EDIT_IDEMPOTENCY_CONFLICT");
+		const failure = { code: "CHAT_EDIT_IDEMPOTENCY_CONFLICT" };
+		postMock.mockResolvedValue({ data: undefined, error: failure });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(
+			result.current.editMessage("turn-2", "do not unlock this edit", "edit-conflict-1"),
+		).rejects.toBe(failure);
 	});
 
 	it("activates an existing branch", async () => {
@@ -281,6 +341,51 @@ describe("steering refusals", () => {
 		await waitFor(() =>
 			expect(result.current.steerRefusal).toMatch(/Send it as a message instead/),
 		);
+	});
+
+	it("returns a typed non-acceptance for a steer the daemon definitively refused", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_NO_ACTIVE_TURN");
+		apiErrorMessageMock.mockReturnValue("there is no turn in flight");
+		postMock.mockResolvedValue({
+			data: undefined,
+			error: { code: "CHAT_NO_ACTIVE_TURN" },
+		});
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+		let outcome: Awaited<ReturnType<typeof result.current.steer>> | undefined;
+
+		await act(async () => {
+			outcome = await result.current.steer("send this normally", "steer-refused-1");
+		});
+
+		expect(outcome).toEqual({
+			status: "not-accepted",
+			reason: "The turn finished before this landed. Send it as a message instead.",
+		});
+	});
+
+	it("treats a durable interface-transition refusal as definitive non-acceptance", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_INTERFACE_TRANSITION");
+		apiErrorMessageMock.mockReturnValue("the session is switching interfaces");
+		const failure = { code: "CHAT_INTERFACE_TRANSITION" };
+		postMock.mockResolvedValue({ data: undefined, error: failure });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(result.current.steer("wait for the switch", "transition-steer-1")).resolves.toEqual({
+			status: "not-accepted",
+			reason: "The session is switching interfaces. This guidance was not delivered; send it after the switch finishes.",
+		});
+	});
+
+	it("keeps an uncertain steer rejected so the composer remains fail-closed", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_STEER_UNCERTAIN");
+		apiErrorMessageMock.mockReturnValue("the provider may have received this guidance");
+		const failure = { code: "CHAT_STEER_UNCERTAIN" };
+		postMock.mockResolvedValue({ data: undefined, error: failure });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(
+			act(async () => result.current.steer("do not redispatch", "steer-unknown-1")),
+		).rejects.toBe(failure);
 	});
 
 	// The daemon's own message names which kind of turn refused, which is the part the

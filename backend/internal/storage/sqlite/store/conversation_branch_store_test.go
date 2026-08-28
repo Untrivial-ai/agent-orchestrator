@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -436,6 +437,98 @@ func TestConversationEditAnchorRejectsMissingOrNonHumanTurn(t *testing.T) {
 	s, _, conversation := seededChatConversation(t)
 	if _, err := s.ConversationEditAnchor(ctx, conversation.ID, "missing"); !errors.Is(err, store.ErrConversationTurnNotFound) {
 		t.Fatalf("missing edit anchor error = %v", err)
+	}
+}
+
+func TestEditDeliveryReservationHasOneConcurrentWinner(t *testing.T) {
+	ctx := context.Background()
+	s, _, conversation := seededChatConversation(t)
+	const workers = 8
+	created := make(chan bool, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, won, err := s.ReserveEditDelivery(
+				ctx, conversation.ID, "edit-concurrent", `{"sourceTurnId":"turn-1","text":"edited"}`, testNow)
+			created <- won
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(created)
+	close(errs)
+	winners := 0
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("ReserveEditDelivery: %v", err)
+		}
+	}
+	for won := range created {
+		if won {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("reservation winners = %d, want exactly one", winners)
+	}
+}
+
+func TestCompleteEditDeliveryRollsBackBranchMutationWhenResultCannotSettle(t *testing.T) {
+	ctx := context.Background()
+	s, session, conversation := seededChatConversation(t)
+	seedBranchTurns(t, s, session, conversation)
+	child := domain.ConversationBranch{
+		ID: "branch-edit-atomic", ConversationID: conversation.ID, SessionID: session.ID,
+		ProviderConversationID: "thread-edit-atomic", ParentBranchID: conversation.ActiveBranchID,
+		ForkAfterTurnID: "turn-1", ReplacedTurnID: "turn-2", ForkAfterSequence: 2,
+	}
+	if err := s.CreateConversationBranch(ctx, child, testNow.Add(time.Minute)); err != nil {
+		t.Fatalf("CreateConversationBranch: %v", err)
+	}
+	activateTestBranch(t, s, session, conversation, child.ID, child.ProviderConversationID, "generation-edit")
+	appendBranchPrompt(t, s, session, conversation, "generation-edit", "replacement", "edited second prompt")
+	turn, err := s.TurnByID(ctx, "turn-replacement")
+	if err != nil {
+		t.Fatalf("TurnByID: %v", err)
+	}
+	if _, created, err := s.ReserveEditDelivery(
+		ctx, conversation.ID, "edit-atomic", `{"sourceTurnId":"turn-2","text":"edited second prompt"}`, testNow); err != nil || !created {
+		t.Fatalf("ReserveEditDelivery: created=%v err=%v", created, err)
+	}
+
+	// The branch update executes first inside CompleteEditDelivery. Settling an
+	// absent handle then fails, and the transaction must undo that first write.
+	err = s.CompleteEditDelivery(ctx, conversation.ID, "missing-edit-handle",
+		conversation.ActiveBranchID, child.ID, turn, testNow.Add(2*time.Minute))
+	if err == nil {
+		t.Fatal("CompleteEditDelivery unexpectedly settled a missing reservation")
+	}
+	gotBranch, err := s.ConversationBranch(ctx, conversation.ID, child.ID)
+	if err != nil {
+		t.Fatalf("ConversationBranch after rollback: %v", err)
+	}
+	if gotBranch.ReplacementTurnID != "" {
+		t.Fatalf("branch replacement survived failed transaction: %q", gotBranch.ReplacementTurnID)
+	}
+	delivery, found, err := s.EditDelivery(ctx, conversation.ID, "edit-atomic")
+	if err != nil || !found || delivery.State != domain.ConversationEditReserved {
+		t.Fatalf("delivery after rollback = %+v found=%v err=%v, want reserved", delivery, found, err)
+	}
+
+	if err := s.CompleteEditDelivery(ctx, conversation.ID, "edit-atomic",
+		conversation.ActiveBranchID, child.ID, turn, testNow.Add(3*time.Minute)); err != nil {
+		t.Fatalf("CompleteEditDelivery valid: %v", err)
+	}
+	gotBranch, err = s.ConversationBranch(ctx, conversation.ID, child.ID)
+	if err != nil || gotBranch.ReplacementTurnID != turn.ID {
+		t.Fatalf("completed branch = %+v err=%v", gotBranch, err)
+	}
+	delivery, found, err = s.EditDelivery(ctx, conversation.ID, "edit-atomic")
+	if err != nil || !found || delivery.State != domain.ConversationEditAccepted || delivery.Turn.ID != turn.ID {
+		t.Fatalf("completed delivery = %+v found=%v err=%v", delivery, found, err)
 	}
 }
 

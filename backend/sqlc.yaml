@@ -56,6 +56,8 @@ sql:
               type: "PRCheckStatus"
           - column: "pr_comment.resolved"
             go_type: "bool"
+          - column: "app_settings.cloud_offering"
+            go_type: "bool"
           - column: "notifications.session_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

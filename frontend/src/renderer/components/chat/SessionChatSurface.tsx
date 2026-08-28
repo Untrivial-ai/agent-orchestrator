@@ -296,7 +296,8 @@ export function SessionChatSurface({
 				loadingOlder={isLoadingOlder}
 				onLoadOlder={loadOlder}
 				busy={commands.busy}
-				onSend={(text, attachments) => commands.send({ text, attachments })}
+				onSend={(text, attachments, clientMessageId) =>
+					commands.send({ text, attachments, clientMessageId })}
 				commandError={commands.error}
 				onDecide={commands.resolve}
 				onResolveInput={commands.resolveInput}

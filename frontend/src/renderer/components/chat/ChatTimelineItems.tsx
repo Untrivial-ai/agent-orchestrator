@@ -447,7 +447,10 @@ export function HumanMessage({
 	onEditStart,
 	onEditDraftChange,
 	onEditCancel,
+	onEditAbandonRecovery,
 	editPending = false,
+	editSendBlocked = false,
+	editRecoveryLabel,
 	editBusy = false,
 	editError,
 	branchPoint,
@@ -471,7 +474,10 @@ export function HumanMessage({
 	onEditStart?: () => void;
 	onEditDraftChange?: (text: string) => void;
 	onEditCancel?: () => void;
+	onEditAbandonRecovery?: () => void;
 	editPending?: boolean;
+	editSendBlocked?: boolean;
+	editRecoveryLabel?: string;
 	editBusy?: boolean;
 	editError?: string;
 	branchPoint?: ConversationBranchPoint;
@@ -489,11 +495,15 @@ export function HumanMessage({
 					text={editText ?? message.text}
 					content={message.content ?? []}
 					pending={editPending}
+					locked={Boolean(editRecoveryLabel)}
+					recoveryLabel={editRecoveryLabel}
+					sendBlocked={editSendBlocked}
 					busy={editBusy}
 					reconstructedContext={editReconstructedContext}
 					error={editError}
 					onDraftChange={onEditDraftChange}
 					onCancel={() => onEditCancel?.()}
+					onAbandonRecovery={onEditAbandonRecovery}
 					onSend={(text) => {
 						if (!message.turnId || !onEdit) return;
 						return onEdit(message.turnId, text);

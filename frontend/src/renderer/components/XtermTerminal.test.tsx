@@ -7,7 +7,9 @@ import { XtermTerminal } from "./XtermTerminal";
 
 const state = vi.hoisted(() => ({
 	fit: vi.fn(),
+	lifecycle: [] as string[],
 	linkHandler: null as null | ((event: MouseEvent, uri: string) => void),
+	queueViewportSyncOnOpen: false,
 	searchAddon: null as null | {
 		clearDecorations: ReturnType<typeof vi.fn>;
 		findNext: ReturnType<typeof vi.fn>;
@@ -81,10 +83,15 @@ vi.mock("@xterm/xterm", () => ({
 		loadAddon() {}
 		open(host: HTMLElement) {
 			host.appendChild(document.createElement("textarea"));
+			if (state.queueViewportSyncOnOpen) {
+				window.setTimeout(() => state.lifecycle.push("viewport-sync"), 0);
+			}
 		}
 		write() {}
 		writeln() {}
-		dispose() {}
+		dispose() {
+			state.lifecycle.push("dispose");
+		}
 		onData(listener: (data: string) => void) {
 			this.dataListeners.add(listener);
 			return { dispose: () => this.dataListeners.delete(listener) };
@@ -186,8 +193,10 @@ function setNavigatorPlatform(platform: string) {
 describe("XtermTerminal", () => {
 	beforeEach(() => {
 		state.fit.mockReset();
+		state.lifecycle.length = 0;
 		state.lastTerminal = null;
 		state.linkHandler = null;
+		state.queueViewportSyncOnOpen = false;
 		state.searchAddon = null;
 		setNavigatorPlatform("Linux x86_64");
 		window.ao!.clipboard.writeText = vi.fn().mockResolvedValue(undefined);
@@ -252,6 +261,21 @@ describe("XtermTerminal", () => {
 		} finally {
 			vi.useRealTimers();
 			vi.unstubAllGlobals();
+		}
+	});
+
+	it("lets xterm drain its queued viewport initialization before disposal", () => {
+		vi.useFakeTimers();
+		state.queueViewportSyncOnOpen = true;
+		try {
+			const view = render(<XtermTerminal theme="dark" />);
+			view.unmount();
+
+			expect(state.lifecycle).toEqual([]);
+			act(() => vi.runOnlyPendingTimers());
+			expect(state.lifecycle).toEqual(["viewport-sync", "dispose"]);
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 

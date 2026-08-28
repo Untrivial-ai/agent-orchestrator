@@ -64,6 +64,7 @@ export type ComposerEditorHandle = {
 type TokenKind = "skill" | "file";
 
 const completionHandledEvents = new WeakSet<Event>();
+const PROGRAMMATIC_TEXT_UPDATE_TAG = "ao:composer-programmatic-text";
 
 type SerializedComposerTokenNode = Spread<
 	{
@@ -254,8 +255,9 @@ const EditorBridge = forwardRef<
 		disabled?: boolean;
 		onChange: (snapshot: ComposerEditorSnapshot) => void;
 		onComplete: (snapshot: ComposerEditorSnapshot, key: "Enter" | "Tab") => string | undefined;
+		onEnter: (snapshot: ComposerEditorSnapshot, event: globalThis.KeyboardEvent) => boolean;
 	}
->(function EditorBridge({ disabled, onChange, onComplete }, ref) {
+>(function EditorBridge({ disabled, onChange, onComplete, onEnter }, ref) {
 	const [editor] = useLexicalComposerContext();
 
 	useEffect(() => editor.setEditable(!disabled), [disabled, editor]);
@@ -265,17 +267,27 @@ const EditorBridge = forwardRef<
 		() => ({
 			focus: () => focusEditor(editor),
 			clear: () => {
-				editor.update(() => $replaceEditorText(""), { discrete: true });
-				editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
+				editor.update(() => {
+					$replaceEditorText("");
+					editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
+				}, {
+					discrete: true,
+					tag: PROGRAMMATIC_TEXT_UPDATE_TAG,
+				});
 			},
 			setText: (text) => {
-				editor.update(() => $replaceEditorText(text), { discrete: true });
-				editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
+				editor.update(() => {
+					$replaceEditorText(text);
+					editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
+				}, {
+					discrete: true,
+					tag: PROGRAMMATIC_TEXT_UPDATE_TAG,
+				});
 			},
 			insertToken: (trigger, value) => {
 				editor.update(() => {
 					$insertComposerToken(trigger, value);
-				});
+				}, { discrete: true });
 			},
 			getSnapshot: () => editor.getEditorState().read(editorSnapshot),
 		}),
@@ -284,7 +296,8 @@ const EditorBridge = forwardRef<
 
 	useEffect(
 		() =>
-			editor.registerUpdateListener(({ editorState }) => {
+			editor.registerUpdateListener(({ editorState, tags }) => {
+				if (tags.has(PROGRAMMATIC_TEXT_UPDATE_TAG)) return;
 				editorState.read(() => onChange(editorSnapshot()));
 			}),
 		[editor, onChange],
@@ -292,16 +305,27 @@ const EditorBridge = forwardRef<
 
 	useEffect(() => {
 		const complete = (event: globalThis.KeyboardEvent | null, key: "Enter" | "Tab") => {
+			// The React capture handler owns send/menu keys before Lexical's native
+			// bubble listener. A prevented event was already handled there and must not
+			// also insert a newline or a second completion token.
+			if (event?.defaultPrevented) return true;
 			if (event?.isComposing || event?.shiftKey || editor.isComposing()) return false;
 			const snapshot = editorSnapshot();
 			const value = onComplete(snapshot, key);
-			if (!snapshot.trigger || !value) return false;
-			if (!$insertComposerToken(snapshot.trigger, value)) return false;
-			if (event) {
+			if (snapshot.trigger && value) {
+				if (!$insertComposerToken(snapshot.trigger, value)) return false;
+				if (event) {
+					completionHandledEvents.add(event);
+					event.preventDefault();
+				}
+				return true;
+			}
+			if (key === "Enter" && event && onEnter(snapshot, event)) {
 				completionHandledEvents.add(event);
 				event.preventDefault();
+				return true;
 			}
-			return true;
+			return false;
 		};
 		const removeEnter = editor.registerCommand(
 			KEY_ENTER_COMMAND,
@@ -317,7 +341,7 @@ const EditorBridge = forwardRef<
 			removeEnter();
 			removeTab();
 		};
-	}, [editor, onComplete]);
+	}, [editor, onComplete, onEnter]);
 
 	return null;
 });
@@ -333,6 +357,7 @@ export const ComposerEditor = forwardRef<
 		activeIndex: number;
 		onChange: (snapshot: ComposerEditorSnapshot) => void;
 		onComplete: (snapshot: ComposerEditorSnapshot, key: "Enter" | "Tab") => string | undefined;
+		onEnter: (snapshot: ComposerEditorSnapshot, event: globalThis.KeyboardEvent) => boolean;
 		onCompositionChange: (isComposing: boolean) => void;
 		onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
 		onPaste: (event: ClipboardEvent<HTMLDivElement>) => void;
@@ -347,6 +372,7 @@ export const ComposerEditor = forwardRef<
 		activeIndex,
 		onChange,
 		onComplete,
+		onEnter,
 		onCompositionChange,
 		onKeyDown,
 		onPaste,
@@ -412,6 +438,7 @@ export const ComposerEditor = forwardRef<
 					disabled={disabled}
 					onChange={onChange}
 					onComplete={onComplete}
+					onEnter={onEnter}
 				/>
 			</div>
 		</LexicalComposer>

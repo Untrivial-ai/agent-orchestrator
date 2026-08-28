@@ -1,12 +1,15 @@
 import { StrictMode, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render as rtlRender, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionView } from "./SessionView";
 import { SessionTopbarProvider } from "./SessionTopbarPortal";
 import { TooltipProvider } from "./ui/tooltip";
 import { useUiStore } from "../stores/ui-store";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import { setChatDraftBoundary } from "../lib/chat-draft-boundary";
+import { chatDraftScopeKey } from "../lib/chat-drafts";
+import { useFileAttachments, type FileAttachment } from "../hooks/useFileAttachments";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const openShellTerminalMock = vi.hoisted(() => vi.fn());
@@ -14,6 +17,7 @@ const closeShellTerminalMock = vi.hoisted(() => vi.fn());
 const nativeFullScreenMock = vi.hoisted(() => vi.fn(() => false));
 const interfaceTransitionMock = vi.hoisted(() => ({
 	start: vi.fn(),
+	refreshStatus: vi.fn(),
 	resetStartError: vi.fn(),
 	cancel: vi.fn(),
 	acknowledgeNotice: vi.fn(),
@@ -31,7 +35,18 @@ const interfaceTransitionState = vi.hoisted(() => ({
 					sourceMode: "chat" | "tui";
 					targetMode: "chat" | "tui";
 					policy: "drain" | "interrupt";
-					phase: "failed" | "recovery_required";
+					phase:
+						| "requested"
+						| "preflighting"
+						| "draining"
+						| "source_stopping"
+						| "source_stopped"
+						| "target_starting"
+						| "activating"
+						| "completed"
+						| "failed"
+						| "cancelled"
+						| "recovery_required";
 					errorCode?: string;
 					errorDetail?: string;
 					createdAt: string;
@@ -44,9 +59,21 @@ const interfaceTransitionState = vi.hoisted(() => ({
 }));
 const reviewGetMock = vi.hoisted(() => vi.fn());
 const inspectorVisibilityRenders = vi.hoisted(() => [] as boolean[]);
+const routeBlockerState = vi.hoisted(() => ({
+	options: undefined as
+		| {
+				disabled: boolean;
+				enableBeforeUnload: boolean;
+				shouldBlockFn: () => boolean | Promise<boolean>;
+			}
+		| undefined,
+}));
 
 vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => navigateMock,
+	useBlocker: (options: NonNullable<typeof routeBlockerState.options>) => {
+		routeBlockerState.options = options;
+	},
 }));
 
 vi.mock("../lib/platform", () => ({
@@ -75,6 +102,7 @@ vi.mock("../hooks/useSessionInterfaceTransition", () => ({
 		isLoading: false,
 		statusError: undefined,
 		start: interfaceTransitionMock.start,
+		refreshStatus: interfaceTransitionMock.refreshStatus,
 		starting: false,
 		startError: undefined,
 		resetStartError: interfaceTransitionMock.resetStartError,
@@ -174,6 +202,7 @@ vi.mock("./chat/SessionChatSurface", () => ({
 		onOpenReviewerTerminal,
 		reviewerTarget,
 		onSelectChat,
+		controllerTransitioning,
 		shellTerminals = [],
 		shellTarget,
 		onSelectShellTerminal,
@@ -185,12 +214,16 @@ vi.mock("./chat/SessionChatSurface", () => ({
 		onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
 		reviewerTarget?: { kind: "reviewer"; handleId: string; harness: string; sessionId: string };
 		onSelectChat?: () => void;
+		controllerTransitioning?: boolean;
 		shellTerminals?: Array<{ handleId: string; title: string }>;
 		shellTarget?: { kind: "shell"; handleId: string };
 		onSelectShellTerminal?: (handleId: string) => void;
 		workspaceTabs?: ReactNode;
 	}) => (
-		<div data-testid="chat-surface">
+		<div
+			data-testid="chat-surface"
+			data-transitioning={controllerTransitioning ? "true" : "false"}
+		>
 			chat surface
 			{headerActions}
 			<div role="tablist">{workspaceTabs}</div>
@@ -442,6 +475,22 @@ function workerSession(sessionId: string): WorkspaceSession {
 	return session;
 }
 
+function testInterfaceTransition(
+	id: string,
+	phase: NonNullable<NonNullable<typeof interfaceTransitionState.status>["transition"]>["phase"],
+) {
+	return {
+		id,
+		sessionId: "sess-1",
+		sourceMode: "chat" as const,
+		targetMode: "tui" as const,
+		policy: "interrupt" as const,
+		phase,
+		createdAt: "2026-08-26T09:00:00.000Z",
+		updatedAt: "2026-08-26T09:00:01.000Z",
+	};
+}
+
 function inspectorOpen(sessionId: string): boolean {
 	return useUiStore.getState().inspectorSessions[sessionId]?.isOpen ?? true;
 }
@@ -454,6 +503,16 @@ function inspectorButton(): HTMLElement {
 	const button = screen.getByText("pop browser").closest("button");
 	if (!button) throw new Error("missing inspector button");
 	return button;
+}
+
+async function unsafeChatLeaveDialog(): Promise<HTMLElement> {
+	return screen.findByRole("dialog", { name: "Discard unsafe Chat draft state?" });
+}
+
+async function confirmUnsafeChatLeave(): Promise<HTMLElement> {
+	const dialog = await unsafeChatLeaveDialog();
+	fireEvent.click(within(dialog).getByRole("button", { name: "Leave chat" }));
+	return dialog;
 }
 
 function render(ui: ReactNode) {
@@ -476,6 +535,11 @@ function render(ui: ReactNode) {
 
 describe("SessionView", () => {
 	beforeEach(() => {
+		for (const sessionId of ["sess-1", "sess-2", "sess-orch", "sess-cross-project"]) {
+			setChatDraftBoundary(sessionId, "composer", undefined);
+			setChatDraftBoundary(sessionId, "inline-edit", undefined);
+		}
+		routeBlockerState.options = undefined;
 		inspectorVisibilityRenders.length = 0;
 		nativeFullScreenMock.mockReturnValue(false);
 		window.localStorage.clear();
@@ -503,12 +567,16 @@ describe("SessionView", () => {
 		browserViewState.url = "";
 		browserViewState.agentBrowserActive = false;
 		shellTerminalsState.data = [];
-	navigateMock.mockReset();
-	openShellTerminalMock.mockReset();
-	closeShellTerminalMock.mockReset();
-	interfaceTransitionMock.start.mockReset();
+		navigateMock.mockReset();
+		openShellTerminalMock.mockReset();
+		closeShellTerminalMock.mockReset();
+		interfaceTransitionMock.start.mockReset();
+		interfaceTransitionMock.refreshStatus.mockReset();
+		interfaceTransitionMock.refreshStatus.mockImplementation(
+			async () => interfaceTransitionState.status,
+		);
 		interfaceTransitionMock.resetStartError.mockReset();
-	interfaceTransitionMock.cancel.mockReset();
+		interfaceTransitionMock.cancel.mockReset();
 		interfaceTransitionMock.acknowledgeNotice.mockReset();
 		interfaceTransitionState.status = undefined;
 		reviewGetMock.mockReset();
@@ -678,7 +746,7 @@ describe("SessionView", () => {
 	it.each([
 		["worker", "sess-1"],
 		["orchestrator", "sess-orch"],
-	] as const)("uses interrupt for an idle Chat %s switching to Terminal UI", (_label, sessionId) => {
+	] as const)("uses interrupt for an idle Chat %s switching to Terminal UI", async (_label, sessionId) => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		const session = workerSession(sessionId);
 		session.mode = "chat";
@@ -690,7 +758,12 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "interrupt" });
+		await waitFor(() =>
+			expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+				targetMode: "tui",
+				policy: "interrupt",
+			}),
+		);
 	});
 
 	it("keeps the policy dialog closed when an idle direct switch fails", async () => {
@@ -752,19 +825,643 @@ describe("SessionView", () => {
 		["active activity", "sess-1", "idle", "active"],
 		["waiting-input activity", "sess-orch", "idle", "waiting_input"],
 		["blocked activity", "sess-1", "idle", "blocked"],
-	] as const)("interrupts a busy Chat session for %s and switches directly to Terminal UI", (_label, sessionId, status, activityState) => {
-		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
-		const session = workerSession(sessionId);
-		session.mode = "chat";
-		session.status = status;
-		session.activity = { state: activityState, lastActivityAt: "2026-08-06T00:00:00Z" };
+	] as const)(
+		"interrupts a busy Chat session for %s and switches directly to Terminal UI",
+		async (_label, sessionId, status, activityState) => {
+			interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+			const session = workerSession(sessionId);
+			session.mode = "chat";
+			session.status = status;
+			session.activity = { state: activityState, lastActivityAt: "2026-08-06T00:00:00Z" };
 
-		render(<SessionView sessionId={sessionId} />);
+			render(<SessionView sessionId={sessionId} />);
+
+			fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+			await waitFor(() =>
+				expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+					targetMode: "tui",
+					policy: "interrupt",
+				}),
+			);
+		},
+	);
+
+	it("blocks route unload while a Chat draft is unsafe and uses explicit discard copy", async () => {
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: "sess-1",
+					incarnation: "2026-08-26T08:00:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "route-late.txt", { type: "text/plain" }),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		setChatDraftBoundary("sess-1", "composer", "persistence-failed");
+		render(<SessionView sessionId="sess-1" />);
+
+		expect(routeBlockerState.options).toMatchObject({
+			disabled: false,
+			enableBeforeUnload: true,
+		});
+		let blocked!: Promise<boolean>;
+		act(() => {
+			blocked = Promise.resolve(routeBlockerState.options!.shouldBlockFn());
+		});
+		const cancelled = await unsafeChatLeaveDialog();
+		expect(cancelled).toHaveTextContent("discard the unsaved changes");
+		fireEvent.click(within(cancelled).getByRole("button", { name: "Cancel" }));
+		expect(await blocked).toBe(true);
+
+		let allowed!: Promise<boolean>;
+		act(() => {
+			allowed = Promise.resolve(routeBlockerState.options!.shouldBlockFn());
+		});
+		await confirmUnsafeChatLeave();
+		expect(await allowed).toBe(false);
+		await waitFor(() => expect(staging.result.current.preparing).toBe(false));
+		await act(async () => {
+			finishStaging([
+				{
+					id: "route-discarded-late",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "route-late.txt",
+					stagedPath: ".ao/attachments/route-late.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toEqual([]);
+		act(() => setChatDraftBoundary("sess-1", "composer", undefined));
+		expect(routeBlockerState.options).toMatchObject({
+			disabled: true,
+			enableBeforeUnload: false,
+		});
+	});
+
+	it("publishes the full stable native risk set and clears it only on unmount", async () => {
+		const publishRisk = vi.spyOn(window.ao!.app, "setChatDraftRisk");
+		const view = render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(publishRisk).toHaveBeenLastCalledWith([]));
+
+		act(() => setChatDraftBoundary("sess-1", "composer", "persistence-failed"));
+		await waitFor(() =>
+			expect(publishRisk).toHaveBeenLastCalledWith(["persistence-failed"]),
+		);
+		publishRisk.mockClear();
+
+		act(() =>
+			setChatDraftBoundary("sess-1", "composer", [
+				"persistence-failed",
+				"pending-attachments",
+			]),
+		);
+		await waitFor(() =>
+			expect(publishRisk).toHaveBeenCalledWith([
+				"persistence-failed",
+				"pending-attachments",
+			]),
+		);
+		expect(publishRisk).not.toHaveBeenCalledWith([]);
+
+		view.unmount();
+		expect(publishRisk).toHaveBeenLastCalledWith([]);
+		publishRisk.mockRestore();
+	});
+
+	it("uses an app-rendered confirmation before leaving unsafe Chat for Terminal", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		setChatDraftBoundary("sess-1", "composer", "pending-attachments");
+		const nativeConfirm = vi.spyOn(window, "confirm");
+		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
+		const cancelled = await screen.findByRole("dialog", { name: "Discard unsafe Chat draft state?" });
+		expect(cancelled).toHaveTextContent("Attachments are still being saved");
+		fireEvent.click(within(cancelled).getByRole("button", { name: "Cancel" }));
+		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
 
-		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "interrupt" });
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		const confirmed = await screen.findByRole("dialog", { name: "Discard unsafe Chat draft state?" });
+		fireEvent.click(within(confirmed).getByRole("button", { name: "Leave chat" }));
+		await waitFor(() =>
+			expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+				targetMode: "tui",
+				policy: "interrupt",
+			}),
+		);
+		expect(nativeConfirm).not.toHaveBeenCalled();
+		setChatDraftBoundary("sess-1", "composer", undefined);
+		nativeConfirm.mockRestore();
+	});
+
+	it("cancels pending attachments only after the exact interface transition completes", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("discard-after-complete", "requested");
+		interfaceTransitionMock.start.mockResolvedValueOnce({ transition });
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T09:00:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "discard-late.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => setChatDraftBoundary(session.id, "composer", "pending-attachments"));
+		const view = render(<SessionView sessionId={session.id} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await confirmUnsafeChatLeave();
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+			targetMode: "tui",
+			policy: "interrupt",
+		});
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		expect(staging.result.current.preparing).toBe(true);
+		await act(async () => undefined);
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: testInterfaceTransition("older-completed-transition", "completed"),
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		expect(staging.result.current.preparing).toBe(true);
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "completed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() => expect(staging.result.current.preparing).toBe(false));
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "discarded-late",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "discard-late.txt",
+					stagedPath: ".ao/attachments/discard-late.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toEqual([]);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("preserves attachment work started after the switch confirmation", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("preserve-after-confirmation", "requested");
+		let admitSwitch!: (response: { transition: typeof transition }) => void;
+		interfaceTransitionMock.start.mockReturnValueOnce(
+			new Promise((resolve) => {
+				admitSwitch = resolve;
+			}),
+		);
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		act(() => setChatDraftBoundary(session.id, "composer", "persistence-failed"));
+		const view = render(<SessionView sessionId={session.id} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await confirmUnsafeChatLeave();
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true"),
+		);
+
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T09:30:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "after-confirmation.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		await act(async () => admitSwitch({ transition }));
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "completed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		expect(staging.result.current.preparing).toBe(true);
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "after-confirmation",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "after-confirmation.txt",
+					stagedPath: ".ao/attachments/after-confirmation.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments.map((attachment) => attachment.name)).toEqual([
+			"after-confirmation.txt",
+		]);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("unlocks Chat when a pending Chat-to-Terminal request is rejected", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let rejectSwitch!: (error: Error) => void;
+		interfaceTransitionMock.start.mockReturnValueOnce(
+			new Promise((_resolve, reject) => {
+				rejectSwitch = reject;
+			}),
+		);
+		render(<SessionView sessionId={session.id} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true"),
+		);
+		await act(async () => rejectSwitch(new Error("switch rejected")));
+		expect(interfaceTransitionMock.refreshStatus).toHaveBeenCalledTimes(1);
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"),
+		);
+	});
+
+	it("keeps Chat locked when a rejected start reconciles to a durable transition", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("admitted-before-response-loss", "requested");
+		interfaceTransitionMock.start.mockRejectedValueOnce(new TypeError("connection closed"));
+		interfaceTransitionMock.refreshStatus.mockResolvedValueOnce({
+			supported: true,
+			targetMode: "tui",
+			transition,
+		});
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		const view = render(<SessionView sessionId={session.id} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await waitFor(() => expect(interfaceTransitionMock.refreshStatus).toHaveBeenCalledTimes(1));
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "failed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"),
+		);
+	});
+
+	it("does not let a stale reconciliation response clear a transition already observed by CDC", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("cdc-wins-reconciliation-race", "requested");
+		interfaceTransitionMock.start.mockRejectedValueOnce(new TypeError("connection closed"));
+		let finishRefresh!: (status: { supported: boolean; targetMode: "tui" }) => void;
+		interfaceTransitionMock.refreshStatus.mockReturnValueOnce(
+			new Promise((resolve) => {
+				finishRefresh = resolve;
+			}),
+		);
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		const view = render(<SessionView sessionId={session.id} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await waitFor(() => expect(interfaceTransitionMock.refreshStatus).toHaveBeenCalledTimes(1));
+		interfaceTransitionState.status = { supported: true, targetMode: "tui", transition };
+		await act(async () => {
+			view.rerender(<SessionView sessionId={session.id} />);
+			await Promise.resolve();
+		});
+
+		await act(async () => finishRefresh({ supported: true, targetMode: "tui" }));
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "failed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() =>
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"),
+		);
+	});
+
+	it("retains confirmed attachment capture until CDC resolves an unreadable start outcome", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("admitted-before-status-outage", "requested");
+		interfaceTransitionMock.start.mockRejectedValueOnce(new TypeError("connection closed"));
+		interfaceTransitionMock.refreshStatus.mockRejectedValueOnce(new TypeError("daemon unavailable"));
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T10:30:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "captured-through-outage.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => setChatDraftBoundary(session.id, "composer", "pending-attachments"));
+		const view = render(<SessionView sessionId={session.id} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await confirmUnsafeChatLeave();
+		await waitFor(() => expect(interfaceTransitionMock.refreshStatus).toHaveBeenCalledTimes(1));
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+		expect(staging.result.current.preparing).toBe(true);
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition,
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "completed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() => expect(staging.result.current.preparing).toBe(false));
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "discarded-after-outage",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "captured-through-outage.txt",
+					stagedPath: ".ao/attachments/captured-through-outage.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toEqual([]);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("preserves pending attachments when starting the confirmed interface switch rejects", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		interfaceTransitionMock.start.mockRejectedValueOnce(new Error("switch failed"));
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T10:00:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "preserved-after-rejection.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => setChatDraftBoundary(session.id, "composer", "pending-attachments"));
+		render(<SessionView sessionId={session.id} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await confirmUnsafeChatLeave();
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		expect(staging.result.current.preparing).toBe(true);
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "preserved-after-rejection",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "preserved-after-rejection.txt",
+					stagedPath: ".ao/attachments/preserved-after-rejection.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toHaveLength(1);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("preserves pending attachments when an admitted switch later fails", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("preserve-after-late-failure", "requested");
+		interfaceTransitionMock.start.mockResolvedValueOnce({ transition });
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: chatDraftScopeKey({
+					sessionId: session.id,
+					incarnation: "2026-08-26T11:00:00.000Z",
+				}),
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "preserved-after-failure.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => setChatDraftBoundary(session.id, "composer", "pending-attachments"));
+		const view = render(<SessionView sessionId={session.id} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await confirmUnsafeChatLeave();
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		session.mode = "tui";
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "chat",
+			transition: { ...transition, phase: "failed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		expect(staging.result.current.preparing).toBe(true);
+
+		await act(async () => {
+			finishStaging([
+				{
+					id: "preserved-after-failure",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "preserved-after-failure.txt",
+					stagedPath: ".ao/attachments/preserved-after-failure.txt",
+				},
+			]);
+			await pending;
+		});
+		expect(staging.result.current.attachments).toHaveLength(1);
+		act(() => setChatDraftBoundary(session.id, "composer", undefined));
+	});
+
+	it("cancels hidden attachment work after a confirmed mixed-risk leave without resurrection", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const transition = testInterfaceTransition("mixed-risk-complete", "requested");
+		interfaceTransitionMock.start.mockResolvedValueOnce({ transition });
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		const draftKey = chatDraftScopeKey({
+			sessionId: session.id,
+			incarnation: "2026-08-27T09:00:00.000Z",
+		});
+		let finishStaging!: (attachments: FileAttachment[]) => void;
+		const staging = renderHook(() =>
+			useFileAttachments({
+				initialKey: draftKey,
+				prepareAttachments: () =>
+					new Promise<FileAttachment[]>((resolve) => {
+						finishStaging = resolve;
+					}),
+			}),
+		);
+		let pending!: Promise<void>;
+		act(() => {
+			pending = staging.result.current.addFiles([
+				new File([new Uint8Array(8).fill(1)], "mixed-late.txt", {
+					type: "text/plain",
+				}),
+			]);
+		});
+		await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+		act(() => {
+			// Inline edit registers first, so the legacy single-kind snapshot hides
+			// the composer's pending attachment work behind delivery recovery.
+			setChatDraftBoundary(session.id, "inline-edit", "pending-delivery");
+			setChatDraftBoundary(session.id, "composer", "pending-attachments");
+		});
+		const view = render(<SessionView sessionId={session.id} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		const dialog = await unsafeChatLeaveDialog();
+		const warning = dialog.textContent ?? "";
+		expect(warning).toContain("delivery recovery is still pending");
+		expect(warning).toContain("Attachments are still being saved");
+		fireEvent.click(within(dialog).getByRole("button", { name: "Leave chat" }));
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledTimes(1));
+		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+			targetMode: "tui",
+			policy: "interrupt",
+		});
+		expect(staging.result.current.preparing).toBe(true);
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "tui",
+			transition: { ...transition, phase: "completed" },
+		};
+		view.rerender(<SessionView sessionId={session.id} />);
+		await waitFor(() => expect(staging.result.current.preparing).toBe(false));
+
+		view.unmount();
+		staging.unmount();
+		await act(async () => {
+			finishStaging([
+				{
+					id: "mixed-discarded-late",
+					mimeType: "text/plain",
+					bytes: 8,
+					name: "mixed-late.txt",
+					stagedPath: ".ao/attachments/mixed-late.txt",
+				},
+			]);
+			await pending;
+		});
+		const replacement = renderHook(() => useFileAttachments({ initialKey: draftKey }));
+		expect(replacement.result.current.attachments).toEqual([]);
+		expect(replacement.result.current.preparing).toBe(false);
+
+		replacement.unmount();
+		act(() => {
+			setChatDraftBoundary(session.id, "inline-edit", undefined);
+			setChatDraftBoundary(session.id, "composer", undefined);
+		});
 	});
 
 	it("checks only the selected session when deciding whether to show the policy dialog", () => {

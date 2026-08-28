@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useBlocker } from "@tanstack/react-router";
 import { PanelRight, Plus } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -8,6 +9,7 @@ import {
 	useMemo,
 	useRef,
 	useState,
+	useSyncExternalStore,
 	type CSSProperties,
 	type ReactNode,
 	type RefObject,
@@ -19,6 +21,7 @@ import { defaultShortcutBindings, shortcutBindingLabel } from "../../shared/shor
 import { BrowserPanelView, useBrowserAnnotationQueue } from "./BrowserPanel";
 import { CenterPane } from "./CenterPane";
 import { SessionChatSurface } from "./chat/SessionChatSurface";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
@@ -52,6 +55,18 @@ import {
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { aoBridge } from "../lib/bridge";
+import {
+	capturePendingFileAttachmentsForSession,
+	discardCapturedPendingFileAttachments,
+	type PendingFileAttachmentCapture,
+} from "../hooks/useFileAttachments";
+import {
+	chatDraftDiscardWarning,
+	getChatDraftBoundaries,
+	subscribeChatDraftBoundaries,
+	type ChatDraftBoundaryKind,
+} from "../lib/chat-draft-boundary";
 import { SHELL_PANEL_SPRING } from "../lib/motion-spring";
 import {
 	activateSessionFile,
@@ -112,9 +127,46 @@ const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as CSSProperties) : 
 const newTerminalShortcutLabel = shortcutBindingLabel(defaultShortcutBindings("new-shell-terminal", isMac)[0], isMac);
 
 type ReviewsResponse = components["schemas"]["ListReviewsResponse"];
+type SessionInterfaceTransition = components["schemas"]["SessionInterfaceTransition"];
 type ReviewerTerminalTarget = { handleId: string; harness: string };
 
 type WorkspaceLayoutMode = "utility" | "browser" | "files";
+
+type UnsafeDraftLeaveDecision =
+	| { kind: "safe" }
+	| { kind: "cancelled" }
+	| { kind: "confirmed"; pendingAttachments: PendingFileAttachmentCapture };
+
+type PendingUnsafeDraftLeave = {
+	sessionId: string;
+	promise: Promise<UnsafeDraftLeaveDecision>;
+	resolve: (decision: UnsafeDraftLeaveDecision) => void;
+};
+
+type ChatLeaveLock = {
+	sessionId: string;
+	requestId: number;
+	previousTransitionId?: string;
+	targetMode: "tui";
+	policy: "drain" | "interrupt";
+	transitionId?: string;
+	pendingAttachments?: PendingFileAttachmentCapture;
+	needsReconciliation?: boolean;
+};
+
+function chatLeaveTransitionMatches(
+	lock: ChatLeaveLock,
+	transition: SessionInterfaceTransition | undefined,
+): transition is SessionInterfaceTransition {
+	return Boolean(
+		transition &&
+			transition.id !== lock.previousTransitionId &&
+			transition.sessionId === lock.sessionId &&
+			transition.sourceMode === "chat" &&
+			transition.targetMode === lock.targetMode &&
+			transition.policy === lock.policy,
+	);
+}
 
 type InspectorSizing = {
 	chatMinWidth: number;
@@ -363,6 +415,88 @@ function SessionInspectorRail({
 // profile before the conversation can become unusably narrow.
 export function SessionView({ sessionId }: SessionViewProps) {
 	const { t } = useTranslation();
+	const [confirmedDraftDiscard, setConfirmedDraftDiscard] = useState<{
+		sessionId: string;
+		transitionId: string;
+		pendingAttachments: PendingFileAttachmentCapture;
+	}>();
+	const [chatLeaveLock, setChatLeaveLock] = useState<ChatLeaveLock>();
+	const chatLeaveRequestIdRef = useRef(0);
+	const pendingUnsafeDraftLeaveRef = useRef<PendingUnsafeDraftLeave | undefined>(undefined);
+	const [unsafeDraftLeaveConfirmation, setUnsafeDraftLeaveConfirmation] = useState<{
+		sessionId: string;
+		boundaries: readonly ChatDraftBoundaryKind[];
+	}>();
+	const getCurrentChatDraftBoundaries = useCallback(
+		() => getChatDraftBoundaries(sessionId),
+		[sessionId],
+	);
+	const chatDraftBoundaries = useSyncExternalStore(
+		subscribeChatDraftBoundaries,
+		getCurrentChatDraftBoundaries,
+		getCurrentChatDraftBoundaries,
+	);
+	const confirmUnsafeDraftLeave = useCallback((): Promise<UnsafeDraftLeaveDecision> => {
+		const activeBoundaries = getChatDraftBoundaries(sessionId);
+		if (activeBoundaries.length === 0) return Promise.resolve({ kind: "safe" });
+		const pending = pendingUnsafeDraftLeaveRef.current;
+		if (pending?.sessionId === sessionId) return pending.promise;
+		if (pending) pending.resolve({ kind: "cancelled" });
+		let resolve!: (decision: UnsafeDraftLeaveDecision) => void;
+		const promise = new Promise<UnsafeDraftLeaveDecision>((settle) => {
+			resolve = settle;
+		});
+		pendingUnsafeDraftLeaveRef.current = { sessionId, promise, resolve };
+		setUnsafeDraftLeaveConfirmation({ sessionId, boundaries: [...activeBoundaries] });
+		return promise;
+	}, [sessionId]);
+	const settleUnsafeDraftLeave = useCallback((confirmed: boolean) => {
+		const pending = pendingUnsafeDraftLeaveRef.current;
+		if (!pending) return;
+		pendingUnsafeDraftLeaveRef.current = undefined;
+		setUnsafeDraftLeaveConfirmation((current) =>
+			current?.sessionId === pending.sessionId ? undefined : current,
+		);
+		pending.resolve(
+			confirmed
+				? {
+						kind: "confirmed",
+						pendingAttachments: capturePendingFileAttachmentsForSession(pending.sessionId),
+					}
+				: { kind: "cancelled" },
+		);
+	}, []);
+	useEffect(
+		() => () => {
+			const pending = pendingUnsafeDraftLeaveRef.current;
+			if (pending?.sessionId !== sessionId) return;
+			pendingUnsafeDraftLeaveRef.current = undefined;
+			pending.resolve({ kind: "cancelled" });
+		},
+		[sessionId],
+	);
+	useBlocker({
+		disabled: chatDraftBoundaries.length === 0,
+		enableBeforeUnload: chatDraftBoundaries.length > 0,
+		shouldBlockFn: async () => {
+			const decision = await confirmUnsafeDraftLeave();
+			if (decision.kind === "cancelled") return true;
+			if (decision.kind === "confirmed") {
+				// Route navigation is the boundary itself, so confirmed in-flight file
+				// work can be invalidated now. Interface switches defer this until the
+				// exact durable transition reports completed.
+				discardCapturedPendingFileAttachments(decision.pendingAttachments);
+			}
+			return false;
+		},
+	});
+	useEffect(() => {
+		aoBridge.app.setChatDraftRisk?.(chatDraftBoundaries);
+	}, [chatDraftBoundaries]);
+	useEffect(
+		() => () => aoBridge.app.setChatDraftRisk?.([]),
+		[sessionId],
+	);
 	const workspaceQuery = useWorkspaceQuery();
 	const workspaces = workspaceQuery.data ?? [];
 	const theme = useResolvedTheme();
@@ -429,6 +563,111 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	const session = workspaces.flatMap((workspace) => workspace.sessions).find((s) => s.id === sessionId);
 	const interfaceSwitch = useSessionInterfaceTransition(session?.id);
+	useEffect(() => {
+		setConfirmedDraftDiscard(undefined);
+	}, [sessionId]);
+	useEffect(() => {
+		if (!chatLeaveLock) return;
+		if (chatLeaveLock.sessionId !== sessionId) {
+			setChatLeaveLock((current) =>
+				current?.requestId === chatLeaveLock.requestId ? undefined : current,
+			);
+			return;
+		}
+		const transition = interfaceSwitch.transition;
+		if (!chatLeaveLock.transitionId) {
+			if (chatLeaveTransitionMatches(chatLeaveLock, transition)) {
+				setChatLeaveLock((current) =>
+					current?.requestId === chatLeaveLock.requestId
+						? {
+								...current,
+								transitionId: transition.id,
+								needsReconciliation: false,
+							}
+						: current,
+				);
+			}
+			return;
+		}
+		if (chatLeaveLock.pendingAttachments) {
+			setConfirmedDraftDiscard({
+				sessionId,
+				transitionId: chatLeaveLock.transitionId,
+				pendingAttachments: chatLeaveLock.pendingAttachments,
+			});
+			setChatLeaveLock((current) => {
+				if (current?.requestId !== chatLeaveLock.requestId) return current;
+				return { ...current, pendingAttachments: undefined };
+			});
+		}
+		if (session?.mode !== "chat") {
+			setChatLeaveLock((current) =>
+				current?.requestId === chatLeaveLock.requestId ? undefined : current,
+			);
+			return;
+		}
+		if (!transition || transition.id !== chatLeaveLock.transitionId) return;
+		if (
+			transition.phase === "failed" ||
+			transition.phase === "cancelled" ||
+			transition.phase === "recovery_required"
+		) {
+			setChatLeaveLock((current) =>
+				current?.requestId === chatLeaveLock.requestId ? undefined : current,
+			);
+		}
+	}, [chatLeaveLock, interfaceSwitch.transition, session?.mode, sessionId]);
+	useEffect(() => {
+		if (
+			!chatLeaveLock?.needsReconciliation ||
+			chatLeaveLock.transitionId ||
+			chatLeaveLock.sessionId !== sessionId
+		) return;
+		let active = true;
+		let retryTimer: number | undefined;
+		const reconcile = async () => {
+			try {
+				const status = await interfaceSwitch.refreshStatus();
+				if (!active) return;
+				setChatLeaveLock((current) => {
+					if (current?.requestId !== chatLeaveLock.requestId) return current;
+					return chatLeaveTransitionMatches(current, status?.transition)
+						? {
+								...current,
+								transitionId: status.transition.id,
+								needsReconciliation: false,
+							}
+						: undefined;
+				});
+			} catch {
+				if (!active) return;
+				retryTimer = window.setTimeout(() => void reconcile(), 1_000);
+			}
+		};
+		void reconcile();
+		return () => {
+			active = false;
+			if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+		};
+	}, [chatLeaveLock, interfaceSwitch.refreshStatus, sessionId]);
+	useEffect(() => {
+		if (!confirmedDraftDiscard || confirmedDraftDiscard.sessionId !== sessionId) return;
+		const transition = interfaceSwitch.transition;
+		if (!transition || transition.id !== confirmedDraftDiscard.transitionId) return;
+		switch (transition.phase) {
+			case "completed":
+				// This only invalidates renderer-owned in-flight generations. Bytes that
+				// already reached the daemon/worktree remain outside this discard boundary.
+				discardCapturedPendingFileAttachments(confirmedDraftDiscard.pendingAttachments);
+				setConfirmedDraftDiscard(undefined);
+				break;
+			case "failed":
+			case "cancelled":
+			case "recovery_required":
+				setConfirmedDraftDiscard(undefined);
+				break;
+		}
+	}, [confirmedDraftDiscard, interfaceSwitch.transition, sessionId]);
 	const reviewerQuery = useQuery({
 		queryKey: ["session-reviews", sessionId],
 		enabled: Boolean(
@@ -711,9 +950,17 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[setSidebarWorkspaceDemand],
 	);
 	const activeInterfaceTransition = interfaceTransitionIsActive(interfaceSwitch.transition);
+	const chatLeaveLocked = Boolean(
+		chatLeaveLock?.sessionId === sessionId && session?.mode === "chat",
+	);
 	const chatControllerTransitioning = Boolean(
-		interfaceSwitch.transition?.targetMode === "chat" &&
-			(activeInterfaceTransition || interfaceSwitch.settling),
+		session?.mode === "chat" &&
+			(chatLeaveLocked ||
+				interfaceSwitch.starting ||
+				(interfaceSwitch.transition?.targetMode === "tui" &&
+					(activeInterfaceTransition || interfaceSwitch.transition.phase === "completed")) ||
+				(interfaceSwitch.transition?.targetMode === "chat" &&
+					(activeInterfaceTransition || interfaceSwitch.settling))),
 	);
 	const interfaceTarget =
 		(activeInterfaceTransition ? interfaceSwitch.transition?.targetMode : interfaceSwitch.status?.targetMode) ??
@@ -735,15 +982,61 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	);
 	const beginInterfaceSwitch = useCallback(
 		async (policy: "drain" | "interrupt") => {
+			const draftLeaveDecision = chatToTerminal
+				? await confirmUnsafeDraftLeave()
+				: ({ kind: "safe" } satisfies UnsafeDraftLeaveDecision);
+			if (draftLeaveDecision.kind === "cancelled") return;
+			const chatLeaveRequestId = chatToTerminal
+				? (chatLeaveRequestIdRef.current += 1)
+				: undefined;
+			if (chatLeaveRequestId !== undefined) {
+				setChatLeaveLock({
+					sessionId,
+					requestId: chatLeaveRequestId,
+					previousTransitionId: interfaceSwitch.transition?.id,
+					targetMode: "tui",
+					policy,
+					pendingAttachments:
+						draftLeaveDecision.kind === "confirmed"
+							? draftLeaveDecision.pendingAttachments
+							: undefined,
+				});
+			}
 			try {
-				await interfaceSwitch.start({ targetMode: interfaceTarget, policy });
+				const response = await interfaceSwitch.start({ targetMode: interfaceTarget, policy });
+				if (chatLeaveRequestId !== undefined) {
+					setChatLeaveLock((current) =>
+						current?.requestId === chatLeaveRequestId && response?.transition?.id
+							? {
+									...current,
+									transitionId: response.transition.id,
+									needsReconciliation: false,
+								}
+							: current?.requestId === chatLeaveRequestId
+								? { ...current, needsReconciliation: true }
+								: current,
+					);
+				}
 				setInterfaceSwitchDialogOpen(false);
 			} catch {
+				if (chatLeaveRequestId !== undefined) {
+					setChatLeaveLock((current) =>
+						current?.requestId === chatLeaveRequestId
+							? { ...current, needsReconciliation: true }
+							: current,
+					);
+				}
 				// The mutation owns the typed error. A policy dialog that was already
 				// open stays open; a direct switch must not open one on failure.
 			}
 		},
-		[interfaceSwitch, interfaceTarget],
+		[
+			chatToTerminal,
+			confirmUnsafeDraftLeave,
+			interfaceSwitch,
+			interfaceTarget,
+			sessionId,
+		],
 	);
 	const requestInterfaceSwitch = useCallback(() => {
 		interfaceSwitch.resetStartError();
@@ -771,13 +1064,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const interfaceSwitchAction = session && showInterfaceSwitchAction ? (
 		<SessionInterfaceSwitchButton
 			target={interfaceTarget}
-			supported={Boolean(interfaceSwitch.status?.supported) && !activeInterfaceTransition}
+			supported={
+				Boolean(interfaceSwitch.status?.supported) && !activeInterfaceTransition && !chatLeaveLocked
+			}
 			disabledReason={
 				interfaceSwitch.isLoading
 					? "Checking whether this agent can switch interfaces…"
 					: interfaceSwitch.status?.reason || interfaceSwitch.statusError
 			}
-			pending={interfaceSwitch.starting || activeInterfaceTransition}
+			pending={interfaceSwitch.starting || activeInterfaceTransition || chatLeaveLocked}
 			transition={interfaceSwitch.transition}
 			cancelling={interfaceSwitch.cancelling}
 			cancelError={interfaceSwitch.cancelError}
@@ -1334,6 +1629,21 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				error={interfaceSwitch.startError}
 				onOpenChange={setInterfaceSwitchDialogOpen}
 				onChoose={(policy) => void beginInterfaceSwitch(policy)}
+			/>
+			<ConfirmDialog
+				open={unsafeDraftLeaveConfirmation?.sessionId === sessionId}
+				title={t("chat.draftDiscard.title")}
+				description={
+					<p className="whitespace-pre-line">
+						{chatDraftDiscardWarning(unsafeDraftLeaveConfirmation?.boundaries ?? [])}
+					</p>
+				}
+				confirmLabel={t("chat.draftDiscard.leave")}
+				destructive
+				onConfirm={() => settleUnsafeDraftLeave(true)}
+				onOpenChange={(open) => {
+					if (!open) settleUnsafeDraftLeave(false);
+				}}
 			/>
 			{filesPoppedOut && session
 				? createPortal(
