@@ -975,6 +975,22 @@ describe("ChatWorkspace timeline", () => {
 		expect(onLinkOpen).toHaveBeenCalledWith("http://localhost:5173");
 	});
 
+	it.each([
+		["human", "user"],
+		["automation", "user"],
+		["daemon", "user"],
+		["provider", "assistant"],
+	] as const)("activates session links from %s messages", async (origin, role) => {
+		const snapshot = structuredClone(chatFixtureSettled);
+		const template = snapshot.items.find((item): item is ConversationMessage => item.kind === "message");
+		if (!template) throw new Error("fixture has no message");
+		snapshot.items = [{ ...template, id: `link-${origin}`, origin, role, text: "ao://sessions/project/session", streaming: false }];
+		const onSessionLinkOpen = vi.fn();
+		render(<ChatWorkspace snapshot={snapshot} onSessionLinkOpen={onSessionLinkOpen} />);
+		await userEvent.setup().click(screen.getByRole("link"));
+		expect(onSessionLinkOpen).toHaveBeenCalledWith("ao://sessions/project/session");
+	});
+
 	it("offers real recovery actions when the controller stops", async () => {
 		const user = userEvent.setup();
 		const resume = vi.fn();
