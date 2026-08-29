@@ -507,6 +507,7 @@
 	"newTask.unableToStart": "Impossible de démarrer la tâche",
 	"notify.all": "Toutes",
 	"notify.bell": "Notifications",
+	"sessionLink.dismissError": "Fermer l’erreur du lien de session",
 	"notify.couldNotMarkAllRead": "Impossible de marquer les notifications comme lues",
 	"notify.couldNotMarkRead": "Impossible de marquer la notification comme lue",
 	"notify.earlierLoadFailed": "Impossible de charger les notifications antérieures.",

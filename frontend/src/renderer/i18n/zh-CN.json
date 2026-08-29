@@ -504,6 +504,7 @@
 	"newTask.titleRequired": "标题和简述为必填项。",
 	"newTask.unableToStart": "无法启动任务",
 	"notify.bell": "通知",
+	"sessionLink.dismissError": "关闭会话链接错误",
 	"notify.couldNotMarkAllRead": "无法将通知全部标为已读",
 	"notify.earlierLoadFailed": "无法加载更早的通知。",
 	"notify.emptyAll": "暂无通知。",

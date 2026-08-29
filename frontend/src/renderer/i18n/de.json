@@ -505,6 +505,7 @@
 	"newTask.unableToStart": "Aufgabe konnte nicht gestartet werden",
 	"notify.all": "Alle",
 	"notify.bell": "Benachrichtigungen",
+	"sessionLink.dismissError": "Sitzungslink-Fehler schließen",
 	"notify.couldNotMarkAllRead": "Benachrichtigungen konnten nicht als gelesen markiert werden",
 	"notify.couldNotMarkRead": "Benachrichtigung konnte nicht als gelesen markiert werden",
 	"notify.earlierLoadFailed": "Frühere Benachrichtigungen konnten nicht geladen werden.",

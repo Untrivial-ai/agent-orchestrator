@@ -505,6 +505,7 @@
 	"newTask.unableToStart": "작업을 시작할 수 없습니다",
 	"notify.all": "전체",
 	"notify.bell": "알림",
+	"sessionLink.dismissError": "세션 링크 오류 닫기",
 	"notify.couldNotMarkAllRead": "모든 알림을 읽음으로 표시할 수 없습니다",
 	"notify.couldNotMarkRead": "알림을 읽음으로 표시할 수 없습니다",
 	"notify.earlierLoadFailed": "이전 알림을 불러올 수 없습니다.",

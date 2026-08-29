@@ -52,6 +52,7 @@ import { cn } from "../../lib/utils";
 import { caretNotation, stripAnsi } from "../../lib/ansi";
 import { getApiBaseUrl } from "../../lib/api-client";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { findSessionLinks } from "../../lib/session-links";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
 import { HumanMessageEditor } from "./HumanMessageEditor";
@@ -510,7 +511,13 @@ export function HumanMessage({
 							: "bg-raised text-foreground",
 					)}
 				>
-					{body ? <p className="break-words whitespace-pre-wrap text-pretty">{body}</p> : null}
+					{body ? (
+						findSessionLinks(body).length > 0 ? (
+							<ChatMarkdown text={body} />
+						) : (
+							<p className="break-words whitespace-pre-wrap text-pretty">{body}</p>
+						)
+					) : null}
 					{attachments.length > 0 ? (
 						<ul aria-label="Attached files" className={cn("flex max-w-full flex-wrap gap-2", body && "mt-2")}>
 							{attachments.map((path) => {
@@ -602,9 +609,11 @@ export function OriginMessage({ message }: { message: ConversationMessage }) {
 			{longReport && expanded ? (
 				<ChatMarkdown text={message.text} muted />
 			) : (
-				<p className={cn("text-sm leading-relaxed text-muted-foreground", longReport && "line-clamp-3")}>
-					{preview}
-				</p>
+				findSessionLinks(preview).length > 0 ? (
+					<div className={cn(longReport && "line-clamp-3")}><ChatMarkdown text={preview} muted /></div>
+				) : (
+					<p className={cn("text-sm leading-relaxed text-muted-foreground", longReport && "line-clamp-3")}>{preview}</p>
+				)
 			)}
 			{longReport ? (
 				<button

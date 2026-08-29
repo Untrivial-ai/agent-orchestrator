@@ -20,7 +20,7 @@
 //    fits don't spam the PTY.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 import { useTranslation } from "react-i18next";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
@@ -36,6 +36,7 @@ import type {
 import { aoBridge } from "../lib/bridge";
 import { TERMINAL_FONT_SIZE_DEFAULT } from "../lib/design-tokens";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { findSessionLinks } from "../lib/session-links";
 import { isMacPlatform } from "../lib/platform";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import { buildTerminalThemes } from "../lib/terminal-themes";
@@ -70,6 +71,8 @@ export type XtermTerminalProps = {
 	onError?: (error: unknown) => void;
 	/** Called after a terminal hyperlink is opened in the OS browser. */
 	onLinkOpen?: (uri: string) => void;
+	/** Navigate a canonical ao:// session link inside the current AO window. */
+	onSessionLinkOpen?: (uri: string) => void;
 	/** Publish the positive grid after a retained terminal becomes visible. */
 	onVisibleSize?: (cols: number, rows: number) => void;
 	/** Hidden retained terminals keep parsing output but expose no UI overlays. */
@@ -284,6 +287,32 @@ function configureScrollbarReservation(term: Terminal): void {
 	if (viewport) viewport.scrollBarWidth = isMacPlatform() ? MAC_TERMINAL_SCROLLBAR_WIDTH : 0;
 }
 
+export function sessionLinkProvider(term: Terminal, activate: (event: MouseEvent, uri: string) => void): ILinkProvider {
+	return {
+		provideLinks(lineNumber, callback) {
+			const buffer = term.buffer.active;
+			let firstLine = lineNumber - 1;
+			while (firstLine > 0 && buffer.getLine(firstLine)?.isWrapped) firstLine -= 1;
+			const lines = [];
+			for (let line = firstLine; line < buffer.length; line += 1) {
+				if (line > firstLine && !buffer.getLine(line)?.isWrapped) break;
+				lines.push(buffer.getLine(line)?.translateToString(false) ?? "");
+			}
+			const links: ILink[] = findSessionLinks(lines.join("")).flatMap((match) => {
+				const startLine = firstLine + Math.floor(match.start / term.cols);
+				const endOffset = match.end - 1;
+				const endLine = firstLine + Math.floor(endOffset / term.cols);
+				if (lineNumber - 1 < startLine || lineNumber - 1 > endLine) return [];
+				return [{ text: match.text, range: {
+					start: { x: (match.start % term.cols) + 1, y: startLine + 1 },
+					end: { x: (endOffset % term.cols) + 1, y: endLine + 1 },
+				}, activate: (event) => activate(event, match.text) }];
+			});
+			callback(links.length > 0 ? links : undefined);
+		},
+	};
+}
+
 export function XtermTerminal(props: XtermTerminalProps) {
 	const { t } = useTranslation();
 	const themeStyle = useUiStore((state) => state.themeStyle);
@@ -400,6 +429,12 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			callbacksRef.current.onChangeFontSize?.(delta);
 		});
 		const activateLink = (event: MouseEvent, uri: string) => {
+			if (uri.startsWith("ao:")) {
+				const modifierPressed = isMacPlatform() ? event.metaKey : event.ctrlKey;
+				if (term.modes.mouseTrackingMode !== "none" && !modifierPressed) return;
+				callbacksRef.current.onSessionLinkOpen?.(uri);
+				return;
+			}
 			// Left-click on a web link opens it inside the AO Browser panel (the
 			// parent decides how). Non-web schemes (mailto:, etc.) still go to the OS
 			// via the main process's window-open handler. Right-click to open a web
@@ -477,6 +512,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// empty open is dropped and clicks silently no-op. Pass the matched URL to
 		// window.open directly so the main process routes it to shell.openExternal.
 		term.loadAddon(new WebLinksAddon(activateLink, { hover: trackHover, leave: clearHover }));
+		term.registerLinkProvider(sessionLinkProvider(term, activateLink));
 		const searchAddon = new SearchAddon();
 		searchAddonRef.current = searchAddon;
 		term.loadAddon(searchAddon);

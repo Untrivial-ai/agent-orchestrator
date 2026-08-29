@@ -505,6 +505,7 @@
 	"newTask.unableToStart": "タスクを開始できません",
 	"notify.all": "すべて",
 	"notify.bell": "通知",
+	"sessionLink.dismissError": "セッションリンクのエラーを閉じる",
 	"notify.couldNotMarkAllRead": "すべての通知を既読にできませんでした",
 	"notify.couldNotMarkRead": "通知を既読にできませんでした",
 	"notify.earlierLoadFailed": "以前の通知を読み込めませんでした。",

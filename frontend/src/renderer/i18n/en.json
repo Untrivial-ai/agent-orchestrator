@@ -499,6 +499,7 @@
 	"newTask.titleRequired": "Title and brief are required.",
 	"newTask.unableToStart": "Unable to start task",
 	"notify.bell": "Notifications",
+	"sessionLink.dismissError": "Dismiss session link error",
 	"notify.couldNotMarkAllRead": "Could not mark notifications read",
 	"notify.earlierLoadFailed": "Couldn’t load earlier notifications.",
 	"notify.emptyAll": "No notifications yet.",
