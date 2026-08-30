@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { conversationQueryKey } from "./useConversation";
+import { useCloudCp } from "./useCloudCp";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
 export type SessionInterfaceTransition = components["schemas"]["SessionInterfaceTransition"];
@@ -144,8 +145,13 @@ export function sessionInterfaceTransitionQueryKey(sessionId: string) {
  * traffic and the existing session CDC stream still refreshes the committed
  * mode in the workspace model.
  */
-export function useSessionInterfaceTransition(sessionId: string | undefined) {
+export function useSessionInterfaceTransition(
+	sessionId: string | undefined,
+	cloud?: { orgId: string },
+) {
 	const queryClient = useQueryClient();
+	const cloudCp = useCloudCp();
+	const isCloud = Boolean(cloud && cloudCp.ready);
 	const settledRef = useRef<string>("");
 	const refreshAttemptRef = useRef(0);
 	const [refreshingTransition, setRefreshingTransition] = useState<{
@@ -154,8 +160,20 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 	}>();
 	const query = useQuery({
 		queryKey: sessionInterfaceTransitionQueryKey(sessionId ?? ""),
-		enabled: Boolean(sessionId && hasTrustedApiBaseUrl()),
+		enabled: Boolean(sessionId && (isCloud || hasTrustedApiBaseUrl())),
 		queryFn: async () => {
+			if (isCloud && cloud) {
+				const [sessionResponse, transitionStatus] = await Promise.all([
+					cloudCp.client.getSession(cloud.orgId, sessionId as string),
+					cloudCp.client.getInterfaceTransition(cloud.orgId, sessionId as string),
+				]);
+				return {
+					supported: transitionStatus.supported,
+					targetMode: transitionStatus.targetMode,
+					transition: undefined,
+					currentMode: sessionResponse.session.interfaceMode,
+				} as SessionInterfaceTransitionStatus & { currentMode?: SessionInterfaceMode };
+			}
 			const { data, error } = await apiClient.GET(
 				"/api/v1/sessions/{sessionId}/interface-transition",
 				{ params: { path: { sessionId: sessionId as string } } },
@@ -184,6 +202,16 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			targetSessionId,
 			...input
 		}: StartInterfaceTransitionMutationInput) => {
+			if (isCloud && cloud) {
+				const response = await cloudCp.client.startInterfaceTransition(
+					cloud.orgId,
+					targetSessionId,
+					input,
+				);
+				return response as unknown as {
+					transition: SessionInterfaceTransition;
+				};
+			}
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/interface-transition",
 				{
@@ -219,6 +247,7 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 	const cancel = useMutation({
 		mutationKey: cancelInterfaceTransitionMutationKey,
 		mutationFn: async ({ targetSessionId }: InterfaceTransitionMutationTarget) => {
+			if (isCloud) return;
 			const { error } = await apiClient.DELETE(
 				"/api/v1/sessions/{sessionId}/interface-transition",
 				{ params: { path: { sessionId: targetSessionId } } },
@@ -238,6 +267,7 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			targetSessionId,
 			transitionId,
 		}: AcknowledgeInterfaceTransitionNoticeMutationInput) => {
+			if (isCloud) return undefined;
 			const { data, error } = await apiClient.PUT(
 				"/api/v1/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement",
 				{
@@ -250,6 +280,7 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			return data;
 		},
 		onSuccess: (response, variables) => {
+			if (!response) return;
 			queryClient.setQueryData<SessionInterfaceTransitionStatus>(
 				sessionInterfaceTransitionQueryKey(variables.targetSessionId),
 				(current) =>

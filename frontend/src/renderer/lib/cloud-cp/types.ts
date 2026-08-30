@@ -146,6 +146,7 @@ export interface CloudCpProjectDeletedResponse {
 export type CloudCpSessionKind = "worker" | "orchestrator";
 
 export type CloudCpSessionMode = "read-only" | "standard" | "trusted";
+export type CloudCpInterfaceMode = "tui" | "chat";
 
 /** POST /orgs/{orgId}/sessions (requires an Idempotency-Key header). */
 export interface CloudCpCreateSessionRequest {
@@ -172,6 +173,7 @@ export interface CloudCpSession {
 	displayName: string;
 	branch: string;
 	mode: string;
+	interfaceMode: CloudCpInterfaceMode;
 	deniedCommands: string[];
 	activityState: string;
 	status: string;
@@ -181,6 +183,33 @@ export interface CloudCpSession {
 	isTerminated: boolean;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export interface CloudCpInterfaceTransition {
+	id: string;
+	phase: "completed" | "failed";
+	policy: "drain" | "interrupt";
+	sessionId: string;
+	sourceMode: CloudCpInterfaceMode;
+	targetMode: CloudCpInterfaceMode;
+	updatedAt: string;
+}
+
+export interface CloudCpInterfaceTransitionStatusResponse {
+	supported: boolean;
+	targetMode: CloudCpInterfaceMode;
+	transition?: CloudCpInterfaceTransition;
+}
+
+export interface CloudCpStartInterfaceTransitionRequest {
+	targetMode: CloudCpInterfaceMode;
+	policy?: "drain" | "interrupt";
+}
+
+export interface CloudCpStartInterfaceTransitionResponse {
+	ok: boolean;
+	sessionId: string;
+	transition: CloudCpInterfaceTransition;
 }
 
 export interface CloudCpSessionResponse {

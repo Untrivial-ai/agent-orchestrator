@@ -201,6 +201,7 @@ function toCloudWorkspaceSession(
 		title: session.displayName || session.id,
 		provider: toAgentProvider(session.harness),
 		kind: session.kind === "orchestrator" ? "orchestrator" : "worker",
+		mode: session.interfaceMode ?? "tui",
 		branch: session.branch || undefined,
 		status: toSessionStatus(session.status, session.isTerminated),
 		isTerminated: session.isTerminated,

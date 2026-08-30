@@ -507,6 +507,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => stopTerminalLiveResize, [stopTerminalLiveResize]);
 
 	const session = workspaceQuery.data;
+<<<<<<< HEAD
 	const routeVisibilityOperation =
 		session?.activeAgentSwitch &&
 		session.activeAgentSwitch.state !== "completed" &&
@@ -525,7 +526,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			(codexAccountSwitch.sessions.length === 0 ||
 				codexAccountSwitch.sessions.some((entry) => entry.sessionId === session.id)),
 	);
-	const interfaceSwitch = useSessionInterfaceTransition(session?.id);
+	const interfaceSwitch = useSessionInterfaceTransition(session?.id, session?.cloud);
 	const reviewerQuery = useQuery({
 		queryKey: ["session-reviews", sessionId],
 		enabled: Boolean(
