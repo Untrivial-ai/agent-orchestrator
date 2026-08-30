@@ -974,11 +974,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// the button entirely rather than showing a permanently disabled control.
 	const interfaceSwitchUnsupported = interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED";
 	const showInterfaceSwitchAction = Boolean(
-		!interfaceSwitchUnsupported &&
-		(session?.cloud !== undefined ||
-			interfaceSwitch.status ||
-			interfaceSwitch.isLoading ||
-			interfaceSwitch.statusError),
+		session !== undefined && !interfaceSwitchUnsupported,
 	);
 	const newTerminalError = openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined;
 	const newShellTerminalAction =
