@@ -16,6 +16,13 @@ vi.mock("../lib/api-client", () => ({
 	hasTrustedApiBaseUrl: () => true,
 }));
 
+// Keep these hook tests focused on the local daemon path. The real Cloud
+// readiness hooks subscribe to settings/auth queries and can trigger an
+// unrelated refetch while the test is asserting the first response.
+vi.mock("./useCloudCp", () => ({
+	useCloudCp: () => ({ client: {}, ready: false, baseUrl: "" }),
+}));
+
 import { useSessionInterfaceTransition } from "./useSessionInterfaceTransition";
 
 function wrapper({ children }: { children: ReactNode }) {

@@ -153,7 +153,12 @@ export function useSessionInterfaceTransition(
 ) {
 	const queryClient = useQueryClient();
 	const cloudCp = useCloudCp();
+	// Keep the two-argument call site backwards-compatible for local sessions.
+	// SessionView deliberately passes `undefined` while a tab is unresolved, so
+	// distinguish an omitted context from that explicit unresolved value.
+	const hasSessionContext = arguments.length >= 2;
 	const isCloud = Boolean(cloud && cloudCp.ready);
+	const isLocal = cloud === null || !hasSessionContext;
 	const settledRef = useRef<string>("");
 	const refreshAttemptRef = useRef(0);
 	const [refreshingTransition, setRefreshingTransition] = useState<{
@@ -162,7 +167,7 @@ export function useSessionInterfaceTransition(
 	}>();
 	const query = useQuery({
 		queryKey: sessionInterfaceTransitionQueryKey(sessionId ?? ""),
-		enabled: Boolean(sessionId && (isCloud || (cloud === null && hasTrustedApiBaseUrl()))),
+		enabled: Boolean(sessionId && (isCloud || (isLocal && hasTrustedApiBaseUrl()))),
 		queryFn: async () => {
 			if (isCloud && cloud) {
 				const [sessionResponse, transitionStatus] = await Promise.all([
