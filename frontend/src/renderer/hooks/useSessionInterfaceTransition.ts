@@ -147,7 +147,9 @@ export function sessionInterfaceTransitionQueryKey(sessionId: string) {
  */
 export function useSessionInterfaceTransition(
 	sessionId: string | undefined,
-	cloud?: { orgId: string },
+	// undefined: session row is still resolving; null: resolved local session.
+	// This prevents unresolved Cloud tabs from probing the local daemon.
+	cloud?: { orgId: string } | null,
 ) {
 	const queryClient = useQueryClient();
 	const cloudCp = useCloudCp();
@@ -160,7 +162,7 @@ export function useSessionInterfaceTransition(
 	}>();
 	const query = useQuery({
 		queryKey: sessionInterfaceTransitionQueryKey(sessionId ?? ""),
-		enabled: Boolean(sessionId && (isCloud || hasTrustedApiBaseUrl())),
+		enabled: Boolean(sessionId && (isCloud || (cloud === null && hasTrustedApiBaseUrl()))),
 		queryFn: async () => {
 			if (isCloud && cloud) {
 				const [sessionResponse, transitionStatus] = await Promise.all([

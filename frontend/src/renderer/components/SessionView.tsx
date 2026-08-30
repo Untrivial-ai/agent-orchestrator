@@ -235,6 +235,7 @@ function reviewerTerminalFromReviews(data?: ReviewsResponse): ReviewerTerminalTa
 
 type SessionViewProps = {
 	sessionId: string;
+	cloudOrgId?: string;
 };
 
 // Mirrors the left sidebar: a Motion gap takes layout width while a sibling
@@ -370,7 +371,7 @@ function SessionInspectorRail({
 // x-transform). Summary/Reviews/Files share a utility width, while Browser
 // automatically grows into a co-work canvas. Chat readability clamps either
 // profile before the conversation can become unusably narrow.
-export function SessionView({ sessionId }: SessionViewProps) {
+export function SessionView({ sessionId, cloudOrgId }: SessionViewProps) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const refreshWorkspaces = useCallback(
@@ -507,7 +508,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => stopTerminalLiveResize, [stopTerminalLiveResize]);
 
 	const session = workspaceQuery.data;
-<<<<<<< HEAD
 	const routeVisibilityOperation =
 		session?.activeAgentSwitch &&
 		session.activeAgentSwitch.state !== "completed" &&
@@ -526,7 +526,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			(codexAccountSwitch.sessions.length === 0 ||
 				codexAccountSwitch.sessions.some((entry) => entry.sessionId === session.id)),
 	);
-	const interfaceSwitch = useSessionInterfaceTransition(session?.id, session?.cloud);
+	const interfaceContext = session
+		? (session.cloud ?? null)
+		: cloudOrgId
+			? { orgId: cloudOrgId }
+			: undefined;
+	const interfaceSwitch = useSessionInterfaceTransition(sessionId, interfaceContext);
 	const reviewerQuery = useQuery({
 		queryKey: ["session-reviews", sessionId],
 		enabled: Boolean(
