@@ -196,13 +196,18 @@ func TestReviewActivityPersistsReviewerState(t *testing.T) {
 	}
 }
 
-func TestReviewActivityRejectsUnknownState(t *testing.T) {
+func TestReviewActivityIgnoresUnknownStateWithoutMetadata(t *testing.T) {
 	svc := &fakeReviewService{}
 	srv := newReviewTestServer(t, svc)
 
 	body, status, headers := doRequest(t, srv, "POST", "/api/v1/reviews/review-1/activity", `{"state":"busy"}`)
 	assertJSON(t, headers)
-	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_ACTIVITY_STATE")
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if svc.activityID != "" {
+		t.Fatalf("activity should be ignored, got id=%q signal=%+v", svc.activityID, svc.activitySignal)
+	}
 }
 
 func TestReviewsListIncludesReviewStates(t *testing.T) {
