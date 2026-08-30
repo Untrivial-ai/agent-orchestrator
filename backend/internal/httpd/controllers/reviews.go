@@ -128,13 +128,15 @@ func (c *ReviewsController) activity(w http.ResponseWriter, r *http.Request) {
 		switch state {
 		case domain.ActivityActive, domain.ActivityIdle, domain.ActivityWaitingInput, domain.ActivityBlocked, domain.ActivityExited:
 		default:
-			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_ACTIVITY_STATE", "Unknown activity state", nil)
-			return
+			// Reviewer hooks are best-effort. If a reviewer CLI stops emitting one
+			// of AO's known activity states, degrade to a no-op instead of turning
+			// review-run polling into a surfaced hook failure.
+			state = ""
 		}
 	}
 	agentSessionID := capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.AgentSessionID)))
 	if state == "" && agentSessionID == "" {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "REVIEW_ACTIVITY_OR_SESSION_ID_REQUIRED", "Reviewer activity state or agent session ID is required", nil)
+		envelope.WriteJSON(w, http.StatusOK, SetReviewActivityResponse{OK: true, ReviewSessionID: reviewSessionID})
 		return
 	}
 	if err := c.Svc.ApplyReviewActivitySignal(r.Context(), reviewSessionID, reviewsvc.ActivitySignal{
