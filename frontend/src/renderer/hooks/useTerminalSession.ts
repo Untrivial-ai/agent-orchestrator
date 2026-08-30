@@ -47,6 +47,7 @@ export type AttachableTerminal = {
 	prepareForActivation: () => Promise<void>;
 	onUserInput: (listener: (data: string, source: TerminalUserInputSource) => void) => { dispose: () => void };
 	onResize: (listener: (size: { cols: number; rows: number }) => void) => { dispose: () => void };
+	focus: () => void;
 };
 
 export type TerminalSessionState =
