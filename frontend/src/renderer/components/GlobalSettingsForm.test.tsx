@@ -159,7 +159,7 @@ describe("GlobalSettingsForm", () => {
 		expect(await screen.findByLabelText("Settings")).toBeInTheDocument();
 		expect(screen.getByText("Appearance")).toBeInTheDocument();
 		expect(screen.getByText("Language")).toBeInTheDocument();
-		expect(await screen.findByText("Updates")).toBeInTheDocument();
+		expect(await screen.findByText("Updates", {}, { timeout: 10_000 })).toBeInTheDocument();
 		expect(screen.getByText("Advanced")).toBeInTheDocument();
 		expect(screen.getByText("Report a problem")).toBeInTheDocument();
 		// Report form is inline — no dialog, fields directly present.

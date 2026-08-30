@@ -170,6 +170,12 @@ export interface ChatWorkspaceProps {
 	newWorkDisabled?: boolean;
 	reviewerTerminal?: { handleId: string; harness: string };
 	onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
+	reviewerChat?: { reviewId: string; harness: string };
+	onOpenReviewerChat?: (target: { reviewId: string; harness: string }) => void;
+	/** A separate reviewer conversation owns the body while this worker Chat stays mounted. */
+	reviewerChatSelected?: boolean;
+	/** The parent surface owns the shared session tab strip. */
+	hideHeader?: boolean;
 	/** Older durable history is available but not loaded into the DOM yet. */
 	hasOlder?: boolean;
 	loadingOlder?: boolean;
@@ -305,6 +311,10 @@ export function ChatWorkspace({
 	newWorkDisabled = false,
 	reviewerTerminal,
 	onOpenReviewerTerminal,
+	reviewerChat,
+	onOpenReviewerChat,
+	reviewerChatSelected = false,
+	hideHeader = false,
 	session,
 	reviewerTarget,
 	onSelectChat,
@@ -420,7 +430,7 @@ export function ChatWorkspace({
 	// Selection is durable UI state; availability only controls whether the tab is
 	// offered. Keeping these separate preserves a selected reviewer while an active
 	// session temporarily becomes terminated and later returns.
-	const reviewerActive = Boolean(reviewerTarget && session);
+	const reviewerActive = reviewerChatSelected || Boolean(reviewerTarget && session);
 	const shellActive = Boolean(shellTarget && session);
 	const queuedMessages = useMemo(() => {
 		const messagesByTurn = new Map(
@@ -573,7 +583,7 @@ export function ChatWorkspace({
 		(direction: -1 | 1) => {
 			const tabs = [
 				{ kind: "chat" as const },
-				...(reviewerTerminal ? [{ kind: "reviewer" as const }] : []),
+				...(reviewerTerminal || reviewerChat ? [{ kind: "reviewer" as const }] : []),
 				...(shellTerminals ?? []).map((shell) => ({
 					kind: "shell" as const,
 					handleId: shell.handleId,
@@ -594,15 +604,18 @@ export function ChatWorkspace({
 			}
 			if (next.kind === "reviewer") {
 				if (reviewerTerminal) onOpenReviewerTerminal?.(reviewerTerminal);
+				else if (reviewerChat) onOpenReviewerChat?.(reviewerChat);
 				return;
 			}
 			onSelectShellTerminal?.(next.handleId);
 		},
 		[
+			onOpenReviewerChat,
 			onOpenReviewerTerminal,
 			onSelectChat,
 			onSelectShellTerminal,
 			reviewerActive,
+			reviewerChat,
 			reviewerTerminal,
 			shellActive,
 			shellTarget,
@@ -751,27 +764,31 @@ export function ChatWorkspace({
 				} as CSSProperties
 			}
 		>
-			<ChatHeader
-				snapshot={snapshot}
-				reviewerTerminal={reviewerTerminal}
-				onOpenReviewerTerminal={onOpenReviewerTerminal}
-				reviewerActive={reviewerActive}
-				onSelectChat={onSelectChat}
-				shellTerminals={shellTerminals}
-				shellActiveHandleId={shellActive ? shellTarget?.handleId : undefined}
-				onSelectShellTerminal={onSelectShellTerminal}
-				onCloseShellTerminal={onCloseShellTerminal}
-				onRenameShellTerminal={onRenameShellTerminal}
-				onTabsKeyDown={handleChatTabsKeyDown}
-				headerActions={headerActions}
-				session={session}
-				sessionTabAction={sessionTabAction}
-				tabStripAction={tabStripAction}
-				workspaceTabs={workspaceTabs}
-				workspaceFileActive={workspaceFileActive}
-				inline={isFullscreen}
-				topbarBounds={topbarBounds}
-			/>
+			{hideHeader ? null : (
+				<ChatHeader
+					snapshot={snapshot}
+					reviewerTerminal={reviewerTerminal}
+					onOpenReviewerTerminal={onOpenReviewerTerminal}
+					reviewerChat={reviewerChat}
+					onOpenReviewerChat={onOpenReviewerChat}
+					reviewerActive={reviewerActive}
+					onSelectChat={onSelectChat}
+					shellTerminals={shellTerminals}
+					shellActiveHandleId={shellActive ? shellTarget?.handleId : undefined}
+					onSelectShellTerminal={onSelectShellTerminal}
+					onCloseShellTerminal={onCloseShellTerminal}
+					onRenameShellTerminal={onRenameShellTerminal}
+					onTabsKeyDown={handleChatTabsKeyDown}
+					headerActions={headerActions}
+					session={session}
+					sessionTabAction={sessionTabAction}
+					tabStripAction={tabStripAction}
+					workspaceTabs={workspaceTabs}
+					workspaceFileActive={workspaceFileActive}
+					inline={isFullscreen}
+					topbarBounds={topbarBounds}
+				/>
+			)}
 			<div className="relative flex min-h-0 flex-1 flex-col">
 				{reviewerTarget && session ? (
 					<div
@@ -1127,6 +1144,8 @@ function ChatHeader({
 	snapshot,
 	reviewerTerminal,
 	onOpenReviewerTerminal,
+	reviewerChat,
+	onOpenReviewerChat,
 	reviewerActive,
 	onSelectChat,
 	shellTerminals,
@@ -1147,6 +1166,8 @@ function ChatHeader({
 	snapshot: ConversationSnapshot;
 	reviewerTerminal?: { handleId: string; harness: string };
 	onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
+	reviewerChat?: { reviewId: string; harness: string };
+	onOpenReviewerChat?: (target: { reviewId: string; harness: string }) => void;
 	/** The reviewer tab is selected; the chat tab is the clickable alternative. */
 	reviewerActive?: boolean;
 	/** Return the tab strip to the chat tab. */
@@ -1170,7 +1191,7 @@ function ChatHeader({
 	topbarBounds: TopbarBounds;
 }) {
 	const label = agentLabel(snapshot.harness);
-	const tabScrollWatch = `${session?.id ?? ""}|${reviewerTerminal?.handleId ?? ""}|${(shellTerminals ?? []).map((shell) => shell.handleId).join("|")}`;
+	const tabScrollWatch = `${session?.id ?? ""}|${reviewerTerminal?.handleId ?? reviewerChat?.reviewId ?? ""}|${(shellTerminals ?? []).map((shell) => shell.handleId).join("|")}`;
 	const {
 		scrollRef: tabsOverflowRef,
 		scrollToEnd: scrollTabsToEnd,
@@ -1234,7 +1255,7 @@ function ChatHeader({
 								)}
 								onClick={timelineActive ? undefined : onSelectChat}
 								role="tab"
-								tabIndex={timelineActive || (!reviewerTerminal && !shellTerminals?.length) ? 0 : -1}
+								tabIndex={timelineActive || (!reviewerTerminal && !reviewerChat && !shellTerminals?.length) ? 0 : -1}
 								title={label}
 								type="button"
 							>
@@ -1245,7 +1266,7 @@ function ChatHeader({
 						<div className="relative min-w-0 flex-1 self-stretch overflow-hidden">
 							<div ref={tabsOverflowRef} className="scrollbar-none flex h-full min-w-flex-min min-w-0 items-stretch overflow-x-auto">
 								<div className="flex w-max items-stretch">
-								{reviewerTerminal ? (
+								{reviewerTerminal || reviewerChat ? (
 									<button
 										aria-current={reviewerActive ? true : undefined}
 										aria-label="Reviewer"
@@ -1256,16 +1277,20 @@ function ChatHeader({
 												? "bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
 												: "text-muted-foreground hover:bg-raised hover:text-foreground",
 										)}
-										onClick={() => onOpenReviewerTerminal?.(reviewerTerminal)}
+										onClick={() =>
+											reviewerTerminal
+												? onOpenReviewerTerminal?.(reviewerTerminal)
+												: reviewerChat && onOpenReviewerChat?.(reviewerChat)
+										}
 										role="tab"
 										tabIndex={reviewerActive ? 0 : -1}
-										title={reviewerTerminal.harness}
+										title={(reviewerTerminal ?? reviewerChat)?.harness}
 										type="button"
 									>
 										<AgentAvatar
 											className="size-icon-base"
 											decorative
-											provider={reviewerTerminal.harness}
+											provider={(reviewerTerminal ?? reviewerChat)?.harness ?? "codex"}
 										/>
 										<span className="truncate">Reviewer</span>
 									</button>

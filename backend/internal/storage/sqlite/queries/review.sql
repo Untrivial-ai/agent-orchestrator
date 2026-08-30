@@ -1,28 +1,85 @@
 -- name: UpsertReview :exec
-INSERT INTO review (id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO review (
+    id, session_id, project_id, harness, pr_url, reviewer_handle_id,
+    agent_session_id, interface_mode, provider_conversation_id,
+    controller_generation, controller_error, created_at, updated_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (session_id, harness) DO UPDATE SET
     project_id = excluded.project_id,
     pr_url = excluded.pr_url,
     reviewer_handle_id = excluded.reviewer_handle_id,
     agent_session_id = CASE WHEN excluded.agent_session_id != '' THEN excluded.agent_session_id ELSE review.agent_session_id END,
+    interface_mode = excluded.interface_mode,
+    provider_conversation_id = CASE
+        WHEN excluded.provider_conversation_id != '' THEN excluded.provider_conversation_id
+        ELSE review.provider_conversation_id
+    END,
+    controller_generation = CASE
+        WHEN excluded.controller_generation != '' THEN excluded.controller_generation
+        ELSE review.controller_generation
+    END,
+    controller_error = excluded.controller_error,
     updated_at = excluded.updated_at;
 
 -- name: GetReviewBySession :one
-SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, created_at, updated_at
+SELECT *
 FROM review WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1;
 
 -- name: GetReviewBySessionAndHarness :one
-SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, created_at, updated_at
+SELECT *
 FROM review WHERE session_id = ? AND harness = ?;
 
 -- name: GetReviewByID :one
-SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, created_at, updated_at
+SELECT *
 FROM review WHERE id = ?;
 
 -- name: ListReviewsBySession :many
-SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, created_at, updated_at
+SELECT *
 FROM review WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC;
+
+-- name: SetReviewInterfaceMode :execrows
+UPDATE review
+SET interface_mode = sqlc.arg(interface_mode),
+    reviewer_handle_id = CASE WHEN sqlc.arg(interface_mode) = 'chat' THEN '' ELSE reviewer_handle_id END,
+    provider_conversation_id = CASE WHEN sqlc.arg(interface_mode) = 'tui' THEN '' ELSE provider_conversation_id END,
+    controller_generation = CASE WHEN sqlc.arg(interface_mode) = 'tui' THEN '' ELSE controller_generation END,
+    controller_error = '',
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id);
+
+-- name: ClaimReviewChatController :execrows
+UPDATE review
+SET provider_conversation_id = sqlc.arg(provider_conversation_id),
+    controller_generation = sqlc.arg(controller_generation),
+    controller_error = '',
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND interface_mode = 'chat';
+
+-- name: RecordReviewChatControllerError :execrows
+UPDATE review
+SET controller_error = sqlc.arg(controller_error), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND interface_mode = 'chat';
+
+-- name: ClearReviewChatController :execrows
+UPDATE review
+SET controller_generation = '', updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND interface_mode = 'chat';
+
+-- name: ActivateConversationBranchReview :execrows
+UPDATE review
+SET provider_conversation_id = sqlc.arg(provider_conversation_id),
+    controller_generation = sqlc.arg(controller_generation),
+    controller_error = '',
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND interface_mode = 'chat';
+
+-- name: ListRecoverableChatReviews :many
+SELECT *
+FROM review
+WHERE interface_mode = 'chat'
+  AND provider_conversation_id != ''
+ORDER BY updated_at, id;
 
 -- name: ClearReviewerHandle :exec
 UPDATE review SET reviewer_handle_id = '', updated_at = CURRENT_TIMESTAMP WHERE session_id = ?;

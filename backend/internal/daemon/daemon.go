@@ -579,6 +579,11 @@ func Run() error {
 			if reconcileErr := sessMgr.ReconcileBackground(ctx); reconcileErr != nil {
 				log.Error("background session reconciliation on boot failed", "err", reconcileErr)
 			}
+			if recovery, ok := reviewSvc.(interface{ RecoverChatReviewers(context.Context) error }); ok {
+				if recoverErr := recovery.RecoverChatReviewers(ctx); recoverErr != nil {
+					log.Error("background reviewer-chat recovery on boot failed", "err", recoverErr)
+				}
+			}
 			if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
 				log.Error("background agent-process reconciliation on boot failed", "err", reconcileErr)
 			}

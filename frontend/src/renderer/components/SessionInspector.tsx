@@ -150,6 +150,8 @@ export function SessionInspector({
 	onToggleBrowserPopOut,
 	onOpenFiles,
 	onOpenReviewFile,
+	onOpenReviewerChat,
+	onWorkerMessageSent,
 	filesView,
 	browserView,
 	view: viewProp,
@@ -163,6 +165,8 @@ export function SessionInspector({
 	onToggleBrowserPopOut?: (next: boolean, sourceRect?: DOMRectReadOnly) => void;
 	onOpenFiles?: () => void;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
+	onOpenReviewerChat?: (reviewId: string) => void;
+	onWorkerMessageSent?: () => void;
 	filesView?: ReactNode;
 	browserView?: BrowserViewModel;
 	/** Controlled active tab. Omit to let the inspector own its own selection. */
@@ -236,7 +240,15 @@ export function SessionInspector({
 				loadingText={session ? undefined : t("inspector.loadingSession")}
 				onViewChange={setView}
 				reviewsView={
-					session ? <ReviewsView onOpenReviewFile={onOpenReviewFile} onOpenReviewerTerminal={onOpenReviewerTerminal} session={session} /> : undefined
+					session ? (
+						<ReviewsView
+							onOpenReviewFile={onOpenReviewFile}
+							onOpenReviewerTerminal={onOpenReviewerTerminal}
+							onOpenReviewerChat={onOpenReviewerChat}
+							onWorkerMessageSent={onWorkerMessageSent}
+							session={session}
+						/>
+					) : undefined
 				}
 				summaryView={
 					session ? <SummaryView canOpenReviews={reviewsAvailable} onOpenReviews={() => setView("reviews")} session={session} /> : undefined
@@ -333,14 +345,24 @@ function ReviewsView({
 	session,
 	onOpenReviewFile,
 	onOpenReviewerTerminal,
+	onOpenReviewerChat,
+	onWorkerMessageSent,
 }: {
 	session: WorkspaceSession;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 	onOpenReviewerTerminal?: OpenReviewerTerminal;
+	onOpenReviewerChat?: (reviewId: string) => void;
+	onWorkerMessageSent?: () => void;
 }) {
 	return (
 		<div role="tabpanel">
-			<ReviewsSection onOpenReviewFile={onOpenReviewFile} onOpenReviewerTerminal={onOpenReviewerTerminal} session={session} />
+			<ReviewsSection
+				onOpenReviewFile={onOpenReviewFile}
+				onOpenReviewerTerminal={onOpenReviewerTerminal}
+				onOpenReviewerChat={onOpenReviewerChat}
+				onWorkerMessageSent={onWorkerMessageSent}
+				session={session}
+			/>
 		</div>
 	);
 }
@@ -1452,10 +1474,14 @@ function ReviewsSection({
 	session,
 	onOpenReviewFile,
 	onOpenReviewerTerminal,
+	onOpenReviewerChat,
+	onWorkerMessageSent,
 }: {
 	session: WorkspaceSession;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 	onOpenReviewerTerminal?: OpenReviewerTerminal;
+	onOpenReviewerChat?: (reviewId: string) => void;
+	onWorkerMessageSent?: () => void;
 }) {
 	const { t } = useTranslation();
 	const hasPr = sortedPRs(session).length > 0;
@@ -1554,7 +1580,9 @@ function ReviewsSection({
 				setReviewNotice(t("inspector.reviewAlreadyRanForCommit"));
 				return;
 			}
-			if (data?.reviewerHandleId) {
+			if (data?.reviewerSurface?.mode === "chat" && data.reviewerSurface.reviewId) {
+				onOpenReviewerChat?.(data.reviewerSurface.reviewId);
+			} else if (data?.reviewerHandleId) {
 				const harness = started.latestRun.harness || "reviewer";
 				onOpenReviewerTerminal?.({ handleId: data.reviewerHandleId, harness });
 			}
@@ -1638,6 +1666,7 @@ function ReviewsSection({
 				githubPRs={githubReviews}
 				isLoading={scmSummary.isLoading}
 				onOpenReviewFile={onOpenReviewFile}
+				onWorkerMessageSent={onWorkerMessageSent}
 				reviewStates={reviewStates}
 				runs={reviewsQuery.data?.runs ?? []}
 				session={session}
@@ -1657,6 +1686,7 @@ function MergedReviewsSection({
 	githubPRs,
 	isLoading,
 	onOpenReviewFile,
+	onWorkerMessageSent,
 	reviewStates,
 	runs,
 	session,
@@ -1664,6 +1694,7 @@ function MergedReviewsSection({
 	githubPRs: SessionPRSummary[];
 	isLoading: boolean;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
+	onWorkerMessageSent?: () => void;
 	reviewStates: PRReviewState[];
 	runs: ReviewRunFacts[];
 	session: WorkspaceSession;
@@ -1701,19 +1732,34 @@ function MergedReviewsSection({
 		void queryClient.invalidateQueries({ queryKey: sessionScmSummaryQueryKey(session.id) });
 		void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 	};
-	const sendInlineCommentToWorker = async (comment: InspectorInlineComment & { reviewerId?: string }) => {
+	const sendMessageToWorker = async (message: string, fallbackError: string) => {
+		if (session.mode === "chat") {
+			const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/conversation/messages", {
+				params: { path: { sessionId: session.id } },
+				body: { text: message, clientMessageId: crypto.randomUUID() },
+			});
+			if (error) throw new Error(apiErrorMessage(error, fallbackError));
+			return;
+		}
 		const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
 			params: { path: { sessionId: session.id } },
-			body: { message: formatInlineReviewCommentMessage(comment) },
+			body: { message },
 		});
-		if (error) throw new Error(apiErrorMessage(error, "Unable to send review comment to worker agent"));
+		if (error) throw new Error(apiErrorMessage(error, fallbackError));
+	};
+	const sendInlineCommentToWorker = async (comment: InspectorInlineComment & { reviewerId?: string }) => {
+		await sendMessageToWorker(
+			formatInlineReviewCommentMessage(comment),
+			"Unable to send review comment to worker agent",
+		);
+		onWorkerMessageSent?.();
 	};
 	const sendReviewSummaryToWorker = async (summary: InspectorReviewSummaryAction) => {
-		const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
-			params: { path: { sessionId: session.id } },
-			body: { message: formatReviewSummaryMessage(summary) },
-		});
-		if (error) throw new Error(apiErrorMessage(error, "Unable to send review summary to worker agent"));
+		await sendMessageToWorker(
+			formatReviewSummaryMessage(summary),
+			"Unable to send review summary to worker agent",
+		);
+		onWorkerMessageSent?.();
 	};
 	const groups: InspectorReviewGroup[] = rows.map(([number, { ao, github }]) => {
 		const aoRuns = ao ? [...(runsByPR.get(ao.prUrl) ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];
@@ -2014,18 +2060,24 @@ function formatInlineReviewCommentMessage(comment: InspectorInlineComment & { re
 	const body = sanitizeWorkerMessagePart(comment.body?.trim() || "No comment body provided.");
 	const url = sanitizeWorkerMessagePart(comment.url?.trim() || "");
 	const lines = [
-		`A reviewer left an unresolved inline comment on your PR. Address it, commit the fix, and push the branch to GitHub.`,
+		"## Inline review comment",
 		"",
-		`Reviewer: @${reviewer}`,
-		`Location: ${location}`,
-		"",
-		"Comment:",
-		body,
+		`**Reviewer:** @${reviewer}  `,
+		`**Location:** \`${location}\``,
 	];
 	if (url) {
-		lines.push("", `Comment URL: ${url}`);
+		lines.push(`**Comment:** [Open on GitHub](${url})`);
 	}
-	lines.push("", "You should not need to re-fetch review data unless you need additional context beyond what AO has provided here.");
+	lines.push(
+		"",
+		"### Comment",
+		"",
+		body,
+		"",
+		"### Next step",
+		"",
+		"Address this comment, run relevant tests, commit the fix, and push the branch. AO has included the available review context above.",
+	);
 	return lines.join("\n");
 }
 
@@ -2035,12 +2087,21 @@ function formatReviewSummaryMessage(summary: InspectorReviewSummaryAction): stri
 	const url = sanitizeWorkerMessagePart((summary.url || summary.pullRequestUrl || "").trim());
 	const source = summary.source === "agent" ? "AO agent review" : "external PR review";
 	const lines = [
-		`A ${source} from ${reviewer} has feedback for your pull request. Address the actionable items, run relevant tests, commit the fixes, and push the branch.`,
+		"## Review feedback",
 		"",
-		"Review summary:",
-		body,
+		`**Source:** ${source} · ${reviewer}`,
 	];
-	if (url) lines.push("", `Review URL: ${url}`);
+	if (url) lines.push(`**Review:** [Open review](${url})`);
+	lines.push(
+		"",
+		"### Feedback",
+		"",
+		body || "No review summary was provided.",
+		"",
+		"### Next step",
+		"",
+		"Address the actionable items, run relevant tests, commit the fixes, and push the branch.",
+	);
 	return lines.join("\n");
 }
 
@@ -2156,6 +2217,7 @@ function ReviewPanel({
 			? t("inspector.review.cancelling")
 			: t("inspector.review.cancel")
 		: runAction;
+	const runningReviewLabel = `Review in progress · ${agentLabel(activeReviewerHarness)}`;
 	const killDisabled = autoReviewEnabled || isKilling || isTriggering || isSwitchingReviewer || !hasReviewerSession;
 
 	return (
@@ -2246,8 +2308,16 @@ function ReviewPanel({
 										type="button"
 										variant={reviewRunning ? "ghost" : reviewHasRun ? "secondary" : "primary"}
 									>
-										{reviewRunning ? <X aria-hidden="true" /> : <Play aria-hidden="true" />}
-										<span className="review-run-action-label">{primaryReviewActionLabel}</span>
+										{reviewRunning && isCancelling ? (
+											<Loader2 aria-hidden="true" className="animate-spin" />
+										) : reviewRunning ? (
+											<X aria-hidden="true" />
+										) : (
+											<Play aria-hidden="true" />
+										)}
+										<span className={cn("review-run-action-label", reviewRunning && "review-run-action-label--running")}>
+											{reviewRunning ? (isCancelling ? primaryReviewActionLabel : runningReviewLabel) : primaryReviewActionLabel}
+										</span>
 									</Button>
 								</TooltipTrigger>
 								<TooltipContent side="top">{primaryReviewActionLabel}</TooltipContent>
@@ -2269,16 +2339,6 @@ function ReviewPanel({
 						</div>
 					</div>
 				</div>
-				{reviewRunning ? (
-					<div className="mt-3 flex items-center gap-2 border-t border-border pt-3">
-						<Loader2 aria-hidden="true" className="size-icon-sm shrink-0 animate-spin text-muted-foreground" />
-						<span className="min-w-0 flex-1 truncate text-2xs font-medium text-muted-foreground">
-							{isCancelling
-								? t("inspector.review.cancelling")
-								: `Review in progress · ${agentLabel(activeReviewerHarness)}`}
-						</span>
-					</div>
-				) : null}
 			</Section>
 		</div>
 	);

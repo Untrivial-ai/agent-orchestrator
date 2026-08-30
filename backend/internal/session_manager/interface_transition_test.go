@@ -2244,3 +2244,17 @@ func TestRecoverInterruptedTUIToChatRollsBackCommittedModeBeforeReconcile(t *tes
 		t.Fatalf("source native conversation = %q, want native-1", rec.Metadata.AgentSessionID)
 	}
 }
+
+func TestInterfaceTransitionTargetStartupBudgetIncludesResumeAndHistoryImport(t *testing.T) {
+	ctx, cancel := interfaceTransitionTargetContext(context.Background())
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("target startup context has no deadline")
+	}
+	if remaining := time.Until(deadline); remaining < 2*interfaceTransitionStepLimit {
+		t.Fatalf("target startup budget = %s, want at least %s for sequential resume and history import",
+			remaining, 2*interfaceTransitionStepLimit)
+	}
+}

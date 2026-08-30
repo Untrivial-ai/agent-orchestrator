@@ -22,6 +22,13 @@ type Reviewer interface {
 	ReviewMessage(ctx context.Context, inv ReviewInvocation) (string, error)
 }
 
+// ReviewerChatProfile is implemented by reviewers that can run through AO's
+// typed Chat driver instead of a terminal TUI. Reviewers without this optional
+// capability keep the existing terminal launch path.
+type ReviewerChatProfile interface {
+	ReviewChatHarness() domain.AgentHarness
+}
+
 // ReviewCancelMode names how AO should stop a running reviewer.
 type ReviewCancelMode string
 

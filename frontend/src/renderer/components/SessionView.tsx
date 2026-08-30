@@ -18,6 +18,7 @@ import type { components } from "../../api/schema";
 import { defaultShortcutBindings, shortcutBindingLabel } from "../../shared/shortcuts";
 import { BrowserPanelView, useBrowserAnnotationQueue } from "./BrowserPanel";
 import { CenterPane } from "./CenterPane";
+import { ReviewerChatSurface } from "./chat/ReviewerChatSurface";
 import {
 	SessionChatSurface,
 	type ConversationWorkState,
@@ -122,6 +123,7 @@ const newTerminalShortcutLabel = shortcutBindingLabel(defaultShortcutBindings("n
 
 type ReviewsResponse = components["schemas"]["ListReviewsResponse"];
 type ReviewerTerminalTarget = { handleId: string; harness: string };
+type ReviewerChatTarget = { reviewId: string; harness: string };
 type InterfaceSwitchDialogScope = {
 	sessionId: string;
 	targetMode: "chat" | "tui";
@@ -234,10 +236,17 @@ function browserIsVisible(sessionId: string, browserPoppedOut: boolean): boolean
 }
 
 function reviewerTerminalFromReviews(data?: ReviewsResponse): ReviewerTerminalTarget | undefined {
+	if (data?.reviewerSurface?.mode === "chat") return undefined;
 	const handleId = data?.reviewerHandleId?.trim();
 	if (!handleId) return undefined;
 	const latest = data?.reviews?.find((review) => review.latestRun)?.latestRun;
 	return { handleId, harness: data?.reviewerHarness || latest?.harness || "codex" };
+}
+
+function reviewerChatFromReviews(data?: ReviewsResponse): ReviewerChatTarget | undefined {
+	const surface = data?.reviewerSurface;
+	if (surface?.mode !== "chat" || !surface.reviewId) return undefined;
+	return { reviewId: surface.reviewId, harness: surface.harness || "codex" };
 }
 
 type SessionViewProps = {
@@ -400,6 +409,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const [inspectorSettledClosed, setInspectorSettledClosed] = useState(!isInspectorOpen);
 	const inspectorPanelVisible = isInspectorOpen || !inspectorSettledClosed;
 	const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>({ kind: "worker" });
+	const [reviewerChatId, setReviewerChatId] = useState<string | null>(null);
 	const [browserPopOutState, setBrowserPopOutState] = useState<BrowserPopOutState>({
 		sessionId,
 		phase: "docked",
@@ -494,6 +504,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	});
 	const availableReviewerTerminal = reviewerTerminalFromReviews(reviewerQuery.data);
 	const reviewerTerminal = session && sessionIsActive(session) ? availableReviewerTerminal : undefined;
+	const availableReviewerChat = reviewerChatFromReviews(reviewerQuery.data);
+	const reviewerChat = session && sessionIsActive(session) ? availableReviewerChat : undefined;
 
 	// Shell terminals opened inside a session live beside its pane as extra tabs,
 	// scoped to the session on screen so each session has its own shell set.
@@ -539,6 +551,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		(handleId: string) => {
 			const shell = shellTerminals.find((s) => s.handleId === handleId);
 			if (!shell) return;
+			setReviewerChatId(null);
 			setActiveShellTerminal(shell.handleId);
 			setFileTabsBySession((current) => ({
 				...current,
@@ -596,12 +609,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const selectSessionTerminal = useCallback(() => {
 		setActiveShellTerminal(null);
 		setTerminalTarget({ kind: "worker" });
+		setReviewerChatId(null);
 		setFileTabsBySession((current) => ({
 			...current,
 			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
 		}));
 	}, [sessionId, setActiveShellTerminal]);
 	const selectReviewerTerminal = useCallback((target: ReviewerTerminalTarget) => {
+		setReviewerChatId(null);
 		setActiveShellTerminal(null);
 		setTerminalTarget({ kind: "reviewer", handleId: target.handleId, harness: target.harness, sessionId });
 		setFileTabsBySession((current) => ({
@@ -609,13 +624,24 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
 		}));
 	}, [sessionId, setActiveShellTerminal]);
+	const selectReviewerChat = useCallback((reviewId: string) => {
+		setActiveShellTerminal(null);
+		setTerminalTarget({ kind: "worker" });
+		setReviewerChatId(reviewId);
+		setFileTabsBySession((current) => ({
+			...current,
+			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+		}));
+	}, [sessionId, setActiveShellTerminal]);
 	const openCenterFile = useCallback((path: string) => {
+		setReviewerChatId(null);
 		setFileTabsBySession((current) => ({
 			...current,
 			[sessionId]: openSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, path),
 		}));
 	}, [sessionId]);
 	const activateCenterFile = useCallback((path: string) => {
+		setReviewerChatId(null);
 		setFileTabsBySession((current) => ({
 			...current,
 			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, path),
@@ -930,6 +956,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	useLayoutEffect(() => {
 		setTerminalTarget({ kind: "worker" });
+		setReviewerChatId(null);
 		setBrowserPopOutState({ sessionId, phase: "docked" });
 		setFilesPoppedOut(false);
 	}, [sessionId]);
@@ -1040,9 +1067,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// Publish which one is showing: the notification runtime lives outside this
 	// subtree and must not treat "on the session route" as "watching the agent".
 	useEffect(() => {
-		setVisibleTerminalKind(sessionId, routedTerminalTarget.kind);
+		setVisibleTerminalKind(sessionId, reviewerChatId ? "reviewer" : routedTerminalTarget.kind);
 		return () => clearVisibleTerminalKind(sessionId);
-	}, [clearVisibleTerminalKind, routedTerminalTarget.kind, sessionId, setVisibleTerminalKind]);
+	}, [clearVisibleTerminalKind, reviewerChatId, routedTerminalTarget.kind, sessionId, setVisibleTerminalKind]);
 
 	const prepareFilesInspector = useCallback(() => {
 		setBrowserPopOutState({ sessionId, phase: "docked" });
@@ -1379,41 +1406,53 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								inert={fileTabs.activePath ? true : undefined}
 							>
 							{showChatSurface ? (
-								<SessionChatSurface
-									key={session.id}
-									session={session}
-									reviewerTerminal={reviewerTerminal}
-									onOpenReviewerTerminal={selectReviewerTerminal}
-									reviewerTarget={
-										routedTerminalTarget.kind === "reviewer" ? routedTerminalTarget : undefined
-									}
-									onSelectChat={selectSessionTerminal}
-									shellTerminals={shellTerminals}
-									shellTarget={
-										routedTerminalTarget.kind === "shell" ? routedTerminalTarget : undefined
-									}
-									onSelectShellTerminal={selectShellTerminal}
-									onCloseShellTerminal={closeShellTerminalByHandle}
-									onRenameShellTerminal={renameShellTerminalByHandle}
-									daemonReady={daemonStatus.state === "ready"}
-									theme={theme}
-									headerActions={sessionHeaderActions}
-									sessionTabAction={sessionTabActions}
-									tabStripAction={newShellTerminalAction}
-									handoffDialogOpen={handoffDialogOpen}
-									workspaceTabs={centerFileTabs}
-									workspaceFileActive={Boolean(fileTabs.activePath)}
-									controllerTransitioning={chatControllerTransitioning}
-									newWorkDisabled={chatNewWorkDisabled}
-									onConversationWorkChange={handleConversationWorkChange}
-									onOpenShell={addShellTerminal}
-									openingShell={openShellTerminal.isPending}
-									shellError={
-										openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined
-									}
-									onOpenFiles={handleOpenFiles}
-									onOpenFile={handleOpenFile}
-								/>
+								<>
+									<SessionChatSurface
+										key={session.id}
+										session={session}
+										reviewerChat={reviewerChat}
+										onOpenReviewerChat={(target) => selectReviewerChat(target.reviewId)}
+										reviewerChatSelected={Boolean(reviewerChatId)}
+										reviewerTerminal={reviewerTerminal}
+										onOpenReviewerTerminal={selectReviewerTerminal}
+										reviewerTarget={
+											routedTerminalTarget.kind === "reviewer" ? routedTerminalTarget : undefined
+										}
+										onSelectChat={selectSessionTerminal}
+										shellTerminals={shellTerminals}
+										shellTarget={
+											routedTerminalTarget.kind === "shell" ? routedTerminalTarget : undefined
+										}
+										onSelectShellTerminal={selectShellTerminal}
+										onCloseShellTerminal={closeShellTerminalByHandle}
+										onRenameShellTerminal={renameShellTerminalByHandle}
+										daemonReady={daemonStatus.state === "ready"}
+										theme={theme}
+										headerActions={sessionHeaderActions}
+										sessionTabAction={sessionTabActions}
+										tabStripAction={newShellTerminalAction}
+										handoffDialogOpen={handoffDialogOpen}
+										controllerTransitioning={chatControllerTransitioning}
+										newWorkDisabled={chatNewWorkDisabled}
+										onConversationWorkChange={handleConversationWorkChange}
+										onOpenShell={addShellTerminal}
+										openingShell={openShellTerminal.isPending}
+										shellError={
+											openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined
+										}
+										onOpenFiles={handleOpenFiles}
+										onOpenFile={handleOpenFile}
+										workspaceTabs={centerFileTabs}
+										workspaceFileActive={Boolean(fileTabs.activePath)}
+									/>
+									{reviewerChatId ? (
+										<div className="absolute inset-0">
+											<ReviewerChatSurface hideHeader reviewId={reviewerChatId} />
+										</div>
+									) : null}
+								</>
+							) : reviewerChatId ? (
+								<ReviewerChatSurface reviewId={reviewerChatId} />
 							) : (
 								<CenterPane
 									agentInputDisabled={
@@ -1423,9 +1462,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									onCloseShellTerminal={closeShellTerminalByHandle}
 									onRenameShellTerminal={renameShellTerminalByHandle}
 									onSelectSessionTerminal={selectSessionTerminal}
+									onSelectReviewerChat={(target) => selectReviewerChat(target.reviewId)}
 									onSelectReviewerTerminal={selectReviewerTerminal}
 									onSelectShellTerminal={selectShellTerminal}
 									reviewerTerminal={reviewerTerminal}
+									reviewerChat={reviewerChat}
 									session={session}
 									shellTerminals={shellTerminals}
 									terminalTarget={routedTerminalTarget}
@@ -1490,6 +1531,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							onOpenFiles={handleOpenFiles}
 							onOpenReviewFile={handleOpenReviewFile}
 							onOpenReviewerTerminal={selectReviewerTerminal}
+							onOpenReviewerChat={selectReviewerChat}
+							onWorkerMessageSent={showChatSurface || reviewerChatId ? selectSessionTerminal : undefined}
 							onToggleBrowserPopOut={handleToggleBrowserPopOut}
 							onViewChange={transitionInspectorView}
 							view={inspectorView}

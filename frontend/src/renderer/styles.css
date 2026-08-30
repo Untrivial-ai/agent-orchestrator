@@ -751,7 +751,7 @@ button.settings-link-row:active {
 }
 
 @container (max-width: 20rem) {
-	.review-run-action-label {
+	.review-run-action-label:not(.review-run-action-label--running) {
 		display: none;
 	}
 }

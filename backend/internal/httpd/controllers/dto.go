@@ -1935,6 +1935,11 @@ type ConversationRequestIDParam struct {
 	RequestID string `path:"requestId" description:"Provider approval request identifier. Zero is a legitimate value."`
 }
 
+// ReviewIDParam identifies the durable reviewer controller/conversation owner.
+type ReviewIDParam struct {
+	ReviewID string `path:"reviewId" description:"Reviewer conversation identifier."`
+}
+
 // ConversationConfigIDParam names one provider-advertised session option.
 type ConversationConfigIDParam struct {
 	ConfigID string `path:"configId" description:"Provider session configuration option identifier."`

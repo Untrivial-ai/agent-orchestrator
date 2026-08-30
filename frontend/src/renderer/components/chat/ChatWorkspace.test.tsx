@@ -175,6 +175,26 @@ const chatSession = {
 } satisfies WorkspaceSession;
 
 describe("HumanMessage attachments", () => {
+	it("renders AO review handoff markdown instead of showing its syntax", () => {
+		const { container } = render(
+			<HumanMessage
+				message={humanMessage(
+					"## Review feedback\n\n**Source:** AO agent review · codex\n**Review:** [Open review](https://github.com/acme/repo/pull/2)\n\n### Feedback\n\nUse the exact CLI.",
+				)}
+				sessionId="ao-1"
+			/>,
+		);
+
+		expect(screen.getByRole("heading", { name: "Review feedback", level: 4 })).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute(
+			"href",
+			"https://github.com/acme/repo/pull/2",
+		);
+		expect(container.querySelector(".cursor-chat-human-message")?.parentElement).toHaveClass("items-end");
+		expect(container).not.toHaveTextContent("## Review feedback");
+		expect(container).not.toHaveTextContent("**Source:**");
+	});
+
 	function renderImageAttachment(header: string, name: string) {
 		render(
 			<HumanMessage
@@ -1312,6 +1332,57 @@ describe("ChatWorkspace timeline", () => {
 });
 
 describe("automation reports", () => {
+	it("summarizes browser diagnostics and groups repeated details", async () => {
+		const user = userEvent.setup();
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const warning =
+			"[console] Error: Not connected to alive (https://github.githubassets.com/assets/app.js:2)";
+		const message: ConversationMessage = {
+			...source,
+			senderLabel: undefined,
+			text: ["Browser detected 6 issues on this page:", ...Array(6).fill(`- ${warning}`)].join("\n"),
+		};
+		render(<OriginMessage message={message} />);
+
+		expect(screen.getByText("Browser report")).toBeInTheDocument();
+		expect(screen.getByText("6 issues detected on this page")).toBeInTheDocument();
+		expect(screen.queryByText(/github\.githubassets\.com/)).not.toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Show browser details" }));
+		expect(screen.getAllByText(warning, { exact: false })).toHaveLength(1);
+		expect(screen.getByText("×6")).toBeInTheDocument();
+	});
+
+	it("uses a leading Markdown heading as the card title and formats the body", () => {
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const message: ConversationMessage = {
+			...source,
+			senderLabel: undefined,
+			text: "## Review feedback\n\n**Source:** AO agent review · codex\n\n### Feedback\n\n- Tighten validation\n- Add a regression test",
+		};
+		render(<OriginMessage message={message} />);
+
+		expect(screen.getByText("Review feedback")).toBeInTheDocument();
+		expect(screen.queryByText("automation")).not.toBeInTheDocument();
+		expect(screen.getByText("Source:")).toBeInTheDocument();
+		expect(screen.getAllByRole("listitem")).toHaveLength(2);
+	});
+
+	it("labels a collapsed titled handoff as a review instead of a generic report", () => {
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const message: ConversationMessage = {
+			...source,
+			senderLabel: undefined,
+			text: `## Review feedback\n\n### Feedback\n\n${"Actionable review detail. ".repeat(30)}`,
+		};
+		render(<OriginMessage message={message} />);
+
+		expect(screen.getByRole("button", { name: "Show full review" })).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		);
+	});
+
 	it("collapses a long report until the reader asks to expand it", async () => {
 		const user = userEvent.setup();
 		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
@@ -1845,6 +1916,28 @@ describe("ChatWorkspace reviewer tabs", () => {
 		...reviewerTerminal,
 		sessionId: chatSession.id,
 	};
+	it("selects Reviewer while keeping the worker mounted but inaccessible", () => {
+		const onSelectChat = vi.fn();
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				reviewerChat={{ reviewId: "review-chat-1", harness: "codex" }}
+				reviewerChatSelected
+				onSelectChat={onSelectChat}
+			/>,
+		);
+
+		const workerTab = screen.getByRole("tab", { name: "Codex" });
+		expect(workerTab).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "Reviewer" })).toHaveAttribute("aria-selected", "true");
+		const workerConversation = screen.getByTestId("chat-conversation-panel");
+		expect(workerConversation).toHaveAttribute("hidden");
+		expect(workerConversation).toHaveAttribute("aria-hidden", "true");
+		expect(workerConversation).toHaveAttribute("inert");
+
+		fireEvent.click(workerTab);
+		expect(onSelectChat).toHaveBeenCalledOnce();
+	});
 
 	it("makes each full-height tile its semantic click target", () => {
 		const onOpenReviewerTerminal = vi.fn();

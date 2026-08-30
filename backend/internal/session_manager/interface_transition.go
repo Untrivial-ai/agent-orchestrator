@@ -20,6 +20,7 @@ const (
 	interfaceInterruptSettle              = 2 * time.Second
 	interfaceTransitionStopLimit          = 15 * time.Second
 	interfaceTransitionStepLimit          = 45 * time.Second
+	interfaceTransitionTargetStartLimit   = 3 * time.Minute
 	interfaceDeliveryRetry                = 2 * time.Second
 	interfaceDeliveryIdlePoll             = 30 * time.Second
 )
@@ -971,7 +972,7 @@ func (m *Manager) stopSourceControllerConclusive(rec domain.SessionRecord) error
 }
 
 func (m *Manager) startTransitionTarget(ctx context.Context, id domain.SessionID, fresh, requireNativeHistory bool) error {
-	ctx, cancel := context.WithTimeout(ctx, interfaceTransitionStepLimit)
+	ctx, cancel := interfaceTransitionTargetContext(ctx)
 	defer cancel()
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
@@ -993,6 +994,14 @@ func (m *Manager) startTransitionTarget(ctx context.Context, id domain.SessionID
 		fresh, requireNativeHistory && !fresh,
 	)
 	return err
+}
+
+func interfaceTransitionTargetContext(parent context.Context) (context.Context, context.CancelFunc) {
+	// Starting Chat can perform three sequential bounded provider operations:
+	// initialize, native resume, and authoritative history import. The generic
+	// step limit is shorter than that combined budget and can otherwise cancel a
+	// valid large-thread resume just before its history becomes readable.
+	return context.WithTimeout(parent, interfaceTransitionTargetStartLimit)
 }
 
 func (m *Manager) rollbackInterfaceTransition(

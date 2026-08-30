@@ -30,10 +30,11 @@ import (
 )
 
 const (
-	nativeHistorySettlePoll  = 100 * time.Millisecond
-	nativeHistorySettleLimit = 45 * time.Second
-	branchHandoffReportLimit = 5 * time.Second
-	retryClientMessagePrefix = "retry-attempt/"
+	nativeHistorySettlePoll         = 100 * time.Millisecond
+	nativeHistorySettleLimit        = 45 * time.Second
+	nativeHistoryHandoffSettleLimit = 2 * time.Minute
+	branchHandoffReportLimit        = 5 * time.Second
+	retryClientMessagePrefix        = "retry-attempt/"
 )
 
 // Store is the durable conversation surface the controller needs. Implemented by
@@ -45,7 +46,7 @@ type Store interface {
 	ClaimChatControllerGeneration(ctx context.Context, session domain.SessionID, generation string, now time.Time) error
 	ConversationBranch(ctx context.Context, conversationID, branchID string) (domain.ConversationBranch, error)
 	ConversationEditAnchor(ctx context.Context, conversationID, replacedTurnID string) (domain.ConversationEditAnchor, error)
-	RepairIncompleteConversationEdit(ctx context.Context, sessionID domain.SessionID, conversationID string, now time.Time) (domain.ConversationBranch, bool, error)
+	RepairIncompleteConversationEdit(ctx context.Context, owner domain.ConversationOwner, conversationID string, now time.Time) (domain.ConversationBranch, bool, error)
 	CreateAndActivateConversationBranch(ctx context.Context, sessionID domain.SessionID, branch domain.ConversationBranch, generation string, now time.Time) error
 	ActivateConversationBranch(ctx context.Context, sessionID domain.SessionID, conversationID, branchID, providerConversationID, generation string, now time.Time) error
 	UpdateConversationBranchReplacement(ctx context.Context, branchID, replacementTurnID string) error
@@ -119,6 +120,16 @@ type Store interface {
 	ProjectProviderEvent(ctx context.Context, conversationID string, session domain.SessionID, generation, providerEventID, method, payloadJSON string, now time.Time, project func(context.Context) error) (bool, error)
 }
 
+// reviewConversationStore is the owner-specific extension used only by native
+// reviewer controllers. Keeping it separate preserves the existing Store test
+// doubles and session-only callers.
+type reviewConversationStore interface {
+	AppendReviewUserMessage(context.Context, string, domain.SessionID, string, string, domain.ConversationMessage, string, time.Time) (bool, error)
+	AdoptProviderReviewTurn(context.Context, string, domain.SessionID, string, string, string, string, time.Time) error
+	SettleOrphanedReviewTurns(context.Context, string, time.Time) error
+	ProjectReviewProviderEvent(context.Context, string, domain.SessionID, string, string, string, string, string, time.Time, func(context.Context) error) (bool, error)
+}
+
 // ActivityRecorder feeds derived session status.
 //
 // Chat reports activity through the SAME lifecycle reduction terminal sessions
@@ -156,9 +167,11 @@ func interfaceHandoff(policy domain.SessionInterfaceTransitionPolicy) controller
 
 // Controller drives one Chat session.
 type Controller struct {
-	sessionID    domain.SessionID
-	conversation domain.ConversationRecord
-	generation   string
+	sessionID       domain.SessionID
+	owner           domain.ConversationOwner
+	workspaceAccess ports.ChatWorkspaceAccess
+	conversation    domain.ConversationRecord
+	generation      string
 
 	conv     ports.ChatConversation
 	store    Store
@@ -263,6 +276,8 @@ var ErrRetryUnsupported = errors.New("current agent cannot retry this prompt con
 
 func newController(
 	sessionID domain.SessionID,
+	owner domain.ConversationOwner,
+	workspaceAccess ports.ChatWorkspaceAccess,
 	conversation domain.ConversationRecord,
 	generation string,
 	conv ports.ChatConversation,
@@ -272,20 +287,25 @@ func newController(
 	newID IDFactory,
 	now Clock,
 ) *Controller {
+	if owner.ID == "" {
+		owner = domain.SessionConversationOwner(sessionID)
+	}
 	c := &Controller{
-		sessionID:    sessionID,
-		conversation: conversation,
-		generation:   generation,
-		conv:         conv,
-		store:        store,
-		activity:     activity,
-		log:          log,
-		newID:        newID,
-		now:          now,
-		state:        ports.ChatControllerReady,
-		settings:     conversation.Settings,
-		mcpServers:   map[string]domain.ConversationMCPServer{},
-		stopped:      make(chan struct{}),
+		sessionID:       sessionID,
+		owner:           owner,
+		workspaceAccess: workspaceAccess,
+		conversation:    conversation,
+		generation:      generation,
+		conv:            conv,
+		store:           store,
+		activity:        activity,
+		log:             log,
+		newID:           newID,
+		now:             now,
+		state:           ports.ChatControllerReady,
+		settings:        conversation.Settings,
+		mcpServers:      map[string]domain.ConversationMCPServer{},
+		stopped:         make(chan struct{}),
 	}
 	// Seeded from the durable row so a reconnect merges onto what is already known
 	// rather than starting from blank and reporting a conversation as having no
@@ -532,7 +552,7 @@ func (c *Controller) readNativeHistory(
 		}
 		return nil, nil
 	}
-	historyCtx, cancel := context.WithTimeout(ctx, nativeHistorySettleLimit)
+	historyCtx, cancel := nativeHistoryContext(ctx, required)
 	defer cancel()
 	events, err := reader.ReadHistory(historyCtx)
 	refresher, refreshable := reader.(ports.ChatHistoryRefresher)
@@ -587,6 +607,17 @@ func (c *Controller) projectNativeHistory(ctx context.Context, events []ports.Ch
 		}
 	}
 	return nil
+}
+
+func nativeHistoryContext(parent context.Context, required bool) (context.Context, context.CancelFunc) {
+	limit := nativeHistorySettleLimit
+	if required {
+		// A TUI -> Chat handoff must wait for the provider's authoritative replay.
+		// Large native threads can take longer than an ordinary best-effort resume,
+		// while the transition still bounds the whole target start to three minutes.
+		limit = nativeHistoryHandoffSettleLimit
+	}
+	return context.WithTimeout(parent, limit)
 }
 
 // nativeHistoryTurn is the durable identity AO already assigned to one native
@@ -993,8 +1024,19 @@ func (c *Controller) Send(ctx context.Context, msg ports.ChatUserMessage) (domai
 		DeliveryContentJSON: deliveryContent,
 	}
 
-	created, err := c.store.AppendUserMessage(
-		ctx, c.conversation.ID, c.sessionID, c.generation, record, turnID, now)
+	var created bool
+	var err error
+	if c.owner.Kind == domain.ConversationOwnerReview {
+		reviewStore, ok := c.store.(reviewConversationStore)
+		if !ok {
+			return domain.ConversationTurn{}, errors.New("reviewer conversation store is unavailable")
+		}
+		created, err = reviewStore.AppendReviewUserMessage(
+			ctx, c.conversation.ID, c.sessionID, c.owner.ID, c.generation, record, turnID, now)
+	} else {
+		created, err = c.store.AppendUserMessage(
+			ctx, c.conversation.ID, c.sessionID, c.generation, record, turnID, now)
+	}
 	if err != nil {
 		return domain.ConversationTurn{}, fmt.Errorf("record user message: %w", err)
 	}
@@ -1013,6 +1055,7 @@ func (c *Controller) Send(ctx context.Context, msg ports.ChatUserMessage) (domai
 			ID:                 turnID,
 			ConversationID:     c.conversation.ID,
 			HandledBySessionID: c.sessionID,
+			HandledByReviewID:  reviewOwnerID(c.owner),
 			State:              domain.TurnStateQueued,
 			RequestedAt:        now,
 		}, nil
@@ -1194,9 +1237,10 @@ func (c *Controller) SetSettings(ctx context.Context, settings domain.Conversati
 func (c *Controller) turnSettings() ports.ChatTurnSettings {
 	current := c.Settings()
 	return ports.ChatTurnSettings{
-		Model:    current.Model,
-		Effort:   current.ReasoningEffort,
-		Approval: current.ApprovalMode,
+		Model:           current.Model,
+		Effort:          current.ReasoningEffort,
+		Approval:        current.ApprovalMode,
+		WorkspaceAccess: c.workspaceAccess,
 	}
 }
 
@@ -2092,7 +2136,17 @@ func (c *Controller) project() {
 	if !suppressStoppedActivity {
 		c.reportActivity(ctx, domain.ActivityExited, "chat.controller.stopped", now)
 	}
-	if _, err := c.store.CleanupOwnedControllerWork(
+	if c.owner.Kind == domain.ConversationOwnerReview {
+		if err := c.settleOrphanedTurns(ctx, now); err != nil {
+			c.log.Error("failed to settle orphaned turns", "session", c.sessionID, "error", err)
+		}
+		if err := c.store.FailPendingApprovals(ctx, c.conversation.ID, now); err != nil {
+			c.log.Error("failed to close pending approvals", "session", c.sessionID, "error", err)
+		}
+		if err := c.store.FailPendingInputs(ctx, c.conversation.ID, now); err != nil {
+			c.log.Error("failed to close pending input requests", "session", c.sessionID, "error", err)
+		}
+	} else if _, err := c.store.CleanupOwnedControllerWork(
 		ctx, c.sessionID, c.conversation.ID, c.generation, now,
 	); err != nil {
 		c.log.Error("failed to clean up stopped controller work", "session", c.sessionID, "error", err)
@@ -2140,9 +2194,20 @@ func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (b
 	if err != nil {
 		return false, false, fmt.Errorf("encode provider event archive: %w", err)
 	}
-	projected, err := c.store.ProjectProviderEvent(ctx, c.conversation.ID, c.sessionID,
-		c.generation, event.ProviderEventID, string(event.Kind), string(payload), c.now(),
-		func(txCtx context.Context) error { return c.apply(txCtx, event) })
+	var projected bool
+	if c.owner.Kind == domain.ConversationOwnerReview {
+		reviewStore, ok := c.store.(reviewConversationStore)
+		if !ok {
+			return false, false, errors.New("reviewer conversation store is unavailable")
+		}
+		projected, err = reviewStore.ProjectReviewProviderEvent(ctx, c.conversation.ID, c.sessionID,
+			c.owner.ID, c.generation, event.ProviderEventID, string(event.Kind), string(payload), c.now(),
+			func(txCtx context.Context) error { return c.apply(txCtx, event) })
+	} else {
+		projected, err = c.store.ProjectProviderEvent(ctx, c.conversation.ID, c.sessionID,
+			c.generation, event.ProviderEventID, string(event.Kind), string(payload), c.now(),
+			func(txCtx context.Context) error { return c.apply(txCtx, event) })
+	}
 	if err != nil || !projected {
 		return projected, false, err
 	}
@@ -2210,8 +2275,19 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 				// from its own history. Adopting it is what keeps every item it emits
 				// correlated, and without that the activities arrive with no turn and the
 				// timeline quietly stops grouping them.
-				if err := c.store.AdoptProviderTurn(ctx, c.conversation.ID, c.sessionID,
-					c.generation, c.newID(), event.ProviderTurnID, now); err != nil {
+				var err error
+				if c.owner.Kind == domain.ConversationOwnerReview {
+					reviewStore, ok := c.store.(reviewConversationStore)
+					if !ok {
+						return errors.New("reviewer conversation store is unavailable")
+					}
+					err = reviewStore.AdoptProviderReviewTurn(ctx, c.conversation.ID, c.sessionID,
+						c.owner.ID, c.generation, c.newID(), event.ProviderTurnID, now)
+				} else {
+					err = c.store.AdoptProviderTurn(ctx, c.conversation.ID, c.sessionID,
+						c.generation, c.newID(), event.ProviderTurnID, now)
+				}
+				if err != nil {
 					return fmt.Errorf("adopt provider-started turn %s: %w", event.ProviderTurnID, err)
 				}
 			}
@@ -2532,6 +2608,15 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 
 	case ports.ChatEventControllerState:
 		if event.ControllerState == ports.ChatControllerStopped {
+			if c.owner.Kind == domain.ConversationOwnerReview {
+				if err := c.settleOrphanedTurns(ctx, now); err != nil {
+					return err
+				}
+				if err := c.store.FailPendingApprovals(ctx, c.conversation.ID, now); err != nil {
+					return err
+				}
+				return c.store.FailPendingInputs(ctx, c.conversation.ID, now)
+			}
 			_, err := c.store.CleanupOwnedControllerWork(
 				ctx, c.sessionID, c.conversation.ID, c.generation, now)
 			return err
@@ -2557,6 +2642,24 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		// An event kind this build does not model is archived but not projected.
 		return nil
 	}
+}
+
+func reviewOwnerID(owner domain.ConversationOwner) string {
+	if owner.Kind == domain.ConversationOwnerReview {
+		return owner.ID
+	}
+	return ""
+}
+
+func (c *Controller) settleOrphanedTurns(ctx context.Context, now time.Time) error {
+	if c.owner.Kind != domain.ConversationOwnerReview {
+		return c.store.SettleOrphanedTurns(ctx, c.sessionID, now)
+	}
+	reviewStore, ok := c.store.(reviewConversationStore)
+	if !ok {
+		return errors.New("reviewer conversation store is unavailable")
+	}
+	return reviewStore.SettleOrphanedReviewTurns(ctx, c.owner.ID, now)
 }
 
 // afterProject performs effects that intentionally live outside the SQLite
@@ -2616,8 +2719,8 @@ func (c *Controller) reportInteractionResolved(ctx context.Context, event string
 	c.reportActivity(ctx, domain.ActivityActive, event, now)
 }
 
-// applyThreadTitle records a title the provider reports for the thread and, when
-// it may, adopts it as the session's label.
+// applyThreadTitle records a title the provider reports for the thread and, for
+// session-owned conversations, adopts it as the session's label when it may.
 //
 // The session's display name is the field that already exists for this, so a
 // provider title lands there rather than in a parallel one — every surface that
@@ -2635,7 +2738,7 @@ func (c *Controller) applyThreadTitle(ctx context.Context, title string, now tim
 	if err := c.store.SetProviderTitle(ctx, c.conversation.ID, normalized, now); err != nil {
 		return err
 	}
-	if normalized == "" {
+	if normalized == "" || c.owner.Kind == domain.ConversationOwnerReview {
 		return nil
 	}
 	applied, err := c.store.ApplyProviderTitle(
@@ -3000,6 +3103,9 @@ func (c *Controller) reportActivity(
 	event string,
 	now time.Time,
 ) {
+	if c.owner.Kind == domain.ConversationOwnerReview {
+		return
+	}
 	if c.activity == nil {
 		return
 	}

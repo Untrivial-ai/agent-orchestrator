@@ -24,10 +24,33 @@ type Review struct {
 	PRURL     string          `json:"prUrl"`
 	// ReviewerHandleID is the runtime handle of the live reviewer pane, reused
 	// across passes and exposed so the UI can attach its terminal.
-	ReviewerHandleID string    `json:"reviewerHandleId"`
-	AgentSessionID   string    `json:"agentSessionId"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ReviewerHandleID       string                `json:"reviewerHandleId"`
+	AgentSessionID         string                `json:"agentSessionId"`
+	InterfaceMode          ReviewerInterfaceMode `json:"interfaceMode"`
+	ProviderConversationID string                `json:"providerConversationId"`
+	ControllerGeneration   string                `json:"controllerGeneration"`
+	ControllerError        string                `json:"controllerError"`
+	CreatedAt              time.Time             `json:"createdAt"`
+	UpdatedAt              time.Time             `json:"updatedAt"`
+}
+
+// ReviewerInterfaceMode is the controller surface committed for one reviewer.
+type ReviewerInterfaceMode string
+
+// Reviewer interface modes.
+const (
+	ReviewerInterfaceTUI  ReviewerInterfaceMode = "tui"
+	ReviewerInterfaceChat ReviewerInterfaceMode = "chat"
+)
+
+// ReviewerSurface is the stable client-facing identity of the active reviewer.
+// HandleID is populated only for TUI; ReviewID addresses Reviewer Chat.
+type ReviewerSurface struct {
+	Mode            ReviewerInterfaceMode `json:"mode"`
+	ReviewID        string                `json:"reviewId"`
+	Harness         ReviewerHarness       `json:"harness"`
+	HandleID        string                `json:"handleId,omitempty"`
+	ControllerError string                `json:"controllerError,omitempty"`
 }
 
 // ReviewRun is one review pass against a worker's PR.

@@ -17,17 +17,83 @@ import (
 func (s *Store) UpsertReview(ctx context.Context, r domain.Review) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if r.InterfaceMode == "" {
+		r.InterfaceMode = domain.ReviewerInterfaceTUI
+	}
 	return s.qw.UpsertReview(ctx, gen.UpsertReviewParams{
-		ID:               r.ID,
-		SessionID:        r.SessionID,
-		ProjectID:        r.ProjectID,
-		Harness:          r.Harness,
-		PRURL:            r.PRURL,
-		ReviewerHandleID: r.ReviewerHandleID,
-		AgentSessionID:   r.AgentSessionID,
-		CreatedAt:        r.CreatedAt,
-		UpdatedAt:        r.UpdatedAt,
+		ID:                     r.ID,
+		SessionID:              r.SessionID,
+		ProjectID:              r.ProjectID,
+		Harness:                r.Harness,
+		PRURL:                  r.PRURL,
+		ReviewerHandleID:       r.ReviewerHandleID,
+		AgentSessionID:         r.AgentSessionID,
+		InterfaceMode:          r.InterfaceMode,
+		ProviderConversationID: r.ProviderConversationID,
+		ControllerGeneration:   r.ControllerGeneration,
+		ControllerError:        r.ControllerError,
+		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
 	})
+}
+
+// SetReviewInterfaceMode commits which controller family owns the reviewer.
+func (s *Store) SetReviewInterfaceMode(ctx context.Context, id string, mode domain.ReviewerInterfaceMode, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.SetReviewInterfaceMode(ctx, gen.SetReviewInterfaceModeParams{
+		InterfaceMode: mode,
+		UpdatedAt:     now,
+		ID:            id,
+	})
+	return n > 0, err
+}
+
+// ClaimReviewChatController atomically publishes a reviewer provider identity
+// and generation after the native controller has started.
+func (s *Store) ClaimReviewChatController(ctx context.Context, id, providerID, generation string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.ClaimReviewChatController(ctx, gen.ClaimReviewChatControllerParams{
+		ProviderConversationID: providerID,
+		ControllerGeneration:   generation,
+		UpdatedAt:              now,
+		ID:                     id,
+	})
+	return n > 0, err
+}
+
+// RecordReviewChatControllerError records a failed reviewer controller start.
+func (s *Store) RecordReviewChatControllerError(ctx context.Context, id, message string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.RecordReviewChatControllerError(ctx, gen.RecordReviewChatControllerErrorParams{
+		ControllerError: message,
+		UpdatedAt:       now,
+		ID:              id,
+	})
+	return n > 0, err
+}
+
+// ClearReviewChatController clears the durable reviewer controller lease.
+func (s *Store) ClearReviewChatController(ctx context.Context, id string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.ClearReviewChatController(ctx, gen.ClearReviewChatControllerParams{UpdatedAt: now, ID: id})
+	return n > 0, err
+}
+
+// ListRecoverableChatReviews returns Chat reviewers eligible for daemon recovery.
+func (s *Store) ListRecoverableChatReviews(ctx context.Context) ([]domain.Review, error) {
+	rows, err := s.qr.ListRecoverableChatReviews(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list recoverable reviewer chat controllers: %w", err)
+	}
+	out := make([]domain.Review, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, reviewFromReview(row))
+	}
+	return out, nil
 }
 
 // GetReviewBySession returns the latest review row for a worker session,
@@ -305,15 +371,19 @@ func reviewFromListReviewsBySessionRow(r gen.Review) domain.Review {
 
 func reviewFromReview(r gen.Review) domain.Review {
 	return domain.Review{
-		ID:               r.ID,
-		SessionID:        r.SessionID,
-		ProjectID:        r.ProjectID,
-		Harness:          r.Harness,
-		PRURL:            r.PRURL,
-		ReviewerHandleID: r.ReviewerHandleID,
-		AgentSessionID:   r.AgentSessionID,
-		CreatedAt:        r.CreatedAt,
-		UpdatedAt:        r.UpdatedAt,
+		ID:                     r.ID,
+		SessionID:              r.SessionID,
+		ProjectID:              r.ProjectID,
+		Harness:                r.Harness,
+		PRURL:                  r.PRURL,
+		ReviewerHandleID:       r.ReviewerHandleID,
+		AgentSessionID:         r.AgentSessionID,
+		InterfaceMode:          r.InterfaceMode,
+		ProviderConversationID: r.ProviderConversationID,
+		ControllerGeneration:   r.ControllerGeneration,
+		ControllerError:        r.ControllerError,
+		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
 	}
 }
 

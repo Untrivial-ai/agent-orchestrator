@@ -58,6 +58,8 @@ type CenterPaneProps = {
 	terminalTarget?: TerminalTarget;
 	reviewerTerminal?: { handleId: string; harness: string };
 	onSelectReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
+	reviewerChat?: { reviewId: string; harness: string };
+	onSelectReviewerChat?: (target: { reviewId: string; harness: string }) => void;
 	/** Standalone shells to render as tabs beside the session's own pane. */
 	shellTerminals?: ShellTerminal[];
 	onSelectSessionTerminal?: () => void;
@@ -79,6 +81,7 @@ type CenterPaneProps = {
 
 type AuxiliaryTerminal =
 	| { key: string; kind: "reviewer"; terminal: NonNullable<CenterPaneProps["reviewerTerminal"]> }
+	| { key: string; kind: "reviewer-chat"; terminal: NonNullable<CenterPaneProps["reviewerChat"]> }
 	| { key: string; kind: "shell"; terminal: ShellTerminal };
 
 type TerminalOrder = { sessionId: string; keys: string[] };
@@ -130,7 +133,9 @@ export function CenterPane({
 	daemonReady,
 	terminalTarget,
 	reviewerTerminal,
+	reviewerChat,
 	onSelectReviewerTerminal,
+	onSelectReviewerChat,
 	shellTerminals = [],
 	onSelectSessionTerminal,
 	onSelectShellTerminal,
@@ -165,9 +170,12 @@ export function CenterPane({
 						},
 					]
 				: []),
+			...(!reviewerTerminal && reviewerChat
+				? [{ key: `reviewer-chat:${reviewerChat.reviewId}`, kind: "reviewer-chat" as const, terminal: reviewerChat }]
+				: []),
 			...shellTerminals.map((terminal) => ({ key: terminal.handleId, kind: "shell" as const, terminal })),
 		],
-		[reviewerTerminal, shellTerminals],
+		[reviewerChat, reviewerTerminal, shellTerminals],
 	);
 	const availableAuxiliaryKeys = useMemo(() => auxiliaryTerminals.map((terminal) => terminal.key), [auxiliaryTerminals]);
 	const orderedAuxiliaryTerminals = useMemo(() => {
@@ -327,10 +335,12 @@ export function CenterPane({
 			}
 			const nextTerminal = orderedAuxiliaryTerminals[nextIndex - 1];
 			if (nextTerminal?.kind === "reviewer") onSelectReviewerTerminal?.(nextTerminal.terminal);
+			if (nextTerminal?.kind === "reviewer-chat") onSelectReviewerChat?.(nextTerminal.terminal);
 			if (nextTerminal?.kind === "shell") onSelectShellTerminal?.(nextTerminal.terminal.handleId);
 		},
 		[
 			onSelectReviewerTerminal,
+			onSelectReviewerChat,
 			onSelectSessionTerminal,
 			onSelectShellTerminal,
 			orderedAuxiliaryTerminals,
@@ -552,16 +562,16 @@ export function CenterPane({
 					}}
 				>
 					<div
-							aria-label={t("terminal.tabsAria")}
-							className="flex h-full min-w-0 flex-1 items-stretch"
-							onKeyDown={handleTerminalTabListKeyDown}
-							role="tablist"
-						>
-							<div className="relative min-w-0 flex-1 self-stretch overflow-hidden">
-								<div
-									ref={tabsOverflowRef}
-									className="session-tab-scroll-region scrollbar-none flex h-full min-w-flex-min min-w-0 items-stretch overflow-x-auto"
-								>
+						aria-label={t("terminal.tabsAria")}
+						className="flex h-full min-w-0 flex-1 items-stretch"
+						onKeyDown={handleTerminalTabListKeyDown}
+						role="tablist"
+					>
+						<div className="relative min-w-0 flex-1 self-stretch overflow-hidden">
+							<div
+								ref={tabsOverflowRef}
+								className="session-tab-scroll-region scrollbar-none flex h-full min-w-flex-min min-w-0 items-stretch overflow-x-auto"
+							>
 								<div className="flex w-max items-stretch">
 									{/* The owning session scrolls with its auxiliary terminals, but remains fixed in order. */}
 									{session ? (
@@ -584,7 +594,7 @@ export function CenterPane({
 									>
 										{orderedAuxiliaryTerminals.map((terminal) => (
 											<DraggableTerminalTab key={terminal.key} value={terminal.key}>
-												{terminal.kind === "reviewer" ? (
+												{terminal.kind === "reviewer" || terminal.kind === "reviewer-chat" ? (
 													<SessionPaneTab
 														appearance="connected"
 														icon={
@@ -596,7 +606,11 @@ export function CenterPane({
 														}
 														isActive={target.kind === "reviewer"}
 														label={t("terminal.reviewer")}
-														onSelect={() => onSelectReviewerTerminal?.(terminal.terminal)}
+														onSelect={() =>
+															terminal.kind === "reviewer"
+																? onSelectReviewerTerminal?.(terminal.terminal)
+																: onSelectReviewerChat?.(terminal.terminal)
+														}
 														title={terminal.terminal.harness}
 													/>
 												) : (
@@ -609,8 +623,8 @@ export function CenterPane({
 																? (title) => onRenameShellTerminal(terminal.terminal.handleId, title)
 																: undefined
 														}
-																	onSelect={() => onSelectShellTerminal?.(terminal.terminal.handleId)}
-																	shell={terminal.terminal}
+														onSelect={() => onSelectShellTerminal?.(terminal.terminal.handleId)}
+														shell={terminal.terminal}
 													/>
 												)}
 											</DraggableTerminalTab>
@@ -619,9 +633,9 @@ export function CenterPane({
 									{workspaceTabs}
 								</div>
 							</div>
-								{showLeftFade ? <div aria-hidden="true" className="session-tab-scroll-fade session-tab-scroll-fade--left" /> : null}
-								{showRightFade ? <div aria-hidden="true" className="session-tab-scroll-fade" /> : null}
-							</div>
+							{showLeftFade ? <div aria-hidden="true" className="session-tab-scroll-fade session-tab-scroll-fade--left" /> : null}
+							{showRightFade ? <div aria-hidden="true" className="session-tab-scroll-fade" /> : null}
+						</div>
 					</div>
 				</div>
 				{isFullscreen ? null : (

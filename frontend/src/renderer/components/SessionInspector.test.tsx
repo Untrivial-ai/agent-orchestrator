@@ -1817,6 +1817,50 @@ describe("SessionInspector summary reviews", () => {
     });
   });
 
+  it("keeps Chat selected when triggering a review from a Chat session", async () => {
+    mockCommonGets([], "", [reviewState(3, "needs_review")]);
+    const runningReview = {
+      ...approvedReview,
+      status: "running",
+      verdict: "",
+      body: "",
+    };
+    postMock.mockResolvedValue({
+      response: { status: 201 },
+      data: {
+        reviewerHandleId: "reviewer-pane",
+        reviewerSurface: { mode: "chat", reviewId: "review-1", harness: "codex" },
+        reviews: [{ ...reviewState(3, "running"), latestRun: runningReview }],
+      },
+    });
+    const onOpenReviewerTerminal = vi.fn();
+    const onOpenReviewerChat = vi.fn();
+
+    renderWithQuery(
+      <SessionInspector
+        onOpenReviewerTerminal={onOpenReviewerTerminal}
+        onOpenReviewerChat={onOpenReviewerChat}
+        session={session([pr(3, "open")], { mode: "chat" })}
+      />,
+    );
+    await openReviewsSection();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Review latest commit" }),
+    );
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/api/v1/sessions/{sessionId}/reviews/trigger",
+        {
+          params: { path: { sessionId: "sess-1" } },
+        },
+      ),
+    );
+    expect(onOpenReviewerTerminal).not.toHaveBeenCalled();
+    expect(onOpenReviewerChat).toHaveBeenCalledWith("review-1");
+  });
+
   it("shows the worker-compatible default reviewer before a run exists", async () => {
     getMock.mockImplementation(async (path: string) => {
       if (path === "/api/v1/sessions/{sessionId}/reviews") {
@@ -2062,6 +2106,9 @@ describe("SessionInspector summary reviews", () => {
     expect(
       screen.queryByRole("button", { name: "Run review" }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Stop review" }),
+    ).toHaveTextContent("Review in progress · Codex");
   });
 
   it("hides review summary sections when no review data exists", async () => {
@@ -2256,6 +2303,7 @@ describe("SessionInspector summary reviews", () => {
   });
 
   it("opens an AO review in Browser and sends its summary to the worker", async () => {
+    const onWorkerMessageSent = vi.fn();
     const reviewUrl = "https://github.com/acme/repo/pull/3#pullrequestreview-98765";
     mockCommonGets([], "reviewer-pane", [
       {
@@ -2269,7 +2317,12 @@ describe("SessionInspector summary reviews", () => {
       },
     ]);
 
-    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    renderWithQuery(
+      <SessionInspector
+        onWorkerMessageSent={onWorkerMessageSent}
+        session={session([pr(3, "open")])}
+      />,
+    );
     await openReviewsSection();
 
     await userEvent.click(await screen.findByRole("button", { name: "Review actions" }));
@@ -2289,18 +2342,106 @@ describe("SessionInspector summary reviews", () => {
       expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
         params: { path: { sessionId: "sess-1" } },
         body: {
-          message: expect.stringContaining("Review summary:\nPlease tighten validation and add a regression test."),
+          message: expect.stringContaining(
+            "## Review feedback\n\n**Source:** AO agent review · codex",
+          ),
         },
       }),
     );
     expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
       params: { path: { sessionId: "sess-1" } },
-      body: { message: expect.stringContaining(`Review URL: ${reviewUrl}`) },
+      body: {
+        message: expect.stringContaining(
+          "### Feedback\n\nPlease tighten validation and add a regression test.",
+        ),
+      },
     });
+    expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
+      params: { path: { sessionId: "sess-1" } },
+      body: { message: expect.stringContaining(`[Open review](${reviewUrl})`) },
+    });
+    expect(onWorkerMessageSent).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Sent to worker agent")).toBeInTheDocument();
+  });
+
+  it("sends review feedback as a human message in Chat mode", async () => {
+    const onWorkerMessageSent = vi.fn();
+    mockCommonGets([], "reviewer-pane", [
+      {
+        ...reviewState(3, "up_to_date", "abc123"),
+        latestRun: {
+          ...approvedReview,
+          body: "Please tighten validation and add a regression test.",
+        },
+      },
+    ]);
+
+    renderWithQuery(
+      <SessionInspector
+        onWorkerMessageSent={onWorkerMessageSent}
+        session={session([pr(3, "open")], { mode: "chat" })}
+      />,
+    );
+    await openReviewsSection();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Review actions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send to worker agent" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/api/v1/sessions/{sessionId}/conversation/messages",
+        {
+          params: { path: { sessionId: "sess-1" } },
+          body: {
+            text: expect.stringContaining(
+              "## Review feedback\n\n**Source:** AO agent review · codex",
+            ),
+            clientMessageId: expect.any(String),
+          },
+        },
+      ),
+    );
+    expect(postMock).not.toHaveBeenCalledWith(
+      "/api/v1/sessions/{sessionId}/send",
+      expect.anything(),
+    );
+    expect(onWorkerMessageSent).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the current surface selected when review feedback fails to send", async () => {
+    const onWorkerMessageSent = vi.fn();
+    postMock.mockResolvedValueOnce({
+      data: undefined,
+      error: { message: "Worker unavailable" },
+    });
+    mockCommonGets([], "reviewer-pane", [
+      {
+        ...reviewState(3, "up_to_date", "abc123"),
+        latestRun: {
+          ...approvedReview,
+          body: "Please tighten validation.",
+        },
+      },
+    ]);
+
+    renderWithQuery(
+      <SessionInspector
+        onWorkerMessageSent={onWorkerMessageSent}
+        session={session([pr(3, "open")])}
+      />,
+    );
+    await openReviewsSection();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Review actions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send to worker agent" }));
+
+    expect(await screen.findByText("Unable to send. Retry.")).toBeInTheDocument();
+    expect(onWorkerMessageSent).not.toHaveBeenCalled();
   });
 
   it("shows inline comments on their exact AO review pass without duplicating them externally", async () => {
     const onOpenReviewFile = vi.fn();
+    const onWorkerMessageSent = vi.fn();
     const currentRun = {
       ...approvedReview,
       body: "Current AO review.",
@@ -2361,6 +2502,7 @@ describe("SessionInspector summary reviews", () => {
     renderWithQuery(
       <SessionInspector
         onOpenReviewFile={onOpenReviewFile}
+        onWorkerMessageSent={onWorkerMessageSent}
         session={session([pr(3, "open")])}
       />,
     );
@@ -2372,9 +2514,19 @@ describe("SessionInspector summary reviews", () => {
 
     await userEvent.click(screen.getAllByRole("button", { name: "Comment actions" })[0]!);
     await userEvent.click(screen.getByRole("button", { name: "Send to worker agent" }));
-    expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", expect.objectContaining({
+    expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
       params: { path: { sessionId: "sess-1" } },
-    }));
+      body: {
+        message: expect.stringContaining(
+          "## Inline review comment\n\n**Reviewer:** @codebanditssss  \n**Location:** `src/current.ts:11`",
+        ),
+      },
+    });
+    expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
+      params: { path: { sessionId: "sess-1" } },
+      body: { message: expect.stringContaining("### Comment\n\nCurrent-pass comment.") },
+    });
+    expect(onWorkerMessageSent).toHaveBeenCalledTimes(1);
     await userEvent.click(screen.getAllByRole("button", { name: "Comment actions" })[0]!);
     await userEvent.click(screen.getByRole("button", { name: "View in file" }));
     expect(onOpenReviewFile).toHaveBeenCalledWith({ path: "src/current.ts", line: 11 });
@@ -2828,7 +2980,7 @@ describe("SessionInspector summary reviews", () => {
         {
           params: { path: { sessionId: "sess-1" } },
           body: {
-            message: expect.stringContaining("Location: a.ts:9"),
+            message: expect.stringContaining("**Location:** `a.ts:9`"),
           },
         },
       ),
@@ -2837,14 +2989,14 @@ describe("SessionInspector summary reviews", () => {
       params: { path: { sessionId: "sess-1" } },
       body: {
         message: expect.stringContaining(
-          "commit the fix, and push the branch to GitHub",
+          "commit the fix, and push the branch",
         ),
       },
     });
     expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
       params: { path: { sessionId: "sess-1" } },
       body: {
-        message: expect.stringContaining("Reviewer: @maya"),
+        message: expect.stringContaining("**Reviewer:** @maya"),
       },
     });
     expect(

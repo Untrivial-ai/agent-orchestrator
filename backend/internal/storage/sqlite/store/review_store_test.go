@@ -9,6 +9,39 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+func TestListRecoverableChatReviewsIncludesCompletedConversation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	worker, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.UpsertReview(ctx, domain.Review{
+		ID: "rev-complete", SessionID: worker.ID, ProjectID: worker.ProjectID,
+		Harness: domain.ReviewerCodex, InterfaceMode: domain.ReviewerInterfaceChat,
+		ProviderConversationID: "provider-thread-complete", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert review: %v", err)
+	}
+	if err := s.InsertReviewRun(ctx, domain.ReviewRun{
+		ID: "run-complete", ReviewID: "rev-complete", SessionID: worker.ID,
+		Harness: domain.ReviewerCodex, PRURL: "https://example/pr/1", TargetSHA: "sha1",
+		Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert completed run: %v", err)
+	}
+
+	reviews, err := s.ListRecoverableChatReviews(ctx)
+	if err != nil {
+		t.Fatalf("ListRecoverableChatReviews: %v", err)
+	}
+	if len(reviews) != 1 || reviews[0].ID != "rev-complete" {
+		t.Fatalf("recoverable reviews = %+v, want completed reviewer conversation", reviews)
+	}
+}
+
 func TestInsertReviewRunDuplicatePRSHAMapsToSentinel(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

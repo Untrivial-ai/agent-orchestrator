@@ -217,6 +217,10 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ReviewerHarness"
+          - column: "review.interface_mode"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "ReviewerInterfaceMode"
           - column: "review_run.session_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

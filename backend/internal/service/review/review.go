@@ -473,6 +473,12 @@ func (s *Service) RestoreReviewer(ctx context.Context, workerID domain.SessionID
 	return err
 }
 
+// RecoverChatReviewers restores durable typed reviewer controllers after a
+// daemon restart without creating or resending review tasks.
+func (s *Service) RecoverChatReviewers(ctx context.Context) error {
+	return s.engine.RecoverChatReviewers(ctx)
+}
+
 // SwitchReviewer atomically persists a worker's reviewer preference and returns
 // the authoritative post-switch review state.
 func (s *Service) SwitchReviewer(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (reviewcore.SessionReviews, error) {

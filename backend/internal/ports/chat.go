@@ -158,6 +158,17 @@ const (
 // ChatCapabilities is the set a driver reports from Probe.
 type ChatCapabilities map[ChatCapability]bool
 
+// ChatWorkspaceAccess is a launch-time safety boundary independent of approval
+// behavior. Reviewer conversations are read-only even when they may request
+// approval for network access needed to post a review.
+type ChatWorkspaceAccess string
+
+// Chat workspace access modes.
+const (
+	ChatWorkspaceWritable ChatWorkspaceAccess = "writable"
+	ChatWorkspaceReadOnly ChatWorkspaceAccess = "read_only"
+)
+
 // Has reports whether the capability is present and enabled.
 func (c ChatCapabilities) Has(capability ChatCapability) bool { return c[capability] }
 
@@ -219,7 +230,8 @@ type ChatStartConfig struct {
 	Model string
 	// Permissions is AO's existing per-session approval policy. Drivers map it
 	// onto their provider's native approval and sandbox settings.
-	Permissions PermissionMode
+	Permissions     PermissionMode
+	WorkspaceAccess ChatWorkspaceAccess
 	// SystemPrompt carries AO's standing instructions for the session.
 	SystemPrompt string
 	// ProviderScopeID identifies the AO ownership boundary for opaque provider
@@ -242,8 +254,9 @@ type ChatResumeConfig struct {
 	WorkspacePath          string
 	Env                    map[string]string
 	// Model is optional; empty keeps the provider conversation's current model.
-	Model       string
-	Permissions PermissionMode
+	Model           string
+	Permissions     PermissionMode
+	WorkspaceAccess ChatWorkspaceAccess
 	// SystemPrompt is recomputed by the session manager on restore and reapplied
 	// to the provider process. It is not persisted in the conversation transcript.
 	SystemPrompt string
@@ -327,12 +340,16 @@ type ChatTurnSettings struct {
 	// Approval is AO's permission mode for this turn. The driver maps it onto
 	// whatever approval policy and sandbox its provider understands.
 	Approval PermissionMode
+	// WorkspaceAccess is controller-owned policy, not a user preference. It is
+	// carried on every turn so changing approval settings cannot make a reviewer
+	// conversation writable.
+	WorkspaceAccess ChatWorkspaceAccess
 }
 
 // IsZero reports whether nothing was chosen, so a dispatch can omit the fields
 // entirely rather than sending empty strings the provider would have to interpret.
 func (s ChatTurnSettings) IsZero() bool {
-	return s.Model == "" && s.Effort == "" && s.Approval == ""
+	return s.Model == "" && s.Effort == "" && s.Approval == "" && s.WorkspaceAccess == ""
 }
 
 // ChatModel is one model the provider offers for a conversation.

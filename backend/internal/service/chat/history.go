@@ -320,7 +320,7 @@ func (s *Service) EditMessage(
 	}
 	conversation := source.conversation
 	conversation.ActiveBranchID = branchID
-	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
+	replacement := newController(id, domain.SessionConversationOwner(id), "", conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
 	if err := s.store.CreateAndActivateConversationBranch(
 		operationCtx, id, branch, generation, s.now(),
 	); err != nil {
@@ -601,7 +601,7 @@ func (s *Service) ActivateBranch(ctx context.Context, id domain.SessionID, branc
 	generation := s.newID()
 	conversation := source.conversation
 	conversation.ActiveBranchID = branch.ID
-	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
+	replacement := newController(id, domain.SessionConversationOwner(id), "", conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
 	if err := s.store.ActivateConversationBranch(ctx, id, conversation.ID, branch.ID,
 		branch.ProviderConversationID, generation, s.now()); err != nil {
 		_ = provider.Close()
@@ -618,9 +618,10 @@ func (s *Service) branchLaunchConfig(
 	id domain.SessionID,
 	source *Controller,
 ) (StartConfig, ports.ChatDriver, error) {
+	key := keyFor(domain.SessionConversationOwner(id))
 	s.mu.RLock()
-	cfg, ok := s.startConfigs[id]
-	current := s.controllers[id]
+	cfg, ok := s.startConfigs[key]
+	current := s.controllers[key]
 	s.mu.RUnlock()
 	if !ok || current != source {
 		return StartConfig{}, nil, ErrControllerHandoff
@@ -676,7 +677,8 @@ func (s *Service) restoreClosedSourceController(
 	conversation := source.conversation
 	conversation.ActiveBranchID = branch.ID
 	replacement := newController(
-		id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
+		id, domain.SessionConversationOwner(id), "", conversation, generation,
+		provider, s.store, s.activity, s.log, s.newID, s.now)
 	if err := s.store.ActivateConversationBranch(recoveryCtx, id, conversation.ID, branch.ID,
 		providerConversationID, generation, s.now()); err != nil {
 		_ = provider.Close()
@@ -708,8 +710,9 @@ func (s *Service) installStartedBranchController(
 	source, replacement *Controller,
 	sourceBranchID string,
 ) error {
+	key := keyFor(domain.SessionConversationOwner(id))
 	s.mu.Lock()
-	if s.controllers[id] != source {
+	if s.controllers[key] != source {
 		s.mu.Unlock()
 		_ = replacement.Close(ctx)
 		if err := s.store.ActivateConversationBranch(ctx, id, source.conversation.ID,
@@ -719,15 +722,15 @@ func (s *Service) installStartedBranchController(
 		return ErrControllerHandoff
 	}
 	source.prepareBranchHandoffStop()
-	s.controllers[id] = replacement
+	s.controllers[key] = replacement
 	s.mu.Unlock()
 
 	go func() {
 		replacement.Wait()
 		replacement.waitForBranchHandoff()
 		s.mu.Lock()
-		if current := s.controllers[id]; current == replacement {
-			delete(s.controllers, id)
+		if current := s.controllers[key]; current == replacement {
+			delete(s.controllers, key)
 		}
 		s.mu.Unlock()
 	}()

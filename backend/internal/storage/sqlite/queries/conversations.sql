@@ -12,8 +12,18 @@ INSERT INTO conversations (
 )
 VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?);
 
+-- name: InsertReviewConversation :exec
+INSERT INTO conversations (
+    id, scope, project_id, review_id, current_review_id, latest_sequence,
+    active_branch_id, created_at, updated_at
+)
+VALUES (?, 'review', ?, ?, ?, 0, ?, ?, ?);
+
 -- name: SelectConversationBySession :one
 SELECT * FROM conversations WHERE current_session_id = ? LIMIT 1;
+
+-- name: SelectConversationByReview :one
+SELECT * FROM conversations WHERE current_review_id = ? LIMIT 1;
 
 -- name: SelectProjectConversation :one
 SELECT * FROM conversations WHERE project_id = ? AND scope = 'project' LIMIT 1;
@@ -37,6 +47,19 @@ INSERT INTO conversation_branches (
     sqlc.narg(fork_after_turn_id), sqlc.narg(replaced_turn_id),
     sqlc.narg(replacement_turn_id), sqlc.arg(fork_after_sequence), sqlc.arg(strategy),
     sqlc.arg(replay_cutoff_sequence), sqlc.arg(replay_truncated), sqlc.arg(provider_scope_id), sqlc.arg(created_at)
+);
+
+-- name: InsertReviewConversationBranch :exec
+INSERT INTO conversation_branches (
+    id, conversation_id, session_id, review_id, provider_conversation_id,
+    parent_branch_id, fork_after_turn_id, replaced_turn_id,
+    replacement_turn_id, fork_after_sequence, created_at
+) VALUES (
+    sqlc.arg(id), sqlc.arg(conversation_id), sqlc.arg(session_id),
+    sqlc.arg(review_id), sqlc.arg(provider_conversation_id),
+    sqlc.narg(parent_branch_id), sqlc.narg(fork_after_turn_id),
+    sqlc.narg(replaced_turn_id), sqlc.narg(replacement_turn_id),
+    sqlc.arg(fork_after_sequence), sqlc.arg(created_at)
 );
 
 -- name: SelectConversationBranch :one
@@ -447,6 +470,12 @@ INSERT INTO conversation_turns (
     controller_generation, retry_of_turn_id, state, requested_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
+-- name: InsertReviewConversationTurn :exec
+INSERT INTO conversation_turns (
+    id, conversation_id, handled_by_session_id, handled_by_review_id,
+    provider_turn_id, controller_generation, state, requested_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
 -- A turn the PROVIDER started that AO never dispatched: a compaction runs as its
 -- own turn, and so does work resumed inside the provider's own history. Without a
 -- row every item it emits correlates to no turn, which silently unpicks the
@@ -458,6 +487,12 @@ INSERT OR IGNORE INTO conversation_turns (
     id, conversation_id, handled_by_session_id, provider_turn_id,
     controller_generation, state, requested_at, started_at
 ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?);
+
+-- name: AdoptProviderReviewConversationTurn :exec
+INSERT OR IGNORE INTO conversation_turns (
+    id, conversation_id, handled_by_session_id, handled_by_review_id,
+    provider_turn_id, controller_generation, state, requested_at, started_at
+) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?);
 
 -- Correlating a provider notification back to its turn happens on every streamed
 -- event, so it is a keyed lookup rather than a scan.
@@ -501,6 +536,17 @@ WHERE status = 'running'
   AND turn_id IN (
       SELECT id FROM conversation_turns
       WHERE handled_by_session_id = sqlc.arg(handled_by_session_id)
+        AND handled_by_review_id IS NULL
+        AND state IN ('queued', 'running')
+  );
+
+-- name: FailOrphanedReviewConversationActivities :exec
+UPDATE conversation_activities
+SET status = 'failed', revision = revision + 1, updated_at = sqlc.arg(updated_at)
+WHERE status = 'running'
+  AND turn_id IN (
+      SELECT id FROM conversation_turns
+      WHERE handled_by_review_id = sqlc.arg(handled_by_review_id)
         AND state IN ('queued', 'running')
   );
 
@@ -512,7 +558,15 @@ UPDATE conversation_turns
 SET state = 'failed',
     error_message = 'controller ended before the turn completed',
     completed_at = ?
-WHERE handled_by_session_id = ? AND state IN ('queued', 'running');
+WHERE handled_by_session_id = ? AND handled_by_review_id IS NULL
+  AND state IN ('queued', 'running');
+
+-- name: SettleOrphanedReviewConversationTurns :exec
+UPDATE conversation_turns
+SET state = 'failed',
+    error_message = 'controller ended before the turn completed',
+    completed_at = ?
+WHERE handled_by_review_id = ? AND state IN ('queued', 'running');
 
 -- The running turns visible on the active branch, in the same order as the
 -- snapshot. Interrupt uses this exact projection when in-memory turn tracking
@@ -1234,6 +1288,12 @@ WHERE id = ?
 INSERT OR IGNORE INTO conversation_provider_events (
     conversation_id, session_id, provider_event_id, method, payload_json, received_at
 ) VALUES (?, ?, ?, ?, ?, ?);
+
+-- name: InsertReviewConversationProviderEvent :execrows
+INSERT OR IGNORE INTO conversation_provider_events (
+    conversation_id, session_id, review_id, provider_event_id, method,
+    payload_json, received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: SelectConversationProviderEvents :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (

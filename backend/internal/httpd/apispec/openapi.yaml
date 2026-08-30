@@ -1552,6 +1552,264 @@ paths:
       summary: Unpair this phone from the daemon, removing it from the roster
       tags:
       - push
+  /api/v1/reviews/{reviewId}/conversation:
+    get:
+      operationId: getReviewerConversation
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      - description: Read items older than this conversation sequence. Omit for the
+          newest page.
+        in: query
+        name: beforeSequence
+        schema:
+          description: Read items older than this conversation sequence. Omit for
+            the newest page.
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      - description: Maximum combined messages and activities to return. Defaults
+          to 200.
+        in: query
+        name: limit
+        schema:
+          description: Maximum combined messages and activities to return. Defaults
+            to 200.
+          maximum: 500
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationSnapshotResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Read a reviewer's durable Chat conversation
+      tags:
+      - conversations
+  /api/v1/reviews/{reviewId}/conversation/approvals/{requestId}/resolve:
+    post:
+      operationId: resolveReviewerConversationApproval
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      - description: Provider approval request identifier. Zero is a legitimate value.
+        in: path
+        name: requestId
+        required: true
+        schema:
+          description: Provider approval request identifier. Zero is a legitimate
+            value.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveConversationApprovalRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Answer a pending approval in a reviewer conversation
+      tags:
+      - conversations
+  /api/v1/reviews/{reviewId}/conversation/inputs/{requestId}/resolve:
+    post:
+      operationId: resolveReviewerConversationInput
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      - description: Provider approval request identifier. Zero is a legitimate value.
+        in: path
+        name: requestId
+        required: true
+        schema:
+          description: Provider approval request identifier. Zero is a legitimate
+            value.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveConversationInputRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Answer a structured reviewer input request
+      tags:
+      - conversations
+  /api/v1/reviews/{reviewId}/conversation/interrupt:
+    post:
+      operationId: interruptReviewerConversationTurn
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Cancel the in-flight reviewer turn
+      tags:
+      - conversations
+  /api/v1/reviews/{reviewId}/conversation/messages:
+    post:
+      operationId: sendReviewerConversationMessage
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendConversationMessageRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendConversationMessageResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Send a message to a Chat reviewer
+      tags:
+      - conversations
   /api/v1/reviews/{reviewSessionID}/activity:
     post:
       operationId: setReviewActivity
@@ -7112,6 +7370,23 @@ components:
       required:
       - harness
       type: object
+    DomainReviewerSurface:
+      properties:
+        controllerError:
+          type: string
+        handleId:
+          type: string
+        harness:
+          type: string
+        mode:
+          type: string
+        reviewId:
+          type: string
+      required:
+      - mode
+      - reviewId
+      - harness
+      type: object
     EditConversationMessageRequest:
       properties:
         clientMessageId:
@@ -7399,6 +7674,8 @@ components:
           type: string
         reviewerHarness:
           type: string
+        reviewerSurface:
+          $ref: '#/components/schemas/DomainReviewerSurface'
         reviews:
           items:
             $ref: '#/components/schemas/PRReviewState'
@@ -9353,6 +9630,8 @@ components:
           type: boolean
         reviewerHandleId:
           type: string
+        reviewerSurface:
+          $ref: '#/components/schemas/DomainReviewerSurface'
         reviews:
           items:
             $ref: '#/components/schemas/PRReviewState'

@@ -160,6 +160,9 @@ describe("createEventTransport", () => {
 			vi.advanceTimersByTime(200);
 
 			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["conversation"] });
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+				queryKey: ["reviewer-conversation"],
+			});
 		} finally {
 			vi.useRealTimers();
 		}
@@ -195,6 +198,45 @@ describe("createEventTransport", () => {
 			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["workspaces"] });
 			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
 				queryKey: ["session-scm-summary"],
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("invalidates only the named reviewer conversation for reviewer CDC", () => {
+		vi.useFakeTimers();
+		try {
+			const queryClient = fakeQueryClient();
+			createEventTransport(queryClient).connect();
+			EventSourceStub.instances[0].emit(
+				"session_updated",
+				JSON.stringify({
+					seq: 44,
+					projectId: "proj-1",
+					sessionId: "worker-1",
+					type: "session_updated",
+					payload: {
+						id: "worker-1",
+						sessionId: "worker-1",
+						reviewId: "review-1",
+						conversationId: "review-conv-1",
+						activity: "active",
+						isTerminated: false,
+					},
+					createdAt: "2026-08-30T15:15:14Z",
+				}),
+			);
+
+			vi.advanceTimersByTime(200);
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+				queryKey: ["reviewer-conversation", "review-1"],
+			});
+			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
+				queryKey: ["conversation", "worker-1"],
+			});
+			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
+				queryKey: ["workspaces"],
 			});
 		} finally {
 			vi.useRealTimers();

@@ -1008,7 +1008,7 @@ func TestRepairIncompleteProjectEditDoesNotTransferProviderOwnerToReboundSession
 	}
 
 	repaired, restoredOwner, err := s.RepairIncompleteConversationEdit(
-		ctx, target.ID, conversation.ID, testNow.Add(4*time.Minute))
+		ctx, domain.SessionConversationOwner(target.ID), conversation.ID, testNow.Add(4*time.Minute))
 	if err != nil {
 		t.Fatalf("RepairIncompleteConversationEdit: %v", err)
 	}

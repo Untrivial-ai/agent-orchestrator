@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -255,6 +256,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("reviewer resolver: %w", err)
 	}
+	reviewerChat, _ := chat.(reviewcore.ReviewerChatController)
 	reviewEngine := reviewcore.New(reviewcore.Deps{
 		Store:    store,
 		Sessions: store,
@@ -262,7 +264,8 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Projects: store,
 		Launcher: reviewcore.NewLauncher(reviewers, runtime, cfg.DataDir,
 			reviewcore.WithRunFilePath(cfg.RunFilePath),
-			reviewcore.WithAgentAuth(reviewerAgentAuth{agents: agents})),
+			reviewcore.WithAgentAuth(reviewerAgentAuth{agents: agents}),
+			reviewcore.WithReviewerChat(reviewerChat)),
 	})
 	reviewOpts := []reviewsvc.Option{
 		reviewsvc.WithLifecycleReducer(lcm),
@@ -481,6 +484,67 @@ func (c chatLauncher) PreflightChat(
 	permissions ports.PermissionMode,
 ) error {
 	return c.svc.PreflightChat(ctx, harness, permissions)
+}
+
+func (c chatLauncher) PreflightReviewChat(ctx context.Context, harness domain.AgentHarness) error {
+	return c.svc.PreflightChat(ctx, harness, ports.PermissionModeAuto)
+}
+
+func (c chatLauncher) StartReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart) (string, error) {
+	return c.startReviewChat(ctx, cfg, true)
+}
+
+func (c chatLauncher) RestoreReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart) (string, error) {
+	return c.startReviewChat(ctx, cfg, false)
+}
+
+func (c chatLauncher) startReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart, sendPrompt bool) (string, error) {
+	owner := domain.ReviewConversationOwner(cfg.ReviewID)
+	started, err := c.svc.StartChat(ctx, chatsvc.StartRequest{
+		Owner: owner, SessionID: cfg.WorkerID, ProjectID: cfg.ProjectID,
+		Kind: domain.KindWorker, Harness: cfg.Harness, DataDir: cfg.DataDir,
+		WorkspacePath: cfg.WorkspacePath, Env: cfg.Env,
+		Permissions:            ports.PermissionModeAuto,
+		WorkspaceAccess:        ports.ChatWorkspaceReadOnly,
+		SystemPrompt:           cfg.SystemPrompt,
+		ProviderConversationID: cfg.ProviderConversationID,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !sendPrompt {
+		return started.ProviderConversationID, nil
+	}
+	if _, err := c.svc.SendForOwner(ctx, owner, ports.ChatUserMessage{
+		Text: cfg.Prompt, Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		_ = c.svc.StopForOwner(context.Background(), owner)
+		return "", err
+	}
+	return started.ProviderConversationID, nil
+}
+
+func (c chatLauncher) SendReviewChat(ctx context.Context, reviewID, message string) error {
+	_, err := c.svc.SendForOwner(ctx, domain.ReviewConversationOwner(reviewID), ports.ChatUserMessage{
+		Text: message, Origin: domain.MessageOriginDaemon,
+	})
+	return err
+}
+
+func (c chatLauncher) ReviewChatAlive(reviewID string) bool {
+	return c.svc.HasLiveControllerForOwner(domain.ReviewConversationOwner(reviewID))
+}
+
+func (c chatLauncher) InterruptReviewChat(ctx context.Context, reviewID string) error {
+	err := c.svc.InterruptForOwner(ctx, domain.ReviewConversationOwner(reviewID))
+	if errors.Is(err, chatsvc.ErrNoActiveTurn) || errors.Is(err, ports.ErrChatNoActiveTurn) {
+		return nil
+	}
+	return err
+}
+
+func (c chatLauncher) StopReviewChat(ctx context.Context, reviewID string) error {
+	return c.svc.StopForOwner(ctx, domain.ReviewConversationOwner(reviewID))
 }
 
 func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStart) (sessionmanager.ChatStarted, error) {

@@ -21,6 +21,89 @@ type fakeReviewer struct {
 	env              map[string]string
 }
 
+type fakeChatReviewer struct{ fakeReviewer }
+
+func (*fakeChatReviewer) ReviewChatHarness() domain.AgentHarness { return domain.HarnessCodex }
+
+type fakeReviewerChat struct {
+	started  ReviewerChatStart
+	restored ReviewerChatStart
+	sentID   string
+	sent     string
+}
+
+func (f *fakeReviewerChat) PreflightReviewChat(context.Context, domain.AgentHarness) error {
+	return nil
+}
+func (f *fakeReviewerChat) StartReviewChat(_ context.Context, cfg ReviewerChatStart) (string, error) {
+	f.started = cfg
+	return "thread-1", nil
+}
+func (f *fakeReviewerChat) RestoreReviewChat(_ context.Context, cfg ReviewerChatStart) (string, error) {
+	f.restored = cfg
+	return cfg.ProviderConversationID, nil
+}
+func (f *fakeReviewerChat) SendReviewChat(_ context.Context, id, message string) error {
+	f.sentID, f.sent = id, message
+	return nil
+}
+func (*fakeReviewerChat) ReviewChatAlive(string) bool                       { return true }
+func (*fakeReviewerChat) InterruptReviewChat(context.Context, string) error { return nil }
+func (*fakeReviewerChat) StopReviewChat(context.Context, string) error      { return nil }
+
+func TestLauncherUsesTypedChatForCapableReviewer(t *testing.T) {
+	reviewer := &fakeChatReviewer{}
+	chat := &fakeReviewerChat{}
+	runtime := &fakeRuntime{}
+	launcher := NewLauncher(
+		fakeReviewerResolver{reviewer: reviewer, ok: true}, runtime, t.TempDir(),
+		WithReviewerChat(chat),
+	)
+
+	result, err := launcher.Spawn(context.Background(), launchSpec())
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if result.HandleID != "review-chat:review-1" || result.AgentSessionID != "thread-1" {
+		t.Fatalf("result = %+v", result)
+	}
+	if chat.started.ReviewID != "review-1" || chat.started.Harness != domain.HarnessCodex {
+		t.Fatalf("chat start = %+v", chat.started)
+	}
+	if !strings.Contains(chat.started.SystemPrompt, "You are an AO code reviewer") ||
+		!strings.Contains(chat.started.SystemPrompt, "Do not run project programs") {
+		t.Fatalf("chat reviewer system prompt lost review-only policy: %q", chat.started.SystemPrompt)
+	}
+	if runtime.created {
+		t.Fatal("terminal runtime was created for a Chat reviewer")
+	}
+}
+
+func TestLauncherRestoresTypedChatWithoutSendingReviewTask(t *testing.T) {
+	chat := &fakeReviewerChat{}
+	runtime := &fakeRuntime{}
+	launcher := NewLauncher(
+		fakeReviewerResolver{reviewer: &fakeChatReviewer{}, ok: true}, runtime, t.TempDir(),
+		WithReviewerChat(chat),
+	)
+	spec := launchSpec()
+	spec.ProviderConversationID = "thread-existing"
+
+	result, err := launcher.RestoreTerminal(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("RestoreTerminal: %v", err)
+	}
+	if result.HandleID != "review-chat:review-1" || result.AgentSessionID != "thread-existing" {
+		t.Fatalf("result = %+v", result)
+	}
+	if chat.restored.ProviderConversationID != "thread-existing" || chat.started.ReviewID != "" || chat.sent != "" {
+		t.Fatalf("review chat calls = started %+v restored %+v sent %q", chat.started, chat.restored, chat.sent)
+	}
+	if runtime.created {
+		t.Fatal("terminal runtime was created while restoring a Chat reviewer")
+	}
+}
+
 func (f *fakeReviewer) ReviewCommand(_ context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	f.gotInv = inv
 	return ports.ReviewCommandSpec{Argv: []string{"greptile", "review"}, Env: f.env, WorkingDirectory: f.workingDirectory}, nil
@@ -77,12 +160,13 @@ func TestLauncherSpawnEnvCannotOverrideWorkerContext(t *testing.T) {
 func TestLauncherSpawnPinsPATHToAOExecutable(t *testing.T) {
 	aoDir := t.TempDir()
 	aoExe := filepath.Join(aoDir, "ao")
+	dataDir := t.TempDir()
 	reviewer := &fakeReviewer{env: map[string]string{"PATH": "/reviewer/bin"}}
 	rt := &fakeRuntime{}
 	l := NewLauncher(
 		fakeReviewerResolver{reviewer: reviewer, ok: true},
 		rt,
-		t.TempDir(),
+		dataDir,
 		WithExecutable(func() (string, error) { return aoExe, nil }),
 	)
 
@@ -91,8 +175,48 @@ func TestLauncherSpawnPinsPATHToAOExecutable(t *testing.T) {
 	}
 
 	parts := strings.Split(rt.createCfg.Env["PATH"], string(os.PathListSeparator))
-	if len(parts) < 2 || parts[0] != aoDir || parts[1] != "/reviewer/bin" {
-		t.Fatalf("reviewer PATH = %q, want AO dir before adapter PATH", rt.createCfg.Env["PATH"])
+	shimDir := filepath.Join(dataDir, "reviewer-runtime", "bin")
+	if len(parts) < 3 || parts[0] != shimDir || parts[1] != aoDir || parts[2] != "/reviewer/bin" {
+		t.Fatalf("reviewer PATH = %q, want stable AO shim then executable dir before adapter PATH", rt.createCfg.Env["PATH"])
+	}
+}
+
+func TestLauncherSpawnPinsPATHToStableAOShim(t *testing.T) {
+	dataDir := t.TempDir()
+	firstExe := filepath.Join(t.TempDir(), "ao")
+	secondExe := filepath.Join(t.TempDir(), "ao")
+	currentExe := firstExe
+	reviewer := &fakeReviewer{env: map[string]string{"PATH": "/reviewer/bin"}}
+	rt := &fakeRuntime{}
+	l := NewLauncher(
+		fakeReviewerResolver{reviewer: reviewer, ok: true},
+		rt,
+		dataDir,
+		WithExecutable(func() (string, error) { return currentExe, nil }),
+	)
+
+	if _, err := l.Spawn(context.Background(), launchSpec()); err != nil {
+		t.Fatalf("first Spawn: %v", err)
+	}
+	shimDir := filepath.Join(dataDir, "reviewer-runtime", "bin")
+	if got := strings.Split(rt.createCfg.Env["PATH"], string(os.PathListSeparator))[0]; got != shimDir {
+		t.Fatalf("reviewer PATH starts with %q, want stable shim dir %q", got, shimDir)
+	}
+
+	currentExe = secondExe
+	if err := l.Notify(context.Background(), "review-mer-1", launchSpec()); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	shimPath := filepath.Join(shimDir, "ao")
+	if runtime.GOOS == "windows" {
+		shimPath += ".cmd"
+	}
+	shim, err := os.ReadFile(shimPath)
+	if err != nil {
+		t.Fatalf("read AO shim: %v", err)
+	}
+	if !strings.Contains(string(shim), secondExe) || strings.Contains(string(shim), firstExe) {
+		t.Fatalf("refreshed AO shim = %q, want only current executable %q", shim, secondExe)
 	}
 }
 
@@ -578,8 +702,9 @@ func TestLauncherRestoreTerminalUsesReviewerRestoreCommandWhenAvailable(t *testi
 		t.Fatalf("runtime argv = %#v", rt.createCfg.Argv)
 	}
 	parts := strings.Split(rt.createCfg.Env["PATH"], string(os.PathListSeparator))
-	if len(parts) < 2 || parts[0] != aoDir || parts[1] != "/restore/bin" {
-		t.Fatalf("restore PATH = %q, want AO dir before restore command PATH", rt.createCfg.Env["PATH"])
+	shimDir := filepath.Join(dataDir, "reviewer-runtime", "bin")
+	if len(parts) < 3 || parts[0] != shimDir || parts[1] != aoDir || parts[2] != "/restore/bin" {
+		t.Fatalf("restore PATH = %q, want stable AO shim then executable dir before restore command PATH", rt.createCfg.Env["PATH"])
 	}
 	if rt.createCfg.Env[EnvRunFile] != runFile {
 		t.Fatalf("restore %s = %q, want %q", EnvRunFile, rt.createCfg.Env[EnvRunFile], runFile)

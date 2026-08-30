@@ -5,6 +5,10 @@ import { setEventsConnectionState } from "./events-connection";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
 import { conversationQueryKey, conversationQueryRoot } from "../hooks/useConversation";
+import {
+	reviewerConversationQueryKey,
+	reviewerConversationQueryRoot,
+} from "../hooks/useReviewerConversation";
 import { agentSwitchesQueryRoot } from "../hooks/useAgentSwitches";
 import { sessionUsageQueryRoot } from "../hooks/useSessionUsageSummaries";
 
@@ -50,6 +54,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 		connect() {
 			let debounce: ReturnType<typeof setTimeout> | undefined;
 			const pendingConversationSessions = new Set<string>();
+			const pendingReviewerConversations = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
 			let workspaceInvalidationPending = false;
 			let allConversationsInvalidationPending = false;
@@ -82,6 +87,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 							typeof decoded.payload === "object" && decoded.payload !== null
 								? (decoded.payload as {
 										conversationId?: unknown;
+										reviewId?: unknown;
 										interfaceTransitionId?: unknown;
 								  })
 								: undefined;
@@ -94,6 +100,14 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 							pendingInterfaceTransitionSessions.add(decoded.sessionId);
 						}
 						if (
+							typeof payload?.reviewId === "string" &&
+							payload.reviewId &&
+							typeof payload.conversationId === "string" &&
+							payload.conversationId
+						) {
+							pendingReviewerConversations.add(payload.reviewId);
+							conversationOnly = true;
+						} else if (
 							typeof decoded.sessionId === "string" &&
 							decoded.sessionId &&
 							typeof payload?.conversationId === "string" &&
@@ -112,6 +126,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				debounce = setTimeout(() => {
 					if (allConversationsInvalidationPending) {
 						void queryClient.invalidateQueries({ queryKey: conversationQueryRoot });
+						void queryClient.invalidateQueries({ queryKey: reviewerConversationQueryRoot });
 						allConversationsInvalidationPending = false;
 					}
 					if (workspaceInvalidationPending) {
@@ -125,6 +140,12 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) });
 					}
 					pendingConversationSessions.clear();
+					for (const reviewId of pendingReviewerConversations) {
+						void queryClient.invalidateQueries({
+							queryKey: reviewerConversationQueryKey(reviewId),
+						});
+					}
+					pendingReviewerConversations.clear();
 					for (const sessionId of pendingInterfaceTransitionSessions) {
 						void queryClient.invalidateQueries({
 							queryKey: ["session-interface-transition", sessionId],

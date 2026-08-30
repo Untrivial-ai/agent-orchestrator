@@ -815,6 +815,31 @@ func shellTerminalOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodGet, path: "/api/v1/reviews/{reviewId}/conversation", id: "getReviewerConversation", tag: "conversations",
+			summary: "Read a reviewer's durable Chat conversation", pathParams: []any{controllers.ReviewIDParam{}, conversationSnapshotQuery{}},
+			resps: []respUnit{{http.StatusOK, controllers.ConversationSnapshotResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/reviews/{reviewId}/conversation/messages", id: "sendReviewerConversationMessage", tag: "conversations",
+			summary: "Send a message to a Chat reviewer", pathParams: []any{controllers.ReviewIDParam{}}, reqBody: controllers.SendConversationMessageRequest{},
+			resps: []respUnit{{http.StatusAccepted, controllers.SendConversationMessageResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/reviews/{reviewId}/conversation/approvals/{requestId}/resolve", id: "resolveReviewerConversationApproval", tag: "conversations",
+			summary: "Answer a pending approval in a reviewer conversation", pathParams: []any{controllers.ReviewIDParam{}, controllers.ConversationRequestIDParam{}}, reqBody: controllers.ResolveConversationApprovalRequest{},
+			resps: []respUnit{{http.StatusNoContent, nil}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/reviews/{reviewId}/conversation/inputs/{requestId}/resolve", id: "resolveReviewerConversationInput", tag: "conversations",
+			summary: "Answer a structured reviewer input request", pathParams: []any{controllers.ReviewIDParam{}, controllers.ConversationRequestIDParam{}}, reqBody: controllers.ResolveConversationInputRequest{},
+			resps: []respUnit{{http.StatusNoContent, nil}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/reviews/{reviewId}/conversation/interrupt", id: "interruptReviewerConversationTurn", tag: "conversations",
+			summary: "Cancel the in-flight reviewer turn", pathParams: []any{controllers.ReviewIDParam{}},
+			resps: []respUnit{{http.StatusNoContent, nil}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
 			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/conversation/steer", id: "steerSessionConversationTurn", tag: "conversations",
 			summary:    "Send guidance into the in-flight turn of a chat session",
 			pathParams: []any{controllers.SessionIDParam{}},

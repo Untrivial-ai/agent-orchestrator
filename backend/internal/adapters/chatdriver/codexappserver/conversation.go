@@ -278,7 +278,7 @@ func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings) {
 		// `sandboxPolicy: {type: "workspaceWrite"}`. Sending a thread's shape to a
 		// turn is rejected as a missing `type`, so the two are mapped separately
 		// rather than assumed to be interchangeable.
-		policy, sandbox := approvalSettings(settings.Approval)
+		policy, sandbox := approvalSettings(settings.Approval, settings.WorkspaceAccess)
 		params["approvalPolicy"] = policy
 		params["sandboxPolicy"] = turnSandboxPolicy(sandbox)
 	}

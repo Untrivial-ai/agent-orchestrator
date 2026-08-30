@@ -858,6 +858,13 @@ func TestApprovalSettingsMirrorTUIPosture(t *testing.T) {
 	}
 }
 
+func TestApprovalSettingsKeepReviewerWorkspaceReadOnly(t *testing.T) {
+	policy, sandbox := approvalSettings(ports.PermissionModeAuto, ports.ChatWorkspaceReadOnly)
+	if policy != "on-request" || sandbox != "read-only" {
+		t.Fatalf("reviewer approval settings = %q/%q, want on-request/read-only", policy, sandbox)
+	}
+}
+
 func TestEnvSliceIsSortedForReproducibleRelaunch(t *testing.T) {
 	// Sortedness is still the contract: a relaunch should be byte-identical so a
 	// process diff is readable. What changed is that the overlay is merged over the

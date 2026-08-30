@@ -26,7 +26,8 @@ type ListReviewsResponse struct {
 	// carries the current and previous run per PR, which cannot answer "what did
 	// the other reviewer say" once a third pass has run — so the client cannot
 	// show one summary across reviewers without this.
-	Runs []domain.ReviewRun `json:"runs"`
+	Runs            []domain.ReviewRun      `json:"runs"`
+	ReviewerSurface *domain.ReviewerSurface `json:"reviewerSurface,omitempty"`
 }
 
 // ReviewRunResponse is the body of submit (200). It carries the run plus the
@@ -43,6 +44,7 @@ type TriggerReviewResponse struct {
 	ReviewerHandleID string                     `json:"reviewerHandleId"`
 	Reviews          []reviewcore.PRReviewState `json:"reviews"`
 	Runs             []domain.ReviewRun         `json:"runs"`
+	ReviewerSurface  *domain.ReviewerSurface    `json:"reviewerSurface,omitempty"`
 	// Created is true when a new review pass was started (HTTP 201) and false
 	// when an existing run for the same commit was reused (HTTP 200).
 	Created bool `json:"created" description:"True when a new review pass was started; false when an existing run for the same commit was reused."`
@@ -197,6 +199,7 @@ func (c *ReviewsController) trigger(w http.ResponseWriter, r *http.Request) {
 		Reviews:          reviews,
 		Runs:             runs,
 		Created:          res.Created,
+		ReviewerSurface:  reviewerSurfacePayload(res.ReviewerSurface),
 	})
 }
 
@@ -342,7 +345,15 @@ func reviewsResponse(res reviewcore.SessionReviews, reviews []reviewcore.PRRevie
 		ReviewerHarness:  res.ReviewerHarness,
 		Reviews:          reviews,
 		Runs:             runs,
+		ReviewerSurface:  reviewerSurfacePayload(res.ReviewerSurface),
 	}
+}
+
+func reviewerSurfacePayload(surface domain.ReviewerSurface) *domain.ReviewerSurface {
+	if surface.ReviewID == "" {
+		return nil
+	}
+	return &surface
 }
 
 func (c *ReviewsController) submit(w http.ResponseWriter, r *http.Request) {
