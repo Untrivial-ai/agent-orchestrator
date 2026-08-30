@@ -113,6 +113,7 @@ type WorkerLaunch struct {
 	AgentSessionID string
 	Mode           string
 	DeniedCommands []string
+	Interface      SessionInterface
 	RepositoryURL  string
 	DefaultBranch  string
 }

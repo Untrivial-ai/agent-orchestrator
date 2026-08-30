@@ -428,6 +428,56 @@ paths:
                 $ref: "#/components/schemas/DeleteSessionResponse"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/interface-transition:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: getSessionInterfaceTransition
+      tags: [Sessions]
+      responses:
+        "200":
+          description: Interface-switch readiness and the active transition, if any.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInterfaceTransitionStatus"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: startSessionInterfaceTransition
+      tags: [Sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartSessionInterfaceTransitionInput"
+      responses:
+        "202":
+          description: Interface switch accepted for asynchronous processing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transition]
+                properties:
+                  transition:
+                    $ref: "#/components/schemas/SessionInterfaceTransition"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: cancelSessionInterfaceTransition
+      tags: [Sessions]
+      responses:
+        "200":
+          description: Interface switch cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/pull-requests:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -2053,6 +2103,7 @@ components:
         - branch
         - prompt
         - mode
+        - interfaceMode
         - deniedCommands
         - repositoryUrl
         - defaultBranch
@@ -2078,6 +2129,8 @@ components:
           maxLength: 256
         mode:
           $ref: "#/components/schemas/SessionMode"
+        interfaceMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
         deniedCommands:
           type: array
           items:
@@ -2736,6 +2789,76 @@ components:
             desiredState:
               type: string
               const: deleted
+    SessionInterfaceMode:
+      type: string
+      enum: [tui, chat]
+    SessionInterfaceTransitionPolicy:
+      type: string
+      enum: [drain, interrupt]
+    SessionInterfaceTransitionPhase:
+      type: string
+      enum: [requested, preflighting, draining, source_stopping, source_stopped, target_starting, activating, completed, failed, cancelled, recovery_required]
+    SessionInterfaceTransition:
+      type: object
+      additionalProperties: false
+      required: [id, sessionId, sourceMode, targetMode, policy, phase, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        sourceMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+        targetMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+        policy:
+          $ref: "#/components/schemas/SessionInterfaceTransitionPolicy"
+        phase:
+          $ref: "#/components/schemas/SessionInterfaceTransitionPhase"
+        nativeConversationId:
+          type: string
+        errorCode:
+          type: string
+        errorDetail:
+          type: string
+        noticeAcknowledgedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+    SessionInterfaceTransitionStatus:
+      type: object
+      additionalProperties: false
+      required: [supported, targetMode]
+      properties:
+        supported:
+          type: boolean
+        targetMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+        reasonCode:
+          type: string
+        reason:
+          type: string
+        transition:
+          $ref: "#/components/schemas/SessionInterfaceTransition"
+    StartSessionInterfaceTransitionInput:
+      type: object
+      additionalProperties: false
+      required: [targetMode, policy]
+      properties:
+        targetMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+        policy:
+          $ref: "#/components/schemas/SessionInterfaceTransitionPolicy"
     Session:
       type: object
       additionalProperties: false

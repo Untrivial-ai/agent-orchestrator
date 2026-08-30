@@ -129,6 +129,7 @@ func (s *Server) workerBootstrap(w http.ResponseWriter, r *http.Request) {
 			AgentSessionID: launch.AgentSessionID,
 			Mode:           launch.Mode,
 			DeniedCommands: launch.DeniedCommands,
+			Interface:      string(launch.Interface),
 			RepositoryURL:  launch.RepositoryURL,
 			DefaultBranch:  launch.DefaultBranch,
 		},

@@ -105,6 +105,11 @@ type Store interface {
 	RedeemProjectShareLink(context.Context, domain.Principal, string, string) (domain.SharedProject, error)
 	ListSharedProjects(context.Context, domain.Principal) ([]domain.SharedProject, error)
 	ListSharedProjectSessions(context.Context, domain.Principal, string, string) ([]domain.Session, error)
+	GetSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, error)
+	StartSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterface, domain.SessionInterface, domain.SessionInterfaceTransitionPolicy, string) (domain.SessionInterfaceTransition, error)
+	GetActiveSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error)
+	AdvanceSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterfaceTransitionPhase, domain.SessionInterfaceTransitionPhase, string, string, string) error
+	AcknowledgeSessionInterfaceTransitionNotice(context.Context, domain.Principal, string, string, string) error
 }
 
 // WorkerTokens issues and verifies the short-lived credentials sandbox workers
@@ -369,6 +374,10 @@ func New(options Options) *Server {
 			router.Get("/sessions/{sessionId}/workspace/diff", server.getWorkspaceDiff)
 			router.Get("/sessions/{sessionId}/pull-requests", server.listSessionPullRequests)
 			router.Get("/sessions/{sessionId}/reviews", server.getSessionReviewState)
+			router.Get("/sessions/{sessionId}/interface-transition", server.getSessionInterfaceTransition)
+			router.Post("/sessions/{sessionId}/interface-transition", server.startSessionInterfaceTransition)
+			router.Delete("/sessions/{sessionId}/interface-transition", server.cancelSessionInterfaceTransition)
+			router.Put("/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement", server.acknowledgeSessionInterfaceTransitionNotice)
 			router.Get("/members", server.listOrgMembers)
 			router.Patch("/members/{userId}", server.updateOrgMemberRole)
 			router.Get("/invitations", server.listOrgInvitations)

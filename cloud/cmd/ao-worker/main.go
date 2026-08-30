@@ -198,6 +198,11 @@ func run(logger *slog.Logger) error {
 	agentTerminalID := ""
 	pullRequestSocketPath := filepath.Join(dataDir, "ao-pull-request.sock")
 	reviewSocketPath := filepath.Join(dataDir, "ao-review.sock")
+	committedInterface := strings.TrimSpace(bootstrap.Launch.Interface)
+	if committedInterface == "" {
+		committedInterface = workertransport.InterfaceTUI
+	}
+	var chatRunner workertransport.ChatRunner
 	if err := verifyHarnessAvailable(bootstrap.Launch.Harness); err != nil {
 		// Workspace files and shell terminals use the same worker transport as the
 		// coding agent. Keep that transport alive when a rootfs is missing the
@@ -208,9 +213,8 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("load coding-agent credential: %w", err)
 		}
-		agentCommand, err = (workerexec.HarnessBuilder{
-			DataDir: dataDir,
-		}).BuildInteractive(bootstrap.Launch, credential, workspace)
+		b := workerexec.HarnessBuilder{DataDir: dataDir}
+		agentCommand, err = b.BuildInteractive(bootstrap.Launch, credential, workspace)
 		if err != nil {
 			return fmt.Errorf("build interactive coding-agent command: %w", err)
 		}
@@ -229,12 +233,18 @@ func run(logger *slog.Logger) error {
 			`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
 			`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
 			"to submit an AO-triggered review verdict."
-		agentTerminal, err := client.ensureAgentTerminal(ctx)
-		if err != nil {
-			agentCommand.Cleanup()
-			return fmt.Errorf("initialize agent terminal: %w", err)
+		chatRunner = workerexec.Supervisor{
+			Control: client, Builder: b, Runner: workerexec.OSRunner{},
+			Workspace: workspace, Logger: logger, PollInterval: time.Second,
 		}
-		agentTerminalID = agentTerminal.TerminalID
+		if committedInterface == workertransport.InterfaceTUI {
+			agentTerminal, err := client.ensureAgentTerminal(ctx)
+			if err != nil {
+				agentCommand.Cleanup()
+				return fmt.Errorf("initialize agent terminal: %w", err)
+			}
+			agentTerminalID = agentTerminal.TerminalID
+		}
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -243,7 +253,9 @@ func run(logger *slog.Logger) error {
 	transportSupervisor := workertransport.Supervisor{
 		Control: client, Workspace: workspace, Logger: logger,
 		AgentCommand: agentCommand, AgentTerminalID: agentTerminalID,
-		Started: started,
+		Started: started, ChatRunner: chatRunner,
+		InitialInterface: committedInterface,
+		AgentSessionID:   bootstrap.Launch.AgentSessionID,
 	}
 	if os.Getenv("AO_CLOUD_TERMINAL_STREAM") == "1" {
 		transportSupervisor.Streams = client

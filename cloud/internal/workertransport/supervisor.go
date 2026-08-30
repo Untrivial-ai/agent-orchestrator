@@ -41,8 +41,24 @@ type Supervisor struct {
 	// authoritative whenever a stream is absent or unhealthy.
 	Streams StreamDialer
 
+	// ChatRunner is the headless turn-based Chat controller. Nil means the
+	// session cannot switch into the Chat interface.
+	ChatRunner ChatRunner
+	// InitialInterface is the committed launch interface ("tui" or "chat").
+	InitialInterface string
+	// AgentSessionID is the provider-native conversation identity shared by the
+	// TUI and Chat controllers. It is the resume hint used on both sides.
+	AgentSessionID string
+
 	mu        sync.Mutex
 	terminals map[string]*terminalProcess
+	iface     InterfaceTransition
+}
+
+// ChatRunner executes the headless Chat controller kind for a session. Run
+// blocks until ctx is canceled, mirroring the terminal supervisor's lifetime.
+type ChatRunner interface {
+	Run(ctx context.Context) error
 }
 
 type terminalProcess struct {
@@ -75,7 +91,13 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 	defer workspace.Close()
 	defer s.closeAllTerminals()
-	if s.AgentTerminalID != "" {
+	switch s.InitialInterface {
+	case InterfaceChat:
+		s.iface.current = InterfaceChat
+	default:
+		s.iface.current = InterfaceTUI
+	}
+	if s.iface.current == InterfaceTUI && s.AgentTerminalID != "" {
 		err := s.openTerminal(ctx, worker.TerminalCommand{
 			TerminalID: s.AgentTerminalID,
 			Kind:       "agent",
@@ -134,6 +156,11 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	}
 	if turn.CancelRequested {
 		return true, s.Control.CompleteTurn(ctx, turn.ID, turn.Attempt, true)
+	}
+	if s.iface.Current() == InterfaceChat {
+		return true, s.Control.FailTurn(
+			ctx, turn.ID, turn.Attempt, "turns are claimed by the chat controller",
+		)
 	}
 	if s.AgentTerminalID == "" {
 		return true, s.Control.FailTurn(
@@ -215,6 +242,13 @@ func (s *Supervisor) handle(
 		if err == nil {
 			s.closeTerminal(input.TerminalID)
 			response = map[string]bool{"closed": true}
+		}
+	case "interface.inspect", "interface.interrupt", "interface.stop",
+		"interface.native-id", "interface.start":
+		var input interfacePayload
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = s.handleInterface(ctx, input, request.Kind)
 		}
 	default:
 		err = errors.New("unsupported worker transport request")

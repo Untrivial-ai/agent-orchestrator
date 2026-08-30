@@ -21,6 +21,7 @@ type LaunchContext struct {
 	AgentSessionID string   `json:"agentSessionId,omitempty"`
 	Mode           string   `json:"mode"`
 	DeniedCommands []string `json:"deniedCommands"`
+	Interface      string   `json:"interface"`
 	RepositoryURL  string   `json:"repositoryUrl"`
 	DefaultBranch  string   `json:"defaultBranch"`
 }

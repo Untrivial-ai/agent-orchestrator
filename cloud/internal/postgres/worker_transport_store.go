@@ -1060,3 +1060,76 @@ func scanWorkerRequest(row scanner, request *domain.WorkerRequest) error {
 		&request.ExpiresAt,
 	)
 }
+
+// CreateCoordinatedInterfaceRequest enqueues a worker command under service
+// context for the interface-transition coordinator. Unlike the user-facing
+// CreateWorkspaceRequest it does not require a request principal, and it is
+// fenced to the session's current worker epoch on claim. The coordinator owns
+// the result poll, so the call returns the request row immediately.
+func (s *Store) CreateCoordinatedInterfaceRequest(
+	ctx context.Context,
+	orgID, sessionID, kind string,
+	payload json.RawMessage,
+) (domain.WorkerRequest, error) {
+	var request domain.WorkerRequest
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var epoch int64
+		var terminated bool
+		if err := tx.QueryRow(ctx,
+			`SELECT worker.epoch, session.is_terminated
+			FROM ao_sessions session
+			JOIN ao_worker_connections worker
+			  ON worker.org_id = session.org_id
+			 AND worker.session_id = session.id
+			 AND worker.disconnected_at IS NULL
+			WHERE session.org_id = $1 AND session.id = $2
+			FOR UPDATE OF session`,
+			orgID, sessionID,
+		).Scan(&epoch, &terminated); errors.Is(err, pgx.ErrNoRows) {
+			return ErrWorkerUnavailable
+		} else if err != nil {
+			return err
+		}
+		if terminated {
+			return ErrWorkerUnavailable
+		}
+		request = domain.WorkerRequest{
+			OrgID: orgID, SessionID: sessionID, WorkerEpoch: epoch,
+			Kind: kind, Payload: payload,
+		}
+		err := scanWorkerRequest(tx.QueryRow(ctx,
+			`INSERT INTO ao_worker_requests (
+				org_id, session_id, worker_epoch, kind, payload, expires_at
+			) VALUES ($1, $2, $3, $4, $5, now() + interval '5 minutes')
+			RETURNING id, org_id, session_id, worker_epoch, kind, payload, status,
+				response, error_code, error_message, attempt_count, expires_at`,
+			orgID, sessionID, epoch, kind, payload,
+		), &request)
+		return normalizeConstraintError(err)
+	})
+	return request, err
+}
+
+// GetCoordinatedInterfaceRequestResult returns a worker command row for the
+// coordinator under service context. The response is empty while the worker
+// still owns the request.
+func (s *Store) GetCoordinatedInterfaceRequestResult(
+	ctx context.Context,
+	orgID, sessionID, requestID string,
+) (domain.WorkerRequest, error) {
+	var request domain.WorkerRequest
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		err := scanWorkerRequest(tx.QueryRow(ctx,
+			`SELECT id, org_id, session_id, worker_epoch, kind, payload, status,
+				response, error_code, error_message, attempt_count, expires_at
+			FROM ao_worker_requests
+			WHERE org_id = $1 AND session_id = $2 AND id = $3`,
+			orgID, sessionID, requestID,
+		), &request)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	return request, err
+}

@@ -688,11 +688,13 @@ func (s *Store) WorkerLaunchSpec(
 ) (domain.WorkerLaunch, error) {
 	launch := domain.WorkerLaunch{OrgID: orgID}
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var interfaceValue string
 		err := tx.QueryRow(
 			ctx,
 			`SELECT session.id, session.project_id, session.kind, session.harness,
 				session.display_name, session.branch, session.prompt,
 				session.agent_session_id, session.mode, session.denied_commands,
+				session.interface,
 				project.repository_url, project.default_branch
 			FROM ao_sessions session
 			JOIN ao_projects project ON project.id = session.project_id
@@ -710,6 +712,7 @@ func (s *Store) WorkerLaunchSpec(
 			&launch.AgentSessionID,
 			&launch.Mode,
 			&launch.DeniedCommands,
+			&interfaceValue,
 			&launch.RepositoryURL,
 			&launch.DefaultBranch,
 		)
@@ -719,6 +722,7 @@ func (s *Store) WorkerLaunchSpec(
 		if err != nil {
 			return fmt.Errorf("load worker launch spec: %w", err)
 		}
+		launch.Interface = domain.SessionInterface(interfaceValue).Normalized()
 		return nil
 	})
 	if err != nil {
