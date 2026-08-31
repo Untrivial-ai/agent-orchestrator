@@ -130,7 +130,7 @@ export function SessionInterfaceSwitchButton({
 						aria-label={label}
 						className={cn(
 							!supported && "opacity-50",
-							showLabel && "topbar-control--labeled h-7 gap-1.5 px-2 text-xs",
+							showLabel && "topbar-control--labeled !inline-flex !h-control-lg !w-auto !min-w-0 gap-1.5 px-2 text-xs",
 							className,
 						)}
 						disabled={!supported || pending}
@@ -143,7 +143,7 @@ export function SessionInterfaceSwitchButton({
 						) : (
 							<TargetIcon aria-hidden="true" className="size-icon-md" />
 						)}
-						{showLabel ? <span>{target === "tui" ? "Terminal UI" : "Chat UI"}</span> : null}
+						{showLabel ? <span data-compact-label>{target === "tui" ? "Terminal UI" : "Chat UI"}</span> : null}
 					</TopbarButton>
 				</span>
 			</TooltipTrigger>
