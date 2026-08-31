@@ -75,11 +75,18 @@ func (s *Supervisor) handleInterface(
 func (s *Supervisor) inspectInterface() (any, error) {
 	s.iface.mu.Lock()
 	defer s.iface.mu.Unlock()
-	// The terminal source is quiescent when an agent PTY is open and no turn is
-	// actively being forwarded. The worker owns no richer drain signal than
-	// liveness for the terminal surface, so idle means the process is running.
+	// TUI work is interactive and the worker has no turn execution to drain.
+	// Chat work is headless, so it must report its actual turn activity. The old
+	// implementation returned idle only for TUI, which made every Chat -> TUI
+	// drain transition wait forever even when no prompt was running.
+	idle := true
+	if s.iface.current == InterfaceChat {
+		if activity, ok := s.ChatRunner.(chatActivity); ok {
+			idle = activity.Idle()
+		}
+	}
 	return interfaceInspectResult{
-		Idle:            s.iface.current == InterfaceTUI,
+		Idle:            idle,
 		WaitingForInput: false,
 	}, nil
 }

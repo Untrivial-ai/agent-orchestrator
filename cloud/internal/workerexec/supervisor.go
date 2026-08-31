@@ -29,9 +29,20 @@ type Supervisor struct {
 	CancelInterval  time.Duration
 	CompletionRetry time.Duration
 	Logger          *slog.Logger
+
+	// busy is read by the transport supervisor while an interface handoff is
+	// draining Chat work. It belongs to the long-lived controller instance, not
+	// an individual turn, so a TUI handoff never mistakes a running headless
+	// provider process for an idle controller.
+	busy atomic.Bool
 }
 
-func (s Supervisor) Run(ctx context.Context) error {
+// Idle reports whether the Chat controller has no currently executing turn.
+func (s *Supervisor) Idle() bool {
+	return !s.busy.Load()
+}
+
+func (s *Supervisor) Run(ctx context.Context) error {
 	if s.Control == nil || s.Builder == nil || s.Runner == nil {
 		return errors.New("worker supervisor dependencies are incomplete")
 	}
@@ -72,7 +83,10 @@ func (s Supervisor) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := s.execute(ctx, *turn); err != nil {
+		s.busy.Store(true)
+		err = s.execute(ctx, *turn)
+		s.busy.Store(false)
+		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}

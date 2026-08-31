@@ -12,6 +12,11 @@ type supervisorControlStub struct {
 	turn           *worker.Turn
 }
 
+type chatRunnerStub struct{ idle bool }
+
+func (s chatRunnerStub) Run(context.Context) error { return nil }
+func (s chatRunnerStub) Idle() bool                { return s.idle }
+
 func (s *supervisorControlStub) ClaimTransport(context.Context) (*worker.TransportRequest, error) {
 	return nil, nil
 }
@@ -50,5 +55,31 @@ func TestForwardTurnLeavesQueueToChatController(t *testing.T) {
 	}
 	if control.claimTurnCalls != 0 {
 		t.Fatalf("expected Chat controller to own the queue, got %d claims", control.claimTurnCalls)
+	}
+}
+
+func TestInspectInterfaceDrainsOnlyActiveChatWork(t *testing.T) {
+	tests := []struct {
+		name string
+		idle bool
+		want bool
+	}{
+		{name: "idle chat controller", idle: true, want: true},
+		{name: "running chat turn", idle: false, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			supervisor := &Supervisor{ChatRunner: chatRunnerStub{idle: test.idle}}
+			supervisor.iface.current = InterfaceChat
+
+			result, err := supervisor.inspectInterface()
+			if err != nil {
+				t.Fatalf("inspect interface: %v", err)
+			}
+			inspection := result.(interfaceInspectResult)
+			if inspection.Idle != test.want {
+				t.Fatalf("idle = %v, want %v", inspection.Idle, test.want)
+			}
+		})
 	}
 }

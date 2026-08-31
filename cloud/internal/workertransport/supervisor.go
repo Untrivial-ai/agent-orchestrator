@@ -61,6 +61,13 @@ type ChatRunner interface {
 	Run(ctx context.Context) error
 }
 
+// chatActivity is implemented by the durable headless controller. Keeping it
+// optional preserves the runner boundary for alternate worker implementations
+// while allowing a real Chat turn to drain before a TUI handoff begins.
+type chatActivity interface {
+	Idle() bool
+}
+
 type terminalProcess struct {
 	cancel                context.CancelFunc
 	pty                   *os.File

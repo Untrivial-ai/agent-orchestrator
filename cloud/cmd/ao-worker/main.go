@@ -233,7 +233,7 @@ func run(logger *slog.Logger) error {
 			`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
 			`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
 			"to submit an AO-triggered review verdict."
-		chatRunner = workerexec.Supervisor{
+		chatRunner = &workerexec.Supervisor{
 			Control: client, Builder: b, Runner: workerexec.OSRunner{},
 			Workspace: workspace, Logger: logger, PollInterval: time.Second,
 		}
