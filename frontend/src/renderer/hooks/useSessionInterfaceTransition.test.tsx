@@ -3,7 +3,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { deleteMock, getMock, postMock, putMock } = vi.hoisted(() => ({
+const { cloudCpMock, deleteMock, getMock, postMock, putMock } = vi.hoisted(() => ({
+	cloudCpMock: { client: {}, ready: false, baseUrl: "" },
 	deleteMock: vi.fn(),
 	getMock: vi.fn(),
 	postMock: vi.fn(),
@@ -20,7 +21,7 @@ vi.mock("../lib/api-client", () => ({
 // readiness hooks subscribe to settings/auth queries and can trigger an
 // unrelated refetch while the test is asserting the first response.
 vi.mock("./useCloudCp", () => ({
-	useCloudCp: () => ({ client: {}, ready: false, baseUrl: "" }),
+	useCloudCp: () => cloudCpMock,
 }));
 
 import { useSessionInterfaceTransition } from "./useSessionInterfaceTransition";
@@ -45,9 +46,44 @@ beforeEach(() => {
 	getMock.mockReset();
 	postMock.mockReset();
 	putMock.mockReset();
+	cloudCpMock.client = {};
+	cloudCpMock.ready = false;
+	cloudCpMock.baseUrl = "";
 });
 
 describe("session-scoped interface transition mutations", () => {
+	it("keeps a Cloud handoff active across its status refetch", async () => {
+		const transition = {
+			id: "transition-1",
+			sessionId: "session-a",
+			sourceMode: "tui" as const,
+			targetMode: "chat" as const,
+			policy: "drain" as const,
+			phase: "source_stopping" as const,
+			createdAt: "2026-09-01T00:00:00Z",
+			updatedAt: "2026-09-01T00:00:01Z",
+		};
+		const getSession = vi.fn().mockResolvedValue({
+			session: { interfaceMode: "tui" },
+		});
+		const getInterfaceTransition = vi.fn().mockResolvedValue({
+			supported: true,
+			targetMode: "chat",
+			transition,
+		});
+		cloudCpMock.client = { getSession, getInterfaceTransition };
+		cloudCpMock.ready = true;
+
+		const { result } = renderHook(
+			() => useSessionInterfaceTransition("session-a", { orgId: "org-a" }),
+			{ wrapper },
+		);
+
+		await waitFor(() => expect(result.current.transition?.id).toBe("transition-1"));
+		expect(result.current.transition?.phase).toBe("source_stopping");
+		expect(getMock).not.toHaveBeenCalled();
+	});
+
 	it("keeps a deferred start attached to its initiating session after navigation", async () => {
 		const response = deferred<{
 			data: { ok: boolean };

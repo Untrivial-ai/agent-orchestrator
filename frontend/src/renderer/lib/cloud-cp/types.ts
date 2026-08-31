@@ -187,17 +187,37 @@ export interface CloudCpSession {
 
 export interface CloudCpInterfaceTransition {
 	id: string;
-	phase: "completed" | "failed";
+	/** Mirrors the durable Cloud coordinator state machine. */
+	phase:
+		| "requested"
+		| "preflighting"
+		| "draining"
+		| "source_stopping"
+		| "source_stopped"
+		| "target_starting"
+		| "activating"
+		| "completed"
+		| "failed"
+		| "cancelled"
+		| "recovery_required";
 	policy: "drain" | "interrupt";
 	sessionId: string;
 	sourceMode: CloudCpInterfaceMode;
 	targetMode: CloudCpInterfaceMode;
+	nativeConversationId?: string;
+	errorCode?: string;
+	errorDetail?: string;
+	noticeAcknowledgedAt?: string;
+	createdAt: string;
 	updatedAt: string;
+	completedAt?: string;
 }
 
 export interface CloudCpInterfaceTransitionStatusResponse {
 	supported: boolean;
 	targetMode: CloudCpInterfaceMode;
+	reasonCode?: string;
+	reason?: string;
 	transition?: CloudCpInterfaceTransition;
 }
 
@@ -207,8 +227,6 @@ export interface CloudCpStartInterfaceTransitionRequest {
 }
 
 export interface CloudCpStartInterfaceTransitionResponse {
-	ok: boolean;
-	sessionId: string;
 	transition: CloudCpInterfaceTransition;
 }
 

@@ -11,6 +11,7 @@ import { apiClient, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-cli
 import { conversationQueryKey } from "./useConversation";
 import { useCloudCp } from "./useCloudCp";
 import { cloudSessionsQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
+import type { CloudCpInterfaceTransition } from "../lib/cloud-cp";
 
 export type SessionInterfaceTransition = components["schemas"]["SessionInterfaceTransition"];
 export type SessionInterfaceTransitionStatus =
@@ -48,6 +49,17 @@ type InterfaceTransitionMutationState<TInput> = {
 	status: "error" | "idle" | "pending" | "success";
 	submittedAt: number;
 };
+
+// Cloud and the local daemon deliberately expose the same state-machine
+// vocabulary. Keep this conversion at the control-plane boundary rather than
+// dropping the Cloud transition: without it, the first status refetch after a
+// successful POST erased the optimistic active state, re-enabled the action,
+// and let a second click race the still-running handoff.
+function toSessionInterfaceTransition(
+	transition: CloudCpInterfaceTransition | undefined,
+): SessionInterfaceTransition | undefined {
+	return transition as SessionInterfaceTransition | undefined;
+}
 
 function useInterfaceTransitionMutations<TInput>(mutationKey: readonly unknown[]) {
 	return useMutationState<InterfaceTransitionMutationState<TInput>>({
@@ -177,7 +189,9 @@ export function useSessionInterfaceTransition(
 				return {
 					supported: transitionStatus.supported,
 					targetMode: transitionStatus.targetMode,
-					transition: undefined,
+					reasonCode: transitionStatus.reasonCode,
+					reason: transitionStatus.reason,
+					transition: toSessionInterfaceTransition(transitionStatus.transition),
 					currentMode: sessionResponse.session.interfaceMode,
 				} as SessionInterfaceTransitionStatus & { currentMode?: SessionInterfaceMode };
 			}
@@ -215,8 +229,8 @@ export function useSessionInterfaceTransition(
 					targetSessionId,
 					input,
 				);
-				return response as unknown as {
-					transition: SessionInterfaceTransition;
+				return {
+					transition: toSessionInterfaceTransition(response.transition),
 				};
 			}
 			const { data, error } = await apiClient.POST(
