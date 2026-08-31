@@ -22,6 +22,7 @@ import {
 	SessionChatSurface,
 	type ConversationWorkState,
 } from "./chat/SessionChatSurface";
+import { CloudSessionChatSurface } from "./chat/CloudSessionChatSurface";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
@@ -1602,7 +1603,13 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 								className={cn("h-full min-h-0", fileTabs.activePath && "invisible pointer-events-none")}
 								inert={fileTabs.activePath ? true : undefined}
 							>
-							{showChatSurface ? (
+							{showChatSurface && session?.cloud ? (
+								<CloudSessionChatSurface
+									headerActions={sessionHeaderActions}
+									session={session}
+									sessionTabAction={sessionTabActions}
+								/>
+							) : showChatSurface ? (
 								<SessionChatSurface
 									key={session.id}
 									session={session}
