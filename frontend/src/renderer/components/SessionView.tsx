@@ -390,7 +390,17 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 	const workspaces = workspaceQuery.data ?? [];
 	const routedWorkspace = projectId ? workspaces.find((workspace) => workspace.id === projectId) : undefined;
 	const isCloudRoute = routedWorkspace?.kind === "cloud";
-	const cloudRouteSession = useCloudSessionQuery(cloudOrgId, sessionId, isCloudRoute);
+	const listedSession = workspaces.flatMap((workspace) => workspace.sessions).find((s) => s.id === sessionId);
+	// Project-scoped navigation identifies Cloud routes immediately. The legacy
+	// cross-project route has no project id, so fall back to a direct CP lookup
+	// when the session is absent from the merged list. This keeps a fresh Cloud
+	// tab from ever being resolved through the local daemon during list-cache
+	// races or after restoring an old route.
+	const cloudRouteSession = useCloudSessionQuery(
+		cloudOrgId,
+		sessionId,
+		Boolean(cloudOrgId && (isCloudRoute || !listedSession)),
+	);
 	const theme = useResolvedTheme();
 	const prefersReducedMotion = useReducedMotion();
 	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? true);
@@ -519,18 +529,27 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 
 	useEffect(() => stopTerminalLiveResize, [stopTerminalLiveResize]);
 
-	const listedSession = workspaces.flatMap((workspace) => workspace.sessions).find((s) => s.id === sessionId);
 	// A newly-created Cloud session can be routed before the paginated session
 	// list refresh completes. Resolve that exact row from Cloud so terminal and
 	// interface operations retain {orgId, sessionId} instead of falling back to
 	// the local daemon and surfacing SESSION_NOT_FOUND.
+	const directCloudWorkspace = cloudRouteSession.data
+		? workspaces.find(
+				(workspace) =>
+					workspace.kind === "cloud" && workspace.id === cloudRouteSession.data?.projectId,
+			)
+		: undefined;
+	const cloudSessionWorkspace = directCloudWorkspace ?? routedWorkspace;
 	const session =
 		listedSession ??
 		workspaceSessionQuery.data ??
-		(isCloudRoute && routedWorkspace && cloudOrgId && cloudRouteSession.data
+		(cloudOrgId && cloudRouteSession.data && cloudSessionWorkspace
 			? toCloudWorkspaceSession(
 					cloudRouteSession.data,
-					{ id: routedWorkspace.id, displayName: routedWorkspace.name },
+					{
+						id: cloudSessionWorkspace.id,
+						displayName: cloudSessionWorkspace.name,
+					},
 					cloudOrgId,
 				)
 			: undefined);
