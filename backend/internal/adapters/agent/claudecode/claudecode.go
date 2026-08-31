@@ -550,6 +550,7 @@ func isPluginURL(s string) bool {
 	}
 	return strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https")
 }
+
 // claudeBinarySpec locates the claude binary: PATH first, then the native
 // installer's locations, npm global, Homebrew, and the claude-managed dir.
 var claudeBinarySpec = binaryutil.BinarySpec{
