@@ -97,7 +97,7 @@ func (s *Supervisor) interruptInterface(ctx context.Context) error {
 
 func (s *Supervisor) stopInterface(ctx context.Context) error {
 	if s.iface.Current() == InterfaceTUI {
-		s.closeTerminal(s.AgentTerminalID)
+		s.closeTerminalForInterfaceHandoff(s.AgentTerminalID)
 	} else {
 		s.stopChat()
 	}

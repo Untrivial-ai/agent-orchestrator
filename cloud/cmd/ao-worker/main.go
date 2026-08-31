@@ -598,11 +598,15 @@ func (c *client) PublishTerminalExit(
 	ctx context.Context,
 	terminalID string,
 	exitCode int,
+	interfaceHandoff bool,
 ) error {
 	return c.do(
 		ctx,
 		"/worker/terminals/"+url.PathEscape(terminalID)+"/exit",
-		worker.TerminalExitRequest{ExitCode: exitCode},
+		worker.TerminalExitRequest{
+			ExitCode:         exitCode,
+			InterfaceHandoff: interfaceHandoff,
+		},
 		nil,
 	)
 }

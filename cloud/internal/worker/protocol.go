@@ -283,6 +283,10 @@ type TerminalOutputRequest struct {
 
 type TerminalExitRequest struct {
 	ExitCode int `json:"exitCode"`
+	// InterfaceHandoff is set when the worker deliberately closes the agent
+	// terminal while transferring ownership to the Chat controller. That is a
+	// terminal lifecycle event, not a session exit.
+	InterfaceHandoff bool `json:"interfaceHandoff,omitempty"`
 }
 
 type AgentTerminalResponse struct {

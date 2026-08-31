@@ -924,6 +924,7 @@ func (s *Store) MarkTerminalExited(
 	orgID, sessionID, workerID, terminalID string,
 	epoch int64,
 	exitCode int,
+	interfaceHandoff bool,
 ) error {
 	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		current, err := workerConnectionCurrent(
@@ -953,6 +954,9 @@ func (s *Store) MarkTerminalExited(
 		}
 		if tag.RowsAffected() == 0 {
 			return ErrTransportExpired
+		}
+		if interfaceHandoff {
+			return nil
 		}
 		_, err = tx.Exec(ctx,
 			`UPDATE ao_sessions session
