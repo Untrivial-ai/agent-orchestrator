@@ -151,16 +151,48 @@ func (d *TransportDriver) awaitResult(
 	request domain.WorkerRequest,
 	out any,
 ) error {
-	if request.Status == "succeeded" && len(request.Response) > 0 && out != nil {
-		return json.Unmarshal(request.Response, out)
+	// The worker completes requests asynchronously. Poll the durable row for this
+	// step instead of immediately returning pending; otherwise even a healthy
+	// worker cannot complete a handoff before the coordinator retries the phase.
+	deadline := time.NewTimer(d.step)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	check := func() error {
+		if request.Status == "succeeded" {
+			if out == nil || len(request.Response) == 0 {
+				return nil
+			}
+			return json.Unmarshal(request.Response, out)
+		}
+		if request.Status == "failed" {
+			return fmt.Errorf("worker interface command %s failed: %s",
+				request.Kind, firstNonEmpty(request.ErrorCode, request.ErrorMessage))
+		}
+		return nil
 	}
-	if request.Status == "failed" {
-		return fmt.Errorf("worker interface command %s failed: %s",
-			request.Kind, firstNonEmpty(request.ErrorCode, request.ErrorMessage))
+	if err := check(); err != nil || request.Status == "succeeded" {
+		return err
 	}
-	// The worker has not completed the request yet; retry on a later tick so the
-	// coordinator re-claims from the durable phase row.
-	return errPendingWorkerCommand
+	for {
+		select {
+		case <-ctx.Done():
+			return errPendingWorkerCommand
+		case <-deadline.C:
+			return errPendingWorkerCommand
+		case <-ticker.C:
+			updated, err := d.store.GetCoordinatedInterfaceRequestResult(
+				ctx, transition.OrgID, transition.SessionID, request.ID,
+			)
+			if err != nil {
+				return fmt.Errorf("get worker interface command %s: %w", request.Kind, err)
+			}
+			request = updated
+			if err := check(); err != nil || request.Status == "succeeded" {
+				return err
+			}
+		}
+	}
 }
 
 func firstNonEmpty(values ...string) string {
