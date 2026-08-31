@@ -153,7 +153,7 @@ function DesktopSessionCard({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const [confirmOpen, setConfirmOpen] = useState(false);
-	const summaries = sessionPRDisplaySummaries(session, useSessionScmSummary(session.id).data);
+	const summaries = sessionPRDisplaySummaries(session, useSessionScmSummary(session.id, !session.cloud).data);
 	const termination = useTerminateSessionState(session.id);
 	const showTerminate = interactive && session.isTerminated !== true && onTerminate;
 	const keepTerminateVisible = session.status === "merged";
