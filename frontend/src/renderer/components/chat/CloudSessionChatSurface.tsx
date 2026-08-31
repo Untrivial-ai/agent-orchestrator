@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 import { useCloudCp } from "../../hooks/useCloudCp";
 import type { CloudCpClientEvent } from "../../lib/cloud-cp";
 import type { ConversationMessage, ConversationSnapshot, ConversationTurn } from "../../types/conversation";
@@ -95,10 +95,20 @@ export function CloudSessionChatSurface({
 	session,
 	headerActions,
 	sessionTabAction,
+	controllerTransitioning,
+	newWorkDisabled,
+	onConversationWorkChange,
 }: {
 	session: WorkspaceSession;
 	headerActions?: ReactNode;
 	sessionTabAction?: ReactNode;
+	controllerTransitioning?: boolean;
+	newWorkDisabled?: boolean;
+	onConversationWorkChange?: (state: {
+		controllerBusy: boolean;
+		hasRunningTurn: boolean;
+		queuedTurnCount: number;
+	}) => void;
 }) {
 	const cloud = session.cloud;
 	const { client, ready } = useCloudCp();
@@ -130,6 +140,14 @@ export function CloudSessionChatSurface({
 	});
 	const snapshot = useMemo(() => toSnapshot(session, eventsQuery.data ?? []), [eventsQuery.data, session]);
 	const activeTurn = snapshot.turns.find((turn) => turn.state === "running");
+	const queuedTurnCount = snapshot.turns.filter((turn) => turn.state === "queued").length;
+	useEffect(() => {
+		onConversationWorkChange?.({
+			controllerBusy: snapshot.controller.state === "busy",
+			hasRunningTurn: Boolean(activeTurn),
+			queuedTurnCount,
+		});
+	}, [activeTurn, onConversationWorkChange, queuedTurnCount, snapshot.controller.state]);
 	const interrupt = useMutation({
 		mutationFn: async () => {
 			if (!cloud || !activeTurn) return;
@@ -142,6 +160,8 @@ export function CloudSessionChatSurface({
 		<ChatWorkspace
 			snapshot={snapshot}
 			busy={send.isPending}
+			controllerTransitioning={controllerTransitioning}
+			newWorkDisabled={newWorkDisabled}
 			commandError={
 				eventsQuery.error instanceof Error
 					? eventsQuery.error.message

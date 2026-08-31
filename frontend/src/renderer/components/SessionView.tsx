@@ -1211,8 +1211,12 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			switchError={handoffSwitchError}
 		/>
 	) : null;
+	// Cloud's Chat surface does not have an interactive terminal tab to hover.
+	// Keep the handoff control in the app chrome as a direct, always-visible
+	// button so users can reliably return from Chat UI to TUI.
+	const cloudInterfaceSwitchAction = session?.cloud ? interfaceSwitchInlineStatus : null;
 	const sessionTabActions = (
-		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
+		<SessionActionsMenu inlineStatus={session?.cloud ? undefined : interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
@@ -1220,7 +1224,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 	const compactSessionChrome = adaptiveWorkspaceActive;
 	const sessionHeaderActions = (
 		<div
-			className="session-topbar-session-chrome flex shrink-0 items-center"
+			className="session-topbar-session-chrome flex shrink-0 items-center gap-1"
 			data-compact-session-chrome={compactSessionChrome ? "true" : "false"}
 		>
 			<ShellTopbar
@@ -1605,7 +1609,10 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 							>
 							{showChatSurface && session?.cloud ? (
 								<CloudSessionChatSurface
+									controllerTransitioning={chatControllerTransitioning}
 									headerActions={sessionHeaderActions}
+									newWorkDisabled={chatNewWorkDisabled}
+									onConversationWorkChange={handleConversationWorkChange}
 									session={session}
 									sessionTabAction={sessionTabActions}
 								/>
