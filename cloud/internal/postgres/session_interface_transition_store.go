@@ -381,21 +381,19 @@ func (s *Store) RenewCoordinatedInterfaceClaim(
 	owner, transitionID string,
 	lease time.Duration,
 ) error {
-	tag, err := s.pool.Exec(
-		ctx,
-		`UPDATE ao_interface_transitions
-		SET claimed_by = $1, claimed_at = now(), updated_at = now()
-		WHERE id = $2`,
-		owner,
-		transitionID,
-	)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrTransitionNotFound
-	}
-	return nil
+	return s.withService(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE ao_interface_transitions
+			SET claimed_by = $1, claimed_at = now(), updated_at = now()
+			WHERE id = $2`, owner, transitionID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrTransitionNotFound
+		}
+		return nil
+	})
 }
 
 // AdvanceCoordinatedInterfaceTransition moves a claimed transition to the next
@@ -408,35 +406,29 @@ func (s *Store) AdvanceCoordinatedInterfaceTransition(
 	nativeConversationID string,
 	errorCode, errorDetail string,
 ) error {
-	tag, err := s.pool.Exec(
-		ctx,
-		`UPDATE ao_interface_transitions
-		SET phase = $1,
-			native_conversation_id = CASE WHEN $2 <> '' THEN $2 ELSE native_conversation_id END,
-			error_code = $3,
-			error_detail = $4,
-			updated_at = now(),
-			completed_at = CASE
-				WHEN $1 IN ('completed', 'failed', 'cancelled', 'recovery_required')
-					THEN now()
-				ELSE completed_at
-			END
-		WHERE id = $5 AND claimed_by = $6 AND phase = $7`,
-		to,
-		nativeConversationID,
-		errorCode,
-		errorDetail,
-		transitionID,
-		owner,
-		from,
-	)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrTransitionStale
-	}
-	return nil
+	return s.withService(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE ao_interface_transitions
+			SET phase = $1,
+				native_conversation_id = CASE WHEN $2 <> '' THEN $2 ELSE native_conversation_id END,
+				error_code = $3,
+				error_detail = $4,
+				updated_at = now(),
+				completed_at = CASE
+					WHEN $1 IN ('completed', 'failed', 'cancelled', 'recovery_required')
+						THEN now()
+					ELSE completed_at
+				END
+			WHERE id = $5 AND claimed_by = $6 AND phase = $7`,
+			to, nativeConversationID, errorCode, errorDetail, transitionID, owner, from)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrTransitionStale
+		}
+		return nil
+	})
 }
 
 // CommitCoordinatedSessionInterface commits a session's committed interface and
@@ -448,19 +440,19 @@ func (s *Store) CommitCoordinatedSessionInterface(
 	owner, orgID, sessionID string,
 	interfaceValue domain.SessionInterface,
 ) (bool, error) {
-	tag, err := s.pool.Exec(
-		ctx,
-		`UPDATE ao_sessions
-		SET interface = $1, updated_at = now()
-		WHERE org_id = $2 AND id = $3`,
-		interfaceValue,
-		orgID,
-		sessionID,
-	)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	var committed bool
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE ao_sessions
+			SET interface = $1, updated_at = now()
+			WHERE org_id = $2 AND id = $3`, interfaceValue, orgID, sessionID)
+		if err != nil {
+			return err
+		}
+		committed = tag.RowsAffected() > 0
+		return nil
+	})
+	return committed, err
 }
 
 // ReleaseCoordinatedInterfaceClaim drops a coordinator's hold on a transition.
@@ -468,15 +460,13 @@ func (s *Store) ReleaseCoordinatedInterfaceClaim(
 	ctx context.Context,
 	owner, transitionID string,
 ) error {
-	_, err := s.pool.Exec(
-		ctx,
-		`UPDATE ao_interface_transitions
-		SET claimed_by = NULL, claimed_at = NULL, updated_at = now()
-		WHERE id = $1 AND claimed_by = $2`,
-		transitionID,
-		owner,
-	)
-	return err
+	return s.withService(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE ao_interface_transitions
+			SET claimed_by = '', claimed_at = NULL, updated_at = now()
+			WHERE id = $1 AND claimed_by = $2`, transitionID, owner)
+		return err
+	})
 }
 
 func insertInterfaceTransition(
