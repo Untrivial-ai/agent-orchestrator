@@ -185,9 +185,9 @@ export const cloudSessionsQueryKey = ["cloud-sessions"] as const;
 // Maps one control-plane session onto the board's session shape. Cloud sessions
 // carry the same status/activity/harness vocabulary as local ones, so the same
 // product-ui mappers apply; fields with no cloud analogue take safe defaults.
-function toCloudWorkspaceSession(
+export function toCloudWorkspaceSession(
 	session: CloudCpSession,
-	project: CloudCpProject,
+	project: Pick<CloudCpProject, "id" | "displayName">,
 	orgId: string,
 ): WorkspaceSession {
 	return {
@@ -271,6 +271,28 @@ export function useCloudSessionsQuery(options: WorkspaceSubscriptionOptions = {}
 			if (orgId === undefined) return [];
 			const response = await client.listSessions(orgId, { limit: 100 });
 			return response.items;
+		},
+	});
+}
+
+// Route-level recovery for a Cloud session that has just been created or whose
+// list cache is stale. The session screen must resolve it through the control
+// plane, never try the local daemon just because the list query has not caught
+// up yet.
+export function useCloudSessionQuery(
+	orgId: string | undefined,
+	sessionId: string,
+	enabled = true,
+) {
+	const { client, ready, baseUrl } = useCloudCp();
+	return useQuery({
+		queryKey: ["cloud-session", baseUrl, orgId ?? "", sessionId],
+		enabled: enabled && ready && orgId !== undefined && sessionId !== "",
+		retry: 1,
+		queryFn: async (): Promise<CloudCpSession | undefined> => {
+			if (orgId === undefined) return undefined;
+			const response = await client.getSession(orgId, sessionId);
+			return response.session;
 		},
 	});
 }

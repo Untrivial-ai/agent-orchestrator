@@ -7,7 +7,7 @@ export const Route = createFileRoute("/_shell/projects/$projectId_/sessions/$ses
 });
 
 function ProjectSessionRoute() {
-	const { sessionId } = Route.useParams();
+	const { projectId, sessionId } = Route.useParams();
 	const { org } = useCloudOrg();
-	return <SessionView sessionId={sessionId} cloudOrgId={org?.id} />;
+	return <SessionView sessionId={sessionId} projectId={projectId} cloudOrgId={org?.id} />;
 }
