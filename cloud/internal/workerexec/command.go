@@ -419,19 +419,29 @@ func codexArgs(turn worker.Turn) ([]string, error) {
 	if len(turn.DeniedCommands) > 0 {
 		return nil, fmt.Errorf("%w: Codex has no exact denied-command primitive", ErrUnsupportedPolicy)
 	}
-	args := []string{"exec", "--json", "--skip-git-repo-check"}
+	// Match the interactive Codex policy for the same Cloud session. In
+	// particular, a trusted TUI runs in YOLO mode; launching headless Chat with
+	// only `--sandbox danger-full-access` can leave Codex waiting for an
+	// approval that no terminal is available to answer.
+	args := []string{
+		"exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-hook-trust",
+	}
 	switch turn.Mode {
 	case "read-only":
-		args = append(args, "--sandbox", "read-only")
+		args = append(args, "--sandbox", "read-only", "--ask-for-approval", "on-request")
 	case "standard":
-		args = append(args, "--sandbox", "workspace-write")
+		args = append(args,
+			"--sandbox", "workspace-write",
+			"--ask-for-approval", "on-request",
+			"-c", `approvals_reviewer="auto_review"`,
+		)
 	case "trusted":
-		args = append(args, "--sandbox", "danger-full-access")
+		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	if turn.AgentSessionID != "" {
 		args = append(args, "resume", turn.AgentSessionID)
 	}
-	return append(args, turn.Prompt), nil
+	return append(args, "--", turn.Prompt), nil
 }
 
 func cursorArgs(turn worker.Turn) ([]string, error) {
