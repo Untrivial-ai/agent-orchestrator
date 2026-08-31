@@ -24,11 +24,12 @@ export function sessionScmSummaryQueryOptions(sessionId: string) {
 	};
 }
 
-export function useSessionScmSummary(sessionId?: string) {
+export function useSessionScmSummary(sessionId?: string, enabled = true) {
 	return useQuery({
 		queryKey: sessionScmSummaryQueryKey(sessionId),
-		enabled: Boolean(sessionId),
-		queryFn: () => fetchSessionScmSummary(sessionId!),
+		enabled: enabled && Boolean(sessionId),
+		queryFn: () =>
+			usePreviewData ? Promise.resolve(mockSessionScmSummaries[sessionId!] ?? []) : fetchSessionScmSummary(sessionId!),
 		retry: 1,
 	});
 }
