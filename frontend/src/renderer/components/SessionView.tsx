@@ -548,8 +548,11 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			? toCloudWorkspaceSession(
 					cloudRouteSession.data,
 					{
-						id: cloudSessionWorkspace.id,
-						displayName: cloudSessionWorkspace.name,
+						// A session lookup remains authoritative even if the projects list
+						// is refetching. Do not turn a real Cloud row into "Session not
+						// found" merely because its parent list is temporarily absent.
+						id: cloudSessionWorkspace?.id ?? cloudRouteSession.data.projectId,
+						displayName: cloudSessionWorkspace?.name ?? "Cloud project",
 					},
 					cloudOrgId,
 				)
@@ -1219,7 +1222,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			className="session-topbar-session-chrome flex shrink-0 items-center"
 			data-compact-session-chrome={compactSessionChrome ? "true" : "false"}
 		>
-<<<<<<< HEAD
 			<ShellTopbar
 				compactActions={compactSessionChrome}
 				embedded

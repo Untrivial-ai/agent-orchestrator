@@ -10,7 +10,7 @@ import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { conversationQueryKey } from "./useConversation";
 import { useCloudCp } from "./useCloudCp";
-import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { cloudSessionsQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
 
 export type SessionInterfaceTransition = components["schemas"]["SessionInterfaceTransition"];
 export type SessionInterfaceTransitionStatus =
@@ -243,11 +243,21 @@ export function useSessionInterfaceTransition(
 					},
 				);
 			}
-			return queryClient
-				.invalidateQueries({
+			const refreshes = [
+				queryClient.invalidateQueries({
 					queryKey: sessionInterfaceTransitionQueryKey(variables.targetSessionId),
-				})
-				.catch(() => undefined);
+				}),
+			];
+			if (isCloud) {
+				// Cloud's session projection owns interfaceMode. Refetch it as soon
+				// as POST accepts the handoff rather than leaving the source TUI
+				// mounted until the ordinary five-second Cloud polling interval.
+				refreshes.push(
+					queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey }),
+					queryClient.invalidateQueries({ queryKey: ["cloud-session"] }),
+				);
+			}
+			return Promise.all(refreshes).catch(() => undefined);
 		},
 	});
 
@@ -344,17 +354,24 @@ export function useSessionInterfaceTransition(
 		settledRef.current = transitionKey;
 		const attempt = ++refreshAttemptRef.current;
 		setRefreshingTransition({ attempt, key: transitionKey });
-		void Promise.all([
+		const refreshes = [
 			queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
 			queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) }),
-		]).finally(() => {
+		];
+		if (isCloud) {
+			refreshes.push(
+				queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey }),
+				queryClient.invalidateQueries({ queryKey: ["cloud-session"] }),
+			);
+		}
+		void Promise.all(refreshes).finally(() => {
 			setRefreshingTransition((refreshing) =>
 				refreshing?.key === transitionKey && refreshing.attempt === attempt
 					? undefined
 					: refreshing,
 			);
 		});
-	}, [queryClient, sessionId, transitionActive, transitionKey]);
+	}, [isCloud, queryClient, sessionId, transitionActive, transitionKey]);
 	// A local start refusal records a durable-free error. If any client then opens
 	// a real transition, that newer durable row supersedes the stale refusal: the
 	// switch is running or done, so the "could not switch" notice must not linger.
