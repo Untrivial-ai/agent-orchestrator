@@ -51,6 +51,7 @@ vi.mock("../lib/platform", () => ({
 	// shortcut assertions in this suite.
 	hidesShellTopbar: () => true,
 	isMacPlatform: () => false,
+	isLinuxPlatform: () => false,
 }));
 vi.mock("../hooks/useWindowFullScreen", () => ({
 	useWindowFullScreen: () => nativeFullScreenMock(),

@@ -1,44 +1,95 @@
-import { Loader2, SendHorizontal } from "lucide-react";
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, type ReactNode } from "react";
 import { useCloudCp } from "../../hooks/useCloudCp";
 import type { CloudCpClientEvent } from "../../lib/cloud-cp";
+import type { ConversationMessage, ConversationSnapshot, ConversationTurn } from "../../types/conversation";
 import type { WorkspaceSession } from "../../types/workspace";
-import { cn } from "../../lib/utils";
+import { ChatWorkspace } from "./ChatWorkspace";
 
-type ChatLine = {
-	id: string;
-	role: "assistant" | "user";
-	text: string;
+type EventPayload = {
+	attempt?: unknown;
+	error?: unknown;
+	text?: unknown;
+	turnId?: unknown;
 };
 
+function eventPayload(event: CloudCpClientEvent): EventPayload {
+	return event.payload && typeof event.payload === "object" ? (event.payload as EventPayload) : {};
+}
+
 function eventText(event: CloudCpClientEvent): string | undefined {
-	if (!event.payload || typeof event.payload !== "object") return undefined;
-	const text = (event.payload as { text?: unknown }).text;
+	const text = eventPayload(event).text;
 	return typeof text === "string" && text.trim() !== "" ? text : undefined;
 }
 
-function toChatLines(events: CloudCpClientEvent[]): ChatLine[] {
-	const lines: ChatLine[] = [];
+function eventTurnID(event: CloudCpClientEvent): string | undefined {
+	const turnID = eventPayload(event).turnId;
+	return typeof turnID === "string" && turnID !== "" ? turnID : undefined;
+}
+
+/** Builds the shared ChatWorkspace projection from Cloud's durable event log. */
+function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent[]): ConversationSnapshot {
+	const turns = new Map<string, ConversationTurn>();
+	const assistant = new Map<string, ConversationMessage>();
+	const items: ConversationMessage[] = [];
 	for (const event of events) {
+		const turnID = eventTurnID(event);
+		if (turnID && !turns.has(turnID)) {
+			turns.set(turnID, { id: turnID, state: "queued", requestedAt: event.createdAt });
+		}
+		if (turnID && event.type === "chat.turn_started") {
+			const turn = turns.get(turnID)!;
+			turn.state = "running";
+			turn.startedAt = event.createdAt;
+		}
+		if (turnID && (event.type === "chat.turn_completed" || event.type === "chat.turn_interrupted" || event.type === "chat.turn_aborted")) {
+			const turn = turns.get(turnID)!;
+			turn.state = event.type === "chat.turn_completed" ? "completed" : event.type === "chat.turn_interrupted" ? "interrupted" : "failed";
+			turn.completedAt = event.createdAt;
+			const error = eventPayload(event).error;
+			turn.errorMessage = typeof error === "string" ? error : undefined;
+		}
 		const text = eventText(event);
 		if (!text) continue;
 		if (event.type === "chat.user_message") {
-			lines.push({ id: String(event.sequence), role: "user", text });
+			items.push({
+				kind: "message", id: `cloud-event-${event.sequence}`, sequence: event.sequence, revision: 1,
+				role: "user", origin: "human", text, streaming: false, delivery: "accepted", createdAt: event.createdAt,
+			});
 			continue;
 		}
-		if (event.type === "chat.assistant_delta") {
-			lines.push({ id: String(event.sequence), role: "assistant", text });
+		if (event.type !== "chat.assistant_delta") continue;
+		const assistantKey = turnID ?? `event-${event.sequence}`;
+		const previous = assistant.get(assistantKey);
+		if (previous) {
+			previous.text += text;
+			previous.revision += 1;
+			continue;
 		}
+		const message: ConversationMessage = {
+			kind: "message", id: `cloud-assistant-${assistantKey}`, turnId: turnID, sequence: event.sequence,
+			revision: 1, role: "assistant", origin: "provider", text, streaming: true, createdAt: event.createdAt,
+		};
+		assistant.set(assistantKey, message);
+		items.push(message);
 	}
-	return lines;
+	for (const message of assistant.values()) {
+		if (!message.turnId || turns.get(message.turnId)?.state !== "running") message.streaming = false;
+	}
+	const orderedTurns = [...turns.values()];
+	const hasRunningTurn = orderedTurns.some((turn) => turn.state === "running");
+	return {
+		conversationId: `cloud:${session.id}`, sessionId: session.id, harness: session.provider, mode: "chat",
+		controller: { state: hasRunningTurn ? "busy" : "ready" }, turns: orderedTurns, items,
+		latestSequence: events.at(-1)?.sequence ?? 0, oldestSequence: events[0]?.sequence ?? 1,
+		hasMoreBefore: false, settings: {},
+	};
 }
 
 /**
- * Cloud ChatUI reads the control-plane event projection directly. It must not
- * use the local daemon conversation hooks: a Cloud session id is meaningless
- * to the loopback daemon and would otherwise produce SESSION_NOT_FOUND as soon
- * as a TUI -> ChatUI handoff commits.
+ * The Cloud adapter deliberately renders the same ChatWorkspace as local AO.
+ * Only the data/command transport differs: Cloud reads its durable event log
+ * and posts messages to the control plane instead of calling the loopback daemon.
  */
 export function CloudSessionChatSurface({
 	session,
@@ -52,7 +103,6 @@ export function CloudSessionChatSurface({
 	const cloud = session.cloud;
 	const { client, ready } = useCloudCp();
 	const queryClient = useQueryClient();
-	const [draft, setDraft] = useState("");
 	const eventsQuery = useQuery({
 		queryKey: ["cloud-chat-events", cloud?.orgId ?? "", session.id],
 		enabled: Boolean(cloud && ready),
@@ -69,77 +119,43 @@ export function CloudSessionChatSurface({
 			}
 		},
 	});
+	const invalidate = () =>
+		queryClient.invalidateQueries({ queryKey: ["cloud-chat-events", cloud?.orgId ?? "", session.id] });
 	const send = useMutation({
 		mutationFn: async (text: string) => {
 			if (!cloud) throw new Error("Cloud session context is unavailable.");
 			return client.sendSessionMessage(cloud.orgId, session.id, { text });
 		},
-		onSuccess: () => {
-			setDraft("");
-			void queryClient.invalidateQueries({ queryKey: ["cloud-chat-events", cloud?.orgId ?? "", session.id] });
-		},
+		onSuccess: () => void invalidate(),
 	});
-	const lines = useMemo(() => toChatLines(eventsQuery.data ?? []), [eventsQuery.data]);
-	const submit = (event: FormEvent) => {
-		event.preventDefault();
-		const text = draft.trim();
-		if (!text || send.isPending) return;
-		send.mutate(text);
-	};
+	const snapshot = useMemo(() => toSnapshot(session, eventsQuery.data ?? []), [eventsQuery.data, session]);
+	const activeTurn = snapshot.turns.find((turn) => turn.state === "running");
+	const interrupt = useMutation({
+		mutationFn: async () => {
+			if (!cloud || !activeTurn) return;
+			await client.cancelTurn(cloud.orgId, session.id, activeTurn.id);
+		},
+		onSettled: () => void invalidate(),
+	});
 
 	return (
-		<div className="flex h-full min-h-0 flex-col bg-background">
-			<div className="flex h-inspector-tabs shrink-0 items-center border-b border-border px-2">
-				<div className="min-w-0 flex-1 text-sm font-medium">Chat</div>
-				{sessionTabAction}
-				{headerActions}
-			</div>
-			<div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
-				{eventsQuery.isLoading ? (
-					<div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-						<Loader2 className="size-4 animate-spin" /> Loading conversation…
-					</div>
-				) : lines.length === 0 ? (
-					<div className="grid h-full place-items-center text-center text-sm text-muted-foreground">
-						ChatUI is ready. Send a message to continue this Cloud agent session.
-					</div>
-				) : (
-					<div className="mx-auto flex max-w-3xl flex-col gap-4">
-						{lines.map((line) => (
-							<div
-								className={cn(
-									"max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm leading-relaxed",
-									line.role === "user"
-										? "self-end bg-primary text-primary-foreground"
-										: "self-start bg-muted text-foreground",
-								)}
-								key={line.id}
-							>
-								{line.text}
-							</div>
-						))}
-					</div>
-				)}
-			</div>
-			<form className="border-t border-border p-3" onSubmit={submit}>
-				<textarea
-					className="min-h-20 w-full resize-y rounded-md border border-input bg-background p-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-					disabled={send.isPending || !cloud || !ready}
-					onChange={(event) => setDraft(event.target.value)}
-					placeholder="Message the Cloud agent…"
-					value={draft}
-				/>
-				<div className="mt-2 flex items-center justify-between">
-					<span className="text-xs text-destructive">{send.error instanceof Error ? send.error.message : ""}</span>
-					<button
-						className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-						disabled={!draft.trim() || send.isPending || !cloud || !ready}
-						type="submit"
-					>
-						<SendHorizontal className="size-4" /> Send
-					</button>
-				</div>
-			</form>
-		</div>
+		<ChatWorkspace
+			snapshot={snapshot}
+			busy={send.isPending}
+			commandError={
+				eventsQuery.error instanceof Error
+					? eventsQuery.error.message
+					: send.error instanceof Error
+						? send.error.message
+						: undefined
+			}
+			headerActions={headerActions}
+			onInterrupt={activeTurn ? () => interrupt.mutate() : undefined}
+			onSend={(text) => send.mutateAsync(text)}
+			session={session}
+			sessionRole={session.kind}
+			sessionTabAction={sessionTabAction}
+			sessionTitle={session.title}
+		/>
 	);
 }
