@@ -1183,6 +1183,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 				onCancel={() => {
 					void interfaceSwitch.cancel().catch(() => {});
 				}}
+				showLabel={Boolean(session?.cloud)}
 			/>
 		) : null;
 	const interfaceSwitchMenuItem =
