@@ -241,17 +241,17 @@ func (s *Service) FindInstalledBinary(ctx context.Context) (Info, bool) {
 			}
 		}(item, resolver, presenceResolver)
 	}
-	done := make(chan struct{})
 	go func() {
 		wg.Wait()
-		close(done)
+		close(results)
 	}()
 
 	select {
-	case found := <-results:
+	case found, ok := <-results:
+		if !ok {
+			return Info{}, false
+		}
 		return found.info, true
-	case <-done:
-		return Info{}, false
 	case <-ctx.Done():
 		return Info{}, false
 	}
