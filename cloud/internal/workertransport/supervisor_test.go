@@ -62,6 +62,16 @@ func TestNativeConversationIDRefreshesFromControlPlane(t *testing.T) {
 	}
 }
 
+func TestNativeConversationIDPrefersRefreshedControlPlaneID(t *testing.T) {
+	supervisor := &Supervisor{
+		Control:        &supervisorControlStub{agentSessionID: "native-chat"},
+		AgentSessionID: "stale-bootstrap-id",
+	}
+	if got := supervisor.nativeConversationID(context.Background(), interfacePayload{}); got != "native-chat" {
+		t.Fatalf("native conversation id = %q, want refreshed control-plane id", got)
+	}
+}
+
 func TestForwardTurnLeavesQueueToChatController(t *testing.T) {
 	control := &supervisorControlStub{turn: &worker.Turn{ID: "turn-1", Attempt: 1}}
 	supervisor := &Supervisor{Control: control}
