@@ -116,9 +116,22 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	if command.Cleanup != nil {
 		defer command.Cleanup()
 	}
-
 	executionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	projector := newChatOutputProjector(turn.Harness)
+	publish := func(output Output) error {
+		for _, projected := range projector.Project(output) {
+			if err := s.Control.PublishOutput(executionCtx, worker.OutputEvent{
+				TurnID:  turn.ID,
+				Attempt: turn.Attempt,
+				Stream:  projected.Stream,
+				Text:    projected.Text,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	done := make(chan struct{})
 	var cancellation atomic.Bool
 	go func() {
@@ -146,14 +159,20 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 		}
 	}()
 
-	runErr := s.Runner.Run(executionCtx, command, func(output Output) error {
-		return s.Control.PublishOutput(executionCtx, worker.OutputEvent{
-			TurnID:  turn.ID,
-			Attempt: turn.Attempt,
-			Stream:  output.Stream,
-			Text:    output.Text,
-		})
-	})
+	runErr := s.Runner.Run(executionCtx, command, publish)
+	if runErr == nil {
+		for _, output := range projector.Flush() {
+			if err := s.Control.PublishOutput(executionCtx, worker.OutputEvent{
+				TurnID:  turn.ID,
+				Attempt: turn.Attempt,
+				Stream:  output.Stream,
+				Text:    output.Text,
+			}); err != nil {
+				runErr = err
+				break
+			}
+		}
+	}
 	close(done)
 
 	if cancellation.Load() {
