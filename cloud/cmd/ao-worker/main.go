@@ -416,6 +416,16 @@ func (c *client) ClaimTurn(ctx context.Context) (*worker.Turn, error) {
 	return response.Turn, nil
 }
 
+func (c *client) AgentSessionID(ctx context.Context) (string, error) {
+	var response struct {
+		AgentSessionID string `json:"agentSessionId"`
+	}
+	if err := c.doMethod(ctx, http.MethodGet, "/worker/session", nil, &response); err != nil {
+		return "", err
+	}
+	return response.AgentSessionID, nil
+}
+
 func (c *client) Credential(ctx context.Context) (worker.CredentialResponse, error) {
 	var response worker.CredentialResponse
 	err := c.doMethod(ctx, http.MethodGet, "/worker/credential", nil, &response)

@@ -61,7 +61,7 @@ func (s *Supervisor) handleInterface(
 	case "interface.inspect":
 		return s.inspectInterface()
 	case "interface.native-id":
-		return map[string]any{"nativeConversationId": s.nativeConversationID(input)}, nil
+		return map[string]any{"nativeConversationId": s.nativeConversationID(ctx, input)}, nil
 	case "interface.interrupt":
 		return map[string]bool{"ok": true}, s.interruptInterface(ctx)
 	case "interface.stop":
@@ -130,9 +130,12 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 	})
 }
 
-func (s *Supervisor) nativeConversationID(input interfacePayload) string {
+func (s *Supervisor) nativeConversationID(ctx context.Context, input interfacePayload) string {
 	if id := strings.TrimSpace(s.AgentSessionID); id != "" {
 		return id
+	}
+	if id, err := s.Control.AgentSessionID(ctx); err == nil && strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
 	}
 	return strings.TrimSpace(input.NativeConversationID)
 }

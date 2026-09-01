@@ -11,6 +11,7 @@ import (
 type supervisorControlStub struct {
 	claimTurnCalls int
 	turn           *worker.Turn
+	agentSessionID string
 }
 
 type chatRunnerStub struct{ idle bool }
@@ -48,6 +49,17 @@ func (s *supervisorControlStub) PublishTerminalOutput(context.Context, string, [
 }
 func (s *supervisorControlStub) PublishTerminalExit(context.Context, string, int, bool) error {
 	return nil
+}
+func (s *supervisorControlStub) AgentSessionID(context.Context) (string, error) {
+	return s.agentSessionID, nil
+}
+
+func TestNativeConversationIDRefreshesFromControlPlane(t *testing.T) {
+	supervisor := &Supervisor{Control: &supervisorControlStub{agentSessionID: "native-chat"}}
+	got := supervisor.nativeConversationID(context.Background(), interfacePayload{})
+	if got != "native-chat" {
+		t.Fatalf("native conversation id = %q, want native-chat", got)
+	}
 }
 
 func TestForwardTurnLeavesQueueToChatController(t *testing.T) {

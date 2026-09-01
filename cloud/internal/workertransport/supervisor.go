@@ -25,6 +25,7 @@ type Control interface {
 	FailTransport(context.Context, string, int, string, string) error
 	PublishTerminalOutput(context.Context, string, []byte) error
 	PublishTerminalExit(context.Context, string, int, bool) error
+	AgentSessionID(context.Context) (string, error)
 }
 
 type Supervisor struct {
