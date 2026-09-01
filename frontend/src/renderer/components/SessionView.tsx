@@ -1222,7 +1222,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 	// surface is intended to handle makes the switch disappear entirely.
 	const cloudInterfaceSwitchAction = interfaceContext ? interfaceSwitchInlineStatus : null;
 	const sessionTabActions = (
-		<SessionActionsMenu inlineStatus={session?.cloud ? undefined : interfaceSwitchInlineStatus}>
+		<SessionActionsMenu inlineStatus={isCloudSession ? undefined : interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
