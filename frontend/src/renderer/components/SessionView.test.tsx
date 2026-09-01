@@ -35,6 +35,10 @@ const chatSurfaceWorkState = vi.hoisted(() => ({
 }));
 const codexAccountsQueryState = vi.hoisted(() => ({ data: undefined as unknown }));
 const recoverCodexAccountSwitchMock = vi.hoisted(() => vi.fn());
+const cloudSessionQueryState = vi.hoisted(() => ({
+	data: undefined as WorkspaceSession | undefined,
+	isLoading: false,
+}));
 
 async function chooseSessionAction(name: string) {
 	const user = userEvent.setup();
@@ -558,7 +562,7 @@ vi.mock("../lib/shell-context", () => ({
 }));
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	toCloudWorkspaceSession: vi.fn(),
-	useCloudSessionQuery: () => ({ data: undefined }),
+	useCloudSessionQuery: () => cloudSessionQueryState,
 	useWorkspaceQuery: () => ({
 		data: workspaceQueryState.data,
 		isLoading: workspaceQueryState.isLoading,
@@ -665,6 +669,8 @@ describe("SessionView", () => {
 		interfaceTransitionState.settling = false;
 		interfaceTransitionState.startError = undefined;
 		interfaceTransitionState.status = undefined;
+		cloudSessionQueryState.data = undefined;
+		cloudSessionQueryState.isLoading = false;
 		chatSurfaceWorkState.controllerBusy = false;
 		chatSurfaceWorkState.hasRunningTurn = false;
 		chatSurfaceWorkState.queuedTurnCount = 0;
@@ -718,6 +724,18 @@ describe("SessionView", () => {
 		expect(retry).toBeEnabled();
 		await userEvent.click(retry);
 		expect(recoverCodexAccountSwitchMock).toHaveBeenCalledWith("switch-1");
+	});
+
+	it("keeps the Cloud switch visible while a newly selected Cloud session resolves", () => {
+		workspaceQueryState.data = [];
+		cloudSessionQueryState.isLoading = true;
+
+		render(<SessionView cloudOrgId="cloud-org" projectId="cloud-project" sessionId="cloud-session" />);
+
+		expect(screen.queryByText("session not found")).not.toBeInTheDocument();
+		const switchButtons = screen.getAllByRole("button", { name: "Switch to chat UI" });
+		expect(switchButtons).not.toHaveLength(0);
+		expect(switchButtons.some((button) => (button as HTMLButtonElement).disabled)).toBe(true);
 	});
 
 	// Regression: shell terminals are an app-wide list, so without a per-session

@@ -1042,6 +1042,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
 	// the button entirely rather than showing a permanently disabled control.
 	const interfaceSwitchUnsupported = interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED";
+	const isCloudSession = Boolean(interfaceContext);
 	const showInterfaceSwitchAction = Boolean(
 		sessionId && !interfaceSwitchUnsupported,
 	);
@@ -1169,7 +1170,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		showInterfaceSwitchAction ? (
 			<SessionInterfaceSwitchButton
 				target={interfaceTarget}
-				supported={session?.cloud ? Boolean(interfaceSwitch.status?.supported) : true}
+				supported={isCloudSession ? Boolean(interfaceSwitch.status?.supported) : true}
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
@@ -1189,7 +1190,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		showInterfaceSwitchAction && !activeInterfaceTransition ? (
 			<SessionInterfaceSwitchMenuItem
 				target={interfaceTarget}
-				supported={session?.cloud ? Boolean(interfaceSwitch.status?.supported) : true}
+				supported={isCloudSession ? Boolean(interfaceSwitch.status?.supported) : true}
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
@@ -1214,7 +1215,12 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 	// Cloud's Chat surface does not have an interactive terminal tab to hover.
 	// Keep the handoff control in the app chrome as a direct, always-visible
 	// button so users can reliably return from Chat UI to TUI.
-	const cloudInterfaceSwitchAction = session?.cloud ? interfaceSwitchInlineStatus : null;
+	// `session` is briefly undefined while a newly-created Cloud tab is being
+	// resolved from the control plane. The route still has its Cloud org
+	// context, however, so mount the control from that context rather than from
+	// the eventually-populated row. Otherwise the very list-cache race this
+	// surface is intended to handle makes the switch disappear entirely.
+	const cloudInterfaceSwitchAction = interfaceContext ? interfaceSwitchInlineStatus : null;
 	const sessionTabActions = (
 		<SessionActionsMenu inlineStatus={session?.cloud ? undefined : interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
@@ -1523,7 +1529,16 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			inspectorMotionReadyRef.current = false;
 		};
 	}, [hasInspector]);
-	if (!session && !workspaceQuery.isLoading) {
+	// A Cloud tab may arrive before the paginated workspace cache contains its
+	// row. Keep the session surface (and its switch control) mounted while the
+	// direct control-plane lookup is in flight; only show "not found" after
+	// both sources have settled.
+	const cloudSessionResolving = Boolean(
+		cloudOrgId &&
+		(isCloudRoute || !listedSession) &&
+		cloudRouteSession.isLoading,
+	);
+	if (!session && !workspaceQuery.isLoading && !cloudSessionResolving) {
 		return (
 			<div className="grid h-full place-items-center p-6 text-center font-mono text-xs text-passive">
 				{t("session.notFound")}
