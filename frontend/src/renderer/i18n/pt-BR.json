@@ -260,6 +260,7 @@
 	"daemon.title.unreachable": "O daemon do AO está inacessível",
 	"editor.open": "Abrir",
 	"editor.opening": "Abrindo…",
+	"editor.preparingWorkspace": "Preparando workspace…",
 	"editor.chooseEditor": "Escolher editor",
 	"editor.chooseEditorTitle": "Escolha um editor instalado ou uma opção nativa",
 	"editor.fileManager": "Gerenciador de arquivos",

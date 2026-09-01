@@ -258,6 +258,7 @@
 	"daemon.title.unreachable": "AO-Daemon ist nicht erreichbar",
 	"editor.open": "Öffnen",
 	"editor.opening": "Wird geöffnet…",
+	"editor.preparingWorkspace": "Arbeitsbereich wird vorbereitet…",
 	"editor.chooseEditor": "Editor auswählen",
 	"editor.chooseEditorTitle": "Installierten Editor oder native Option auswählen",
 	"editor.fileManager": "Dateimanager",

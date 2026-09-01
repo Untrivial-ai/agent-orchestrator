@@ -258,6 +258,7 @@
 	"daemon.title.unreachable": "AO 데몬에 연결할 수 없습니다",
 	"editor.open": "열기",
 	"editor.opening": "여는 중…",
+	"editor.preparingWorkspace": "워크스페이스 준비 중…",
 	"editor.chooseEditor": "편집기 선택",
 	"editor.chooseEditorTitle": "설치된 편집기 또는 기본 앱 선택",
 	"editor.fileManager": "파일 관리자",

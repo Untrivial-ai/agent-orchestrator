@@ -51,6 +51,7 @@ function renderDialog() {
 			<GlobalNewTaskDialog />
 		</QueryClientProvider>,
 	);
+	return queryClient;
 }
 
 beforeEach(() => {
@@ -70,7 +71,8 @@ describe("GlobalNewTaskDialog", () => {
 
 	it("opens for the requested project and navigates to the created session", async () => {
 		const user = userEvent.setup();
-		renderDialog();
+		const queryClient = renderDialog();
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
 
 		act(() => {
 			useUiStore.getState().requestNewTask("proj-7");
@@ -80,6 +82,8 @@ describe("GlobalNewTaskDialog", () => {
 		expect(dialog).toHaveAttribute("data-project", "proj-7");
 
 		await user.click(screen.getByRole("button", { name: "create" }));
+		expect(invalidate).toHaveBeenCalledWith({ queryKey: ["workspaces"] });
+		expect(invalidate).toHaveBeenCalledWith({ queryKey: ["editor-handoff", "sess-9"] });
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-7", sessionId: "sess-9" },

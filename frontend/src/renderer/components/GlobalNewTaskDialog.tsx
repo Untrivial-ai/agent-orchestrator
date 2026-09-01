@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import { editorHandoffQueryKey } from "../hooks/useEditorHandoff";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { useUiStore } from "../stores/ui-store";
 import { NewTaskDialog } from "./NewTaskDialog";
@@ -32,7 +33,10 @@ export function GlobalNewTaskDialog() {
 
 	const handleCreated = async (sessionId: string) => {
 		if (!projectId) return;
-		await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		await Promise.all([
+			queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
+			queryClient.invalidateQueries({ queryKey: editorHandoffQueryKey(sessionId) }),
+		]);
 		void navigate({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId, sessionId },

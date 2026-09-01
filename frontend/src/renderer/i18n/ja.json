@@ -258,6 +258,7 @@
 	"daemon.title.unreachable": "AO デーモンに接続できません",
 	"editor.open": "開く",
 	"editor.opening": "開いています…",
+	"editor.preparingWorkspace": "ワークスペースを準備中…",
 	"editor.chooseEditor": "エディターを選択",
 	"editor.chooseEditorTitle": "インストール済みのエディターまたは標準アプリを選択",
 	"editor.fileManager": "ファイルマネージャー",

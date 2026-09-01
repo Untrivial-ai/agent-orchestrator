@@ -258,6 +258,7 @@
 	"daemon.title.unreachable": "AO daemon is unreachable",
 	"editor.open": "Open",
 	"editor.opening": "Opening…",
+	"editor.preparingWorkspace": "Preparing workspace…",
 	"editor.chooseEditor": "Choose editor",
 	"editor.chooseEditorTitle": "Choose an installed editor or use a native fallback",
 	"editor.fileManager": "File Manager",

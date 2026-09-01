@@ -371,6 +371,8 @@ export function ShellTopbar({
 								key={`open-workspace-${session.id}`}
 								sessionId={session.id}
 								projectId={session.workspaceId}
+								sessionCreatedAt={session.createdAt}
+								sessionTerminated={session.isTerminated}
 								style={noDragStyle}
 							/>
 						) : null}

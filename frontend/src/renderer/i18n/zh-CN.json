@@ -258,6 +258,7 @@
 	"daemon.title.unreachable": "无法连接 AO 守护进程",
 	"editor.open": "打开",
 	"editor.opening": "正在打开…",
+	"editor.preparingWorkspace": "正在准备工作区…",
 	"editor.chooseEditor": "选择编辑器",
 	"editor.chooseEditorTitle": "选择已安装的编辑器或系统应用",
 	"editor.fileManager": "文件管理器",
