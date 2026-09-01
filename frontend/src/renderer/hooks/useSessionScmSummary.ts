@@ -28,8 +28,7 @@ export function useSessionScmSummary(sessionId?: string, enabled = true) {
 	return useQuery({
 		queryKey: sessionScmSummaryQueryKey(sessionId),
 		enabled: enabled && Boolean(sessionId),
-		queryFn: () =>
-			usePreviewData ? Promise.resolve(mockSessionScmSummaries[sessionId!] ?? []) : fetchSessionScmSummary(sessionId!),
+		queryFn: () => fetchSessionScmSummary(sessionId!),
 		retry: 1,
 	});
 }
