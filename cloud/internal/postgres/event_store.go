@@ -259,6 +259,11 @@ func appendUserMessage(
 		JOIN ao_sessions session
 			ON session.org_id = terminal.org_id AND session.id = terminal.session_id
 		WHERE terminal.org_id = $1 AND terminal.session_id = $2 AND terminal.kind = 'agent'
+		  -- A terminal may still be recorded as open while its PTY is winding
+		  -- down during a TUI -> Chat handoff. Once Chat is committed, it must
+		  -- never receive new input: that would strand a ChatUI message in the
+		  -- old terminal instead of creating a durable worker turn.
+		  AND session.interface = 'tui'
 		  AND terminal.state = 'open' AND terminal.expires_at > now()
 		ORDER BY terminal.created_at DESC
 		LIMIT 1`,

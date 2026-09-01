@@ -116,6 +116,18 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+	} else if s.iface.current == InterfaceChat {
+		// A worker may be replaced or restarted after the committed interface
+		// changed to Chat. Starting the transport loop alone is not enough: the
+		// headless controller owns the durable turn queue and must be restarted
+		// too, otherwise ChatUI accepts a message that no worker will execute.
+		err := s.startChat(ctx)
+		if s.Started != nil {
+			s.Started <- err
+		}
+		if err != nil {
+			return err
+		}
 	} else if s.Started != nil {
 		s.Started <- nil
 	}

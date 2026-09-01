@@ -100,7 +100,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
-func (s Supervisor) execute(ctx context.Context, turn worker.Turn) error {
+func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	if turn.CancelRequested {
 		return s.retryComplete(ctx, turn.ID, turn.Attempt, true)
 	}
@@ -168,7 +168,7 @@ func (s Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	return s.retryComplete(ctx, turn.ID, turn.Attempt, false)
 }
 
-func (s Supervisor) retryComplete(
+func (s *Supervisor) retryComplete(
 	ctx context.Context,
 	turnID string,
 	attempt int,
@@ -185,7 +185,7 @@ func (s Supervisor) retryComplete(
 	}
 }
 
-func (s Supervisor) retryFailure(
+func (s *Supervisor) retryFailure(
 	ctx context.Context,
 	turnID string,
 	attempt int,

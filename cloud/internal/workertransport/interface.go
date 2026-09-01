@@ -35,11 +35,12 @@ type interfaceInspectResult struct {
 // terminal (TUI) and the headless turn-based Chat controller. It owns the
 // current committed interface and the chat runner lifecycle.
 type InterfaceTransition struct {
-	mu          sync.Mutex
-	current     string
-	chatRun     context.CancelFunc
-	chatRunning bool
-	agentTermID string
+	mu             sync.Mutex
+	current        string
+	chatRun        context.CancelFunc
+	chatRunning    bool
+	chatGeneration uint64
+	agentTermID    string
 }
 
 func (t *InterfaceTransition) Current() string {
@@ -157,12 +158,22 @@ func (s *Supervisor) startChat(ctx context.Context) error {
 		return nil
 	}
 	runCtx, cancel := context.WithCancel(ctx)
+	s.iface.chatGeneration++
+	generation := s.iface.chatGeneration
 	s.iface.chatRun = cancel
 	s.iface.chatRunning = true
 	s.iface.current = InterfaceChat
 	s.iface.mu.Unlock()
 	go func() {
-		_ = s.ChatRunner.Run(runCtx)
+		if err := s.ChatRunner.Run(runCtx); err != nil && runCtx.Err() == nil {
+			s.Logger.Warn("chat controller stopped", "error", err)
+		}
+		s.iface.mu.Lock()
+		if s.iface.chatGeneration == generation {
+			s.iface.chatRun = nil
+			s.iface.chatRunning = false
+		}
+		s.iface.mu.Unlock()
 	}()
 	return nil
 }

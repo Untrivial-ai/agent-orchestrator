@@ -3,6 +3,7 @@ package workertransport
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
@@ -16,6 +17,14 @@ type chatRunnerStub struct{ idle bool }
 
 func (s chatRunnerStub) Run(context.Context) error { return nil }
 func (s chatRunnerStub) Idle() bool                { return s.idle }
+
+type blockingChatRunner struct{ started chan struct{} }
+
+func (r blockingChatRunner) Run(ctx context.Context) error {
+	close(r.started)
+	<-ctx.Done()
+	return nil
+}
 
 func (s *supervisorControlStub) ClaimTransport(context.Context) (*worker.TransportRequest, error) {
 	return nil, nil
@@ -81,5 +90,39 @@ func TestInspectInterfaceDrainsOnlyActiveChatWork(t *testing.T) {
 				t.Fatalf("idle = %v, want %v", inspection.Idle, test.want)
 			}
 		})
+	}
+}
+
+func TestRunRestartsChatControllerForChatSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan error, 1)
+	runnerStarted := make(chan struct{})
+	supervisor := &Supervisor{
+		Control:          &supervisorControlStub{},
+		Workspace:        t.TempDir(),
+		Started:          started,
+		InitialInterface: InterfaceChat,
+		ChatRunner:       blockingChatRunner{started: runnerStarted},
+		PollInterval:     time.Millisecond,
+	}
+	done := make(chan error, 1)
+	go func() { done <- supervisor.Run(ctx) }()
+	if err := <-started; err != nil {
+		t.Fatalf("start chat worker: %v", err)
+	}
+	select {
+	case <-runnerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("chat controller was not started for a Chat session")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transport supervisor did not stop")
 	}
 }
