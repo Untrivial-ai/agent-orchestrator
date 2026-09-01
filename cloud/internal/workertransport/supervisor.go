@@ -29,14 +29,15 @@ type Control interface {
 }
 
 type Supervisor struct {
-	Control         Control
-	Workspace       string
-	Shell           string
-	AgentCommand    workerexec.Command
-	AgentTerminalID string
-	Started         chan<- error
-	PollInterval    time.Duration
-	Logger          *slog.Logger
+	Control             Control
+	Workspace           string
+	Shell               string
+	AgentCommand        workerexec.Command
+	AgentCommandFactory AgentCommandFactory
+	AgentTerminalID     string
+	Started             chan<- error
+	PollInterval        time.Duration
+	Logger              *slog.Logger
 	// Streams, when non-nil, holds a persistent duplex terminal stream per
 	// open terminal for low-latency input/output. The polled transport stays
 	// authoritative whenever a stream is absent or unhealthy.
@@ -61,6 +62,11 @@ type Supervisor struct {
 type ChatRunner interface {
 	Run(ctx context.Context) error
 }
+
+// AgentCommandFactory rebuilds the native interactive command when a TUI is
+// reopened. The provider conversation ID is learned after worker bootstrap, so
+// reusing the bootstrap command would start a fresh TUI after ChatUI work.
+type AgentCommandFactory func(context.Context, string) (workerexec.Command, error)
 
 // chatActivity is implemented by the durable headless controller. Keeping it
 // optional preserves the runner boundary for alternate worker implementations
@@ -370,13 +376,16 @@ func (s *Supervisor) terminalCommand(
 	kind string,
 ) (*exec.Cmd, func(), error) {
 	if kind == "agent" {
-		if s.AgentCommand.Path == "" {
+		s.mu.Lock()
+		agentCommand := s.AgentCommand
+		s.mu.Unlock()
+		if agentCommand.Path == "" {
 			return nil, func() {}, errors.New("interactive agent command is unavailable")
 		}
-		command := exec.CommandContext(ctx, s.AgentCommand.Path, s.AgentCommand.Args...)
-		command.Dir = s.AgentCommand.Dir
-		command.Env = terminalEnvironment(s.AgentCommand.Env)
-		cleanup := s.AgentCommand.Cleanup
+		command := exec.CommandContext(ctx, agentCommand.Path, agentCommand.Args...)
+		command.Dir = agentCommand.Dir
+		command.Env = terminalEnvironment(agentCommand.Env)
+		cleanup := agentCommand.Cleanup
 		if cleanup == nil {
 			cleanup = func() {}
 		}

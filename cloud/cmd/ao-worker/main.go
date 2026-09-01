@@ -195,6 +195,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	var agentCommand workerexec.Command
+	var agentCommandFactory workertransport.AgentCommandFactory
 	agentTerminalID := ""
 	pullRequestSocketPath := filepath.Join(dataDir, "ao-pull-request.sock")
 	reviewSocketPath := filepath.Join(dataDir, "ao-review.sock")
@@ -209,30 +210,40 @@ func run(logger *slog.Logger) error {
 		// selected harness instead of making the whole sandbox unreachable.
 		logger.Warn("coding-agent harness unavailable; continuing with workspace transport", "error", err)
 	} else {
-		credential, err := client.Credential(ctx)
-		if err != nil {
-			return fmt.Errorf("load coding-agent credential: %w", err)
-		}
 		b := workerexec.HarnessBuilder{DataDir: dataDir}
-		agentCommand, err = b.BuildInteractive(bootstrap.Launch, credential, workspace)
-		if err != nil {
-			return fmt.Errorf("build interactive coding-agent command: %w", err)
+		agentCommandFactory = func(buildCtx context.Context, nativeConversationID string) (workerexec.Command, error) {
+			credential, err := client.Credential(buildCtx)
+			if err != nil {
+				return workerexec.Command{}, fmt.Errorf("load coding-agent credential: %w", err)
+			}
+			launch := bootstrap.Launch
+			launch.AgentSessionID = strings.TrimSpace(nativeConversationID)
+			command, err := b.BuildInteractive(launch, credential, workspace)
+			credential.Secret = ""
+			if err != nil {
+				return workerexec.Command{}, fmt.Errorf("build interactive coding-agent command: %w", err)
+			}
+			command.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
+			command.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
+			command.Env["AO_SESSION_ID"] = bootstrap.SessionID
+			command.Env["AO_PROJECT_ID"] = bootstrap.Launch.ProjectID
+			command.Env["AO_SESSION_KIND"] = bootstrap.Launch.Kind
+			command.Env["AO_PULL_REQUEST_SOCKET"] = pullRequestSocketPath
+			command.Env["AO_PULL_REQUEST_HELP"] = "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
+				`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
+				`-d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}' ` +
+				"to push the current branch and open a pull request against the repository's default branch."
+			command.Env["AO_REVIEW_SOCKET"] = reviewSocketPath
+			command.Env["AO_REVIEW_HELP"] = "curl --unix-socket $AO_REVIEW_SOCKET " +
+				`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
+				`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
+				"to submit an AO-triggered review verdict."
+			return command, nil
 		}
-		agentCommand.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
-		agentCommand.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
-		agentCommand.Env["AO_SESSION_ID"] = bootstrap.SessionID
-		agentCommand.Env["AO_PROJECT_ID"] = bootstrap.Launch.ProjectID
-		agentCommand.Env["AO_SESSION_KIND"] = bootstrap.Launch.Kind
-		agentCommand.Env["AO_PULL_REQUEST_SOCKET"] = pullRequestSocketPath
-		agentCommand.Env["AO_PULL_REQUEST_HELP"] = "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
-			`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
-			`-d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}' ` +
-			"to push the current branch and open a pull request against the repository's default branch."
-		agentCommand.Env["AO_REVIEW_SOCKET"] = reviewSocketPath
-		agentCommand.Env["AO_REVIEW_HELP"] = "curl --unix-socket $AO_REVIEW_SOCKET " +
-			`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
-			`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
-			"to submit an AO-triggered review verdict."
+		agentCommand, err = agentCommandFactory(ctx, bootstrap.Launch.AgentSessionID)
+		if err != nil {
+			return err
+		}
 		chatRunner = &workerexec.Supervisor{
 			Control: client, Builder: b, Runner: workerexec.OSRunner{},
 			Workspace: workspace, Logger: logger, PollInterval: time.Second,
@@ -252,8 +263,9 @@ func run(logger *slog.Logger) error {
 	started := make(chan error, 1)
 	transportSupervisor := workertransport.Supervisor{
 		Control: client, Workspace: workspace, Logger: logger,
-		AgentCommand: agentCommand, AgentTerminalID: agentTerminalID,
-		Started: started, ChatRunner: chatRunner,
+		AgentCommand: agentCommand, AgentCommandFactory: agentCommandFactory,
+		AgentTerminalID: agentTerminalID,
+		Started:         started, ChatRunner: chatRunner,
 		InitialInterface: committedInterface,
 		AgentSessionID:   bootstrap.Launch.AgentSessionID,
 	}

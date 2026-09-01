@@ -118,9 +118,13 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 	if input.TargetInterface == InterfaceChat {
 		return s.startChat(ctx)
 	}
-	// Terminal target: reopen the interactive agent PTY with the resolved
-	// conversation identity. The launch command already carries the resume
-	// identity, so a fresh PTY restores the same native conversation.
+	// Terminal target: rebuild the interactive command with the conversation
+	// identity resolved after ChatUI's latest turn. The command built at worker
+	// bootstrap can predate the first TUI hook and would otherwise launch a
+	// fresh TUI with no shared history.
+	if err := s.refreshAgentCommand(ctx, s.nativeConversationID(ctx, input)); err != nil {
+		return err
+	}
 	s.iface.mu.Lock()
 	s.iface.current = InterfaceTUI
 	s.iface.mu.Unlock()
@@ -128,6 +132,20 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 		TerminalID: s.AgentTerminalID,
 		Kind:       "agent",
 	})
+}
+
+func (s *Supervisor) refreshAgentCommand(ctx context.Context, nativeConversationID string) error {
+	if s.AgentCommandFactory == nil {
+		return nil
+	}
+	command, err := s.AgentCommandFactory(ctx, nativeConversationID)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.AgentCommand = command
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Supervisor) nativeConversationID(ctx context.Context, input interfacePayload) string {

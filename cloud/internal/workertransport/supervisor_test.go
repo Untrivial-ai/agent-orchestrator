@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/workerexec"
 )
 
 type supervisorControlStub struct {
@@ -52,6 +53,29 @@ func (s *supervisorControlStub) PublishTerminalExit(context.Context, string, int
 }
 func (s *supervisorControlStub) AgentSessionID(context.Context) (string, error) {
 	return s.agentSessionID, nil
+}
+
+func TestRefreshAgentCommandUsesLatestConversationID(t *testing.T) {
+	var gotID string
+	supervisor := &Supervisor{
+		AgentCommand: workerexec.Command{Path: "stale-codex"},
+		AgentCommandFactory: func(_ context.Context, nativeConversationID string) (workerexec.Command, error) {
+			gotID = nativeConversationID
+			return workerexec.Command{Path: "codex", Args: []string{"resume", nativeConversationID}}, nil
+		},
+	}
+	if err := supervisor.refreshAgentCommand(context.Background(), "native-chat"); err != nil {
+		t.Fatalf("refresh agent command: %v", err)
+	}
+	if gotID != "native-chat" {
+		t.Fatalf("factory native conversation id = %q, want native-chat", gotID)
+	}
+	if supervisor.AgentCommand.Path != "codex" {
+		t.Fatalf("refreshed command path = %q, want codex", supervisor.AgentCommand.Path)
+	}
+	if len(supervisor.AgentCommand.Args) != 2 || supervisor.AgentCommand.Args[1] != "native-chat" {
+		t.Fatalf("refreshed command args = %v, want resume native-chat", supervisor.AgentCommand.Args)
+	}
 }
 
 func TestNativeConversationIDRefreshesFromControlPlane(t *testing.T) {
