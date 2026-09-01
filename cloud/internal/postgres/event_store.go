@@ -226,6 +226,60 @@ func (s *Store) AppendSessionEvent(
 	return event, nil
 }
 
+// AppendInteractiveConversationFacts projects provider hook facts from the
+// native TUI into the same durable Chat event stream used by ChatUI. The
+// interface check is important: headless Chat turns already append these
+// events themselves and must not be duplicated by provider hooks.
+func (s *Store) AppendInteractiveConversationFacts(
+	ctx context.Context,
+	orgID, sessionID, eventType, userPrompt, assistantUpdate string,
+) error {
+	if eventType != "user-prompt-submit" && eventType != "stop" {
+		return nil
+	}
+	text := userPrompt
+	clientEventType := "chat.user_message"
+	if eventType == "stop" {
+		text = assistantUpdate
+		clientEventType = "chat.assistant_delta"
+	}
+	if text == "" {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return err
+	}
+	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var interfaceValue string
+		if err := tx.QueryRow(ctx,
+			`SELECT interface FROM ao_sessions WHERE org_id = $1 AND id = $2 AND is_terminated = false`,
+			orgID, sessionID,
+		).Scan(&interfaceValue); errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if interfaceValue != "tui" {
+			return nil
+		}
+		var sequence int64
+		if err := tx.QueryRow(ctx,
+			`UPDATE ao_sessions SET next_sequence = next_sequence + 1, updated_at = now()
+			 WHERE org_id = $1 AND id = $2 RETURNING next_sequence - 1`,
+			orgID, sessionID,
+		).Scan(&sequence); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO ao_events (org_id, session_id, sequence, type, payload)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			orgID, sessionID, sequence, clientEventType, payload,
+		)
+		return err
+	})
+}
+
 // appendUserMessage records a user message and, depending on how the
 // session is currently running, either injects it directly into an
 // already-open interactive agent terminal or queues it as a new turn.

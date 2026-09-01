@@ -66,6 +66,7 @@ type Store interface {
 	WorkerAgentSessionID(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (string, error)
 	MarkWorkerSeen(ctx context.Context, orgID, sessionID, workerID, version string, epoch int64, capabilities []string) error
 	SetWorkerActivity(ctx context.Context, orgID, sessionID, workerID string, epoch int64, activity worker.ActivityEvent) error
+	AppendInteractiveConversationFacts(ctx context.Context, orgID, sessionID, eventType, userPrompt, assistantUpdate string) error
 	AppendSessionEvent(ctx context.Context, orgID, sessionID, eventType string, payload json.RawMessage) (domain.ClientEvent, error)
 	ClaimWorkerTurn(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (domain.WorkerTurn, bool, error)
 	RequestTurnCancellation(ctx context.Context, principal domain.Principal, orgID, sessionID, turnID string) error
