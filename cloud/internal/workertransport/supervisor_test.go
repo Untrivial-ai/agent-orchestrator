@@ -78,6 +78,39 @@ func TestRefreshAgentCommandUsesLatestConversationID(t *testing.T) {
 	}
 }
 
+func TestOpenAgentTerminalStartsWithoutDeadlocking(t *testing.T) {
+	workspace := t.TempDir()
+	supervisor := &Supervisor{
+		Control:   &supervisorControlStub{},
+		Workspace: workspace,
+		AgentCommand: workerexec.Command{
+			Path: "/bin/sh",
+			Args: []string{"-c", "sleep 30"},
+			Dir:  workspace,
+		},
+		terminals: make(map[string]*terminalProcess),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- supervisor.openTerminal(context.Background(), worker.TerminalCommand{
+			TerminalID: "00000000-0000-0000-0000-000000000001",
+			Kind:       "agent",
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("open agent terminal: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("open agent terminal deadlocked before starting the PTY")
+	}
+
+	supervisor.closeAllTerminals()
+}
+
 func TestNativeConversationIDRefreshesFromControlPlane(t *testing.T) {
 	supervisor := &Supervisor{Control: &supervisorControlStub{agentSessionID: "native-chat"}}
 	got := supervisor.nativeConversationID(context.Background(), interfacePayload{})

@@ -376,9 +376,11 @@ func (s *Supervisor) terminalCommand(
 	kind string,
 ) (*exec.Cmd, func(), error) {
 	if kind == "agent" {
-		s.mu.Lock()
+		// openTerminal holds s.mu while it snapshots the command and creates the
+		// terminal entry. Do not lock s.mu again here: sync.Mutex is not
+		// re-entrant, and doing so leaves the worker stuck before the PTY (and
+		// coding-agent process) is started.
 		agentCommand := s.AgentCommand
-		s.mu.Unlock()
 		if agentCommand.Path == "" {
 			return nil, func() {}, errors.New("interactive agent command is unavailable")
 		}
