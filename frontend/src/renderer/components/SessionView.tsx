@@ -1047,8 +1047,11 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		sessionId && !interfaceSwitchUnsupported,
 	);
 	const newTerminalError = openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined;
+	// Shell terminals are implemented by the loopback daemon only. A Cloud
+	// session's id is not a daemon session id, so never offer an action that
+	// would send it to /api/v1/shell-terminals and produce SESSION_NOT_FOUND.
 	const newShellTerminalAction =
-		session && !isOrchestrator ? (
+		session && !session.cloud && !isOrchestrator ? (
 			<TopbarButton
 				aria-label={t("shortcut.new-shell-terminal")}
 				onClick={addShellTerminal}

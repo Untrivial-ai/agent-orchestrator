@@ -627,6 +627,7 @@ describe("SessionView", () => {
 		nativeFullScreenMock.mockReturnValue(false);
 		window.localStorage.clear();
 		for (const session of workspaces.flatMap((workspace) => workspace.sessions)) {
+			delete session.cloud;
 			delete session.previewUrl;
 			delete session.previewRevision;
 			delete session.isTerminated;
@@ -881,6 +882,14 @@ describe("SessionView", () => {
 
 	it("does not offer a new terminal for orchestrator sessions", () => {
 		render(<SessionView sessionId="sess-orch" />);
+
+		expect(screen.queryByRole("button", { name: "New terminal" })).not.toBeInTheDocument();
+	});
+
+	it("does not route Cloud sessions through the local new-terminal action", () => {
+		workerSession("sess-1").cloud = { orgId: "cloud-org" };
+
+		render(<SessionView cloudOrgId="cloud-org" projectId="proj-1" sessionId="sess-1" />);
 
 		expect(screen.queryByRole("button", { name: "New terminal" })).not.toBeInTheDocument();
 	});
