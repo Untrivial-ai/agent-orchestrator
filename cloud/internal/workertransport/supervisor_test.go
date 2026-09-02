@@ -111,6 +111,44 @@ func TestOpenAgentTerminalStartsWithoutDeadlocking(t *testing.T) {
 	supervisor.closeAllTerminals()
 }
 
+func TestStopInterfaceWaitsForInteractiveProcessExit(t *testing.T) {
+	workspace := t.TempDir()
+	supervisor := &Supervisor{
+		Control:   &supervisorControlStub{},
+		Workspace: workspace,
+		AgentCommand: workerexec.Command{
+			Path: "/bin/sh",
+			Args: []string{"-c", "sleep 30"},
+			Dir:  workspace,
+		},
+		AgentTerminalID: "00000000-0000-0000-0000-000000000002",
+		terminals:       make(map[string]*terminalProcess),
+	}
+	supervisor.iface.current = InterfaceTUI
+
+	if err := supervisor.openTerminal(context.Background(), worker.TerminalCommand{
+		TerminalID: supervisor.AgentTerminalID,
+		Kind:       "agent",
+	}); err != nil {
+		t.Fatalf("open agent terminal: %v", err)
+	}
+	supervisor.mu.Lock()
+	process := supervisor.terminals[supervisor.AgentTerminalID]
+	supervisor.mu.Unlock()
+	if process == nil {
+		t.Fatal("agent terminal was not registered")
+	}
+
+	if err := supervisor.stopInterface(context.Background()); err != nil {
+		t.Fatalf("stop interface: %v", err)
+	}
+	select {
+	case <-process.done:
+	default:
+		t.Fatal("stop interface returned before the interactive process exited")
+	}
+}
+
 func TestNativeConversationIDRefreshesFromControlPlane(t *testing.T) {
 	supervisor := &Supervisor{Control: &supervisorControlStub{agentSessionID: "native-chat"}}
 	got := supervisor.nativeConversationID(context.Background(), interfacePayload{})

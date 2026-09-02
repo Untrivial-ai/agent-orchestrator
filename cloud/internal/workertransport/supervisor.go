@@ -81,6 +81,7 @@ type terminalProcess struct {
 	cleanup               func()
 	interfaceHandoffClose bool
 	stream                atomic.Pointer[terminalStream]
+	done                  chan struct{}
 }
 
 func (s *Supervisor) Run(ctx context.Context) error {
@@ -335,6 +336,7 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 		cancel:  cancel,
 		pty:     terminalPTY,
 		cleanup: cleanup,
+		done:    make(chan struct{}),
 	}
 	s.terminals[input.TerminalID] = terminal
 	s.mu.Unlock()
@@ -344,6 +346,7 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 		go s.runTerminalStream(processCtx, input.TerminalID, terminal)
 	}
 	go func() {
+		defer close(terminal.done)
 		_ = command.Wait()
 		s.mu.Lock()
 		current := s.terminals[input.TerminalID]
@@ -467,23 +470,43 @@ func (s *Supervisor) closeTerminal(id string) {
 
 // closeTerminalForInterfaceHandoff closes the source TUI without reporting the
 // whole Cloud session as exited. The Chat controller takes ownership next.
-func (s *Supervisor) closeTerminalForInterfaceHandoff(id string) {
-	s.closeTerminalWithReason(id, true)
+func (s *Supervisor) closeTerminalForInterfaceHandoff(ctx context.Context, id string) error {
+	terminal := s.detachTerminal(id, true)
+	if terminal == nil {
+		return nil
+	}
+	_ = terminal.pty.Close()
+	terminal.cancel()
+	terminal.cleanup()
+	// Codex serializes thread writers. Do not acknowledge the source stop until
+	// the interactive process has actually exited; otherwise the Chat runner can
+	// resume the same thread while the TUI still owns its writer.
+	select {
+	case <-terminal.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Supervisor) closeTerminalWithReason(id string, interfaceHandoff bool) {
-	s.mu.Lock()
-	terminal := s.terminals[id]
-	delete(s.terminals, id)
-	if terminal != nil && interfaceHandoff {
-		terminal.interfaceHandoffClose = true
-	}
-	s.mu.Unlock()
+	terminal := s.detachTerminal(id, interfaceHandoff)
 	if terminal != nil {
 		_ = terminal.pty.Close()
 		terminal.cancel()
 		terminal.cleanup()
 	}
+}
+
+func (s *Supervisor) detachTerminal(id string, interfaceHandoff bool) *terminalProcess {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	terminal := s.terminals[id]
+	delete(s.terminals, id)
+	if terminal != nil && interfaceHandoff {
+		terminal.interfaceHandoffClose = true
+	}
+	return terminal
 }
 
 func (s *Supervisor) closeAllTerminals() {
