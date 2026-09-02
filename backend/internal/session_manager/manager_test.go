@@ -31,19 +31,20 @@ import (
 var ctx = context.Background()
 
 type fakeStore struct {
-	sessions         map[domain.SessionID]domain.SessionRecord
-	pr               map[domain.SessionID]domain.PRFacts
-	projects         map[string]domain.ProjectRecord
-	conversations    map[domain.SessionID]domain.ConversationRecord
-	workspaceRepo    map[string][]domain.WorkspaceRepoRecord
-	num              int
-	deleteErr        error
-	upsertWTErr      error
-	listAllErr       error
-	getProjectErr    error
-	getSessionErr    error
-	updateSessionErr error
-	deletePrepErr    error
+	sessions                           map[domain.SessionID]domain.SessionRecord
+	pr                                 map[domain.SessionID]domain.PRFacts
+	projects                           map[string]domain.ProjectRecord
+	conversations                      map[domain.SessionID]domain.ConversationRecord
+	workspaceRepo                      map[string][]domain.WorkspaceRepoRecord
+	num                                int
+	deleteErr                          error
+	upsertWTErr                        error
+	listAllErr                         error
+	getProjectErr                      error
+	getSessionErr                      error
+	updateSessionErr                   error
+	deletePrepErr                      error
+	updateBrowserCapabilityVerifierErr error
 	// agentSwitchStore is wired only by agent-switch tests so fakeLCM can model
 	// Lifecycle Manager's atomic ownership-boundary commands.
 	agentSwitchStore any
@@ -169,8 +170,8 @@ func (f *fakeStore) DeleteTaskPreparation(_ context.Context, id domain.SessionID
 }
 
 func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string) (bool, error) {
-	if f.updateSessionErr != nil {
-		return false, f.updateSessionErr
+	if f.updateBrowserCapabilityVerifierErr != nil {
+		return false, f.updateBrowserCapabilityVerifierErr
 	}
 	rec, ok := f.sessions[id]
 	if !ok || rec.ControllerOwner() != expected {

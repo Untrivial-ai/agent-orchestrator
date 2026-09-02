@@ -1313,7 +1313,7 @@ func TestChatSpawnCapabilityFailurePreventsControllerStart(t *testing.T) {
 			launcher := &recordingLauncher{}
 			mgr, store, runtime := newChatManager(launcher)
 			mgr.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{tt.issue}}
-			store.updateSessionErr = tt.persistErr
+			store.updateBrowserCapabilityVerifierErr = tt.persistErr
 
 			_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 				ProjectID:     chatTestProject,
