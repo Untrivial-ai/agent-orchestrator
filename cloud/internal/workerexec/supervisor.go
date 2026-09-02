@@ -168,6 +168,13 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	}()
 
 	runErr := s.Runner.Run(executionCtx, command, publish)
+	var flushed []Output
+	if runErr == nil {
+		// Codex normally terminates JSONL records with a newline, but flush the
+		// final partial record before reading the identity so a clean process
+		// exit cannot strand a thread.started event in the projector buffer.
+		flushed = projector.Flush()
+	}
 	if identity := projector.NativeConversationID(); identity != "" {
 		if publisher, ok := s.Control.(conversationIdentityPublisher); ok {
 			if err := publisher.PublishActivity(executionCtx, worker.ActivityEvent{
@@ -180,7 +187,7 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 		}
 	}
 	if runErr == nil {
-		for _, output := range projector.Flush() {
+		for _, output := range flushed {
 			if err := s.Control.PublishOutput(executionCtx, worker.OutputEvent{
 				TurnID:  turn.ID,
 				Attempt: turn.Attempt,
