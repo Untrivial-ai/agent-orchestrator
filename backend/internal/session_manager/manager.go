@@ -1029,17 +1029,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// must exist and be known before buildSpawnTexts runs. For a prep-derived
 	// session the value is threaded through the later promoteTaskPreparation
 	// seed instead of written here, since that call replaces the whole row.
-	artifactDir, err := m.reserveArtifactDir(id)
-	if err != nil {
-		if prep != nil {
-			cleanupCtx, cancel := spawnRollbackContext(ctx)
-			m.discardClaimedTaskPreparation(cleanupCtx, prep)
-			cancel()
-		} else {
-			m.rollbackSpawnSeedRow(ctx, id)
-		}
-		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnArtifactDir, err)
-	}
+	artifactDir := m.reserveArtifactDir(id)
 	if prep == nil {
 		rec.Metadata.ArtifactDir = artifactDir
 		if err := m.store.UpdateSession(ctx, rec); err != nil {
@@ -4993,15 +4983,15 @@ func (m *Manager) artifactDir(id domain.SessionID) string {
 	return filepath.Join(m.dataDir, "artifacts", string(id))
 }
 
-func (m *Manager) reserveArtifactDir(id domain.SessionID) (string, error) {
+func (m *Manager) reserveArtifactDir(id domain.SessionID) string {
 	dir := m.artifactDir(id)
 	if dir == "" {
-		return "", nil
+		return ""
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		m.logger.Warn("artifact dir unavailable; reserving path only", "session", id, "path", dir, "err", err)
 	}
-	return dir, nil
+	return dir
 }
 
 func (m *Manager) cleanupArtifactDir(id domain.SessionID) {

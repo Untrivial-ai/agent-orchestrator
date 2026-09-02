@@ -12,18 +12,26 @@ import (
 
 const artifactEntryPrefix = "__ao_artifacts__"
 
+// StoredEntryScope identifies which session-owned root a stored preview target
+// is resolved against.
 type StoredEntryScope string
 
 const (
+	// StoredEntryScopeWorkspace resolves the entry under the session workspace.
 	StoredEntryScopeWorkspace StoredEntryScope = "workspace"
-	StoredEntryScopeArtifact  StoredEntryScope = "artifact"
+	// StoredEntryScopeArtifact resolves the entry under the session artifact directory.
+	StoredEntryScopeArtifact StoredEntryScope = "artifact"
 )
 
+// StoredEntry is a normalized persisted preview entry plus the root it belongs
+// to.
 type StoredEntry struct {
 	Scope StoredEntryScope
 	Path  string
 }
 
+// ArtifactEntryPath encodes an artifact-relative path as a stored preview
+// entry.
 func ArtifactEntryPath(rel string) (string, bool) {
 	clean, ok := CleanWorkspacePath(rel)
 	if !ok {
@@ -32,6 +40,8 @@ func ArtifactEntryPath(rel string) (string, bool) {
 	return path.Join(artifactEntryPrefix, clean), true
 }
 
+// ArtifactEntryRelative decodes an artifact-relative path from a stored preview
+// entry.
 func ArtifactEntryRelative(raw string) (string, bool) {
 	clean, ok := CleanWorkspacePath(raw)
 	if !ok || clean == artifactEntryPrefix {
