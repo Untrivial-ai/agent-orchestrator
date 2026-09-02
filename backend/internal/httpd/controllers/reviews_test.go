@@ -169,7 +169,7 @@ func TestReviewActivityPersistsReviewerNativeSessionID(t *testing.T) {
 	svc := &fakeReviewService{}
 	srv := newReviewTestServer(t, svc)
 
-	body, status, headers := doRequest(t, srv, "POST", "/api/v1/reviews/review-1/activity", `{"event":"session-start","agentSessionId":"native-review-1"}`)
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/reviews/review-1/activity", `{"event":"session-start","agentSessionId":"native-review-1","launchId":"launch-7"}`)
 	assertJSON(t, headers)
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
@@ -177,7 +177,7 @@ func TestReviewActivityPersistsReviewerNativeSessionID(t *testing.T) {
 	if svc.activityID != "review-1" {
 		t.Fatalf("activity id = %q, want review-1", svc.activityID)
 	}
-	if svc.activitySignal.Event != "session-start" || svc.activitySignal.AgentSessionID != "native-review-1" {
+	if svc.activitySignal.Event != "session-start" || svc.activitySignal.AgentSessionID != "native-review-1" || svc.activitySignal.LaunchID != "launch-7" {
 		t.Fatalf("activity signal = %+v", svc.activitySignal)
 	}
 }

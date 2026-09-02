@@ -143,6 +143,7 @@ func (c *ReviewsController) activity(w http.ResponseWriter, r *http.Request) {
 		Event:          capActivityMeta(domain.SanitizeControlChars(in.Event)),
 		State:          state,
 		AgentSessionID: agentSessionID,
+		LaunchID:       capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.LaunchID))),
 	}); err != nil {
 		if errors.Is(err, reviewsvc.ErrNotFound) {
 			envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "REVIEW_NOT_FOUND", "Unknown review session", nil)

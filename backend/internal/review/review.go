@@ -314,7 +314,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	}
 
 	now := e.clock()
-	reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, reviewRow.AgentSessionID, domain.ActivityActive, now)
+	reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID, domain.ActivityActive, now)
 	if err != nil {
 		return TriggerResult{}, err
 	}
@@ -422,16 +422,20 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		if err := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath); err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("reviewer preflight: %w", err))
 		}
-		launch, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID))
+		launchID := e.newID()
+		launch, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID, launchID))
 		if err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("launch reviewer: %w", err))
 		}
 		handleID = launch.HandleID
+		if launch.LaunchID != "" {
+			reviewRow.ReviewerLaunchID = launch.LaunchID
+		}
 		if launch.AgentSessionID != "" {
 			persistedAgentSessionID = launch.AgentSessionID
 		}
 	} else {
-		if err := e.launcher.Notify(ctx, handleID, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID)); err != nil {
+		if err := e.launcher.Notify(ctx, handleID, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID)); err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("notify reviewer: %w", err))
 		}
 	}
@@ -451,7 +455,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 			return TriggerResult{}, failRuns(0, err)
 		}
 	}
-	reviewRow, err = e.upsertReview(ctx, worker, harness, handleID, persistedAgentSessionID, "", now)
+	reviewRow, err = e.upsertReview(ctx, worker, harness, handleID, persistedAgentSessionID, reviewRow.ReviewerLaunchID, "", now)
 	if err != nil {
 		if handleID != "" {
 			_ = e.launcher.Destroy(ctx, handleID)
@@ -821,13 +825,15 @@ func (e *Engine) restoreReviewerLocked(
 	if hasReview {
 		agentSessionID = reviewRow.AgentSessionID
 	} else {
-		reviewRow, err = e.upsertReview(ctx, worker, harness, "", "", domain.ActivityIdle, e.clock())
+		reviewRow, err = e.upsertReview(ctx, worker, harness, "", "", "", domain.ActivityIdle, e.clock())
 		if err != nil {
 			return RestoreReviewerResult{}, err
 		}
 	}
+	launchID := e.newID()
 	launch, err := e.launcher.RestoreTerminal(ctx, LaunchSpec{
 		ReviewSessionID:      reviewRow.ID,
+		LaunchID:             launchID,
 		WorkerID:             worker.ID,
 		ProjectID:            worker.ProjectID,
 		Harness:              harness,
@@ -854,7 +860,7 @@ func (e *Engine) restoreReviewerLocked(
 	if launch.AgentSessionID != "" {
 		agentSessionID = launch.AgentSessionID
 	}
-	if _, err := e.upsertReview(ctx, worker, harness, launch.HandleID, agentSessionID, "", e.clock()); err != nil {
+	if _, err := e.upsertReview(ctx, worker, harness, launch.HandleID, agentSessionID, launch.LaunchID, "", e.clock()); err != nil {
 		_ = e.launcher.Destroy(ctx, launch.HandleID)
 		return RestoreReviewerResult{}, err
 	}
@@ -969,11 +975,13 @@ func reviewLaunchSpec(
 	queue []ports.ReviewTask,
 	index int,
 	agentSessionID string,
+	launchID string,
 ) LaunchSpec {
 	return LaunchSpec{
 		RunID:           run.ID,
 		BatchID:         run.BatchID,
 		ReviewSessionID: run.ReviewID,
+		LaunchID:        launchID,
 		WorkerID:        worker.ID,
 		ProjectID:       worker.ProjectID,
 		Harness:         harness,
@@ -1337,7 +1345,7 @@ func (e *Engine) projectReviewerSelection(
 	return cfg.ResolveReviewerHarness(worker.Harness), domain.AgentConfig{}, nil
 }
 
-func (e *Engine) upsertReview(ctx stdctx.Context, worker domain.SessionRecord, harness domain.ReviewerHarness, handleID, agentSessionID string, activityState domain.ActivityState, now time.Time) (domain.Review, error) {
+func (e *Engine) upsertReview(ctx stdctx.Context, worker domain.SessionRecord, harness domain.ReviewerHarness, handleID, agentSessionID, reviewerLaunchID string, activityState domain.ActivityState, now time.Time) (domain.Review, error) {
 	existing, ok, err := e.store.GetReviewBySessionAndHarness(ctx, worker.ID, harness)
 	if err != nil {
 		return domain.Review{}, err
@@ -1351,6 +1359,7 @@ func (e *Engine) upsertReview(ctx stdctx.Context, worker domain.SessionRecord, h
 		PRURL:                 "",
 		ReviewerHandleID:      handleID,
 		AgentSessionID:        agentSessionID,
+		ReviewerLaunchID:      strings.TrimSpace(reviewerLaunchID),
 		ReviewerActivityState: activityState,
 		CreatedAt:             now,
 		UpdatedAt:             now,
@@ -1360,6 +1369,9 @@ func (e *Engine) upsertReview(ctx stdctx.Context, worker domain.SessionRecord, h
 		// refreshes harness/pr_url/reviewer_handle_id/updated_at.
 		review.ID = existing.ID
 		review.CreatedAt = existing.CreatedAt
+		if review.ReviewerLaunchID == "" {
+			review.ReviewerLaunchID = existing.ReviewerLaunchID
+		}
 		if review.ReviewerActivityState == "" {
 			review.ReviewerActivityState = existing.ReviewerActivityState
 		}
