@@ -547,9 +547,16 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		m.mu.Unlock()
 		return nil
 	}
-	if s.ControllerGeneration != "" &&
-		(domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat ||
-			s.ControllerGeneration != rec.Metadata.ControllerGeneration) {
+	mode := domain.NormalizeSessionMode(rec.Mode)
+	currentChatController := mode == domain.SessionModeChat &&
+		s.ControllerGeneration != "" &&
+		s.ControllerGeneration == rec.Metadata.ControllerGeneration
+	// Chat has no supervised runtime launch to fence inherited workspace hooks.
+	// Its in-process controller always supplies the generation it durably claimed,
+	// while provider hooks never receive that internal credential. Requiring it in
+	// Chat mode therefore rejects both stale controllers and nested agent processes.
+	if (mode == domain.SessionModeChat && !currentChatController) ||
+		(mode != domain.SessionModeChat && s.ControllerGeneration != "") {
 		m.mu.Unlock()
 		return nil
 	}
@@ -558,11 +565,13 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		m.mu.Unlock()
 		return nil
 	}
-	// An explicit prompt submission is proof that an agent was relaunched in the
-	// preserved shell. Other same-generation callbacks may have been delayed
-	// behind the process-exit report and cannot resurrect an exited workload.
+	// An explicit prompt submission is proof that a TUI agent was relaunched in
+	// the preserved shell. Other TUI callbacks may have been delayed behind the
+	// process-exit report and cannot resurrect an exited workload. Chat activity
+	// is emitted synchronously by its current generation-fenced controller, so a
+	// non-exited signal from that owner is direct evidence that it is still live.
 	if rec.Activity.State == domain.ActivityExited && s.Valid && s.State != domain.ActivityExited &&
-		(s.State != domain.ActivityActive || s.Event != "user-prompt-submit") {
+		!currentChatController && (s.State != domain.ActivityActive || s.Event != "user-prompt-submit") {
 		m.mu.Unlock()
 		return nil
 	}
