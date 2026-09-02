@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import type { CloudCpAgentProvider } from "../lib/cloud-cp";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
+import { useCloudSession } from "../lib/cloud-session";
 import { providerConnectionsQueryKey } from "../hooks/useProviderConnections";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { cn } from "../lib/utils";
@@ -61,6 +62,7 @@ export function CloudCredentialDialog() {
 	const { t } = useTranslation();
 	const { client } = useCloudCp();
 	const { org } = useCloudOrg();
+	const { session } = useCloudSession();
 	const queryClient = useQueryClient();
 	const open = useCredentialDialogStore((s) => s.open);
 	const setOpen = useCredentialDialogStore((s) => s.setOpen);
@@ -91,23 +93,36 @@ export function CloudCredentialDialog() {
 		setError(null);
 	};
 
-	const canSubmit = phase !== "submitting" && secret.trim() !== "" && org !== undefined;
+	// The org query can lag the already-authenticated cloud session by a render
+	// (especially after local sign-in). Do not make the button look dead while
+	// that query catches up; submit resolves the same first org from the session
+	// as a fallback and reports a useful error if neither is available.
+	const resolvedOrg = org ?? session?.organizations?.[0];
+	const canSubmit = phase !== "submitting" && secret.trim() !== "";
 
 	const submit = async () => {
-		if (!canSubmit || org === undefined) return;
+		const credential = secret.trim();
+		if (credential === "") {
+			setError(t("cloudCredential.failed"));
+			return;
+		}
+		if (resolvedOrg === undefined) {
+			setError(t("cloudCredential.failed"));
+			return;
+		}
 		setPhase("submitting");
 		setError(null);
 		try {
-			const { providerConnection } = await client.putAgentConnection(org.id, agent, {
+			const { providerConnection } = await client.putAgentConnection(resolvedOrg.id, agent, {
 				credentialType,
-				secret: secret.trim(),
+				secret: credential,
 			});
 			if (providerConnection.validationState !== "valid") {
 				setPhase("idle");
 				setError(t("cloudCredential.invalid", { state: providerConnection.validationState }));
 				return;
 			}
-			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
+			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(resolvedOrg.id) });
 			setPhase("success");
 			setSecret("");
 		} catch (err) {
@@ -176,6 +191,13 @@ export function CloudCredentialDialog() {
 								placeholder={t("cloudCredential.tokenPlaceholder")}
 								value={secret}
 								onChange={(e) => setSecret(e.target.value)}
+								onInput={(e) => setSecret(e.currentTarget.value)}
+								onPaste={(e) => {
+									// Some native Electron paste paths update the input after the
+									// paste event. Sync on the next frame so the button reflects
+									// what is visibly in the field.
+									requestAnimationFrame(() => setSecret(e.currentTarget.value));
+								}}
 								onKeyDown={(e) => {
 									if (e.key === "Enter") void submit();
 								}}
