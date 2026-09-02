@@ -26,6 +26,7 @@ type Control interface {
 	PublishTerminalOutput(context.Context, string, []byte) error
 	PublishTerminalExit(context.Context, string, int, bool) error
 	AgentSessionID(context.Context) (string, error)
+	EnsureAgentTerminal(context.Context) (worker.AgentTerminalResponse, error)
 }
 
 type Supervisor struct {
@@ -191,13 +192,14 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	if turn.CancelRequested {
 		return true, s.Control.CompleteTurn(ctx, turn.ID, turn.Attempt, true)
 	}
-	if s.AgentTerminalID == "" {
+	agentTerminalID := s.agentTerminalID()
+	if agentTerminalID == "" {
 		return true, s.Control.FailTurn(
 			ctx, turn.ID, turn.Attempt, "interactive agent terminal is unavailable",
 		)
 	}
 	if err := s.writeTerminal(worker.TerminalCommand{
-		TerminalID: s.AgentTerminalID,
+		TerminalID: agentTerminalID,
 		Data:       []byte(turn.Prompt + "\r"),
 	}); err != nil {
 		if failErr := s.Control.FailTurn(

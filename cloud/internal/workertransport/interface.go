@@ -94,8 +94,9 @@ func (s *Supervisor) inspectInterface() (any, error) {
 }
 
 func (s *Supervisor) interruptInterface(ctx context.Context) error {
+	agentTerminalID := s.agentTerminalID()
 	s.mu.Lock()
-	terminal := s.terminals[s.AgentTerminalID]
+	terminal := s.terminals[agentTerminalID]
 	s.mu.Unlock()
 	if terminal == nil {
 		return errors.New("agent terminal is not open")
@@ -106,7 +107,7 @@ func (s *Supervisor) interruptInterface(ctx context.Context) error {
 
 func (s *Supervisor) stopInterface(ctx context.Context) error {
 	if s.iface.Current() == InterfaceTUI {
-		return s.closeTerminalForInterfaceHandoff(ctx, s.AgentTerminalID)
+		return s.closeTerminalForInterfaceHandoff(ctx, s.agentTerminalID())
 	} else {
 		return s.stopChat(ctx)
 	}
@@ -125,13 +126,38 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 			return err
 		}
 	}
+	// Chat -> TUI closes the old agent terminal record. Obtain the replacement
+	// handle from the control plane before starting the PTY; otherwise the
+	// worker starts a process on the stale bootstrap handle while the renderer
+	// attaches to a newly ticketed handle. The two processes then diverge (and
+	// Codex can report an active thread writer).
+	terminal, err := s.Control.EnsureAgentTerminal(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(terminal.TerminalID) == "" {
+		return errors.New("control plane returned no agent terminal")
+	}
+	s.setAgentTerminalID(terminal.TerminalID)
 	s.iface.mu.Lock()
 	s.iface.current = InterfaceTUI
 	s.iface.mu.Unlock()
 	return s.openTerminal(ctx, worker.TerminalCommand{
-		TerminalID: s.AgentTerminalID,
+		TerminalID: terminal.TerminalID,
 		Kind:       "agent",
 	})
+}
+
+func (s *Supervisor) agentTerminalID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.AgentTerminalID
+}
+
+func (s *Supervisor) setAgentTerminalID(id string) {
+	s.mu.Lock()
+	s.AgentTerminalID = id
+	s.mu.Unlock()
 }
 
 func (s *Supervisor) refreshAgentCommand(ctx context.Context, nativeConversationID string) error {

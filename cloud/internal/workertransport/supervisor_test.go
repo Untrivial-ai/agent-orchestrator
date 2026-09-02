@@ -13,6 +13,7 @@ type supervisorControlStub struct {
 	claimTurnCalls int
 	turn           *worker.Turn
 	agentSessionID string
+	agentTerminal  string
 }
 
 type chatRunnerStub struct{ idle bool }
@@ -68,6 +69,9 @@ func (s *supervisorControlStub) PublishTerminalExit(context.Context, string, int
 func (s *supervisorControlStub) AgentSessionID(context.Context) (string, error) {
 	return s.agentSessionID, nil
 }
+func (s *supervisorControlStub) EnsureAgentTerminal(context.Context) (worker.AgentTerminalResponse, error) {
+	return worker.AgentTerminalResponse{TerminalID: s.agentTerminal}, nil
+}
 
 func TestRefreshAgentCommandUsesLatestConversationID(t *testing.T) {
 	var gotID string
@@ -96,7 +100,7 @@ func TestStartInterfaceKeepsBootstrapCommandWithoutConversation(t *testing.T) {
 	workspace := t.TempDir()
 	called := false
 	supervisor := &Supervisor{
-		Control:   &supervisorControlStub{},
+		Control:   &supervisorControlStub{agentTerminal: "00000000-0000-0000-0000-000000000004"},
 		Workspace: workspace,
 		AgentCommand: workerexec.Command{
 			Path: "/bin/sh",
@@ -118,6 +122,9 @@ func TestStartInterfaceKeepsBootstrapCommandWithoutConversation(t *testing.T) {
 	}
 	if called {
 		t.Fatal("refreshed the agent command without a native conversation")
+	}
+	if supervisor.AgentTerminalID != "00000000-0000-0000-0000-000000000004" {
+		t.Fatalf("agent terminal id = %q, want replacement handle", supervisor.AgentTerminalID)
 	}
 	supervisor.closeAllTerminals()
 }

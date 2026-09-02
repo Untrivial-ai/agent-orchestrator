@@ -494,6 +494,31 @@ func (s *Store) EnsureWorkerAgentTerminal(
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		// An interface handoff closes the PTY but not the session's terminal
+		// history. Reopen the most recent closed agent terminal instead of
+		// creating a new stream, so the TUI can replay the same scrollback after
+		// ChatUI hands ownership back. Failed terminals are deliberately not
+		// reused; a fresh stream is safer after an actual process failure.
+		err = tx.QueryRow(ctx,
+			`UPDATE ao_terminal_sessions
+			SET worker_epoch = $1, state = 'open', error_message = '',
+				closed_at = NULL, expires_at = now() + $2::interval, updated_at = now()
+			WHERE id = (
+				SELECT id FROM ao_terminal_sessions
+				WHERE org_id = $3 AND session_id = $4
+				  AND kind = 'agent' AND state = 'closed'
+				ORDER BY created_at DESC
+				LIMIT 1
+			)
+			RETURNING id, state, expires_at`,
+			epoch, intervalString(ttl), orgID, sessionID,
+		).Scan(&terminal.ID, &terminal.State, &terminal.ExpiresAt)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		return tx.QueryRow(ctx,
 			`INSERT INTO ao_terminal_sessions (
 				org_id, session_id, worker_epoch, kind, state, expires_at

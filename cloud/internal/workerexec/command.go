@@ -126,7 +126,11 @@ func (b HarnessBuilder) BuildInteractive(
 		Path: argv[0],
 		Args: argv[1:],
 		Dir:  workspace,
-		Env:  map[string]string{},
+		// This marker lets the hook bridge distinguish interactive TUI facts
+		// from any provider hooks a headless Chat invocation may inherit from
+		// the workspace. It also survives a TUI -> Chat handoff: the final stop
+		// hook can arrive after the control plane commits the new interface.
+		Env: map[string]string{"AO_CLOUD_SOURCE_INTERFACE": "tui"},
 	}
 	if err := b.configureCredential(&command, launch.Harness, credential); err != nil {
 		if command.Cleanup != nil {

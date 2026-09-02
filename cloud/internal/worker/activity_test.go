@@ -27,3 +27,25 @@ func TestActivityEventFromHookCarriesAssistantFactOnStop(t *testing.T) {
 		t.Fatalf("assistant update = %q", event.LatestAssistantUpdate)
 	}
 }
+
+func TestValidActivityEventAcceptsInteractiveSourceMarker(t *testing.T) {
+	if !ValidActivityEvent(ActivityEvent{
+		Harness:         "codex",
+		Event:           "stop",
+		State:           "idle",
+		SourceInterface: "tui",
+	}) {
+		t.Fatal("interactive TUI source marker should be valid")
+	}
+}
+
+func TestValidActivityEventRejectsUnknownSourceMarker(t *testing.T) {
+	if ValidActivityEvent(ActivityEvent{
+		Harness:         "codex",
+		Event:           "stop",
+		State:           "idle",
+		SourceInterface: "chat",
+	}) {
+		t.Fatal("unknown source marker should be rejected")
+	}
+}

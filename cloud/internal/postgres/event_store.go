@@ -228,12 +228,17 @@ func (s *Store) AppendSessionEvent(
 
 // AppendInteractiveConversationFacts projects provider hook facts from the
 // native TUI into the same durable Chat event stream used by ChatUI. The
-// interface check is important: headless Chat turns already append these
-// events themselves and must not be duplicated by provider hooks.
+// source marker, rather than the session's current interface, is authoritative:
+// a TUI stop hook can arrive after the coordinator commits the target Chat
+// interface. Headless Chat commands leave the marker empty and already append
+// their own typed events, so they must not be projected a second time.
 func (s *Store) AppendInteractiveConversationFacts(
 	ctx context.Context,
-	orgID, sessionID, eventType, userPrompt, assistantUpdate string,
+	orgID, sessionID, eventType, sourceInterface, userPrompt, assistantUpdate string,
 ) error {
+	if sourceInterface != "" && sourceInterface != "tui" {
+		return nil
+	}
 	if eventType != "user-prompt-submit" && eventType != "stop" {
 		return nil
 	}
@@ -251,17 +256,33 @@ func (s *Store) AppendInteractiveConversationFacts(
 		return err
 	}
 	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
-		var interfaceValue string
-		if err := tx.QueryRow(ctx,
-			`SELECT interface FROM ao_sessions WHERE org_id = $1 AND id = $2 AND is_terminated = false`,
-			orgID, sessionID,
-		).Scan(&interfaceValue); errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		} else if err != nil {
-			return err
+		if sourceInterface == "" {
+			// Workers built before sourceInterface was added did not tag their
+			// hooks. Preserve their active-TUI behavior during a rolling deploy,
+			// while still suppressing inherited headless hooks once Chat is active.
+			var interfaceValue string
+			if err := tx.QueryRow(ctx,
+				`SELECT interface FROM ao_sessions WHERE org_id = $1 AND id = $2 AND is_terminated = false`,
+				orgID, sessionID,
+			).Scan(&interfaceValue); errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			} else if err != nil {
+				return err
+			} else if interfaceValue != "tui" {
+				return nil
+			}
 		}
-		if interfaceValue != "tui" {
-			return nil
+		var sessionExists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (
+				SELECT 1 FROM ao_sessions
+				WHERE org_id = $1 AND id = $2 AND is_terminated = false
+			)`,
+			orgID, sessionID,
+		).Scan(&sessionExists); err != nil {
+			return err
+		} else if !sessionExists {
+			return ErrNotFound
 		}
 		var sequence int64
 		if err := tx.QueryRow(ctx,

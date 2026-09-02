@@ -438,6 +438,10 @@ func (c *client) AgentSessionID(ctx context.Context) (string, error) {
 	return response.AgentSessionID, nil
 }
 
+func (c *client) EnsureAgentTerminal(ctx context.Context) (worker.AgentTerminalResponse, error) {
+	return c.ensureAgentTerminal(ctx)
+}
+
 func (c *client) Credential(ctx context.Context) (worker.CredentialResponse, error) {
 	var response worker.CredentialResponse
 	err := c.doMethod(ctx, http.MethodGet, "/worker/credential", nil, &response)

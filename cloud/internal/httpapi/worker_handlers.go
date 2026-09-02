@@ -546,7 +546,8 @@ func (s *Server) workerEvent(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.store.AppendInteractiveConversationFacts(
 			r.Context(), claims.OrgID, claims.SessionID, activity.Event,
-			activity.LatestUserPrompt, activity.LatestAssistantUpdate,
+			activity.SourceInterface, activity.LatestUserPrompt,
+			activity.LatestAssistantUpdate,
 		); err != nil {
 			s.writeWorkerStoreError(w, r, err)
 			return

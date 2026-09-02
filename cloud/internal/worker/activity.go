@@ -8,14 +8,18 @@ import (
 
 // ActivityEvent is an explicit lifecycle signal emitted by a coding-agent hook.
 type ActivityEvent struct {
-	Harness               string                 `json:"harness"`
-	Event                 string                 `json:"event"`
-	State                 contract.ActivityState `json:"state"`
-	ToolName              string                 `json:"toolName,omitempty"`
-	ToolUseID             string                 `json:"toolUseId,omitempty"`
-	AgentSessionID        string                 `json:"agentSessionId,omitempty"`
-	LatestUserPrompt      string                 `json:"latestUserPrompt,omitempty"`
-	LatestAssistantUpdate string                 `json:"latestAssistantUpdate,omitempty"`
+	Harness string                 `json:"harness"`
+	Event   string                 `json:"event"`
+	State   contract.ActivityState `json:"state"`
+	// SourceInterface identifies facts emitted by the interactive TUI hook.
+	// Headless Chat activity intentionally leaves this empty because its
+	// controller writes typed chat events directly.
+	SourceInterface       string `json:"sourceInterface,omitempty"`
+	ToolName              string `json:"toolName,omitempty"`
+	ToolUseID             string `json:"toolUseId,omitempty"`
+	AgentSessionID        string `json:"agentSessionId,omitempty"`
+	LatestUserPrompt      string `json:"latestUserPrompt,omitempty"`
+	LatestAssistantUpdate string `json:"latestAssistantUpdate,omitempty"`
 }
 
 const maxActivityCorrelationLength = 256
@@ -97,6 +101,9 @@ func boundedConversationText(value string) string {
 // ValidActivityEvent ensures workers cannot pair a real hook name with an
 // impossible state when reporting activity to the control plane.
 func ValidActivityEvent(event ActivityEvent) bool {
+	if event.SourceInterface != "" && event.SourceInterface != "tui" {
+		return false
+	}
 	if len(event.ToolName) > maxActivityCorrelationLength ||
 		len(event.ToolUseID) > maxActivityCorrelationLength ||
 		len(event.AgentSessionID) > maxActivityCorrelationLength ||

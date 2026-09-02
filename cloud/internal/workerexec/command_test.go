@@ -47,6 +47,28 @@ func TestCodexArgsMatchesCloudSessionPermissionMode(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveMarksTUISourceForHookProjection(t *testing.T) {
+	workspace := t.TempDir()
+	builder := HarnessBuilder{
+		Binaries: map[string]string{"codex": "/bin/echo"},
+		DataDir:  t.TempDir(),
+		CodexLogin: func(string, string, string, string) error {
+			return nil
+		},
+	}
+	command, err := builder.BuildInteractive(
+		worker.LaunchContext{Harness: "codex", SessionID: "session-1", Mode: "trusted"},
+		worker.CredentialResponse{Provider: "codex", CredentialType: "api_key", Secret: "test-secret"},
+		workspace,
+	)
+	if err != nil {
+		t.Fatalf("build interactive command: %v", err)
+	}
+	if command.Env["AO_CLOUD_SOURCE_INTERFACE"] != "tui" {
+		t.Fatalf("source interface env = %q, want tui", command.Env["AO_CLOUD_SOURCE_INTERFACE"])
+	}
+}
+
 func TestInteractiveRestoreIdentityDoesNotInferFreshClaudeConversation(t *testing.T) {
 	dataDir := t.TempDir()
 	launch := worker.LaunchContext{Harness: "claude-code", SessionID: "session-1"}
