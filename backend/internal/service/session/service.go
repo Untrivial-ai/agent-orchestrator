@@ -1109,13 +1109,18 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 }
 
 func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) (domain.Session, error) {
+	artifactFiles, err := listSessionArtifactFiles(rec.Metadata.ArtifactDir)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("artifact files %s: %w", rec.ID, err)
+	}
 	runs = canonicalizeCurrentHeadReviewRuns(prs, runs)
 	prs = deduplicatePRFacts(prs)
 	// Both derivations read the clock once, from the same instant: they share
 	// the no-signal rule, and two reads could put them either side of its grace
 	// period and have the card contradict its own status.
 	now := s.now()
-	presentation := deriveKanbanPresentation(rec, prs, runs, now, s.harnessSignals(rec.Harness))
+	rec.OutputType = deriveSessionOutputType(prs, artifactFiles)
+	presentation := deriveKanbanPresentation(rec, prs, runs, artifactFiles, now, s.harnessSignals(rec.Harness))
 	readiness := "ready"
 	if recovery, ok := s.manager.(interface {
 		SessionStatusReadiness(domain.SessionRecord) string
@@ -1132,6 +1137,7 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 		KanbanColumn:     presentation.Column,
 		DisplayStatus:    presentation.DisplayStatus,
 		TerminalHandleID: rec.Metadata.RuntimeHandleID,
+		ArtifactFiles:    artifactFiles,
 		PRs:              prs,
 	}, nil
 }

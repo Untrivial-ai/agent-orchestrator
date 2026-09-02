@@ -1425,6 +1425,88 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_GetExposesArtifactFilesAndServesHTMLArtifact(t *testing.T) {
+	artifactDir := t.TempDir()
+	artifactPath := filepath.Join(artifactDir, "site", "index.html")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("<html><body>artifact preview</body></html>"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	s := svc.sessions["ao-1"]
+	s.OutputType = domain.SessionOutputArtifact
+	s.Metadata.ArtifactDir = artifactDir
+	s.ArtifactFiles = []domain.SessionArtifactFile{
+		{
+			Path:      "site/index.html",
+			Name:      "index.html",
+			Kind:      domain.SessionArtifactHTML,
+			Size:      42,
+			UpdatedAt: time.Now().UTC().Truncate(time.Second),
+		},
+		{
+			Path:      "notes/readme.md",
+			Name:      "readme.md",
+			Kind:      domain.SessionArtifactMarkdown,
+			Size:      12,
+			UpdatedAt: time.Now().UTC().Truncate(time.Second),
+		},
+	}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+	previewURL, err := previewutil.FileURL(srv.URL, "ao-1", "__ao_artifacts__/site/index.html")
+	if err != nil {
+		t.Fatalf("build preview URL: %v", err)
+	}
+	s = svc.sessions["ao-1"]
+	s.Metadata.PreviewURL = previewURL
+	svc.sessions["ao-1"] = s
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET session = %d, want 200; body=%s", status, body)
+	}
+	var resp struct {
+		Session struct {
+			ID            string `json:"id"`
+			OutputType    string `json:"outputType"`
+			ArtifactFiles []struct {
+				Path       string `json:"path"`
+				Kind       string `json:"kind"`
+				PreviewURL string `json:"previewUrl"`
+			} `json:"artifactFiles"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &resp)
+	if resp.Session.OutputType != string(domain.SessionOutputArtifact) {
+		t.Fatalf("outputType = %q, want %q", resp.Session.OutputType, domain.SessionOutputArtifact)
+	}
+	if len(resp.Session.ArtifactFiles) != 2 {
+		t.Fatalf("artifactFiles = %+v, want 2", resp.Session.ArtifactFiles)
+	}
+	if resp.Session.ArtifactFiles[0].Path != "site/index.html" || resp.Session.ArtifactFiles[0].Kind != "html" {
+		t.Fatalf("html artifact = %+v", resp.Session.ArtifactFiles[0])
+	}
+	if !strings.Contains(resp.Session.ArtifactFiles[0].PreviewURL, ".localhost:") ||
+		!strings.HasSuffix(resp.Session.ArtifactFiles[0].PreviewURL, "/__ao_artifacts__/site/index.html") {
+		t.Fatalf("html previewUrl = %q, want isolated artifact preview origin", resp.Session.ArtifactFiles[0].PreviewURL)
+	}
+	if resp.Session.ArtifactFiles[1].PreviewURL != "" {
+		t.Fatalf("markdown previewUrl = %q, want empty", resp.Session.ArtifactFiles[1].PreviewURL)
+	}
+
+	servedBody, servedStatus, _ := doPreviewOriginRequest(t, srv, resp.Session.ArtifactFiles[0].PreviewURL, "/")
+	if servedStatus != http.StatusOK {
+		t.Fatalf("GET artifact preview = %d, want 200; body=%s", servedStatus, servedBody)
+	}
+	if !bytes.Contains(servedBody, []byte("artifact preview")) {
+		t.Fatalf("served artifact body = %q, want html artifact content", servedBody)
+	}
+}
+
 func TestSessionsAPI_SetReviewerAllowsConfigWithoutHarness(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)

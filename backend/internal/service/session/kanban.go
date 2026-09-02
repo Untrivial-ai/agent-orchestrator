@@ -11,23 +11,25 @@ func deriveKanbanPresentation(
 	rec domain.SessionRecord,
 	prs []domain.PRFacts,
 	runs []domain.CurrentHeadReviewRun,
+	artifactFiles []domain.SessionArtifactFile,
 	now time.Time,
 	signalCapable bool,
 ) contract.KanbanPresentation {
 	return contract.DeriveKanbanPresentation(
-		toContractKanbanSessionFacts(rec, signalCapable),
+		toContractKanbanSessionFacts(rec, artifactFiles, signalCapable),
 		toContractKanbanPRFacts(prs, runs),
 		now,
 		noSignalGrace,
 	)
 }
 
-func toContractKanbanSessionFacts(rec domain.SessionRecord, signalCapable bool) contract.KanbanSessionFacts {
+func toContractKanbanSessionFacts(rec domain.SessionRecord, artifactFiles []domain.SessionArtifactFile, signalCapable bool) contract.KanbanSessionFacts {
 	return contract.KanbanSessionFacts{
-		SessionFacts:     toContractSessionFacts(rec, signalCapable),
-		AutoReview:       rec.AutoReviewEnabled,
-		AutoInjectReview: rec.AutoInjectReview,
-		AutoInjectCI:     rec.AutoInjectCI,
+		SessionFacts:      toContractSessionFacts(rec, signalCapable),
+		HasArtifactOutput: len(artifactFiles) > 0,
+		AutoReview:        rec.AutoReviewEnabled,
+		AutoInjectReview:  rec.AutoInjectReview,
+		AutoInjectCI:      rec.AutoInjectCI,
 	}
 }
 

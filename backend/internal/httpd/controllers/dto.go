@@ -355,9 +355,20 @@ type SessionView struct {
 	Model string `json:"model,omitempty"`
 	// LastUserMessageAt is the latest real user-authored task direction time.
 	// Lifecycle and internal automation updates do not advance it.
-	LastUserMessageAt *time.Time       `json:"lastUserMessageAt,omitempty"`
-	PRs               []SessionPRFacts `json:"prs"`
-	ActiveAgentSwitch *AgentSwitchView `json:"activeAgentSwitch,omitempty"`
+	LastUserMessageAt *time.Time            `json:"lastUserMessageAt,omitempty"`
+	PRs               []SessionPRFacts      `json:"prs"`
+	ArtifactFiles     []SessionArtifactView `json:"artifactFiles,omitempty"`
+	ActiveAgentSwitch *AgentSwitchView      `json:"activeAgentSwitch,omitempty"`
+}
+
+// SessionArtifactView is one inferred file artifact for a session.
+type SessionArtifactView struct {
+	Path       string                     `json:"path"`
+	Name       string                     `json:"name"`
+	Kind       domain.SessionArtifactKind `json:"kind" enum:"html,markdown,file"`
+	Size       int64                      `json:"size"`
+	UpdatedAt  time.Time                  `json:"updatedAt"`
+	PreviewURL string                     `json:"previewUrl,omitempty"`
 }
 
 // ListSessionsResponse is the body of GET /api/v1/sessions.

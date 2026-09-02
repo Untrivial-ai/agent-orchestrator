@@ -67,6 +67,36 @@ func (o ConversationCheckpointOrigin) Valid() bool {
 		o == ConversationCheckpointOriginCoordination
 }
 
+// SessionOutputType is the durable summary of what kind of output a session
+// currently owns.
+type SessionOutputType string
+
+// Session output types.
+const (
+	SessionOutputNone     SessionOutputType = "none"
+	SessionOutputPR       SessionOutputType = "pr"
+	SessionOutputArtifact SessionOutputType = "artifact"
+)
+
+// SessionArtifactKind is the UI-facing kind of one file artifact.
+type SessionArtifactKind string
+
+// Session artifact kinds.
+const (
+	SessionArtifactHTML     SessionArtifactKind = "html"
+	SessionArtifactMarkdown SessionArtifactKind = "markdown"
+	SessionArtifactGeneric  SessionArtifactKind = "file"
+)
+
+// SessionArtifactFile is one session-owned file discovered inside artifact_dir.
+type SessionArtifactFile struct {
+	Path      string              `json:"path"`
+	Name      string              `json:"name"`
+	Kind      SessionArtifactKind `json:"kind" enum:"html,markdown,file"`
+	Size      int64               `json:"size"`
+	UpdatedAt time.Time           `json:"updatedAt"`
+}
+
 // SessionMetadata is the typed, off-status metadata for a session: operational
 // handles and seed inputs used by Session Manager and reaper.
 type SessionMetadata struct {
@@ -144,6 +174,9 @@ type SessionMetadata struct {
 	// means the provider default, including an explicit task-level reset. The
 	// resolved value is pinned so project-default changes cannot alter resume.
 	Effort string `json:"effort,omitempty"`
+	// ArtifactDir is the session-owned artifact directory under AO's data dir.
+	// It is outside the git workspace and is never exposed directly on the API.
+	ArtifactDir string `json:"-"`
 	// BrowserCapabilityVerifier is a one-way verifier for the random browser
 	// capability held by this session's worker process. The bearer token itself
 	// is never persisted, so reading the database cannot grant access to another
@@ -183,10 +216,11 @@ type SessionRecord struct {
 	IsTerminated  bool      `json:"isTerminated"`
 	// TerminateOnPRMerge is a user-controlled lifecycle policy. When enabled,
 	// completing the session's PR set through a merge tears down the session.
-	TerminateOnPRMerge bool            `json:"terminateOnPrMerge"`
-	AutoInjectReview   bool            `json:"autoInjectReview"`
-	AutoInjectCI       bool            `json:"autoInjectCI"`
-	Metadata           SessionMetadata `json:"-"`
+	TerminateOnPRMerge bool              `json:"terminateOnPrMerge"`
+	AutoInjectReview   bool              `json:"autoInjectReview"`
+	AutoInjectCI       bool              `json:"autoInjectCI"`
+	OutputType         SessionOutputType `json:"outputType" enum:"none,pr,artifact"`
+	Metadata           SessionMetadata   `json:"-"`
 	// CleanupGeneration is a monotonic counter bumped each time the session is
 	// un-terminated (spawn/restore). The terminal-resource reconciler stamps its
 	// durable cleanup facts with the generation they were written for so a
@@ -302,9 +336,10 @@ type Session struct {
 	// important current fact about the session at the stage it sits in. It is
 	// derived after the column, from the facts that column reads, and ships in
 	// renderable form so clients print it without a mapping table of their own.
-	DisplayStatus     DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review failed,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
-	TerminalHandleID  string        `json:"terminalHandleId,omitempty"`
-	ActiveAgentSwitch *AgentSwitch  `json:"-"`
+	DisplayStatus     DisplayStatus         `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review failed,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
+	TerminalHandleID  string                `json:"terminalHandleId,omitempty"`
+	ArtifactFiles     []SessionArtifactFile `json:"-"`
+	ActiveAgentSwitch *AgentSwitch          `json:"-"`
 	// PRs are the session's attributed pull requests (one session can own many).
 	// They feed status derivation and are surfaced on the API read model. Not
 	// serialized here: the HTTP boundary maps them to the curated wire shape.
