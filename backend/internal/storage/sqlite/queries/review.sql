@@ -38,7 +38,8 @@ UPDATE review SET
     reviewer_activity_state = CASE WHEN ? != '' THEN ? ELSE reviewer_activity_state END,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-  AND (? = '' OR reviewer_launch_id = '' OR reviewer_launch_id = ?);
+  AND ((? != '' AND reviewer_launch_id = ?)
+    OR (? = '' AND reviewer_launch_id = ''));
 
 -- name: InsertReviewRun :exec
 INSERT INTO review_run (id, review_id, session_id, batch_id, harness, trigger_source, pr_url, target_sha, status, verdict, body, github_review_id, created_at, auto_inject_review)

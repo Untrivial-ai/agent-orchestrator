@@ -601,7 +601,7 @@ func (s *Service) ApplyReviewActivitySignal(ctx context.Context, reviewSessionID
 		// A live reviewer row is reused across launches. Once it carries a launch
 		// generation, a delayed hook from an older reviewer must not clobber the
 		// replacement's activity state. Treat that as a successful no-op.
-		if signal.LaunchID != "" && review.ReviewerLaunchID != "" && signal.LaunchID != review.ReviewerLaunchID {
+		if review.ReviewerLaunchID != "" && signal.LaunchID != review.ReviewerLaunchID {
 			return nil
 		}
 		return fmt.Errorf("%w: review session %q", ErrNotFound, reviewSessionID)
