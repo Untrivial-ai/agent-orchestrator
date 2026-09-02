@@ -26,6 +26,7 @@ func (s *Store) UpsertReview(ctx context.Context, r domain.Review) error {
 		ReviewerHandleID:      r.ReviewerHandleID,
 		AgentSessionID:        r.AgentSessionID,
 		ReviewerActivityState: string(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
 		CreatedAt:             r.CreatedAt,
 		UpdatedAt:             r.UpdatedAt,
 	})
@@ -101,7 +102,7 @@ func (s *Store) ClearReviewerHandleByHarness(ctx context.Context, id domain.Sess
 
 // UpdateReviewActivity records the native reviewer conversation id and/or
 // reviewer activity reported by the reviewer harness hooks.
-func (s *Store) UpdateReviewActivity(ctx context.Context, id string, state domain.ActivityState, agentSessionID string) (bool, error) {
+func (s *Store) UpdateReviewActivity(ctx context.Context, id string, state domain.ActivityState, agentSessionID, launchID string) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	n, err := s.qw.UpdateReviewActivity(ctx, gen.UpdateReviewActivityParams{
@@ -109,6 +110,8 @@ func (s *Store) UpdateReviewActivity(ctx context.Context, id string, state domai
 		AgentSessionID:        agentSessionID,
 		Column3:               state,
 		ReviewerActivityState: string(state),
+		Column6:               launchID,
+		ReviewerLaunchID:      launchID,
 		ID:                    id,
 	})
 	if err != nil {
@@ -308,6 +311,7 @@ func reviewFromGetReviewBySessionRow(r gen.GetReviewBySessionRow) domain.Review 
 		ReviewerHandleID:      r.ReviewerHandleID,
 		AgentSessionID:        r.AgentSessionID,
 		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
 		CreatedAt:             r.CreatedAt,
 		UpdatedAt:             r.UpdatedAt,
 	}
@@ -323,6 +327,7 @@ func reviewFromGetReviewBySessionAndHarnessRow(r gen.GetReviewBySessionAndHarnes
 		ReviewerHandleID:      r.ReviewerHandleID,
 		AgentSessionID:        r.AgentSessionID,
 		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
 		CreatedAt:             r.CreatedAt,
 		UpdatedAt:             r.UpdatedAt,
 	}
@@ -338,6 +343,7 @@ func reviewFromListReviewsBySessionRow(r gen.ListReviewsBySessionRow) domain.Rev
 		ReviewerHandleID:      r.ReviewerHandleID,
 		AgentSessionID:        r.AgentSessionID,
 		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
 		CreatedAt:             r.CreatedAt,
 		UpdatedAt:             r.UpdatedAt,
 	}
@@ -353,6 +359,7 @@ func reviewFromReview(r gen.GetReviewByIDRow) domain.Review {
 		ReviewerHandleID:      r.ReviewerHandleID,
 		AgentSessionID:        r.AgentSessionID,
 		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:      r.ReviewerLaunchID,
 		CreatedAt:             r.CreatedAt,
 		UpdatedAt:             r.UpdatedAt,
 	}

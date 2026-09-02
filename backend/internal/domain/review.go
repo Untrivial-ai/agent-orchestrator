@@ -26,6 +26,9 @@ type Review struct {
 	// across passes and exposed so the UI can attach its terminal.
 	ReviewerHandleID string `json:"reviewerHandleId"`
 	AgentSessionID   string `json:"agentSessionId"`
+	// ReviewerLaunchID is the AO runtime generation that owns the live reviewer
+	// pane on this row. It fences delayed hooks from an older replaced reviewer.
+	ReviewerLaunchID string `json:"-"`
 	// ReviewerActivityState is the latest activity hook reported by the review
 	// pane itself. It is separate from ReviewRun.Status so the UI can distinguish
 	// "review pass exists" from "reviewer is actively working right now".

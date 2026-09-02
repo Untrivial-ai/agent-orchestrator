@@ -40,6 +40,9 @@ func (f *fakeStore) UpsertReview(_ context.Context, r domain.Review) error {
 		if cp.AgentSessionID == "" {
 			cp.AgentSessionID = existing.AgentSessionID
 		}
+		if cp.ReviewerLaunchID == "" {
+			cp.ReviewerLaunchID = existing.ReviewerLaunchID
+		}
 		if cp.ReviewerActivityState == "" {
 			cp.ReviewerActivityState = existing.ReviewerActivityState
 		}
@@ -256,6 +259,7 @@ func (f fakeProjects) GetProject(_ context.Context, id string) (domain.ProjectRe
 type fakeLauncher struct {
 	handle           string
 	agentSessionID   string
+	launchID         string
 	alive            bool
 	reusable         bool
 	reusableSet      bool
@@ -305,7 +309,10 @@ func (f *fakeLauncher) Spawn(_ context.Context, spec LaunchSpec) (LaunchResult, 
 	if f.spawnErr != nil {
 		return LaunchResult{}, f.spawnErr
 	}
-	return LaunchResult{HandleID: f.handle, AgentSessionID: f.agentSessionID}, nil
+	if f.launchID == "" {
+		f.launchID = spec.LaunchID
+	}
+	return LaunchResult{HandleID: f.handle, LaunchID: f.launchID, AgentSessionID: f.agentSessionID}, nil
 }
 func (f *fakeLauncher) RestoreTerminal(_ context.Context, spec LaunchSpec) (LaunchResult, error) {
 	f.restored = true
@@ -317,7 +324,10 @@ func (f *fakeLauncher) RestoreTerminal(_ context.Context, spec LaunchSpec) (Laun
 	if f.spawnErr != nil {
 		return LaunchResult{}, f.spawnErr
 	}
-	return LaunchResult{HandleID: f.handle, AgentSessionID: f.agentSessionID}, nil
+	if f.launchID == "" {
+		f.launchID = spec.LaunchID
+	}
+	return LaunchResult{HandleID: f.handle, LaunchID: f.launchID, AgentSessionID: f.agentSessionID}, nil
 }
 func (f *fakeLauncher) Notify(_ context.Context, handleID string, spec LaunchSpec) error {
 	f.notified = true
@@ -421,6 +431,7 @@ func TestTriggerPreservesHookOwnedActivityStateAfterLaunch(t *testing.T) {
 	launcher := &fakeLauncher{
 		handle:         "review-mer-1",
 		agentSessionID: "native-review-1",
+		launchID:       "launch-1",
 		onSpawn: func(LaunchSpec) {
 			// Simulate a fast reviewer whose stop hook wins the race while Spawn
 			// is still unwinding.
@@ -443,6 +454,9 @@ func TestTriggerPreservesHookOwnedActivityStateAfterLaunch(t *testing.T) {
 	}
 	if store.review.ReviewerHandleID != "review-mer-1" || store.review.AgentSessionID != "native-review-1" {
 		t.Fatalf("review metadata = %+v, want launched reviewer metadata", store.review)
+	}
+	if store.review.ReviewerLaunchID != "launch-1" {
+		t.Fatalf("review launch id = %q, want launch-1", store.review.ReviewerLaunchID)
 	}
 	if store.review.ReviewerActivityState != domain.ActivityIdle {
 		t.Fatalf("review activity state = %q, want idle hook state preserved", store.review.ReviewerActivityState)

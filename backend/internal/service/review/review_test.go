@@ -41,8 +41,11 @@ func (f *fakeStore) GetReviewByID(_ context.Context, id string) (domain.Review, 
 	return domain.Review{}, false, nil
 }
 
-func (f *fakeStore) UpdateReviewActivity(_ context.Context, id string, state domain.ActivityState, agentSessionID string) (bool, error) {
+func (f *fakeStore) UpdateReviewActivity(_ context.Context, id string, state domain.ActivityState, agentSessionID, launchID string) (bool, error) {
 	if !f.reviewOK || f.review.ID != id {
+		return false, nil
+	}
+	if launchID != "" && f.review.ReviewerLaunchID != "" && f.review.ReviewerLaunchID != launchID {
 		return false, nil
 	}
 	f.activityUpdates++
@@ -51,6 +54,9 @@ func (f *fakeStore) UpdateReviewActivity(_ context.Context, id string, state dom
 	}
 	if state != "" {
 		f.review.ReviewerActivityState = state
+	}
+	if launchID != "" {
+		f.review.ReviewerLaunchID = launchID
 	}
 	return true, nil
 }
@@ -341,6 +347,34 @@ func TestApplyReviewActivitySignalPersistsReviewerActivityState(t *testing.T) {
 	}
 	if st.activityUpdates != 1 || st.review.ReviewerActivityState != domain.ActivityIdle {
 		t.Fatalf("activity update calls=%d review=%+v", st.activityUpdates, st.review)
+	}
+}
+
+func TestApplyReviewActivitySignalIgnoresStaleLaunchGeneration(t *testing.T) {
+	st := &fakeStore{
+		reviewOK: true,
+		review: domain.Review{
+			ID:                    "review-1",
+			SessionID:             "worker-1",
+			Harness:               domain.ReviewerOpenCode,
+			ReviewerLaunchID:      "launch-current",
+			ReviewerActivityState: domain.ActivityActive,
+		},
+	}
+	svc := New(nil, st)
+
+	if err := svc.ApplyReviewActivitySignal(context.Background(), "review-1", ActivitySignal{
+		Event:    "stop",
+		State:    domain.ActivityIdle,
+		LaunchID: "launch-stale",
+	}); err != nil {
+		t.Fatalf("ApplyReviewActivitySignal stale generation: %v", err)
+	}
+	if st.activityUpdates != 0 {
+		t.Fatalf("stale generation performed update calls=%d review=%+v", st.activityUpdates, st.review)
+	}
+	if st.review.ReviewerActivityState != domain.ActivityActive || st.review.ReviewerLaunchID != "launch-current" {
+		t.Fatalf("stale generation changed persisted review = %+v", st.review)
 	}
 }
 

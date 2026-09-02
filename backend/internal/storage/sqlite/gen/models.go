@@ -363,6 +363,7 @@ type Review struct {
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 	ReviewerActivityState string
+	ReviewerLaunchID      string
 }
 
 type ReviewRun struct {

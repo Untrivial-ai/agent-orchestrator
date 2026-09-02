@@ -72,7 +72,7 @@ func (q *Queries) ClearReviewerHandleByHarness(ctx context.Context, arg ClearRev
 }
 
 const getReviewByID = `-- name: GetReviewByID :one
-SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, created_at, updated_at
+SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, created_at, updated_at
 FROM review WHERE id = ?
 `
 
@@ -85,6 +85,7 @@ type GetReviewByIDRow struct {
 	ReviewerHandleID      string
 	AgentSessionID        string
 	ReviewerActivityState string
+	ReviewerLaunchID      string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -101,6 +102,7 @@ func (q *Queries) GetReviewByID(ctx context.Context, id string) (GetReviewByIDRo
 		&i.ReviewerHandleID,
 		&i.AgentSessionID,
 		&i.ReviewerActivityState,
+		&i.ReviewerLaunchID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -108,7 +110,7 @@ func (q *Queries) GetReviewByID(ctx context.Context, id string) (GetReviewByIDRo
 }
 
 const getReviewBySession = `-- name: GetReviewBySession :one
-SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, created_at, updated_at
+SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, created_at, updated_at
 FROM review WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1
 `
 
@@ -121,6 +123,7 @@ type GetReviewBySessionRow struct {
 	ReviewerHandleID      string
 	AgentSessionID        string
 	ReviewerActivityState string
+	ReviewerLaunchID      string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -137,6 +140,7 @@ func (q *Queries) GetReviewBySession(ctx context.Context, sessionID domain.Sessi
 		&i.ReviewerHandleID,
 		&i.AgentSessionID,
 		&i.ReviewerActivityState,
+		&i.ReviewerLaunchID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -144,7 +148,7 @@ func (q *Queries) GetReviewBySession(ctx context.Context, sessionID domain.Sessi
 }
 
 const getReviewBySessionAndHarness = `-- name: GetReviewBySessionAndHarness :one
-SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, created_at, updated_at
+SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, created_at, updated_at
 FROM review WHERE session_id = ? AND harness = ?
 `
 
@@ -162,6 +166,7 @@ type GetReviewBySessionAndHarnessRow struct {
 	ReviewerHandleID      string
 	AgentSessionID        string
 	ReviewerActivityState string
+	ReviewerLaunchID      string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -178,6 +183,7 @@ func (q *Queries) GetReviewBySessionAndHarness(ctx context.Context, arg GetRevie
 		&i.ReviewerHandleID,
 		&i.AgentSessionID,
 		&i.ReviewerActivityState,
+		&i.ReviewerLaunchID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -555,7 +561,7 @@ func (q *Queries) ListReviewRunsBySession(ctx context.Context, sessionID domain.
 }
 
 const listReviewsBySession = `-- name: ListReviewsBySession :many
-SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, created_at, updated_at
+SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, created_at, updated_at
 FROM review WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC
 `
 
@@ -568,6 +574,7 @@ type ListReviewsBySessionRow struct {
 	ReviewerHandleID      string
 	AgentSessionID        string
 	ReviewerActivityState string
+	ReviewerLaunchID      string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -590,6 +597,7 @@ func (q *Queries) ListReviewsBySession(ctx context.Context, sessionID domain.Ses
 			&i.ReviewerHandleID,
 			&i.AgentSessionID,
 			&i.ReviewerActivityState,
+			&i.ReviewerLaunchID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -697,6 +705,7 @@ UPDATE review SET
     reviewer_activity_state = CASE WHEN ? != '' THEN ? ELSE reviewer_activity_state END,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
+  AND (? = '' OR reviewer_launch_id = '' OR reviewer_launch_id = ?)
 `
 
 type UpdateReviewActivityParams struct {
@@ -705,6 +714,8 @@ type UpdateReviewActivityParams struct {
 	Column3               interface{}
 	ReviewerActivityState string
 	ID                    string
+	Column6               interface{}
+	ReviewerLaunchID      string
 }
 
 func (q *Queries) UpdateReviewActivity(ctx context.Context, arg UpdateReviewActivityParams) (int64, error) {
@@ -714,6 +725,8 @@ func (q *Queries) UpdateReviewActivity(ctx context.Context, arg UpdateReviewActi
 		arg.Column3,
 		arg.ReviewerActivityState,
 		arg.ID,
+		arg.Column6,
+		arg.ReviewerLaunchID,
 	)
 	if err != nil {
 		return 0, err
@@ -750,14 +763,15 @@ func (q *Queries) UpdateReviewRunResult(ctx context.Context, arg UpdateReviewRun
 }
 
 const upsertReview = `-- name: UpsertReview :exec
-INSERT INTO review (id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO review (id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (session_id, harness) DO UPDATE SET
     project_id = excluded.project_id,
     pr_url = excluded.pr_url,
     reviewer_handle_id = excluded.reviewer_handle_id,
     agent_session_id = CASE WHEN excluded.agent_session_id != '' THEN excluded.agent_session_id ELSE review.agent_session_id END,
     reviewer_activity_state = CASE WHEN excluded.reviewer_activity_state != '' THEN excluded.reviewer_activity_state ELSE review.reviewer_activity_state END,
+    reviewer_launch_id = CASE WHEN excluded.reviewer_launch_id != '' THEN excluded.reviewer_launch_id ELSE review.reviewer_launch_id END,
     updated_at = excluded.updated_at
 `
 
@@ -770,6 +784,7 @@ type UpsertReviewParams struct {
 	ReviewerHandleID      string
 	AgentSessionID        string
 	ReviewerActivityState string
+	ReviewerLaunchID      string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -784,6 +799,7 @@ func (q *Queries) UpsertReview(ctx context.Context, arg UpsertReviewParams) erro
 		arg.ReviewerHandleID,
 		arg.AgentSessionID,
 		arg.ReviewerActivityState,
+		arg.ReviewerLaunchID,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
