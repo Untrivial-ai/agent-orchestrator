@@ -125,6 +125,8 @@ var shippedMigrations = map[int64]string{
 	118: "0118_cancelled_conversation_turns.sql",
 	119: "0119_finalize_completed_conversation_plans.sql",
 	120: "0120_normalize_activity_last_at.sql",
+	121: "0121_review_activity_state.sql",
+	122: "0122_review_launch_id.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

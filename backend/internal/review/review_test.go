@@ -40,10 +40,28 @@ func (f *fakeStore) UpsertReview(_ context.Context, r domain.Review) error {
 		if cp.AgentSessionID == "" {
 			cp.AgentSessionID = existing.AgentSessionID
 		}
+		if cp.ReviewerLaunchID == "" {
+			cp.ReviewerLaunchID = existing.ReviewerLaunchID
+		}
+		if cp.ReviewerActivityState == "" {
+			cp.ReviewerActivityState = existing.ReviewerActivityState
+		}
 		f.review = &cp
 	}
 	f.reviews[r.Harness] = cp
 	return nil
+}
+
+func (f *fakeStore) mutateReview(harness domain.ReviewerHarness, fn func(*domain.Review)) {
+	if review, ok := f.reviews[harness]; ok {
+		fn(&review)
+		f.reviews[harness] = review
+		f.review = &review
+		return
+	}
+	if f.review != nil && f.review.Harness == harness {
+		fn(f.review)
+	}
 }
 func (f *fakeStore) SetSessionReviewerHarness(_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ time.Time) (bool, error) {
 	return true, nil
@@ -241,6 +259,7 @@ func (f fakeProjects) GetProject(_ context.Context, id string) (domain.ProjectRe
 type fakeLauncher struct {
 	handle           string
 	agentSessionID   string
+	launchID         string
 	alive            bool
 	reusable         bool
 	reusableSet      bool
@@ -268,6 +287,9 @@ type fakeLauncher struct {
 	spawnStarted     chan struct{}
 	unblockSpawn     <-chan struct{}
 	destroyCalled    chan string
+	onSpawn          func(LaunchSpec)
+	onRestore        func(LaunchSpec)
+	onNotify         func(string, LaunchSpec)
 }
 
 func (f *fakeLauncher) Spawn(_ context.Context, spec LaunchSpec) (LaunchResult, error) {
@@ -275,6 +297,9 @@ func (f *fakeLauncher) Spawn(_ context.Context, spec LaunchSpec) (LaunchResult, 
 	f.spawnCount++
 	f.gotSpec = spec
 	f.specs = append(f.specs, spec)
+	if f.onSpawn != nil {
+		f.onSpawn(spec)
+	}
 	if f.spawnStarted != nil {
 		close(f.spawnStarted)
 	}
@@ -284,16 +309,25 @@ func (f *fakeLauncher) Spawn(_ context.Context, spec LaunchSpec) (LaunchResult, 
 	if f.spawnErr != nil {
 		return LaunchResult{}, f.spawnErr
 	}
-	return LaunchResult{HandleID: f.handle, AgentSessionID: f.agentSessionID}, nil
+	if f.launchID == "" {
+		f.launchID = spec.LaunchID
+	}
+	return LaunchResult{HandleID: f.handle, LaunchID: f.launchID, AgentSessionID: f.agentSessionID}, nil
 }
 func (f *fakeLauncher) RestoreTerminal(_ context.Context, spec LaunchSpec) (LaunchResult, error) {
 	f.restored = true
 	f.gotSpec = spec
 	f.specs = append(f.specs, spec)
+	if f.onRestore != nil {
+		f.onRestore(spec)
+	}
 	if f.spawnErr != nil {
 		return LaunchResult{}, f.spawnErr
 	}
-	return LaunchResult{HandleID: f.handle, AgentSessionID: f.agentSessionID}, nil
+	if f.launchID == "" {
+		f.launchID = spec.LaunchID
+	}
+	return LaunchResult{HandleID: f.handle, LaunchID: f.launchID, AgentSessionID: f.agentSessionID}, nil
 }
 func (f *fakeLauncher) Notify(_ context.Context, handleID string, spec LaunchSpec) error {
 	f.notified = true
@@ -301,6 +335,9 @@ func (f *fakeLauncher) Notify(_ context.Context, handleID string, spec LaunchSpe
 	f.gotSpec = spec
 	f.handles = append(f.handles, handleID)
 	f.specs = append(f.specs, spec)
+	if f.onNotify != nil {
+		f.onNotify(handleID, spec)
+	}
 	return f.notifyErr
 }
 func (f *fakeLauncher) Alive(_ context.Context, _ string) (bool, error) {
@@ -389,6 +426,43 @@ func TestTriggerSpawnsNewReviewerAndRecordsRunAfterLaunch(t *testing.T) {
 	}
 }
 
+func TestTriggerPreservesHookOwnedActivityStateAfterLaunch(t *testing.T) {
+	store := &fakeStore{}
+	launcher := &fakeLauncher{
+		handle:         "review-mer-1",
+		agentSessionID: "native-review-1",
+		launchID:       "launch-1",
+		onSpawn: func(LaunchSpec) {
+			// Simulate a fast reviewer whose stop hook wins the race while Spawn
+			// is still unwinding.
+			store.mutateReview(domain.ReviewerClaudeCode, func(review *domain.Review) {
+				review.ReviewerActivityState = domain.ActivityIdle
+			})
+		},
+	}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	res, err := eng.Trigger(context.Background(), "mer-1", "")
+	if err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	if !res.Created {
+		t.Fatalf("result = %+v, want created review run", res)
+	}
+	if store.review == nil {
+		t.Fatal("review row not persisted")
+	}
+	if store.review.ReviewerHandleID != "review-mer-1" || store.review.AgentSessionID != "native-review-1" {
+		t.Fatalf("review metadata = %+v, want launched reviewer metadata", store.review)
+	}
+	if store.review.ReviewerLaunchID != "launch-1" {
+		t.Fatalf("review launch id = %q, want launch-1", store.review.ReviewerLaunchID)
+	}
+	if store.review.ReviewerActivityState != domain.ActivityIdle {
+		t.Fatalf("review activity state = %q, want idle hook state preserved", store.review.ReviewerActivityState)
+	}
+}
+
 func TestRestoreReviewerNoopsWithoutReviewHistory(t *testing.T) {
 	store := &fakeStore{}
 	launcher := &fakeLauncher{handle: "review-mer-1"}
@@ -428,6 +502,52 @@ func TestRestoreReviewerRestoresDeadReviewerFromHistory(t *testing.T) {
 	}
 	if store.review.ReviewerHandleID != "review-mer-1" {
 		t.Fatalf("stored reviewer handle = %q", store.review.ReviewerHandleID)
+	}
+}
+
+func TestRestoreReviewerPreservesHookOwnedActivityStateAfterRestore(t *testing.T) {
+	store := &fakeStore{
+		review: &domain.Review{
+			ID:                    "rev-1",
+			SessionID:             "mer-1",
+			Harness:               domain.ReviewerCodex,
+			ReviewerHandleID:      "stale-pane",
+			AgentSessionID:        "native-review-1",
+			ReviewerActivityState: domain.ActivityIdle,
+		},
+		runs: []domain.ReviewRun{{
+			ID: "run-1", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex,
+			PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved,
+		}},
+	}
+	launcher := &fakeLauncher{
+		alive:          false,
+		handle:         "review-mer-1",
+		agentSessionID: "native-review-2",
+		onRestore: func(LaunchSpec) {
+			// Simulate the relaunched reviewer reporting newer activity before the
+			// restore finalization writes handle/native-id metadata.
+			store.mutateReview(domain.ReviewerCodex, func(review *domain.Review) {
+				review.ReviewerActivityState = domain.ActivityActive
+			})
+		},
+	}
+	worker := liveWorker()
+	worker.ReviewerHarness = domain.ReviewerCodex
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	res, err := eng.RestoreReviewer(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("RestoreReviewer: %v", err)
+	}
+	if !res.Restored {
+		t.Fatalf("result = %+v, want restored reviewer", res)
+	}
+	if store.review.ReviewerHandleID != "review-mer-1" || store.review.AgentSessionID != "native-review-2" {
+		t.Fatalf("review metadata = %+v, want restored reviewer metadata", store.review)
+	}
+	if store.review.ReviewerActivityState != domain.ActivityActive {
+		t.Fatalf("review activity state = %q, want active hook state preserved", store.review.ReviewerActivityState)
 	}
 }
 
@@ -1575,7 +1695,7 @@ func TestTriggerRejectsBadWorkerState(t *testing.T) {
 
 func TestListReturnsHandleAndRuns(t *testing.T) {
 	store := &fakeStore{
-		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, ReviewerHandleID: "review-mer-1"},
+		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, ReviewerHandleID: "review-mer-1", ReviewerActivityState: domain.ActivityIdle},
 		runs:   []domain.ReviewRun{{ID: "run-1", SessionID: "mer-1", PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1"}},
 	}
 	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{})
@@ -1583,7 +1703,7 @@ func TestListReturnsHandleAndRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if got.ReviewerHandleID != "review-mer-1" || got.ReviewerHarness != domain.ReviewerClaudeCode || len(got.Runs) != 1 {
+	if got.ReviewerHandleID != "review-mer-1" || got.ReviewerHarness != domain.ReviewerClaudeCode || got.ReviewerActivityState != domain.ActivityIdle || len(got.Runs) != 1 {
 		t.Fatalf("list = %+v", got)
 	}
 }
