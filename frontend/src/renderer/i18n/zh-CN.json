@@ -260,6 +260,7 @@
 	"createProject.workspace": "工作区",
 	"createProject.workspaceAgents": "工作区代理",
 	"createProject.workspaceDesc": "位于同一父文件夹下的多个 Git 仓库。",
+	"createProject.standaloneDesc": "无需项目、仓库或工作区即可启动代理。",
 	"createProject.workspaceRoot": "工作区根目录",
 	"daemon.hint.binaryMissing": "请运行 npm run build:daemon 重新构建守护进程。",
 	"daemon.hint.conflict": "请先停止冲突的守护进程，然后重启桌面应用。",

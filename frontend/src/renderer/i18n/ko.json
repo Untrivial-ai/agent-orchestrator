@@ -260,6 +260,7 @@
 	"createProject.workspace": "워크스페이스",
 	"createProject.workspaceAgents": "워크스페이스 에이전트",
 	"createProject.workspaceDesc": "하나의 상위 폴더 아래에 있는 여러 Git 저장소.",
+	"createProject.standaloneDesc": "프로젝트, 저장소 또는 워크스페이스 없이 에이전트를 시작합니다.",
 	"createProject.workspaceRoot": "워크스페이스 루트",
 	"daemon.hint.binaryMissing": "npm run build:daemon을 실행하여 데몬을 다시 빌드하세요.",
 	"daemon.hint.conflict": "충돌하는 데몬을 중지한 뒤 데스크톱 앱을 다시 시작하세요.",

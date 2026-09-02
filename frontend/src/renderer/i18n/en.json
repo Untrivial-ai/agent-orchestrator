@@ -260,6 +260,7 @@
 	"createProject.workspace": "Workspace",
 	"createProject.workspaceAgents": "Workspace agents",
 	"createProject.workspaceDesc": "Several projects that live under one parent folder",
+	"createProject.standaloneDesc": "Start an agent without a project, repository, or workspace.",
 	"createProject.workspaceRoot": "Workspace root",
 	"daemon.hint.binaryMissing": "Run npm run build:daemon to rebuild the daemon.",
 	"daemon.hint.conflict": "Stop the conflicting daemon, then restart the desktop app.",

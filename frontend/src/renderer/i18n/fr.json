@@ -262,6 +262,7 @@
 	"createProject.workspace": "Espace de travail",
 	"createProject.workspaceAgents": "Agents de l'espace de travail",
 	"createProject.workspaceDesc": "Plusieurs dépôts Git sous un même dossier parent.",
+	"createProject.standaloneDesc": "Démarrez un agent sans projet, dépôt ni espace de travail.",
 	"createProject.workspaceRoot": "Racine de l'espace de travail",
 	"daemon.hint.binaryMissing": "Exécutez npm run build:daemon pour recompiler le daemon.",
 	"daemon.hint.conflict": "Arrêtez le daemon en conflit, puis redémarrez l'application de bureau.",

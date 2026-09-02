@@ -19,7 +19,12 @@ import {
 	SIDEBAR_DEFAULT_WIDTH,
 	SIDEBAR_MIN_WIDTH,
 } from "./Sidebar";
-import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import {
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
+	type WorkspaceSession,
+	type WorkspaceSummary,
+} from "../types/workspace";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { useUiStore } from "../stores/ui-store";
@@ -369,7 +374,7 @@ beforeEach(() => {
 	cloudSessionState.signOut.mockReset().mockResolvedValue(undefined);
 	historyBackMock.mockReset();
 	historyForwardMock.mockReset();
-	useUiStore.setState({ isCommandPaletteOpen: false, settingsModal: null });
+	useUiStore.setState({ isCommandPaletteOpen: false, newTaskRequest: null, settingsModal: null });
 	getMock.mockReset();
 	getMock.mockResolvedValue({
 		data: {
@@ -820,6 +825,35 @@ describe("Sidebar", () => {
 		expect(screen.getByText("Project One").closest("button")).toHaveAttribute("aria-expanded", "false");
 	});
 
+	it("toggles standalone sessions without navigating to onboarding", async () => {
+		const user = userEvent.setup();
+		const standaloneSession: WorkspaceSession = {
+			...session,
+			id: "standalone-1",
+			title: "standalone task",
+			workspaceId: STANDALONE_WORKSPACE_ID,
+			workspaceName: "Standalone agents",
+		};
+		renderSidebar({
+			expandedProjectIds: [],
+			workspaces: [
+				{
+					id: STANDALONE_WORKSPACE_ID,
+					kind: STANDALONE_PROJECT_KIND,
+					name: "Standalone agents",
+					path: "",
+					sessions: [standaloneSession],
+				},
+			],
+		});
+
+		expect(screen.queryByLabelText("Open standalone task")).not.toBeInTheDocument();
+		await user.click(screen.getByText("Standalone agents"));
+
+		expect(screen.getByLabelText("Open standalone task")).toBeInTheDocument();
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
 	it("expands a collapsed project when opening its orchestrator", async () => {
 		const user = userEvent.setup();
 		const orchestrator: WorkspaceSession = {
@@ -873,6 +907,22 @@ describe("Sidebar", () => {
 				}),
 			),
 		);
+	});
+
+	it("starts a standalone agent from the new-project picker", async () => {
+		const user = userEvent.setup();
+		renderSidebar();
+
+		await user.click(screen.getByLabelText("New project"));
+		await user.click(screen.getByRole("button", { name: "New standalone agent" }));
+
+		await waitFor(() =>
+			expect(useUiStore.getState().newTaskRequest).toEqual({
+				nonce: 1,
+				projectId: STANDALONE_WORKSPACE_ID,
+			}),
+		);
+		expect(screen.queryByRole("dialog", { name: "Add code to Agent Orchestrator" })).not.toBeInTheDocument();
 	});
 
 	it("clones a Git URL into the selected folder before starting agents", async () => {

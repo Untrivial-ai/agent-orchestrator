@@ -262,6 +262,7 @@
 	"createProject.workspace": "Espacio de trabajo",
 	"createProject.workspaceAgents": "Agentes del espacio de trabajo",
 	"createProject.workspaceDesc": "Varios repos Git bajo una carpeta principal.",
+	"createProject.standaloneDesc": "Inicia un agente sin proyecto, repositorio ni espacio de trabajo.",
 	"createProject.workspaceRoot": "Raíz del espacio de trabajo",
 	"daemon.hint.binaryMissing": "Ejecuta npm run build:daemon para recompilar el daemon.",
 	"daemon.hint.conflict": "Detén el daemon en conflicto y reinicia la aplicación de escritorio.",

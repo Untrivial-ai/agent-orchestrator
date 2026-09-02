@@ -1206,7 +1206,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		if (consumeDragClick(workspace.id)) return;
 		if (workspace.kind === STANDALONE_PROJECT_KIND) {
 			toggleDisclosure();
-			if (!expanded) selection.goHome();
 			return;
 		}
 		if (!expanded) {
@@ -2493,6 +2492,7 @@ function CreateProjectButton({
 	// reuses this flow via requestCreateProject().
 	const createProjectNonce = useUiStore((state) => state.createProjectNonce);
 	const folderDropRequest = useUiStore((state) => state.folderDropRequest);
+	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	return (
 		<CreateProjectFlow
 			droppedPath={folderDropRequest}
@@ -2500,6 +2500,7 @@ function CreateProjectButton({
 			onCloneProject={onCloneProject}
 			onCreateProject={onCreateProject}
 			onInitializeProject={onInitializeProject}
+			onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 			openSignal={createProjectNonce}
 		>
 			{({ disabled, choosePath, label }) => (

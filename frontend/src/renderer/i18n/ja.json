@@ -260,6 +260,7 @@
 	"createProject.workspace": "ワークスペース",
 	"createProject.workspaceAgents": "ワークスペースエージェント",
 	"createProject.workspaceDesc": "1 つの親フォルダー配下にある複数の Git リポジトリ。",
+	"createProject.standaloneDesc": "プロジェクト、リポジトリ、ワークスペースなしでエージェントを開始します。",
 	"createProject.workspaceRoot": "ワークスペースルート",
 	"daemon.hint.binaryMissing": "npm run build:daemon を実行してデーモンを再ビルドしてください。",
 	"daemon.hint.conflict": "競合しているデーモンを停止してから、デスクトップアプリを再起動してください。",
