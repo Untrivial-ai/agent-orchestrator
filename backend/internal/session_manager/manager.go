@@ -2556,7 +2556,10 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 			}
 		}
 	}
-	if projectKind == domain.ProjectKindScratch {
+	// Legacy Scratch sessions were intentionally one-shot. Standalone sessions
+	// also use the plain-directory workspace adapter, but unlike Scratch they
+	// are durable and must be relaunched after the daemon restarts.
+	if projectKind == domain.ProjectKindScratch && rec.ProjectID != "" {
 		return m.lcm.MarkTerminated(ctx, rec.ID)
 	}
 	ws, restoreErr := m.restoreSessionWorkspace(ctx, project, rec)
