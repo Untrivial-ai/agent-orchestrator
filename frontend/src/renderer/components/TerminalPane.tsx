@@ -490,6 +490,16 @@ export function TerminalCacheProvider({
 				removeEntry(entry.cacheKey);
 				continue;
 			}
+			// Cloud interface handoff deliberately stops the TUI process before
+			// starting ChatUI. The ticketed mux reports that intentional close as a
+			// normal exit, so retaining this AttachedTerminal would leave it in the
+			// terminal hook's terminal-exited state forever. When the committed mode
+			// returns to TUI, let the slot create a fresh xterm/mux attachment and
+			// replay the newly started process instead of showing the dead renderer.
+			if (entry.kind === "worker" && session?.cloud && session.mode !== "tui") {
+				removeEntry(entry.cacheKey);
+				continue;
+			}
 			if (
 				entry.kind === "worker" &&
 				session &&
