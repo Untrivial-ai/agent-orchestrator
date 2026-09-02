@@ -32,6 +32,11 @@ func TestDeriveKanbanColumnSessionLevelRules(t *testing.T) {
 			session: contract.KanbanSessionFacts{},
 			want:    contract.KanbanBuilding,
 		},
+		{
+			name:    "artifact output without a pr is validating",
+			session: contract.KanbanSessionFacts{HasArtifactOutput: true},
+			want:    contract.KanbanValidating,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

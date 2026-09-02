@@ -684,6 +684,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		TerminateOnPRMerge: row.TerminateOnPRMerge,
 		AutoInjectReview:   row.AutoInjectReview,
 		AutoInjectCI:       row.AutoInjectCI,
+		OutputType:         normalizeSessionOutputType(domain.SessionOutputType(row.SessionOutputType)),
 		Metadata: domain.SessionMetadata{
 			Branch:                           row.Branch,
 			WorkspacePath:                    row.WorkspacePath,
@@ -709,6 +710,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			NativeTranscriptPath:             row.NativeTranscriptPath,
 			PreviewURL:                       row.PreviewURL,
 			PreviewRevision:                  row.PreviewRevision,
+			ArtifactDir:                      row.ArtifactDir,
 			BrowserCapabilityVerifier:        row.BrowserCapabilityVerifier,
 			ProviderConversationID:           row.ProviderConversationID,
 			ControllerGeneration:             row.ControllerGeneration,
@@ -785,6 +787,8 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		AutoInjectCI:                     rec.AutoInjectCI,
 		CleanupGeneration:                rec.CleanupGeneration,
 		BrowserCapabilityVerifier:        rec.Metadata.BrowserCapabilityVerifier,
+		ArtifactDir:                      rec.Metadata.ArtifactDir,
+		SessionOutputType:                string(normalizeSessionOutputType(rec.OutputType)),
 		SessionMode:                      domain.NormalizeSessionMode(rec.Mode),
 		ProviderConversationID:           rec.Metadata.ProviderConversationID,
 		ControllerGeneration:             rec.Metadata.ControllerGeneration,
@@ -849,6 +853,8 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		AutoInjectCI:                     rec.AutoInjectCI,
 		CleanupGeneration:                rec.CleanupGeneration,
 		BrowserCapabilityVerifier:        rec.Metadata.BrowserCapabilityVerifier,
+		ArtifactDir:                      rec.Metadata.ArtifactDir,
+		SessionOutputType:                string(normalizeSessionOutputType(rec.OutputType)),
 		ProviderConversationID:           rec.Metadata.ProviderConversationID,
 		ControllerGeneration:             rec.Metadata.ControllerGeneration,
 		Model:                            rec.Metadata.Model,
@@ -896,6 +902,13 @@ func normalizedConversationCheckpointState(metadata domain.SessionMetadata) doma
 		return domain.ConversationCheckpointLegacy
 	}
 	return domain.ConversationCheckpointEmpty
+}
+
+func normalizeSessionOutputType(v domain.SessionOutputType) domain.SessionOutputType {
+	if v == "" {
+		return domain.SessionOutputNone
+	}
+	return v
 }
 
 // nullTimeToTime / timeToNullTime bridge the nullable first_signal_at column
