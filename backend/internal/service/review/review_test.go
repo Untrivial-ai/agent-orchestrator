@@ -362,6 +362,29 @@ func TestSubmitSnapshotsDisabledPolicyAndNeverDeliversOnRetry(t *testing.T) {
 	}
 }
 
+func TestSubmitCompletedRunDoesNotDeliverAfterSessionDisabled(t *testing.T) {
+	disabled := false
+	st := &fakeStore{
+		ok:                      true,
+		sessionAutoInjectReview: &disabled,
+		run: domain.ReviewRun{
+			ID: "run-1", SessionID: "mer-1", BatchID: "batch-1", PRURL: "pr1", TargetSHA: "sha1",
+			Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested, Body: "captured while enabled", AutoInjectReview: true,
+		},
+		prs: []domain.PullRequest{{URL: "pr1", HeadSHA: "sha1"}},
+	}
+	reducer := &fakeReducer{outcome: lifecycle.ReviewDeliverySent}
+	svc := New(nil, st, WithLifecycleReducer(reducer))
+
+	run, err := svc.Submit(context.Background(), "mer-1", "run-1", domain.VerdictChangesRequested, "captured while enabled", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.ReviewRunComplete || !run.AutoInjectReview || reducer.batchCalls != 0 || st.markCalls != 0 {
+		t.Fatalf("disabled current policy delivered or rewrote snapshot: run=%+v reducerCalls=%d markCalls=%d", run, reducer.batchCalls, st.markCalls)
+	}
+}
+
 func TestSubmitBatchRunDoesNotWaitForOtherRunningRuns(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	st := &fakeStore{
