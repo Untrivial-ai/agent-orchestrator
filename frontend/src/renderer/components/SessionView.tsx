@@ -30,9 +30,9 @@ import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import { SessionActionsMenu } from "./SessionActionsMenu";
 import { SessionInspector } from "./SessionInspector";
 import {
-	SessionInterfaceActionGroup,
 	SessionInterfaceSwitchButton,
 	SessionInterfaceSwitchDialog,
+	SessionInterfaceSwitchMenuItem,
 	SessionInterfaceTransitionNotice,
 } from "./SessionInterfaceSwitch";
 import { ShellTopbar } from "./ShellTopbar";
@@ -1094,7 +1094,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		if (handoffSwitchError) setHandoffDialogOpen(true);
 	}, [handoffSwitchError]);
-	const interfaceSwitchControl =
+	const interfaceSwitchInlineStatus =
 		session && showInterfaceSwitchAction ? (
 			<SessionInterfaceSwitchButton
 				target={interfaceTarget}
@@ -1114,6 +1114,20 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				}}
 			/>
 		) : null;
+	const interfaceSwitchMenuItem =
+		session && showInterfaceSwitchAction && !activeInterfaceTransition ? (
+			<SessionInterfaceSwitchMenuItem
+				target={interfaceTarget}
+				supported={Boolean(interfaceSwitch.status?.supported)}
+				disabledReason={
+					interfaceSwitch.isLoading
+						? "Checking whether this agent can switch interfaces…"
+						: interfaceSwitch.status?.reason || interfaceSwitch.statusError
+				}
+				pending={interfaceSwitch.starting}
+				onClick={requestInterfaceSwitch}
+			/>
+		) : null;
 	const handoffMenuItem = session ? (
 		<TerminalSwitchAgentButton
 			key={session.id}
@@ -1126,20 +1140,24 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			switchError={handoffSwitchError}
 		/>
 	) : null;
-	const sessionTabActions =
-		interfaceSwitchControl || handoffMenuItem ? (
-			<SessionInterfaceActionGroup>
-				{interfaceSwitchControl}
-				<SessionActionsMenu>{handoffMenuItem}</SessionActionsMenu>
-			</SessionInterfaceActionGroup>
-		) : null;
+	const cloudInterfaceSwitchAction = session?.cloud ? interfaceSwitchInlineStatus : null;
+	const sessionTabActions = (
+		<SessionActionsMenu inlineStatus={session?.cloud ? undefined : interfaceSwitchInlineStatus}>
+			{interfaceSwitchMenuItem}
+			{handoffMenuItem}
+		</SessionActionsMenu>
+	);
 	const compactSessionChrome = adaptiveWorkspaceActive;
 	const sessionHeaderActions = (
 		<div
-			className="session-topbar-session-chrome flex shrink-0 items-center"
-			data-compact-session-chrome="false"
+			className="session-topbar-session-chrome flex shrink-0 items-center gap-1"
+			data-compact-session-chrome={compactSessionChrome ? "true" : "false"}
 		>
-			<ShellTopbar embedded />
+			<ShellTopbar
+				compactActions={compactSessionChrome}
+				embedded
+				 sessionAction={cloudInterfaceSwitchAction}
+			/>
 		</div>
 	);
 
