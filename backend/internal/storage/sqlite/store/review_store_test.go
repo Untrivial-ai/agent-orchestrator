@@ -280,6 +280,20 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 	if got.ReviewerActivityState != "" {
 		t.Fatalf("stale launch update changed activity state = %q, want empty", got.ReviewerActivityState)
 	}
+	updated, err = s.UpdateReviewActivity(ctx, "rev-2", domain.ActivityBlocked, "legacy-native", "")
+	if err != nil {
+		t.Fatalf("empty launch update against claimed generation: %v", err)
+	}
+	if updated {
+		t.Fatal("empty launch update unexpectedly succeeded against claimed generation")
+	}
+	got, ok, err = s.GetReviewBySessionAndHarness(ctx, rec.ID, domain.ReviewerHarness("greptile"))
+	if err != nil || !ok {
+		t.Fatalf("get greptile review after empty launch update: ok=%v err=%v", ok, err)
+	}
+	if got.ReviewerActivityState != "" || got.AgentSessionID != "reviewer-native-1" {
+		t.Fatalf("empty launch update changed review = %+v", got)
+	}
 	updated, err = s.UpdateReviewActivity(ctx, "rev-2", domain.ActivityIdle, "", "launch-2")
 	if err != nil || !updated {
 		t.Fatalf("matching launch update: updated=%v err=%v", updated, err)

@@ -378,6 +378,10 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 			return TriggerResult{}, failRuns(0, fmt.Errorf("reviewer preflight: %w", err))
 		}
 		launchID := e.newID()
+		reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, reviewRow.AgentSessionID, launchID, "", now)
+		if err != nil {
+			return TriggerResult{}, failRuns(0, err)
+		}
 		launch, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, created[0], queue, 0, reviewRow.AgentSessionID, launchID))
 		if err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("launch reviewer: %w", err))
@@ -565,6 +569,10 @@ func (e *Engine) restoreReviewerLocked(ctx stdctx.Context, workerID domain.Sessi
 		}
 	}
 	launchID := e.newID()
+	reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, agentSessionID, launchID, "", e.clock())
+	if err != nil {
+		return RestoreReviewerResult{}, err
+	}
 	launch, err := e.launcher.RestoreTerminal(ctx, LaunchSpec{
 		ReviewSessionID: reviewRow.ID,
 		LaunchID:        launchID,

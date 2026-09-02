@@ -45,7 +45,10 @@ func (f *fakeStore) UpdateReviewActivity(_ context.Context, id string, state dom
 	if !f.reviewOK || f.review.ID != id {
 		return false, nil
 	}
-	if launchID != "" && f.review.ReviewerLaunchID != "" && f.review.ReviewerLaunchID != launchID {
+	switch {
+	case f.review.ReviewerLaunchID != "" && launchID != f.review.ReviewerLaunchID:
+		return false, nil
+	case f.review.ReviewerLaunchID == "" && launchID != "":
 		return false, nil
 	}
 	f.activityUpdates++
@@ -375,6 +378,34 @@ func TestApplyReviewActivitySignalIgnoresStaleLaunchGeneration(t *testing.T) {
 	}
 	if st.review.ReviewerActivityState != domain.ActivityActive || st.review.ReviewerLaunchID != "launch-current" {
 		t.Fatalf("stale generation changed persisted review = %+v", st.review)
+	}
+}
+
+func TestApplyReviewActivitySignalIgnoresMissingLaunchIDAfterGenerationClaimed(t *testing.T) {
+	st := &fakeStore{
+		reviewOK: true,
+		review: domain.Review{
+			ID:                    "review-1",
+			SessionID:             "worker-1",
+			Harness:               domain.ReviewerOpenCode,
+			ReviewerLaunchID:      "launch-current",
+			ReviewerActivityState: domain.ActivityActive,
+			AgentSessionID:        "native-current",
+		},
+	}
+	svc := New(nil, st)
+
+	if err := svc.ApplyReviewActivitySignal(context.Background(), "review-1", ActivitySignal{
+		Event:          "session-start",
+		AgentSessionID: "legacy-native",
+	}); err != nil {
+		t.Fatalf("ApplyReviewActivitySignal missing launch id: %v", err)
+	}
+	if st.activityUpdates != 0 {
+		t.Fatalf("missing launch id performed update calls=%d review=%+v", st.activityUpdates, st.review)
+	}
+	if st.review.ReviewerActivityState != domain.ActivityActive || st.review.ReviewerLaunchID != "launch-current" || st.review.AgentSessionID != "native-current" {
+		t.Fatalf("missing launch id changed persisted review = %+v", st.review)
 	}
 }
 

@@ -112,6 +112,7 @@ func (s *Store) UpdateReviewActivity(ctx context.Context, id string, state domai
 		ReviewerActivityState: string(state),
 		Column6:               launchID,
 		ReviewerLaunchID:      launchID,
+		Column8:               launchID,
 		ID:                    id,
 	})
 	if err != nil {

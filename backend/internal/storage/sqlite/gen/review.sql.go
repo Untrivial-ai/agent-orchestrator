@@ -705,7 +705,8 @@ UPDATE review SET
     reviewer_activity_state = CASE WHEN ? != '' THEN ? ELSE reviewer_activity_state END,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-  AND (? = '' OR reviewer_launch_id = '' OR reviewer_launch_id = ?)
+  AND ((? != '' AND reviewer_launch_id = ?)
+    OR (? = '' AND reviewer_launch_id = ''))
 `
 
 type UpdateReviewActivityParams struct {
@@ -716,6 +717,7 @@ type UpdateReviewActivityParams struct {
 	ID                    string
 	Column6               interface{}
 	ReviewerLaunchID      string
+	Column8               interface{}
 }
 
 func (q *Queries) UpdateReviewActivity(ctx context.Context, arg UpdateReviewActivityParams) (int64, error) {
@@ -727,6 +729,7 @@ func (q *Queries) UpdateReviewActivity(ctx context.Context, arg UpdateReviewActi
 		arg.ID,
 		arg.Column6,
 		arg.ReviewerLaunchID,
+		arg.Column8,
 	)
 	if err != nil {
 		return 0, err
