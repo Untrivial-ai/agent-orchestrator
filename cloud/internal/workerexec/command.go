@@ -159,14 +159,17 @@ func (b HarnessBuilder) interactiveRestoreIdentity(
 	if launch.Harness != "claude-code" {
 		return strings.TrimSpace(launch.AgentSessionID)
 	}
-	if identity := strings.TrimSpace(launch.AgentSessionID); b.claudeConversationAvailable(identity) {
-		return identity
+	// A newly provisioned worker has no native conversation yet. Do not infer
+	// one from the deterministic Claude session id: a stale or partially
+	// created JSONL file can make Claude start with --resume for a conversation
+	// that does not exist, leaving the PTY open with no agent process/output.
+	// The control plane's agentSessionID is populated only after a real native
+	// conversation has been observed, so it is the only safe restore hint here.
+	identity := strings.TrimSpace(launch.AgentSessionID)
+	if identity == "" || !b.claudeConversationAvailable(identity) {
+		return ""
 	}
-	identity := agentruntime.ClaudeSessionID(launch.SessionID)
-	if b.claudeConversationAvailable(identity) {
-		return identity
-	}
-	return ""
+	return identity
 }
 
 func (b HarnessBuilder) claudeConfigDir() (string, error) {

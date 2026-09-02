@@ -1,9 +1,12 @@
 package workerexec
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
 
@@ -41,5 +44,44 @@ func TestCodexArgsMatchesCloudSessionPermissionMode(t *testing.T) {
 				t.Fatalf("args = %#v, want %#v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestInteractiveRestoreIdentityDoesNotInferFreshClaudeConversation(t *testing.T) {
+	dataDir := t.TempDir()
+	launch := worker.LaunchContext{Harness: "claude-code", SessionID: "session-1"}
+	identity := agentruntime.ClaudeSessionID(launch.SessionID)
+	path := filepath.Join(dataDir, "claude", "projects", "workspace", identity+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create Claude project directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("stale conversation"), 0o600); err != nil {
+		t.Fatalf("write stale Claude conversation: %v", err)
+	}
+
+	got := (HarnessBuilder{DataDir: dataDir}).interactiveRestoreIdentity(launch)
+	if got != "" {
+		t.Fatalf("fresh Claude launch identity = %q, want empty", got)
+	}
+}
+
+func TestInteractiveRestoreIdentityUsesExplicitClaudeConversation(t *testing.T) {
+	dataDir := t.TempDir()
+	launch := worker.LaunchContext{
+		Harness:        "claude-code",
+		SessionID:      "session-1",
+		AgentSessionID: "native-chat",
+	}
+	path := filepath.Join(dataDir, "claude", "projects", "workspace", launch.AgentSessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create Claude project directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("native conversation"), 0o600); err != nil {
+		t.Fatalf("write Claude conversation: %v", err)
+	}
+
+	got := (HarnessBuilder{DataDir: dataDir}).interactiveRestoreIdentity(launch)
+	if got != launch.AgentSessionID {
+		t.Fatalf("explicit Claude launch identity = %q, want %q", got, launch.AgentSessionID)
 	}
 }

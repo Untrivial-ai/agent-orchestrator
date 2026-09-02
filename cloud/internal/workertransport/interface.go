@@ -116,12 +116,14 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 	if input.TargetInterface == InterfaceChat {
 		return s.startChat(ctx)
 	}
-	// Terminal target: rebuild the interactive command with the conversation
-	// identity resolved after ChatUI's latest turn. The command built at worker
-	// bootstrap can predate the first TUI hook and would otherwise launch a
-	// fresh TUI with no shared history.
-	if err := s.refreshAgentCommand(ctx, s.nativeConversationID(ctx, input)); err != nil {
-		return err
+	// Terminal target: rebuild the interactive command only when a real native
+	// conversation was observed after ChatUI's turn. For a fresh session there
+	// is no identity to resume; keep the plain bootstrap command instead of
+	// manufacturing a resume command for a conversation that does not exist.
+	if nativeConversationID := s.nativeConversationID(ctx, input); nativeConversationID != "" {
+		if err := s.refreshAgentCommand(ctx, nativeConversationID); err != nil {
+			return err
+		}
 	}
 	s.iface.mu.Lock()
 	s.iface.current = InterfaceTUI

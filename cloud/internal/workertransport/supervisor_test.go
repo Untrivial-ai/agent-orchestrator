@@ -92,6 +92,36 @@ func TestRefreshAgentCommandUsesLatestConversationID(t *testing.T) {
 	}
 }
 
+func TestStartInterfaceKeepsBootstrapCommandWithoutConversation(t *testing.T) {
+	workspace := t.TempDir()
+	called := false
+	supervisor := &Supervisor{
+		Control:   &supervisorControlStub{},
+		Workspace: workspace,
+		AgentCommand: workerexec.Command{
+			Path: "/bin/sh",
+			Args: []string{"-c", "sleep 30"},
+			Dir:  workspace,
+		},
+		AgentCommandFactory: func(context.Context, string) (workerexec.Command, error) {
+			called = true
+			return workerexec.Command{Path: "unexpected"}, nil
+		},
+		AgentTerminalID: "00000000-0000-0000-0000-000000000003",
+		terminals:       make(map[string]*terminalProcess),
+	}
+
+	if err := supervisor.startInterface(context.Background(), interfacePayload{
+		TargetInterface: InterfaceTUI,
+	}); err != nil {
+		t.Fatalf("start interface: %v", err)
+	}
+	if called {
+		t.Fatal("refreshed the agent command without a native conversation")
+	}
+	supervisor.closeAllTerminals()
+}
+
 func TestOpenAgentTerminalStartsWithoutDeadlocking(t *testing.T) {
 	workspace := t.TempDir()
 	supervisor := &Supervisor{
