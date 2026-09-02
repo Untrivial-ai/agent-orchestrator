@@ -1148,6 +1148,14 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		session !== undefined &&
 		renderedSessionMode === "chat" &&
 		(chatTargetKind === "worker" || chatTargetKind === "reviewer" || chatTargetKind === "shell");
+	// A Cloud Chat -> TUI handoff must not reuse the TUI cache entry that was
+	// intentionally closed when Chat started. The committed mode changes to TUI
+	// only after the coordinator has stopped Chat, so using the completed
+	// transition id here is safe and gives the new PTY a deterministic generation.
+	const terminalGeneration =
+		session?.cloud && session.mode === "tui" && interfaceSwitch.transition?.targetMode === "tui"
+			? interfaceSwitch.transition.id
+			: undefined;
 	const {
 		agentSwitch: handoffAgentSwitch,
 		switchControlPresentation: handoffControlPresentation,
@@ -1688,6 +1696,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 									onSelectShellTerminal={selectShellTerminal}
 									reviewerTerminal={reviewerTerminal}
 									session={session}
+									terminalGeneration={terminalGeneration}
 									shellTerminals={shellTerminals}
 									terminalTarget={routedTerminalTarget}
 									theme={theme}
