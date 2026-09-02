@@ -196,7 +196,8 @@ export function CloudCredentialDialog() {
 									// Some native Electron paste paths update the input after the
 									// paste event. Sync on the next frame so the button reflects
 									// what is visibly in the field.
-									requestAnimationFrame(() => setSecret(e.currentTarget.value));
+									const input = e.currentTarget;
+									requestAnimationFrame(() => setSecret(input.value));
 								}}
 								onKeyDown={(e) => {
 									if (e.key === "Enter") void submit();
