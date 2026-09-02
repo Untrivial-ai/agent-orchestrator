@@ -961,12 +961,7 @@ func (s *Store) MarkTerminalExited(
 		if !current {
 			return ErrStaleWorker
 		}
-		state := "closed"
-		message := ""
-		if exitCode != 0 {
-			state = "failed"
-			message = fmt.Sprintf("Terminal process exited with status %d.", exitCode)
-		}
+		state, message := terminalExitState(exitCode, interfaceHandoff)
 		tag, err := tx.Exec(ctx,
 			`UPDATE ao_terminal_sessions
 			SET state = $1, error_message = $2, closed_at = now(), updated_at = now()
@@ -1000,6 +995,22 @@ func (s *Store) MarkTerminalExited(
 		)
 		return err
 	})
+}
+
+// terminalExitState keeps an intentional interface handoff reusable. Closing
+// a PTY is expected to make the provider process return a non-zero status on
+// some platforms (for example after the controlling terminal is closed), but
+// that is not a failed agent terminal. Marking the row failed would prevent
+// EnsureWorkerAgentTerminal from reopening it and would lose the persisted TUI
+// scrollback when ChatUI hands the same session back to TUI.
+func terminalExitState(exitCode int, interfaceHandoff bool) (string, string) {
+	if interfaceHandoff {
+		return "closed", ""
+	}
+	if exitCode != 0 {
+		return "failed", fmt.Sprintf("Terminal process exited with status %d.", exitCode)
+	}
+	return "closed", ""
 }
 
 func (s *Store) ListTerminalOutput(
