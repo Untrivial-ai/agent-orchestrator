@@ -2787,7 +2787,7 @@ export interface components {
             /** Format: int64 */
             previewRevision?: number;
             previewUrl?: string;
-            projectId: string;
+            projectId?: string;
             prs: components["schemas"]["SessionPRFacts"][];
             reviewerConfig?: components["schemas"]["AgentConfig"];
             /** @enum {string} */
@@ -3985,7 +3985,7 @@ export interface components {
             /** @enum {string} */
             mode?: "chat" | "tui";
             model?: string;
-            projectId: string;
+            projectId?: string;
             prompt?: string;
             /** @enum {string} */
             trackerProvider?: "github" | "gitlab";

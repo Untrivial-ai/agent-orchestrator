@@ -251,7 +251,8 @@ type ListSessionsResponse struct {
 
 // SpawnSessionRequest is the body of POST /api/v1/sessions.
 type SpawnSessionRequest struct {
-	ProjectID       domain.ProjectID       `json:"projectId"`
+	// ProjectID is omitted for a standalone worker session.
+	ProjectID       domain.ProjectID       `json:"projectId,omitempty"`
 	IssueID         domain.IssueID         `json:"issueId,omitempty"`
 	TrackerProvider domain.TrackerProvider `json:"trackerProvider,omitempty" enum:"github,gitlab"`
 	Kind            domain.SessionKind     `json:"kind,omitempty" enum:"worker,orchestrator"`

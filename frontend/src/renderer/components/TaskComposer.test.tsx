@@ -102,6 +102,35 @@ afterEach(() => {
 });
 
 describe("TaskComposer", () => {
+	it("starts a standalone worker without loading or sending a project", async () => {
+		const onCreated = vi.fn();
+		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="__standalone__" onCreated={onCreated} />
+			</Wrap>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Agent"));
+		fireEvent.change(task(), { target: { value: "Research release options" } });
+		fireEvent.click(screen.getByText("Start task"));
+
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("standalone-1"));
+		expect(h.post).toHaveBeenCalledWith(
+			"/api/v1/sessions",
+			expect.objectContaining({
+				body: expect.objectContaining({
+					kind: "worker",
+					harness: "codex",
+					prompt: "Research release options",
+				}),
+			}),
+		);
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("projectId");
+		expect(h.get.mock.calls.some(([path]) => path === "/api/v1/projects/{id}")).toBe(false);
+	});
+
 	it("ensures display readiness for every harness when the composer opens", async () => {
 		render(
 			<Wrap>

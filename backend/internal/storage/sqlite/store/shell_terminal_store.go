@@ -128,6 +128,13 @@ func optionalProjectID(id domain.ProjectID) *domain.ProjectID {
 	return &id
 }
 
+func projectIDValue(id *domain.ProjectID) domain.ProjectID {
+	if id == nil {
+		return ""
+	}
+	return *id
+}
+
 // optionalSessionID maps the service's "no session" empty string onto the
 // nullable column, so a session-less shell stores NULL rather than an empty
 // string that would violate the sessions FK.

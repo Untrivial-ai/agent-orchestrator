@@ -334,111 +334,6 @@ func TestManager_AddDoesNotRepeatFirstProjectTelemetry(t *testing.T) {
 	}
 }
 
-func TestManager_EnsureDefaultScratchProjectSeedsFreshRegistry(t *testing.T) {
-	ctx := context.Background()
-	store, err := sqlitetest.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	m := project.NewWithDeps(project.Deps{Store: store, DefaultHarness: domain.HarnessCodex})
-	scratchPath := filepath.Join(t.TempDir(), "scratch", "default")
-
-	proj, err := m.EnsureDefaultScratchProject(ctx, scratchPath)
-	if err != nil {
-		t.Fatalf("EnsureDefaultScratchProject: %v", err)
-	}
-	if proj.ID != "scratch" || proj.Name != "Scratch" || proj.Path != scratchPath || proj.Kind != domain.ProjectKindScratch {
-		t.Fatalf("scratch project = %#v", proj)
-	}
-	if proj.Repo != "" || proj.DefaultBranch != "" {
-		t.Fatalf("scratch repo/default branch = %q/%q, want empty", proj.Repo, proj.DefaultBranch)
-	}
-	if proj.Agent != string(domain.HarnessCodex) || proj.Config == nil ||
-		proj.Config.Worker.Harness != domain.HarnessCodex ||
-		proj.Config.Orchestrator.Harness != domain.HarnessCodex {
-		t.Fatalf("scratch agents/config = agent:%q config:%#v, want codex role overrides", proj.Agent, proj.Config)
-	}
-
-	list, err := m.List(ctx)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(list) != 1 || list[0].ID != "scratch" || list[0].Kind != domain.ProjectKindScratch {
-		t.Fatalf("List = %#v, want one scratch project", list)
-	}
-	if list[0].OrchestratorAgent != domain.HarnessCodex {
-		t.Fatalf("summary orchestrator agent = %q, want codex", list[0].OrchestratorAgent)
-	}
-}
-
-func TestManager_EnsureDefaultScratchProjectDoesNotReseedWithActiveProject(t *testing.T) {
-	ctx := context.Background()
-	store, err := sqlitetest.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	now := time.Now().UTC().Truncate(time.Second)
-	if err := store.UpsertProject(ctx, domain.ProjectRecord{
-		ID:           "old",
-		DisplayName:  "Old",
-		Path:         "/tmp/old",
-		Kind:         domain.ProjectKindSingleRepo,
-		RegisteredAt: now,
-	}); err != nil {
-		t.Fatalf("seed old project: %v", err)
-	}
-
-	m := project.NewWithDeps(project.Deps{Store: store})
-	proj, err := m.EnsureDefaultScratchProject(ctx, filepath.Join(t.TempDir(), "scratch", "default"))
-	if err != nil {
-		t.Fatalf("EnsureDefaultScratchProject: %v", err)
-	}
-	if proj.ID != "" {
-		t.Fatalf("seeded scratch with active project: %#v", proj)
-	}
-	if list, err := m.List(ctx); err != nil || len(list) != 1 || list[0].ID != "old" {
-		t.Fatalf("active projects = %#v, %v; want old project only", list, err)
-	}
-}
-
-func TestManager_EnsureDefaultScratchProjectReseedsAfterArchivedScratchLeavesNoActiveProjects(t *testing.T) {
-	ctx := context.Background()
-	store, err := sqlitetest.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	m := project.NewWithDeps(project.Deps{Store: store})
-	firstPath := filepath.Join(t.TempDir(), "scratch", "default")
-	first, err := m.EnsureDefaultScratchProject(ctx, firstPath)
-	if err != nil {
-		t.Fatalf("first EnsureDefaultScratchProject: %v", err)
-	}
-	if first.ID != "scratch" {
-		t.Fatalf("first scratch project = %#v", first)
-	}
-	if ok, err := store.ArchiveProject(ctx, "scratch", time.Now().UTC().Add(time.Minute)); err != nil || !ok {
-		t.Fatalf("archive scratch project: ok=%v err=%v", ok, err)
-	}
-	scratchPath := filepath.Join(t.TempDir(), "scratch", "replacement")
-	proj, err := m.EnsureDefaultScratchProject(ctx, scratchPath)
-	if err != nil {
-		t.Fatalf("EnsureDefaultScratchProject: %v", err)
-	}
-	if proj.ID != "scratch" || proj.Path != scratchPath || proj.Kind != domain.ProjectKindScratch {
-		t.Fatalf("reseeded scratch project = %#v", proj)
-	}
-	list, err := m.List(ctx)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(list) != 1 || list[0].ID != "scratch" {
-		t.Fatalf("active projects = %#v, want reseeded scratch", list)
-	}
-}
-
 func TestManager_SetConfigRejectsScratchGitOnlyFields(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlitetest.Open(t.TempDir())
@@ -448,8 +343,14 @@ func TestManager_SetConfigRejectsScratchGitOnlyFields(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	m := project.NewWithDeps(project.Deps{Store: store})
 	scratchPath := filepath.Join(t.TempDir(), "scratch", "default")
-	if _, err := m.EnsureDefaultScratchProject(ctx, scratchPath); err != nil {
-		t.Fatalf("EnsureDefaultScratchProject: %v", err)
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{
+		ID:           "scratch",
+		Path:         scratchPath,
+		DisplayName:  "Scratch",
+		RegisteredAt: time.Now().UTC(),
+		Kind:         domain.ProjectKindScratch,
+	}); err != nil {
+		t.Fatalf("seed legacy Scratch project: %v", err)
 	}
 
 	_, err = m.SetConfig(ctx, "scratch", project.SetConfigInput{Config: domain.ProjectConfig{DefaultBranch: "main"}})

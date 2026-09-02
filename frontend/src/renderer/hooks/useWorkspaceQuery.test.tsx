@@ -250,6 +250,43 @@ describe("useWorkspaceQuery", () => {
 		});
 	});
 
+	it("groups projectless sessions as standalone agents", async () => {
+		respondWith({
+			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+			sessions: {
+				data: {
+					sessions: [
+						{
+							id: "standalone-1",
+							displayName: "Research",
+							harness: "codex",
+							status: "working",
+							isTerminated: false,
+							updatedAt: "2026-06-10T16:15:04Z",
+						},
+					],
+				},
+				error: undefined,
+			},
+		});
+
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+		expect(result.current.data?.[0]).toMatchObject({
+			id: "__standalone__",
+			name: "Standalone agents",
+			kind: "standalone",
+		});
+		expect(result.current.data?.[0].sessions[0]).toMatchObject({
+			id: "standalone-1",
+			workspaceId: "",
+			workspaceName: "Standalone agents",
+			title: "Research",
+			branch: undefined,
+		});
+	});
+
 	it("maps each session's prs straight from the session list", async () => {
 		respondWith({
 			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },

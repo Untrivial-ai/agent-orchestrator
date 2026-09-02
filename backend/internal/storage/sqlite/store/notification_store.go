@@ -32,7 +32,7 @@ func (s *Store) CreateNotification(ctx context.Context, rec domain.NotificationR
 	row, err := s.qw.CreateNotification(ctx, gen.CreateNotificationParams{
 		ID:        rec.ID,
 		SessionID: rec.SessionID,
-		ProjectID: rec.ProjectID,
+		ProjectID: optionalProjectID(rec.ProjectID),
 		PRURL:     rec.PRURL,
 		Type:      rec.Type,
 		Title:     rec.Title,
@@ -289,7 +289,7 @@ func notificationFromGen(row gen.Notification) domain.NotificationRecord {
 	return domain.NotificationRecord{
 		ID:         row.ID,
 		SessionID:  row.SessionID,
-		ProjectID:  row.ProjectID,
+		ProjectID:  projectIDValue(row.ProjectID),
 		PRURL:      row.PRURL,
 		Type:       row.Type,
 		Title:      row.Title,

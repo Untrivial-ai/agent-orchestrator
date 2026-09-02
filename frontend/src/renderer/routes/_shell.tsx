@@ -48,7 +48,7 @@ import {
 } from "../lib/platform";
 import { sidebarIsCompact, sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
-import { sessionIsActive, toProjectKind, type WorkspaceSummary } from "../types/workspace";
+import { sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
 import { useAgentInventoryTelemetry } from "../hooks/useAgentInventoryTelemetry";
 
@@ -172,7 +172,6 @@ function ShellLayout() {
 	const shellContentRowRef = useRef<HTMLDivElement | null>(null);
 	const syncSystemTheme = useUiStore((state) => state.syncSystemTheme);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
-	const requestCreateProject = useUiStore((state) => state.requestCreateProject);
 	const requestCreateProjectFromPath = useUiStore((state) => state.requestCreateProjectFromPath);
 	const requestNewShellTerminal = useUiStore((state) => state.requestNewShellTerminal);
 	const newShellTerminalNonce = useUiStore((state) => state.newShellTerminalNonce);
@@ -712,17 +711,17 @@ function ShellLayout() {
 	// New session (⌘N / Ctrl+Shift+N) is detected in the main process and
 	// delivered here, so it fires even when focus is inside xterm or a native
 	// Browser-preview view. The shell owns the routing: open the New Task flow
-	// for the in-scope project, else fall back to create-project.
+	// for the in-scope project, or a standalone agent when no project is in scope.
 	useEffect(
 		() =>
 			aoBridge.app.onNewSessionShortcut(() => {
 				if (scopedProjectId) {
 					requestNewTask(scopedProjectId);
 				} else {
-					requestCreateProject();
+					requestNewTask(STANDALONE_WORKSPACE_ID);
 				}
 			}),
-		[scopedProjectId, requestNewTask, requestCreateProject],
+		[scopedProjectId, requestNewTask],
 	);
 
 	useEffect(() => aoBridge.app.onKeyboardShortcutsHelp(() => setIsKeyboardShortcutsOpen(true)), []);

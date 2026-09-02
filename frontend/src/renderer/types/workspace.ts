@@ -177,6 +177,10 @@ export function canonicalTrackerIssueId(issueId?: string): string | undefined {
 
 export type ProjectKind = "single_repo" | "workspace" | "scratch";
 
+/** UI-only grouping for sessions that have no daemon project row. */
+export const STANDALONE_WORKSPACE_ID = "__standalone__" as const;
+export const STANDALONE_PROJECT_KIND = "standalone" as const;
+
 /** Sentinel `kind` value for projects hosted by the AO cloud control plane. */
 export const CLOUD_PROJECT_KIND = "cloud" as const;
 
@@ -312,7 +316,7 @@ export type WorkspaceSummary = {
 	 * the AO cloud control plane carry CLOUD_PROJECT_KIND — branch on
 	 * `kind === CLOUD_PROJECT_KIND`.
 	 */
-	kind?: ProjectKind | typeof CLOUD_PROJECT_KIND;
+	kind?: ProjectKind | typeof CLOUD_PROJECT_KIND | typeof STANDALONE_PROJECT_KIND;
 	/** Local checkout path; empty string for cloud projects (no local folder). */
 	path: string;
 	workspaceRepos?: WorkspaceRepoSummary[];

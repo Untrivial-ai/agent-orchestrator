@@ -631,13 +631,13 @@ describe("shell new-session shortcut subscription", () => {
 		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "proj-1");
 	});
 
-	it("opens the create-project flow when no project is in scope", async () => {
+	it("opens the standalone new-task flow when no project is in scope", async () => {
 		await renderShell();
 
 		emitShortcut();
 
-		expect(screen.getByTestId("create-project-flow")).toBeInTheDocument();
-		expect(screen.queryByTestId("new-task-flow")).not.toBeInTheDocument();
+		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "__standalone__");
+		expect(screen.queryByTestId("create-project-flow")).not.toBeInTheDocument();
 	});
 });
 

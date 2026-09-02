@@ -67,6 +67,8 @@ import {
 	type WorkspaceSummary,
 	sortedWorkerSessions,
 	workerSessions,
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 import { getSessionStatusDotView } from "../lib/session-presentation";
 import { deriveSessionAgentSwitchPresentation } from "../lib/agent-switch-presentation";
@@ -368,11 +370,16 @@ function useSelection() {
 		[navigate],
 	);
 	const goSession = useCallback(
-		(projectId: string, sessionId: string) =>
+		(projectId: string, sessionId: string) => {
+			if (projectId === STANDALONE_WORKSPACE_ID) {
+				void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
+				return;
+			}
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
 				params: { projectId, sessionId },
-			}),
+			});
+		},
 		[navigate],
 	);
 	return useMemo(() => ({
@@ -1197,6 +1204,11 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// one-click path back from the orchestrator button.
 	const onProjectClick = () => {
 		if (consumeDragClick(workspace.id)) return;
+		if (workspace.kind === STANDALONE_PROJECT_KIND) {
+			toggleDisclosure();
+			if (!expanded) selection.goHome();
+			return;
+		}
 		if (!expanded) {
 			toggleDisclosure();
 			selection.goProject(workspace.id);
@@ -1383,7 +1395,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 								onClick={(event) => event.stopPropagation()}
 								onPointerDown={(event) => event.stopPropagation()}
 							>
-								<Tooltip>
+								{workspace.kind !== STANDALONE_PROJECT_KIND && <Tooltip>
 									<TooltipTrigger asChild>
 										<span className="inline-flex">
 											<button
@@ -1415,7 +1427,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 													? t("shell.orchestrator")
 													: t("shell.spawnOrchestratorLower")}
 									</TooltipContent>
-								</Tooltip>
+								</Tooltip>}
 								<DropdownMenu>
 									<Tooltip>
 										<TooltipTrigger asChild>
@@ -1442,20 +1454,22 @@ const ProjectItemContent = memo(function ProjectItemContent({
 											<Plus aria-hidden="true" />
 											{t("shell.newSession")}
 										</DropdownMenuItem>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
-											<Settings aria-hidden="true" />
-											{t("shell.projectSettings")}
-										</DropdownMenuItem>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem
+										{workspace.kind !== STANDALONE_PROJECT_KIND && <>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+												<Settings aria-hidden="true" />
+												{t("shell.projectSettings")}
+											</DropdownMenuItem>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem
 											className="text-destructive focus:text-destructive [&_svg]:text-destructive"
 											disabled={isRemoving}
 											onSelect={() => void removeProject()}
 										>
 											<Trash2 aria-hidden="true" />
 											{t("shell.removeProjectTitle")}
-										</DropdownMenuItem>
+											</DropdownMenuItem>
+										</>}
 									</DropdownMenuContent>
 								</DropdownMenu>
 							</div>
@@ -1567,6 +1581,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					<Plus aria-hidden="true" />
 					{t("shell.newSession")}
 				</ContextMenuItem>
+				{workspace.kind !== STANDALONE_PROJECT_KIND && <>
 				<ContextMenuSeparator />
 				<ContextMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 					<Settings aria-hidden="true" />
@@ -1581,6 +1596,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					<Trash2 aria-hidden="true" />
 					{t("shell.removeProjectTitle")}
 				</ContextMenuItem>
+				</>}
 			</ContextMenuContent>
 		</ContextMenu>
 	);

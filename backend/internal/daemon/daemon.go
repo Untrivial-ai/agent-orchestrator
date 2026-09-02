@@ -511,14 +511,6 @@ func Run() error {
 	lcStack.LCM.SetSessionOperationGate(sessMgr)
 	termMgr.SetSessionInputLease(sessMgr)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink})
-	if err := seedScratchProjectOnBoot(ctx, cfg, projectSvc); err != nil {
-		stop()
-		lcStack.Stop()
-		if cdcErr := cdcPipe.Stop(); cdcErr != nil {
-			log.Error("cdc pipeline shutdown", "err", cdcErr)
-		}
-		return err
-	}
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, tracker, log)
 
 	hostCommands := systemexec.New(cfg.DataDir)
@@ -953,16 +945,6 @@ func usagePipelineWatchRoots(roots usagesvc.SourceRoots) []string {
 		roots.CodexArchived,
 		roots.KimiHome,
 	}
-}
-
-func seedScratchProjectOnBoot(ctx context.Context, cfg config.Config, projects *projectsvc.Service) error {
-	if projects == nil {
-		return nil
-	}
-	if _, err := projects.EnsureDefaultScratchProject(ctx, filepath.Join(cfg.DataDir, "scratch", "default")); err != nil {
-		return fmt.Errorf("seed scratch project: %w", err)
-	}
-	return nil
 }
 
 // newLogger returns the daemon's slog logger. It writes to stderr so supervisors

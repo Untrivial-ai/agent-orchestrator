@@ -57,6 +57,31 @@ func TestWorkspaceCreatesBranchlessPerSessionDirectories(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCreatesStandaloneSessionDirectory(t *testing.T) {
+	root := t.TempDir()
+	physicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := scratch.New(scratch.Options{ManagedRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := ws.Create(context.Background(), ports.WorkspaceConfig{
+		SessionID: "standalone-1",
+		Kind:      domain.KindWorker,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(physicalRoot, "standalone", "sessions", "standalone-1"); info.Path != want {
+		t.Fatalf("standalone path = %q, want %q", info.Path, want)
+	}
+	if info.ProjectID != "" || info.Branch != "" {
+		t.Fatalf("standalone info = %#v", info)
+	}
+}
+
 func TestWorkspaceDestroyPreservesNonEmptyDirectory(t *testing.T) {
 	ws, err := scratch.New(scratch.Options{ManagedRoot: t.TempDir()})
 	if err != nil {

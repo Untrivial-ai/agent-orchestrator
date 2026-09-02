@@ -207,6 +207,9 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (
 		return WorkspaceFiles{}, err
 	}
 	projectKind := domain.ProjectKindSingleRepo
+	if rec.IsStandalone() {
+		projectKind = domain.ProjectKindScratch
+	}
 	if projectOK {
 		projectKind = project.Kind.WithDefault()
 	}
@@ -296,6 +299,9 @@ func (s *Service) resolveWorkspaceFileTarget(ctx context.Context, id domain.Sess
 		return workspaceFileTarget{}, err
 	}
 	projectKind := domain.ProjectKindSingleRepo
+	if rec.IsStandalone() {
+		projectKind = domain.ProjectKindScratch
+	}
 	if projectOK {
 		projectKind = project.Kind.WithDefault()
 	}

@@ -243,6 +243,9 @@ func NewWithDeps(d Deps) *Service {
 // Spawn creates a session and returns the API-facing read model plus
 // ephemeral prompt size measurements.
 func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
+	if cfg.ProjectID == "" && cfg.Kind != domain.KindWorker {
+		return domain.Session{}, 0, 0, apierr.Invalid("STANDALONE_WORKER_REQUIRED", "Standalone sessions must be workers", nil)
+	}
 	if cfg.Kind == domain.KindOrchestrator {
 		unlock := s.lockOrchestratorProject(cfg.ProjectID)
 		defer unlock()
@@ -259,9 +262,20 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 }
 
 func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
-	project, err := s.requireProject(ctx, cfg.ProjectID)
-	if err != nil {
-		return domain.Session{}, 0, 0, err
+	var project domain.ProjectRecord
+	var err error
+	if cfg.ProjectID != "" {
+		project, err = s.requireProject(ctx, cfg.ProjectID)
+		if err != nil {
+			return domain.Session{}, 0, 0, err
+		}
+	} else {
+		if cfg.IssueID != "" || strings.TrimSpace(cfg.Branch) != "" {
+			return domain.Session{}, 0, 0, apierr.Invalid("STANDALONE_PROJECT_FEATURE_UNSUPPORTED", "Standalone sessions do not support issues or branches", nil)
+		}
+		if cfg.Harness == "" {
+			return domain.Session{}, 0, 0, apierr.Invalid("HARNESS_REQUIRED", "harness is required for a standalone session", nil)
+		}
 	}
 	if s.agentReadiness != nil && cfg.Harness != "" {
 		readiness, err := s.agentReadiness.EnsureAgentReadiness(ctx, string(cfg.Harness), domain.AgentReadinessPurposeLaunch)

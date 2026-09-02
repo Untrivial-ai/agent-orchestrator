@@ -125,16 +125,16 @@ func (w *Workspace) ObserveWorkspace(_ context.Context, info ports.WorkspaceInfo
 }
 
 func (w *Workspace) managedPath(cfg ports.WorkspaceConfig) (string, error) {
-	if cfg.ProjectID == "" {
-		return "", errors.New("scratch workspace: project id is required")
-	}
 	if cfg.SessionID == "" {
 		return "", errors.New("scratch workspace: session id is required")
 	}
-	if err := validatePathComponent("project id", string(cfg.ProjectID)); err != nil {
+	if err := validatePathComponent("session id", string(cfg.SessionID)); err != nil {
 		return "", err
 	}
-	if err := validatePathComponent("session id", string(cfg.SessionID)); err != nil {
+	if cfg.ProjectID == "" {
+		return w.validateManagedPath(filepath.Join(w.managedRoot, "standalone", "sessions", string(cfg.SessionID)))
+	}
+	if err := validatePathComponent("project id", string(cfg.ProjectID)); err != nil {
 		return "", err
 	}
 	roleDir := "workers"
