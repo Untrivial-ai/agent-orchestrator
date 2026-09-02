@@ -28,6 +28,20 @@ func (r blockingChatRunner) Run(ctx context.Context) error {
 	return nil
 }
 
+type delayedStoppingChatRunner struct {
+	started chan struct{}
+	stopped chan struct{}
+	release chan struct{}
+}
+
+func (r delayedStoppingChatRunner) Run(ctx context.Context) error {
+	close(r.started)
+	<-ctx.Done()
+	close(r.stopped)
+	<-r.release
+	return nil
+}
+
 func (s *supervisorControlStub) ClaimTransport(context.Context) (*worker.TransportRequest, error) {
 	return nil, nil
 }
@@ -146,6 +160,48 @@ func TestStopInterfaceWaitsForInteractiveProcessExit(t *testing.T) {
 	case <-process.done:
 	default:
 		t.Fatal("stop interface returned before the interactive process exited")
+	}
+}
+
+func TestStopInterfaceWaitsForChatProcessExit(t *testing.T) {
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	release := make(chan struct{})
+	supervisor := &Supervisor{
+		ChatRunner: delayedStoppingChatRunner{
+			started: started, stopped: stopped, release: release,
+		},
+	}
+	supervisor.iface.current = InterfaceChat
+	if err := supervisor.startChat(context.Background()); err != nil {
+		t.Fatalf("start chat: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("chat controller did not start")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- supervisor.stopInterface(context.Background()) }()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("chat controller did not receive stop")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("stop interface returned before chat process exit: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stop interface: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stop interface did not wait for chat process exit")
 	}
 }
 

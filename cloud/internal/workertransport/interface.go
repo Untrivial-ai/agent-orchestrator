@@ -38,6 +38,7 @@ type InterfaceTransition struct {
 	mu             sync.Mutex
 	current        string
 	chatRun        context.CancelFunc
+	chatDone       chan struct{}
 	chatRunning    bool
 	chatGeneration uint64
 	agentTermID    string
@@ -107,11 +108,8 @@ func (s *Supervisor) stopInterface(ctx context.Context) error {
 	if s.iface.Current() == InterfaceTUI {
 		return s.closeTerminalForInterfaceHandoff(ctx, s.AgentTerminalID)
 	} else {
-		s.stopChat()
+		return s.stopChat(ctx)
 	}
-	// A stopped controller may have published a terminal exit that the control
-	// plane already consumed; nothing else is owed here.
-	return nil
 }
 
 func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload) error {
@@ -161,14 +159,25 @@ func (s *Supervisor) nativeConversationID(ctx context.Context, input interfacePa
 	return strings.TrimSpace(input.NativeConversationID)
 }
 
-func (s *Supervisor) stopChat() {
+func (s *Supervisor) stopChat(ctx context.Context) error {
 	s.iface.mu.Lock()
 	cancel := s.iface.chatRun
-	s.iface.chatRun = nil
-	s.iface.chatRunning = false
+	done := s.iface.chatDone
 	s.iface.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if done == nil {
+		return nil
+	}
+	// The Chat runner owns the provider's native thread writer. Cancelling its
+	// context only requests shutdown; do not let the TUI start until the
+	// headless provider process has actually exited and released that writer.
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -184,7 +193,9 @@ func (s *Supervisor) startChat(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.iface.chatGeneration++
 	generation := s.iface.chatGeneration
+	done := make(chan struct{})
 	s.iface.chatRun = cancel
+	s.iface.chatDone = done
 	s.iface.chatRunning = true
 	s.iface.current = InterfaceChat
 	s.iface.mu.Unlock()
@@ -195,9 +206,11 @@ func (s *Supervisor) startChat(ctx context.Context) error {
 		s.iface.mu.Lock()
 		if s.iface.chatGeneration == generation {
 			s.iface.chatRun = nil
+			s.iface.chatDone = nil
 			s.iface.chatRunning = false
 		}
 		s.iface.mu.Unlock()
+		close(done)
 	}()
 	return nil
 }
