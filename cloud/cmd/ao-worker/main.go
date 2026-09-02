@@ -531,6 +531,10 @@ func (c *client) PublishOutput(ctx context.Context, output worker.OutputEvent) e
 	return c.publishEvent(ctx, "chat.assistant_delta", output)
 }
 
+func (c *client) PublishActivity(ctx context.Context, activity worker.ActivityEvent) error {
+	return c.publishEvent(ctx, "agent.activity", activity)
+}
+
 func (c *client) ClaimTransport(ctx context.Context) (*worker.TransportRequest, error) {
 	var response worker.ClaimTransportResponse
 	if err := c.do(ctx, "/worker/transport/claim", struct{}{}, &response); err != nil {

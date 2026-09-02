@@ -16,8 +16,9 @@ import (
 // newline arrives rather than accidentally publishing fragmented JSON as a
 // user-visible assistant response.
 type chatOutputProjector struct {
-	harness string
-	pending []byte
+	harness              string
+	pending              []byte
+	nativeConversationID string
 }
 
 func newChatOutputProjector(harness string) *chatOutputProjector {
@@ -36,7 +37,7 @@ func (p *chatOutputProjector) Project(output Output) []Output {
 			break
 		}
 		p.pending = rest
-		projected = append(projected, projectCodexJSONLine(string(line))...)
+		projected = append(projected, p.projectCodexJSONLine(string(line))...)
 	}
 	return projected
 }
@@ -47,17 +48,29 @@ func (p *chatOutputProjector) Flush() []Output {
 	}
 	line := string(p.pending)
 	p.pending = nil
-	return projectCodexJSONLine(line)
+	return p.projectCodexJSONLine(line)
 }
 
-func projectCodexJSONLine(line string) []Output {
+// NativeConversationID returns the provider thread announced by a headless
+// Codex run. Chat sessions can start before a TUI has ever run, so the
+// provider's thread.started event is the only identity available for the
+// later TUI restore in that case.
+func (p *chatOutputProjector) NativeConversationID() string {
+	return p.nativeConversationID
+}
+
+func (p *chatOutputProjector) projectCodexJSONLine(line string) []Output {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return nil
 	}
 	var event struct {
-		Type string `json:"type"`
-		Item struct {
+		Type                string `json:"type"`
+		ThreadID            string `json:"thread_id"`
+		ThreadIDCamel       string `json:"threadId"`
+		ConversationID      string `json:"conversation_id"`
+		ConversationIDCamel string `json:"conversationId"`
+		Item                struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"item"`
@@ -66,6 +79,24 @@ func projectCodexJSONLine(line string) []Output {
 		// Preserve unexpected non-JSON output for diagnosis instead of silently
 		// dropping it. Valid Codex protocol bookkeeping is intentionally hidden.
 		return []Output{{Stream: "stdout", Text: line}}
+	}
+	if event.Type == "thread.started" {
+		for _, candidate := range []string{
+			event.ThreadID,
+			event.ThreadIDCamel,
+			event.ConversationID,
+			event.ConversationIDCamel,
+		} {
+			if candidate = strings.TrimSpace(candidate); candidate != "" {
+				// Keep the first announcement for this run. A resumed thread
+				// should retain its existing identity, while a provider that
+				// emits more than one bookkeeping event must not flap it.
+				if p.nativeConversationID == "" {
+					p.nativeConversationID = candidate
+				}
+				return nil
+			}
+		}
 	}
 	if event.Type == "item.completed" && event.Item.Type == "agent_message" && strings.TrimSpace(event.Item.Text) != "" {
 		return []Output{{Stream: "stdout", Text: event.Item.Text}}

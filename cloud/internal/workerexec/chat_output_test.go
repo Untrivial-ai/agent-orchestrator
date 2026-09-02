@@ -7,8 +7,11 @@ import (
 
 func TestChatOutputProjectorPublishesOnlyCodexAgentMessages(t *testing.T) {
 	projector := newChatOutputProjector("codex")
-	if got := projector.Project(Output{Stream: "stdout", Text: `{"type":"thread.started"}` + "\n"}); len(got) != 0 {
+	if got := projector.Project(Output{Stream: "stdout", Text: `{"type":"thread.started","thread_id":"native-chat-1"}` + "\n"}); len(got) != 0 {
 		t.Fatalf("bookkeeping event = %#v, want no output", got)
+	}
+	if got := projector.NativeConversationID(); got != "native-chat-1" {
+		t.Fatalf("native conversation id = %q, want native-chat-1", got)
 	}
 	if got := projector.Project(Output{Stream: "stdout", Text: `{"type":"item.completed","item":{"type":"agent_message","text":"hel`}); len(got) != 0 {
 		t.Fatalf("partial JSONL output = %#v, want no output", got)

@@ -20,6 +20,14 @@ type ControlPlane interface {
 	FailTurn(context.Context, string, int, string) error
 }
 
+// conversationIdentityPublisher is optional so alternate worker controls can
+// keep the existing runner contract. The Cloud client implements it to make a
+// Chat-first session restorable in the native TUI after Codex announces its
+// thread id on stdout.
+type conversationIdentityPublisher interface {
+	PublishActivity(context.Context, worker.ActivityEvent) error
+}
+
 type Supervisor struct {
 	Control         ControlPlane
 	Builder         CommandBuilder
@@ -160,6 +168,17 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	}()
 
 	runErr := s.Runner.Run(executionCtx, command, publish)
+	if identity := projector.NativeConversationID(); identity != "" {
+		if publisher, ok := s.Control.(conversationIdentityPublisher); ok {
+			if err := publisher.PublishActivity(executionCtx, worker.ActivityEvent{
+				Harness:        turn.Harness,
+				Event:          "session-start",
+				AgentSessionID: identity,
+			}); err != nil && executionCtx.Err() == nil {
+				s.Logger.Warn("publish headless conversation identity", "error", err)
+			}
+		}
+	}
 	if runErr == nil {
 		for _, output := range projector.Flush() {
 			if err := s.Control.PublishOutput(executionCtx, worker.OutputEvent{
