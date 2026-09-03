@@ -367,8 +367,8 @@ vi.mock("./CenterPane", () => ({
 			<div data-testid={`auxiliary-tab-order-tui-${session?.id ?? "none"}`}>
 				{auxiliaryTabOrder?.join("|") ?? ""}
 			</div>
-			{topbarActions}
-			{sessionTabAction}
+			<div data-testid="tui-topbar-actions">{topbarActions}</div>
+			<div data-testid="tui-session-tab-action">{sessionTabAction}</div>
 			<div role="tablist">
 				{workspaceTabs?.map((tab) => <div key={tab.key}>{tab.content}</div>)}
 				{workspaceTabActions}
@@ -1276,6 +1276,35 @@ describe("SessionView", () => {
 		interfaceTransitionState.settling = false;
 		view.rerender(<SessionView sessionId="sess-1" />);
 		expect(chatSurface()).toHaveAttribute("data-new-work-disabled", "false");
+	});
+
+	it("keeps the interface-switch status out of the session tab while a switch runs", () => {
+		// A tab action is absolutely positioned over the tab and the label only
+		// reserves a fixed icon-width gutter for it, so the status pill has to stay
+		// in the header action region or it paints over the tab label (#4848).
+		interfaceTransitionState.status = {
+			supported: true,
+			targetMode: "chat",
+			transition: {
+				id: "switch-tui-to-chat",
+				sessionId: "sess-1",
+				sourceMode: "tui",
+				targetMode: "chat",
+				policy: "drain",
+				phase: "draining",
+				createdAt: "2026-08-06T00:00:00Z",
+				updatedAt: "2026-08-06T00:00:01Z",
+			},
+		};
+		const session = workerSession("sess-1");
+		session.mode = "tui";
+
+		render(<SessionView sessionId="sess-1" />);
+
+		const status = screen.getByRole("status");
+		expect(status).toHaveTextContent("Chat UI");
+		expect(screen.getByTestId("tui-topbar-actions")).toContainElement(status);
+		expect(screen.getByTestId("tui-session-tab-action")).not.toContainElement(status);
 	});
 
 	it("discards one session's switch consent dialog when navigating to another session", async () => {
