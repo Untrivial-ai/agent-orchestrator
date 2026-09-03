@@ -731,7 +731,6 @@ describe("SessionView", () => {
 		await userEvent.click(retry);
 		expect(recoverCodexAccountSwitchMock).toHaveBeenCalledWith("switch-1");
 	});
-
 	it("keeps the Cloud switch visible while a newly selected Cloud session resolves", () => {
 		workspaceQueryState.data = [];
 		cloudSessionQueryState.isLoading = true;
