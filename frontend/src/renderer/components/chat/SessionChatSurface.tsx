@@ -12,6 +12,7 @@ import { useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	findActiveAgentSwitch,
+	isTerminalAgentSwitch,
 	selectDurableAgentSwitch,
 	useAgentSwitches,
 } from "../../hooks/useAgentSwitches";
@@ -26,6 +27,7 @@ import {
 	useStageAttachments,
 	useWorkspaceFilePaths,
 } from "../../hooks/useConversation";
+import { useAgentSwitchProviderCatalogs } from "../../hooks/useAgentSwitchProviderCatalogs";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import {
@@ -149,31 +151,9 @@ export function SessionChatSurface({
 		if (!conversationWorkKnown) return;
 		onConversationWorkChange?.({ controllerBusy, hasRunningTurn, queuedTurnCount });
 	}, [controllerBusy, conversationWorkKnown, hasRunningTurn, onConversationWorkChange, queuedTurnCount]);
-	const configOptions = useConversationConfigOptions(
-		session.id,
-		Boolean(snapshot && can(snapshot, "config_options")),
-	);
-	// A provider config catalog may cover only model, only mode, or both.
-	// Suppress native controls only for dimensions the provider catalog replaces;
-	// a model-only catalog must not hide the Approvals control.
-	const providerOptions = configOptions.options ?? [];
-	const hasProviderMode = providerOptions.some(
-		(option) => option.category === "mode" || option.id === "mode",
-	);
-	const hasProviderModel = providerOptions.some(
-		(option) => option.category === "model" || option.id === "model",
-	);
-	// Only asked for once the conversation is actually readable: the catalog comes
-	// from the live controller, so there is nothing to fetch before then.
-	const { models } = useConversationModels(
-		session.id,
-		Boolean(snapshot) && !hasProviderModel,
-	);
-	const { skills } = useConversationSkills(session.id, Boolean(snapshot));
-	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
-	const stageAttachments = useStageAttachments(session.id);
-	const openLinkInBrowser = useSessionBrowserLink(session);
-	// Agent-switch presentation for the chat surface progress track and input locks.
+	const targetChatControllerReady =
+		snapshot?.harness === session.provider &&
+		(snapshot.controller?.state === "ready" || snapshot.controller?.state === "busy");
 	const switchMutation = useSwitchAgentState(session.id);
 	const agentSwitches = useAgentSwitches(session.id).data ?? [];
 	const activeHistorySwitch = findActiveAgentSwitch(agentSwitches);
@@ -181,6 +161,16 @@ export function SessionChatSurface({
 		session.activeAgentSwitch,
 		agentSwitches,
 	);
+	const admissionAgentSwitch: AgentSwitchSummary | undefined =
+		switchMutation.isPending && switchMutation.input
+			? {
+				agentHandoffStatus: "not_attempted",
+				fromHarness: switchMutation.input.session.provider,
+				id: `admission:${switchMutation.input.idempotencyKey}`,
+				state: "preparing_handoff",
+				targetHarness: switchMutation.input.targetHarness,
+			}
+			: undefined;
 	const {
 		dismissFailure: dismissAgentSwitchFailure,
 		dismissedFailureSwitchId,
@@ -197,25 +187,14 @@ export function SessionChatSurface({
 			session.activeAgentSwitch,
 			activeHistorySwitch,
 			selectedDurableAgentSwitch,
+			admissionAgentSwitch,
 		],
 	});
 	const durableAgentSwitch =
 		selectedDurableAgentSwitch && !isAgentSwitchRetired(selectedDurableAgentSwitch.id)
 			? selectedDurableAgentSwitch
 			: undefined;
-	const admissionAgentSwitch: AgentSwitchSummary | undefined =
-		!durableAgentSwitch && switchMutation.isPending && switchMutation.input
-			? {
-				agentHandoffStatus: "not_attempted",
-				fromHarness: switchMutation.input.session.provider,
-				id: `admission:${switchMutation.input.idempotencyKey}`,
-				state: "preparing_handoff",
-				targetHarness: switchMutation.input.targetHarness,
-			}
-			: undefined;
 	const agentSwitch = durableAgentSwitch ?? admissionAgentSwitch ?? observedTerminalSwitch;
-	const targetChatControllerReady =
-		snapshot?.controller?.state === "ready" || snapshot?.controller?.state === "busy";
 	const switchPresentation = agentSwitch
 		? deriveAgentSwitchPresentation({
 				agentSwitch,
@@ -228,15 +207,70 @@ export function SessionChatSurface({
 				terminalHandleId: targetChatControllerReady ? "chat-controller" : undefined,
 			})
 		: undefined;
-	const observedSettledSwitch = Boolean(
+	const agentSwitching = Boolean(
+		switchMutation.isPending ||
+			(switchPresentation?.outcome === "in_progress" ||
+				switchPresentation?.outcome === "recovery"),
+	);
+	const observedSettledSwitchId =
 		agentSwitch &&
-			switchPresentation?.outcome === "success" &&
-			isAgentSwitchObserved(agentSwitch.id),
+		(switchPresentation?.outcome === "success" || switchPresentation?.outcome === "failure") &&
+		isAgentSwitchObserved(agentSwitch.id)
+			? agentSwitch.id
+			: undefined;
+	const latestTerminalSwitch = agentSwitches.find(isTerminalAgentSwitch);
+	const controllerOwnedTerminalSwitch =
+		targetChatControllerReady &&
+		latestTerminalSwitch &&
+		((latestTerminalSwitch.state === "completed" &&
+			latestTerminalSwitch.targetHarness === session.provider) ||
+			(latestTerminalSwitch.state === "failed" &&
+				latestTerminalSwitch.fromHarness === session.provider))
+			? latestTerminalSwitch
+			: undefined;
+	// Catalog ownership follows the live controller epoch, not whether this mount
+	// happened to observe the switch in progress. A sub-second switch can arrive
+	// first as terminal history and still needs its outgoing cache reconciled.
+	const providerCatalogSettledSwitchId =
+		observedSettledSwitchId ?? controllerOwnedTerminalSwitch?.id;
+	const catalogsEnabled = useAgentSwitchProviderCatalogs({
+		sessionId: session.id,
+		agentSwitching,
+		settledSwitchId: providerCatalogSettledSwitchId,
+	});
+	const configOptions = useConversationConfigOptions(
+		session.id,
+		catalogsEnabled && Boolean(snapshot && can(snapshot, "config_options")),
+	);
+	// A provider config catalog may cover only model, only mode, or both.
+	// Suppress native controls only for dimensions the provider catalog replaces;
+	// a model-only catalog must not hide the Approvals control.
+	const providerOptions = configOptions.options ?? [];
+	const hasProviderMode = providerOptions.some(
+		(option) => option.category === "mode" || option.id === "mode",
+	);
+	const hasProviderModel = providerOptions.some(
+		(option) => option.category === "model" || option.id === "model",
+	);
+	// Only asked for once the conversation is actually readable: the catalog comes
+	// from the live controller, so there is nothing to fetch before then.
+	const { models } = useConversationModels(
+		session.id,
+		catalogsEnabled && Boolean(snapshot) && !hasProviderModel,
+	);
+	const { skills } = useConversationSkills(session.id, catalogsEnabled && Boolean(snapshot));
+	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
+	const stageAttachments = useStageAttachments(session.id);
+	const openLinkInBrowser = useSessionBrowserLink(session);
+	const observedSuccessfulSwitch = Boolean(
+		agentSwitch &&
+			observedSettledSwitchId === agentSwitch.id &&
+			switchPresentation?.outcome === "success",
 	);
 	useEffect(() => {
-		if (!observedSettledSwitch || !agentSwitch || !switchPresentation) return;
+		if (!observedSuccessfulSwitch || !agentSwitch || !switchPresentation) return;
 		settleAgentSwitch(agentSwitch, switchPresentation);
-	}, [agentSwitch, observedSettledSwitch, settleAgentSwitch, switchPresentation]);
+	}, [agentSwitch, observedSuccessfulSwitch, settleAgentSwitch, switchPresentation]);
 	const shownSwitchPresentation =
 		switchPresentation?.outcome === "failure" && dismissedFailureSwitchId === agentSwitch?.id
 			? undefined

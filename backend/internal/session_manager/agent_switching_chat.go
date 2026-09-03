@@ -756,6 +756,6 @@ func (m *Manager) resolveChatTargetActivationOutcome(
 		domain.NormalizeSessionMode(session.Mode) == domain.SessionModeChat &&
 		session.Harness == activation.SourceHarness &&
 		session.Metadata.ProviderConversationID == source.Metadata.ProviderConversationID &&
-		session.Metadata.ControllerGeneration == activation.ControllerGeneration
+		session.Metadata.ControllerGeneration == string(activation.SourceGenerationID)
 	return current, false, sourceStillOwns, nil
 }

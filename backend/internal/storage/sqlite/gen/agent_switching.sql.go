@@ -67,18 +67,19 @@ WHERE id = ?6
   AND session_mode = 'chat'
   AND activity_state = 'exited'
   AND harness = ?7
-  AND controller_generation = ?5
+  AND controller_generation = ?8
   AND activity_last_at <= ?2
 `
 
 type ActivateChatSessionAgentSwitchTargetParams struct {
-	TargetHarness          domain.AgentHarness
-	ActivatedAt            time.Time
-	TargetNativeSessionID  string
-	ProviderConversationID string
-	ControllerGeneration   string
-	SessionID              domain.SessionID
-	ExpectedSourceHarness  domain.AgentHarness
+	TargetHarness                      domain.AgentHarness
+	ActivatedAt                        time.Time
+	TargetNativeSessionID              string
+	ProviderConversationID             string
+	ControllerGeneration               string
+	SessionID                          domain.SessionID
+	ExpectedSourceHarness              domain.AgentHarness
+	ExpectedSourceControllerGeneration string
 }
 
 func (q *Queries) ActivateChatSessionAgentSwitchTarget(ctx context.Context, arg ActivateChatSessionAgentSwitchTargetParams) (int64, error) {
@@ -90,6 +91,7 @@ func (q *Queries) ActivateChatSessionAgentSwitchTarget(ctx context.Context, arg 
 		arg.ControllerGeneration,
 		arg.SessionID,
 		arg.ExpectedSourceHarness,
+		arg.ExpectedSourceControllerGeneration,
 	)
 	if err != nil {
 		return 0, err

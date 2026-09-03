@@ -423,7 +423,7 @@ func (s *switchTestStore) ActivateChatAgentSwitchTarget(_ context.Context, activ
 	if !ok || rec.IsTerminated || rec.Activity.State != domain.ActivityExited ||
 		domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat ||
 		rec.Harness != activation.SourceHarness ||
-		rec.Metadata.ControllerGeneration != activation.ControllerGeneration {
+		rec.Metadata.ControllerGeneration != string(activation.SourceGenerationID) {
 		return false, nil
 	}
 	native, ok := s.native[activation.TargetNativeSessionRef]
@@ -521,11 +521,6 @@ func (l *switchAgentChatLauncher) StartChat(ctx context.Context, cfg ChatStart) 
 		ProviderConversationID: providerID,
 		ControllerGeneration:   generation,
 	}
-	l.store.mu.Lock()
-	rec := l.store.sessions[cfg.SessionID]
-	rec.Metadata.ControllerGeneration = generation
-	l.store.sessions[cfg.SessionID] = rec
-	l.store.mu.Unlock()
 	if cfg.ControllerReady != nil {
 		if _, err := cfg.ControllerReady(started); err != nil {
 			return ChatStarted{}, err
@@ -3899,11 +3894,6 @@ func TestReconcileChatAgentSwitchesUsesControllerBoundaries(t *testing.T) {
 			rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
 			if tt.state == domain.AgentSwitchSourceStopped || tt.state == domain.AgentSwitchStartingTarget {
 				rec.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: now}
-			}
-			if tt.state == domain.AgentSwitchStartingTarget {
-				// Chat Service claims the reserved generation before ControllerReady;
-				// ownership still belongs to the source until activation commits.
-				rec.Metadata.ControllerGeneration = "target-chat-generation"
 			}
 			if tt.state == domain.AgentSwitchTargetReady || tt.state == domain.AgentSwitchDelivering {
 				rec.Harness = domain.HarnessCodex

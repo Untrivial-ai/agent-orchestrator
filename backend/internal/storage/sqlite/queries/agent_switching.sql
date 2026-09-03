@@ -363,7 +363,7 @@ WHERE id = sqlc.arg(session_id)
   AND session_mode = 'chat'
   AND activity_state = 'exited'
   AND harness = sqlc.arg(expected_source_harness)
-  AND controller_generation = sqlc.arg(controller_generation)
+  AND controller_generation = sqlc.arg(expected_source_controller_generation)
   AND activity_last_at <= sqlc.arg(activated_at);
 
 -- name: MarkAgentSwitchTargetReady :execrows
