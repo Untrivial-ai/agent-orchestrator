@@ -399,6 +399,7 @@ describe("useTerminalSession", () => {
 			const { view, terminal, muxes } = setup({ coverInitialReplay: false });
 			expect(view.result.current.replaySettled).toBe(true);
 			act(() => muxes[0].emitData("handle-1", "review output"));
+			act(() => void vi.advanceTimersByTime(16));
 			expect(terminal.lines).toEqual(["review output"]);
 			expect(view.result.current.replaySettled).toBe(true);
 		});
@@ -452,9 +453,26 @@ describe("useTerminalSession", () => {
 			act(() => void vi.advanceTimersByTime(60 + 180));
 
 			act(() => muxes[0].emitData("handle-1", "live-1"));
+			act(() => void vi.advanceTimersByTime(16));
 			expect(terminal.lines).toEqual(["replay", "live-1"]);
 			act(() => muxes[0].emitData("handle-1", "live-2"));
+			act(() => void vi.advanceTimersByTime(16));
 			expect(terminal.lines).toEqual(["replay", "live-1", "live-2"]);
+		});
+
+		it("coalesces a steady-state burst into one ordered write per frame", () => {
+			const { terminal, muxes } = setup();
+			act(() => muxes[0].emitOpened("handle-1"));
+			act(() => muxes[0].emitData("handle-1", "replay"));
+			act(() => void vi.advanceTimersByTime(60 + 180));
+
+			// Two chunks in the same frame must not reach xterm synchronously;
+			// they land together, in wire order, on the next animation frame.
+			act(() => muxes[0].emitData("handle-1", "live-1"));
+			act(() => muxes[0].emitData("handle-1", "live-2"));
+			expect(terminal.lines).toEqual(["replay"]);
+			act(() => void vi.advanceTimersByTime(16));
+			expect(terminal.lines).toEqual(["replay", "live-1live-2"]);
 		});
 
 		it("reveals a pane that replays nothing instead of holding the cover to the cap", () => {
@@ -621,6 +639,7 @@ describe("useTerminalSession", () => {
 			expect(muxes[0].inputs).toEqual([["handle-1", "l"]]);
 			// Subsequent output is live, so the echo shows up immediately.
 			act(() => muxes[0].emitData("handle-1", "l"));
+			act(() => void vi.advanceTimersByTime(16));
 			expect(terminal.lines).toEqual(["prompt$ ", "l"]);
 		});
 
