@@ -2,6 +2,7 @@ package interfacereconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"testing"
@@ -72,6 +73,8 @@ type fakeDriver struct {
 	interrupt   bool
 	nativeID    string
 	nativeIDErr error
+
+	startedWithNativeID string
 }
 
 func (f *fakeDriver) PreflightTarget(context.Context, postgres.CoordinatedInterfaceTransition) error {
@@ -93,12 +96,27 @@ func (f *fakeDriver) ResolveNativeConversationID(context.Context, postgres.Coord
 	}
 	return f.nativeID, nil
 }
-func (f *fakeDriver) StartTarget(context.Context, postgres.CoordinatedInterfaceTransition, string) error {
+func (f *fakeDriver) StartTarget(_ context.Context, _ postgres.CoordinatedInterfaceTransition, nativeID string) error {
+	f.startedWithNativeID = nativeID
 	return f.startErr
 }
 
 func newCoordinator(store *fakeStore, driver *fakeDriver) *Coordinator {
 	return New(store, driver, Options{Interval: time.Millisecond, Logger: slog.New(slog.DiscardHandler)})
+}
+
+// fakeRequestStore satisfies the TransportDriver's RequestStore for tests that
+// never reach a dispatch (preflight fails before any worker request exists).
+type fakeRequestStore struct{}
+
+func (fakeRequestStore) CreateCoordinatedInterfaceRequest(context.Context, string, string, string, json.RawMessage) (domain.WorkerRequest, error) {
+	return domain.WorkerRequest{}, errors.New("no requests expected")
+}
+func (fakeRequestStore) GetCoordinatedInterfaceRequestResult(context.Context, string, string, string) (domain.WorkerRequest, error) {
+	return domain.WorkerRequest{}, errors.New("no requests expected")
+}
+func (fakeRequestStore) CommitCoordinatedSessionInterface(context.Context, string, string, string, domain.SessionInterface) (bool, error) {
+	return false, nil
 }
 
 func TestReconcileHappyPath(t *testing.T) {
@@ -114,6 +132,59 @@ func TestReconcileHappyPath(t *testing.T) {
 	last := store.advances[len(store.advances)-1]
 	if last != domain.SessionInterfaceTransitionCompleted {
 		t.Fatalf("expected final phase completed, got %q", last)
+	}
+}
+
+// Both handoff directions and every supported harness must converge through
+// the same durable phase machine, commit the requested interface, and hand the
+// shared native conversation identity to the target controller.
+func TestReconcileEverySupportedHarnessBothDirections(t *testing.T) {
+	for _, harness := range []string{"codex", "claude-code", "cursor"} {
+		for _, direction := range []struct {
+			name   string
+			source domain.SessionInterface
+			target domain.SessionInterface
+		}{
+			{name: "tui-to-chat", source: domain.SessionInterfaceTUI, target: domain.SessionInterfaceChat},
+			{name: "chat-to-tui", source: domain.SessionInterfaceChat, target: domain.SessionInterfaceTUI},
+		} {
+			t.Run(harness+"/"+direction.name, func(t *testing.T) {
+				transition := testTransition(domain.SessionInterfaceTransitionRequested)
+				transition.Harness = harness
+				transition.SourceInterface = direction.source
+				transition.TargetInterface = direction.target
+				store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{transition}}
+				driver := &fakeDriver{Inspection: SourceInspection{Idle: true}, nativeID: "native-" + harness}
+				err := newCoordinator(store, driver).ReconcileOnce(context.Background())
+				if err != nil {
+					t.Fatalf("reconcile: %v", err)
+				}
+				if store.committed != direction.target {
+					t.Fatalf("expected interface committed to %s, got %q", direction.target, store.committed)
+				}
+				if driver.startedWithNativeID != "native-"+harness {
+					t.Fatalf("target started with native id %q, want native-%s", driver.startedWithNativeID, harness)
+				}
+				if last := store.advances[len(store.advances)-1]; last != domain.SessionInterfaceTransitionCompleted {
+					t.Fatalf("expected final phase completed, got %q", last)
+				}
+			})
+		}
+	}
+}
+
+func TestTransportDriverPreflightRejectsUnsupportedHarness(t *testing.T) {
+	driver := NewTransportDriver(&fakeRequestStore{}, "owner", time.Millisecond, slog.New(slog.DiscardHandler))
+	transition := testTransition(domain.SessionInterfaceTransitionRequested)
+	for _, harness := range []string{"codex", "claude-code", "cursor"} {
+		transition.Harness = harness
+		if err := driver.PreflightTarget(context.Background(), transition); err != nil {
+			t.Fatalf("preflight %s: %v", harness, err)
+		}
+	}
+	transition.Harness = "unknown-harness"
+	if err := driver.PreflightTarget(context.Background(), transition); err == nil {
+		t.Fatal("expected an unsupported harness to fail preflight")
 	}
 }
 

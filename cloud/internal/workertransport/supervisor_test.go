@@ -2,6 +2,9 @@ package workertransport
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -334,5 +337,100 @@ func TestRunRestartsChatControllerForChatSession(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("transport supervisor did not stop")
+	}
+}
+
+// A Chat -> TUI handoff must rebuild the interactive command from the shared
+// native conversation identity using each harness's own resume syntax, so the
+// reopened TUI continues the same provider thread the Chat controller used.
+func TestAgentCommandFactoryBuildsHarnessResumeCommands(t *testing.T) {
+	tests := []struct {
+		name           string
+		harness        string
+		mode           string
+		credentialType string
+		wantContains   []string
+	}{
+		{
+			name:           "codex",
+			harness:        "codex",
+			mode:           "trusted",
+			credentialType: "api_key",
+			wantContains:   []string{"resume", "native-thread-1"},
+		},
+		{
+			name:           "claude-code",
+			harness:        "claude-code",
+			mode:           "trusted",
+			credentialType: "api_key",
+			wantContains:   []string{"--resume", "native-claude-1"},
+		},
+		{
+			name:           "cursor",
+			harness:        "cursor",
+			mode:           "trusted",
+			credentialType: "api_key",
+			wantContains:   []string{"--resume", "native-cursor-1"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			builder := workerexec.HarnessBuilder{DataDir: dataDir}
+			nativeID := map[string]string{
+				"codex":       "native-thread-1",
+				"claude-code": "native-claude-1",
+				"cursor":      "native-cursor-1",
+			}[test.harness]
+			if test.harness == "claude-code" {
+				// Claude only resumes a conversation whose JSONL transcript
+				// exists under the worker's CLAUDE_CONFIG_DIR; a real handoff
+				// always has one because the Chat turn wrote it.
+				path := filepath.Join(
+					dataDir, "claude", "projects", "workspace", nativeID+".jsonl",
+				)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatalf("create claude project directory: %v", err)
+				}
+				if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+					t.Fatalf("write claude transcript: %v", err)
+				}
+			}
+			launch := worker.LaunchContext{
+				Harness:   test.harness,
+				SessionID: "session-1",
+				Mode:      test.mode,
+			}
+			credential := worker.CredentialResponse{
+				Provider:       test.harness,
+				CredentialType: test.credentialType,
+				Secret:         "test-secret",
+			}
+			command, err := builder.BuildInteractive(launch, credential, t.TempDir())
+			if err != nil {
+				t.Fatalf("build interactive command: %v", err)
+			}
+			// Simulate the factory's restore path: the same builder, but with a
+			// native conversation observed by the control plane.
+			launch.AgentSessionID = nativeID
+			restored, err := builder.BuildInteractive(launch, credential, t.TempDir())
+			if err != nil {
+				t.Fatalf("build restored command: %v", err)
+			}
+			argv := append([]string{restored.Path}, restored.Args...)
+			joined := strings.Join(argv, " ")
+			for _, want := range test.wantContains {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("restored argv %q missing %q", joined, want)
+				}
+			}
+			// The fresh command must not carry a resume flag: a newly
+			// provisioned worker has no conversation to resume yet.
+			fresh := append([]string{command.Path}, command.Args...)
+			freshJoined := strings.Join(fresh, " ")
+			if strings.Contains(freshJoined, "--resume") || strings.Contains(freshJoined, "resume ") {
+				t.Fatalf("fresh interactive argv resumed a nonexistent conversation: %q", freshJoined)
+			}
+		})
 	}
 }

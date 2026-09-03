@@ -390,7 +390,10 @@ func updateJSONFile(path string, update func(map[string]any)) error {
 }
 
 func claudeArgs(turn worker.Turn) ([]string, error) {
-	args := []string{"--print", "--output-format", "stream-json"}
+	// Claude Code hard-errors on `--print --output-format stream-json` without
+	// --verbose. Streamed assistant/result events are also the only machine
+	// readable projection source for the Chat UI, so both flags are load-bearing.
+	args := []string{"--print", "--output-format", "stream-json", "--verbose"}
 	switch turn.Mode {
 	case "read-only":
 		args = append(args, "--permission-mode", "plan")
