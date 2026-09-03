@@ -22,6 +22,21 @@ func TestKilocodeLocalAuthStatusAuthorizedWithProviderEnv(t *testing.T) {
 	}
 }
 
+func TestKilocodeLocalAuthStatusAuthorizedWithNVIDIAEnv(t *testing.T) {
+	for _, name := range kilocodeAPIKeyEnvVars {
+		t.Setenv(name, "")
+	}
+	t.Setenv("NVIDIA_API_KEY", "test-only-placeholder")
+
+	status, ok, err := kilocodeLocalAuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	}
+}
+
 func TestKilocodeAuthListStatusAuthorizedWithEnvironmentVariable(t *testing.T) {
 	output := `
 log stream error: EPERM: operation not permitted

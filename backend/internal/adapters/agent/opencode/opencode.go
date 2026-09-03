@@ -221,6 +221,7 @@ var opencodeAPIKeyEnvVars = []string{
 	"XAI_API_KEY",
 	"MISTRAL_API_KEY",
 	"COHERE_API_KEY",
+	"NVIDIA_API_KEY",
 }
 
 func opencodeLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {

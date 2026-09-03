@@ -77,6 +77,15 @@ describe("buildDaemonEnv", () => {
 		expect(env.ANTHROPIC_API_KEY).toBe("sk-ant");
 	});
 
+	it("keeps an NVIDIA credential present only in the shell env", () => {
+		const env = buildDaemonEnv(
+			minimalProcessEnv,
+			{ PATH: "/opt/homebrew/bin", NVIDIA_API_KEY: "test-only-placeholder" },
+			{},
+		);
+		expect(env.NVIDIA_API_KEY).toBe("test-only-placeholder");
+	});
+
 	it("takes PATH from the shell env (with floor) over a minimal process PATH", () => {
 		const env = buildDaemonEnv(minimalProcessEnv, { PATH: "/opt/homebrew/bin:/usr/bin" }, {});
 		expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin:/opt/homebrew/sbin:/usr/local/bin:/bin:/usr/sbin:/sbin");
