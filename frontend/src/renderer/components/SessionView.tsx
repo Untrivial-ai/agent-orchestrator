@@ -26,7 +26,7 @@ import { CloudSessionChatSurface } from "./chat/CloudSessionChatSurface";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
-import { SessionFileTab, SessionFileTabActions } from "./SessionFileTabs";
+import { SessionFileTab } from "./SessionFileTabs";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import { SessionActionsMenu } from "./SessionActionsMenu";
 import { SessionInspector } from "./SessionInspector";
@@ -77,7 +77,6 @@ import { matchWorkspaceFilePath } from "../lib/workspace-file-path";
 import { SHELL_PANEL_SPRING } from "../lib/motion-spring";
 import {
 	activateSessionFile,
-	closeAllSessionFiles,
 	closeSessionFile,
 	EMPTY_SESSION_FILE_TABS,
 	openSessionFile,
@@ -818,20 +817,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		}
 		removeAuxiliaryTab(`file:${path}`);
 	}, [activateAuxiliaryTab, adjacentAuxiliaryTab, fileTabs.activePath, removeAuxiliaryTab, sessionId]);
-	const closeAllCenterFiles = useCallback(() => {
-		setFileTabsBySession((current) => ({ ...current, [sessionId]: closeAllSessionFiles() }));
-		setAuxiliaryTabOrderBySession((current) => {
-			const currentOrder = current[sessionId];
-			if (!currentOrder?.some((key) => key.startsWith("file:"))) return current;
-			const nextOrder = currentOrder.filter((key) => !key.startsWith("file:"));
-			if (nextOrder.length === 0) {
-				const { [sessionId]: _removed, ...rest } = current;
-				return rest;
-			}
-			return { ...current, [sessionId]: nextOrder };
-		});
-	}, [sessionId]);
-
 	// The shell layout owns opening (it is mounted on every route, so the button
 	// and ⌘T / Ctrl+T work everywhere); this view only follows the result. When a new
 	// shell becomes active while a session is on screen, switch the pane to it —
@@ -1081,9 +1066,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			})),
 		[activateCenterFile, closeCenterFile, fileAnnotation, fileTabs.activePath, fileTabs.openPaths],
 	);
-	const centerFileTabActions = fileTabs.openPaths.length > 0 ? (
-		<SessionFileTabActions onCloseAll={closeAllCenterFiles} />
-	) : undefined;
 	const activeWorkspaceTabKey = fileTabs.activePath ? `file:${fileTabs.activePath}` : undefined;
 	const previewUrl = session?.previewUrl?.trim() || undefined;
 	const previewRevision = session?.previewRevision;
@@ -1667,7 +1649,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 									tabStripAction={newShellTerminalAction}
 									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
-									workspaceTabActions={centerFileTabActions}
 									workspaceActiveTabKey={activeWorkspaceTabKey}
 									workspaceFileActive={Boolean(fileTabs.activePath)}
 									auxiliaryTabOrder={resolvedAuxiliaryTabOrder}
@@ -1705,7 +1686,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 									tabStripAction={newShellTerminalAction}
 									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
-									workspaceTabActions={centerFileTabActions}
 									workspaceActiveTabKey={activeWorkspaceTabKey}
 									workspaceFileActive={Boolean(fileTabs.activePath)}
 									auxiliaryTabOrder={resolvedAuxiliaryTabOrder}
