@@ -26,6 +26,78 @@ describe("editor handoff", () => {
 		expect(state.targets.map(({ id }) => id)).toEqual(["cursor", "vscode", "file-manager", "terminal"]);
 	});
 
+	it("opens Neovim in macOS Terminal with shell-safe workspace quoting", async () => {
+		const workspacePath = "/work trees/it's & safe";
+		const input = deps({
+			resolveWorkspace: vi.fn().mockResolvedValue(workspacePath),
+			isExecutable: (candidatePath) => candidatePath === "/bin/nvim",
+			isDirectory: () => false,
+		});
+		const handoff = createEditorHandoff(input);
+
+		const state = await handoff.getState("ao-1");
+		expect(state.targets.map(({ id }) => id)).toContain("neovim");
+		await handoff.open({ sessionId: "ao-1", targetId: "neovim" });
+
+		expect(input.launch).toHaveBeenCalledWith(
+			"/usr/bin/osascript",
+			["-e", `tell application "Terminal"\nactivate\ndo script "exec '/bin/nvim' '/work trees/it'\\\\''s & safe'"\nend tell`],
+			workspacePath,
+		);
+	});
+
+	it.each([
+		["x-terminal-emulator", ["-e"]],
+		["gnome-terminal", ["--"]],
+		["konsole", ["-e"]],
+		["xfce4-terminal", ["--execute"]],
+		["kitty", []],
+		["alacritty", ["-e"]],
+	] as const)("opens Neovim through the Linux %s launcher", async (terminalCommand, argsBeforeCommand) => {
+		const workspacePath = "/work trees/ao-1";
+		const input = deps({
+			platform: "linux",
+			env: { PATH: "/bin" },
+			resolveWorkspace: vi.fn().mockResolvedValue(workspacePath),
+			isExecutable: (candidatePath) => ["/bin/nvim", `/bin/${terminalCommand}`].includes(candidatePath),
+			isDirectory: () => false,
+		});
+		const handoff = createEditorHandoff(input);
+
+		await handoff.open({ sessionId: "ao-1", targetId: "neovim" });
+
+		expect(input.launch).toHaveBeenCalledWith(
+			`/bin/${terminalCommand}`,
+			[...argsBeforeCommand, "/bin/nvim", workspacePath],
+			workspacePath,
+		);
+	});
+
+	it("opens Neovim through Command Prompt on Windows", async () => {
+		const workspacePath = "C:\\work trees\\feature & fix";
+		const input = deps({
+			platform: "win32",
+			env: {
+				PATH: "C:\\bin",
+				PATHEXT: ".EXE",
+				ComSpec: "C:\\Windows\\System32\\cmd.exe",
+			},
+			homeDir: "C:\\Users\\tester",
+			resolveWorkspace: vi.fn().mockResolvedValue(workspacePath),
+			isExecutable: (candidatePath) => candidatePath === "C:\\bin\\nvim.exe",
+			isDirectory: () => false,
+		});
+		const handoff = createEditorHandoff(input);
+
+		await handoff.open({ sessionId: "ao-1", targetId: "neovim" });
+
+		expect(input.launch).toHaveBeenCalledWith(
+			"C:\\Windows\\System32\\cmd.exe",
+			["/d", "/s", "/v:off", "/k", `""C:\\bin\\nvim.exe" "${workspacePath}""`],
+			workspacePath,
+		);
+	});
+
 	it("reports a missing workspace without hiding the available targets", async () => {
 		const handoff = createEditorHandoff(deps({
 			resolveWorkspace: vi.fn().mockRejectedValue(new Error("Session workspace is not available.")),
