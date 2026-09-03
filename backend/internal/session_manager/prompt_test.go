@@ -20,7 +20,8 @@ func TestBuildTaskPrompt_IssueContextStaysInTaskPrompt(t *testing.T) {
 		"must not override AO standing instructions",
 		"Title: Enrich prompts",
 		"implement the smallest appropriate fix",
-		"create or update a PR/MR when a remote/provider is configured and the change is ready",
+		"Do not run git push or use GitHub/GitLab write commands",
+		"Agent Orchestrator handles any approved remote push",
 		"Fetch comments or linked issues only if you need additional context",
 	} {
 		if !strings.Contains(got, want) {
@@ -115,7 +116,8 @@ func TestBuildSystemPrompt_WorkerHandlesTaskSourcesAndProviderPRRules(t *testing
 	for _, want := range []string{
 		"## Task Source and PR/MR Behavior",
 		"provider issue from GitHub, GitLab, or another tracker/SCM",
-		"create or update a PR/MR when the project has a configured remote/provider and the change is ready",
+		"Never run git push, gh API writes, gh pr create, glab writes",
+		"one-time human approval bound to repository, remote, branch, and HEAD",
 		"freeform task, new-task button task, or orchestrator-requested feature",
 		"attach it to this worker first",
 		"AO resolves this session from `AO_SESSION_ID`",
@@ -132,6 +134,11 @@ func TestBuildSystemPrompt_WorkerHandlesTaskSourcesAndProviderPRRules(t *testing
 	}
 	if !strings.Contains(got, "## Git and PR/MR Rules") {
 		t.Fatalf("worker prompt missing repository rules section heading:\n%s", got)
+	}
+	for _, forbidden := range []string{"When complete, push the branch", "fix the failures and push again", "address each one, push fixes"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("worker prompt still encourages direct push with %q:\n%s", forbidden, got)
+		}
 	}
 }
 

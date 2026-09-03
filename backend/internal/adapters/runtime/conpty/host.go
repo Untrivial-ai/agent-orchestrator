@@ -387,7 +387,19 @@ func (h *host) handleClientMsg(conn net.Conn, msgType byte, payload []byte) {
 	switch msgType {
 	case MsgTerminalInput:
 		if _, alive := h.cfg.PTY.ExitCode(); !alive {
-			_, _ = h.cfg.PTY.Write(payload)
+			if _, err := h.cfg.PTY.Write(payload); err != nil {
+				// The previous implementation silently discarded ConPTY input
+				// failures, leaving attached clients hung with no actionable signal.
+				// Return a bounded, credential-free OS diagnostic to this client.
+				diagnostic := err.Error()
+				if len(diagnostic) > 512 {
+					diagnostic = diagnostic[:512]
+				}
+				if frame, frameErr := EncodeMessage(MsgTerminalData,
+					[]byte("\r\n[ao: terminal input failed: "+diagnostic+"]\r\n")); frameErr == nil {
+					h.sendTo(conn, frame)
+				}
+			}
 		}
 
 	case MsgResize:
@@ -440,7 +452,14 @@ func (h *host) handleClientMsg(conn net.Conn, msgType byte, payload []byte) {
 		h.sendTo(conn, statusFrame(alive, pid, codePtr))
 
 	case MsgKillReq:
-		// Trigger graceful shutdown; returns immediately (idempotent).
+		// Unblock the main accept loop before disposing ConPTY. On Windows,
+		// ClosePseudoConsole can wait on a misbehaving descendant; closing the
+		// listener first guarantees RunHost exits, so its launcher closes the
+		// session Job and KILL_ON_JOB_CLOSE terminates the entire process tree.
+		if ack, err := EncodeMessage(MsgKillAck, nil); err == nil {
+			h.sendTo(conn, ack)
+		}
+		_ = h.cfg.Listener.Close()
 		go h.shutdown()
 	}
 }

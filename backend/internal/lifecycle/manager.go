@@ -1868,6 +1868,14 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 		}
 	}
 	set(&base.Branch, in.Branch)
+	if in.ProviderID != "" {
+		base.ProviderID = in.ProviderID
+	}
+	if in.ProviderModelID != "" {
+		base.ProviderModelID = in.ProviderModelID
+	}
+	set(&base.ProviderDisplayName, in.ProviderDisplayName)
+	set(&base.ProviderModelName, in.ProviderModelName)
 	set(&base.WorkspacePath, in.WorkspacePath)
 	set(&base.WorkspaceRepoPath, in.WorkspaceRepoPath)
 	set(&base.DiffBaseSHA, in.DiffBaseSHA)

@@ -2329,6 +2329,8 @@ func TestMarkSpawnedStoresRuntimeMetadata(t *testing.T) {
 	st.sessions["mer-1"] = working("mer-1")
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", IsTerminated: true}
 	metadata := domain.SessionMetadata{
+		ProviderID:        "provider-deepseek",
+		ProviderModelID:   "model-deepseek-v4-pro",
 		Branch:            "b",
 		WorkspacePath:     "/ws",
 		WorkspaceRepoPath: "/repos/mer",
@@ -2345,6 +2347,9 @@ func TestMarkSpawnedStoresRuntimeMetadata(t *testing.T) {
 	}
 	if got.Metadata.WorkspaceRepoPath != metadata.WorkspaceRepoPath {
 		t.Fatalf("workspace repo path = %q, want %q", got.Metadata.WorkspaceRepoPath, metadata.WorkspaceRepoPath)
+	}
+	if got.Metadata.ProviderID != metadata.ProviderID || got.Metadata.ProviderModelID != metadata.ProviderModelID {
+		t.Fatalf("Provider selection = %q/%q, want %q/%q", got.Metadata.ProviderID, got.Metadata.ProviderModelID, metadata.ProviderID, metadata.ProviderModelID)
 	}
 }
 

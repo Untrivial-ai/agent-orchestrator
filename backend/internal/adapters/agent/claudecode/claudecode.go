@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -195,9 +196,8 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 // agent would hang at that prompt with no one to answer it.
 //
 // An AO worktree is derived from the repo the user is already running
-// AO in, so it is inherently trusted. PreLaunch records that trust in
-// ~/.claude.json before launch, additively and atomically, so it cannot
-// clobber a concurrently-running Claude instance's config.
+// AO in, so it is inherently trusted. PreLaunch records that trust only in
+// the explicit per-session Worker profile used by the launched process.
 func (p *Plugin) PreLaunch(ctx context.Context, cfg ports.LaunchConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -205,11 +205,17 @@ func (p *Plugin) PreLaunch(ctx context.Context, cfg ports.LaunchConfig) error {
 	if cfg.WorkspacePath == "" {
 		return nil
 	}
-	cfgPath, err := claudeConfigPath()
-	if err != nil {
+	configDir := strings.TrimSpace(cfg.Env["CLAUDE_CONFIG_DIR"])
+	if configDir == "" {
+		return errors.New("claude-code: Worker CLAUDE_CONFIG_DIR is required")
+	}
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		return fmt.Errorf("claude-code: create Worker config directory: %w", err)
+	}
+	if err := ensureWorkspaceTrusted(filepath.Join(filepath.Dir(configDir), ".claude.json"), cfg.WorkspacePath); err != nil {
 		return err
 	}
-	return ensureWorkspaceTrusted(cfgPath, cfg.WorkspacePath)
+	return ensureWorkspaceTrusted(filepath.Join(configDir, ".claude.json"), cfg.WorkspacePath)
 }
 
 // GetRestoreCommand rebuilds the argv that continues an existing Claude Code
@@ -315,14 +321,7 @@ func (p *Plugin) NativeConversationExists(
 	}
 	configDir := strings.TrimSpace(env["CLAUDE_CONFIG_DIR"])
 	if configDir == "" {
-		configDir = strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
-	}
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return false, fmt.Errorf("claude-code: resolve transcript root: %w", err)
-		}
-		configDir = filepath.Join(home, ".claude")
+		return false, nil
 	}
 	projectsDir := filepath.Join(configDir, "projects")
 	projects, err := os.ReadDir(projectsDir)
@@ -605,17 +604,29 @@ func ensureWorkspaceTrustedForOS(configPath, workspacePath, goos string) error {
 		root["projects"] = projects
 	}
 
-	entry, _ := projects[workspacePath].(map[string]any)
-	if entry == nil {
-		entry = map[string]any{}
-		projects[workspacePath] = entry
+	onboardingComplete, _ := root["hasCompletedOnboarding"].(bool)
+	workspaceKeys := []string{workspacePath}
+	if normalized := filepath.ToSlash(workspacePath); normalized != workspacePath {
+		workspaceKeys = append(workspaceKeys, normalized)
 	}
-
-	if trusted, ok := entry["hasTrustDialogAccepted"].(bool); ok && trusted {
+	allTrusted := true
+	for _, key := range workspaceKeys {
+		entry, _ := projects[key].(map[string]any)
+		if entry == nil {
+			entry = map[string]any{}
+			projects[key] = entry
+		}
+		trusted, _ := entry["hasTrustDialogAccepted"].(bool)
+		if !trusted {
+			entry["hasTrustDialogAccepted"] = true
+			allTrusted = false
+		}
+	}
+	if onboardingComplete && allTrusted {
 		// Already trusted — no write needed, so no race window at all.
 		return nil
 	}
-	entry["hasTrustDialogAccepted"] = true
+	root["hasCompletedOnboarding"] = true
 
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {

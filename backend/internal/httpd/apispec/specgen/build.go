@@ -19,6 +19,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	providersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/provider"
 )
 
 // Build reflects the Go contract types and the operation registry below into
@@ -659,6 +660,15 @@ func systemOperations() []operation {
 
 func browserOperations() []operation {
 	return []operation{
+		{method: http.MethodGet, path: "/api/v1/providers", id: "listProviders", tag: "providers", summary: "List configured LLM providers", resps: []respUnit{{http.StatusOK, controllers.ProvidersResponse{}}, {http.StatusInternalServerError, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/providers", id: "createProvider", tag: "providers", summary: "Create an LLM provider", reqBody: controllers.ProviderRequest{}, resps: []respUnit{{http.StatusCreated, controllers.ProviderResponse{}}, {http.StatusBadRequest, envelope.APIError{}}}},
+		{method: http.MethodGet, path: "/api/v1/providers/{providerId}", id: "getProvider", tag: "providers", summary: "Read a provider and its models", pathParams: []any{controllers.ProviderIDParam{}}, resps: []respUnit{{http.StatusOK, controllers.ProviderDetailResponse{}}, {http.StatusNotFound, envelope.APIError{}}}},
+		{method: http.MethodPatch, path: "/api/v1/providers/{providerId}", id: "updateProvider", tag: "providers", summary: "Update or disable a provider", pathParams: []any{controllers.ProviderIDParam{}}, reqBody: controllers.ProviderRequest{}, resps: []respUnit{{http.StatusOK, controllers.ProviderResponse{}}, {http.StatusBadRequest, envelope.APIError{}}}},
+		{method: http.MethodDelete, path: "/api/v1/providers/{providerId}", id: "disableProvider", tag: "providers", summary: "Disable a provider while preserving history", pathParams: []any{controllers.ProviderIDParam{}}, resps: []respUnit{{http.StatusOK, controllers.ProviderResponse{}}, {http.StatusNotFound, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/providers/{providerId}/models", id: "createProviderModel", tag: "providers", summary: "Create a provider model", pathParams: []any{controllers.ProviderIDParam{}}, reqBody: controllers.ProviderModelRequest{}, resps: []respUnit{{http.StatusOK, controllers.ProviderModelResponse{}}, {http.StatusBadRequest, envelope.APIError{}}}},
+		{method: http.MethodPatch, path: "/api/v1/providers/{providerId}/models/{modelId}", id: "updateProviderModel", tag: "providers", summary: "Update or disable a provider model", pathParams: []any{controllers.ProviderIDParam{}, controllers.ProviderModelIDParam{}}, reqBody: controllers.ProviderModelRequest{}, resps: []respUnit{{http.StatusOK, controllers.ProviderModelResponse{}}, {http.StatusBadRequest, envelope.APIError{}}}},
+		{method: http.MethodDelete, path: "/api/v1/providers/{providerId}/models/{modelId}", id: "disableProviderModel", tag: "providers", summary: "Disable a provider model while preserving history", pathParams: []any{controllers.ProviderIDParam{}, controllers.ProviderModelIDParam{}}, resps: []respUnit{{http.StatusOK, controllers.ProviderModelResponse{}}, {http.StatusNotFound, envelope.APIError{}}}},
+		{method: http.MethodPost, path: "/api/v1/providers/{providerId}/test", id: "testProviderConnection", tag: "providers", summary: "Test a provider connection without exposing its credential", pathParams: []any{controllers.ProviderIDParam{}}, reqBody: controllers.TestProviderRequest{}, resps: []respUnit{{http.StatusOK, providersvc.TestResult{}}, {http.StatusBadRequest, envelope.APIError{}}}},
 		{
 			method: http.MethodGet, path: "/api/v1/browser/status", id: "getBrowserStatus", tag: "browser",
 			summary:    "Check whether the desktop browser runtime is connected for a session",

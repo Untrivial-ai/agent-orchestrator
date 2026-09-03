@@ -79,7 +79,7 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 		if r.GithubReviewID != "" {
 			safeReviewID := domain.SanitizeControlChars(r.GithubReviewID)
 			fmt.Fprintf(&msg, "\nGitHub review: %s", safeReviewID)
-			fmt.Fprintf(&msg, "\nOnce you have addressed it, reply on GitHub review %s with how you addressed it, then resolve the review comment threads you addressed.", safeReviewID)
+			fmt.Fprintf(&msg, "\nOnce you have addressed it, commit locally and report GitHub review %s plus the resolved details. Do not write to GitHub directly; the platform handles remote actions after approval.", safeReviewID)
 		}
 		if r.Body != "" {
 			fmt.Fprintf(&msg, "\n\nReview body:\n%s\n", domain.SanitizeControlChars(r.Body))
@@ -837,7 +837,7 @@ func formatCIFailureMessage(checks []ports.PRCheckObservation) string {
 		}
 		msg.WriteString("\n")
 	}
-	msg.WriteString("\nUse the included log tail and failure URL first; fetch full CI logs only if you need additional context. Fix the issues and push again.")
+	msg.WriteString("\nUse the included log tail and failure URL first; fetch full CI logs only if you need additional context. Fix the issues and commit locally. Do not push; report that the platform needs a new human approval for the updated HEAD.")
 	return msg.String()
 }
 
@@ -882,13 +882,13 @@ func formatReviewChangesRequestedMessage(review domain.PullRequestReview) string
 	if review.ID != "" {
 		fmt.Fprintf(&msg, "\nReview ID: %s", domain.SanitizeControlChars(review.ID))
 	}
-	msg.WriteString("\n\nAddress the requested changes and push. You should not need to re-fetch the review unless you need additional context beyond what AO has provided here.")
+	msg.WriteString("\n\nAddress the requested changes and commit locally. Do not push; report that the platform needs a new human approval for the updated HEAD. You should not need to re-fetch the review unless you need additional context beyond what AO has provided here.")
 	return msg.String()
 }
 
 func formatReviewCommentsMessage(comments []ports.PRCommentObservation) string {
 	if len(comments) == 0 {
-		return "A reviewer left feedback on your PR. Address it and push. Fetch the review details only if you need additional context beyond what AO has provided here."
+		return "A reviewer left feedback on your PR. Address it and commit locally. Do not push; the platform requires a new human approval for the updated HEAD. Fetch the review details only if you need additional context beyond what AO has provided here."
 	}
 	var msg strings.Builder
 	fmt.Fprintf(&msg, "The following %d unresolved review comment(s) are on your PR as of just now. You should not need to re-fetch this data unless you need additional context.\n", len(comments))
@@ -917,7 +917,7 @@ func formatReviewCommentsMessage(comments []ports.PRCommentObservation) string {
 		}
 		msg.WriteString("\n")
 	}
-	msg.WriteString("\nAddress each comment and push fixes. Use the thread ID to resolve each thread directly after pushing when available. You should not need to re-fetch review data unless you need additional context beyond what is provided here.")
+	msg.WriteString("\nAddress each comment and commit fixes locally. Do not push or resolve remote threads directly; report the thread IDs so the platform can act after human approval. You should not need to re-fetch review data unless you need additional context beyond what is provided here.")
 	return msg.String()
 }
 

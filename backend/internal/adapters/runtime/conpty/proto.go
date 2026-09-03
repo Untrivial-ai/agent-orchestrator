@@ -27,6 +27,7 @@ const (
 	MsgKillReq            byte = 0x08 // client -> host: empty
 	MsgGetStyledOutputReq byte = 0x09 // client -> host: JSON {lines}
 	MsgGetStyledOutputRes byte = 0x0a // host -> client: rendered UTF-8 text with ANSI styles
+	MsgKillAck            byte = 0x0b // host -> client: kill request accepted
 )
 
 // JSON payload structs shared with later tasks (kept minimal).

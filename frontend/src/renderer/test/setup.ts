@@ -97,6 +97,9 @@ if (typeof window !== "undefined") {
 	Element.prototype.scrollIntoView = (() => undefined) as typeof Element.prototype.scrollIntoView;
 
 	window.ao = {
+		gitPush: {
+			request: async () => { throw new Error("git push broker not configured in this test"); },
+		},
 		app: {
 			getVersion: async () => "0.0.0-test",
 			chooseDirectory: async () => null,

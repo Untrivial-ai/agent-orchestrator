@@ -252,6 +252,14 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "SessionMode"
+          - column: "sessions.provider_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "ProviderID"
+          - column: "sessions.provider_model_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "ProviderModelID"
           - column: "session_interface_transitions.session_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

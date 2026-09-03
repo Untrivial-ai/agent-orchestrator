@@ -725,10 +725,18 @@ func TestKillReq(t *testing.T) {
 	// Serve should return within 2s (includes the 50ms grace sleep).
 	f.waitDone(t)
 
-	// PTY Close must have been called.
-	f.pty.closeMu.Lock()
-	closed := f.pty.closed
-	f.pty.closeMu.Unlock()
+	// Listener-first teardown lets Serve return before an OS ConPTY close that
+	// may block. The close still begins promptly on the shutdown goroutine.
+	deadline := time.Now().Add(time.Second)
+	closed := false
+	for !closed && time.Now().Before(deadline) {
+		f.pty.closeMu.Lock()
+		closed = f.pty.closed
+		f.pty.closeMu.Unlock()
+		if !closed {
+			time.Sleep(time.Millisecond)
+		}
+	}
 	if !closed {
 		t.Fatal("expected pty.Close() to be called on kill")
 	}

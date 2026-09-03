@@ -73,6 +73,11 @@ type SessionMetadata struct {
 	// Permissions pins the resolved launch policy independently of future project defaults.
 	Permissions PermissionMode `json:"permissions,omitempty"`
 
+	ProviderID          ProviderID      `json:"providerId,omitempty"`
+	ProviderModelID     ProviderModelID `json:"providerModelId,omitempty"`
+	ProviderDisplayName string          `json:"providerDisplayName,omitempty"`
+	ProviderModelName   string          `json:"providerModelName,omitempty"`
+
 	Branch            string `json:"branch,omitempty"`
 	WorkspacePath     string `json:"workspacePath,omitempty"`
 	WorkspaceRepoPath string `json:"workspaceRepoPath,omitempty"`

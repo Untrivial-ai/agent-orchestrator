@@ -239,6 +239,39 @@ function mockCommonGets(
   getMock.mockImplementation(commonGetsResponder(_unusedRuns, reviewerHandleId, reviews, reviewerActivityState));
 }
 
+describe("Git push approval", () => {
+  it("can only request a Main-owned confirmation and receives the final result", async () => {
+    mockCommonGets();
+    const request = vi.fn().mockResolvedValue({
+      status: "PUSHED",
+      approvalId: "approval-1",
+      remote: "origin",
+      branch: "feat/ns",
+      headSha: "0123456789abcdef",
+      result: "ok",
+    });
+    window.ao!.gitPush.request = request;
+
+    renderWithQuery(<SessionInspector session={session([])} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Review Git Push" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ sessionId: "sess-1", remote: "origin" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Pushed 0123456789ab to origin/feat/ns");
+    expect(Object.keys(window.ao!.gitPush)).toEqual(["request"]);
+  });
+
+  it("treats native-dialog cancellation as a no-op", async () => {
+    mockCommonGets();
+    const request = vi.fn().mockResolvedValue({ status: "CANCELLED" });
+    window.ao!.gitPush.request = request;
+
+    renderWithQuery(<SessionInspector session={session([])} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Review Git Push" }));
+    await waitFor(() => expect(request).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
 const approvedReview = {
   id: "run-1",
   reviewId: "review-1",
@@ -2943,7 +2976,7 @@ describe("SessionInspector summary reviews", () => {
       params: { path: { sessionId: "sess-1" } },
       body: {
         message: expect.stringContaining(
-          "commit the fix, and push the branch to GitHub",
+      "commit the fix locally. Do not push or write to GitHub directly",
         ),
       },
     });
