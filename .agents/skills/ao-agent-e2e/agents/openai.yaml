@@ -1,0 +1,4 @@
+interface:
+  display_name: "AO Agent E2E"
+  short_description: "Test real AO orchestrator, worker, and reviewer agents"
+  default_prompt: "Use $ao-agent-e2e to run the live AO E2E test for the notification-icon task with the supplied harness and report prompt, delegation, Kanban, PR, and reviewer evidence."
