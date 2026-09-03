@@ -375,7 +375,10 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""
-	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
+	// Session identity is useful independently of activity support. Some
+	// harnesses (currently Crush) expose only a metadata-bearing hook, so they
+	// must not be registered as activity-capable merely to persist a resume ID.
+	if domain.AgentHarness(agent).IsKnown() {
 		agentSessionID = hookAgentSessionID(payload)
 	}
 	usage := hookUsageMetadata(agent, payload)
