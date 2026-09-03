@@ -30,7 +30,6 @@ import {
 	revalidateAgentModels,
 } from "../hooks/useAgentModelsQuery";
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
-import { cn } from "../lib/utils";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
