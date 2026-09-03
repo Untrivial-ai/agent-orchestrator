@@ -52,6 +52,13 @@ const AGENTS = [
 	},
 ] as const;
 
+// Codex is the default cloud harness in the desktop flow. Start with the
+// credential type users receive from OpenAI so a pasted `sk-*` API key is not
+// accidentally submitted as a Codex access token or a Claude setup token.
+const DEFAULT_AGENT = AGENTS.find((a) => a.agent === "codex") ?? AGENTS[0];
+const DEFAULT_CREDENTIAL_TYPE =
+	DEFAULT_AGENT.creds.find((credential) => credential.value === "api_key")?.value ?? DEFAULT_AGENT.creds[0].value;
+
 type Phase = "idle" | "submitting" | "success";
 
 // Connects a developer's local coding-agent credential (Claude Code setup
@@ -67,8 +74,8 @@ export function CloudCredentialDialog() {
 	const open = useCredentialDialogStore((s) => s.open);
 	const setOpen = useCredentialDialogStore((s) => s.setOpen);
 
-	const [agent, setAgent] = useState<CloudCpAgentProvider>(AGENTS[0].agent);
-	const [credentialType, setCredentialType] = useState<string>(AGENTS[0].creds[0].value);
+	const [agent, setAgent] = useState<CloudCpAgentProvider>(DEFAULT_AGENT.agent);
+	const [credentialType, setCredentialType] = useState<string>(DEFAULT_CREDENTIAL_TYPE);
 	const [secret, setSecret] = useState("");
 	const [phase, setPhase] = useState<Phase>("idle");
 	const [error, setError] = useState<string | null>(null);
@@ -79,8 +86,8 @@ export function CloudCredentialDialog() {
 	// stale secret or a previous error/success.
 	useEffect(() => {
 		if (!open) return;
-		setAgent(AGENTS[0].agent);
-		setCredentialType(AGENTS[0].creds[0].value);
+		setAgent(DEFAULT_AGENT.agent);
+		setCredentialType(DEFAULT_CREDENTIAL_TYPE);
 		setSecret("");
 		setPhase("idle");
 		setError(null);
