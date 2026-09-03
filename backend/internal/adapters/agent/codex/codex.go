@@ -355,13 +355,25 @@ func ResolveCodexBinary(ctx context.Context) (string, error) {
 			}
 		}
 
-		for _, name := range []string{"codex.cmd", "codex", "codex.exe"} {
-			path, err := exec.LookPath(name)
-			if err == nil && path != "" {
-				if isWindowsAppsCodexExecutable(path) {
-					continue
+		resolveWindowsCandidate := func(candidate string) (string, bool) {
+			path, err := exec.LookPath(candidate)
+			if err != nil || path == "" {
+				return "", false
+			}
+			if isWindowsAppsCodexExecutable(path) {
+				return "", false
+			}
+			return resolveNativeWindowsCodex(path), true
+		}
+
+		for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+			if dir == "" {
+				continue
+			}
+			for _, name := range []string{"codex.exe", "codex", "codex.cmd"} {
+				if path, ok := resolveWindowsCandidate(filepath.Join(dir, name)); ok {
+					return path, nil
 				}
-				return resolveNativeWindowsCodex(path), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return "", err

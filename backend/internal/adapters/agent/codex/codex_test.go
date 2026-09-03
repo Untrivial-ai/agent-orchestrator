@@ -479,6 +479,43 @@ func TestResolveCodexBinaryPrefersNPMOverWindowsAppsExecutable(t *testing.T) {
 	}
 }
 
+func TestResolveCodexBinaryPrefersEarlierPathExeOverLaterCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows resolver only")
+	}
+
+	root := t.TempDir()
+	firstDir := filepath.Join(root, "first")
+	secondDir := filepath.Join(root, "second")
+	if err := os.MkdirAll(firstDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(secondDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	want := filepath.Join(firstDir, "codex.exe")
+	if err := os.WriteFile(want, []byte("native codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(secondDir, "codex.cmd")
+	if err := os.WriteFile(shim, []byte("@echo off\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("APPDATA", "")
+	t.Setenv("PATH", strings.Join([]string{firstDir, secondDir}, string(os.PathListSeparator)))
+	t.Setenv("USERPROFILE", filepath.Join(root, "profile"))
+
+	got, err := ResolveCodexBinary(context.Background())
+	if err != nil {
+		t.Fatalf("ResolveCodexBinary: %v", err)
+	}
+	if got != want {
+		t.Fatalf("ResolveCodexBinary = %q, want %q", got, want)
+	}
+}
+
 func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 	tests := []struct {
 		name        string
