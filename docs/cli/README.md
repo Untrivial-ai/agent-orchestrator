@@ -5,11 +5,13 @@ It starts, discovers, inspects, and stops the daemon through the loopback HTTP
 surface and the `running.json` handshake. It must not open SQLite directly or
 call runtime, workspace, tracker, or agent adapters in-process.
 
-When using the CLI directly from a shell, make sure the daemon is running first
-with `ao start` or by opening the desktop app. Product commands such as
-`ao agent ls` and `ao spawn` call the loopback daemon and will fail with a
-"daemon is not running" error if no `running.json` points at a live process. From
-a source checkout, build and run the local binary explicitly, for example:
+When using the CLI directly from a shell, make sure the daemon is running first.
+On a desktop, open the app (`ao start` fetches and launches it, and the app owns
+the daemon). On a headless server, run `ao daemon` to start the backend directly.
+Product commands such as `ao agent ls` and `ao spawn` call the loopback daemon
+and will fail with a "daemon is not running" error if no `running.json` points at
+a live process. From a source checkout, build and run the local binary
+explicitly, for example:
 
 ```bash
 cd backend
@@ -26,13 +28,13 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 
 | Command                       | Purpose                                                                                                                           |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `ao start`                    | Start the daemon in the background and wait for `/readyz`.                                                                        |
+| `ao start`                    | Fetch (if needed) and open the desktop app, which owns the daemon. Does not start a headless daemon itself.                       |
 | `ao stop`                     | Gracefully stop the daemon via loopback `POST /shutdown` after verifying daemon identity.                                         |
 | `ao status` / `--json`        | Report daemon state from `running.json`, process liveness, `/healthz`, and `/readyz`.                                             |
 | `ao doctor` / `--json`        | Check config, data directory, DB-file presence, daemon state, `git`, and (on Darwin/Linux) `tmux`; on Windows conpty is built in. |
 | `ao completion <shell>`       | Generate completions for `bash`, `zsh`, `fish`, or `powershell`.                                                                  |
 | `ao version` / `ao --version` | Print build metadata.                                                                                                             |
-| `ao daemon`                   | Hidden internal daemon entrypoint used by `ao start`.                                                                             |
+| `ao daemon`                   | Run the backend daemon in the foreground. The headless/server entrypoint, used when there is no desktop app to own the daemon.     |
 
 ### Product commands
 
