@@ -64,6 +64,7 @@ type Store interface {
 	RegisterWorkerBootstrap(ctx context.Context, orgID, sessionID, workerID, version string, epoch int64, capabilities []string) error
 	WorkerConnectionCurrent(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (bool, error)
 	WorkerAgentSessionID(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (string, error)
+	WorkerSessionModel(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (string, error)
 	MarkWorkerSeen(ctx context.Context, orgID, sessionID, workerID, version string, epoch int64, capabilities []string) error
 	SetWorkerActivity(ctx context.Context, orgID, sessionID, workerID string, epoch int64, activity worker.ActivityEvent) error
 	AppendInteractiveConversationFacts(ctx context.Context, orgID, sessionID, eventType, sourceInterface, userPrompt, assistantUpdate string) error

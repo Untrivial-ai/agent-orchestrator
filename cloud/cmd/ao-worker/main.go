@@ -217,6 +217,14 @@ func run(logger *slog.Logger) error {
 				return workerexec.Command{}, fmt.Errorf("load coding-agent credential: %w", err)
 			}
 			launch := bootstrap.Launch
+			// ChatUI can select a different model after bootstrap. Refresh the
+			// durable value before rebuilding TUI so the native process and its
+			// visible model stay in sync across the handoff.
+			if model, err := client.SessionModel(buildCtx); err != nil {
+				return workerexec.Command{}, fmt.Errorf("load current session model: %w", err)
+			} else if strings.TrimSpace(model) != "" {
+				launch.Model = strings.TrimSpace(model)
+			}
 			launch.AgentSessionID = strings.TrimSpace(nativeConversationID)
 			command, err := b.BuildInteractive(launch, credential, workspace)
 			credential.Secret = ""
@@ -436,6 +444,16 @@ func (c *client) AgentSessionID(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return response.AgentSessionID, nil
+}
+
+func (c *client) SessionModel(ctx context.Context) (string, error) {
+	var response struct {
+		Model string `json:"model"`
+	}
+	if err := c.doMethod(ctx, http.MethodGet, "/worker/session", nil, &response); err != nil {
+		return "", err
+	}
+	return response.Model, nil
 }
 
 func (c *client) EnsureAgentTerminal(ctx context.Context) (worker.AgentTerminalResponse, error) {
