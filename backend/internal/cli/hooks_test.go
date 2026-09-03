@@ -217,6 +217,27 @@ func TestHooks_NotificationReportsBlocked(t *testing.T) {
 	}
 }
 
+func TestHooks_DeliversWhenWorkerCannotInspectDaemonProcess(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, Deps{
+		In:           strings.NewReader(`{"session_id":"native-7"}`),
+		ProcessAlive: func(int) bool { return false },
+	}, "hooks", "claude-code", "session-start")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.hits != 1 {
+		t.Fatalf("hook requests = %d, want 1", capture.hits)
+	}
+	if got := capturedAgentSessionID(t, capture); got != "native-7" {
+		t.Fatalf("agentSessionId = %q, want native-7", got)
+	}
+}
+
 func TestHooks_IdlePromptReportsIdle(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "ao-7")
 	cfg := setConfigEnv(t)

@@ -29,6 +29,8 @@ type DelegateAgent = components["schemas"]["DelegateTaskRequest"]["agent"];
 
 type CreateTaskInput = {
 	projectId: string;
+	providerId?: string;
+	providerModelId?: string;
 	brief: string;
 	agent?: DelegateAgent;
 	model?: string;
@@ -74,6 +76,7 @@ export function TaskComposer({
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
 	const [agent, setAgent] = useState("");
+	const [providerSelection, setProviderSelection] = useState("");
 	const [agentTouched, setAgentTouched] = useState(false);
 	const [modelTouched, setModelTouched] = useState(false);
 	const [isSubmitting, setIsSubmitting] = useState(false);
@@ -94,6 +97,8 @@ export function TaskComposer({
 				const { data, error } = await apiClient.POST("/api/v1/orchestrators/delegate", {
 					body: {
 						projectId: input.projectId,
+						providerId: input.providerId,
+						providerModelId: input.providerModelId,
 						brief: input.brief,
 						agent: input.agent,
 						model: input.model,
@@ -208,6 +213,30 @@ export function TaskComposer({
 		selectedAgent !== "" &&
 		settings?.defaultSessionMode === "chat" &&
 		!settings.chatHarnesses.includes(selectedAgent);
+	const providerOptionsQuery = useQuery({
+		queryKey: ["providers", "selectable-models"],
+		enabled: selectedAgent === "claude-code",
+		queryFn: async () => {
+			const { data, error: listError } = await apiClient.GET("/api/v1/providers");
+			if (listError) throw listError;
+			const enabled = (data?.providers ?? []).filter((provider) => provider.enabled && provider.apiProtocol === "anthropic-compatible");
+			const details = await Promise.all(enabled.map(async (provider) => {
+				const { data: detail, error } = await apiClient.GET("/api/v1/providers/{providerId}", { params: { path: { providerId: provider.id } } });
+				if (error) throw error;
+				return (detail?.models ?? []).filter((model) => model.enabled).map((model) => ({ value: `${provider.id}|${model.id}`, label: `${provider.displayName} · ${model.displayName}` }));
+			}));
+			return details.flat();
+		},
+	});
+	useEffect(() => {
+		if (selectedAgent !== "claude-code") {
+			setProviderSelection("");
+			return;
+		}
+		if (providerSelection && providerOptionsQuery.data && !providerOptionsQuery.data.some((option) => option.value === providerSelection)) {
+			setProviderSelection("");
+		}
+	}, [providerOptionsQuery.data, providerSelection, selectedAgent]);
 
 	useEffect(() => {
 		if (!agentTouched) setAgent(defaultWorkerAgent);
@@ -246,8 +275,11 @@ export function TaskComposer({
 		setCanCreateAsTUI(false);
 		try {
 			const attachmentPayloads = await toSettledPayload();
+			const [providerId, providerModelId] = providerSelection.split("|");
 			const sessionId = await createTask({
 				projectId,
+				providerId: providerId || undefined,
+				providerModelId: providerModelId || undefined,
 				brief: prompt,
 				// The visible selection is authoritative: it is either the user's pick
 				// or the resolved default, so spawning names it explicitly.
@@ -270,6 +302,13 @@ export function TaskComposer({
 	};
 
 	return (
+		<div className="flex flex-col gap-2">
+			{selectedAgent === "claude-code" && (providerOptionsQuery.data?.length ?? 0) > 0 && (
+				<select aria-label="LLM provider and model" className="h-control-form rounded-md bg-input/50 px-3 text-sm" value={providerSelection} onChange={(event) => setProviderSelection(event.target.value)}>
+					<option value="">Use agent default provider</option>
+					{providerOptionsQuery.data?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+				</select>
+			)}
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
 			canSubmit={Boolean(projectId)}
@@ -342,6 +381,7 @@ export function TaskComposer({
 			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
 			renderModelControl={(control) => <TaskModelPicker {...control} />}
 		/>
+		</div>
 	);
 }
 

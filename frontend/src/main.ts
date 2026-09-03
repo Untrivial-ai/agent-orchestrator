@@ -86,6 +86,9 @@ import { AgentBrowserRuntime } from "./main/agent-browser-runtime";
 import { sameBrowserRuntimeIdentity, type BrowserRuntimeIdentity } from "./main/browser-runtime-identity";
 import { connectSupervisor, type SupervisorLinkHandle } from "./main/supervisor-link";
 import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./main/browser-runtime-link";
+import { callGitPushBroker } from "./main/git-push-client";
+import { buildGitPushConfirmationOptions } from "./main/git-push-confirmation";
+import type { GitPushProposal, GitPushRequestResult, GitPushResult } from "./shared/git-push";
 import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
@@ -1487,6 +1490,42 @@ ipcMain.handle("daemon:restart", async () => {
 	} catch (error) {
 		return reportDaemonRestartFailure(error);
 	}
+});
+function trustedShellIPC(event: Electron.IpcMainInvokeEvent): void {
+	if (event.sender !== getShellWebContents()) throw new Error("untrusted renderer");
+}
+function readyDaemonPort(): number {
+	if (daemonStatus.state !== "ready" || daemonStatus.port === undefined) throw new Error("AO daemon is not ready");
+	return daemonStatus.port;
+}
+ipcMain.handle("gitPush:request", async (event, input: { sessionId: string; remote?: string }): Promise<GitPushRequestResult> => {
+	trustedShellIPC(event);
+	const port = readyDaemonPort();
+	const proposal = await callGitPushBroker<GitPushProposal>(port, browserRuntimeToken, "prepare", {
+		sessionId: input.sessionId,
+		remote: input.remote ?? "origin",
+		requestedBy: "desktop-user",
+	});
+	const confirmation = await dialog.showMessageBox(buildGitPushConfirmationOptions(proposal));
+	if (confirmation.response !== 1) {
+		await callGitPushBroker<void>(port, browserRuntimeToken, "revoke", {
+			approvalId: proposal.approvalId,
+			requestedBy: "desktop-user",
+		});
+		return { status: "CANCELLED" };
+	}
+	const pushed = await callGitPushBroker<GitPushResult>(port, browserRuntimeToken, "approve-and-push", {
+		approvalId: proposal.approvalId,
+		approvedBy: "desktop-user",
+	});
+	return {
+		status: "PUSHED",
+		approvalId: pushed.approvalId,
+		headSha: proposal.headSha,
+		remote: proposal.remote,
+		branch: proposal.branch,
+		result: pushed.result,
+	};
 });
 ipcMain.handle("app:getVersion", () => app.getVersion());
 ipcMain.handle("app:openExternal", async (_event, url: string) => {

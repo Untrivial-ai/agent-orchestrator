@@ -1281,6 +1281,255 @@ paths:
       summary: Initialize a selected folder as a Git repository with an initial commit
       tags:
       - projects
+  /api/v1/providers:
+    get:
+      operationId: listProviders
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersProvidersResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List configured LLM providers
+      tags:
+      - providers
+    post:
+      operationId: createProvider
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersProviderRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersProviderResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+      summary: Create an LLM provider
+      tags:
+      - providers
+  /api/v1/providers/{providerId}:
+    delete:
+      operationId: disableProvider
+      parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersProviderResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: Disable a provider while preserving history
+      tags:
+      - providers
+    get:
+      operationId: getProvider
+      parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersProviderDetailResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: Read a provider and its models
+      tags:
+      - providers
+    patch:
+      operationId: updateProvider
+      parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersProviderRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersProviderResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+      summary: Update or disable a provider
+      tags:
+      - providers
+  /api/v1/providers/{providerId}/models:
+    post:
+      operationId: createProviderModel
+      parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersProviderModelRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersProviderModelResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+      summary: Create a provider model
+      tags:
+      - providers
+  /api/v1/providers/{providerId}/models/{modelId}:
+    delete:
+      operationId: disableProviderModel
+      parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: modelId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersProviderModelResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: Disable a provider model while preserving history
+      tags:
+      - providers
+    patch:
+      operationId: updateProviderModel
+      parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: modelId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersProviderModelRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersProviderModelResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+      summary: Update or disable a provider model
+      tags:
+      - providers
+  /api/v1/providers/{providerId}/test:
+    post:
+      operationId: testProviderConnection
+      parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersTestProviderRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderTestResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+      summary: Test a provider connection without exposing its credential
+      tags:
+      - providers
   /api/v1/prs/{id}/merge:
     post:
       operationId: mergePR
@@ -5464,6 +5713,79 @@ components:
         disabled:
           type: boolean
       type: object
+    ControllersProviderDetailResponse:
+      properties:
+        models:
+          items:
+            $ref: '#/components/schemas/DomainProviderModel'
+          type: array
+        provider:
+          $ref: '#/components/schemas/DomainProvider'
+      required:
+      - provider
+      - models
+      type: object
+    ControllersProviderModelRequest:
+      properties:
+        displayName:
+          type: string
+        enabled:
+          type: boolean
+        modelName:
+          type: string
+        sortOrder:
+          type: integer
+      required:
+      - displayName
+      - modelName
+      - enabled
+      - sortOrder
+      type: object
+    ControllersProviderModelResponse:
+      properties:
+        model:
+          $ref: '#/components/schemas/DomainProviderModel'
+      required:
+      - model
+      type: object
+    ControllersProviderRequest:
+      properties:
+        apiKey:
+          type:
+          - "null"
+          - string
+        apiProtocol:
+          type: string
+        baseUrl:
+          type: string
+        deleteApiKey:
+          type: boolean
+        displayName:
+          type: string
+        enabled:
+          type: boolean
+      required:
+      - displayName
+      - apiProtocol
+      - baseUrl
+      - enabled
+      type: object
+    ControllersProviderResponse:
+      properties:
+        provider:
+          $ref: '#/components/schemas/DomainProvider'
+      required:
+      - provider
+      type: object
+    ControllersProvidersResponse:
+      properties:
+        providers:
+          items:
+            $ref: '#/components/schemas/DomainProvider'
+          type: array
+      required:
+      - providers
+      type: object
     ControllersRequestRereviewRequest:
       properties:
         pullRequestUrl:
@@ -5572,6 +5894,14 @@ components:
           type: string
         projectId:
           type: string
+        providerDisplayName:
+          type: string
+        providerId:
+          type: string
+        providerModelId:
+          type: string
+        providerModelName:
+          type: string
         prs:
           items:
             $ref: '#/components/schemas/SessionPRFacts'
@@ -5669,6 +5999,13 @@ components:
           type: boolean
       required:
       - enabled
+      type: object
+    ControllersTestProviderRequest:
+      properties:
+        providerModelId:
+          type: string
+      required:
+      - providerModelId
       type: object
     ConversationAccountPayload:
       properties:
@@ -6345,6 +6682,10 @@ components:
           type: string
         projectId:
           type: string
+        providerId:
+          type: string
+        providerModelId:
+          type: string
       required:
       - projectId
       - brief
@@ -6432,6 +6773,66 @@ components:
       required:
       - state
       - lastActivityAt
+      type: object
+    DomainProvider:
+      properties:
+        apiProtocol:
+          type: string
+        baseUrl:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        displayName:
+          type: string
+        enabled:
+          type: boolean
+        id:
+          type: string
+        secretConfigured:
+          type: boolean
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - displayName
+      - apiProtocol
+      - baseUrl
+      - secretConfigured
+      - enabled
+      - createdAt
+      - updatedAt
+      type: object
+    DomainProviderModel:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        displayName:
+          type: string
+        enabled:
+          type: boolean
+        id:
+          type: string
+        modelName:
+          type: string
+        providerId:
+          type: string
+        sortOrder:
+          type: integer
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - providerId
+      - displayName
+      - modelName
+      - enabled
+      - sortOrder
+      - createdAt
+      - updatedAt
       type: object
     DomainReviewerConfig:
       properties:
@@ -7141,6 +7542,23 @@ components:
       - sourceTurnId
       - providerTurnId
       - activityId
+      type: object
+    ProviderTestResult:
+      properties:
+        category:
+          type: string
+        latencyMs:
+          format: int64
+          type: integer
+        message:
+          type: string
+        ok:
+          type: boolean
+      required:
+      - ok
+      - category
+      - message
+      - latencyMs
       type: object
     PushDeviceEnvelope:
       properties:
@@ -8234,6 +8652,10 @@ components:
           type: string
         prompt:
           maxLength: 4096
+          type: string
+        providerId:
+          type: string
+        providerModelId:
           type: string
         trackerProvider:
           enum:

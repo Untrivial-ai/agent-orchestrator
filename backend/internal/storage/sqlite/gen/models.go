@@ -191,6 +191,24 @@ type ConversationTurn struct {
 	PromotedToTurnID     sql.NullString
 }
 
+type GitActionAudit struct {
+	ID           string
+	ProjectID    string
+	SessionID    string
+	Action       string
+	Repository   string
+	Remote       string
+	Branch       string
+	HeadSha      string
+	ApprovalID   sql.NullString
+	RequestedBy  string
+	ExecutedBy   string
+	StartedAt    time.Time
+	FinishedAt   sql.NullTime
+	Result       string
+	ErrorMessage string
+}
+
 type ModelUsageEvent struct {
 	ID                  int64
 	BindingID           int64
@@ -330,6 +348,61 @@ type Project struct {
 	Kind          string
 }
 
+type Provider struct {
+	ID          string
+	DisplayName string
+	ApiProtocol string
+	BaseURL     string
+	SecretRef   string
+	Enabled     int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type ProviderAudit struct {
+	ID         string
+	ProviderID string
+	Action     string
+	Detail     string
+	CreatedAt  time.Time
+}
+
+type ProviderModel struct {
+	ID          string
+	ProviderID  string
+	DisplayName string
+	ModelName   string
+	Enabled     int64
+	SortOrder   int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type ProviderSecret struct {
+	SecretRef  string
+	Ciphertext []byte
+	UpdatedAt  time.Time
+}
+
+type PushApproval struct {
+	ID              string
+	ProjectID       string
+	SessionID       string
+	Repository      string
+	Remote          string
+	RemoteURL       string
+	Branch          string
+	ExpectedHeadSha string
+	CreatedAt       time.Time
+	ApprovedAt      sql.NullTime
+	ApprovedBy      string
+	ExpiresAt       time.Time
+	ConsumedAt      sql.NullTime
+	Status          string
+	Result          string
+	ErrorMessage    string
+}
+
 type Review struct {
 	ID               string
 	SessionID        domain.SessionID
@@ -401,6 +474,10 @@ type Session struct {
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
 	AgentSessionIDLaunchID    string
+	ProviderID                domain.ProviderID
+	ProviderModelID           domain.ProviderModelID
+	ProviderDisplayName       string
+	ProviderModelName         string
 }
 
 type SessionCleanupFact struct {

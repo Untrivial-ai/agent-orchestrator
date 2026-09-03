@@ -1,4 +1,5 @@
 {
+	"gitPush.review": "Review Git Push",
 	"activity.active": "Em andamento",
 	"activity.blocked": "Aguardando decisão",
 	"activity.exited": "Encerrado",

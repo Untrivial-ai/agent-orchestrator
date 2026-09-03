@@ -384,6 +384,10 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		AutoInjectReview:   row.AutoInjectReview,
 		AutoInjectCI:       row.AutoInjectCI,
 		Metadata: domain.SessionMetadata{
+			ProviderID:                row.ProviderID,
+			ProviderModelID:           row.ProviderModelID,
+			ProviderDisplayName:       row.ProviderDisplayName,
+			ProviderModelName:         row.ProviderModelName,
 			Branch:                    row.Branch,
 			WorkspacePath:             row.WorkspacePath,
 			WorkspaceRepoPath:         row.WorkspaceRepoPath,
@@ -462,6 +466,10 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		SessionMode:               domain.NormalizeSessionMode(rec.Mode),
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,
 		ControllerGeneration:      rec.Metadata.ControllerGeneration,
+		ProviderID:                rec.Metadata.ProviderID,
+		ProviderModelID:           rec.Metadata.ProviderModelID,
+		ProviderDisplayName:       rec.Metadata.ProviderDisplayName,
+		ProviderModelName:         rec.Metadata.ProviderModelName,
 		CreatedAt:                 rec.CreatedAt,
 		UpdatedAt:                 rec.UpdatedAt,
 	}
@@ -505,6 +513,10 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,
 		ControllerGeneration:      rec.Metadata.ControllerGeneration,
+		ProviderID:                rec.Metadata.ProviderID,
+		ProviderModelID:           rec.Metadata.ProviderModelID,
+		ProviderDisplayName:       rec.Metadata.ProviderDisplayName,
+		ProviderModelName:         rec.Metadata.ProviderModelName,
 		UpdatedAt:                 rec.UpdatedAt,
 	}
 }

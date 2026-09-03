@@ -342,7 +342,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	if hasActivity {
 		req.State = string(state)
 	}
-	if err := c.postJSON(ctx, path, req, nil); err != nil {
+	if err := c.postHookJSON(ctx, path, req); err != nil {
 		// Surface the failure for diagnosis, but exit 0: a failed activity
 		// report must not disrupt the agent.
 		c.reportHookFailure(agent, event, sessionID, err)
@@ -388,7 +388,7 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 	if hasActivity {
 		req.State = string(state)
 	}
-	if err := c.postJSON(ctx, path, req, nil); err != nil {
+	if err := c.postHookJSON(ctx, path, req); err != nil {
 		c.reportHookFailure(agent, event, reviewSessionID, err)
 	}
 	return nil

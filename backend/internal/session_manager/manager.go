@@ -23,8 +23,10 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	providersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/provider"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
+	"github.com/aoagents/agent-orchestrator/backend/internal/workeridentity"
 )
 
 // Sentinel errors returned by the Session Manager; callers match them with
@@ -239,6 +241,14 @@ type runtimeController interface {
 	IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error)
 }
 
+type ProviderResolver interface {
+	ResolveRuntimeProvider(context.Context, domain.ProviderID, domain.ProviderModelID) (providersvc.RuntimeConfig, error)
+}
+
+type resumeProviderResolver interface {
+	ResolveRuntimeProviderForResume(context.Context, domain.ProviderID, domain.ProviderModelID) (providersvc.RuntimeConfig, error)
+}
+
 // RestoreMode reports whether a restore continued an agent-native transcript or
 // relaunched from AO's saved task prompt.
 type RestoreMode string
@@ -297,6 +307,7 @@ type Manager struct {
 	agents    ports.AgentResolver
 	workspace ports.Workspace
 	store     Store
+	providers ProviderResolver
 	// messenger is a sessionguard.Guard wrapping the raw messenger, so every
 	// pane write is guarded (re-read state, refuse a blocked session) without
 	// each call site re-deriving the check. Send/confirmActive use Deliver for
@@ -559,6 +570,7 @@ type Deps struct {
 	Agents    ports.AgentResolver
 	Workspace ports.Workspace
 	Store     Store
+	Providers ProviderResolver
 	Messenger ports.AgentMessenger
 	// Defaults supplies the daemon-owned default session interface for spawns that
 	// name no mode. Nil means always use the compatibility default.
@@ -608,6 +620,7 @@ func New(d Deps) *Manager {
 		agents:                       d.Agents,
 		workspace:                    d.Workspace,
 		store:                        d.Store,
+		providers:                    d.Providers,
 		defaults:                     d.Defaults,
 		chat:                         d.Chat,
 		lcm:                          d.Lifecycle,
@@ -822,6 +835,31 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: browser capability: %w", id, err)
 	}
+	providerDisplayName, providerModelName := "", ""
+	if cfg.ProviderID != "" || cfg.ProviderModelID != "" {
+		if cfg.ProviderID == "" || cfg.ProviderModelID == "" || m.providers == nil {
+			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+			return domain.SessionRecord{}, 0, 0, errors.New("spawn: providerId and providerModelId must be selected together")
+		}
+		resolved, resolveErr := m.providers.ResolveRuntimeProvider(ctx, cfg.ProviderID, cfg.ProviderModelID)
+		if resolveErr != nil {
+			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: provider: %w", id, resolveErr)
+		}
+		if cfg.Harness != domain.HarnessClaudeCode {
+			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+			return domain.SessionRecord{}, 0, 0, errors.New("spawn: configured API providers currently support Claude Code only")
+		}
+		providerEnv, mapErr := resolved.ClaudeEnvironment()
+		if mapErr != nil {
+			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: provider mapping: %w", id, mapErr)
+		}
+		for key, value := range providerEnv {
+			env[key] = value
+		}
+		providerDisplayName, providerModelName = resolved.ProviderDisplayName, resolved.ModelDisplayName
+	}
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, browserCapabilityVerifier)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
@@ -888,6 +926,10 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 
 	metadata := domain.SessionMetadata{
+		ProviderID:                cfg.ProviderID,
+		ProviderModelID:           cfg.ProviderModelID,
+		ProviderDisplayName:       providerDisplayName,
+		ProviderModelName:         providerModelName,
 		Branch:                    ws.Branch,
 		WorkspacePath:             ws.Path,
 		WorkspaceRepoPath:         ws.RepoPath,
@@ -1717,6 +1759,25 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: browser capability: %w", operation, rec.ID, err)
 	}
+	if rec.Metadata.ProviderID != "" || rec.Metadata.ProviderModelID != "" {
+		if rec.Metadata.ProviderID == "" || rec.Metadata.ProviderModelID == "" || m.providers == nil {
+			return RestoreResult{}, fmt.Errorf("%s %s: provider selection is incomplete", operation, rec.ID)
+		}
+		resolved, resolveErr := m.providers.ResolveRuntimeProvider(ctx, rec.Metadata.ProviderID, rec.Metadata.ProviderModelID)
+		if resolver, ok := m.providers.(resumeProviderResolver); ok {
+			resolved, resolveErr = resolver.ResolveRuntimeProviderForResume(ctx, rec.Metadata.ProviderID, rec.Metadata.ProviderModelID)
+		}
+		if resolveErr != nil {
+			return RestoreResult{}, fmt.Errorf("%s %s: provider: %w", operation, rec.ID, resolveErr)
+		}
+		providerEnv, mapErr := resolved.ClaudeEnvironment()
+		if mapErr != nil {
+			return RestoreResult{}, fmt.Errorf("%s %s: provider mapping: %w", operation, rec.ID, mapErr)
+		}
+		for key, value := range providerEnv {
+			env[key] = value
+		}
+	}
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, browserCapabilityVerifier)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: persist browser capability: %w", operation, rec.ID, err)
@@ -1771,6 +1832,10 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 		return RestoreResult{}, fmt.Errorf("%s %s: runtime: %w", operation, rec.ID, err)
 	}
 	metadata := domain.SessionMetadata{
+		ProviderID:                rec.Metadata.ProviderID,
+		ProviderModelID:           rec.Metadata.ProviderModelID,
+		ProviderDisplayName:       rec.Metadata.ProviderDisplayName,
+		ProviderModelName:         rec.Metadata.ProviderModelName,
 		Branch:                    ws.Branch,
 		WorkspacePath:             ws.Path,
 		WorkspaceRepoPath:         ws.RepoPath,
@@ -3468,6 +3533,16 @@ func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueI
 // logged so the degradation isn't silent.
 func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) map[string]string {
 	env := spawnEnv(id, project, issue, m.dataDir, projectEnv)
+	clearProviderRuntimeEnvironment(env)
+	profileRoot := filepath.Join(m.dataDir, "workers", string(id), "home")
+	if configPath := strings.TrimSpace(os.Getenv("AO_WORKER_IDENTITY_CONFIG")); configPath != "" {
+		if cfg, err := workeridentity.LoadConfig(configPath); err == nil {
+			profileRoot = filepath.Join(cfg.SessionProfileRoot, string(id))
+		}
+	}
+	env["AO_WORKER_HOME"] = profileRoot
+	env["CLAUDE_CONFIG_DIR"] = filepath.Join(profileRoot, ".claude")
+	env["CODEX_HOME"] = filepath.Join(profileRoot, ".codex")
 	// Project configuration must never redirect AO-owned hook callbacks to a
 	// different daemon. New receives the resolved absolute path in production;
 	// the environment fallback keeps focused embedders and tests compatible.
@@ -3490,6 +3565,15 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 	}
 	env["PATH"] = path
 	return env
+}
+
+func clearProviderRuntimeEnvironment(env map[string]string) {
+	for key := range env {
+		upper := strings.ToUpper(key)
+		if strings.HasPrefix(upper, "ANTHROPIC_") || strings.HasPrefix(upper, "OPENAI_") || strings.HasPrefix(upper, "CLAUDE_CODE_") {
+			delete(env, key)
+		}
+	}
 }
 
 func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, string, error) {
@@ -3682,7 +3766,7 @@ func (m *Manager) prepareWorkspace(ctx context.Context, agent ports.Agent, id do
 		return fmt.Errorf("install hooks: %w", err)
 	}
 	if pl, ok := agent.(preLauncher); ok {
-		if err := pl.PreLaunch(ctx, ports.LaunchConfig{DataDir: m.dataDir, SessionID: string(id), WorkspacePath: workspacePath}); err != nil {
+		if err := pl.PreLaunch(ctx, ports.LaunchConfig{DataDir: m.dataDir, Env: env, SessionID: string(id), WorkspacePath: workspacePath}); err != nil {
 			m.cleanupPreparedAgentWorkspace(ctx, agent, id, workspacePath, env)
 			return fmt.Errorf("pre-launch: %w", err)
 		}

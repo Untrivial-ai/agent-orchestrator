@@ -351,6 +351,7 @@ const (
 type LaunchConfig struct {
 	Config      AgentConfig
 	DataDir     string
+	Env         map[string]string
 	IssueID     string
 	Kind        domain.SessionKind
 	Permissions PermissionMode

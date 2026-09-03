@@ -61,6 +61,9 @@ export const aoBridge: AoBridge =
 			restart: async () => ({ state: "starting" }),
 			onStatus: () => () => undefined,
 		},
+		gitPush: {
+			request: async () => { throw new Error("Git push approval requires the desktop app"); },
+		},
 		telemetry: {
 			getBootstrap: async () => null,
 		},

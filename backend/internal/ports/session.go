@@ -29,7 +29,9 @@ type SpawnConfig struct {
 	Prompt       string
 	// AgentConfig overrides the resolved project/role agent config for this
 	// single spawn. Empty fields keep the project defaults.
-	AgentConfig AgentConfig
+	AgentConfig     AgentConfig
+	ProviderID      domain.ProviderID
+	ProviderModelID domain.ProviderModelID
 
 	// RequestedMode is the caller's explicit session mode, or empty to let the
 	// daemon resolve its default. It is validated and persisted before any

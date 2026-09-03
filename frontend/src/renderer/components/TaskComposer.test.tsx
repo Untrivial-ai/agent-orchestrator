@@ -555,4 +555,48 @@ describe("TaskComposer", () => {
 			),
 		);
 	});
+
+	it("links enabled Provider models to Claude and submits the selected IDs", async () => {
+		h.get.mockImplementation(async (path: string, request?: { params?: { path?: { providerId?: string } } }) => {
+			if (path.includes("/models")) {
+				return { data: { agent: "claude-code", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			if (path === "/api/v1/providers") {
+				return { data: { providers: [
+					{ id: "deepseek", displayName: "DeepSeek", apiProtocol: "anthropic-compatible", enabled: true },
+					{ id: "disabled", displayName: "Disabled", apiProtocol: "anthropic-compatible", enabled: false },
+				] } };
+			}
+			if (path === "/api/v1/providers/{providerId}" && request?.params?.path?.providerId === "deepseek") {
+				return { data: { models: [
+					{ id: "v4", providerId: "deepseek", displayName: "V4 Pro", modelName: "deepseek-v4-pro", enabled: true },
+					{ id: "old", providerId: "deepseek", displayName: "Old", modelName: "old", enabled: false },
+				] } };
+			}
+			return { data: { status: "ok", project: { agent: "claude-code", config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ data: { workerId: "sess-provider" } });
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		const providerModel = await screen.findByRole("combobox", { name: "LLM provider and model" });
+		expect(providerModel).toHaveTextContent("DeepSeek · V4 Pro");
+		expect(providerModel).not.toHaveTextContent("Old");
+		fireEvent.change(providerModel, { target: { value: "deepseek|v4" } });
+		fireEvent.change(task(), { target: { value: "Use DeepSeek" } });
+		fireEvent.click(screen.getByText("Start task"));
+
+		await waitFor(() => expect(h.post).toHaveBeenCalledWith(
+			"/api/v1/orchestrators/delegate",
+			expect.objectContaining({ body: expect.objectContaining({
+				agent: "claude-code",
+				providerId: "deepseek",
+				providerModelId: "v4",
+			}) }),
+		));
+	});
 });

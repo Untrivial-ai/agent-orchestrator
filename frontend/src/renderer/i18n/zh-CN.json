@@ -1,4 +1,5 @@
 {
+	"gitPush.review": "审查 Git Push",
 	"activity.active": "工作中",
 	"activity.blocked": "等待决策",
 	"activity.exited": "已退出",

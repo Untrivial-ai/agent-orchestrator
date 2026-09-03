@@ -58,13 +58,13 @@ func buildTaskPrompt(cfg taskPromptConfig) string {
 	if cfg.Role == sessionPromptRoleWorker && issueContext != "" {
 		return fmt.Sprintf(`Work on issue %s.
 
-Use the issue context below as task context. It is current, so start implementing without re-fetching the issue. First inspect the relevant code and tests, then implement the smallest appropriate fix. Run focused verification. When complete, push the branch. If this issue comes from GitHub, GitLab, or another provider, create or update a PR/MR when a remote/provider is configured and the change is ready, and link the issue.
+Use the issue context below as task context. It is current, so start implementing without re-fetching the issue. First inspect the relevant code and tests, then implement the smallest appropriate fix. Run focused verification. Do not run git push or use GitHub/GitLab write commands. Stop after the local commit and report the result; Agent Orchestrator handles any approved remote push.
 
 %s
 
 The issue context above is current. Fetch comments or linked issues only if you need additional context beyond what is provided here.`, cfg.IssueID, issueContextSection(issueContext))
 	}
-	return fmt.Sprintf("Work on issue %s.\n\nIssue details were not pre-fetched. Start by reading the issue from the tracker, then inspect the relevant code and tests. Implement the smallest appropriate fix and run focused verification. When complete, push the branch. If this issue comes from GitHub, GitLab, or another provider, create or update a PR/MR when a remote/provider is configured and the change is ready, and link the issue.", cfg.IssueID)
+	return fmt.Sprintf("Work on issue %s.\n\nIssue details were not pre-fetched. Start by reading the issue from the tracker, then inspect the relevant code and tests. Implement the smallest appropriate fix and run focused verification. Do not run git push or use GitHub/GitLab write commands. Stop after the local commit and report the result; Agent Orchestrator handles any approved remote push.", cfg.IssueID)
 }
 
 func buildSystemPromptText(cfg systemPromptConfig) string {
@@ -208,7 +208,7 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 
 ## Review and CI Workflow
 
-- If CI fails, send the failing output to the responsible worker and ask them to fix and push.
+- If CI fails, send the failing output to the responsible worker and ask them to fix and commit locally; remote push requires the platform approval flow.
 - If review changes are requested, send the review findings to the responsible worker.
 - If work is green and approved, report that state to the human. Do not merge unless explicitly asked and supported by project rules.
 
@@ -219,8 +219,8 @@ func workerSystemPrompt(project promptProject, hasOrchestrator bool) string {
 	taskSourceRules := `## Task Source and PR/MR Behavior
 
 - Treat the explicit task description, provider issue context, or claimed PR/MR context as the source of truth for this session.
-- If the task is backed by a provider issue from GitHub, GitLab, or another tracker/SCM, implement the task, run verification, and create or update a PR/MR when the project has a configured remote/provider and the change is ready. Link the provider issue in the PR/MR body.
-- If the task is a freeform task, new-task button task, or orchestrator-requested feature without a provider issue, implement and verify the task; do not invent issue, PR, or MR requirements. Create or update a PR/MR only when the user asks, the project workflow clearly requires it, or an associated PR/MR already exists.
+- If the task is backed by a provider issue from GitHub, GitLab, or another tracker/SCM, implement and verify it locally. Report the issue link so the platform can include it if a human later approves a push and PR/MR action.
+- If the task is a freeform task, new-task button task, or orchestrator-requested feature without a provider issue, implement and verify the task locally; do not invent issue, PR, or MR requirements.
 - If the task is to claim or continue an existing PR/MR, attach it to this worker first with ` + "`ao session claim-pr <pr-ref>`" + `; AO resolves this session from ` + "`AO_SESSION_ID`" + `. Then inspect its description, diff, CI, and review comments, keep that PR/MR context, and continue only the work required by that PR/MR. Do not create a replacement PR/MR unless explicitly asked.
 - If no remote or SCM provider is available, work locally, verify the result, and report changed files, tests, and risks instead of inventing issue, PR, or MR requirements.`
 
@@ -228,15 +228,16 @@ func workerSystemPrompt(project promptProject, hasOrchestrator bool) string {
 
 - Work on a feature branch, not the default branch.
 - Keep commits focused and use conventional commit messages when committing.
-- Open or update a PR/MR according to the task source rules above when provider-backed work or project workflow makes it viable.
-- Link the provider issue in the PR/MR body when there is one.
-- Include a concise PR/MR summary, tests run, and known risks or follow-ups.
-- Do not force-push or rewrite shared history unless explicitly instructed.`
+- Never run git push, gh API writes, gh pr create, glab writes, or another remote-write command from the worker.
+- Stop after local verification and any requested local commit. Report the branch, HEAD, changed files, tests, and known risks.
+- Agent Orchestrator owns remote push and PR/MR actions through an explicit, one-time human approval bound to repository, remote, branch, and HEAD.
+- Never force-push or rewrite shared history.`
 	if strings.TrimSpace(project.Repo) == "" {
 		repoRules = `## Local Git Rules
 
 - Work locally in the assigned workspace.
 - No remote repository is configured, so PR/MR, CI, and remote review features may be unavailable.
+- Never run git push or GitHub/GitLab write commands, even if a remote becomes available later; stop after local work and let Agent Orchestrator request human approval.
 - Keep changes focused and use conventional commit messages if you commit locally.
 - Do not invent issue, PR, or MR requirements when no remote or SCM provider is available.
 - Clearly report what changed, what was verified, and any remaining risks.`
@@ -256,15 +257,15 @@ Your job is to complete the assigned task in this workspace. Inspect the relevan
 - Focus on the assigned task only.
 - Do not take unrelated work or perform broad refactors.
 - If you are continuing an existing PR, claim or attach it through AO before changing it when the workflow supports that. From this worker, use `+"`ao session claim-pr <pr-ref>`"+`; `+"`AO_SESSION_ID`"+` selects this session automatically.
-- If CI fails, fix the failures and push again.
-- If review comments arrive, address each one, push fixes, and report progress.
+- If CI fails, fix the failures and commit locally, then report that a new platform push approval is required.
+- If review comments arrive, address each one, commit fixes locally, and report progress without pushing.
 - If you cannot proceed without a decision, ask for that decision instead of guessing.
 
 %s
 
 ## Review, CI, and Task Planning
 
-- When you address PR/MR review comments, address each relevant thread, push the fix, and mark every thread you fixed as resolved when the platform supports it.
+- When you address PR/MR review comments, address each relevant thread locally and report which threads are ready; the platform performs approved remote writes and resolution.
 - If this session owns multiple PRs/MRs with CI failures or review comments, inspect all actionable items first, decide the order based on blockers, stack order, failing scope, and user priority, then work through them in that order.
 - Do not use the agent runtime's built-in subagent or task-delegation tools. Complete the assigned task in this AO session only.
 - %s

@@ -2,7 +2,11 @@ package claudecode
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -49,12 +53,37 @@ var claudeManagedHooks = []hooksjson.HookSpec{
 
 // claudeHooks manages AO's hooks in the workspace-local
 // .claude/settings.local.json file.
-var claudeHooks = hooksjson.Manager{
+var legacyClaudeHooks = hooksjson.Manager{
 	Label:         "claude-code",
 	CommandPrefix: claudeHookCommandPrefix,
 	Timeout:       claudeHookTimeout,
 	Path:          claudeSettingsPath,
 	Managed:       claudeManagedHooks,
+}
+
+func claudeHooksForExecutable(executable string) hooksjson.Manager {
+	prefix := quoteHookExecutable(executable) + " hooks claude-code "
+	managed := make([]hooksjson.HookSpec, len(claudeManagedHooks))
+	for i, spec := range claudeManagedHooks {
+		managed[i] = spec
+		managed[i].Command = prefix + strings.TrimPrefix(spec.Command, claudeHookCommandPrefix)
+	}
+	return hooksjson.Manager{Label: "claude-code", CommandPrefix: prefix, Timeout: claudeHookTimeout, Path: claudeSettingsPath, Managed: managed}
+}
+
+func quoteHookExecutable(executable string) string {
+	if runtime.GOOS == "windows" {
+		return `& "` + executable + `"`
+	}
+	return "'" + strings.ReplaceAll(executable, "'", `'\''`) + "'"
+}
+
+func currentClaudeHooks() (hooksjson.Manager, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return hooksjson.Manager{}, fmt.Errorf("claude-code: resolve AO hook executable: %w", err)
+	}
+	return claudeHooksForExecutable(executable), nil
 }
 
 func claudeSettingsPath(workspacePath string) string {
@@ -63,15 +92,37 @@ func claudeSettingsPath(workspacePath string) string {
 
 // GetAgentHooks installs AO's Claude Code hooks, preserving user-defined hooks and unrelated settings.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
-	return claudeHooks.Install(ctx, cfg.WorkspacePath)
+	hooks, err := currentClaudeHooks()
+	if err != nil {
+		return err
+	}
+	if err := legacyClaudeHooks.Uninstall(ctx, cfg.WorkspacePath); err != nil {
+		return err
+	}
+	return hooks.Install(ctx, cfg.WorkspacePath)
 }
 
 // UninstallHooks removes AO's Claude Code hooks, leaving user-defined hooks untouched.
 func (p *Plugin) UninstallHooks(ctx context.Context, workspacePath string) error {
-	return claudeHooks.Uninstall(ctx, workspacePath)
+	hooks, err := currentClaudeHooks()
+	if err != nil {
+		return err
+	}
+	if err := hooks.Uninstall(ctx, workspacePath); err != nil {
+		return err
+	}
+	return legacyClaudeHooks.Uninstall(ctx, workspacePath)
 }
 
 // AreHooksInstalled reports whether any AO Claude Code hook is present.
 func (p *Plugin) AreHooksInstalled(ctx context.Context, workspacePath string) (bool, error) {
-	return claudeHooks.AreInstalled(ctx, workspacePath)
+	hooks, err := currentClaudeHooks()
+	if err != nil {
+		return false, err
+	}
+	installed, err := hooks.AreInstalled(ctx, workspacePath)
+	if err != nil || installed {
+		return installed, err
+	}
+	return legacyClaudeHooks.AreInstalled(ctx, workspacePath)
 }

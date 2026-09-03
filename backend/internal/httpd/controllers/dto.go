@@ -145,7 +145,11 @@ type WorkspaceFileQuery struct {
 // fields are json:"-"; these curated fields are what serialize.
 type SessionView struct {
 	domain.Session
-	Branch string `json:"branch,omitempty"`
+	Branch              string                 `json:"branch,omitempty"`
+	ProviderID          domain.ProviderID      `json:"providerId,omitempty"`
+	ProviderModelID     domain.ProviderModelID `json:"providerModelId,omitempty"`
+	ProviderDisplayName string                 `json:"providerDisplayName,omitempty"`
+	ProviderModelName   string                 `json:"providerModelName,omitempty"`
 	// PreviewURL is the browser preview target the desktop app opens for this
 	// session, set via POST /sessions/{sessionId}/preview. Empty (omitted) when
 	// no preview has been requested. Pulled from the json:"-" domain Metadata.
@@ -167,6 +171,8 @@ type ListSessionsResponse struct {
 // SpawnSessionRequest is the body of POST /api/v1/sessions.
 type SpawnSessionRequest struct {
 	ProjectID       domain.ProjectID       `json:"projectId"`
+	ProviderID      domain.ProviderID      `json:"providerId,omitempty"`
+	ProviderModelID domain.ProviderModelID `json:"providerModelId,omitempty"`
 	IssueID         domain.IssueID         `json:"issueId,omitempty"`
 	TrackerProvider domain.TrackerProvider `json:"trackerProvider,omitempty" enum:"github,gitlab"`
 	Kind            domain.SessionKind     `json:"kind,omitempty" enum:"worker,orchestrator"`
@@ -599,10 +605,12 @@ type SendSessionMessageResponse struct {
 // DelegateTaskRequest is the body of POST /api/v1/orchestrators/delegate.
 // An omitted agent tells the orchestrator to use the project's worker default.
 type DelegateTaskRequest struct {
-	ProjectID domain.ProjectID    `json:"projectId"`
-	Brief     string              `json:"brief" maxLength:"4096"`
-	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,prime-agent,autohand,fake"`
-	Model     string              `json:"model,omitempty" maxLength:"256"`
+	ProjectID       domain.ProjectID       `json:"projectId"`
+	ProviderID      domain.ProviderID      `json:"providerId,omitempty"`
+	ProviderModelID domain.ProviderModelID `json:"providerModelId,omitempty"`
+	Brief           string                 `json:"brief" maxLength:"4096"`
+	Agent           domain.AgentHarness    `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,prime-agent,autohand,fake"`
+	Model           string                 `json:"model,omitempty" maxLength:"256"`
 	// Mode is omitted for the daemon-owned default. The UI sends tui only when
 	// the user explicitly accepts the fallback after Chat preflight fails.
 	Mode domain.SessionMode `json:"mode,omitempty" enum:"tui,chat"`

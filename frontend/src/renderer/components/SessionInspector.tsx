@@ -244,7 +244,12 @@ function SummaryView({ onOpenReviews, session }: { onOpenReviews: () => void; se
 				</>
 			}
 			activityTitle={t("inspector.activity")}
-			completion={<SessionControls session={session} />}
+			completion={
+				<>
+					<SessionControls session={session} />
+					{session.kind !== "orchestrator" && !session.isTerminated ? <GitPushApproval sessionId={session.id} /> : null}
+				</>
+			}
 			pullRequestCards={
 				<div className="flex flex-col gap-1.5">
 					{hasPRs ? (
@@ -276,6 +281,40 @@ function SummaryView({ onOpenReviews, session }: { onOpenReviews: () => void; se
 				) : null
 			}
 		/>
+	);
+}
+
+function GitPushApproval({ sessionId }: { sessionId: string }) {
+	const { t } = useTranslation();
+	const queryClient = useQueryClient();
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+	const [success, setSuccess] = useState("");
+
+	async function requestPush() {
+		setBusy(true); setError(""); setSuccess("");
+		try {
+			const result = await aoBridge.gitPush.request({ sessionId, remote: "origin" });
+			if (result.status === "CANCELLED") return;
+			setSuccess(`Pushed ${result.headSha.slice(0, 12)} to ${result.remote}/${result.branch}`);
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
+				queryClient.invalidateQueries({ queryKey: sessionScmSummaryQueryKey(sessionId) }),
+			]);
+		}
+		catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+		finally { setBusy(false); }
+	}
+
+	return (
+		<div className="mt-2 border-t border-border pt-2">
+			<Button disabled={busy} onClick={() => void requestPush()} size="sm" type="button" variant="outline">
+				{busy ? <Loader2 aria-hidden="true" className="mr-1 size-3 animate-spin" /> : null}
+				{t("gitPush.review")}
+			</Button>
+			{error ? <p className="mt-1 text-xs text-destructive" role="alert">{error}</p> : null}
+			{success ? <p className="mt-1 text-xs text-muted-foreground" role="status">{success}</p> : null}
+		</div>
 	);
 }
 
@@ -1623,7 +1662,7 @@ function formatInlineReviewCommentMessage(comment: InspectorInlineComment & { re
 	const body = sanitizeWorkerMessagePart(comment.body?.trim() || "No comment body provided.");
 	const url = sanitizeWorkerMessagePart(comment.url?.trim() || "");
 	const lines = [
-		`A reviewer left an unresolved inline comment on your PR. Address it, commit the fix, and push the branch to GitHub.`,
+		`A reviewer left an unresolved inline comment on your PR. Address it and commit the fix locally. Do not push or write to GitHub directly; report the result so the platform can request human approval.`,
 		"",
 		`Reviewer: @${reviewer}`,
 		`Location: ${location}`,

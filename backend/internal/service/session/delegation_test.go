@@ -38,7 +38,7 @@ func TestDelegateTaskSpawnsWorkerThenRequestsTitleFromNewestActiveOrchestrator(t
 
 			brief := "  Fix the renderer\nwithout changing the API.  "
 			out, err := svc.DelegateTask(context.Background(), DelegateTaskInput{
-				ProjectID: "ao", Brief: brief, RequestedAgent: tt.agent, Model: tt.model, RequestedMode: tt.mode,
+				ProjectID: "ao", ProviderID: "provider-1", ProviderModelID: "provider-model-1", Brief: brief, RequestedAgent: tt.agent, Model: tt.model, RequestedMode: tt.mode,
 			})
 			if err != nil {
 				t.Fatalf("DelegateTask: %v", err)
@@ -54,6 +54,9 @@ func TestDelegateTaskSpawnsWorkerThenRequestsTitleFromNewestActiveOrchestrator(t
 			}
 			if cmd.spawnedCfg.RequestedMode != tt.mode {
 				t.Fatalf("spawn mode = %q, want %q", cmd.spawnedCfg.RequestedMode, tt.mode)
+			}
+			if cmd.spawnedCfg.ProviderID != "provider-1" || cmd.spawnedCfg.ProviderModelID != "provider-model-1" {
+				t.Fatalf("spawn provider selection = %q/%q", cmd.spawnedCfg.ProviderID, cmd.spawnedCfg.ProviderModelID)
 			}
 			if len(cmd.sent) != 1 || cmd.sent[0] != "orch-new" {
 				t.Fatalf("sent = %#v; want orch-new", cmd.sent)

@@ -24,12 +24,14 @@ const (
 // may be empty to open an idle worker that the user can instruct later. Empty
 // RequestedAgent means the spawn uses the project's worker-agent default.
 type DelegateTaskInput struct {
-	ProjectID      domain.ProjectID
-	Brief          string
-	RequestedAgent domain.AgentHarness
-	Model          string
-	RequestedMode  domain.SessionMode
-	Attachments    []ports.SpawnAttachment
+	ProjectID       domain.ProjectID
+	ProviderID      domain.ProviderID
+	ProviderModelID domain.ProviderModelID
+	Brief           string
+	RequestedAgent  domain.AgentHarness
+	Model           string
+	RequestedMode   domain.SessionMode
+	Attachments     []ports.SpawnAttachment
 }
 
 // DelegateTaskOutcome identifies the spawned worker. OrchestratorID remains
@@ -60,14 +62,16 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 	}
 
 	worker, _, _, err := s.manager.Spawn(ctx, ports.SpawnConfig{
-		ProjectID:     in.ProjectID,
-		Kind:          domain.KindWorker,
-		Harness:       in.RequestedAgent,
-		Prompt:        prompt,
-		DisplayName:   delegatedTaskDisplayName(in.Brief),
-		AgentConfig:   ports.AgentConfig{Model: strings.TrimSpace(in.Model)},
-		RequestedMode: in.RequestedMode,
-		Attachments:   in.Attachments,
+		ProjectID:       in.ProjectID,
+		ProviderID:      in.ProviderID,
+		ProviderModelID: in.ProviderModelID,
+		Kind:            domain.KindWorker,
+		Harness:         in.RequestedAgent,
+		Prompt:          prompt,
+		DisplayName:     delegatedTaskDisplayName(in.Brief),
+		AgentConfig:     ports.AgentConfig{Model: strings.TrimSpace(in.Model)},
+		RequestedMode:   in.RequestedMode,
+		Attachments:     in.Attachments,
 	})
 	if err != nil {
 		return DelegateTaskOutcome{}, toAPIError(err)

@@ -164,9 +164,9 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 	r.mu.Unlock()
 
 	if err := ptyregistry.Unregister(handle.ID); err != nil {
-		return fmt.Errorf("conpty: unregister destroyed session %q: %w", handle.ID, err)
+		return errors.Join(gracefulErr, fmt.Errorf("conpty: unregister destroyed session %q: %w", handle.ID, err))
 	}
-	return nil
+	return gracefulErr
 }
 
 func (r *Runtime) waitForPIDExit(ctx context.Context, pid int) (bool, error) {

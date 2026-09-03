@@ -68,6 +68,15 @@ func (c *commandContext) postJSON(ctx context.Context, path string, body, out an
 	return c.doJSON(ctx, http.MethodPost, path, body, out)
 }
 
+// postHookJSON delivers an internal agent hook through the daemon run-file.
+// Worker identities cannot reliably query the host user's daemon process token
+// on Windows, so hook delivery treats a successful loopback connection as the
+// liveness check. The run-file still supplies the port and the destination host
+// remains fixed to loopback; ordinary CLI calls retain the PID check below.
+func (c *commandContext) postHookJSON(ctx context.Context, path string, body any) error {
+	return c.doJSONPathWithHeadersAndTimeoutOptions(ctx, http.MethodPost, "/api/v1/"+path, body, nil, nil, commandTimeout, false)
+}
+
 // patchJSON sends body as JSON to PATCH /api/v1/<path> on the running daemon
 // and decodes a 2xx response into out.
 func (c *commandContext) patchJSON(ctx context.Context, path string, body, out any) error {
@@ -114,6 +123,17 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	headers map[string]string,
 	timeout time.Duration,
 ) error {
+	return c.doJSONPathWithHeadersAndTimeoutOptions(ctx, method, path, body, out, headers, timeout, true)
+}
+
+func (c *commandContext) doJSONPathWithHeadersAndTimeoutOptions(
+	ctx context.Context,
+	method, path string,
+	body, out any,
+	headers map[string]string,
+	timeout time.Duration,
+	verifyProcess bool,
+) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -125,7 +145,7 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	if info == nil {
 		return fmt.Errorf("AO daemon is not running — start it with `ao start`")
 	}
-	if !c.deps.ProcessAlive(info.PID) {
+	if verifyProcess && !c.deps.ProcessAlive(info.PID) {
 		return fmt.Errorf("AO daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath)
 	}
 

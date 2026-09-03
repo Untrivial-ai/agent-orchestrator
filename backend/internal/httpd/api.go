@@ -10,6 +10,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/gitservice"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
@@ -40,6 +41,7 @@ type APIDeps struct {
 	Conversations controllers.ConversationService
 	// Settings is the daemon-owned preference surface.
 	Settings            controllers.SettingsService
+	Providers           controllers.ProviderService
 	DevImport           controllers.DevImportService
 	CDC                 cdc.Source
 	Events              cdcSubscriber
@@ -48,6 +50,10 @@ type APIDeps struct {
 	Browser             controllers.BrowserService
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
+	// GitPush is the privileged broker. Its capability is delivered to the
+	// desktop main process over the daemon's private stdin handshake only.
+	GitPush           *gitservice.Service
+	GitPushCapability string
 
 	// Presence tracks which mobile devices are currently running the app.
 	// Nil disables presence tracking (the roster then reports every device offline).
@@ -102,6 +108,7 @@ type API struct {
 	shellTerms    *controllers.ShellTerminalsController
 	conversations *controllers.ConversationsController
 	settings      *controllers.SettingsController
+	providers     *controllers.ProvidersController
 	dev           *controllers.DevController
 	browser       *controllers.BrowserController
 	events        *EventsController
@@ -137,6 +144,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
 		conversations: &controllers.ConversationsController{Svc: deps.Conversations},
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
+		providers:     &controllers.ProvidersController{Svc: deps.Providers},
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
@@ -169,6 +177,7 @@ func (a *API) Register(root chi.Router) {
 			a.shellTerms.Register(r)
 			a.conversations.Register(r)
 			a.settings.Register(r)
+			a.providers.Register(r)
 			a.dev.Register(r)
 			a.browser.Register(r)
 			// Sibling REST controllers plug in here.

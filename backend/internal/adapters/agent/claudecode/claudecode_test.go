@@ -70,7 +70,8 @@ func TestNativeConversationExistsRequiresPersistedClaudeTranscript(t *testing.T)
 	p := &Plugin{}
 	id := claudeSessionUUID("ao-session-1")
 
-	exists, err := p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, nil)
+	env := map[string]string{"CLAUDE_CONFIG_DIR": configDir}
+	exists, err := p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func TestNativeConversationExistsRequiresPersistedClaudeTranscript(t *testing.T)
 	if err := os.WriteFile(filepath.Join(projectDir, id+".jsonl"), []byte("{\"type\":\"user\"}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	exists, err = p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, nil)
+	exists, err = p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +429,11 @@ func TestGetAgentHooksInstallsClaudeHooks(t *testing.T) {
 	}
 
 	// Every managed command is installed exactly once under its event.
-	for _, spec := range claudeManagedHooks {
+	installedHooks, err := currentClaudeHooks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range installedHooks.Managed {
 		if got := countClaudeHookCommand(config.Hooks[spec.Event], spec.Command); got != 1 {
 			t.Fatalf("%s command %q count = %d, want 1", spec.Event, spec.Command, got)
 		}
@@ -442,18 +447,18 @@ func TestGetAgentHooksInstallsClaudeHooks(t *testing.T) {
 		t.Fatalf("unrelated settings clobbered: %s", data)
 	}
 	// SessionStart carries the required matcher; UserPromptSubmit omits it.
-	if m := matcherForCommand(config.Hooks["SessionStart"], "ao hooks claude-code session-start"); m == nil || *m != "startup" {
+	if m := matcherForCommand(config.Hooks["SessionStart"], installedHooks.Managed[0].Command); m == nil || *m != "startup" {
 		t.Fatalf("SessionStart matcher = %v, want startup", m)
 	}
-	if m := matcherForCommand(config.Hooks["UserPromptSubmit"], "ao hooks claude-code user-prompt-submit"); m != nil {
+	if m := matcherForCommand(config.Hooks["UserPromptSubmit"], installedHooks.Managed[1].Command); m != nil {
 		t.Fatalf("UserPromptSubmit matcher = %v, want none", m)
 	}
 	// Notification and SessionEnd install with no matcher (they fire for all
 	// sub-types; the handler filters on the payload).
-	if m := matcherForCommand(config.Hooks["Notification"], "ao hooks claude-code notification"); m != nil {
+	if m := matcherForCommand(config.Hooks["Notification"], installedHooks.Managed[7].Command); m != nil {
 		t.Fatalf("Notification matcher = %v, want none", m)
 	}
-	if m := matcherForCommand(config.Hooks["SessionEnd"], "ao hooks claude-code session-end"); m != nil {
+	if m := matcherForCommand(config.Hooks["SessionEnd"], installedHooks.Managed[9].Command); m != nil {
 		t.Fatalf("SessionEnd matcher = %v, want none", m)
 	}
 }
@@ -903,7 +908,7 @@ func TestEnsureWorkspaceTrustedIsIdempotentAndNoWriteWhenAlreadyTrusted(t *testi
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ".claude.json")
 	work := "/w"
-	if err := os.WriteFile(cfgPath, []byte(`{"projects":{"/w":{"hasTrustDialogAccepted":true}}}`), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(`{"hasCompletedOnboarding":true,"projects":{"/w":{"hasTrustDialogAccepted":true}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	info1, err := os.Stat(cfgPath)
@@ -939,6 +944,39 @@ func TestEnsureWorkspaceTrustedCreatesMissingConfig(t *testing.T) {
 	entry := projects[work].(map[string]any)
 	if entry["hasTrustDialogAccepted"] != true {
 		t.Fatalf("entry not trusted in freshly-created config: %#v", entry)
+	}
+	if root["hasCompletedOnboarding"] != true {
+		t.Fatalf("onboarding not completed in freshly-created config: %#v", root)
+	}
+}
+
+func TestPreLaunchCreatesMissingWorkerProfileRoot(t *testing.T) {
+	profileRoot := filepath.Join(t.TempDir(), "session-profile")
+	configDir := filepath.Join(profileRoot, ".claude")
+	work := filepath.Join(t.TempDir(), "worktree")
+	p := &Plugin{}
+
+	if err := p.PreLaunch(context.Background(), ports.LaunchConfig{
+		WorkspacePath: work,
+		Env:           map[string]string{"CLAUDE_CONFIG_DIR": configDir},
+	}); err != nil {
+		t.Fatalf("PreLaunch: %v", err)
+	}
+
+	root := readJSON(t, filepath.Join(configDir, ".claude.json"))
+	projects := root["projects"].(map[string]any)
+	entry := projects[work].(map[string]any)
+	if entry["hasTrustDialogAccepted"] != true {
+		t.Fatalf("entry not trusted in newly-created Worker profile: %#v", entry)
+	}
+	if root["hasCompletedOnboarding"] != true {
+		t.Fatalf("onboarding not completed in newly-created Worker profile: %#v", root)
+	}
+	profileConfig := readJSON(t, filepath.Join(profileRoot, ".claude.json"))
+	profileProjects := profileConfig["projects"].(map[string]any)
+	profileEntry := profileProjects[work].(map[string]any)
+	if profileEntry["hasTrustDialogAccepted"] != true {
+		t.Fatalf("entry not trusted in Worker USERPROFILE config: %#v", profileEntry)
 	}
 }
 

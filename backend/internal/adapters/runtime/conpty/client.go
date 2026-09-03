@@ -305,7 +305,8 @@ func isConnRefused(err error) bool {
 	return errors.Is(err, wsaeconnrefused)
 }
 
-// clientKill sends MsgKillReq. Connection refused is idempotent success because
+// clientKill sends MsgKillReq and waits until the host confirms it parsed the
+// request. Connection refused is idempotent success because
 // the host is already absent; other transport failures are preserved so
 // Destroy can combine them with its final PID evidence.
 func clientKill(addr string) error {
@@ -322,5 +323,28 @@ func clientKill(addr string) error {
 	if _, err := conn.Write(killFrame); err != nil {
 		return fmt.Errorf("write pty-host kill request: %w", err)
 	}
-	return nil
+	ack := make(chan struct{}, 1)
+	parser := NewMessageParser(func(msgType byte, _ []byte) {
+		if msgType == MsgKillAck {
+			select {
+			case ack <- struct{}{}:
+			default:
+			}
+		}
+	})
+	buf := make([]byte, 1024)
+	for {
+		n, readErr := conn.Read(buf)
+		if n > 0 {
+			parser.Feed(buf[:n])
+			select {
+			case <-ack:
+				return nil
+			default:
+			}
+		}
+		if readErr != nil {
+			return fmt.Errorf("wait for pty-host kill acknowledgement: %w", readErr)
+		}
+	}
 }
