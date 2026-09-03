@@ -1165,17 +1165,24 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		/>
 	) : null;
 	const sessionTabActions = (
-		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
+		<SessionActionsMenu>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
 	);
 	const compactSessionChrome = adaptiveWorkspaceActive;
+	// The transition pill belongs to the session, not to one tab. A tab action is
+	// absolutely positioned over the tab and the label only reserves a fixed
+	// icon-width gutter for it, so the pill's phase copy ("Stopping controller…
+	// Chat UI") plus Cancel paints straight over the tab label. The action region
+	// is a real flex row, so the pill takes space there and the tab strip
+	// (shrink + min-w-0) yields and truncates instead of being overdrawn.
 	const sessionHeaderActions = (
 		<div
 			className="session-topbar-session-chrome flex shrink-0 items-center"
 			data-compact-session-chrome={compactSessionChrome ? "true" : "false"}
 		>
+			{interfaceSwitchInlineStatus}
 			<ShellTopbar compactActions={compactSessionChrome} embedded />
 		</div>
 	);
