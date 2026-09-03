@@ -340,6 +340,11 @@ type fakeStore struct {
 	projects    []domain.ProjectRecord
 	sessions    []domain.SessionRecord
 	sessionsErr error
+	// prsBySession is the PR facts each session owns. Empty/absent means the
+	// session never produced a PR.
+	prsBySession map[domain.SessionID][]domain.PRFacts
+	// prsErr, when set for a session id, makes ListPRFactsForSession fail for it.
+	prsErr map[domain.SessionID]error
 }
 
 func (f *fakeStore) ListProjects(context.Context) ([]domain.ProjectRecord, error) {
@@ -348,6 +353,13 @@ func (f *fakeStore) ListProjects(context.Context) ([]domain.ProjectRecord, error
 
 func (f *fakeStore) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
 	return append([]domain.SessionRecord(nil), f.sessions...), f.sessionsErr
+}
+
+func (f *fakeStore) ListPRFactsForSession(_ context.Context, id domain.SessionID) ([]domain.PRFacts, error) {
+	if err := f.prsErr[id]; err != nil {
+		return nil, err
+	}
+	return append([]domain.PRFacts(nil), f.prsBySession[id]...), nil
 }
 
 type fakeTracker struct {

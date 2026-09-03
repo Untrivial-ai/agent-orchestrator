@@ -35,6 +35,10 @@ const (
 type Store interface {
 	ListProjects(ctx context.Context) ([]domain.ProjectRecord, error)
 	ListAllSessions(ctx context.Context) ([]domain.SessionRecord, error)
+	// ListPRFactsForSession returns the PRs attributed to a session. Intake uses
+	// it to tell whether a terminated session already left a PR before freeing
+	// its issue for re-spawn (see claimIssuesWithInFlightPR).
+	ListPRFactsForSession(ctx context.Context, id domain.SessionID) ([]domain.PRFacts, error)
 }
 
 // Spawner is the session creation surface used by intake.
@@ -142,6 +146,7 @@ func (o *Observer) Poll(ctx context.Context) error {
 		return err
 	}
 	seen := seenIssueIDs(sessions)
+	o.claimIssuesWithInFlightPR(ctx, sessions, seen)
 	for _, project := range enabledProjects {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -249,6 +254,52 @@ func seenIssueIDs(sessions []domain.SessionRecord) map[domain.IssueID]bool {
 		}
 	}
 	return seen
+}
+
+// claimIssuesWithInFlightPR augments seen with issues whose only session is
+// terminated but that still left an open or merged PR. Without this, excluding
+// terminated sessions from the seen set (#2777) lets intake spawn a duplicate
+// worker — and a second PR — on top of a PR that is already open, e.g. after a
+// worker opened a PR and was then killed or crashed while its issue stayed open
+// (#2921).
+//
+// A terminated session with no PR, or only a closed and unmerged PR, does not
+// claim its issue: that is the genuinely-dead-worker case #2777 exists to
+// re-spawn, and a rejected attempt should be retried fresh.
+//
+// Only terminated sessions whose issue is not already claimed by a live session
+// are queried, so a healthy project (one live session per issue) issues no PR
+// lookups at all.
+func (o *Observer) claimIssuesWithInFlightPR(ctx context.Context, sessions []domain.SessionRecord, seen map[domain.IssueID]bool) {
+	for _, sess := range sessions {
+		if sess.IssueID == "" || !sess.IsTerminated || seen[sess.IssueID] {
+			continue
+		}
+		prs, err := o.store.ListPRFactsForSession(ctx, sess.ID)
+		if err != nil {
+			// Fail safe toward "claimed": a duplicate worker opens a real,
+			// duplicate PR, which is worse than deferring a re-spawn until a
+			// later tick reads cleanly. A genuinely dead worker's issue is not
+			// lost — only delayed while the read keeps failing.
+			o.logger.Warn("tracker intake: PR lookup for terminated session failed; treating issue as claimed to avoid a duplicate spawn", "session", sess.ID, "issue", sess.IssueID, "err", err)
+			seen[sess.IssueID] = true
+			continue
+		}
+		if anyOpenOrMerged(prs) {
+			seen[sess.IssueID] = true
+		}
+	}
+}
+
+// anyOpenOrMerged reports whether any PR is still open (not merged, not closed)
+// or was merged. A closed, unmerged PR (rejected/abandoned) does not count.
+func anyOpenOrMerged(prs []domain.PRFacts) bool {
+	for _, pr := range prs {
+		if pr.Merged || !pr.Closed {
+			return true
+		}
+	}
+	return false
 }
 
 // CanonicalIssueID stores tracker issue ids in sessions.issue_id with the
