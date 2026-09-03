@@ -29,6 +29,7 @@ type sessionCleanupOptions struct {
 	project string
 	yes     bool
 	dryRun  bool
+	json    bool
 }
 
 type sessionClaimPROptions struct {
@@ -208,7 +209,9 @@ func newSessionKillCommand(ctx *commandContext) *cobra.Command {
 			return ctx.killSession(cmd.Context(), cmd, id, opts)
 		},
 	}
-	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	f := cmd.Flags()
+	addSessionProjectFlag(f, &opts.project, "Project id to scope the lookup")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -226,7 +229,9 @@ func newSessionRestoreCommand(ctx *commandContext) *cobra.Command {
 			return ctx.restoreSession(cmd.Context(), cmd, id, opts)
 		},
 	}
-	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	f := cmd.Flags()
+	addSessionProjectFlag(f, &opts.project, "Project id to scope the lookup")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -244,7 +249,9 @@ func newSessionRenameCommand(ctx *commandContext) *cobra.Command {
 			return ctx.renameSession(cmd.Context(), cmd, id, args[1], opts)
 		},
 	}
-	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	f := cmd.Flags()
+	addSessionProjectFlag(f, &opts.project, "Project id to scope the lookup")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -262,6 +269,7 @@ func newSessionCleanupCommand(ctx *commandContext) *cobra.Command {
 	addSessionProjectFlag(cmd.Flags(), &opts.project, "Filter by project ID")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Preview which sessions would be cleaned without removing anything")
+	cmd.Flags().BoolVar(&opts.json, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -480,6 +488,9 @@ func (c *commandContext) killSession(ctx context.Context, cmd *cobra.Command, id
 	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/kill", struct{}{}, &res); err != nil {
 		return err
 	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), res)
+	}
 	if res.Freed {
 		_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s killed\n", res.SessionID)
 		return err
@@ -499,6 +510,9 @@ func (c *commandContext) restoreSession(ctx context.Context, cmd *cobra.Command,
 	var res restoreSessionResponse
 	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/restore", struct{}{}, &res); err != nil {
 		return err
+	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), res)
 	}
 	out := cmd.OutOrStdout()
 	if _, err := fmt.Fprintf(out, "session %s restored\n", res.SessionID); err != nil {
@@ -523,6 +537,9 @@ func (c *commandContext) renameSession(ctx context.Context, cmd *cobra.Command, 
 	if err := c.patchJSON(ctx, "sessions/"+url.PathEscape(id), sessionRenameRequest{DisplayName: name}, &res); err != nil {
 		return err
 	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), res)
+	}
 	sessionID := res.SessionID
 	if sessionID == "" {
 		sessionID = id
@@ -540,20 +557,38 @@ func (c *commandContext) cleanupSessions(ctx context.Context, cmd *cobra.Command
 		return err
 	}
 	out := cmd.OutOrStdout()
-	if _, err := fmt.Fprintln(out, "Checking for completed sessions..."); err != nil {
-		return err
+	if opts.json && opts.dryRun {
+		type dryRunOut struct {
+			DryRun     bool     `json:"dryRun"`
+			WouldClean []string `json:"wouldClean"`
+		}
+		ids := make([]string, 0, len(candidates))
+		for _, sess := range candidates {
+			ids = append(ids, sess.ID)
+		}
+		return writeJSON(out, dryRunOut{DryRun: true, WouldClean: ids})
 	}
-	if _, err := fmt.Fprintln(out); err != nil {
-		return err
+	if !opts.json {
+		if _, err := fmt.Fprintln(out, "Checking for completed sessions..."); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
 	}
 	if len(candidates) == 0 {
+		if opts.json {
+			return writeJSON(out, cleanupSessionsResponse{Cleaned: []string{}, Skipped: []cleanupSkippedSession{}})
+		}
 		_, err := fmt.Fprintln(out, "  No sessions to clean up.")
 		return err
 	}
-	labels := cleanupLabels(candidates, opts.project)
-	for _, label := range labels {
-		if _, err := fmt.Fprintf(out, "  Would clean %s\n", label); err != nil {
-			return err
+	if !opts.json {
+		labels := cleanupLabels(candidates, opts.project)
+		for _, label := range labels {
+			if _, err := fmt.Fprintf(out, "  Would clean %s\n", label); err != nil {
+				return err
+			}
 		}
 	}
 	if opts.dryRun {
@@ -566,6 +601,9 @@ func (c *commandContext) cleanupSessions(ctx context.Context, cmd *cobra.Command
 			return err
 		}
 		if !confirmed {
+			if opts.json {
+				return writeJSON(out, map[string]any{"aborted": true})
+			}
 			_, err := fmt.Fprintln(out, "aborted")
 			return err
 		}
@@ -577,6 +615,9 @@ func (c *commandContext) cleanupSessions(ctx context.Context, cmd *cobra.Command
 	var res cleanupSessionsResponse
 	if err := c.postJSON(ctx, apiPath("sessions/cleanup", params), struct{}{}, &res); err != nil {
 		return err
+	}
+	if opts.json {
+		return writeJSON(out, res)
 	}
 	cleaned := res.Cleaned
 	labelByID := cleanupLabelByID(candidates, opts.project)
