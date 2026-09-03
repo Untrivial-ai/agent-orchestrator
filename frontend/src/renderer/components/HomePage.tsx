@@ -53,7 +53,7 @@ export function HomePage() {
 						<h1 className="text-[17px] font-medium tracking-[-0.01em] text-foreground/80">{t("home.jumpBack")}</h1>
 						<TopbarButton
 							className="shrink-0 font-mono text-[15px] tracking-[0.03em] transition-[transform,filter,background,color,border-color] duration-150 ease-out active:scale-[0.96] motion-reduce:transform-none"
-							onClick={() => void aoBridge.app.openExternal(`${GITHUB_REPOSITORY_URL}/stargazers`)}
+							onClick={() => void aoBridge.app.openExternal(GITHUB_REPOSITORY_URL)}
 							variant="accent"
 						>
 							<Star className="size-4" strokeWidth={1.8} aria-hidden="true" />
