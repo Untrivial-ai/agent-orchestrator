@@ -120,6 +120,87 @@ func TestWorkspaceIntegrationStashApplyRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWorkspaceIntegrationStashPreservesTrackedButIgnoredEdit guards a data-loss
+// case: an uncommitted edit to a file that is tracked in HEAD but also matches a
+// .gitignore pattern must still be captured and replayed on restore. With an
+// empty capture index git treats it as an untracked-ignored file and drops it,
+// which reads as a deletion on restore and loses the agent's edit. A genuinely
+// untracked ignored file must still be skipped.
+func TestWorkspaceIntegrationStashPreservesTrackedButIgnoredEdit(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	root := filepath.Join(tmp, "managed")
+	ws, err := New(Options{Binary: git, ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx := context.Background()
+	cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess-tracked-ignored", Branch: "feature/tracked-ignored"}
+
+	info, err := ws.Create(ctx, cfg)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Commit config.yaml first, then commit a .gitignore that covers it (and a
+	// yet-to-exist untracked secret): config.yaml stays tracked in HEAD while
+	// matching an ignore pattern.
+	if err := os.WriteFile(filepath.Join(info.Path, "config.yaml"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatalf("write config v1: %v", err)
+	}
+	runGit(t, git, info.Path, "add", "config.yaml")
+	runGit(t, git, info.Path, "commit", "-m", "add config")
+	if err := os.WriteFile(filepath.Join(info.Path, ".gitignore"), []byte("config.yaml\nuntracked-secret.txt\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	runGit(t, git, info.Path, "add", ".gitignore")
+	runGit(t, git, info.Path, "commit", "-m", "ignore config and secret")
+
+	// Uncommitted agent edit to the tracked-but-ignored file, plus a genuinely
+	// untracked ignored file that must NOT be captured.
+	if err := os.WriteFile(filepath.Join(info.Path, "config.yaml"), []byte("v2-agent\n"), 0o644); err != nil {
+		t.Fatalf("write config v2: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "untracked-secret.txt"), []byte("super-secret\n"), 0o644); err != nil {
+		t.Fatalf("write untracked secret: %v", err)
+	}
+
+	ref, err := ws.StashUncommitted(ctx, info)
+	if err != nil {
+		t.Fatalf("StashUncommitted: %v", err)
+	}
+	if ref == "" {
+		t.Fatal("StashUncommitted returned empty ref for dirty worktree")
+	}
+
+	if err := ws.ForceDestroy(ctx, info); err != nil {
+		t.Fatalf("ForceDestroy: %v", err)
+	}
+	restored, err := ws.Restore(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if err := ws.ApplyPreserved(ctx, restored, ref); err != nil {
+		t.Fatalf("ApplyPreserved: %v", err)
+	}
+
+	// The tracked-but-ignored edit must survive (not be deleted). Compare newline-
+	// insensitively so a CRLF autocrlf checkout doesn't mask the real assertion.
+	got, err := os.ReadFile(filepath.Join(restored.Path, "config.yaml"))
+	if err != nil {
+		t.Fatalf("config.yaml was lost across preserve/restore (tracked-but-ignored edit dropped): %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "v2-agent" {
+		t.Fatalf("config.yaml content = %q, want %q", strings.TrimSpace(string(got)), "v2-agent")
+	}
+
+	// The genuinely untracked ignored file must still be skipped.
+	if _, err := os.Stat(filepath.Join(restored.Path, "untracked-secret.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("untracked-secret.txt exists after apply but must not (it was .gitignore-d and untracked)")
+	}
+}
+
 // TestWorkspaceIntegrationApplyPreservedConflict verifies the spec for a
 // conflicting apply (plan edge case 5):
 //
