@@ -12,10 +12,12 @@ const noDragStyle = isMac
   ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties)
   : undefined;
 
-// Sidebar chrome cluster (sidebar toggle + history arrows). It stays fixed while
-// the sidebar expands or collapses. macOS pins it beside the traffic lights;
-// Linux has no traffic lights, so it sits at the sidebar's top-left. (Windows
-// keeps these controls in its own titlebar.)
+// Sidebar chrome cluster. The sidebar toggle stays fixed while the sidebar
+// expands, compacts, or moves off-canvas. History normally sits beside it, then
+// moves into the compact icon rail so the fixed toggle keeps its exact position.
+// macOS pins it beside the traffic lights; Linux has no traffic lights, so it
+// sits at the sidebar's top-left. (Windows keeps these controls in its own
+// titlebar.)
 // The installed router has no useCanGoForward, and deriving one as
 // `__TSR_index < history.length - 1` (the upstream hook's approach) is wrong
 // here: window.history.length also counts entries the router never created —
@@ -58,7 +60,6 @@ export function TitlebarNav({
   const canGoForward = useCanGoForward();
 
   if (!isMac && !isLinux) return null;
-  if (isSidebarCompact) return null;
 
   // macOS: pinned beside the traffic lights. Native dots sit at y: 12 with a
   // 12px hit target (centerline 18); the 40px clearance band is items-centered,
@@ -68,7 +69,7 @@ export function TitlebarNav({
   // the sidebar is off-canvas it shifts right to clear the framed centre
   // panel's left border instead of straddling it.
   const leftClass = !isMac
-    ? isSidebarOpen
+    ? sidebarHasLayout
       ? "left-titlebar-cluster-left-linux"
       : "left-titlebar-cluster-left-linux-panel"
     : isFullScreen
@@ -107,22 +108,26 @@ export function TitlebarNav({
       >
         <PanelLeft className="size-icon-lg" aria-hidden="true" />
       </TitlebarButton>
-      <TitlebarButton
-        disabled={historyLocked || !canGoBack}
-        label={t("titlebar.goBack")}
-        onClick={() => router.history.back()}
-        title={t("titlebar.goBack")}
-      >
-        <ArrowLeft className="size-icon-lg" aria-hidden="true" />
-      </TitlebarButton>
-      <TitlebarButton
-        disabled={historyLocked || !canGoForward}
-        label={t("titlebar.goForward")}
-        onClick={() => router.history.forward()}
-        title={t("titlebar.goForward")}
-      >
-        <ArrowRight className="size-icon-lg" aria-hidden="true" />
-      </TitlebarButton>
+      {isSidebarCompact ? null : (
+        <>
+          <TitlebarButton
+            disabled={historyLocked || !canGoBack}
+            label={t("titlebar.goBack")}
+            onClick={() => router.history.back()}
+            title={t("titlebar.goBack")}
+          >
+            <ArrowLeft className="size-icon-lg" aria-hidden="true" />
+          </TitlebarButton>
+          <TitlebarButton
+            disabled={historyLocked || !canGoForward}
+            label={t("titlebar.goForward")}
+            onClick={() => router.history.forward()}
+            title={t("titlebar.goForward")}
+          >
+            <ArrowRight className="size-icon-lg" aria-hidden="true" />
+          </TitlebarButton>
+        </>
+      )}
     </div>
   );
 }

@@ -31,7 +31,6 @@ import {
 	LogIn,
 	LogOut,
 	MoreVertical,
-	PanelLeft,
 	Pin,
 	PinOff,
 	Plus,
@@ -130,9 +129,9 @@ import { isLinuxPlatform, isMacPlatform, isWindowsPlatform } from "../lib/platfo
 import { useCloudSession } from "../lib/cloud-session";
 import { useCanGoForward } from "./TitlebarNav";
 
-// macOS paints framed chrome: the fixed TitlebarNav cluster carries the
-// sidebar toggle + history arrows above this surface. Windows hangs the sidebar
-// under its custom titlebar.
+// macOS paints framed chrome: TitlebarNav keeps the sidebar toggle fixed above
+// this surface. Compact mode keeps history accessible in the icon rail. Windows
+// hangs the sidebar under its custom titlebar.
 const isMac = isMacPlatform();
 const isLinux = isLinuxPlatform();
 const isWindows = isWindowsPlatform();
@@ -424,7 +423,7 @@ export function Sidebar({
 }: SidebarProps) {
 	const { t } = useTranslation();
 	const selection = useSelection();
-	const { state, setOpen, toggleSidebar } = useSidebar();
+	const { state, setOpen } = useSidebar();
 	const isCollapsed = state === "collapsed";
 	const [expandedChromeVisible, setExpandedChromeVisible] = useState(!isCollapsed);
 	const router = useRouter();
@@ -688,21 +687,6 @@ export function Sidebar({
 						</span>
 					)}
 				</div>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<button
-							aria-label={isCollapsed ? t("shell.expandSidebar") : t("shell.collapseSidebar")}
-							className="hidden size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground group-data-[collapsible=icon]:grid [&_svg]:size-icon-base"
-							onClick={toggleSidebar}
-							type="button"
-						>
-							<PanelLeft aria-hidden="true" />
-						</button>
-					</TooltipTrigger>
-					<TooltipContent side="right">
-						{isCollapsed ? t("shell.expandSidebar") : t("shell.collapseSidebar")}
-					</TooltipContent>
-				</Tooltip>
 				{showCompactRailHistory ? (
 					<div className="flex flex-col items-center gap-1 pb-2">
 						<Tooltip>

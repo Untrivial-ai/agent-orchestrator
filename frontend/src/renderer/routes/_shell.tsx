@@ -937,9 +937,9 @@ function ShellLayout() {
 						/>
 					) : null}
 					{/* Fixed macOS titlebar cluster beside the traffic lights — rendered
-              once here so the toggle/history buttons never move when the
-              sidebar collapses or expands. History arrows stay visible but
-              locked on the empty start page. MUST come after the drag strip
+              once here so the sidebar toggle never moves when the sidebar
+              collapses, compacts, or expands. History moves into the compact rail
+              and otherwise stays locked on the empty start page. MUST come after the drag strip
               (ShellTopbar or the welcome substitute) in the DOM: Electron
               builds the window-drag region in document order (drag rects add,
               no-drag rects subtract), so the cluster's no-drag holes only

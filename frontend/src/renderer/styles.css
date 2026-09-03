@@ -549,8 +549,9 @@
 }
 
 /* Browser pressure keeps a 48px navigation rail in layout. Native macOS
- * traffic lights extend to the 72px titlebar boundary, so reserve only the
- * missing slice instead of applying the full off-canvas navigation clearance. */
+ * traffic lights extend to the 72px titlebar boundary, and the fixed sidebar
+ * toggle follows them. Reserve that missing slice plus the toggle and its gap
+ * instead of applying the full off-canvas navigation clearance. */
 .session-topbar-terminal-region {
 	transition: padding-left 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
@@ -574,7 +575,9 @@
 }
 
 .session-topbar-traffic-light-clearance-mac {
-	padding-left: calc(var(--size-titlebar-cluster-left) - var(--size-sidebar-icon));
+	padding-left: calc(
+		var(--size-titlebar-cluster-left) - var(--size-sidebar-icon) + var(--size-control-md) + var(--space-1)
+	);
 }
 
 @media (prefers-reduced-motion: reduce) {

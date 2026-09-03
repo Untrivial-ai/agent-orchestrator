@@ -149,7 +149,12 @@ beforeEach(() => {
 	terminalPaneState.props = undefined;
 	window.localStorage.clear();
 	setApiBaseUrl("http://127.0.0.1:3001");
-	useUiStore.setState({ isSidebarOpen: true, inspectorSessions: {} });
+	useUiStore.setState({
+		isSidebarOpen: true,
+		isSidebarAutoCollapsed: false,
+		sidebarAutoCollapseOverride: false,
+		inspectorSessions: {},
+	});
 });
 
 afterEach(async () => {
@@ -409,6 +414,15 @@ describe("ChatWorkspace timeline", () => {
 
 		expect(screen.getByTestId("session-terminal-region")).not.toHaveClass(
 			"session-topbar-titlebar-clearance-mac",
+		);
+	});
+
+	it("clears compact session tabs past the fixed sidebar toggle on macOS", () => {
+		useUiStore.setState({ isSidebarAutoCollapsed: true });
+		render(<ChatWorkspace snapshot={chatFixture} />);
+
+		expect(screen.getByTestId("session-terminal-region")).toHaveClass(
+			"session-topbar-traffic-light-clearance-mac",
 		);
 	});
 

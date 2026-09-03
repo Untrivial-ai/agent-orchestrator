@@ -30,7 +30,11 @@ vi.mock("../lib/platform", () => ({
 
 describe("TitlebarNav", () => {
 	beforeEach(() => {
-		useUiStore.setState({ isSidebarOpen: true });
+		useUiStore.setState({
+			isSidebarOpen: true,
+			isSidebarAutoCollapsed: false,
+			sidebarAutoCollapseOverride: false,
+		});
 	});
 
 	it("uses the compact sidebar-aligned chrome row in native fullscreen", () => {
@@ -66,11 +70,15 @@ describe("TitlebarNav", () => {
 		expect(nav).toHaveClass("left-titlebar-cluster-left", "h-traffic-light-clearance", "-top-0.6");
 	});
 
-	it("hides the fixed navigation cluster while the sidebar is an icon rail", () => {
+	it("keeps the sidebar toggle fixed while history moves into the icon rail", () => {
 		useUiStore.setState({ isSidebarAutoCollapsed: true });
 
 		const { container } = render(<TitlebarNav />);
 
-		expect(container.querySelector('[data-slot="titlebar-nav"]')).toBeNull();
+		const nav = container.querySelector('[data-slot="titlebar-nav"]');
+		expect(nav).toHaveClass("left-titlebar-cluster-left", "h-traffic-light-clearance", "-top-0.6");
+		expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Go back" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Go forward" })).not.toBeInTheDocument();
 	});
 });
