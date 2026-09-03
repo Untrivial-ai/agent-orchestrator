@@ -169,7 +169,11 @@ func delegatedTaskDisplayName(brief string) string {
 	if utf8.RuneCountInString(title) <= delegatedTaskTitleLimit {
 		return title
 	}
-	return strings.TrimSpace(string([]rune(title)[:delegatedTaskTitleLimit]))
+	truncated := string([]rune(title)[:delegatedTaskTitleLimit-1])
+	if lastSpace := strings.LastIndexByte(truncated, ' '); lastSpace > 0 {
+		truncated = truncated[:lastSpace]
+	}
+	return strings.TrimSpace(truncated) + "…"
 }
 
 func taskTitleDelegationMessage(workerID domain.SessionID, in DelegateTaskInput) string {
