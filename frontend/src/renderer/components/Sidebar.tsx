@@ -24,6 +24,7 @@ import {
 	AlertTriangle,
 	ArrowLeft,
 	ArrowRight,
+	Bot,
 	ChevronRight,
 	Download,
 	Folder,
@@ -1085,6 +1086,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	}, []);
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
+	const isStandalone = workspace.kind === STANDALONE_PROJECT_KIND;
 	const projectIsDragging = draggingProjectId === workspace.id;
 	// Keep completed PR sessions reachable while their runtime still exists.
 	// Only termination removes a worker from the sidebar; archived sessions stay
@@ -1204,7 +1206,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// one-click path back from the orchestrator button.
 	const onProjectClick = () => {
 		if (consumeDragClick(workspace.id)) return;
-		if (workspace.kind === STANDALONE_PROJECT_KIND) {
+		if (isStandalone) {
 			toggleDisclosure();
 			return;
 		}
@@ -1333,7 +1335,13 @@ const ProjectItemContent = memo(function ProjectItemContent({
 												draggingProjectId && "group-hover/menu-item:opacity-100",
 											)}
 										>
-											{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
+											{isStandalone ? (
+												<Bot strokeWidth={1.75} />
+											) : expanded ? (
+												<FolderOpen strokeWidth={1.75} />
+											) : (
+												<Folder strokeWidth={1.75} />
+											)}
 										</span>
 										<span
 											className={cn(
@@ -1350,7 +1358,13 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										aria-hidden="true"
 										className="hidden group-data-[collapsible=icon]:inline-flex size-8 items-center justify-center text-muted-foreground"
 									>
-										{expanded ? <FolderOpen className="size-5" strokeWidth={1.75} /> : <Folder className="size-5" strokeWidth={1.75} />}
+										{isStandalone ? (
+											<Bot className="size-5" strokeWidth={1.75} />
+										) : expanded ? (
+											<FolderOpen className="size-5" strokeWidth={1.75} />
+										) : (
+											<Folder className="size-5" strokeWidth={1.75} />
+										)}
 									</span>
 									<span
 										className="sidebar-expanded-chrome min-w-0 flex-1 translate-y-px truncate group-data-[collapsible=icon]:hidden"
@@ -1394,7 +1408,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 								onClick={(event) => event.stopPropagation()}
 								onPointerDown={(event) => event.stopPropagation()}
 							>
-								{workspace.kind !== STANDALONE_PROJECT_KIND && <Tooltip>
+								{!isStandalone && <Tooltip>
 									<TooltipTrigger asChild>
 										<span className="inline-flex">
 											<button
@@ -1427,7 +1441,22 @@ const ProjectItemContent = memo(function ProjectItemContent({
 													: t("shell.spawnOrchestratorLower")}
 									</TooltipContent>
 								</Tooltip>}
-								<DropdownMenu>
+								{isStandalone ? (
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<button
+												aria-label={t("home.newStandaloneAgent")}
+												className={HOVER_ACTION_CLASS}
+												onClick={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
+												type="button"
+											>
+												<Plus aria-hidden="true" />
+											</button>
+										</TooltipTrigger>
+										<TooltipContent>{t("home.newStandaloneAgent")}</TooltipContent>
+									</Tooltip>
+								) : (
+									<DropdownMenu>
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<DropdownMenuTrigger asChild>
@@ -1453,24 +1482,23 @@ const ProjectItemContent = memo(function ProjectItemContent({
 											<Plus aria-hidden="true" />
 											{t("shell.newSession")}
 										</DropdownMenuItem>
-										{workspace.kind !== STANDALONE_PROJECT_KIND && <>
-											<DropdownMenuSeparator />
-											<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
-												<Settings aria-hidden="true" />
-												{t("shell.projectSettings")}
-											</DropdownMenuItem>
-											<DropdownMenuSeparator />
-											<DropdownMenuItem
+										<DropdownMenuSeparator />
+										<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+											<Settings aria-hidden="true" />
+											{t("shell.projectSettings")}
+										</DropdownMenuItem>
+										<DropdownMenuSeparator />
+										<DropdownMenuItem
 											className="text-destructive focus:text-destructive [&_svg]:text-destructive"
 											disabled={isRemoving}
 											onSelect={() => void removeProject()}
 										>
 											<Trash2 aria-hidden="true" />
 											{t("shell.removeProjectTitle")}
-											</DropdownMenuItem>
-										</>}
+										</DropdownMenuItem>
 									</DropdownMenuContent>
-								</DropdownMenu>
+									</DropdownMenu>
+								)}
 							</div>
 						</div>
 						{/* end outer relative */}
@@ -1605,6 +1633,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
  * visible sessions travel with it without becoming collision targets. */
 const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expanded, selection, sessions }: { workspace: WorkspaceSummary; expanded: boolean; selection: Selection; sessions: WorkspaceSession[] }) {
 	const { t } = useTranslation();
+	const isStandalone = workspace.kind === STANDALONE_PROJECT_KIND;
 	const activeProjectMatches = selection.activeProjectId === workspace.id;
 	const projectActive =
 		(activeProjectMatches && !selection.activeSessionId) ||
@@ -1617,7 +1646,13 @@ const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expande
 				data-active={projectActive}
 			>
 				<span className="inline-flex size-icon-md shrink-0 translate-y-px items-center justify-center text-muted-foreground">
-					{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
+					{isStandalone ? (
+						<Bot strokeWidth={1.75} />
+					) : expanded ? (
+						<FolderOpen strokeWidth={1.75} />
+					) : (
+						<Folder strokeWidth={1.75} />
+					)}
 				</span>
 				<span className="min-w-0 flex-1 translate-y-px truncate">{workspace.name}</span>
 			</div>

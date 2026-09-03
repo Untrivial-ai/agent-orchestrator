@@ -854,6 +854,30 @@ describe("Sidebar", () => {
 		expect(navigateMock).not.toHaveBeenCalled();
 	});
 
+	it("starts a standalone agent directly from the standalone group action", async () => {
+		const user = userEvent.setup();
+		const standalone: WorkspaceSummary = {
+			id: STANDALONE_WORKSPACE_ID,
+			kind: STANDALONE_PROJECT_KIND,
+			name: "Standalone agents",
+			path: "",
+			sessions: [{ ...session, id: "standalone-1", workspaceId: "", workspaceName: "Standalone agents" }],
+		};
+		renderSidebar({ workspaces: [standalone] });
+		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
+		const standaloneRow = screen.getByText("Standalone agents").closest("button");
+
+		expect(screen.queryByLabelText("Project actions for Standalone agents")).not.toBeInTheDocument();
+		expect(standaloneRow?.querySelector(".lucide-bot")).toBeInTheDocument();
+		expect(standaloneRow?.querySelector(".lucide-folder, .lucide-folder-open")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "New standalone agent" }));
+
+		expect(useUiStore.getState().newTaskRequest).toEqual({
+			nonce: before + 1,
+			projectId: STANDALONE_WORKSPACE_ID,
+		});
+	});
+
 	it("expands a collapsed project when opening its orchestrator", async () => {
 		const user = userEvent.setup();
 		const orchestrator: WorkspaceSession = {

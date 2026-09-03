@@ -173,7 +173,10 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 			.filter((session) => !session.projectId)
 			.map((session) => toLocalWorkspaceSession(session, "", "Standalone agents")),
 	};
-	return standalone.sessions.length > 0 ? [standalone, ...projects] : projects;
+	// Standalone agents are presented as a peer group after the user's projects.
+	// The sidebar can still reorder every group locally after this initial order
+	// has been established.
+	return standalone.sessions.length > 0 ? [...projects, standalone] : projects;
 }
 
 // Shared so route loaders can prefetch via queryClient.ensureQueryData (paired
