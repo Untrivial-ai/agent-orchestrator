@@ -524,6 +524,32 @@ func (w *Workspace) StashUncommitted(ctx context.Context, info ports.WorkspaceIn
 	// Deferred remove is a best-effort cleanup in case git leaves the file.
 	defer func() { _ = os.Remove(tmpIdxPath) }()
 
+	// Seed the temp index from HEAD before staging. git's "an already-tracked
+	// path bypasses .gitignore" rule keys off what is IN THE INDEX, not what
+	// is in HEAD, and the temp index above starts absent (empty). Without this
+	// seed step, a file that is committed in HEAD but ALSO matches a
+	// .gitignore pattern looks, from this empty index's perspective, exactly
+	// like a genuinely untracked ignored file, so the `git add -A` below would
+	// silently skip it (no -f). The preserve tree would then omit the file;
+	// since the preserve commit's parent is HEAD (which still has the file),
+	// the diff would read as a deletion, and ApplyPreserved would faithfully
+	// replay that deletion on restore, destroying the uncommitted edit. `git
+	// read-tree HEAD` makes git aware of what HEAD actually tracks, so the
+	// subsequent add -A correctly stages a tracked+ignored edit as modified
+	// while still skipping genuinely untracked ignored files.
+	//
+	// An unborn HEAD (a brand new repo with no commits yet) has nothing to
+	// seed from: `git read-tree HEAD` fails with exit 128 and "fatal: Not a
+	// valid object name HEAD" (verified against git 2.54). That specific
+	// failure is expected and tolerated — the temp index simply stays empty,
+	// exactly as it behaved before this seed step existed. Any other
+	// read-tree failure is a real problem and is surfaced normally.
+	readTreeCmd := exec.CommandContext(ctx, w.binary, readTreeHeadArgs(path)...)
+	readTreeCmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmpIdxPath)
+	if out, err := readTreeCmd.CombinedOutput(); err != nil && !isUnbornHeadReadTreeError(string(out)) {
+		return "", commandError{args: append([]string{w.binary}, readTreeHeadArgs(path)...), output: string(out), err: err}
+	}
+
 	// Stage all tracked and non-ignored untracked files into the temp index.
 	// GIT_INDEX_FILE overrides the index so the real index is never touched.
 	addCmd := aoprocess.CommandContext(ctx, w.binary, addAllTempIndexArgs(path)...)
@@ -581,6 +607,18 @@ func (w *Workspace) StashUncommitted(ctx context.Context, info ports.WorkspaceIn
 
 func isNotGitRepositoryError(err error) bool {
 	return strings.Contains(err.Error(), "not a git repository")
+}
+
+// isUnbornHeadReadTreeError reports whether a "git read-tree HEAD" failure is
+// only the unborn-HEAD case: a repo with no commits yet has no HEAD for
+// read-tree to seed the temp index from. Verified against git 2.54: that case
+// fails with exactly this message at exit 128. Text matching mirrors the
+// existing isNotGitRepositoryError / isMissingRegisteredWorktreeError /
+// isLockedWorktreeRemoveError helpers in this file. Matching only this exact
+// message keeps every other read-tree failure (corruption, permissions, etc.)
+// from being silently swallowed.
+func isUnbornHeadReadTreeError(output string) bool {
+	return strings.Contains(output, "Not a valid object name HEAD")
 }
 
 // countIgnoredPaths returns the number of entries listed by

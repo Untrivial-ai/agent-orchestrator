@@ -79,6 +79,19 @@ func worktreeListPorcelainArgs(repo string) []string {
 	return []string{"-C", repo, "worktree", "list", "--porcelain"}
 }
 
+// readTreeHeadArgs seeds a temp index from HEAD so git's "a tracked path
+// bypasses .gitignore" rule (which keys off what is IN THE INDEX, not what is
+// in HEAD) has something to key off before the subsequent `git add -A` runs
+// against the same temp index. Without this, a fresh/empty temp index makes
+// git treat a file that is committed in HEAD but also matches .gitignore as
+// untracked+ignored, so `add -A` silently skips it. GIT_INDEX_FILE must be set
+// in the command's environment before calling. Fails with exit 128 and
+// "fatal: Not a valid object name HEAD" on an unborn HEAD (no commits yet);
+// callers must tolerate that specific failure and leave the temp index empty.
+func readTreeHeadArgs(worktree string) []string {
+	return []string{"-C", worktree, "read-tree", "HEAD"}
+}
+
 // addAllTempIndexArgs stages all tracked and non-ignored untracked files into a
 // temp index file without touching the real index or the working tree.
 // GIT_INDEX_FILE must be set in the command's environment before calling.
