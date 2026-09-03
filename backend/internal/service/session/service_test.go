@@ -700,6 +700,25 @@ func TestListWorkspaceFilesReturnsTrackedAndUntrackedStatus(t *testing.T) {
 	}
 }
 
+func TestListWorkspaceFilesTreatsStandaloneWorkerAsNonGitWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, "notes.txt", "standalone note\n")
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "standalone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "notes.txt" || got.Files[0].Status != WorkspaceFileAdded {
+		t.Fatalf("standalone files = %#v, want added notes.txt", got.Files)
+	}
+}
+
 func TestGetWorkspaceFileReturnsContentAndDiff(t *testing.T) {
 	repo := newWorkspaceRepo(t)
 	writeWorkspaceFile(t, repo, "README.md", "goodbye\nupdated\n")

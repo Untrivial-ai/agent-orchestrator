@@ -23,31 +23,35 @@ func TestStandaloneProjectColumnsAreNullable(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	for _, table := range []string{"sessions", "change_log", "notifications", "conversations"} {
-		rows, err := db.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
-		if err != nil {
-			t.Fatalf("%s table info: %v", table, err)
-		}
-		found := false
-		for rows.Next() {
-			var cid, notNull, primaryKey int
-			var name, columnType string
-			var defaultValue any
-			if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-				rows.Close()
-				t.Fatal(err)
+		t.Run(table, func(t *testing.T) {
+			rows, err := db.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
+			if err != nil {
+				t.Fatalf("%s table info: %v", table, err)
 			}
-			if name == "project_id" {
-				found = true
-				if notNull != 0 {
-					rows.Close()
-					t.Fatalf("%s.project_id remains NOT NULL", table)
+			defer rows.Close()
+
+			found := false
+			for rows.Next() {
+				var cid, notNull, primaryKey int
+				var name, columnType string
+				var defaultValue any
+				if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+					t.Fatal(err)
+				}
+				if name == "project_id" {
+					found = true
+					if notNull != 0 {
+						t.Fatalf("%s.project_id remains NOT NULL", table)
+					}
 				}
 			}
-		}
-		rows.Close()
-		if !found {
-			t.Fatalf("%s.project_id not found", table)
-		}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("%s table info rows: %v", table, err)
+			}
+			if !found {
+				t.Fatalf("%s.project_id not found", table)
+			}
+		})
 	}
 }
 
