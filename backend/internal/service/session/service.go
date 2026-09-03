@@ -447,6 +447,8 @@ func (s *Service) SpawnOrchestrator(
 		return domain.Session{}, err
 	}
 	mode := requestedMode
+	var resumeCandidate domain.SessionID
+	coldStart := false
 	if clean {
 		existing, err := s.activeOrchestrators(ctx, projectID)
 		if err != nil {
@@ -460,11 +462,28 @@ func (s *Service) SpawnOrchestrator(
 			// authoritative.
 			mode = newestSession(existing).Mode
 		}
+		// Only the single-orchestrator case attempts a resume below: with more
+		// than one active orchestrator there is no single native conversation to
+		// carry forward, so every one of them is simply retired as before.
+		if len(existing) == 1 {
+			resumeCandidate = existing[0].ID
+		}
 		for _, orch := range existing {
 			_ = s.sendRetireNotice(ctx, orch.ID)
 			if err := s.manager.RetireForReplacement(ctx, orch.ID); err != nil {
 				return domain.Session{}, toAPIError(err)
 			}
+		}
+		// The retired orchestrator's history (its native transcript, plus AO's
+		// own conversation record) is fully intact on disk even when the reason
+		// for replacement was a dead runtime (host reboot, tmux server loss).
+		// Try to resume that conversation in place before falling back to a
+		// cold, unlinked respawn (#4641).
+		if resumeCandidate != "" {
+			if sess, ok := s.resumeRetiredOrchestrator(ctx, project, resumeCandidate); ok {
+				return sess, nil
+			}
+			coldStart = true
 		}
 	} else {
 		existing, err := s.activeOrchestrators(ctx, projectID)
@@ -486,7 +505,59 @@ func (s *Service) SpawnOrchestrator(
 	if err := s.verifyOrchestratorReplacement(project, sess); err != nil {
 		return domain.Session{}, err
 	}
+	if coldStart {
+		// Resume was attempted and genuinely failed (no native id, an adapter
+		// with no resume support, or a workspace/history restore error): tell
+		// the user explicitly rather than silently swapping in a blank
+		// coordinator that looks the same as a successful resume (#4641).
+		// Best-effort: wait for the freshly spawned controller to be ready for
+		// input before delivering the notice, same as the delegation path.
+		if err := s.manager.WaitForMessageDeliveryReady(ctx, sess.ID); err == nil {
+			_ = s.manager.Send(ctx, sess.ID, orchestratorColdStartNotice, nil)
+		} else if s.logger != nil {
+			s.logger.Warn("orchestrator cold-start notice: controller never became ready", "sessionID", sess.ID, "error", err)
+		}
+	}
 	return sess, nil
+}
+
+// resumeRetiredOrchestrator attempts to relaunch a just-retired orchestrator
+// via its existing native-resume mechanism (RestoreWithMode ->
+// restoreArgv -> GetRestoreCommand) instead of discarding its conversation.
+// It reports ok=false for any failure — an unresumable adapter, a workspace
+// restore error, or a resumed session that fails the same replacement
+// verification a fresh spawn would — so the caller can fall back to a cold
+// spawn without leaking a half-restored session. If failure occurs after
+// RestoreWithMode has already relaunched the runtime, it retires that
+// just-resumed runtime so the fallback spawn starts from a clean slate.
+func (s *Service) resumeRetiredOrchestrator(ctx context.Context, project domain.ProjectRecord, id domain.SessionID) (domain.Session, bool) {
+	res, err := s.manager.RestoreWithMode(ctx, id)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("orchestrator resume failed; respawning cold", "sessionID", id, "error", err)
+		}
+		return domain.Session{}, false
+	}
+	sess, err := s.toSession(ctx, res.Session)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("orchestrator resume: read back resumed session failed; respawning cold", "sessionID", id, "error", err)
+		}
+		if retErr := s.manager.RetireForReplacement(ctx, id); retErr != nil && s.logger != nil {
+			s.logger.Warn("orchestrator resume: failed to retire resumed session after read back error", "sessionID", id, "error", retErr)
+		}
+		return domain.Session{}, false
+	}
+	if err := s.verifyOrchestratorReplacement(project, sess); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("orchestrator resume: resumed session failed replacement verification; respawning cold", "sessionID", id, "error", err)
+		}
+		if retErr := s.manager.RetireForReplacement(ctx, id); retErr != nil && s.logger != nil {
+			s.logger.Warn("orchestrator resume: failed to retire resumed session after verification failure", "sessionID", id, "error", retErr)
+		}
+		return domain.Session{}, false
+	}
+	return sess, true
 }
 
 func (s *Service) activeOrchestrators(ctx context.Context, projectID domain.ProjectID) ([]domain.Session, error) {
@@ -495,6 +566,12 @@ func (s *Service) activeOrchestrators(ctx context.Context, projectID domain.Proj
 }
 
 const orchestratorRetireNotice = "AO is replacing this project orchestrator. Stop coordinating new work now; a fresh orchestrator will take over in a new workspace."
+
+// orchestratorColdStartNotice is sent into the replacement orchestrator's own
+// conversation when resuming the retired orchestrator's native history was
+// attempted and failed, so the user knows this is a blank coordinator rather
+// than a continuation of the one it replaced.
+const orchestratorColdStartNotice = "AO could not resume the previous orchestrator's conversation, so this is a fresh coordinator with no memory of that history."
 
 func (s *Service) sendRetireNotice(ctx context.Context, id domain.SessionID) error {
 	if err := s.manager.Send(ctx, id, orchestratorRetireNotice, nil); err != nil {

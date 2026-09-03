@@ -557,6 +557,19 @@ func (r *Runtime) paneSessionIDs(ctx context.Context, id string) []int {
 // connection or protocol/client failure wraps ErrRuntimeProbeInconclusive so
 // no caller can treat a possibly-live session as absent. Any other non-zero
 // exit is a plain probe error, which is likewise never per-session death.
+//
+// migrationSocketAbsentOutput ("error connecting ... no such file or
+// directory") is treated as equally definitive as serverNotRunningOutput
+// here, not merely transient: this is the exact message tmux prints after a
+// real host reboot on a tmpfs-backed /tmp, where the whole per-user socket
+// directory (not just one socket file) is gone. By the time control reaches
+// here, runForSession has already resolved any private/legacy-socket
+// migration ambiguity (#3475's concern) for this specific session, so this
+// output describes the one socket that was actually, authoritatively
+// checked — it is not a raw client-side dial hiccup. Before this fix, this
+// message fell through to the transient/inconclusive branch below, which
+// left reconcileLivePass permanently unable to detect the session as dead
+// and revive it after a reboot (#4641).
 func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
 	id, err := handleID(handle)
 	if err != nil {
@@ -569,7 +582,7 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 			if sessionMissingOutput(string(out)) {
 				return false, nil
 			}
-			if serverNotRunningOutput(string(out)) {
+			if serverNotRunningOutput(string(out)) || migrationSocketAbsentOutput(string(out)) {
 				return false, fmt.Errorf("tmux runtime: probe session %s: %w: %s",
 					id, ports.ErrRuntimeUnavailable, strings.TrimSpace(string(out)))
 			}
