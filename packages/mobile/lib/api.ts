@@ -32,6 +32,12 @@ export type DashboardPR = {
 	unresolvedThreads?: number;
 };
 
+export type MergePRInput = {
+	number: number;
+	url: string;
+	headSha: string;
+};
+
 export type DashboardSession = {
 	id: string;
 	projectId: string;
@@ -651,6 +657,7 @@ export type SessionPRSummary = {
 	author: string;
 	sourceBranch: string;
 	targetBranch: string;
+	headSha: string;
 	additions: number;
 	deletions: number;
 	changedFiles: number;
@@ -770,8 +777,11 @@ export async function launchOrchestrator(
 	};
 }
 
-export async function mergePR(cfg: ServerConfig, pr: DashboardPR): Promise<void> {
-	await req(cfg, `${API}/prs/${pr.number}/merge`, { method: "POST" });
+export async function mergePR(cfg: ServerConfig, pr: MergePRInput): Promise<void> {
+	await req(cfg, `${API}/prs/${pr.number}/merge`, {
+		method: "POST",
+		body: JSON.stringify({ prUrl: pr.url, expectedHeadSha: pr.headSha }),
+	});
 }
 
 // Quick reachability probe for the Settings "Test connection" button.
