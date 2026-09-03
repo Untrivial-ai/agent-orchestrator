@@ -170,6 +170,7 @@ export interface CloudCpSession {
 	projectId: string;
 	kind: string;
 	harness: string;
+	model?: string;
 	displayName: string;
 	branch: string;
 	mode: string;
@@ -265,6 +266,8 @@ export interface CloudCpWakeSessionsResponse {
 export interface CloudCpSendMessageRequest {
 	/** 1-65536 bytes. */
 	text: string;
+	/** Optional provider model for the next turn. */
+	model?: string;
 }
 
 export interface CloudCpClientEvent {

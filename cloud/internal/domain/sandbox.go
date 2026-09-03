@@ -107,6 +107,7 @@ type WorkerLaunch struct {
 	ProjectID      string
 	Kind           string
 	Harness        string
+	Model          string
 	DisplayName    string
 	Branch         string
 	Prompt         string

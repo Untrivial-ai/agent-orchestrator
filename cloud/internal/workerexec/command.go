@@ -99,6 +99,7 @@ func (b HarnessBuilder) BuildInteractive(
 			Binary:        binary,
 			SessionID:     launch.SessionID,
 			Metadata:      map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
+			Model:         launch.Model,
 			WorkspacePath: workspace,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
@@ -114,6 +115,7 @@ func (b HarnessBuilder) BuildInteractive(
 			SessionID:     launch.SessionID,
 			WorkspacePath: workspace,
 			Prompt:        launch.Prompt,
+			Model:         launch.Model,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
 			Permission:    permission,
@@ -422,6 +424,9 @@ func claudeArgs(turn worker.Turn) ([]string, error) {
 	if turn.AgentSessionID != "" {
 		args = append(args, "--resume", turn.AgentSessionID)
 	}
+	if strings.TrimSpace(turn.Model) != "" {
+		args = append(args, "--model", strings.TrimSpace(turn.Model))
+	}
 	return append(args, turn.Prompt), nil
 }
 
@@ -451,6 +456,9 @@ func codexArgs(turn worker.Turn) ([]string, error) {
 	if turn.AgentSessionID != "" {
 		args = append(args, "resume", turn.AgentSessionID)
 	}
+	if strings.TrimSpace(turn.Model) != "" {
+		args = append(args, "--model", strings.TrimSpace(turn.Model))
+	}
 	return append(args, "--", turn.Prompt), nil
 }
 
@@ -467,6 +475,9 @@ func cursorArgs(turn worker.Turn) ([]string, error) {
 	}
 	if turn.AgentSessionID != "" {
 		args = append(args, "--resume", turn.AgentSessionID)
+	}
+	if strings.TrimSpace(turn.Model) != "" {
+		args = append(args, "--model", strings.TrimSpace(turn.Model))
 	}
 	return append(args, turn.Prompt), nil
 }

@@ -63,6 +63,7 @@ type Session struct {
 	ProjectID        string
 	Kind             string
 	Harness          string
+	Model            string
 	DisplayName      string
 	Branch           string
 	Mode             string
@@ -127,6 +128,7 @@ type WorkerTurn struct {
 	Mode              string
 	DeniedCommands    []string
 	Harness           string
+	Model             string
 	Attempt           int
 	WorkerEpoch       int64
 	CancelRequested   bool

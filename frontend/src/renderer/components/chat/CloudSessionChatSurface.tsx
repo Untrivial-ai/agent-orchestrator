@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useCloudCp } from "../../hooks/useCloudCp";
 import type { CloudCpClientEvent } from "../../lib/cloud-cp";
-import type { ConversationMessage, ConversationSnapshot, ConversationTurn } from "../../types/conversation";
+import type { ChatModel, ConversationMessage, ConversationSnapshot, ConversationTurn, TurnSettings } from "../../types/conversation";
 import type { WorkspaceSession } from "../../types/workspace";
 import { ChatWorkspace } from "./ChatWorkspace";
 
@@ -26,6 +26,12 @@ function eventTurnID(event: CloudCpClientEvent): string | undefined {
 	const turnID = eventPayload(event).turnId;
 	return typeof turnID === "string" && turnID !== "" ? turnID : undefined;
 }
+
+const CLOUD_MODELS: Record<string, ChatModel[]> = {
+	codex: ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"].map((id, index) => ({ id, displayName: id, default: index === 0 })),
+	"claude-code": ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"].map((id, index) => ({ id, displayName: id, default: index === 0 })),
+	cursor: ["auto", "composer-1", "gpt-5"].map((id, index) => ({ id, displayName: id, default: index === 0 })),
+};
 
 /** Builds the shared ChatWorkspace projection from Cloud's durable event log. */
 function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent[]): ConversationSnapshot {
@@ -111,6 +117,10 @@ export function CloudSessionChatSurface({
 	}) => void;
 }) {
 	const cloud = session.cloud;
+	const models = CLOUD_MODELS[session.provider] ?? [];
+	const [selectedModel, setSelectedModel] = useState(
+		session.model ?? models.find((model) => model.default)?.id,
+	);
 	const { client, ready } = useCloudCp();
 	const queryClient = useQueryClient();
 	const eventsQuery = useQuery({
@@ -134,11 +144,14 @@ export function CloudSessionChatSurface({
 	const send = useMutation({
 		mutationFn: async (text: string) => {
 			if (!cloud) throw new Error("Cloud session context is unavailable.");
-			return client.sendSessionMessage(cloud.orgId, session.id, { text });
+			return client.sendSessionMessage(cloud.orgId, session.id, { text, model: selectedModel });
 		},
 		onSuccess: () => void invalidate(),
 	});
-	const snapshot = useMemo(() => toSnapshot(session, eventsQuery.data ?? []), [eventsQuery.data, session]);
+	const snapshot = useMemo(
+		() => ({ ...toSnapshot(session, eventsQuery.data ?? []), settings: { model: selectedModel } }),
+		[eventsQuery.data, selectedModel, session],
+	);
 	const activeTurn = snapshot.turns.find((turn) => turn.state === "running");
 	const queuedTurnCount = snapshot.turns.filter((turn) => turn.state === "queued").length;
 	useEffect(() => {
@@ -172,6 +185,8 @@ export function CloudSessionChatSurface({
 			headerActions={headerActions}
 			onInterrupt={activeTurn ? () => interrupt.mutate() : undefined}
 			onSend={(text) => send.mutateAsync(text)}
+			models={models}
+			onChooseSettings={(settings: TurnSettings) => setSelectedModel(settings.model)}
 			session={session}
 			sessionRole={session.kind}
 			sessionTabAction={sessionTabAction}

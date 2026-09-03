@@ -20,7 +20,8 @@ const (
 )
 
 type sendMessageRequest struct {
-	Text string `json:"text"`
+	Text  string `json:"text"`
+	Model string `json:"model,omitempty"`
 }
 
 type clientEventResponse struct {
@@ -59,6 +60,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		sessionID,
 		key,
 		request.Text,
+		strings.TrimSpace(request.Model),
 	)
 	if err != nil {
 		s.writeStoreError(w, r, err)

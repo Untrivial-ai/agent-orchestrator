@@ -15,6 +15,7 @@ type LaunchContext struct {
 	ProjectID      string   `json:"projectId"`
 	Kind           string   `json:"kind"`
 	Harness        string   `json:"harness"`
+	Model          string   `json:"model,omitempty"`
 	DisplayName    string   `json:"displayName"`
 	Branch         string   `json:"branch"`
 	Prompt         string   `json:"prompt,omitempty"`
@@ -127,6 +128,7 @@ type Turn struct {
 	Mode            string   `json:"mode"`
 	DeniedCommands  []string `json:"deniedCommands"`
 	Harness         string   `json:"harness"`
+	Model           string   `json:"model,omitempty"`
 	Attempt         int      `json:"attempt"`
 	CancelRequested bool     `json:"cancelRequested"`
 	AgentSessionID  string   `json:"agentSessionId,omitempty"`

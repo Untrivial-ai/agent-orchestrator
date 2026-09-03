@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -34,6 +35,7 @@ func (s *Store) SendMessage(
 	sessionID string,
 	idempotencyKey string,
 	text string,
+	model string,
 ) (domain.ClientEvent, error) {
 	var event domain.ClientEvent
 	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
@@ -42,7 +44,7 @@ func (s *Store) SendMessage(
 		}
 		var err error
 		event, err = sendMessageTx(
-			ctx, tx, orgID, sessionID, idempotencyKey, text, principal.UserID, "",
+			ctx, tx, orgID, sessionID, idempotencyKey, text, model, principal.UserID, "",
 			access.ModeCap, access.DeniedCommands,
 		)
 		return err
@@ -53,11 +55,11 @@ func (s *Store) SendMessage(
 func sendMessageTx(
 	ctx context.Context,
 	tx pgx.Tx,
-	orgID, sessionID, idempotencyKey, text, actorUserID, actorSessionID string,
+	orgID, sessionID, idempotencyKey, text, model, actorUserID, actorSessionID string,
 	modeCap string,
 	deniedCommands []string,
 ) (domain.ClientEvent, error) {
-	payload, err := json.Marshal(map[string]string{"text": text})
+	payload, err := json.Marshal(map[string]string{"text": text, "model": strings.TrimSpace(model)})
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -81,7 +83,7 @@ func sendMessageTx(
 	if err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
 	}
-	event, err := appendUserMessage(ctx, tx, orgID, sessionID, text, modeCap, deniedCommands)
+	event, err := appendUserMessage(ctx, tx, orgID, sessionID, text, model, modeCap, deniedCommands)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -317,6 +319,7 @@ func appendUserMessage(
 	orgID string,
 	sessionID string,
 	text string,
+	model string,
 	modeCap string,
 	deniedCommands []string,
 ) (domain.ClientEvent, error) {
@@ -393,6 +396,11 @@ func appendUserMessage(
 		nonNilStrings(deniedCommands),
 	); err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
+	}
+	if strings.TrimSpace(model) != "" {
+		if _, err := tx.Exec(ctx, `UPDATE ao_sessions SET model = $3, updated_at = now() WHERE org_id = $1 AND id = $2`, orgID, sessionID, strings.TrimSpace(model)); err != nil {
+			return domain.ClientEvent{}, err
+		}
 	}
 	return event, nil
 }

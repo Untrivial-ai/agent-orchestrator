@@ -691,7 +691,7 @@ func (s *Store) WorkerLaunchSpec(
 		var interfaceValue string
 		err := tx.QueryRow(
 			ctx,
-			`SELECT session.id, session.project_id, session.kind, session.harness,
+			`SELECT session.id, session.project_id, session.kind, session.harness, session.model,
 				session.display_name, session.branch, session.prompt,
 				session.agent_session_id, session.mode, session.denied_commands,
 				session.interface,
@@ -706,6 +706,7 @@ func (s *Store) WorkerLaunchSpec(
 			&launch.ProjectID,
 			&launch.Kind,
 			&launch.Harness,
+			&launch.Model,
 			&launch.DisplayName,
 			&launch.Branch,
 			&launch.Prompt,

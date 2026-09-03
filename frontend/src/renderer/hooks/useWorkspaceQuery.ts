@@ -200,6 +200,7 @@ export function toCloudWorkspaceSession(
 		workspaceName: project.displayName,
 		title: session.displayName || session.id,
 		provider: toAgentProvider(session.harness),
+		model: session.model,
 		kind: session.kind === "orchestrator" ? "orchestrator" : "worker",
 		mode: session.interfaceMode ?? "tui",
 		branch: session.branch || undefined,

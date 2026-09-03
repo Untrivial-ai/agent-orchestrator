@@ -630,7 +630,7 @@ func createSessionTx(
 		SELECT id, $1, $2, $3, $4, $5, 'ao/' || left(id::text, 8),
 			$6, $7, $8, $9, NULLIF($10, '')::uuid, NULLIF($11, '')::uuid
 		FROM generated
-		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
+		RETURNING id, org_id, project_id, kind, harness, model, display_name, branch,
 			mode, denied_commands, interface, activity_state, is_terminated,
 			false, '', '', created_at, updated_at`,
 		orgID,
@@ -834,7 +834,7 @@ func (s *Store) GetSession(
 
 const sessionSelect = `
 	SELECT session.id, session.org_id, session.project_id, session.kind,
-		session.harness, session.display_name, session.branch,
+		session.harness, session.model, session.display_name, session.branch,
 		session.mode, session.denied_commands, session.interface,
 		CASE
 			WHEN EXISTS (
@@ -903,6 +903,7 @@ func scanSession(row scanner, session *domain.Session) error {
 		&session.ProjectID,
 		&session.Kind,
 		&session.Harness,
+		&session.Model,
 		&session.DisplayName,
 		&session.Branch,
 		&session.Mode,
