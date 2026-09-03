@@ -306,7 +306,12 @@ export function useWorkspaceQuery(options: WorkspaceSubscriptionOptions = {}) {
 		// cloud projects would keep rendering for a signed-out user.
 		if (!ready || orgId === undefined) return localData;
 		const sessions = cloudSessionData ?? [];
-		return [...localData, ...cloudData.map((project) => toCloudWorkspace(project, sessions, orgId))];
+		const standalone = localData.find((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
+		const localProjects = standalone
+			? localData.filter((workspace) => workspace.id !== STANDALONE_WORKSPACE_ID)
+			: localData;
+		const cloudProjects = cloudData.map((project) => toCloudWorkspace(project, sessions, orgId));
+		return standalone ? [...localProjects, ...cloudProjects, standalone] : [...localProjects, ...cloudProjects];
 	}, [localData, cloudData, cloudSessionData, orgId, ready]);
 	return { ...local, data };
 }

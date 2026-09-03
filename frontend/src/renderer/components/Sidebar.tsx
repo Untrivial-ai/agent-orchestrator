@@ -310,6 +310,32 @@ function applyOrder<T>(items: readonly T[], idOf: (item: T) => string, order: re
 	return unplaced === "start" ? [...rest, ...placed] : [...placed, ...rest];
 }
 
+// Preserve an explicit drag order, but insert projects discovered afterward
+// ahead of Standalone agents when that group was already the final row. This
+// keeps the user's ordering while ensuring newly created/local/cloud projects
+// do not accidentally appear below the standalone group.
+export function applyProjectOrder(items: readonly WorkspaceSummary[], order: readonly string[]): WorkspaceSummary[] {
+	if (order.length === 0) return [...items];
+	const ordered = applyOrder(items, (workspace) => workspace.id, order, "end");
+	const standaloneIndex = ordered.findIndex((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
+	if (standaloneIndex < 0) return ordered;
+
+	const placedIds = new Set(order);
+	const standaloneWasLast = order.filter((id) => items.some((workspace) => workspace.id === id)).at(-1) === STANDALONE_WORKSPACE_ID;
+	if (!standaloneWasLast) return ordered;
+
+	const newlyDiscovered = ordered.filter(
+		(workspace) => !placedIds.has(workspace.id) && workspace.id !== STANDALONE_WORKSPACE_ID,
+	);
+	if (newlyDiscovered.length === 0) return ordered;
+
+	return [
+		...ordered.filter((workspace) => placedIds.has(workspace.id) && workspace.id !== STANDALONE_WORKSPACE_ID),
+		...newlyDiscovered,
+		ordered[standaloneIndex]!,
+	];
+}
+
 function useGrabbingCursor(active: boolean) {
 	useEffect(() => {
 		if (!active) return;
@@ -518,7 +544,7 @@ export function Sidebar({
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
 	const [sessionOrderByProject, setSessionOrderByProject] = useState<Record<string, string[]>>({});
 	const orderedWorkspaces = useMemo(
-		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
+		() => applyProjectOrder(workspaces, projectOrder),
 		[projectOrder, workspaces],
 	);
 	const projectIds = useMemo(() => orderedWorkspaces.map((workspace) => workspace.id), [orderedWorkspaces]);

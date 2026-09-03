@@ -18,6 +18,7 @@ import {
 	Sidebar,
 	SIDEBAR_DEFAULT_WIDTH,
 	SIDEBAR_MIN_WIDTH,
+	applyProjectOrder,
 } from "./Sidebar";
 import {
 	STANDALONE_PROJECT_KIND,
@@ -2151,6 +2152,26 @@ describe("Sidebar", () => {
 		act(() => dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } }));
 
 		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
+	});
+
+	it("inserts newly discovered projects before a standalone group ordered last", () => {
+		const standalone: WorkspaceSummary = {
+			id: STANDALONE_WORKSPACE_ID,
+			kind: STANDALONE_PROJECT_KIND,
+			name: "Standalone agents",
+			path: "",
+			sessions: [],
+		};
+		const alpha = { ...workspace, id: "alpha", name: "Alpha" };
+		const cloud = { ...workspace, id: "cloud", name: "Cloud", kind: "cloud" as const };
+		const newlyCreated = { ...workspace, id: "new", name: "New project" };
+
+		expect(
+			applyProjectOrder(
+				[alpha, cloud, newlyCreated, standalone],
+				["alpha", "cloud", STANDALONE_WORKSPACE_ID],
+			).map((project) => project.id),
+		).toEqual(["alpha", "cloud", "new", STANDALONE_WORKSPACE_ID]);
 	});
 
 	it("pauses nested session drag contexts during a project drag", async () => {
