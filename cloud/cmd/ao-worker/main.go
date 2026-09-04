@@ -225,6 +225,11 @@ func run(logger *slog.Logger) error {
 			} else if strings.TrimSpace(model) != "" {
 				launch.Model = strings.TrimSpace(model)
 			}
+			if effort, err := client.SessionReasoningEffort(buildCtx); err != nil {
+				return workerexec.Command{}, fmt.Errorf("load current session reasoning effort: %w", err)
+			} else if strings.TrimSpace(effort) != "" {
+				launch.ReasoningEffort = strings.TrimSpace(effort)
+			}
 			launch.AgentSessionID = strings.TrimSpace(nativeConversationID)
 			command, err := b.BuildInteractive(launch, credential, workspace)
 			credential.Secret = ""
@@ -454,6 +459,16 @@ func (c *client) SessionModel(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return response.Model, nil
+}
+
+func (c *client) SessionReasoningEffort(ctx context.Context) (string, error) {
+	var response struct {
+		ReasoningEffort string `json:"reasoningEffort"`
+	}
+	if err := c.doMethod(ctx, http.MethodGet, "/worker/session", nil, &response); err != nil {
+		return "", err
+	}
+	return response.ReasoningEffort, nil
 }
 
 func (c *client) EnsureAgentTerminal(ctx context.Context) (worker.AgentTerminalResponse, error) {

@@ -74,6 +74,8 @@ export type WorkspaceSession = {
 	provider: AgentProvider;
 	/** Currently selected provider model, when the backend exposes one. */
 	model?: string;
+	/** Currently selected provider reasoning effort, when exposed by Cloud. */
+	reasoningEffort?: string;
 	/** Reviewer selected for this session; absent means use the project default. */
 	reviewerHarness?: ReviewerHarnessId;
 	/** Per-session reviewer override, including hidden fields preserved across saves. */

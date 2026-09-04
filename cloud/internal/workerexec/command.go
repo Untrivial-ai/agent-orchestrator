@@ -100,6 +100,7 @@ func (b HarnessBuilder) BuildInteractive(
 			SessionID:     launch.SessionID,
 			Metadata:      map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
 			Model:         launch.Model,
+			Effort:        launch.ReasoningEffort,
 			WorkspacePath: workspace,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
@@ -116,6 +117,7 @@ func (b HarnessBuilder) BuildInteractive(
 			WorkspacePath: workspace,
 			Prompt:        launch.Prompt,
 			Model:         launch.Model,
+			Effort:        launch.ReasoningEffort,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
 			Permission:    permission,
@@ -458,6 +460,9 @@ func codexArgs(turn worker.Turn) ([]string, error) {
 	}
 	if strings.TrimSpace(turn.Model) != "" {
 		args = append(args, "--model", strings.TrimSpace(turn.Model))
+	}
+	if strings.TrimSpace(turn.ReasoningEffort) != "" {
+		args = append(args, "-c", "model_reasoning_effort="+strings.TrimSpace(turn.ReasoningEffort))
 	}
 	return append(args, "--", turn.Prompt), nil
 }

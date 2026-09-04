@@ -46,3 +46,21 @@ func (s *Store) WorkerSessionModel(ctx context.Context, orgID, sessionID, worker
 	}
 	return model, err
 }
+
+func (s *Store) WorkerSessionReasoningEffort(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (string, error) {
+	var effort string
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		current, err := workerConnectionCurrent(ctx, tx, orgID, sessionID, workerID, epoch)
+		if err != nil {
+			return err
+		}
+		if !current {
+			return ErrStaleWorker
+		}
+		return tx.QueryRow(ctx, `SELECT reasoning_effort FROM ao_sessions WHERE org_id = $1 AND id = $2 AND is_terminated = false`, orgID, sessionID).Scan(&effort)
+	})
+	if err == pgx.ErrNoRows {
+		return "", ErrNotFound
+	}
+	return effort, err
+}

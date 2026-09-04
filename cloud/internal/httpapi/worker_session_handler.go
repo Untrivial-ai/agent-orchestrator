@@ -24,5 +24,10 @@ func (s *Server) workerSession(w http.ResponseWriter, r *http.Request) {
 		s.writeWorkerStoreError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"agentSessionId": id, "model": model})
+	effort, err := s.store.WorkerSessionReasoningEffort(r.Context(), claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch)
+	if err != nil {
+		s.writeWorkerStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"agentSessionId": id, "model": model, "reasoningEffort": effort})
 }

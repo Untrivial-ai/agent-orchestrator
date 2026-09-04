@@ -119,7 +119,7 @@ func (s *Store) SendOrchestratorChildMessage(
 			return ErrForbidden
 		}
 		event, err = sendMessageTx(
-			ctx, tx, orgID, childSessionID, idempotencyKey, text, "", "", orchestratorSessionID,
+			ctx, tx, orgID, childSessionID, idempotencyKey, text, "", "", "", orchestratorSessionID,
 			"", nil,
 		)
 		return err

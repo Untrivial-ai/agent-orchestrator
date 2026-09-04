@@ -57,6 +57,7 @@ type LaunchConfig struct {
 	NativeSessionID  string
 	WorkspacePath    string
 	Model            string
+	Effort           string
 	Prompt           string
 	SystemPrompt     string
 	SystemPromptFile string
@@ -77,6 +78,7 @@ type RestoreConfig struct {
 	Metadata         map[string]string
 	WorkspacePath    string
 	Model            string
+	Effort           string
 	Prompt           string
 	SystemPrompt     string
 	SystemPromptFile string
@@ -293,6 +295,9 @@ func appendClaudeSystemPrompt(cmd []string, promptFile, prompt string) ([]string
 func buildCodexLaunch(cfg LaunchConfig) []string {
 	cmd := codexBaseCommand(cfg.Binary, cfg.Permission, cfg.ProviderArgs)
 	cmd = appendCodexCommon(cmd, cfg.WorkspacePath, cfg.Model, cfg.SystemPromptFile, cfg.SystemPrompt)
+	if effort := strings.TrimSpace(cfg.Effort); effort != "" {
+		cmd = append(cmd, "-c", "model_reasoning_effort="+effort)
+	}
 	if cfg.Prompt != "" {
 		cmd = append(cmd, "--", cfg.Prompt)
 	}
@@ -302,6 +307,9 @@ func buildCodexLaunch(cfg LaunchConfig) []string {
 func buildCodexRestore(cfg RestoreConfig, identity string) []string {
 	cmd := append([]string{cfg.Binary, "resume"}, codexBaseArgs(cfg.Permission, cfg.ProviderArgs)...)
 	cmd = appendCodexCommon(cmd, cfg.WorkspacePath, cfg.Model, cfg.SystemPromptFile, cfg.SystemPrompt)
+	if effort := strings.TrimSpace(cfg.Effort); effort != "" {
+		cmd = append(cmd, "-c", "model_reasoning_effort="+effort)
+	}
 	cmd = append(cmd, identity)
 	if cfg.Prompt != "" {
 		cmd = append(cmd, "--", cfg.Prompt)

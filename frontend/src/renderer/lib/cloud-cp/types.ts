@@ -171,6 +171,7 @@ export interface CloudCpSession {
 	kind: string;
 	harness: string;
 	model?: string;
+	reasoningEffort?: string;
 	displayName: string;
 	branch: string;
 	mode: string;
@@ -268,6 +269,8 @@ export interface CloudCpSendMessageRequest {
 	text: string;
 	/** Optional provider model for the next turn. */
 	model?: string;
+	/** Optional provider reasoning effort for the next turn. */
+	reasoningEffort?: string;
 }
 
 export interface CloudCpClientEvent {

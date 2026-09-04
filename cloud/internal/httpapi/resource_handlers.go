@@ -55,6 +55,7 @@ type sessionResponse struct {
 	Kind             string    `json:"kind"`
 	Harness          string    `json:"harness"`
 	Model            string    `json:"model,omitempty"`
+	ReasoningEffort  string    `json:"reasoningEffort,omitempty"`
 	DisplayName      string    `json:"displayName"`
 	Branch           string    `json:"branch"`
 	Mode             string    `json:"mode"`
@@ -518,6 +519,7 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 		Kind:             session.Kind,
 		Harness:          session.Harness,
 		Model:            session.Model,
+		ReasoningEffort:  session.ReasoningEffort,
 		DisplayName:      session.DisplayName,
 		Branch:           session.Branch,
 		Mode:             session.Mode,

@@ -79,7 +79,7 @@ func (s *Store) ClaimWorkerTurn(
 			SELECT claimed.id, claimed.session_id, event.payload->>'text',
 				session.mode, session.denied_commands, session.harness,
 				claimed.attempt_count, claimed.worker_epoch,
-				claimed.state, session.agent_session_id, session.model,
+				claimed.state, session.agent_session_id, session.model, session.reasoning_effort,
 				claimed.user_message_sequence,
 				COALESCE(claimed_turn.mode_cap, ''), COALESCE(claimed_turn.denied_commands, ARRAY[]::text[])
 			FROM claimed
@@ -106,6 +106,7 @@ func (s *Store) ClaimWorkerTurn(
 			&state,
 			&turn.AgentSessionID,
 			&turn.Model,
+			&turn.ReasoningEffort,
 			&turn.UserEventSequence,
 			&turnModeCap,
 			&turnDeniedCommands,

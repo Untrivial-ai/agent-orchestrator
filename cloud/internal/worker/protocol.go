@@ -11,20 +11,21 @@ type BootstrapRequest struct {
 
 // LaunchContext is the durable session context handed to a bootstrapped worker.
 type LaunchContext struct {
-	SessionID      string   `json:"sessionId"`
-	ProjectID      string   `json:"projectId"`
-	Kind           string   `json:"kind"`
-	Harness        string   `json:"harness"`
-	Model          string   `json:"model,omitempty"`
-	DisplayName    string   `json:"displayName"`
-	Branch         string   `json:"branch"`
-	Prompt         string   `json:"prompt,omitempty"`
-	AgentSessionID string   `json:"agentSessionId,omitempty"`
-	Mode           string   `json:"mode"`
-	DeniedCommands []string `json:"deniedCommands"`
-	Interface      string   `json:"interface"`
-	RepositoryURL  string   `json:"repositoryUrl"`
-	DefaultBranch  string   `json:"defaultBranch"`
+	SessionID       string   `json:"sessionId"`
+	ProjectID       string   `json:"projectId"`
+	Kind            string   `json:"kind"`
+	Harness         string   `json:"harness"`
+	Model           string   `json:"model,omitempty"`
+	ReasoningEffort string   `json:"reasoningEffort,omitempty"`
+	DisplayName     string   `json:"displayName"`
+	Branch          string   `json:"branch"`
+	Prompt          string   `json:"prompt,omitempty"`
+	AgentSessionID  string   `json:"agentSessionId,omitempty"`
+	Mode            string   `json:"mode"`
+	DeniedCommands  []string `json:"deniedCommands"`
+	Interface       string   `json:"interface"`
+	RepositoryURL   string   `json:"repositoryUrl"`
+	DefaultBranch   string   `json:"defaultBranch"`
 }
 
 // BootstrapResponse is the control plane's answer to a valid bootstrap ticket.
@@ -129,6 +130,7 @@ type Turn struct {
 	DeniedCommands  []string `json:"deniedCommands"`
 	Harness         string   `json:"harness"`
 	Model           string   `json:"model,omitempty"`
+	ReasoningEffort string   `json:"reasoningEffort,omitempty"`
 	Attempt         int      `json:"attempt"`
 	CancelRequested bool     `json:"cancelRequested"`
 	AgentSessionID  string   `json:"agentSessionId,omitempty"`
