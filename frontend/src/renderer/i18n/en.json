@@ -1094,6 +1094,7 @@
 	"settings.updates.confirm": "Confirm",
 	"settings.updates.disabled": "Disabled",
 	"settings.updates.downloaded": "Downloaded. Restart to finish updating.",
+	"settings.updates.downloadedFrom": "Downloaded from {{channel}}. Restart to finish updating.",
 	"settings.updates.downloading": "Downloading… {{percent}}%",
 	"settings.updates.enabled": "Enabled",
 	"settings.updates.featureBuild": "Feature build",

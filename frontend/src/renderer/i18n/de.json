@@ -973,6 +973,7 @@
 	"settings.updates.confirm": "Bestätigen",
 	"settings.updates.disabled": "Deaktiviert",
 	"settings.updates.downloaded": "Heruntergeladen. Neu starten, um das Update abzuschließen.",
+	"settings.updates.downloadedFrom": "Von {{channel}} heruntergeladen. Neu starten, um das Update abzuschließen.",
 	"settings.updates.downloading": "Wird heruntergeladen… {{percent}}%",
 	"settings.updates.enabled": "Aktiviert",
 	"settings.updates.featureBuild": "Feature-Build",

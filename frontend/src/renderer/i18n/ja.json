@@ -973,6 +973,7 @@
 	"settings.updates.confirm": "確認",
 	"settings.updates.disabled": "無効",
 	"settings.updates.downloaded": "ダウンロード済み。再起動して更新を完了してください。",
+	"settings.updates.downloadedFrom": "{{channel}} からダウンロード済み。再起動して更新を完了してください。",
 	"settings.updates.downloading": "ダウンロード中… {{percent}}%",
 	"settings.updates.enabled": "有効",
 	"settings.updates.featureBuild": "機能ビルド",

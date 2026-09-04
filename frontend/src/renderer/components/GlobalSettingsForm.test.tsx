@@ -362,6 +362,36 @@ describe("GlobalSettingsForm", () => {
 		expect(await screen.findByText(/Nightly updates daily and may be unstable or cause data loss/i)).toBeInTheDocument();
 	});
 
+	it("keeps the newest combined intent when saves overlap", async () => {
+		const resolvers: Array<() => void> = [];
+		setUpdate.mockImplementation(
+			() => new Promise<void>((resolve) => resolvers.push(resolve)),
+		);
+		renderForm();
+
+		const automatic = await screen.findByRole("switch", { name: "Automatic Updates" });
+		await userEvent.click(automatic);
+		await userEvent.click(await screen.findByLabelText("Updates channel"));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Nightly (Pre-release)" }));
+		await waitFor(() => expect(setUpdate).toHaveBeenCalledTimes(2));
+
+		await act(async () => resolvers[0]?.());
+		await waitFor(() => {
+			expect(automatic).toBeEnabled();
+			expect(automatic).not.toBeChecked();
+		});
+		await userEvent.click(automatic);
+		await waitFor(() => expect(setUpdate).toHaveBeenCalledTimes(3));
+		expect(setUpdate.mock.calls[2]?.[0]).toEqual(
+			expect.objectContaining({ enabled: true, channel: "nightly", nightlyAck: true, feature: null }),
+		);
+
+		await act(async () => {
+			resolvers[1]?.();
+			resolvers[2]?.();
+		});
+	});
+
 	it("checks the newly selected channel and explains how to switch after an update", async () => {
 		let emit: (s: { state: string; version?: string; requestId?: string }) => void = () => undefined;
 		updOnStatus.mockImplementation((cb: (s: unknown) => void) => {
@@ -412,6 +442,12 @@ describe("GlobalSettingsForm", () => {
 		getVersion.mockResolvedValue("1.4.0-nightly.202608271030");
 		renderForm();
 		await waitFor(() => expect(screen.getByTestId("installed-update-channel")).toHaveTextContent("Nightly (Pre-release)"));
+	});
+
+	it("labels an installed feature build separately from Stable", async () => {
+		getVersion.mockResolvedValue("1.4.0-pr4536.202608271030");
+		renderForm();
+		expect(await screen.findByTestId("installed-update-channel")).toHaveTextContent("Feature Releases");
 	});
 
 	it("shows an explicit idle update state and triggers a manual check", async () => {
@@ -486,7 +522,7 @@ describe("GlobalSettingsForm", () => {
 		});
 
 		await waitFor(
-			() => expect(screen.getByRole("status")).toHaveTextContent("Downloaded. Restart to finish updating."),
+			() => expect(screen.getByRole("status")).toHaveTextContent("Downloaded from Stable. Restart to finish updating."),
 			{ timeout: 1_500 },
 		);
 		expect(screen.queryByRole("button", { name: "Check for updates" })).not.toBeInTheDocument();

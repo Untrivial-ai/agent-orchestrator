@@ -973,6 +973,7 @@
 	"settings.updates.confirm": "확인",
 	"settings.updates.disabled": "사용 안 함",
 	"settings.updates.downloaded": "다운로드됨. 다시 시작하여 업데이트를 완료하세요.",
+	"settings.updates.downloadedFrom": "{{channel}}에서 다운로드됨. 다시 시작하여 업데이트를 완료하세요.",
 	"settings.updates.downloading": "다운로드 중… {{percent}}%",
 	"settings.updates.enabled": "사용",
 	"settings.updates.featureBuild": "기능 빌드",

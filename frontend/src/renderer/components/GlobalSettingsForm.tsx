@@ -69,7 +69,13 @@ export function GlobalSettingsForm({
 			)}
 
 			{(all || section === "updates") && (
-				<Suspense fallback={null}>
+				<Suspense
+					fallback={
+						<SettingsContentPanel>
+							<div className="h-24 animate-pulse motion-reduce:animate-none" aria-label={t("settings.updates")} />
+						</SettingsContentPanel>
+					}
+				>
 					<UpdatesSection titleHidden={titleHidden} />
 				</Suspense>
 			)}

@@ -957,6 +957,7 @@
 	"settings.updates.confirm": "确认",
 	"settings.updates.disabled": "已关闭",
 	"settings.updates.downloaded": "已下载。重启以完成更新。",
+	"settings.updates.downloadedFrom": "已从 {{channel}} 下载。重启以完成更新。",
 	"settings.updates.downloading": "正在下载… {{percent}}%",
 	"settings.updates.enabled": "已开启",
 	"settings.updates.featureBuild": "功能构建",

@@ -988,6 +988,7 @@
 	"settings.updates.confirm": "Confirmar",
 	"settings.updates.disabled": "Desativado",
 	"settings.updates.downloaded": "Baixado. Reinicie para concluir a atualização.",
+	"settings.updates.downloadedFrom": "Baixado de {{channel}}. Reinicie para concluir a atualização.",
 	"settings.updates.downloading": "Baixando… {{percent}}%",
 	"settings.updates.enabled": "Ativado",
 	"settings.updates.featureBuild": "Build de feature",

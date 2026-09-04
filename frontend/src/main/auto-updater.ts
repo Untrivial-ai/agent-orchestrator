@@ -1,7 +1,7 @@
 import { autoUpdater } from "electron-updater";
 import { app, BrowserWindow, dialog } from "electron";
 import { accessSync, constants as fsConstants, existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import semver from "semver";
 import {
@@ -22,6 +22,8 @@ import {
   type UpdatePhase,
   type UpdateTrigger,
 } from "../shared/update-telemetry";
+
+const STAGED_UPDATE_FILE_NAME = "staged-update.json";
 
 // reconcileAndPersist clears a pinned feature build whose PR has been retired
 // (merged/closed/deleted/expired) and persists the change, so the next check
@@ -62,6 +64,7 @@ async function reconcileAndPersist(
 export function configureFeed(
   settings: Pick<UpdateSettings, "channel" | "feature">,
 ): void {
+  currentFeed = feedIdentity(settings);
   if (settings.feature !== null && settings.feature !== undefined) {
     // Feature build: pin to the pr<N> semver prerelease identifier channel.
     autoUpdater.channel = `pr${settings.feature.pr}`;
@@ -91,6 +94,8 @@ let stagedVersion: string | undefined;
 let stagedAtMs: number | undefined;
 let stagedEscalated = false;
 let stagedRequestId: string | undefined;
+let currentFeed = "latest";
+let stagedInstallInvalidated = false;
 let escalationTimer: ReturnType<typeof setInterval> | undefined;
 let escalationStateDir: string | undefined;
 const STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -397,6 +402,53 @@ function stagedDownloadedStatus(): UpdateStatus {
   };
 }
 
+function feedIdentity(settings: Pick<UpdateSettings, "channel" | "feature">): string {
+  return settings.feature === null || settings.feature === undefined
+    ? settings.channel
+    : `pr${settings.feature.pr}`;
+}
+
+async function clearStagedUpdate(stateDir: string): Promise<void> {
+  stagedVersion = undefined;
+  stagedAtMs = undefined;
+  stagedEscalated = false;
+  stagedRequestId = undefined;
+  stagedInstallInvalidated = true;
+  stopEscalationTimer();
+  autoUpdater.autoInstallOnAppQuit = false;
+  await unlink(path.join(stateDir, STAGED_UPDATE_FILE_NAME)).catch(() => undefined);
+}
+
+async function restoreStagedUpdate(stateDir: string, settings: UpdateSettings): Promise<void> {
+  try {
+    const raw = JSON.parse(await readFile(path.join(stateDir, STAGED_UPDATE_FILE_NAME), "utf8")) as {
+      version?: unknown;
+      stagedAt?: unknown;
+      feed?: unknown;
+    };
+    if (
+      typeof raw.version !== "string" ||
+      typeof raw.stagedAt !== "number" ||
+      typeof raw.feed !== "string" ||
+      raw.feed !== feedIdentity(settings) ||
+      raw.version === app.getVersion()
+    ) {
+      await clearStagedUpdate(stateDir);
+      return;
+    }
+    stagedVersion = raw.version;
+    stagedAtMs = raw.stagedAt;
+    stagedInstallInvalidated = false;
+    stagedEscalated = false;
+  } catch {
+    stagedVersion = undefined;
+    stagedAtMs = undefined;
+    // If metadata exists but cannot be read, fail closed: an unknown staged
+    // package must never be installed automatically.
+    stagedInstallInvalidated = true;
+  }
+}
+
 // runEscalationCheck re-reads settings and feeds, then rebroadcasts the
 // downloaded status with a fresh escalated flag. The timer is keyed on a build
 // being staged (stagedAtMs set), NOT on lastStatus: a manual re-check flips
@@ -681,6 +733,19 @@ function wireUpdaterEvents(): void {
     stagedAtMs = Date.now();
     stagedEscalated = false;
     stagedRequestId = activeUpdaterRequestId;
+    stagedInstallInvalidated = false;
+    const stagedStateDir = escalationStateDir;
+    if (stagedStateDir !== undefined && stagedVersion !== undefined) {
+      void mkdir(stagedStateDir, { recursive: true })
+        .then(() =>
+          writeFile(
+            path.join(stagedStateDir, STAGED_UPDATE_FILE_NAME),
+            `${JSON.stringify({ version: stagedVersion, stagedAt: stagedAtMs, feed: currentFeed })}\n`,
+            { mode: 0o600 },
+          ),
+        )
+        .catch(() => undefined);
+    }
     automaticCheckPreviousStatus = undefined;
     // A completed automatic download advances the independent baseline; a
     // renderer-requested download additionally carries its request ownership.
@@ -877,6 +942,14 @@ async function requestAutomaticUpdateCheck(
 // downloaded automatically. Both preferences come from update-settings.
 // Caller guards on app.isPackaged.
 export async function startAutoUpdates(stateDir: string): Promise<void> {
+  try {
+    if (existsSync(path.join(stateDir, STAGED_UPDATE_FILE_NAME))) {
+      const settings = await readUpdateSettings(stateDir);
+      await restoreStagedUpdate(stateDir, settings);
+    }
+  } catch {
+    // requestAutomaticUpdateCheck owns the existing settings-error handling.
+  }
   startRetirementPollTimer(stateDir);
   const intervalMs = await requestAutomaticUpdateCheck(stateDir);
   if (intervalMs !== undefined)
@@ -887,6 +960,10 @@ async function persistUpdaterSettings(
   stateDir: string,
   settings: UpdateSettings,
 ): Promise<void> {
+  const previous = await readUpdateSettings(stateDir);
+  if (feedIdentity(previous) !== feedIdentity(settings)) {
+    await clearStagedUpdate(stateDir);
+  }
   await writeUpdateSettings(stateDir, settings);
   configureFeed(settings);
   reconcileAutomaticUpdateSchedule(stateDir, settings);
@@ -937,7 +1014,7 @@ export async function checkForUpdatesNow(
       "manual-check",
       async () => {
         if (options.settings)
-          await writeUpdateSettings(stateDir, options.settings);
+          await persistUpdaterSettings(stateDir, options.settings);
         const settings = await reconcileAndPersist(
           stateDir,
           options.settings ?? (await readUpdateSettings(stateDir)),
@@ -1132,7 +1209,7 @@ export function getMacInstallBlocker(): string | undefined {
 // the staged build wait for a location it can actually install from.
 function applyInstallOnQuitPolicy(): void {
   const blocker = getMacInstallBlocker();
-  autoUpdater.autoInstallOnAppQuit = blocker === undefined;
+  autoUpdater.autoInstallOnAppQuit = blocker === undefined && !stagedInstallInvalidated;
   if (blocker !== undefined) {
     console.warn(
       "install-on-quit disabled; the update cannot be installed from here:",

@@ -188,6 +188,7 @@ describe("startAutoUpdates", () => {
   const stateDir = "/tmp/ao-state";
 
   afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -844,8 +845,9 @@ describe("startAutoUpdates", () => {
     });
 
     const startPromise = module.startAutoUpdates(stateDir);
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(updaterEvents.get("error")).toBeTypeOf("function");
+    });
     let startSettled = false;
     void startPromise.then(() => {
       startSettled = true;
