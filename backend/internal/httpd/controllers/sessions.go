@@ -424,6 +424,19 @@ func (c *SessionsController) preview(w http.ResponseWriter, r *http.Request) {
 	envelope.WriteJSON(w, http.StatusOK, res)
 }
 
+// previewMarkdownCSP hardens rendered-Markdown previews: no scripts and no
+// network access (a rendered document needs neither), while still allowing the
+// inline stylesheet and images/badges so the document renders normally. This
+// severs the "previewed file runs a script that calls the loopback API" chain
+// (issue #2771) for the Markdown path at zero cost to document rendering.
+const previewMarkdownCSP = "default-src 'none'; img-src * data:; style-src 'unsafe-inline'; font-src * data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+
+// previewFileCSP applies to raw workspace files served verbatim (including
+// .html, which cannot be sanitized). Scripts/styles/images still load so a
+// built static app renders, but connect-src 'none' blocks fetch/XHR/WebSocket
+// so page script cannot reach the loopback control API (issue #2771).
+const previewFileCSP = "connect-src 'none'; form-action 'none'"
+
 func (c *SessionsController) previewFile(w http.ResponseWriter, r *http.Request) {
 	if c.Svc == nil {
 		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/preview/files/*")
@@ -524,6 +537,7 @@ func (c *SessionsController) serveWorkspacePreviewFile(w http.ResponseWriter, r 
 
 func serveOpenedPreviewFile(w http.ResponseWriter, r *http.Request, file *os.File, info fs.FileInfo, clean string) {
 	if !previewutil.IsMarkdownPath(clean) {
+		w.Header().Set("Content-Security-Policy", previewFileCSP)
 		http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 		return
 	}
@@ -538,9 +552,10 @@ func serveOpenedPreviewFile(w http.ResponseWriter, r *http.Request, file *os.Fil
 		envelope.WriteError(w, r, err)
 		return
 	}
+	w.Header().Set("Content-Security-Policy", previewMarkdownCSP)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Method != http.MethodHead {
-		_, _ = w.Write(rendered) //nolint:gosec // G705: preview content is workspace-local and agent-trusted
+		_, _ = w.Write(rendered) //nolint:gosec // G705: raw-HTML passthrough is contained by the restrictive CSP set above (default-src 'none'; connect-src 'none'), so previewed content cannot reach the loopback API — see issue #2771
 	}
 }
 

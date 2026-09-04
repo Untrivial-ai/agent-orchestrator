@@ -1407,6 +1407,42 @@ func TestSessionsAPI_PreviewRejectsSessionIDTooLongForHostname(t *testing.T) {
 	assertErrorCode(t, body, status, http.StatusUnprocessableEntity, "PREVIEW_SESSION_ID_UNSUPPORTED")
 }
 
+func TestSessionsAPI_PreviewSendsCSP(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"),
+		[]byte("# Hi\n\n<script>fetch('/api/v1/projects')</script>"), 0o644); err != nil {
+		t.Fatalf("write md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "page.html"),
+		[]byte("<h1>hi</h1>"), 0o644); err != nil {
+		t.Fatalf("write html: %v", err)
+	}
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	// Markdown path: strict CSP (no scripts, no network).
+	_, status, headers := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/preview/files/README.md", "")
+	if status != http.StatusOK {
+		t.Fatalf("md preview = %d, want 200", status)
+	}
+	if csp := headers.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") ||
+		!strings.Contains(csp, "connect-src 'none'") {
+		t.Fatalf("markdown CSP = %q, want default-src 'none' + connect-src 'none'", csp)
+	}
+
+	// Raw file path: connect-src 'none' cuts the API-reach vector.
+	_, status, headers = doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/preview/files/page.html", "")
+	if status != http.StatusOK {
+		t.Fatalf("html preview = %d, want 200", status)
+	}
+	if csp := headers.Get("Content-Security-Policy"); !strings.Contains(csp, "connect-src 'none'") {
+		t.Fatalf("html CSP = %q, want connect-src 'none'", csp)
+	}
+}
+
 func TestSessionsAPI_SetPreviewExplicitURLPersists(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
