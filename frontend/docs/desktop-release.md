@@ -48,6 +48,11 @@ Windows installers follow the same boundary (#4502): the NSIS maker
 when signing credentials are present in the environment, so the public build
 stays unsigned while the conductor signs with its own credentials downstream.
 
+The Forge configuration preserves that unsigned `make` boundary, but rejects
+partial macOS signing/notarization credentials. A direct Forge `publish` on
+macOS additionally requires both credential sets, so the legacy publication
+path cannot emit an unsigned ZIP when it is invoked accidentally.
+
 ## Channels
 
 - **Stable** releases are deliberate production cuts. After all verification

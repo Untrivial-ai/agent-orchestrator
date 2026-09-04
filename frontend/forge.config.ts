@@ -9,6 +9,11 @@ import MakerAppImage from "./makers/maker-appimage";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import {
+	assertMacReleaseCredentials,
+	isForgePublishCommand,
+	macPackagerSecurity,
+} from "./mac-release-security";
 
 // Default GitHub release target (production). Releases land on Untrivial-ai
 // (the org the repo was transferred to in July 2026; AgentWrapper and aoagents
@@ -83,6 +88,17 @@ function parseReleaseRepo(value: string | undefined): { owner: string; name: str
 	return { owner, name };
 }
 
+// The public artifact workflow deliberately runs unsigned; the private release
+// conductor seals those artifacts later. Direct Forge publication, however,
+// must never emit an unsigned macOS update. Validate at config load for an
+// immediate publish failure and again in prePackage for an explicit target.
+assertMacReleaseCredentials(
+	process.env,
+	process.platform,
+	isForgePublishCommand(process.argv),
+);
+const macSecurity = macPackagerSecurity(process.env);
+
 const config: ForgeConfig = {
 	packagerConfig: {
 		asar: true,
@@ -108,20 +124,8 @@ const config: ForgeConfig = {
 		//  - Local: AO_NOTARY_PROFILE, a notarytool keychain profile created with
 		//    `notarytool store-credentials`. See ao-macos-signed-release runbook.
 		// Both are valid NotaryToolCredentials, so no cast is needed.
-		osxSign: process.env.APPLE_SIGNING_IDENTITY
-			? { identity: process.env.APPLE_SIGNING_IDENTITY }
-			: process.env.CSC_LINK
-				? {}
-				: undefined,
-		osxNotarize: process.env.AO_NOTARY_PROFILE
-			? { keychainProfile: process.env.AO_NOTARY_PROFILE }
-			: process.env.APPLE_API_KEY
-				? {
-						appleApiKey: process.env.APPLE_API_KEY,
-						appleApiKeyId: process.env.APPLE_API_KEY_ID!,
-						appleApiIssuer: process.env.APPLE_API_ISSUER!,
-					}
-				: undefined,
+		osxSign: macSecurity.osxSign,
+		osxNotarize: macSecurity.osxNotarize,
 	},
 	hooks: {
 		// electron-forge does not generate app-update.yml (electron-builder does);
@@ -133,6 +137,11 @@ const config: ForgeConfig = {
 		// and macOS reports the app as "damaged". owner/repo are baked from
 		// AO_RELEASE_REPO at build time.
 		prePackage: async (_forgeConfig, platform, arch) => {
+			assertMacReleaseCredentials(
+				process.env,
+				platform as NodeJS.Platform,
+				isForgePublishCommand(process.argv),
+			);
 			await prepareNativeDependencies(platform as NodeJS.Platform, arch);
 			const { owner, name } = parseReleaseRepo(process.env.AO_RELEASE_REPO);
 			const yml = [
