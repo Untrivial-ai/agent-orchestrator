@@ -446,6 +446,8 @@
 	"mobile.devices.title": "Connected devices",
 	"mobile.devices.unnamed": "Unnamed device",
 	"mobile.generate": "Generate",
+	"mobile.trustNetworkAndGenerate": "I trust this network — generate",
+	"mobile.unencryptedConfirmTitle": "Use an unencrypted local connection?",
 	"mobile.preparingQr": "Preparing your secure link — this usually takes 30-60 seconds",
 	"mobile.getApp": "Get the app",
 	"mobile.getApp.step1": "Install Agent Orchestrator on your phone",

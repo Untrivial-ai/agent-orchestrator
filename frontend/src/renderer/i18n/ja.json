@@ -446,6 +446,8 @@
 	"mobile.devices.title": "接続済みデバイス",
 	"mobile.devices.unnamed": "名前未設定のデバイス",
 	"mobile.generate": "生成",
+	"mobile.trustNetworkAndGenerate": "このネットワークを信頼して生成",
+	"mobile.unencryptedConfirmTitle": "暗号化されていないローカル接続を使用しますか？",
 	"mobile.preparingQr": "セキュアリンクを準備しています — 通常30〜60秒かかります",
 	"mobile.getApp": "アプリを入手",
 	"mobile.getApp.step1": "スマートフォンに Agent Orchestrator をインストール",

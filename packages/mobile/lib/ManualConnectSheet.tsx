@@ -1,6 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
-import { Linking, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { Alert, Linking, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { ApiError, pingServer } from "./api";
 import { DEFAULT_CONFIG, loadConfig, saveConfig, type ServerConfig } from "./config";
 import { saveHost, setActiveHost } from "./hosts";
@@ -86,6 +86,21 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 		}
 	}
 
+	function requestConnect() {
+		if (cfg.secure) {
+			void connect();
+			return;
+		}
+		Alert.alert(
+			"Unencrypted local connection",
+			"Your AO password will be sent over the local network without encryption. Continue only on a private network you trust.",
+			[
+				{ text: "Cancel", style: "cancel" },
+				{ text: "I trust this network", onPress: () => void connect() },
+			],
+		);
+	}
+
 	const form = (
 		<>
 			<Field
@@ -115,6 +130,14 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 					trackColor={{ true: t.blue, false: t.borderStrong }}
 				/>
 			</View>
+			{!cfg.secure ? (
+				<View style={styles.warningBox}>
+					<Feather name="alert-triangle" size={15} color={t.amber} />
+					<Text style={styles.warningText}>
+						Not encrypted. Use this connection only on a private network you trust.
+					</Text>
+				</View>
+			) : null}
 
 			{failure ? (
 				<View style={styles.errorBox}>
@@ -142,7 +165,7 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 				icon="link"
 				loading={busy}
 				disabled={!cfg.host.trim()}
-				onPress={connect}
+				onPress={requestConnect}
 				style={{ marginTop: 16 }}
 			/>
 		</>
@@ -225,4 +248,14 @@ const makeStyles = (t: Theme) =>
 			marginTop: 16,
 		},
 		errorText: { color: t.red, fontSize: 13, lineHeight: 19 },
+		warningBox: {
+			flexDirection: "row",
+			gap: 9,
+			alignItems: "flex-start",
+			backgroundColor: t.tintAmber,
+			borderRadius: 10,
+			padding: 12,
+			marginTop: 16,
+		},
+		warningText: { color: t.amber, fontSize: 13, lineHeight: 19, flex: 1 },
 	});

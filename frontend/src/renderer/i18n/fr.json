@@ -448,6 +448,8 @@
 	"mobile.devices.title": "Appareils connectés",
 	"mobile.devices.unnamed": "Appareil sans nom",
 	"mobile.generate": "Générer",
+	"mobile.trustNetworkAndGenerate": "Je fais confiance à ce réseau — générer",
+	"mobile.unencryptedConfirmTitle": "Utiliser une connexion locale non chiffrée ?",
 	"mobile.preparingQr": "Préparation de votre lien sécurisé — cela prend généralement 30 à 60 secondes",
 	"mobile.getApp": "Obtenir l'application",
 	"mobile.getApp.step1": "Installez Agent Orchestrator sur votre téléphone",

@@ -446,6 +446,8 @@
 	"mobile.devices.title": "已连接的设备",
 	"mobile.devices.unnamed": "未命名设备",
 	"mobile.generate": "生成",
+	"mobile.trustNetworkAndGenerate": "我信任此网络 — 生成",
+	"mobile.unencryptedConfirmTitle": "使用未加密的本地连接？",
 	"mobile.preparingQr": "正在准备安全链接 — 通常需要 30-60 秒",
 	"mobile.getApp": "获取应用",
 	"mobile.getApp.step1": "在手机上安装 Agent Orchestrator",

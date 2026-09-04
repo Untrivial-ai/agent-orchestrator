@@ -51,6 +51,11 @@ function toggleEvents() {
 	return captureRendererEvent.mock.calls.filter((c) => c[0] === "ao.renderer.mobile_bridge_toggled");
 }
 
+async function confirmBridgeStart() {
+	await userEvent.click(screen.getByRole("button", { name: "Generate" }));
+	await userEvent.click(await screen.findByRole("button", { name: "I trust this network — generate" }));
+}
+
 describe("Connect Mobile telemetry", () => {
 	beforeEach(() => {
 		captureRendererEvent.mockClear();
@@ -76,8 +81,11 @@ describe("Connect Mobile telemetry", () => {
 		await waitFor(() => expect(openEvents()).toHaveLength(1));
 		expect(openEvents()[0][1]).toEqual({ bridge_enabled: false });
 
-		mobileStatus.enabled = true;
-		await userEvent.click(screen.getByRole("button", { name: "Generate" }));
+		post.mockImplementationOnce(async () => {
+			mobileStatus.enabled = true;
+			return { data: {}, error: undefined };
+		});
+		await confirmBridgeStart();
 
 		await waitFor(() => expect(toggleEvents()).toHaveLength(1));
 		await waitFor(() => expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled());
@@ -96,7 +104,7 @@ describe("Connect Mobile telemetry", () => {
 		renderMobileSettings();
 		await waitFor(() => expect(openEvents()).toHaveLength(1));
 
-		await userEvent.click(screen.getByRole("button", { name: "Generate" }));
+		await confirmBridgeStart();
 
 		await waitFor(() => expect(toggleEvents()).toHaveLength(1));
 		expect(toggleEvents()[0][1]).toEqual({ enabled: true, outcome: "succeeded" });
@@ -114,7 +122,7 @@ describe("Connect Mobile telemetry", () => {
 		renderMobileSettings();
 		await waitFor(() => expect(openEvents()).toHaveLength(1));
 
-		await userEvent.click(screen.getByRole("button", { name: "Generate" }));
+		await confirmBridgeStart();
 
 		await waitFor(() => expect(toggleEvents()).toHaveLength(1));
 		expect(toggleEvents()[0][1]).toEqual({ enabled: true, outcome: "failed" });

@@ -446,6 +446,8 @@
 	"mobile.devices.title": "연결된 기기",
 	"mobile.devices.unnamed": "이름 없는 기기",
 	"mobile.generate": "생성",
+	"mobile.trustNetworkAndGenerate": "이 네트워크를 신뢰하고 생성",
+	"mobile.unencryptedConfirmTitle": "암호화되지 않은 로컬 연결을 사용하시겠습니까?",
 	"mobile.preparingQr": "보안 링크를 준비하는 중입니다 — 보통 30~60초 정도 걸립니다",
 	"mobile.getApp": "앱 받기",
 	"mobile.getApp.step1": "휴대폰에 Agent Orchestrator 설치",
