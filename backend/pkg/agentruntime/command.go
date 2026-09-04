@@ -31,6 +31,10 @@ const (
 	PermissionAcceptEdits       PermissionPolicy = "accept-edits"
 	PermissionAuto              PermissionPolicy = "auto"
 	PermissionBypassPermissions PermissionPolicy = "bypass-permissions"
+	// PermissionDenyUnapproved is an internal policy used by unattended,
+	// allowlisted processes. It is not a user-selectable project permission
+	// mode; provider mappings may opt into a native fail-closed equivalent.
+	PermissionDenyUnapproved PermissionPolicy = "deny-unapproved"
 )
 
 // SessionMode is the durable Cloud execution mode.
@@ -172,6 +176,9 @@ func PermissionPolicyForMode(mode SessionMode) PermissionPolicy {
 
 // ClaudePermissionArgs maps AO policy onto Claude Code flags.
 func ClaudePermissionArgs(policy PermissionPolicy) []string {
+	if policy == PermissionDenyUnapproved {
+		return []string{"--permission-mode", "dontAsk"}
+	}
 	switch NormalizePermissionPolicy(policy) {
 	case PermissionAcceptEdits:
 		return []string{"--permission-mode", "acceptEdits"}

@@ -192,6 +192,14 @@ func TestPermissionPolicyForMode(t *testing.T) {
 	}
 }
 
+func TestClaudePermissionArgsMapsDenyUnapprovedToDontAsk(t *testing.T) {
+	got := ClaudePermissionArgs(PermissionDenyUnapproved)
+	want := []string{"--permission-mode", "dontAsk"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ClaudePermissionArgs() = %#v, want %#v", got, want)
+	}
+}
+
 func TestClaudeNativeSessionIDValidation(t *testing.T) {
 	id := uuid.NewString()
 	cmd, err := BuildLaunchCommand(LaunchConfig{

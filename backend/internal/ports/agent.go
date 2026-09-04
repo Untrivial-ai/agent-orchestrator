@@ -507,6 +507,11 @@ const (
 	PermissionModeAcceptEdits       = domain.PermissionModeAcceptEdits
 	PermissionModeAuto              = domain.PermissionModeAuto
 	PermissionModeBypassPermissions = domain.PermissionModeBypassPermissions
+	// PermissionModeDenyUnapproved is an internal launch-only policy for
+	// unattended restricted agents. It is deliberately not accepted by
+	// AgentConfig: adapters may map it to a provider-native mode that executes
+	// allowlisted actions and denies everything else instead of prompting.
+	PermissionModeDenyUnapproved PermissionMode = "deny-unapproved"
 )
 
 // NormalizePermissionMode collapses an empty or unrecognized mode to

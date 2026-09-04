@@ -37,19 +37,19 @@ var _ ports.ReviewerRestorer = (*Reviewer)(nil)
 
 // reviewerAllowedTools is the read-only tool allowlist the reviewer launches
 // with. The reviewer runs headless (no human to approve prompts) but must stay
-// read-only, so instead of bypassPermissions — which skips the permission
-// system entirely and ignores allow/deny rules — it launches in the default
-// mode where these rules are honored: allow rules auto-approve without
-// prompting, so the reviewer can read the checkout and run the few commands it
-// needs (git diff/log/show to inspect the PR, printf to pipe review JSON into
-// the downstream commands without writing a worktree file, gh to post the
-// review, and `ao review submit` to record the verdict) without stalling.
+// read-only. It launches in Claude's dontAsk-equivalent policy: allow rules are
+// honored, while an action that Claude cannot statically approve is rejected
+// instead of parking the unattended reviewer at a permission prompt. Reporting
+// uses an analyzer-safe base64 pipeline so review JSON is neither placed raw in
+// a shell operand nor written to the worktree.
 var reviewerAllowedTools = []string{
 	"Read",
 	"Grep",
 	"Glob",
 	"Bash(printf:*)",
-	"Bash(gh:*)",
+	"Bash(base64 --decode:*)",
+	"Bash(base64 -D:*)",
+	"Bash(gh api --method POST repos/:*)",
 	"Bash(git diff:*)",
 	"Bash(git log:*)",
 	"Bash(git show:*)",
@@ -66,6 +66,19 @@ var reviewerDisallowedTools = []string{
 	"NotebookEdit",
 	"Bash(git push:*)",
 	"Bash(git commit:*)",
+	"Bash(gh pr merge:*)",
+	"Bash(gh api --method DELETE:*)",
+	"Bash(gh api --method PUT:*)",
+	"Bash(gh api --method PATCH:*)",
+	"Bash(gh gist:*)",
+}
+
+const analyzerSafeReportingRule = `
+
+Claude reviewer reporting rule: when the review task shows a command that pipes raw JSON from printf, base64-encode the UTF-8 JSON yourself and run the same pipeline as printf '%s' '<base64>' | base64 --decode | <report command> (use base64 -D instead of --decode on systems that require it). Never place raw review JSON in a Bash operand or write it to a file.`
+
+func reviewMessage(prompt string) string {
+	return prompt + analyzerSafeReportingRule
 }
 
 // ReviewCommand builds a claude-code invocation that reviews the worker's
@@ -81,13 +94,12 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 		// from an id that the process was not launched with.
 		SessionID:        agentSessionID,
 		WorkspacePath:    inv.WorkspacePath,
-		Prompt:           inv.Prompt,
+		Prompt:           reviewMessage(inv.Prompt),
 		SystemPrompt:     inv.SystemPrompt,
 		SystemPromptFile: inv.SystemPromptFile,
-		// Launch off bypassPermissions so the allow/deny lists are enforced.
-		// Set an explicit non-bypass mode instead of deferring to the user's
-		// Claude defaultMode, which may itself be bypassPermissions.
-		Permissions:     ports.PermissionModeAuto,
+		// A headless reviewer cannot answer a prompt. Deny anything outside the
+		// allowlist so upstream analyzer changes fail closed rather than stall.
+		Permissions:     ports.PermissionModeDenyUnapproved,
 		AllowedTools:    reviewerAllowedTools,
 		DisallowedTools: reviewerDisallowedTools,
 	})
@@ -124,14 +136,14 @@ func (r *Reviewer) PreLaunch(ctx context.Context, inv ports.ReviewInvocation) er
 // ReviewMessage is the text injected into an already-running reviewer pane to
 // review a new commit — AO's central review prompt.
 func (r *Reviewer) ReviewMessage(_ context.Context, inv ports.ReviewInvocation) (string, error) {
-	return inv.Prompt, nil
+	return reviewMessage(inv.Prompt), nil
 }
 
 // ReviewRestoreCommand resumes the reviewer Claude Code conversation captured
 // from hooks, reapplying the same read-only tool policy as a fresh review launch.
 func (r *Reviewer) ReviewRestoreCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, bool, error) {
 	cmd, ok, err := agentrestore.Command(ctx, r.agent, inv, agentrestore.Options{
-		Permissions:     ports.PermissionModeAuto,
+		Permissions:     ports.PermissionModeDenyUnapproved,
 		AllowedTools:    reviewerAllowedTools,
 		DisallowedTools: reviewerDisallowedTools,
 	})

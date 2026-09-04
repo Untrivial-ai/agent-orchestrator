@@ -52,7 +52,7 @@ func (a *captureAgent) SessionInfo(context.Context, ports.SessionRef) (ports.Ses
 	return ports.SessionInfo{}, false, nil
 }
 
-func TestReviewCommandLaunchesReadOnlyOffBypass(t *testing.T) {
+func TestReviewCommandLaunchesReadOnlyWithoutInteractivePrompts(t *testing.T) {
 	agent := &captureAgent{}
 	r := &Reviewer{agent: agent}
 
@@ -69,8 +69,8 @@ func TestReviewCommandLaunchesReadOnlyOffBypass(t *testing.T) {
 	// The allowlist is what enforces read-only, so it must launch in an
 	// explicit non-bypass mode: bypassPermissions ignores allow/deny rules
 	// entirely, and an empty mode would defer to a user's defaultMode.
-	if agent.got.Permissions != ports.PermissionModeAuto {
-		t.Fatalf("reviewer must launch in auto permission mode; got %q", agent.got.Permissions)
+	if agent.got.Permissions != ports.PermissionModeDenyUnapproved {
+		t.Fatalf("reviewer must deny unapproved tools without prompting; got %q", agent.got.Permissions)
 	}
 	if agent.got.SessionID == "" {
 		t.Fatal("reviewer must pin the persisted Claude session id")
@@ -78,10 +78,16 @@ func TestReviewCommandLaunchesReadOnlyOffBypass(t *testing.T) {
 	if spec.AgentSessionID != agent.got.SessionID {
 		t.Fatalf("persisted agent session id = %q, launched session id = %q", spec.AgentSessionID, agent.got.SessionID)
 	}
-	if !contains(agent.got.AllowedTools, "Read") || !contains(agent.got.AllowedTools, "Bash(ao review submit:*)") {
+	if !contains(agent.got.AllowedTools, "Read") || !contains(agent.got.AllowedTools, "Bash(ao review submit:*)") || !contains(agent.got.AllowedTools, "Bash(base64 --decode:*)") {
 		t.Fatalf("allowlist missing read-only review tools: %#v", agent.got.AllowedTools)
 	}
-	for _, denied := range []string{"Edit", "Write", "Bash(git push:*)", "Bash(git commit:*)"} {
+	if contains(agent.got.AllowedTools, "Bash(gh:*)") {
+		t.Fatalf("allowlist grants blanket gh access: %#v", agent.got.AllowedTools)
+	}
+	if !contains(agent.got.AllowedTools, "Bash(gh api --method POST repos/:*)") {
+		t.Fatalf("allowlist missing exact GitHub review-post path: %#v", agent.got.AllowedTools)
+	}
+	for _, denied := range []string{"Edit", "Write", "Bash(git push:*)", "Bash(git commit:*)", "Bash(gh pr merge:*)"} {
 		if !contains(agent.got.DisallowedTools, denied) {
 			t.Fatalf("disallow list missing %q: %#v", denied, agent.got.DisallowedTools)
 		}
@@ -124,8 +130,8 @@ func TestAllowlistCoversPromptRequiredPipedCommands(t *testing.T) {
 	}
 
 	for _, cmd := range []string{
-		"printf '%s' '{ \"event\": \"COMMENT\", \"body\": \"x\" }' | gh api --method POST repos/o/r/pulls/1/reviews --input - --jq '.id'",
-		"printf '%s' '{ \"reviews\": [] }' | ao review submit --session sess-1 --reviews -",
+		"printf '%s' 'eyJldmVudCI6IkNPTU1FTlQifQ==' | base64 --decode | gh api --method POST repos/o/r/pulls/1/reviews --input - --jq '.id'",
+		"printf '%s' 'eyJyZXZpZXdzIjpbXX0=' | base64 --decode | ao review submit --session sess-1 --reviews -",
 	} {
 		if !compoundCommandCovered(agent.got.AllowedTools, cmd) {
 			t.Fatalf("allowlist does not cover prompt-required command %q with tools %#v", cmd, agent.got.AllowedTools)
@@ -135,6 +141,31 @@ func TestAllowlistCoversPromptRequiredPipedCommands(t *testing.T) {
 	disallowed := "printf x | rm -rf /"
 	if compoundCommandCovered(agent.got.AllowedTools, disallowed) {
 		t.Fatalf("allowlist unexpectedly covers disallowed command %q with tools %#v", disallowed, agent.got.AllowedTools)
+	}
+}
+
+func TestReviewMessagesRequireAnalyzerSafeBase64Reporting(t *testing.T) {
+	agent := &captureAgent{}
+	r := &Reviewer{agent: agent}
+
+	if _, err := r.ReviewCommand(context.Background(), ports.ReviewInvocation{
+		ReviewerID: "review-w1",
+		Prompt:     "Read `/ao/task.md`.",
+	}); err != nil {
+		t.Fatalf("ReviewCommand: %v", err)
+	}
+	for _, want := range []string{"base64-encode", "base64 --decode", "Never place raw review JSON"} {
+		if !strings.Contains(agent.got.Prompt, want) {
+			t.Fatalf("launch prompt missing %q: %q", want, agent.got.Prompt)
+		}
+	}
+
+	message, err := r.ReviewMessage(context.Background(), ports.ReviewInvocation{Prompt: "Read `/ao/next.md`."})
+	if err != nil {
+		t.Fatalf("ReviewMessage: %v", err)
+	}
+	if !strings.Contains(message, "base64 --decode") {
+		t.Fatalf("follow-up prompt lacks analyzer-safe reporting rule: %q", message)
 	}
 }
 
@@ -148,7 +179,7 @@ func TestReviewCommandUsesHiddenSystemPromptFile(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ReviewCommand: %v", err)
 	}
-	if agent.got.Prompt != "Start the AO review task." || agent.got.SystemPrompt != "" || agent.got.SystemPromptFile != "/ao/prompts/reviewer/system.md" {
+	if !strings.HasPrefix(agent.got.Prompt, "Start the AO review task.") || !strings.Contains(agent.got.Prompt, "base64 --decode") || agent.got.SystemPrompt != "" || agent.got.SystemPromptFile != "/ao/prompts/reviewer/system.md" {
 		t.Fatalf("launch config = %+v", agent.got)
 	}
 }
@@ -175,8 +206,8 @@ func TestReviewRestoreCommandUsesNativeSessionIDAndReadOnlyPolicy(t *testing.T) 
 	if agent.gotRestore.Session.Metadata[ports.MetadataKeyAgentSessionID] != "claude-native-1" {
 		t.Fatalf("restore metadata = %#v", agent.gotRestore.Session.Metadata)
 	}
-	if agent.gotRestore.Permissions != ports.PermissionModeAuto {
-		t.Fatalf("restore permissions = %q, want auto", agent.gotRestore.Permissions)
+	if agent.gotRestore.Permissions != ports.PermissionModeDenyUnapproved {
+		t.Fatalf("restore permissions = %q, want deny-unapproved", agent.gotRestore.Permissions)
 	}
 	if !contains(agent.gotRestore.AllowedTools, "Read") || !contains(agent.gotRestore.DisallowedTools, "Write") {
 		t.Fatalf("restore tool policy allowed=%#v disallowed=%#v", agent.gotRestore.AllowedTools, agent.gotRestore.DisallowedTools)
