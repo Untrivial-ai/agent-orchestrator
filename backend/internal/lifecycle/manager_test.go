@@ -3442,6 +3442,34 @@ func TestActivity_SameStateRepeatAfterReceiptIsNoOp(t *testing.T) {
 	}
 }
 
+func TestActivity_SameStatePersistsNewAgentSessionID(t *testing.T) {
+	m, st, _ := newManager()
+	rec := working("mer-1")
+	rec.FirstSignalAt = time.Now()
+	st.sessions["mer-1"] = rec
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, AgentSessionID: "cline-task-123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.sessions["mer-1"].Metadata.AgentSessionID; got != "cline-task-123" {
+		t.Fatalf("AgentSessionID = %q, want cline-task-123", got)
+	}
+}
+
+func TestActivity_MissingAgentSessionIDDoesNotEraseExistingID(t *testing.T) {
+	m, st, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.AgentSessionID = "existing-task"
+	st.sessions["mer-1"] = rec
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{Valid: true, State: domain.ActivityIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.sessions["mer-1"].Metadata.AgentSessionID; got != "existing-task" {
+		t.Fatalf("AgentSessionID = %q, want existing-task", got)
+	}
+}
+
 func TestMarkSpawnedClearsFirstSignalAndLeavesResumeIdentityUnverified(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
