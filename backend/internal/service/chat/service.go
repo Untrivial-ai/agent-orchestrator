@@ -44,6 +44,10 @@ type Service struct {
 	now                    Clock
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// onModelChanged records a model the user picked in ChatUI onto the
+	// session's durable metadata before the next prompt routes, so a later TUI
+	// rebuild can resume with the same model.
+	onModelChanged func(domain.SessionID, string)
 
 	mu           sync.RWMutex
 	controllers  map[domain.SessionID]*Controller
@@ -90,6 +94,11 @@ type Options struct {
 	// globally active AO Codex account. The callback owns profile-independent
 	// account state; conversation rows are not the authority for Codex capacity.
 	OnCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// OnModelChanged persists a model the user picked in ChatUI onto the
+	// session's durable metadata before the next prompt routes. Nil leaves the
+	// session model unchanged (production always wires it so the choice survives
+	// a later TUI rebuild).
+	OnModelChanged func(domain.SessionID, string)
 }
 
 // New builds a Chat service.
@@ -114,6 +123,7 @@ func New(opts Options) *Service {
 		now:                    now,
 		onAccountChanged:       opts.OnAccountChanged,
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
+		onModelChanged:         opts.OnModelChanged,
 		controllers:            make(map[domain.SessionID]*Controller),
 		startConfigs:           make(map[domain.SessionID]StartConfig),
 		gates:                  make(map[domain.SessionID]controllerGate),
@@ -1432,8 +1442,16 @@ func (s *Service) SetTurnSettings(
 	if err != nil {
 		return domain.ConversationSettings{}, err
 	}
+	previous := controller.Settings()
 	if err := controller.SetSettings(ctx, settings); err != nil {
 		return domain.ConversationSettings{}, err
+	}
+	// Persist the picked model onto the session BEFORE the next prompt routes.
+	// The conversation row is the chat-side source of truth; the session
+	// metadata is what a later TUI rebuild reads to keep the same model, so a
+	// model change must land there too before the user can switch interfaces.
+	if model := strings.TrimSpace(settings.Model); model != "" && model != strings.TrimSpace(previous.Model) && s.onModelChanged != nil {
+		s.onModelChanged(id, model)
 	}
 	return controller.Settings(), nil
 }

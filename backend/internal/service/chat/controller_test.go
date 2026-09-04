@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2818,6 +2819,68 @@ func TestControllerReadyDurableSettingsRefreshBeforeFirstDispatch(t *testing.T) 
 	if sent[0].Settings.Model != "" || sent[0].Settings.Effort != "" ||
 		sent[0].Settings.Approval != domain.PermissionModeAcceptEdits {
 		t.Fatalf("activation settings = %+v, want target defaults with preserved approval", sent[0].Settings)
+	}
+}
+
+// TestSetTurnSettingsPersistsModelBeforeRouting is the regression for the
+// ChatUI ↔ TUI model-persistence bug (#4893). A model the user picks in ChatUI
+// must be recorded on the session BEFORE the next prompt routes, so that when
+// ChatUI later hands off to TUI, the rebuilt terminal resumes with the same
+// model instead of reverting to the project default. The conversation row is
+// the chat-side source of truth already; this pins the extra session metadata
+// write that makes the choice visible to the TUI rebuild.
+func TestSetTurnSettingsPersistsModelBeforeRouting(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	conv := newFakeConversation()
+	var (
+		logMu sync.Mutex
+		log   []string
+	)
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "persist-model-id" },
+		// Production wires this to the session manager, which writes the model onto
+		// the session's durable metadata before the next turn routes.
+		OnModelChanged: func(id domain.SessionID, model string) {
+			logMu.Lock()
+			defer logMu.Unlock()
+			log = append(log, string(id)+":"+model)
+		},
+	})
+	t.Cleanup(func() { _ = svc.Stop(ctx, testSession) })
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// A model change is persisted immediately (before the next prompt routes).
+	if _, err := svc.SetTurnSettings(ctx, testSession, domain.ConversationSettings{Model: "5.6-luna"}); err != nil {
+		t.Fatalf("SetTurnSettings (luna): %v", err)
+	}
+	if !reflect.DeepEqual(log, []string{string(testSession) + ":5.6-luna"}) {
+		t.Fatalf("model persistence log = %v, want [%s:5.6-luna]", log, testSession)
+	}
+
+	// Re-selecting the same model is a no-op: no redundant session write.
+	if _, err := svc.SetTurnSettings(ctx, testSession, domain.ConversationSettings{Model: "5.6-luna"}); err != nil {
+		t.Fatalf("SetTurnSettings (same): %v", err)
+	}
+	if !reflect.DeepEqual(log, []string{string(testSession) + ":5.6-luna"}) {
+		t.Fatalf("model persistence log after no-op = %v, want unchanged", log)
+	}
+
+	// A later change to another model lands too, so the TUI rebuild picks up the
+	// most recent choice rather than the first one.
+	if _, err := svc.SetTurnSettings(ctx, testSession, domain.ConversationSettings{Model: "5.6-full"}); err != nil {
+		t.Fatalf("SetTurnSettings (full): %v", err)
+	}
+	if !reflect.DeepEqual(log, []string{string(testSession) + ":5.6-luna", string(testSession) + ":5.6-full"}) {
+		t.Fatalf("model persistence log = %v, want luna then full", log)
 	}
 }
 

@@ -197,6 +197,10 @@ type sessionLifecycle interface {
 	// SetHarnessUseGate prevents lifecycle operations from racing a harness
 	// executable replacement.
 	SetHarnessUseGate(gate sessionmanager.HarnessUseGate)
+	// PersistChatModel records the model the user picked in ChatUI onto the
+	// session's durable metadata before the next prompt routes. A later TUI
+	// rebuild reads it back so ChatUI model changes survive the handoff.
+	PersistChatModel(ctx context.Context, id domain.SessionID, model string) error
 }
 
 // sessionLifecycleMessenger adapts sessionLifecycle to ports.AgentMessenger so
