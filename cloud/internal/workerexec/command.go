@@ -100,7 +100,6 @@ func (b HarnessBuilder) BuildInteractive(
 			SessionID:     launch.SessionID,
 			Metadata:      map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
 			Model:         launch.Model,
-			Effort:        launch.ReasoningEffort,
 			WorkspacePath: workspace,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
@@ -117,7 +116,6 @@ func (b HarnessBuilder) BuildInteractive(
 			WorkspacePath: workspace,
 			Prompt:        launch.Prompt,
 			Model:         launch.Model,
-			Effort:        launch.ReasoningEffort,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
 			Permission:    permission,
@@ -125,6 +123,9 @@ func (b HarnessBuilder) BuildInteractive(
 	}
 	if err != nil {
 		return Command{}, err
+	}
+	if launch.Harness == "codex" && strings.TrimSpace(launch.ReasoningEffort) != "" {
+		argv = appendCodexEffort(argv, strings.TrimSpace(launch.ReasoningEffort))
 	}
 	command := Command{
 		Path: argv[0],
@@ -159,6 +160,17 @@ func (b HarnessBuilder) BuildInteractive(
 		}
 	}
 	return command, nil
+}
+
+// appendCodexEffort keeps Cloud's optional provider setting local to the Cloud
+// module; its Docker build intentionally consumes a pinned backend module.
+func appendCodexEffort(argv []string, effort string) []string {
+	for i, arg := range argv {
+		if arg == "--" {
+			return append(argv[:i], append([]string{"-c", "model_reasoning_effort=" + effort}, argv[i:]...)...)
+		}
+	}
+	return append(argv, "-c", "model_reasoning_effort="+effort)
 }
 
 func (b HarnessBuilder) interactiveRestoreIdentity(
