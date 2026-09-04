@@ -2036,6 +2036,7 @@ ipcMain.handle("app:getRepositoryBranch", async (_event, path: string) => {
 	await ensureShellEnv();
 	return resolveCheckedOutBranch(path, { env: daemonEnv(), homeDir: os.homedir() });
 });
+ipcMain.handle("app:getGitHubLogin", async () => process.env.AO_GITHUB_LOGIN?.trim() ?? "");
 ipcMain.handle("clipboard:writeText", (_event, text: string) => {
 	clipboard.writeText(text, "clipboard");
 	if (process.platform === "linux") {

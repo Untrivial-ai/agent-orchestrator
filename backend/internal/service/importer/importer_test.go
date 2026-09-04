@@ -358,26 +358,39 @@ func TestValidateWorkspaceImportPartialChildrenExposeMissingActions(t *testing.T
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if !result.IsValid || result.NextStep != ImportNextStepPrepareGit || len(result.ChildRepos) != 3 {
+	if !result.IsValid || result.NextStep != ImportNextStepPrepareGit || len(result.ChildRepos) != 2 {
 		t.Fatalf("result = %#v, want workspace needing preparation", result)
 	}
 	byPath := childStatusByPath(result.ChildRepos)
 	wantActions(t, byPath[unborn].RequiredActions, []string{GitPreparationActionCommit, GitPreparationActionSetRemote})
 	wantActions(t, byPath[noRemote].RequiredActions, []string{GitPreparationActionSetRemote})
-	wantActions(t, byPath[plain].RequiredActions, []string{GitPreparationActionInit, GitPreparationActionCommit, GitPreparationActionSetRemote})
-	if !byPath[plain].NeedsGitInit {
-		t.Fatalf("plain child = %#v, want needsGitInit", byPath[plain])
+	if _, ok := byPath[plain]; ok {
+		t.Fatalf("childRepos = %#v, plain folder must not be surfaced as a workspace repo", result.ChildRepos)
 	}
+}
+
+func TestValidateWorkspaceImportRequiresInitializedChildRepo(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "plain"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(Deps{Store: newFakeStore()})
+
+	result, err := svc.Validate(ctx, ImportValidationInput{ImportKind: ImportKindWorkspace, Path: root})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if result.IsValid || result.NextStep != ImportNextStepError {
+		t.Fatalf("result = %#v, want invalid workspace child repo requirement", result)
+	}
+	wantActions(t, result.BlockingErrors, []string{"WORKSPACE_CHILD_REPO_REQUIRED"})
 }
 
 func TestPrepareGitWorkspaceRunsPerRepositoryEvents(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	noRemote := gitRepoWithCommitWithOrigin(t, filepath.Join(root, "no-remote"), "")
-	plain := filepath.Join(root, "plain")
-	if err := os.Mkdir(plain, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	svc := New(Deps{Store: newFakeStore()})
 
 	result, err := svc.PrepareGit(ctx, GitPreparationInput{
@@ -389,15 +402,6 @@ func TestPrepareGitWorkspaceRunsPerRepositoryEvents(t *testing.T) {
 				ApprovedActions: []string{GitPreparationActionSetRemote},
 				RemoteURL:       "https://example.invalid/no-remote.git",
 			},
-			{
-				RepoPath: plain,
-				ApprovedActions: []string{
-					GitPreparationActionInit,
-					GitPreparationActionCommit,
-					GitPreparationActionSetRemote,
-				},
-				RemoteURL: "https://example.invalid/plain.git",
-			},
 		},
 	})
 	if err != nil {
@@ -406,14 +410,14 @@ func TestPrepareGitWorkspaceRunsPerRepositoryEvents(t *testing.T) {
 	if result.Validation.NextStep != ImportNextStepContinue {
 		t.Fatalf("validation = %#v, want continue", result.Validation)
 	}
-	if len(result.Events) != 12 {
-		t.Fatalf("events = %#v, want 12 state events", result.Events)
+	if len(result.Events) != 3 {
+		t.Fatalf("events = %#v, want 3 state events", result.Events)
 	}
 	if result.Events[0].RepoPath != noRemote || result.Events[0].Action != GitPreparationActionSetRemote {
 		t.Fatalf("first event = %#v, want noRemote set_remote", result.Events[0])
 	}
-	if result.Events[3].RepoPath != plain || result.Events[3].Action != GitPreparationActionInit {
-		t.Fatalf("plain first event = %#v, want git_init", result.Events[3])
+	if result.Events[2].RepoPath != noRemote || result.Events[2].Action != GitPreparationActionSetRemote {
+		t.Fatalf("last event = %#v, want noRemote set_remote complete", result.Events[2])
 	}
 }
 

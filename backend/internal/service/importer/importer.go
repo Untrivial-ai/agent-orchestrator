@@ -203,11 +203,18 @@ func (m *Manager) Validate(ctx context.Context, in ImportValidationInput) (Impor
 	root := inspectImportRepo(ctx, path)
 	result.Root = root
 	if importKind == ImportKindWorkspace {
-		children, scanErr := directChildImportStatuses(ctx, path)
+		children, scanErr := directChildImportRepos(ctx, path)
 		if scanErr != nil {
 			return invalidImportResult(importKind, path, "CHILD_REPO_SCAN_FAILED"), nil //nolint:nilerr // validation failures are reported in-band so the UI can show blocking errors
 		}
 		result.ChildRepos = children
+		if len(children) == 0 {
+			result.Root.BlockingErrors = append(result.Root.BlockingErrors, "WORKSPACE_CHILD_REPO_REQUIRED")
+			result.BlockingErrors = append(result.BlockingErrors, "WORKSPACE_CHILD_REPO_REQUIRED")
+			result.IsValid = false
+			result.NextStep = ImportNextStepError
+			return result, nil
+		}
 		for _, child := range children {
 			if len(child.BlockingErrors) > 0 {
 				result.BlockingErrors = append(result.BlockingErrors, child.BlockingErrors...)
