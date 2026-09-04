@@ -17,6 +17,27 @@ func (c *commandContext) resolvePRRef(ctx context.Context, ref string, project p
 	if isNumericPRRef(ref) {
 		repo := strings.TrimSpace(project.Repo)
 		if repo == "" {
+			// The gh fallback below is local-only in the same sense as `ao doctor`,
+			// but it is a fallback inside a command that otherwise works remotely,
+			// so refuseLocalOnly's "`<command>` <why>" shape does not fit: the
+			// command is fine, this one branch is not, and resolvePRRef does not
+			// know whether it was reached from `ao spawn` or `ao session claim-pr`.
+			//
+			// project.Path came from the REMOTE daemon and CommandOutputInDir runs
+			// HERE. If that path does not exist locally the operator is told "gh not
+			// available", which is a misdiagnosis; if it happens to exist locally —
+			// two machines with the same checkout layout is the normal case — the PR
+			// is resolved from this machine's checkout and this machine's gh
+			// credentials, silently, and the resulting URL is sent to the remote
+			// daemon as if it had come from there.
+			if c.remote != nil {
+				return "", usageError{fmt.Errorf(
+					"%s targets the remote daemon at %s, and that project's record has no repo URL — "+
+						"resolving PR %s by number would run `gh repo view` on THIS machine in %q, a path "+
+						"that belongs to the remote host, reading this machine's checkout and gh "+
+						"credentials. Pass the full PR URL (https://github.com/<owner>/<repo>/pull/<number>)",
+					c.remote.source, c.remote.baseURL, ref, project.Path)}
+			}
 			// The daemon must not shell out to external CLIs from its loopback API;
 			// when the durable project record lacks repo_origin_url, the thin CLI
 			// does the one-off gh lookup from the registered project checkout and

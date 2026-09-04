@@ -451,3 +451,34 @@ func TestProjectRemove_YesSkipsConfirmationAndSupportsBackendRemoveEnvelope(t *t
 		t.Fatalf("--yes output should skip prompt and print removal:\n%s", out)
 	}
 }
+
+// The daemon has always returned `path` in the projects list; the CLI's own
+// summary struct dropped it on decode, so neither the table nor --json could
+// answer "where does this project actually live" — which is the whole question
+// when the answering daemon is on another machine.
+func TestProjectList_SurfacesPath(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := projectServer(t, http.StatusOK,
+		`{"projects":[{"id":"zeta","name":"Zeta","sessionPrefix":"zeta","path":"/srv/repos/zeta"}]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "project", "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "PATH") {
+		t.Fatalf("table missing PATH column:\n%s", out)
+	}
+	if !strings.Contains(out, "/srv/repos/zeta") {
+		t.Fatalf("table missing the project path:\n%s", out)
+	}
+
+	// --json must carry it too: a remote-aware UI reads that, not the table.
+	out, errOut, err = executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "project", "ls", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, `"path": "/srv/repos/zeta"`) && !strings.Contains(out, `"path":"/srv/repos/zeta"`) {
+		t.Fatalf("--json dropped the path:\n%s", out)
+	}
+}

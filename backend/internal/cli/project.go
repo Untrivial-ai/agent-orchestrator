@@ -47,8 +47,13 @@ type addProjectRequest struct {
 }
 
 type projectSummary struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Path is the project root as resolved by the daemon that answered — which,
+	// with --url, is a path on THAT host, not on this machine. The daemon has
+	// always returned it; the CLI used to drop it on decode, so neither the
+	// table nor --json could say where a project actually lives.
+	Path          string `json:"path,omitempty"`
 	Kind          string `json:"kind"`
 	SessionPrefix string `json:"sessionPrefix"`
 	ResolveError  string `json:"resolveError,omitempty"`
@@ -248,6 +253,9 @@ func newProjectAddCommand(ctx *commandContext) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.path == "" {
 				return usageError{fmt.Errorf("--path is required")}
+			}
+			if err := ctx.checkRemoteProjectPath(opts.path); err != nil {
+				return err
 			}
 			req := addProjectRequest{Path: opts.path, AsWorkspace: opts.asWorkspace}
 			if opts.id != "" {
@@ -483,7 +491,10 @@ func writeProjectList(cmd *cobra.Command, projects []projectSummary) error {
 	}
 
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ID\tNAME\tKIND\tSESSION PREFIX\tSTATUS"); err != nil {
+	// PATH last: it is the widest column and the only one whose meaning depends
+	// on which daemon answered, so it reads as a qualifier rather than pushing
+	// the identifying columns around.
+	if _, err := fmt.Fprintln(tw, "ID\tNAME\tKIND\tSESSION PREFIX\tSTATUS\tPATH"); err != nil {
 		return err
 	}
 	for _, p := range projects {
@@ -495,7 +506,7 @@ func writeProjectList(cmd *cobra.Command, projects []projectSummary) error {
 		if kind == "" {
 			kind = "single_repo"
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.ID, p.Name, kind, p.SessionPrefix, status); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", p.ID, p.Name, kind, p.SessionPrefix, status, p.Path); err != nil {
 			return err
 		}
 	}
