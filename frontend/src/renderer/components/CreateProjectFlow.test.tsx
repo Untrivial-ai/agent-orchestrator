@@ -325,6 +325,8 @@ describe("CreateProjectFlow project import validation", () => {
 
 		expect(await screen.findByText("Choose a folder AO can read.")).toBeInTheDocument();
 		expect(screen.queryByTestId("agent-sheet")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Back to import source" }));
+		expect(screen.getByRole("button", { name: "Import an existing project" })).toBeInTheDocument();
 	});
 
 	it("suggests workspace import when a plain root contains child repositories", async () => {
@@ -364,9 +366,10 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(screen.getByRole("button", { name: "New project" }));
 		await user.click(await screen.findByRole("button", { name: "Import an existing project" }));
 
-		expect(await screen.findByText("Contains child Git repos. Import as workspace if AO should keep them separate.")).toBeInTheDocument();
-		expect(await screen.findByText("Try importing as workspace")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+		expect(await screen.findByText("This folder contains child Git repos")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Clone from Git" })).not.toBeInTheDocument();
+		await user.click(await screen.findByRole("button", { name: "Import as workspace instead" }));
+		expect(await screen.findByTestId("agent-sheet")).toHaveAttribute("data-path", "/repo/parent");
 	});
 
 	it("shows only the missing Git preparation steps for a project root", async () => {
@@ -397,6 +400,7 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(screen.queryByText("Git initialization")).not.toBeInTheDocument();
 		expect(screen.getByText("Initial commit")).toBeInTheDocument();
 		expect(screen.getByText("Remote setup")).toBeInTheDocument();
+		expect(screen.queryByText("Create the first commit so the project has a usable history.")).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Origin remote URL")).toBeInTheDocument();
 		expect(
 			screen.getByText(
@@ -458,6 +462,9 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(await screen.findByRole("button", { name: "Import an existing project" }));
 
 		const remoteAction = screen.getByRole("checkbox");
+		expect(remoteAction).toBeChecked();
+		await user.click(screen.getByLabelText("Origin remote URL"));
+		expect(remoteAction).toBeChecked();
 		await user.click(remoteAction);
 
 		expect(screen.getByText("Approve all required setup actions to continue importing this project.")).toBeInTheDocument();
@@ -591,8 +598,10 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(screen.getByRole("button", { name: "Continue" }));
 
 		expect(await screen.findByText("Running project setup. AO is preparing this repository now.")).toBeInTheDocument();
-		expect(screen.getByText("Running")).toBeInTheDocument();
-		expect(screen.getAllByText("Queued")).not.toHaveLength(0);
+		expect(screen.queryByText("Running")).not.toBeInTheDocument();
+		expect(screen.queryByText("Queued")).not.toBeInTheDocument();
+		expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+		expect(screen.queryByText("Set URL")).not.toBeInTheDocument();
 
 		resolvePrepare({
 			data: {
