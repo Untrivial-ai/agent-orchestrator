@@ -1833,7 +1833,7 @@ type ConversationConfigOptionResponse struct {
 	Type           string                             `json:"type" enum:"select,boolean"`
 	CurrentValue   string                             `json:"currentValue,omitempty"`
 	CurrentBoolean *bool                              `json:"currentBoolean,omitempty"`
-	Choices        []ConversationConfigChoiceResponse `json:"choices,omitempty"`
+	Choices        []ConversationConfigChoiceResponse `json:"choices"`
 }
 
 // ConversationConfigChoiceResponse is one value in a provider select.

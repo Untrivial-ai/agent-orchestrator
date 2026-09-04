@@ -70,6 +70,33 @@ func TestConfigOptionsRoutePreservesProviderCatalog(t *testing.T) {
 	}
 }
 
+func TestConfigOptionsRouteSerializesEmptyChoices(t *testing.T) {
+	svc := &fakeConversationService{configOptions: []ports.ChatConfigOption{{
+		ID: "model", Name: "Model", Category: "model", Type: ports.ChatConfigOptionSelect,
+	}}}
+	r := chi.NewRouter()
+	(&controllers.ConversationsController{Svc: svc}).Register(r)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(
+		http.MethodGet, "/sessions/p1-1/conversation/config-options", nil,
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.Bytes())
+	}
+
+	var got struct {
+		Options []struct {
+			Choices json.RawMessage `json:"choices"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Options) != 1 || string(got.Options[0].Choices) != "[]" {
+		t.Fatalf("choices = %s, want [] (body = %s)", got.Options[0].Choices, rec.Body.Bytes())
+	}
+}
+
 func TestSetConfigOptionAcceptsSelectAndBooleanValues(t *testing.T) {
 	svc := &fakeConversationService{configOptions: []ports.ChatConfigOption{}}
 	status, body := configOptionsRequest(t, http.MethodPatch, `{"value":"opus"}`, svc)
