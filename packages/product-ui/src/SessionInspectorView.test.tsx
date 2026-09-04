@@ -204,6 +204,11 @@ describe("portable inspector presentations", () => {
     expect(
       screen.getByRole("link", { name: "Open PR #12" }),
     ).toBeInTheDocument();
+    const titleLink = screen.getByRole("link", { name: "Portable inspector" });
+    const stateBadge = screen.getByText("open");
+    expect(titleLink.parentElement).toContainElement(stateBadge);
+    const metadata = screen.getByText("feature → main").closest("div.font-mono");
+    expect(metadata).toContainElement(screen.getByRole("link", { name: "Open PR #12" }));
     expect(screen.getByText("Ready to merge")).toHaveClass("text-success");
     expect(screen.getByRole("button", { name: "Merge" })).toBeInTheDocument();
   });
