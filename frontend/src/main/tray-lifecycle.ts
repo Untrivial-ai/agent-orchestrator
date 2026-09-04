@@ -3,7 +3,13 @@ import type { TrayController } from "./tray";
 import { TRAY_OPEN_SESSION_CHANNEL, type TrayAttentionState, type TrayOpenSessionTarget } from "../shared/tray";
 
 export function isTrayEnabled(platform: NodeJS.Platform, isPackaged: boolean, appVersion: string): boolean {
-	return platform === "darwin" && (!isPackaged || appVersion.includes("-nightly."));
+	return platform === "linux" || (platform === "darwin" && (!isPackaged || appVersion.includes("-nightly.")));
+}
+
+export function shouldQuitWhenAllWindowsClosed(platform: NodeJS.Platform, trayAvailable: boolean): boolean {
+	if (platform === "darwin") return false;
+	if (platform === "linux") return !trayAvailable;
+	return true;
 }
 
 export type TrayLifecycleDeps = {

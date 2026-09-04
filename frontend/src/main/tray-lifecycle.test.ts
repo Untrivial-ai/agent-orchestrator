@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createTrayLifecycle, isTrayEnabled, type TrayLifecycleDeps } from "./tray-lifecycle";
+import {
+	createTrayLifecycle,
+	isTrayEnabled,
+	shouldQuitWhenAllWindowsClosed,
+	type TrayLifecycleDeps,
+} from "./tray-lifecycle";
 import type { TrayController } from "./tray";
 import { TRAY_OPEN_SESSION_CHANNEL } from "../shared/tray";
 
@@ -47,9 +52,28 @@ describe("isTrayEnabled", () => {
 		expect(isTrayEnabled("darwin", true, "0.10.3")).toBe(false);
 	});
 
-	it("is disabled on every non-darwin platform even for dev/nightly builds", () => {
+	it("is disabled on Windows", () => {
 		expect(isTrayEnabled("win32", false, "0.10.3")).toBe(false);
-		expect(isTrayEnabled("linux", true, "0.10.3-nightly.20260804")).toBe(false);
+	});
+
+	it("is enabled on Linux for both development and packaged builds", () => {
+		expect(isTrayEnabled("linux", false, "0.10.3")).toBe(true);
+		expect(isTrayEnabled("linux", true, "0.10.3")).toBe(true);
+	});
+});
+
+describe("shouldQuitWhenAllWindowsClosed", () => {
+	it("keeps macOS alive without requiring a tray", () => {
+		expect(shouldQuitWhenAllWindowsClosed("darwin", false)).toBe(false);
+	});
+
+	it("keeps Linux alive only when its tray was created", () => {
+		expect(shouldQuitWhenAllWindowsClosed("linux", true)).toBe(false);
+		expect(shouldQuitWhenAllWindowsClosed("linux", false)).toBe(true);
+	});
+
+	it("continues to quit Windows when its last window closes", () => {
+		expect(shouldQuitWhenAllWindowsClosed("win32", true)).toBe(true);
 	});
 });
 

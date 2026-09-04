@@ -11,14 +11,16 @@ type MenuItem = {
 	submenu?: MenuItem[];
 };
 
-const { FakeTray, trayInstances } = vi.hoisted(() => {
+const { FakeTray, trayInstances, trayConstructor } = vi.hoisted(() => {
 	const trayInstances: FakeTray[] = [];
+	const trayConstructor: { error: Error | null } = { error: null };
 	class FakeTray {
 		title = "";
 		tooltip = "";
 		template: MenuItem[] = [];
 		destroyed = false;
 		constructor(public icon: unknown) {
+			if (trayConstructor.error) throw trayConstructor.error;
 			trayInstances.push(this);
 		}
 		setTitle(title: string) {
@@ -34,7 +36,7 @@ const { FakeTray, trayInstances } = vi.hoisted(() => {
 			this.destroyed = true;
 		}
 	}
-	return { FakeTray, trayInstances };
+	return { FakeTray, trayInstances, trayConstructor };
 });
 
 const setTemplateImage = vi.hoisted(() => vi.fn());
@@ -71,6 +73,7 @@ const sessionItems = (tray: { template: MenuItem[] }) =>
 
 afterEach(() => {
 	trayInstances.length = 0;
+	trayConstructor.error = null;
 	vi.clearAllMocks();
 });
 
@@ -80,6 +83,17 @@ describe("createTrayController", () => {
 		expect(tray.title).toBe("");
 		expect(tray.template.some((i) => i.label === "No sessions need attention" && i.enabled === false)).toBe(true);
 		expect(tray.template.some((i) => i.role === "quit")).toBe(true);
+	});
+
+	it("reports an unavailable native tray without crashing startup", () => {
+		const unavailable = new Error("no status notifier");
+		const onUnavailable = vi.fn();
+		trayConstructor.error = unavailable;
+
+		expect(
+			createTrayController({ focusWindow: vi.fn(), openSession: vi.fn(), locale: "en", onUnavailable }),
+		).toBeNull();
+		expect(onUnavailable).toHaveBeenCalledWith(unavailable);
 	});
 
 	it("uses grammatically correct singular for exactly one attention session", () => {
