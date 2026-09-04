@@ -92,6 +92,13 @@ func (m *Manager) WaitForMessageDeliveryReady(ctx context.Context, id domain.Ses
 						ready = emptyComposerDetector.ComposerIsEmpty(output)
 					}
 				}
+				// A rendered idle composer can briefly survive a provider-owned
+				// startup dialog or resume sequence. Adapters that declare the
+				// first hook as their input-ready proof must satisfy it even when
+				// they also have a terminal activity detector.
+				if requireFirstSignal && rec.FirstSignalAt.IsZero() {
+					ready = false
+				}
 			} else {
 				// MarkSpawned records idle before the TUI is necessarily ready.
 				// Capability-declaring adapters require their first startup-ready

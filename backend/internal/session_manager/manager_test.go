@@ -8446,6 +8446,28 @@ func TestSend_TUIStartupPendingRejectsDelivery(t *testing.T) {
 	}
 }
 
+// Claude Code can display its own pre-session trust or responsibility dialog
+// before its hook can acknowledge the launch. A normal pane paste at that
+// point can answer the dialog rather than reach the agent composer.
+func TestSend_ClaudeTUIStartupPendingRejectsDelivery(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["s1"] = domain.SessionRecord{
+		ID: "s1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityIdle},
+		Metadata: domain.SessionMetadata{RuntimeHandleID: "h1"},
+	}
+	msg := &fakeMessenger{}
+	m := newSendTestManager(t, &claudecode.Plugin{}, msg, st)
+
+	err := m.Send(context.Background(), "s1", "follow-up after spawn", nil)
+	if !errors.Is(err, ErrStartupPending) {
+		t.Fatalf("Send error = %v, want ErrStartupPending", err)
+	}
+	if len(msg.msgs) != 0 {
+		t.Fatalf("Send calls = %d, want 0 before Claude emits its first hook", len(msg.msgs))
+	}
+}
+
 func TestSend_HooklessTUIStartupAllowsDelivery(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["s1"] = domain.SessionRecord{

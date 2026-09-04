@@ -78,6 +78,13 @@ var _ ports.EmptyComposerDetector = (*Plugin)(nil)
 var _ ports.AgentInterfaceHandoff = (*Plugin)(nil)
 var _ ports.AgentInterfaceHandoffHistoryProbe = (*Plugin)(nil)
 var _ ports.TerminalSurfaceInspector = (*Plugin)(nil)
+var _ ports.StartupInputReadinessSignaler = (*Plugin)(nil)
+
+// FirstSignalProvesInputReady declares that Claude's first AO hook can only
+// arrive after its native startup sequence has reached the agent loop. Before
+// then, pane input may land on Claude's trust or responsibility dialog rather
+// than on the agent composer, so AO must not inject a message.
+func (p *Plugin) FirstSignalProvesInputReady() bool { return true }
 
 // ComposerIsEmpty recognizes Claude Code's blank composer or its dim
 // placeholder. Claude renders normal, non-dim status chrome below a bordered
