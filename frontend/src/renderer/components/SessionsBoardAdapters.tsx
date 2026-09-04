@@ -6,6 +6,7 @@ import {
 	SessionCardView,
 	SessionUsageMetricView,
 	type BoardPullRequestLabels,
+	type BoardPullRequestProgress,
 	type BoardSessionPresentation,
 	type BoardColumnLabels,
 	type BoardUsagePresentation,
@@ -251,6 +252,7 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 
 function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 	return {
+		progress: (progress) => pullRequestProgressLabel(progress, t),
 		short: t("pr.short"),
 		states: {
 			closed: t("pr.state.closed"),
@@ -259,6 +261,20 @@ function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 			open: t("pr.state.open"),
 		},
 	};
+}
+
+function pullRequestProgressLabel(
+	{ closed, draft, merged, open, total }: BoardPullRequestProgress,
+	t: TFunction,
+): string {
+	return [
+		t("pr.progress.merged", { count: total, merged }),
+		open > 0 ? `${open} ${t("pr.state.open")}` : undefined,
+		draft > 0 ? `${draft} ${t("pr.state.draft")}` : undefined,
+		closed > 0 ? `${closed} ${t("pr.state.closed")}` : undefined,
+	]
+		.filter((part): part is string => part !== undefined)
+		.join(" · ");
 }
 
 function reviewerAvatarUrl(pr: SessionPRSummary, reviewerId: string): string | undefined {

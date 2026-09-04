@@ -83,12 +83,17 @@ export type BoardPullRequestPresentation = {
 	url: string;
 };
 
+export type BoardPullRequestProgress = Record<BoardPullRequestState, number> & {
+	total: number;
+};
+
 export type BoardUsagePresentation = {
 	accessibleLabel: string;
 	compactLabel: string;
 };
 
 export type BoardPullRequestLabels = {
+	progress?: (progress: BoardPullRequestProgress) => string;
 	short: string;
 	states: Record<BoardPullRequestState, string>;
 };
@@ -241,6 +246,12 @@ export function SessionCardView({
 	const renderedStatusLabel =
 		statusPresentation?.label ??
 		(session.displayStatus ? getDisplayStatusLabel(session.displayStatus, translate) : badge.label);
+	// Keep the daemon-derived lifecycle label intact. This line only summarizes
+	// the same PRs already rendered on completed or terminated cards.
+	const pullRequestProgressLabel =
+		prs.length > 0 && (session.status === "terminated" || session.status === "merged")
+			? labels.pr.progress?.(countBoardPullRequests(prs))
+			: undefined;
 	const showStatusLoader =
 		!needsAttention &&
 		session.displayStatus !== "Needs human review" &&
@@ -334,9 +345,7 @@ export function SessionCardView({
 						data-testid="session-status"
 					>
 						{showStatusLoader ? <LoaderCircleIcon aria-hidden="true" className="mr-1 size-icon-2xs animate-spin" /> : null}
-						<span className="min-w-0 truncate">
-							{renderedStatusLabel}
-						</span>
+						<span className="min-w-0 truncate">{renderedStatusLabel}</span>
 					</span>
 				</div>
 				<div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap text-2xs text-muted-foreground">
@@ -346,6 +355,15 @@ export function SessionCardView({
 						{labels.formatTime(session.updatedAt)}
 					</span>
 				</div>
+				{pullRequestProgressLabel ? (
+					<div
+						className="col-span-2 min-w-0 truncate text-2xs text-muted-foreground"
+						data-testid="session-pr-progress"
+						title={pullRequestProgressLabel}
+					>
+						{pullRequestProgressLabel}
+					</div>
+				) : null}
 			</div>
 			{error ? (
 				<div className="border-t border-border px-3.5 py-1.5 text-2xs text-destructive" role="alert">
@@ -501,6 +519,18 @@ export function groupBoardPullRequests(
 		else groups.set(pr.state, { state: pr.state, prs: [pr] });
 	}
 	return Array.from(groups.values());
+}
+
+function countBoardPullRequests(prs: BoardPullRequestPresentation[]): BoardPullRequestProgress {
+	const progress: BoardPullRequestProgress = {
+		closed: 0,
+		draft: 0,
+		merged: 0,
+		open: 0,
+		total: prs.length,
+	};
+	for (const pr of prs) progress[pr.state] += 1;
+	return progress;
 }
 
 function lifecycleClassName(state: BoardPullRequestState): string {
