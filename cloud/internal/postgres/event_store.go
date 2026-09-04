@@ -327,6 +327,16 @@ func appendUserMessage(
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
+	// Persist the ChatUI selection before checking for a live terminal. During
+	// handoff there is a short window where the old terminal row can still be
+	// open even though ChatUI is already accepting input. The message may be
+	// routed to that terminal, but the selected model must still be durable for
+	// the next TUI rebuild.
+	if strings.TrimSpace(model) != "" {
+		if _, err := tx.Exec(ctx, `UPDATE ao_sessions SET model = $3, updated_at = now() WHERE org_id = $1 AND id = $2`, orgID, sessionID, strings.TrimSpace(model)); err != nil {
+			return domain.ClientEvent{}, err
+		}
+	}
 	var terminalID string
 	var workerEpoch int64
 	var sessionMode string
@@ -396,11 +406,6 @@ func appendUserMessage(
 		nonNilStrings(deniedCommands),
 	); err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
-	}
-	if strings.TrimSpace(model) != "" {
-		if _, err := tx.Exec(ctx, `UPDATE ao_sessions SET model = $3, updated_at = now() WHERE org_id = $1 AND id = $2`, orgID, sessionID, strings.TrimSpace(model)); err != nil {
-			return domain.ClientEvent{}, err
-		}
 	}
 	return event, nil
 }
