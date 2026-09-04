@@ -18,6 +18,7 @@
  */
 
 import { Fragment, useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { nativePermissionMenu, providerPermissionMenu, permissionMenuLabel } from "@aoagents/product-ui";
 import { Shuffle } from "lucide-react";
 import {
 	OptionMenu,
@@ -39,38 +40,6 @@ import type {
 	ModelReroute,
 	TurnSettings,
 } from "../../types/conversation";
-
-/** AO's generic approval modes, used by harnesses without a native vocabulary. */
-const APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
-	default: { label: "Default approvals" },
-	"accept-edits": { label: "Accept edits" },
-	auto: { label: "Auto-approve" },
-	"bypass-permissions": { label: "Bypass permissions" },
-};
-
-const APPROVAL_ORDER: ApprovalMode[] = [
-	"default",
-	"accept-edits",
-	"auto",
-	"bypass-permissions",
-];
-
-// Codex has three distinct permission profiles. Its default is already full
-// access in AO's isolated worktree posture, so expose it as that rather than a
-// fourth, ambiguous "default" option.
-const CODEX_APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
-	default: { label: "Full access" },
-	"accept-edits": { label: "Ask for approval" },
-	auto: { label: "Approve for me" },
-	"bypass-permissions": { label: "Bypass permissions" },
-};
-
-const CODEX_APPROVAL_ORDER: ApprovalMode[] = [
-	"default",
-	"accept-edits",
-	"auto",
-	"bypass-permissions",
-];
 
 const TRIGGER_CLASS =
 	"h-7 gap-1 bg-transparent rounded-lg px-3 text-[12px]! leading-none text-muted-foreground hover:bg-white/5 hover:text-foreground data-[state=open]:bg-white/5 data-[state=open]:text-foreground";
@@ -126,9 +95,8 @@ export function TurnSettingsBar({
 	const efforts = (selected ?? fallback)?.efforts ?? [];
 	const effortLabel =
 		settings.reasoningEffort ?? (selected ?? fallback)?.defaultEffort ?? undefined;
-	const approvalCopy = harness === "codex" ? CODEX_APPROVAL_COPY : APPROVAL_COPY;
-	const approvalOrder = harness === "codex" ? CODEX_APPROVAL_ORDER : APPROVAL_ORDER;
-	const approvalLabel = approvalCopy[settings.approvalMode ?? "default"].label;
+	const approvalItems = nativePermissionMenu(harness);
+	const approvalLabel = permissionMenuLabel(approvalItems, settings.approvalMode ?? "default");
 	const modelGroupLabel = effortLabel
 		? `${modelLabel} ${capitalize(effortLabel)}`
 		: modelLabel;
@@ -189,7 +157,8 @@ export function TurnSettingsBar({
 					<div className="flex h-7 shrink-0 items-center gap-1">
 						{children}
 						{!planning && modeOption && onChangeConfigOption ? (
-							<ConfigOptionPicker
+							<PermissionOptionPicker
+								harness={harness}
 								option={modeOption}
 								disabled={optionDisabled}
 								onChange={(value) => applyOption(modeOption.id, value)}
@@ -200,22 +169,12 @@ export function TurnSettingsBar({
 													title="Approval policy for the next turn"
 													disabled={optionDisabled}
 							>
-								{approvalOrder.map((mode) => (
-									<OptionMenuItem
-										key={mode}
-										onSelect={() => onChange({ ...settings, approvalMode: mode })}
-										className={cn("text-xs")}
-									>
-										<span
-											className={cn(
-														"text-xs",
-												mode === (settings.approvalMode ?? "default")
-													? "text-foreground"
-													: "text-muted-foreground",
-											)}
-										>
-											{approvalCopy[mode].label}
-										</span>
+								{approvalItems.map((item) => (
+									<OptionMenuItem key={item.id} disabled={!item.value} title={item.hint}
+										className={item.id === "default" ? "mt-1 border-t border-border text-muted-foreground" : undefined}
+										active={item.value === (settings.approvalMode ?? "default")}
+										onSelect={() => item.value && onChange({ ...settings, approvalMode: item.value as ApprovalMode })}>
+										{item.label}
 									</OptionMenuItem>
 								))}
 							</Picker>
@@ -615,6 +574,20 @@ function OptionSubmenu({
 	);
 }
 
+function PermissionOptionPicker({ option, harness, disabled, onChange }: {
+	harness?: string;
+	option: ChatConfigOption;
+	disabled?: boolean;
+	onChange: (value: ChatConfigOptionValue) => void;
+}) {
+	const items = providerPermissionMenu(option.choices ?? [], harness);
+	return <Picker label={permissionMenuLabel(items, option.currentValue)} title={option.description || option.name} disabled={disabled}>
+		{items.map((item) => <OptionMenuItem key={item.id} disabled={!item.value} title={item.hint}
+			active={item.value !== undefined && item.value === option.currentValue}
+			onSelect={() => item.value && onChange({ value: item.value })}>{item.label}</OptionMenuItem>)}
+	</Picker>;
+}
+
 function ConfigOptionPicker({
 	option,
 	title,
@@ -795,7 +768,8 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	const extra: ChatConfigOption[] = [];
 	let executionMode: ChatConfigOption | undefined;
 	let mode: ChatConfigOption | undefined;
-	for (const option of options) {
+	for (const rawOption of options) {
+		const option = { ...rawOption, choices: rawOption.choices ?? [] };
 		if (isAgentOption(option)) continue;
 		if (isModelOption(option)) {
 			if (option.category === "model" || option.id === "model") primaryModel.push(option);

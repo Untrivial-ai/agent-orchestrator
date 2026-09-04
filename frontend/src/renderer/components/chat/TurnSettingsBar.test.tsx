@@ -247,7 +247,7 @@ describe("ACP session config options", () => {
 		expect(onChange).toHaveBeenCalledWith("model", { value: "sonnet" });
 	});
 
-	it("shows Codex's three native permission choices", async () => {
+	it("shows Codex's distinct native and explicit permission choices", async () => {
 		const user = userEvent.setup();
 		const onChange = vi.fn();
 		render(
@@ -260,19 +260,60 @@ describe("ACP session config options", () => {
 		);
 
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Full access",
+			"Provider configuration",
 		);
 		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
-		expect(screen.getByRole("menuitem", { name: "Ask for approval" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Approve for me" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Bypass permissions" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Accept Edits" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Auto" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Bypass Permissions" })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: "Default approvals" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: "Accept edits" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Manual" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Don't Ask" })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: "Auto-approve" })).not.toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Full access" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Provider configuration" })).toBeInTheDocument();
 
-		await user.click(screen.getByRole("menuitem", { name: "Approve for me" }));
+		await user.click(screen.getByRole("menuitem", { name: "Auto" }));
 		expect(onChange).toHaveBeenCalledWith({ approvalMode: "auto" });
+	});
+
+	it.each([['Manual', 'manual'], ["Don't Ask", 'dont-ask']])("sends explicit Codex %s without changing the model", async (label, value) => {
+		const onChange = vi.fn();
+		const user = userEvent.setup();
+		render(<TurnSettingsBar harness="codex" models={[]} settings={{ model: "chosen" }} onChange={onChange} />);
+		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
+		await user.click(screen.getByRole("menuitem", { name: label }));
+		expect(onChange).toHaveBeenCalledWith({ model: "chosen", approvalMode: value });
+	});
+
+	it("shows unsupported ACP policies disabled and preserves native selection values", async () => {
+		const onChange = vi.fn();
+		const user = userEvent.setup();
+		render(<TurnSettingsBar models={[]} settings={{}} configOptions={[OPTIONS[2]]} onChangeConfigOption={onChange} />);
+		await user.click(screen.getByRole("button", { name: "Permission mode" }));
+		expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Auto", "Manual", "Accept Edits", "Don't Ask", "Bypass Permissions"]);
+		const unavailable = screen.getByRole("menuitem", { name: "Don't Ask" });
+		expect(unavailable).toHaveAttribute("aria-disabled", "true");
+		await user.click(unavailable);
+		expect(onChange).not.toHaveBeenCalled();
+		await user.click(screen.getByRole("menuitem", { name: "Manual" }));
+		expect(onChange).toHaveBeenCalledWith("mode", { value: "manual" });
+	});
+
+	it.each(["kimchi", "omp"])("uses %s native yolo under the shared bypass action", async (harness) => {
+		const onChange = vi.fn();
+		const user = userEvent.setup();
+		render(<TurnSettingsBar harness={harness} models={[]} settings={{}} configOptions={[{ ...OPTIONS[2], currentValue: "default", choices: [{ value: "default", name: "Configured policy" }, { value: "yolo", name: "YOLO" }] }]} onChangeConfigOption={onChange} />);
+		await user.click(screen.getByRole("button", { name: "Permission mode" }));
+		await user.click(screen.getByRole("menuitem", { name: "Bypass Permissions" }));
+		expect(onChange).toHaveBeenCalledWith("mode", { value: "yolo" });
+	});
+
+	it("renders an omitted permission choice array as unavailable policies", async () => {
+		const user = userEvent.setup();
+		render(<TurnSettingsBar harness="claude-code" models={[]} settings={{}} configOptions={[{ ...OPTIONS[2], choices: undefined } as unknown as ChatConfigOption]} onChangeConfigOption={vi.fn()} />);
+		await user.click(screen.getByRole("button", { name: "Permission mode" }));
+		expect(screen.getAllByRole("menuitem")).toHaveLength(5);
+		for (const item of screen.getAllByRole("menuitem")) expect(item).toHaveAttribute("aria-disabled", "true");
 	});
 
 	it("keeps Codex native model+effort in one trigger when the provider has no catalog", () => {
@@ -291,7 +332,7 @@ describe("ACP session config options", () => {
 			screen.getByRole("button", { name: "Model and reasoning effort for the next turn" }),
 		).toHaveTextContent("gpt-5.6-terra High");
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Full access",
+			"Provider configuration",
 		);
 	});
 
@@ -305,10 +346,10 @@ describe("ACP session config options", () => {
 		);
 
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Bypass permissions",
+			"Bypass Permissions",
 		);
 	});
-	it("distinguishes Codex bypass permissions from its default full-access posture", () => {
+	it("distinguishes Codex bypass permissions from its native defaults", () => {
 		render(
 			<TurnSettingsBar
 				harness="codex"
@@ -319,7 +360,7 @@ describe("ACP session config options", () => {
 		);
 
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Bypass permissions",
+			"Bypass Permissions",
 		);
 	});
 	it("keeps a lone extra option as its own picker rather than inventing a model menu", () => {

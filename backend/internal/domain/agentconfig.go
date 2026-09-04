@@ -13,7 +13,10 @@ const (
 	// PermissionModeDefault is special: adapters choose their own baseline
 	// behavior for it. Most defer to the agent's own config; some managed
 	// adapters may map it to a safer non-interactive default.
-	PermissionModeDefault           PermissionMode = "default"
+	PermissionModeDefault PermissionMode = "default"
+	// Explicit chat policies; project/TUI configuration rejects these until its adapters support them.
+	PermissionModeManual            PermissionMode = "manual"
+	PermissionModeDontAsk           PermissionMode = "dont-ask"
 	PermissionModeAcceptEdits       PermissionMode = "accept-edits"
 	PermissionModeAuto              PermissionMode = "auto"
 	PermissionModeBypassPermissions PermissionMode = "bypass-permissions"
@@ -64,4 +67,9 @@ func (c AgentConfig) Validate() error {
 		return nil
 	}
 	return fmt.Errorf("invalid permissions %q: want one of default, accept-edits, auto, bypass-permissions", c.Permissions)
+}
+
+// ValidTurn also accepts explicit chat-only permission policies.
+func (m PermissionMode) ValidTurn() bool {
+	return m.Valid() || m == PermissionModeManual || m == PermissionModeDontAsk
 }

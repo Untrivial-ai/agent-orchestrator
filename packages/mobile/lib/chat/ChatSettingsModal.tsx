@@ -1,18 +1,12 @@
+import { nativePermissionMenu, providerPermissionMenu } from "../../../product-ui/src/permission-menu";
 import { Feather } from "@expo/vector-icons";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { SheetHeader } from "../ui";
-import type { ChatConfigOption, ChatModel, ConversationSnapshot, TurnSettings } from "./types";
+import type { ApprovalMode, ChatConfigOption, ChatModel, ConversationSnapshot, TurnSettings } from "./types";
 import { can } from "./types";
-
-const APPROVALS = [
-	{ id: "default", label: "Default", hint: "The worktree is the safety boundary" },
-	{ id: "accept-edits", label: "Ask outside worktree", hint: "Edits here are allowed; anything else asks" },
-	{ id: "auto", label: "Ask when unsure", hint: "The agent decides when to check with you" },
-	{ id: "bypass-permissions", label: "Never ask", hint: "No approvals or sandbox prompts" },
-] as const;
 
 export function ChatSettingsSheet({
 	snapshot,
@@ -57,20 +51,25 @@ export function ChatSettingsSheet({
 						{efforts.map((effort) => <Choice key={effort} label={capitalize(effort)} selected={effort === (snapshot.settings.reasoningEffort ?? selected?.defaultEffort)} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, reasoningEffort: effort })} />)}
 					</SettingsSection> : null}
 					{(!usesProviderOptions || !hasProviderMode) ? <SettingsSection icon="shield" title="Approvals">
-						{APPROVALS.map((mode) => <Choice key={mode.id} label={mode.label} hint={mode.hint} selected={mode.id === (snapshot.settings.approvalMode ?? "default")} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, approvalMode: mode.id })} />)}
+						{nativePermissionMenu(snapshot.harness).map((mode) => <Choice key={mode.id} label={mode.label} hint={mode.hint} selected={mode.value === (snapshot.settings.approvalMode ?? "default")} disabled={disabled || !mode.value} onPress={() => mode.value && onSettings({ ...snapshot.settings, approvalMode: mode.value as ApprovalMode })} />)}
 					</SettingsSection> : null}
 					{options.map((option) => <SettingsSection key={option.id} icon={configOptionIcon(option)} title={option.name} description={option.description}>
-						{option.type === "boolean" ? <View style={styles.switchRow}><Text style={styles.choiceLabel}>{option.currentBoolean ? "On" : "Off"}</Text><Switch disabled={disabled} value={Boolean(option.currentBoolean)} onValueChange={(enabled) => onOption(option.id, { enabled })} trackColor={{ true: t.blue }} /></View> : <GroupedChoices option={option} disabled={disabled} onOption={onOption} />}
+						{option.type === "boolean" ? <View style={styles.switchRow}><Text style={styles.choiceLabel}>{option.currentBoolean ? "On" : "Off"}</Text><Switch disabled={disabled} value={Boolean(option.currentBoolean)} onValueChange={(enabled) => onOption(option.id, { enabled })} trackColor={{ true: t.blue }} /></View> : <GroupedChoices harness={snapshot.harness} option={option} disabled={disabled} onOption={onOption} />}
 					</SettingsSection>)}
 					{usesProviderOptions && options.length === 0 ? <Text style={styles.empty}>The provider has not advertised any turn controls yet.</Text> : null}
 		</ScrollView>
 	);
 }
 
-function GroupedChoices({ option, disabled, onOption }: { option: ChatConfigOption; disabled?: boolean; onOption(id: string, value: { value: string }): void }) {
+function GroupedChoices({ option, harness, disabled, onOption }: { harness?: string; option: ChatConfigOption; disabled?: boolean; onOption(id: string, value: { value: string }): void }) {
 	const styles = useThemedStyles(makeStyles);
+	if (option.category === "mode" || option.id === "mode") {
+		return <>{providerPermissionMenu(option.choices ?? [], harness).map((item) => <Choice key={item.id} label={item.label} hint={item.hint}
+			selected={item.value !== undefined && item.value === option.currentValue} disabled={disabled || !item.value}
+			onPress={() => item.value && onOption(option.id, { value: item.value })} />)}</>;
+	}
 	const groups = new Map<string, typeof option.choices>();
-	for (const choice of option.choices) {
+	for (const choice of option.choices ?? []) {
 		const key = choice.groupName || choice.group || "";
 		groups.set(key, [...(groups.get(key) ?? []), choice]);
 	}
@@ -86,7 +85,7 @@ function SettingsSection({ icon, title, description, children }: { icon: keyof t
 function Choice({ label, hint, selected, disabled, onPress }: { label: string; hint?: string; selected: boolean; disabled?: boolean; onPress(): void }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
-	return <Pressable accessibilityRole="radio" accessibilityState={{ selected, disabled }} disabled={disabled} onPress={() => { haptics.select(); onPress(); }} style={({ pressed }) => [styles.choice, pressed && { backgroundColor: t.bgSubtle }]}><View style={{ flex: 1 }}><Text style={[styles.choiceLabel, selected && { color: t.blue }]}>{label}</Text>{hint ? <Text style={styles.choiceHint}>{hint}</Text> : null}</View>{selected ? <Feather name="check" size={16} color={t.blue} /> : null}</Pressable>;
+	return <Pressable accessibilityRole="radio" accessibilityState={{ selected, disabled }} disabled={disabled} onPress={() => { haptics.select(); onPress(); }} style={({ pressed }) => [styles.choice, disabled && { opacity: 0.45 }, pressed && { backgroundColor: t.bgSubtle }]}><View style={{ flex: 1 }}><Text style={[styles.choiceLabel, selected && { color: t.blue }]}>{label}</Text>{hint ? <Text style={styles.choiceHint}>{hint}</Text> : null}</View>{selected ? <Feather name="check" size={16} color={t.blue} /> : null}</Pressable>;
 }
 
 function capitalize(value: string): string { return value ? value[0].toUpperCase() + value.slice(1) : value; }

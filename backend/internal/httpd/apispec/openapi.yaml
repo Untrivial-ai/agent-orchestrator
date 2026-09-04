@@ -8606,8 +8606,10 @@ components:
         approvalMode:
           enum:
           - default
+          - manual
           - accept-edits
           - auto
+          - dont-ask
           - bypass-permissions
           type: string
         model:

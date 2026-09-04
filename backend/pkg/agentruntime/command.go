@@ -27,7 +27,9 @@ type PermissionPolicy string
 
 // Provider-neutral permission policies.
 const (
-	PermissionDefault           PermissionPolicy = "default"
+	PermissionDefault PermissionPolicy = "default"
+	// PermissionReadOnly is selected only by durable worker execution modes.
+	PermissionReadOnly          PermissionPolicy = "read-only"
 	PermissionAcceptEdits       PermissionPolicy = "accept-edits"
 	PermissionAuto              PermissionPolicy = "auto"
 	PermissionBypassPermissions PermissionPolicy = "bypass-permissions"
@@ -149,7 +151,7 @@ func ClaudeSessionID(sessionID string) string {
 // provider's established default behavior.
 func NormalizePermissionPolicy(policy PermissionPolicy) PermissionPolicy {
 	switch policy {
-	case PermissionDefault, PermissionAcceptEdits, PermissionAuto, PermissionBypassPermissions:
+	case PermissionDefault, PermissionReadOnly, PermissionAcceptEdits, PermissionAuto, PermissionBypassPermissions:
 		return policy
 	default:
 		return PermissionDefault
@@ -161,6 +163,8 @@ func NormalizePermissionPolicy(policy PermissionPolicy) PermissionPolicy {
 // supported CLI flag alone provides filesystem containment.
 func PermissionPolicyForMode(mode SessionMode) PermissionPolicy {
 	switch mode {
+	case SessionModeReadOnly:
+		return PermissionReadOnly
 	case SessionModeStandard:
 		return PermissionAuto
 	case SessionModeTrusted:
@@ -191,8 +195,12 @@ func CodexPermissionArgs(policy PermissionPolicy) []string {
 		return []string{"--ask-for-approval", "on-request"}
 	case PermissionAuto:
 		return []string{"--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`}
-	default:
+	case PermissionReadOnly:
+		return []string{"--sandbox", "read-only", "--ask-for-approval", "never"}
+	case PermissionBypassPermissions:
 		return []string{"--dangerously-bypass-approvals-and-sandbox"}
+	default:
+		return nil
 	}
 }
 

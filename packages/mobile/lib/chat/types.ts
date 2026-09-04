@@ -16,7 +16,7 @@ export type ActivityKind =
 	| "auto_review"
 	| "user_input";
 
-export type ApprovalMode = "default" | "accept-edits" | "auto" | "bypass-permissions";
+export type ApprovalMode = "default" | "manual" | "accept-edits" | "auto" | "dont-ask" | "bypass-permissions";
 export type TurnSettings = { model?: string; reasoningEffort?: string; approvalMode?: ApprovalMode };
 
 export type PlanStep = { text: string; status: "pending" | "in_progress" | "completed" };

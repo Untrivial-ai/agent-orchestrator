@@ -15,3 +15,5 @@ export * from "./session-presentation";
 export * from "./SessionInspectorView";
 export * from "./SessionsBoardView";
 export * from "./TaskComposerView";
+
+export * from "./permission-menu";

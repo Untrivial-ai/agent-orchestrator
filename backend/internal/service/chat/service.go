@@ -1117,11 +1117,23 @@ func (s *Service) PreflightChat(
 	return capabilityAdmissionError(harness, caps, permissions)
 }
 
+// Explicit policies must not fall through an adapter's native defaults when a
+// saved conversation is resumed or switched to another harness.
+func explicitPermissionModeError(harness domain.AgentHarness, mode domain.PermissionMode) error {
+	if (mode == domain.PermissionModeManual || mode == domain.PermissionModeDontAsk) && harness != domain.HarnessCodex {
+		return fmt.Errorf("%w: %s does not support %s; use its advertised permission modes", ports.ErrChatPermissionModeUnsupported, harness, mode)
+	}
+	return nil
+}
+
 func capabilityAdmissionError(
 	harness domain.AgentHarness,
 	caps ports.ChatCapabilities,
 	permissions ports.PermissionMode,
 ) error {
+	if err := explicitPermissionModeError(harness, permissions); err != nil {
+		return err
+	}
 	missing := ports.MissingCapabilitiesForPermissions(caps, permissions)
 	if len(missing) == 0 {
 		return nil

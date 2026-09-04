@@ -17,6 +17,8 @@ import (
 )
 
 type transitionStore struct {
+	permissionMode  domain.PermissionMode
+	conversationErr error
 	*fakeStore
 	mu             sync.Mutex
 	transitions    map[string]domain.SessionInterfaceTransition
@@ -26,6 +28,10 @@ type transitionStore struct {
 	activeErr      error
 	messenger      *fakeMessenger
 	markMessageErr error
+}
+
+func (s *transitionStore) ConversationForSession(_ context.Context, _ domain.SessionID) (domain.ConversationRecord, error) {
+	return domain.ConversationRecord{Settings: domain.ConversationSettings{ApprovalMode: s.permissionMode}}, s.conversationErr
 }
 
 func newTransitionStore() *transitionStore {
@@ -2260,5 +2266,57 @@ func TestRecoverInterruptedTUIToChatRollsBackCommittedModeBeforeReconcile(t *tes
 	}
 	if rec.Metadata.AgentSessionID != "native-1" {
 		t.Fatalf("source native conversation = %q, want native-1", rec.Metadata.AgentSessionID)
+	}
+}
+
+func TestInterfaceTransitionChatToTUIRefusesChatOnlyPermissionsBeforeStoppingSource(t *testing.T) {
+	for _, mode := range []domain.PermissionMode{domain.PermissionModeManual, domain.PermissionModeDontAsk} {
+		t.Run(string(mode), func(t *testing.T) {
+			manager, store, runtime, chat, log := newTransitionManager(t, domain.SessionModeChat)
+			store.permissionMode = mode
+			project := store.projects["proj"]
+			project.Config.AgentConfig.Permissions = domain.PermissionModeBypassPermissions
+			store.projects["proj"] = project
+			transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settled := awaitTransition(t, store, transition.ID)
+			if settled.Phase != domain.SessionInterfaceTransitionFailed || settled.ErrorCode != "PERMISSION_MODE_UNSUPPORTED" {
+				t.Fatalf("transition = %+v", settled)
+			}
+			select {
+			case <-chat.aborted:
+			default:
+				t.Fatal("Chat intake not reopened")
+			}
+			if runtime.created != 0 || runtime.destroyed != 0 || len(*log) != 0 {
+				t.Fatalf("permission refusal mutated controllers: runtime=%d/%d log=%v", runtime.created, runtime.destroyed, *log)
+			}
+			if store.sessions["session-1"].Mode != domain.SessionModeChat {
+				t.Fatal("source no longer Chat")
+			}
+		})
+	}
+}
+
+func TestInterfaceTransitionChatToTUIFailsClosedWhenPermissionsCannotBeRead(t *testing.T) {
+	manager, store, runtime, chat, log := newTransitionManager(t, domain.SessionModeChat)
+	store.conversationErr = errors.New("storage unavailable")
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed {
+		t.Fatalf("transition = %+v", settled)
+	}
+	select {
+	case <-chat.aborted:
+	default:
+		t.Fatal("Chat intake not reopened")
+	}
+	if runtime.created != 0 || runtime.destroyed != 0 || len(*log) != 0 {
+		t.Fatalf("unverified permissions mutated controllers: runtime=%d/%d log=%v", runtime.created, runtime.destroyed, *log)
 	}
 }

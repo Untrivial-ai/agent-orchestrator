@@ -416,7 +416,7 @@ func (c *ConversationsController) setSettings(w http.ResponseWriter, r *http.Req
 	// downgrading a permission choice is the one direction that must never happen
 	// by accident.
 	approval := domain.PermissionMode(req.ApprovalMode)
-	if req.ApprovalMode != "" && !approval.Valid() {
+	if req.ApprovalMode != "" && !approval.ValidTurn() {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"CHAT_APPROVAL_MODE_INVALID",
 			fmt.Sprintf("unknown approval mode %q", req.ApprovalMode), nil)
@@ -816,6 +816,9 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"CHAT_DECISION_NOT_OFFERED", err.Error(), nil)
 
+	case errors.Is(err, ports.ErrChatPermissionModeUnsupported):
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "CHAT_APPROVAL_MODE_UNSUPPORTED", err.Error(), nil)
+		return
 	case errors.Is(err, ports.ErrChatConfigOptionInvalid):
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"CHAT_CONFIG_OPTION_INVALID", err.Error(), nil)

@@ -46,8 +46,12 @@ type conversation struct {
 	proc *process
 	log  *slog.Logger
 
-	threadID string
-	events   chan ports.ChatEvent
+	workdir               string
+	nativePermissions     *nativePermissionSettings
+	permissionsOverridden bool // guarded by sendMu after start
+	permissionMode        ports.PermissionMode
+	threadID              string
+	events                chan ports.ChatEvent
 	// Effective defaults returned when Codex opened or resumed this thread.
 	threadModel, threadEffort string
 
@@ -158,6 +162,10 @@ func (c *conversation) pump() {
 		// normalizer that reads the clock itself cannot be tested deterministically.
 		for _, ev := range normalizeNotification(n, time.Now()) {
 			rootConversation := ev.ProviderConversationID == "" || ev.ProviderConversationID == c.threadID
+			// Native-default probes have their own lifecycle; never project it onto this thread.
+			if ev.Kind == ports.ChatEventThreadState && !rootConversation {
+				continue
+			}
 			if ev.Kind == ports.ChatEventTurnStarted && ev.ProviderTurnID != "" && rootConversation {
 				c.mu.Lock()
 				c.activeTurn = ev.ProviderTurnID
@@ -250,6 +258,24 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		params["clientUserMessageId"] = msg.ClientMessageID
 	}
 	applyTurnSettings(params, msg.Settings)
+	permissionMode := c.permissionMode
+	if msg.Settings.Approval != "" {
+		permissionMode = ports.NormalizePermissionMode(msg.Settings.Approval)
+	}
+	if ports.NormalizePermissionMode(permissionMode) == ports.PermissionModeDefault && c.permissionsOverridden {
+		native, err := c.resolveNativePermissions(ctx)
+		if err != nil {
+			return ports.ChatTurnRef{}, err
+		}
+		native.applyApproval(params)
+		params["sandboxPolicy"] = native.Sandbox
+	}
+
+	// A failed response can still mean Codex applied the override. Keep the
+	// reset latch closed until a successful native-default turn confirms it.
+	if ports.NormalizePermissionMode(permissionMode) != ports.PermissionModeDefault {
+		c.permissionsOverridden = true
+	}
 
 	var resp struct {
 		Turn struct {
@@ -260,6 +286,8 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		return ports.ChatTurnRef{}, fmt.Errorf("turn/start: %w", err)
 	}
 
+	c.permissionMode = permissionMode
+	c.permissionsOverridden = ports.NormalizePermissionMode(permissionMode) != ports.PermissionModeDefault
 	c.mu.Lock()
 	c.activeTurn = resp.Turn.ID
 	c.mu.Unlock()
@@ -287,9 +315,11 @@ func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings) {
 		// turn is rejected as a missing `type`, so the two are mapped separately
 		// rather than assumed to be interchangeable.
 		policy, sandbox := approvalSettings(settings.Approval)
-		params["approvalPolicy"] = policy
-		params["approvalsReviewer"] = approvalReviewer(settings.Approval)
-		params["sandboxPolicy"] = turnSandboxPolicy(sandbox)
+		if policy != "" {
+			params["approvalPolicy"] = policy
+			params["approvalsReviewer"] = approvalReviewer(settings.Approval)
+			params["sandboxPolicy"] = turnSandboxPolicy(sandbox)
+		}
 	}
 }
 
@@ -301,8 +331,10 @@ func turnSandboxPolicy(sandbox string) map[string]any {
 		return map[string]any{"type": "workspaceWrite"}
 	case "read-only":
 		return map[string]any{"type": "readOnly"}
-	default:
+	case "danger-full-access":
 		return map[string]any{"type": "dangerFullAccess"}
+	default:
+		return nil
 	}
 }
 

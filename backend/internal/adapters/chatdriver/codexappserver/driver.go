@@ -279,13 +279,10 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		return nil, errors.New("persistent chat host already owns a provider conversation for a fresh session")
 	}
 
-	policy, sandbox := approvalSettings(cfg.Permissions)
 	params := map[string]any{
-		"cwd":               cfg.WorkspacePath,
-		"approvalPolicy":    policy,
-		"approvalsReviewer": approvalReviewer(cfg.Permissions),
-		"sandbox":           sandbox,
+		"cwd": cfg.WorkspacePath,
 	}
+	applyThreadPermissions(params, cfg.Permissions)
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
 	}
@@ -294,6 +291,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 
 	var resp struct {
+		nativePermissionSettings
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
@@ -311,6 +309,12 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		return nil, errors.New("thread/start returned no thread id")
 	}
 
+	conv.workdir = cfg.WorkspacePath
+	conv.permissionMode = ports.NormalizePermissionMode(cfg.Permissions)
+	conv.permissionsOverridden = ports.NormalizePermissionMode(cfg.Permissions) != ports.PermissionModeDefault
+	if !conv.permissionsOverridden && resp.valid() {
+		conv.nativePermissions = &resp.nativePermissionSettings
+	}
 	conv.start(resp.Thread.ID, resp.Model, resp.ReasoningEffort)
 	return conv, nil
 }
@@ -333,18 +337,18 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		// The host preserved the already-initialized app-server connection and its
 		// loaded thread. Host replay bridges output and unresolved server requests
 		// across the daemon detach without waiting for the active turn to settle.
+		conv.workdir = cfg.WorkspacePath
+		conv.permissionMode = ports.NormalizePermissionMode(cfg.Permissions)
+		conv.permissionsOverridden = true // the retained provider may have sticky overrides
 		conv.start(cfg.ProviderConversationID, cfg.Model, "")
 		return conv, nil
 	}
 
-	policy, sandbox := approvalSettings(cfg.Permissions)
 	params := map[string]any{
-		"threadId":          cfg.ProviderConversationID,
-		"cwd":               cfg.WorkspacePath,
-		"approvalPolicy":    policy,
-		"approvalsReviewer": approvalReviewer(cfg.Permissions),
-		"sandbox":           sandbox,
+		"threadId": cfg.ProviderConversationID,
+		"cwd":      cfg.WorkspacePath,
 	}
+	applyThreadPermissions(params, cfg.Permissions)
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
 	}
@@ -360,6 +364,24 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	if cfg.SystemPrompt != "" {
 		params["developerInstructions"] = cfg.SystemPrompt
 	}
+	conv.workdir = cfg.WorkspacePath
+	conv.permissionMode = ports.NormalizePermissionMode(cfg.Permissions)
+	conv.threadID = cfg.ProviderConversationID
+	conv.permissionsOverridden = ports.NormalizePermissionMode(cfg.Permissions) != ports.PermissionModeDefault
+	if !conv.permissionsOverridden {
+		native, resolveErr := conv.resolveNativePermissions(ctx)
+		if resolveErr != nil {
+			_ = conv.Terminate()
+			return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, resolveErr)
+		}
+		mode, ok := native.sandboxMode()
+		if !ok {
+			_ = conv.Terminate()
+			return nil, errors.New("codex native sandbox cannot be restored safely")
+		}
+		native.applyApproval(params)
+		params["sandbox"] = mode
+	}
 	resumeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 	var resp struct {
@@ -374,6 +396,11 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, err)
 	}
 
+	// thread/resume only accepts a sandbox mode name. Before the first model
+	// turn, also restore the full native sandbox object (roots/network settings).
+	if ports.NormalizePermissionMode(cfg.Permissions) == ports.PermissionModeDefault {
+		conv.permissionsOverridden = true
+	}
 	conv.start(cfg.ProviderConversationID, resp.Model, resp.ReasoningEffort)
 	return conv, nil
 }
@@ -483,32 +510,40 @@ func initializeConnection(ctx context.Context, connection *conn) error {
 	return nil
 }
 
-// approvalSettings maps AO's existing per-session permission mode onto Codex's
-// approval policy and sandbox.
-//
-// The default matches what AO already passes a Codex TUI session
-// (--dangerously-bypass-approvals-and-sandbox): AO sessions run in isolated
-// worktrees and are expected to work without prompting. Chat does not quietly
-// become stricter than the terminal path for the same setting.
+// approvalSettings leaves Default/unknown entirely to native Codex configuration.
 func approvalSettings(mode ports.PermissionMode) (policy, sandbox string) {
 	switch ports.NormalizePermissionMode(mode) {
+	case ports.PermissionModeManual:
+		return "on-request", "read-only"
+	case ports.PermissionModeDontAsk:
+		return "never", "workspace-write"
 	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
-		// on-request lets the provider decide when to ask; workspace-write keeps
-		// edits inside the worktree.
 		return "on-request", "workspace-write"
-	default:
+	case ports.PermissionModeBypassPermissions:
 		return "never", "danger-full-access"
+	default:
+		return "", ""
 	}
 }
 
-// approvalReviewer selects whether Codex asks the user directly or first lets
-// its built-in reviewer approve routine safe actions. Explicitly sending "user"
-// also resets a thread that previously used auto review.
 func approvalReviewer(mode ports.PermissionMode) string {
-	if ports.NormalizePermissionMode(mode) == ports.PermissionModeAuto {
+	switch ports.NormalizePermissionMode(mode) {
+	case ports.PermissionModeAuto:
 		return "auto_review"
+	case ports.PermissionModeManual, ports.PermissionModeDontAsk, ports.PermissionModeAcceptEdits, ports.PermissionModeBypassPermissions:
+		return "user"
+	default:
+		return ""
 	}
-	return "user"
+}
+
+func applyThreadPermissions(params map[string]any, mode ports.PermissionMode) {
+	policy, sandbox := approvalSettings(mode)
+	if policy != "" {
+		params["approvalPolicy"] = policy
+		params["approvalsReviewer"] = approvalReviewer(mode)
+		params["sandbox"] = sandbox
+	}
 }
 
 // spawnAppServer is the real launcher.

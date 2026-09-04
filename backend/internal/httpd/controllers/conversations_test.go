@@ -34,6 +34,7 @@ func conversationTestServer(t *testing.T, service *fakeConversationService) *htt
 // JSON a client actually parses is what is checked.
 
 type fakeConversationService struct {
+	settingsErr    error
 	snapshot       chatsvc.Snapshot
 	skills         []ports.ChatSkill
 	skillErr       error
@@ -91,8 +92,8 @@ func (f *fakeConversationService) SetConfigOption(_ context.Context, _ domain.Se
 	return f.configOptions, f.configErr
 }
 
-func (f *fakeConversationService) SetTurnSettings(context.Context, domain.SessionID, domain.ConversationSettings) (domain.ConversationSettings, error) {
-	return domain.ConversationSettings{}, nil
+func (f *fakeConversationService) SetTurnSettings(_ context.Context, _ domain.SessionID, settings domain.ConversationSettings) (domain.ConversationSettings, error) {
+	return settings, f.settingsErr
 }
 
 func (f *fakeConversationService) Compact(context.Context, domain.SessionID) (ports.ChatCompactionResult, error) {
@@ -511,5 +512,43 @@ func TestSnapshotKeepsAggregateWhenNoStreamArrived(t *testing.T) {
 	}
 	if _, present := detail["outputTruncated"]; present {
 		t.Error("untruncated output still carried the truncation flag")
+	}
+}
+
+func TestConversationExplicitPermissionSettings(t *testing.T) {
+	for _, tc := range []struct {
+		mode   string
+		err    error
+		status int
+	}{
+		{"manual", nil, http.StatusOK}, {"dont-ask", nil, http.StatusOK},
+		{"unknown", nil, http.StatusBadRequest},
+		{"manual", ports.ErrChatPermissionModeUnsupported, http.StatusBadRequest},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			server := conversationTestServer(t, &fakeConversationService{settingsErr: tc.err})
+			request, err := http.NewRequest(http.MethodPatch, server.URL+"/api/v1/sessions/p1-1/conversation/settings", bytes.NewBufferString(`{"approvalMode":"`+tc.mode+`"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != tc.status {
+				t.Fatalf("status %d: %s", response.StatusCode, body)
+			}
+			if tc.status == http.StatusOK && !bytes.Contains(body, []byte(`"approvalMode":"`+tc.mode+`"`)) {
+				t.Fatalf("policy did not round trip: %s", body)
+			}
+			if tc.err != nil && !bytes.Contains(body, []byte("CHAT_APPROVAL_MODE_UNSUPPORTED")) {
+				t.Fatalf("missing unsupported error code: %s", body)
+			}
+		})
 	}
 }

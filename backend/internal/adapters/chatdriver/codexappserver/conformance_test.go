@@ -39,6 +39,7 @@ var driverMethods = []struct {
 	{codexproto.MethodInitialize, &codexproto.InitializeParams{}},
 	{codexproto.MethodThreadStart, &codexproto.ThreadStartParams{}},
 	{codexproto.MethodThreadResume, &codexproto.ThreadResumeParams{}},
+	{codexproto.MethodThreadUnsubscribe, &codexproto.ThreadUnsubscribeParams{}},
 
 	// Outbound: turns.
 	{codexproto.MethodTurnStart, &codexproto.TurnStartParams{}},

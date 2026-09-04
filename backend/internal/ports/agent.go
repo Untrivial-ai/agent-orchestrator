@@ -504,18 +504,20 @@ type PermissionMode = domain.PermissionMode
 // These re-export the domain constants so existing adapter code is unchanged.
 const (
 	PermissionModeDefault           = domain.PermissionModeDefault
+	PermissionModeManual            = domain.PermissionModeManual
+	PermissionModeDontAsk           = domain.PermissionModeDontAsk
 	PermissionModeAcceptEdits       = domain.PermissionModeAcceptEdits
 	PermissionModeAuto              = domain.PermissionModeAuto
 	PermissionModeBypassPermissions = domain.PermissionModeBypassPermissions
 )
 
 // NormalizePermissionMode collapses an empty or unrecognized mode to
-// PermissionModeDefault, leaving the four known modes unchanged. Adapters call
+// PermissionModeDefault, leaving known modes unchanged. Adapters call
 // it so a stored value they don't recognize defers to the agent's own config
 // (usually by emitting no flag) rather than mapping onto a bogus one.
 func NormalizePermissionMode(mode PermissionMode) PermissionMode {
 	switch mode {
-	case PermissionModeDefault,
+	case PermissionModeDefault, PermissionModeManual, PermissionModeDontAsk,
 		PermissionModeAcceptEdits,
 		PermissionModeAuto,
 		PermissionModeBypassPermissions:

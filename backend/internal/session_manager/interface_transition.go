@@ -639,6 +639,25 @@ func (m *Manager) preflightInterfaceTarget(
 		permissions := effectiveAgentConfig(rec.Kind, project.Config).Permissions
 		return m.chat.PreflightChat(ctx, rec.Harness, permissions)
 	}
+	// The terminal adapters currently cannot express these Chat-only policies.
+	// Never replace the durable choice with the project's potentially bypassing
+	// launch config. This check runs before draining or stopping the Chat source.
+	if transition.SourceMode == domain.SessionModeChat {
+		store, ok := m.store.(interface {
+			ConversationForSession(context.Context, domain.SessionID) (domain.ConversationRecord, error)
+		})
+		if !ok {
+			return fmt.Errorf("cannot verify Chat permissions before terminal handoff")
+		}
+		conversation, err := store.ConversationForSession(ctx, rec.ID)
+		if err != nil {
+			return fmt.Errorf("read Chat permissions before terminal handoff: %w", err)
+		}
+		mode := conversation.Settings.ApprovalMode
+		if mode == domain.PermissionModeManual || mode == domain.PermissionModeDontAsk {
+			return fmt.Errorf("%w: terminal handoff cannot preserve %s; select a supported permission mode in Chat before switching", ports.ErrChatPermissionModeUnsupported, mode)
+		}
+	}
 	agent, ok := m.agents.Agent(rec.Harness)
 	if !ok {
 		return ErrUnknownHarness
@@ -1409,6 +1428,8 @@ func oppositeSessionMode(mode domain.SessionMode) domain.SessionMode {
 
 func interfaceTransitionErrorCode(err error) string {
 	switch {
+	case errors.Is(err, ports.ErrChatPermissionModeUnsupported):
+		return "PERMISSION_MODE_UNSUPPORTED"
 	case errors.Is(err, ports.ErrChatUnsupported), errors.Is(err, ErrInterfaceHandoffUnsupported):
 		return "INTERFACE_HANDOFF_UNSUPPORTED"
 	case errors.Is(err, ports.ErrChatDriverUnavailable), errors.Is(err, ports.ErrAgentBinaryNotFound):

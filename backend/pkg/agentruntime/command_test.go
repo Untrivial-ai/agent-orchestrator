@@ -180,7 +180,7 @@ func TestRestoreIdentityRequiresCapturedIDOutsideClaude(t *testing.T) {
 
 func TestPermissionPolicyForMode(t *testing.T) {
 	tests := map[SessionMode]PermissionPolicy{
-		SessionModeReadOnly: PermissionDefault,
+		SessionModeReadOnly: PermissionReadOnly,
 		SessionModeStandard: PermissionAuto,
 		SessionModeTrusted:  PermissionBypassPermissions,
 		"unknown":           PermissionDefault,

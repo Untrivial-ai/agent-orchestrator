@@ -131,12 +131,13 @@ func newTestDriver(t *testing.T) (*Driver, *scriptedServer) {
 		t:        t,
 		toClient: serverWrites,
 		responses: map[string]string{
-			"initialize":     `{"userAgent":"ao/test","codexHome":"/tmp/.codex"}`,
-			"model/list":     `{"data":[{"id":"gpt-test","displayName":"GPT Test","isDefault":true}]}`,
-			"thread/start":   `{"thread":{"id":"thread-1"},"model":"gpt-test","cwd":"/tmp/ws"}`,
-			"turn/start":     `{"turn":{"id":"turn-1","status":"inProgress","items":[]}}`,
-			"turn/interrupt": `{}`,
-			"thread/resume":  `{"thread":{"id":"thread-1"}}`,
+			"initialize":         `{"userAgent":"ao/test","codexHome":"/tmp/.codex"}`,
+			"model/list":         `{"data":[{"id":"gpt-test","displayName":"GPT Test","isDefault":true}]}`,
+			"thread/start":       `{"thread":{"id":"thread-1"},"model":"gpt-test","cwd":"/tmp/ws","approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":{"type":"workspaceWrite","networkAccess":false,"writableRoots":["/tmp/ws"]}}`,
+			"turn/start":         `{"turn":{"id":"turn-1","status":"inProgress","items":[]}}`,
+			"turn/interrupt":     `{}`,
+			"thread/resume":      `{"thread":{"id":"thread-1"}}`,
+			"thread/unsubscribe": `{ "status":"unsubscribed" }`,
 		},
 		responseSequences: map[string][]string{},
 		failures:          map[string]string{},
@@ -164,6 +165,12 @@ func newTestDriver(t *testing.T) (*Driver, *scriptedServer) {
 			if sequence := srv.responseSequences[f.Method]; len(sequence) > 0 {
 				reply, known = sequence[0], true
 				srv.responseSequences[f.Method] = sequence[1:]
+			}
+			var startParams struct {
+				Ephemeral bool `json:"ephemeral"`
+			}
+			if f.Method == "thread/start" && json.Unmarshal(f.Params, &startParams) == nil && startParams.Ephemeral {
+				reply = strings.Replace(reply, `"id":"thread-1"`, `"id":"native-defaults"`, 1)
 			}
 			failure, refused := srv.failures[f.Method]
 			srv.mu.Unlock()
@@ -260,8 +267,8 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 		t.Errorf("developerInstructions = %q", params.DeveloperInstructions)
 	}
 	// Default permissions must match what AO already gives a Codex TUI session.
-	if params.ApprovalPolicy != "never" || params.Sandbox != "danger-full-access" {
-		t.Errorf("default posture = %q/%q, want never/danger-full-access", params.ApprovalPolicy, params.Sandbox)
+	if params.ApprovalPolicy != "" || params.Sandbox != "" {
+		t.Errorf("default posture = %q/%q, want native defaults", params.ApprovalPolicy, params.Sandbox)
 	}
 }
 
@@ -679,7 +686,11 @@ func TestResumeFailureDoesNotFallBackToStart(t *testing.T) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	for _, f := range srv.seen {
-		if f.Method == "thread/start" {
+		var params struct {
+			Ephemeral bool `json:"ephemeral"`
+		}
+		_ = json.Unmarshal(f.Params, &params)
+		if f.Method == "thread/start" && !params.Ephemeral {
 			t.Fatal("driver fell back to thread/start after a failed resume")
 		}
 	}
@@ -946,11 +957,13 @@ func TestApprovalSettingsMirrorTUIPosture(t *testing.T) {
 		mode                      ports.PermissionMode
 		policy, sandbox, reviewer string
 	}{
-		{ports.PermissionModeDefault, "never", "danger-full-access", "user"},
+		{ports.PermissionModeDefault, "", "", ""},
+		{ports.PermissionModeManual, "on-request", "read-only", "user"},
+		{ports.PermissionModeDontAsk, "never", "workspace-write", "user"},
 		{ports.PermissionModeBypassPermissions, "never", "danger-full-access", "user"},
 		{ports.PermissionModeAcceptEdits, "on-request", "workspace-write", "user"},
 		{ports.PermissionModeAuto, "on-request", "workspace-write", "auto_review"},
-		{ports.PermissionMode("nonsense"), "never", "danger-full-access", "user"},
+		{ports.PermissionMode("nonsense"), "", "", ""},
 	} {
 		policy, sandbox := approvalSettings(tc.mode)
 		reviewer := approvalReviewer(tc.mode)

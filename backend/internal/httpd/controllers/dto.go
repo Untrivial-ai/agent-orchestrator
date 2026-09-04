@@ -1897,7 +1897,7 @@ type ConversationSkillResponse struct {
 type ConversationTurnSettingsPayload struct {
 	Model           string `json:"model,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
-	ApprovalMode    string `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
+	ApprovalMode    string `json:"approvalMode,omitempty" enum:"default,manual,accept-edits,auto,dont-ask,bypass-permissions"`
 }
 
 // ResolveConversationApprovalRequest answers a pending approval. DecisionID must

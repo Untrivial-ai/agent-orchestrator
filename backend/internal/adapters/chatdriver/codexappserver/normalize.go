@@ -476,16 +476,21 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		if state.Status == "" {
 			return nil
 		}
-		return []ports.ChatEvent{{Kind: ports.ChatEventThreadState, ThreadState: &state}}
+		return []ports.ChatEvent{{Kind: ports.ChatEventThreadState, ProviderConversationID: p.ThreadID, ThreadState: &state}}
 
 	case codexproto.MethodThreadArchived, codexproto.MethodThreadUnarchived:
 		// VERIFIED live: thread/archive and thread/unarchive each produced their
 		// notification. Archiving is the provider's own idea of putting a thread away,
 		// and it is reversible, so it is tri-state rather than a one-way marker.
+		var p codexproto.ThreadArchivedNotification
+		if json.Unmarshal(n.Params, &p) != nil {
+			return nil
+		}
 		archived := n.Method == codexproto.MethodThreadArchived
 		return []ports.ChatEvent{{
-			Kind:        ports.ChatEventThreadState,
-			ThreadState: &ports.ChatThreadState{Archived: &archived},
+			Kind:                   ports.ChatEventThreadState,
+			ProviderConversationID: p.ThreadID,
+			ThreadState:            &ports.ChatThreadState{Archived: &archived},
 		}}
 
 	case codexproto.MethodThreadClosed:
@@ -493,9 +498,14 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		// emitted nothing. Recorded rather than acted on — tearing a controller down
 		// on an unverified notification would turn a provider quirk into a lost
 		// session.
+		var p codexproto.ThreadClosedNotification
+		if json.Unmarshal(n.Params, &p) != nil {
+			return nil
+		}
 		return []ports.ChatEvent{{
-			Kind:        ports.ChatEventThreadState,
-			ThreadState: &ports.ChatThreadState{Closed: true, Status: domain.ThreadStatusClosed},
+			Kind:                   ports.ChatEventThreadState,
+			ProviderConversationID: p.ThreadID,
+			ThreadState:            &ports.ChatThreadState{Closed: true, Status: domain.ThreadStatusClosed},
 		}}
 
 	case codexproto.MethodMcpServerStartupStatusUpdated:
