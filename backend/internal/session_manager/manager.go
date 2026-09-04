@@ -833,7 +833,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
 	}
+	standalone := cfg.ProjectID == ""
 	projectKind := project.Kind.WithDefault()
+	if standalone {
+		projectKind = domain.ProjectKindScratch
+	}
+	if standalone && cfg.Kind != domain.KindWorker {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: standalone sessions must be workers")
+	}
 	if projectKind == domain.ProjectKindScratch && strings.TrimSpace(cfg.Branch) != "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrScratchBranchUnsupported)
 	}
@@ -1114,6 +1121,9 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 // unregistered yet still have live sessions, and an empty config simply means
 // every field falls back to its default.
 func (m *Manager) loadProject(ctx context.Context, projectID domain.ProjectID) (domain.ProjectRecord, error) {
+	if projectID == "" {
+		return domain.ProjectRecord{}, nil
+	}
 	row, ok, err := m.store.GetProject(ctx, string(projectID))
 	if err != nil {
 		return domain.ProjectRecord{}, fmt.Errorf("load project: %w", err)
@@ -1210,6 +1220,9 @@ func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project 
 
 func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.ProjectRecord, cfg ports.SpawnConfig, id domain.SessionID, branch string, baseRefs map[string]string) (ports.WorkspaceInfo, *ports.WorkspaceProjectInfo, error) {
 	projectKind := project.Kind.WithDefault()
+	if cfg.ProjectID == "" {
+		projectKind = domain.ProjectKindScratch
+	}
 	if projectKind != domain.ProjectKindWorkspace {
 		baseBranch := project.Config.WorktreeBaseBranch()
 		if projectKind == domain.ProjectKindScratch {
@@ -1986,7 +1999,7 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (Res
 	// the workspace landed has neither WorkspacePath nor Branch, and there is
 	// nothing meaningful to restore from. Surface this as a typed 409 instead of
 	// letting workspace.Restore fail with an opaque wrapped error.
-	if meta.WorkspacePath == "" || (meta.Branch == "" && project.Kind.WithDefault() != domain.ProjectKindScratch) {
+	if meta.WorkspacePath == "" || (meta.Branch == "" && projectKindForSession(project, rec.ProjectID) != domain.ProjectKindScratch) {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, ErrIncompleteHandle)
 	}
 	// Resumability is decided inside restoreArgv, not here. A promptless session
@@ -2179,7 +2192,7 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 	meta := rec.Metadata
 	mode := domain.NormalizeSessionMode(rec.Mode)
 	if meta.WorkspacePath == "" ||
-		(meta.Branch == "" && project.Kind.WithDefault() != domain.ProjectKindScratch) ||
+		(meta.Branch == "" && projectKindForSession(project, rec.ProjectID) != domain.ProjectKindScratch) ||
 		(mode != domain.SessionModeChat && meta.RuntimeHandleID == "") {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrIncompleteHandle)
 	}
@@ -2518,7 +2531,7 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 	if err != nil {
 		return err
 	}
-	projectKind := project.Kind.WithDefault()
+	projectKind := projectKindForSession(project, rec.ProjectID)
 	if rec.Metadata.WorkspacePath == "" || (rec.Metadata.Branch == "" && projectKind != domain.ProjectKindScratch) {
 		return nil
 	}
@@ -2543,7 +2556,10 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 			}
 		}
 	}
-	if projectKind == domain.ProjectKindScratch {
+	// Legacy Scratch sessions were intentionally one-shot. Standalone sessions
+	// also use the plain-directory workspace adapter, but unlike Scratch they
+	// are durable and must be relaunched after the daemon restarts.
+	if projectKind == domain.ProjectKindScratch && rec.ProjectID != "" {
 		return m.lcm.MarkTerminated(ctx, rec.ID)
 	}
 	ws, restoreErr := m.restoreSessionWorkspace(ctx, project, rec)
@@ -2991,7 +3007,7 @@ func (m *Manager) markSessionWorktreesActive(ctx context.Context, rows []domain.
 }
 
 func (m *Manager) restoreSessionWorkspace(ctx context.Context, project domain.ProjectRecord, rec domain.SessionRecord) (ports.WorkspaceInfo, error) {
-	if project.Kind.WithDefault() != domain.ProjectKindWorkspace {
+	if projectKindForSession(project, rec.ProjectID) != domain.ProjectKindWorkspace {
 		ws, err := m.workspace.Restore(ctx, ports.WorkspaceConfig{
 			ProjectID:     rec.ProjectID,
 			SessionID:     rec.ID,
@@ -3837,6 +3853,13 @@ func promptProjectContext(projectID domain.ProjectID, project domain.ProjectReco
 	}
 }
 
+func projectKindForSession(project domain.ProjectRecord, projectID domain.ProjectID) domain.ProjectKind {
+	if projectID == "" {
+		return domain.ProjectKindScratch
+	}
+	return project.Kind.WithDefault()
+}
+
 // attachmentsDir is the worktree-relative directory where spawn file
 // attachments are projected for agents.
 const attachmentsDir = attachmentstore.WorkspaceDir
@@ -3932,20 +3955,23 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 		return "", err
 	}
 	cfg := systemPromptConfig{
-		Role:    promptRoleForKind(kind),
-		Project: promptProjectContext(projectID, project),
+		Role:       promptRoleForKind(kind),
+		Standalone: projectID == "",
+		Project:    promptProjectContext(projectID, project),
 	}
 
 	switch kind {
 	case domain.KindOrchestrator:
 		cfg.OrchestratorRules = project.Config.OrchestratorRules
 	case domain.KindWorker:
-		orchestratorID, ok, err := m.activeOrchestratorSessionID(ctx, projectID)
-		if err != nil {
-			return "", err
-		}
-		if ok {
-			cfg.OrchestratorSessionID = string(orchestratorID)
+		if projectID != "" {
+			orchestratorID, ok, err := m.activeOrchestratorSessionID(ctx, projectID)
+			if err != nil {
+				return "", err
+			}
+			if ok {
+				cfg.OrchestratorSessionID = string(orchestratorID)
+			}
 		}
 		rules, err := buildProjectRules(projectRulesConfig{
 			ProjectPath:    project.Path,
@@ -3960,12 +3986,14 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 		return "", nil
 	}
 
-	workspacePrompt, err := m.workspaceProjectPrompt(ctx, kind, projectID)
-	if err != nil {
-		return "", err
-	}
-	if workspacePrompt != "" {
-		cfg.AdditionalSections = append(cfg.AdditionalSections, workspacePrompt)
+	if projectID != "" {
+		workspacePrompt, err := m.workspaceProjectPrompt(ctx, kind, projectID)
+		if err != nil {
+			return "", err
+		}
+		if workspacePrompt != "" {
+			cfg.AdditionalSections = append(cfg.AdditionalSections, workspacePrompt)
+		}
 	}
 	if pointer := strings.TrimSpace(m.aoSkillPointer()); pointer != "" {
 		cfg.AdditionalSections = append(cfg.AdditionalSections, pointer)

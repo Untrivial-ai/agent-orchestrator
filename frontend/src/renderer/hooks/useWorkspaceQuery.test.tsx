@@ -35,6 +35,7 @@ vi.mock("./useCloudOrg", () => ({
 }));
 
 import { useWorkspaceQuery, useWorkspaceTraySessions } from "./useWorkspaceQuery";
+import { STANDALONE_PROJECT_KIND, STANDALONE_WORKSPACE_ID } from "../types/workspace";
 
 function wrapper({ children }: { children: ReactNode }) {
 	// The hook pins its own retry policy; retryDelay 0 keeps the error tests fast.
@@ -250,6 +251,44 @@ describe("useWorkspaceQuery", () => {
 		});
 	});
 
+	it("groups projectless sessions as standalone agents", async () => {
+		respondWith({
+			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+			sessions: {
+				data: {
+					sessions: [
+						{
+							id: "standalone-1",
+							displayName: "Research",
+							harness: "codex",
+							status: "working",
+							isTerminated: false,
+							updatedAt: "2026-06-10T16:15:04Z",
+						},
+					],
+				},
+				error: undefined,
+			},
+		});
+
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+		expect(result.current.data?.map((workspace) => workspace.id)).toEqual(["proj-1", "__standalone__"]);
+		expect(result.current.data?.[1]).toMatchObject({
+			id: "__standalone__",
+			name: "Standalone agents",
+			kind: "standalone",
+		});
+		expect(result.current.data?.[1].sessions[0]).toMatchObject({
+			id: "standalone-1",
+			workspaceId: "",
+			workspaceName: "Standalone agents",
+			title: "Research",
+			branch: undefined,
+		});
+	});
+
 	it("maps each session's prs straight from the session list", async () => {
 		respondWith({
 			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
@@ -384,7 +423,7 @@ describe("useWorkspaceQuery", () => {
 		expect(result.current.error).toBe(failure);
 	});
 
-	it("merges control-plane projects after local ones with kind cloud", async () => {
+	it("merges control-plane projects after local ones and before standalone agents", async () => {
 		cloudState.ready = true;
 		cloudState.org = { id: "org-1" };
 		listProjectsMock.mockResolvedValue({
@@ -404,10 +443,25 @@ describe("useWorkspaceQuery", () => {
 		});
 		respondWith({
 			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+			sessions: {
+				data: {
+					sessions: [
+						{
+							id: "standalone-1",
+							displayName: "Research",
+							harness: "codex",
+							status: "idle",
+							isTerminated: false,
+							updatedAt: "2026-08-01T00:00:00Z",
+						},
+					],
+				},
+				error: undefined,
+			},
 		});
 
 		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
-		await waitFor(() => expect(result.current.data).toHaveLength(2));
+		await waitFor(() => expect(result.current.data).toHaveLength(3));
 
 		expect(result.current.data?.[0]).toMatchObject({ id: "proj-1", name: "my-app", path: "/p" });
 		expect(result.current.data?.[1]).toEqual({
@@ -416,6 +470,10 @@ describe("useWorkspaceQuery", () => {
 			kind: "cloud",
 			path: "",
 			sessions: [],
+		});
+		expect(result.current.data?.[2]).toMatchObject({
+			id: STANDALONE_WORKSPACE_ID,
+			kind: STANDALONE_PROJECT_KIND,
 		});
 		expect(listProjectsMock).toHaveBeenCalledWith("org-1", { limit: 100 });
 	});

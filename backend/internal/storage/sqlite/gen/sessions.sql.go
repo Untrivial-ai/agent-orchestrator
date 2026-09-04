@@ -122,7 +122,7 @@ FROM sessions WHERE id = ?
 
 type GetSessionRow struct {
 	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
+	ProjectID                 *domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
 	Kind                      domain.SessionKind
@@ -237,7 +237,7 @@ INSERT INTO sessions (
 
 type InsertSessionParams struct {
 	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
+	ProjectID                 *domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
 	Kind                      domain.SessionKind
@@ -345,7 +345,7 @@ FROM sessions ORDER BY project_id, num
 
 type ListAllSessionsRow struct {
 	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
+	ProjectID                 *domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
 	Kind                      domain.SessionKind
@@ -466,12 +466,12 @@ SELECT id, project_id, num, issue_id, kind, harness,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
-FROM sessions WHERE project_id = ? ORDER BY num
+FROM sessions WHERE project_id IS ? ORDER BY num
 `
 
 type ListSessionsByProjectRow struct {
 	ID                        domain.SessionID
-	ProjectID                 domain.ProjectID
+	ProjectID                 *domain.ProjectID
 	Num                       int64
 	IssueID                   domain.IssueID
 	Kind                      domain.SessionKind
@@ -515,7 +515,7 @@ type ListSessionsByProjectRow struct {
 	Model                     string
 }
 
-func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.ProjectID) ([]ListSessionsByProjectRow, error) {
+func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.ProjectID) ([]ListSessionsByProjectRow, error) {
 	rows, err := q.db.QueryContext(ctx, listSessionsByProject, projectID)
 	if err != nil {
 		return nil, err
@@ -586,8 +586,19 @@ const nextSessionNum = `-- name: NextSessionNum :one
 SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id = ?
 `
 
-func (q *Queries) NextSessionNum(ctx context.Context, projectID domain.ProjectID) (int64, error) {
+func (q *Queries) NextSessionNum(ctx context.Context, projectID *domain.ProjectID) (int64, error) {
 	row := q.db.QueryRowContext(ctx, nextSessionNum, projectID)
+	var next int64
+	err := row.Scan(&next)
+	return next, err
+}
+
+const nextStandaloneSessionNum = `-- name: NextStandaloneSessionNum :one
+SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id IS NULL
+`
+
+func (q *Queries) NextStandaloneSessionNum(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, nextStandaloneSessionNum)
 	var next int64
 	err := row.Scan(&next)
 	return next, err

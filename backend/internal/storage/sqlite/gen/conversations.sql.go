@@ -611,7 +611,7 @@ VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
 type InsertConversationParams struct {
 	ID               string
 	Scope            domain.ConversationScope
-	ProjectID        domain.ProjectID
+	ProjectID        *domain.ProjectID
 	SessionID        *domain.SessionID
 	CurrentSessionID *domain.SessionID
 	ActiveBranchID   string
@@ -2554,7 +2554,7 @@ const selectProjectConversation = `-- name: SelectProjectConversation :one
 SELECT id, scope, project_id, session_id, current_session_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id FROM conversations WHERE project_id = ? AND scope = 'project' LIMIT 1
 `
 
-func (q *Queries) SelectProjectConversation(ctx context.Context, projectID domain.ProjectID) (Conversation, error) {
+func (q *Queries) SelectProjectConversation(ctx context.Context, projectID *domain.ProjectID) (Conversation, error) {
 	row := q.db.QueryRowContext(ctx, selectProjectConversation, projectID)
 	var i Conversation
 	err := row.Scan(

@@ -18,8 +18,14 @@ import {
 	Sidebar,
 	SIDEBAR_DEFAULT_WIDTH,
 	SIDEBAR_MIN_WIDTH,
+	applyProjectOrder,
 } from "./Sidebar";
-import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import {
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
+	type WorkspaceSession,
+	type WorkspaceSummary,
+} from "../types/workspace";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { useUiStore } from "../stores/ui-store";
@@ -369,7 +375,7 @@ beforeEach(() => {
 	cloudSessionState.signOut.mockReset().mockResolvedValue(undefined);
 	historyBackMock.mockReset();
 	historyForwardMock.mockReset();
-	useUiStore.setState({ isCommandPaletteOpen: false, settingsModal: null });
+	useUiStore.setState({ isCommandPaletteOpen: false, newTaskRequest: null, settingsModal: null });
 	getMock.mockReset();
 	getMock.mockResolvedValue({
 		data: {
@@ -820,6 +826,59 @@ describe("Sidebar", () => {
 		expect(screen.getByText("Project One").closest("button")).toHaveAttribute("aria-expanded", "false");
 	});
 
+	it("toggles standalone sessions without navigating to onboarding", async () => {
+		const user = userEvent.setup();
+		const standaloneSession: WorkspaceSession = {
+			...session,
+			id: "standalone-1",
+			title: "standalone task",
+			workspaceId: STANDALONE_WORKSPACE_ID,
+			workspaceName: "Standalone agents",
+		};
+		renderSidebar({
+			expandedProjectIds: [],
+			workspaces: [
+				{
+					id: STANDALONE_WORKSPACE_ID,
+					kind: STANDALONE_PROJECT_KIND,
+					name: "Standalone agents",
+					path: "",
+					sessions: [standaloneSession],
+				},
+			],
+		});
+
+		expect(screen.queryByLabelText("Open standalone task")).not.toBeInTheDocument();
+		await user.click(screen.getByText("Standalone agents"));
+
+		expect(screen.getByLabelText("Open standalone task")).toBeInTheDocument();
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
+	it("starts a standalone agent directly from the standalone group action", async () => {
+		const user = userEvent.setup();
+		const standalone: WorkspaceSummary = {
+			id: STANDALONE_WORKSPACE_ID,
+			kind: STANDALONE_PROJECT_KIND,
+			name: "Standalone agents",
+			path: "",
+			sessions: [{ ...session, id: "standalone-1", workspaceId: "", workspaceName: "Standalone agents" }],
+		};
+		renderSidebar({ workspaces: [standalone] });
+		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
+		const standaloneRow = screen.getByText("Standalone agents").closest("button");
+
+		expect(screen.queryByLabelText("Project actions for Standalone agents")).not.toBeInTheDocument();
+		expect(standaloneRow?.querySelector(".lucide-bot")).toBeInTheDocument();
+		expect(standaloneRow?.querySelector(".lucide-folder, .lucide-folder-open")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "New standalone agent" }));
+
+		expect(useUiStore.getState().newTaskRequest).toEqual({
+			nonce: before + 1,
+			projectId: STANDALONE_WORKSPACE_ID,
+		});
+	});
+
 	it("expands a collapsed project when opening its orchestrator", async () => {
 		const user = userEvent.setup();
 		const orchestrator: WorkspaceSession = {
@@ -873,6 +932,22 @@ describe("Sidebar", () => {
 				}),
 			),
 		);
+	});
+
+	it("starts a standalone agent from the new-project picker", async () => {
+		const user = userEvent.setup();
+		renderSidebar();
+
+		await user.click(screen.getByLabelText("New project"));
+		await user.click(screen.getByRole("button", { name: "New standalone agent" }));
+
+		await waitFor(() =>
+			expect(useUiStore.getState().newTaskRequest).toEqual({
+				nonce: 1,
+				projectId: STANDALONE_WORKSPACE_ID,
+			}),
+		);
+		expect(screen.queryByRole("dialog", { name: "Add code to Agent Orchestrator" })).not.toBeInTheDocument();
 	});
 
 	it("clones a Git URL into the selected folder before starting agents", async () => {
@@ -2077,6 +2152,26 @@ describe("Sidebar", () => {
 		act(() => dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } }));
 
 		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
+	});
+
+	it("inserts newly discovered projects before a standalone group ordered last", () => {
+		const standalone: WorkspaceSummary = {
+			id: STANDALONE_WORKSPACE_ID,
+			kind: STANDALONE_PROJECT_KIND,
+			name: "Standalone agents",
+			path: "",
+			sessions: [],
+		};
+		const alpha = { ...workspace, id: "alpha", name: "Alpha" };
+		const cloud = { ...workspace, id: "cloud", name: "Cloud", kind: "cloud" as const };
+		const newlyCreated = { ...workspace, id: "new", name: "New project" };
+
+		expect(
+			applyProjectOrder(
+				[alpha, cloud, newlyCreated, standalone],
+				["alpha", "cloud", STANDALONE_WORKSPACE_ID],
+			).map((project) => project.id),
+		).toEqual(["alpha", "cloud", "new", STANDALONE_WORKSPACE_ID]);
 	});
 
 	it("pauses nested session drag contexts during a project drag", async () => {

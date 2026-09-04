@@ -700,6 +700,25 @@ func TestListWorkspaceFilesReturnsTrackedAndUntrackedStatus(t *testing.T) {
 	}
 }
 
+func TestListWorkspaceFilesTreatsStandaloneWorkerAsNonGitWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, "notes.txt", "standalone note\n")
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "standalone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "notes.txt" || got.Files[0].Status != WorkspaceFileAdded {
+		t.Fatalf("standalone files = %#v, want added notes.txt", got.Files)
+	}
+}
+
 func TestGetWorkspaceFileReturnsContentAndDiff(t *testing.T) {
 	repo := newWorkspaceRepo(t)
 	writeWorkspaceFile(t, repo, "README.md", "goodbye\nupdated\n")
@@ -2492,6 +2511,47 @@ func TestSpawnUnknownProjectReturns404(t *testing.T) {
 	}
 	if fc.spawned {
 		t.Fatal("manager.Spawn must NOT be invoked for an unknown project")
+	}
+}
+
+func TestSpawnStandaloneWorkerDoesNotRequireProject(t *testing.T) {
+	st := newFakeStore()
+	fc := &fakeCommander{spawnRecord: domain.SessionRecord{
+		ID: "standalone-1", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+	}}
+	svc := &Service{manager: fc, store: st}
+
+	session, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
+		Kind:    domain.KindWorker,
+		Harness: domain.HarnessCodex,
+		Prompt:  "Research release options",
+	})
+	if err != nil {
+		t.Fatalf("Spawn standalone: %v", err)
+	}
+	if session.ID != "standalone-1" || session.ProjectID != "" {
+		t.Fatalf("standalone session = %#v", session)
+	}
+	if fc.spawnedCfg.ProjectID != "" || fc.spawnedCfg.Kind != domain.KindWorker {
+		t.Fatalf("manager config = %#v", fc.spawnedCfg)
+	}
+}
+
+func TestSpawnStandaloneRejectsProjectFeatures(t *testing.T) {
+	for _, cfg := range []ports.SpawnConfig{
+		{Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex},
+		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, Branch: "feature/x"},
+		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, IssueID: "42"},
+		{Kind: domain.KindWorker},
+	} {
+		fc := &fakeCommander{}
+		svc := &Service{manager: fc, store: newFakeStore()}
+		if _, _, _, err := svc.Spawn(context.Background(), cfg); err == nil {
+			t.Fatalf("Spawn(%#v) succeeded, want validation error", cfg)
+		}
+		if fc.spawned {
+			t.Fatalf("manager called for invalid standalone config %#v", cfg)
+		}
 	}
 }
 

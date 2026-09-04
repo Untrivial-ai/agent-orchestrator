@@ -14,19 +14,26 @@ import (
 
 // ---- sessions ----
 
-// CreateSession assigns the per-project identity ("{project}-{num}") and inserts
-// the record, returning it with ID populated. The next-num read and the insert
-// run on the writer connection under writeMu, so two concurrent creates in the
-// same project can't collide on num.
+// CreateSession assigns a per-project identity or a global standalone identity
+// and inserts the record. The next-num read and insert share writeMu, so two
+// concurrent creates cannot collide.
 func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	num, err := s.qw.NextSessionNum(ctx, rec.ProjectID)
+	var num int64
+	var err error
+	prefix := string(rec.ProjectID)
+	if rec.ProjectID == "" {
+		num, err = s.qw.NextStandaloneSessionNum(ctx)
+		prefix = "standalone"
+	} else {
+		num, err = s.qw.NextSessionNum(ctx, optionalProjectID(rec.ProjectID))
+	}
 	if err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("next session num for %s: %w", rec.ProjectID, err)
 	}
-	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", rec.ProjectID, num))
+	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, num))
 	if err := s.qw.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("insert session %s: %w", rec.ID, err)
 	}
@@ -391,7 +398,7 @@ func (s *Store) GetSession(ctx context.Context, id domain.SessionID) (domain.Ses
 
 // ListSessions returns every session in a project, ordered by num.
 func (s *Store) ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error) {
-	rows, err := s.qr.ListSessionsByProject(ctx, project)
+	rows, err := s.qr.ListSessionsByProject(ctx, optionalProjectID(project))
 	if err != nil {
 		return nil, fmt.Errorf("list sessions for %s: %w", project, err)
 	}
@@ -426,7 +433,7 @@ func mapListAllSessionsRows(rows []gen.ListAllSessionsRow) []domain.SessionRecor
 func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 	return domain.SessionRecord{
 		ID:                row.ID,
-		ProjectID:         row.ProjectID,
+		ProjectID:         projectIDValue(row.ProjectID),
 		IssueID:           row.IssueID,
 		Kind:              row.Kind,
 		Harness:           row.Harness,
@@ -490,7 +497,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 	activity := normalActivity(rec.Activity, rec.CreatedAt)
 	return gen.InsertSessionParams{
 		ID:                        rec.ID,
-		ProjectID:                 rec.ProjectID,
+		ProjectID:                 optionalProjectID(rec.ProjectID),
 		Num:                       num,
 		IssueID:                   rec.IssueID,
 		Kind:                      rec.Kind,

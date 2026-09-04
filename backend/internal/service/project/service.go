@@ -595,57 +595,6 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	return m.projectFromRow(ctx, row), nil
 }
 
-// EnsureDefaultScratchProject seeds the built-in first-run scratch project when
-// the registry has no active projects. Archived rows do not suppress reseeding:
-// otherwise deleting Scratch can leave first-run users with no non-git path
-// back into AO.
-func (m *Service) EnsureDefaultScratchProject(ctx context.Context, scratchPath string) (Project, error) {
-	scratchPath = strings.TrimSpace(scratchPath)
-	if scratchPath == "" {
-		return Project{}, apierr.Invalid("INVALID_SCRATCH_PATH", "Scratch project path is required", nil)
-	}
-	abs, err := filepath.Abs(scratchPath)
-	if err != nil {
-		return Project{}, apierr.Invalid("INVALID_SCRATCH_PATH", "Scratch project path is invalid", nil)
-	}
-	path := filepath.Clean(abs)
-
-	m.addMu.Lock()
-	defer m.addMu.Unlock()
-
-	projects, err := m.store.ListProjects(ctx)
-	if err != nil {
-		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load projects")
-	}
-	if len(projects) != 0 {
-		return Project{}, nil
-	}
-
-	if err := os.MkdirAll(path, 0o750); err != nil {
-		return Project{}, apierr.Internal("SCRATCH_PROJECT_SEED_FAILED", "Failed to create scratch project directory")
-	}
-
-	cfg := domain.ProjectConfig{
-		Worker:       domain.RoleOverride{Harness: m.defaultHarness},
-		Orchestrator: domain.RoleOverride{Harness: m.defaultHarness},
-	}
-	if err := cfg.Validate(); err != nil {
-		return Project{}, apierr.Internal("SCRATCH_PROJECT_SEED_FAILED", "Default scratch project config is invalid")
-	}
-	row := domain.ProjectRecord{
-		ID:           "scratch",
-		Path:         path,
-		DisplayName:  "Scratch",
-		RegisteredAt: m.clock().UTC(),
-		Kind:         domain.ProjectKindScratch,
-		Config:       cfg,
-	}
-	if err := m.store.UpsertProject(ctx, row); err != nil {
-		return Project{}, apierr.Internal("SCRATCH_PROJECT_SEED_FAILED", "Failed to create scratch project")
-	}
-	return m.projectFromRow(ctx, row), nil
-}
-
 // SetConfig replaces the project's stored config. The typed config is validated
 // here so a bad value is rejected when set rather than surfacing at spawn.
 func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConfigInput) (Project, error) {

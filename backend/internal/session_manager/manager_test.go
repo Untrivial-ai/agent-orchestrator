@@ -69,7 +69,11 @@ func (f *fakeStore) ListWorkspaceRepos(_ context.Context, projectID string) ([]d
 }
 func (f *fakeStore) CreateSession(_ context.Context, rec domain.SessionRecord) (domain.SessionRecord, error) {
 	f.num++
-	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", rec.ProjectID, f.num))
+	prefix := string(rec.ProjectID)
+	if prefix == "" {
+		prefix = "standalone"
+	}
+	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, f.num))
 	f.sessions[rec.ID] = rec
 	return rec, nil
 }
@@ -5737,6 +5741,27 @@ func TestSpawn_ScratchUsesBranchlessWorkspace(t *testing.T) {
 	}
 	if rows := st.worktrees[s.ID]; len(rows) != 0 {
 		t.Fatalf("scratch spawn must not write session_worktrees rows, got %#v", rows)
+	}
+}
+
+func TestSpawn_StandaloneUsesBranchlessWorkspaceWithoutProjectLookup(t *testing.T) {
+	m, st, _, ws := newManager()
+
+	s, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		Kind:    domain.KindWorker,
+		Harness: domain.HarnessCodex,
+	})
+	if err != nil {
+		t.Fatalf("Spawn standalone: %v", err)
+	}
+	if s.ID != "standalone-1" || s.ProjectID != "" {
+		t.Fatalf("standalone identity = %q project %q", s.ID, s.ProjectID)
+	}
+	if s.Metadata.Branch != "" || ws.lastCfg.Branch != "" || ws.lastCfg.BaseBranch != "" {
+		t.Fatalf("standalone branch/session workspace = %q/%q/%q, want empty", s.Metadata.Branch, ws.lastCfg.Branch, ws.lastCfg.BaseBranch)
+	}
+	if rows := st.worktrees[s.ID]; len(rows) != 0 {
+		t.Fatalf("standalone spawn must not write session_worktrees rows, got %#v", rows)
 	}
 }
 

@@ -21,6 +21,7 @@ const maxDisplayNameLen = 20
 
 type spawnOptions struct {
 	project         string
+	standalone      bool
 	harness         string
 	kind            string
 	mode            string
@@ -38,7 +39,7 @@ type spawnOptions struct {
 // spawnRequest mirrors the daemon's SpawnSessionRequest body for
 // POST /api/v1/sessions. The CLI keeps its own copy so it need not import httpd.
 type spawnRequest struct {
-	ProjectID       string `json:"projectId"`
+	ProjectID       string `json:"projectId,omitempty"`
 	IssueID         string `json:"issueId,omitempty"`
 	TrackerProvider string `json:"trackerProvider,omitempty"`
 	Kind            string `json:"kind,omitempty"`
@@ -63,12 +64,15 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	var opts spawnOptions
 	cmd := &cobra.Command{
 		Use:   "spawn",
-		Short: "Spawn an agent session in a registered project",
-		Long: "Spawn an agent session (worker or orchestrator) in a registered project.\n\n" +
+		Short: "Spawn an agent session",
+		Long: "Spawn an agent session in a registered project, or a standalone worker with --standalone.\n\n" +
 			"The session runs the chosen agent in a\n" +
-			"fresh isolated workspace. Git projects use worktrees; Scratch uses an AO-managed directory.",
+			"fresh isolated workspace. Git projects use worktrees; standalone agents use an AO-managed plain directory.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.standalone && strings.TrimSpace(opts.project) != "" {
+				return usageError{fmt.Errorf("--standalone and --project cannot be used together")}
+			}
 			if opts.noTakeover && opts.claimPR == "" {
 				return usageError{fmt.Errorf("--no-takeover requires --claim-pr")}
 			}
@@ -88,6 +92,18 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if opts.kind != "" && opts.kind != "worker" && opts.kind != "orchestrator" {
 				return usageError{fmt.Errorf(`--kind must be "worker" or "orchestrator"`)}
 			}
+			if opts.standalone {
+				if opts.kind == "orchestrator" {
+					return usageError{fmt.Errorf("standalone sessions must be workers")}
+				}
+				if strings.TrimSpace(opts.branch) != "" || strings.TrimSpace(opts.issue) != "" || strings.TrimSpace(opts.claimPR) != "" {
+					return usageError{fmt.Errorf("standalone sessions do not support --branch, --issue, or --claim-pr")}
+				}
+				if strings.TrimSpace(opts.harness) == "" {
+					return usageError{fmt.Errorf("--agent is required with --standalone")}
+				}
+				opts.kind = "worker"
+			}
 
 			tp := strings.TrimSpace(opts.trackerProvider)
 			if tp == "" {
@@ -98,11 +114,15 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			}
 			opts.trackerProvider = tp
 
-			project, err := ctx.resolveSpawnProject(cmd.Context(), opts.project)
-			if err != nil {
-				return err
+			var project projectDetails
+			var err error
+			if !opts.standalone {
+				project, err = ctx.resolveSpawnProject(cmd.Context(), opts.project)
+				if err != nil {
+					return err
+				}
+				opts.project = project.ID
 			}
-			opts.project = project.ID
 
 			harness, err := resolveSpawnHarness(opts.harness, opts.kind, project)
 			if err != nil {
@@ -182,11 +202,12 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 		}
 		return pflag.NormalizedName(name)
 	})
-	f.StringVar(&opts.project, "project", "", "Project id to spawn the session in (default: AO_PROJECT_ID, current registered repo, or Scratch when it is the only project)")
+	f.StringVar(&opts.project, "project", "", "Project id to spawn the session in (default: AO_PROJECT_ID or the current registered repo)")
+	f.BoolVar(&opts.standalone, "standalone", false, "Spawn a projectless worker in an AO-managed plain directory (requires --agent)")
 	f.StringVar(&opts.harness, "harness", "", "Agent harness / --agent: claude-code, codex, aider, opencode, grok, droid, amp, agy, crush, cursor, qwen, copilot, goose, auggie, continue, devin, cline, kimi, muse, kiro, kilocode, vibe, pi, kimchi, prime-agent, autohand (default: project worker.agent; orchestrator spawns default to project orchestrator.agent; required if the project has none)")
 	f.StringVar(&opts.kind, "kind", "", "Session role: worker or orchestrator (default: worker)")
 	f.StringVar(&opts.mode, "mode", "", "Initial session interface: chat (structured agent connection) or tui (the agent's native terminal). Omitted uses the daemon default; compatible sessions can switch later.")
-	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for Scratch)")
+	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for standalone or Scratch sessions)")
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")
@@ -234,7 +255,7 @@ func (c *commandContext) resolveSpawnProject(ctx context.Context, explicit strin
 	if ok {
 		return project, nil
 	}
-	return projectDetails{}, usageError{fmt.Errorf("project could not be resolved; pass --project or run `ao project add --path <repo-path> --worker-agent <agent>`")}
+	return projectDetails{}, usageError{fmt.Errorf("project could not be resolved; pass --project, use --standalone, or run `ao project add --path <repo-path> --worker-agent <agent>`")}
 }
 
 func (c *commandContext) resolveProjectFromSession(ctx context.Context, sessionID string) (projectDetails, error) {
@@ -267,7 +288,6 @@ func (c *commandContext) resolveProjectFromCWD(ctx context.Context) (projectDeta
 	})
 
 	var best projectDetails
-	details := make(map[string]projectDetails, len(list.Projects))
 	bestLen := -1
 	ambiguous := false
 	for _, summary := range list.Projects {
@@ -275,7 +295,6 @@ func (c *commandContext) resolveProjectFromCWD(ctx context.Context) (projectDeta
 		if err != nil {
 			return projectDetails{}, false, err
 		}
-		details[summary.ID] = project
 		if project.Path == "" {
 			continue
 		}
@@ -297,26 +316,12 @@ func (c *commandContext) resolveProjectFromCWD(ctx context.Context) (projectDeta
 		}
 	}
 	if bestLen == -1 {
-		if scratch, ok := onlyScratchProject(list.Projects, details); ok {
-			return scratch, true, nil
-		}
 		return projectDetails{}, false, nil
 	}
 	if ambiguous {
 		return projectDetails{}, false, usageError{fmt.Errorf("current directory matches multiple registered projects; pass --project")}
 	}
 	return best, true, nil
-}
-
-func onlyScratchProject(summaries []projectSummary, details map[string]projectDetails) (projectDetails, bool) {
-	if len(summaries) != 1 {
-		return projectDetails{}, false
-	}
-	project := details[summaries[0].ID]
-	if isScratchProject(project) {
-		return project, true
-	}
-	return projectDetails{}, false
 }
 
 func isScratchProject(project projectDetails) bool {

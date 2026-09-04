@@ -100,7 +100,7 @@ func (s *Store) createConversation(
 
 	scope := options.scope
 	if scope == domain.ConversationScopeProject {
-		if existing, err := s.qw.SelectProjectConversation(ctx, options.project); err == nil {
+		if existing, err := s.qw.SelectProjectConversation(ctx, optionalProjectID(options.project)); err == nil {
 			transactionName := "rebind project conversation"
 			if options.contextReset != nil {
 				transactionName += " with reset"
@@ -192,7 +192,7 @@ func (s *Store) createConversation(
 		if insertErr := q.InsertConversation(ctx, gen.InsertConversationParams{
 			ID:               options.id,
 			Scope:            scope,
-			ProjectID:        options.project,
+			ProjectID:        optionalProjectID(options.project),
 			SessionID:        ownerSession,
 			CurrentSessionID: &options.session,
 			ActiveBranchID:   rootBranchID,
@@ -2898,7 +2898,7 @@ func conversationToDomain(row gen.Conversation) domain.ConversationRecord {
 	rec := domain.ConversationRecord{
 		ID:             row.ID,
 		Scope:          row.Scope,
-		ProjectID:      row.ProjectID,
+		ProjectID:      projectIDValue(row.ProjectID),
 		ActiveBranchID: row.ActiveBranchID,
 		LatestSequence: row.LatestSequence,
 		Settings: domain.ConversationSettings{

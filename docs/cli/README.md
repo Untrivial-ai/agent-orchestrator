@@ -74,7 +74,10 @@ forces fresh installation and authentication checks before printing.
 `AO_PROJECT_ID`, `AO_SESSION_ID` (by fetching the current session from the
 daemon), then the current working directory matched against registered project
 paths. If `AO_SESSION_ID` is set but the session cannot be fetched, pass
-`--project` explicitly.
+`--project` explicitly. Use `ao spawn --standalone --agent <agent> --name
+<name>` to launch a worker in an AO-managed plain directory without resolving
+or registering a project. Standalone sessions do not support orchestrator,
+branch, issue, or PR-claim options.
 
 Agent switching is initially available only for worker sessions whose source
 and target harnesses are Claude Code or Codex. The main command
@@ -121,6 +124,9 @@ warns-but-continues for unauthorized or unknown observations; daemon session
 creation repeats launch validation and native launch remains authoritative.
 `--skip-agent-check` suppresses only the CLI warnings and early check, never the
 daemon validation.
+
+Standalone spawns require `--agent` because there is no project configuration
+from which to resolve a default harness.
 
 `ao preview` resolves its session from the `AO_SESSION_ID` environment variable
 (it is meant to run inside a session), not a flag. With no argument it
