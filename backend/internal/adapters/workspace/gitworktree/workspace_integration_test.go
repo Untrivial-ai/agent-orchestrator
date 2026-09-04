@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -729,6 +730,39 @@ func TestFetchDefaultBranchRefreshesRemoteTrackingRef(t *testing.T) {
 	}
 	if got := gitOutput(t, git, repo, "rev-parse", "refs/remotes/origin/main"); got != freshMain {
 		t.Fatalf("origin/main = %s, want refreshed %s", got, freshMain)
+	}
+}
+
+func TestResolveDefaultBranchInferredDoesNotContactRemote(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginCloneOnBranch(t, git, tmp, "dev")
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	// The spawn path resolves every workspace repo with this call before the
+	// budgeted fetch pass, so it must answer from cached refs/remotes/origin/HEAD
+	// without any remote round trip.
+	realRun := ws.run
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		for _, arg := range args {
+			if arg == "ls-remote" || arg == "fetch" {
+				t.Fatalf("ResolveDefaultBranch ran a remote git command: git %s", strings.Join(args, " "))
+			}
+		}
+		return realRun(ctx, binary, args...)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	target, err := ws.ResolveDefaultBranch(ctx, repo, "")
+	if err != nil {
+		t.Fatalf("resolve inferred default with offline origin: %v", err)
+	}
+	want := ports.WorkspaceDefaultBranch{Remote: "origin", Branch: "dev", BaseRef: "refs/remotes/origin/dev"}
+	if target != want {
+		t.Fatalf("target = %#v, want %#v", target, want)
 	}
 }
 

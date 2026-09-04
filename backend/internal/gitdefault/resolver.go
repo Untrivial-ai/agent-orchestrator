@@ -165,6 +165,29 @@ func (r *Resolver) Resolve(ctx, remoteCtx context.Context, repo string) (Resolut
 	)
 }
 
+// ResolveLocal answers from repository metadata only: the selected remote's
+// cached symbolic HEAD, or the branch AO recorded when it initialized the
+// repository. It never contacts a remote, so its cost does not grow with
+// network latency; callers that need a live answer use Resolve.
+func (r *Resolver) ResolveLocal(ctx context.Context, repo string) (Resolution, error) {
+	remote, remotes, err := r.selectRemote(ctx, repo)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if len(remotes) == 0 {
+		return r.resolveAOInitialized(ctx, repo)
+	}
+	if cached, ok := r.cachedRemoteHead(ctx, repo, remote); ok {
+		return cached, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return Resolution{}, err
+	}
+	return Resolution{}, unresolvedf(
+		"repository %q has no cached HEAD for remote %q (run `git remote set-head %s --auto`)", repo, remote, remote,
+	)
+}
+
 func (r *Resolver) selectRemote(ctx context.Context, repo string) (string, []string, error) {
 	out, err := r.run(ctx, r.binary, "-C", repo, "remote")
 	if err != nil {

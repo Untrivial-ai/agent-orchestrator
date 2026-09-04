@@ -57,6 +57,54 @@ func TestResolveFallsBackToCachedHeadWhenRemoteIsOffline(t *testing.T) {
 	}
 }
 
+func TestResolveLocalUsesCachedHeadWithoutContactingRemote(t *testing.T) {
+	_, repo := remoteRepo(t, "trunk")
+	// The bare origin is reachable on disk, so guard against network use by
+	// rejecting any git subcommand that talks to a remote.
+	guarded := func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		for _, arg := range args {
+			if arg == "ls-remote" || arg == "fetch" {
+				t.Fatalf("ResolveLocal ran a remote git command: git %s", strings.Join(args, " "))
+			}
+		}
+		return runCommand(ctx, binary, args...)
+	}
+
+	resolution, err := New("", guarded).ResolveLocal(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("ResolveLocal: %v", err)
+	}
+	if resolution.Branch != "trunk" || resolution.Remote != "origin" || resolution.Source != SourceCachedRemoteHead {
+		t.Fatalf("resolution = %#v, want cached origin/trunk", resolution)
+	}
+}
+
+func TestResolveLocalIsUnresolvedWithoutCachedHead(t *testing.T) {
+	_, repo := remoteRepo(t, "trunk")
+	runGit(t, repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+
+	_, err := New("", nil).ResolveLocal(context.Background(), repo)
+	if !errors.Is(err, ErrUnresolved) {
+		t.Fatalf("ResolveLocal error = %v, want ErrUnresolved", err)
+	}
+	if !strings.Contains(err.Error(), "no cached HEAD") {
+		t.Fatalf("ResolveLocal error = %v, want missing cached HEAD detail", err)
+	}
+}
+
+func TestResolveLocalUsesBranchAORecordedAtInitialization(t *testing.T) {
+	repo := localRepo(t, "main")
+	runGit(t, repo, "config", "--local", ManagedDefaultConfigKey, "main")
+
+	resolution, err := New("", nil).ResolveLocal(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("ResolveLocal: %v", err)
+	}
+	if resolution.Branch != "main" || resolution.Source != SourceAOInitialized {
+		t.Fatalf("resolution = %#v, want AO-initialized main", resolution)
+	}
+}
+
 func TestResolveNeverFallsBackToCurrentOrConventionalBranch(t *testing.T) {
 	repo := localRepo(t, "main")
 	runGit(t, repo, "switch", "-c", "feature/temporary")
