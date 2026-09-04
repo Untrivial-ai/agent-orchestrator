@@ -41,6 +41,15 @@ describe("CenterPanelShell platform classes", () => {
 		expect(container.firstElementChild!.classList.contains("center-panel-shell--mac")).toBe(false);
 	});
 
+	it("places the session drag strip in the outer frame", () => {
+		const { container } = render(<CenterPanelShell draggableSessionFrame>x</CenterPanelShell>);
+		const frame = container.firstElementChild!;
+		const strip = frame.querySelector(".center-panel-session-drag-strip");
+
+		expect(frame).toHaveClass("center-panel-shell--draggable-session-frame");
+		expect(strip?.nextElementSibling).toHaveClass("center-panel-surface");
+	});
+
 	it("pads the framed titlebar past the Linux nav cluster when the sidebar is collapsed", () => {
 		mockIsLinux.mockReturnValue(true);
 		uiState.isSidebarOpen = false;
