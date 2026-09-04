@@ -167,6 +167,61 @@ func TestDevImportProjectsDaemonError(t *testing.T) {
 	}
 }
 
+// `ao dev import-projects --url` resolves BOTH data dirs against the local
+// filesystem and then POSTs the local source path for the remote daemon to open
+// on its own disk. The real assertion is the empty request log: /api/v1/dev is
+// on the LAN block list today, so a request that escapes this guard comes back
+// ROUTE_NOT_FOUND and looks, from the exit status alone, exactly like a refusal.
+//
+// The second case is the ordering proof. Pointing --from-data-dir at the target
+// data dir is the input that trips the local same-dir check; if any path
+// resolution had run before the guard, that is the error we would see instead.
+func TestDevImportProjectsRefusesRemoteTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		sourceIsTheTarget bool
+	}{
+		{name: "default source"},
+		{name: "source equal to target", sourceIsTheTarget: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			aoHome(t)
+			cfg := setConfigEnv(t)
+			t.Setenv("AO_TOKEN", "tok")
+			var args []string
+			if tc.sourceIsTheTarget {
+				args = []string{"--from-data-dir", cfg.dataDir}
+			}
+
+			var requests int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				http.NotFound(w, r)
+			}))
+			t.Cleanup(srv.Close)
+
+			_, _, err := executeCLI(t, Deps{}, append([]string{"dev", "import-projects", "--url", srv.URL}, args...)...)
+			if err == nil {
+				t.Fatal("dev import-projects --url succeeded, want a refusal")
+			}
+			if requests != 0 {
+				t.Fatalf("refused dev import-projects still contacted the remote daemon (%d requests)", requests)
+			}
+			if code := ExitCode(err); code != 2 {
+				t.Errorf("exit code = %d, want 2 (usage)", code)
+			}
+			if strings.Contains(err.Error(), "source and target data dirs are the same") {
+				t.Errorf("local path resolution ran before the remote refusal: %v", err)
+			}
+			for _, want := range []string{"--url", srv.URL, "ao dev import-projects"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestDevImportProjectsRefusesSameSourceAndTargetDataDir(t *testing.T) {
 	cfg := setConfigEnv(t)
 	if err := runfile.Write(cfg.runFile, runfile.Info{PID: os.Getpid(), Port: 3002, StartedAt: time.Now()}); err != nil {

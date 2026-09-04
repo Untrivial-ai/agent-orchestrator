@@ -172,6 +172,7 @@ func (d Deps) withDefaults() Deps {
 func NewRootCommand(deps Deps) *cobra.Command {
 	deps = deps.withDefaults()
 	ctx := &commandContext{deps: deps}
+	var remoteURL string
 
 	root := &cobra.Command{
 		Use:           "ao",
@@ -181,12 +182,21 @@ func NewRootCommand(deps Deps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			// Resolve before anything else: every daemon call below, telemetry
+			// included, depends on which daemon this invocation targets.
+			remote, err := resolveRemoteTarget(remoteURL)
+			if err != nil {
+				return err
+			}
+			ctx.remote = remote
 			if shouldEmitCLIInvocation(cmd) {
 				ctx.emitCLIInvoked(cmd.Context(), cmd)
 			}
 			return nil
 		},
 	}
+	root.PersistentFlags().StringVar(&remoteURL, "url", "",
+		"Base URL of a remote AO daemon, e.g. http://host:3011 (env AO_URL); credential from AO_TOKEN or ~/.ao/remotes.json")
 	root.SetIn(deps.In)
 	root.SetOut(deps.Out)
 	root.SetErr(deps.Err)
@@ -197,7 +207,7 @@ func NewRootCommand(deps Deps) *cobra.Command {
 		return usageError{err}
 	})
 
-	root.AddCommand(newDaemonCommand())
+	root.AddCommand(newDaemonCommand(ctx))
 	root.AddCommand(newStartCommand(ctx))
 	root.AddCommand(newStopCommand(ctx))
 	root.AddCommand(newStatusCommand(ctx))
@@ -228,6 +238,8 @@ func NewRootCommand(deps Deps) *cobra.Command {
 
 type commandContext struct {
 	deps Deps
+	// remote is nil for the default local daemon; see remote.go.
+	remote *remoteTarget
 }
 
 func shouldEmitCLIInvocation(cmd *cobra.Command) bool {
@@ -332,13 +344,17 @@ func atMostOneArg(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func newDaemonCommand() *cobra.Command {
+func newDaemonCommand(ctx *commandContext) *cobra.Command {
 	return &cobra.Command{
 		Use:    "daemon",
 		Short:  "Run the AO backend daemon",
 		Hidden: true,
 		Args:   noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Flag-only, not AO_URL — see refuseDaemonURLFlag.
+			if err := ctx.refuseDaemonURLFlag(); err != nil {
+				return err
+			}
 			return daemon.Run()
 		},
 	}

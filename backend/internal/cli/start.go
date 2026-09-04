@@ -85,6 +85,12 @@ func newStartCommand(ctx *commandContext) *cobra.Command {
 // it if absent, open it, then print the deprecation notice. It never blocks or
 // supervises the launched app.
 func (c *commandContext) runStart(ctx context.Context, cmd *cobra.Command, opts startOptions) error {
+	if err := c.refuseLocalOnly("ao start",
+		"resolves and opens the desktop app installed on the machine running the CLI, and that app "+
+			"owns its own local daemon — it can neither start nor reach a daemon on that host. Open "+
+			"the desktop app on the machine running that daemon"); err != nil {
+		return err
+	}
 	out := cmd.OutOrStdout()
 	res := startResult{}
 

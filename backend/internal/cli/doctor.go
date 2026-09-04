@@ -77,6 +77,21 @@ func newDoctorCommand(ctx *commandContext) *cobra.Command {
 		Short: "Run local AO health checks",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Refuse rather than label. Every check but `daemon` reads this
+			// machine's config, filesystem and PATH, so a labelled report
+			// against a remote target is a page of answers to a question the
+			// operator did not ask — and `doctor` is precisely the command they
+			// reach for to ask "is the remote host set up right?". Labelling
+			// would also have to add a host field to --json, changing an output
+			// scripts parse, to keep a report whose one honest line
+			// `ao status --url` already gives.
+			if err := ctx.refuseLocalOnly("ao doctor",
+				"probes the machine running the CLI — its config, data directory, PATH, git, "+
+					"terminal runtime and agent harnesses all describe THIS host, so every check but "+
+					"`daemon` would answer about the wrong machine. Run `ao doctor` on the host running "+
+					"that daemon; to check that daemon's health from here, use `ao status --url`"); err != nil {
+				return err
+			}
 			checks := ctx.runDoctor(cmd.Context())
 			failures := 0
 			for _, check := range checks {

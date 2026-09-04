@@ -128,7 +128,7 @@ func newPreviewCommand(ctx *commandContext) *cobra.Command {
 }
 
 func (c *commandContext) openPreview(ctx context.Context, target string) error {
-	path, err := sessionPreviewPath()
+	path, err := c.sessionPreviewPath()
 	if err != nil {
 		return err
 	}
@@ -138,14 +138,31 @@ func (c *commandContext) openPreview(ctx context.Context, target string) error {
 // clearPreview empties the desktop browser panel for the current session
 // (`ao preview clear`) by deleting the session's stored preview target.
 func (c *commandContext) clearPreview(ctx context.Context) error {
-	path, err := sessionPreviewPath()
+	path, err := c.sessionPreviewPath()
 	if err != nil {
 		return err
 	}
 	return c.deleteJSON(ctx, path, nil)
 }
 
-func sessionPreviewPath() (string, error) {
+// sessionPreviewPath is the single chokepoint for every `ao preview`
+// subcommand, so the remote refusal lives here rather than in five RunEs.
+//
+// `ao preview --url` can never be right, on two counts: AO_SESSION_ID names a
+// session on THIS machine (ids are `<project>-<n>`, which collide across hosts
+// readily), and the panel it drives belongs to the local desktop app, which is
+// not a client of the remote daemon. So even a request that lands sets a
+// preview target nobody will look at — on a stranger's session, if the id
+// happens to exist there. `preview start|status|stop` are blocked at the LAN
+// listener today and report ROUTE_NOT_FOUND, which reads as "that daemon is too
+// old"; they come through here too and now say what is actually wrong.
+func (c *commandContext) sessionPreviewPath() (string, error) {
+	if err := c.refuseLocalOnly("ao preview",
+		"drives the browser panel of the desktop app running on THIS machine, which is not a client "+
+			"of that daemon, and it addresses $AO_SESSION_ID — a session id on this machine. Run "+
+			"`ao preview` from inside a session on the host running that daemon"); err != nil {
+		return "", err
+	}
 	sessionID := strings.TrimSpace(os.Getenv("AO_SESSION_ID"))
 	if sessionID == "" {
 		return "", usageError{errors.New("ao preview must run inside an AO session (AO_SESSION_ID is not set)")}
@@ -155,8 +172,8 @@ func sessionPreviewPath() (string, error) {
 	return "sessions/" + url.PathEscape(sessionID) + "/preview", nil
 }
 
-func previewServerPath() (string, error) {
-	path, err := sessionPreviewPath()
+func (c *commandContext) previewServerPath() (string, error) {
+	path, err := c.sessionPreviewPath()
 	if err != nil {
 		return "", err
 	}
@@ -167,7 +184,7 @@ func (c *commandContext) startPreviewServer(
 	ctx context.Context,
 	configuration string,
 ) (previewServerStatusDTO, error) {
-	path, err := previewServerPath()
+	path, err := c.previewServerPath()
 	if err != nil {
 		return previewServerStatusDTO{}, err
 	}
@@ -188,7 +205,7 @@ func (c *commandContext) startPreviewServer(
 }
 
 func (c *commandContext) previewServerStatus(ctx context.Context) (previewServerStatusDTO, error) {
-	path, err := previewServerPath()
+	path, err := c.previewServerPath()
 	if err != nil {
 		return previewServerStatusDTO{}, err
 	}
@@ -202,7 +219,7 @@ func (c *commandContext) previewServerStatus(ctx context.Context) (previewServer
 }
 
 func (c *commandContext) stopPreviewServer(ctx context.Context) (previewServerStatusDTO, error) {
-	path, err := previewServerPath()
+	path, err := c.previewServerPath()
 	if err != nil {
 		return previewServerStatusDTO{}, err
 	}

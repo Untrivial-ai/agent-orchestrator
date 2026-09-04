@@ -46,6 +46,16 @@ func newImportCommand(ctx *commandContext) *cobra.Command {
 }
 
 func (c *commandContext) runImport(cmd *cobra.Command, opts importOptions) error {
+	// Before the run-file check below, which names the LOCAL daemon's pid and
+	// tells the operator to run `ao stop` — advice that cannot be followed with
+	// --url still set, because `ao stop` refuses a remote target outright.
+	if err := c.refuseLocalOnly("ao import",
+		"reads the legacy store on the machine running the CLI and writes THIS machine's AO "+
+			"database directly; it is the one command that never goes through a daemon's HTTP API, "+
+			"so it cannot import anything on that host. Run `ao import` on the machine running that "+
+			"daemon, with that daemon stopped"); err != nil {
+		return err
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err

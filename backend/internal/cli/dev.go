@@ -61,6 +61,22 @@ func newDevImportProjectsCommand(ctx *commandContext) *cobra.Command {
 }
 
 func (c *commandContext) runDevImportProjects(cmd *cobra.Command, opts devImportProjectsOptions) error {
+	// Before config.Load and before any path resolution below: both data dirs are
+	// expanded, made absolute and symlink-resolved against THIS machine's
+	// filesystem, compared here, and then the local source path is POSTed to the
+	// daemon as a bare string for it to open on its OWN disk. Every step of that
+	// is wrong for a remote target, and the same-dir check would be comparing a
+	// local path against a local path to guard a remote import.
+	//
+	// /api/v1/dev is on the LAN block list today, so this fails loudly anyway —
+	// but with ROUTE_NOT_FOUND, which explains none of the above, and the block
+	// is not this command's to depend on.
+	if err := c.refuseLocalOnly("ao dev import-projects",
+		"resolves both data dir paths on the machine running the CLI and then hands that "+
+			"local path to the daemon to open on its own disk, where it would name a different "+
+			"directory or none at all. Run it on the machine running that daemon"); err != nil {
+		return err
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
