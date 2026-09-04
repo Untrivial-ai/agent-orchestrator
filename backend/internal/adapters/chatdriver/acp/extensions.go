@@ -19,11 +19,15 @@ type ClientApprovalRequest struct {
 	Decisions    []ports.ChatDecisionOption
 }
 
-// ClientExtensionBridge exposes only the durable user-interaction operations a
-// provider extension may need while its JSON-RPC request is blocked.
+// ClientExtensionBridge exposes only the conversation operations a provider
+// extension may need while its JSON-RPC request is blocked. Approval and input
+// remain durable AO interactions; configuration and continuation let an
+// accepted provider workflow resume inside that same durable turn.
 type ClientExtensionBridge interface {
 	RequestInput(context.Context, ports.ChatInputRequest) (ports.ChatInputResponse, error)
 	RequestApproval(context.Context, ClientApprovalRequest) (string, error)
+	RequestTurnContinuation(context.Context, string) error
+	SetConfigOption(context.Context, string, ports.ChatConfigOptionValue) ([]ports.ChatConfigOption, error)
 	UpdatePlan(*domain.ConversationPlan)
 }
 

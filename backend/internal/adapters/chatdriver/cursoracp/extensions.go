@@ -185,6 +185,12 @@ func handleCreatePlan(
 	}
 	switch selected {
 	case "accept":
+		if _, err := bridge.SetConfigOption(ctx, "mode", ports.ChatConfigOptionValue{Select: "agent"}); err != nil {
+			return nil, fmt.Errorf("switch Cursor to agent mode after plan approval: %w", err)
+		}
+		if err := bridge.RequestTurnContinuation(ctx, "Implement the approved plan now."); err != nil {
+			return nil, fmt.Errorf("continue Cursor turn after plan approval: %w", err)
+		}
 		return map[string]any{"outcome": map[string]any{"outcome": "accepted"}}, nil
 	case "reject":
 		return map[string]any{"outcome": map[string]any{"outcome": "rejected"}}, nil

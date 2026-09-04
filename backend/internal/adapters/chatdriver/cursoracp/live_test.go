@@ -145,6 +145,96 @@ func TestLiveCursorACPPermissionModes(t *testing.T) {
 	}
 }
 
+// Accepting Cursor's custom create-plan request must resume the same provider
+// turn. Auto-review removes ordinary tool permissions from this scenario so a
+// second approval or timeout identifies plan continuation rather than policy.
+func TestLiveCursorACPPlanAcceptanceContinues(t *testing.T) {
+	if os.Getenv("AO_LIVE_CURSOR_ACP") != "1" {
+		t.Skip("set AO_LIVE_CURSOR_ACP=1 to run against the local Cursor account")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	workspace := t.TempDir()
+	conv, err := New(cursor.New(), nil).Start(ctx, ports.ChatStartConfig{
+		SessionID: "live-cursor-plan-continuation", DataDir: liveDataDir(t),
+		WorkspacePath: workspace, Env: liveEnvMap(), Permissions: ports.PermissionModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conv.Close()
+	setCursorPlanMode(ctx, t, conv)
+	ref := sendLiveTurnWithSettings(ctx, t, conv,
+		"Create a plan first. After I approve it, use the file editing tool to create plan-proof.txt containing continued, then say done.",
+		ports.ChatTurnSettings{Approval: ports.PermissionModeAuto})
+	waitForApprovedCursorPlan(ctx, t, conv, ref.ProviderTurnID)
+	content, err := os.ReadFile(filepath.Join(workspace, "plan-proof.txt"))
+	if err != nil || strings.TrimSpace(string(content)) != "continued" {
+		t.Fatalf("plan continuation proof = %q, %v", content, err)
+	}
+}
+
+func setCursorPlanMode(ctx context.Context, t *testing.T, conv ports.ChatConversation) {
+	t.Helper()
+	controller := conv.(ports.ChatConfigOptionController)
+	options, err := controller.ListConfigOptions(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigOptions: %v", err)
+	}
+	for _, option := range options {
+		if option.ID != "mode" {
+			continue
+		}
+		for _, choice := range option.Choices {
+			if choice.Value == "plan" {
+				if _, err := controller.SetConfigOption(ctx, "mode", ports.ChatConfigOptionValue{Select: choice.Value}); err != nil {
+					t.Fatalf("SetConfigOption(mode=plan): %v", err)
+				}
+				return
+			}
+		}
+	}
+	t.Fatalf("Cursor did not advertise mode=plan: %#v", options)
+}
+
+func waitForApprovedCursorPlan(
+	ctx context.Context,
+	t *testing.T,
+	conv ports.ChatConversation,
+	turnID string,
+) {
+	t.Helper()
+	approved := false
+	for {
+		select {
+		case event, ok := <-conv.Events():
+			if !ok {
+				t.Fatal("controller closed before plan continuation completed")
+			}
+			if event.ProviderTurnID != "" && event.ProviderTurnID != turnID {
+				continue
+			}
+			switch event.Kind {
+			case ports.ChatEventApprovalRequested:
+				if approved || event.ActivityKind != domain.ActivityKindPlan {
+					t.Fatalf("unexpected approval after accepting Cursor plan: %#v", event)
+				}
+				if err := conv.ResolveRequest(ctx, event.RequestID, ports.ChatDecision{ID: "accept"}); err != nil {
+					t.Fatalf("ResolveRequest(plan): %v", err)
+				}
+				approved = true
+			case ports.ChatEventTurnCompleted:
+				if !approved || event.TurnState != domain.TurnStateCompleted {
+					t.Fatalf("plan turn completed without continuation: approved=%v state=%q", approved, event.TurnState)
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatalf("Cursor did not continue after plan approval: %v", ctx.Err())
+		}
+	}
+}
+
 func assertCursorAdvertisements(ctx context.Context, t *testing.T, conv ports.ChatConversation) {
 	t.Helper()
 	options, err := conv.(ports.ChatConfigOptionController).ListConfigOptions(ctx)

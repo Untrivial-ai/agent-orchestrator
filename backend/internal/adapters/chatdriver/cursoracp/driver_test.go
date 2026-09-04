@@ -18,11 +18,16 @@ import (
 )
 
 type fakeExtensionBridge struct {
-	input         ports.ChatInputRequest
-	inputResponse ports.ChatInputResponse
-	approval      acpdriver.ClientApprovalRequest
-	selected      string
-	plan          *domain.ConversationPlan
+	input           ports.ChatInputRequest
+	inputResponse   ports.ChatInputResponse
+	approval        acpdriver.ClientApprovalRequest
+	selected        string
+	plan            *domain.ConversationPlan
+	configID        string
+	configValue     ports.ChatConfigOptionValue
+	configErr       error
+	continuation    string
+	continuationErr error
 }
 
 func (f *fakeExtensionBridge) RequestInput(
@@ -42,6 +47,21 @@ func (f *fakeExtensionBridge) RequestApproval(
 }
 
 func (f *fakeExtensionBridge) UpdatePlan(plan *domain.ConversationPlan) { f.plan = plan }
+
+func (f *fakeExtensionBridge) SetConfigOption(
+	_ context.Context,
+	id string,
+	value ports.ChatConfigOptionValue,
+) ([]ports.ChatConfigOption, error) {
+	f.configID = id
+	f.configValue = value
+	return nil, f.configErr
+}
+
+func (f *fakeExtensionBridge) RequestTurnContinuation(_ context.Context, text string) error {
+	f.continuation = text
+	return f.continuationErr
+}
 
 func TestConfigureWritesManagedStandingRuleForStartAndResume(t *testing.T) {
 	dataDir := t.TempDir()
@@ -268,9 +288,84 @@ func TestHandleCreatePlanPublishesPlanAndUsesDurableApprovalFlow(t *testing.T) {
 	if bridge.approval.Summary != "Approve Cursor plan: Repair ACP" || len(bridge.approval.Decisions) != 2 {
 		t.Fatalf("approval request = %#v", bridge.approval)
 	}
+	if bridge.configID != "mode" || bridge.configValue.Select != "agent" {
+		t.Fatalf("accepted plan config = %q %#v, want mode=agent", bridge.configID, bridge.configValue)
+	}
+	if bridge.continuation != "Implement the approved plan now." {
+		t.Fatalf("accepted plan continuation = %q", bridge.continuation)
+	}
 	encoded, _ := json.Marshal(result)
 	if string(encoded) != `{"outcome":{"outcome":"accepted"}}` {
 		t.Fatalf("plan response = %s", encoded)
+	}
+}
+
+func TestHandleCreatePlanDoesNotSwitchModeWhenRejected(t *testing.T) {
+	bridge := &fakeExtensionBridge{selected: "reject"}
+	result, handled, err := handleExtension(
+		context.Background(), bridge, "cursor/create_plan", json.RawMessage(`{"name":"Stop"}`),
+	)
+	if err != nil {
+		t.Fatalf("handleExtension: %v", err)
+	}
+	if !handled {
+		t.Fatal("cursor/create_plan was not handled")
+	}
+	if bridge.configID != "" {
+		t.Fatalf("rejected plan changed config %q", bridge.configID)
+	}
+	if bridge.continuation != "" {
+		t.Fatalf("rejected plan scheduled continuation %q", bridge.continuation)
+	}
+	encoded, _ := json.Marshal(result)
+	if string(encoded) != `{"outcome":{"outcome":"rejected"}}` {
+		t.Fatalf("plan response = %s", encoded)
+	}
+}
+
+func TestHandleCreatePlanDoesNotSwitchModeWhenCancelled(t *testing.T) {
+	bridge := &fakeExtensionBridge{}
+	result, handled, err := handleExtension(
+		context.Background(), bridge, "cursor/create_plan", json.RawMessage(`{"name":"Stop"}`),
+	)
+	if err != nil {
+		t.Fatalf("handleExtension: %v", err)
+	}
+	if !handled {
+		t.Fatal("cursor/create_plan was not handled")
+	}
+	if bridge.configID != "" || bridge.continuation != "" {
+		t.Fatalf("cancelled plan changed config %q or scheduled continuation %q", bridge.configID, bridge.continuation)
+	}
+	encoded, _ := json.Marshal(result)
+	if string(encoded) != `{"outcome":{"outcome":"cancelled"}}` {
+		t.Fatalf("plan response = %s", encoded)
+	}
+}
+
+func TestHandleCreatePlanSurfacesAgentModeSwitchFailure(t *testing.T) {
+	bridge := &fakeExtensionBridge{selected: "accept", configErr: errors.New("mode unavailable")}
+	_, handled, err := handleExtension(
+		context.Background(), bridge, "cursor/create_plan", json.RawMessage(`{"name":"Build"}`),
+	)
+	if !handled {
+		t.Fatal("cursor/create_plan was not handled")
+	}
+	if err == nil || !strings.Contains(err.Error(), "switch Cursor to agent mode after plan approval") {
+		t.Fatalf("handleExtension error = %v", err)
+	}
+}
+
+func TestHandleCreatePlanSurfacesContinuationFailure(t *testing.T) {
+	bridge := &fakeExtensionBridge{selected: "accept", continuationErr: errors.New("turn settled")}
+	_, handled, err := handleExtension(
+		context.Background(), bridge, "cursor/create_plan", json.RawMessage(`{"name":"Build"}`),
+	)
+	if !handled {
+		t.Fatal("cursor/create_plan was not handled")
+	}
+	if err == nil || !strings.Contains(err.Error(), "continue Cursor turn after plan approval") {
+		t.Fatalf("handleExtension error = %v", err)
 	}
 }
 
