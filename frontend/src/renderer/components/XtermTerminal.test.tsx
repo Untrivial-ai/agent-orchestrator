@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttachableTerminal } from "../hooks/useTerminalSession";
@@ -7,6 +8,9 @@ import { XtermTerminal } from "./XtermTerminal";
 
 const state = vi.hoisted(() => ({
 	fit: vi.fn(),
+	disposeCalls: 0,
+	openTimerRanAfterDispose: 0,
+	trackOpenTimerLifecycle: false,
 	linkHandler: null as null | ((event: MouseEvent, uri: string) => void),
 	searchAddon: null as null | {
 		clearDecorations: ReturnType<typeof vi.fn>;
@@ -103,10 +107,19 @@ vi.mock("@xterm/xterm", () => ({
 		loadAddon() {}
 		open(host: HTMLElement) {
 			host.appendChild(document.createElement("textarea"));
+			if (state.trackOpenTimerLifecycle) {
+				window.setTimeout(() => {
+					if (this.disposed) state.openTimerRanAfterDispose += 1;
+				}, 0);
+			}
 		}
 		write() {}
 		writeln() {}
-		dispose() {}
+		disposed = false;
+		dispose() {
+			this.disposed = true;
+			state.disposeCalls += 1;
+		}
 		onData(listener: (data: string) => void) {
 			this.dataListeners.add(listener);
 			return { dispose: () => this.dataListeners.delete(listener) };
@@ -208,6 +221,9 @@ function setNavigatorPlatform(platform: string) {
 describe("XtermTerminal", () => {
 	beforeEach(() => {
 		state.fit.mockReset();
+		state.disposeCalls = 0;
+		state.openTimerRanAfterDispose = 0;
+		state.trackOpenTimerLifecycle = false;
 		state.lastTerminal = null;
 		state.linkHandler = null;
 		state.searchAddon = null;
@@ -275,6 +291,44 @@ describe("XtermTerminal", () => {
 			vi.useRealTimers();
 			vi.unstubAllGlobals();
 		}
+	});
+
+	it("lets xterm's deferred open work settle before StrictMode disposal", () => {
+		vi.useFakeTimers();
+		state.trackOpenTimerLifecycle = true;
+		try {
+			render(
+				<StrictMode>
+					<XtermTerminal theme="dark" />
+				</StrictMode>,
+			);
+
+			expect(state.disposeCalls).toBe(0);
+			act(() => vi.advanceTimersByTime(0));
+
+			expect(state.disposeCalls).toBe(1);
+			expect(state.openTimerRanAfterDispose).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("settles a pending write when terminal cleanup wins the race", () => {
+		let terminal: AttachableTerminal | undefined;
+		const view = render(
+			<XtermTerminal
+				theme="dark"
+				onReady={(ready) => {
+					terminal = ready;
+				}}
+			/>,
+		);
+		const done = vi.fn();
+
+		view.unmount();
+		terminal!.write(new Uint8Array([0x61]), done);
+
+		expect(done).toHaveBeenCalledOnce();
 	});
 
 	it("preserves the agent TUI palette without contrast remapping", () => {
