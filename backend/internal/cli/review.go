@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,11 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+)
+
+const (
+	reviewSubmitRetryWindow   = 30 * time.Second
+	reviewSubmitRetryInterval = 250 * time.Millisecond
 )
 
 // reviewRun mirrors the daemon's domain.ReviewRun for the CLI client.
@@ -195,7 +201,7 @@ func (c *commandContext) submitReview(cmd *cobra.Command, args []string, opts re
 	reviewID := strings.TrimSpace(opts.reviewID)
 	path := "sessions/" + url.PathEscape(session) + "/reviews/submit"
 	var res reviewRunResponse
-	if err := c.postJSON(cmd.Context(), path, submitReviewRequest{RunID: runID, Verdict: verdict, Body: body, GithubReviewID: reviewID}, &res); err != nil {
+	if err := c.postReviewJSON(cmd.Context(), path, submitReviewRequest{RunID: runID, Verdict: verdict, Body: body, GithubReviewID: reviewID}, &res); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "recorded %s review for %s\n", res.Review.Verdict, session)
@@ -212,7 +218,7 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 	}
 	path := "sessions/" + url.PathEscape(session) + "/reviews/submit"
 	var res reviewRunResponse
-	if err := c.postJSON(cmd.Context(), path, submitReviewRequest{Reviews: reviews}, &res); err != nil {
+	if err := c.postReviewJSON(cmd.Context(), path, submitReviewRequest{Reviews: reviews}, &res); err != nil {
 		return err
 	}
 	count := len(res.Reviews)
@@ -221,6 +227,43 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 	}
 	_, err = fmt.Fprintf(cmd.OutOrStdout(), "recorded %d review(s) for %s\n", count, session)
 	return err
+}
+
+// postReviewJSON retries only transport-level daemon unavailability. The
+// service accepts an identical completed result idempotently, so replay is safe
+// even when a connection drops after the daemon committed the first request.
+// Validation/API errors still return immediately and are never retried.
+func (c *commandContext) postReviewJSON(ctx context.Context, path string, body submitReviewRequest, out *reviewRunResponse) error {
+	retryCtx, cancel := context.WithTimeout(ctx, reviewSubmitRetryWindow)
+	defer cancel()
+
+	var lastErr error
+	for {
+		err := c.postJSON(retryCtx, path, body, out)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !errors.Is(err, errDaemonUnavailable) {
+			return err
+		}
+		lastErr = err
+		if retryCtx.Err() != nil {
+			return fmt.Errorf("%w (review result was not recorded after retrying for %s)", lastErr, reviewSubmitRetryWindow)
+		}
+
+		// Deps.Sleep keeps this loop deterministic in unit tests. The short
+		// interval bounds cancellation latency without adding a retry goroutine.
+		c.deps.Sleep(reviewSubmitRetryInterval)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if retryCtx.Err() != nil {
+			return fmt.Errorf("%w (review result was not recorded after retrying for %s)", lastErr, reviewSubmitRetryWindow)
+		}
+	}
 }
 
 func newReviewCancelCommand(ctx *commandContext) *cobra.Command {

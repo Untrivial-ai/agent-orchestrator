@@ -32,6 +32,24 @@ type apiResponseError struct {
 	ErrorBody  apiError
 }
 
+var errDaemonUnavailable = errors.New("AO daemon unavailable")
+
+// daemonUnavailableError keeps the established user-facing diagnostics while
+// giving the few idempotent CLI operations that can safely retry a typed signal.
+// Most commands continue returning this error immediately through doJSON.
+type daemonUnavailableError struct {
+	message string
+	cause   error
+}
+
+func (e daemonUnavailableError) Error() string { return e.message }
+
+func (e daemonUnavailableError) Unwrap() error { return e.cause }
+
+func (e daemonUnavailableError) Is(target error) bool {
+	return target == errDaemonUnavailable || errors.Is(e.cause, target)
+}
+
 func (e apiResponseError) Error() string {
 	if e.ErrorBody.Message == "" {
 		return fmt.Sprintf("daemon returned HTTP %d", e.StatusCode)
@@ -123,10 +141,10 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		return err
 	}
 	if info == nil {
-		return fmt.Errorf("AO daemon is not running — start it with `ao start`")
+		return daemonUnavailableError{message: "AO daemon is not running — start it with `ao start`"}
 	}
 	if !c.deps.ProcessAlive(info.PID) {
-		return fmt.Errorf("AO daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath)
+		return daemonUnavailableError{message: fmt.Sprintf("AO daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath)}
 	}
 
 	var reader io.Reader = http.NoBody
@@ -155,7 +173,7 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	client.Timeout = timeout
 	resp, err := client.Do(req) // #nosec G704 -- request target is the fixed loopback daemon URL above.
 	if err != nil {
-		return fmt.Errorf("call daemon: %w", err)
+		return daemonUnavailableError{message: fmt.Sprintf("call daemon: %v", err), cause: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 

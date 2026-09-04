@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // reviewCapture records the method/path/body of the request the CLI made.
@@ -127,6 +130,113 @@ func TestReviewSubmitBatchReadsReviewsFromStdin(t *testing.T) {
 	}
 	if req.RunID != "" || req.Verdict != "" {
 		t.Fatalf("batch request should not also set legacy fields: %+v", req)
+	}
+}
+
+func TestReviewSubmitBatchRetriesAcrossDaemonRestart(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := reviewServer(t, http.StatusOK, `{"reviews":[{"id":"run-1","verdict":"changes_requested"}]}`)
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"changes_requested","body":"fix auth","githubReviewId":"101"}]}`)
+	retries := 0
+	deps.Sleep = func(time.Duration) {
+		retries++
+		writeRunFileFor(t, cfg, srv)
+	}
+
+	out, errOut, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-")
+	if err != nil {
+		t.Fatalf("submit should survive a daemon restart: %v\nstderr=%s", err, errOut)
+	}
+	if retries != 1 {
+		t.Fatalf("retry waits = %d, want 1", retries)
+	}
+	if !strings.Contains(out, "recorded 1 review(s) for mer-1") {
+		t.Fatalf("stdout = %q", out)
+	}
+	var req submitReviewRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(req.Reviews) != 1 || req.Reviews[0].RunID != "run-1" || req.Reviews[0].Body != "fix auth" || req.Reviews[0].GithubReviewID != "101" {
+		t.Fatalf("retried request = %+v", req)
+	}
+}
+
+func TestReviewSubmitRetriesUncertainTransportFailureWithIdenticalPayload(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := reviewServer(t, http.StatusOK, `{}`)
+	writeRunFileFor(t, cfg, srv)
+
+	var bodies []string
+	deps := aliveDeps()
+	deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"approved","githubReviewId":"101"}]}`)
+	deps.Sleep = func(time.Duration) {}
+	deps.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/v1/sessions/mer-1/reviews/submit" {
+			return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
+		}
+		raw, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, string(raw))
+		if len(bodies) == 1 {
+			// The daemon may have committed before the connection broke. A retry
+			// must therefore send byte-for-byte equivalent idempotency fields.
+			return nil, io.ErrUnexpectedEOF
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"reviews":[{"id":"run-1","verdict":"approved"}]}`)),
+		}, nil
+	})}
+
+	if _, errOut, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-"); err != nil {
+		t.Fatalf("retry uncertain result: %v\nstderr=%s", err, errOut)
+	}
+	if len(bodies) != 2 || bodies[0] != bodies[1] {
+		t.Fatalf("request bodies = %#v, want two identical attempts", bodies)
+	}
+}
+
+func TestReviewSubmitDoesNotRetryDaemonAPIRejection(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := reviewServer(t, http.StatusConflict, `{"message":"review run already recorded a different body","code":"REVIEW_INVALID"}`)
+	writeRunFileFor(t, cfg, srv)
+
+	deps := aliveDeps()
+	waits := 0
+	deps.Sleep = func(time.Duration) { waits++ }
+	_, _, err := executeCLI(t, deps, "review", "submit", "mer-1", "--run", "run-1", "--verdict", "approved")
+	if err == nil || !strings.Contains(err.Error(), "REVIEW_INVALID") {
+		t.Fatalf("err = %v, want daemon rejection", err)
+	}
+	if waits != 0 {
+		t.Fatalf("retry waits = %d, want 0", waits)
+	}
+}
+
+func TestReviewSubmitCancellationStopsUnavailableRetry(t *testing.T) {
+	setConfigEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	deps := aliveDeps()
+	waits := 0
+	deps.Sleep = func(time.Duration) {
+		waits++
+		cancel()
+	}
+	c := &commandContext{deps: deps.withDefaults()}
+	err := c.postReviewJSON(ctx, "sessions/mer-1/reviews/submit", submitReviewRequest{
+		RunID: "run-1", Verdict: "approved",
+	}, &reviewRunResponse{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context cancellation", err)
+	}
+	if waits != 1 {
+		t.Fatalf("retry waits = %d, want 1", waits)
 	}
 }
 
