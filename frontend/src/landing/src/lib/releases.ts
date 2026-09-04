@@ -1,10 +1,5 @@
-import {
-  COMPANY,
-  DOWNLOAD_URL_LINUX,
-  DOWNLOAD_URL_MAC_ARM64,
-  DOWNLOAD_URL_MAC_X64,
-  DOWNLOAD_URL_WINDOWS,
-} from "@ao/shared/constants";
+import { COMPANY } from "@ao/shared/constants";
+import semver from "semver";
 
 export interface GitHubReleaseAsset {
   name: string;
@@ -25,22 +20,35 @@ export interface DownloadBuild {
 }
 
 export interface PlatformDownloads {
-  name: string;
+  name: "macOS" | "Windows" | "Linux";
   builds: DownloadBuild[];
 }
 
+const RELEASE_PAGE_SIZE = 20;
+const RELEASE_PAGE_COUNT = 5;
+
 export async function getReleases(): Promise<GitHubRelease[]> {
   try {
-    const response = await fetch(
-      `https://api.github.com/repos/${COMPANY.GITHUB_REPO}/releases?per_page=30`,
-      {
-        headers: { Accept: "application/vnd.github+json" },
-        next: { revalidate: 3600 },
-      },
+    const responses = await Promise.all(
+      Array.from({ length: RELEASE_PAGE_COUNT }, (_, index) =>
+        fetch(
+          `https://api.github.com/repos/${COMPANY.GITHUB_REPO}/releases?per_page=${RELEASE_PAGE_SIZE}&page=${index + 1}`,
+          {
+            headers: { Accept: "application/vnd.github+json" },
+            next: { revalidate: 60 },
+          },
+        ),
+      ),
     );
 
-    if (!response.ok) return [];
-    return (await response.json()) as GitHubRelease[];
+    if (responses.some((response) => !response.ok)) return [];
+    return (
+      await Promise.all(
+        responses.map(
+          async (response) => (await response.json()) as GitHubRelease[],
+        ),
+      )
+    ).flat();
   } catch {
     return [];
   }
@@ -70,16 +78,41 @@ function available(builds: Array<DownloadBuild | null>): DownloadBuild[] {
 }
 
 export function findStableRelease(releases: GitHubRelease[]) {
-  return releases.find((release) => !release.draft && !release.prerelease);
+  return newestEligibleRelease(releases, "Stable");
 }
 
 export function findNightlyRelease(releases: GitHubRelease[]) {
-  return releases.find(
-    (release) =>
-      !release.draft &&
-      release.prerelease &&
-      release.tag_name.includes("-nightly."),
-  );
+  return newestEligibleRelease(releases, "Nightly");
+}
+
+const CHANNEL_MANIFESTS = {
+  Stable: ["latest-mac.yml", "latest-linux.yml", "latest.yml"],
+  Nightly: ["nightly-mac.yml", "nightly-linux.yml", "nightly.yml"],
+} as const;
+
+function newestEligibleRelease(
+  releases: GitHubRelease[],
+  channel: DownloadBuild["channel"],
+): GitHubRelease | undefined {
+  const manifestNames = CHANNEL_MANIFESTS[channel];
+
+  return releases
+    .filter((release) => {
+      const version = semver.valid(release.tag_name);
+      if (release.draft || version === null) return false;
+
+      const prerelease = semver.prerelease(version);
+      const channelMatches =
+        channel === "Stable"
+          ? !release.prerelease && prerelease === null
+          : release.prerelease && prerelease?.[0] === "nightly";
+      if (!channelMatches) return false;
+
+      return manifestNames.every((manifestName) =>
+        release.assets.some((asset) => asset.name === manifestName),
+      );
+    })
+    .sort((left, right) => semver.rcompare(left.tag_name, right.tag_name))[0];
 }
 
 /** Per-platform Stable + Nightly download links, sourced from the latest GitHub releases. */
@@ -93,8 +126,18 @@ export function getPlatformDownloads(
     {
       name: "macOS",
       builds: available([
-        build("Mac (Apple silicon)", DOWNLOAD_URL_MAC_ARM64, "Stable"),
-        build("Mac (Intel)", DOWNLOAD_URL_MAC_X64, "Stable"),
+        build(
+          "Mac (Apple silicon)",
+          assetUrl(stable, "agent-orchestrator-darwin-arm64.dmg") ??
+            assetUrl(stable, "agent-orchestrator-darwin-arm64.zip"),
+          "Stable",
+        ),
+        build(
+          "Mac (Intel)",
+          assetUrl(stable, "agent-orchestrator-darwin-x64.dmg") ??
+            assetUrl(stable, "agent-orchestrator-darwin-x64.zip"),
+          "Stable",
+        ),
         build(
           "Mac (Apple silicon)",
           assetUrl(nightly, "agent-orchestrator-darwin-arm64.zip"),
@@ -110,7 +153,11 @@ export function getPlatformDownloads(
     {
       name: "Windows",
       builds: available([
-        build("Windows (x64)", DOWNLOAD_URL_WINDOWS, "Stable"),
+        build(
+          "Windows (x64)",
+          assetUrl(stable, "agent-orchestrator-win32-x64.exe"),
+          "Stable",
+        ),
         build(
           "Windows (x64)",
           assetUrl(nightly, "agent-orchestrator-win32-x64.exe"),
@@ -121,7 +168,11 @@ export function getPlatformDownloads(
     {
       name: "Linux",
       builds: available([
-        build("Linux AppImage (x64)", DOWNLOAD_URL_LINUX, "Stable"),
+        build(
+          "Linux AppImage (x64)",
+          assetUrl(stable, "agent-orchestrator-linux-x64.AppImage"),
+          "Stable",
+        ),
         build(
           "Linux .deb (x64)",
           assetUrl(

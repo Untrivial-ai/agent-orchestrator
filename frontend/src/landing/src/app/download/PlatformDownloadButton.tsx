@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  COMPANY,
-  DOWNLOAD_URL_LINUX,
-  DOWNLOAD_URL_MAC_ARM64,
-  DOWNLOAD_URL_MAC_X64,
-  DOWNLOAD_URL_WINDOWS,
-} from "@ao/shared/constants";
+import { COMPANY } from "@ao/shared/constants";
 import { FaApple, FaLinux, FaWindows } from "react-icons/fa";
 import { isMacPlatform, Platform, usePlatform } from "../hooks/useOS";
 
@@ -16,29 +10,45 @@ type DownloadTarget = {
   icon: "apple" | "windows" | "linux";
 };
 
-function getDownloadTarget(platform: Platform): DownloadTarget {
+export interface PlatformDownloadLinks {
+  linux?: string;
+  macArm64?: string;
+  macX64?: string;
+  windows?: string;
+}
+
+function getDownloadTarget(
+  platform: Platform,
+  downloads: PlatformDownloadLinks,
+): DownloadTarget | null {
   if (platform === Platform.Windows) {
-    return {
-      href: DOWNLOAD_URL_WINDOWS,
-      label: "Download for Windows",
-      icon: "windows",
-    };
+    return downloads.windows
+      ? {
+          href: downloads.windows,
+          label: "Download for Windows",
+          icon: "windows",
+        }
+      : null;
   }
 
   if (platform === Platform.Linux) {
-    return {
-      href: DOWNLOAD_URL_LINUX,
-      label: "Download for Linux",
-      icon: "linux",
-    };
+    return downloads.linux
+      ? {
+          href: downloads.linux,
+          label: "Download for Linux",
+          icon: "linux",
+        }
+      : null;
   }
 
   if (platform === Platform.MacIntel) {
-    return {
-      href: DOWNLOAD_URL_MAC_X64,
-      label: "Download for macOS (Intel)",
-      icon: "apple",
-    };
+    return downloads.macX64
+      ? {
+          href: downloads.macX64,
+          label: "Download for macOS (Intel)",
+          icon: "apple",
+        }
+      : null;
   }
 
   if (platform === Platform.Mobile) {
@@ -50,23 +60,32 @@ function getDownloadTarget(platform: Platform): DownloadTarget {
   }
 
   if (isMacPlatform(platform)) {
-    return {
-      href: DOWNLOAD_URL_MAC_ARM64,
-      label: "Download for macOS",
-      icon: "apple",
-    };
+    return downloads.macArm64
+      ? {
+          href: downloads.macArm64,
+          label: "Download for macOS",
+          icon: "apple",
+        }
+      : null;
   }
 
-  return {
-    href: DOWNLOAD_URL_MAC_ARM64,
-    label: "Download for macOS",
-    icon: "apple",
-  };
+  return downloads.macArm64
+    ? {
+        href: downloads.macArm64,
+        label: "Download for macOS",
+        icon: "apple",
+      }
+    : null;
 }
 
-export function PlatformDownloadButton() {
+export function PlatformDownloadButton({
+  downloads,
+}: {
+  downloads: PlatformDownloadLinks;
+}) {
   const { platform } = usePlatform();
-  const target = getDownloadTarget(platform);
+  const target = getDownloadTarget(platform, downloads);
+  if (target === null) return null;
   const Icon =
     target.icon === "windows"
       ? FaWindows
