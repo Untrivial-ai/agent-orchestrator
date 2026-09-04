@@ -438,6 +438,38 @@ func TestManager_EnsureDefaultScratchProjectReseedsAfterArchivedScratchLeavesNoA
 		t.Fatalf("active projects = %#v, want reseeded scratch", list)
 	}
 }
+// failingListStore fails every ListProjects call with a fixed cause so the
+// seed path's error wrapping can be asserted.
+type failingListStore struct {
+	project.Store
+	err error
+}
+
+func (s *failingListStore) ListProjects(context.Context) ([]domain.ProjectRecord, error) {
+	return nil, s.err
+}
+
+func TestManager_EnsureDefaultScratchProjectSurfacesStoreFailure(t *testing.T) {
+	ctx := context.Background()
+	cause := errors.New("disk I/O error")
+	m := project.NewWithDeps(project.Deps{Store: &failingListStore{err: cause}})
+
+	_, err := m.EnsureDefaultScratchProject(ctx, filepath.Join(t.TempDir(), "scratch", "default"))
+	if err == nil {
+		t.Fatalf("EnsureDefaultScratchProject: want error, got nil")
+	}
+	var e *apierr.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("error = %v, want *apierr.Error", err)
+	}
+	if e.Code != "PROJECT_LOAD_FAILED" {
+		t.Fatalf("code = %q, want PROJECT_LOAD_FAILED", e.Code)
+	}
+	if !strings.Contains(e.Message, "disk I/O error") {
+		t.Fatalf("message = %q, want wrapped cause", e.Message)
+	}
+}
+
 
 func TestManager_SetConfigRejectsScratchGitOnlyFields(t *testing.T) {
 	ctx := context.Background()

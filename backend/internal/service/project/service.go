@@ -615,7 +615,7 @@ func (m *Service) EnsureDefaultScratchProject(ctx context.Context, scratchPath s
 
 	projects, err := m.store.ListProjects(ctx)
 	if err != nil {
-		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load projects")
+		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load projects: "+err.Error())
 	}
 	if len(projects) != 0 {
 		return Project{}, nil
