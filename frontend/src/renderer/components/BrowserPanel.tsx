@@ -12,12 +12,14 @@ import {
 import { useTranslation } from "react-i18next";
 import {
 	DndContext,
+	DragOverlay,
 	KeyboardSensor,
 	PointerSensor,
 	closestCenter,
 	useSensor,
 	useSensors,
 	type DragEndEvent,
+	type Modifier,
 } from "@dnd-kit/core";
 import {
 	SortableContext,
@@ -100,6 +102,22 @@ const DEVICE_PRESETS: { id: string; label: string; width: number; height: number
 const CUSTOM_DEVICE_PRESET_ID = "custom";
 const MIN_DEVICE_FRAME_WIDTH = 240;
 const MAX_DEVICE_FRAME_WIDTH = 2560;
+
+const restrictBrowserTopTabDragToHorizontalAxis: Modifier = ({
+	activeNodeRect,
+	transform,
+	windowRect,
+}) => {
+	if (!activeNodeRect || !windowRect) return { ...transform, y: 0 };
+	const minX = windowRect.left - activeNodeRect.left;
+	const maxX = windowRect.right - activeNodeRect.right;
+	return {
+		...transform,
+		x: Math.min(maxX, Math.max(minX, transform.x)),
+		y: 0,
+	};
+};
+const browserTopTabDragModifiers = [restrictBrowserTopTabDragToHorizontalAxis];
 
 function clampDeviceFrameWidth(width: number): number | undefined {
 	if (!Number.isFinite(width)) return undefined;
@@ -364,7 +382,8 @@ export function BrowserPanelView({
 	const urlInputRef = useRef<HTMLInputElement>(null);
 	const [pinned, setPinned] = useState(() => window.localStorage.getItem(RAIL_PINNED_STORAGE_KEY) === "1");
 	const showTabsTrigger = !poppedOut && !pinned && tabs.length >= 2;
-	const [topTabDragActive, setTopTabDragActive] = useState(false);
+	const [draggedTopTabId, setDraggedTopTabId] = useState<string | null>(null);
+	const draggedTopTab = tabs.find((tab) => tab.id === draggedTopTabId);
 
 	useEffect(() => {
 		if (!viewId) return;
@@ -397,7 +416,7 @@ export function BrowserPanelView({
 	);
 	const handleTopTabDragEnd = useCallback(
 		(event: DragEndEvent) => {
-			setTopTabDragActive(false);
+			setDraggedTopTabId(null);
 			if (!event.over) return;
 			const orderedIds = reorderBrowserTabs(
 				tabs.map((tab) => tab.id),
@@ -626,16 +645,17 @@ export function BrowserPanelView({
 				<div className="browser-panel__tab-bar" data-testid="browser-tab-bar">
 					<DndContext
 						collisionDetection={closestCenter}
-						onDragCancel={() => setTopTabDragActive(false)}
+						modifiers={browserTopTabDragModifiers}
+						onDragCancel={() => setDraggedTopTabId(null)}
 						onDragEnd={handleTopTabDragEnd}
-						onDragStart={() => setTopTabDragActive(true)}
+						onDragStart={({ active }) => setDraggedTopTabId(String(active.id))}
 						sensors={tabSensors}
 					>
 						<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
 							<div
 								aria-label={t("browser.tabs")}
 								className="browser-panel__tab-strip"
-								onKeyDown={topTabDragActive ? undefined : handleTabListKeyDown}
+								onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
 								role="tablist"
 							>
 								{tabs.map((tab) => (
@@ -650,10 +670,22 @@ export function BrowserPanelView({
 								))}
 							</div>
 						</SortableContext>
+						<DragOverlay
+							adjustScale={false}
+							dropAnimation={null}
+							modifiers={browserTopTabDragModifiers}
+						>
+							{draggedTopTab ? (
+								<BrowserTopTabDragOverlay onlyTab={tabs.length === 1} tab={draggedTopTab} />
+							) : null}
+						</DragOverlay>
 					</DndContext>
 					<button
 						aria-label={t("browser.openNewTab")}
-						className="browser-panel__tab-new"
+						className={cn(
+							"browser-panel__tab-new",
+							draggedTopTabId && "browser-panel__tab-new--dragging",
+						)}
 						onClick={() => void handleOpenTab()}
 						title={t("browser.openNewTab")}
 						type="button"
@@ -1070,7 +1102,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 			className={cn(
 				"browser-panel__tab",
 				selected && "browser-panel__tab--active",
-				isDragging && "browser-panel__tab--dragging z-chrome opacity-80",
+				isDragging && "browser-panel__tab--drag-placeholder",
 			)}
 			ref={setNodeRef}
 			style={{ transform: CSS.Transform.toString(transform), transition }}
@@ -1103,6 +1135,37 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 			>
 				<X aria-hidden="true" className="size-icon-sm" />
 			</button>
+		</div>
+	);
+});
+
+export const BrowserTopTabDragOverlay = memo(function BrowserTopTabDragOverlay({
+	tab,
+	onlyTab,
+}: {
+	tab: BrowserViewModel["tabs"][number];
+	onlyTab: boolean;
+}) {
+	const label = browserTabLabel(tab.title, tab.url);
+	return (
+		<div
+			aria-hidden="true"
+			className="browser-panel__tab browser-panel__tab--drag-overlay"
+			data-testid="browser-tab-drag-overlay"
+		>
+			<div className="browser-panel__tab-select">
+				{tab.favicon ? (
+					<img alt="" className="browser-panel__tab-icon object-cover" src={tab.favicon} />
+				) : (
+					<Globe2 aria-hidden="true" className="browser-panel__tab-icon" />
+				)}
+				<span className="browser-panel__tab-title">{label.title}</span>
+			</div>
+			{onlyTab ? null : (
+				<span className="browser-panel__tab-close">
+					<X aria-hidden="true" className="size-icon-sm" />
+				</span>
+			)}
 		</div>
 	);
 });

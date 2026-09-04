@@ -2,7 +2,7 @@ import { act, fireEvent, render as rtlRender, renderHook, screen, waitFor, withi
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserPanel, BrowserPanelView, useBrowserAnnotationQueue } from "./BrowserPanel";
+import { BrowserPanel, BrowserPanelView, BrowserTopTabDragOverlay, useBrowserAnnotationQueue } from "./BrowserPanel";
 import { reorderBrowserTabs } from "../lib/browser-tab-order";
 import { useBrowserView, type BrowserNavState } from "../hooks/useBrowserView";
 import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
@@ -652,6 +652,21 @@ describe("BrowserPanel", () => {
 		expect(secondTab).toHaveAttribute("aria-selected", "true");
 		await userEvent.click(firstTab);
 		expect(hookState.selectTab).toHaveBeenCalledWith("t1");
+	});
+
+	it("renders the complete tab chrome in the drag overlay", () => {
+		render(
+			<BrowserTopTabDragOverlay
+				onlyTab={false}
+				tab={{ id: "t1", url: "http://localhost:3000/", title: "First app", active: true }}
+			/>,
+		);
+
+		const overlay = screen.getByTestId("browser-tab-drag-overlay");
+		expect(overlay).toHaveClass("browser-panel__tab--drag-overlay");
+		expect(overlay).toHaveTextContent("First app");
+		expect(overlay.querySelector(".browser-panel__tab-icon")).not.toBeNull();
+		expect(overlay.querySelector(".browser-panel__tab-close")).not.toBeNull();
 	});
 
 	it("moves browser tab focus and selection with arrow keys", async () => {
