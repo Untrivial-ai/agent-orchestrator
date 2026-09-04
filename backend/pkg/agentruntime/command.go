@@ -326,7 +326,7 @@ func appendCodexCommon(cmd []string, workspace, model, promptFile, prompt string
 		cmd = append(cmd, "--model", model)
 	}
 	if promptFile != "" {
-		return append(cmd, "-c", "model_instructions_file="+promptFile)
+		return append(cmd, "-c", "model_instructions_file="+codexTOMLString(promptFile))
 	}
 	if prompt != "" {
 		cmd = append(cmd, "-c", "developer_instructions="+codexTOMLString(prompt))

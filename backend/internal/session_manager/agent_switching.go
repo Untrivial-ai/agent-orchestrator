@@ -1350,7 +1350,7 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 		return preparedTargetActivation{}, fmt.Errorf("system prompt: %w", err)
 	}
 	systemPrompt = appendAgentContinuationProtocol(systemPrompt)
-	systemFile, err := m.prepareSystemPromptFile(rec.ID, harness, systemPrompt)
+	systemFile, err := m.prepareSystemPromptFile(rec.ID, harness, systemPrompt, true)
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("system prompt file: %w", err)
 	}
@@ -1514,7 +1514,7 @@ func (m *Manager) systemPromptForNativeRestore(ctx context.Context, rec domain.S
 func (m *Manager) prepareTargetLaunchPrompt(ctx context.Context, rec domain.SessionRecord, target *preparedTargetActivation, systemPrompt, prompt string) error {
 	launch := target.launch
 	systemPrompt = strings.TrimSpace(systemPrompt)
-	systemFile, err := m.prepareSystemPromptFile(rec.ID, target.harness, systemPrompt)
+	systemFile, err := m.prepareSystemPromptFile(rec.ID, target.harness, systemPrompt, true)
 	if err != nil {
 		return fmt.Errorf("system prompt file: %w", err)
 	}
