@@ -1794,7 +1794,13 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 		if err := m.terminateNativeSession(ctx, rec); err != nil {
 			return fmt.Errorf("retire replacement %s: native session: %w", id, err)
 		}
-		if handle.ID != "" {
+		// A chat session has no runtime handle (see the mirrored branch in
+		// Kill): its controller owns an app-server child process directly, not
+		// through m.runtime. Without this, the process is simply never asked
+		// to stop.
+		if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+			m.stopChatBestEffort(ctx, id)
+		} else if handle.ID != "" {
 			if err := m.runtime.Destroy(ctx, handle); err != nil {
 				return fmt.Errorf("retire replacement %s: runtime: %w", id, err)
 			}
@@ -1839,8 +1845,16 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 		staleWorkspace = true
 		m.logger.Warn("retire replacement: stale workspace; skipping preserve", "sessionID", id, "path", ws.Path, "error", err)
 	}
+	// A chat session's process is owned by its chat controller, not the
+	// runtime port — it never has a runtime handle (see the mirrored branch
+	// in Kill). Skipping this for chat sessions left the real agent process
+	// running with its cwd inside ws.Path, so the ForceDestroy below could
+	// fail on Windows ("process cannot access the file") against a directory
+	// an orphaned agent process still had open.
 	handle := runtimeHandle(rec.Metadata)
-	if handle.ID != "" {
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		m.stopChatBestEffort(ctx, id)
+	} else if handle.ID != "" {
 		if err := m.runtime.Destroy(ctx, handle); err != nil {
 			return fmt.Errorf("retire replacement %s: runtime: %w", id, err)
 		}
@@ -1917,8 +1931,14 @@ func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec 
 			m.logger.Warn("retire replacement: stale workspace repo; skipping preserve", "sessionID", rec.ID, "repo", row.RepoName, "path", row.Path, "error", err)
 		}
 	}
+	// See the identical branch in RetireForReplacement: a chat session has no
+	// runtime handle, so without this its agent process is never stopped and
+	// can hold the workspace repos' files open through the force destroys
+	// below.
 	handle := runtimeHandle(rec.Metadata)
-	if handle.ID != "" {
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		m.stopChatBestEffort(ctx, rec.ID)
+	} else if handle.ID != "" {
 		if err := m.runtime.Destroy(ctx, handle); err != nil {
 			return fmt.Errorf("retire replacement %s: runtime: %w", rec.ID, err)
 		}
