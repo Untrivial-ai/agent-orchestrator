@@ -451,3 +451,93 @@ func TestProjectRemove_YesSkipsConfirmationAndSupportsBackendRemoveEnvelope(t *t
 		t.Fatalf("--yes output should skip prompt and print removal:\n%s", out)
 	}
 }
+
+// --- item 8: destructive verbs must name the daemon they act on -------------
+//
+// `project rm` is correct about WHICH daemon it removes from; the defect is
+// that neither the prompt nor the success line said so. A project id is not
+// host-qualified — the same id can exist on two daemons — so echoing it back
+// carries no information about the machine that is about to lose it.
+//
+// Local output must stay byte-identical, so the local case asserts an exact
+// literal. Path-free by design so it asserts identically on every runner OS.
+func TestProjectRemoveNamesTheDaemon(t *testing.T) {
+	removeServer := func(t *testing.T) (*httptest.Server, *[]string) {
+		t.Helper()
+		var requests []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests = append(requests, r.Method+" "+r.URL.Path)
+			if r.Method != http.MethodDelete || r.URL.Path != "/api/v1/projects/demo" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ok":true,"projectId":"demo"}`)
+		}))
+		t.Cleanup(srv.Close)
+		return srv, &requests
+	}
+
+	t.Run("remote names the daemon in the prompt and the success line", func(t *testing.T) {
+		srv, _ := removeServer(t)
+		aoHome(t)
+		setConfigEnv(t)
+		t.Setenv("AO_TOKEN", "tok")
+
+		out, _, err := executeCLI(t, Deps{
+			In:           strings.NewReader("demo\n"),
+			ProcessAlive: func(int) bool { t.Error("ProcessAlive consulted for a remote target"); return false },
+		}, "project", "rm", "demo", "--url", srv.URL)
+		if err != nil {
+			t.Fatalf("project rm --url: %v", err)
+		}
+		want := `Remove project "demo" on the remote daemon at ` + srv.URL +
+			"? Type the project id to confirm: " +
+			"removed project demo on the remote daemon at " + srv.URL + "\n"
+		if out != want {
+			t.Fatalf("remote rm output = %q, want %q", out, want)
+		}
+	})
+
+	t.Run("local output is byte-identical", func(t *testing.T) {
+		cfg := setConfigEnv(t)
+		srv, _ := removeServer(t)
+		writeRunFileFor(t, cfg, srv)
+
+		out, _, err := executeCLI(t, Deps{
+			In:           strings.NewReader("demo\n"),
+			ProcessAlive: func(int) bool { return true },
+		}, "project", "rm", "demo")
+		if err != nil {
+			t.Fatalf("project rm: %v", err)
+		}
+		want := "Remove project \"demo\"? Type the project id to confirm: removed project demo\n"
+		if out != want {
+			t.Fatalf("local rm output = %q, want %q (local output must not change)", out, want)
+		}
+	})
+
+	// The prompt must still gate: a mistyped id aborts, and the DELETE is never
+	// sent. It would be an ugly irony to break a destructive-action confirmation
+	// while making it clearer.
+	t.Run("a mismatched id still aborts and sends nothing", func(t *testing.T) {
+		srv, requests := removeServer(t)
+		aoHome(t)
+		setConfigEnv(t)
+		t.Setenv("AO_TOKEN", "tok")
+
+		out, _, err := executeCLI(t, Deps{In: strings.NewReader("nope\n")},
+			"project", "rm", "demo", "--url", srv.URL)
+		if err != nil {
+			t.Fatalf("project rm --url with a mismatched id: %v", err)
+		}
+		if !strings.HasSuffix(out, "aborted\n") {
+			t.Fatalf("output = %q, want it to end with \"aborted\"", out)
+		}
+		for _, req := range *requests {
+			if strings.HasPrefix(req, http.MethodDelete+" ") {
+				t.Errorf("request %q reached the daemon after a declined confirmation", req)
+			}
+		}
+	})
+}

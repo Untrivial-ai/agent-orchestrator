@@ -825,3 +825,156 @@ func TestSessionClaimPR_GHFallbackWhenProjectRepoMissing(t *testing.T) {
 		t.Fatalf("ghDir=%q out=%s", ghDir, out)
 	}
 }
+
+// --- item 8: destructive verbs must name the daemon they act on -------------
+//
+// `session kill` and `session cleanup` are correct about WHICH daemon they hit;
+// the defect is that neither the prompt nor the success line said so. Against a
+// remote target every ambient cue that would tell an operator which machine
+// they are pointed at is gone, and "Clean 2 terminated sessions across all
+// projects?" begs the question "on whose machine?".
+//
+// Local output must stay byte-identical, so the local cases assert an exact
+// literal rather than a substring. Path-free by design — judging a path by the
+// local OS is a Windows-only break waiting to happen — so these assert
+// identically on every runner OS.
+
+// remoteSessionEnv points the CLI at srv as a REMOTE daemon: no run file, no
+// local process gate, credential via AO_TOKEN.
+func remoteSessionEnv(t *testing.T) {
+	t.Helper()
+	aoHome(t)
+	setConfigEnv(t)
+	t.Setenv("AO_TOKEN", "tok")
+}
+
+func TestSessionKillNamesTheDaemon(t *testing.T) {
+	t.Run("remote names the daemon in the success line", func(t *testing.T) {
+		srv, _ := sessionCommandServer(t)
+		remoteSessionEnv(t)
+
+		out, _, err := executeCLI(t, Deps{
+			ProcessAlive: func(int) bool { t.Error("ProcessAlive consulted for a remote target"); return false },
+		}, "session", "kill", "demo-1", "--url", srv.URL)
+		if err != nil {
+			t.Fatalf("session kill --url: %v", err)
+		}
+		if want := "session demo-1 killed on the remote daemon at " + srv.URL + "\n"; out != want {
+			t.Fatalf("remote kill output = %q, want %q", out, want)
+		}
+	})
+
+	t.Run("local output is byte-identical", func(t *testing.T) {
+		cfg := setConfigEnv(t)
+		srv, _ := sessionCommandServer(t)
+		writeRunFileFor(t, cfg, srv)
+
+		out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+			"session", "kill", "demo-1")
+		if err != nil {
+			t.Fatalf("session kill: %v", err)
+		}
+		if want := "session demo-1 killed\n"; out != want {
+			t.Fatalf("local kill output = %q, want %q (local output must not change)", out, want)
+		}
+	})
+}
+
+func TestSessionCleanupNamesTheDaemon(t *testing.T) {
+	// The prompt is the last moment the operator can catch the wrong host, so
+	// it is asserted separately from the success line: naming one and not the
+	// other still leaves them unsure what just happened.
+	t.Run("remote names the daemon in the prompt and the success line", func(t *testing.T) {
+		srv, _ := sessionCommandServer(t)
+		remoteSessionEnv(t)
+
+		out, _, err := executeCLI(t, Deps{In: strings.NewReader("yes\n")},
+			"session", "cleanup", "--url", srv.URL)
+		if err != nil {
+			t.Fatalf("session cleanup --url: %v", err)
+		}
+		prompt, rest, ok := strings.Cut(out, "? Type yes to confirm: ")
+		if !ok {
+			t.Fatalf("no confirmation prompt in output:\n%s", out)
+		}
+		if !strings.Contains(prompt, "on the remote daemon at "+srv.URL) {
+			t.Errorf("prompt = %q, want it to name %s", prompt, srv.URL)
+		}
+		if !strings.Contains(rest, "Cleanup complete on the remote daemon at "+srv.URL+".") {
+			t.Errorf("success line = %q, want it to name %s", rest, srv.URL)
+		}
+	})
+
+	t.Run("remote dry-run names the daemon", func(t *testing.T) {
+		srv, _ := sessionCommandServer(t)
+		remoteSessionEnv(t)
+
+		out, _, err := executeCLI(t, Deps{}, "session", "cleanup", "--dry-run", "--url", srv.URL)
+		if err != nil {
+			t.Fatalf("session cleanup --dry-run --url: %v", err)
+		}
+		if !strings.Contains(out, "(dry-run: no sessions were removed on the remote daemon at "+srv.URL+")") {
+			t.Fatalf("dry-run output = %q, want it to name %s", out, srv.URL)
+		}
+	})
+
+	t.Run("local output is byte-identical", func(t *testing.T) {
+		cfg := setConfigEnv(t)
+		srv, _ := sessionCommandServer(t)
+		writeRunFileFor(t, cfg, srv)
+
+		out, _, err := executeCLI(t, Deps{
+			In:           strings.NewReader("yes\n"),
+			ProcessAlive: func(int) bool { return true },
+		}, "session", "cleanup")
+		if err != nil {
+			t.Fatalf("session cleanup: %v", err)
+		}
+		want := "Checking for completed sessions...\n\n" +
+			"  Would clean demo:demo-old\n" +
+			"  Would clean demo:demo-orch\n" +
+			"Clean 2 terminated sessions across all projects? Type yes to confirm: " +
+			"  Cleaned: demo:demo-old\n" +
+			"  Cleaned: demo:demo-orch\n" +
+			"\nCleanup complete. 2 sessions cleaned.\n"
+		if out != want {
+			t.Fatalf("local cleanup output = %q, want %q (local output must not change)", out, want)
+		}
+	})
+
+	t.Run("local dry-run output is byte-identical", func(t *testing.T) {
+		cfg := setConfigEnv(t)
+		srv, _ := sessionCommandServer(t)
+		writeRunFileFor(t, cfg, srv)
+
+		out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+			"session", "cleanup", "--dry-run")
+		if err != nil {
+			t.Fatalf("session cleanup --dry-run: %v", err)
+		}
+		if want := "\n(dry-run: no sessions were removed)\n"; !strings.HasSuffix(out, want) {
+			t.Fatalf("local dry-run output = %q, want it to end with %q", out, want)
+		}
+	})
+
+	// Making the prompt clearer must not stop it gating: "no" still aborts, and
+	// the cleanup POST must never be sent.
+	t.Run("a no answer still aborts and sends nothing", func(t *testing.T) {
+		srv, log := sessionCommandServer(t)
+		remoteSessionEnv(t)
+
+		out, _, err := executeCLI(t, Deps{In: strings.NewReader("no\n")},
+			"session", "cleanup", "--url", srv.URL)
+		if err != nil {
+			t.Fatalf("session cleanup --url with a no answer: %v", err)
+		}
+		if !strings.HasSuffix(out, "aborted\n") {
+			t.Fatalf("output = %q, want it to end with \"aborted\"", out)
+		}
+		for _, req := range log.all() {
+			if strings.HasPrefix(req, "POST ") {
+				t.Errorf("request %q reached the daemon after a declined confirmation", req)
+			}
+		}
+	})
+}
