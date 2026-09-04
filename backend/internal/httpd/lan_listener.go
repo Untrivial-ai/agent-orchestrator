@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -64,14 +65,46 @@ var lanControlBlockedPrefixes = []string{
 	"/api/v1/agents/codex",
 }
 
+// loopbackOnlyJSON answers a request for a route this daemon serves, but not on
+// this listener. It is deliberately NOT ROUTE_NOT_FOUND: that code reads as
+// "this daemon is too old / that endpoint does not exist", so an operator who
+// hits a policy block goes and audits daemon builds and finds nothing wrong,
+// because nothing is wrong. This says the block is a decision.
+//
+// What it does not do is resolve the route. Every path under a blocked prefix
+// gets this same answer whether or not a handler exists behind it, so the
+// response is a compile-time constant of the AO build and never an oracle for
+// which loopback-only routes this particular daemon has. That is also why it is
+// safe to serve before authMiddleware: see the note on lanControlBlock.
+//
+// The status stays 404. The route genuinely is not mounted on this listener —
+// the LAN handler chain is a different one — and holding the status still keeps
+// every existing client's error handling working; the code and message are
+// what carry the diagnosis.
+func loopbackOnlyJSON(w http.ResponseWriter, r *http.Request) {
+	envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "ROUTE_LOOPBACK_ONLY",
+		r.Method+" "+r.URL.Path+" is served on this daemon's loopback listener only and is deliberately "+
+			"not exposed on the network listener — run the command on that machine, or over loopback", nil)
+}
+
 // lanControlBlock returns 404 for any request whose path is, or is nested
 // under, a loopback-only control-route prefix, before it ever reaches auth or
-// the shared router. It answers as if the route were never mounted at all —
-// no 403/401 that would confirm the path exists.
+// the shared router. It also stamps the LAN-listener marker every layer below
+// reads.
+//
+// It answers before authMiddleware, and stays there. Being outermost is the
+// load-bearing property: no code below — not auth, not the router's middleware
+// stack — can run for a blocked path, whatever headers the caller forged. A
+// message that only an authenticated caller could see would mean moving this
+// inside auth, or evaluating the credential twice; the first trades a
+// structural guarantee for wording, and neither buys anything, because what an
+// unauthenticated caller learns here is a constant of the AO build (the prefix
+// list, which is in the source) and not a fact about this machine. It still
+// never confirms that a specific route exists — see loopbackOnlyJSON.
 func lanControlBlock(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isLANControlBlockedPath(r.URL.Path) || isLANControlBlockedRequest(r.Method, r.URL.Path) {
-			notFoundJSON(w, r)
+			loopbackOnlyJSON(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)

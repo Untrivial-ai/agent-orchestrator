@@ -91,7 +91,37 @@ func (c *commandContext) doJSON(ctx context.Context, method, path string, body, 
 }
 
 func (c *commandContext) postLoopbackJSON(ctx context.Context, path string, body any) error {
+	// These are loopback-only control routes (/internal/*), 404'd at the LAN
+	// socket by design — and CLI telemetry has no business reaching a daemon on
+	// someone else's machine. Drop them when a remote target is set.
+	if c.remote != nil {
+		return nil
+	}
 	return c.doJSONPath(ctx, http.MethodPost, path, body, nil)
+}
+
+// daemonBase returns the base URL every daemon call targets. With a remote
+// target it is the given URL; otherwise it is the loopback daemon discovered
+// through the run-file, gated on a live local PID as before.
+func (c *commandContext) daemonBase() (string, error) {
+	if c.remote != nil {
+		return c.remote.baseURL, nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	info, err := runfile.Read(cfg.RunFilePath)
+	if err != nil {
+		return "", err
+	}
+	if info == nil {
+		return "", fmt.Errorf("AO daemon is not running — start it with `ao start`")
+	}
+	if !c.deps.ProcessAlive(info.PID) {
+		return "", fmt.Errorf("AO daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath)
+	}
+	return fmt.Sprintf("http://%s:%d", config.LoopbackHost, info.Port), nil
 }
 
 func (c *commandContext) doJSONPath(ctx context.Context, method, path string, body, out any) error {
@@ -114,19 +144,9 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	headers map[string]string,
 	timeout time.Duration,
 ) error {
-	cfg, err := config.Load()
+	base, err := c.daemonBase()
 	if err != nil {
 		return err
-	}
-	info, err := runfile.Read(cfg.RunFilePath)
-	if err != nil {
-		return err
-	}
-	if info == nil {
-		return fmt.Errorf("AO daemon is not running — start it with `ao start`")
-	}
-	if !c.deps.ProcessAlive(info.PID) {
-		return fmt.Errorf("AO daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath)
 	}
 
 	var reader io.Reader = http.NoBody
@@ -137,14 +157,14 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		}
 		reader = bytes.NewReader(payload)
 	}
-	url := fmt.Sprintf("http://%s:%d%s", config.LoopbackHost, info.Port, path)
-	req, err := http.NewRequestWithContext(ctx, method, url, reader) // #nosec G704 -- daemon host is fixed loopback; path is an internal API route.
+	req, err := http.NewRequestWithContext(ctx, method, base+path, reader) // #nosec G704 -- host is loopback or an explicitly configured daemon URL; path is an internal API route.
 	if err != nil {
 		return err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	c.authorize(req)
 	for name, value := range headers {
 		req.Header.Set(name, value)
 	}
@@ -153,7 +173,7 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	// give daemon API calls far more headroom than the 2s status-probe timeout.
 	client := *c.deps.HTTPClient
 	client.Timeout = timeout
-	resp, err := client.Do(req) // #nosec G704 -- request target is the fixed loopback daemon URL above.
+	resp, err := client.Do(req) // #nosec G704 -- request target is the daemon base URL resolved above.
 	if err != nil {
 		return fmt.Errorf("call daemon: %w", err)
 	}
