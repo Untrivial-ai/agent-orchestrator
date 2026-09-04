@@ -35,6 +35,9 @@ import type {
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
 	CloudCpSessionResponse,
+	CloudCpInterfaceTransitionStatusResponse,
+	CloudCpStartInterfaceTransitionRequest,
+	CloudCpStartInterfaceTransitionResponse,
 	CloudCpTerminalTicketRequest,
 	CloudCpTerminalTicketResponse,
 	CloudCpUpdateProjectRequest,
@@ -117,6 +120,13 @@ export interface CloudCpClient {
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSessionResponse>;
 	getSession(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
+	getInterfaceTransition(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpInterfaceTransitionStatusResponse>;
+	startInterfaceTransition(
+		orgId: string,
+		sessionId: string,
+		body: CloudCpStartInterfaceTransitionRequest,
+		options?: CloudCpMutationOptions,
+	): Promise<CloudCpStartInterfaceTransitionResponse>;
 	deleteSession(
 		orgId: string,
 		sessionId: string,
@@ -361,6 +371,14 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		getSession: (orgId, sessionId, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
+		getInterfaceTransition: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition`, { signal: o?.signal }),
+		startInterfaceTransition: (orgId, sessionId, body, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition`, {
+				body,
+				signal: o?.signal,
+				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
+			}),
 		deleteSession: (orgId, sessionId, o) =>
 			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
 		wakePausedSessions: (orgId, o) =>

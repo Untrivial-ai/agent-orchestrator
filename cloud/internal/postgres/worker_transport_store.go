@@ -494,6 +494,31 @@ func (s *Store) EnsureWorkerAgentTerminal(
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		// An interface handoff closes the PTY but not the session's terminal
+		// history. Reopen the most recent closed agent terminal instead of
+		// creating a new stream, so the TUI can replay the same scrollback after
+		// ChatUI hands ownership back. Failed terminals are deliberately not
+		// reused; a fresh stream is safer after an actual process failure.
+		err = tx.QueryRow(ctx,
+			`UPDATE ao_terminal_sessions
+			SET worker_epoch = $1, state = 'open', error_message = '',
+				closed_at = NULL, expires_at = now() + $2::interval, updated_at = now()
+			WHERE id = (
+				SELECT id FROM ao_terminal_sessions
+				WHERE org_id = $3 AND session_id = $4
+				  AND kind = 'agent' AND state = 'closed'
+				ORDER BY created_at DESC
+				LIMIT 1
+			)
+			RETURNING id, state, expires_at`,
+			epoch, intervalString(ttl), orgID, sessionID,
+		).Scan(&terminal.ID, &terminal.State, &terminal.ExpiresAt)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		return tx.QueryRow(ctx,
 			`INSERT INTO ao_terminal_sessions (
 				org_id, session_id, worker_epoch, kind, state, expires_at
@@ -841,6 +866,7 @@ func (s *Store) MarkTerminalExited(
 	orgID, sessionID, workerID, terminalID string,
 	epoch int64,
 	exitCode int,
+	interfaceHandoff bool,
 ) error {
 	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		current, err := workerConnectionCurrent(
@@ -852,12 +878,7 @@ func (s *Store) MarkTerminalExited(
 		if !current {
 			return ErrStaleWorker
 		}
-		state := "closed"
-		message := ""
-		if exitCode != 0 {
-			state = "failed"
-			message = fmt.Sprintf("Terminal process exited with status %d.", exitCode)
-		}
+		state, message := terminalExitState(exitCode, interfaceHandoff)
 		tag, err := tx.Exec(ctx,
 			`UPDATE ao_terminal_sessions
 			SET state = $1, error_message = $2, closed_at = now(), updated_at = now()
@@ -870,6 +891,9 @@ func (s *Store) MarkTerminalExited(
 		}
 		if tag.RowsAffected() == 0 {
 			return ErrTransportExpired
+		}
+		if interfaceHandoff {
+			return nil
 		}
 		_, err = tx.Exec(ctx,
 			`UPDATE ao_sessions session
@@ -888,6 +912,22 @@ func (s *Store) MarkTerminalExited(
 		)
 		return err
 	})
+}
+
+// terminalExitState keeps an intentional interface handoff reusable. Closing
+// a PTY is expected to make the provider process return a non-zero status on
+// some platforms (for example after the controlling terminal is closed), but
+// that is not a failed agent terminal. Marking the row failed would prevent
+// EnsureWorkerAgentTerminal from reopening it and would lose the persisted TUI
+// scrollback when ChatUI hands the same session back to TUI.
+func terminalExitState(exitCode int, interfaceHandoff bool) (string, string) {
+	if interfaceHandoff {
+		return "closed", ""
+	}
+	if exitCode != 0 {
+		return "failed", fmt.Sprintf("Terminal process exited with status %d.", exitCode)
+	}
+	return "closed", ""
 }
 
 func (s *Store) ListTerminalOutput(
@@ -976,4 +1016,77 @@ func scanWorkerRequest(row scanner, request *domain.WorkerRequest) error {
 		&request.ErrorCode, &request.ErrorMessage, &request.Attempt,
 		&request.ExpiresAt,
 	)
+}
+
+// CreateCoordinatedInterfaceRequest enqueues a worker command under service
+// context for the interface-transition coordinator. Unlike the user-facing
+// CreateWorkspaceRequest it does not require a request principal, and it is
+// fenced to the session's current worker epoch on claim. The coordinator owns
+// the result poll, so the call returns the request row immediately.
+func (s *Store) CreateCoordinatedInterfaceRequest(
+	ctx context.Context,
+	orgID, sessionID, kind string,
+	payload json.RawMessage,
+) (domain.WorkerRequest, error) {
+	var request domain.WorkerRequest
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var epoch int64
+		var terminated bool
+		if err := tx.QueryRow(ctx,
+			`SELECT worker.epoch, session.is_terminated
+			FROM ao_sessions session
+			JOIN ao_worker_connections worker
+			  ON worker.org_id = session.org_id
+			 AND worker.session_id = session.id
+			 AND worker.disconnected_at IS NULL
+			WHERE session.org_id = $1 AND session.id = $2
+			FOR UPDATE OF session`,
+			orgID, sessionID,
+		).Scan(&epoch, &terminated); errors.Is(err, pgx.ErrNoRows) {
+			return ErrWorkerUnavailable
+		} else if err != nil {
+			return err
+		}
+		if terminated {
+			return ErrWorkerUnavailable
+		}
+		request = domain.WorkerRequest{
+			OrgID: orgID, SessionID: sessionID, WorkerEpoch: epoch,
+			Kind: kind, Payload: payload,
+		}
+		err := scanWorkerRequest(tx.QueryRow(ctx,
+			`INSERT INTO ao_worker_requests (
+				org_id, session_id, worker_epoch, kind, payload, expires_at
+			) VALUES ($1, $2, $3, $4, $5, now() + interval '5 minutes')
+			RETURNING id, org_id, session_id, worker_epoch, kind, payload, status,
+				response, error_code, error_message, attempt_count, expires_at`,
+			orgID, sessionID, epoch, kind, payload,
+		), &request)
+		return normalizeConstraintError(err)
+	})
+	return request, err
+}
+
+// GetCoordinatedInterfaceRequestResult returns a worker command row for the
+// coordinator under service context. The response is empty while the worker
+// still owns the request.
+func (s *Store) GetCoordinatedInterfaceRequestResult(
+	ctx context.Context,
+	orgID, sessionID, requestID string,
+) (domain.WorkerRequest, error) {
+	var request domain.WorkerRequest
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		err := scanWorkerRequest(tx.QueryRow(ctx,
+			`SELECT id, org_id, session_id, worker_epoch, kind, payload, status,
+				response, error_code, error_message, attempt_count, expires_at
+			FROM ao_worker_requests
+			WHERE org_id = $1 AND session_id = $2 AND id = $3`,
+			orgID, sessionID, requestID,
+		), &request)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	return request, err
 }

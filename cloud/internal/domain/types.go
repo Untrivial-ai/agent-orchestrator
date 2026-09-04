@@ -63,10 +63,12 @@ type Session struct {
 	ProjectID        string
 	Kind             string
 	Harness          string
+	Model            string
 	DisplayName      string
 	Branch           string
 	Mode             string
 	DeniedCommands   []string
+	Interface        SessionInterface
 	ActivityState    contract.ActivityState
 	IsTerminated     bool
 	RuntimeConnected bool
@@ -95,6 +97,7 @@ type CreateSession struct {
 	Prompt         string
 	Mode           string
 	DeniedCommands []string
+	Interface      SessionInterface
 	Provider       string
 	// SandboxConnectionID names a bring-your-own provider credential. It is
 	// empty for sandboxes that run on the platform's own account.
@@ -125,6 +128,7 @@ type WorkerTurn struct {
 	Mode              string
 	DeniedCommands    []string
 	Harness           string
+	Model             string
 	Attempt           int
 	WorkerEpoch       int64
 	CancelRequested   bool

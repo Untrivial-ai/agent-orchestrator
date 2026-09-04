@@ -63,6 +63,7 @@ export function SessionInterfaceSwitchButton({
 	cancelError,
 	onClick,
 	onCancel,
+	showLabel = false,
 	className,
 }: {
 	target: SessionInterfaceMode;
@@ -74,6 +75,8 @@ export function SessionInterfaceSwitchButton({
 	cancelError?: string;
 	onClick: () => void;
 	onCancel?: () => void;
+	/** Cloud uses a text label so the return-to-TUI action is discoverable. */
+	showLabel?: boolean;
 	className?: string;
 }) {
 	if (transition && interfaceTransitionIsActive(transition)) {
@@ -125,7 +128,11 @@ export function SessionInterfaceSwitchButton({
 				<span className="inline-flex">
 					<TopbarButton
 						aria-label={label}
-						className={cn(!supported && "opacity-50", className)}
+						className={cn(
+							!supported && "opacity-50",
+							showLabel && "topbar-control--labeled !inline-flex !h-control-lg !w-auto !min-w-0 gap-1.5 px-2 text-xs",
+							className,
+						)}
 						disabled={!supported || pending}
 						onClick={onClick}
 						type="button"
@@ -136,6 +143,7 @@ export function SessionInterfaceSwitchButton({
 						) : (
 							<TargetIcon aria-hidden="true" className="size-icon-md" />
 						)}
+						{showLabel ? <span data-compact-label>{target === "tui" ? "Terminal UI" : "Chat UI"}</span> : null}
 					</TopbarButton>
 				</span>
 			</TooltipTrigger>

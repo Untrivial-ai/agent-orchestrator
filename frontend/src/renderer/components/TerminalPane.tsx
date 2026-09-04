@@ -43,6 +43,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type TerminalPaneProps = {
 	session?: WorkspaceSession;
+	/** Changes after a Cloud Chat -> TUI handoff so the PTY is reattached fresh. */
+	terminalGeneration?: string;
 	theme: Theme;
 	daemonReady: boolean;
 	terminalTarget?: TerminalTarget;
@@ -136,6 +138,7 @@ function terminalPropsMatch(left: TerminalPaneProps, right: TerminalPaneProps): 
 function cacheDescriptor(
 	session: WorkspaceSession | undefined,
 	terminalTarget: TerminalTarget | undefined,
+	terminalGeneration?: string,
 ): TerminalCacheDescriptor | null {
 	if (terminalTarget?.kind === "shell") {
 		if (!terminalTargetBelongsToSession(terminalTarget, session?.id)) return null;
@@ -156,9 +159,9 @@ function cacheDescriptor(
 	const handleId = session?.terminalHandleId;
 	if (!session?.id || !handleId) return null;
 	const ownerKey = `session:${session.id}:worker`;
-	const generation = session.terminalGeneration ?? "";
+	const generation = terminalGeneration ?? session.terminalGeneration;
 	return {
-		cacheKey: `${ownerKey}|handle:${handleId}|generation:${generation}`,
+		cacheKey: `${ownerKey}|handle:${handleId}|generation:${generation ?? "initial"}`,
 		generation,
 		handleId,
 		kind: "worker",
@@ -490,6 +493,16 @@ export function TerminalCacheProvider({
 				removeEntry(entry.cacheKey);
 				continue;
 			}
+			// Cloud interface handoff deliberately stops the TUI process before
+			// starting ChatUI. The ticketed mux reports that intentional close as a
+			// normal exit, so retaining this AttachedTerminal would leave it in the
+			// terminal hook's terminal-exited state forever. When the committed mode
+			// returns to TUI, let the slot create a fresh xterm/mux attachment and
+			// replay the newly started process instead of showing the dead renderer.
+			if (entry.kind === "worker" && session?.cloud && session.mode !== "tui") {
+				removeEntry(entry.cacheKey);
+				continue;
+			}
 			if (
 				entry.kind === "worker" &&
 				session &&
@@ -603,6 +616,7 @@ function CachedTerminalSlot({
 
 export function TerminalPane({
 	session,
+	terminalGeneration,
 	theme,
 	daemonReady,
 	terminalTarget: requestedTerminalTarget,
@@ -709,7 +723,7 @@ export function TerminalPane({
 		inputRequest,
 		onInputRequestResult,
 	};
-	const descriptor = cacheDescriptor(session, terminalTarget);
+	const descriptor = cacheDescriptor(session, terminalTarget, terminalGeneration);
 	if (cache && descriptor) {
 		return <CachedTerminalSlot descriptor={descriptor} props={props} />;
 	}

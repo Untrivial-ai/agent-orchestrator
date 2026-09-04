@@ -62,7 +62,7 @@ secret_arn() {
 		--output text
 }
 
-provider_secret_arn="$(secret_arn ao-cloud/staging/provider-secret-key)"
+provider_secret_arn="$(secret_arn "${AO_CLOUD_PROVIDER_SECRET_ID:-ao-cloud/staging/provider-secret-key}")"
 nodeops_secret_arn="$(secret_arn "$NODEOPS_SECRET_ID")"
 worker_secret_arn="$(secret_arn "$WORKER_SECRET_ID")"
 broker_secret_arn="$(secret_arn "${AO_CLOUD_REPOSITORY_BROKER_SECRET_ID:-ao-cloud/repository-broker}")"
@@ -202,7 +202,7 @@ register_task_definition() {
 	if [[ "$container_name" == "control-plane" ]]; then
 		render_args+=(
 			--worker-image "$worker_image"
-			--set-environment AO_CLOUD_PUBLIC_URL=https://staging-api.aoagents.dev
+			--set-environment "AO_CLOUD_PUBLIC_URL=${AO_CLOUD_PUBLIC_URL:-https://staging-api.aoagents.dev}"
 			--set-environment AO_CLOUD_REPOSITORY_BROKER_URL=https://api.aoagents.dev
 			--set-environment AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT=true
 			--set-environment "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS=${rootfs_by_harness}"
@@ -252,7 +252,7 @@ migration_result="$(
 		--started-by "deploy-${RELEASE:0:28}" \
 		--tags \
 			key=Project,value=ao-cloud \
-			key=Environment,value=staging \
+			key=Environment,value="${AO_CLOUD_DEPLOY_ENVIRONMENT:-staging}" \
 			"key=Release,value=${RELEASE}"
 )"
 migration_arn="$(

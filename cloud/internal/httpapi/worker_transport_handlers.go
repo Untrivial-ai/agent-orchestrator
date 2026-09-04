@@ -182,7 +182,7 @@ func (s *Server) workerTerminalExit(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.MarkTerminalExited(
 		r.Context(), claims.OrgID, claims.SessionID, claims.WorkerID,
-		terminalID, claims.Epoch, input.ExitCode,
+		terminalID, claims.Epoch, input.ExitCode, input.InterfaceHandoff,
 	); err != nil {
 		s.writeWorkerTransportError(w, r, err)
 		return

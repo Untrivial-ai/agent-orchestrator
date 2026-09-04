@@ -146,6 +146,7 @@ export interface CloudCpProjectDeletedResponse {
 export type CloudCpSessionKind = "worker" | "orchestrator";
 
 export type CloudCpSessionMode = "read-only" | "standard" | "trusted";
+export type CloudCpInterfaceMode = "tui" | "chat";
 
 /** POST /orgs/{orgId}/sessions (requires an Idempotency-Key header). */
 export interface CloudCpCreateSessionRequest {
@@ -169,9 +170,11 @@ export interface CloudCpSession {
 	projectId: string;
 	kind: string;
 	harness: string;
+	model?: string;
 	displayName: string;
 	branch: string;
 	mode: string;
+	interfaceMode: CloudCpInterfaceMode;
 	deniedCommands: string[];
 	activityState: string;
 	status: string;
@@ -181,6 +184,51 @@ export interface CloudCpSession {
 	isTerminated: boolean;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export interface CloudCpInterfaceTransition {
+	id: string;
+	/** Mirrors the durable Cloud coordinator state machine. */
+	phase:
+		| "requested"
+		| "preflighting"
+		| "draining"
+		| "source_stopping"
+		| "source_stopped"
+		| "target_starting"
+		| "activating"
+		| "completed"
+		| "failed"
+		| "cancelled"
+		| "recovery_required";
+	policy: "drain" | "interrupt";
+	sessionId: string;
+	sourceMode: CloudCpInterfaceMode;
+	targetMode: CloudCpInterfaceMode;
+	nativeConversationId?: string;
+	errorCode?: string;
+	errorDetail?: string;
+	noticeAcknowledgedAt?: string;
+	createdAt: string;
+	updatedAt: string;
+	completedAt?: string;
+}
+
+export interface CloudCpInterfaceTransitionStatusResponse {
+	supported: boolean;
+	targetMode: CloudCpInterfaceMode;
+	reasonCode?: string;
+	reason?: string;
+	transition?: CloudCpInterfaceTransition;
+}
+
+export interface CloudCpStartInterfaceTransitionRequest {
+	targetMode: CloudCpInterfaceMode;
+	policy?: "drain" | "interrupt";
+}
+
+export interface CloudCpStartInterfaceTransitionResponse {
+	transition: CloudCpInterfaceTransition;
 }
 
 export interface CloudCpSessionResponse {
@@ -218,6 +266,8 @@ export interface CloudCpWakeSessionsResponse {
 export interface CloudCpSendMessageRequest {
 	/** 1-65536 bytes. */
 	text: string;
+	/** Optional provider model for the next turn. */
+	model?: string;
 }
 
 export interface CloudCpClientEvent {

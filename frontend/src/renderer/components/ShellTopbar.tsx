@@ -376,14 +376,15 @@ export function ShellTopbar({
 						) : null}
 						{/* Local worker actions share one tight control group. Navigation
 						    remains a separate visual target in the outer top-bar row. */}
-						{!isOrchestrator && session && (sessionAction || sessionIsActive(session)) ? (
+						{!isOrchestrator &&
+							(sessionAction || (session && !session.cloud && sessionIsActive(session))) ? (
 							<div
 								className="inline-flex shrink-0 items-center gap-1"
 								data-testid="session-local-actions"
 								style={noDragStyle}
 							>
 								{sessionAction ? <div className="inline-flex shrink-0 items-center">{sessionAction}</div> : null}
-								{sessionIsActive(session) ? (
+									{session && !session.cloud && sessionIsActive(session) ? (
 									<TopbarKillButton
 										key={session.id}
 										session={session}

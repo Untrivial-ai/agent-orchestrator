@@ -1,0 +1,273 @@
+package interfacereconcile
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
+)
+
+func testTransition(phase domain.SessionInterfaceTransitionPhase) postgres.CoordinatedInterfaceTransition {
+	return postgres.CoordinatedInterfaceTransition{
+		SessionInterfaceTransition: domain.SessionInterfaceTransition{
+			ID:                   "transition-1",
+			OrgID:                "org-1",
+			SessionID:            "session-1",
+			SourceInterface:      domain.SessionInterfaceTUI,
+			TargetInterface:      domain.SessionInterfaceChat,
+			Policy:               domain.SessionInterfaceTransitionDrain,
+			Phase:                phase,
+			NativeConversationID: "native-1",
+		},
+		Harness: "claude-code",
+	}
+}
+
+type fakeStore struct {
+	transitions []postgres.CoordinatedInterfaceTransition
+	committed   domain.SessionInterface
+	advances    []domain.SessionInterfaceTransitionPhase
+	claimErr    error
+	advanceErr  error
+}
+
+func (f *fakeStore) ClaimCoordinatedInterfaceTransitions(context.Context, string, int, time.Duration) ([]postgres.CoordinatedInterfaceTransition, error) {
+	if f.claimErr != nil {
+		return nil, f.claimErr
+	}
+	return f.transitions, nil
+}
+func (f *fakeStore) RenewCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string, lease time.Duration) error {
+	return nil
+}
+func (f *fakeStore) AdvanceCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string, from, to domain.SessionInterfaceTransitionPhase, nativeConversationID, errorCode, errorDetail string) error {
+	if f.advanceErr != nil {
+		return f.advanceErr
+	}
+	f.advances = append(f.advances, to)
+	_ = from
+	return nil
+}
+func (f *fakeStore) CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, sessionID string, v domain.SessionInterface) (bool, error) {
+	f.committed = v
+	return true, nil
+}
+func (f *fakeStore) ReleaseCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string) error {
+	return nil
+}
+func (f *fakeStore) EnqueueSessionInterfaceTransitionMessage(ctx context.Context, transitionID, clientMessageID, message string) error {
+	return nil
+}
+
+type fakeDriver struct {
+	Inspection  SourceInspection
+	inspectErr  error
+	stopErr     error
+	startErr    error
+	preflight   error
+	interrupt   bool
+	nativeID    string
+	nativeIDErr error
+
+	startedWithNativeID string
+}
+
+func (f *fakeDriver) PreflightTarget(context.Context, postgres.CoordinatedInterfaceTransition) error {
+	return f.preflight
+}
+func (f *fakeDriver) InspectSource(context.Context, postgres.CoordinatedInterfaceTransition) (SourceInspection, error) {
+	return f.Inspection, f.inspectErr
+}
+func (f *fakeDriver) InterruptSource(context.Context, postgres.CoordinatedInterfaceTransition) error {
+	f.interrupt = true
+	return nil
+}
+func (f *fakeDriver) StopSource(context.Context, postgres.CoordinatedInterfaceTransition) error {
+	return f.stopErr
+}
+func (f *fakeDriver) ResolveNativeConversationID(context.Context, postgres.CoordinatedInterfaceTransition) (string, error) {
+	if f.nativeIDErr != nil {
+		return "", f.nativeIDErr
+	}
+	return f.nativeID, nil
+}
+func (f *fakeDriver) StartTarget(_ context.Context, _ postgres.CoordinatedInterfaceTransition, nativeID string) error {
+	f.startedWithNativeID = nativeID
+	return f.startErr
+}
+
+func newCoordinator(store *fakeStore, driver *fakeDriver) *Coordinator {
+	return New(store, driver, Options{Interval: time.Millisecond, Logger: slog.New(slog.DiscardHandler)})
+}
+
+// fakeRequestStore satisfies the TransportDriver's RequestStore for tests that
+// never reach a dispatch (preflight fails before any worker request exists).
+type fakeRequestStore struct{}
+
+func (fakeRequestStore) CreateCoordinatedInterfaceRequest(context.Context, string, string, string, json.RawMessage) (domain.WorkerRequest, error) {
+	return domain.WorkerRequest{}, errors.New("no requests expected")
+}
+func (fakeRequestStore) GetCoordinatedInterfaceRequestResult(context.Context, string, string, string) (domain.WorkerRequest, error) {
+	return domain.WorkerRequest{}, errors.New("no requests expected")
+}
+func (fakeRequestStore) CommitCoordinatedSessionInterface(context.Context, string, string, string, domain.SessionInterface) (bool, error) {
+	return false, nil
+}
+
+func TestReconcileHappyPath(t *testing.T) {
+	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
+	driver := &fakeDriver{Inspection: SourceInspection{Idle: true}, nativeID: "native-1"}
+	err := newCoordinator(store, driver).ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if store.committed != domain.SessionInterfaceChat {
+		t.Fatalf("expected interface committed to chat, got %q", store.committed)
+	}
+	last := store.advances[len(store.advances)-1]
+	if last != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("expected final phase completed, got %q", last)
+	}
+}
+
+// Both handoff directions and every supported harness must converge through
+// the same durable phase machine, commit the requested interface, and hand the
+// shared native conversation identity to the target controller.
+func TestReconcileEverySupportedHarnessBothDirections(t *testing.T) {
+	for _, harness := range []string{"codex", "claude-code", "cursor"} {
+		for _, direction := range []struct {
+			name   string
+			source domain.SessionInterface
+			target domain.SessionInterface
+		}{
+			{name: "tui-to-chat", source: domain.SessionInterfaceTUI, target: domain.SessionInterfaceChat},
+			{name: "chat-to-tui", source: domain.SessionInterfaceChat, target: domain.SessionInterfaceTUI},
+		} {
+			t.Run(harness+"/"+direction.name, func(t *testing.T) {
+				transition := testTransition(domain.SessionInterfaceTransitionRequested)
+				transition.Harness = harness
+				transition.SourceInterface = direction.source
+				transition.TargetInterface = direction.target
+				store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{transition}}
+				driver := &fakeDriver{Inspection: SourceInspection{Idle: true}, nativeID: "native-" + harness}
+				err := newCoordinator(store, driver).ReconcileOnce(context.Background())
+				if err != nil {
+					t.Fatalf("reconcile: %v", err)
+				}
+				if store.committed != direction.target {
+					t.Fatalf("expected interface committed to %s, got %q", direction.target, store.committed)
+				}
+				if driver.startedWithNativeID != "native-"+harness {
+					t.Fatalf("target started with native id %q, want native-%s", driver.startedWithNativeID, harness)
+				}
+				if last := store.advances[len(store.advances)-1]; last != domain.SessionInterfaceTransitionCompleted {
+					t.Fatalf("expected final phase completed, got %q", last)
+				}
+			})
+		}
+	}
+}
+
+func TestTransportDriverPreflightRejectsUnsupportedHarness(t *testing.T) {
+	driver := NewTransportDriver(&fakeRequestStore{}, "owner", time.Millisecond, slog.New(slog.DiscardHandler))
+	transition := testTransition(domain.SessionInterfaceTransitionRequested)
+	for _, harness := range []string{"codex", "claude-code", "cursor"} {
+		transition.Harness = harness
+		if err := driver.PreflightTarget(context.Background(), transition); err != nil {
+			t.Fatalf("preflight %s: %v", harness, err)
+		}
+	}
+	transition.Harness = "unknown-harness"
+	if err := driver.PreflightTarget(context.Background(), transition); err == nil {
+		t.Fatal("expected an unsupported harness to fail preflight")
+	}
+}
+
+func TestReconcileInterruptPolicy(t *testing.T) {
+	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
+	store.transitions[0].Policy = domain.SessionInterfaceTransitionInterrupt
+	driver := &fakeDriver{Inspection: SourceInspection{Idle: true}}
+	err := newCoordinator(store, driver).ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !driver.interrupt {
+		t.Fatal("expected interrupt to be issued for interrupt policy")
+	}
+	if store.committed != domain.SessionInterfaceChat {
+		t.Fatalf("expected interface committed to chat, got %q", store.committed)
+	}
+}
+
+func TestReconcileDrainDecisionPendingFails(t *testing.T) {
+	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
+	driver := &fakeDriver{Inspection: SourceInspection{DecisionPending: true}}
+	err := newCoordinator(store, driver).ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("expected decision-pending to be surfaced as a recovered failure, got err: %v", err)
+	}
+	if store.committed != "" {
+		t.Fatalf("no session interface should be committed on drain failure, got %q", store.committed)
+	}
+	if last := store.advances[len(store.advances)-1]; last != domain.SessionInterfaceTransitionFailed {
+		t.Fatalf("expected terminal phase failed, got %q", last)
+	}
+}
+
+func TestReconcileTargetStartFailureRecovers(t *testing.T) {
+	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
+	driver := &fakeDriver{Inspection: SourceInspection{Idle: true}, startErr: errors.New("harness unavailable")}
+	err := newCoordinator(store, driver).ReconcileOnce(context.Background())
+	if err != nil && !errors.Is(err, errCoordinationLost) {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if store.committed != domain.SessionInterfaceChat {
+		t.Fatalf("expected interface committed to chat before target start, got %q", store.committed)
+	}
+	last := store.advances[len(store.advances)-1]
+	if last != domain.SessionInterfaceTransitionRecovery {
+		t.Fatalf("expected terminal phase recovery_required, got %q", last)
+	}
+}
+
+func TestReconcilePreflightFailure(t *testing.T) {
+	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
+	driver := &fakeDriver{preflight: errors.New("chat unsupported")}
+	err := newCoordinator(store, driver).ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("expected preflight failure surfaced as recovered failure, got err: %v", err)
+	}
+	if store.committed != "" {
+		t.Fatalf("no session interface should be committed on preflight failure, got %q", store.committed)
+	}
+}
+
+func TestReconcilePendingWorkerCommandRecovers(t *testing.T) {
+	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
+	driver := &fakeDriver{
+		Inspection: SourceInspection{Idle: true},
+		// The worker never completes the native-conversation-id resolver, so
+		// every run reports a pending retryable command before commit.
+		nativeIDErr: errPendingWorkerCommand,
+	}
+	coordinator := newCoordinator(store, driver)
+	for attempt := 0; attempt < defaultMaxRetries+2; attempt++ {
+		_ = coordinator.ReconcileOnce(context.Background())
+	}
+	// The pending command is resolved before the session interface is committed,
+	// so no commit happens; the transition fails closed after retry exhaustion.
+	if store.committed != "" {
+		t.Fatalf("expected no commit while native id is pending, got %q", store.committed)
+	}
+	for _, phase := range store.advances {
+		if phase == domain.SessionInterfaceTransitionFailed {
+			return
+		}
+	}
+	t.Fatalf("expected terminal phase failed after pending retries, got %v", store.advances)
+}

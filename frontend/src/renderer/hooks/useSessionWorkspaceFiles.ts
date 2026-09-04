@@ -92,19 +92,22 @@ export function isChangedWorkspaceFile(file: WorkspaceFileSummary): boolean {
 // Keep the lightweight summary query warm while the inspector is open. The
 // Files view then mounts against current cache data instead of flashing a
 // misleading zero while its first request starts.
-export function useSessionWorkspaceFilesChangedCount(sessionId: string | undefined): number | undefined {
+export function useSessionWorkspaceFilesChangedCount(
+	sessionId: string | undefined,
+	enabled = true,
+): number | undefined {
 	const queryClient = useQueryClient();
 	const query = useQuery({
 		...sessionWorkspaceFilesQueryOptions(sessionId ?? ""),
-		enabled: Boolean(sessionId),
+		enabled: enabled && Boolean(sessionId),
 		// Live invalidations keep the inactive tab fresh; polling starts only
 		// when the full Files view is visible.
 		refetchInterval: false,
 		select: (data: WorkspaceFilesResponse) => data.files.filter(isChangedWorkspaceFile).length,
 	});
 	useEffect(() => {
-		if (!sessionId) return;
+		if (!sessionId || !enabled) return;
 		return subscribeWorkspaceFileChanges(sessionId, queryClient);
-	}, [queryClient, sessionId]);
-	return sessionId ? query.data : undefined;
+	}, [enabled, queryClient, sessionId]);
+	return enabled && sessionId ? query.data : undefined;
 }

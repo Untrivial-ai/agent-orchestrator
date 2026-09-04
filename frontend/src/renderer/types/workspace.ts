@@ -72,6 +72,8 @@ export type WorkspaceSession = {
 	/** Raw issue/task identifier from the daemon. Intake ids are provider-prefixed. */
 	issueId?: string;
 	provider: AgentProvider;
+	/** Currently selected provider model, when the backend exposes one. */
+	model?: string;
 	/** Reviewer selected for this session; absent means use the project default. */
 	reviewerHarness?: ReviewerHarnessId;
 	/** Per-session reviewer override, including hidden fields preserved across saves. */

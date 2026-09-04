@@ -288,6 +288,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/interface-transition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getSessionInterfaceTransition"];
+        put?: never;
+        post: operations["startSessionInterfaceTransition"];
+        delete: operations["cancelSessionInterfaceTransition"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/pull-requests": {
         parameters: {
             query?: never;
@@ -1152,6 +1171,7 @@ export interface components {
             prompt: string;
             agentSessionId?: string;
             mode: components["schemas"]["SessionMode"];
+            interfaceMode: components["schemas"]["SessionInterfaceMode"];
             deniedCommands: string[];
             /** Format: uri */
             repositoryUrl: string;
@@ -1469,6 +1489,44 @@ export interface components {
                 /** @constant */
                 desiredState: "deleted";
             };
+        };
+        /** @enum {string} */
+        SessionInterfaceMode: "tui" | "chat";
+        /** @enum {string} */
+        SessionInterfaceTransitionPolicy: "drain" | "interrupt";
+        /** @enum {string} */
+        SessionInterfaceTransitionPhase: "requested" | "preflighting" | "draining" | "source_stopping" | "source_stopped" | "target_starting" | "activating" | "completed" | "failed" | "cancelled" | "recovery_required";
+        SessionInterfaceTransition: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            sessionId: string;
+            sourceMode: components["schemas"]["SessionInterfaceMode"];
+            targetMode: components["schemas"]["SessionInterfaceMode"];
+            policy: components["schemas"]["SessionInterfaceTransitionPolicy"];
+            phase: components["schemas"]["SessionInterfaceTransitionPhase"];
+            nativeConversationId?: string;
+            errorCode?: string;
+            errorDetail?: string;
+            /** Format: date-time */
+            noticeAcknowledgedAt?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            completedAt?: string;
+        };
+        SessionInterfaceTransitionStatus: {
+            supported: boolean;
+            targetMode: components["schemas"]["SessionInterfaceMode"];
+            reasonCode?: string;
+            reason?: string;
+            transition?: components["schemas"]["SessionInterfaceTransition"];
+        };
+        StartSessionInterfaceTransitionInput: {
+            targetMode: components["schemas"]["SessionInterfaceMode"];
+            policy: components["schemas"]["SessionInterfaceTransitionPolicy"];
         };
         Session: {
             /** Format: uuid */
@@ -2497,6 +2555,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeleteSessionResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getSessionInterfaceTransition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Interface-switch readiness and the active transition, if any. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInterfaceTransitionStatus"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    startSessionInterfaceTransition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartSessionInterfaceTransitionInput"];
+            };
+        };
+        responses: {
+            /** @description Interface switch accepted for asynchronous processing. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        transition: components["schemas"]["SessionInterfaceTransition"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    cancelSessionInterfaceTransition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Interface switch cancelled. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerOKResponse"];
                 };
             };
             default: components["responses"]["Error"];

@@ -24,27 +24,60 @@ type Control interface {
 	CompleteTransport(context.Context, string, int, any) error
 	FailTransport(context.Context, string, int, string, string) error
 	PublishTerminalOutput(context.Context, string, []byte) error
-	PublishTerminalExit(context.Context, string, int) error
+	PublishTerminalExit(context.Context, string, int, bool) error
+	AgentSessionID(context.Context) (string, error)
+	EnsureAgentTerminal(context.Context) (worker.AgentTerminalResponse, error)
 }
 
 type Supervisor struct {
-	Control         Control
-	Workspace       string
-	Shell           string
-	AgentCommand    workerexec.Command
-	AgentTerminalID string
-	Started         chan<- error
-	PollInterval    time.Duration
-	Logger          *slog.Logger
+	Control             Control
+	Workspace           string
+	Shell               string
+	AgentCommand        workerexec.Command
+	AgentCommandFactory AgentCommandFactory
+	AgentTerminalID     string
+	Started             chan<- error
+	PollInterval        time.Duration
+	Logger              *slog.Logger
+
+	// ChatRunner is the headless turn-based Chat controller. Nil means the
+	// session cannot switch into the Chat interface.
+	ChatRunner ChatRunner
+	// InitialInterface is the committed launch interface ("tui" or "chat").
+	InitialInterface string
+	// AgentSessionID is the provider-native conversation identity shared by the
+	// TUI and Chat controllers. It is the resume hint used on both sides.
+	AgentSessionID string
 
 	mu        sync.Mutex
 	terminals map[string]*terminalProcess
+	iface     InterfaceTransition
+}
+
+// ChatRunner executes the headless Chat controller kind for a session. Run
+// blocks until ctx is canceled, mirroring the terminal supervisor's lifetime.
+type ChatRunner interface {
+	Run(ctx context.Context) error
+}
+
+// AgentCommandFactory rebuilds the native interactive command when a TUI is
+// reopened. The provider conversation ID is learned after worker bootstrap, so
+// reusing the bootstrap command would start a fresh TUI after ChatUI work.
+type AgentCommandFactory func(context.Context, string) (workerexec.Command, error)
+
+// chatActivity is implemented by the durable headless controller. Keeping it
+// optional preserves the runner boundary for alternate worker implementations
+// while allowing a real Chat turn to drain before a TUI handoff begins.
+type chatActivity interface {
+	Idle() bool
 }
 
 type terminalProcess struct {
-	cancel  context.CancelFunc
-	pty     *os.File
-	cleanup func()
+	cancel                context.CancelFunc
+	pty                   *os.File
+	cleanup               func()
+	interfaceHandoffClose bool
+	done                  chan struct{}
 }
 
 func (s *Supervisor) Run(ctx context.Context) error {
@@ -70,11 +103,29 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 	defer workspace.Close()
 	defer s.closeAllTerminals()
-	if s.AgentTerminalID != "" {
+	switch s.InitialInterface {
+	case InterfaceChat:
+		s.iface.current = InterfaceChat
+	default:
+		s.iface.current = InterfaceTUI
+	}
+	if s.iface.current == InterfaceTUI && s.AgentTerminalID != "" {
 		err := s.openTerminal(ctx, worker.TerminalCommand{
 			TerminalID: s.AgentTerminalID,
 			Kind:       "agent",
 		})
+		if s.Started != nil {
+			s.Started <- err
+		}
+		if err != nil {
+			return err
+		}
+	} else if s.iface.current == InterfaceChat {
+		// A worker may be replaced or restarted after the committed interface
+		// changed to Chat. Starting the transport loop alone is not enough: the
+		// headless controller owns the durable turn queue and must be restarted
+		// too, otherwise ChatUI accepts a message that no worker will execute.
+		err := s.startChat(ctx)
 		if s.Started != nil {
 			s.Started <- err
 		}
@@ -123,6 +174,12 @@ func (s *Supervisor) Run(ctx context.Context) error {
 }
 
 func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
+	// The Chat controller owns the durable turn queue while ChatUI is active.
+	// Do not claim a turn here: doing so races the headless runner and either
+	// drops the turn or fails it before the Chat controller can execute it.
+	if s.iface.Current() == InterfaceChat {
+		return false, nil
+	}
 	turn, err := s.Control.ClaimTurn(ctx)
 	if err != nil || turn == nil {
 		return false, err
@@ -130,13 +187,14 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	if turn.CancelRequested {
 		return true, s.Control.CompleteTurn(ctx, turn.ID, turn.Attempt, true)
 	}
-	if s.AgentTerminalID == "" {
+	agentTerminalID := s.agentTerminalID()
+	if agentTerminalID == "" {
 		return true, s.Control.FailTurn(
 			ctx, turn.ID, turn.Attempt, "interactive agent terminal is unavailable",
 		)
 	}
 	if err := s.writeTerminal(worker.TerminalCommand{
-		TerminalID: s.AgentTerminalID,
+		TerminalID: agentTerminalID,
 		Data:       []byte(turn.Prompt + "\r"),
 	}); err != nil {
 		if failErr := s.Control.FailTurn(
@@ -211,6 +269,13 @@ func (s *Supervisor) handle(
 			s.closeTerminal(input.TerminalID)
 			response = map[string]bool{"closed": true}
 		}
+	case "interface.inspect", "interface.interrupt", "interface.stop",
+		"interface.native-id", "interface.start":
+		var input interfacePayload
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = s.handleInterface(ctx, input, request.Kind)
+		}
 	default:
 		err = errors.New("unsupported worker transport request")
 	}
@@ -264,19 +329,25 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 		s.mu.Unlock()
 		return err
 	}
-	s.terminals[input.TerminalID] = &terminalProcess{
+	process := &terminalProcess{
 		cancel:  cancel,
 		pty:     terminalPTY,
 		cleanup: cleanup,
+		done:    make(chan struct{}),
 	}
+	s.terminals[input.TerminalID] = process
 	s.mu.Unlock()
 
 	go s.copyTerminalOutput(processCtx, input.TerminalID, terminalPTY)
-	go func() {
+	go func(process *terminalProcess) {
+		defer close(process.done)
 		_ = command.Wait()
 		s.mu.Lock()
 		current := s.terminals[input.TerminalID]
-		delete(s.terminals, input.TerminalID)
+		if current == process {
+			delete(s.terminals, input.TerminalID)
+		}
+		handoff := process.interfaceHandoffClose
 		s.mu.Unlock()
 		if current != nil {
 			_ = current.pty.Close()
@@ -289,10 +360,11 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 			exitCtx,
 			input.TerminalID,
 			command.ProcessState.ExitCode(),
+			handoff,
 		); err != nil && exitCtx.Err() == nil {
 			s.Logger.Warn("publish terminal exit", "error", err, "terminal_id", input.TerminalID)
 		}
-	}()
+	}(process)
 	return nil
 }
 
@@ -301,13 +373,18 @@ func (s *Supervisor) terminalCommand(
 	kind string,
 ) (*exec.Cmd, func(), error) {
 	if kind == "agent" {
-		if s.AgentCommand.Path == "" {
+		// openTerminal holds s.mu while it snapshots the command and creates the
+		// terminal entry. Do not lock s.mu again here: sync.Mutex is not
+		// re-entrant, and doing so leaves the worker stuck before the PTY (and
+		// coding-agent process) is started.
+		agentCommand := s.AgentCommand
+		if agentCommand.Path == "" {
 			return nil, func() {}, errors.New("interactive agent command is unavailable")
 		}
-		command := exec.CommandContext(ctx, s.AgentCommand.Path, s.AgentCommand.Args...)
-		command.Dir = s.AgentCommand.Dir
-		command.Env = terminalEnvironment(s.AgentCommand.Env)
-		cleanup := s.AgentCommand.Cleanup
+		command := exec.CommandContext(ctx, agentCommand.Path, agentCommand.Args...)
+		command.Dir = agentCommand.Dir
+		command.Env = terminalEnvironment(agentCommand.Env)
+		cleanup := agentCommand.Cleanup
 		if cleanup == nil {
 			cleanup = func() {}
 		}
@@ -380,15 +457,48 @@ func (s *Supervisor) resizeTerminal(input worker.TerminalCommand) error {
 }
 
 func (s *Supervisor) closeTerminal(id string) {
-	s.mu.Lock()
-	terminal := s.terminals[id]
-	delete(s.terminals, id)
-	s.mu.Unlock()
+	s.closeTerminalWithReason(id, false)
+}
+
+// closeTerminalForInterfaceHandoff closes the source TUI without reporting the
+// whole Cloud session as exited. The Chat controller takes ownership next.
+func (s *Supervisor) closeTerminalForInterfaceHandoff(ctx context.Context, id string) error {
+	terminal := s.detachTerminal(id, true)
+	if terminal == nil {
+		return nil
+	}
+	_ = terminal.pty.Close()
+	terminal.cancel()
+	terminal.cleanup()
+	// Codex serializes thread writers. Do not acknowledge the source stop until
+	// the interactive process has actually exited; otherwise the Chat runner can
+	// resume the same thread while the TUI still owns its writer.
+	select {
+	case <-terminal.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Supervisor) closeTerminalWithReason(id string, interfaceHandoff bool) {
+	terminal := s.detachTerminal(id, interfaceHandoff)
 	if terminal != nil {
 		_ = terminal.pty.Close()
 		terminal.cancel()
 		terminal.cleanup()
 	}
+}
+
+func (s *Supervisor) detachTerminal(id string, interfaceHandoff bool) *terminalProcess {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	terminal := s.terminals[id]
+	delete(s.terminals, id)
+	if terminal != nil && interfaceHandoff {
+		terminal.interfaceHandoffClose = true
+	}
+	return terminal
 }
 
 func (s *Supervisor) closeAllTerminals() {

@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import type { CloudCpAgentProvider } from "../lib/cloud-cp";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
+import { useCloudSession } from "../lib/cloud-session";
 import { providerConnectionsQueryKey } from "../hooks/useProviderConnections";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { cn } from "../lib/utils";
@@ -51,6 +52,13 @@ const AGENTS = [
 	},
 ] as const;
 
+// Codex is the default cloud harness in the desktop flow. Start with the
+// credential type users receive from OpenAI so a pasted `sk-*` API key is not
+// accidentally submitted as a Codex access token or a Claude setup token.
+const DEFAULT_AGENT = AGENTS.find((a) => a.agent === "codex") ?? AGENTS[0];
+const DEFAULT_CREDENTIAL_TYPE =
+	DEFAULT_AGENT.creds.find((credential) => credential.value === "api_key")?.value ?? DEFAULT_AGENT.creds[0].value;
+
 type Phase = "idle" | "submitting" | "success";
 
 // Connects a developer's local coding-agent credential (Claude Code setup
@@ -61,12 +69,13 @@ export function CloudCredentialDialog() {
 	const { t } = useTranslation();
 	const { client } = useCloudCp();
 	const { org } = useCloudOrg();
+	const { session } = useCloudSession();
 	const queryClient = useQueryClient();
 	const open = useCredentialDialogStore((s) => s.open);
 	const setOpen = useCredentialDialogStore((s) => s.setOpen);
 
-	const [agent, setAgent] = useState<CloudCpAgentProvider>(AGENTS[0].agent);
-	const [credentialType, setCredentialType] = useState<string>(AGENTS[0].creds[0].value);
+	const [agent, setAgent] = useState<CloudCpAgentProvider>(DEFAULT_AGENT.agent);
+	const [credentialType, setCredentialType] = useState<string>(DEFAULT_CREDENTIAL_TYPE);
 	const [secret, setSecret] = useState("");
 	const [phase, setPhase] = useState<Phase>("idle");
 	const [error, setError] = useState<string | null>(null);
@@ -77,8 +86,8 @@ export function CloudCredentialDialog() {
 	// stale secret or a previous error/success.
 	useEffect(() => {
 		if (!open) return;
-		setAgent(AGENTS[0].agent);
-		setCredentialType(AGENTS[0].creds[0].value);
+		setAgent(DEFAULT_AGENT.agent);
+		setCredentialType(DEFAULT_CREDENTIAL_TYPE);
 		setSecret("");
 		setPhase("idle");
 		setError(null);
@@ -91,23 +100,36 @@ export function CloudCredentialDialog() {
 		setError(null);
 	};
 
-	const canSubmit = phase !== "submitting" && secret.trim() !== "" && org !== undefined;
+	// The org query can lag the already-authenticated cloud session by a render
+	// (especially after local sign-in). Do not make the button look dead while
+	// that query catches up; submit resolves the same first org from the session
+	// as a fallback and reports a useful error if neither is available.
+	const resolvedOrg = org ?? session?.organizations?.[0];
+	const canSubmit = phase !== "submitting" && secret.trim() !== "";
 
 	const submit = async () => {
-		if (!canSubmit || org === undefined) return;
+		const credential = secret.trim();
+		if (credential === "") {
+			setError(t("cloudCredential.failed"));
+			return;
+		}
+		if (resolvedOrg === undefined) {
+			setError(t("cloudCredential.failed"));
+			return;
+		}
 		setPhase("submitting");
 		setError(null);
 		try {
-			const { providerConnection } = await client.putAgentConnection(org.id, agent, {
+			const { providerConnection } = await client.putAgentConnection(resolvedOrg.id, agent, {
 				credentialType,
-				secret: secret.trim(),
+				secret: credential,
 			});
 			if (providerConnection.validationState !== "valid") {
 				setPhase("idle");
 				setError(t("cloudCredential.invalid", { state: providerConnection.validationState }));
 				return;
 			}
-			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
+			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(resolvedOrg.id) });
 			setPhase("success");
 			setSecret("");
 		} catch (err) {
@@ -176,6 +198,14 @@ export function CloudCredentialDialog() {
 								placeholder={t("cloudCredential.tokenPlaceholder")}
 								value={secret}
 								onChange={(e) => setSecret(e.target.value)}
+								onInput={(e) => setSecret(e.currentTarget.value)}
+								onPaste={(e) => {
+									// Some native Electron paste paths update the input after the
+									// paste event. Sync on the next frame so the button reflects
+									// what is visibly in the field.
+									const input = e.currentTarget;
+									requestAnimationFrame(() => setSecret(input.value));
+								}}
 								onKeyDown={(e) => {
 									if (e.key === "Enter") void submit();
 								}}

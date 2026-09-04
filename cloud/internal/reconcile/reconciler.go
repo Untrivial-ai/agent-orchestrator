@@ -1031,6 +1031,7 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 			"worker:turn:poll",
 			"worker:turn:complete",
 			"worker:credential:read",
+			"worker:session:read",
 			"worker:git",
 			"worker:orchestrate",
 			"worker:transport",
@@ -1054,7 +1055,13 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 		"HOME":                      "/workspace/.ao/home",
 		"CLAUDE_CONFIG_DIR":         "/workspace/.ao/home/.claude",
 		"CODEX_HOME":                "/workspace/.ao/home/.codex",
-		"DISABLE_AUTOUPDATER":       "1",
+		// Never let a provider command block the worker's terminal on an
+		// interactive GitHub credential prompt. Git operations that need
+		// credentials go through the worker's scoped credential helper; when
+		// that grant is unavailable, fail the Git command instead of leaving
+		// the TUI stuck at "Username for https://github.com/...".
+		"GIT_TERMINAL_PROMPT": "0",
+		"DISABLE_AUTOUPDATER": "1",
 	}
 	if record.Provider == sandbox.ProviderDocker || r.options.AllowAnonymousCheckout {
 		workerEnvironment["AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT"] = "true"

@@ -107,12 +107,14 @@ type WorkerLaunch struct {
 	ProjectID      string
 	Kind           string
 	Harness        string
+	Model          string
 	DisplayName    string
 	Branch         string
 	Prompt         string
 	AgentSessionID string
 	Mode           string
 	DeniedCommands []string
+	Interface      SessionInterface
 	RepositoryURL  string
 	DefaultBranch  string
 }

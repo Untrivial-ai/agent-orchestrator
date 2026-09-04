@@ -15,12 +15,14 @@ type LaunchContext struct {
 	ProjectID      string   `json:"projectId"`
 	Kind           string   `json:"kind"`
 	Harness        string   `json:"harness"`
+	Model          string   `json:"model,omitempty"`
 	DisplayName    string   `json:"displayName"`
 	Branch         string   `json:"branch"`
 	Prompt         string   `json:"prompt,omitempty"`
 	AgentSessionID string   `json:"agentSessionId,omitempty"`
 	Mode           string   `json:"mode"`
 	DeniedCommands []string `json:"deniedCommands"`
+	Interface      string   `json:"interface"`
 	RepositoryURL  string   `json:"repositoryUrl"`
 	DefaultBranch  string   `json:"defaultBranch"`
 }
@@ -126,6 +128,7 @@ type Turn struct {
 	Mode            string   `json:"mode"`
 	DeniedCommands  []string `json:"deniedCommands"`
 	Harness         string   `json:"harness"`
+	Model           string   `json:"model,omitempty"`
 	Attempt         int      `json:"attempt"`
 	CancelRequested bool     `json:"cancelRequested"`
 	AgentSessionID  string   `json:"agentSessionId,omitempty"`
@@ -270,6 +273,10 @@ type TerminalOutputRequest struct {
 
 type TerminalExitRequest struct {
 	ExitCode int `json:"exitCode"`
+	// InterfaceHandoff is set when the worker deliberately closes the agent
+	// terminal while transferring ownership to the Chat controller. That is a
+	// terminal lifecycle event, not a session exit.
+	InterfaceHandoff bool `json:"interfaceHandoff,omitempty"`
 }
 
 type AgentTerminalResponse struct {

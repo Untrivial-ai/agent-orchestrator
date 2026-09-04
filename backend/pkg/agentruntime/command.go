@@ -246,6 +246,9 @@ func buildClaudeRestore(cfg RestoreConfig, identity string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if model := strings.TrimSpace(cfg.Model); model != "" {
+		cmd = append(cmd, "--model", model)
+	}
 	cmd = append(cmd, "--resume", identity)
 	if cfg.Prompt != "" {
 		cmd = append(cmd, "--", cfg.Prompt)
