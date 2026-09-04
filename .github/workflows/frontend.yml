@@ -15,6 +15,12 @@ on:
       - "packages/cloud-client/**"
       - "packages/product-ui/**"
       - ".github/workflows/frontend.yml"
+      - ".node-version"
+      - ".nvmrc"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/bootstrap-frontend.mjs"
+      - "scripts/bootstrap-frontend.test.mjs"
 
 permissions:
   contents: read
@@ -30,33 +36,21 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: |
+            package-lock.json
             frontend/package-lock.json
             frontend/src/landing/package-lock.json
             packages/cloud-client/package-lock.json
             packages/product-ui/package-lock.json
 
-      - name: Install frontend dependencies
-        run: |
-          for attempt in 1 2 3; do
-            if npm ci; then
-              exit 0
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            echo "npm ci failed; retrying Electron dependency download ($attempt/3)"
-          done
+      - name: Bootstrap frontend dependencies
+        run: npm --prefix .. run bootstrap:frontend
 
       - name: Install Cloud client dependencies
         run: npm ci
         working-directory: packages/cloud-client
-
-      - name: Install product UI dependencies
-        run: npm ci
-        working-directory: packages/product-ui
 
       - name: Verify Cloud contract and client
         run: |
@@ -113,9 +107,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
 
       - run: npm ci
 
@@ -127,3 +123,15 @@ jobs:
 
       - name: Run renderer smoke suite
         run: CI=true npm run test:e2e:renderer
+
+  bootstrap-contract:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: node --test scripts/bootstrap-frontend.test.mjs

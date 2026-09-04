@@ -3,6 +3,11 @@
 	"productName": "Agent Orchestrator",
 	"version": "0.10.3",
 	"private": true,
+	"packageManager": "npm@11.19.0",
+	"engines": {
+		"node": "24.20.x",
+		"npm": "11.19.x"
+	},
 	"description": "Electron + TypeScript frontend for the agent-orchestrator rewrite",
 	"author": "Agent Orchestrator",
 	"license": "MIT",
