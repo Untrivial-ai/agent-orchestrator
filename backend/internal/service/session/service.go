@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sync/singleflight"
 
@@ -20,6 +21,12 @@ import (
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
+
+// maxDisplayNameLen caps the user-facing session display name. Mirrors the
+// spawn path's limit (backend/internal/httpd/controllers/sessions.go and
+// backend/internal/cli/spawn.go) so rename cannot set a name spawn would have
+// rejected.
+const maxDisplayNameLen = 20
 
 // Store is the read-only persistence surface needed to assemble controller-facing session read models.
 type Store interface {
@@ -726,6 +733,9 @@ func (s *Service) Rename(ctx context.Context, id domain.SessionID, displayName s
 	displayName = strings.TrimSpace(displayName)
 	if displayName == "" {
 		return apierr.Invalid("DISPLAY_NAME_REQUIRED", "Display name is required", nil)
+	}
+	if utf8.RuneCountInString(displayName) > maxDisplayNameLen {
+		return apierr.Invalid("DISPLAY_NAME_TOO_LONG", "Display name must be 20 characters or fewer", nil)
 	}
 	renamed, err := s.store.RenameSession(ctx, id, displayName, time.Now().UTC())
 	if err != nil {

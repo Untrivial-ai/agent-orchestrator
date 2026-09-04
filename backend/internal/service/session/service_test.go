@@ -481,6 +481,25 @@ func TestSessionRenameUpdatesDisplayName(t *testing.T) {
 	}
 }
 
+// TestSessionRenameRejectsOverlongDisplayName asserts Rename caps the display
+// name at 20 characters, the same limit spawn enforces
+// (TestSessionsAPI_SpawnRejectsOverlongDisplayName in the controllers
+// package), so a name spawn would reject cannot be set via rename either.
+func TestSessionRenameRejectsOverlongDisplayName(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", DisplayName: "original"}
+
+	overlong := strings.Repeat("x", 21)
+	err := (&Service{store: st}).Rename(context.Background(), "mer-1", overlong)
+	var e *apierr.Error
+	if !errors.As(err, &e) || e.Kind != apierr.KindInvalid || e.Code != "DISPLAY_NAME_TOO_LONG" {
+		t.Fatalf("err = %v, want DISPLAY_NAME_TOO_LONG", err)
+	}
+	if got := st.sessions["mer-1"].DisplayName; got != "original" {
+		t.Fatalf("display name = %q, want unchanged (rename should have been rejected)", got)
+	}
+}
+
 func TestSessionPinAndUnpin(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
