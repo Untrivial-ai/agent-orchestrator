@@ -4341,6 +4341,26 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	background: transparent;
 }
 
+.browser-panel__tab--drag-placeholder {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.browser-panel__tab--drag-overlay {
+	width: 100%;
+	min-width: 0;
+	max-width: none;
+	flex: none;
+	color: var(--fg);
+	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
+	background: var(--surface);
+	box-shadow:
+		inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
+		0 6px 16px color-mix(in srgb, black 22%, transparent);
+	cursor: grabbing;
+	pointer-events: none;
+}
+
 .browser-panel__tab:not(:last-child)::after {
 	position: absolute;
 	top: 8px;
@@ -4357,8 +4377,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 .browser-panel__tab:has(+ .browser-panel__tab--active)::after,
 .browser-panel__tab:hover::after,
 .browser-panel__tab:has(+ .browser-panel__tab:hover)::after,
-.browser-panel__tab--dragging::after,
-.browser-panel__tab:has(+ .browser-panel__tab--dragging)::after {
+.browser-panel__tab--drag-placeholder::after,
+.browser-panel__tab:has(+ .browser-panel__tab--drag-placeholder)::after {
 	opacity: 0;
 }
 
@@ -4451,6 +4471,11 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	border-radius: 7px;
 	color: var(--fg-muted);
 	background: transparent;
+}
+
+.browser-panel__tab-new--dragging {
+	visibility: hidden;
+	pointer-events: none;
 }
 
 .browser-panel__tab-new:not(:disabled):hover {
