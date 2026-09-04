@@ -518,6 +518,12 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 	r.reapSessions(ctx, sessionIDs, r.reapGrace)
 
 	if err != nil {
+		// Socket discovery can classify the control endpoint as unavailable before
+		// kill-session runs. Explicit teardown already accepts that as idempotent.
+		if errors.Is(err, ports.ErrRuntimeUnavailable) {
+			r.forgetSessionSocket(id)
+			return nil
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && killSessionMissingOutput(string(out)) {
 			r.forgetSessionSocket(id)
@@ -747,7 +753,17 @@ func (r *Runtime) Interrupt(ctx context.Context, handle ports.RuntimeHandle) err
 	if err != nil {
 		return err
 	}
-	if _, err := r.runForSession(ctx, id, sendInterruptArgs(id)...); err != nil {
+	out, err := r.runForSession(ctx, id, sendInterruptArgs(id)...)
+	if err != nil {
+		var exitErr *exec.ExitError
+		// A missing session/control endpoint leaves nothing reachable to interrupt.
+		// Other connection failures may hide a target that never received Ctrl-C.
+		if errors.Is(err, ports.ErrRuntimeUnavailable) ||
+			errors.As(err, &exitErr) && (sessionMissingOutput(string(out)) ||
+				serverNotRunningOutput(string(out)) || migrationSocketAbsentOutput(string(out))) {
+			r.forgetSessionSocket(id)
+			return nil
+		}
 		return fmt.Errorf("tmux runtime: interrupt session %s: %w", id, err)
 	}
 	return nil
@@ -953,6 +969,18 @@ func (r *Runtime) socketForSession(ctx context.Context, id string) (string, erro
 	}
 	if ctx.Err() != nil {
 		return "", ctx.Err()
+	}
+	// The private lookup already missed before reaching the legacy probe. A
+	// missing legacy socket proves control-endpoint absence, not process death:
+	// keep liveness fail-closed while allowing explicit teardown to recover.
+	if migrationSocketAbsentOutput(string(legacyOut)) {
+		return "", fmt.Errorf(
+			"%w: system tmux %q could not reach legacy default-socket session %s: %w",
+			ports.ErrRuntimeUnavailable,
+			r.legacyBinary,
+			id,
+			legacyErr,
+		)
 	}
 	if sessionMissingOutput(string(legacyOut)) || serverNotRunningOutput(string(legacyOut)) {
 		// Both known sockets definitively lack the session. Return the private

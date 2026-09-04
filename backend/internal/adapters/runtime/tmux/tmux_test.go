@@ -75,6 +75,30 @@ func newTestRuntime(chunkSize int) (*Runtime, *fakeRunner) {
 	return r, fr
 }
 
+func newMissingSocketTestRuntime(discoveries int) *Runtime {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	privateMissing := fakeRunnerResult{
+		out: []byte("error connecting to /private/tmp/tmux-501/ao (No such file or directory)"),
+		err: &exec.ExitError{},
+	}
+	legacyMissing := fakeRunnerResult{
+		out: []byte("error connecting to /private/tmp/tmux-501/default (No such file or directory)"),
+		err: &exec.ExitError{},
+	}
+	results := make([]fakeRunnerResult, 0, discoveries*2)
+	for range discoveries {
+		results = append(results, privateMissing, legacyMissing)
+	}
+	r.runner = &fakeRunnerSequence{results: results}
+	r.reapSessions = (&recordingReaper{}).reap
+	return r
+}
+
 // countCalls returns how many of fr's recorded calls invoked the given tmux
 // subcommand (args[0]), e.g. "display-message" for pane cwd verification
 // probes.
@@ -950,7 +974,27 @@ func TestIsAliveReportsTransientLegacyConnectionAsProbeInconclusive(t *testing.T
 	}
 }
 
+func TestIsAliveReportsMissingPrivateAndLegacySocketsAsRuntimeUnavailable(t *testing.T) {
+	r := newMissingSocketTestRuntime(1)
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false with unavailable runtime")
+	}
+}
+
 // -- Destroy tests --
+
+func TestDestroyTreatsMissingPrivateAndLegacySocketsAsAlreadyGone(t *testing.T) {
+	r := newMissingSocketTestRuntime(2)
+
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy with missing sockets: %v", err)
+	}
+}
 
 func TestDestroyIsIdempotentWhenSessionMissing(t *testing.T) {
 	r, fr := newTestRuntime(0)
@@ -1531,6 +1575,27 @@ func TestInterruptSendsCtrlC(t *testing.T) {
 	}
 	if got, want := fr.calls[0].args, sendInterruptArgs("sess-1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("interrupt args = %#v, want %#v", got, want)
+	}
+}
+
+func TestInterruptTreatsMissingPrivateAndLegacySocketsAsAlreadyStopped(t *testing.T) {
+	r := newMissingSocketTestRuntime(1)
+
+	if err := r.Interrupt(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Interrupt with missing sockets: %v", err)
+	}
+}
+
+func TestInterruptTreatsCachedLegacySocketDisappearanceAsAlreadyStopped(t *testing.T) {
+	r := newMissingSocketTestRuntime(0)
+	r.rememberSessionSocket("sess-1", "")
+	r.runner = &fakeRunnerSequence{results: []fakeRunnerResult{{
+		out: []byte("error connecting to /private/tmp/tmux-501/default (No such file or directory)"),
+		err: &exec.ExitError{},
+	}}}
+
+	if err := r.Interrupt(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Interrupt after legacy socket disappeared: %v", err)
 	}
 }
 
