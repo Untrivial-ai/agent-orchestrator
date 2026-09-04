@@ -6131,6 +6131,115 @@ paths:
       summary: Clean up terminated session workspaces
       tags:
       - sessions
+  /api/v1/sessions/import:
+    post:
+      operationId: importSession
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersImportSessionRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersImportSessionResponse'
+          description: OK
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersImportSessionResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Import an existing agent conversation as a resumable session
+      tags:
+      - sessions
+  /api/v1/sessions/importable:
+    get:
+      operationId: listImportableSessions
+      parameters:
+      - description: Only include conversations active within the last N days (default
+          60, 0 disables the age filter).
+        in: query
+        name: days
+        schema:
+          description: Only include conversations active within the last N days (default
+            60, 0 disables the age filter).
+          type: integer
+      - description: Restrict to one provider, e.g. claude-code or codex.
+        in: query
+        name: provider
+        schema:
+          description: Restrict to one provider, e.g. claude-code or codex.
+          type: string
+      - description: Restrict to conversations that ran inside this project. Empty
+          lists every conversation on the machine.
+        in: query
+        name: projectId
+        schema:
+          description: Restrict to conversations that ran inside this project. Empty
+            lists every conversation on the machine.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersListImportableSessionsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List agent conversations on disk that can be imported
+      tags:
+      - sessions
   /api/v1/settings:
     get:
       operationId: getSettings
@@ -7759,6 +7868,89 @@ components:
       properties:
         disabled:
           type: boolean
+      type: object
+    ControllersImportSessionRequest:
+      properties:
+        nativeSessionId:
+          description: The provider's own session id from the discovery list.
+          type: string
+        provider:
+          description: Agent harness of the conversation, e.g. claude-code or codex.
+          type: string
+      required:
+      - provider
+      - nativeSessionId
+      type: object
+    ControllersImportSessionResponse:
+      properties:
+        alreadyImported:
+          description: True when the session already existed and was returned as-is.
+          type: boolean
+        session:
+          $ref: '#/components/schemas/ControllersSessionView'
+      required:
+      - session
+      - alreadyImported
+      type: object
+    ControllersImportableSessionView:
+      properties:
+        alreadyImported:
+          description: True when an AO session is already bound to this native session
+            id.
+          type: boolean
+        branch:
+          description: Git branch recorded in the transcript, when present.
+          type: string
+        cwd:
+          description: Working directory the conversation ran in, read from the transcript.
+          type: string
+        lastActivity:
+          description: RFC3339 timestamp of the most recent activity.
+          type: string
+        meaning:
+          description: 'Import verdict from the transcript''s content: meaningful,
+            or ambiguous when the local heuristic could not decide. Trivial conversations
+            are withheld and never listed.'
+          type: string
+        messageCount:
+          description: Best-effort visible message count; 0 when the transcript is
+            too large to count cheaply.
+          type: integer
+        nativeSessionId:
+          description: The provider's own session id, used to bind and resume the
+            imported session.
+          type: string
+        provider:
+          description: Agent harness that wrote the transcript, e.g. claude-code or
+            codex.
+          type: string
+        sizeBytes:
+          description: Transcript size on disk in bytes.
+          format: int64
+          type: integer
+        title:
+          description: 'Human label: the provider''s title, else the first prompt,
+            else the file name.'
+          type: string
+      required:
+      - provider
+      - nativeSessionId
+      - title
+      - cwd
+      - lastActivity
+      - messageCount
+      - sizeBytes
+      - alreadyImported
+      - meaning
+      type: object
+    ControllersListImportableSessionsResponse:
+      properties:
+        sessions:
+          items:
+            $ref: '#/components/schemas/ControllersImportableSessionView'
+          type: array
+      required:
+      - sessions
       type: object
     ControllersRequestRereviewRequest:
       properties:

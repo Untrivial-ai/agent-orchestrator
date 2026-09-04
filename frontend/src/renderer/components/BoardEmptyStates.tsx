@@ -1,7 +1,9 @@
-import { Plus } from "lucide-react";
+import { Download, Plus } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShell } from "../lib/shell-context";
 import { CreateProjectFlow } from "./CreateProjectFlow";
+import { ImportSessionDialog } from "./ImportSessionDialog";
 import { TopbarButton } from "./TopbarButton";
 import { WelcomePanel } from "./WelcomePanel";
 import { OrchestratorIcon } from "./icons";
@@ -9,11 +11,13 @@ import { OrchestratorIcon } from "./icons";
 // Board empty states: first-launch welcome (`BoardWelcome`) and project board
 // with no worker sessions yet (`ProjectBoardEmpty`).
 export function BoardWelcome() {
+	const { t } = useTranslation();
 	const { cloneProject, createProject, initializeProjectRepository } = useShell();
+	const [importOpen, setImportOpen] = useState(false);
 	return (
 		<WelcomePanel>
 			<div
-				className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-8"
+				className="flex h-full min-h-0 flex-col items-center justify-center overflow-y-auto px-6 py-8"
 				data-testid="board-welcome"
 			>
 				<CreateProjectFlow
@@ -23,7 +27,17 @@ export function BoardWelcome() {
 					onCreateProject={createProject}
 					onInitializeProject={initializeProjectRepository}
 				/>
+				<button
+					className="mt-6 inline-flex items-center gap-1.5 text-caption text-muted-foreground transition-colors hover:text-foreground"
+					data-testid="board-welcome-import"
+					onClick={() => setImportOpen(true)}
+					type="button"
+				>
+					<Download className="size-icon-sm" aria-hidden="true" />
+					{t("importSession.openFromWelcome")}
+				</button>
 			</div>
+			<ImportSessionDialog open={importOpen} onOpenChange={setImportOpen} />
 		</WelcomePanel>
 	);
 }

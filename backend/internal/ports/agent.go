@@ -65,6 +65,23 @@ type AgentAuthChecker interface {
 	AuthStatus(ctx context.Context) (AgentAuthStatus, error)
 }
 
+// AgentOneShot is the optional capability for adapters whose CLI can answer a
+// single prompt non-interactively, in one short subprocess, using credentials
+// the user has already authorized. AO uses it for internal questions about the
+// user's own data — currently, judging whether an on-disk conversation is worth
+// importing — so no AO-hosted model or API key is ever involved and the user's
+// existing agent subscription is what pays.
+//
+// Implementations must be side-effect free with respect to the user's work:
+// no file writes outside WorkDir, no repository access, no tools. WorkDir is an
+// AO-owned scratch directory, passed because some CLIs record a transcript
+// keyed by their working directory; running there keeps AO's own questions out
+// of the history AO is reading.
+type AgentOneShot interface {
+	// RunOneShot answers prompt and returns the CLI's stdout.
+	RunOneShot(ctx context.Context, workDir, prompt string) (string, error)
+}
+
 // AgentBinaryResolver is the optional capability adapters expose when their
 // binary can be checked without constructing a real session launch command.
 type AgentBinaryResolver interface {

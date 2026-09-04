@@ -812,9 +812,15 @@ type missingAgents struct{}
 func (missingAgents) Agent(domain.AgentHarness) (ports.Agent, bool) { return nil, false }
 
 type fakeWorkspace struct {
-	createErr  error
-	destroyErr error
-	destroyed  int
+	createErr error
+	// createErrForBranch fails Create only when that exact branch is requested,
+	// modelling git's one-checkout-per-branch rule so a test can exercise a
+	// caller's fallback to a different branch.
+	createErrForBranch string
+	// createBranches records the branch of every Create attempt, in order.
+	createBranches []string
+	destroyErr     error
+	destroyed      int
 	// destroyCtxErr records ctx.Err() as seen by Destroy, so a test can prove
 	// teardown does not inherit a caller's cancellation.
 	destroyCtxErr error
@@ -902,8 +908,12 @@ func (w *fakeWorkspace) FetchDefaultBranch(ctx context.Context, repoPath string,
 }
 
 func (w *fakeWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	w.createBranches = append(w.createBranches, cfg.Branch)
 	if w.createErr != nil {
 		return ports.WorkspaceInfo{}, w.createErr
+	}
+	if w.createErrForBranch != "" && cfg.Branch == w.createErrForBranch {
+		return ports.WorkspaceInfo{}, ports.ErrWorkspaceBranchCheckedOutElsewhere
 	}
 	if w.sharedLog != nil {
 		*w.sharedLog = append(*w.sharedLog, "Create")

@@ -448,6 +448,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		AutoInjectCI:       row.AutoInjectCI,
 		Metadata: domain.SessionMetadata{
 			Branch:                    row.Branch,
+			SourceBranch:              row.SourceBranch,
 			WorkspacePath:             row.WorkspacePath,
 			WorkspaceRepoPath:         row.WorkspaceRepoPath,
 			DiffBaseSHA:               row.DiffBaseSha,
@@ -506,6 +507,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		IsPinned:                  rec.IsPinned,
 		PinnedAt:                  timePtrToNullTime(rec.PinnedAt),
 		Branch:                    rec.Metadata.Branch,
+		SourceBranch:              rec.Metadata.SourceBranch,
 		WorkspacePath:             rec.Metadata.WorkspacePath,
 		WorkspaceRepoPath:         rec.Metadata.WorkspaceRepoPath,
 		DiffBaseSha:               rec.Metadata.DiffBaseSHA,
@@ -553,6 +555,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		IsPinned:                  rec.IsPinned,
 		PinnedAt:                  timePtrToNullTime(rec.PinnedAt),
 		Branch:                    rec.Metadata.Branch,
+		SourceBranch:              rec.Metadata.SourceBranch,
 		WorkspacePath:             rec.Metadata.WorkspacePath,
 		WorkspaceRepoPath:         rec.Metadata.WorkspaceRepoPath,
 		DiffBaseSha:               rec.Metadata.DiffBaseSHA,

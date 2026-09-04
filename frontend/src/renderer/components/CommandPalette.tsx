@@ -416,6 +416,10 @@ export function CommandPalette() {
 					case "open-orchestrator":
 							await openOrchestrator(action.projectId);
 							break;
+					case "open-import-sessions":
+							closePalette();
+							useUiStore.getState().setImportSessionOpen(true);
+							break;
 				}
 			} catch (err) {
 				if (isCurrentRun()) setError(err instanceof Error ? err.message : t("command.failed"));

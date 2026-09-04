@@ -1788,6 +1788,31 @@ func sessionOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodGet, path: "/api/v1/sessions/importable", id: "listImportableSessions", tag: "sessions",
+			summary:    "List agent conversations on disk that can be imported",
+			pathParams: []any{controllers.ListImportableSessionsQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListImportableSessionsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/import", id: "importSession", tag: "sessions",
+			summary: "Import an existing agent conversation as a resumable session",
+			reqBody: controllers.ImportSessionRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.ImportSessionResponse{}},
+				{http.StatusOK, controllers.ImportSessionResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusUnprocessableEntity, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}", id: "getSession", tag: "sessions",
 			summary:    "Fetch one session",
 			pathParams: []any{controllers.SessionIDParam{}},

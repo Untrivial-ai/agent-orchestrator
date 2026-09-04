@@ -1,4 +1,4 @@
-import { BadgeCheck, Bot, CircleHelp, Cloud, GitBranch, Globe2, Inbox, Keyboard, MonitorCog, RefreshCw, Settings2, Smartphone, TriangleAlert, X } from "lucide-react";
+import { BadgeCheck, Bot, CircleHelp, Cloud, Download, GitBranch, Globe2, Inbox, Keyboard, MonitorCog, RefreshCw, Settings2, Smartphone, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCloudGate } from "../hooks/useCloudGate";
@@ -55,6 +55,7 @@ export function SettingsDialog() {
 		{ id: "general", label: t("settings.general"), icon: Settings2 },
 		{ id: "harness", label: t("settings.harness"), icon: Bot },
 		{ id: "agents", label: t("settings.agents"), icon: BadgeCheck },
+		{ id: "importSessions", label: t("settings.importSessions"), icon: Download },
 		{ id: "browserProfiles", label: t("settings.browserProfiles"), icon: Globe2 },
 		// Only deployments with the cloud offering get the Cloud page.
 		...(cloudEnabled ? [{ id: "cloud" as const, label: t("settings.cloud"), icon: Cloud }] : []),
@@ -69,6 +70,7 @@ export function SettingsDialog() {
 		{ id: "agents", label: t("settings.project.agents"), icon: Bot },
 		{ id: "workflow", label: t("settings.project.workflow"), icon: GitBranch },
 		{ id: "intake", label: t("settings.project.intake"), icon: Inbox },
+		{ id: "importSessions", label: t("settings.importSessions"), icon: Download },
 	];
 
 	const isProjectSettings = displaySettings?.scope === "project";

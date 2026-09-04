@@ -27,12 +27,14 @@ import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-repla
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { captureRendererEvent } from "../lib/telemetry";
 import { type OrchestratorReplacementFailure, useUiStore } from "../stores/ui-store";
+import { useNavigateToSession } from "../lib/navigate-to-session";
 import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { buildIntake, deriveRepoPath, deriveRepoHost, IntakeFields, type IntakeForm } from "./IntakeFields";
 import { ProductExternalLink } from "./ProductExternalLink";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
+import { ImportSessionsSection } from "./settings/ImportSessionsSection";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { SettingsRow } from "./settings/SettingsRow";
 import { Switch } from "./ui/switch";
@@ -54,7 +56,7 @@ type SettingsSaveResult = {
 	spawnError: unknown;
 };
 
-export type ProjectSettingsSection = "general" | "agents" | "workflow" | "intake";
+export type ProjectSettingsSection = "general" | "agents" | "workflow" | "intake" | "importSessions";
 export interface ProjectSettingsSaveState {
 	isPending: boolean;
 	showSaving: boolean;
@@ -131,6 +133,7 @@ function SettingsBody({
 	const queryClient = useQueryClient();
 	const navigate = useNavigate();
 	const closeSettings = useUiStore((state) => state.closeSettings);
+	const navigateToSession = useNavigateToSession();
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const workspaceQuery = useWorkspaceQuery();
 	const config = project.config ?? {};
@@ -595,6 +598,19 @@ function SettingsBody({
 						<p className="px-1 text-xs text-settings-muted">{t("settings.project.workflow")}</p>
 					)}
 				</>
+			)}
+
+			{section === "importSessions" && (
+				<ImportSessionsSection
+					projectId={projectId}
+					titleHidden
+					onImported={(sessionId, importedProjectId) => {
+						// Land the user in the session they just imported rather
+						// than leaving them staring at the settings page.
+						closeSettings();
+						navigateToSession(importedProjectId ?? projectId, sessionId);
+					}}
+				/>
 			)}
 
 			{section === "intake" && (

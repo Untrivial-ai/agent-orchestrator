@@ -66,11 +66,11 @@ type AgentSwitch struct {
 	TargetRuntimeHandleID   string
 	TargetAcknowledgedAt    sql.NullTime
 	ErrorCode               string
-	FailurePoint            string
 	RequestedAt             time.Time
 	UpdatedAt               time.Time
 	FinalHandoffPath        string
 	FinalHandoffHash        string
+	FailurePoint            string
 }
 
 type AgentSwitchFailureDeliveryState struct {
@@ -546,6 +546,7 @@ type Session struct {
 	Model                     string
 	LatestUserPromptAt        sql.NullTime
 	ReviewerAgentConfig       string
+	SourceBranch              string
 }
 
 type SessionCleanupFact struct {

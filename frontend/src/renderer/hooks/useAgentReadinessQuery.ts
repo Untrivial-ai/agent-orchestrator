@@ -55,6 +55,19 @@ export function useAgentReadinessQuery(enabled = true) {
 	return useQuery({ ...agentReadinessQueryOptions, enabled });
 }
 
+// useHasReadyAgent reports whether the user has at least one agent that is both
+// installed and authorized. Features that depend on running an agent on the
+// user's behalf gate on this rather than offering a route that can only
+// dead-end: an imported conversation, for instance, has to be resumable.
+//
+// It reads the readiness query the app already loads, so it costs no extra
+// request. effectiveReadiness is the daemon's own combined verdict, which is
+// why it is preferred over reassembling installation and auth here.
+export function useHasReadyAgent(): boolean {
+	const { data } = useAgentReadinessQuery();
+	return useMemo(() => (data?.agents ?? []).some((agent) => agent.effectiveReadiness === "ready"), [data]);
+}
+
 export function useEnsureAgentReadiness({
 	agentIds = [],
 	enabled = true,

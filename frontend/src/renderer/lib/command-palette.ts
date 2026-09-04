@@ -32,6 +32,7 @@ export type CommandAction =
 	| { kind: "navigate"; target: NavigateTarget }
 	| { kind: "open-new-task"; projectId: string }
 	| { kind: "open-new-project" }
+	| { kind: "open-import-sessions" }
 	| { kind: "open-orchestrator"; projectId: string }
 	| { kind: "open-session-actions"; sessionId: string }
 	| { kind: "resume-session"; projectId: string; sessionId: string }
@@ -348,6 +349,13 @@ export function buildCommands(ctx: CommandPaletteContext, t: TFunction = appI18n
 		title: t("command.newProject"),
 		keywords: ["add", "import", "repo", "workspace"],
 		action: { kind: "open-new-project" },
+	});
+	items.push({
+		id: "global-import-session",
+		group: "global",
+		title: t("command.importSession"),
+		keywords: ["import", "session", "resume", "claude", "codex", "conversation", "thread"],
+		action: { kind: "open-import-sessions" },
 	});
 	items.push({
 		id: "global-settings",
