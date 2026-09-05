@@ -262,7 +262,7 @@ function TelemetryEventsRow() {
 		<SettingsRow label={t("settings.telemetryEvents.label")}>
 			<Switch aria-label={t("settings.telemetryEvents.label")} checked={checked} disabled={saving || !view || blockedEnable} onCheckedChange={(enabled) => { void setEnabled(enabled); }} />
 		</SettingsRow>
-		<p className={cn("px-3 pb-2 text-xs leading-relaxed", status === "failed" ? "text-destructive" : "text-muted-foreground")} role={status === "failed" ? "alert" : undefined}>
+		<p className={cn("pb-2 text-xs leading-relaxed", status === "failed" ? "text-destructive" : "text-muted-foreground")} role={status === "failed" ? "alert" : undefined}>
 			{t(status ? `settings.telemetryEvents.${status}` : "settings.telemetryEvents.description")}
 		</p>
 	</div>;

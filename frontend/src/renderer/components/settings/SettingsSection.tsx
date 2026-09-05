@@ -26,7 +26,7 @@ export function SettingsSection({
 			data-section={sectionId}
 		>
 			{!titleHidden && (
-				<h2 className="px-3 text-xs font-medium leading-4 text-settings-muted">{title}</h2>
+				<h2 className="text-xs font-medium leading-4 text-settings-muted">{title}</h2>
 			)}
 			<div
 				className={cn(

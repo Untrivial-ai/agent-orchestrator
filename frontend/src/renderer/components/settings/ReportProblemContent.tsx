@@ -131,8 +131,6 @@ export function ReportProblemContent({ active }: { active: boolean }) {
 				}
 			}}
 		>
-			<p className="text-xs leading-4 text-settings-muted">{t("report.subtitle")}</p>
-
 			<div className="flex flex-col gap-1.5">
 				<label className="settings-field-label" htmlFor={titleId}>
 					{t("report.titleLabel")}

@@ -696,12 +696,6 @@ button.settings-row-bar {
 	background-color: var(--color-bg-settings-row);
 }
 
-button.settings-link-row:hover,
-button.settings-link-row:active {
-	background-color: var(--color-bg-settings-row-hover);
-	color: var(--color-text-settings-title);
-}
-
 /* Grouped rows size around the shared action control, keeping its top/bottom
  * inset equal to the row's right and left inset. */
 .settings-grouped-rows .settings-row-bar {
@@ -712,15 +706,15 @@ button.settings-link-row:active {
 	border-radius: 0;
 }
 
+/* The dialog body owns the page inset. Rows must not add a second left/right
+ * gutter or their labels drift from the dialog title and section headings. */
+.settings-dialog-body .settings-row-bar {
+	padding-inline: 0;
+}
+
 /* The update summary is a content row, not a compact control row. */
 .settings-grouped-rows .update-status-row {
 	padding-block: var(--space-4);
-}
-
-/* Button/link rows (e.g. Connect Mobile, Keyboard Shortcuts) keep rounded
- * corners even though the shared group container lost its outer border. */
-.settings-grouped-rows .settings-link-row.settings-row-bar {
-	border-radius: var(--radius-md);
 }
 
 @utility settings-menu-item {

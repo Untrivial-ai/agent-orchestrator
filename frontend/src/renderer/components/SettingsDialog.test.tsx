@@ -25,12 +25,7 @@ vi.mock("./ProjectSettingsForm", () => ({
 			type="button"
 			onClick={() =>
 				onSaveState?.({
-					isPending: true,
-					showSaving: false,
-					validationError: null,
-					mutationError: null,
-					saved: false,
-					replacementError: null,
+					phase: "pending",
 				})
 			}
 		>
@@ -78,6 +73,14 @@ describe("SettingsDialog", () => {
 
 		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("mobile");
 		expect(screen.getByRole("button", { name: "Mobile" })).toHaveAttribute("aria-current", "page");
+	});
+
+	it("falls back to General when Cloud is unavailable", async () => {
+		useUiStore.getState().openGlobalSettings("cloud");
+		renderSettingsDialog();
+
+		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("general");
+		expect(screen.queryByRole("button", { name: "Cloud" })).not.toBeInTheDocument();
 	});
 
 	it("closes Settings without cancelling daemon-owned account login work", async () => {
