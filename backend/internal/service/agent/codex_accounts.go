@@ -28,6 +28,8 @@ const (
 	codexAccountProcessLimit     = 2
 )
 
+var defaultCodexAccountBootstrapRetryDelays = []time.Duration{15 * time.Second, time.Minute, 5 * time.Minute}
+
 // CodexAccounts is the display-safe account-management view. Credentials and
 // filesystem locations remain daemon-private.
 type CodexAccounts struct {
@@ -95,6 +97,11 @@ type accountReconcileCall struct {
 	done chan struct{}
 	err  error
 }
+type codexAccountBootstrapCall struct {
+	done    chan struct{}
+	err     error
+	attempt int
+}
 type accountLoginOperation struct {
 	snapshot        domain.CodexAccountLoginOperation
 	targetAccountID string
@@ -125,22 +132,24 @@ type codexAccountManager struct {
 	pendingRoot       string
 	switchStagingRoot string
 
-	mu                 sync.Mutex
-	bootstrapCall      *accountReconcileCall
-	bootstrapErr       error
-	bootstrapNextRetry time.Time
-	bootstrapFailures  int
-	auth               map[string]*accountAuthState
-	usage              map[string]*accountUsageState
-	capabilities       domain.CodexAccountCapabilities
-	active             domain.CodexActiveAccount
-	globalAuth         domain.AgentAuthenticationObservation
-	unmanaged          *domain.CodexUnmanagedGlobalAccount
-	login              *accountLoginOperation
-	reconcile          *accountReconcileCall
-	bootstrapped       bool
-	capacity           *codexCapacityCoordinator
-	subscribers        map[chan CodexAccounts]struct{}
+	mu                       sync.Mutex
+	bootstrapCall            *codexAccountBootstrapCall
+	bootstrapLastErr         error
+	bootstrapFailures        int
+	bootstrapNextRetryAt     time.Time
+	bootstrapRetryGeneration uint64
+	bootstrapRetryDelays     []time.Duration
+	auth                     map[string]*accountAuthState
+	usage                    map[string]*accountUsageState
+	capabilities             domain.CodexAccountCapabilities
+	active                   domain.CodexActiveAccount
+	globalAuth               domain.AgentAuthenticationObservation
+	unmanaged                *domain.CodexUnmanagedGlobalAccount
+	login                    *accountLoginOperation
+	reconcile                *accountReconcileCall
+	bootstrapped             bool
+	capacity                 *codexCapacityCoordinator
+	subscribers              map[chan CodexAccounts]struct{}
 }
 
 func newCodexAccountManager(ctx context.Context, accountRoot, pendingRoot, switchStagingRoot, globalHome string, factory ports.CodexAccountClientFactory, stateStore CodexAccountStateStore, logger *slog.Logger, operationGates ...ports.CodexOperationGate) *codexAccountManager {
@@ -161,7 +170,8 @@ func newCodexAccountManager(ctx context.Context, accountRoot, pendingRoot, switc
 		globalHome: canonicalPath(globalHome), pendingRoot: canonicalPath(pendingRoot), switchStagingRoot: canonicalPath(switchStagingRoot),
 		auth: map[string]*accountAuthState{}, usage: map[string]*accountUsageState{},
 		capabilities: unavailableCodexCapabilities(), subscribers: map[chan CodexAccounts]struct{}{},
-		globalAuth: uncheckedAuthentication(),
+		bootstrapRetryDelays: append([]time.Duration(nil), defaultCodexAccountBootstrapRetryDelays...),
+		globalAuth:           uncheckedAuthentication(),
 	}
 	m.mutations <- struct{}{}
 	m.capacity = newCodexCapacityCoordinator(m)

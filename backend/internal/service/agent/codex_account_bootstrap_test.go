@@ -59,10 +59,12 @@ func TestCodexBootstrapRecoversAfterTransientFailure(t *testing.T) {
 
 func TestCodexBootstrapCooldownAndSafeFailure(t *testing.T) {
 	root := t.TempDir()
+	daemonCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
 		return nil, errors.New("secret credential /private/path")
 	}}
-	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), filepath.Join(root, "global"), factory, nil, nil)
+	manager := newCodexAccountManager(daemonCtx, filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), filepath.Join(root, "global"), factory, nil, nil)
 	var logs bytes.Buffer
 	manager.logger = slog.New(slog.NewTextHandler(&logs, nil))
 	service := &Service{codexAccounts: manager}

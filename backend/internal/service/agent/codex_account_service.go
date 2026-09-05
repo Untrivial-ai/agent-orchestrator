@@ -311,24 +311,23 @@ func (s *Service) WarmCodexAccounts() {
 	if s.codexAccounts == nil {
 		return
 	}
-	go func() {
-		if err := s.codexAccounts.waitBootstrap(s.codexAccounts.ctx); err != nil {
-			return
-		}
-		capabilities := s.codexAccounts.detectCapabilities(s.codexAccounts.ctx)
-		records, err := s.codexAccounts.catalog.recordsFor(nil)
-		if err != nil {
-			return
-		}
-		if capabilities.AccountRead.State == domain.CodexCapabilitySupported {
-			for _, record := range records {
-				if record.Snapshot.Status == domain.CodexAccountStatusValid {
-					_, _ = s.codexAccounts.ensureAuthentication(s.codexAccounts.ctx, record, domain.AgentReadinessPurposeDisplay, false)
-				}
+	_, _ = s.codexAccounts.startOrJoinBootstrap()
+}
+
+func (m *codexAccountManager) warmAfterBootstrap() {
+	capabilities := m.detectCapabilities(m.ctx)
+	records, err := m.catalog.recordsFor(nil)
+	if err != nil {
+		return
+	}
+	if capabilities.AccountRead.State == domain.CodexCapabilitySupported {
+		for _, record := range records {
+			if record.Snapshot.Status == domain.CodexAccountStatusValid {
+				_, _ = m.ensureAuthentication(m.ctx, record, domain.AgentReadinessPurposeDisplay, false)
 			}
 		}
-		_ = s.codexAccounts.capacity.ensure(s.codexAccounts.ctx, records, capabilities)
-	}()
+	}
+	_ = m.capacity.ensure(m.ctx, records, capabilities)
 }
 
 // WaitCodexAccountBootstrap waits for the daemon-owned bootstrap gate.

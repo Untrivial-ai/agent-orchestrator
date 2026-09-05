@@ -15,36 +15,61 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// Bootstrap failures are retried only on demand. All callers retain their own
-// attempt result even if a later caller starts another attempt.
-func (m *codexAccountManager) waitBootstrap(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
+// Bootstrap failures are serialized into one daemon-owned attempt. Retryable
+// failures schedule bounded background recovery, while callers retain the
+// result of the specific attempt they joined.
+func (m *codexAccountManager) startOrJoinBootstrap() (*codexAccountBootstrapCall, error) {
+	if err := m.ctx.Err(); err != nil {
+		return nil, err
 	}
 	m.mu.Lock()
 	if m.bootstrapped {
 		m.mu.Unlock()
-		return nil
+		return nil, nil
 	}
-	call := m.bootstrapCall
-	if call == nil {
-		if m.bootstrapErr != nil {
-			var failure *codexBootstrapFailure
-			if !errors.As(m.bootstrapErr, &failure) || !failure.retryable || m.now().Before(m.bootstrapNextRetry) {
-				err := m.bootstrapErr
-				m.mu.Unlock()
-				return err
-			}
-		}
-		if err := m.ctx.Err(); err != nil {
+	if m.bootstrapCall != nil {
+		call := m.bootstrapCall
+		m.mu.Unlock()
+		return call, nil
+	}
+	if m.bootstrapLastErr != nil {
+		var failure *codexBootstrapFailure
+		if !errors.As(m.bootstrapLastErr, &failure) || !failure.retryable || (!m.bootstrapNextRetryAt.IsZero() && m.now().Before(m.bootstrapNextRetryAt)) {
+			err := m.bootstrapLastErr
 			m.mu.Unlock()
-			return err
+			return nil, err
 		}
-		call = &accountReconcileCall{done: make(chan struct{})}
-		m.bootstrapCall = call
-		go m.runBootstrap(call)
 	}
+	if !m.bootstrapNextRetryAt.IsZero() && m.now().Before(m.bootstrapNextRetryAt) {
+		err := m.bootstrapLastErr
+		m.mu.Unlock()
+		if err == nil {
+			err = bootstrapFailure("account_bootstrap_unavailable", true)
+		}
+		return nil, err
+	}
+	call := m.startBootstrapLocked()
 	m.mu.Unlock()
+	go m.runBootstrap(call)
+	return call, nil
+}
+
+func (m *codexAccountManager) startBootstrapLocked() *codexAccountBootstrapCall {
+	m.bootstrapRetryGeneration++
+	m.bootstrapNextRetryAt = time.Time{}
+	call := &codexAccountBootstrapCall{done: make(chan struct{}), attempt: m.bootstrapFailures + 1}
+	m.bootstrapCall = call
+	return call
+}
+
+func (m *codexAccountManager) waitBootstrap(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	call, err := m.startOrJoinBootstrap()
+	if err != nil || call == nil {
+		return err
+	}
 	select {
 	case <-call.done:
 		return call.err
@@ -53,27 +78,93 @@ func (m *codexAccountManager) waitBootstrap(ctx context.Context) error {
 	}
 }
 
-func (m *codexAccountManager) runBootstrap(call *accountReconcileCall) {
+func (m *codexAccountManager) runBootstrap(call *codexAccountBootstrapCall) {
+	startedAt := m.now()
 	err := m.bootstrapInner()
+	finishedAt := m.now()
+	reason, retryable := "unknown", false
+	var failure *codexBootstrapFailure
+	if errors.As(err, &failure) {
+		reason, retryable = failure.reason, failure.retryable
+	}
+	var (
+		retryDelay      time.Duration
+		nextRetryAt     time.Time
+		retryGeneration uint64
+		shouldRetry     bool
+	)
+
 	m.mu.Lock()
-	m.bootstrapErr = err
-	m.bootstrapped = err == nil
-	if err != nil {
-		m.bootstrapFailures++
-		// A bounded cooldown prevents repeated launch requests from creating a
-		// provider process storm; there is no timer or background retry loop.
-		delay := time.Second << min(m.bootstrapFailures-1, 5)
-		m.bootstrapNextRetry = m.now().Add(delay)
-		var failure *codexBootstrapFailure
-		if errors.As(err, &failure) {
-			m.logger.Warn("Codex account bootstrap failed", "reasonCode", failure.reason, "retryable", failure.retryable)
-		}
+	if m.bootstrapCall != call {
+		m.mu.Unlock()
+		return
 	}
 	call.err = err
 	m.bootstrapCall = nil
-	close(call.done)
+	if err == nil {
+		m.bootstrapped = true
+		m.bootstrapLastErr = nil
+		m.bootstrapFailures = 0
+		m.bootstrapNextRetryAt = time.Time{}
+		m.bootstrapRetryGeneration++
+	} else {
+		m.bootstrapLastErr = err
+		if m.ctx.Err() == nil && retryable {
+			m.bootstrapFailures++
+			retryDelay = m.bootstrapRetryDelayLocked()
+			nextRetryAt = finishedAt.Add(retryDelay)
+			m.bootstrapNextRetryAt = nextRetryAt
+			m.bootstrapRetryGeneration++
+			retryGeneration = m.bootstrapRetryGeneration
+			shouldRetry = true
+		}
+	}
 	m.mu.Unlock()
 	m.publish()
+
+	duration := finishedAt.Sub(startedAt)
+	if err == nil {
+		m.logger.Info("Codex account bootstrap completed", "attempt", call.attempt, "duration_ms", duration.Milliseconds())
+		close(call.done)
+		go m.warmAfterBootstrap()
+		return
+	}
+	if !shouldRetry {
+		m.logger.Warn("Codex account bootstrap failed", "attempt", call.attempt, "duration_ms", duration.Milliseconds(), "reasonCode", reason, "retryable", retryable)
+		close(call.done)
+		return
+	}
+	m.logger.Warn("Codex account bootstrap failed", "attempt", call.attempt, "duration_ms", duration.Milliseconds(), "reasonCode", reason, "retryable", retryable, "nextRetryAt", nextRetryAt)
+	close(call.done)
+	go m.scheduleBootstrapRetry(retryGeneration, retryDelay)
+}
+
+func (m *codexAccountManager) bootstrapRetryDelayLocked() time.Duration {
+	delays := m.bootstrapRetryDelays
+	if len(delays) == 0 {
+		delays = defaultCodexAccountBootstrapRetryDelays
+	}
+	return delays[min(m.bootstrapFailures-1, len(delays)-1)]
+}
+
+func (m *codexAccountManager) scheduleBootstrapRetry(generation uint64, delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-m.ctx.Done():
+		return
+	}
+
+	m.mu.Lock()
+	valid := m.ctx.Err() == nil && !m.bootstrapped && m.bootstrapCall == nil && m.bootstrapRetryGeneration == generation && !m.bootstrapNextRetryAt.IsZero() && !m.now().Before(m.bootstrapNextRetryAt)
+	if !valid {
+		m.mu.Unlock()
+		return
+	}
+	call := m.startBootstrapLocked()
+	m.mu.Unlock()
+	go m.runBootstrap(call)
 }
 
 // Only allowlisted metadata crosses the API/log boundary. Provider errors can

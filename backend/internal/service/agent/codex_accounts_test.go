@@ -227,11 +227,34 @@ func supportedCodexAccountCapabilities() domain.CodexAccountCapabilities {
 
 func newTestCodexAccountManager(t *testing.T, factory ports.CodexAccountClientFactory, state CodexAccountStateStore) *codexAccountManager {
 	t.Helper()
+	return newTestCodexAccountManagerWithContext(context.Background(), t, factory, state)
+}
+
+func newTestCodexAccountManagerWithContext(ctx context.Context, t *testing.T, factory ports.CodexAccountClientFactory, state CodexAccountStateStore) *codexAccountManager {
+	t.Helper()
 	root := t.TempDir()
-	return newCodexAccountManager(context.Background(),
+	return newCodexAccountManager(ctx,
 		filepath.Join(root, "accounts"), filepath.Join(root, "pending-accounts"),
 		filepath.Join(root, "switch-staging"), filepath.Join(root, "device-home"),
 		factory, state, nil)
+}
+
+func waitForCodexAccountTestCondition(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatal("timed out waiting for Codex account condition")
+		}
+	}
 }
 
 func TestCachedCodexAccountsPerformsNoFilesystemOrNativeWork(t *testing.T) {
@@ -682,6 +705,236 @@ func TestBootstrapImportsOpaqueDeviceCredentialWithoutMutatingDeviceHome(t *test
 	}
 	if _, err := os.Stat(filepath.Join(root, "runtime")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("bootstrap created an obsolete private runtime: %v", err)
+	}
+}
+
+func TestCodexAccountBootstrapRetriesAfterTransientOpenFailure(t *testing.T) {
+	daemonCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var failureMu sync.Mutex
+	failOpen := true
+	factory := &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			failureMu.Lock()
+			defer failureMu.Unlock()
+			if failOpen {
+				failOpen = false
+				return nil, errors.New("transient open failure")
+			}
+			return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized}}, nil
+		},
+	}
+	manager := newTestCodexAccountManagerWithContext(daemonCtx, t, factory, nil)
+	manager.bootstrapRetryDelays = []time.Duration{time.Millisecond}
+	service := &Service{codexAccounts: manager}
+
+	err := service.WaitCodexAccountBootstrap(context.Background())
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Kind != apierr.KindUnavailable || apiError.Code != "CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE" || apiError.Message != "Codex account setup did not complete" {
+		t.Fatalf("first bootstrap error = %#v, want stable unavailable envelope", err)
+	}
+	waitForCodexAccountTestCondition(t, func() bool {
+		manager.mu.Lock()
+		ready := manager.bootstrapped
+		manager.mu.Unlock()
+		return ready
+	})
+	if err := service.WaitCodexAccountBootstrap(context.Background()); err != nil {
+		t.Fatalf("bootstrap after automatic retry: %v", err)
+	}
+	waitForCodexAccountTestCondition(t, func() bool {
+		factory.mu.Lock()
+		defer factory.mu.Unlock()
+		return factory.capabilityChecks == 1
+	})
+	service.WarmCodexAccounts()
+	if err := service.WaitCodexAccountBootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	factory.mu.Lock()
+	opens, capabilityChecks := factory.opens, factory.capabilityChecks
+	factory.mu.Unlock()
+	if opens != 2 || capabilityChecks != 1 {
+		t.Fatalf("native calls after recovery: opens=%d capabilities=%d, want 2 and 1", opens, capabilityChecks)
+	}
+}
+
+func TestCodexAccountBootstrapRetriesAfterTransientReadFailure(t *testing.T) {
+	daemonCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var failureMu sync.Mutex
+	failRead := true
+	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return &fakeCodexAccountClient{readFn: func(context.Context, bool) (ports.CodexAccountObservation, error) {
+			failureMu.Lock()
+			defer failureMu.Unlock()
+			if failRead {
+				failRead = false
+				return ports.CodexAccountObservation{}, context.DeadlineExceeded
+			}
+			return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized}, nil
+		}}, nil
+	}}
+	manager := newTestCodexAccountManagerWithContext(daemonCtx, t, factory, nil)
+	manager.bootstrapRetryDelays = []time.Duration{time.Millisecond}
+
+	err := manager.waitBootstrap(context.Background())
+	var failure *codexBootstrapFailure
+	if !errors.As(err, &failure) || failure.reason != "account_read_inconclusive" || !failure.retryable {
+		t.Fatalf("first bootstrap error = %#v, want retryable account_read_inconclusive", err)
+	}
+	waitForCodexAccountTestCondition(t, func() bool {
+		manager.mu.Lock()
+		ready := manager.bootstrapped
+		manager.mu.Unlock()
+		return ready
+	})
+	factory.mu.Lock()
+	opens := factory.opens
+	factory.mu.Unlock()
+	if opens != 2 {
+		t.Fatalf("account client opens = %d, want 2", opens)
+	}
+}
+
+func TestCodexAccountBootstrapWarmAndConcurrentWaitersShareAttempt(t *testing.T) {
+	daemonCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	readStarted := make(chan struct{})
+	readRelease := make(chan struct{})
+	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return &fakeCodexAccountClient{
+			read:        ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized},
+			readStarted: readStarted,
+			readRelease: readRelease,
+		}, nil
+	}}
+	manager := newTestCodexAccountManagerWithContext(daemonCtx, t, factory, nil)
+	service := &Service{codexAccounts: manager}
+	service.WarmCodexAccounts()
+	select {
+	case <-readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("bootstrap account read did not start")
+	}
+
+	const waiters = 20
+	results := make(chan error, waiters)
+	for range waiters {
+		go func() { results <- service.WaitCodexAccountBootstrap(context.Background()) }()
+	}
+	factory.mu.Lock()
+	opens := factory.opens
+	factory.mu.Unlock()
+	if opens != 1 {
+		t.Fatalf("account client opens during shared bootstrap = %d, want 1", opens)
+	}
+	close(readRelease)
+	for range waiters {
+		if err := <-results; err != nil {
+			t.Fatalf("shared bootstrap waiter: %v", err)
+		}
+	}
+	factory.mu.Lock()
+	opens = factory.opens
+	factory.mu.Unlock()
+	if opens != 1 {
+		t.Fatalf("account client opens after shared bootstrap = %d, want 1", opens)
+	}
+}
+
+func TestCodexAccountBootstrapBackoffProgressionAndCooldown(t *testing.T) {
+	daemonCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return nil, errors.New("persistent open failure")
+	}}
+	manager := newTestCodexAccountManagerWithContext(daemonCtx, t, factory, nil)
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+
+	for attempt, wantDelay := range []time.Duration{15 * time.Second, time.Minute, 5 * time.Minute, 5 * time.Minute} {
+		if err := manager.waitBootstrap(context.Background()); err == nil {
+			t.Fatalf("attempt %d unexpectedly succeeded", attempt+1)
+		}
+		manager.mu.Lock()
+		nextRetryAt := manager.bootstrapNextRetryAt
+		manager.mu.Unlock()
+		if got := nextRetryAt.Sub(now); got != wantDelay {
+			t.Fatalf("attempt %d retry delay = %s, want %s", attempt+1, got, wantDelay)
+		}
+		factory.mu.Lock()
+		opensBeforeCooldownCall := factory.opens
+		factory.mu.Unlock()
+		if err := manager.waitBootstrap(context.Background()); err == nil {
+			t.Fatalf("attempt %d cooldown call unexpectedly succeeded", attempt+1)
+		}
+		factory.mu.Lock()
+		opensAfterCooldownCall := factory.opens
+		factory.mu.Unlock()
+		if opensAfterCooldownCall != opensBeforeCooldownCall {
+			t.Fatalf("attempt %d cooldown started native work: before=%d after=%d", attempt+1, opensBeforeCooldownCall, opensAfterCooldownCall)
+		}
+		now = nextRetryAt
+	}
+}
+
+func TestCodexAccountBootstrapCallerCancellationDoesNotCancelAttempt(t *testing.T) {
+	daemonCtx, cancelDaemon := context.WithCancel(context.Background())
+	defer cancelDaemon()
+	readStarted := make(chan struct{})
+	readRelease := make(chan struct{})
+	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return &fakeCodexAccountClient{
+			read:        ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized},
+			readStarted: readStarted,
+			readRelease: readRelease,
+		}, nil
+	}}
+	manager := newTestCodexAccountManagerWithContext(daemonCtx, t, factory, nil)
+	service := &Service{codexAccounts: manager}
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- service.WaitCodexAccountBootstrap(callerCtx) }()
+	select {
+	case <-readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("bootstrap account read did not start")
+	}
+	cancelCaller()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled waiter error = %v, want context canceled", err)
+	}
+	manager.mu.Lock()
+	callStillRunning := manager.bootstrapCall != nil
+	manager.mu.Unlock()
+	if !callStillRunning {
+		t.Fatal("canceling one waiter canceled the daemon bootstrap")
+	}
+	close(readRelease)
+	if err := service.WaitCodexAccountBootstrap(context.Background()); err != nil {
+		t.Fatalf("joining bootstrap after canceled waiter: %v", err)
+	}
+}
+
+func TestCodexAccountBootstrapDaemonCancellationStopsScheduledRetry(t *testing.T) {
+	daemonCtx, cancelDaemon := context.WithCancel(context.Background())
+	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return nil, errors.New("persistent open failure")
+	}}
+	manager := newTestCodexAccountManagerWithContext(daemonCtx, t, factory, nil)
+	manager.bootstrapRetryDelays = []time.Duration{10 * time.Millisecond}
+	if err := manager.waitBootstrap(context.Background()); err == nil {
+		t.Fatal("bootstrap unexpectedly succeeded")
+	}
+	cancelDaemon()
+	time.Sleep(30 * time.Millisecond)
+	factory.mu.Lock()
+	opens := factory.opens
+	factory.mu.Unlock()
+	if opens != 1 {
+		t.Fatalf("account client opens after daemon cancellation = %d, want 1", opens)
 	}
 }
 

@@ -52,6 +52,12 @@ type blockingBootstrapAdmissionCredentials struct {
 	once    sync.Once
 }
 
+type retryingBootstrapAdmissionCredentials struct {
+	*bootstrapOrderingCredentials
+	mu       sync.Mutex
+	attempts int
+}
+
 func (c *blockingBootstrapAdmissionCredentials) WaitCodexAccountBootstrap(ctx context.Context) error {
 	c.once.Do(func() { close(c.entered) })
 	select {
@@ -60,6 +66,16 @@ func (c *blockingBootstrapAdmissionCredentials) WaitCodexAccountBootstrap(ctx co
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (c *retryingBootstrapAdmissionCredentials) WaitCodexAccountBootstrap(context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.attempts++
+	if c.attempts == 1 {
+		return errors.New("transient bootstrap failure")
+	}
+	return nil
 }
 
 func (c *bootstrapOrderingCredentials) record(call string) {
@@ -116,6 +132,31 @@ func TestCodexControllerAdmissionWaitsForBootstrapBeforeReadingGate(t *testing.T
 		result.release()
 	case <-time.After(time.Second):
 		t.Fatal("Codex controller admission did not resume after bootstrap")
+	}
+}
+
+func TestCodexControllerAdmissionRecoversAfterBootstrapRetry(t *testing.T) {
+	credentials := &retryingBootstrapAdmissionCredentials{bootstrapOrderingCredentials: &bootstrapOrderingCredentials{}}
+	manager := New(Deps{CodexOperationGate: codexops.NewGate()})
+	manager.SetAgentReadiness(credentials)
+
+	release, err := manager.acquireCodexControllerAdmission(context.Background(), domain.HarnessCodex)
+	if err == nil || release != nil {
+		if release != nil {
+			release()
+		}
+		t.Fatalf("first controller admission release_nil=%t err=%v, want nil release and bootstrap failure", release == nil, err)
+	}
+	release, err = manager.acquireCodexControllerAdmission(context.Background(), domain.HarnessCodex)
+	if err != nil {
+		t.Fatalf("controller admission after bootstrap retry: %v", err)
+	}
+	release()
+	credentials.mu.Lock()
+	attempts := credentials.attempts
+	credentials.mu.Unlock()
+	if attempts != 2 {
+		t.Fatalf("bootstrap admission attempts = %d, want 2", attempts)
 	}
 }
 
