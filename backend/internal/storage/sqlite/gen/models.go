@@ -33,6 +33,19 @@ type AgentNativeSession struct {
 	LastUsedAt       time.Time
 }
 
+type AgentRole struct {
+	ID                     string
+	Name                   string
+	DisplayName            string
+	Description            string
+	SystemPrompt           string
+	DefaultProviderID      string
+	DefaultProviderModelID string
+	Enabled                int64
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
 type AgentSwitch struct {
 	ID                      domain.AgentSwitchID
 	SessionID               domain.SessionID
@@ -189,6 +202,49 @@ type ConversationTurn struct {
 	BranchID             string
 	PromotionStartedAt   sql.NullTime
 	PromotedToTurnID     sql.NullString
+}
+
+type DevelopmentPlan struct {
+	ID                    string
+	ProjectID             string
+	Title                 string
+	Objective             string
+	Requirements          string
+	ImplementationSummary string
+	Status                string
+	CreatedAt             time.Time
+	ConfirmedAt           interface{}
+	CompletedAt           interface{}
+}
+
+type DevelopmentStage struct {
+	ID                 string
+	PlanID             string
+	Sequence           int64
+	Title              string
+	Description        string
+	AcceptanceCriteria string
+	Status             string
+	CreatedAt          time.Time
+	StartedAt          interface{}
+	CompletedAt        interface{}
+}
+
+type DevelopmentTask struct {
+	ID                 string
+	StageID            string
+	Sequence           int64
+	Title              string
+	Description        string
+	TaskType           string
+	AcceptanceCriteria string
+	Status             string
+	AgentRoleID        string
+	ProviderID         string
+	ProviderModelID    string
+	CreatedAt          time.Time
+	StartedAt          interface{}
+	CompletedAt        interface{}
 }
 
 type GitActionAudit struct {
@@ -433,6 +489,17 @@ type ReviewRun struct {
 	TriggerSource    domain.ReviewTriggerSource
 }
 
+type RunReview struct {
+	ID          string
+	RunID       string
+	Source      string
+	Status      string
+	Summary     string
+	Issues      string
+	CreatedAt   time.Time
+	CompletedAt interface{}
+}
+
 type Session struct {
 	ID                        domain.SessionID
 	ProjectID                 domain.ProjectID
@@ -535,6 +602,25 @@ type ShellTerminal struct {
 	AppRunID   string
 	CreatedAt  time.Time
 	SessionID  sql.NullString
+}
+
+type TaskRun struct {
+	ID                  string
+	TaskID              string
+	Attempt             int64
+	SessionID           string
+	AgentRoleID         string
+	ProviderID          string
+	ProviderModelID     string
+	ProviderDisplayName string
+	ProviderModelName   string
+	ExecutorType        string
+	Status              string
+	ResultSummary       string
+	ErrorMessage        string
+	CreatedAt           time.Time
+	StartedAt           interface{}
+	FinishedAt          interface{}
 }
 
 type TelemetryEvent struct {

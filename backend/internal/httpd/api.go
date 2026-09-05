@@ -19,6 +19,7 @@ import (
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/workflow"
 )
 
 // APIDeps bundles every service the API layer's controllers depend on.
@@ -62,6 +63,10 @@ type APIDeps struct {
 	// DeviceRoster and DeviceLive back the desktop-only mobile device roster.
 	DeviceRoster controllers.DeviceRoster
 	DeviceLive   controllers.LiveSet
+
+	// Workflow is the development workflow service (Phase 2.2).
+	// Nil disables the workflow endpoints (they return 501).
+	Workflow *workflow.Service
 }
 
 // normalizeAPIDeps closes the Presence/DeviceLive duplication trap structurally.
@@ -112,6 +117,7 @@ type API struct {
 	dev           *controllers.DevController
 	browser       *controllers.BrowserController
 	events        *EventsController
+	workflow      *controllers.WorkflowController
 }
 
 // NewAPI constructs the API surface from its dependencies. cfg carries the
@@ -148,6 +154,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
+		workflow:      &controllers.WorkflowController{Svc: deps.Workflow},
 	}
 }
 
@@ -180,6 +187,7 @@ func (a *API) Register(root chi.Router) {
 			a.providers.Register(r)
 			a.dev.Register(r)
 			a.browser.Register(r)
+			a.workflow.Register(r)
 			// Sibling REST controllers plug in here.
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.

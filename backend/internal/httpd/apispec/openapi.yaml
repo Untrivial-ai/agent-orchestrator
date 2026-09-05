@@ -1244,6 +1244,33 @@ paths:
       summary: Replace a project's per-project config
       tags:
       - projects
+  /api/v1/projects/{id}/plans:
+    get:
+      operationId: listPlansByProject
+      parameters:
+      - description: Project identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPlansResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List all development plans for a project
+      tags:
+      - workflow
   /api/v1/projects/initialize:
     post:
       operationId: initializeProjectRepository
@@ -5317,6 +5344,1073 @@ paths:
       summary: Get detailed token usage for one session
       tags:
       - usage
+  /api/v1/workflow/plans:
+    post:
+      operationId: createPlan
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePlanRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Create a development plan in DRAFT status
+      tags:
+      - workflow
+  /api/v1/workflow/plans/{id}:
+    get:
+      operationId: getPlan
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Get a development plan by ID
+      tags:
+      - workflow
+    patch:
+      operationId: updatePlanContent
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePlanRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Update plan content (title, objective, requirements, summary)
+      tags:
+      - workflow
+  /api/v1/workflow/plans/{id}/cancel:
+    post:
+      operationId: cancelPlan
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Cancel a plan
+      tags:
+      - workflow
+  /api/v1/workflow/plans/{id}/complete:
+    post:
+      operationId: completePlan
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Complete a plan (all non-cancelled stages must be passed)
+      tags:
+      - workflow
+  /api/v1/workflow/plans/{id}/confirm:
+    post:
+      operationId: confirmPlan
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Confirm a DRAFT plan
+      tags:
+      - workflow
+  /api/v1/workflow/plans/{id}/stages:
+    get:
+      operationId: listStagesByPlan
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListStagesResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List all stages for a plan
+      tags:
+      - workflow
+  /api/v1/workflow/plans/{id}/start:
+    post:
+      operationId: startPlan
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Start a confirmed plan (requires at least one stage)
+      tags:
+      - workflow
+  /api/v1/workflow/stages:
+    post:
+      operationId: createStage
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStageRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Create a development stage in PENDING status
+      tags:
+      - workflow
+  /api/v1/workflow/stages/{id}:
+    get:
+      operationId: getStage
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Get a development stage by ID
+      tags:
+      - workflow
+  /api/v1/workflow/stages/{id}/block:
+    post:
+      operationId: blockStage
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Block a stage
+      tags:
+      - workflow
+  /api/v1/workflow/stages/{id}/cancel:
+    post:
+      operationId: cancelStage
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Cancel a stage
+      tags:
+      - workflow
+  /api/v1/workflow/stages/{id}/pass:
+    post:
+      operationId: passStage
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Pass a stage (re-validates task completeness)
+      tags:
+      - workflow
+  /api/v1/workflow/stages/{id}/ready:
+    post:
+      operationId: readyForApproval
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Mark stage ready for approval (all non-cancelled tasks must be passed)
+      tags:
+      - workflow
+  /api/v1/workflow/stages/{id}/start:
+    post:
+      operationId: startStage
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Start a pending stage (plan must be confirmed or in_progress)
+      tags:
+      - workflow
+  /api/v1/workflow/stages/{id}/tasks:
+    get:
+      operationId: listTasksByStage
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List all tasks for a stage
+      tags:
+      - workflow
+  /api/v1/workflow/stages/{id}/unblock:
+    post:
+      operationId: unblockStage
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Unblock a stage (returns to in_progress)
+      tags:
+      - workflow
+  /api/v1/workflow/tasks:
+    post:
+      operationId: createTask
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Create a development task in PENDING status
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}:
+    get:
+      operationId: getTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Get a development task by ID
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}/assignment:
+    patch:
+      operationId: assignTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignTaskRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Update agent role and provider assignment for a task
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}/block:
+    post:
+      operationId: blockTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Block a task
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}/cancel:
+    post:
+      operationId: cancelTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Cancel a task
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}/pass:
+    post:
+      operationId: passTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Pass a task under review
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}/ready:
+    post:
+      operationId: readyTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Mark task as ready (from pending or blocked)
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}/reject:
+    post:
+      operationId: rejectTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Reject a task (returns to ready, not rejected status)
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}/review:
+    post:
+      operationId: submitTaskForReview
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Submit a running task for review
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}/start:
+    post:
+      operationId: startTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Start a ready task (stage must be in_progress)
+      tags:
+      - workflow
+  /api/v1/workflow/tasks/{id}/unblock:
+    post:
+      operationId: unblockTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Unblock a task (returns to ready)
+      tags:
+      - workflow
 components:
   schemas:
     APIError:
@@ -5546,6 +6640,22 @@ components:
           $ref: '#/components/schemas/AgentSwitch'
       required:
       - switch
+      type: object
+    AssignTaskRequest:
+      properties:
+        agentRoleId:
+          description: Agent role identifier.
+          type: string
+        providerId:
+          description: Provider identifier.
+          type: string
+        providerModelId:
+          description: Provider model identifier.
+          type: string
+      required:
+      - agentRoleId
+      - providerId
+      - providerModelId
       type: object
     AttachmentInput:
       properties:
@@ -6610,6 +7720,75 @@ components:
       - cachedTokens
       - totalTokens
       type: object
+    CreatePlanRequest:
+      properties:
+        implementationSummary:
+          description: Implementation summary.
+          type: string
+        objective:
+          description: Plan objective.
+          type: string
+        projectId:
+          description: Parent project identifier.
+          type: string
+        requirements:
+          description: Requirements text.
+          type: string
+        title:
+          description: Plan title.
+          type: string
+      required:
+      - projectId
+      - title
+      type: object
+    CreateStageRequest:
+      properties:
+        acceptanceCriteria:
+          type: string
+        description:
+          type: string
+        planId:
+          description: Parent plan identifier.
+          type: string
+        sequence:
+          description: Ordering within the plan.
+          type: integer
+        title:
+          description: Stage title.
+          type: string
+      required:
+      - planId
+      - sequence
+      - title
+      type: object
+    CreateTaskRequest:
+      properties:
+        acceptanceCriteria:
+          type: string
+        agentRoleId:
+          type: string
+        description:
+          type: string
+        providerId:
+          type: string
+        providerModelId:
+          type: string
+        sequence:
+          description: Ordering within the stage.
+          type: integer
+        stageId:
+          description: Parent stage identifier.
+          type: string
+        taskType:
+          type: string
+        title:
+          description: Task title.
+          type: string
+      required:
+      - stageId
+      - sequence
+      - title
+      type: object
     DegradedProject:
       properties:
         id:
@@ -7011,6 +8190,15 @@ components:
       - unreadCount
       - unresolvedCount
       type: object
+    ListPlansResponse:
+      properties:
+        plans:
+          items:
+            $ref: '#/components/schemas/PlanView'
+          type: array
+      required:
+      - plans
+      type: object
     ListProjectsResponse:
       properties:
         projects:
@@ -7068,6 +8256,24 @@ components:
           type: array
       required:
       - shellTerminals
+      type: object
+    ListStagesResponse:
+      properties:
+        stages:
+          items:
+            $ref: '#/components/schemas/StageView'
+          type: array
+      required:
+      - stages
+      type: object
+    ListTasksResponse:
+      properties:
+        tasks:
+          items:
+            $ref: '#/components/schemas/TaskView'
+          type: array
+      required:
+      - tasks
       type: object
     ListWorkspaceFilesResponse:
       properties:
@@ -7354,6 +8560,60 @@ components:
       - title
       - targetSha
       - status
+      type: object
+    PlanResponse:
+      properties:
+        plan:
+          $ref: '#/components/schemas/PlanView'
+      required:
+      - plan
+      type: object
+    PlanView:
+      properties:
+        completedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        confirmedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          description: Plan identifier.
+          type: string
+        implementationSummary:
+          type: string
+        objective:
+          type: string
+        projectId:
+          description: Parent project identifier.
+          type: string
+        requirements:
+          type: string
+        status:
+          enum:
+          - draft
+          - confirmed
+          - in_progress
+          - completed
+          - cancelled
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - projectId
+      - title
+      - objective
+      - requirements
+      - implementationSummary
+      - status
+      - createdAt
       type: object
     PreviewServerStatusResponse:
       properties:
@@ -8678,6 +9938,13 @@ components:
       - promptBytes
       - systemPromptBytes
       type: object
+    StageResponse:
+      properties:
+        stage:
+          $ref: '#/components/schemas/StageView'
+      required:
+      - stage
+      type: object
     StageSessionAttachmentsRequest:
       properties:
         attachments:
@@ -8698,6 +9965,54 @@ components:
       required:
       - sessionId
       - paths
+      type: object
+    StageView:
+      properties:
+        acceptanceCriteria:
+          type: string
+        completedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        createdAt:
+          format: date-time
+          type: string
+        description:
+          type: string
+        id:
+          description: Stage identifier.
+          type: string
+        planId:
+          description: Parent plan identifier.
+          type: string
+        sequence:
+          type: integer
+        startedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        status:
+          enum:
+          - pending
+          - in_progress
+          - ready_for_approval
+          - passed
+          - blocked
+          - cancelled
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - planId
+      - sequence
+      - title
+      - description
+      - acceptanceCriteria
+      - status
+      - createdAt
       type: object
     StartPreviewServerRequest:
       properties:
@@ -8822,6 +10137,74 @@ components:
       required:
       - targetHarness
       type: object
+    TaskResponse:
+      properties:
+        task:
+          $ref: '#/components/schemas/TaskView'
+      required:
+      - task
+      type: object
+    TaskView:
+      properties:
+        acceptanceCriteria:
+          type: string
+        agentRoleId:
+          type: string
+        completedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        createdAt:
+          format: date-time
+          type: string
+        description:
+          type: string
+        id:
+          description: Task identifier.
+          type: string
+        providerId:
+          type: string
+        providerModelId:
+          type: string
+        sequence:
+          type: integer
+        stageId:
+          description: Parent stage identifier.
+          type: string
+        startedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        status:
+          enum:
+          - pending
+          - ready
+          - running
+          - review
+          - passed
+          - blocked
+          - cancelled
+          type: string
+        taskType:
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - stageId
+      - sequence
+      - title
+      - description
+      - taskType
+      - acceptanceCriteria
+      - status
+      - agentRoleId
+      - providerId
+      - providerModelId
+      - createdAt
+      type: object
     TrackerIntakeConfig:
       properties:
         assignee:
@@ -8898,6 +10281,29 @@ components:
       required:
       - token
       - deleted
+      type: object
+    UpdatePlanRequest:
+      properties:
+        implementationSummary:
+          description: Implementation summary.
+          type:
+          - "null"
+          - string
+        objective:
+          description: Plan objective.
+          type:
+          - "null"
+          - string
+        requirements:
+          description: Requirements text.
+          type:
+          - "null"
+          - string
+        title:
+          description: Plan title.
+          type:
+          - "null"
+          - string
       type: object
     UpdateProjectSettingsInput:
       properties:
@@ -9137,3 +10543,5 @@ tags:
   name: mobile
 - description: Target-isolated desktop browser runtime (loopback only)
   name: browser
+- description: Development workflow lifecycle (plans, stages, tasks)
+  name: workflow

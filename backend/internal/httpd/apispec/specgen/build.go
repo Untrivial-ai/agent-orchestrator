@@ -82,6 +82,8 @@ func Build() ([]byte, error) {
 			"Connect Mobile LAN bridge control (loopback/desktop only)"),
 		*(&openapi31.Tag{Name: "browser"}).WithDescription(
 			"Target-isolated desktop browser runtime (loopback only)"),
+		*(&openapi31.Tag{Name: "workflow"}).WithDescription(
+			"Development workflow lifecycle (plans, stages, tasks)"),
 	}
 
 	for _, op := range operations() {
@@ -355,6 +357,23 @@ var schemaNames = map[string]string{
 	"ProjectUpdateSettingsInput":        "UpdateProjectSettingsInput",
 	"ProjectWorkspaceRepo":              "WorkspaceRepo",
 	"SessionWorkspaceFileStatus":        "WorkspaceFileStatus",
+	// Workflow (Phase 2.2.1)
+	"ControllersCreatePlanRequest":     "CreatePlanRequest",
+	"ControllersUpdatePlanRequest":     "UpdatePlanRequest",
+	"ControllersPlanView":              "PlanView",
+	"ControllersPlanResponse":          "PlanResponse",
+	"ControllersListPlansResponse":     "ListPlansResponse",
+	"ControllersCreateStageRequest":    "CreateStageRequest",
+	"ControllersStageView":             "StageView",
+	"ControllersStageResponse":         "StageResponse",
+	"ControllersListStagesResponse":    "ListStagesResponse",
+	"ControllersCreateTaskRequest":     "CreateTaskRequest",
+	"ControllersAssignTaskRequest":     "AssignTaskRequest",
+	"ControllersTaskView":              "TaskView",
+	"ControllersTaskResponse":          "TaskResponse",
+	"ControllersListTasksResponse":     "ListTasksResponse",
+	"ControllersWorkflowIDParam":       "WorkflowIDParam",
+	"ControllersProjectIDForPlansParam": "ProjectIDForPlansParam",
 }
 
 // markRequestBodyRequired sets requestBody.required: true on the operation's
@@ -445,6 +464,7 @@ func operations() []operation {
 	ops = append(ops, mobileOperations()...)
 	ops = append(ops, mobileDeviceOperations()...)
 	ops = append(ops, browserOperations()...)
+	ops = append(ops, workflowOperations()...)
 	ops = append(ops, shellTerminalOperations()...)
 	return ops
 }
