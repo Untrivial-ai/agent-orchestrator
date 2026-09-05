@@ -186,6 +186,7 @@
 	"createProject.cloneDestinationPlaceholder": "Übergeordneten Ordner auswählen",
 	"createProject.cloneDestinationRequired": "Wähle einen Zielordner aus.",
 	"createProject.cloneFailedTitle": "Repository konnte nicht geklont werden",
+	"createProject.cloneProjectExists": "An diesem Speicherort gibt es bereits ein Projekt",
 	"createProject.cloneFromGit": "Von Git klonen",
 	"createProject.cloneFromGitDesc": "Starte mit einem Remote-Repository über eine HTTPS- oder SSH-URL.",
 	"createProject.cloneInvalidUrl": "Gib eine gültige HTTPS-, SSH-, Git- oder Datei-URL ein.",

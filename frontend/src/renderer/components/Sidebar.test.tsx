@@ -223,6 +223,7 @@ type CloneProjectHandler = (input: {
 	workerAgent: string;
 	orchestratorAgent: string;
 	trackerIntake?: unknown;
+	signal?: AbortSignal;
 }) => Promise<void>;
 type InitializeProjectHandler = (path: string) => Promise<void>;
 type RemoveProjectHandler = (projectId: string) => Promise<void>;
@@ -884,18 +885,20 @@ describe("Sidebar", () => {
 		);
 		await user.click(screen.getByRole("button", { name: "Choose" }));
 		expect(window.ao!.app.chooseDirectory).toHaveBeenCalledWith("Choose where to clone the repository");
+		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
 		await user.click(screen.getByRole("button", { name: "Continue" }));
 
 		expect(await screen.findByRole("dialog", { name: "Set up project" })).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Clone" }));
 		await waitFor(() =>
-			expect(onCloneProject).toHaveBeenCalledWith({
+			expect(onCloneProject).toHaveBeenCalledWith(expect.objectContaining({
 				remoteUrl: "git@github.com:acme/web-app.git",
 				destinationParent: "/repo",
 				workerAgent: "claude-code",
 				orchestratorAgent: "claude-code",
 				trackerIntake: undefined,
-			}),
+				signal: expect.any(AbortSignal),
+			})),
 		);
 	});
 
@@ -916,6 +919,7 @@ describe("Sidebar", () => {
 			"git@github.com:acme/web-app.git",
 		);
 		await user.click(screen.getByRole("button", { name: "Choose" }));
+		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
 		await user.click(await screen.findByRole("button", { name: "Continue" }));
 
 		await user.click(await screen.findByRole("button", { name: "Back to clone details" }));

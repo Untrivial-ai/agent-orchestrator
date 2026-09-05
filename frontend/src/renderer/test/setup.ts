@@ -100,6 +100,7 @@ if (typeof window !== "undefined") {
 		app: {
 			getVersion: async () => "0.0.0-test",
 			chooseDirectory: async () => null,
+			checkGitRepository: async () => true,
 			openExternal: async () => undefined,
 			scanImportFolder: async ({ path }: { path: string }) => ({ path, repos: [] }),
 			checkAncestorRepo: async () => undefined,

@@ -21,6 +21,9 @@ describe("clone repository input", () => {
 		"https://example.com/acme/repo.git?access_token=secret",
 		"ssh://git:secret@example.com/acme/repo.git",
 		"https://github.com/acme/two words.git",
+		"https://github.com/acme/web-app/pull/123",
+		"https://github.com/acme/web-app/issues/12",
+		"https://gitlab.com/acme/web-app/-/merge_requests/12",
 		"file:///tmp/bad%ZZ.git",
 	])("rejects unsafe or incomplete URL %s", (remoteUrl) => {
 		expect(repositoryNameFromGitUrl(remoteUrl)).toBeNull();

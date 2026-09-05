@@ -1,6 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronLeft, Folder, Link2, X } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { ChevronLeft, Folder, Link2, LoaderCircle, X } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { aoBridge } from "../lib/bridge";
 import { Button } from "./ui/button";
@@ -26,6 +27,8 @@ export default function CloneRepositoryDialog({
 	onClose,
 	onContinue,
 	open,
+	existingProjectPaths = [],
+	existingProjectNames = [],
 	value,
 }: {
 	disabled: boolean;
@@ -35,16 +38,61 @@ export default function CloneRepositoryDialog({
 	onClose: () => void;
 	onContinue: (selection: CloneRepositorySelection) => void;
 	open: boolean;
+	existingProjectPaths?: readonly string[];
+	existingProjectNames?: readonly string[];
 	value: CloneRepositoryDetails;
 }) {
 	const { t } = useTranslation();
 	const [submitted, setSubmitted] = useState(false);
+	const [repositoryCheck, setRepositoryCheck] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
+	const repositoryCheckRequest = useRef(0);
 	const [choosingDestination, setChoosingDestination] = useState(false);
 	const [destinationPickerError, setDestinationPickerError] = useState<string | null>(null);
 	const repositoryName = repositoryNameFromGitUrl(value.remoteUrl);
 	const repositoryAvatar = repositoryAvatarFromGitUrl(value.remoteUrl);
-	const urlError = submitted && !repositoryName ? t("createProject.cloneInvalidUrl") : null;
+	const hasRemoteUrl = value.remoteUrl.trim().length > 0;
+	const targetPath = repositoryName && value.destinationParent
+		? joinCloneDestination(value.destinationParent, repositoryName)
+		: "";
+	const projectExists = Boolean(
+		repositoryName &&
+		(existingProjectNames.some((name) => sameProjectName(name, repositoryName)) ||
+			(targetPath && existingProjectPaths.some((path) => sameProjectPath(path, targetPath)))),
+	);
+	const urlError = hasRemoteUrl && !repositoryName ? t("createProject.cloneInvalidUrl") : null;
+	const repositoryAccessError = repositoryName && repositoryCheck === "invalid"
+		? t("createProject.cloneRepositoryUnavailable", {
+				defaultValue: "This isn't a repository or you don't have access",
+			})
+		: null;
+	const duplicateError = repositoryName && projectExists ? t("createProject.cloneProjectExists") : null;
+	const inlineRepositoryError = urlError ?? repositoryAccessError ?? duplicateError;
 	const destinationError = submitted && !value.destinationParent ? t("createProject.cloneDestinationRequired") : null;
+	const canContinue = Boolean(
+		repositoryName &&
+		repositoryCheck === "valid" &&
+		value.destinationParent &&
+		!projectExists &&
+		!disabled &&
+		!choosingDestination,
+	);
+
+	useEffect(() => {
+		const requestId = ++repositoryCheckRequest.current;
+		if (!repositoryName) {
+			setRepositoryCheck("idle");
+			return;
+		}
+		setRepositoryCheck("checking");
+		const timer = window.setTimeout(() => {
+			void aoBridge.app.checkGitRepository(value.remoteUrl.trim()).then((exists) => {
+				if (requestId === repositoryCheckRequest.current) setRepositoryCheck(exists ? "valid" : "invalid");
+			}).catch(() => {
+				if (requestId === repositoryCheckRequest.current) setRepositoryCheck("invalid");
+			});
+		}, 300);
+		return () => window.clearTimeout(timer);
+	}, [repositoryName, value.remoteUrl]);
 
 	const chooseDestination = async () => {
 		setDestinationPickerError(null);
@@ -69,11 +117,11 @@ export default function CloneRepositoryDialog({
 	const submit = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		setSubmitted(true);
-		if (!repositoryName || !value.destinationParent || disabled) return;
+		if (!canContinue) return;
 		onContinue({
 			...value,
 			remoteUrl: value.remoteUrl.trim(),
-			targetPath: joinCloneDestination(value.destinationParent, repositoryName),
+			targetPath,
 		});
 	};
 
@@ -120,35 +168,49 @@ export default function CloneRepositoryDialog({
 							) : null}
 
 							<div className="space-y-2">
-								<Label htmlFor="cloneRepositoryUrl" className="text-[13px] font-semibold text-[var(--color-text-import-title)]">
-									{t("createProject.cloneRepositoryUrl")}
-								</Label>
+								<div className="relative">
+									<Label htmlFor="cloneRepositoryUrl" className="text-[13px] font-semibold text-[var(--color-text-import-title)]">
+										{t("createProject.cloneRepositoryUrl")}
+									</Label>
+									<AnimatePresence initial={false}>
+										{inlineRepositoryError ? (
+											<motion.p
+												key={urlError ? "repository-url-error" : repositoryAccessError ? "repository-access-error" : "duplicate-project-error"}
+												initial={{ opacity: 0, filter: "blur(2px)" }}
+												animate={{ opacity: 1, filter: "blur(0px)" }}
+												exit={{ opacity: 0, filter: "blur(2px)" }}
+												transition={{ duration: 0.15, ease: "easeOut" }}
+												className="absolute right-0 top-0 max-w-[65%] truncate overflow-hidden whitespace-nowrap text-right text-[12px] leading-5 text-destructive"
+												role="alert"
+											>
+												{inlineRepositoryError}
+											</motion.p>
+										) : null}
+									</AnimatePresence>
+								</div>
 								<div className="relative">
 									<Input
 										id="cloneRepositoryUrl"
 										autoFocus
 										autoCapitalize="none"
 										autoComplete="off"
-										aria-describedby={urlError ? "cloneRepositoryUrlError" : "cloneRepositoryUrlHelp"}
-										aria-invalid={urlError ? true : undefined}
-										className="bg-[var(--color-bg-import-card)] pl-10 font-mono text-[13px]"
+										aria-describedby="cloneRepositoryUrlHelp"
+										aria-invalid={urlError || repositoryAccessError || duplicateError ? true : undefined}
+										className="bg-[var(--color-bg-import-card)] pl-10 pr-10 font-mono text-[13px]"
 										disabled={disabled}
 										placeholder={t("createProject.cloneRepositoryUrlPlaceholder")}
 										spellCheck={false}
 										value={value.remoteUrl}
 										onChange={(event) => onChange({ ...value, remoteUrl: event.target.value })}
 									/>
+									{repositoryCheck === "checking" ? (
+										<LoaderCircle className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" aria-label={t("createProject.cloneCheckingRepository", { defaultValue: "Checking repository" })} />
+									) : null}
 									<RepositoryOwnerIcon owner={repositoryAvatar?.owner ?? null} avatarUrl={repositoryAvatar?.url ?? null} />
 								</div>
-								{urlError ? (
-									<p id="cloneRepositoryUrlError" className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
-										{urlError}
-									</p>
-								) : (
-									<span id="cloneRepositoryUrlHelp" className="sr-only">
-										{t("createProject.cloneRepositoryUrlHelp")}
-									</span>
-								)}
+								<span id="cloneRepositoryUrlHelp" className="sr-only">
+									{t("createProject.cloneRepositoryUrlHelp")}
+								</span>
 							</div>
 
 							<div className="space-y-2">
@@ -184,7 +246,7 @@ export default function CloneRepositoryDialog({
 
 						<div className="flex shrink-0 justify-end gap-2 px-4 pb-4 pt-3">
 							<div className="flex items-center justify-end gap-3">
-								<Button type="submit" variant="primary" disabled={disabled || choosingDestination}>
+								<Button type="submit" variant="primary" disabled={!canContinue}>
 									{t("createProject.cloneContinue")}
 								</Button>
 							</div>
@@ -246,8 +308,10 @@ export function repositoryNameFromGitUrl(raw: string): string | null {
 	const value = raw.trim();
 	if (!value || /\s/.test(value) || value.startsWith("-")) return null;
 	let remotePath = "";
+	let host = "";
 	const scpMatch = value.match(/^[^/@:\s]+@[^/:\s]+:(.+)$/);
 	if (scpMatch?.[1]) {
+		host = value.match(/^[^/@:\s]+@([^/:\s]+):/)?.[1]?.toLowerCase() ?? "";
 		remotePath = scpMatch[1];
 	} else {
 		try {
@@ -260,6 +324,7 @@ export function repositoryNameFromGitUrl(raw: string): string | null {
 			) {
 				return null;
 			}
+			host = parsed.hostname.toLowerCase();
 			// URL.pathname preserves percent escapes, while Go's net/url exposes a
 			// decoded URL.Path to the daemon. Decode once so this preview names the
 			// exact directory the daemon will create, including escaped separators.
@@ -268,7 +333,20 @@ export function repositoryNameFromGitUrl(raw: string): string | null {
 			return null;
 		}
 	}
-	const lastSegment = remotePath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+	const segments = remotePath.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
+	if (segments.length < 2) return null;
+	const providerSubpage = segments[2];
+	if (
+		(host === "github.com" &&
+			["actions", "blob", "commit", "commits", "compare", "issues", "pull", "releases", "settings", "tree", "wiki"].includes(
+				providerSubpage ?? "",
+			)) ||
+		(host === "bitbucket.org" && providerSubpage === "pull-requests") ||
+		(host === "gitlab.com" && segments.includes("merge_requests"))
+	) {
+		return null;
+	}
+	const lastSegment = segments[segments.length - 1] ?? "";
 	const name = lastSegment.replace(/\.git$/, "");
 	if (!name || name === "." || name === ".." || /[\\/<>:"|?*]/.test(name)) return null;
 	return name;
@@ -322,6 +400,17 @@ function repositoryRemoteParts(raw: string): RepositoryRemoteParts | null {
 
 	const segments = remotePath.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
 	if (segments.length < 2) return null;
+	const providerSubpage = segments[2];
+	if (
+		(host === "github.com" &&
+			["actions", "blob", "commit", "commits", "compare", "issues", "pull", "releases", "settings", "tree", "wiki"].includes(
+				providerSubpage ?? "",
+			)) ||
+		(host === "bitbucket.org" && providerSubpage === "pull-requests") ||
+		(host === "gitlab.com" && segments.includes("merge_requests"))
+	) {
+		return null;
+	}
 	const repository = segments[segments.length - 1]?.replace(/\.git$/, "");
 	const owner = segments[0];
 	if (!repository || !owner || repository === "." || repository === ".." || /[\\/<>:"|?*]/.test(repository)) return null;
@@ -331,4 +420,15 @@ function repositoryRemoteParts(raw: string): RepositoryRemoteParts | null {
 export function joinCloneDestination(parent: string, repositoryName: string): string {
 	const separator = parent.includes("\\") && !parent.includes("/") ? "\\" : "/";
 	return `${parent.replace(/[\\/]+$/, "")}${separator}${repositoryName}`;
+}
+
+function sameProjectPath(left: string, right: string): boolean {
+	const normalize = (path: string) => path.replace(/[\\/]+$/, "").replaceAll("\\", "/");
+	const normalizedLeft = normalize(left);
+	const normalizedRight = normalize(right);
+	return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+}
+
+function sameProjectName(left: string, right: string): boolean {
+	return left.trim().toLowerCase() === right.trim().toLowerCase();
 }

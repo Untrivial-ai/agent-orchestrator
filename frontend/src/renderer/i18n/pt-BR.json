@@ -187,6 +187,7 @@
 	"createProject.cloneDestinationPlaceholder": "Escolher uma pasta principal",
 	"createProject.cloneDestinationRequired": "Escolha uma pasta de destino.",
 	"createProject.cloneFailedTitle": "Não foi possível clonar o repositório",
+	"createProject.cloneProjectExists": "Já existe um projeto neste local",
 	"createProject.cloneFromGit": "Clonar do Git",
 	"createProject.cloneFromGitDesc": "Comece com um repositório remoto usando uma URL HTTPS ou SSH.",
 	"createProject.cloneInvalidUrl": "Insira uma URL HTTPS, SSH, Git ou de arquivo válida.",

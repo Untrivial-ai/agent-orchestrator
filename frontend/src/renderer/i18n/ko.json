@@ -186,6 +186,7 @@
 	"createProject.cloneDestinationPlaceholder": "상위 폴더 선택",
 	"createProject.cloneDestinationRequired": "대상 폴더를 선택하세요.",
 	"createProject.cloneFailedTitle": "저장소를 복제할 수 없습니다",
+	"createProject.cloneProjectExists": "이 위치에 이미 프로젝트가 있습니다",
 	"createProject.cloneFromGit": "Git에서 복제",
 	"createProject.cloneFromGitDesc": "HTTPS 또는 SSH URL을 사용하여 원격 저장소에서 시작합니다.",
 	"createProject.cloneInvalidUrl": "유효한 HTTPS, SSH, Git 또는 파일 URL을 입력하세요.",

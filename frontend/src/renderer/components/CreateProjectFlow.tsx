@@ -1,4 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
+import type { TFunction } from "i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -30,6 +31,7 @@ import { cn } from "../lib/utils";
 import type { ProjectKind } from "../types/workspace";
 import { CreateProjectAgentSheet, type CreateProjectAgentSelection } from "./CreateProjectAgentSheet";
 import CloneRepositoryDialog, { type CloneRepositoryDetails, type CloneRepositorySelection } from "./CloneRepositoryDialog";
+import CreateProjectProgressDialog from "./CreateProjectProgressDialog";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -37,7 +39,7 @@ import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
 export type CreateProjectInput = { path: string; asWorkspace?: boolean; defaultBranch?: string } & CreateProjectAgentSelection;
 export type CloneProjectInput = Pick<CloneRepositorySelection, "remoteUrl" | "destinationParent"> &
-	CreateProjectAgentSelection;
+	CreateProjectAgentSelection & { signal?: AbortSignal };
 
 const LAST_CLONE_DESTINATION_KEY = "ao.clone.lastDestinationParent";
 const LAST_IMPORT_REMOTE_URL_KEY = "ao.import.lastRemoteUrl";
@@ -50,6 +52,24 @@ type ProjectSource = "clone" | "local" | "workspace";
 
 /** Where the new project should live: on this machine or in AO Cloud. */
 type ProjectOffering = "local" | "cloud";
+type CloneProgressStage = "starting" | "connecting" | "cloning" | "settingUp" | "finishing" | "complete";
+
+function cloneProgressMessage(t: TFunction, stage: CloneProgressStage): string {
+	switch (stage) {
+		case "starting":
+			return t("createProject.cloneProgressStarting", { defaultValue: "Preparing the project" });
+		case "connecting":
+			return t("createProject.cloneProgressConnecting", { defaultValue: "Connecting to the repository" });
+		case "cloning":
+			return t("createProject.cloneProgressCloning", { defaultValue: "Cloning the repository" });
+		case "settingUp":
+			return t("createProject.cloneProgressSettingUp", { defaultValue: "Setting up the project" });
+		case "finishing":
+			return t("createProject.cloneProgressFinishing", { defaultValue: "Finishing project setup" });
+		default:
+			return t("createProject.cloneProgressComplete", { defaultValue: "Project created" });
+	}
+}
 
 // Shared create-project flow. Local projects/workspaces use the native folder
 // picker; remote projects progressively reveal a lazily loaded clone form.
@@ -65,8 +85,12 @@ export function CreateProjectFlow({
 	onInitializeProject,
 	openSignal,
 	sourceSignal,
+	existingProjectPaths = [],
+	existingProjectNames = [],
 }: {
 	children?: (state: { choosePath: () => void; disabled: boolean; error: string | null; label: string }) => ReactNode;
+	existingProjectPaths?: readonly string[];
+	existingProjectNames?: readonly string[];
 	// A folder was dropped on the app window (ShellLayout owns the global
 	// listener). Mirrors openSignal but carries a path: skips straight to the
 	// mode picker with the native OS dialog step skipped.
@@ -113,6 +137,11 @@ export function CreateProjectFlow({
 	const [isCreating, setIsCreating] = useState(false);
 	const [isInitializing, setIsInitializing] = useState(false);
 	const [isPreparingGit, setIsPreparingGit] = useState(false);
+	const [cloneProgressOpen, setCloneProgressOpen] = useState(false);
+	const [cloneProgress, setCloneProgress] = useState(0);
+	const [cloneProgressStage, setCloneProgressStage] = useState<CloneProgressStage>("starting");
+	const cloneAbortController = useRef<AbortController | null>(null);
+	const cloneCancelled = useRef(false);
 	const [repositorySetup, setRepositorySetup] = useState<"NOT_A_GIT_REPO" | "PROJECT_UNBORN" | null>(null);
 	const [repositorySetupWarning, setRepositorySetupWarning] = useState<string | null>(null);
 	// A path that arrived via droppedPath, staged until the user confirms
@@ -132,6 +161,33 @@ export function CreateProjectFlow({
 	const hasModePicker = mode === "choose";
 	const projectImportOpen = projectImportStep !== null && projectValidation !== null;
 	const isBusy = isChoosingPath || isCreating || isInitializing || isPreparingGit;
+
+	useEffect(() => {
+		if (!cloneProgressOpen) return;
+		const startedAt = Date.now();
+		const updateProgress = () => {
+			const elapsed = Date.now() - startedAt;
+			if (elapsed < 800) {
+				setCloneProgressStage("starting");
+				setCloneProgress(Math.min(12, 4 + elapsed / 100));
+			} else if (elapsed < 1800) {
+				setCloneProgressStage("connecting");
+				setCloneProgress(12 + ((elapsed - 800) / 1000) * 18);
+			} else if (elapsed < 5000) {
+				setCloneProgressStage("cloning");
+				setCloneProgress(30 + ((elapsed - 1800) / 3200) * 38);
+			} else if (elapsed < 7600) {
+				setCloneProgressStage("settingUp");
+				setCloneProgress(68 + ((elapsed - 5000) / 2600) * 17);
+			} else {
+				setCloneProgressStage("finishing");
+				setCloneProgress(Math.min(90, 85 + (elapsed - 7600) / 1000));
+			}
+		};
+		updateProgress();
+		const timer = window.setInterval(updateProgress, 250);
+		return () => window.clearInterval(timer);
+	}, [cloneProgressOpen]);
 
 	const transitionToChild = (open: () => void) => {
 		setChildTransitioning(true);
@@ -297,11 +353,21 @@ export function CreateProjectFlow({
 		setIsCreating(true);
 		try {
 			if (cloneSelection) {
+				const abortController = new AbortController();
+				cloneAbortController.current = abortController;
+				cloneCancelled.current = false;
+				setCloneProgress(0);
+				setCloneProgressStage("starting");
+				setCloneProgressOpen(true);
 				await onCloneProject({
 					remoteUrl: cloneSelection.remoteUrl,
 					destinationParent: cloneSelection.destinationParent,
+					signal: abortController.signal,
 					...selection,
 				});
+				setCloneProgress(100);
+				setCloneProgressStage("complete");
+				await new Promise((resolve) => window.setTimeout(resolve, 180));
 				setSelectedPath(null);
 				setCloneSelection(null);
 				return;
@@ -325,6 +391,7 @@ export function CreateProjectFlow({
 			});
 			setSelectedPath(null);
 		} catch (err) {
+			if (cloneCancelled.current) return;
 			const code = err instanceof Error && "code" in err ? (err.code as string | undefined) : undefined;
 			const message = err instanceof Error ? err.message : t("createProject.couldNotAdd");
 			if (!cloneSelection && selectedKind === "single_repo" && isRepositorySetupRecoveryCode(code)) {
@@ -349,6 +416,8 @@ export function CreateProjectFlow({
 				setFolderPickerOpen(true);
 			}
 		} finally {
+			cloneAbortController.current = null;
+			setCloneProgressOpen(false);
 			setIsCreating(false);
 			setIsInitializing(false);
 		}
@@ -424,6 +493,17 @@ export function CreateProjectFlow({
 		}
 	};
 
+	const cancelClone = () => {
+		cloneCancelled.current = true;
+		cloneAbortController.current?.abort();
+		cloneAbortController.current = null;
+		setCloneProgressOpen(false);
+		setSelectedPath(null);
+		setCloneSelection(null);
+		setError(null);
+		setIsCreating(false);
+	};
+
 	const label = isInitializing
 		? hasModePicker
 			? t("createProject.initializing")
@@ -446,7 +526,7 @@ export function CreateProjectFlow({
 					error,
 					label,
 				})}
-			<CreateProjectFlowBackdrop open={modePickerOpen || cloneDialogOpen || folderPickerOpen || selectedPath !== null || childTransitioning} />
+			<CreateProjectFlowBackdrop open={modePickerOpen || cloneDialogOpen || folderPickerOpen || selectedPath !== null || cloneProgressOpen || childTransitioning} />
 			{hasModePicker && embedded && !modePickerOpen && !cloneDialogOpen && selectedPath === null && (
 				<div className="flex w-full flex-col items-center gap-3">
 					{cloudEnabled && (
@@ -525,6 +605,8 @@ export function CreateProjectFlow({
 								}, 80);
 							}}
 							open={cloneDialogOpen}
+							existingProjectPaths={existingProjectPaths}
+							existingProjectNames={existingProjectNames}
 							value={cloneDetails}
 						/>
 					) : null}
@@ -612,10 +694,16 @@ export function CreateProjectFlow({
 						: undefined
 				}
 				onSubmit={createProject}
-				open={selectedPath !== null}
+				open={selectedPath !== null && !cloneProgressOpen}
 				path={selectedPath}
 				repositorySetupNeeded={repositorySetup !== null}
 				repositorySetupWarning={repositorySetupWarning}
+			/>
+			<CreateProjectProgressDialog
+				message={cloneProgressMessage(t, cloneProgressStage)}
+				onCancel={cancelClone}
+				open={cloneProgressOpen}
+				progress={cloneProgress}
 			/>
 			{error && !hasModePicker && (
 				<span className="sr-only" role="status">
