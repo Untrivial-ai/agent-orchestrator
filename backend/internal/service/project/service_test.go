@@ -522,6 +522,37 @@ func TestManager_RemoveDoesNotArchiveWhenTeardownFails(t *testing.T) {
 	}
 }
 
+// TestManager_RemoveSurfacesProjectRemoveBlockedConflict verifies the typed
+// PROJECT_REMOVE_BLOCKED conflict that TeardownProject returns for a
+// genuinely-blocking dirty worktree (issue #2598, fix points 2/4) survives
+// Remove()'s pass-through unchanged, and that the project stays registered
+// rather than being silently archived out from under preserved work.
+func TestManager_RemoveSurfacesProjectRemoveBlockedConflict(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	blocked := apierr.Conflict("PROJECT_REMOVE_BLOCKED", "Project has sessions with uncommitted worktree changes", map[string]any{
+		"blockedSessions": []map[string]string{{"sessionId": "ao-1", "workspacePath": "/managed/ao/ao-1"}},
+	})
+	m := project.NewWithDeps(project.Deps{Store: store, Sessions: &fakeProjectTeardowner{err: blocked}})
+
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_, err = m.Remove(ctx, "ao")
+	wantCode(t, err, "PROJECT_REMOVE_BLOCKED")
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindConflict {
+		t.Fatalf("Remove err = %v, want a KindConflict *apierr.Error", err)
+	}
+	if got, err := m.Get(ctx, "ao"); err != nil || got.Project == nil || got.Project.ID != "ao" {
+		t.Fatalf("project after blocked remove = %#v, %v; want still active", got, err)
+	}
+}
+
 func TestManager_DefaultsWhenUnconfigured(t *testing.T) {
 	ctx := context.Background()
 	m := newManager(t)

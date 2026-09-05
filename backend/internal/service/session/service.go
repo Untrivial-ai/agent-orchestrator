@@ -866,24 +866,92 @@ func (s *Service) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	return out, nil
 }
 
+// preservedWorktree names one session whose worktree Kill genuinely had to
+// preserve (uncommitted changes) rather than destroy, during project teardown.
+type preservedWorktree struct {
+	SessionID     domain.SessionID
+	WorkspacePath string
+}
+
 // TeardownProject stops every live session in a project, then asks the session
-// manager to reclaim terminal workspaces. Dirty worktrees are preserved by Kill
-// and Cleanup; callers only see hard teardown failures.
+// manager to reclaim terminal workspaces. It must tolerate legacy or
+// inconsistent local AO state: a stale runtime handle, a missing or non-git
+// worktree, a prunable git worktree registration, an already-removed
+// filesystem path, or any other teardown failure that Kill/Cleanup did not
+// already fold into a dirty-worktree preservation should never by itself block
+// unregistering the project. Every non-terminated session's Kill outcome is
+// collected instead of short-circuiting on the first raw error: unrecognized
+// failures are logged with their original cause (for daemon-side diagnosis)
+// and otherwise ignored, while the one case that truly must preserve user
+// work — Kill declining to force-delete a dirty worktree (freed=false, err=nil,
+// see ports.ErrWorkspaceDirty) — is aggregated across every affected session
+// and surfaced as a structured PROJECT_REMOVE_BLOCKED conflict instead of
+// silently archiving the project out from under still-preserved work.
 func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID) error {
 	recs, err := s.listRecords(ctx, project)
 	if err != nil {
 		return err
 	}
+	var preserved []preservedWorktree
 	for _, rec := range recs {
 		if rec.IsTerminated {
 			continue
 		}
-		if _, err := s.Kill(ctx, rec.ID); err != nil {
-			return err
+		freed, killErr := s.Kill(ctx, rec.ID)
+		if killErr != nil {
+			s.warnTeardown("teardown project: session kill failed; continuing", project, rec.ID, killErr)
+			continue
+		}
+		if !freed {
+			preserved = append(preserved, preservedWorktree{SessionID: rec.ID, WorkspacePath: rec.Metadata.WorkspacePath})
 		}
 	}
-	_, err = s.Cleanup(ctx, project)
-	return err
+	if _, err := s.Cleanup(ctx, project); err != nil {
+		if len(preserved) == 0 {
+			return err
+		}
+		// Cleanup already treats per-session workspace teardown trouble as
+		// best-effort (see manager.Cleanup/cleanupOne); a hard error here only
+		// comes from listing terminated records, a real infra failure. Keep the
+		// cause in the logs but let the actionable PROJECT_REMOVE_BLOCKED
+		// conflict below take priority on the wire over a generic one.
+		s.warnTeardown("teardown project: cleanup failed; continuing", project, "", err)
+	}
+	if len(preserved) > 0 {
+		return projectRemoveBlockedError(preserved)
+	}
+	return nil
+}
+
+// warnTeardown logs a non-fatal project-teardown failure with its original
+// cause. The raw cause never leaves the daemon: it is intentionally not part
+// of any returned apierr, so a legacy/corrupt local state failure never leaks
+// internal filesystem detail onto the wire while still being diagnosable from
+// server-side logs.
+func (s *Service) warnTeardown(msg string, project domain.ProjectID, sessionID domain.SessionID, err error) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Warn(msg, "projectID", project, "sessionID", sessionID, "error", err)
+}
+
+// projectRemoveBlockedError reports that project removal cannot proceed
+// because one or more sessions have dirty, uncommitted worktrees that Kill
+// preserved instead of force-deleting. Details name every blocking session and
+// its preserved path so the caller has a concrete recovery action: resolve
+// (commit, discard, or let the session finish) each session's uncommitted
+// changes, then retry removal.
+func projectRemoveBlockedError(preserved []preservedWorktree) error {
+	sessions := make([]map[string]string, 0, len(preserved))
+	for _, p := range preserved {
+		sessions = append(sessions, map[string]string{
+			"sessionId":     string(p.SessionID),
+			"workspacePath": p.WorkspacePath,
+		})
+	}
+	return apierr.Conflict("PROJECT_REMOVE_BLOCKED",
+		"Project has sessions with uncommitted worktree changes that AO preserved instead of deleting. Resolve or discard those changes (or let the session finish), then retry removal.",
+		map[string]any{"blockedSessions": sessions})
 }
 
 // List returns sessions as enriched display models after applying API filters.

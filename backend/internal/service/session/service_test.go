@@ -2215,6 +2215,8 @@ type fakeCommander struct {
 	sentMessages    []string
 	cleanupProjects []domain.ProjectID
 	killErr         error
+	killErrs        map[domain.SessionID]error
+	killNotFreed    map[domain.SessionID]bool
 	retireErr       error
 	sendErr         error
 	sendFunc        func(domain.SessionID, string) error
@@ -2283,10 +2285,20 @@ func (f *fakeCommander) ExitAgent(_ context.Context, id domain.SessionID) (domai
 	return rec, nil
 }
 func (f *fakeCommander) Kill(_ context.Context, id domain.SessionID) (bool, error) {
+	if f.killErrs != nil {
+		if err, ok := f.killErrs[id]; ok {
+			return false, err
+		}
+	}
 	if f.killErr != nil {
 		return false, f.killErr
 	}
 	f.killed = append(f.killed, id)
+	if f.killNotFreed != nil && f.killNotFreed[id] {
+		// Mirrors manager.Kill preserving a dirty worktree: it still tears the
+		// session down (nil error) but declines to force-delete the workspace.
+		return false, nil
+	}
 	return true, nil
 }
 func (f *fakeCommander) RetireForReplacement(_ context.Context, id domain.SessionID) error {
@@ -2368,19 +2380,85 @@ func TestTeardownProjectKillsActiveSessionsThenCleansProject(t *testing.T) {
 	}
 }
 
-func TestTeardownProjectStopsOnKillError(t *testing.T) {
+// TestTeardownProjectToleratesUnrecognizedKillFailure covers regression
+// scenario (c) from issue #2598: a non-dirty teardown failure from the
+// workspace/runtime adapter that isn't in toAPIError's sentinel allowlist
+// (a plain, unwrapped error — the shape a stale runtime handle or a Windows
+// sharing-violation on os.RemoveAll would surface as). Project removal must
+// not abort or surface a raw 500 for it: the failure is logged and the
+// project's teardown otherwise proceeds and succeeds, aggregating across every
+// session instead of stopping on the first raw error (fix point 3).
+func TestTeardownProjectToleratesUnrecognizedKillFailure(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	st.sessions["mer-2"] = domain.SessionRecord{ID: "mer-2", ProjectID: "mer"}
 	boom := errors.New("boom")
-	fc := &fakeCommander{killErr: boom}
+	fc := &fakeCommander{killErrs: map[domain.SessionID]error{"mer-1": boom}}
+	svc := &Service{manager: fc, store: st}
+
+	if err := svc.TeardownProject(context.Background(), "mer"); err != nil {
+		t.Fatalf("TeardownProject err = %v, want nil (unrecognized kill failures must be tolerated)", err)
+	}
+	if len(fc.killed) != 1 || fc.killed[0] != "mer-2" {
+		t.Fatalf("killed = %#v, want mer-2 killed despite mer-1's failure", fc.killed)
+	}
+	if len(fc.cleanupProjects) != 1 || fc.cleanupProjects[0] != "mer" {
+		t.Fatalf("cleanup projects = %#v, want [mer] to still run after a tolerated kill failure", fc.cleanupProjects)
+	}
+}
+
+// TestTeardownProjectToleratesStaleWorktreeRegistration covers regression
+// scenario (b): a stale/prunable/non-git worktree registration, the shape
+// gitworktree.Workspace.Destroy returns wrapped around ports.ErrWorkspaceStale
+// when an AO-managed workspace path no longer points at a registered git
+// worktree. That must not block project removal either (fix point 1).
+func TestTeardownProjectToleratesStaleWorktreeRegistration(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	staleErr := fmt.Errorf("gitworktree: stale worktree %q: %w", "/tmp/rc-main", ports.ErrWorkspaceStale)
+	fc := &fakeCommander{killErrs: map[domain.SessionID]error{"mer-1": staleErr}}
+	svc := &Service{manager: fc, store: st}
+
+	if err := svc.TeardownProject(context.Background(), "mer"); err != nil {
+		t.Fatalf("TeardownProject err = %v, want nil (stale worktree registration must be tolerated)", err)
+	}
+	if len(fc.cleanupProjects) != 1 || fc.cleanupProjects[0] != "mer" {
+		t.Fatalf("cleanup projects = %#v, want [mer] to still run after a tolerated stale-worktree failure", fc.cleanupProjects)
+	}
+}
+
+// TestTeardownProjectBlocksOnDirtyPreservedWorktree covers regression scenario
+// (a): a live session whose worktree Kill genuinely had to preserve rather
+// than force-delete (ports.ErrWorkspaceDirty surfaces from Kill as
+// freed=false, err=nil). That is the one case that truly must block removal
+// (fix points 2, 4, 6): TeardownProject must thread the freed=false signal
+// through and return a structured PROJECT_REMOVE_BLOCKED conflict — naming the
+// blocking session — instead of silently archiving the project out from under
+// preserved user work.
+func TestTeardownProjectBlocksOnDirtyPreservedWorktree(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Metadata:  domain.SessionMetadata{WorkspacePath: "/managed/mer/mer-1"},
+	}
+	fc := &fakeCommander{killNotFreed: map[domain.SessionID]bool{"mer-1": true}}
 	svc := &Service{manager: fc, store: st}
 
 	err := svc.TeardownProject(context.Background(), "mer")
-	if !errors.Is(err, boom) {
-		t.Fatalf("TeardownProject err = %v, want boom", err)
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("TeardownProject err = %v, want *apierr.Error", err)
 	}
-	if len(fc.cleanupProjects) != 0 {
-		t.Fatalf("cleanup projects = %#v, want none after kill failure", fc.cleanupProjects)
+	if apiErr.Kind != apierr.KindConflict {
+		t.Fatalf("kind = %v, want KindConflict (409)", apiErr.Kind)
+	}
+	if apiErr.Code != "PROJECT_REMOVE_BLOCKED" {
+		t.Fatalf("code = %q, want PROJECT_REMOVE_BLOCKED", apiErr.Code)
+	}
+	blocked, ok := apiErr.Details["blockedSessions"].([]map[string]string)
+	if !ok || len(blocked) != 1 || blocked[0]["sessionId"] != "mer-1" || blocked[0]["workspacePath"] != "/managed/mer/mer-1" {
+		t.Fatalf("details[blockedSessions] = %#v, want [{sessionId: mer-1, workspacePath: /managed/mer/mer-1}]", apiErr.Details["blockedSessions"])
 	}
 }
 
