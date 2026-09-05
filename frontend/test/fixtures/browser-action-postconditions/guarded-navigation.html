@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<title>AO guarded navigation fixture</title>
+		<style>
+			button {
+				position: fixed;
+				top: 20px;
+				width: 160px;
+				height: 40px;
+			}
+			#continue {
+				left: 20px;
+			}
+			#no-effect {
+				left: 200px;
+			}
+			#guarded {
+				left: 380px;
+			}
+		</style>
+	</head>
+	<body>
+		<button id="continue" type="button">Continue</button>
+		<button id="no-effect" type="button">Do nothing</button>
+		<button id="guarded" type="button">Leave guarded page</button>
+		<script>
+			let guardEnabled = false;
+			document.querySelector("#continue").addEventListener("click", () => {
+				window.location.hash = "continued";
+			});
+			document.querySelector("#guarded").addEventListener("click", () => {
+				guardEnabled = true;
+				window.location.assign("/destination");
+			});
+			window.addEventListener("beforeunload", (event) => {
+				if (!guardEnabled) return;
+				event.preventDefault();
+				event.returnValue = true;
+			});
+		</script>
+	</body>
+</html>

@@ -91,6 +91,9 @@ jobs:
           AO_AGENT_BROWSER_TEST_BINARY: ${{ github.workspace }}/frontend/agent-browser/agent-browser
         run: npx vitest run
 
+      - name: Run guarded-navigation browser integration
+        run: npm run test:browser-postcondition-integration
+
   renderer-smoke:
     # RENDERER smoke (issue #2483, renderer slice) — the Playwright specs that run
     # the renderer under `dev:web` with an injected window.ao + fake CDC/snapshot.
