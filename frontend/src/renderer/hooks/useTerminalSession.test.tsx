@@ -24,6 +24,7 @@ type FakeMux = {
 	mux: TerminalMux;
 	opens: Array<[string, number, number]>;
 	resizes: Array<[string, number, number]>;
+	forcedResizes: Array<[string, number, number]>;
 	inputs: Array<[string, string]>;
 	closes: string[];
 	events: string[];
@@ -52,6 +53,7 @@ function createFakeMux(): FakeMux {
 	const fake: FakeMux = {
 		opens: [],
 		resizes: [],
+		forcedResizes: [],
 		inputs: [],
 		closes: [],
 		events: [],
@@ -59,7 +61,10 @@ function createFakeMux(): FakeMux {
 		mux: {
 			open: (id, cols, rows) => fake.opens.push([id, cols, rows]),
 			sendInput: (id, input) => fake.inputs.push([id, input]),
-			resize: (id, cols, rows) => fake.resizes.push([id, cols, rows]),
+			resize: (id, cols, rows, force) => {
+				fake.resizes.push([id, cols, rows]);
+				if (force) fake.forcedResizes.push([id, cols, rows]);
+			},
 			close: (id) => {
 				fake.closes.push(id);
 				fake.events.push(`close:${id}`);
@@ -341,6 +346,27 @@ describe("useTerminalSession", () => {
 		act(() => view.result.current.syncVisibleSize(terminal.cols, terminal.rows));
 
 		expect(muxes[0].resizes.slice(initialResizes)).toEqual([["handle-1", 132, 47]]);
+		expect(muxes[0].forcedResizes).toEqual([["handle-1", 132, 47]]);
+	});
+
+	// The activation promote must reach the daemon even when the grid it
+	// republishes is identical to the last published one — the common case, since
+	// a parked terminal is refitted back to the size it already had. The daemon
+	// deduplicates repeat resizes, so an unforced call would be dropped and tmux
+	// would never be told to redraw, leaving the pane blank.
+	it("forces the activation resize when the grid is unchanged", () => {
+		const { view, terminal, muxes } = setup();
+		act(() => muxes[0].emitOpened("handle-1"));
+		act(() => terminal.emitResize(120, 40));
+		act(() => void vi.advanceTimersByTime(100));
+		const initialResizes = muxes[0].resizes.length;
+
+		view.rerender({ daemonReady: true, isVisible: false });
+		view.rerender({ daemonReady: true, isVisible: true });
+		act(() => view.result.current.syncVisibleSize(120, 40));
+
+		expect(muxes[0].resizes.slice(initialResizes)).toEqual([["handle-1", 120, 40]]);
+		expect(muxes[0].forcedResizes).toEqual([["handle-1", 120, 40]]);
 	});
 
 	it("collapses a drag's burst into one resize and does not re-send the settled grid", () => {
