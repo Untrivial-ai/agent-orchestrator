@@ -103,8 +103,9 @@ type RollbackOutcome struct {
 
 // CleanupOutcome reports what session cleanup reclaimed and what it preserved.
 type CleanupOutcome struct {
-	Cleaned []domain.SessionID `json:"cleaned"`
-	Skipped []CleanupSkipped   `json:"skipped"`
+	Cleaned     []domain.SessionID `json:"cleaned"`
+	AlreadyGone []domain.SessionID `json:"alreadyGone"`
+	Skipped     []CleanupSkipped   `json:"skipped"`
 }
 
 // CleanupSkipped is one terminal session whose workspace was preserved by
@@ -856,9 +857,16 @@ func (s *Service) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
-	out := CleanupOutcome{Cleaned: res.Cleaned, Skipped: make([]CleanupSkipped, 0, len(res.Skipped))}
+	out := CleanupOutcome{
+		Cleaned:     res.Cleaned,
+		AlreadyGone: res.AlreadyGone,
+		Skipped:     make([]CleanupSkipped, 0, len(res.Skipped)),
+	}
 	if out.Cleaned == nil {
 		out.Cleaned = []domain.SessionID{}
+	}
+	if out.AlreadyGone == nil {
+		out.AlreadyGone = []domain.SessionID{}
 	}
 	for _, skip := range res.Skipped {
 		out.Skipped = append(out.Skipped, CleanupSkipped{SessionID: skip.SessionID, Reason: skip.Reason})

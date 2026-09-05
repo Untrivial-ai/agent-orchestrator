@@ -107,3 +107,40 @@ func TestWorkspaceRejectsUnsafeSessionIDs(t *testing.T) {
 		t.Fatal("Create unsafe session id succeeded, want error")
 	}
 }
+
+// TestWorkspaceDestroyReclaimReportsAlreadyAbsentDirectory covers the scratch
+// half of the cleanup accounting. os.Remove is deliberately tolerated on a
+// missing path, so a scratch directory that was already gone tears down without
+// error while releasing nothing. Counting that as reclaimed reports space that
+// was never freed.
+func TestWorkspaceDestroyReclaimReportsAlreadyAbsentDirectory(t *testing.T) {
+	ws, err := scratch.New(scratch.Options{ManagedRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	info, err := ws.Create(context.Background(), ports.WorkspaceConfig{
+		ProjectID: "scratch",
+		SessionID: "scratch-gone",
+		Kind:      domain.KindWorker,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	reclaim, err := ws.DestroyReclaim(context.Background(), info)
+	if err != nil {
+		t.Fatalf("DestroyReclaim present: %v", err)
+	}
+	if reclaim != ports.WorkspaceReclaimRemoved {
+		t.Fatalf("reclaim = %q, want %q", reclaim, ports.WorkspaceReclaimRemoved)
+	}
+
+	// Second pass: the directory is gone, so there is nothing left to release.
+	reclaim, err = ws.DestroyReclaim(context.Background(), info)
+	if err != nil {
+		t.Fatalf("DestroyReclaim absent: %v", err)
+	}
+	if reclaim != ports.WorkspaceReclaimAlreadyAbsent {
+		t.Fatalf("reclaim = %q, want %q", reclaim, ports.WorkspaceReclaimAlreadyAbsent)
+	}
+}

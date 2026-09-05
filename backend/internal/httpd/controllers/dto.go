@@ -719,9 +719,13 @@ type CleanupSkippedSession struct {
 
 // CleanupSessionsResponse is the body of POST /api/v1/sessions/cleanup.
 type CleanupSessionsResponse struct {
-	OK      bool                    `json:"ok"`
-	Cleaned []domain.SessionID      `json:"cleaned"`
-	Skipped []CleanupSkippedSession `json:"skipped"`
+	OK bool `json:"ok"`
+	// Cleaned lists sessions whose workspace was present and has been released.
+	Cleaned []domain.SessionID `json:"cleaned"`
+	// AlreadyGone lists sessions whose workspace directory was already missing,
+	// so teardown completed without reclaiming anything.
+	AlreadyGone []domain.SessionID      `json:"alreadyGone"`
+	Skipped     []CleanupSkippedSession `json:"skipped"`
 }
 
 // SendSessionMessageRequest is the body of POST /api/v1/sessions/{sessionId}/send.

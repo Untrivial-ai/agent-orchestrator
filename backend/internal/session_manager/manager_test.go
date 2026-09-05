@@ -815,6 +815,8 @@ type fakeWorkspace struct {
 	createErr  error
 	destroyErr error
 	destroyed  int
+	// destroyReclaim, when set, is the reclaim outcome DestroyReclaim reports.
+	destroyReclaim ports.WorkspaceReclaim
 	// destroyCtxErr records ctx.Err() as seen by Destroy, so a test can prove
 	// teardown does not inherit a caller's cancellation.
 	destroyCtxErr error
@@ -977,6 +979,17 @@ func (w *fakeWorkspace) Destroy(ctx context.Context, info ports.WorkspaceInfo) e
 	}
 	w.destroyed++
 	return w.destroyErr
+}
+
+// DestroyReclaim makes the fake report reclaim outcomes like the real git
+// worktree adapter. destroyReclaim is empty in every pre-existing test, which
+// keeps them on the "a completed teardown released something" default.
+func (w *fakeWorkspace) DestroyReclaim(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceReclaim, error) {
+	err := w.Destroy(ctx, info)
+	if w.destroyReclaim == "" {
+		return ports.WorkspaceReclaimRemoved, err
+	}
+	return w.destroyReclaim, err
 }
 func (w *fakeWorkspace) DestroyWorkspaceProject(context.Context, ports.WorkspaceProjectInfo) error {
 	w.projectDestroyed++
@@ -3371,6 +3384,37 @@ func TestCleanup_ReclaimsTerminalWorkspaces(t *testing.T) {
 	}
 	if ws.destroyed != 1 {
 		t.Fatal("live workspace must not be destroyed")
+	}
+}
+
+// TestCleanup_SeparatesAlreadyGoneWorkspacesFromReclaimedOnes keeps the
+// reported count evidence rather than bookkeeping. A workspace whose directory
+// was already missing tears down without error, so counting it as Cleaned
+// claims disk that was never reclaimed and makes a batch run look like it did
+// work it did not do.
+func TestCleanup_SeparatesAlreadyGoneWorkspacesFromReclaimedOnes(t *testing.T) {
+	m, st, _, ws := newManager()
+	ws.destroyReclaim = ports.WorkspaceReclaimAlreadyAbsent
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+
+	res, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(res.Cleaned) != 0 {
+		t.Fatalf("cleaned = %v, want none: nothing was reclaimed", res.Cleaned)
+	}
+	if len(res.AlreadyGone) != 1 || res.AlreadyGone[0] != "mer-1" {
+		t.Fatalf("alreadyGone = %v, want [mer-1]", res.AlreadyGone)
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("skipped = %v, want none: teardown did not fail", res.Skipped)
+	}
+	// Teardown still runs, so any stale registration is reconciled exactly as
+	// before; only the accounting changed.
+	if ws.destroyed != 1 {
+		t.Fatalf("destroyed = %d, want 1", ws.destroyed)
 	}
 }
 

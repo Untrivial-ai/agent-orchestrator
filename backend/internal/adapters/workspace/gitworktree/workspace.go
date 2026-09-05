@@ -97,6 +97,7 @@ var _ ports.Workspace = (*Workspace)(nil)
 var _ ports.WorkspaceDefaultBranchRefresher = (*Workspace)(nil)
 var _ ports.WorkspaceProject = (*Workspace)(nil)
 var _ ports.WorkspaceObserver = (*Workspace)(nil)
+var _ ports.WorkspaceReclaimer = (*Workspace)(nil)
 
 // New builds a gitworktree Workspace, validating that ManagedRoot and
 // RepoResolver are set and resolving the root to an absolute, symlink-free path.
@@ -411,59 +412,83 @@ func (w *Workspace) DestroyWorkspaceProject(ctx context.Context, info ports.Work
 // Destroy removes the session's worktree and prunes it from the repo, refusing
 // (rather than force-deleting) if git still has the path registered afterwards.
 func (w *Workspace) Destroy(ctx context.Context, info ports.WorkspaceInfo) error {
+	_, err := w.destroy(ctx, info)
+	return err
+}
+
+// DestroyReclaim is Destroy plus the reclaim outcome. A worktree directory that
+// was already gone before this call leaves nothing for `git worktree remove` to
+// operate on: the prune below still clears the stale registration and the final
+// os.RemoveAll is a no-op on a missing path, so the whole teardown reports
+// success without any disk having been released. Callers that count reclaimed
+// workspaces need that told apart from a real removal.
+func (w *Workspace) DestroyReclaim(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceReclaim, error) {
+	return w.destroy(ctx, info)
+}
+
+func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceReclaim, error) {
 	if info.Path == "" {
-		return fmt.Errorf("%w: empty path", ErrUnsafePath)
+		return ports.WorkspaceReclaimAlreadyAbsent, fmt.Errorf("%w: empty path", ErrUnsafePath)
 	}
 	repo, err := w.repoPathForInfo(info)
 	if err != nil {
-		return err
+		return ports.WorkspaceReclaimAlreadyAbsent, err
 	}
 	path, err := w.validateManagedPath(info.Path)
 	if err != nil {
-		return err
+		return ports.WorkspaceReclaimAlreadyAbsent, err
+	}
+	// Sampled before any teardown step runs, so it reflects the state this call
+	// found rather than the state it left behind. Only a definite absence counts
+	// as already-absent; a stat that fails for any other reason (permissions, a
+	// racing writer) stays on the removed path so an unknown is never reported
+	// as "nothing to do".
+	reclaim := ports.WorkspaceReclaimRemoved
+	if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
+		reclaim = ports.WorkspaceReclaimAlreadyAbsent
 	}
 	if err := w.requireReachableRepo(repo); err != nil {
-		return err
+		return reclaim, err
 	}
 	// Move the directory aside rather than waiting out `git worktree remove`'s
 	// walk of an ignored-file mountain; falls through to the git-driven path
 	// below whenever the move is not clearly safe.
 	if handled, err := w.discardWorktree(ctx, repo, path); handled {
-		return err
+		return reclaim, err
 	}
 	_, removeErr := w.run(ctx, w.binary, worktreeRemoveArgs(repo, path)...)
 	if _, err := w.run(ctx, w.binary, worktreePruneArgs(repo)...); err != nil {
-		return fmt.Errorf("gitworktree: worktree prune: %w", err)
+		return reclaim, fmt.Errorf("gitworktree: worktree prune: %w", err)
 	}
 	records, err := w.listRecords(ctx, repo)
 	if err != nil {
-		return err
+		return reclaim, err
 	}
 	if _, ok := findWorktree(records, path); ok {
 		if removeErr != nil {
 			if isLockedWorktreeRemoveError(removeErr) {
-				return fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune (worktree remove: %w)", path, removeErr)
+				return reclaim, fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune (worktree remove: %w)", path, removeErr)
 			}
 			// Distinguish the dirty-worktree refusal (uncommitted agent work)
 			// from other registration leftovers (e.g. a locked worktree) so the
 			// Session Manager can preserve the workspace without erroring.
 			dirty, statusErr := w.isDirty(ctx, path)
 			if statusErr == nil && dirty {
-				return fmt.Errorf("gitworktree: refusing to remove %q: %w (worktree remove: %w)", path, ports.ErrWorkspaceDirty, removeErr)
+				return reclaim, fmt.Errorf("gitworktree: refusing to remove %q: %w (worktree remove: %w)", path, ports.ErrWorkspaceDirty, removeErr)
 			}
 			if statusErr != nil {
 				// A failed probe must stay visible: without it the caller can't
 				// tell "not dirty" from "couldn't check".
-				return fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune (worktree remove: %w; dirty probe: %w)", path, removeErr, statusErr)
+				return reclaim, fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune (worktree remove: %w; dirty probe: %w)", path, removeErr, statusErr)
 			}
-			return fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune (worktree remove: %w)", path, removeErr)
+			return reclaim, fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune (worktree remove: %w)", path, removeErr)
 		}
-		return fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune", path)
+		return reclaim, fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune", path)
 	}
 	if err := removeAllWithRetry(ctx, path); err != nil {
-		return fmt.Errorf("gitworktree: remove unregistered path %q: %w", path, err)
+		return reclaim, fmt.Errorf("gitworktree: remove unregistered path %q: %w", path, err)
 	}
-	return nil
+	return reclaim, nil
 }
 
 // ForceDestroy removes the session's worktree unconditionally (--force), prunes

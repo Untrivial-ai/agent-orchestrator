@@ -279,6 +279,32 @@ type Attacher interface {
 
 // The Agent port and its supporting types live in agent.go.
 
+// WorkspaceReclaim distinguishes a teardown that actually released disk from
+// one that found nothing to release. Destroy returning a nil error proves only
+// that the workspace is absent afterwards, not that this call is what removed
+// it: a directory that was already gone leaves nothing for the adapter to fail
+// on. Callers that report teardown counts need the two kept apart.
+type WorkspaceReclaim string
+
+// Workspace reclaim outcomes.
+const (
+	// WorkspaceReclaimRemoved means the workspace was present and this call
+	// released it.
+	WorkspaceReclaimRemoved WorkspaceReclaim = "removed"
+	// WorkspaceReclaimAlreadyAbsent means there was nothing on disk to release.
+	// Any stale registration is still reconciled, so the post-state matches
+	// WorkspaceReclaimRemoved; only the accounting differs.
+	WorkspaceReclaimAlreadyAbsent WorkspaceReclaim = "already_absent"
+)
+
+// WorkspaceReclaimer is the optional half of Workspace that reports which of
+// the two reclaim outcomes a teardown reached. Implementing it is optional:
+// callers fall back to Destroy and treat a nil error as
+// WorkspaceReclaimRemoved, which is the pre-existing behaviour.
+type WorkspaceReclaimer interface {
+	DestroyReclaim(ctx context.Context, info WorkspaceInfo) (WorkspaceReclaim, error)
+}
+
 // Workspace is the isolated checkout an agent works in (a git worktree or clone).
 type Workspace interface {
 	Create(ctx context.Context, cfg WorkspaceConfig) (WorkspaceInfo, error)

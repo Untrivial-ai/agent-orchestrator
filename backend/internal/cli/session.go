@@ -102,8 +102,9 @@ type cleanupSkippedSession struct {
 }
 
 type cleanupSessionsResponse struct {
-	Cleaned []string                `json:"cleaned"`
-	Skipped []cleanupSkippedSession `json:"skipped"`
+	Cleaned     []string                `json:"cleaned"`
+	AlreadyGone []string                `json:"alreadyGone"`
+	Skipped     []cleanupSkippedSession `json:"skipped"`
 }
 
 type claimPRRequest struct {
@@ -682,6 +683,15 @@ func (c *commandContext) cleanupSessions(ctx context.Context, cmd *cobra.Command
 			return err
 		}
 	}
+	for _, id := range res.AlreadyGone {
+		label := id
+		if mapped := labelByID[id]; mapped != "" {
+			label = mapped
+		}
+		if _, err := fmt.Fprintf(out, "  Already gone: %s (workspace was missing; nothing reclaimed)\n", label); err != nil {
+			return err
+		}
+	}
 	for _, skip := range res.Skipped {
 		label := skip.SessionID
 		if mapped := labelByID[skip.SessionID]; mapped != "" {
@@ -692,6 +702,9 @@ func (c *commandContext) cleanupSessions(ctx context.Context, cmd *cobra.Command
 		}
 	}
 	summary := fmt.Sprintf("\nCleanup complete. %d session%s cleaned", len(cleaned), pluralS(len(cleaned)))
+	if len(res.AlreadyGone) > 0 {
+		summary += fmt.Sprintf(", %d already gone", len(res.AlreadyGone))
+	}
 	if len(res.Skipped) > 0 {
 		summary += fmt.Sprintf(", %d skipped", len(res.Skipped))
 	}
