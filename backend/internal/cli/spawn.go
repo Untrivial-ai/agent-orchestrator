@@ -40,6 +40,7 @@ type spawnOptions struct {
 type spawnRequest struct {
 	ProjectID       string `json:"projectId"`
 	IssueID         string `json:"issueId,omitempty"`
+	ParentSessionID string `json:"parentSessionId,omitempty"`
 	TrackerProvider string `json:"trackerProvider,omitempty"`
 	Kind            string `json:"kind,omitempty"`
 	Mode            string `json:"mode,omitempty"`
@@ -135,6 +136,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			req := spawnRequest{
 				ProjectID:       opts.project,
 				IssueID:         opts.issue,
+				ParentSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
 				TrackerProvider: opts.trackerProvider,
 				Kind:            opts.kind,
 				Harness:         opts.harness,

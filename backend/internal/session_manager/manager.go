@@ -358,6 +358,13 @@ type Store interface {
 	DeleteSessionWorktrees(ctx context.Context, id domain.SessionID) error
 }
 
+// conversationSettingsStore is the narrow optional read boundary for deriving
+// a chat orchestrator's current approval mode during a worker spawn. Older
+// embedders without chat persistence retain project-config-only behavior.
+type conversationSettingsStore interface {
+	ConversationForSession(ctx context.Context, session domain.SessionID) (domain.ConversationRecord, error)
+}
+
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
 // the outbound ports. User-facing read-model assembly lives in the service package.
 type Manager struct {
@@ -837,6 +844,13 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if projectKind == domain.ProjectKindScratch && strings.TrimSpace(cfg.Branch) != "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrScratchBranchUnsupported)
 	}
+	if cfg.ParentSessionID != "" && cfg.AgentConfig.Permissions == "" {
+		permissions, err := m.inheritedSpawnPermissions(ctx, cfg.ProjectID, cfg.ParentSessionID)
+		if err != nil {
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+		}
+		cfg.AgentConfig.Permissions = permissions
+	}
 	// A per-project role override picks the harness when the spawn names none,
 	// so a project can default workers to one agent and orchestrators to another.
 	cfg.Harness = effectiveHarness(cfg.Harness, cfg.Kind, project.Config)
@@ -1106,6 +1120,34 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, err
 	}
 	return rec, promptBytes, systemPromptBytes, nil
+}
+
+// inheritedSpawnPermissions derives a worker override from its requesting chat
+// orchestrator. The request supplies identity only: the stored conversation
+// settings remain the authority for the permission policy.
+func (m *Manager) inheritedSpawnPermissions(ctx context.Context, projectID domain.ProjectID, parentID domain.SessionID) (domain.PermissionMode, error) {
+	parent, ok, err := m.store.GetSession(ctx, parentID)
+	if err != nil {
+		return "", fmt.Errorf("load parent session %s: %w", parentID, err)
+	}
+	if !ok || parent.ProjectID != projectID || parent.Kind != domain.KindOrchestrator {
+		// AO_SESSION_ID is available in every session, not only orchestrators.
+		// A worker (or a stale/cross-project value) must preserve the historical
+		// project-default spawn behavior rather than gain an inherited policy.
+		return "", nil
+	}
+	conversations, ok := m.store.(conversationSettingsStore)
+	if !ok {
+		return "", nil
+	}
+	conversation, err := conversations.ConversationForSession(ctx, parentID)
+	if errors.Is(err, domain.ErrNoConversation) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load parent conversation %s: %w", parentID, err)
+	}
+	return conversation.Settings.ApprovalMode, nil
 }
 
 // loadProject loads the project record so spawn can resolve its per-project

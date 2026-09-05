@@ -3987,6 +3987,7 @@ export interface components {
             /** @enum {string} */
             mode?: "chat" | "tui";
             model?: string;
+            parentSessionId?: string;
             projectId: string;
             prompt?: string;
             /** @enum {string} */

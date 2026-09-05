@@ -1321,6 +1321,20 @@ func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_SpawnPassesParentSessionToService(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions",
+		`{"projectId":"ao","kind":"worker","harness":"claude-code","parentSessionId":"ao-1","prompt":"fix"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.ParentSessionID != "ao-1" {
+		t.Fatalf("service ParentSessionID = %q, want ao-1", svc.lastSpawn.ParentSessionID)
+	}
+}
+
 func TestSessionsAPI_OrchestratorAcceptsExplicitChatMode(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
