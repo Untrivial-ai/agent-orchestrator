@@ -30,6 +30,7 @@ const (
 	agentTerminalTTL           = 24 * time.Hour
 	terminalInteractionTTL     = 2 * time.Minute
 	terminalInteractionRefresh = 30 * time.Second
+	terminalPingInterval       = 25 * time.Second
 )
 
 var errTerminalProcessUnavailable = errors.New("terminal process unavailable")
@@ -147,6 +148,9 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 		writeResult <- s.writeTerminalOutput(ctx, connection, terminal, after, structured, &writeMu)
 	}()
 
+	// Keep the connection alive through the ALB idle timeout (default 60 s).
+	go s.pingTerminalConnection(ctx, connection)
+
 	select {
 	case err = <-readResult:
 	case err = <-writeResult:
@@ -174,6 +178,26 @@ func (s *Server) refreshTerminalInteraction(ctx context.Context, terminal domain
 				if !errors.Is(err, context.Canceled) && s.logger != nil {
 					s.logger.Debug("refresh terminal interaction lease", "error", err, "terminal_id", terminal.ID)
 				}
+				return
+			}
+		}
+	}
+}
+
+// pingTerminalConnection sends periodic WebSocket Ping frames to prevent the
+// ALB (idle timeout: 60 s) from severing idle terminal connections. It runs
+// as a goroutine for the lifetime of a connectTerminal handler and stops when
+// ctx is cancelled.
+func (s *Server) pingTerminalConnection(ctx context.Context, connection *websocket.Conn) {
+	ticker := time.NewTicker(terminalPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := connection.Ping(ctx); err != nil {
+				// ctx cancelled or connection already closing — exit silently.
 				return
 			}
 		}
