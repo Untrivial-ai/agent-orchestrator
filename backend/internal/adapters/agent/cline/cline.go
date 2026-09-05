@@ -213,7 +213,10 @@ func appendApprovalFlags(cmd *[]string, permissions ports.PermissionMode) {
 		// Auto-approve every tool for unattended runs.
 		*cmd = append(*cmd, "--auto-approve", "true")
 	case ports.PermissionModeBypassPermissions:
-		// yolo mode: auto-approve tools with the restricted (safer) toolset.
-		*cmd = append(*cmd, "--yolo")
+		// Bypass maps onto --auto-approve, not --yolo: Cline's --yolo forces
+		// headless plain-text output (exit-when-complete), which contradicts
+		// this adapter's TUI assumptions (readiness hints, terminal activity
+		// detection, and after-start prompt injection). See #4944.
+		*cmd = append(*cmd, "--auto-approve", "true")
 	}
 }
