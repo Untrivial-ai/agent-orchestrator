@@ -5,11 +5,13 @@ package conpty
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -21,9 +23,9 @@ import (
 // port), installs SIGTERM/SIGINT handlers, then runs Serve. Returns a process
 // exit code.
 //
-// ponytail: loopback bind only; any local process on this host can connect to
-// the assigned port. A per-session random token handshake is the upgrade path
-// if multi-user isolation is needed.
+// ponytail: loopback bind only. The immutable per-host random token prevents a
+// stale registry route from authorizing an unrelated listener; same-user local
+// processes remain inside AO's host trust boundary.
 func RunHost(args []string, stdout io.Writer) int {
 	if len(args) < 3 {
 		fmt.Fprintf(os.Stderr, "usage: ao pty-host <sessionId> <cwd> <shellCmd> [shellArg...]\n")
@@ -34,6 +36,16 @@ func RunHost(args []string, stdout io.Writer) int {
 	cwd := args[1]
 	shellCmd := args[2]
 	shellArgs := args[3:]
+	hostToken, identityErr := ptyHostTokenFromEnvironment()
+	if identityErr != nil {
+		fmt.Fprintf(os.Stderr, "pty-host [%s]: %v\n", sessionID, identityErr)
+		return 1
+	}
+	launchID := strings.TrimSpace(os.Getenv(runtimeLaunchIDEnv))
+	// The token authenticates the host process, not the supervised workload.
+	// Remove it before creating the PTY so agent processes cannot inherit the
+	// recovery credential.
+	scrubPTYHostTokenEnvironment()
 	if err := os.Chdir(cwd); err != nil {
 		fmt.Fprintf(os.Stderr, "pty-host [%s]: chdir %s: %v\n", sessionID, cwd, err)
 		return 1
@@ -81,14 +93,31 @@ func RunHost(args []string, stdout io.Writer) int {
 	ring := NewRing()
 	cfg := ServeConfig{
 		SessionID: sessionID,
+		LaunchID:  launchID,
+		HostPID:   os.Getpid(),
+		HostToken: hostToken,
 		Listener:  ln,
 		PTY:       pty,
 		Ring:      ring,
 	}
-
 	if err := Serve(ctx, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "pty-host [%s]: serve: %v\n", sessionID, err)
 		return 1
 	}
 	return 0
+}
+
+// ptyHostTokenFromEnvironment keeps the production rule strict: every newly
+// launched host requires the random token that its registry entry persists.
+// Historical protocol-v2 behavior belongs only in the external test fixture.
+func ptyHostTokenFromEnvironment() (string, error) {
+	hostToken := strings.TrimSpace(os.Getenv(runtimeHostTokenEnv))
+	if hostToken != "" {
+		return hostToken, nil
+	}
+	return "", errors.New("missing host identity token")
+}
+
+func scrubPTYHostTokenEnvironment() {
+	_ = os.Unsetenv(runtimeHostTokenEnv)
 }

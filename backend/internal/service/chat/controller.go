@@ -42,7 +42,7 @@ type Store interface {
 	CreateConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
 	CreateProjectConversationWithContextReset(ctx context.Context, id string, project domain.ProjectID, session domain.SessionID, reset domain.ConversationActivity, now time.Time) (domain.ConversationRecord, error)
 	ConversationForSession(ctx context.Context, session domain.SessionID) (domain.ConversationRecord, error)
-	ClaimChatControllerGeneration(ctx context.Context, session domain.SessionID, generation string, now time.Time) error
+	ClaimChatControllerGeneration(ctx context.Context, session domain.SessionID, expected domain.SessionControllerOwner, generation string, now time.Time) (bool, error)
 	ConversationBranch(ctx context.Context, conversationID, branchID string) (domain.ConversationBranch, error)
 	ConversationEditAnchor(ctx context.Context, conversationID, replacedTurnID string) (domain.ConversationEditAnchor, error)
 	RepairIncompleteConversationEdit(ctx context.Context, sessionID domain.SessionID, conversationID string, now time.Time) (domain.ConversationBranch, bool, error)
@@ -180,9 +180,9 @@ type Controller struct {
 	configMu sync.Mutex
 
 	mu sync.Mutex
-	// suppressStoppedActivity marks a deliberate branch-controller retirement.
-	// The replacement generation owns lifecycle state; publishing an exited fact
-	// from the source would make that replacement unable to report active work.
+	// suppressStoppedActivity marks a deliberate controller detach or retirement.
+	// A planned daemon detach is not evidence that the agent exited, and an
+	// in-place replacement owns the next lifecycle state.
 	suppressStoppedActivity bool
 	// activeTurn maps a provider turn id to AO's turn id for the turn currently
 	// in flight, so a completion can be attributed without a round trip.
@@ -210,9 +210,9 @@ type Controller struct {
 	// started until this controller reports quiescent and is closed.
 	handoff           controllerHandoff
 	branchHandoffDone chan struct{}
-	// preserveProviderOnStop is set before deliberate daemon detach. It prevents
-	// the closing controller from projecting a false provider exit or failing work
-	// that the detached host continues to run.
+	// preserveProviderOnStop is set when deliberate daemon detach leaves the
+	// provider host running. Unlike suppressStoppedActivity, this also prevents
+	// cleanup of work that the detached host continues to own.
 	preserveProviderOnStop bool
 
 	// account, threadState and mcpServers are merged here before being written,
@@ -227,6 +227,9 @@ type Controller struct {
 	// replacement erases the other half and turns a percentage meter into a bare
 	// token count.
 	usage domain.ConversationUsage
+	// Set only by the synchronous surviving-provider recovery barrier. It is the
+	// exact activity ControllerReady atomically publishes for this generation.
+	recoveredActivity domain.Activity
 	// mcpServers is keyed by name; mcpServerOrder preserves first-seen order so the
 	// list a client renders does not reshuffle on every turn.
 	mcpServers     map[string]domain.ConversationMCPServer
@@ -630,6 +633,79 @@ func (c *Controller) projectNativeHistory(ctx context.Context, events []ports.Ch
 		}
 	}
 	return nil
+}
+
+// projectLiveRecovery synchronously catches the durable projection and volatile
+// turn gate up to the surviving provider's ordered snapshot boundary. It does
+// not run afterProject: session activity is published once, atomically, by
+// ControllerReady after this complete batch succeeds.
+func (c *Controller) projectLiveRecovery(
+	ctx context.Context,
+	snapshot ports.ChatLiveRecoverySnapshot,
+	existingTurns []domain.ConversationTurn,
+	existingMessages []domain.ConversationMessage,
+	existingActivities []domain.ConversationActivity,
+) error {
+	history := reconcileNativeHistory(
+		snapshot.HistoryEvents, existingTurns, existingMessages, existingActivities,
+	)
+	if err := c.projectNativeHistory(ctx, history); err != nil {
+		return fmt.Errorf("project surviving provider snapshot: %w", err)
+	}
+
+	c.mu.Lock()
+	state := c.state
+	c.mu.Unlock()
+	switch snapshot.ActivityState {
+	case domain.ActivityIdle:
+		if state != ports.ChatControllerReady {
+			return fmt.Errorf("provider is idle but durable turn ownership remains %s", state)
+		}
+	case domain.ActivityActive:
+		if state != ports.ChatControllerBusy {
+			return errors.New("provider is active but no live root turn was recovered")
+		}
+	case domain.ActivityWaitingInput:
+		if state != ports.ChatControllerBusy {
+			return errors.New("provider is waiting but no live root turn was recovered")
+		}
+		pending, err := c.store.HasPendingConversationInteractions(ctx, c.conversation.ID)
+		if err != nil {
+			return fmt.Errorf("verify recovered provider interaction: %w", err)
+		}
+		if !pending {
+			return errors.New("provider is waiting but its pending interaction was not recovered")
+		}
+	default:
+		return fmt.Errorf("provider returned invalid live activity %q", snapshot.ActivityState)
+	}
+
+	c.mu.Lock()
+	c.recoveredActivity = domain.Activity{
+		State: snapshot.ActivityState, LastActivityAt: c.now(),
+	}
+	c.mu.Unlock()
+	return nil
+}
+
+// projectLiveRecoveryReplay transfers the host-owned replay prefix into AO's
+// generation-fenced durable projection. It is deliberately separate from the
+// authoritative snapshot reconciliation because this prefix remains valid even
+// when thread/read itself fails and startup must stay unready.
+func (c *Controller) projectLiveRecoveryReplay(
+	ctx context.Context,
+	events []ports.ChatEvent,
+) error {
+	if err := c.projectNativeHistory(ctx, events); err != nil {
+		return fmt.Errorf("project surviving provider replay: %w", err)
+	}
+	return nil
+}
+
+func (c *Controller) liveRecoveredActivity() domain.Activity {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.recoveredActivity
 }
 
 // nativeHistoryTurn is the durable identity AO already assigned to one native
@@ -2029,17 +2105,19 @@ func (c *Controller) Rollback(ctx context.Context, turnID string) (int, error) {
 	return discarded, nil
 }
 
-// Close detaches this daemon's controller. Persistent provider hosts keep the
-// native connection and any in-flight turn alive; non-persistent drivers retain
-// their historical process-close behavior. The persistent host replays detached
-// output and unresolved provider requests to the replacement controller.
+// Close detaches this daemon's controller. A planned detach never publishes a
+// session-level exit: closing a non-persistent provider is an implementation
+// consequence, not evidence that the user ended the session. Persistent provider
+// hosts additionally keep the native connection and in-flight turn alive so they
+// can replay detached output to the replacement controller.
 func (c *Controller) Close(ctx context.Context) error {
 	c.once.Do(func() {
+		c.mu.Lock()
+		c.suppressStoppedActivity = true
 		if preserver, ok := c.conv.(ports.ChatProviderPreserver); ok && preserver.PreservesProviderOnClose() {
-			c.mu.Lock()
 			c.preserveProviderOnStop = true
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 		c.closeErr = c.conv.Close()
 	})
 	select {

@@ -17,6 +17,7 @@ var ctx = context.Background()
 
 type fakeLCM struct {
 	observed map[domain.SessionID]ports.RuntimeFacts
+	err      error
 }
 
 func (l *fakeLCM) ApplyRuntimeObservation(_ context.Context, id domain.SessionID, f ports.RuntimeFacts) error {
@@ -24,7 +25,7 @@ func (l *fakeLCM) ApplyRuntimeObservation(_ context.Context, id domain.SessionID
 		l.observed = map[domain.SessionID]ports.RuntimeFacts{}
 	}
 	l.observed[id] = f
-	return nil
+	return l.err
 }
 
 type fakeSessions struct{ rows []domain.SessionRecord }
@@ -126,6 +127,70 @@ func TestTick_ReportsProbeErrorAsFailed(t *testing.T) {
 	}
 }
 
+func TestReconcile_PropagatesRuntimeProbeErrorAfterReportingFailedFact(t *testing.T) {
+	lcm := &fakeLCM{}
+	sessions := fakeSessions{rows: []domain.SessionRecord{probableSession("mer-1")}}
+	err := newReaper(lcm, sessions, fakeRuntime{err: errors.New("tmux gone")}).Reconcile(ctx)
+	if err == nil || !strings.Contains(err.Error(), "tmux gone") {
+		t.Fatalf("Reconcile error = %v, want runtime probe failure", err)
+	}
+	if got := lcm.observed["mer-1"]; got.Runtime != ports.ProbeFailed {
+		t.Fatalf("failed runtime probe fact = %+v, want inconclusive", got)
+	}
+}
+
+func TestReconcile_PropagatesWorkloadProbeError(t *testing.T) {
+	lcm := &fakeLCM{}
+	session := probableSession("mer-1")
+	session.Metadata.RuntimeLaunchID = "launch-1"
+	err := newReaper(
+		lcm,
+		fakeSessions{rows: []domain.SessionRecord{session}},
+		fakeRuntime{alive: true, workloadErr: errors.New("ps unavailable")},
+	).Reconcile(ctx)
+	if err == nil || !strings.Contains(err.Error(), "ps unavailable") {
+		t.Fatalf("Reconcile error = %v, want workload probe failure", err)
+	}
+	if got := lcm.observed["mer-1"]; got.Runtime != ports.ProbeAlive || got.Workload != ports.ProbeFailed {
+		t.Fatalf("failed workload probe fact = %+v, want alive/inconclusive", got)
+	}
+}
+
+func TestReconcile_PropagatesLifecycleFoldError(t *testing.T) {
+	lcm := &fakeLCM{err: errors.New("write failed")}
+	err := newReaper(
+		lcm,
+		fakeSessions{rows: []domain.SessionRecord{probableSession("mer-1")}},
+		fakeRuntime{alive: true},
+	).Reconcile(ctx)
+	if err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("Reconcile error = %v, want lifecycle fold failure", err)
+	}
+}
+
+func TestReconcile_AllowsUnsupportedWorkloadProbe(t *testing.T) {
+	lcm := &fakeLCM{}
+	err := newReaper(
+		lcm,
+		fakeSessions{rows: []domain.SessionRecord{probableSession("mer-1")}},
+		fakeRuntime{alive: true},
+	).Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile unsupported workload error = %v, want nil", err)
+	}
+}
+
+func TestTick_RemainsBestEffortForPeriodicLifecycleFoldFailure(t *testing.T) {
+	lcm := &fakeLCM{err: errors.New("write failed")}
+	if err := newReaper(
+		lcm,
+		fakeSessions{rows: []domain.SessionRecord{probableSession("mer-1")}},
+		fakeRuntime{alive: true},
+	).Tick(ctx); err != nil {
+		t.Fatalf("periodic Tick error = %v, want best-effort nil", err)
+	}
+}
+
 func TestTick_SkipsTerminatedSession(t *testing.T) {
 	lcm := &fakeLCM{}
 	dead := probableSession("mer-1")
@@ -174,6 +239,66 @@ func TestTick_MassDeathPassIsReportedAsInconclusive(t *testing.T) {
 		if got.Runtime != ports.ProbeFailed {
 			t.Fatalf("session %s runtime = %q, want %q (mass death must not conclude)",
 				id, got.Runtime, ports.ProbeFailed)
+		}
+	}
+}
+
+func TestReconcile_MassDeathPassBlocksReadiness(t *testing.T) {
+	lcm := &fakeLCM{}
+	var rows []domain.SessionRecord
+	for _, id := range []domain.SessionID{"mer-1", "mer-2", "mer-3", "mer-4", "mer-5", "mer-6"} {
+		rows = append(rows, handledSession(id))
+	}
+	r := New(lcm, fakeSessions{rows: rows}, perHandleRuntime{}, Config{Logger: quietLogger()})
+	err := r.Reconcile(ctx)
+	if err == nil || !strings.Contains(err.Error(), "mass-death circuit breaker") {
+		t.Fatalf("Reconcile error = %v, want mass-death recovery failure", err)
+	}
+	for id, got := range lcm.observed {
+		if got.Runtime != ports.ProbeFailed {
+			t.Fatalf("session %s runtime = %q, want inconclusive", id, got.Runtime)
+		}
+	}
+}
+
+func TestTick_MassWorkloadDeathPassIsReportedAsInconclusive(t *testing.T) {
+	lcm := &fakeLCM{}
+	var rows []domain.SessionRecord
+	for _, id := range []domain.SessionID{"mer-1", "mer-2", "mer-3", "mer-4", "mer-5", "mer-6"} {
+		rec := handledSession(id)
+		rec.Metadata.RuntimeLaunchID = "launch-" + string(id)
+		rows = append(rows, rec)
+	}
+	r := newReaper(lcm, fakeSessions{rows: rows}, fakeRuntime{alive: true, workloadAlive: false})
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(lcm.observed) != len(rows) {
+		t.Fatalf("observed %d sessions, want %d", len(lcm.observed), len(rows))
+	}
+	for id, got := range lcm.observed {
+		if got.Runtime != ports.ProbeAlive || got.Workload != ports.ProbeFailed {
+			t.Fatalf("session %s facts = %+v, want alive runtime with inconclusive workload", id, got)
+		}
+	}
+}
+
+func TestReconcile_MassWorkloadDeathPassBlocksReadiness(t *testing.T) {
+	lcm := &fakeLCM{}
+	var rows []domain.SessionRecord
+	for _, id := range []domain.SessionID{"mer-1", "mer-2", "mer-3", "mer-4", "mer-5", "mer-6"} {
+		rec := handledSession(id)
+		rec.Metadata.RuntimeLaunchID = "launch-" + string(id)
+		rows = append(rows, rec)
+	}
+	r := newReaper(lcm, fakeSessions{rows: rows}, fakeRuntime{alive: true, workloadAlive: false})
+	err := r.Reconcile(ctx)
+	if err == nil || !strings.Contains(err.Error(), "mass-death circuit breaker") {
+		t.Fatalf("Reconcile error = %v, want mass-death recovery failure", err)
+	}
+	for id, got := range lcm.observed {
+		if got.Runtime != ports.ProbeAlive || got.Workload != ports.ProbeFailed {
+			t.Fatalf("session %s facts = %+v, want alive runtime with inconclusive workload", id, got)
 		}
 	}
 }
@@ -229,6 +354,19 @@ func TestTick_SkipsSessionWithoutHandle(t *testing.T) {
 	}
 	if _, probed := lcm.observed["mer-1"]; probed {
 		t.Fatal("a session without a runtime handle must be skipped")
+	}
+}
+
+func TestReconcile_MissingRuntimeHandleBlocksReadiness(t *testing.T) {
+	lcm := &fakeLCM{}
+	noHandle := domain.SessionRecord{ID: "mer-1"}
+	err := newReaper(
+		lcm,
+		fakeSessions{rows: []domain.SessionRecord{noHandle}},
+		fakeRuntime{alive: true},
+	).Reconcile(ctx)
+	if err == nil || !strings.Contains(err.Error(), "no runtime handle metadata") {
+		t.Fatalf("Reconcile error = %v, want missing-handle recovery failure", err)
 	}
 }
 

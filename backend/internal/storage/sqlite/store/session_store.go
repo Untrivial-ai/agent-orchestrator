@@ -72,6 +72,96 @@ func (s *Store) UpdateBrowserCapabilityVerifier(
 	return rows > 0, nil
 }
 
+// CanonicalizeRuntimeHandle atomically upgrades a legacy TUI route together
+// with the supervisor generation proven to own it. This is controller
+// provenance, not an activity event, so it deliberately leaves UpdatedAt and
+// every unrelated session fact untouched.
+func (s *Store) CanonicalizeRuntimeHandle(
+	ctx context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	expectedHandleID string,
+	canonicalHandleID string,
+	actualLaunchID string,
+) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.CanonicalizeRuntimeHandle(ctx, gen.CanonicalizeRuntimeHandleParams{
+		CanonicalRuntimeHandleID:       canonicalHandleID,
+		ActualRuntimeLaunchID:          actualLaunchID,
+		ExpectedRuntimeLaunchID:        expected.RuntimeLaunchID,
+		ID:                             id,
+		ExpectedSessionMode:            domain.NormalizeSessionMode(expected.Mode),
+		ExpectedIsTerminated:           expected.IsTerminated,
+		ExpectedHarness:                expected.Harness,
+		ExpectedRuntimeHandleID:        expectedHandleID,
+		ExpectedAgentSessionID:         expected.AgentSessionID,
+		ExpectedAgentSessionIDLaunchID: expected.AgentSessionIDLaunchID,
+		ExpectedProviderConversationID: expected.ProviderConversationID,
+		ExpectedControllerGeneration:   expected.ControllerGeneration,
+	})
+	if err != nil {
+		return false, fmt.Errorf("canonicalize runtime handle for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// ReconcileRuntimeActivity records a synchronous terminal observation only while
+// the exact activity, TUI controller owner, and canonical runtime route observed
+// by the caller are still current.
+func (s *Store) ReconcileRuntimeActivity(
+	ctx context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	expectedHandleID string,
+	expectedActivity domain.Activity,
+	recovered domain.Activity,
+) (bool, error) {
+	if !recovered.State.IsRecoverable() || recovered.LastActivityAt.IsZero() {
+		return false, fmt.Errorf("reconcile runtime activity for %s: invalid recovered activity %q", id, recovered.State)
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.ReconcileRuntimeActivity(ctx, gen.ReconcileRuntimeActivityParams{
+		RecoveredActivityState:         recovered.State,
+		ObservedAt:                     recovered.LastActivityAt,
+		ExpectedActivityState:          expectedActivity.State,
+		ExpectedActivityLastAt:         expectedActivity.LastActivityAt,
+		ID:                             id,
+		ExpectedSessionMode:            domain.NormalizeSessionMode(expected.Mode),
+		ExpectedIsTerminated:           expected.IsTerminated,
+		ExpectedHarness:                expected.Harness,
+		ExpectedRuntimeHandleID:        expectedHandleID,
+		ExpectedRuntimeLaunchID:        expected.RuntimeLaunchID,
+		ExpectedAgentSessionID:         expected.AgentSessionID,
+		ExpectedAgentSessionIDLaunchID: expected.AgentSessionIDLaunchID,
+		ExpectedProviderConversationID: expected.ProviderConversationID,
+		ExpectedControllerGeneration:   expected.ControllerGeneration,
+	})
+	if err != nil {
+		return false, fmt.Errorf("reconcile runtime activity for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// LatestNonExitedSessionActivity returns the last durable activity fact before
+// a historical false exit. It is a compatibility fallback for legacy sessions
+// whose current TUI does not expose an authoritative activity surface.
+func (s *Store) LatestNonExitedSessionActivity(ctx context.Context, id domain.SessionID) (domain.Activity, bool, error) {
+	row, err := s.qr.LatestNonExitedSessionActivity(ctx, &id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Activity{}, false, nil
+	}
+	if err != nil {
+		return domain.Activity{}, false, fmt.Errorf("latest non-exited activity for %s: %w", id, err)
+	}
+	state := domain.ActivityState(row.ActivityState)
+	if !state.IsRecoverable() {
+		return domain.Activity{}, false, fmt.Errorf("latest non-exited activity for %s: invalid state %q", id, state)
+	}
+	return domain.Activity{State: state, LastActivityAt: row.ObservedAt}, true, nil
+}
+
 // UpdateSessionFromActivitySignal projects activity-derived session metadata
 // only when the signal still belongs to the session's active harness launch.
 func (s *Store) UpdateSessionFromActivitySignal(ctx context.Context, rec domain.SessionRecord) (bool, error) {
@@ -123,23 +213,83 @@ func (s *Store) RecordSessionLatestUserPrompt(ctx context.Context, id domain.Ses
 func (s *Store) ClaimChatControllerGeneration(
 	ctx context.Context,
 	id domain.SessionID,
+	expected domain.SessionControllerOwner,
 	generation string,
 	updatedAt time.Time,
-) error {
+) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.ClaimChatControllerGeneration(ctx, gen.ClaimChatControllerGenerationParams{
-		ControllerGeneration: generation,
-		UpdatedAt:            updatedAt,
-		ID:                   id,
+	rows, err := s.qw.ClaimChatControllerGeneration(
+		ctx, claimChatControllerGenerationParams(id, expected, generation, updatedAt),
+	)
+	if err != nil {
+		return false, fmt.Errorf("claim chat controller generation for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+func claimChatControllerGenerationParams(
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	generation string,
+	claimedAt time.Time,
+) gen.ClaimChatControllerGenerationParams {
+	return gen.ClaimChatControllerGenerationParams{
+		NewControllerGeneration:        generation,
+		ClaimedAt:                      claimedAt,
+		ID:                             id,
+		ExpectedHarness:                expected.Harness,
+		ExpectedSessionMode:            domain.NormalizeSessionMode(expected.Mode),
+		ExpectedIsTerminated:           expected.IsTerminated,
+		ExpectedRuntimeLaunchID:        expected.RuntimeLaunchID,
+		ExpectedAgentSessionID:         expected.AgentSessionID,
+		ExpectedAgentSessionIDLaunchID: expected.AgentSessionIDLaunchID,
+		ExpectedProviderConversationID: expected.ProviderConversationID,
+		ExpectedControllerGeneration:   expected.ControllerGeneration,
+	}
+}
+
+// CommitChatLiveReconnect publishes activity from an ordered provider snapshot.
+// Active, Idle, and WaitingInput are authoritative at that recovery boundary and
+// replace stale durable facts from before detach. The owner comparison and
+// lifecycle update are one statement, serialized with controller claims by
+// writeMu, so a delayed reconnect cannot overwrite a replacement generation.
+func (s *Store) CommitChatLiveReconnect(
+	ctx context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	recovered domain.Activity,
+	reconnectedAt time.Time,
+) (bool, error) {
+	if reconnectedAt.IsZero() {
+		return false, fmt.Errorf("commit Chat live reconnect for %s: missing reconnect time", id)
+	}
+	if (recovered.State != domain.ActivityActive &&
+		recovered.State != domain.ActivityIdle &&
+		recovered.State != domain.ActivityWaitingInput) ||
+		recovered.LastActivityAt.IsZero() {
+		return false, fmt.Errorf("commit Chat live reconnect for %s: invalid recovered activity %q", id, recovered.State)
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.CommitChatLiveReconnect(ctx, gen.CommitChatLiveReconnectParams{
+		RecoveredActivityState:         recovered.State,
+		RecoveredActivityAt:            recovered.LastActivityAt,
+		ReconnectedAt:                  reconnectedAt,
+		ID:                             id,
+		ExpectedSessionMode:            domain.NormalizeSessionMode(expected.Mode),
+		ExpectedIsTerminated:           expected.IsTerminated,
+		ExpectedHarness:                expected.Harness,
+		ExpectedRuntimeLaunchID:        expected.RuntimeLaunchID,
+		ExpectedAgentSessionID:         expected.AgentSessionID,
+		ExpectedAgentSessionIDLaunchID: expected.AgentSessionIDLaunchID,
+		ExpectedProviderConversationID: expected.ProviderConversationID,
+		ExpectedControllerGeneration:   expected.ControllerGeneration,
 	})
 	if err != nil {
-		return fmt.Errorf("claim chat controller generation for %s: %w", id, err)
+		return false, fmt.Errorf("commit Chat live reconnect for %s: %w", id, err)
 	}
-	if rows == 0 {
-		return fmt.Errorf("claim chat controller generation for %s: chat session not found", id)
-	}
-	return nil
+	return rows > 0, nil
 }
 
 // RenameSession updates only the user-facing display name for an existing

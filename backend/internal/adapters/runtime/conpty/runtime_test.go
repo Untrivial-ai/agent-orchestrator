@@ -19,13 +19,10 @@ import (
 )
 
 // livePID returns a PID that is guaranteed to be alive (the current process).
-// Using this as the fake pty-host PID means ptyregistry.List() will not prune
-// the entry during tests. Do NOT use this for the Destroy test: Destroy calls
-// Kill on the pid, so use deadPID() there instead.
+// Tests use it when exercising the runtime's live-host authentication path.
 func livePID() int { return os.Getpid() }
 
-// deadPID returns a PID that is guaranteed to be dead (no process). This is
-// used in Destroy tests so the force-kill step is a safe no-op.
+// deadPID returns a PID that is guaranteed to be dead (no process).
 // ponytail: PID 2147483647 (MaxInt32) is never a real process; signal-0 returns ESRCH.
 func deadPID() int { return 2147483647 }
 
@@ -90,28 +87,21 @@ func TestRegistryResolutionHonorsCallerCancellation(t *testing.T) {
 	}
 }
 
-func TestCreateAndDestroyPassCallerContextToRegistryMutations(t *testing.T) {
+func TestCreatePassesCallerContextToRegistryMutations(t *testing.T) {
 	isolateRegistry(t)
 	type contextKey struct{}
 	ctx := context.WithValue(context.Background(), contextKey{}, "registry-mutation")
 	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
 		return "127.0.0.1:1", livePID(), nil
 	}})
-	rt.killHost = func(string) error { return nil }
-	rt.pidIsAlive = func(int) bool { return false }
+	rt.pidLiveness = func(int) (bool, error) { return false, nil }
 	registerCalls := 0
-	rt.registerHost = func(got context.Context, _ ptyregistry.Entry) error {
+	rt.registerHost = func(got context.Context, entry ptyregistry.Entry) error {
 		registerCalls++
 		if got.Value(contextKey{}) != "registry-mutation" {
 			t.Fatalf("Register context value = %v, want caller context", got.Value(contextKey{}))
 		}
-		return nil
-	}
-	rt.unregisterHost = func(got context.Context, _ string) error {
-		if got.Value(contextKey{}) != "registry-mutation" {
-			t.Fatalf("Unregister context value = %v, want caller context", got.Value(contextKey{}))
-		}
-		return nil
+		return ptyregistry.Register(got, entry)
 	}
 
 	handle, err := rt.Create(ctx, ports.RuntimeConfig{
@@ -148,9 +138,7 @@ func TestPartialCreateCleanupFailureReturnsRuntimeEffectEvidence(t *testing.T) {
 	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
 		return "127.0.0.1:1", livePID(), createErr
 	}})
-	rt.killHost = func(string) error { return errors.New("cleanup denied") }
-	rt.pidIsAlive = func(int) bool { return true }
-	rt.processFinder = func(int) (processKiller, error) { return nil, errors.New("permission denied") }
+	rt.pidLiveness = func(int) (bool, error) { return true, nil }
 	rt.destroyWait = 0
 
 	handle, err := rt.Create(context.Background(), ports.RuntimeConfig{
@@ -218,62 +206,128 @@ func TestRuntimeProvidesStyledRenderedTerminalOutput(t *testing.T) {
 	}
 }
 
-func TestRuntimeRejectsStyledOutputFromARecoveredLegacyHost(t *testing.T) {
+func TestInspectRuntimeIdentityAuthenticatesDirectHost(t *testing.T) {
 	isolateRegistry(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	hosts := map[string]*inProcHost{}
+	runtime := New(Options{Spawner: fakeSpawnerFor(t, hosts, livePID())})
+	handle, err := runtime.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     "sess-identity",
+		WorkspacePath: "/tmp/w",
+		Argv:          []string{"sh"},
+		Env: map[string]string{
+			runtimeLaunchIDEnv: "launch-identity",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
-	requestType := make(chan byte, 1)
-	serverDone := make(chan error, 1)
-	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			serverDone <- acceptErr
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		header := make([]byte, 5)
-		if _, readErr := io.ReadFull(conn, header); readErr != nil {
-			serverDone <- readErr
-			return
-		}
-		requestType <- header[0]
-		payload := []byte(fmt.Sprintf(`{"alive":true,"pid":%d}`, livePID()))
-		frame, encodeErr := EncodeMessage(MsgStatusRes, payload)
-		if encodeErr != nil {
-			serverDone <- encodeErr
-			return
-		}
-		_, writeErr := conn.Write(frame)
-		serverDone <- writeErr
-	}()
+	t.Cleanup(func() { hosts[handle.ID].cleanup(t) })
 
+	identity, err := runtime.InspectRuntimeIdentity(context.Background(), handle, "sess-identity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.LaunchID != "launch-identity" || !identity.OwnershipProven {
+		t.Fatalf("identity = %+v, want authenticated launch-identity", identity)
+	}
+	if _, err := runtime.InspectRuntimeIdentity(context.Background(), handle, "other-session"); !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("mismatched identity error = %v, want inconclusive", err)
+	}
+}
+
+func TestRuntimeRecoversShippedProtocolV2HostWithOSIdentityProof(t *testing.T) {
+	isolateRegistry(t)
+	host := startInProcLegacyHost(t, "sess-legacy", "legacy-launch", livePID())
+	t.Cleanup(func() { host.cleanup(t) })
 	if err := ptyregistry.Register(context.Background(), ptyregistry.Entry{
-		SessionID: "sess-legacy", PtyHostPID: livePID(), PipePath: listener.Addr().String(),
+		SessionID: "sess-legacy", PtyHostPID: host.pid, PipePath: host.addr,
+		LaunchID:     "legacy-launch",
 		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	runtime := New(Options{})
-	_, err = runtime.GetStyledOutput(context.Background(), ports.RuntimeHandle{ID: "sess-legacy"}, 10)
-	if !errors.Is(err, ports.ErrStyledTerminalOutputUnavailable) {
-		t.Fatalf("GetStyledOutput error = %v, want ErrStyledTerminalOutputUnavailable", err)
+	collected := 0
+	revalidated := 0
+	runtime.legacyCollector = func(_ context.Context, sess *hostSession, status StatusPayload) (legacyHostIdentityEvidence, error) {
+		collected++
+		if sess.sessionID != "sess-legacy" || sess.launchID != "legacy-launch" ||
+			sess.pid != host.pid || sess.registeredAt == "" {
+			t.Fatalf("legacy verifier session = %+v", sess)
+		}
+		if status.ProtocolVersion != conPTYStyledOutputProtocolVersion || !status.Alive || status.PID != host.pty.PID() {
+			t.Fatalf("legacy verifier status = %+v", status)
+		}
+		startedAt := time.Now().Add(-time.Second)
+		return legacyHostIdentityEvidence{
+			listenerPID: host.pid,
+			host: legacyProcessIdentity{
+				pid: host.pid, startedAt: startedAt, executable: "/app/ao",
+				argv: []string{"/app/ao", "pty-host", "sess-legacy", "/workspace", "/app/ao", "agent-process", "supervise", "--session", "sess-legacy", "--launch", "legacy-launch", "--", "agent"},
+			},
+			child: &legacyProcessIdentity{
+				pid: host.pty.PID(), ppid: host.pid, startedAt: startedAt.Add(time.Millisecond),
+				executable: "/app/ao",
+				argv:       []string{"/app/ao", "agent-process", "supervise", "--session", "sess-legacy", "--launch", "legacy-launch", "--", "agent"},
+			},
+		}, nil
 	}
-	if got := <-requestType; got != MsgStatusReq {
-		t.Fatalf("legacy host request = 0x%02x, want capability-safe MsgStatusReq", got)
+	runtime.legacyRevalidator = func(_ context.Context, _ *hostSession, status StatusPayload, proof legacyHostIdentityFingerprint) error {
+		revalidated++
+		if proof.hostPID != host.pid || proof.childPID != host.pty.PID() || status.PID != proof.childPID {
+			t.Fatalf("legacy revalidation = status %+v proof %+v", status, proof)
+		}
+		return nil
 	}
-	if serverErr := <-serverDone; serverErr != nil {
-		t.Fatal(serverErr)
+	handle := ports.RuntimeHandle{ID: "sess-legacy"}
+	if alive, err := runtime.IsAlive(context.Background(), handle); err != nil || !alive {
+		t.Fatalf("IsAlive(protocol v2) = (%v, %v), want (true, nil)", alive, err)
 	}
-	_ = listener.Close()
+	if err := runtime.SendInput(context.Background(), handle, "legacy-input"); err != nil {
+		t.Fatalf("SendInput(protocol v2): %v", err)
+	}
+	buf := make([]byte, len("legacy-input"))
+	if _, err := io.ReadFull(host.pty.inR, buf); err != nil || string(buf) != "legacy-input" {
+		t.Fatalf("legacy PTY input = %q, %v", buf, err)
+	}
+	if collected != 1 || revalidated != 1 {
+		t.Fatalf("legacy proof calls = collect %d, revalidate %d; want 1/1", collected, revalidated)
+	}
+}
 
-	// The negotiated legacy result is cached per adopted host. A second call
-	// must return the capability sentinel without dialing the now-closed socket.
-	_, err = runtime.GetStyledOutput(context.Background(), ports.RuntimeHandle{ID: "sess-legacy"}, 10)
-	if !errors.Is(err, ports.ErrStyledTerminalOutputUnavailable) {
-		t.Fatalf("cached GetStyledOutput error = %v, want ErrStyledTerminalOutputUnavailable", err)
+func TestRuntimeRejectsProtocolV2HostWhenOSIdentityIsUnproven(t *testing.T) {
+	isolateRegistry(t)
+	host := startInProcLegacyHost(t, "sess-legacy", "legacy-launch", livePID())
+	t.Cleanup(func() { host.cleanup(t) })
+	if err := ptyregistry.Register(context.Background(), ptyregistry.Entry{
+		SessionID: "sess-legacy", PtyHostPID: host.pid, PipePath: host.addr,
+		LaunchID: "legacy-launch", RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := New(Options{})
+	runtime.legacyCollector = func(context.Context, *hostSession, StatusPayload) (legacyHostIdentityEvidence, error) {
+		return legacyHostIdentityEvidence{}, errors.New("listener owner mismatch")
+	}
+	handle := ports.RuntimeHandle{ID: "sess-legacy"}
+	if alive, err := runtime.IsAlive(context.Background(), handle); alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive(unproven v2) = (%v, %v), want inconclusive", alive, err)
+	}
+	if err := runtime.SendInput(context.Background(), handle, "do-not-send"); !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("SendInput(unproven v2) = %v, want inconclusive", err)
+	}
+	read := make(chan int, 1)
+	go func() {
+		buf := make([]byte, 1)
+		n, _ := host.pty.inR.Read(buf)
+		read <- n
+	}()
+	select {
+	case n := <-read:
+		if n > 0 {
+			t.Fatal("unproven legacy host received terminal input")
+		}
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
@@ -285,16 +339,32 @@ func TestRuntimeRejectsStyledOutputFromARecoveredLegacyHost(t *testing.T) {
 // listener and returns a fake spawner that returns that addr and a fake pid.
 // The caller must call cleanup() to shut down the host.
 type inProcHost struct {
-	addr   string
-	pid    int
-	pty    *fakePTY
-	ring   *Ring
-	cancel context.CancelFunc
-	done   chan error
-	ln     net.Listener
+	addr      string
+	pid       int
+	launchID  string
+	hostToken string
+	pty       *fakePTY
+	ring      *Ring
+	cancel    context.CancelFunc
+	done      chan error
+	ln        net.Listener
 }
 
 func startInProcHost(t *testing.T, sessionID string, fakePID int) *inProcHost {
+	return startInProcHostWithIdentity(t, sessionID, "", "test-host-token-"+sessionID, fakePID)
+}
+
+func startInProcHostWithIdentity(t *testing.T, sessionID, launchID, hostToken string, fakePID int) *inProcHost {
+	return startInProcHostProtocol(t, sessionID, launchID, hostToken, fakePID, 0)
+}
+
+func startInProcLegacyHost(t *testing.T, sessionID, launchID string, fakePID int) *inProcHost {
+	return startInProcHostProtocol(
+		t, sessionID, launchID, "", fakePID, conPTYStyledOutputProtocolVersion,
+	)
+}
+
+func startInProcHostProtocol(t *testing.T, sessionID, launchID, hostToken string, fakePID, protocolVersion int) *inProcHost {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -306,20 +376,27 @@ func startInProcHost(t *testing.T, sessionID string, fakePID int) *inProcHost {
 	done := make(chan error, 1)
 	go func() {
 		done <- Serve(ctx, ServeConfig{
-			SessionID: sessionID,
-			Listener:  ln,
-			PTY:       pty,
-			Ring:      ring,
+			SessionID:       sessionID,
+			LaunchID:        launchID,
+			HostPID:         fakePID,
+			HostToken:       hostToken,
+			protocolVersion: protocolVersion,
+			Listener:        ln,
+			PTY:             pty,
+			Ring:            ring,
 		})
+		close(done)
 	}()
 	return &inProcHost{
-		addr:   ln.Addr().String(),
-		pid:    fakePID,
-		pty:    pty,
-		ring:   ring,
-		cancel: cancel,
-		done:   done,
-		ln:     ln,
+		addr:      ln.Addr().String(),
+		pid:       fakePID,
+		launchID:  launchID,
+		hostToken: hostToken,
+		pty:       pty,
+		ring:      ring,
+		cancel:    cancel,
+		done:      done,
+		ln:        ln,
 	}
 }
 
@@ -333,13 +410,28 @@ func (h *inProcHost) cleanup(t *testing.T) {
 	}
 }
 
+func (h *inProcHost) running() bool {
+	select {
+	case <-h.done:
+		return false
+	default:
+		return true
+	}
+}
+
 // fakeSpawnerFor returns a hostSpawner that starts an in-process host for a
 // single session ID and records which sessions have been spawned.
 // The returned map maps sessionID -> *inProcHost for test inspection.
 func fakeSpawnerFor(t *testing.T, hosts map[string]*inProcHost, fakePID int) hostSpawner {
 	t.Helper()
 	return func(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string) (string, int, error) {
-		h := startInProcHost(t, sessionID, fakePID)
+		h := startInProcHostWithIdentity(
+			t,
+			sessionID,
+			env[runtimeLaunchIDEnv],
+			env[runtimeHostTokenEnv],
+			fakePID,
+		)
 		if hosts != nil {
 			hosts[sessionID] = h
 		}
@@ -374,6 +466,10 @@ func TestCreate_RegistersSession(t *testing.T) {
 		SessionID:     domain.SessionID("sess-abc"),
 		WorkspacePath: "/tmp/workspace",
 		Argv:          []string{"claude-code"},
+		Env: map[string]string{
+			runtimeSessionIDEnv: "sess-abc",
+			runtimeLaunchIDEnv:  "launch-abc",
+		},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -400,6 +496,9 @@ func TestCreate_RegistersSession(t *testing.T) {
 	for _, e := range entries {
 		if e.SessionID == "sess-abc" {
 			found = true
+			if e.LaunchID != "launch-abc" {
+				t.Fatalf("registry launch id = %q, want exact managed generation", e.LaunchID)
+			}
 		}
 	}
 	if !found {
@@ -407,6 +506,264 @@ func TestCreate_RegistersSession(t *testing.T) {
 	}
 
 	hosts["sess-abc"].cleanup(t)
+}
+
+func TestCreate_RegistryFailureRollsBackSpawnedHost(t *testing.T) {
+	isolateRegistry(t)
+	var host *inProcHost
+	t.Cleanup(func() {
+		if host != nil {
+			host.cancel()
+		}
+	})
+	spawner := func(_ context.Context, sessionID, _ string, _ []string, env map[string]string) (string, int, error) {
+		host = startInProcHostWithIdentity(
+			t, sessionID, env[runtimeLaunchIDEnv], env[runtimeHostTokenEnv], deadPID(),
+		)
+		return host.addr, host.pid, nil
+	}
+	rt := New(Options{Spawner: spawner})
+	rt.pidLiveness = func(int) (bool, error) { return host == nil || host.running(), nil }
+	registerCalls := 0
+	registryErr := errors.New("ready registry update denied")
+	rt.registerHost = func(ctx context.Context, entry ptyregistry.Entry) error {
+		registerCalls++
+		if registerCalls == 1 {
+			return ptyregistry.Register(ctx, entry)
+		}
+		return registryErr
+	}
+
+	handle, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     "sess-registry-failure",
+		WorkspacePath: "/tmp/workspace",
+		Argv:          []string{"sh"},
+		Env:           map[string]string{runtimeLaunchIDEnv: "launch-registry-failure"},
+	})
+	if err == nil {
+		t.Fatalf("Create() = (%q, nil), want registry error", handle.ID)
+	}
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("Create() error = %v, want ErrRuntimeProbeInconclusive", err)
+	}
+	if host == nil {
+		t.Fatal("Create did not reach the post-spawn registration boundary")
+	}
+	select {
+	case <-host.done:
+	case <-time.After(3 * time.Second):
+		host.cleanup(t)
+		t.Fatal("spawned pty-host survived failed durable registration")
+	}
+	rt.mu.Lock()
+	_, retained := rt.sessions["sess-registry-failure"]
+	rt.mu.Unlock()
+	if retained {
+		t.Fatal("failed Create retained a stopped in-memory host")
+	}
+}
+
+func TestCreate_ManagedSessionRequiresLaunchIdentity(t *testing.T) {
+	isolateRegistry(t)
+	spawned := false
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+		spawned = true
+		return "", 0, errors.New("must not spawn")
+	}})
+
+	_, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     "sess-managed",
+		WorkspacePath: "/tmp/workspace",
+		Argv:          []string{"sh"},
+		Env:           map[string]string{runtimeSessionIDEnv: "sess-managed"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires a runtime launch id") {
+		t.Fatalf("Create() error = %v, want missing launch identity", err)
+	}
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("Create() error = %v, want no-fallback sentinel", err)
+	}
+	if spawned {
+		t.Fatal("Create spawned a managed host without durable launch identity")
+	}
+}
+
+func TestCreate_DoesNotSpawnOverExistingRegisteredHost(t *testing.T) {
+	isolateRegistry(t)
+	rt := New(Options{})
+	h := startInProcHostWithIdentity(t, "sess-existing", "launch-existing", "existing-token", livePID())
+	t.Cleanup(func() { h.cleanup(t) })
+	if err := ptyregistry.Register(context.Background(), ptyregistry.Entry{
+		SessionID:    "sess-existing",
+		PtyHostPID:   h.pid,
+		PipePath:     h.addr,
+		LaunchID:     "launch-existing",
+		HostToken:    h.hostToken,
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	spawned := false
+	rt.spawner = func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+		spawned = true
+		return "", 0, errors.New("must not spawn")
+	}
+
+	_, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     "sess-existing",
+		WorkspacePath: "/tmp/workspace",
+		Argv:          []string{"sh"},
+	})
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("Create() error = %v, want inconclusive existing-owner error", err)
+	}
+	if spawned {
+		t.Fatal("Create spawned a duplicate over a registered live pty-host")
+	}
+}
+
+func TestPIDProbeFailureFailsRecoveryClosedAndPreventsReplacement(t *testing.T) {
+	isolateRegistry(t)
+	entry := ptyregistry.Entry{
+		SessionID:    "sess-pid-probe",
+		PtyHostPID:   livePID(),
+		PipePath:     "127.0.0.1:1",
+		LaunchID:     "launch-pid-probe",
+		HostToken:    "token-pid-probe",
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := ptyregistry.Register(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	probeFailure := errors.New("injected Windows process-query failure")
+	failedProbe := func(pid int) (bool, error) {
+		if pid != entry.PtyHostPID {
+			t.Fatalf("pid probe = %d, want %d", pid, entry.PtyHostPID)
+		}
+		return false, probeFailure
+	}
+
+	// Startup recovery resolves the exact durable owner before publishing
+	// readiness. An OS-level PID probe failure must stop recovery rather than
+	// report the runtime absent and permit a replacement.
+	recovery := New(Options{})
+	recovery.pidLiveness = failedProbe
+	handle := ports.RuntimeHandle{ID: entry.SessionID}
+	owner := ports.SupervisedProcessRef{SessionID: domain.SessionID(entry.SessionID), LaunchID: entry.LaunchID}
+	resolved, found, err := recovery.ResolveExactRuntimeHandle(context.Background(), handle, owner)
+	if found || resolved.ID != "" || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) || !errors.Is(err, probeFailure) {
+		t.Fatalf("ResolveExactRuntimeHandle() = (%q, %v, %v), want injected inconclusive failure", resolved.ID, found, err)
+	}
+	if alive, err := recovery.IsAlive(context.Background(), handle); alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) || !errors.Is(err, probeFailure) {
+		t.Fatalf("IsAlive() = (%v, %v), want injected inconclusive failure", alive, err)
+	}
+
+	spawned := false
+	replacement := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+		spawned = true
+		return "", 0, errors.New("must not spawn")
+	}})
+	replacement.pidLiveness = failedProbe
+	if _, err := replacement.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     domain.SessionID(entry.SessionID),
+		WorkspacePath: "/tmp/workspace",
+		Argv:          []string{"sh"},
+		Env:           map[string]string{runtimeLaunchIDEnv: entry.LaunchID},
+	}); !errors.Is(err, ports.ErrRuntimeProbeInconclusive) || !errors.Is(err, probeFailure) {
+		t.Fatalf("Create() error = %v, want injected inconclusive failure", err)
+	}
+	if spawned {
+		t.Fatal("Create spawned a replacement after an inconclusive PID probe")
+	}
+
+	entries, err := ptyregistry.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0] != entry {
+		t.Fatalf("registry after inconclusive PID probes = %+v, want unchanged %+v", entries, entry)
+	}
+}
+
+func TestRecoveryRegistryErrorIsInconclusive(t *testing.T) {
+	isolateRegistry(t)
+	instanceDir := t.TempDir()
+	registryPath := filepath.Join(instanceDir, "windows-pty-hosts.json")
+	if err := os.MkdirAll(instanceDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registryPath, []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := New(Options{RunFilePath: filepath.Join(instanceDir, "running.json")})
+	handle := ports.RuntimeHandle{ID: "sess-recovery"}
+
+	alive, err := rt.IsAlive(context.Background(), handle)
+	if err == nil || alive {
+		t.Fatalf("IsAlive() = (%v, %v), want (false, registry error)", alive, err)
+	}
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive() error = %v, want ErrRuntimeProbeInconclusive", err)
+	}
+}
+
+func TestResolveRuntimeHandleRejectsLaunchMismatch(t *testing.T) {
+	isolateRegistry(t)
+	rt := New(Options{})
+	h := startInProcHostWithIdentity(t, "sess-owner", "launch-actual", "owner-token", livePID())
+	t.Cleanup(func() { h.cleanup(t) })
+	if err := ptyregistry.Register(context.Background(), ptyregistry.Entry{
+		SessionID:    "sess-owner",
+		PtyHostPID:   h.pid,
+		PipePath:     h.addr,
+		LaunchID:     "launch-actual",
+		HostToken:    h.hostToken,
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, found, err := rt.ResolveRuntimeHandle(
+		context.Background(),
+		ports.RuntimeHandle{ID: "sess-owner"},
+		ports.SupervisedProcessRef{SessionID: "sess-owner", LaunchID: "launch-actual"},
+	)
+	if err != nil || !found || resolved.ID != "sess-owner" {
+		t.Fatalf("ResolveRuntimeHandle(exact owner) = (%q, %v, %v)", resolved.ID, found, err)
+	}
+	resolved, found, err = rt.ResolveRuntimeHandle(
+		context.Background(),
+		ports.RuntimeHandle{ID: "sess-owner"},
+		ports.SupervisedProcessRef{SessionID: "sess-owner", LaunchID: "launch-expected"},
+	)
+	if err == nil || found || resolved.ID != "" {
+		t.Fatalf("ResolveRuntimeHandle() = (%q, %v, %v), want launch-mismatch error", resolved.ID, found, err)
+	}
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("ResolveRuntimeHandle() error = %v, want ErrRuntimeProbeInconclusive", err)
+	}
+}
+
+func TestResolveRuntimeHandleRejectsLegacyEntryWithoutLaunchProof(t *testing.T) {
+	isolateRegistry(t)
+	instanceDir := t.TempDir()
+	registryPath := filepath.Join(instanceDir, "windows-pty-hosts.json")
+	legacy := fmt.Sprintf(`[{"sessionId":"sess-legacy-owner","ptyHostPid":%d,"pipePath":"127.0.0.1:50000","registeredAt":"legacy"}]`, livePID())
+	if err := os.WriteFile(registryPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := New(Options{RunFilePath: filepath.Join(instanceDir, "running.json")})
+
+	resolved, found, err := rt.ResolveRuntimeHandle(
+		context.Background(),
+		ports.RuntimeHandle{ID: "sess-legacy-owner"},
+		ports.SupervisedProcessRef{SessionID: "sess-legacy-owner", LaunchID: "launch-expected"},
+	)
+	if err == nil || found || resolved.ID != "" {
+		t.Fatalf("ResolveRuntimeHandle(legacy owner) = (%q, %v, %v), want ownership error", resolved.ID, found, err)
+	}
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("ResolveRuntimeHandle(legacy owner) error = %v, want inconclusive", err)
+	}
 }
 
 // TestCreate_RunFilePathScopesRegistryToInstanceDir verifies Create honors
@@ -467,6 +824,9 @@ func TestCreate_DuplicateErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("error %q should contain 'already exists'", err.Error())
+	}
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("duplicate Create error = %v, want ErrRuntimeProbeInconclusive to prevent fallback", err)
 	}
 
 	hosts["sess-dup"].cleanup(t)
@@ -645,6 +1005,32 @@ func TestSendMessage_LargeMessageChunked(t *testing.T) {
 	}
 }
 
+func TestClientSendMessageConnCancelsBetweenChunks(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- clientSendMessageConn(ctx, client, strings.Repeat("x", ptyInputChunkRunes+1))
+	}()
+	firstFrame := make([]byte, 5+ptyInputChunkRunes)
+	if _, err := io.ReadFull(server, firstFrame); err != nil {
+		t.Fatalf("read first chunk: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("clientSendMessageConn error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("clientSendMessageConn ignored cancellation during chunk delay")
+	}
+}
+
 // TestGetOutput_ReturnsRingTail verifies GetOutput returns the ring's tail.
 func TestGetOutput_ReturnsRingTail(t *testing.T) {
 	isolateRegistry(t)
@@ -687,6 +1073,7 @@ func TestIsAlive_TrueWhileServing_FalseAfterClose(t *testing.T) {
 		Argv:          []string{"sh"},
 	})
 	h := hosts["sess-ia"]
+	rt.pidLiveness = func(int) (bool, error) { return h.running(), nil }
 
 	alive, err := rt.IsAlive(ctx, handle)
 	if err != nil {
@@ -733,8 +1120,8 @@ func TestSupervisedProcessExitKeepsHostAlive(t *testing.T) {
 	if alive, err := rt.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{}); err != nil || !alive {
 		t.Fatalf("supervised process before exit = (%v, %v), want (true, nil)", alive, err)
 	}
-	if alive, err := rt.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-stale"}); err != nil || alive {
-		t.Fatalf("stale supervised generation = (%v, %v), want (false, nil)", alive, err)
+	if alive, err := rt.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-stale"}); alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("stale supervised generation = (%v, %v), want inconclusive", alive, err)
 	}
 	if alive, err := rt.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-current"}); err != nil || !alive {
 		t.Fatalf("current supervised generation = (%v, %v), want (true, nil)", alive, err)
@@ -742,8 +1129,8 @@ func TestSupervisedProcessExitKeepsHostAlive(t *testing.T) {
 	if alive, err := rt.IsExactSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-current"}); err != nil || !alive {
 		t.Fatalf("exact current supervised generation = (%v, %v), want (true, nil)", alive, err)
 	}
-	if alive, err := rt.IsExactSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-stale"}); err != nil || alive {
-		t.Fatalf("exact stale supervised generation = (%v, %v), want (false, nil)", alive, err)
+	if alive, err := rt.IsExactSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: "sess-supervised", LaunchID: "launch-stale"}); alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("exact stale supervised generation = (%v, %v), want inconclusive", alive, err)
 	}
 	h.pty.signalExit(42)
 
@@ -784,12 +1171,10 @@ func TestIsAlive_FalseForUnknownSession(t *testing.T) {
 
 // TestDestroy_KillsHostAndCleansUp verifies Destroy triggers clientKill,
 // removes the map + registry entry, and is idempotent on second call.
-// Uses deadPID() so the force-kill step is a safe no-op (the fake pty-host
-// has no real OS process; clientKill already shut it down via the loopback).
 func TestDestroy_KillsHostAndCleansUp(t *testing.T) {
 	isolateRegistry(t)
 	hosts := map[string]*inProcHost{}
-	rt := New(Options{Spawner: fakeSpawnerFor(t, hosts, deadPID())})
+	rt := New(Options{Spawner: fakeSpawnerFor(t, hosts, livePID())})
 	ctx := context.Background()
 
 	handle, err := rt.Create(ctx, ports.RuntimeConfig{
@@ -801,6 +1186,7 @@ func TestDestroy_KillsHostAndCleansUp(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	h := hosts["sess-destroy"]
+	rt.pidLiveness = func(int) (bool, error) { return h.running(), nil }
 
 	// Destroy should succeed.
 	if err := rt.Destroy(ctx, handle); err != nil {
@@ -844,30 +1230,156 @@ func TestDestroy_KillsHostAndCleansUp(t *testing.T) {
 	}
 }
 
-type processKillerFunc func() error
-
-func (f processKillerFunc) Kill() error { return f() }
-
-func TestDestroyRetainsSessionWhenPIDCannotBeStopped(t *testing.T) {
+func TestDestroy_PIDWaitProbeFailurePreservesRecoveryOwner(t *testing.T) {
 	isolateRegistry(t)
-	rt := New(Options{})
-	rt.sessions["sess-stuck"] = &hostSession{addr: "127.0.0.1:1", pid: 424242}
-	rt.killHost = func(string) error { return errors.New("graceful transport failed") }
-	rt.pidIsAlive = func(int) bool { return true }
-	rt.processFinder = func(int) (processKiller, error) {
-		return processKillerFunc(func() error { return errors.New("access denied") }), nil
+	hosts := map[string]*inProcHost{}
+	rt := New(Options{Spawner: fakeSpawnerFor(t, hosts, livePID())})
+	handle, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     "sess-destroy-probe",
+		WorkspacePath: "/tmp/workspace",
+		Argv:          []string{"sh"},
+		Env:           map[string]string{runtimeLaunchIDEnv: "launch-destroy-probe"},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	rt.destroyWait = 0
+	host := hosts[handle.ID]
+	t.Cleanup(func() { host.cleanup(t) })
 
-	err := rt.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-stuck"})
-	if err == nil || !strings.Contains(err.Error(), "still alive") || !strings.Contains(err.Error(), "access denied") {
-		t.Fatalf("Destroy error = %v, want force-kill and final-liveness evidence", err)
+	probeFailure := errors.New("injected Windows wait failure")
+	probeCalls := 0
+	rt.pidLiveness = func(pid int) (bool, error) {
+		if pid != host.pid {
+			t.Fatalf("pid probe = %d, want %d", pid, host.pid)
+		}
+		probeCalls++
+		if probeCalls == 1 {
+			return true, nil // authenticate the exact host before KILL
+		}
+		return false, probeFailure
+	}
+
+	err = rt.Destroy(context.Background(), handle)
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) || !errors.Is(err, probeFailure) {
+		t.Fatalf("Destroy() error = %v, want injected inconclusive PID-wait failure", err)
+	}
+	if probeCalls != 2 {
+		t.Fatalf("pid probe calls = %d, want connect plus first exit check", probeCalls)
+	}
+
+	entries, err := ptyregistry.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].SessionID != handle.ID {
+		t.Fatalf("registry after inconclusive teardown = %+v, want recovery owner retained", entries)
 	}
 	rt.mu.Lock()
-	_, retained := rt.sessions["sess-stuck"]
+	retained := rt.sessions[handle.ID]
 	rt.mu.Unlock()
-	if !retained {
-		t.Fatal("Destroy removed a session whose PID may still be alive")
+	if retained == nil {
+		t.Fatal("inconclusive teardown removed the in-memory recovery owner")
+	}
+}
+
+func TestStaleRegistryPIDAndPortReuseCannotReachForeignHost(t *testing.T) {
+	isolateRegistry(t)
+	// The victim's recorded PID and port now both belong to a different valid
+	// pty-host. Bare liveness probes would accept this endpoint; immutable host
+	// identity must reject it before any read or mutation.
+	foreign := startInProcHostWithIdentity(
+		t,
+		"foreign-session",
+		"foreign-launch",
+		"foreign-token",
+		livePID(),
+	)
+	t.Cleanup(func() { foreign.cleanup(t) })
+	if err := ptyregistry.Register(context.Background(), ptyregistry.Entry{
+		SessionID:    "victim-session",
+		PtyHostPID:   foreign.pid,
+		PipePath:     foreign.addr,
+		LaunchID:     "victim-launch",
+		HostToken:    "victim-token",
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	spawned := false
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+		spawned = true
+		return "", 0, errors.New("must not spawn")
+	}})
+	handle := ports.RuntimeHandle{ID: "victim-session"}
+	owner := ports.SupervisedProcessRef{SessionID: "victim-session", LaunchID: "victim-launch"}
+
+	if alive, err := rt.IsAlive(context.Background(), handle); alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive() = (%v, %v), want inconclusive foreign endpoint", alive, err)
+	}
+	if resolved, found, err := rt.ResolveRuntimeHandle(context.Background(), handle, owner); found || resolved.ID != "" || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("ResolveRuntimeHandle() = (%q, %v, %v), want inconclusive", resolved.ID, found, err)
+	}
+	if alive, err := rt.IsSupervisedProcessAlive(context.Background(), handle, owner); alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsSupervisedProcessAlive() = (%v, %v), want inconclusive", alive, err)
+	}
+	if alive, err := rt.IsExactSupervisedProcessAlive(context.Background(), handle, owner); alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsExactSupervisedProcessAlive() = (%v, %v), want inconclusive", alive, err)
+	}
+	if resolved, found, err := rt.ResolveExactRuntimeHandle(context.Background(), handle, owner); found || resolved.ID != "" || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("ResolveExactRuntimeHandle() = (%q, %v, %v), want inconclusive", resolved.ID, found, err)
+	}
+	if err := rt.SendMessage(context.Background(), handle, "do-not-send"); !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("SendMessage() error = %v, want inconclusive", err)
+	}
+	if err := rt.SendInput(context.Background(), handle, "do-not-send"); !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("SendInput() error = %v, want inconclusive", err)
+	}
+	if err := rt.Interrupt(context.Background(), handle); !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("Interrupt() error = %v, want inconclusive", err)
+	}
+	if output, err := rt.GetOutput(context.Background(), handle, 10); output != "" || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("GetOutput() = (%q, %v), want inconclusive", output, err)
+	}
+	if output, err := rt.GetStyledOutput(context.Background(), handle, 10); output != "" || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("GetStyledOutput() = (%q, %v), want inconclusive", output, err)
+	}
+	if stream, err := rt.Attach(context.Background(), handle, 24, 80); err == nil || stream != nil || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("Attach() = (%v, %v), want inconclusive", stream, err)
+	}
+	if err := rt.Destroy(context.Background(), handle); !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("Destroy() error = %v, want inconclusive", err)
+	}
+	if _, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     "victim-session",
+		WorkspacePath: "/tmp/workspace",
+		Argv:          []string{"sh"},
+		Env:           map[string]string{runtimeLaunchIDEnv: "victim-launch"},
+	}); !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("Create() error = %v, want inconclusive", err)
+	}
+	if spawned {
+		t.Fatal("Create spawned a replacement over an unproven live registry entry")
+	}
+
+	foreign.pty.closeMu.Lock()
+	foreignClosed := foreign.pty.closed
+	foreign.pty.closeMu.Unlock()
+	if foreignClosed {
+		t.Fatal("Destroy killed the foreign pty-host")
+	}
+	inputRead := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 32)
+		n, _ := foreign.pty.inR.Read(buf)
+		inputRead <- append([]byte(nil), buf[:n]...)
+	}()
+	select {
+	case got := <-inputRead:
+		if len(got) > 0 {
+			t.Fatalf("foreign PTY received input %q", got)
+		}
+	case <-time.After(50 * time.Millisecond):
+		// Expected: identity rejection happened before terminal input.
 	}
 }
 
@@ -924,7 +1436,7 @@ func TestResolveViaRegistry(t *testing.T) {
 
 	// Start a host directly (not through Create) to simulate a pre-existing
 	// pty-host from a previous daemon run. Use the current process PID so
-	// ptyregistry.List() does not prune the entry as dead.
+	// the runtime's PID probe treats the durable entry as live.
 	h := startInProcHost(t, "sess-reg", livePID())
 	defer h.cleanup(t)
 
@@ -933,6 +1445,7 @@ func TestResolveViaRegistry(t *testing.T) {
 		SessionID:    "sess-reg",
 		PtyHostPID:   h.pid,
 		PipePath:     h.addr, // addr stored in PipePath field
+		HostToken:    h.hostToken,
 		RegisteredAt: fmt.Sprintf("%d", time.Now().Unix()),
 	})
 	if err != nil {
@@ -1095,13 +1608,13 @@ func TestClientIsAlive_TrueAndFalse(t *testing.T) {
 	}
 }
 
-// TestIsAlive_RefusedIsGone_TimeoutIsTransient is the reaper-safety regression
-// test. It asserts the dead-vs-transient split that keeps a single transient
-// loopback hiccup from spuriously reaping a live idle session:
+// TestIsAlive_RefusedWithLivePIDAndTimeoutAreInconclusive is the reaper-safety
+// regression test. Neither a reused live PID nor a transient loopback failure
+// may be converted into proof that the registered workload is dead:
 //
-//	(a) a resolved-but-REFUSED host -> IsAlive == (false, nil)  [ProbeDead]
+//	(a) a resolved-but-REFUSED host with a live recorded PID -> inconclusive
 //	(b) a resolved host whose probe TIMES OUT -> (false, non-nil) [ProbeFailed]
-func TestIsAlive_RefusedIsGone_TimeoutIsTransient(t *testing.T) {
+func TestIsAlive_RefusedWithLivePIDAndTimeoutAreInconclusive(t *testing.T) {
 	isolateRegistry(t)
 
 	// (a) Refused: bind+close a listener to obtain a port nothing listens on.
@@ -1114,12 +1627,14 @@ func TestIsAlive_RefusedIsGone_TimeoutIsTransient(t *testing.T) {
 
 	rtRefused := New(Options{Spawner: fakeSpawnerFor(t, nil, livePID())})
 	rtRefused.mu.Lock()
-	rtRefused.sessions["gone"] = &hostSession{addr: refusedAddr, pid: livePID()}
+	rtRefused.sessions["gone"] = &hostSession{
+		sessionID: "gone", addr: refusedAddr, pid: livePID(), hostToken: "gone-token",
+	}
 	rtRefused.mu.Unlock()
 
 	alive, err := rtRefused.IsAlive(context.Background(), ports.RuntimeHandle{ID: "gone"})
-	if alive || err != nil {
-		t.Fatalf("IsAlive(refused) = (%v, %v), want (false, nil) definitively gone", alive, err)
+	if alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive(refused) = (%v, %v), want live-PID inconclusive", alive, err)
 	}
 
 	// (b) Transient timeout: a listener that Accepts but never replies. The
@@ -1146,7 +1661,9 @@ func TestIsAlive_RefusedIsGone_TimeoutIsTransient(t *testing.T) {
 
 	rtSilent := New(Options{Spawner: fakeSpawnerFor(t, nil, livePID())})
 	rtSilent.mu.Lock()
-	rtSilent.sessions["stuck"] = &hostSession{addr: silent.Addr().String(), pid: livePID()}
+	rtSilent.sessions["stuck"] = &hostSession{
+		sessionID: "stuck", addr: silent.Addr().String(), pid: livePID(), hostToken: "stuck-token",
+	}
 	rtSilent.mu.Unlock()
 
 	alive, err = rtSilent.IsAlive(context.Background(), ports.RuntimeHandle{ID: "stuck"})
@@ -1160,7 +1677,7 @@ func TestIsAlive_RefusedIsGone_TimeoutIsTransient(t *testing.T) {
 
 // TestClientKill_Idempotent verifies clientKill on a dead address returns nil.
 func TestClientKill_Idempotent(t *testing.T) {
-	if err := clientKill("127.0.0.1:1"); err != nil {
+	if err := clientKill(context.Background(), "127.0.0.1:1"); err != nil {
 		t.Fatalf("clientKill on unreachable addr: %v", err)
 	}
 }

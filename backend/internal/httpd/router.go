@@ -21,14 +21,17 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	agentswitchobs "github.com/aoagents/agent-orchestrator/backend/internal/observe/agentswitch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	previewutil "github.com/aoagents/agent-orchestrator/backend/internal/preview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
 )
 
-// ControlDeps carries the daemon-control hooks the router exposes, such as the
-// callback that requests a graceful shutdown.
+// ControlDeps carries daemon-control hooks exposed by the router. A nil
+// IsReady preserves the standalone-router default: immediately ready.
 type ControlDeps struct {
 	RequestShutdown   func()
+	IsReady           func() bool
+	StartupFailed     func() bool
 	AgentSwitchPolicy AgentSwitchPolicyControl
 }
 
@@ -38,6 +41,13 @@ type AgentSwitchPolicyControl interface {
 	PrepareDisable(context.Context) (ports.AgentSwitchFailurePolicyAcknowledgement, error)
 	ApplyPolicy(context.Context, string, bool) (ports.AgentSwitchFailurePolicyAcknowledgement, error)
 }
+
+const (
+	startupRecoveryPendingCode    = "startup_recovery_in_progress"
+	startupRecoveryPendingMessage = "AO is recovering existing sessions. Try again shortly."
+	startupRecoveryFailureCode    = "startup_recovery_failed"
+	startupRecoveryFailureMessage = "AO could not recover existing sessions. Restart AO and check the daemon log for details."
+)
 
 // NewRouterWithControl builds the root router with the standard middleware
 // stack, the API surface, and the daemon-control hooks wired from ControlDeps.
@@ -51,6 +61,8 @@ type AgentSwitchPolicyControl interface {
 //	recoverer     → turn a handler panic into 500 instead of crashing the daemon
 //	accountOrigin → exact renderer-origin boundary for Codex account management
 //	cors          → CORS allowlist for the Electron renderer / dev origins
+//	startupReady  → keep state-bearing surfaces closed until recovery completes
+//	previewOrigin → serve authenticated workspace previews from the API boundary
 //
 // The per-request timeout is deliberately not global: it wraps only bounded
 // REST routes, never long-lived terminal streams or health probes.
@@ -68,6 +80,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	// rejected before the general CORS layer can answer them.
 	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(corsMiddleware(cfg.AllowedOrigins))
+	r.Use(startupReadinessMiddleware(control.IsReady, control.StartupFailed))
 	r.Use(previewOriginMiddleware(api.sessions))
 
 	// JSON envelopes for unmatched routes / methods — chi's defaults are
@@ -76,7 +89,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.NotFound(notFoundJSON)
 	r.MethodNotAllowed(methodNotAllowedJSON)
 
-	mountHealth(r, cfg)
+	mountHealth(r, cfg, control.IsReady, control.StartupFailed)
 	mountTerminalMux(r, termMgr, log)
 	mountControl(r, control)
 	mountAgentSwitchPolicyControl(r, control.AgentSwitchPolicy)
@@ -86,6 +99,71 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	api.Register(r)
 
 	return r
+}
+
+// startupReadinessMiddleware keeps every state-bearing daemon surface behind
+// the same startup-recovery boundary as /readyz. The listener is deliberately
+// published first so a desktop supervisor can prove liveness and replace an
+// older daemon, but no REST, event, preview, or terminal request may observe
+// the durable state until recovery has reconciled it with the live runtimes.
+func startupReadinessMiddleware(isReady, startupFailed func() bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if startupReadinessExempt(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if startupFailed != nil && startupFailed() {
+				envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable",
+					startupRecoveryFailureCode, startupRecoveryFailureMessage, nil)
+				return
+			}
+			if isReady == nil || isReady() {
+				next.ServeHTTP(w, r)
+				return
+			}
+			envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable",
+				startupRecoveryPendingCode, startupRecoveryPendingMessage, nil)
+		})
+	}
+}
+
+// startupReadinessExempt is intentionally a method-and-exact-path allowlist.
+// These are the only calls needed to identify, poll, and replace a daemon while
+// it is recovering. A preview-origin Host is never exempt: preview dispatch runs
+// before chi route selection, so exempting by path alone would let a request
+// such as GET /readyz read a session workspace instead of reaching the probe.
+func startupReadinessExempt(r *http.Request) bool {
+	if isPreviewOriginRequest(r) {
+		return false
+	}
+	return isStartupControlRequest(r)
+}
+
+// isStartupControlRequest identifies the exact daemon routes needed while
+// startup recovery is pending. previewOriginMiddleware also reserves these
+// routes once the daemon is ready, so the unauthenticated identity path can
+// never be redirected into workspace preview dispatch by a spoofed Host.
+func isStartupControlRequest(r *http.Request) bool {
+	if isIdentityProbe(r) {
+		return true
+	}
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/healthz":
+		return true
+	case r.Method == http.MethodGet && r.URL.Path == "/readyz":
+		return true
+	case r.Method == http.MethodPost && r.URL.Path == "/shutdown":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPreviewOriginRequest(r *http.Request) bool {
+	_, ok := previewutil.SessionIDFromHost(r.Host)
+	return ok
 }
 
 type applyAgentSwitchPolicyRequest struct {
@@ -149,6 +227,10 @@ func mountAgentSwitchPolicyControl(r chi.Router, policy AgentSwitchPolicyControl
 func previewOriginMiddleware(sessions *controllers.SessionsController) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isStartupControlRequest(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if sessions != nil && sessions.PreviewOrigin(w, r) {
 				return
 			}
@@ -159,11 +241,22 @@ func previewOriginMiddleware(sessions *controllers.SessionsController) func(http
 
 // mountHealth registers the liveness and readiness probes the Electron
 // supervisor polls before letting the renderer connect.
-func mountHealth(r chi.Router, cfg config.Config) {
+func mountHealth(r chi.Router, cfg config.Config, isReady, startupFailed func() bool) {
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ok", cfg))
 	})
 	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if startupFailed != nil && startupFailed() {
+			payload := daemonProbePayload("error", cfg)
+			payload["code"] = startupRecoveryFailureCode
+			payload["message"] = startupRecoveryFailureMessage
+			envelope.WriteJSON(w, http.StatusServiceUnavailable, payload)
+			return
+		}
+		if isReady != nil && !isReady() {
+			envelope.WriteJSON(w, http.StatusServiceUnavailable, daemonProbePayload("starting", cfg))
+			return
+		}
 		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ready", cfg))
 	})
 }

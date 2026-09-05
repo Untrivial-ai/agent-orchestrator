@@ -965,6 +965,14 @@ flowchart TD
 
 ```
 
+All authoritative runtime state, including private tmux socket inodes, remains
+under the configured AO data directory. One compatibility-only path is allowed:
+when a historical private socket's canonical path exceeds the platform
+`AF_UNIX` address limit, the tmux adapter recreates the deterministic,
+owner-only `/tmp/ao-tmux-<uid>/<hash>` directory symlink used by that release.
+The alias contains no AO data, points back to the canonical runtime directory,
+and is safe to delete; AO validates and recreates it when needed.
+
 ### Attach Flow
 
 ```mermaid
@@ -1026,7 +1034,9 @@ These rules are **load-bearing** — changing them breaks fundamental architectu
 1. **Never store display status** — Status is derived from durable facts at read time
 2. **Never treat failed probes as death** — A failed probe is a fact, not a termination signal
 3. **Never force-delete dirty worktrees** — User data safety over cleanup convenience
-4. **All app state under ~/.ao** — No OS-default app-data locations
+4. **All authoritative app state under ~/.ao** — No OS-default app-data
+   locations; the validated long-socket compatibility alias described above is
+   derived indirection, not state
 5. **Daemon binds to 127.0.0.1 only** — No network exposure, ever
 6. **CLI is thin** — All logic lives in the daemon, CLI is just an HTTP client
 7. **CDC is source-truth for events** — DB triggers write to change_log, poller fans out

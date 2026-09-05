@@ -18,7 +18,8 @@ import (
 // next-num-then-insert) so concurrent writes can't interleave them.
 //
 // CDC is captured by DB triggers (migration 0001), NOT by this layer: the store
-// never writes change_log, it only reads it for the CDC poller.
+// never writes change_log. Besides the CDC poller, restart recovery may read a
+// session's immutable activity history to repair a historical false-exit.
 type Store struct {
 	writeDB *sql.DB
 	readDB  *sql.DB

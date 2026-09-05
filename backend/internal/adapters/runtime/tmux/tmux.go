@@ -4,7 +4,9 @@ package tmux
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -42,45 +43,119 @@ const (
 	// in roughly this long instead of always burning the full grace — which the
 	// DELETE handler blocks on, and the user sees as a tab that will not close.
 	reapPollInterval = 50 * time.Millisecond
+	tmuxHandlePrefix = "tmux-v1:"
+	runtimeLaunchEnv = "AO_RUNTIME_LAUNCH_ID"
+	// tmuxObjectFenceMismatch is printed only by the false branch of a guarded
+	// tmux command. A constant marker can cause only a conservative false
+	// positive if pane output happens to contain it; it can never authorize an
+	// action against the wrong server.
+	tmuxObjectFenceMismatch = "__AO_TMUX_OBJECT_FENCE_MISMATCH__"
 )
 
-var sessionIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+var (
+	sessionIDPattern     = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	tmuxSessionIDPattern = regexp.MustCompile(`^\$\d+$`)
+	tmuxPaneIDPattern    = regexp.MustCompile(`^%\d+$`)
+)
 
 var getenv = os.Getenv
 
 // Options configures a tmux Runtime. Every field has a sensible default (see
 // New), so the zero value is usable.
 type Options struct {
-	Binary       string        // default configured/bundled/system tmux resolution
-	LegacyBinary string        // default system tmux from PATH when SocketName is set; used only for pre-private-socket sessions
-	SocketName   string        // default $AO_TMUX_SOCKET_NAME; empty uses tmux's machine-wide default socket
-	Shell        string        // default $SHELL else /bin/sh
-	Timeout      time.Duration // default 5s
-	ChunkSize    int           // default 16*1024
-	EnterDelay   time.Duration // pause after pasting a non-empty message before pressing Enter; default defaultEnterDelay. Conpty already does this (ptyInputEnterDelay); tmux lacked it, so a large multiline paste could absorb the trailing Enter and leave the prompt unsubmitted (issue #2342).
-	ReapGrace    time.Duration // grace between SIGTERM and SIGKILL when reaping a pane's leftover background processes on Destroy; default defaultReapGrace.
+	Binary           string        // default configured/bundled/system tmux resolution
+	LegacyBinary     string        // default system tmux from PATH when SocketName is set; used only for pre-private-socket sessions
+	SocketName       string        // default $AO_TMUX_SOCKET_NAME; empty uses tmux's machine-wide default socket
+	LegacySocketPath string        // deterministic absolute -S socket path used by the historical private-socket release
+	RunFilePath      string        // current absolute running.json path; enables immutable ownership proof for legacy handles
+	Shell            string        // default $SHELL else /bin/sh
+	Timeout          time.Duration // default 5s
+	ChunkSize        int           // default 16*1024
+	EnterDelay       time.Duration // pause after pasting a non-empty message before pressing Enter; default defaultEnterDelay. Conpty already does this (ptyInputEnterDelay); tmux lacked it, so a large multiline paste could absorb the trailing Enter and leave the prompt unsubmitted (issue #2342).
+	ReapGrace        time.Duration // grace between SIGTERM and SIGKILL when reaping a pane's leftover background processes on Destroy; default defaultReapGrace.
+}
+
+type socketTargetKind string
+
+const (
+	socketTargetDefault socketTargetKind = "default"
+	socketTargetNamed   socketTargetKind = "named"
+	socketTargetPath    socketTargetKind = "path"
+)
+
+// socketTarget is the complete namespace provenance needed to address one
+// tmux server. It deliberately excludes process-local state: a target encoded
+// in a RuntimeHandle must work in a replacement daemon.
+type socketTarget struct {
+	kind            socketTargetKind
+	value           string
+	useLegacyBinary bool
+}
+
+type qualifiedHandlePayload struct {
+	Session       string           `json:"session"`
+	Target        socketTargetKind `json:"target"`
+	Value         string           `json:"value,omitempty"`
+	LegacyBinary  bool             `json:"legacy_binary,omitempty"`
+	OwnerSession  string           `json:"owner_session,omitempty"`
+	OwnerLaunch   string           `json:"owner_launch,omitempty"`
+	TmuxServerPID int              `json:"tmux_server_pid,omitempty"`
+	TmuxSessionID string           `json:"tmux_session_id,omitempty"`
+	TmuxPaneID    string           `json:"tmux_pane_id,omitempty"`
+}
+
+type runtimeRoute struct {
+	id            string
+	target        socketTarget
+	qualified     bool
+	owner         ports.SupervisedProcessRef
+	tmuxServerPID int
+	tmuxSessionID string
+	tmuxPaneID    string
+}
+
+func (route runtimeRoute) hasObjectFence() bool {
+	return route.tmuxServerPID > 1 && route.tmuxSessionID != "" && route.tmuxPaneID != ""
+}
+
+func (route runtimeRoute) actionSessionTarget() string {
+	if route.tmuxSessionID != "" {
+		return route.tmuxSessionID
+	}
+	return route.id
+}
+
+func (route runtimeRoute) actionPaneTarget() string {
+	if route.tmuxPaneID != "" {
+		return route.tmuxPaneID
+	}
+	return route.id
 }
 
 // Runtime runs agent sessions inside tmux sessions, driving them via the tmux
 // CLI. It implements ports.Runtime.
 type Runtime struct {
-	binary         string
-	legacyBinary   string
-	socketName     string
-	shell          string
-	timeout        time.Duration
-	chunkSize      int
-	enterDelay     time.Duration
-	reapGrace      time.Duration
-	runner         runner
-	reapSessions   func(ctx context.Context, pids []int, grace time.Duration)
-	socketMu       sync.RWMutex
-	sessionSockets map[string]string
+	binary           string
+	legacyBinary     string
+	socketName       string
+	legacySocketPath string
+	runFilePath      string
+	shell            string
+	timeout          time.Duration
+	chunkSize        int
+	enterDelay       time.Duration
+	reapGrace        time.Duration
+	runner           runner
+	reapSessions     func(ctx context.Context, pids []int, grace time.Duration)
+	spawnAttach      func(ctx context.Context, argv, env []string, rows, cols uint16) (ports.Stream, error)
 }
 
 var _ ports.Runtime = (*Runtime)(nil)
 var _ ports.FencedRuntimeProber = (*Runtime)(nil)
 var _ ports.Attacher = (*Runtime)(nil)
+var _ ports.RuntimeHandleResolver = (*Runtime)(nil)
+var _ ports.ExactRuntimeHandleResolver = (*Runtime)(nil)
+var _ ports.RuntimeIdentityInspector = (*Runtime)(nil)
 
 type runtimeEffectFailure struct {
 	err     error
@@ -323,17 +398,19 @@ func New(opts Options) *Runtime {
 		}
 	}
 	return &Runtime{
-		binary:         binary,
-		legacyBinary:   legacyBinary,
-		socketName:     socketName,
-		shell:          shellPath,
-		timeout:        timeout,
-		chunkSize:      chunkSize,
-		enterDelay:     enterDelay,
-		reapGrace:      reapGrace,
-		runner:         execRunner{},
-		reapSessions:   killSessionsByPID,
-		sessionSockets: make(map[string]string),
+		binary:           binary,
+		legacyBinary:     legacyBinary,
+		socketName:       socketName,
+		legacySocketPath: strings.TrimSpace(opts.LegacySocketPath),
+		runFilePath:      strings.TrimSpace(opts.RunFilePath),
+		shell:            shellPath,
+		timeout:          timeout,
+		chunkSize:        chunkSize,
+		enterDelay:       enterDelay,
+		reapGrace:        reapGrace,
+		runner:           execRunner{},
+		reapSessions:     killSessionsByPID,
+		spawnAttach:      ptyexec.Spawn,
 	}
 }
 
@@ -356,35 +433,83 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 
 	launchCmd := buildLaunchCommand(cfg)
 	args := newSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd)
-	if _, err := r.run(ctx, args...); err != nil {
+	createdOut, err := r.run(ctx, args...)
+	if err != nil {
 		return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(
 			fmt.Errorf("tmux runtime: create session %s: %w", id, err),
 			ports.RuntimeHandle{ID: id},
 			ports.RuntimeCleanupNotAttempted,
 		)
 	}
-	r.rememberSessionSocket(id, r.socketName)
-	handle := ports.RuntimeHandle{ID: id}
-	if err := r.verifyPaneWorkingDirectory(ctx, id, cfg.WorkspacePath); err != nil {
+	target := r.primarySocketTarget()
+	evidence, err := r.parsePaneIdentityEvidence(string(createdOut), cfg.SessionID, target)
+	if err != nil {
+		// new-session's -P output is the only race-free identity of the server
+		// that accepted creation. Without it, even cleanup by name could hit a
+		// replacement server, so fail closed and leave cleanup to reconciliation.
+		return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(
+			fmt.Errorf("tmux runtime: capture created session %s: %w", id, err),
+			ports.RuntimeHandle{ID: id},
+			ports.RuntimeCleanupNotAttempted,
+		)
+	}
+	route := runtimeRoute{
+		id:            id,
+		target:        target,
+		qualified:     true,
+		tmuxServerPID: evidence.tmuxServerPID,
+		tmuxSessionID: evidence.tmuxSessionID,
+		tmuxPaneID:    evidence.tmuxPaneID,
+	}
+	launchID := strings.TrimSpace(cfg.Env[runtimeLaunchEnv])
+	if launchID != "" {
+		if evidence.launchID != launchID || (r.runFilePath != "" && !evidence.identity.OwnershipProven) {
+			cleanupHandle, encodeErr := qualifiedRuntimeHandleForRoute(route)
+			if encodeErr == nil {
+				return ports.RuntimeHandle{}, r.failedCreatedRuntime(cleanupHandle, fmt.Errorf(
+					"%w: created tmux pane %s did not retain its launch provenance",
+					ports.ErrRuntimeProbeInconclusive,
+					id,
+				))
+			}
+			return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(
+				errors.Join(
+					fmt.Errorf("%w: created tmux pane %s did not retain its launch provenance", ports.ErrRuntimeProbeInconclusive, id),
+					encodeErr,
+				),
+				ports.RuntimeHandle{ID: id},
+				ports.RuntimeCleanupNotAttempted,
+			)
+		}
+		route.owner = ports.SupervisedProcessRef{
+			SessionID: cfg.SessionID,
+			LaunchID:  launchID,
+		}
+	}
+	handle, err := qualifiedRuntimeHandleForRoute(route)
+	if err != nil {
+		return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(err, ports.RuntimeHandle{ID: id}, ports.RuntimeCleanupNotAttempted)
+	}
+	if err := r.verifyPaneWorkingDirectoryOnRoute(ctx, route, cfg.WorkspacePath); err != nil {
 		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, err)
 	}
 
 	// Hide the status bar in the embedded terminal: it clutters the view and
 	// was not designed for the in-browser display context.
-	if _, err := r.run(ctx, setStatusOffArgs(id)...); err != nil {
+	if _, err := r.runActionOnRoute(ctx, route, setStatusOffArgs(route.actionSessionTarget())...); err != nil {
 		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: set status %s: %w", id, err))
 	}
 
 	// Enable mouse mode so the embedded terminal's SGR wheel reports scroll the
 	// pane (see setMouseOnArgs). Without it, wheel scrolling silently no-ops.
-	if _, err := r.run(ctx, setMouseOnArgs(id)...); err != nil {
+	if _, err := r.runActionOnRoute(ctx, route, setMouseOnArgs(route.actionSessionTarget())...); err != nil {
 		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: set mouse %s: %w", id, err))
 	}
 
 	// Size the shared window to the largest attached client, not the most recent
 	// one, so a small secondary viewer (e.g. the phone) can't strip down a larger
 	// client's view (see setWindowSizeLargestArgs).
-	if _, err := r.run(ctx, setWindowSizeLargestArgs(id)...); err != nil {
+	if _, err := r.runActionOnRoute(ctx, route, setWindowSizeLargestArgs(route.actionSessionTarget())...); err != nil {
 		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: set window-size %s: %w", id, err))
 	}
 
@@ -409,10 +534,11 @@ func (r *Runtime) failedCreatedRuntime(handle ports.RuntimeHandle, cause error) 
 // session. This is used to resume an exited agent without discarding terminal
 // history or forcing attached clients onto a new handle.
 func (r *Runtime) Restart(ctx context.Context, handle ports.RuntimeHandle, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
-	id, err := handleID(handle)
+	route, err := decodeRuntimeHandle(handle)
 	if err != nil {
 		return ports.RuntimeHandle{}, err
 	}
+	id := route.id
 	expectedID, err := tmuxSessionName(cfg.SessionID)
 	if err != nil {
 		return ports.RuntimeHandle{}, err
@@ -429,19 +555,86 @@ func (r *Runtime) Restart(ctx context.Context, handle ports.RuntimeHandle, cfg p
 	if err := validateEnvKeys(cfg.Env); err != nil {
 		return ports.RuntimeHandle{}, err
 	}
+	newLaunchID := strings.TrimSpace(cfg.Env[runtimeLaunchEnv])
+	if route.qualified && route.owner.SessionID != "" && newLaunchID == "" {
+		return ports.RuntimeHandle{}, fmt.Errorf(
+			"%w: owner-fenced tmux restart requires %s",
+			ports.ErrRuntimeProbeInconclusive,
+			runtimeLaunchEnv,
+		)
+	}
+	route, err = r.routeForOperation(ctx, handle)
+	if err != nil {
+		return ports.RuntimeHandle{}, err
+	}
 
 	launchCmd := buildLaunchCommand(cfg)
-	if _, err := r.runForSession(ctx, id, respawnPaneArgs(id, cfg.WorkspacePath, r.shell, launchCmd)...); err != nil {
+	if !route.hasObjectFence() {
+		if newLaunchID != "" {
+			return ports.RuntimeHandle{}, fmt.Errorf(
+				"%w: legacy tmux restart requires canonicalization before changing launch generation",
+				ports.ErrRuntimeProbeInconclusive,
+			)
+		}
+		if _, err := r.runOnSocket(ctx, route.target, respawnPaneArgs(route.actionPaneTarget(), cfg.WorkspacePath, r.shell, launchCmd)...); err != nil {
+			return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: restart session %s: %w", id, err)
+		}
+		alive, err := r.IsAlive(ctx, handle)
+		if err != nil {
+			return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: verify restarted session %s: %w", id, err)
+		}
+		if !alive {
+			return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: session %s exited during restart", id)
+		}
+		return handle, nil
+	}
+	restartedOut, err := r.runFencedCommands(
+		ctx,
+		route,
+		respawnPaneArgs(route.actionPaneTarget(), cfg.WorkspacePath, r.shell, launchCmd),
+		paneStartCommandsArgs(route.actionSessionTarget()),
+	)
+	if err != nil {
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: restart session %s: %w", id, err)
 	}
-	alive, err := r.IsAlive(ctx, handle)
+	evidence, err := r.parsePaneIdentityEvidence(string(restartedOut), cfg.SessionID, route.target)
+	if err != nil {
+		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: inspect restarted session %s: %w", id, err)
+	}
+	if evidence.tmuxServerPID != route.tmuxServerPID ||
+		evidence.tmuxSessionID != route.tmuxSessionID || evidence.tmuxPaneID != route.tmuxPaneID {
+		return ports.RuntimeHandle{}, fmt.Errorf(
+			"%w: tmux object identity changed while restarting session %s",
+			ports.ErrRuntimeProbeInconclusive,
+			id,
+		)
+	}
+	restartedRoute := route.withPaneIdentity(evidence)
+	if newLaunchID != "" {
+		if evidence.launchID != newLaunchID || (r.runFilePath != "" && !evidence.identity.OwnershipProven) {
+			return ports.RuntimeHandle{}, fmt.Errorf(
+				"%w: restarted tmux pane %s did not retain its launch provenance",
+				ports.ErrRuntimeProbeInconclusive,
+				id,
+			)
+		}
+		restartedRoute.owner = ports.SupervisedProcessRef{
+			SessionID: cfg.SessionID,
+			LaunchID:  newLaunchID,
+		}
+	}
+	restartedHandle, err := qualifiedRuntimeHandleForRoute(restartedRoute)
+	if err != nil {
+		return ports.RuntimeHandle{}, err
+	}
+	alive, err := r.IsAlive(ctx, restartedHandle)
 	if err != nil {
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: verify restarted session %s: %w", id, err)
 	}
 	if !alive {
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: session %s exited during restart", id)
 	}
-	return handle, nil
+	return restartedHandle, nil
 }
 
 // paneCwdVerifyAttempts and paneCwdVerifyRetryDelay bound how long Create
@@ -460,6 +653,14 @@ const (
 )
 
 func (r *Runtime) verifyPaneWorkingDirectory(ctx context.Context, id, want string) error {
+	return r.verifyPaneWorkingDirectoryOnRoute(ctx, runtimeRoute{
+		id:     id,
+		target: r.primarySocketTarget(),
+	}, want)
+}
+
+func (r *Runtime) verifyPaneWorkingDirectoryOnRoute(ctx context.Context, route runtimeRoute, want string) error {
+	id := route.id
 	var lastErr error
 	for attempt := 0; attempt < paneCwdVerifyAttempts; attempt++ {
 		if attempt > 0 {
@@ -469,7 +670,7 @@ func (r *Runtime) verifyPaneWorkingDirectory(ctx context.Context, id, want strin
 			case <-time.After(paneCwdVerifyRetryDelay):
 			}
 		}
-		out, err := r.runForSession(ctx, id, paneCurrentPathArgs(id)...)
+		out, err := r.runActionOnRoute(ctx, route, paneCurrentPathArgs(route.actionPaneTarget())...)
 		if err != nil {
 			// A later transient probe failure (e.g. a one-off tmux CLI hiccup)
 			// must not overwrite an already-observed cwd mismatch: the mismatch
@@ -502,16 +703,36 @@ func (r *Runtime) verifyPaneWorkingDirectory(ctx context.Context, id, want strin
 // teardown and, after kill-session, signals the whole session (see
 // killSessionsByPID). An already-gone session is treated as success (idempotent).
 func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {
-	id, err := handleID(handle)
+	route, found, err := r.resolveRouteForOperation(ctx, handle)
 	if err != nil {
 		return err
+	}
+	if !found {
+		return nil
+	}
+	if route.hasObjectFence() {
+		out, guardedErr := r.runFencedCommands(
+			ctx,
+			route,
+			listPanePIDsArgs(route.actionSessionTarget()),
+			killSessionArgs(route.actionSessionTarget()),
+		)
+		sessionIDs := paneSessionIDsFromOutput(string(out), route)
+		// The listed pids came from the same guarded server command queue as the
+		// kill. They remain safe to reap even if kill-session itself reports an
+		// error after the identity check.
+		r.reapSessions(ctx, sessionIDs, r.reapGrace)
+		if guardedErr != nil {
+			return fmt.Errorf("tmux runtime: destroy session %s: %w", route.id, guardedErr)
+		}
+		return nil
 	}
 	// Capture pane session ids while the session still exists; a missing
 	// session lists no panes and reaps nothing. Best-effort: failures here must
 	// not block the kill-session below.
-	sessionIDs := r.paneSessionIDs(ctx, id)
+	sessionIDs := r.paneSessionIDsOnRoute(ctx, route)
 
-	out, err := r.runForSession(ctx, id, killSessionArgs(id)...)
+	out, err := r.runOnSocket(ctx, route.target, killSessionArgs(route.actionSessionTarget())...)
 	// Reap regardless of the kill-session result: orphaned children outlive the
 	// session, so they must be cleaned up even when the session was already
 	// gone (a benign double-kill).
@@ -520,28 +741,43 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && killSessionMissingOutput(string(out)) {
-			r.forgetSessionSocket(id)
 			return nil
 		}
-		return fmt.Errorf("tmux runtime: destroy session %s: %w", id, err)
+		return fmt.Errorf("tmux runtime: destroy session %s: %w", route.id, err)
 	}
-	r.forgetSessionSocket(id)
 	return nil
 }
 
-// paneSessionIDs lists the pid of every pane in the session. tmux launches each
-// pane in its own session (setsid), so a pane's pid is also its session id —
-// the handle killSessionsByPID uses to reap the pane's descendants. Best-effort:
-// any error (including a missing session) or unparseable line yields no ids,
-// and pids <= 1 are skipped so we never signal init or the "current session".
-func (r *Runtime) paneSessionIDs(ctx context.Context, id string) []int {
-	out, err := r.runForSession(ctx, id, listPanePIDsArgs(id)...)
+// paneSessionIDsOnRoute returns a pane pid only when tmux reports the same
+// session and pane object ids captured with owner provenance. tmux launches a
+// pane in its own session (setsid), so its pid is also the process-session id
+// killSessionsByPID uses to reap descendants. Any error, identity mismatch, or
+// unparseable row yields no id; pids <= 1 are skipped so init is never signaled.
+func (r *Runtime) paneSessionIDsOnRoute(ctx context.Context, route runtimeRoute) []int {
+	out, err := r.runOnSocket(ctx, route.target, listPanePIDsArgs(route.actionSessionTarget())...)
 	if err != nil {
 		return nil
 	}
+	return paneSessionIDsFromOutput(string(out), route)
+}
+
+func paneSessionIDsFromOutput(output string, route runtimeRoute) []int {
 	var ids []int
-	for _, line := range strings.Split(string(out), "\n") {
-		pid, convErr := strconv.Atoi(strings.TrimSpace(line))
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Split(strings.TrimSpace(line), "\t")
+		if len(fields) != 4 {
+			continue
+		}
+		serverPID, serverErr := strconv.Atoi(fields[0])
+		if serverErr != nil || serverPID <= 1 ||
+			(route.tmuxServerPID != 0 && serverPID != route.tmuxServerPID) ||
+			(route.tmuxSessionID != "" && fields[1] != route.tmuxSessionID) ||
+			(route.tmuxPaneID != "" && fields[2] != route.tmuxPaneID) ||
+			!tmuxSessionIDPattern.MatchString(fields[1]) ||
+			!tmuxPaneIDPattern.MatchString(fields[2]) {
+			continue
+		}
+		pid, convErr := strconv.Atoi(fields[3])
 		if convErr != nil || pid <= 1 {
 			continue
 		}
@@ -558,11 +794,24 @@ func (r *Runtime) paneSessionIDs(ctx context.Context, id string) []int {
 // no caller can treat a possibly-live session as absent. Any other non-zero
 // exit is a plain probe error, which is likewise never per-session death.
 func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
-	id, err := handleID(handle)
+	decoded, err := decodeRuntimeHandle(handle)
 	if err != nil {
 		return false, err
 	}
-	out, err := r.runForSession(ctx, id, hasSessionArgs(id)...)
+	requiresResolution := decoded.qualified ||
+		(!decoded.qualified && (len(r.legacySocketTargets()) > 1 || r.runFilePath != ""))
+	if requiresResolution {
+		_, found, resolveErr := r.resolveRouteForOperation(ctx, handle)
+		return found, resolveErr
+	}
+	route, found, err := r.resolveRouteForOperation(ctx, handle)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	out, err := r.runOnSocket(ctx, route.target, hasSessionArgs(route.id)...)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -571,14 +820,14 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 			}
 			if serverNotRunningOutput(string(out)) {
 				return false, fmt.Errorf("tmux runtime: probe session %s: %w: %s",
-					id, ports.ErrRuntimeUnavailable, strings.TrimSpace(string(out)))
+					route.id, ports.ErrRuntimeUnavailable, strings.TrimSpace(string(out)))
 			}
 			if transientServerFailureOutput(string(out)) {
 				return false, fmt.Errorf("tmux runtime: probe session %s: %w: %s",
-					id, ports.ErrRuntimeProbeInconclusive, strings.TrimSpace(string(out)))
+					route.id, ports.ErrRuntimeProbeInconclusive, strings.TrimSpace(string(out)))
 			}
 		}
-		return false, fmt.Errorf("tmux runtime: probe session %s: %w", id, err)
+		return false, fmt.Errorf("tmux runtime: probe session %s: %w", route.id, err)
 	}
 	return true, nil
 }
@@ -653,15 +902,58 @@ func (r *Runtime) IsExactSupervisedProcessAlive(ctx context.Context, handle port
 }
 
 func (r *Runtime) supervisedProcessTree(ctx context.Context, handle ports.RuntimeHandle) ([]processEntry, int, error) {
-	id, err := handleID(handle)
+	route, err := r.routeForOperation(ctx, handle)
 	if err != nil {
 		return nil, 0, err
 	}
-	paneOut, err := r.runForSession(ctx, id, panePIDArgs(id)...)
+	return r.supervisedProcessTreeOnTarget(ctx, route)
+}
+
+func (r *Runtime) isExactSupervisedProcessAliveOnTarget(
+	ctx context.Context,
+	id string,
+	target socketTarget,
+	tmuxServerPID int,
+	tmuxSessionID string,
+	tmuxPaneID string,
+	ref ports.SupervisedProcessRef,
+) (bool, error) {
+	entries, panePID, err := r.supervisedProcessTreeOnTarget(ctx, runtimeRoute{
+		id:            id,
+		target:        target,
+		tmuxServerPID: tmuxServerPID,
+		tmuxSessionID: tmuxSessionID,
+		tmuxPaneID:    tmuxPaneID,
+	})
+	if err != nil {
+		return false, err
+	}
+	return containsExactSupervisedWorkload(entries, panePID, string(ref.SessionID), ref.LaunchID), nil
+}
+
+func (r *Runtime) supervisedProcessTreeOnTarget(
+	ctx context.Context,
+	route runtimeRoute,
+) ([]processEntry, int, error) {
+	id := route.id
+	paneOut, err := r.runActionOnRoute(ctx, route, panePIDArgs(route.actionPaneTarget())...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("tmux runtime: inspect pane pid %s: %w", id, err)
 	}
-	panePID, err := strconv.Atoi(strings.TrimSpace(string(paneOut)))
+	fields := strings.Split(strings.TrimSpace(string(paneOut)), "\t")
+	if len(fields) != 4 {
+		return nil, 0, fmt.Errorf("tmux runtime: pane identity changed for %s", id)
+	}
+	serverPID, serverErr := strconv.Atoi(fields[0])
+	if serverErr != nil || serverPID <= 1 ||
+		(route.tmuxServerPID != 0 && serverPID != route.tmuxServerPID) ||
+		(route.tmuxSessionID != "" && fields[1] != route.tmuxSessionID) ||
+		(route.tmuxPaneID != "" && fields[2] != route.tmuxPaneID) ||
+		!tmuxSessionIDPattern.MatchString(fields[1]) ||
+		!tmuxPaneIDPattern.MatchString(fields[2]) {
+		return nil, 0, fmt.Errorf("tmux runtime: pane identity changed for %s", id)
+	}
+	panePID, err := strconv.Atoi(fields[3])
 	if err != nil || panePID <= 0 {
 		return nil, 0, fmt.Errorf("tmux runtime: invalid pane pid %q", strings.TrimSpace(string(paneOut)))
 	}
@@ -684,17 +976,19 @@ func (r *Runtime) supervisedProcessTree(ctx context.Context, handle ports.Runtim
 // ceiling is very large messages may be slower, but chunk size defaults to 16 KB
 // which is ample for agent prompts.
 func (r *Runtime) SendMessage(ctx context.Context, handle ports.RuntimeHandle, message string) error {
-	id, err := handleID(handle)
+	route, err := r.routeForOperation(ctx, handle)
 	if err != nil {
 		return err
 	}
+	id := route.id
+	paneTargetID := route.actionPaneTarget()
 	enterCtx := ctx
 	if message != "" {
 		messageChunks := chunks(message, r.chunkSize)
 		sendCtx := ctx
 		var finishCancel context.CancelFunc
 		for i, chunk := range messageChunks {
-			if _, err := r.runForSession(sendCtx, id, sendKeysLiteralArgs(id, chunk)...); err != nil {
+			if _, err := r.runActionOnRoute(sendCtx, route, sendKeysLiteralArgs(paneTargetID, chunk)...); err != nil {
 				if finishCancel != nil {
 					finishCancel()
 				}
@@ -730,7 +1024,7 @@ func (r *Runtime) SendMessage(ctx context.Context, handle ports.RuntimeHandle, m
 			}
 		}
 	}
-	if _, err := r.runForSession(enterCtx, id, sendEnterArgs(id)...); err != nil {
+	if _, err := r.runActionOnRoute(enterCtx, route, sendEnterArgs(paneTargetID)...); err != nil {
 		return fmt.Errorf("tmux runtime: send enter %s: %w", id, err)
 	}
 	return nil
@@ -743,12 +1037,12 @@ func sendCompletionBudget(chunkCount int, commandTimeout, enterDelay time.Durati
 // Interrupt sends Ctrl-C to the foreground process without destroying the tmux
 // session, keeping the terminal available for inspection and reuse.
 func (r *Runtime) Interrupt(ctx context.Context, handle ports.RuntimeHandle) error {
-	id, err := handleID(handle)
+	route, err := r.routeForOperation(ctx, handle)
 	if err != nil {
 		return err
 	}
-	if _, err := r.runForSession(ctx, id, sendInterruptArgs(id)...); err != nil {
-		return fmt.Errorf("tmux runtime: interrupt session %s: %w", id, err)
+	if _, err := r.runActionOnRoute(ctx, route, sendInterruptArgs(route.actionPaneTarget())...); err != nil {
+		return fmt.Errorf("tmux runtime: interrupt session %s: %w", route.id, err)
 	}
 	return nil
 }
@@ -756,13 +1050,13 @@ func (r *Runtime) Interrupt(ctx context.Context, handle ports.RuntimeHandle) err
 // SendInput sends raw terminal input without appending Enter. It is intended
 // for TUI keybindings such as Escape rather than prompt text.
 func (r *Runtime) SendInput(ctx context.Context, handle ports.RuntimeHandle, input string) error {
-	id, err := handleID(handle)
+	route, err := r.routeForOperation(ctx, handle)
 	if err != nil {
 		return err
 	}
-	args := sendKeysLiteralArgs(id, input)
-	if _, err := r.runForSession(ctx, id, args...); err != nil {
-		return fmt.Errorf("tmux runtime: send input %s: %w", id, err)
+	args := sendKeysLiteralArgs(route.actionPaneTarget(), input)
+	if _, err := r.runActionOnRoute(ctx, route, args...); err != nil {
+		return fmt.Errorf("tmux runtime: send input %s: %w", route.id, err)
 	}
 	return nil
 }
@@ -770,32 +1064,32 @@ func (r *Runtime) SendInput(ctx context.Context, handle ports.RuntimeHandle, inp
 // GetOutput returns the last `lines` lines of the session pane's captured
 // output.
 func (r *Runtime) GetOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error) {
-	id, err := handleID(handle)
+	route, err := r.routeForOperation(ctx, handle)
 	if err != nil {
 		return "", err
 	}
 	if lines <= 0 {
 		return "", errors.New("tmux runtime: lines must be positive")
 	}
-	out, err := r.runForSession(ctx, id, capturePaneArgs(id, lines)...)
+	out, err := r.runActionOnRoute(ctx, route, capturePaneArgs(route.actionPaneTarget(), lines)...)
 	if err != nil {
-		return "", fmt.Errorf("tmux runtime: capture output %s: %w", id, err)
+		return "", fmt.Errorf("tmux runtime: capture output %s: %w", route.id, err)
 	}
 	return tailLines(trimTrailingBlankLines(string(out)), lines), nil
 }
 
 // GetStyledOutput is GetOutput with tmux's -e flag so SGR styling is retained.
 func (r *Runtime) GetStyledOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error) {
-	id, err := handleID(handle)
+	route, err := r.routeForOperation(ctx, handle)
 	if err != nil {
 		return "", err
 	}
 	if lines <= 0 {
 		return "", errors.New("tmux runtime: lines must be positive")
 	}
-	out, err := r.runForSession(ctx, id, capturePaneStyledArgs(id, lines)...)
+	out, err := r.runActionOnRoute(ctx, route, capturePaneStyledArgs(route.actionPaneTarget(), lines)...)
 	if err != nil {
-		return "", fmt.Errorf("tmux runtime: capture styled output %s: %w", id, err)
+		return "", fmt.Errorf("tmux runtime: capture styled output %s: %w", route.id, err)
 	}
 	return tailLines(trimTrailingBlankLines(string(out)), lines), nil
 }
@@ -804,16 +1098,15 @@ func (r *Runtime) GetStyledOutput(ctx context.Context, handle ports.RuntimeHandl
 // local PTY, sized rows x cols from birth when known. ctx cancellation closes
 // the PTY.
 func (r *Runtime) Attach(ctx context.Context, handle ports.RuntimeHandle, rows, cols uint16) (ports.Stream, error) {
-	id, err := handleID(handle)
+	route, err := r.routeForOperation(ctx, handle)
 	if err != nil {
 		return nil, err
 	}
-	socketName, err := r.socketForSession(ctx, id)
+	argv, err := r.attachCommandForRoute(ctx, route)
 	if err != nil {
-		return nil, fmt.Errorf("tmux runtime: attach session %s: %w", id, err)
+		return nil, fmt.Errorf("tmux runtime: attach session %s: %w", route.id, err)
 	}
-	argv := r.attachCommandForSocket(id, socketName)
-	return ptyexec.Spawn(ctx, argv, attachEnv(os.Environ()), rows, cols)
+	return r.spawnAttach(ctx, argv, attachEnv(os.Environ()), rows, cols)
 }
 
 // attachCommand returns the argv to attach a terminal to the session.
@@ -834,27 +1127,43 @@ func (r *Runtime) Attach(ctx context.Context, handle ports.RuntimeHandle, rows, 
 // difference for the still-correct box-drawing case. AO already treats the
 // PTY byte stream as UTF-8 end to end, so forcing the flag is always
 // correct here regardless of the daemon's own environment.
-func (r *Runtime) attachCommand(handle ports.RuntimeHandle) ([]string, error) {
-	id, err := handleID(handle)
+func (r *Runtime) attachCommand(ctx context.Context, handle ports.RuntimeHandle) ([]string, error) {
+	route, err := decodeRuntimeHandle(handle)
 	if err != nil {
 		return nil, err
 	}
-	return r.attachCommandForSocket(id, r.socketName), nil
+	if !route.qualified {
+		route.target = r.primarySocketTarget()
+	}
+	return r.attachCommandForSocket(ctx, route.id, route.target)
 }
 
-func (r *Runtime) attachCommandForSocket(id, socketName string) []string {
+func (r *Runtime) attachCommandForSocket(ctx context.Context, id string, target socketTarget) ([]string, error) {
 	// The embedded xterm renderer supports 24-bit SGR colors. Tell this tmux
 	// client explicitly so tmux forwards RGB instead of quantizing it to the
 	// xterm-256color palette. -T is available in AO's minimum tmux version (3.2).
-	argv := []string{r.binaryForSocket(socketName)}
-	if socketName != "" {
-		argv = append(argv, "-L", socketName)
-	} else if r.socketName != "" {
-		// A legacy session means tmux's historical machine default, never the
-		// socket named by an inherited TMUX from an AO worker or nested shell.
-		argv = append(argv, "-L", "default")
+	binary, argv, err := r.commandForSocket(ctx, target, "-u", "-T", "RGB", "attach-session", "-t", id)
+	if err != nil {
+		return nil, err
 	}
-	return append(argv, "-u", "-T", "RGB", "attach-session", "-t", id)
+	return append([]string{binary}, argv...), nil
+}
+
+func (r *Runtime) attachCommandForRoute(ctx context.Context, route runtimeRoute) ([]string, error) {
+	if !route.hasObjectFence() {
+		return r.attachCommandForSocket(ctx, route.actionSessionTarget(), route.target)
+	}
+	guarded, err := fencedCommandArgs(route, []string{
+		"attach-session", "-t", route.actionSessionTarget(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	binary, argv, err := r.commandForSocket(ctx, route.target, append([]string{"-u", "-T", "RGB"}, guarded...)...)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string{binary}, argv...), nil
 }
 
 func attachEnv(base []string) []string {
@@ -882,102 +1191,945 @@ func attachEnv(base []string) []string {
 
 // run wraps runner.Run with a per-call timeout context.
 func (r *Runtime) run(ctx context.Context, args ...string) ([]byte, error) {
-	return r.runOnSocket(ctx, r.socketName, args...)
+	return r.runOnSocket(ctx, r.primarySocketTarget(), args...)
 }
 
-func (r *Runtime) runOnSocket(ctx context.Context, socketName string, args ...string) ([]byte, error) {
-	if socketName != "" {
-		args = append([]string{"-L", socketName}, args...)
-	} else if r.socketName != "" {
-		// Pin legacy discovery and commands to the historical machine default.
-		// Without -L, tmux honors inherited TMUX and may target an unrelated
-		// nested server whose session name happens to collide with AO's handle.
-		args = append([]string{"-L", "default"}, args...)
+func (r *Runtime) runOnSocket(ctx context.Context, target socketTarget, args ...string) ([]byte, error) {
+	binary, argv, err := r.commandForSocket(ctx, target, args...)
+	if err != nil {
+		return nil, err
 	}
-	return r.runCommand(ctx, r.binaryForSocket(socketName), args...)
+	return r.runCommand(ctx, binary, argv...)
 }
 
-func (r *Runtime) binaryForSocket(socketName string) string {
-	if socketName == "" && r.socketName != "" {
+// runActionOnRoute runs action directly for an unresolved legacy route and
+// uses a server-side object fence for every canonical route. Recovery is the
+// only path allowed to turn a legacy locator into a canonical route; public
+// operations reject legacy qualified handles before reaching this helper.
+func (r *Runtime) runActionOnRoute(ctx context.Context, route runtimeRoute, action ...string) ([]byte, error) {
+	if !route.hasObjectFence() {
+		return r.runOnSocket(ctx, route.target, action...)
+	}
+	return r.runFencedCommands(ctx, route, action)
+}
+
+// runFencedCommands evaluates the complete server/session/pane identity and
+// queues the action(s) in one tmux client command. if-shell executes the chosen
+// branch inside the already-connected server, so a socket replacement after
+// the condition cannot redirect the queued action to the replacement server.
+func (r *Runtime) runFencedCommands(ctx context.Context, route runtimeRoute, actions ...[]string) ([]byte, error) {
+	args, err := fencedCommandArgs(route, actions...)
+	if err != nil {
+		return nil, err
+	}
+	out, err := r.runOnSocket(ctx, route.target, args...)
+	if ctx.Err() != nil {
+		return out, ctx.Err()
+	}
+	if tmuxFenceMismatchOutput(string(out)) {
+		return out, fmt.Errorf(
+			"%w: tmux server or pane identity changed for session %s",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+		)
+	}
+	if err != nil {
+		return out, fmt.Errorf(
+			"%w: guarded tmux command failed for session %s: %w",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+			err,
+		)
+	}
+	return out, nil
+}
+
+func fencedCommandArgs(route runtimeRoute, actions ...[]string) ([]string, error) {
+	if !route.hasObjectFence() {
+		return nil, fmt.Errorf(
+			"%w: tmux route for session %s has no complete object fence",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+		)
+	}
+	if len(actions) == 0 {
+		return nil, errors.New("tmux runtime: guarded command requires an action")
+	}
+	commandStrings := make([]string, 0, len(actions))
+	for _, action := range actions {
+		command, err := tmuxCommandString(action)
+		if err != nil {
+			return nil, err
+		}
+		commandStrings = append(commandStrings, command)
+	}
+	falseCommand, err := tmuxCommandString([]string{"display-message", "-p", tmuxObjectFenceMismatch})
+	if err != nil {
+		return nil, err
+	}
+	condition := fmt.Sprintf(
+		"#{&&:#{==:#{pid},%d},#{&&:#{==:#{session_id},%s},#{==:#{pane_id},%s}}}",
+		route.tmuxServerPID,
+		route.tmuxSessionID,
+		route.tmuxPaneID,
+	)
+	return []string{
+		"if-shell", "-F", "-t", route.tmuxPaneID,
+		condition,
+		strings.Join(commandStrings, " ; "),
+		falseCommand,
+	}, nil
+}
+
+// tmuxCommandString quotes one argv vector for tmux's command parser. The
+// result is passed as a single if-shell branch argument, then parsed once by
+// tmux. Always quoting every argument keeps user input literal (notably $, ;,
+// quotes, newlines, and backslashes) while still allowing tmux format strings
+// in AO-authored arguments to be evaluated by their target command.
+func tmuxCommandString(args []string) (string, error) {
+	if len(args) == 0 {
+		return "", errors.New("tmux runtime: empty command")
+	}
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		var b strings.Builder
+		b.Grow(len(arg) + 2)
+		b.WriteByte('"')
+		for _, char := range arg {
+			switch char {
+			case 0:
+				return "", errors.New("tmux runtime: command argument contains NUL")
+			case '\\':
+				b.WriteString(`\\`)
+			case '"':
+				b.WriteString(`\"`)
+			case '$':
+				b.WriteString(`\$`)
+			case '\n':
+				b.WriteString(`\n`)
+			case '\r':
+				b.WriteString(`\r`)
+			case '\t':
+				b.WriteString(`\t`)
+			case '\x1b':
+				b.WriteString(`\e`)
+			default:
+				b.WriteRune(char)
+			}
+		}
+		b.WriteByte('"')
+		quoted = append(quoted, b.String())
+	}
+	return strings.Join(quoted, " "), nil
+}
+
+func tmuxFenceMismatchOutput(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSuffix(line, "\r") == tmuxObjectFenceMismatch {
+			return true
+		}
+	}
+	return false
+}
+
+// commandForSocket is the single mapping from namespace provenance to tmux
+// argv. Attach and ordinary operations both use it so a new target kind cannot
+// accidentally route those two paths differently.
+func (r *Runtime) commandForSocket(ctx context.Context, target socketTarget, args ...string) (string, []string, error) {
+	binary := r.binaryForSocket(target)
+	if strings.TrimSpace(binary) == "" {
+		return "", nil, fmt.Errorf("%w: tmux client is unavailable for %s", ports.ErrRuntimeProbeInconclusive, target)
+	}
+	prefix, err := target.argv(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	return binary, append(prefix, args...), nil
+}
+
+func (target socketTarget) argv(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	switch target.kind {
+	case socketTargetDefault:
+		// Always pin the machine default. Plain tmux honors inherited TMUX and
+		// could otherwise redirect creation or recovery to a nested server.
+		return []string{"-L", "default"}, nil
+	case socketTargetNamed:
+		if strings.TrimSpace(target.value) == "" {
+			return nil, errors.New("tmux runtime: named socket target is empty")
+		}
+		return []string{"-L", target.value}, nil
+	case socketTargetPath:
+		if strings.TrimSpace(target.value) == "" {
+			return nil, errors.New("tmux runtime: socket path target is empty")
+		}
+		address, err := socketAddress(ctx, target.value)
+		if err != nil {
+			return nil, err
+		}
+		return []string{"-S", address, "-f", os.DevNull}, nil
+	default:
+		return nil, fmt.Errorf("tmux runtime: unknown socket target %q", target.kind)
+	}
+}
+
+func (target socketTarget) String() string {
+	switch target.kind {
+	case socketTargetDefault:
+		return "default socket"
+	case socketTargetNamed:
+		return fmt.Sprintf("named socket %q", target.value)
+	case socketTargetPath:
+		return fmt.Sprintf("socket path %q", target.value)
+	default:
+		return fmt.Sprintf("unknown socket target %q", target.kind)
+	}
+}
+
+func (r *Runtime) binaryForSocket(target socketTarget) string {
+	if target.useLegacyBinary {
 		return r.legacyBinary
 	}
 	return r.binary
 }
 
-// runForSession routes sessions created before AO introduced its private tmux
-// socket back to tmux's legacy default socket. The decision is discovered once
-// per daemon lifetime and cached. New sessions always use socketName.
-func (r *Runtime) runForSession(ctx context.Context, id string, args ...string) ([]byte, error) {
-	socketName, err := r.socketForSession(ctx, id)
-	if err != nil {
-		return nil, err
+func (r *Runtime) primarySocketTarget() socketTarget {
+	if r.socketName != "" {
+		return socketTarget{kind: socketTargetNamed, value: r.socketName}
 	}
-	return r.runOnSocket(ctx, socketName, args...)
+	return socketTarget{kind: socketTargetDefault}
 }
 
-func (r *Runtime) socketForSession(ctx context.Context, id string) (string, error) {
-	if r.socketName == "" {
-		return "", nil
-	}
-	r.socketMu.RLock()
-	socketName, ok := r.sessionSockets[id]
-	r.socketMu.RUnlock()
-	if ok {
-		return socketName, nil
-	}
+func (r *Runtime) historicalPrivateSocketTarget() socketTarget {
+	return socketTarget{kind: socketTargetPath, value: r.legacySocketPath}
+}
 
-	out, err := r.runOnSocket(ctx, r.socketName, hasSessionArgs(id)...)
-	if err == nil {
-		r.rememberSessionSocket(id, r.socketName)
-		return r.socketName, nil
+func (r *Runtime) legacyDefaultSocketTarget() socketTarget {
+	return socketTarget{kind: socketTargetDefault, useLegacyBinary: true}
+}
+
+func (r *Runtime) routeForOperation(ctx context.Context, handle ports.RuntimeHandle) (runtimeRoute, error) {
+	route, found, err := r.resolveRouteForOperation(ctx, handle)
+	if err != nil {
+		return runtimeRoute{}, err
 	}
-	// Only cross the migration boundary when the private server definitively
-	// lacks this session. An ambiguous probe stays on the private socket so a
-	// transient error cannot redirect a live session elsewhere.
-	if !sessionMissingOutput(string(out)) &&
-		!serverNotRunningOutput(string(out)) &&
-		!migrationSocketAbsentOutput(string(out)) {
-		return r.socketName, nil
+	if !found {
+		return runtimeRoute{}, fmt.Errorf("tmux runtime: session %s was not found", route.id)
 	}
-	if r.legacyBinary == "" {
-		return "", fmt.Errorf(
-			"%w: cannot inspect legacy default-socket session %s because system tmux is unavailable",
+	return route, nil
+}
+
+func (r *Runtime) resolveRouteForOperation(
+	ctx context.Context,
+	handle ports.RuntimeHandle,
+) (runtimeRoute, bool, error) {
+	route, err := decodeRuntimeHandle(handle)
+	if err != nil {
+		return runtimeRoute{}, false, err
+	}
+	if route.qualified {
+		// Pre-object-fence qualified handles remain decodable only so startup
+		// recovery can discover the durable owner and persist a canonical route.
+		// A public read or mutation must never re-resolve implicitly: doing so
+		// would reopen a gap in which a replacement server can reuse $0/%0.
+		if !route.hasObjectFence() {
+			return runtimeRoute{}, false, fmt.Errorf(
+				"%w: qualified tmux handle %q requires canonicalization",
+				ports.ErrRuntimeProbeInconclusive,
+				handle.ID,
+			)
+		}
+		return r.resolveExactQualifiedRoute(ctx, route)
+	}
+	candidates := r.legacySocketTargets()
+	if len(candidates) == 1 && r.runFilePath == "" {
+		route.target = candidates[0]
+		return route, true, nil
+	}
+	resolved, found, err := r.resolveRuntimeHandle(ctx, handle, ports.SupervisedProcessRef{}, true)
+	if err != nil {
+		return runtimeRoute{}, false, err
+	}
+	if !found {
+		return route, false, nil
+	}
+	return resolved.route, true, nil
+}
+
+func (r *Runtime) legacySocketTargets() []socketTarget {
+	targets := []socketTarget{r.primarySocketTarget()}
+	if r.legacySocketPath != "" {
+		targets = append(targets, r.historicalPrivateSocketTarget())
+	}
+	if r.socketName != "" {
+		targets = append(targets, r.legacyDefaultSocketTarget())
+	}
+	return targets
+}
+
+func (r *Runtime) discoverTargets(
+	ctx context.Context,
+	id string,
+	targets []socketTarget,
+) ([]socketTarget, error) {
+	var matches []socketTarget
+	var failures []error
+	for _, target := range targets {
+		out, err := r.runOnSocket(ctx, target, hasSessionArgs(id)...)
+		if err == nil {
+			matches = append(matches, target)
+			continue
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if sessionMissingOutput(string(out)) || serverNotRunningOutput(string(out)) || migrationSocketAbsentOutput(string(out)) {
+			continue
+		}
+		failures = append(failures, fmt.Errorf("probe %s: %w", target, err))
+	}
+	if len(failures) > 0 {
+		return nil, fmt.Errorf(
+			"%w: could not inspect every tmux namespace for session %s: %w",
 			ports.ErrRuntimeProbeInconclusive,
 			id,
+			errors.Join(failures...),
 		)
 	}
-	legacyOut, legacyErr := r.runOnSocket(ctx, "", hasSessionArgs(id)...)
-	if legacyErr == nil {
-		r.rememberSessionSocket(id, "")
-		return "", nil
+	return matches, nil
+}
+
+func appendUniqueTarget(targets []socketTarget, candidate socketTarget) []socketTarget {
+	for _, target := range targets {
+		if target == candidate {
+			return targets
+		}
 	}
-	if ctx.Err() != nil {
-		return "", ctx.Err()
+	return append(targets, candidate)
+}
+
+func (r *Runtime) recoveryTargets(route runtimeRoute) []socketTarget {
+	targets := make([]socketTarget, 0, len(r.legacySocketTargets())+1)
+	if route.qualified {
+		targets = appendUniqueTarget(targets, route.target)
 	}
-	if sessionMissingOutput(string(legacyOut)) || serverNotRunningOutput(string(legacyOut)) {
-		// Both known sockets definitively lack the session. Return the private
-		// target so IsAlive's ordinary exact-session handling reports false.
-		return r.socketName, nil
+	for _, target := range r.legacySocketTargets() {
+		targets = appendUniqueTarget(targets, target)
 	}
-	return "", fmt.Errorf(
-		"%w: system tmux %q could not inspect legacy default-socket session %s: %w",
+	return targets
+}
+
+type runtimeTargetCandidate struct {
+	target        socketTarget
+	identity      ports.RuntimeIdentity
+	adoptable     bool
+	tmuxServerPID int
+	tmuxSessionID string
+	tmuxPaneID    string
+}
+
+type runtimeResolution struct {
+	handle ports.RuntimeHandle
+	route  runtimeRoute
+}
+
+type paneIdentityEvidence struct {
+	identity        ports.RuntimeIdentity
+	launchID        string
+	legacyNoRunFile bool
+	tmuxServerPID   int
+	tmuxSessionID   string
+	tmuxPaneID      string
+}
+
+func (r *Runtime) inspectTargetIdentityEvidence(
+	ctx context.Context,
+	tmuxID string,
+	expectedSessionID domain.SessionID,
+	target socketTarget,
+) (paneIdentityEvidence, error) {
+	out, err := r.runOnSocket(ctx, target, paneStartCommandsArgs(tmuxID)...)
+	if err != nil {
+		return paneIdentityEvidence{}, fmt.Errorf(
+			"%w: inspect pane provenance for session %s on %s: %w",
+			ports.ErrRuntimeProbeInconclusive,
+			tmuxID,
+			target,
+			err,
+		)
+	}
+	return r.parsePaneIdentityEvidence(string(out), expectedSessionID, target)
+}
+
+func (r *Runtime) parsePaneIdentityEvidence(
+	output string,
+	expectedSessionID domain.SessionID,
+	target socketTarget,
+) (paneIdentityEvidence, error) {
+	tmuxServerPID, tmuxSessionID, tmuxPaneID, command, err := parsePaneIdentityOutput(output)
+	if err != nil {
+		return paneIdentityEvidence{}, fmt.Errorf(
+			"%w: inspect pane identity for session %s on %s: %w",
+			ports.ErrRuntimeProbeInconclusive,
+			expectedSessionID,
+			target,
+			err,
+		)
+	}
+	rawSessionID := string(expectedSessionID)
+	launchID, supervised := paneSupervisorIdentity(command, rawSessionID)
+	if !supervised && r.isHistoricalPrivateSocketTarget(target) {
+		// #4393 installed AO_SESSION_ID/AO_SUPERVISED_PROCESS in tmux's
+		// session environment, not in pane_start_command. Its immutable pane
+		// provenance is therefore the quoted supervisor argv itself. Accept
+		// that weaker historical grammar only on this run file's deterministic
+		// private socket; candidate selection below still requires the durable
+		// launch fence to match exactly and can never adopt a newer launch.
+		launchID, supervised = historicalPrivatePaneSupervisorIdentity(command, rawSessionID)
+	}
+	if !supervised {
+		return paneIdentityEvidence{
+			tmuxServerPID: tmuxServerPID,
+			tmuxSessionID: tmuxSessionID,
+			tmuxPaneID:    tmuxPaneID,
+		}, nil
+	}
+	_, owned := paneRuntimeIdentity(command, rawSessionID, r.runFilePath)
+	return paneIdentityEvidence{
+		identity: ports.RuntimeIdentity{
+			LaunchID:        launchID,
+			OwnershipProven: owned,
+		},
+		launchID:        launchID,
+		legacyNoRunFile: !strings.Contains(command, "export AO_RUN_FILE="),
+		tmuxServerPID:   tmuxServerPID,
+		tmuxSessionID:   tmuxSessionID,
+		tmuxPaneID:      tmuxPaneID,
+	}, nil
+}
+
+func parsePaneIdentityOutput(output string) (int, string, string, string, error) {
+	line := strings.TrimSuffix(output, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	if line == "" || strings.ContainsAny(line, "\r\n") {
+		return 0, "", "", "", errors.New("expected exactly one pane identity")
+	}
+	fields := strings.SplitN(line, "\t", 4)
+	serverPID, err := strconv.Atoi(firstField(fields))
+	if len(fields) != 4 || err != nil || serverPID <= 1 ||
+		!tmuxSessionIDPattern.MatchString(fields[1]) || !tmuxPaneIDPattern.MatchString(fields[2]) {
+		return 0, "", "", "", errors.New("invalid tmux object identity")
+	}
+	command := strings.TrimSpace(fields[3])
+	if command == "" {
+		return 0, "", "", "", errors.New("pane start command is empty")
+	}
+	return serverPID, fields[1], fields[2], command, nil
+}
+
+func firstField(fields []string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func (r *Runtime) isHistoricalPrivateSocketTarget(target socketTarget) bool {
+	return target.kind == socketTargetPath &&
+		r.legacySocketPath != "" &&
+		filepath.Clean(target.value) == filepath.Clean(r.legacySocketPath)
+}
+
+func (r *Runtime) inspectTargetIdentity(
+	ctx context.Context,
+	tmuxID string,
+	expectedSessionID domain.SessionID,
+	target socketTarget,
+) (ports.RuntimeIdentity, error) {
+	evidence, err := r.inspectTargetIdentityEvidence(ctx, tmuxID, expectedSessionID, target)
+	return evidence.identity, err
+}
+
+func paneRuntimeIdentity(command, id, runFilePath string) (string, bool) {
+	launchID, supervised := paneSupervisorIdentity(command, id)
+	if !supervised || !strings.Contains(command, "export AO_RUN_FILE="+shellQuote(runFilePath)+";") {
+		return "", false
+	}
+	return launchID, true
+}
+
+func paneSupervisorIdentity(command, id string) (string, bool) {
+	required := []string{
+		"export AO_SESSION_ID=" + shellQuote(id) + ";",
+		"export AO_SUPERVISED_PROCESS='1';",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(command, fragment) {
+			return "", false
+		}
+	}
+	return paneSupervisorArgvIdentity(command, id)
+}
+
+// historicalPrivatePaneSupervisorIdentity recognizes the supervised launch
+// string emitted by the private-socket release (#4393). That release populated
+// AO's environment through tmux set-environment, so pane_start_command contains
+// no AO_SESSION_ID, AO_SUPERVISED_PROCESS, or AO_RUN_FILE exports. The framing
+// below and the quoted supervisor argv are durable command-line facts; callers
+// must additionally require an exact database session+launch match.
+func historicalPrivatePaneSupervisorIdentity(command, id string) (string, bool) {
+	required := []string{
+		"cd ",
+		" || exit;",
+		"export COLORTERM='truecolor';",
+		"; exec cat >/dev/null",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(command, fragment) {
+			return "", false
+		}
+	}
+	return paneSupervisorArgvIdentity(command, id)
+}
+
+func paneSupervisorArgvIdentity(command, id string) (string, bool) {
+	pattern := regexp.MustCompile(
+		`'agent-process'\s+'supervise'\s+'--session'\s+'` + regexp.QuoteMeta(id) + `'\s+'--launch'\s+'([^']+)'`,
+	)
+	match := pattern.FindStringSubmatch(command)
+	if len(match) != 2 || strings.TrimSpace(match[1]) == "" {
+		return "", false
+	}
+	return match[1], true
+}
+
+// InspectRuntimeIdentity rereads immutable pane provenance from the canonical
+// target. It intentionally has no cache: a previous process's discovery is not
+// evidence after daemon replacement.
+func (r *Runtime) InspectRuntimeIdentity(ctx context.Context, handle ports.RuntimeHandle, expectedSessionID domain.SessionID) (ports.RuntimeIdentity, error) {
+	route, err := decodeRuntimeHandle(handle)
+	if err != nil {
+		return ports.RuntimeIdentity{}, err
+	}
+	expectedTmuxID, err := tmuxSessionName(expectedSessionID)
+	if err != nil {
+		return ports.RuntimeIdentity{}, err
+	}
+	if route.id != expectedTmuxID && route.id != string(expectedSessionID) {
+		return ports.RuntimeIdentity{}, fmt.Errorf(
+			"tmux runtime: identity handle %s does not match session %s",
+			route.id,
+			expectedSessionID,
+		)
+	}
+	if route.hasObjectFence() {
+		out, err := r.runFencedCommands(ctx, route, paneStartCommandsArgs(route.actionSessionTarget()))
+		if err != nil {
+			return ports.RuntimeIdentity{}, err
+		}
+		evidence, err := r.parsePaneIdentityEvidence(string(out), expectedSessionID, route.target)
+		if err != nil {
+			return ports.RuntimeIdentity{}, err
+		}
+		return evidence.identity, nil
+	}
+	return r.inspectTargetIdentity(ctx, route.id, expectedSessionID, route.target)
+}
+
+// ResolveRuntimeHandle canonicalizes a legacy bare or pre-fence qualified
+// locator into a durable owner-fenced route. A fully canonical handle remains
+// pinned to its persisted server/session/pane object; only a newer launch on
+// that unchanged object may be adopted to repair a crash between pane respawn
+// and the database CAS. Destructive cleanup uses ResolveExactRuntimeHandle.
+func (r *Runtime) ResolveRuntimeHandle(
+	ctx context.Context,
+	handle ports.RuntimeHandle,
+	owner ports.SupervisedProcessRef,
+) (ports.RuntimeHandle, bool, error) {
+	resolved, found, err := r.resolveRuntimeHandle(ctx, handle, owner, true)
+	return resolved.handle, found, err
+}
+
+// ResolveExactRuntimeHandle resolves only owner itself. A legacy locator may
+// relocate an exact surviving workload to another known tmux namespace; a
+// fully canonical handle stays pinned to its persisted object. Neither path
+// adopts a newer same-session generation. Boot reaping depends on this
+// distinction so a terminated stale row cannot kill its live replacement.
+func (r *Runtime) ResolveExactRuntimeHandle(
+	ctx context.Context,
+	handle ports.RuntimeHandle,
+	owner ports.SupervisedProcessRef,
+) (ports.RuntimeHandle, bool, error) {
+	if owner.SessionID == "" {
+		return ports.RuntimeHandle{}, false, fmt.Errorf(
+			"%w: exact tmux owner requires a session",
+			ports.ErrRuntimeProbeInconclusive,
+		)
+	}
+	owner.LaunchID = strings.TrimSpace(owner.LaunchID)
+	if owner.LaunchID == "" {
+		return r.resolveAbsentExactOwnerWithoutLaunch(ctx, handle, owner.SessionID)
+	}
+	resolved, found, err := r.resolveRuntimeHandle(ctx, handle, owner, false)
+	return resolved.handle, found, err
+}
+
+// resolveAbsentExactOwnerWithoutLaunch handles terminated rows created before
+// AO persisted runtime launch generations. Absence needs no ownership proof:
+// exhaustively finding no same-named target is enough to finish boot cleanup.
+// If any target exists, however, an empty historical generation cannot
+// authorize inspection or destruction, so recovery stays failed closed.
+func (r *Runtime) resolveAbsentExactOwnerWithoutLaunch(
+	ctx context.Context,
+	handle ports.RuntimeHandle,
+	sessionID domain.SessionID,
+) (ports.RuntimeHandle, bool, error) {
+	route, err := decodeRuntimeHandle(handle)
+	if err != nil {
+		return ports.RuntimeHandle{}, false, err
+	}
+	tmuxID, err := tmuxSessionName(sessionID)
+	if err != nil {
+		return ports.RuntimeHandle{}, false, err
+	}
+	if route.id != tmuxID && route.id != string(sessionID) {
+		return ports.RuntimeHandle{}, false, fmt.Errorf(
+			"%w: tmux handle %s does not match owner session %s",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+			sessionID,
+		)
+	}
+	matches, err := r.discoverTargets(ctx, route.id, r.recoveryTargets(route))
+	if err != nil {
+		return ports.RuntimeHandle{}, false, err
+	}
+	if len(matches) == 0 {
+		return ports.RuntimeHandle{}, false, nil
+	}
+	return ports.RuntimeHandle{}, false, fmt.Errorf(
+		"%w: tmux session %s exists in %d namespace(s), but the durable launch generation is empty",
 		ports.ErrRuntimeProbeInconclusive,
-		r.legacyBinary,
-		id,
-		legacyErr,
+		route.id,
+		len(matches),
 	)
 }
 
-func (r *Runtime) rememberSessionSocket(id, socketName string) {
-	r.socketMu.Lock()
-	r.sessionSockets[id] = socketName
-	r.socketMu.Unlock()
+func (r *Runtime) resolveRuntimeHandle(
+	ctx context.Context,
+	handle ports.RuntimeHandle,
+	owner ports.SupervisedProcessRef,
+	allowProvenNewer bool,
+) (runtimeResolution, bool, error) {
+	route, err := decodeRuntimeHandle(handle)
+	if err != nil {
+		return runtimeResolution{}, false, err
+	}
+	owner.LaunchID = strings.TrimSpace(owner.LaunchID)
+	if route.qualified && route.owner.SessionID != "" {
+		if owner.SessionID == "" {
+			owner = route.owner
+		} else if owner != route.owner {
+			return runtimeResolution{}, false, fmt.Errorf(
+				"%w: qualified tmux handle owner does not match durable owner",
+				ports.ErrRuntimeProbeInconclusive,
+			)
+		}
+	}
+	identitySessionID := domain.SessionID(route.id)
+	hasExpectedOwner := owner.SessionID != ""
+	if hasExpectedOwner {
+		ownerTmuxID, nameErr := tmuxSessionName(owner.SessionID)
+		if nameErr != nil {
+			return runtimeResolution{}, false, nameErr
+		}
+		if ownerTmuxID != route.id && string(owner.SessionID) != route.id {
+			return runtimeResolution{}, false, fmt.Errorf(
+				"%w: tmux handle %s does not match owner session %s",
+				ports.ErrRuntimeProbeInconclusive,
+				route.id,
+				owner.SessionID,
+			)
+		}
+		identitySessionID = owner.SessionID
+		if route.qualified && route.hasObjectFence() {
+			return r.resolveFencedRuntimeHandle(ctx, route, identitySessionID, owner, allowProvenNewer)
+		}
+	} else if route.qualified {
+		if r.runFilePath == "" {
+			present, evidence, inspectErr := r.inspectTargetPresence(ctx, route, domain.SessionID(route.id))
+			if inspectErr != nil || !present {
+				return runtimeResolution{}, present, inspectErr
+			}
+			if route.hasObjectFence() && (evidence.tmuxServerPID != route.tmuxServerPID ||
+				evidence.tmuxSessionID != route.tmuxSessionID || evidence.tmuxPaneID != route.tmuxPaneID) {
+				return runtimeResolution{}, false, fmt.Errorf(
+					"%w: tmux object identity changed for session %s",
+					ports.ErrRuntimeProbeInconclusive,
+					route.id,
+				)
+			}
+			resolvedRoute := route.withPaneIdentity(evidence)
+			resolved, encodeErr := qualifiedRuntimeHandleForRoute(resolvedRoute)
+			return runtimeResolution{handle: resolved, route: resolvedRoute}, encodeErr == nil, encodeErr
+		}
+		return runtimeResolution{}, false, fmt.Errorf(
+			"%w: qualified tmux handle %q has no immutable owner fence",
+			ports.ErrRuntimeProbeInconclusive,
+			handle.ID,
+		)
+	}
+
+	matches, err := r.discoverTargets(ctx, route.id, r.recoveryTargets(route))
+	if err != nil {
+		return runtimeResolution{}, false, err
+	}
+	if len(matches) == 0 {
+		return runtimeResolution{}, false, nil
+	}
+
+	candidates := make([]runtimeTargetCandidate, 0, len(matches))
+	for _, target := range matches {
+		evidence, inspectErr := r.inspectTargetIdentityEvidence(ctx, route.id, identitySessionID, target)
+		if inspectErr != nil {
+			return runtimeResolution{}, false, inspectErr
+		}
+		fullCandidate := evidence.identity.OwnershipProven &&
+			(allowProvenNewer || !hasExpectedOwner || evidence.launchID == owner.LaunchID)
+		weakExactCandidate := evidence.legacyNoRunFile && hasExpectedOwner &&
+			owner.LaunchID != "" && evidence.launchID == owner.LaunchID
+		// A pre-AO_RUN_FILE controller whose launch was overwritten in the DB is
+		// not safe to adopt, but it is still conflict evidence. Keep it in the
+		// candidate set so a later named/default duplicate cannot become the only
+		// visible owner merely because it matches the stale durable generation.
+		legacyController := evidence.legacyNoRunFile && evidence.launchID != ""
+		if fullCandidate || weakExactCandidate || legacyController {
+			candidates = append(candidates, runtimeTargetCandidate{
+				target:        target,
+				tmuxServerPID: evidence.tmuxServerPID,
+				tmuxSessionID: evidence.tmuxSessionID,
+				tmuxPaneID:    evidence.tmuxPaneID,
+				adoptable:     fullCandidate || weakExactCandidate,
+				identity: ports.RuntimeIdentity{
+					LaunchID:        evidence.launchID,
+					OwnershipProven: evidence.identity.OwnershipProven,
+				},
+			})
+		}
+	}
+	if len(candidates) == 0 {
+		if len(matches) > 1 {
+			return runtimeResolution{}, false, ports.RuntimeHandleAmbiguityError{
+				Handle: handle, Candidates: len(matches),
+			}
+		}
+		return runtimeResolution{}, false, fmt.Errorf(
+			"%w: tmux session %s exists on %s but is not the durable AO owner",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+			matches[0],
+		)
+	}
+
+	qualify := func(candidate runtimeTargetCandidate) (runtimeResolution, bool, error) {
+		resolvedOwner := ports.SupervisedProcessRef{
+			SessionID: identitySessionID,
+			LaunchID:  candidate.identity.LaunchID,
+		}
+		resolvedRoute := runtimeRoute{
+			id:            route.id,
+			target:        candidate.target,
+			qualified:     true,
+			owner:         resolvedOwner,
+			tmuxServerPID: candidate.tmuxServerPID,
+			tmuxSessionID: candidate.tmuxSessionID,
+			tmuxPaneID:    candidate.tmuxPaneID,
+		}
+		resolved, encodeErr := qualifiedRuntimeHandleForRoute(resolvedRoute)
+		return runtimeResolution{
+			handle: resolved,
+			route:  resolvedRoute,
+		}, encodeErr == nil, encodeErr
+	}
+	if len(candidates) == 1 && candidates[0].adoptable {
+		return qualify(candidates[0])
+	}
+
+	// Prefer the only controller that still owns a live managed workload. This
+	// repairs failed respawns while refusing to guess between live duplicates.
+	var live []runtimeTargetCandidate
+	for _, candidate := range candidates {
+		alive, inspectErr := r.isExactSupervisedProcessAliveOnTarget(ctx, route.id, candidate.target, candidate.tmuxServerPID, candidate.tmuxSessionID, candidate.tmuxPaneID, ports.SupervisedProcessRef{
+			SessionID: identitySessionID,
+			LaunchID:  candidate.identity.LaunchID,
+		})
+		if inspectErr != nil {
+			return runtimeResolution{}, false, fmt.Errorf(
+				"%w: inspect live owned controller on %s for session %s: %w",
+				ports.ErrRuntimeProbeInconclusive,
+				candidate.target,
+				route.id,
+				inspectErr,
+			)
+		}
+		if alive {
+			live = append(live, candidate)
+		}
+	}
+	matchingLaunch := func(in []runtimeTargetCandidate) []runtimeTargetCandidate {
+		if !hasExpectedOwner || owner.LaunchID == "" {
+			return nil
+		}
+		var matching []runtimeTargetCandidate
+		for _, candidate := range in {
+			if candidate.identity.LaunchID == owner.LaunchID {
+				matching = append(matching, candidate)
+			}
+		}
+		return matching
+	}
+	if len(live) == 1 {
+		if live[0].adoptable {
+			return qualify(live[0])
+		}
+		return runtimeResolution{}, false, fmt.Errorf(
+			"%w: live tmux controller on %s is not the durable AO owner",
+			ports.ErrRuntimeProbeInconclusive,
+			live[0].target,
+		)
+	}
+	if len(live) > 1 {
+		return runtimeResolution{}, false, ports.RuntimeHandleAmbiguityError{
+			Handle: handle, Candidates: len(live),
+		}
+	}
+	adoptable := make([]runtimeTargetCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.adoptable {
+			adoptable = append(adoptable, candidate)
+		}
+	}
+	if matching := matchingLaunch(adoptable); len(matching) == 1 {
+		return qualify(matching[0])
+	}
+	return runtimeResolution{}, false, ports.RuntimeHandleAmbiguityError{
+		Handle: handle, Candidates: len(candidates),
+	}
 }
 
-func (r *Runtime) forgetSessionSocket(id string) {
-	r.socketMu.Lock()
-	delete(r.sessionSockets, id)
-	r.socketMu.Unlock()
+func (r *Runtime) resolveFencedRuntimeHandle(
+	ctx context.Context,
+	route runtimeRoute,
+	identitySessionID domain.SessionID,
+	owner ports.SupervisedProcessRef,
+	allowProvenNewer bool,
+) (runtimeResolution, bool, error) {
+	present, evidence, err := r.inspectTargetPresence(ctx, route, identitySessionID)
+	if err != nil || !present {
+		return runtimeResolution{}, present, err
+	}
+	if evidence.tmuxServerPID != route.tmuxServerPID ||
+		evidence.tmuxSessionID != route.tmuxSessionID || evidence.tmuxPaneID != route.tmuxPaneID {
+		return runtimeResolution{}, false, fmt.Errorf(
+			"%w: tmux object identity changed for session %s",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+		)
+	}
+	fullCandidate := evidence.identity.OwnershipProven &&
+		(allowProvenNewer || evidence.launchID == owner.LaunchID)
+	weakExactCandidate := evidence.legacyNoRunFile && owner.LaunchID != "" &&
+		evidence.launchID == owner.LaunchID
+	if !fullCandidate && !weakExactCandidate {
+		return runtimeResolution{}, false, fmt.Errorf(
+			"%w: tmux session %s is not the durable AO owner",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+		)
+	}
+	resolvedRoute := route
+	resolvedRoute.owner = ports.SupervisedProcessRef{
+		SessionID: identitySessionID,
+		LaunchID:  evidence.launchID,
+	}
+	resolved, err := qualifiedRuntimeHandleForRoute(resolvedRoute)
+	return runtimeResolution{handle: resolved, route: resolvedRoute}, err == nil, err
+}
+
+func (r *Runtime) resolveExactQualifiedRoute(
+	ctx context.Context,
+	route runtimeRoute,
+) (runtimeRoute, bool, error) {
+	if !route.hasObjectFence() {
+		return runtimeRoute{}, false, fmt.Errorf(
+			"%w: qualified tmux route %s has no complete object fence",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+		)
+	}
+	expectedSessionID := route.owner.SessionID
+	if expectedSessionID == "" {
+		expectedSessionID = domain.SessionID(route.id)
+	}
+	present, evidence, err := r.inspectTargetPresence(ctx, route, expectedSessionID)
+	if err != nil {
+		return runtimeRoute{}, false, err
+	}
+	if !present {
+		return route, false, nil
+	}
+	if evidence.tmuxServerPID != route.tmuxServerPID ||
+		evidence.tmuxSessionID != route.tmuxSessionID ||
+		evidence.tmuxPaneID != route.tmuxPaneID {
+		return runtimeRoute{}, false, fmt.Errorf(
+			"%w: tmux object identity changed for session %s",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+		)
+	}
+	if route.owner.SessionID == "" {
+		return route, true, nil
+	}
+	if evidence.launchID != route.owner.LaunchID ||
+		(!evidence.identity.OwnershipProven && !evidence.legacyNoRunFile) {
+		return runtimeRoute{}, false, fmt.Errorf(
+			"%w: tmux session %s is not the persisted owner",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+		)
+	}
+	return route, true, nil
+}
+
+func (route runtimeRoute) withPaneIdentity(evidence paneIdentityEvidence) runtimeRoute {
+	route.tmuxServerPID = evidence.tmuxServerPID
+	route.tmuxSessionID = evidence.tmuxSessionID
+	route.tmuxPaneID = evidence.tmuxPaneID
+	return route
+}
+
+func (r *Runtime) inspectTargetPresence(
+	ctx context.Context,
+	route runtimeRoute,
+	expectedSessionID domain.SessionID,
+) (bool, paneIdentityEvidence, error) {
+	out, err := r.runOnSocket(ctx, route.target, hasSessionArgs(route.id)...)
+	if err != nil {
+		if sessionMissingOutput(string(out)) || serverNotRunningOutput(string(out)) || migrationSocketAbsentOutput(string(out)) {
+			return false, paneIdentityEvidence{}, nil
+		}
+		return false, paneIdentityEvidence{}, fmt.Errorf(
+			"%w: probe qualified tmux owner %s on %s: %w",
+			ports.ErrRuntimeProbeInconclusive,
+			route.id,
+			route.target,
+			err,
+		)
+	}
+	evidence, err := r.inspectTargetIdentityEvidence(ctx, route.id, expectedSessionID, route.target)
+	return true, evidence, err
 }
 
 func (r *Runtime) runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -1152,15 +2304,172 @@ func sanitizedSessionName(raw string) string {
 	return base + "-" + hex.EncodeToString(sum[:4])
 }
 
-func handleID(handle ports.RuntimeHandle) (string, error) {
-	id := handle.ID
+func qualifiedRuntimeHandle(id string, target socketTarget) (ports.RuntimeHandle, error) {
+	return qualifiedRuntimeHandleForOwner(id, target, ports.SupervisedProcessRef{})
+}
+
+func qualifiedRuntimeHandleForOwner(
+	id string,
+	target socketTarget,
+	owner ports.SupervisedProcessRef,
+) (ports.RuntimeHandle, error) {
+	return qualifiedRuntimeHandleForRoute(runtimeRoute{
+		id:        id,
+		target:    target,
+		qualified: true,
+		owner:     owner,
+	})
+}
+
+func qualifiedRuntimeHandleForRoute(route runtimeRoute) (ports.RuntimeHandle, error) {
+	id := route.id
+	target := route.target
+	owner := route.owner
+	if err := validateHandleSessionID(id); err != nil {
+		return ports.RuntimeHandle{}, err
+	}
+	owner.LaunchID = strings.TrimSpace(owner.LaunchID)
+	if (owner.SessionID == "") != (owner.LaunchID == "") {
+		return ports.RuntimeHandle{}, errors.New("tmux runtime: qualified handle owner requires both session and launch")
+	}
+	if owner.SessionID != "" {
+		ownerTmuxID, err := tmuxSessionName(owner.SessionID)
+		if err != nil {
+			return ports.RuntimeHandle{}, err
+		}
+		if ownerTmuxID != id && string(owner.SessionID) != id {
+			return ports.RuntimeHandle{}, fmt.Errorf(
+				"tmux runtime: qualified handle owner session %s does not match tmux session %s",
+				owner.SessionID,
+				id,
+			)
+		}
+	}
+	payload := qualifiedHandlePayload{
+		Session:       id,
+		Target:        target.kind,
+		LegacyBinary:  target.useLegacyBinary,
+		OwnerSession:  string(owner.SessionID),
+		OwnerLaunch:   owner.LaunchID,
+		TmuxServerPID: route.tmuxServerPID,
+		TmuxSessionID: route.tmuxSessionID,
+		TmuxPaneID:    route.tmuxPaneID,
+	}
+	if (payload.TmuxServerPID == 0) != (payload.TmuxSessionID == "") ||
+		(payload.TmuxServerPID == 0) != (payload.TmuxPaneID == "") {
+		return ports.RuntimeHandle{}, errors.New("tmux runtime: qualified handle requires a complete object fence")
+	}
+	if payload.TmuxServerPID != 0 && (payload.TmuxServerPID <= 1 ||
+		!tmuxSessionIDPattern.MatchString(payload.TmuxSessionID) ||
+		!tmuxPaneIDPattern.MatchString(payload.TmuxPaneID)) {
+		return ports.RuntimeHandle{}, errors.New("tmux runtime: invalid qualified handle object fence")
+	}
+	switch target.kind {
+	case socketTargetDefault:
+		// Default is intentionally explicit in the durable form; decoding pins
+		// it with -L default even when the replacement Runtime has a named
+		// primary or inherited TMUX points elsewhere.
+	case socketTargetNamed, socketTargetPath:
+		payload.Value = target.value
+	default:
+		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: cannot encode unknown socket target %q", target.kind)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: encode handle: %w", err)
+	}
+	return ports.RuntimeHandle{ID: tmuxHandlePrefix + base64.RawURLEncoding.EncodeToString(encoded)}, nil
+}
+
+func decodeRuntimeHandle(handle ports.RuntimeHandle) (runtimeRoute, error) {
+	if handle.ID == "" {
+		return runtimeRoute{}, errors.New("tmux runtime: session id is required")
+	}
+	if !strings.HasPrefix(handle.ID, tmuxHandlePrefix) {
+		if err := validateHandleSessionID(handle.ID); err != nil {
+			return runtimeRoute{}, err
+		}
+		return runtimeRoute{id: handle.ID}, nil
+	}
+
+	raw := strings.TrimPrefix(handle.ID, tmuxHandlePrefix)
+	encoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return runtimeRoute{}, fmt.Errorf("tmux runtime: invalid qualified handle: %w", err)
+	}
+	var payload qualifiedHandlePayload
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		return runtimeRoute{}, fmt.Errorf("tmux runtime: invalid qualified handle payload: %w", err)
+	}
+	if err := validateHandleSessionID(payload.Session); err != nil {
+		return runtimeRoute{}, err
+	}
+	payload.OwnerSession = strings.TrimSpace(payload.OwnerSession)
+	payload.OwnerLaunch = strings.TrimSpace(payload.OwnerLaunch)
+	if (payload.OwnerSession == "") != (payload.OwnerLaunch == "") {
+		return runtimeRoute{}, errors.New("tmux runtime: invalid qualified handle owner")
+	}
+	owner := ports.SupervisedProcessRef{
+		SessionID: domain.SessionID(payload.OwnerSession),
+		LaunchID:  payload.OwnerLaunch,
+	}
+	if owner.SessionID != "" {
+		ownerTmuxID, nameErr := tmuxSessionName(owner.SessionID)
+		if nameErr != nil || (ownerTmuxID != payload.Session && string(owner.SessionID) != payload.Session) {
+			return runtimeRoute{}, errors.New("tmux runtime: qualified handle owner does not match session route")
+		}
+	}
+	hasServerPID := payload.TmuxServerPID != 0
+	hasSessionID := payload.TmuxSessionID != ""
+	hasPaneID := payload.TmuxPaneID != ""
+	if hasServerPID != hasSessionID || hasServerPID != hasPaneID {
+		return runtimeRoute{}, errors.New("tmux runtime: incomplete qualified handle object fence")
+	}
+	if hasServerPID && (payload.TmuxServerPID <= 1 ||
+		!tmuxSessionIDPattern.MatchString(payload.TmuxSessionID) ||
+		!tmuxPaneIDPattern.MatchString(payload.TmuxPaneID)) {
+		return runtimeRoute{}, errors.New("tmux runtime: invalid qualified handle object fence")
+	}
+	target := socketTarget{
+		kind:            payload.Target,
+		value:           payload.Value,
+		useLegacyBinary: payload.LegacyBinary,
+	}
+	switch target.kind {
+	case socketTargetDefault:
+		if payload.Value != "" {
+			return runtimeRoute{}, errors.New("tmux runtime: default qualified handle has a socket value")
+		}
+	case socketTargetNamed:
+		if strings.TrimSpace(target.value) == "" {
+			return runtimeRoute{}, errors.New("tmux runtime: qualified named socket is empty")
+		}
+	case socketTargetPath:
+		if strings.TrimSpace(target.value) == "" || !filepath.IsAbs(target.value) {
+			return runtimeRoute{}, errors.New("tmux runtime: qualified socket path must be absolute")
+		}
+	default:
+		return runtimeRoute{}, fmt.Errorf("tmux runtime: unknown qualified socket target %q", target.kind)
+	}
+	return runtimeRoute{
+		id:            payload.Session,
+		target:        target,
+		qualified:     true,
+		owner:         owner,
+		tmuxServerPID: payload.TmuxServerPID,
+		tmuxSessionID: payload.TmuxSessionID,
+		tmuxPaneID:    payload.TmuxPaneID,
+	}, nil
+}
+
+func validateHandleSessionID(id string) error {
 	if id == "" {
-		return "", errors.New("tmux runtime: session id is required")
+		return errors.New("tmux runtime: session id is required")
 	}
 	if !sessionIDPattern.MatchString(id) {
-		return "", fmt.Errorf("tmux runtime: invalid handle id %q", id)
+		return fmt.Errorf("tmux runtime: invalid handle id %q", id)
 	}
-	return id, nil
+	return nil
 }
 
 // -- output detection helpers --

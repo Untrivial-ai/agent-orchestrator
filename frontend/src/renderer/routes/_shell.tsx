@@ -331,6 +331,7 @@ function ShellLayout() {
 	const setOrchestratorStartupError = useUiStore((state) => state.setOrchestratorStartupError);
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const replacementErrorProjectId = Object.keys(orchestratorReplacementErrors)[0] ?? null;
+	const startupRecoveryFailed = daemonStatus.code === "startup_recovery_failed";
 	const isStartupLoading =
 		!usesPreviewWorkspaceData &&
 		!daemonStatus.code &&
@@ -910,7 +911,6 @@ function ShellLayout() {
 						</div>
 					</main>
 					</div>
-					<DaemonFailureBanner status={daemonStatus} />
 					{/* When ShellTopbar is hidden, keep a macOS window-drag strip over
               the traffic-light band only. The fixed TitlebarNav renders after
               this strip so its no-drag buttons remain clickable. */}
@@ -951,6 +951,16 @@ function ShellLayout() {
 					workspaces={workspaces}
 				/>
 					<CommandPalette />
+				{startupRecoveryFailed ? (
+					<div
+						className="fixed inset-0"
+						data-testid="startup-recovery-cover"
+						style={{ zIndex: "calc(var(--z-overlay) + 1)" }}
+					>
+						<DaemonStartupLoader />
+					</div>
+				) : null}
+				<DaemonFailureBanner status={daemonStatus} />
 				</div>
 				</TerminalCacheProvider>
 			</SessionTopbarProvider>

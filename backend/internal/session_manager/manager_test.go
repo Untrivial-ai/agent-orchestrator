@@ -38,6 +38,13 @@ type fakeStore struct {
 	getProjectErr    error
 	getSessionErr    error
 	updateSessionErr error
+	// canonicalization is an optional narrow persistence seam used only when a
+	// runtime resolves a legacy handle to a durable qualified route.
+	canonicalizeRuntimeHandleCalls  int
+	beforeCanonicalizeRuntimeHandle func(domain.SessionID)
+	repairExitedActivityCalls       int
+	beforeRepairExitedActivity      func(domain.SessionID, domain.Activity)
+	previousActivities              map[domain.SessionID]domain.Activity
 	// agentSwitchStore is wired only by agent-switch tests so fakeLCM can model
 	// Lifecycle Manager's atomic ownership-boundary commands.
 	agentSwitchStore any
@@ -50,11 +57,12 @@ type fakeStore struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		sessions:      map[domain.SessionID]domain.SessionRecord{},
-		pr:            map[domain.SessionID]domain.PRFacts{},
-		projects:      map[string]domain.ProjectRecord{},
-		workspaceRepo: map[string][]domain.WorkspaceRepoRecord{},
-		worktrees:     map[domain.SessionID][]domain.SessionWorktreeRecord{},
+		sessions:           map[domain.SessionID]domain.SessionRecord{},
+		pr:                 map[domain.SessionID]domain.PRFacts{},
+		projects:           map[string]domain.ProjectRecord{},
+		workspaceRepo:      map[string][]domain.WorkspaceRepoRecord{},
+		worktrees:          map[domain.SessionID][]domain.SessionWorktreeRecord{},
+		previousActivities: map[domain.SessionID]domain.Activity{},
 	}
 }
 func (f *fakeStore) GetProject(_ context.Context, id string) (domain.ProjectRecord, bool, error) {
@@ -94,6 +102,68 @@ func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain
 	}
 	f.sessions[id] = rec
 	return true, nil
+}
+func (f *fakeStore) CanonicalizeRuntimeHandle(
+	_ context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	expectedHandleID string,
+	canonicalHandleID string,
+	actualLaunchID string,
+) (bool, error) {
+	f.canonicalizeRuntimeHandleCalls++
+	if f.beforeCanonicalizeRuntimeHandle != nil {
+		f.beforeCanonicalizeRuntimeHandle(id)
+	}
+	rec, ok := f.sessions[id]
+	if !ok || rec.IsTerminated || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeTUI ||
+		rec.ControllerOwner() != expected || rec.Metadata.RuntimeHandleID != expectedHandleID {
+		return false, nil
+	}
+	rec.Metadata.RuntimeHandleID = canonicalHandleID
+	rec.Metadata.RuntimeLaunchID = actualLaunchID
+	if rec.Metadata.AgentSessionID != "" &&
+		(rec.Metadata.AgentSessionIDLaunchID == "" || rec.Metadata.AgentSessionIDLaunchID == expected.RuntimeLaunchID) {
+		rec.Metadata.AgentSessionIDLaunchID = actualLaunchID
+	}
+	f.sessions[id] = rec
+	if f.sharedLog != nil {
+		*f.sharedLog = append(*f.sharedLog,
+			"persist-runtime-identity:"+expectedHandleID+"->"+canonicalHandleID+":"+actualLaunchID)
+	}
+	return true, nil
+}
+func (f *fakeStore) ReconcileRuntimeActivity(
+	_ context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	expectedHandleID string,
+	expectedActivity domain.Activity,
+	recovered domain.Activity,
+) (bool, error) {
+	f.repairExitedActivityCalls++
+	if f.beforeRepairExitedActivity != nil {
+		f.beforeRepairExitedActivity(id, recovered)
+	}
+	rec, ok := f.sessions[id]
+	if !ok || rec.IsTerminated || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeTUI ||
+		rec.ControllerOwner() != expected || rec.Metadata.RuntimeHandleID != expectedHandleID ||
+		rec.Activity != expectedActivity {
+		return false, nil
+	}
+	rec.Activity = recovered
+	if rec.UpdatedAt.Before(recovered.LastActivityAt) {
+		rec.UpdatedAt = recovered.LastActivityAt
+	}
+	f.sessions[id] = rec
+	return true, nil
+}
+func (f *fakeStore) LatestNonExitedSessionActivity(
+	_ context.Context,
+	id domain.SessionID,
+) (domain.Activity, bool, error) {
+	activity, ok := f.previousActivities[id]
+	return activity, ok, nil
 }
 func (f *fakeStore) RecordSessionLatestUserPrompt(_ context.Context, id domain.SessionID, prompt string, updatedAt time.Time) (bool, error) {
 	rec, ok := f.sessions[id]
@@ -224,6 +294,32 @@ func (l *fakeLCM) MarkChatSpawned(
 	return l.MarkSpawned(ctx, id, metadata)
 }
 
+func (l *fakeLCM) CanonicalizeRuntimeHandle(
+	ctx context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	expectedHandleID string,
+	canonicalHandleID string,
+	actualLaunchID string,
+) (bool, error) {
+	return l.store.CanonicalizeRuntimeHandle(
+		ctx, id, expected, expectedHandleID, canonicalHandleID, actualLaunchID,
+	)
+}
+
+func (l *fakeLCM) ReconcileRuntimeActivity(
+	ctx context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	expectedHandleID string,
+	expectedActivity domain.Activity,
+	recovered domain.Activity,
+) (bool, error) {
+	return l.store.ReconcileRuntimeActivity(
+		ctx, id, expected, expectedHandleID, expectedActivity, recovered,
+	)
+}
+
 func (l *fakeLCM) ApplyActivitySignal(_ context.Context, id domain.SessionID, signal ports.ActivitySignal) error {
 	rec, ok := l.store.sessions[id]
 	if !ok {
@@ -246,20 +342,6 @@ func (l *fakeLCM) ApplyActivitySignal(_ context.Context, id domain.SessionID, si
 	rec.Activity = domain.Activity{State: signal.State, LastActivityAt: time.Now()}
 	l.store.sessions[id] = rec
 	return nil
-}
-
-type contendedActivityLCM struct {
-	*fakeLCM
-	calls  int
-	before func(call int, id domain.SessionID, signal ports.ActivitySignal)
-}
-
-func (l *contendedActivityLCM) ApplyActivitySignal(ctx context.Context, id domain.SessionID, signal ports.ActivitySignal) error {
-	l.calls++
-	if l.before != nil {
-		l.before(l.calls, id, signal)
-	}
-	return l.fakeLCM.ApplyActivitySignal(ctx, id, signal)
 }
 
 func (l *fakeLCM) CommitControllerEpoch(
@@ -323,6 +405,7 @@ func (l *fakeLCM) MarkTerminated(_ context.Context, id domain.SessionID) error {
 }
 
 type fakeRuntime struct {
+	probeMu            sync.Mutex
 	createErr          error
 	createErrSequence  []error
 	createIDs          []string
@@ -338,14 +421,20 @@ type fakeRuntime struct {
 	interrupts         []string
 	onInterrupt        func(ports.RuntimeHandle)
 	// aliveByHandle maps a RuntimeHandle.ID to its liveness; missing = false.
-	aliveByHandle           map[string]bool
-	aliveErr                error
-	supervisedErr           error
-	supervisedAliveOverride *bool
-	supervisedSequence      []bool
-	destroyedIDs            []string
-	fencedResult            ports.FencedProbeResult
-	fencedRefs              []ports.FencedRuntimeRef
+	aliveByHandle                map[string]bool
+	aliveErr                     error
+	supervisedErr                error
+	supervisedAliveOverride      *bool
+	exactSupervisedErr           error
+	exactSupervisedAliveOverride *bool
+	supervisedSequence           []bool
+	destroyedIDs                 []string
+	aliveHandles                 []string
+	exactHandles                 []string
+	exactRefs                    []ports.SupervisedProcessRef
+	sharedLog                    *[]string
+	fencedResult                 ports.FencedProbeResult
+	fencedRefs                   []ports.FencedRuntimeRef
 }
 
 func (r *fakeRuntime) Interrupt(_ context.Context, handle ports.RuntimeHandle) error {
@@ -490,6 +579,12 @@ func (r *fakeRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle) err
 	return nil
 }
 func (r *fakeRuntime) IsAlive(_ context.Context, handle ports.RuntimeHandle) (bool, error) {
+	r.probeMu.Lock()
+	r.aliveHandles = append(r.aliveHandles, handle.ID)
+	if r.sharedLog != nil {
+		*r.sharedLog = append(*r.sharedLog, "probe-runtime:"+handle.ID)
+	}
+	r.probeMu.Unlock()
 	if r.aliveErr != nil {
 		return false, r.aliveErr
 	}
@@ -505,6 +600,19 @@ func (r *fakeRuntime) IsSupervisedProcessAlive(_ context.Context, handle ports.R
 	return r.aliveByHandle[handle.ID], nil
 }
 func (r *fakeRuntime) IsExactSupervisedProcessAlive(ctx context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
+	r.probeMu.Lock()
+	r.exactHandles = append(r.exactHandles, handle.ID)
+	r.exactRefs = append(r.exactRefs, ref)
+	if r.sharedLog != nil {
+		*r.sharedLog = append(*r.sharedLog, "probe-exact-workload:"+handle.ID)
+	}
+	r.probeMu.Unlock()
+	if r.exactSupervisedErr != nil {
+		return false, r.exactSupervisedErr
+	}
+	if r.exactSupervisedAliveOverride != nil {
+		return *r.exactSupervisedAliveOverride, nil
+	}
 	if len(r.supervisedSequence) > 0 {
 		alive := r.supervisedSequence[0]
 		r.supervisedSequence = r.supervisedSequence[1:]
@@ -512,6 +620,96 @@ func (r *fakeRuntime) IsExactSupervisedProcessAlive(ctx context.Context, handle 
 	}
 	return r.IsSupervisedProcessAlive(ctx, handle, ref)
 }
+
+type resolvingRuntime struct {
+	*fakeRuntime
+	resolved      ports.RuntimeHandle
+	found         bool
+	resolveErr    error
+	legacyHandles []string
+	owners        []ports.SupervisedProcessRef
+	identity      ports.RuntimeIdentity
+	identityErr   error
+	identityCalls []ports.RuntimeHandle
+	identityIDs   []domain.SessionID
+}
+
+func (r *resolvingRuntime) ResolveRuntimeHandle(
+	_ context.Context,
+	legacy ports.RuntimeHandle,
+	owner ports.SupervisedProcessRef,
+) (ports.RuntimeHandle, bool, error) {
+	r.legacyHandles = append(r.legacyHandles, legacy.ID)
+	r.owners = append(r.owners, owner)
+	if r.sharedLog != nil {
+		*r.sharedLog = append(*r.sharedLog, "resolve-runtime-handle:"+legacy.ID)
+	}
+	return r.resolved, r.found, r.resolveErr
+}
+
+var _ ports.RuntimeHandleResolver = (*resolvingRuntime)(nil)
+
+func (r *resolvingRuntime) InspectRuntimeIdentity(
+	_ context.Context,
+	handle ports.RuntimeHandle,
+	expectedSessionID domain.SessionID,
+) (ports.RuntimeIdentity, error) {
+	r.identityCalls = append(r.identityCalls, handle)
+	r.identityIDs = append(r.identityIDs, expectedSessionID)
+	if r.sharedLog != nil {
+		*r.sharedLog = append(*r.sharedLog, "inspect-runtime-identity:"+handle.ID)
+	}
+	return r.identity, r.identityErr
+}
+
+var _ ports.RuntimeIdentityInspector = (*resolvingRuntime)(nil)
+
+type exactResolvingRuntime struct {
+	*fakeRuntime
+	resolved ports.RuntimeHandle
+	found    bool
+	err      error
+	handles  []ports.RuntimeHandle
+	owners   []ports.SupervisedProcessRef
+}
+
+func (r *exactResolvingRuntime) ResolveExactRuntimeHandle(
+	_ context.Context,
+	handle ports.RuntimeHandle,
+	owner ports.SupervisedProcessRef,
+) (ports.RuntimeHandle, bool, error) {
+	r.handles = append(r.handles, handle)
+	r.owners = append(r.owners, owner)
+	return r.resolved, r.found, r.err
+}
+
+var _ ports.ExactRuntimeHandleResolver = (*exactResolvingRuntime)(nil)
+
+// runtimeWithoutExactInspection deliberately exposes only the base runtime
+// contract. A live shell without exact supervisor proof must not resurrect an
+// exited workload.
+type runtimeWithoutExactInspection struct{ runtime *fakeRuntime }
+
+func (r runtimeWithoutExactInspection) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	return r.runtime.Create(ctx, cfg)
+}
+
+func (r runtimeWithoutExactInspection) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {
+	return r.runtime.Destroy(ctx, handle)
+}
+
+func (r runtimeWithoutExactInspection) GetOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error) {
+	return r.runtime.GetOutput(ctx, handle, lines)
+}
+
+func (r runtimeWithoutExactInspection) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	return r.runtime.IsAlive(ctx, handle)
+}
+
+func (r runtimeWithoutExactInspection) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
+	return r.runtime.ProbeFencedRuntime(ctx, ref)
+}
+
 func (r *fakeRuntime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
 	r.fencedRefs = append(r.fencedRefs, ref)
 	if r.fencedResult.Liveness != "" {
@@ -532,6 +730,7 @@ func (r *fakeRuntime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRu
 	}
 	return ports.FencedProbeResult{Liveness: ports.FencedDead, Reason: ports.FencedReasonExactAbsent}
 }
+
 func (r *fakeRuntime) GetOutput(_ context.Context, _ ports.RuntimeHandle, _ int) (string, error) {
 	r.outputCalls++
 	if r.outputErr != nil {
@@ -611,6 +810,15 @@ type supervisedLaunchAgent struct{ launchArgvAgent }
 
 func (supervisedLaunchAgent) ExitDetectionMode() ports.AgentExitDetectionMode {
 	return ports.AgentExitDetectionSupervisor
+}
+
+type resumeBootstrapAgent struct{ supervisedLaunchAgent }
+
+func (resumeBootstrapAgent) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
+	if output == "ready" {
+		return domain.ActivityIdle, true
+	}
+	return "", false
 }
 
 // fakeAgents resolves every harness to the same fakeAgent.
@@ -812,9 +1020,10 @@ type missingAgents struct{}
 func (missingAgents) Agent(domain.AgentHarness) (ports.Agent, bool) { return nil, false }
 
 type fakeWorkspace struct {
-	createErr  error
-	destroyErr error
-	destroyed  int
+	createErr          error
+	createErrBySession map[domain.SessionID]error
+	destroyErr         error
+	destroyed          int
 	// destroyCtxErr records ctx.Err() as seen by Destroy, so a test can prove
 	// teardown does not inherit a caller's cancellation.
 	destroyCtxErr error
@@ -902,6 +1111,9 @@ func (w *fakeWorkspace) FetchDefaultBranch(ctx context.Context, repoPath string,
 }
 
 func (w *fakeWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	if err := w.createErrBySession[cfg.SessionID]; err != nil {
+		return ports.WorkspaceInfo{}, err
+	}
 	if w.createErr != nil {
 		return ports.WorkspaceInfo{}, w.createErr
 	}
@@ -1769,7 +1981,11 @@ func newExitedResumeManager(t *testing.T, runtime runtimeController, agent ports
 }
 
 func TestResumeAgent_RestartsRuntimeWithManagedGeneration(t *testing.T) {
-	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	exactAlive := false
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-mer-1": true},
+		exactSupervisedAliveOverride: &exactAlive,
+	}
 	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
 	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
 	m, st, ws := newExitedResumeManager(t, runtime, agent)
@@ -1778,6 +1994,7 @@ func TestResumeAgent_RestartsRuntimeWithManagedGeneration(t *testing.T) {
 		if !reflect.DeepEqual(lcm.prepared, []string{"mer-1:launch-new"}) {
 			t.Fatalf("runtime restarted before lifecycle prepared generation: %v", lcm.prepared)
 		}
+		exactAlive = true
 	}
 
 	result, err := m.ResumeAgentWithMode(ctx, "mer-1")
@@ -1818,8 +2035,79 @@ func TestResumeAgent_RestartsRuntimeWithManagedGeneration(t *testing.T) {
 	}
 }
 
+func TestResumeAgent_KeepaliveWithoutManagedWorkloadDoesNotSucceed(t *testing.T) {
+	exactAlive := false
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-mer-1": true},
+		exactSupervisedAliveOverride: &exactAlive,
+	}
+	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
+	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
+	m, st, _ := newExitedResumeManager(t, runtime, agent)
+	m.switchTargetStartWait = time.Millisecond
+
+	if _, err := m.ResumeAgentWithMode(ctx, "mer-1"); err == nil {
+		t.Fatal("ResumeAgentWithMode succeeded with only the tmux keepalive pane")
+	}
+	if runtime.restarted != 1 {
+		t.Fatalf("restart calls = %d, want 1", runtime.restarted)
+	}
+	if got := st.sessions["mer-1"]; got.Activity.State != domain.ActivityExited || got.Metadata.RuntimeLaunchID != "launch-old" {
+		t.Fatalf("failed bootstrap changed durable session: %+v", got)
+	}
+	if len(baseRuntime.exactRefs) < 2 || baseRuntime.exactRefs[len(baseRuntime.exactRefs)-1].LaunchID != "launch-new" {
+		t.Fatalf("exact workload probes = %+v, want post-restart launch-new proof", baseRuntime.exactRefs)
+	}
+}
+
+func TestResumeAgent_TransientConflictingWorkloadDoesNotSucceed(t *testing.T) {
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:      map[string]bool{"tmux-mer-1": true},
+		supervisedSequence: []bool{false, true, true, false},
+		outputs:            []string{"another process owns this conversation"},
+	}
+	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
+	agent := resumeBootstrapAgent{supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}}
+	m, st, _ := newExitedResumeManager(t, runtime, agent)
+	m.switchTargetStartWait = 25 * time.Millisecond
+
+	if _, err := m.ResumeAgentWithMode(ctx, "mer-1"); err == nil {
+		t.Fatal("ResumeAgentWithMode succeeded after a conflicting child appeared only transiently")
+	}
+	if got := st.sessions["mer-1"]; got.Activity.State != domain.ActivityExited || got.Metadata.RuntimeLaunchID != "launch-old" {
+		t.Fatalf("failed bootstrap changed durable session: %+v", got)
+	}
+}
+
+func TestResumeAgent_ExitedRowDoesNotRespawnExactLiveWorkload(t *testing.T) {
+	exactAlive := true
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-mer-1": true},
+		exactSupervisedAliveOverride: &exactAlive,
+	}
+	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
+	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
+	m, st, _ := newExitedResumeManager(t, runtime, agent)
+
+	_, err := m.ResumeAgentWithMode(ctx, "mer-1")
+	if !errors.Is(err, ErrAgentNotExited) {
+		t.Fatalf("ResumeAgentWithMode error = %v, want ErrAgentNotExited", err)
+	}
+	if runtime.restarted != 0 || baseRuntime.created != 0 || baseRuntime.destroyed != 0 {
+		t.Fatalf("false Exited row replaced exact live workload: restarted=%d created=%d destroyed=%d",
+			runtime.restarted, baseRuntime.created, baseRuntime.destroyed)
+	}
+	if got := st.sessions["mer-1"]; got.Activity.State != domain.ActivityExited ||
+		got.Metadata.RuntimeLaunchID != "launch-old" {
+		t.Fatalf("rejected resume changed durable owner: %+v", got)
+	}
+}
+
 func TestResumeAgent_FallsBackToRuntimeRecreateWithoutRestartCapability(t *testing.T) {
-	runtime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	runtime := &fakeRuntime{
+		aliveByHandle:      map[string]bool{"tmux-mer-1": true},
+		supervisedSequence: []bool{false, true},
+	}
 	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
 	m, st, _ := newExitedResumeManager(t, runtime, agent)
 
@@ -1858,7 +2146,11 @@ func TestResumeAgent_RequiresLiveExitedSession(t *testing.T) {
 }
 
 func TestResumeAgent_RestartFailureLeavesSessionExited(t *testing.T) {
-	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	exactAlive := false
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-mer-1": true},
+		exactSupervisedAliveOverride: &exactAlive,
+	}
 	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime, restartErr: errors.New("respawn failed")}
 	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
 	m, st, _ := newExitedResumeManager(t, runtime, agent)
@@ -1877,7 +2169,11 @@ func TestResumeAgent_RestartFailureLeavesSessionExited(t *testing.T) {
 }
 
 func TestResumeAgent_RejectsConcurrentRequest(t *testing.T) {
-	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	exactAlive := false
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-mer-1": true},
+		exactSupervisedAliveOverride: &exactAlive,
+	}
 	runtime := &blockingRestartRuntime{
 		fakeRuntime: baseRuntime,
 		entered:     make(chan struct{}),
@@ -1895,6 +2191,7 @@ func TestResumeAgent_RejectsConcurrentRequest(t *testing.T) {
 	if _, err := m.ResumeAgentWithMode(ctx, "mer-1"); !errors.Is(err, ErrResumeInProgress) {
 		t.Fatalf("concurrent resume error = %v, want ErrResumeInProgress", err)
 	}
+	exactAlive = true
 	close(runtime.release)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first resume: %v", err)
@@ -7424,6 +7721,132 @@ func TestRestoreAll_ConflictLogsAndContinues(t *testing.T) {
 	}
 }
 
+func TestRestoreAll_ReportsPreserveReplayFailureWithoutRelaunch(t *testing.T) {
+	m, st, rt, ws := newLifecycleManager()
+	applyErr := errors.New("apply preserved failed")
+	ws.applyErr = applyErr
+	rec := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		IsTerminated: true,
+		Activity:     domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root", AgentSessionID: "agent-mer-1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+		SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName,
+		WorktreePath: rec.Metadata.WorkspacePath, PreservedRef: "refs/ao/preserved/mer-1", State: "removed",
+	}}
+
+	err := m.RestoreAll(context.Background())
+	if !errors.Is(err, applyErr) {
+		t.Fatalf("RestoreAll error = %v, want %v", err, applyErr)
+	}
+	if rt.created != 0 || !st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("failed preserve replay relaunched session: creates=%d session=%+v", rt.created, st.sessions[rec.ID])
+	}
+	if rows := st.worktrees[rec.ID]; len(rows) != 1 || rows[0].PreservedRef == "" {
+		t.Fatalf("failed preserve replay consumed retry state: %+v", rows)
+	}
+}
+
+func TestRestoreAll_ReportsRestoreFailureAndContinuesOtherSessions(t *testing.T) {
+	m, st, rt, ws := newLifecycleManager()
+	restoreErr := errors.New("restore workspace failed")
+	ws.createErrBySession = map[domain.SessionID]error{"mer-1": restoreErr}
+	for _, id := range []domain.SessionID{"mer-1", "mer-2"} {
+		st.sessions[id] = domain.SessionRecord{
+			ID: id, ProjectID: "mer", Kind: domain.KindWorker,
+			Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+			IsTerminated: true,
+			Activity:     domain.Activity{State: domain.ActivityExited},
+			Metadata: domain.SessionMetadata{
+				WorkspacePath: "/ws/" + string(id), Branch: "ao/" + string(id) + "/root",
+				AgentSessionID: "agent-" + string(id),
+			},
+		}
+		st.worktrees[id] = []domain.SessionWorktreeRecord{{
+			SessionID: id, RepoName: domain.RootWorkspaceRepoName,
+			WorktreePath: "/ws/" + string(id), State: "removed",
+		}}
+	}
+
+	err := m.RestoreAll(context.Background())
+	if !errors.Is(err, restoreErr) {
+		t.Fatalf("RestoreAll error = %v, want %v", err, restoreErr)
+	}
+	if !st.sessions["mer-1"].IsTerminated || len(st.worktrees["mer-1"]) != 1 {
+		t.Fatalf("failed session lost retry state: session=%+v rows=%+v", st.sessions["mer-1"], st.worktrees["mer-1"])
+	}
+	if st.sessions["mer-2"].IsTerminated || len(st.worktrees["mer-2"]) != 0 {
+		t.Fatalf("independent session was not restored: session=%+v rows=%+v", st.sessions["mer-2"], st.worktrees["mer-2"])
+	}
+	if rt.created != 1 {
+		t.Fatalf("runtime creates = %d, want one independent restore", rt.created)
+	}
+}
+
+func TestRestoreAll_ReportsRelaunchFailureAndKeepsRetryMarker(t *testing.T) {
+	m, st, rt, _ := newLifecycleManager()
+	relaunchErr := errors.New("runtime create failed")
+	rt.createErr = relaunchErr
+	rec := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		IsTerminated: true,
+		Activity:     domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root", AgentSessionID: "agent-mer-1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+		SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName,
+		WorktreePath: rec.Metadata.WorkspacePath, State: "removed",
+	}}
+
+	err := m.RestoreAll(context.Background())
+	if !errors.Is(err, relaunchErr) {
+		t.Fatalf("RestoreAll error = %v, want %v", err, relaunchErr)
+	}
+	if got := st.sessions[rec.ID]; !got.IsTerminated {
+		t.Fatalf("failed relaunch made session live: %+v", got)
+	}
+	if rows := st.worktrees[rec.ID]; len(rows) != 1 || rows[0].State != "removed" {
+		t.Fatalf("failed relaunch consumed retry marker: %+v", rows)
+	}
+}
+
+func TestRestoreAll_NotResumableRemainsHarmless(t *testing.T) {
+	m, st, rt, _ := newLifecycleManager()
+	rec := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		IsTerminated: true,
+		Activity:     domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+		SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName,
+		WorktreePath: rec.Metadata.WorkspacePath, State: "removed",
+	}}
+
+	if err := m.RestoreAll(context.Background()); err != nil {
+		t.Fatalf("RestoreAll error = %v; ErrNotResumable is an intentional skip", err)
+	}
+	if rt.created != 0 || !st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("unresumable session changed lifecycle: creates=%d session=%+v", rt.created, st.sessions[rec.ID])
+	}
+	if rows := st.worktrees[rec.ID]; len(rows) != 1 || rows[0].State != "removed" {
+		t.Fatalf("unresumable session lost future retry marker: %+v", rows)
+	}
+}
+
 func TestRestoreAll_WorkspaceProjectRestoresAndAppliesEachRepo(t *testing.T) {
 	m, st, rt, ws := newLifecycleManager()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
@@ -7621,7 +8044,7 @@ func TestReconcileLive_PreservesScopedShellTerminalsWithExistingWorktree(t *test
 	}
 }
 
-func TestReconcileLive_RelaunchFailureLeavesSessionExitedAndRecoverable(t *testing.T) {
+func TestReconcileLive_RelaunchFailurePreservesLifecycleAndRemainsResumable(t *testing.T) {
 	st := newFakeStore()
 	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
 	rt := &fakeRuntime{aliveByHandle: map[string]bool{}}
@@ -7635,8 +8058,13 @@ func TestReconcileLive_RelaunchFailureLeavesSessionExitedAndRecoverable(t *testi
 		Messenger: &fakeMessenger{}, Lifecycle: lcm,
 		LookPath: func(string) (string, error) { return "/bin/true", nil },
 	})
+	activityAt := time.Date(2026, time.August, 27, 16, 40, 0, 0, time.UTC)
+	firstSignalAt := activityAt.Add(-time.Minute)
 	rec := domain.SessionRecord{
 		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode,
+		Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: activityAt},
+		FirstSignalAt: firstSignalAt,
+		UpdatedAt:     activityAt,
 		Metadata: domain.SessionMetadata{
 			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "old", AgentSessionID: "agent-s1",
 		},
@@ -7647,8 +8075,9 @@ func TestReconcileLive_RelaunchFailureLeavesSessionExitedAndRecoverable(t *testi
 		t.Fatalf("reconcileLive error = %v, want relaunch failure", err)
 	}
 	got := st.sessions[rec.ID]
-	if got.IsTerminated || got.Activity.State != domain.ActivityExited {
-		t.Fatalf("failed relaunch session = %+v, want live/exited", got)
+	if got.IsTerminated != rec.IsTerminated || got.Activity != rec.Activity || !got.FirstSignalAt.Equal(rec.FirstSignalAt) {
+		t.Fatalf("restart-time relaunch failure changed lifecycle facts: got %+v, want activity=%+v firstSignalAt=%v terminated=%v",
+			got, rec.Activity, rec.FirstSignalAt, rec.IsTerminated)
 	}
 	if ws.stashCalls != 0 || lcm.terminated[rec.ID] != 0 {
 		t.Fatalf("failed relaunch changed durable lifecycle: stash=%d terminated=%d", ws.stashCalls, lcm.terminated[rec.ID])
@@ -7660,6 +8089,15 @@ func TestReconcileLive_RelaunchFailureLeavesSessionExitedAndRecoverable(t *testi
 	}
 	if rows := st.worktrees[rec.ID]; len(rows) != 0 {
 		t.Fatalf("failed relaunch wrote shutdown restore markers: %+v", rows)
+	}
+
+	ws.createErr = nil
+	resumed, err := m.ResumeAgentWithMode(context.Background(), rec.ID)
+	if err != nil {
+		t.Fatalf("ResumeAgentWithMode after dependency recovery: %v", err)
+	}
+	if resumed.Session.IsTerminated || resumed.Session.Activity.State != domain.ActivityIdle {
+		t.Fatalf("resumed session = %+v, want live/idle", resumed.Session)
 	}
 }
 
@@ -7683,8 +8121,9 @@ func TestReconcileLive_RuntimeFailureAfterLaunchMetadataUpdateLeavesSessionResum
 	})
 	rec := domain.SessionRecord{
 		ID: "s1", ProjectID: "p1", Harness: domain.HarnessCodex,
-		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: bootUpdatedAt},
-		UpdatedAt: bootUpdatedAt,
+		Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: bootUpdatedAt},
+		FirstSignalAt: bootUpdatedAt.Add(-time.Minute),
+		UpdatedAt:     bootUpdatedAt,
 		Metadata: domain.SessionMetadata{
 			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "old",
 			RuntimeLaunchID: "old-launch", AgentSessionID: "native-conversation-1",
@@ -7697,8 +8136,9 @@ func TestReconcileLive_RuntimeFailureAfterLaunchMetadataUpdateLeavesSessionResum
 		t.Fatalf("reconcileLive error = %v, want runtime create failure", err)
 	}
 	failed := st.sessions[rec.ID]
-	if failed.IsTerminated || failed.Activity.State != domain.ActivityExited {
-		t.Fatalf("failed relaunch session = %+v, want live/exited", failed)
+	if failed.IsTerminated != rec.IsTerminated || failed.Activity != rec.Activity || !failed.FirstSignalAt.Equal(rec.FirstSignalAt) {
+		t.Fatalf("runtime relaunch failure changed lifecycle facts: got %+v, want activity=%+v firstSignalAt=%v terminated=%v",
+			failed, rec.Activity, rec.FirstSignalAt, rec.IsTerminated)
 	}
 	if failed.Metadata.BrowserCapabilityVerifier != "verifier-1" {
 		t.Fatalf("browser capability verifier = %q, want launch metadata persisted", failed.Metadata.BrowserCapabilityVerifier)
@@ -7719,71 +8159,6 @@ func TestReconcileLive_RuntimeFailureAfterLaunchMetadataUpdateLeavesSessionResum
 	resumed := st.sessions[rec.ID]
 	if resumed.IsTerminated || resumed.Metadata.AgentSessionID != "native-conversation-1" {
 		t.Fatalf("resumed session lost durable identity: %+v", resumed)
-	}
-}
-
-func TestPreserveFailedReconcileRelaunchRetriesContendedCAS(t *testing.T) {
-	st := newFakeStore()
-	now := time.Date(2026, time.August, 27, 16, 54, 0, 0, time.UTC)
-	rec := domain.SessionRecord{
-		ID: "s1", Activity: domain.Activity{State: domain.ActivityActive}, UpdatedAt: now,
-		Metadata: domain.SessionMetadata{RuntimeHandleID: "old", RuntimeLaunchID: "old-launch"},
-	}
-	st.sessions[rec.ID] = rec
-	lcm := &contendedActivityLCM{fakeLCM: &fakeLCM{store: st}}
-	lcm.before = func(call int, id domain.SessionID, signal ports.ActivitySignal) {
-		if call != 1 {
-			return
-		}
-		current := st.sessions[id]
-		current.UpdatedAt = signal.ExpectedUpdatedAt.Add(time.Nanosecond)
-		st.sessions[id] = current
-	}
-	m := New(Deps{Store: st, Lifecycle: lcm})
-
-	committed, err := m.preserveFailedReconcileRelaunch(context.Background(), rec)
-	if err != nil {
-		t.Fatalf("preserveFailedReconcileRelaunch: %v", err)
-	}
-	if committed {
-		t.Fatal("failed controller was reported committed")
-	}
-	if lcm.calls != 2 {
-		t.Fatalf("ApplyActivitySignal calls = %d, want retry after one CAS loss", lcm.calls)
-	}
-	if got := st.sessions[rec.ID].Activity.State; got != domain.ActivityExited {
-		t.Fatalf("activity = %q, want exited after retry", got)
-	}
-}
-
-func TestPreserveFailedReconcileRelaunchBoundsPersistentCASContention(t *testing.T) {
-	st := newFakeStore()
-	now := time.Date(2026, time.August, 27, 16, 54, 0, 0, time.UTC)
-	rec := domain.SessionRecord{
-		ID: "s1", Activity: domain.Activity{State: domain.ActivityActive}, UpdatedAt: now,
-		Metadata: domain.SessionMetadata{RuntimeHandleID: "old", RuntimeLaunchID: "old-launch"},
-	}
-	st.sessions[rec.ID] = rec
-	lcm := &contendedActivityLCM{fakeLCM: &fakeLCM{store: st}}
-	lcm.before = func(_ int, id domain.SessionID, signal ports.ActivitySignal) {
-		current := st.sessions[id]
-		current.UpdatedAt = signal.ExpectedUpdatedAt.Add(time.Nanosecond)
-		st.sessions[id] = current
-	}
-	m := New(Deps{Store: st, Lifecycle: lcm})
-
-	committed, err := m.preserveFailedReconcileRelaunch(context.Background(), rec)
-	if err == nil || !strings.Contains(err.Error(), "session changed") {
-		t.Fatalf("preserveFailedReconcileRelaunch error = %v, want bounded contention error", err)
-	}
-	if committed {
-		t.Fatal("contended failed controller was reported committed")
-	}
-	if lcm.calls != 3 {
-		t.Fatalf("ApplyActivitySignal calls = %d, want bounded 3 attempts", lcm.calls)
-	}
-	if got := st.sessions[rec.ID].Activity.State; got != domain.ActivityActive {
-		t.Fatalf("activity = %q, want unchanged after persistent contention", got)
 	}
 }
 
@@ -7823,6 +8198,579 @@ func TestReconcileLive_DoesNotTeardownAfterUncertainRelaunchCommit(t *testing.T)
 		if call == "ForceDestroy:s1" {
 			t.Fatalf("uncertain live controller must not lose its worktree; calls=%v", ws.calls)
 		}
+	}
+}
+
+func TestReconcileLive_CanonicalizesLegacyHandleBeforeAdoptingExactLiveWorkload(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	activityAt := time.Date(2026, time.August, 27, 16, 40, 0, 0, time.UTC)
+	observedAt := activityAt.Add(5 * time.Minute)
+	var callLog []string
+	st.sharedLog = &callLog
+	exactAlive := true
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-v1:qualified": true},
+		exactSupervisedAliveOverride: &exactAlive,
+		sharedLog:                    &callLog,
+	}
+	rt := &resolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:qualified"},
+		found:       true,
+		identity: ports.RuntimeIdentity{
+			LaunchID: "launch-proven", OwnershipProven: true,
+		},
+	}
+	ws := &fakeWorkspace{createErr: errors.New("live canonical runtime must be adopted, not relaunched")}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: lcm,
+		Clock:    func() time.Time { return observedAt },
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity:      domain.Activity{State: domain.ActivityExited, LastActivityAt: activityAt},
+		FirstSignalAt: activityAt.Add(-time.Minute),
+		UpdatedAt:     activityAt,
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "legacy-s1",
+			RuntimeLaunchID: "launch-stale", AgentSessionID: "agent-s1", AgentSessionIDLaunchID: "launch-stale",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	recoveredActivity := domain.Activity{State: domain.ActivityActive, LastActivityAt: activityAt.Add(-time.Minute)}
+	st.previousActivities[rec.ID] = recoveredActivity
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	got := st.sessions[rec.ID]
+	if got.Metadata.RuntimeHandleID != "tmux-v1:qualified" || got.Metadata.RuntimeLaunchID != "launch-proven" ||
+		got.Metadata.AgentSessionIDLaunchID != "launch-proven" {
+		t.Fatalf("durable runtime identity was not atomically canonicalized: %+v", got.Metadata)
+	}
+	if got.IsTerminated || got.Activity != recoveredActivity || !got.UpdatedAt.Equal(activityAt) {
+		t.Fatalf("exact live workload was not repaired before adoption: %+v", got)
+	}
+	if len(callLog) < 3 || callLog[0] != "resolve-runtime-handle:legacy-s1" ||
+		callLog[1] != "inspect-runtime-identity:tmux-v1:qualified" ||
+		callLog[2] != "persist-runtime-identity:legacy-s1->tmux-v1:qualified:launch-proven" {
+		t.Fatalf("canonicalization order = %v, want resolve, provenance inspection, then atomic persistence before probes", callLog)
+	}
+	for _, handle := range baseRuntime.aliveHandles {
+		if handle != "tmux-v1:qualified" {
+			t.Fatalf("runtime probed before canonical route was durable: handles=%v log=%v", baseRuntime.aliveHandles, callLog)
+		}
+	}
+	if !reflect.DeepEqual(baseRuntime.exactHandles, []string{"tmux-v1:qualified", "tmux-v1:qualified"}) ||
+		!reflect.DeepEqual(baseRuntime.exactRefs, []ports.SupervisedProcessRef{
+			{SessionID: rec.ID, LaunchID: "launch-proven"},
+			{SessionID: rec.ID, LaunchID: "launch-proven"},
+		}) {
+		t.Fatalf("exact workload probes = handles %v refs %+v", baseRuntime.exactHandles, baseRuntime.exactRefs)
+	}
+	if !reflect.DeepEqual(rt.legacyHandles, []string{"legacy-s1"}) ||
+		!reflect.DeepEqual(rt.owners, []ports.SupervisedProcessRef{{SessionID: rec.ID, LaunchID: "launch-stale"}}) ||
+		!reflect.DeepEqual(rt.identityCalls, []ports.RuntimeHandle{{ID: "tmux-v1:qualified"}}) ||
+		!reflect.DeepEqual(rt.identityIDs, []domain.SessionID{rec.ID}) {
+		t.Fatalf("resolution inputs = legacy %v owners %+v identityHandles %+v identitySessions %v",
+			rt.legacyHandles, rt.owners, rt.identityCalls, rt.identityIDs)
+	}
+	if rt.created != 0 || rt.destroyed != 0 || len(ws.restoreConfigs) != 0 {
+		t.Fatalf("adoption relaunched recoverable work: created=%d destroyed=%d restores=%v", rt.created, rt.destroyed, ws.restoreConfigs)
+	}
+}
+
+func TestReconcileLive_CanonicalizationUpdatesOnlyCurrentNativeIdentityFence(t *testing.T) {
+	tests := []struct {
+		name      string
+		before    string
+		wantAfter string
+	}{
+		{name: "unfenced identity follows proven runtime", before: "", wantAfter: "launch-proven"},
+		{name: "newer identity keeps its own launch", before: "newer-native-identity-launch", wantAfter: "newer-native-identity-launch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+			baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-v1:qualified": true}}
+			rt := &resolvingRuntime{
+				fakeRuntime: baseRuntime,
+				resolved:    ports.RuntimeHandle{ID: "tmux-v1:qualified"},
+				found:       true,
+				identity: ports.RuntimeIdentity{
+					LaunchID: "launch-proven", OwnershipProven: true,
+				},
+			}
+			m := New(Deps{
+				Runtime: rt, Agents: fakeAgents{},
+				Workspace: &fakeWorkspace{createErr: errors.New("live canonical runtime must be adopted")},
+				Store:     st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+				LookPath: func(string) (string, error) { return "/bin/true", nil },
+			})
+			rec := domain.SessionRecord{
+				ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+				Activity: domain.Activity{State: domain.ActivityActive},
+				Metadata: domain.SessionMetadata{
+					Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "legacy-s1",
+					RuntimeLaunchID: "launch-stale", AgentSessionID: "agent-s1", AgentSessionIDLaunchID: tt.before,
+				},
+			}
+			st.sessions[rec.ID] = rec
+
+			if err := m.reconcileLive(context.Background(), rec); err != nil {
+				t.Fatalf("reconcileLive: %v", err)
+			}
+			got := st.sessions[rec.ID]
+			if got.Metadata.RuntimeHandleID != "tmux-v1:qualified" || got.Metadata.RuntimeLaunchID != "launch-proven" {
+				t.Fatalf("runtime identity was not canonicalized: %+v", got.Metadata)
+			}
+			if got.Metadata.AgentSessionIDLaunchID != tt.wantAfter {
+				t.Fatalf("native identity fence = %q, want %q: %+v",
+					got.Metadata.AgentSessionIDLaunchID, tt.wantAfter, got.Metadata)
+			}
+		})
+	}
+}
+
+func TestReconcileLive_StaleCanonicalHandleCASStopsBeforeRuntimeUse(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-v1:resolved": true}}
+	rt := &resolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:resolved"},
+		found:       true,
+		identity: ports.RuntimeIdentity{
+			LaunchID: "launch-proven", OwnershipProven: true,
+		},
+	}
+	ws := &fakeWorkspace{createErr: errors.New("stale canonicalization must not fall through to relaunch")}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: lcm,
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "legacy-s1",
+			RuntimeLaunchID: "launch-old", AgentSessionID: "agent-s1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	st.beforeCanonicalizeRuntimeHandle = func(id domain.SessionID) {
+		concurrent := st.sessions[id]
+		concurrent.Metadata.RuntimeHandleID = "tmux-v1:concurrent"
+		concurrent.Metadata.RuntimeLaunchID = "launch-concurrent"
+		st.sessions[id] = concurrent
+	}
+
+	if err := m.reconcileLive(context.Background(), rec); err == nil {
+		t.Fatal("reconcileLive succeeded after losing canonical-handle ownership CAS")
+	}
+	if st.canonicalizeRuntimeHandleCalls != 1 {
+		t.Fatalf("canonicalization CAS calls = %d, want 1", st.canonicalizeRuntimeHandleCalls)
+	}
+	if !reflect.DeepEqual(rt.identityCalls, []ports.RuntimeHandle{{ID: "tmux-v1:resolved"}}) {
+		t.Fatalf("runtime identity inspections = %+v, want canonical handle", rt.identityCalls)
+	}
+	if len(baseRuntime.aliveHandles) != 0 || len(baseRuntime.exactHandles) != 0 ||
+		rt.created != 0 || rt.destroyed != 0 || len(ws.restoreConfigs) != 0 {
+		t.Fatalf("stale canonical route was used: alive=%v exact=%v created=%d destroyed=%d restores=%v",
+			baseRuntime.aliveHandles, baseRuntime.exactHandles, rt.created, rt.destroyed, ws.restoreConfigs)
+	}
+	got := st.sessions[rec.ID]
+	if got.Metadata.RuntimeHandleID != "tmux-v1:concurrent" || got.Metadata.RuntimeLaunchID != "launch-concurrent" {
+		t.Fatalf("stale reconciliation overwrote concurrent ownership: %+v", got.Metadata)
+	}
+}
+
+func TestReconcileLive_UnprovenCanonicalIdentityIsInconclusiveAndNonMutating(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-v1:resolved": true}}
+	rt := &resolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:resolved"},
+		found:       true,
+		identity: ports.RuntimeIdentity{
+			LaunchID: "unproven-launch", OwnershipProven: false,
+		},
+	}
+	ws := &fakeWorkspace{createErr: errors.New("unproven identity must not fall through to relaunch")}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "legacy-s1",
+			RuntimeLaunchID: "launch-stale", AgentSessionID: "agent-s1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	err := m.reconcileLive(context.Background(), rec)
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("reconcileLive error = %v, want ErrRuntimeProbeInconclusive", err)
+	}
+	if st.canonicalizeRuntimeHandleCalls != 0 || len(baseRuntime.aliveHandles) != 0 ||
+		len(baseRuntime.exactHandles) != 0 || rt.created != 0 || rt.destroyed != 0 || len(ws.restoreConfigs) != 0 {
+		t.Fatalf("unproven identity mutated state: CAS=%d alive=%v exact=%v created=%d destroyed=%d restores=%v",
+			st.canonicalizeRuntimeHandleCalls, baseRuntime.aliveHandles, baseRuntime.exactHandles,
+			rt.created, rt.destroyed, ws.restoreConfigs)
+	}
+	if got := st.sessions[rec.ID]; got != rec {
+		t.Fatalf("unproven identity changed durable session: got %+v, want %+v", got, rec)
+	}
+}
+
+func TestReconcileLive_QualifiedTMUXWithMismatchedWeakLaunchIsInconclusive(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-v1:qualified": true}}
+	rt := &resolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:qualified"},
+		found:       true,
+		identity: ports.RuntimeIdentity{
+			LaunchID: "launch-foreign", OwnershipProven: false,
+		},
+	}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "tmux-v1:qualified",
+			RuntimeLaunchID: "launch-current", AgentSessionID: "agent-s1", AgentSessionIDLaunchID: "launch-current",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	err := m.reconcileLive(context.Background(), rec)
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("reconcileLive error = %v, want ErrRuntimeProbeInconclusive", err)
+	}
+	if got := st.sessions[rec.ID]; got != rec {
+		t.Fatalf("unproven qualified route changed durable session: got %+v want %+v", got, rec)
+	}
+	if st.canonicalizeRuntimeHandleCalls != 0 || rt.created != 0 || rt.destroyed != 0 ||
+		len(baseRuntime.exactHandles) != 0 {
+		t.Fatalf("unproven qualified route was adopted or mutated: CAS=%d created=%d destroyed=%d exact=%v",
+			st.canonicalizeRuntimeHandleCalls, rt.created, rt.destroyed, baseRuntime.exactHandles)
+	}
+}
+
+func TestReconcileLive_WeakMatchingIdentityCanonicalizesLegacyRouteWithoutRebindingLaunch(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-v1:qualified": true}}
+	rt := &resolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:qualified"},
+		found:       true,
+		identity: ports.RuntimeIdentity{
+			LaunchID: "launch-current", OwnershipProven: false,
+		},
+	}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity:  domain.Activity{State: domain.ActivityActive},
+		UpdatedAt: time.Date(2026, time.August, 27, 17, 0, 0, 0, time.UTC),
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "legacy-s1",
+			RuntimeLaunchID: "launch-current", AgentSessionID: "agent-s1", AgentSessionIDLaunchID: "launch-current",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	got := st.sessions[rec.ID]
+	if got.Metadata.RuntimeHandleID != "tmux-v1:qualified" ||
+		got.Metadata.RuntimeLaunchID != "launch-current" ||
+		got.Metadata.AgentSessionIDLaunchID != "launch-current" {
+		t.Fatalf("weak matching provenance changed controller identity: %+v", got.Metadata)
+	}
+	if !got.UpdatedAt.Equal(rec.UpdatedAt) || got.Activity != rec.Activity {
+		t.Fatalf("route-only canonicalization changed lifecycle: got %+v want %+v", got, rec)
+	}
+
+	// A second daemon start sees only the now-qualified route. Historical tmux
+	// identity remains weak, but its exact nonempty launch match must still adopt
+	// the same workload without advancing or rewriting the durable owner.
+	if err := m.reconcileLive(context.Background(), got); err != nil {
+		t.Fatalf("second-start reconcileLive: %v", err)
+	}
+	if second := st.sessions[rec.ID]; second != got {
+		t.Fatalf("second-start adoption changed durable session: got %+v want %+v", second, got)
+	}
+	if st.canonicalizeRuntimeHandleCalls != 1 || rt.created != 0 || rt.destroyed != 0 ||
+		len(baseRuntime.exactHandles) != 2 {
+		t.Fatalf("second start relaunched or rewrote matching route: CAS=%d created=%d destroyed=%d exact=%v",
+			st.canonicalizeRuntimeHandleCalls, rt.created, rt.destroyed, baseRuntime.exactHandles)
+	}
+}
+
+func TestReconcileLive_QualifiedHandleRepairsProvenStaleLaunchAndExit(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	exactAlive := true
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-v1:qualified": true},
+		exactSupervisedAliveOverride: &exactAlive,
+	}
+	rt := &resolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:qualified"},
+		found:       true,
+		identity: ports.RuntimeIdentity{
+			LaunchID: "launch-actual", OwnershipProven: true,
+		},
+	}
+	observedAt := time.Date(2026, time.August, 27, 17, 10, 0, 0, time.UTC)
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		Clock:    func() time.Time { return observedAt },
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity:  domain.Activity{State: domain.ActivityExited, LastActivityAt: observedAt.Add(-time.Hour)},
+		UpdatedAt: observedAt.Add(-time.Hour),
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "tmux-v1:qualified",
+			RuntimeLaunchID: "launch-stale", AgentSessionID: "agent-s1", AgentSessionIDLaunchID: "launch-stale",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	previousActivity := domain.Activity{State: domain.ActivityActive, LastActivityAt: observedAt.Add(-2 * time.Hour)}
+	st.previousActivities[rec.ID] = previousActivity
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	got := st.sessions[rec.ID]
+	if got.Metadata.RuntimeHandleID != "tmux-v1:qualified" ||
+		got.Metadata.RuntimeLaunchID != "launch-actual" ||
+		got.Metadata.AgentSessionIDLaunchID != "launch-actual" {
+		t.Fatalf("qualified runtime identity was not repaired atomically: %+v", got.Metadata)
+	}
+	if got.Activity != previousActivity || !got.UpdatedAt.Equal(rec.UpdatedAt) {
+		t.Fatalf("proven qualified workload did not repair stale exit: %+v", got)
+	}
+	if st.canonicalizeRuntimeHandleCalls != 1 {
+		t.Fatalf("same-handle launch CAS calls = %d, want 1", st.canonicalizeRuntimeHandleCalls)
+	}
+	if !reflect.DeepEqual(baseRuntime.exactRefs, []ports.SupervisedProcessRef{
+		{SessionID: rec.ID, LaunchID: "launch-actual"},
+		{SessionID: rec.ID, LaunchID: "launch-actual"},
+	}) {
+		t.Fatalf("exact workload refs = %+v, want repaired launch", baseRuntime.exactRefs)
+	}
+}
+
+func TestReconcileLive_ExactCurrentWorkloadRepairsQualifiedStaleExit(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	exactAlive := true
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-v1:qualified": true},
+		exactSupervisedAliveOverride: &exactAlive,
+	}
+	rt := &resolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:qualified"},
+		found:       true,
+		identity: ports.RuntimeIdentity{
+			LaunchID: "launch-current", OwnershipProven: true,
+		},
+	}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: lcm,
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "tmux-v1:qualified",
+			RuntimeLaunchID: "launch-current", AgentSessionID: "agent-s1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	previousActivity := domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: time.Now().Add(-time.Minute)}
+	st.previousActivities[rec.ID] = previousActivity
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	got := st.sessions[rec.ID]
+	if got.IsTerminated || got.Activity != previousActivity {
+		t.Fatalf("exact current workload left stale exited activity: %+v", got)
+	}
+	if !reflect.DeepEqual(rt.exactHandles, []string{"tmux-v1:qualified", "tmux-v1:qualified"}) ||
+		!reflect.DeepEqual(rt.exactRefs, []ports.SupervisedProcessRef{
+			{SessionID: rec.ID, LaunchID: "launch-current"},
+			{SessionID: rec.ID, LaunchID: "launch-current"},
+		}) {
+		t.Fatalf("exact workload probes = handles %v refs %+v", rt.exactHandles, rt.exactRefs)
+	}
+}
+
+func TestReconcileLive_RepairCASAcceptsConcurrentCurrentOwnerRepair(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	exactAlive := true
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-v1:qualified": true},
+		exactSupervisedAliveOverride: &exactAlive,
+	}
+	rt := &resolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:qualified"},
+		found:       true,
+		identity: ports.RuntimeIdentity{
+			LaunchID: "launch-current", OwnershipProven: true,
+		},
+	}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "tmux-v1:qualified",
+			RuntimeLaunchID: "launch-current", AgentSessionID: "agent-s1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	st.previousActivities[rec.ID] = domain.Activity{
+		State: domain.ActivityWaitingInput, LastActivityAt: time.Now().Add(-time.Minute),
+	}
+	concurrentActivity := domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Now()}
+	st.beforeRepairExitedActivity = func(id domain.SessionID, _ domain.Activity) {
+		current := st.sessions[id]
+		current.Activity = concurrentActivity
+		st.sessions[id] = current
+	}
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if st.repairExitedActivityCalls != 1 {
+		t.Fatalf("repair CAS calls = %d, want 1", st.repairExitedActivityCalls)
+	}
+	if got := st.sessions[rec.ID]; got.Activity != concurrentActivity || got.ControllerOwner() != rec.ControllerOwner() {
+		t.Fatalf("concurrent current-owner repair was not preserved: got %+v", got)
+	}
+}
+
+func TestReconcileLive_RepairCASRejectsConcurrentOwnerChange(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	exactAlive := true
+	baseRuntime := &fakeRuntime{
+		aliveByHandle:                map[string]bool{"tmux-v1:qualified": true},
+		exactSupervisedAliveOverride: &exactAlive,
+	}
+	rt := &resolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:qualified"},
+		found:       true,
+		identity: ports.RuntimeIdentity{
+			LaunchID: "launch-current", OwnershipProven: true,
+		},
+	}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "tmux-v1:qualified",
+			RuntimeLaunchID: "launch-current", AgentSessionID: "agent-s1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	st.previousActivities[rec.ID] = domain.Activity{
+		State: domain.ActivityIdle, LastActivityAt: time.Now().Add(-time.Minute),
+	}
+	st.beforeRepairExitedActivity = func(id domain.SessionID, _ domain.Activity) {
+		current := st.sessions[id]
+		current.Activity = domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Now()}
+		current.Metadata.RuntimeLaunchID = "launch-replacement"
+		st.sessions[id] = current
+	}
+
+	if err := m.reconcileLive(context.Background(), rec); err == nil {
+		t.Fatal("reconcileLive succeeded after repair CAS lost controller ownership")
+	}
+	if got := st.sessions[rec.ID]; got.Metadata.RuntimeLaunchID != "launch-replacement" {
+		t.Fatalf("stale repair overwrote replacement owner: %+v", got.Metadata)
+	}
+}
+
+func TestReconcileLive_RuntimeLivenessAloneDoesNotRepairExitedActivity(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-v1:qualified": true}}
+	rt := runtimeWithoutExactInspection{runtime: baseRuntime}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: lcm,
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "tmux-v1:qualified",
+			RuntimeLaunchID: "launch-current", AgentSessionID: "agent-s1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	err := m.reconcileLive(context.Background(), rec)
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("reconcileLive error = %v, want ErrRuntimeProbeInconclusive", err)
+	}
+	if got := st.sessions[rec.ID]; got.Activity != rec.Activity || got.IsTerminated != rec.IsTerminated {
+		t.Fatalf("runtime-only liveness resurrected an unproven workload: got %+v, want %+v", got, rec)
+	}
+	if baseRuntime.created != 0 || baseRuntime.destroyed != 0 {
+		t.Fatalf("runtime-only adoption mutated runtime: created=%d destroyed=%d", baseRuntime.created, baseRuntime.destroyed)
 	}
 }
 
@@ -7945,6 +8893,133 @@ func TestReconcileStartupSafetyDefersRuntimeReconciliation(t *testing.T) {
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatalf("ReconcileBackground: %v", err)
+	}
+}
+
+func TestReconcileBackgroundReportsPerSessionFailure(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	probeErr := errors.New("runtime ownership probe failed")
+	rt := &fakeRuntime{aliveErr: probeErr}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: lcm,
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s1", ProjectID: "p1", Harness: domain.HarnessClaudeCode,
+		Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Now().UTC()},
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	err := m.ReconcileBackground(context.Background())
+	if !errors.Is(err, probeErr) {
+		t.Fatalf("ReconcileBackground error = %v, want per-session probe failure", err)
+	}
+	if got := st.sessions[rec.ID]; got != rec {
+		t.Fatalf("failed reconciliation mutated session: got %+v want %+v", got, rec)
+	}
+	if ws.stashCalls != 0 || lcm.terminated[rec.ID] != 0 || rt.created != 0 || rt.destroyed != 0 {
+		t.Fatalf("failed probe caused recovery side effects: stash=%d terminated=%d created=%d destroyed=%d",
+			ws.stashCalls, lcm.terminated[rec.ID], rt.created, rt.destroyed)
+	}
+}
+
+func TestReconcileBackground_ReportsSavedSessionRestoreFailure(t *testing.T) {
+	m, st, rt, ws := newLifecycleManager()
+	restoreErr := errors.New("restore dependency unavailable")
+	ws.createErr = restoreErr
+	rec := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		IsTerminated: true,
+		Activity:     domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root", AgentSessionID: "agent-mer-1",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+		SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName,
+		WorktreePath: rec.Metadata.WorkspacePath, State: "removed",
+	}}
+
+	err := m.ReconcileBackground(context.Background())
+	if !errors.Is(err, restoreErr) {
+		t.Fatalf("ReconcileBackground error = %v, want restore failure", err)
+	}
+	if rt.created != 0 || !st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("failed restore published a live session: creates=%d session=%+v", rt.created, st.sessions[rec.ID])
+	}
+}
+
+func TestReconcileBackground_ReapFailureBlocksSavedSessionRestore(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*fakeRuntime, error)
+	}{
+		{
+			name: "probe",
+			configure: func(rt *fakeRuntime, wantErr error) {
+				rt.aliveErr = wantErr
+			},
+		},
+		{
+			name: "destroy",
+			configure: func(rt *fakeRuntime, wantErr error) {
+				rt.aliveByHandle = map[string]bool{"runtime-old": true}
+				rt.destroyErr = wantErr
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+			wantErr := errors.New(tc.name + " failed")
+			rt := &fakeRuntime{}
+			tc.configure(rt, wantErr)
+			m := New(Deps{
+				Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+				Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+				LookPath: func(string) (string, error) { return "/bin/true", nil },
+			})
+			rec := domain.SessionRecord{
+				ID: "s1", ProjectID: "p1", Kind: domain.KindWorker,
+				Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+				IsTerminated: true,
+				Activity:     domain.Activity{State: domain.ActivityExited},
+				Metadata: domain.SessionMetadata{
+					Branch: "ao/s1/root", WorkspacePath: "/wt/s1",
+					RuntimeHandleID: "runtime-old", AgentSessionID: "agent-s1",
+				},
+			}
+			st.sessions[rec.ID] = rec
+			st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+				SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName,
+				WorktreePath: rec.Metadata.WorkspacePath, State: "removed",
+			}}
+
+			err := m.ReconcileBackground(context.Background())
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("ReconcileBackground error = %v, want %v", err, wantErr)
+			}
+			if rt.created != 0 {
+				t.Fatalf("runtime creates = %d, want 0 after unsafe reap", rt.created)
+			}
+			if got := st.sessions[rec.ID]; !got.IsTerminated {
+				t.Fatalf("unsafe reap relaunched session: %+v", got)
+			}
+			if rows := st.worktrees[rec.ID]; len(rows) != 1 || rows[0].State != "removed" {
+				t.Fatalf("unsafe reap consumed restore marker: %+v", rows)
+			}
+		})
 	}
 }
 
@@ -8216,6 +9291,66 @@ func TestReconcileReap_TerminatedButAliveTmuxDestroyed(t *testing.T) {
 	}
 	if len(rt.destroyedIDs) != 1 || rt.destroyedIDs[0] != "t1" {
 		t.Fatalf("destroyedIDs = %v, want [t1]", rt.destroyedIDs)
+	}
+}
+
+func TestReconcileReap_QualifiedForeignReplacementIsNotDestroyed(t *testing.T) {
+	probeErr := fmt.Errorf("same-named runtime is foreign: %w", ports.ErrRuntimeProbeInconclusive)
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-v1:qualified": true}}
+	rt := &exactResolvingRuntime{fakeRuntime: baseRuntime, err: probeErr}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: newFakeStore(),
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: newFakeStore()},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "t1", ProjectID: "p1", IsTerminated: true,
+		Metadata: domain.SessionMetadata{
+			RuntimeHandleID: "tmux-v1:qualified",
+			RuntimeLaunchID: "launch-terminated",
+		},
+	}
+
+	err := m.reconcileReap(context.Background(), rec)
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("reconcileReap error = %v, want ErrRuntimeProbeInconclusive", err)
+	}
+	if baseRuntime.destroyed != 0 || len(baseRuntime.aliveHandles) != 0 {
+		t.Fatalf("foreign replacement reached liveness/destroy: probes=%v destroys=%d",
+			baseRuntime.aliveHandles, baseRuntime.destroyed)
+	}
+	if !reflect.DeepEqual(rt.handles, []ports.RuntimeHandle{{ID: "tmux-v1:qualified"}}) ||
+		!reflect.DeepEqual(rt.owners, []ports.SupervisedProcessRef{{SessionID: "t1", LaunchID: "launch-terminated"}}) {
+		t.Fatalf("exact resolution inputs = handles=%+v owners=%+v", rt.handles, rt.owners)
+	}
+}
+
+func TestReconcileReap_DestroysRediscoveredExactLeakedRuntime(t *testing.T) {
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-v1:elsewhere": true}}
+	rt := &exactResolvingRuntime{
+		fakeRuntime: baseRuntime,
+		resolved:    ports.RuntimeHandle{ID: "tmux-v1:elsewhere"},
+		found:       true,
+	}
+	store := newFakeStore()
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: store,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: store},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "t1", ProjectID: "p1", IsTerminated: true,
+		Metadata: domain.SessionMetadata{
+			RuntimeHandleID: "tmux-v1:stale-route",
+			RuntimeLaunchID: "launch-terminated",
+		},
+	}
+
+	if err := m.reconcileReap(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileReap: %v", err)
+	}
+	if !reflect.DeepEqual(baseRuntime.destroyedIDs, []string{"tmux-v1:elsewhere"}) {
+		t.Fatalf("destroyed handles = %v, want rediscovered exact owner", baseRuntime.destroyedIDs)
 	}
 }
 

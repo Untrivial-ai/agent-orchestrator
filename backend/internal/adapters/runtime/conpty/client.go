@@ -27,11 +27,6 @@ const (
 	isAliveTimeout   = 2 * time.Second
 )
 
-// dialHost opens a TCP connection to addr with a deadline. Callers close it.
-func dialHost(addr string, timeout time.Duration) (net.Conn, error) {
-	return net.DialTimeout("tcp", addr, timeout)
-}
-
 func dialHostContext(ctx context.Context, addr string, timeout time.Duration) (net.Conn, error) {
 	dialer := net.Dialer{Timeout: timeout}
 	return dialer.DialContext(ctx, "tcp", addr)
@@ -50,18 +45,14 @@ func armClientDeadline(ctx context.Context, conn net.Conn, timeout time.Duration
 	return func() { _ = stop() }
 }
 
-// clientSendMessage chunks message by 512 runes and sends each as a
+// clientSendMessageConn chunks message by 512 runes and sends each as a
 // MsgTerminalInput frame with 15ms gaps, then pauses 300ms and sends "\r".
-// Mirrors ptyHostSendMessage from pty-client.ts.
-func clientSendMessage(addr, message string) error {
-	conn, err := dialHost(addr, dialTimeout)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close() }()
-
+func clientSendMessageConn(ctx context.Context, conn net.Conn, message string) error {
 	runes := []rune(message)
 	for i := 0; i < len(runes); i += ptyInputChunkRunes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		end := i + ptyInputChunkRunes
 		if end > len(runes) {
 			end = len(runes)
@@ -76,7 +67,9 @@ func clientSendMessage(addr, message string) error {
 		}
 		// Inter-chunk delay only between chunks, not after the last one.
 		if end < len(runes) {
-			time.Sleep(ptyInputChunkDelay)
+			if err := waitClientDelay(ctx, ptyInputChunkDelay); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -85,7 +78,12 @@ func clientSendMessage(addr, message string) error {
 	// settle, and the pause would only widen the guard-read→Enter window
 	// (mirrors the tmux runtime's enterDelay contract).
 	if len(runes) > 0 {
-		time.Sleep(ptyInputEnterDelay)
+		if err := waitClientDelay(ctx, ptyInputEnterDelay); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	frame, err := EncodeMessage(MsgTerminalInput, []byte("\r"))
 	if err != nil {
@@ -95,12 +93,32 @@ func clientSendMessage(addr, message string) error {
 	return err
 }
 
-func clientSendInput(addr, input string) error {
-	conn, err := dialHost(addr, dialTimeout)
+func waitClientDelay(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func clientSendInput(ctx context.Context, addr, input string) error {
+	conn, err := dialHostContext(ctx, addr, dialTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
+	stopCancellation := armClientDeadline(ctx, conn, dialTimeout)
+	defer stopCancellation()
+	return clientSendInputConn(ctx, conn, input)
+}
+
+func clientSendInputConn(ctx context.Context, conn net.Conn, input string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	frame, err := EncodeMessage(MsgTerminalInput, []byte(input))
 	if err != nil {
 		return err
@@ -116,10 +134,6 @@ func clientGetOutput(ctx context.Context, addr string, lines int) (string, error
 	return clientReadOutput(ctx, addr, lines, MsgGetOutputReq, MsgGetOutputRes)
 }
 
-func clientGetStyledOutput(ctx context.Context, addr string, lines int) (string, error) {
-	return clientReadOutput(ctx, addr, lines, MsgGetStyledOutputReq, MsgGetStyledOutputRes)
-}
-
 func clientReadOutput(ctx context.Context, addr string, lines int, requestType, responseType byte) (string, error) {
 	conn, err := dialHostContext(ctx, addr, getOutputTimeout)
 	if err != nil {
@@ -131,7 +145,14 @@ func clientReadOutput(ctx context.Context, addr string, lines int, requestType, 
 	defer func() { _ = conn.Close() }()
 	stopCancellation := armClientDeadline(ctx, conn, getOutputTimeout)
 	defer stopCancellation()
+	return clientReadOutputConn(ctx, conn, lines, requestType, responseType)
+}
 
+func clientReadOutputConn(ctx context.Context, conn net.Conn, lines int, requestType, responseType byte) (string, error) {
+	return clientReadOutputConnWithPending(ctx, conn, nil, lines, requestType, responseType)
+}
+
+func clientReadOutputConnWithPending(ctx context.Context, conn net.Conn, pending []byte, lines int, requestType, responseType byte) (string, error) {
 	req, _ := json.Marshal(GetOutputReq{Lines: lines})
 	reqFrame, _ := EncodeMessage(requestType, req) // req is small JSON, never overflows uint32
 	if _, err := conn.Write(reqFrame); err != nil {
@@ -150,6 +171,9 @@ func clientReadOutput(ctx context.Context, addr string, lines int, requestType, 
 			}
 		}
 	})
+	if len(pending) > 0 {
+		parser.Feed(pending)
+	}
 
 	buf := make([]byte, 4096)
 	for {
@@ -204,50 +228,76 @@ func clientStatus(addr string) (status StatusPayload, hostAlive bool, transientE
 }
 
 func clientStatusContext(ctx context.Context, addr string) (status StatusPayload, hostAlive bool, transientErr error) {
-	conn, err := dialHostContext(ctx, addr, isAliveTimeout)
+	result, err := clientStatusConnectionContext(ctx, addr, isAliveTimeout)
+	if result.conn != nil {
+		_ = result.conn.Close()
+	}
+	return result.status, result.reachable, err
+}
+
+type clientFrame struct {
+	messageType byte
+	payload     []byte
+}
+
+type clientStatusConnectionResult struct {
+	conn      net.Conn
+	status    StatusPayload
+	frames    []clientFrame
+	pending   []byte
+	reachable bool
+}
+
+// clientStatusConnectionContext performs the status exchange but retains the
+// same TCP connection for an exact-owner operation. Frames queued before the
+// status response (notably attach scrollback) are returned in order so callers
+// can authenticate first without losing them.
+func clientStatusConnectionContext(ctx context.Context, addr string, timeout time.Duration) (clientStatusConnectionResult, error) {
+	conn, err := dialHostContext(ctx, addr, timeout)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return StatusPayload{}, false, ctxErr
+			return clientStatusConnectionResult{}, ctxErr
 		}
 		// A dial timeout is transient (the loopback hiccupped). A refused
 		// connection means nothing is listening -> definitively gone. Any
 		// other dial failure is treated as transient ("when unsure, retry").
 		if isTimeout(err) {
-			return StatusPayload{}, false, err
+			return clientStatusConnectionResult{}, err
 		}
 		if isConnRefused(err) {
-			return StatusPayload{}, false, nil
+			return clientStatusConnectionResult{}, nil
 		}
-		return StatusPayload{}, false, err
+		return clientStatusConnectionResult{}, err
 	}
-	defer func() { _ = conn.Close() }()
-	stopCancellation := armClientDeadline(ctx, conn, isAliveTimeout)
+	result := clientStatusConnectionResult{conn: conn}
+	closeWithError := func(err error) error {
+		_ = conn.Close()
+		return err
+	}
+	stopCancellation := armClientDeadline(ctx, conn, timeout)
 	defer stopCancellation()
 
 	statusReqFrame, _ := EncodeMessage(MsgStatusReq, nil) // nil payload, never overflows
 	if _, err := conn.Write(statusReqFrame); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return StatusPayload{}, false, ctxErr
+			return clientStatusConnectionResult{}, closeWithError(ctxErr)
 		}
 		// We connected, then the write failed: connected-then-failed I/O is
 		// transient (the host may still be up; the conn was disrupted).
-		return StatusPayload{}, false, err
+		return clientStatusConnectionResult{}, closeWithError(err)
 	}
 
-	type statusResult struct {
-		payload StatusPayload
-		err     error
-	}
-	statusC := make(chan statusResult, 1)
+	var (
+		gotStatus bool
+		statusErr error
+	)
 	parser := NewMessageParser(func(msgType byte, payload []byte) {
-		if msgType == MsgStatusRes {
-			var sp StatusPayload
-			decodeErr := json.Unmarshal(payload, &sp)
-			select {
-			case statusC <- statusResult{payload: sp, err: decodeErr}:
-			default:
-			}
+		if msgType != MsgStatusRes || gotStatus {
+			result.frames = append(result.frames, clientFrame{messageType: msgType, payload: payload})
+			return
 		}
+		statusErr = json.Unmarshal(payload, &result.status)
+		gotStatus = true
 	})
 
 	buf := make([]byte, 4096)
@@ -257,33 +307,30 @@ func clientStatusContext(ctx context.Context, addr string) (status StatusPayload
 		if n > 0 {
 			parser.Feed(buf[:n])
 		}
-		select {
-		case result := <-statusC:
-			if result.err != nil {
-				return StatusPayload{}, false, result.err
+		if gotStatus {
+			if statusErr != nil {
+				return clientStatusConnectionResult{}, closeWithError(statusErr)
 			}
-			return result.payload, true, nil
-		default:
+			_ = conn.SetDeadline(time.Time{})
+			// Feed may have consumed a complete status frame while retaining the
+			// prefix of the next frame. Preserve that prefix when this exact TCP
+			// connection is handed to the authenticated operation; otherwise an
+			// attach or output read would resume in the middle of a frame.
+			result.pending = append(result.pending, parser.buf...)
+			result.reachable = true
+			return result, nil
 		}
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return StatusPayload{}, false, ctxErr
+				return clientStatusConnectionResult{}, closeWithError(ctxErr)
 			}
 			lastErr = err
 			break
 		}
 	}
-	select {
-	case result := <-statusC:
-		if result.err != nil {
-			return StatusPayload{}, false, result.err
-		}
-		return result.payload, true, nil
-	default:
-		// Connected but never got a STATUS_RES: read timeout or mid-read EOF.
-		// lastErr is the error that broke the read loop (always non-nil here).
-		return StatusPayload{}, false, lastErr
-	}
+	// Connected but never got a STATUS_RES: read timeout or mid-read EOF.
+	// lastErr is the error that broke the read loop (always non-nil here).
+	return clientStatusConnectionResult{}, closeWithError(lastErr)
 }
 
 // isTimeout reports whether err is a network timeout (dial timeout or
@@ -308,8 +355,8 @@ func isConnRefused(err error) bool {
 // clientKill sends MsgKillReq. Connection refused is idempotent success because
 // the host is already absent; other transport failures are preserved so
 // Destroy can combine them with its final PID evidence.
-func clientKill(addr string) error {
-	conn, err := dialHost(addr, isAliveTimeout)
+func clientKill(ctx context.Context, addr string) error {
+	conn, err := dialHostContext(ctx, addr, isAliveTimeout)
 	if err != nil {
 		if isConnRefused(err) {
 			return nil
@@ -317,7 +364,15 @@ func clientKill(addr string) error {
 		return fmt.Errorf("dial pty-host for kill: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(isAliveTimeout))
+	stopCancellation := armClientDeadline(ctx, conn, isAliveTimeout)
+	defer stopCancellation()
+	return clientKillConn(ctx, conn)
+}
+
+func clientKillConn(ctx context.Context, conn net.Conn) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	killFrame, _ := EncodeMessage(MsgKillReq, nil) // nil payload, never overflows
 	if _, err := conn.Write(killFrame); err != nil {
 		return fmt.Errorf("write pty-host kill request: %w", err)

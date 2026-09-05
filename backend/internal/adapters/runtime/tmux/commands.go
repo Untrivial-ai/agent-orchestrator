@@ -1,13 +1,21 @@
 package tmux
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+const (
+	paneIdentityFormat = "#{pid}\t#{session_id}\t#{pane_id}\t#{pane_start_command}"
+	panePIDFormat      = "#{pid}\t#{session_id}\t#{pane_id}\t#{pane_pid}"
+)
 
 // newSessionArgs builds args for `tmux new-session -d -s <id> -x 220 -y 50
 // -c <cwd> <shell> -c <launchCmd>`. The shell -c form runs the launch command
 // inside the configured shell so exported env vars and quoting work correctly.
 func newSessionArgs(id, cwd, shellPath, launchCmd string) []string {
 	return []string{
-		"new-session", "-d",
+		"new-session", "-d", "-P", "-F", paneIdentityFormat,
 		"-s", id,
 		"-x", "220",
 		"-y", "50",
@@ -21,7 +29,7 @@ func newSessionArgs(id, cwd, shellPath, launchCmd string) []string {
 func respawnPaneArgs(id, cwd, shellPath, launchCmd string) []string {
 	return []string{
 		"respawn-pane", "-k",
-		"-t", id + ":0.0",
+		"-t", paneTarget(id),
 		"-c", cwd,
 		shellPath, "-c", launchCmd,
 	}
@@ -58,7 +66,7 @@ func setWindowSizeLargestArgs(id string) []string {
 // panePIDArgs returns the pid of tmux's direct pane process. AO walks its
 // descendants to find the exact supervisor for the current launch.
 func panePIDArgs(id string) []string {
-	return []string{"display-message", "-p", "-t", id + ":0.0", "#{pane_pid}"}
+	return []string{"display-message", "-p", "-t", paneTarget(id), panePIDFormat}
 }
 
 // paneCurrentPathArgs prints tmux's cwd for the session's active pane. Create
@@ -87,16 +95,31 @@ func hasSessionArgs(id string) []string {
 // support this prefix; pane-targeting commands (send-keys, capture-pane,
 // set-option) use a plain session name.
 func exactSessionTarget(id string) string {
+	if strings.HasPrefix(id, "$") {
+		return id
+	}
 	return "=" + id
 }
 
-// listPanePIDsArgs builds args for `tmux list-panes -s -t =<id> -F #{pane_pid}`.
-// -s lists every pane in the whole session (not just the active window); the
-// exact-match target `=` avoids prefix collisions (see killSessionArgs). Each
-// #{pane_pid} is the pane's session-leader pid, used to reap the pane's
-// descendants when the session is destroyed.
+func paneTarget(id string) string {
+	if strings.HasPrefix(id, "%") {
+		return id
+	}
+	return id + ":0.0"
+}
+
+// listPanePIDsArgs lists pane process identities in the proven session. The
+// caller accepts only rows carrying the exact session and pane object ids
+// captured with ownership provenance before using a pid for descendant reap.
 func listPanePIDsArgs(id string) []string {
-	return []string{"list-panes", "-s", "-t", exactSessionTarget(id), "-F", "#{pane_pid}"}
+	return []string{"list-panes", "-s", "-t", exactSessionTarget(id), "-F", panePIDFormat}
+}
+
+// paneStartCommandsArgs returns tmux object ids and the launch command in one
+// response. Legacy-handle resolution captures all three as ownership evidence
+// rather than trusting a globally collidable session name.
+func paneStartCommandsArgs(id string) []string {
+	return []string{"list-panes", "-s", "-t", exactSessionTarget(id), "-F", paneIdentityFormat}
 }
 
 // sendKeysLiteralArgs builds args for `tmux send-keys -t <id> -l <chunk>`.

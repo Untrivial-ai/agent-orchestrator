@@ -2,11 +2,17 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
+	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
@@ -23,6 +29,7 @@ type stubRuntime struct {
 	// IsAlive returns true (default: alive), matching the pre-existing behavior
 	// that all other tests relied on.
 	aliveByHandle    map[string]bool
+	aliveErr         error
 	destroyedHandles []string
 }
 
@@ -36,6 +43,9 @@ func (s *stubRuntime) Destroy(_ context.Context, h ports.RuntimeHandle) error {
 	return nil
 }
 func (s *stubRuntime) IsAlive(_ context.Context, h ports.RuntimeHandle) (bool, error) {
+	if s.aliveErr != nil {
+		return false, s.aliveErr
+	}
 	if s.aliveByHandle != nil {
 		if alive, ok := s.aliveByHandle[h.ID]; ok {
 			return alive, nil
@@ -267,7 +277,8 @@ func TestRestoreRoundTripPreservesMetadata(t *testing.T) {
 //
 //   - Session A: is_terminated=0 but its runtime is GONE and it is a promptless
 //     KindWorker. Its blank relaunch is not resumable, so reconcileLive preserves
-//     the live record and worktree with exited activity. End state:
+//     the live record, worktree, and prior activity and reports the unresolved
+//     session to the readiness boundary. End state:
 //     is_terminated=false, runtime.Create count stays 0.
 //   - Session B: is_terminated=1 but its runtime is still ALIVE (leaked teardown)
 //     => Reconcile must call Destroy on its handle.
@@ -329,8 +340,8 @@ func TestReconcile_PreservesFailedLiveSessionAndReapsLeakedTmux(t *testing.T) {
 		t.Fatalf("patch session B terminated: %v", err)
 	}
 
-	if err := st.mgr.Reconcile(ctx); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	if reconcileErr := st.mgr.Reconcile(ctx); !errors.Is(reconcileErr, sessionmanager.ErrNotResumable) {
+		t.Fatalf("Reconcile error = %v, want unresolved session A", reconcileErr)
 	}
 
 	// Session A is a promptless KindWorker: reconcileLive cannot safely launch it
@@ -346,8 +357,9 @@ func TestReconcile_PreservesFailedLiveSessionAndReapsLeakedTmux(t *testing.T) {
 	if gotA.IsTerminated {
 		t.Fatalf("session A: restart-time relaunch failure terminated a recoverable session: %+v", gotA)
 	}
-	if gotA.Activity.State != domain.ActivityExited {
-		t.Fatalf("session A: activity = %q, want %q", gotA.Activity.State, domain.ActivityExited)
+	if gotA.Activity != recA.Activity || !gotA.FirstSignalAt.Equal(recA.FirstSignalAt) {
+		t.Fatalf("session A: restart-time failure changed lifecycle: activity=%+v firstSignalAt=%v, want activity=%+v firstSignalAt=%v",
+			gotA.Activity, gotA.FirstSignalAt, recA.Activity, recA.FirstSignalAt)
 	}
 	if gotA.Metadata.WorkspacePath != recA.Metadata.WorkspacePath || gotA.Metadata.Branch != recA.Metadata.Branch {
 		t.Fatalf("session A: workspace identity changed: got %+v, want %+v", gotA.Metadata, recA.Metadata)
@@ -360,6 +372,91 @@ func TestReconcile_PreservesFailedLiveSessionAndReapsLeakedTmux(t *testing.T) {
 	// Session B's leaked runtime must have been destroyed.
 	if !st.rt.wasDestroyed("hdl-B") {
 		t.Fatalf("session B: want Destroy called for handle hdl-B; destroyed handles: %v", st.rt.destroyedHandles)
+	}
+}
+
+func TestReconcileFailureKeepsDaemonLiveButNotReady(t *testing.T) {
+	ctx := context.Background()
+	st := newStack(t)
+	sess, _, _, err := st.sm.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, Branch: "ao/mer-1/root", Prompt: "do it",
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	before, ok, err := st.store.GetSession(ctx, sess.ID)
+	if err != nil || !ok {
+		t.Fatalf("get spawned session: ok=%v err=%v", ok, err)
+	}
+	probeErr := errors.New("runtime probe is ambiguous")
+	st.rt.aliveErr = probeErr
+
+	runPath := filepath.Join(t.TempDir(), "running.json")
+	srv, err := httpd.NewWithDeps(config.Config{
+		Host:            "127.0.0.1",
+		Port:            0,
+		ShutdownTimeout: 5 * time.Second,
+		RunFilePath:     runPath,
+	}, nil, nil, httpd.APIDeps{})
+	if err != nil {
+		t.Fatalf("new HTTP server: %v", err)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- srv.RunWithReady(runCtx, func(reconcileCtx context.Context) error {
+			return st.mgr.ReconcileBackground(reconcileCtx)
+		})
+	}()
+
+	base := "http://" + srv.Addr().String()
+	client := &http.Client{Timeout: time.Second}
+	health, requestErr := client.Get(base + "/healthz")
+	if requestErr != nil {
+		t.Fatalf("GET /healthz after reconciliation failure: %v", requestErr)
+	}
+	health.Body.Close()
+	if health.StatusCode != http.StatusOK {
+		t.Fatalf("GET /healthz after reconciliation failure = %d, want %d", health.StatusCode, http.StatusOK)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, requestErr := client.Get(base + "/readyz")
+		if requestErr != nil {
+			t.Fatalf("GET /readyz after reconciliation failure: %v", requestErr)
+		}
+		var ready struct {
+			Status string `json:"status"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&ready)
+		resp.Body.Close()
+		if decodeErr == nil && ready.Status == "error" {
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("GET /readyz after reconciliation failure = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET /readyz did not report terminal reconciliation failure: status=%q decodeErr=%v", ready.Status, decodeErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	after, ok, err := st.store.GetSession(ctx, sess.ID)
+	if err != nil || !ok || after.Activity != before.Activity || after.IsTerminated != before.IsTerminated {
+		t.Fatalf("failed reconciliation changed lifecycle: got=%+v ok=%v err=%v want activity=%+v terminated=%v",
+			after, ok, err, before.Activity, before.IsTerminated)
+	}
+
+	cancel()
+	select {
+	case err := <-runErr:
+		if !errors.Is(err, probeErr) {
+			t.Fatalf("RunWithReady error = %v, want per-session probe error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunWithReady did not stop after cancellation")
 	}
 }
 

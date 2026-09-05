@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -38,6 +39,9 @@ var _ ports.RuntimeRestarter = (*hybridRuntime)(nil)
 var _ ports.StyledTerminalOutputReader = (*hybridRuntime)(nil)
 var _ ports.SupervisedProcessInspector = (*hybridRuntime)(nil)
 var _ ports.ExactSupervisedProcessInspector = (*hybridRuntime)(nil)
+var _ ports.RuntimeHandleResolver = (*hybridRuntime)(nil)
+var _ ports.ExactRuntimeHandleResolver = (*hybridRuntime)(nil)
+var _ ports.RuntimeIdentityInspector = (*hybridRuntime)(nil)
 
 func newHybridRuntime(legacy, direct routedBackend, log *slog.Logger, platform string) *hybridRuntime {
 	if log == nil {
@@ -57,6 +61,12 @@ func (r *hybridRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (po
 	if err == nil {
 		handle.ID = directHandlePrefix + handle.ID
 		return handle, nil
+	}
+	// An inconclusive direct-runtime error means a native host may already own
+	// this session or its recovery registry could not be made durable. Starting
+	// tmux behind the same session id would turn uncertainty into a duplicate.
+	if errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		return ports.RuntimeHandle{}, err
 	}
 	r.log.Warn(r.platform+" direct PTY host unavailable; falling back to tmux",
 		"session_id", cfg.SessionID,
@@ -126,6 +136,67 @@ func (r *hybridRuntime) IsSupervisedProcessAlive(ctx context.Context, handle por
 func (r *hybridRuntime) IsExactSupervisedProcessAlive(ctx context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
 	backend, raw := r.route(handle)
 	return backend.IsExactSupervisedProcessAlive(ctx, raw, ref)
+}
+
+// ResolveRuntimeHandle routes legacy tmux migration to tmux and asks the native
+// backend to prove a ptyhost handle's exact registry and launch ownership. The
+// outer prefix makes the backend route durable; it is not itself ownership
+// evidence.
+func (r *hybridRuntime) ResolveRuntimeHandle(ctx context.Context, handle ports.RuntimeHandle, owner ports.SupervisedProcessRef) (ports.RuntimeHandle, bool, error) {
+	if strings.HasPrefix(handle.ID, directHandlePrefix) {
+		resolver, ok := r.direct.(ports.RuntimeHandleResolver)
+		if !ok {
+			return ports.RuntimeHandle{}, false, fmt.Errorf("%s direct runtime does not support handle resolution", r.platform)
+		}
+		raw := handle
+		raw.ID = strings.TrimPrefix(raw.ID, directHandlePrefix)
+		resolved, found, err := resolver.ResolveRuntimeHandle(ctx, raw, owner)
+		if err != nil || !found {
+			return ports.RuntimeHandle{}, found, err
+		}
+		if strings.TrimSpace(resolved.ID) == "" {
+			return ports.RuntimeHandle{}, false, fmt.Errorf("%s direct runtime returned an empty handle", r.platform)
+		}
+		resolved.ID = directHandlePrefix + resolved.ID
+		return resolved, true, nil
+	}
+	resolver, ok := r.legacy.(ports.RuntimeHandleResolver)
+	if !ok {
+		return ports.RuntimeHandle{}, false, fmt.Errorf("%s legacy runtime does not support handle resolution", r.platform)
+	}
+	return resolver.ResolveRuntimeHandle(ctx, handle, owner)
+}
+
+// ResolveExactRuntimeHandle keeps destructive recovery on the handle's native
+// backend and requires that backend to prove the exact persisted launch owner.
+// Versioned ptyhost handles are stripped only for the direct adapter call and
+// restored before returning to Session Manager.
+func (r *hybridRuntime) ResolveExactRuntimeHandle(ctx context.Context, handle ports.RuntimeHandle, owner ports.SupervisedProcessRef) (ports.RuntimeHandle, bool, error) {
+	backend, raw := r.route(handle)
+	resolver, ok := backend.(ports.ExactRuntimeHandleResolver)
+	if !ok {
+		return ports.RuntimeHandle{}, false, fmt.Errorf("%s runtime does not support exact handle resolution", r.platform)
+	}
+	resolved, found, err := resolver.ResolveExactRuntimeHandle(ctx, raw, owner)
+	if err != nil || !found {
+		return ports.RuntimeHandle{}, found, err
+	}
+	if strings.TrimSpace(resolved.ID) == "" {
+		return ports.RuntimeHandle{}, false, fmt.Errorf("%s runtime returned an empty exact handle", r.platform)
+	}
+	if backend == r.direct {
+		resolved.ID = directHandlePrefix + resolved.ID
+	}
+	return resolved, true, nil
+}
+
+func (r *hybridRuntime) InspectRuntimeIdentity(ctx context.Context, handle ports.RuntimeHandle, expectedSessionID domain.SessionID) (ports.RuntimeIdentity, error) {
+	backend, raw := r.route(handle)
+	inspector, ok := backend.(ports.RuntimeIdentityInspector)
+	if !ok {
+		return ports.RuntimeIdentity{}, fmt.Errorf("%s runtime does not support identity inspection", r.platform)
+	}
+	return inspector.InspectRuntimeIdentity(ctx, raw, expectedSessionID)
 }
 
 // Restart preserves tmux's in-place restart behavior for every legacy handle.

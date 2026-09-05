@@ -1,5 +1,5 @@
-// Package conpty implements the detached PTY-host runtime used by Windows and
-// macOS agent sessions. This file contains its OS-agnostic framing protocol.
+// Package conpty implements the detached native PTY-host runtime. This file
+// contains its OS-agnostic framing protocol.
 //
 // Frame layout: [1-byte type][4-byte big-endian length][payload]
 package conpty
@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	conPTYHostProtocolVersion         = 2
+	conPTYHostProtocolVersion         = 3
 	conPTYStyledOutputProtocolVersion = 2
+	conPTYHostIdentityProtocolVersion = 3
 )
 
 // Message type constants. Values must match pty-host.ts MSG_* constants exactly.
@@ -39,10 +40,14 @@ type ResizePayload struct {
 
 // StatusPayload is the JSON body for MsgStatusRes.
 type StatusPayload struct {
-	Alive           bool `json:"alive"`
-	PID             int  `json:"pid"`
-	ExitCode        *int `json:"exitCode,omitempty"`
-	ProtocolVersion int  `json:"protocolVersion,omitempty"`
+	Alive           bool   `json:"alive"`
+	PID             int    `json:"pid"`
+	ExitCode        *int   `json:"exitCode,omitempty"`
+	ProtocolVersion int    `json:"protocolVersion,omitempty"`
+	SessionID       string `json:"sessionId,omitempty"`
+	LaunchID        string `json:"launchId,omitempty"`
+	HostPID         int    `json:"hostPid,omitempty"`
+	HostToken       string `json:"hostToken,omitempty"`
 }
 
 // GetOutputReq is the JSON body for MsgGetOutputReq.

@@ -39,6 +39,18 @@ func (a ActivityState) NeedsInput() bool {
 	return a == ActivityWaitingInput || a == ActivityBlocked
 }
 
+// IsRecoverable reports whether a durable activity fact describes a session
+// whose live controller or runtime can be adopted after a daemon restart.
+// Unknown values and Exited are never valid recovery targets.
+func (a ActivityState) IsRecoverable() bool {
+	switch a {
+	case ActivityActive, ActivityIdle, ActivityWaitingInput, ActivityBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
 // Activity captures the persisted activity reading: the state and when it was
 // last observed.
 type Activity struct {

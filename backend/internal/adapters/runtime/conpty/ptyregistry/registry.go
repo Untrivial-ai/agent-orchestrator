@@ -1,6 +1,7 @@
-// Package ptyregistry is a sideband JSON list of live Windows pty-host
-// processes so ao stop can find and graceful-kill them even when session
-// metadata is lost. Ported from agent-orchestrator's windows-pty-registry.ts.
+// Package ptyregistry is a sideband JSON list of live detached pty-host
+// processes. Native runtimes use it to recover hosts across daemon restarts
+// and to stop them even when in-memory session state is lost. The on-disk
+// filename is retained from the original windows-pty-registry.ts format.
 package ptyregistry
 
 import (
@@ -10,15 +11,34 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+)
+
+var (
+	// ErrEntryExists prevents Create from replacing a recovery owner that
+	// appeared after its pre-spawn check.
+	ErrEntryExists = errors.New("pty-host registry entry already exists")
+	// ErrEntryChanged prevents teardown from deleting a later host generation
+	// that reused the same session id.
+	ErrEntryChanged = errors.New("pty-host registry entry changed")
 )
 
 // Entry is one registered pty-host process.
 type Entry struct {
-	SessionID    string `json:"sessionId"`
-	PtyHostPID   int    `json:"ptyHostPid"`
-	PipePath     string `json:"pipePath"`
-	LaunchID     string `json:"launchId,omitempty"`
+	SessionID  string `json:"sessionId"`
+	PtyHostPID int    `json:"ptyHostPid"`
+	PipePath   string `json:"pipePath"`
+	// LaunchID is absent on pre-generation registries and auxiliary hosts such
+	// as reviewer terminals. Those entries remain readable for compatibility,
+	// but the runtime's managed-session resolver rejects an empty launch id as
+	// insufficient ownership proof.
+	LaunchID string `json:"launchId,omitempty"`
+	// HostToken is a random immutable credential held by the detached host and
+	// its registry entry. Entries written before authenticated host identity was
+	// introduced omit it; callers may adopt those protocol-v2 hosts only after
+	// the platform-specific OS identity proof succeeds.
+	HostToken    string `json:"hostToken,omitempty"`
 	RegisteredAt string `json:"registeredAt"` // RFC3339; set by caller
 }
 
@@ -74,7 +94,10 @@ func SetRunFilePath(path string) {
 // the registry filename when set via SetRunFilePath, otherwise
 // ~/.ao/windows-pty-hosts.json via os.UserHomeDir() so t.Setenv("HOME", dir)
 // in tests redirects reads/writes to a temp dir.
-func registryFile() (string, error) {
+func registryFile(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if overrideDir != "" {
 		return filepath.Join(overrideDir, "windows-pty-hosts.json"), nil
 	}
@@ -92,12 +115,9 @@ func readRaw(ctx context.Context) ([]Entry, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	path, err := registryFile()
+	path, err := registryFile(ctx)
 	if err != nil {
-		return nil, false, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("resolve pty-host registry: %w", err)
 	}
 	data, err := os.ReadFile(path)
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -107,40 +127,60 @@ func readRaw(ctx context.Context) ([]Entry, bool, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, true, nil
 		}
-		return nil, false, err
+		return nil, false, fmt.Errorf("read pty-host registry %q: %w", path, err)
 	}
 	var parsed []json.RawMessage
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return nil, false, fmt.Errorf("%w: %w", ErrRegistryMalformed, err)
+		return nil, false, fmt.Errorf("decode pty-host registry %q: %w: %w", path, ErrRegistryMalformed, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
+	if parsed == nil && strings.TrimSpace(string(data)) != "[]" {
+		return nil, false, fmt.Errorf("decode pty-host registry %q: %w: expected a JSON array", path, ErrRegistryMalformed)
+	}
 	out := make([]Entry, 0, len(parsed))
-	for _, raw := range parsed {
+	seen := make(map[string]struct{}, len(parsed))
+	for i, raw := range parsed {
 		if err := ctx.Err(); err != nil {
 			return out, false, err
 		}
 		var e Entry
 		if err := json.Unmarshal(raw, &e); err != nil {
-			return out, false, fmt.Errorf("%w: %w", ErrRegistryMalformed, err)
+			return out, false, fmt.Errorf("decode pty-host registry %q entry %d: %w: %w", path, i, ErrRegistryMalformed, err)
 		}
-		if e.SessionID == "" || e.PtyHostPID < 0 || e.PipePath == "" || (e.PtyHostPID == 0 && e.PipePath != UnresolvedPipePath) {
-			return out, false, fmt.Errorf("%w: entry has invalid sessionId, ptyHostPid, or pipePath", ErrRegistryMalformed)
+		if err := validateEntry(e); err != nil {
+			return out, false, fmt.Errorf("decode pty-host registry %q entry %d: %w: %w", path, i, ErrRegistryMalformed, err)
 		}
+		if _, duplicate := seen[e.SessionID]; duplicate {
+			return out, false, fmt.Errorf("decode pty-host registry %q entry %d: %w: duplicate session id %q", path, i, ErrRegistryMalformed, e.SessionID)
+		}
+		seen[e.SessionID] = struct{}{}
 		out = append(out, e)
 	}
 	return out, true, nil
 }
 
+func validateEntry(entry Entry) error {
+	if strings.TrimSpace(entry.SessionID) == "" {
+		return errors.New("session id is required")
+	}
+	if entry.PtyHostPID == 0 && entry.PipePath == UnresolvedPipePath {
+		return nil
+	}
+	if entry.PtyHostPID <= 0 {
+		return errors.New("pty-host pid must be positive unless this is an unresolved launch reservation")
+	}
+	if strings.TrimSpace(entry.PipePath) == "" {
+		return errors.New("pty-host address is required")
+	}
+	return nil
+}
+
 // writeRaw atomically writes entries to the registry file. When entries is
 // empty it deletes the file instead (mirrors writeRaw in the TS source).
-
 func writeRaw(ctx context.Context, entries []Entry) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	path, err := registryFile()
+	path, err := registryFile(ctx)
 	if err != nil {
 		return err
 	}
@@ -191,7 +231,7 @@ func writeRaw(ctx context.Context, entries []Entry) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -201,10 +241,7 @@ func writeRaw(ctx context.Context, entries []Entry) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	return nil
+	return replaceRegistryFile(ctx, tmpName, path)
 }
 
 // Register adds or replaces the entry for entry.SessionID. registeredAt must
@@ -217,6 +254,9 @@ func Register(ctx context.Context, entry Entry) error {
 	defer registryMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if err := validateEntry(entry); err != nil {
+		return fmt.Errorf("register pty-host: %w", err)
 	}
 	all, complete, err := scanLocked(ctx)
 	if err != nil || !complete {
@@ -233,6 +273,34 @@ func Register(ctx context.Context, entry Entry) error {
 	}
 	next = append(next, entry)
 	return writeRaw(ctx, next)
+}
+
+// RegisterIfAbsent publishes entry only if no owner is currently registered
+// for its session id. Runtime.Create uses this after spawning so a concurrent
+// owner can never be silently overwritten; fixtures and explicit migrations
+// may continue to use Register's replace semantics.
+func RegisterIfAbsent(ctx context.Context, entry Entry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateEntry(entry); err != nil {
+		return fmt.Errorf("register pty-host: %w", err)
+	}
+	all, complete, err := scanLocked(ctx)
+	if err != nil || !complete {
+		return errors.Join(err, errors.New("conpty pty registry scan incomplete"))
+	}
+	for _, existing := range all {
+		if existing.SessionID == entry.SessionID {
+			return fmt.Errorf("session %q: %w", entry.SessionID, ErrEntryExists)
+		}
+	}
+	return writeRaw(ctx, append(all, entry))
 }
 
 // Unregister removes the entry for sessionID. No-op if absent.
@@ -260,6 +328,43 @@ func Unregister(ctx context.Context, sessionID string) error {
 	}
 	if len(next) == len(all) {
 		return nil // absent, no-op
+	}
+	return writeRaw(ctx, next)
+}
+
+// UnregisterExact removes only the exact durable host generation supplied by
+// the caller. It is idempotent when the session is absent and fails with
+// ErrEntryChanged when a later generation now owns the same session id.
+func UnregisterExact(ctx context.Context, entry Entry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateEntry(entry); err != nil {
+		return fmt.Errorf("unregister exact pty-host: %w", err)
+	}
+	all, complete, err := scanLocked(ctx)
+	if err != nil || !complete {
+		return errors.Join(err, errors.New("conpty pty registry scan incomplete"))
+	}
+	next := make([]Entry, 0, len(all))
+	found := false
+	for _, existing := range all {
+		if existing.SessionID != entry.SessionID {
+			next = append(next, existing)
+			continue
+		}
+		found = true
+		if existing != entry {
+			return fmt.Errorf("session %q: %w", entry.SessionID, ErrEntryChanged)
+		}
+	}
+	if !found {
+		return nil
 	}
 	return writeRaw(ctx, next)
 }

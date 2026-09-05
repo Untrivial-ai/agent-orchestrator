@@ -4,23 +4,32 @@ package conpty
 
 import (
 	"errors"
-	"os"
 	"syscall"
 )
 
-// pidAlive probes PID liveness via signal 0. nil and EPERM both mean alive
-// (process exists but may not be signallable). ESRCH means dead.
-// Mirrors ptyregistry.defaultPidAlive (same signal-0 pattern).
-func pidAlive(pid int) bool {
+// probePIDLiveness probes PID liveness via signal 0. nil and EPERM both mean
+// alive (the process exists but may not be signallable). Only an invalid PID
+// or ESRCH is conclusive death; every other OS failure remains inconclusive.
+func probePIDLiveness(pid int) (bool, error) {
+	if pid <= 0 {
+		return false, nil
+	}
 	err := syscall.Kill(pid, 0)
 	if err == nil {
-		return true
+		return true, nil
 	}
-	return errors.Is(err, syscall.EPERM)
+	if errors.Is(err, syscall.EPERM) {
+		return true, nil
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		return false, nil
+	}
+	return false, err
 }
 
-// defaultOSProcessFinder wraps os.FindProcess for Unix (always succeeds on
-// Unix; the returned handle is valid for Kill).
-func defaultOSProcessFinder(pid int) (processKiller, error) {
-	return os.FindProcess(pid)
+// pidAlive preserves the package's existing boolean helper for host process
+// tests. Runtime recovery uses probePIDLiveness so it cannot discard errors.
+func pidAlive(pid int) bool {
+	alive, _ := probePIDLiveness(pid)
+	return alive
 }

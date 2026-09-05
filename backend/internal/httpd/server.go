@@ -9,12 +9,22 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
 )
+
+const (
+	startupRecoveryMaxAttempts           = 3
+	startupRecoveryRetryDelay            = 250 * time.Millisecond
+	defaultStartupRecoveryAttemptTimeout = 30 * time.Second
+	defaultStartupRecoveryDrainWarning   = 5 * time.Second
+)
+
+var errStartupRecoveryInterrupted = errors.New("startup recovery interrupted")
 
 // Server is the daemon's HTTP server together with its lifecycle: bind the
 // loopback port, publish the running.json handshake, serve until the context
@@ -25,8 +35,12 @@ type Server struct {
 	http   *http.Server
 	listen net.Listener
 
-	shutdownRequested chan struct{}
-	shutdownOnce      sync.Once
+	shutdownRequested             chan struct{}
+	shutdownOnce                  sync.Once
+	ready                         atomic.Bool
+	startupFailed                 atomic.Bool
+	startupRecoveryAttemptTimeout time.Duration
+	startupRecoveryDrainWarning   time.Duration
 }
 
 // NewWithDeps constructs a Server with API dependencies supplied by the daemon
@@ -59,14 +73,18 @@ func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager,
 	}
 
 	srv := &Server{
-		cfg:               cfg,
-		log:               log,
-		listen:            ln,
-		shutdownRequested: make(chan struct{}),
+		cfg:                           cfg,
+		log:                           log,
+		listen:                        ln,
+		shutdownRequested:             make(chan struct{}),
+		startupRecoveryAttemptTimeout: defaultStartupRecoveryAttemptTimeout,
+		startupRecoveryDrainWarning:   defaultStartupRecoveryDrainWarning,
 	}
 	srv.http = &http.Server{
 		Handler: NewRouterWithControl(cfg, log, termMgr, deps, ControlDeps{
 			RequestShutdown:   srv.requestShutdown,
+			IsReady:           srv.ready.Load,
+			StartupFailed:     srv.startupFailed.Load,
 			AgentSwitchPolicy: deps.AgentSwitchPolicy,
 		}),
 		// ReadHeaderTimeout guards against slow-loris even on loopback;
@@ -93,15 +111,22 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.run(ctx, nil)
 }
 
-// RunWithReady is Run with a callback invoked after the listener has been
-// published and its serving goroutine has started. The callback must return
-// promptly; it is intended for boot work that can safely continue while the
-// daemon serves read-only durable state.
-func (s *Server) RunWithReady(ctx context.Context, onReady func()) error {
+// RunWithReady is Run with startup work invoked after the listener has been
+// published and its serving goroutine has started. Liveness is available while
+// the callback runs; readiness is published only when the callback succeeds.
+// The callback must be safe to retry: transient failures receive a small,
+// bounded retry window before readiness reports a terminal recovery error. It
+// must use the supplied context for every blocking recovery operation.
+func (s *Server) RunWithReady(ctx context.Context, onReady func(context.Context) error) error {
 	return s.run(ctx, onReady)
 }
 
-func (s *Server) run(ctx context.Context, onReady func()) error {
+func (s *Server) run(ctx context.Context, onReady func(context.Context) error) error {
+	// Run has no deferred startup work and is ready as soon as it serves. A
+	// RunWithReady callback gates readiness until all recovery has completed.
+	s.ready.Store(onReady == nil)
+	s.startupFailed.Store(false)
+
 	info := runfile.Info{
 		PID:                   os.Getpid(),
 		Port:                  s.boundPort(),
@@ -130,15 +155,28 @@ func (s *Server) run(ctx context.Context, onReady func()) error {
 		}
 		serveErr <- nil
 	}()
+	var startupErr error
 	if onReady != nil {
-		onReady()
+		startupErr = s.runStartupRecovery(ctx, onReady)
+		switch {
+		case startupErr == nil:
+			s.ready.Store(true)
+		case errors.Is(startupErr, errStartupRecoveryInterrupted):
+			// Cancellation or an explicit shutdown request interrupted startup.
+			// The select below performs the ordinary graceful shutdown, so this is
+			// not a terminal recovery failure and should not make Run return an error.
+			startupErr = nil
+		default:
+			s.startupFailed.Store(true)
+			s.log.Error("startup recovery failed; daemon remains unready", "err", startupErr)
+		}
 	}
 
 	select {
 	case err := <-serveErr:
 		// Serve died on its own (bind already happened, so this is a real
 		// runtime failure) before any shutdown signal.
-		return err
+		return errors.Join(startupErr, err)
 	case <-s.shutdownRequested:
 		s.log.Info("shutdown requested over HTTP", "timeout", s.cfg.ShutdownTimeout)
 	case <-ctx.Done():
@@ -152,11 +190,120 @@ func (s *Server) run(ctx context.Context, onReady func()) error {
 		// The deadline elapsed with connections still open; force them closed.
 		s.log.Warn("graceful shutdown timed out, forcing close", "err", err)
 		_ = s.http.Close()
-		return fmt.Errorf("graceful shutdown exceeded %s: %w", s.cfg.ShutdownTimeout, err)
+		return errors.Join(startupErr, fmt.Errorf("graceful shutdown exceeded %s: %w", s.cfg.ShutdownTimeout, err))
 	}
 
 	s.log.Info("daemon stopped cleanly")
-	return <-serveErr
+	return errors.Join(startupErr, <-serveErr)
+}
+
+func (s *Server) runStartupRecovery(ctx context.Context, recoverStartup func(context.Context) error) error {
+	var lastErr error
+	for attempt := 1; attempt <= startupRecoveryMaxAttempts; attempt++ {
+		attemptTimeout := s.startupRecoveryTimeout()
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, attemptTimeout)
+		// Keep the result buffered: a callback that ignores cancellation may finish
+		// after the server has timed out the attempt or begun shutting down.
+		result := make(chan error, 1)
+		go func() {
+			result <- recoverStartup(attemptCtx)
+		}()
+
+		select {
+		case lastErr = <-result:
+			if ctx.Err() != nil {
+				cancelAttempt()
+				return errors.Join(errStartupRecoveryInterrupted, ctx.Err())
+			}
+			if attemptCtx.Err() != nil {
+				cancelAttempt()
+				return fmt.Errorf("startup recovery attempt %d timed out after %s: %w",
+					attempt, attemptTimeout, attemptCtx.Err())
+			}
+		case <-attemptCtx.Done():
+			if ctx.Err() != nil {
+				return s.drainInterruptedRecovery(
+					cancelAttempt, result, errors.Join(errStartupRecoveryInterrupted, ctx.Err()),
+				)
+			}
+			// A timed-out callback may still be unwinding. Never start another
+			// recovery writer concurrently, and never tear its dependencies down
+			// underneath it. drainInterruptedRecovery cancels and joins the callback
+			// before Run can return to daemon teardown.
+			return s.drainInterruptedRecovery(cancelAttempt, result, fmt.Errorf(
+				"startup recovery attempt %d timed out after %s: %w",
+				attempt, attemptTimeout, attemptCtx.Err(),
+			))
+		case <-s.shutdownRequested:
+			return s.drainInterruptedRecovery(cancelAttempt, result, errStartupRecoveryInterrupted)
+		}
+		cancelAttempt()
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == startupRecoveryMaxAttempts {
+			break
+		}
+		s.log.Warn("startup recovery failed; retrying",
+			"attempt", attempt,
+			"maxAttempts", startupRecoveryMaxAttempts,
+			"err", lastErr,
+		)
+		timer := time.NewTimer(startupRecoveryRetryDelay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(errStartupRecoveryInterrupted, ctx.Err())
+		case <-s.shutdownRequested:
+			timer.Stop()
+			return errStartupRecoveryInterrupted
+		}
+	}
+	return fmt.Errorf("startup recovery failed after %d attempts: %w", startupRecoveryMaxAttempts, lastErr)
+}
+
+// drainInterruptedRecovery cancels and joins an in-flight recovery callback.
+// Recovery owns lifecycle, controller, and store writers, so returning before it
+// has unwound would race daemon teardown and could attach a controller after
+// StopAll. The warning threshold is diagnostic rather than permission to leak the
+// callback: our callback is required to honor its context, and safety wins over a
+// concurrent teardown if a future implementation violates that contract.
+func (s *Server) drainInterruptedRecovery(
+	cancel context.CancelFunc,
+	result <-chan error,
+	cause error,
+) error {
+	cancel()
+	warningAfter := s.startupRecoveryDrainWarning
+	if warningAfter <= 0 {
+		warningAfter = defaultStartupRecoveryDrainWarning
+	}
+	timer := time.NewTimer(warningAfter)
+	defer timer.Stop()
+	select {
+	case callbackErr := <-result:
+		return errors.Join(cause, callbackErr)
+	case <-timer.C:
+		s.startupFailed.Store(true)
+		s.log.Error(
+			"startup recovery did not stop promptly after cancellation; waiting before teardown",
+			"warningAfter", warningAfter,
+		)
+		callbackErr := <-result
+		return errors.Join(
+			cause,
+			fmt.Errorf("startup recovery ignored cancellation for at least %s", warningAfter),
+			callbackErr,
+		)
+	}
+}
+
+func (s *Server) startupRecoveryTimeout() time.Duration {
+	if s.startupRecoveryAttemptTimeout > 0 {
+		return s.startupRecoveryAttemptTimeout
+	}
+	return defaultStartupRecoveryAttemptTimeout
 }
 
 func (s *Server) boundPort() int {

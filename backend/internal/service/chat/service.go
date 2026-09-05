@@ -24,6 +24,14 @@ var ErrNoController = errors.New("no live chat controller for session")
 // fact later, but callers must route from the persisted mode they read now.
 var ErrNotChatMode = errors.New("session is not in chat mode")
 
+// liveRecoveryReplayPersistTimeout bounds the cancellation-shielded transfer of
+// replay frames the persistent host has already handed to this daemon. A caller
+// canceling at the response boundary must not make those frames disappear.
+const (
+	liveRecoveryReplayPersistTimeout = 5 * time.Second
+	failedGenerationRollbackTimeout  = 5 * time.Second
+)
+
 // SessionReader is the session-fact surface the service needs. It reads the
 // persisted mode rather than trusting the caller, so a client cannot talk its way
 // into the wrong dispatch path.
@@ -191,12 +199,22 @@ func controllerStartResult(
 	providerBoundary *domain.ConversationBranch,
 	commitProviderHistory func(context.Context) error,
 ) StartResult {
+	reconnectedLive := false
+	recoveredActivity := domain.Activity{}
+	if reconnected, ok := controller.conv.(ports.ChatLiveReconnector); ok {
+		reconnectedLive = reconnected.ReconnectedLive()
+		if reconnectedLive {
+			recoveredActivity = controller.liveRecoveredActivity()
+		}
+	}
 	return StartResult{
 		ProviderConversationID: controller.ProviderConversationID(),
 		ControllerGeneration:   controller.Generation(),
 		Conversation:           controller.conversation,
 		ProviderBoundary:       providerBoundary,
 		CommitProviderHistory:  commitProviderHistory,
+		ReconnectedLive:        reconnectedLive,
+		RecoveredActivity:      recoveredActivity,
 	}
 }
 
@@ -266,12 +284,25 @@ func (s *Service) settleOrphanedWork(ctx context.Context, session domain.Session
 // A resume that fails is reported as a failure rather than quietly becoming a new
 // conversation: presenting unrelated history as continuous is worse than an error
 // the user can act on.
-func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, error) {
+func (s *Service) Start(ctx context.Context, cfg StartConfig) (result *Controller, resultErr error) {
 	gate := s.controllerGate(cfg.SessionID)
 	if err := gate.lock(ctx); err != nil {
 		return nil, err
 	}
 	defer gate.unlock()
+	if cfg.ExpectedControllerOwner == (domain.SessionControllerOwner{}) {
+		if s.sessions == nil {
+			return nil, errors.New("chat controller start requires a current session owner")
+		}
+		rec, found, err := s.sessions.GetSession(ctx, cfg.SessionID)
+		if err != nil {
+			return nil, fmt.Errorf("read chat controller owner: %w", err)
+		}
+		if !found {
+			return nil, ports.ErrSessionNotFound
+		}
+		cfg.ExpectedControllerOwner = rec.ControllerOwner()
+	}
 
 	replayCheckpoint := nativeHistoryCheckpoint{}
 	if cfg.RequireNativeHistory {
@@ -382,6 +413,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		// example, agent switching) and must keep its independently reserved handle.
 		if restoredProviderOwner && cfg.ProviderScopeID == "" {
 			cfg.ProviderConversationID = repairedBranch.ProviderConversationID
+			cfg.ExpectedControllerOwner.ProviderConversationID = repairedBranch.ProviderConversationID
+			cfg.ExpectedControllerOwner.ControllerGeneration = ""
 		}
 	}
 	activeBranch, err := s.store.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
@@ -513,11 +546,51 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if generation == "" {
 		generation = s.newID()
 	}
-	if providerBoundaryID == "" {
-		if err := s.store.ClaimChatControllerGeneration(ctx, cfg.SessionID, generation, s.now()); err != nil {
-			cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
-			return nil, fmt.Errorf("claim chat controller: %w", err)
+	previousGeneration := cfg.ExpectedControllerOwner.ControllerGeneration
+	claimedOwner := cfg.ExpectedControllerOwner
+	claimedOwner.ControllerGeneration = generation
+	generationClaimed := false
+	defer func() {
+		if resultErr == nil || !generationClaimed {
+			return
 		}
+		rollbackCtx, cancelRollback := context.WithTimeout(
+			context.WithoutCancel(ctx), failedGenerationRollbackTimeout,
+		)
+		defer cancelRollback()
+		restored, rollbackErr := s.store.ClaimChatControllerGeneration(
+			rollbackCtx,
+			cfg.SessionID,
+			claimedOwner,
+			previousGeneration,
+			s.now(),
+		)
+		switch {
+		case rollbackErr != nil:
+			resultErr = errors.Join(resultErr, fmt.Errorf(
+				"restore controller generation after failed start: %w", rollbackErr,
+			))
+		case !restored:
+			resultErr = errors.Join(resultErr, fmt.Errorf(
+				"%w: controller owner changed before failed generation %s could be restored",
+				ports.ErrChatRecoveryInconclusive, generation,
+			))
+		}
+	}()
+	if providerBoundaryID == "" {
+		claimed, claimErr := s.store.ClaimChatControllerGeneration(
+			ctx, cfg.SessionID, cfg.ExpectedControllerOwner, generation, s.now(),
+		)
+		if claimErr != nil {
+			cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
+			return nil, fmt.Errorf("claim chat controller: %w", claimErr)
+		}
+		if !claimed {
+			cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
+			return nil, fmt.Errorf("%w: chat controller owner changed before generation %s could be claimed",
+				ports.ErrChatRecoveryInconclusive, generation)
+		}
+		generationClaimed = true
 	}
 	providerBoundary := (*domain.ConversationBranch)(nil)
 	if providerBoundaryID != "" {
@@ -543,10 +616,82 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now,
+		s.onAccountChanged, s.onCodexCapacityChanged)
+	var liveRecoveryFinalizer ports.ChatLiveRecoveryFinalizer
+	abortLiveRecovery := func(cause error) error {
+		if liveRecoveryFinalizer == nil {
+			return cause
+		}
+		finalizer := liveRecoveryFinalizer
+		liveRecoveryFinalizer = nil
+		persistCtx, cancelPersist := context.WithTimeout(
+			context.WithoutCancel(ctx), liveRecoveryReplayPersistTimeout,
+		)
+		defer cancelPersist()
+		events, abortErr := finalizer.AbortLiveRecovery(persistCtx)
+		persistErr := controller.projectLiveRecoveryReplay(persistCtx, events)
+		if abortErr != nil {
+			abortErr = fmt.Errorf("drain surviving provider after failed recovery: %w", abortErr)
+		}
+		if persistErr != nil {
+			persistErr = fmt.Errorf("persist surviving provider after failed recovery: %w", persistErr)
+		}
+		return errors.Join(cause, abortErr, persistErr)
+	}
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
 		controller.restoreLiveTurnOwnership(liveRows.Turns)
+		recoverer, ok := conv.(ports.ChatLiveRecoveryReader)
+		if !ok {
+			cleanupUnpublishedConversation(conv, false)
+			return nil, fmt.Errorf(
+				"%w: surviving provider has no ordered recovery snapshot",
+				ports.ErrChatRecoveryInconclusive,
+			)
+		}
+		finalizer, ok := conv.(ports.ChatLiveRecoveryFinalizer)
+		if !ok {
+			cleanupUnpublishedConversation(conv, false)
+			return nil, fmt.Errorf(
+				"%w: surviving provider cannot finalize ordered recovery",
+				ports.ErrChatRecoveryInconclusive,
+			)
+		}
+		liveRecoveryFinalizer = finalizer
+		snapshot, recoveryErr := recoverer.RecoverLive(ctx)
+		// The response can be unusable while its ordered replay prefix is still
+		// authoritative. Persist that prefix under this claimed generation before
+		// cleanup detaches from a host that has already handed those frames over.
+		replayCtx, cancelReplay := context.WithTimeout(
+			context.WithoutCancel(ctx), liveRecoveryReplayPersistTimeout,
+		)
+		replayErr := controller.projectLiveRecoveryReplay(replayCtx, snapshot.ReplayEvents)
+		cancelReplay()
+		if replayErr != nil {
+			return nil, abortLiveRecovery(fmt.Errorf(
+				"%w: persist surviving provider replay: %w",
+				ports.ErrChatRecoveryInconclusive, replayErr,
+			))
+		}
+		if recoveryErr != nil {
+			return nil, abortLiveRecovery(fmt.Errorf(
+				"%w: recover surviving provider: %w",
+				ports.ErrChatRecoveryInconclusive, recoveryErr,
+			))
+		}
+		if recoveryErr := controller.projectLiveRecovery(
+			ctx,
+			snapshot,
+			liveRows.Turns,
+			liveRows.Messages,
+			liveRows.Activities,
+		); recoveryErr != nil {
+			return nil, abortLiveRecovery(fmt.Errorf(
+				"%w: reconcile surviving provider: %w",
+				ports.ErrChatRecoveryInconclusive, recoveryErr,
+			))
+		}
 	}
 	if cfg.ProviderConversationID != "" && !cfg.SkipNativeHistoryImport && !liveReconnect {
 		// The provider's native thread is the continuity authority across TUI and
@@ -597,6 +742,9 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		cfg, controller, providerBoundary, commitProviderHistory,
 	)
 	if err != nil {
+		if liveRecoveryFinalizer != nil {
+			return nil, abortLiveRecovery(err)
+		}
 		cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
 		return nil, err
 	}
@@ -645,7 +793,18 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	s.controllers[cfg.SessionID] = controller
 	s.startConfigs[cfg.SessionID] = cloneStartConfig(cfg)
 	controller.start()
+	if liveRecoveryFinalizer != nil {
+		liveRecoveryFinalizer.CommitLiveRecovery()
+		liveRecoveryFinalizer = nil
+	}
 	s.mu.Unlock()
+	generationClaimed = false
+	if liveReconnect && controller.State() == ports.ChatControllerReady {
+		// A turn may have completed while the daemon was detached. Its completion
+		// was projected synchronously above, so resume the durable queue now that
+		// ControllerReady has published the recovered idle state.
+		go controller.drain(context.WithoutCancel(ctx))
+	}
 
 	// Drop the registry entry when the provider stream ends, so a later command
 	// reports ErrNoController instead of writing into a dead controller.
@@ -1206,6 +1365,14 @@ type StartResult struct {
 	ProviderConversationID string
 	ControllerGeneration   string
 	Conversation           domain.ConversationRecord
+	// ReconnectedLive proves that this controller reattached to the same native
+	// provider process rather than starting a replacement. Only this path can
+	// publish RecoveredActivity from a live recovery snapshot.
+	ReconnectedLive bool
+	// RecoveredActivity is a direct observation of that surviving controller at
+	// the ordered reconnect boundary. It can be Active, Idle, or WaitingInput and
+	// replaces stale activity left by the detached daemon.
+	RecoveredActivity domain.Activity
 	// ProviderBoundary is non-nil when this launch owns a provider namespace
 	// that is not active yet. ControllerReady must commit it atomically with the
 	// session's provider handle and controller generation.

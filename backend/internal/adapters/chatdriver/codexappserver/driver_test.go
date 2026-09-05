@@ -54,12 +54,16 @@ type scriptedServer struct {
 func (s *scriptedServer) replyError(method string, code int, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	delete(s.responses, method)
+	delete(s.responseSequences, method)
 	s.failures[method] = `{"code":` + strconv.Itoa(code) + `,"message":` + strconv.Quote(message) + `}`
 }
 
 func (s *scriptedServer) respondTo(method, resultJSON string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	delete(s.failures, method)
+	delete(s.responseSequences, method)
 	s.responses[method] = resultJSON
 }
 
@@ -81,7 +85,19 @@ func (s *scriptedServer) push(raw string) {
 func (s *scriptedServer) reply(method, result string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	delete(s.failures, method)
+	delete(s.responseSequences, method)
 	s.responses[method] = result
+}
+
+// replySequence scripts one response per request. It is used for protocols
+// whose correctness depends on following opaque pagination cursors.
+func (s *scriptedServer) replySequence(method string, results ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.failures, method)
+	delete(s.responses, method)
+	s.responseSequences[method] = append([]string(nil), results...)
 }
 
 // sentMethod reports whether the client ever sent a request for the method. Guarded
@@ -139,8 +155,12 @@ func newTestDriver(t *testing.T) (*Driver, *scriptedServer) {
 			"thread/resume":  `{"thread":{"id":"thread-1"}}`,
 		},
 		responseSequences: map[string][]string{},
-		failures:          map[string]string{},
-		seenCh:            make(chan frame, 64),
+		failures: map[string]string{
+			// Codex 0.146, the compatibility baseline for this generated test
+			// protocol, predates paginated thread history.
+			"thread/turns/list": `{"code":-32601,"message":"method not found"}`,
+		},
+		seenCh: make(chan frame, 64),
 	}
 
 	go func() {

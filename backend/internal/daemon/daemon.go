@@ -326,17 +326,12 @@ func Run() error {
 	notificationHub := notify.NewHub()
 	notifier := notificationsvc.New(notificationsvc.Deps{Store: store})
 	notificationWriter := notify.New(notify.Deps{Store: store, Publisher: notificationHub})
-	// Resolution transitions that happened while the daemon was down never
-	// reached lifecycle, so re-check open notifications against the durable
-	// session/PR facts before serving. Best-effort: a failure here only leaves
-	// stale rows in the unresolved list, never blocks startup.
-	if err := notificationWriter.Reconcile(ctx); err != nil {
-		log.Warn("notification resolution reconcile failed", "err", err)
-	}
 
-	// Bring up the Lifecycle Manager and the reaper first: it makes the session
-	// lifecycle write path live (reducer write -> store -> DB trigger ->
-	// change_log -> poller -> broadcaster) and gives startSession the shared LCM.
+	// Bring up the Lifecycle Manager first: it makes the session lifecycle write
+	// path live (reducer write -> store -> DB trigger -> change_log -> poller ->
+	// broadcaster) and gives startSession the shared LCM. Periodic runtime
+	// observers start only after startup reconciliation has canonicalized legacy
+	// handles and folded the initial runtime facts.
 	// The agent resolver is built before the LCM so lifecycle can consume the
 	// adapter-declared active-turn steering capability; startSession reuses it.
 	defaultAgent := cfg.Agent
@@ -352,7 +347,7 @@ func Run() error {
 		return fmt.Errorf("wire agent resolver: %w", err)
 	}
 
-	lcStack := startLifecycle(ctx, store, runtimeAdapter, lifecycleMessenger, notificationWriter, telemetrySink, agents, log)
+	lcStack := startLifecycle(store, runtimeAdapter, lifecycleMessenger, notificationWriter, telemetrySink, agents, log)
 
 	// Wire the controller-facing session service over the same store + LCM, the
 	// selected runtime, routed git/scratch workspaces, the per-session agent
@@ -841,22 +836,29 @@ func Run() error {
 		}()
 	}
 
-	var startupReconcileDone <-chan struct{}
-	runErr := srv.RunWithReady(ctx, func() {
-		done := make(chan struct{})
-		startupReconcileDone = done
-		go func() {
-			defer close(done)
-			if reconcileErr := reconcilePersistentChatHosts(ctx, cfg.DataDir, store); reconcileErr != nil {
-				log.Error("persistent chat host reconciliation on boot failed", "err", reconcileErr)
-			}
-			if reconcileErr := sessMgr.ReconcileBackground(ctx); reconcileErr != nil {
-				log.Error("background session reconciliation on boot failed", "err", reconcileErr)
-			}
-			if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
-				log.Error("background agent-process reconciliation on boot failed", "err", reconcileErr)
-			}
-		}()
+	runErr := srv.RunWithReady(ctx, func(recoveryCtx context.Context) error {
+		if reconcileErr := reconcilePersistentChatHosts(recoveryCtx, cfg.DataDir, store); reconcileErr != nil {
+			return fmt.Errorf("persistent chat host reconciliation on boot: %w", reconcileErr)
+		}
+		if reconcileErr := sessMgr.ReconcileBackground(recoveryCtx); reconcileErr != nil {
+			return fmt.Errorf("startup session reconciliation on boot: %w", reconcileErr)
+		}
+		if reconcileErr := lcStack.ReconcileRuntime(recoveryCtx); reconcileErr != nil {
+			return fmt.Errorf("startup agent-process reconciliation on boot: %w", reconcileErr)
+		}
+		// Resolution transitions that happened while the daemon was down never
+		// reached lifecycle. Re-check open notifications only after terminal and
+		// Chat status are final, so the unresolved list agrees with the board when
+		// readiness opens. Best-effort: failure leaves a stale notification but
+		// cannot make the recovered lifecycle facts less trustworthy.
+		if err := notificationWriter.Reconcile(recoveryCtx); err != nil {
+			log.Warn("notification resolution reconcile failed", "err", err)
+		}
+		if err := recoveryCtx.Err(); err != nil {
+			return err
+		}
+		lcStack.StartObservers(ctx)
+		return nil
 	})
 
 	// Both graceful shutdown paths (SIGTERM and POST /shutdown) funnel through
@@ -882,9 +884,6 @@ func Run() error {
 		log.Error("harness installer shutdown", "err", err)
 	}
 	installStopCancel()
-	if startupReconcileDone != nil {
-		<-startupReconcileDone
-	}
 	switchStopCtx, switchCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	if err := sessMgr.WaitAgentSwitchWorkers(switchStopCtx); err != nil {
 		if agentSwitchWorkerWaitTimedOut(err) {

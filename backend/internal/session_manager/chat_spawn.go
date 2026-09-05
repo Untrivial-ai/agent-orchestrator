@@ -105,7 +105,12 @@ type ChatStarted struct {
 	ProviderConversationID string
 	ControllerGeneration   string
 	Conversation           domain.ConversationRecord
-	ProviderBoundary       *domain.ConversationBranch
+	// ReconnectedLive proves that the same native provider process survived the
+	// daemon replacement. A successful reconnect can therefore retain the exact
+	// durable non-terminal activity instead of inventing Idle at commit time.
+	ReconnectedLive   bool
+	RecoveredActivity domain.Activity
+	ProviderBoundary  *domain.ConversationBranch
 	// CommitProviderHistory projects a stable native replay inside the same
 	// lifecycle transaction that publishes ProviderBoundary. It is nil for
 	// ordinary resumes and paths that do not import native history.
@@ -156,6 +161,7 @@ type chatSpawn struct {
 // first so no app-server process is left behind holding the worktree.
 func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domain.SessionRecord, error) {
 	id := in.record.ID
+	expectedControllerOwner := in.record.ControllerOwner()
 	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, in.cfg.Harness)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false)
@@ -195,7 +201,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            in.systemPrompt,
 		AdditionalDirectories:   workspaceProjectDirectories(in.workspace.Path, in.workspaceProject),
-		ExpectedControllerOwner: in.record.ControllerOwner(),
+		ExpectedControllerOwner: expectedControllerOwner,
 		PrepareControllerEnv: func(launchCtx context.Context, expected domain.SessionControllerOwner) (map[string]string, error) {
 			prepared, launchEnv, prepareErr := m.prepareChatControllerEnv(
 				launchCtx, in.record, in.project.Config.Env, expected,
@@ -227,7 +233,8 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 			}
 			committedConversation, commitErr := m.markChatControllerSpawned(
 				ctx, id, metadata, started.Conversation, started.ProviderBoundary,
-				started.CommitProviderHistory,
+				started.CommitProviderHistory, started.ReconnectedLive, started.RecoveredActivity,
+				expectedControllerOwner,
 			)
 			completionErr = commitErr
 			controllerCommitted = completionErr == nil
@@ -393,6 +400,7 @@ func (m *Manager) resumeChatController(
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: recover provider ownership: %w", operation, rec.ID, err)
 	}
+	expectedControllerOwner := rec.ControllerOwner()
 	var completionErr error
 	_, err = m.chat.StartChat(ctx, ChatStart{
 		SessionID:               rec.ID,
@@ -406,7 +414,7 @@ func (m *Manager) resumeChatController(
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            systemPrompt,
 		AdditionalDirectories:   additionalDirectories,
-		ExpectedControllerOwner: rec.ControllerOwner(),
+		ExpectedControllerOwner: expectedControllerOwner,
 		PrepareControllerEnv: func(launchCtx context.Context, expected domain.SessionControllerOwner) (map[string]string, error) {
 			prepared, launchEnv, prepareErr := m.prepareChatControllerEnv(
 				launchCtx, rec, project.Config.Env, expected,
@@ -447,7 +455,8 @@ func (m *Manager) resumeChatController(
 
 			committedConversation, commitErr := m.markChatControllerSpawned(
 				ctx, rec.ID, metadata, started.Conversation, started.ProviderBoundary,
-				started.CommitProviderHistory,
+				started.CommitProviderHistory, started.ReconnectedLive, started.RecoveredActivity,
+				expectedControllerOwner,
 			)
 			completionErr = commitErr
 			return ChatControllerCommit{
@@ -541,8 +550,28 @@ func (m *Manager) markChatControllerSpawned(
 	conversation domain.ConversationRecord,
 	providerBoundary *domain.ConversationBranch,
 	commitProviderHistory func(context.Context) error,
+	reconnectedLive bool,
+	recoveredActivity domain.Activity,
+	expectedControllerOwner domain.SessionControllerOwner,
 ) (domain.ConversationRecord, error) {
 	if providerBoundary == nil {
+		if reconnectedLive {
+			reconnector, ok := m.lcm.(interface {
+				MarkChatReconnected(
+					context.Context,
+					domain.SessionID,
+					domain.SessionControllerOwner,
+					domain.SessionMetadata,
+					domain.Activity,
+				) error
+			})
+			if !ok {
+				return domain.ConversationRecord{}, errors.New("lifecycle: live Chat reconnect persistence is unavailable")
+			}
+			return conversation, reconnector.MarkChatReconnected(
+				ctx, id, expectedControllerOwner, metadata, recoveredActivity,
+			)
+		}
 		return conversation, m.lcm.MarkSpawned(ctx, id, metadata)
 	}
 	var err error

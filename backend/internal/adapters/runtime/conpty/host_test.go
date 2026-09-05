@@ -186,12 +186,14 @@ func (tc *testClient) close() { _ = tc.conn.Close() }
 // ---------------------------------------------------------------------------
 
 type serveFixture struct {
-	pty    *fakePTY
-	ring   *Ring
-	ln     net.Listener
-	addr   string
-	cancel context.CancelFunc
-	done   chan error
+	pty       *fakePTY
+	ring      *Ring
+	ln        net.Listener
+	addr      string
+	sessionID string
+	hostToken string
+	cancel    context.CancelFunc
+	done      chan error
 }
 
 func startServe(t *testing.T, pid int) *serveFixture {
@@ -202,23 +204,29 @@ func startServe(t *testing.T, pid int) *serveFixture {
 	}
 	pty := newFakePTY(pid)
 	ring := NewRing()
+	sessionID := fmt.Sprintf("test-%d", pid)
+	hostToken := fmt.Sprintf("test-host-token-%d", pid)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
 		done <- Serve(ctx, ServeConfig{
-			SessionID: fmt.Sprintf("test-%d", pid),
+			SessionID: sessionID,
+			HostPID:   pid,
+			HostToken: hostToken,
 			Listener:  ln,
 			PTY:       pty,
 			Ring:      ring,
 		})
 	}()
 	return &serveFixture{
-		pty:    pty,
-		ring:   ring,
-		ln:     ln,
-		addr:   ln.Addr().String(),
-		cancel: cancel,
-		done:   done,
+		pty:       pty,
+		ring:      ring,
+		ln:        ln,
+		addr:      ln.Addr().String(),
+		sessionID: sessionID,
+		hostToken: hostToken,
+		cancel:    cancel,
+		done:      done,
 	}
 }
 

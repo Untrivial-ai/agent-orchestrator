@@ -80,6 +80,28 @@ describe("parseDaemonProbe", () => {
 		});
 	});
 
+	it("accepts a terminal startup recovery failure from readyz", () => {
+		expect(
+			parseDaemonProbe("readyz", {
+				status: "error",
+				service: DAEMON_SERVICE_NAME,
+				pid: 4242,
+				code: "startup_recovery_failed",
+				message: "AO could not recover existing sessions.",
+			}),
+		).toEqual({
+			status: "error",
+			service: DAEMON_SERVICE_NAME,
+			pid: 4242,
+			code: "startup_recovery_failed",
+			message: "AO could not recover existing sessions.",
+			executablePath: undefined,
+			workingDirectory: undefined,
+			startupWorkingDirectory: undefined,
+			appImagePath: undefined,
+		});
+	});
+
 	it("rejects a status that does not match the endpoint", () => {
 		expect(parseDaemonProbe("healthz", readyBody)).toBeNull();
 		expect(parseDaemonProbe("readyz", healthBody)).toBeNull();
@@ -180,7 +202,7 @@ describe("resolveDaemonFromRunFile", () => {
 		expect(result).toBeNull();
 	});
 
-	it("reports an error (not a spawn) when the daemon is up but not ready", async () => {
+	it("reports starting when the daemon is healthy but startup recovery is not ready", async () => {
 		const result = await resolveDaemonFromRunFile({
 			runFileContents: runFile(4242, 3001),
 			isProcessAlive: ALIVE,
@@ -190,15 +212,12 @@ describe("resolveDaemonFromRunFile", () => {
 			}),
 			identityError: NO_IDENTITY_ERROR,
 		});
-		expect(result).toEqual({
-			state: "error",
+		expect(result).toMatchObject({
+			state: "starting",
 			port: 3001,
 			pid: 4242,
-			executablePath: undefined,
-			workingDirectory: undefined,
-			message: "An AO daemon is already running, but it is not ready yet.",
-			code: "not_ready",
 		});
+		expect(result).not.toHaveProperty("code");
 	});
 
 	it("surfaces a foreign-daemon identity error", async () => {
@@ -279,7 +298,7 @@ describe("resolveDaemonFromPort", () => {
 		});
 	});
 
-	it("reports an error (not a spawn) when the serving daemon is not ready yet", async () => {
+	it("reports starting when the serving daemon is healthy but startup recovery is not ready", async () => {
 		const result = await resolveDaemonFromPort({
 			expectedPort: 3001,
 			probe: fakeProbe({
@@ -288,15 +307,38 @@ describe("resolveDaemonFromPort", () => {
 			}),
 			identityError: NO_IDENTITY_ERROR,
 		});
-		expect(result).toEqual({
+		expect(result).toMatchObject({
+			state: "starting",
+			port: 3001,
+			pid: 777,
+		});
+		expect(result).not.toHaveProperty("code");
+	});
+
+	it("surfaces a terminal startup recovery failure instead of reporting ready", async () => {
+		const identityError = vi.fn(() => null);
+		const result = await resolveDaemonFromPort({
+			expectedPort: 3001,
+			probe: fakeProbe({
+				"3001:healthz": { status: "ok", service: DAEMON_SERVICE_NAME, pid: 777 },
+				"3001:readyz": {
+					status: "error",
+					service: DAEMON_SERVICE_NAME,
+					pid: 777,
+					code: "startup_recovery_failed",
+					message: "AO could not recover existing sessions.",
+				},
+			}),
+			identityError,
+		});
+		expect(result).toMatchObject({
 			state: "error",
 			port: 3001,
 			pid: 777,
-			executablePath: undefined,
-			workingDirectory: undefined,
-			message: "An AO daemon is already running, but it is not ready yet.",
-			code: "not_ready",
+			code: "startup_recovery_failed",
+			message: "AO could not recover existing sessions.",
 		});
+		expect(identityError).not.toHaveBeenCalled();
 	});
 
 	it("reports an identity error (not a silent attach) for a foreign daemon binary on the port", async () => {
@@ -343,6 +385,8 @@ describe("end-to-end against a real daemon server", () => {
 		service?: string;
 		executablePath?: string;
 		workingDirectory?: string;
+		ready?: boolean;
+		recoveryFailed?: boolean;
 	}): Promise<number> {
 		const service = opts.service ?? DAEMON_SERVICE_NAME;
 		const server = createServer((req, res) => {
@@ -359,6 +403,23 @@ describe("end-to-end against a real daemon server", () => {
 				return;
 			}
 			if (url === "/readyz") {
+				if (opts.recoveryFailed) {
+					res.writeHead(503, { "content-type": "application/json" });
+					res.end(
+						JSON.stringify({
+							status: "error",
+							code: "startup_recovery_failed",
+							message: "AO could not recover existing sessions.",
+							...base,
+						}),
+					);
+					return;
+				}
+				if (opts.ready === false) {
+					res.writeHead(503, { "content-type": "application/json" });
+					res.end(JSON.stringify({ status: "starting", ...base }));
+					return;
+				}
 				res.writeHead(200, { "content-type": "application/json" });
 				res.end(JSON.stringify({ status: "ready", ...base }));
 				return;
@@ -382,8 +443,8 @@ describe("end-to-end against a real daemon server", () => {
 		const timer = setTimeout(() => controller.abort(), 2_000);
 		try {
 			const response = await fetch(`http://127.0.0.1:${port}/${endpoint}`, { signal: controller.signal });
-			if (!response.ok) return null;
-			return parseDaemonProbe(endpoint, await response.json());
+			const probe = parseDaemonProbe(endpoint, await response.json());
+			return !response.ok && probe?.status !== "error" ? null : probe;
 		} catch {
 			return null;
 		} finally {
@@ -423,6 +484,33 @@ describe("end-to-end against a real daemon server", () => {
 			pid: 555,
 			executablePath: undefined,
 			workingDirectory: undefined,
+		});
+	});
+
+	it("reports starting over real HTTP while healthz is 200 and readyz is 503", async () => {
+		const port = await startServer({ pid: 556, ready: false });
+		const result = await resolveDaemonFromPort({
+			expectedPort: port,
+			probe: realProbe,
+			identityError: NO_IDENTITY_ERROR,
+		});
+		expect(result).toMatchObject({ state: "starting", port, pid: 556 });
+		expect(result).not.toHaveProperty("code");
+	});
+
+	it("reports a terminal recovery failure over real HTTP instead of generic starting", async () => {
+		const port = await startServer({ pid: 557, recoveryFailed: true });
+		const result = await resolveDaemonFromPort({
+			expectedPort: port,
+			probe: realProbe,
+			identityError: NO_IDENTITY_ERROR,
+		});
+		expect(result).toMatchObject({
+			state: "error",
+			port,
+			pid: 557,
+			code: "startup_recovery_failed",
+			message: "AO could not recover existing sessions.",
 		});
 	});
 

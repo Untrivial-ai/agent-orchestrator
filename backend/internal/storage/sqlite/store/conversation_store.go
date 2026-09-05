@@ -405,6 +405,7 @@ func (s *Store) commitChatSpawn(
 		if domain.NormalizeSessionMode(owner.SessionMode) != domain.SessionModeChat {
 			return fmt.Errorf("session %s is not in Chat mode", rec.ID)
 		}
+		expectedControllerOwner := rowToRecord(owner).ControllerOwner()
 		conversation, err := q.SelectConversationByID(ctx, branch.ConversationID)
 		if err != nil {
 			return fmt.Errorf("select conversation %s: %w", branch.ConversationID, err)
@@ -436,11 +437,9 @@ func (s *Store) commitChatSpawn(
 			// that generation only inside this transaction, after the new branch is
 			// active, so the replay lands in the new provider namespace while the
 			// terminated target remains unavailable to every concurrent reader.
-			rows, err := q.ClaimChatControllerGeneration(ctx, gen.ClaimChatControllerGenerationParams{
-				ControllerGeneration: rec.Metadata.ControllerGeneration,
-				UpdatedAt:            rec.UpdatedAt,
-				ID:                   rec.ID,
-			})
+			rows, err := q.ClaimChatControllerGeneration(ctx, claimChatControllerGenerationParams(
+				rec.ID, expectedControllerOwner, rec.Metadata.ControllerGeneration, rec.UpdatedAt,
+			))
 			if err != nil {
 				return fmt.Errorf("stage Chat controller generation: %w", err)
 			}

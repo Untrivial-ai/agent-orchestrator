@@ -20,6 +20,7 @@ function DaemonFailureContent({ status }: { status: DaemonStatus }) {
 	const copiedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const slowStartup = isSlowDaemonStartupStatus(status);
 	const details = status.details?.trim();
+	const startupRecoveryFailed = status.code === "startup_recovery_failed";
 	const hint = slowStartup ? "" : daemonFailureHint(status, t);
 	const title = slowStartup ? t("daemon.title.notReady") : daemonFailureTitle(status, t);
 	const canRestart =
@@ -27,6 +28,7 @@ function DaemonFailureContent({ status }: { status: DaemonStatus }) {
 		(status.code === "not_ready" ||
 			status.code === "spawn_failed" ||
 			status.code === "exited" ||
+			status.code === "startup_recovery_failed" ||
 			status.code === "identity_mismatch" ||
 			status.code === "daemon_unreachable");
 	useEffect(() => {
@@ -69,6 +71,7 @@ function DaemonFailureContent({ status }: { status: DaemonStatus }) {
 			aria-live={slowStartup ? "polite" : "assertive"}
 			className="pointer-events-auto fixed top-3 right-3 z-overlay flex w-daemon-failure-toast flex-col rounded-welcome-panel border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)] px-3.5 py-3 text-xs shadow-[var(--shadow-import-modal)]"
 			role={slowStartup ? "status" : "alert"}
+			style={startupRecoveryFailed ? { zIndex: "calc(var(--z-overlay) + 2)" } : undefined}
 		>
 			<div className="flex items-start gap-3">
 				{slowStartup ? (

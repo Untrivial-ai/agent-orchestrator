@@ -27,6 +27,12 @@ const eventBuffer = 4096
 // deciding on the user's behalf.
 const approvalWait = 30 * time.Minute
 
+// Once the provider connection closes, every request handler receives a
+// canceled context. Bound the final producer drain so a future handler that
+// accidentally ignores cancellation cannot keep the public event stream open
+// forever.
+const serverRequestDrainWait = 5 * time.Second
+
 // errConversationClosed reports a decision arriving after the controller ended.
 var errConversationClosed = errors.New("conversation closed")
 
@@ -55,6 +61,23 @@ type conversation struct {
 	pending map[string]*parkedRequest
 	closed  bool
 
+	// A reconnected conversation captures inbound provider events until
+	// RecoverLive establishes its thread/read boundary. The normal controller
+	// projector is deliberately not allowed to consume these first: startup must
+	// project them synchronously before publishing daemon readiness.
+	recoveryMu          sync.Mutex
+	recoveringLive      bool
+	recoveryStarted     bool
+	recoveryEvents      []sequencedChatEvent
+	recoveryBoundary    int64
+	recoveryBoundarySet bool
+	// recoveryDone keeps the notification pump from closing the public event
+	// stream while RecoverLive is still transferring captured events. Without
+	// this ownership handoff, EOF immediately after the snapshot response could
+	// make finishLiveRecovery publish into a closed channel.
+	recoveryDone     chan struct{}
+	recoveryDoneOnce sync.Once
+
 	// sendMu serializes turn dispatch so only one operation mutates the provider
 	// conversation at a time.
 	sendMu sync.Mutex
@@ -82,6 +105,11 @@ type conversation struct {
 	closeOnce sync.Once
 }
 
+type sequencedChatEvent struct {
+	seq   int64
+	event ports.ChatEvent
+}
+
 var _ ports.ChatConversation = (*conversation)(nil)
 
 // Asserted here so a refactor cannot silently drop model listing: the service
@@ -103,12 +131,18 @@ var _ ports.ChatCompactor = (*conversation)(nil)
 var _ ports.ChatMCPReloader = (*conversation)(nil)
 
 func newConversation(proc *process, log *slog.Logger) *conversation {
+	recoveryDone := make(chan struct{})
+	if !proc.reconnected {
+		close(recoveryDone)
+	}
 	c := &conversation{
-		proc:     proc,
-		log:      log,
-		events:   make(chan ports.ChatEvent, eventBuffer),
-		pending:  make(map[string]*parkedRequest),
-		pumpDone: make(chan struct{}),
+		proc:           proc,
+		log:            log,
+		events:         make(chan ports.ChatEvent, eventBuffer),
+		pending:        make(map[string]*parkedRequest),
+		pumpDone:       make(chan struct{}),
+		recoveringLive: proc.reconnected,
+		recoveryDone:   recoveryDone,
 	}
 	c.conn = newConnAt(proc.stdin, proc.stdout, log, c.handleServerRequest, proc.nextRequestID)
 	return c
@@ -148,6 +182,12 @@ func (c *conversation) pump() {
 	defer close(c.events)
 
 	for n := range c.conn.notifs() {
+		// Notifications and provider requests are consumed by different
+		// goroutines, but their sequence is one wire order. Do not publish this
+		// frame until every earlier frame has completed registration/capture.
+		// A begun inbound frame is guaranteed to reach its capture callback even
+		// after EOF, so this wait does not use the connection lifetime context.
+		_ = c.conn.waitInboundCaptured(context.Background(), n.seq-1)
 		// Before normalizing, because a token-usage report is the only place the
 		// context position is stated and a compaction event that arrives in the same
 		// batch has to be able to read it.
@@ -185,9 +225,19 @@ func (c *conversation) pump() {
 				// card AO is still showing is stale.
 				c.discardPending(ev.RequestID)
 			}
-			c.emit(ev)
+			c.publishInbound(n.seq, ev)
 		}
+		c.conn.markInboundCaptured(n.seq)
 	}
+	// Provider requests publish from their own goroutines. Once the connection
+	// stops, wait for those producers and for the reconnect capture owner before
+	// the pump emits the terminal state and closes the sole public event stream.
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), serverRequestDrainWait)
+	if err := c.conn.waitAnswers(drainCtx); err != nil {
+		c.log.Error("timed out draining app-server request handlers", "error", err)
+	}
+	cancelDrain()
+	<-c.recoveryDone
 
 	// The connection ended. Say so explicitly rather than letting the stream go
 	// quiet: a silent channel close is indistinguishable from an idle agent.
@@ -197,6 +247,130 @@ func (c *conversation) pump() {
 	}
 	c.emit(state)
 	c.failPendingApprovals()
+}
+
+// publishInbound routes provider input through the reconnect capture until its
+// ordered snapshot boundary is established. Events after that boundary resume
+// the ordinary channel and are consumed by the live projector after readiness.
+func (c *conversation) publishInbound(seq int64, ev ports.ChatEvent) {
+	c.recoveryMu.Lock()
+	if c.recoveringLive {
+		c.recoveryEvents = append(c.recoveryEvents, sequencedChatEvent{seq: seq, event: ev})
+		c.recoveryMu.Unlock()
+		return
+	}
+	c.recoveryMu.Unlock()
+	c.emit(ev)
+}
+
+// captureLiveRecoveryBoundary returns exactly the events at or before the
+// provider snapshot response while retaining ownership of the complete stream.
+// The caller must explicitly commit or abort after its durable validation and
+// publication work finishes.
+func (c *conversation) captureLiveRecoveryBoundary(boundary int64) []ports.ChatEvent {
+	c.recoveryMu.Lock()
+	defer c.recoveryMu.Unlock()
+
+	c.recoveryBoundary = boundary
+	c.recoveryBoundarySet = true
+	sort.SliceStable(c.recoveryEvents, func(i, j int) bool {
+		return c.recoveryEvents[i].seq < c.recoveryEvents[j].seq
+	})
+	recovered := make([]ports.ChatEvent, 0, len(c.recoveryEvents))
+	for _, sequenced := range c.recoveryEvents {
+		if sequenced.seq <= boundary {
+			recovered = append(recovered, sequenced.event)
+		}
+	}
+	return recovered
+}
+
+// CommitLiveRecovery publishes the captured tail only after the service has
+// durably validated and published this controller. Holding recoveryMu while the
+// tail is emitted prevents a newer publisher from overtaking it.
+func (c *conversation) CommitLiveRecovery() {
+	c.recoveryMu.Lock()
+	defer c.recoveryMu.Unlock()
+	if !c.recoveringLive || !c.recoveryBoundarySet {
+		return
+	}
+	sort.SliceStable(c.recoveryEvents, func(i, j int) bool {
+		return c.recoveryEvents[i].seq < c.recoveryEvents[j].seq
+	})
+	for _, sequenced := range c.recoveryEvents {
+		if sequenced.seq > c.recoveryBoundary {
+			c.emit(sequenced.event)
+		}
+	}
+	c.finishLiveRecoveryLocked()
+}
+
+// AbortLiveRecovery detaches first, then waits until every frame this
+// attachment accepted has reached the ordered capture. The complete capture is
+// returned so the service can durably project it before a retry; the host cannot
+// replay ordinary notifications it already delivered successfully.
+func (c *conversation) AbortLiveRecovery(ctx context.Context) ([]ports.ChatEvent, error) {
+	c.recoveryMu.Lock()
+	active := c.recoveringLive && c.recoveryStarted && c.recoveryBoundarySet
+	c.recoveryMu.Unlock()
+	if !active {
+		return nil, nil
+	}
+	if err := c.Close(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-c.conn.wait():
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := c.conn.waitInboundCaptured(ctx, c.conn.lastInbound()); err != nil {
+		return nil, err
+	}
+
+	c.recoveryMu.Lock()
+	defer c.recoveryMu.Unlock()
+	if !c.recoveringLive {
+		return nil, nil
+	}
+	sort.SliceStable(c.recoveryEvents, func(i, j int) bool {
+		return c.recoveryEvents[i].seq < c.recoveryEvents[j].seq
+	})
+	recovered := make([]ports.ChatEvent, 0, len(c.recoveryEvents))
+	for _, sequenced := range c.recoveryEvents {
+		recovered = append(recovered, sequenced.event)
+	}
+	c.finishLiveRecoveryLocked()
+	return recovered, nil
+}
+
+func (c *conversation) finishLiveRecoveryLocked() {
+	c.recoveryEvents = nil
+	c.recoveringLive = false
+	c.recoveryBoundary = 0
+	c.recoveryBoundarySet = false
+	c.recoveryDoneOnce.Do(func() { close(c.recoveryDone) })
+}
+
+// abandonLiveRecovery releases stream ownership when no response boundary was
+// established. Such a reconnect still fails closed, but cleanup must not leave
+// the notification pump permanently waiting on an owner that already returned.
+func (c *conversation) abandonLiveRecovery() {
+	c.recoveryMu.Lock()
+	c.finishLiveRecoveryLocked()
+	c.recoveryMu.Unlock()
+}
+
+// abandonUnstartedLiveRecovery covers cleanup after attach but before the
+// service asks for its snapshot (for example, a failed durable generation
+// claim). An active RecoverLive owns the captured prefix and must finish that
+// transfer itself, so Close never clears a recovery already in progress.
+func (c *conversation) abandonUnstartedLiveRecovery() {
+	c.recoveryMu.Lock()
+	if c.recoveringLive && !c.recoveryStarted {
+		c.finishLiveRecoveryLocked()
+	}
+	c.recoveryMu.Unlock()
 }
 
 // emit delivers an event, preferring to drop a delta over blocking the reader. A
@@ -643,9 +817,17 @@ func (p *parkedRequest) offeredIDs() []string {
 // than answering immediately. Everything AO does not model is refused with an
 // error, never with a fabricated decision.
 func (c *conversation) handleServerRequest(ctx context.Context, req serverRequest) (any, error) {
+	defer req.markCaptured()
+	// The notification pump and request handlers are concurrent. Serialize their
+	// provider-visible effects by wire sequence before registering or publishing
+	// this request, otherwise a later notification can overtake a slow approval
+	// handler around the reconnect boundary.
+	if err := c.conn.waitInboundCaptured(ctx, req.seq-1); err != nil {
+		return nil, err
+	}
 	switch req.Method {
 	case codexproto.MethodAccountChatgptAuthTokensRefresh:
-		return nil, c.reportAuthRefreshRequest(req.Params)
+		return nil, c.reportAuthRefreshRequest(req.seq, req.Params)
 	case codexproto.MethodItemToolCall:
 		return nil, c.refuseDynamicToolCall(req.Params)
 	}
@@ -677,7 +859,7 @@ func (c *conversation) handleServerRequest(ctx context.Context, req serverReques
 	c.pending[requestID] = &parkedRequest{ch: ch, method: req.Method, offered: offered}
 	c.mu.Unlock()
 
-	c.emit(ports.ChatEvent{
+	c.publishInbound(req.seq, ports.ChatEvent{
 		Kind:           ports.ChatEventApprovalRequested,
 		ProviderTurnID: turnID,
 		ProviderItemID: requestID,
@@ -688,6 +870,9 @@ func (c *conversation) handleServerRequest(ctx context.Context, req serverReques
 		Detail:         detail,
 		Decisions:      decisions,
 	})
+	// The ordered reconnect barrier waits for registration and capture, not for
+	// the user to answer a request that can remain pending for many minutes.
+	req.markCaptured()
 
 	select {
 	case decision := <-ch:
@@ -715,7 +900,7 @@ func (c *conversation) handleServerRequest(ctx context.Context, req serverReques
 //
 // NEVER OBSERVED live: reaching it requires the provider to take a 401 while running
 // in a mode AO does not use, which a test cannot arrange without breaking real auth.
-func (c *conversation) reportAuthRefreshRequest(params json.RawMessage) error {
+func (c *conversation) reportAuthRefreshRequest(seq int64, params json.RawMessage) error {
 	var p codexproto.ChatgptAuthTokensRefreshParams
 	// A payload this build cannot parse still means the same thing: the provider
 	// asked for credentials AO cannot supply.
@@ -726,7 +911,7 @@ func (c *conversation) reportAuthRefreshRequest(params json.RawMessage) error {
 		reason = "unauthorized"
 	}
 	c.log.Warn("app-server asked for ChatGPT auth tokens AO does not hold", "reason", reason)
-	c.emit(ports.ChatEvent{
+	c.publishInbound(seq, ports.ChatEvent{
 		Kind: ports.ChatEventAccountChanged,
 		Account: &ports.ChatAccount{
 			ReauthRequired: true,
@@ -820,6 +1005,7 @@ func (c *conversation) failPendingApprovals() {
 // Close releases the controller without touching provider-side history.
 func (c *conversation) Close() error {
 	c.closeOnce.Do(func() {
+		c.abandonUnstartedLiveRecovery()
 		if c.proc.terminate == nil {
 			c.failPendingApprovals()
 		}
@@ -834,6 +1020,7 @@ func (c *conversation) Close() error {
 // daemon-wide shutdown; explicit session/controller replacement calls this.
 func (c *conversation) Terminate() error {
 	c.closeOnce.Do(func() {
+		c.abandonUnstartedLiveRecovery()
 		c.failPendingApprovals()
 		if c.proc.terminate != nil {
 			_ = c.proc.terminate()

@@ -40,9 +40,7 @@ func conversationFixture(t *testing.T) (*sqlite.Store, domain.SessionID, string)
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
-	if err := s.ClaimChatControllerGeneration(ctx, session.ID, "gen-1", histClock); err != nil {
-		t.Fatalf("claim controller generation: %v", err)
-	}
+	claimCurrentChatControllerGeneration(t, s, session.ID, "gen-1", histClock)
 	return s, session.ID, conversation.ID
 }
 
@@ -1231,9 +1229,7 @@ func TestCleanupOwnedControllerWorkOnlySettlesReboundSessionWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConversation(old): %v", err)
 	}
-	if err := s.ClaimChatControllerGeneration(ctx, oldSession, "old-generation", histClock); err != nil {
-		t.Fatalf("ClaimChatControllerGeneration(old): %v", err)
-	}
+	claimCurrentChatControllerGeneration(t, s, oldSession, "old-generation", histClock)
 
 	seedWork := func(session domain.SessionID, generation, label string, at time.Time) {
 		t.Helper()
@@ -1274,9 +1270,7 @@ func TestCleanupOwnedControllerWorkOnlySettlesReboundSessionWork(t *testing.T) {
 		"cleanup-rebind", newSession, histClock.Add(time.Minute)); err != nil {
 		t.Fatalf("CreateConversation(new): %v", err)
 	}
-	if err := s.ClaimChatControllerGeneration(ctx, newSession, "new-generation", histClock.Add(time.Minute)); err != nil {
-		t.Fatalf("ClaimChatControllerGeneration(new): %v", err)
-	}
+	claimCurrentChatControllerGeneration(t, s, newSession, "new-generation", histClock.Add(time.Minute))
 	seedWork(newSession, "new-generation", "new", histClock.Add(time.Minute))
 
 	owned, err := s.CleanupOwnedControllerWork(ctx, oldSession, conversation.ID,

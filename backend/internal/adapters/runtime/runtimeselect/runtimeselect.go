@@ -5,7 +5,10 @@ package runtimeselect
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
+	"path/filepath"
 	"runtime"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/conpty"
@@ -40,19 +43,47 @@ func New(log *slog.Logger, runFilePath string) Runtime {
 		return conpty.New(conpty.Options{RunFilePath: runFilePath})
 	case "darwin":
 		return newHybridRuntime(
-			tmux.New(tmux.Options{}),
+			tmux.New(tmux.Options{
+				LegacySocketPath: legacyPrivateTmuxSocketPath(runFilePath),
+				RunFilePath:      runFilePath,
+			}),
 			conpty.New(conpty.Options{RunFilePath: runFilePath}),
 			log,
 			"macOS",
 		)
 	case "linux":
 		return newHybridRuntime(
-			tmux.New(tmux.Options{}),
+			tmux.New(tmux.Options{
+				LegacySocketPath: legacyPrivateTmuxSocketPath(runFilePath),
+				RunFilePath:      runFilePath,
+			}),
 			conpty.New(conpty.Options{RunFilePath: runFilePath}),
 			log,
 			"Linux",
 		)
 	default:
-		return tmux.New(tmux.Options{})
+		return tmux.New(tmux.Options{
+			LegacySocketPath: legacyPrivateTmuxSocketPath(runFilePath),
+			RunFilePath:      runFilePath,
+		})
 	}
+}
+
+const legacyTmuxSocketIdentityBytes = 16
+
+// legacyPrivateTmuxSocketPath reproduces the explicit socket path shipped by
+// the short-lived private-socket runtime. The server intentionally outlived
+// the daemon, so upgrades must keep probing this deterministic path for old,
+// unqualified handles even though new sessions no longer use it.
+func legacyPrivateTmuxSocketPath(runFilePath string) string {
+	if runFilePath == "" {
+		return ""
+	}
+	absRunFilePath, err := filepath.Abs(runFilePath)
+	if err != nil {
+		absRunFilePath = filepath.Clean(runFilePath)
+	}
+	digest := sha256.Sum256([]byte(absRunFilePath))
+	identity := hex.EncodeToString(digest[:legacyTmuxSocketIdentityBytes])
+	return filepath.Join(filepath.Dir(absRunFilePath), "tmux-"+identity+".sock")
 }

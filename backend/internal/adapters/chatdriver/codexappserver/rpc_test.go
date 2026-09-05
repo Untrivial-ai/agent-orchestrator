@@ -182,6 +182,146 @@ func TestNotificationsAreFannedOut(t *testing.T) {
 	}
 }
 
+func TestRecoveryRequestWaitsForPrecedingNotificationCapture(t *testing.T) {
+	c, fake := newFakeAppServer(t, rejectAllServerRequests)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.requestThreadReadAfterInboundCapture(context.Background(), nil, nil)
+		done <- err
+	}()
+
+	req := fake.nextRequest()
+	fake.push(`{"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}`)
+	fake.push(`{"id":` + string(*req.ID) + `,"result":{}}`)
+
+	select {
+	case err := <-done:
+		t.Fatalf("recovery request returned before notification capture: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	n := <-c.notifs()
+	if n.Method != "turn/completed" {
+		t.Fatalf("notification = %q, want turn/completed", n.Method)
+	}
+	c.markInboundCaptured(n.seq)
+	if err := <-done; err != nil {
+		t.Fatalf("recovery request: %v", err)
+	}
+}
+
+func TestRecoveryRequestReturnsCapturedBoundaryWithRPCError(t *testing.T) {
+	c, fake := newFakeAppServer(t, rejectAllServerRequests)
+	type result struct {
+		boundary    int64
+		established bool
+		err         error
+	}
+	done := make(chan result, 1)
+	go func() {
+		boundary, established, err := c.requestThreadReadAfterInboundCapture(
+			context.Background(), nil, nil,
+		)
+		done <- result{boundary: boundary, established: established, err: err}
+	}()
+
+	req := fake.nextRequest()
+	fake.push(`{"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}`)
+	fake.push(`{"id":` + string(*req.ID) + `,"error":{"code":-32603,"message":"read failed"}}`)
+
+	select {
+	case got := <-done:
+		t.Fatalf("recovery request returned before error-boundary capture: boundary=%d err=%v",
+			got.boundary, got.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	n := <-c.notifs()
+	c.markInboundCaptured(n.seq)
+	got := <-done
+	if got.boundary != n.seq {
+		t.Fatalf("error boundary = %d, want captured sequence %d", got.boundary, n.seq)
+	}
+	if !got.established {
+		t.Fatal("error response did not close its capture boundary")
+	}
+	if got.err == nil || !strings.Contains(got.err.Error(), "read failed") {
+		t.Fatalf("recovery error = %v, want provider read failure", got.err)
+	}
+}
+
+func TestRecoveryRequestDrainsPrecedingCaptureAfterResponseThenEOF(t *testing.T) {
+	c, fake := newFakeAppServer(t, rejectAllServerRequests)
+	type result struct {
+		boundary    int64
+		established bool
+		err         error
+	}
+	done := make(chan result, 1)
+	go func() {
+		boundary, established, err := c.requestThreadReadAfterInboundCapture(
+			context.Background(), nil, nil,
+		)
+		done <- result{boundary: boundary, established: established, err: err}
+	}()
+
+	req := fake.nextRequest()
+	fake.push(`{"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}`)
+	fake.push(`{"id":` + string(*req.ID) + `,"result":{}}`)
+	if err := fake.toClient.Close(); err != nil {
+		t.Fatalf("close provider output: %v", err)
+	}
+	<-c.wait()
+
+	select {
+	case got := <-done:
+		t.Fatalf("recovery request returned before EOF replay drained: boundary=%d err=%v",
+			got.boundary, got.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	n := <-c.notifs()
+	c.markInboundCaptured(n.seq)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("recovery request after valid response: %v", got.err)
+	}
+	if got.boundary != n.seq {
+		t.Fatalf("response boundary = %d, want drained sequence %d", got.boundary, n.seq)
+	}
+	if !got.established {
+		t.Fatal("valid response did not close its capture boundary")
+	}
+}
+
+func TestRecoveryRequestWaitsForPrecedingServerRequestRegistration(t *testing.T) {
+	registered := make(chan serverRequest, 1)
+	release := make(chan struct{})
+	c, fake := newFakeAppServer(t, func(_ context.Context, req serverRequest) (any, error) {
+		registered <- req
+		<-release
+		return map[string]any{"decision": "accept"}, nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.requestThreadReadAfterInboundCapture(context.Background(), nil, nil)
+		done <- err
+	}()
+
+	req := fake.nextRequest()
+	fake.push(`{"id":7,"method":"item/commandExecution/requestApproval","params":{}}`)
+	fake.push(`{"id":` + string(*req.ID) + `,"result":{}}`)
+	serverRequest := <-registered
+
+	select {
+	case err := <-done:
+		t.Fatalf("recovery request returned before server request registration: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	serverRequest.markCaptured()
+	if err := <-done; err != nil {
+		t.Fatalf("recovery request: %v", err)
+	}
+	close(release)
+}
+
 func TestNotificationReplayBurstRetainsTerminalFrame(t *testing.T) {
 	c, fake := newFakeAppServer(t, rejectAllServerRequests)
 	for i := 0; i < notificationReplayBurst; i++ {
@@ -335,6 +475,18 @@ func TestProcessExitUnblocksPendingRequest(t *testing.T) {
 	case <-c.wait():
 	case <-time.After(2 * time.Second):
 		t.Fatal("connection never reported done")
+	}
+}
+
+func TestWaitAnswersHonorsContext(t *testing.T) {
+	var c conn
+	c.answers.Add(1)
+	defer c.answers.Done()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.waitAnswers(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitAnswers error = %v, want context.Canceled", err)
 	}
 }
 

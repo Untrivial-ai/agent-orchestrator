@@ -58,6 +58,26 @@ func openStore(t *testing.T) *sqlite.Store {
 	return st
 }
 
+func claimCurrentChatControllerGeneration(
+	t *testing.T,
+	st *sqlite.Store,
+	sessionID domain.SessionID,
+	generation string,
+	at time.Time,
+) {
+	t.Helper()
+	rec, found, err := st.GetSession(context.Background(), sessionID)
+	if err != nil || !found {
+		t.Fatalf("GetSession before controller claim: found=%v err=%v", found, err)
+	}
+	applied, err := st.ClaimChatControllerGeneration(
+		context.Background(), sessionID, rec.ControllerOwner(), generation, at,
+	)
+	if err != nil || !applied {
+		t.Fatalf("ClaimChatControllerGeneration: applied=%v err=%v", applied, err)
+	}
+}
+
 func fullSnapshotReader(st *sqlite.Store) chatsvc.SnapshotReader {
 	return chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
 		rows, err := st.LoadConversationSnapshot(ctx, conversationID)
@@ -198,9 +218,39 @@ func (c *terminatingConversation) Terminate() error {
 
 func (c *terminatingConversation) PreservesProviderOnClose() bool { return true }
 
-type liveReconnectedConversation struct{ *nativeHistoryConversation }
+type liveReconnectedConversation struct {
+	*nativeHistoryConversation
+	snapshot      ports.ChatLiveRecoverySnapshot
+	recoveryErr   error
+	abortEvents   []ports.ChatEvent
+	abortErr      error
+	onRecover     func()
+	recoveryReads atomic.Int32
+	commits       atomic.Int32
+	aborts        atomic.Int32
+}
 
 func (c *liveReconnectedConversation) ReconnectedLive() bool { return true }
+
+func (c *liveReconnectedConversation) RecoverLive(context.Context) (ports.ChatLiveRecoverySnapshot, error) {
+	c.recoveryReads.Add(1)
+	if c.onRecover != nil {
+		c.onRecover()
+	}
+	return c.snapshot, c.recoveryErr
+}
+
+func (c *liveReconnectedConversation) CommitLiveRecovery() { c.commits.Add(1) }
+
+func (c *liveReconnectedConversation) AbortLiveRecovery(context.Context) ([]ports.ChatEvent, error) {
+	c.aborts.Add(1)
+	_ = c.Close()
+	return append([]ports.ChatEvent(nil), c.abortEvents...), c.abortErr
+}
+
+type unboundedLiveConversation struct{ *nativeHistoryConversation }
+
+func (c *unboundedLiveConversation) ReconnectedLive() bool { return true }
 
 func (f *deferredConversation) StartDeferredTurn(providerTurnID string) error {
 	return f.start(providerTurnID)
@@ -1040,9 +1090,7 @@ func TestResumeImportsNativeHistoryBeforeTheChatControllerStarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	if err := st.ClaimChatControllerGeneration(context.Background(), testSession, "old-generation", now); err != nil {
-		t.Fatalf("ClaimChatControllerGeneration: %v", err)
-	}
+	claimCurrentChatControllerGeneration(t, st, testSession, "old-generation", now)
 	created, err := st.AppendUserMessage(context.Background(), existing.ID, testSession, "old-generation",
 		domain.ConversationMessage{
 			ID: "existing-user", Text: "What changed?", Origin: domain.MessageOriginHuman,
@@ -1566,9 +1614,7 @@ func TestInterfaceHandoffDoesNotAnchorReplayCheckpointOnFailedTurn(t *testing.T)
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	if err := st.ClaimChatControllerGeneration(context.Background(), testSession, "old-generation", now); err != nil {
-		t.Fatalf("ClaimChatControllerGeneration: %v", err)
-	}
+	claimCurrentChatControllerGeneration(t, st, testSession, "old-generation", now)
 	// An older completed Chat round trip that the provider will replay.
 	created, err := st.AppendUserMessage(context.Background(), existing.ID, testSession, "old-generation",
 		domain.ConversationMessage{
@@ -1718,9 +1764,7 @@ func TestInterfaceHandoffDoesNotAnchorReplayBeforeProviderCoordinationBoundary(t
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	if err := st.ClaimChatControllerGeneration(context.Background(), testSession, "old-generation", now); err != nil {
-		t.Fatalf("ClaimChatControllerGeneration: %v", err)
-	}
+	claimCurrentChatControllerGeneration(t, st, testSession, "old-generation", now)
 
 	// This completed turn belongs to the provider that owned the session before
 	// the agent switch. The new provider receives it through hidden handoff
@@ -2221,9 +2265,7 @@ func (h *harness) awaitSnapshot(t *testing.T, pred func(store.ConversationSnapsh
 func TestStaleControllerEventsDoNotReachTheTimeline(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	if err := h.st.ClaimChatControllerGeneration(ctx, testSession, "replacement-generation", h.now()); err != nil {
-		t.Fatalf("replace controller generation: %v", err)
-	}
+	claimCurrentChatControllerGeneration(t, h.st, testSession, "replacement-generation", h.now())
 
 	h.conv.emit(ports.ChatEvent{
 		Kind:           ports.ChatEventMessageDelta,
@@ -3704,10 +3746,45 @@ func TestServiceStopAllOnlyDetachesPersistentConversation(t *testing.T) {
 	}
 }
 
-func TestServiceLiveReconnectSkipsSettledHistoryBarrier(t *testing.T) {
+func TestServiceStopAllPlannedDetachDoesNotPublishExitForNonPersistentProvider(t *testing.T) {
+	t.Run("planned daemon detach", func(t *testing.T) {
+		provider := newFakeConversation()
+		h := newHarnessWithConversation(t, provider)
+
+		h.svc.StopAll(context.Background())
+
+		for _, signal := range h.activity.snapshot() {
+			if signal.State == domain.ActivityExited {
+				t.Fatalf("planned daemon detach published a false provider exit: %+v", h.activity.snapshot())
+			}
+		}
+	})
+
+	t.Run("unexpected provider stop", func(t *testing.T) {
+		provider := newFakeConversation()
+		h := newHarnessWithConversation(t, provider)
+
+		if err := provider.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		h.ctrl.Wait()
+
+		if !hasActivitySignal(h.activity.snapshot(), domain.ActivityExited, "chat.controller.stopped") {
+			t.Fatalf("unexpected provider stop did not publish exit: %+v", h.activity.snapshot())
+		}
+	})
+}
+
+func TestServiceLiveReconnectUsesOrderedSnapshotInsteadOfSettledHistory(t *testing.T) {
 	st := openStore(t)
 	native := &nativeHistoryConversation{fakeConversation: newFakeConversation(), err: ports.ErrChatHistoryUnsettled}
-	provider := &liveReconnectedConversation{nativeHistoryConversation: native}
+	provider := &liveReconnectedConversation{
+		nativeHistoryConversation: native,
+		snapshot: ports.ChatLiveRecoverySnapshot{
+			ActivityState: domain.ActivityIdle,
+		},
+	}
+	var readyResult chatsvc.StartResult
 	svc := chatsvc.New(chatsvc.Options{
 		Store: st, Reader: fullSnapshotReader(st), Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
 		Log: slog.New(slog.DiscardHandler), NewID: func() string { return "live-reconnect-id" },
@@ -3715,12 +3792,463 @@ func TestServiceLiveReconnectSkipsSettledHistoryBarrier(t *testing.T) {
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
+		ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			readyResult = started
+			return chatsvc.ControllerCommit{}, nil
+		},
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer svc.StopAll(context.Background())
 	if reads := native.historyReads(); reads != 0 {
-		t.Fatalf("native history reads = %d, live reconnect must not wait for active turn to settle", reads)
+		t.Fatalf("ordinary native history reads = %d, live reconnect needs the ordered snapshot", reads)
+	}
+	if reads := provider.recoveryReads.Load(); reads != 1 {
+		t.Fatalf("live recovery snapshot reads = %d, want 1", reads)
+	}
+	if !readyResult.ReconnectedLive {
+		t.Fatal("ControllerReady did not receive live-provider reconnect proof")
+	}
+}
+
+func TestServiceLiveReconnectWithoutOrderedSnapshotFailsClosed(t *testing.T) {
+	st := openStore(t)
+	provider := &unboundedLiveConversation{nativeHistoryConversation: &nativeHistoryConversation{
+		fakeConversation: newFakeConversation(),
+	}}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Reader: fullSnapshotReader(st), Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+		Log:     slog.New(slog.DiscardHandler), NewID: func() string { return "unbounded-reconnect" },
+	})
+	_, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
+	})
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("Start error = %v, want fail-closed recovery error", err)
+	}
+}
+
+func TestServiceLiveReconnectPersistsCapturedReplayBeforeRecoveryFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		event  func(domain.ConversationTurn) ports.ChatEvent
+		verify func(*testing.T, store.ConversationSnapshot, domain.ConversationTurn)
+	}{
+		{
+			name: "detached completion",
+			event: func(turn domain.ConversationTurn) ports.ChatEvent {
+				return ports.ChatEvent{
+					Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+					TurnState: domain.TurnStateCompleted,
+				}
+			},
+			verify: func(t *testing.T, snapshot store.ConversationSnapshot, turn domain.ConversationTurn) {
+				t.Helper()
+				for _, candidate := range snapshot.Turns {
+					if candidate.ID == turn.ID {
+						if candidate.State != domain.TurnStateCompleted {
+							t.Fatalf("captured completion left turn %s", candidate.State)
+						}
+						return
+					}
+				}
+				t.Fatal("captured completion turn is missing")
+			},
+		},
+		{
+			name: "detached approval",
+			event: func(turn domain.ConversationTurn) ports.ChatEvent {
+				return ports.ChatEvent{
+					Kind: ports.ChatEventApprovalRequested, ProviderTurnID: turn.ProviderTurnID,
+					ProviderItemID: "approval-before-failure", RequestID: "request-before-failure",
+					ActivityKind: domain.ActivityKindApproval, ActivityStatus: domain.ActivityStatusPending,
+				}
+			},
+			verify: func(t *testing.T, snapshot store.ConversationSnapshot, _ domain.ConversationTurn) {
+				t.Helper()
+				for _, activity := range snapshot.Activities {
+					if activity.RequestID == "request-before-failure" {
+						if activity.Status != domain.ActivityStatusPending {
+							t.Fatalf("captured approval status = %s, want pending", activity.Status)
+						}
+						return
+					}
+				}
+				t.Fatal("captured pending approval is missing")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st, reader, newID, turn, providerID := seedDetachedRunningChat(t)
+			provider := &liveReconnectedConversation{
+				nativeHistoryConversation: &nativeHistoryConversation{fakeConversation: newFakeConversation()},
+				snapshot: ports.ChatLiveRecoverySnapshot{
+					ReplayEvents: []ports.ChatEvent{tt.event(turn)},
+				},
+				recoveryErr: errors.New("injected thread/read failure"),
+			}
+			svc := chatsvc.New(chatsvc.Options{
+				Store: st, Reader: reader, Sessions: st,
+				Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+				Log:     slog.New(slog.DiscardHandler), NewID: newID,
+			})
+			readyCalled := false
+			_, err := svc.Start(context.Background(), chatsvc.StartConfig{
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+				WorkspacePath: t.TempDir(), ProviderConversationID: providerID,
+				ControllerReady: func(chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+					readyCalled = true
+					return chatsvc.ControllerCommit{}, nil
+				},
+			})
+			if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+				t.Fatalf("Start error = %v, want fail-closed recovery error", err)
+			}
+			if readyCalled {
+				t.Fatal("ControllerReady ran after authoritative recovery failed")
+			}
+			snapshot, snapshotErr := st.LoadConversationSnapshot(context.Background(), turn.ConversationID)
+			if snapshotErr != nil {
+				t.Fatalf("LoadConversationSnapshot: %v", snapshotErr)
+			}
+			tt.verify(t, snapshot, turn)
+		})
+	}
+}
+
+func TestServiceLiveReconnectPersistsCapturedReplayWhenCallerCancelsAtBoundary(t *testing.T) {
+	st, reader, newID, turn, providerID := seedDetachedRunningChat(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := &liveReconnectedConversation{
+		nativeHistoryConversation: &nativeHistoryConversation{fakeConversation: newFakeConversation()},
+		snapshot: ports.ChatLiveRecoverySnapshot{ReplayEvents: []ports.ChatEvent{{
+			Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+			TurnState: domain.TurnStateCompleted,
+		}}},
+		recoveryErr: context.Canceled,
+		onRecover:   cancel,
+	}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Reader: reader, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+		Log:     slog.New(slog.DiscardHandler), NewID: newID,
+	})
+
+	_, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: providerID,
+	})
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("Start error = %v, want fail-closed recovery error", err)
+	}
+	snapshot, snapshotErr := st.LoadConversationSnapshot(context.Background(), turn.ConversationID)
+	if snapshotErr != nil {
+		t.Fatalf("LoadConversationSnapshot: %v", snapshotErr)
+	}
+	for _, candidate := range snapshot.Turns {
+		if candidate.ID == turn.ID {
+			if candidate.State != domain.TurnStateCompleted {
+				t.Fatalf("canceled boundary left captured turn %s", candidate.State)
+			}
+			return
+		}
+	}
+	t.Fatal("captured completion is missing after boundary cancellation")
+}
+
+func TestServiceLiveReconnectPreservesPostBoundaryEventsAcrossFailedRecoveryRetry(t *testing.T) {
+	tests := []struct {
+		name          string
+		firstSnapshot ports.ChatLiveRecoverySnapshot
+		firstErr      error
+		tail          func(domain.ConversationTurn) ports.ChatEvent
+		retryState    domain.ActivityState
+		verify        func(*testing.T, store.ConversationSnapshot, domain.ConversationTurn)
+	}{
+		{
+			name: "completion delivered during snapshot projection failure",
+			firstSnapshot: ports.ChatLiveRecoverySnapshot{
+				// The durable turn is still running, so an idle snapshot without
+				// its concurrent completion fails semantic projection.
+				ActivityState: domain.ActivityIdle,
+			},
+			tail: func(turn domain.ConversationTurn) ports.ChatEvent {
+				return ports.ChatEvent{
+					Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+					TurnState: domain.TurnStateCompleted,
+				}
+			},
+			retryState: domain.ActivityIdle,
+			verify: func(t *testing.T, snapshot store.ConversationSnapshot, turn domain.ConversationTurn) {
+				t.Helper()
+				matches := 0
+				for _, candidate := range snapshot.Turns {
+					if candidate.ID == turn.ID {
+						matches++
+						if candidate.State != domain.TurnStateCompleted {
+							t.Fatalf("retried completion left turn %s", candidate.State)
+						}
+					}
+				}
+				if matches != 1 {
+					t.Fatalf("durable completion rows = %d, want exactly one", matches)
+				}
+			},
+		},
+		{
+			name: "approval delivered during snapshot validation failure",
+			firstSnapshot: ports.ChatLiveRecoverySnapshot{
+				ActivityState: domain.ActivityWaitingInput,
+			},
+			firstErr: errors.New("injected semantic validation failure"),
+			tail: func(turn domain.ConversationTurn) ports.ChatEvent {
+				return ports.ChatEvent{
+					Kind: ports.ChatEventApprovalRequested, ProviderTurnID: turn.ProviderTurnID,
+					ProviderItemID: "approval-after-boundary", RequestID: "request-after-boundary",
+					ActivityKind: domain.ActivityKindApproval, ActivityStatus: domain.ActivityStatusPending,
+				}
+			},
+			retryState: domain.ActivityWaitingInput,
+			verify: func(t *testing.T, snapshot store.ConversationSnapshot, _ domain.ConversationTurn) {
+				t.Helper()
+				matches := 0
+				for _, activity := range snapshot.Activities {
+					if activity.RequestID == "request-after-boundary" {
+						matches++
+						if activity.Status != domain.ActivityStatusPending {
+							t.Fatalf("retried approval status = %s, want pending", activity.Status)
+						}
+					}
+				}
+				if matches != 1 {
+					t.Fatalf("durable approval rows = %d, want exactly one", matches)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st, reader, newID, turn, providerID := seedDetachedRunningChat(t)
+			beforeFailure, found, readErr := st.GetSession(context.Background(), testSession)
+			if readErr != nil || !found {
+				t.Fatalf("GetSession before failed reconnect: found=%v err=%v", found, readErr)
+			}
+			firstProvider := &liveReconnectedConversation{
+				nativeHistoryConversation: &nativeHistoryConversation{fakeConversation: newFakeConversation()},
+				snapshot:                  tt.firstSnapshot,
+				recoveryErr:               tt.firstErr,
+				abortEvents:               []ports.ChatEvent{tt.tail(turn)},
+			}
+			first := chatsvc.New(chatsvc.Options{
+				Store: st, Reader: reader, Sessions: st,
+				Drivers: fakeRegistry{driver: fakeDriver{conv: firstProvider}},
+				Log:     slog.New(slog.DiscardHandler), NewID: newID,
+			})
+			_, err := first.Start(context.Background(), chatsvc.StartConfig{
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+				WorkspacePath: t.TempDir(), ProviderConversationID: providerID,
+			})
+			if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+				t.Fatalf("failed recovery error = %v, want fail-closed recovery error", err)
+			}
+			if got := firstProvider.aborts.Load(); got != 1 {
+				t.Fatalf("failed recovery aborts = %d, want 1", got)
+			}
+			if got := firstProvider.commits.Load(); got != 0 {
+				t.Fatalf("failed recovery commits = %d, want 0", got)
+			}
+			afterFailure, found, readErr := st.GetSession(context.Background(), testSession)
+			if readErr != nil || !found {
+				t.Fatalf("GetSession after failed reconnect: found=%v err=%v", found, readErr)
+			}
+			if afterFailure.ControllerOwner() != beforeFailure.ControllerOwner() ||
+				afterFailure.Activity != beforeFailure.Activity {
+				t.Fatalf(
+					"failed reconnect changed durable session facts: owner/activity = %+v / %+v, want %+v / %+v",
+					afterFailure.ControllerOwner(), afterFailure.Activity,
+					beforeFailure.ControllerOwner(), beforeFailure.Activity,
+				)
+			}
+
+			retryProvider := &liveReconnectedConversation{
+				nativeHistoryConversation: &nativeHistoryConversation{fakeConversation: newFakeConversation()},
+				snapshot: ports.ChatLiveRecoverySnapshot{
+					ActivityState: tt.retryState,
+				},
+			}
+			retry := chatsvc.New(chatsvc.Options{
+				Store: st, Reader: reader, Sessions: st,
+				Drivers: fakeRegistry{driver: fakeDriver{conv: retryProvider}},
+				Log:     slog.New(slog.DiscardHandler), NewID: newID,
+			})
+			t.Cleanup(func() { retry.StopAll(context.Background()) })
+			if _, err := retry.Start(context.Background(), chatsvc.StartConfig{
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+				WorkspacePath: t.TempDir(), ProviderConversationID: providerID,
+			}); err != nil {
+				t.Fatalf("retry Start: %v", err)
+			}
+			if got := retryProvider.commits.Load(); got != 1 {
+				t.Fatalf("successful retry commits = %d, want 1", got)
+			}
+			if got := retryProvider.aborts.Load(); got != 0 {
+				t.Fatalf("successful retry aborts = %d, want 0", got)
+			}
+
+			snapshot, snapshotErr := st.LoadConversationSnapshot(context.Background(), turn.ConversationID)
+			if snapshotErr != nil {
+				t.Fatalf("LoadConversationSnapshot after retry: %v", snapshotErr)
+			}
+			tt.verify(t, snapshot, turn)
+		})
+	}
+}
+
+func seedDetachedRunningChat(
+	t *testing.T,
+) (*sqlite.Store, chatsvc.SnapshotReader, chatsvc.IDFactory, domain.ConversationTurn, string) {
+	t.Helper()
+	st := openStore(t)
+	reader := fullSnapshotReader(st)
+	var ids atomic.Int32
+	newID := func() string { return fmt.Sprintf("detached-%d", ids.Add(1)) }
+	provider := &terminatingConversation{fakeConversation: newFakeConversation()}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Reader: reader, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+		Log:     slog.New(slog.DiscardHandler), NewID: newID,
+	})
+	controller, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("initial Start: %v", err)
+	}
+	turn, err := controller.Send(context.Background(), ports.ChatUserMessage{Text: "survive restart"})
+	if err != nil {
+		t.Fatalf("initial Send: %v", err)
+	}
+	provider.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID,
+		ProviderConversationID: provider.ProviderConversationID(),
+	})
+	h := &harness{st: st, ctrl: controller}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		for _, candidate := range s.Turns {
+			if candidate.ID == turn.ID {
+				return candidate.State == domain.TurnStateRunning
+			}
+		}
+		return false
+	})
+	svc.StopAll(context.Background())
+	return st, reader, newID, turn, provider.ProviderConversationID()
+}
+
+func TestServiceLiveReconnectProjectsDetachedCompletionBeforeControllerReady(t *testing.T) {
+	st, reader, newID, turn, providerID := seedDetachedRunningChat(t)
+	provider := &liveReconnectedConversation{
+		nativeHistoryConversation: &nativeHistoryConversation{fakeConversation: newFakeConversation()},
+		snapshot: ports.ChatLiveRecoverySnapshot{
+			ActivityState: domain.ActivityIdle,
+			ReplayEvents: []ports.ChatEvent{{
+				Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+				TurnState: domain.TurnStateCompleted,
+			}},
+			HistoryEvents: []ports.ChatEvent{
+				{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID},
+				{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+					TurnState: domain.TurnStateCompleted},
+			},
+		},
+	}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Reader: reader, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+		Log:     slog.New(slog.DiscardHandler), NewID: newID,
+	})
+	t.Cleanup(func() { svc.StopAll(context.Background()) })
+	var readyResult chatsvc.StartResult
+	controller, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: providerID,
+		ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			readyResult = started
+			snapshot, snapshotErr := st.LoadConversationSnapshot(context.Background(), started.Conversation.ID)
+			if snapshotErr != nil {
+				return chatsvc.ControllerCommit{}, snapshotErr
+			}
+			found := false
+			for _, candidate := range snapshot.Turns {
+				if candidate.ID == turn.ID {
+					found = true
+					if candidate.State != domain.TurnStateCompleted {
+						return chatsvc.ControllerCommit{}, fmt.Errorf(
+							"turn state before ControllerReady = %s", candidate.State)
+					}
+				}
+			}
+			if !found {
+				return chatsvc.ControllerCommit{}, errors.New("recovered turn missing before ControllerReady")
+			}
+			return chatsvc.ControllerCommit{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("reconnect Start: %v", err)
+	}
+	if readyResult.RecoveredActivity.State != domain.ActivityIdle ||
+		controller.State() != ports.ChatControllerReady {
+		t.Fatalf("recovered result = %+v controller=%s, want idle/ready",
+			readyResult.RecoveredActivity, controller.State())
+	}
+}
+
+func TestServiceLiveReconnectProjectsPendingApprovalBeforeControllerReady(t *testing.T) {
+	st, reader, newID, turn, providerID := seedDetachedRunningChat(t)
+	provider := &liveReconnectedConversation{
+		nativeHistoryConversation: &nativeHistoryConversation{fakeConversation: newFakeConversation()},
+		snapshot: ports.ChatLiveRecoverySnapshot{
+			ActivityState: domain.ActivityWaitingInput,
+			ReplayEvents: []ports.ChatEvent{{
+				Kind: ports.ChatEventApprovalRequested, ProviderTurnID: turn.ProviderTurnID,
+				ProviderItemID: "approval-1", RequestID: "approval-1",
+				ActivityKind:   domain.ActivityKindApproval,
+				ActivityStatus: domain.ActivityStatusPending,
+			}},
+			HistoryEvents: []ports.ChatEvent{{
+				Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID,
+			}},
+		},
+	}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Reader: reader, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: provider}},
+		Log:     slog.New(slog.DiscardHandler), NewID: newID,
+	})
+	t.Cleanup(func() { svc.StopAll(context.Background()) })
+	var readyResult chatsvc.StartResult
+	controller, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: providerID,
+		ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			readyResult = started
+			return chatsvc.ControllerCommit{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("reconnect Start: %v", err)
+	}
+	if readyResult.RecoveredActivity.State != domain.ActivityWaitingInput ||
+		controller.State() != ports.ChatControllerBusy {
+		t.Fatalf("recovered result = %+v controller=%s, want waiting_input/busy",
+			readyResult.RecoveredActivity, controller.State())
 	}
 }
 
@@ -3761,18 +4289,29 @@ func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
 	})
 	first.StopAll(context.Background())
 
-	secondProvider := &liveReconnectedConversation{nativeHistoryConversation: &nativeHistoryConversation{
-		fakeConversation: newFakeConversation(),
-	}}
+	secondProvider := &liveReconnectedConversation{
+		nativeHistoryConversation: &nativeHistoryConversation{fakeConversation: newFakeConversation()},
+		snapshot: ports.ChatLiveRecoverySnapshot{
+			ActivityState: domain.ActivityActive,
+			HistoryEvents: []ports.ChatEvent{{
+				Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID,
+			}},
+		},
+	}
 	second := chatsvc.New(chatsvc.Options{
 		Store: st, Reader: reader, Sessions: st,
 		Drivers: fakeRegistry{driver: fakeDriver{conv: secondProvider}},
 		Log:     slog.New(slog.DiscardHandler), NewID: newID,
 	})
 	t.Cleanup(func() { second.StopAll(context.Background()) })
+	var reconnectResult chatsvc.StartResult
 	secondController, err := second.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
 		WorkspacePath: t.TempDir(), ProviderConversationID: firstProvider.ProviderConversationID(),
+		ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			reconnectResult = started
+			return chatsvc.ControllerCommit{}, nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("reconnect Start: %v", err)
@@ -3786,6 +4325,9 @@ func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
 	}
 	if got := secondProvider.sentTexts(); len(got) != 0 {
 		t.Fatalf("reconnected provider received concurrent turns: %v", got)
+	}
+	if reconnectResult.RecoveredActivity.State != domain.ActivityActive {
+		t.Fatalf("recovered activity = %+v, want active evidence from surviving turn", reconnectResult.RecoveredActivity)
 	}
 }
 
@@ -3928,6 +4470,101 @@ func TestConcurrentReconcileAndResumeShareOneCredentialedControllerLaunch(t *tes
 	}
 	if got := launchedEnv["AO_BROWSER_CAPABILITY"]; got != "token-1" {
 		t.Fatalf("provider capability = %q, want token-1", got)
+	}
+}
+
+func TestLiveReconnectDoesNotStealControllerGenerationClaimedAfterEnvironmentPreparation(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	before, found, err := st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession before launch: found=%v err=%v", found, err)
+	}
+	before.Metadata.ProviderConversationID = "thread-1"
+	before.Metadata.ControllerGeneration = "generation-old"
+	if err := st.UpdateSession(ctx, before); err != nil {
+		t.Fatalf("seed reconnect owner: %v", err)
+	}
+	expected := before.ControllerOwner()
+
+	conversation := &liveReconnectedConversation{nativeHistoryConversation: &nativeHistoryConversation{
+		fakeConversation: newFakeConversation(),
+	}}
+	providerStarted := make(chan struct{})
+	releaseProvider := make(chan struct{})
+	driver := fakeDriver{
+		conv: conversation,
+		resume: func(ports.ChatResumeConfig) (ports.ChatConversation, error) {
+			close(providerStarted)
+			<-releaseProvider
+			return conversation, nil
+		},
+	}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Reader: fullSnapshotReader(st), Sessions: st, Drivers: fakeRegistry{driver: driver},
+		Log: slog.New(slog.DiscardHandler), NewID: func() string { return "unused-race-id" },
+	})
+	workspace := t.TempDir()
+
+	type startResult struct {
+		controller *chatsvc.Controller
+		err        error
+	}
+	result := make(chan startResult, 1)
+	go func() {
+		controller, startErr := svc.Start(ctx, chatsvc.StartConfig{
+			SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+			Harness: domain.HarnessCodex, WorkspacePath: workspace,
+			ExpectedControllerOwner: expected,
+			PrepareControllerEnv: func(_ context.Context, got domain.SessionControllerOwner) (map[string]string, error) {
+				if got != expected {
+					return nil, fmt.Errorf("prepared owner = %+v, want %+v", got, expected)
+				}
+				return map[string]string{"AO_BROWSER_CAPABILITY": "launch-a"}, nil
+			},
+			ProviderConversationID: "thread-1",
+			ControllerGeneration:   "generation-a",
+		})
+		result <- startResult{controller: controller, err: startErr}
+	}()
+
+	// Start A has completed environment preparation but cannot claim yet because
+	// its provider open is paused. A different launcher publishes B in that gap.
+	<-providerStarted
+	claimed, err := st.ClaimChatControllerGeneration(
+		ctx, testSession, expected, "generation-b", time.Now().UTC(),
+	)
+	if err != nil || !claimed {
+		t.Fatalf("claim replacement generation B: claimed=%v err=%v", claimed, err)
+	}
+	close(releaseProvider)
+
+	started := <-result
+	if started.err == nil || !errors.Is(started.err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("stale Start A = controller %p error %v, want fail-closed recovery error",
+			started.controller, started.err)
+	}
+	if started.controller != nil {
+		t.Fatalf("stale Start A published controller %p", started.controller)
+	}
+	after, found, err := st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession after race: found=%v err=%v", found, err)
+	}
+	if after.Metadata.ControllerGeneration != "generation-b" {
+		t.Fatalf("controller generation after stale A = %q, want generation-b",
+			after.Metadata.ControllerGeneration)
+	}
+	if _, controllerErr := svc.Controller(testSession); !errors.Is(controllerErr, chatsvc.ErrNoController) {
+		t.Fatalf("Controller after stale A = %v, want no published controller", controllerErr)
+	}
+	select {
+	case _, open := <-conversation.Events():
+		if open {
+			t.Fatal("stale reconnect left its provider event stream open")
+		}
+	default:
+		t.Fatal("stale reconnect did not detach its unpublished provider")
 	}
 }
 

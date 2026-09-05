@@ -4,11 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+type testDuplexWriteCloser struct {
+	io.Writer
+	close func() error
+}
+
+func (w testDuplexWriteCloser) Close() error { return w.close() }
 
 // Every scripted reply below is a SINGLE line. readFrame is newline-delimited, so a
 // pretty-printed reply is read as a truncated frame and the client waits forever.
@@ -35,6 +46,485 @@ func openConversation(t *testing.T) (*conversation, *scriptedServer) {
 	}
 	t.Cleanup(func() { _ = conv.Close() })
 	return conv.(*conversation), srv
+}
+
+func openLiveRecoveryConversation(
+	t *testing.T,
+	threadReadResult string,
+) (*conversation, *scriptedServer) {
+	t.Helper()
+	d, srv := newTestDriver(t)
+	proc, err := d.spawn(context.Background(), "codex", "/tmp/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.reply("thread/read", threadReadResult)
+	d.persistent = true
+	d.connectHost = func(context.Context, persistenthost.Config) (*persistenthost.Transport, error) {
+		return &persistenthost.Transport{
+			// A real host transport is one net.Conn, whose Close also wakes the
+			// stdout reader. Mirror that duplex-close behavior across these two
+			// independent in-memory pipes so abort/retry tests exercise real detach.
+			Stdin: testDuplexWriteCloser{
+				Writer: proc.stdin,
+				close: func() error {
+					return errors.Join(proc.stdin.Close(), srv.toClient.Close())
+				},
+			},
+			Stdout: proc.stdout, Reconnected: true,
+		}, nil
+	}
+	opened, err := d.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "ao-recovery", ProviderConversationID: "thread-1",
+		DataDir: t.TempDir(), WorkspacePath: "/tmp/ws",
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	conv := opened.(*conversation)
+	t.Cleanup(func() {
+		conv.CommitLiveRecovery()
+		_ = conv.Close()
+	})
+	return conv, srv
+}
+
+func TestRecoverLiveUsesPaginatedHistoryAndAMetadataOnlyBoundary(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}`)
+	srv.reply(methodThreadTurnsList, `{"data":[`+
+		`{"id":"turn-1","status":"completed","items":[],"itemsView":"full"}`+
+		`]}`)
+
+	snapshot, err := conv.RecoverLive(context.Background())
+	if err != nil {
+		t.Fatalf("RecoverLive: %v", err)
+	}
+	if len(snapshot.HistoryEvents) != 2 ||
+		snapshot.HistoryEvents[0].Kind != ports.ChatEventTurnStarted ||
+		snapshot.HistoryEvents[1].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("history events = %#v, want paginated completed turn", snapshot.HistoryEvents)
+	}
+
+	list := srv.awaitFrame(func(f frame) bool { return f.Method == methodThreadTurnsList })
+	var listParams struct {
+		ThreadID      string `json:"threadId"`
+		Limit         uint32 `json:"limit"`
+		SortDirection string `json:"sortDirection"`
+		ItemsView     string `json:"itemsView"`
+	}
+	if err := json.Unmarshal(list.Params, &listParams); err != nil {
+		t.Fatalf("thread/turns/list params: %v", err)
+	}
+	if listParams.ThreadID != "thread-1" ||
+		listParams.Limit != historyTurnPageSize ||
+		listParams.SortDirection != "asc" ||
+		listParams.ItemsView != "full" {
+		t.Errorf("thread/turns/list params = %+v, want full oldest-first history", listParams)
+	}
+
+	read := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/read" })
+	var readParams map[string]json.RawMessage
+	if err := json.Unmarshal(read.Params, &readParams); err != nil {
+		t.Fatalf("thread/read params: %v", err)
+	}
+	if _, included := readParams["includeTurns"]; included {
+		t.Error("modern recovery boundary requested deprecated thread/read turn hydration")
+	}
+}
+
+func TestRecoverLiveAcceptsAnIdleThreadBeforeItsFirstUserMessage(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}`)
+	srv.replyError(methodThreadTurnsList, -32600,
+		"thread thread-1 is not materialized yet; thread/turns/list is unavailable before first user message")
+
+	snapshot, err := conv.RecoverLive(context.Background())
+	if err != nil {
+		t.Fatalf("RecoverLive: %v", err)
+	}
+	if snapshot.ActivityState != domain.ActivityIdle || len(snapshot.HistoryEvents) != 0 {
+		t.Fatalf("snapshot = %#v, want idle empty unmaterialized thread", snapshot)
+	}
+	read := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/read" })
+	var readParams map[string]json.RawMessage
+	if err := json.Unmarshal(read.Params, &readParams); err != nil {
+		t.Fatalf("thread/read params: %v", err)
+	}
+	if _, included := readParams["includeTurns"]; included {
+		t.Error("unmaterialized recovery fell back to the broken includeTurns path")
+	}
+}
+
+func TestRecoverLiveRejectsUnmaterializedHistoryForAnActiveThread(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"active","activeFlags":[]},"turns":[]}}`)
+	srv.replyError(methodThreadTurnsList, -32600,
+		"thread thread-1 is not materialized yet; thread/turns/list is unavailable before first user message")
+
+	_, err := conv.RecoverLive(context.Background())
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) ||
+		!strings.Contains(err.Error(), "unmaterialized") {
+		t.Fatalf("RecoverLive error = %v, want active/unmaterialized contradiction", err)
+	}
+}
+
+func TestReadHistoryTreatsTheExactUnmaterializedRefusalAsEmpty(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.replyError(methodThreadTurnsList, -32600,
+		"thread thread-1 is not materialized yet; thread/turns/list is unavailable before first user message")
+
+	events, err := conv.ReadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("ReadHistory: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events = %#v, want no history before first user message", events)
+	}
+	if srv.sentMethod("thread/read") {
+		t.Fatal("unmaterialized history used deprecated includeTurns fallback")
+	}
+}
+
+func TestReadHistoryFollowsEveryOpaqueTurnCursor(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.replySequence(methodThreadTurnsList,
+		`{"data":[{"id":"turn-a","status":"completed","items":[],"itemsView":"full"}],"nextCursor":"cursor-a"}`,
+		`{"data":[{"id":"turn-b","status":"completed","items":[],"itemsView":"full"}]}`,
+	)
+
+	events, err := conv.ReadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("ReadHistory: %v", err)
+	}
+	if len(events) != 4 ||
+		events[0].ProviderTurnID != "turn-a" ||
+		events[2].ProviderTurnID != "turn-b" {
+		t.Fatalf("events = %#v, want both ordered pages", events)
+	}
+	if srv.sentMethod("thread/read") {
+		t.Fatal("paginated history unexpectedly fell back to thread/read")
+	}
+
+	srv.mu.Lock()
+	var pages []frame
+	for _, seen := range srv.seen {
+		if seen.Method == methodThreadTurnsList {
+			pages = append(pages, seen)
+		}
+	}
+	srv.mu.Unlock()
+	if len(pages) != 2 {
+		t.Fatalf("thread/turns/list requests = %d, want two", len(pages))
+	}
+	var second struct {
+		Cursor string `json:"cursor"`
+	}
+	if err := json.Unmarshal(pages[1].Params, &second); err != nil {
+		t.Fatalf("second page params: %v", err)
+	}
+	if second.Cursor != "cursor-a" {
+		t.Errorf("second page cursor = %q, want cursor-a", second.Cursor)
+	}
+}
+
+func TestReadHistoryRejectsTruncatedPaginatedItems(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply(methodThreadTurnsList, `{"data":[`+
+		`{"id":"turn-a","status":"completed","items":[],"itemsView":"summary"}`+
+		`]}`)
+
+	_, err := conv.ReadHistory(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "want full") {
+		t.Fatalf("ReadHistory error = %v, want truncated-items rejection", err)
+	}
+	if srv.sentMethod("thread/read") {
+		t.Fatal("supported but truncated pagination silently fell back to legacy history")
+	}
+}
+
+func TestReadHistoryRejectsAPaginationCursorLoop(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.replySequence(methodThreadTurnsList,
+		`{"data":[{"id":"turn-a","status":"completed","items":[],"itemsView":"full"}],"nextCursor":"again"}`,
+		`{"data":[{"id":"turn-b","status":"completed","items":[],"itemsView":"full"}],"nextCursor":"again"}`,
+	)
+
+	_, err := conv.ReadHistory(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "repeated cursor") {
+		t.Fatalf("ReadHistory error = %v, want cursor-loop rejection", err)
+	}
+}
+
+func TestRecoverLiveReturnsIdleAfterDetachedTurnCompletion(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[`+
+			`{"id":"turn-1","status":"completed","items":[]}]}}`)
+	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1",` +
+		`"turn":{"id":"turn-1","status":"completed","items":[]}}}`)
+
+	snapshot, err := conv.RecoverLive(context.Background())
+	if err != nil {
+		t.Fatalf("RecoverLive: %v", err)
+	}
+	if snapshot.ActivityState != domain.ActivityIdle {
+		t.Fatalf("activity = %q, want idle", snapshot.ActivityState)
+	}
+	if len(snapshot.ReplayEvents) != 1 || snapshot.ReplayEvents[0].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("replay events = %#v, want detached completion", snapshot.ReplayEvents)
+	}
+	if len(snapshot.HistoryEvents) != 2 ||
+		snapshot.HistoryEvents[0].Kind != ports.ChatEventTurnStarted ||
+		snapshot.HistoryEvents[1].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("history events = %#v, want settled authoritative turn", snapshot.HistoryEvents)
+	}
+}
+
+func TestRecoverLiveReturnsActiveWithRunningTurnOwnership(t *testing.T) {
+	conv, _ := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"active","activeFlags":[]},"turns":[`+
+			`{"id":"turn-1","status":"inProgress","items":[`+
+			`{"type":"agentMessage","id":"partial","text":"not settled"}]}]}}`)
+
+	snapshot, err := conv.RecoverLive(context.Background())
+	if err != nil {
+		t.Fatalf("RecoverLive: %v", err)
+	}
+	if snapshot.ActivityState != domain.ActivityActive {
+		t.Fatalf("activity = %q, want active", snapshot.ActivityState)
+	}
+	if len(snapshot.HistoryEvents) != 1 ||
+		snapshot.HistoryEvents[0].Kind != ports.ChatEventTurnStarted ||
+		snapshot.HistoryEvents[0].ProviderTurnID != "turn-1" {
+		t.Fatalf("history events = %#v, want only live turn ownership", snapshot.HistoryEvents)
+	}
+}
+
+func TestRecoverLiveFailsClosedOnUnknownActiveFlag(t *testing.T) {
+	conv, _ := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"active",`+
+			`"activeFlags":["futureWaitState"]},"turns":[]}}`)
+
+	_, err := conv.RecoverLive(context.Background())
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("RecoverLive error = %v, want unknown active flag to fail closed", err)
+	}
+}
+
+func TestRecoverLiveCapturesPendingApprovalBeforeWaitingState(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"active",`+
+			`"activeFlags":["waitingOnApproval"]},"turns":[`+
+			`{"id":"turn-1","status":"inProgress","items":[]}]}}`)
+	srv.push(`{"id":7,"method":"item/commandExecution/requestApproval","params":{` +
+		`"threadId":"thread-1","turnId":"turn-1","itemId":"command-1",` +
+		`"command":"git push","availableDecisions":["accept","decline"]}}`)
+
+	snapshot, err := conv.RecoverLive(context.Background())
+	if err != nil {
+		t.Fatalf("RecoverLive: %v", err)
+	}
+	if snapshot.ActivityState != domain.ActivityWaitingInput {
+		t.Fatalf("activity = %q, want waiting_input", snapshot.ActivityState)
+	}
+	if len(snapshot.ReplayEvents) != 1 ||
+		snapshot.ReplayEvents[0].Kind != ports.ChatEventApprovalRequested ||
+		snapshot.ReplayEvents[0].RequestID != "7" {
+		t.Fatalf("replay events = %#v, want registered pending approval", snapshot.ReplayEvents)
+	}
+}
+
+func TestRecoverLiveFailsClosedOnUnknownProviderState(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"futureState"},"turns":[]}}`)
+	srv.push(`{"id":7,"method":"item/commandExecution/requestApproval","params":{` +
+		`"threadId":"thread-1","turnId":"turn-1","itemId":"command-1",` +
+		`"command":"git push","availableDecisions":["accept","decline"]}}`)
+
+	snapshot, err := conv.RecoverLive(context.Background())
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("RecoverLive error = %v, want ErrChatRecoveryInconclusive", err)
+	}
+	if len(snapshot.ReplayEvents) != 1 ||
+		snapshot.ReplayEvents[0].Kind != ports.ChatEventApprovalRequested ||
+		snapshot.ReplayEvents[0].RequestID != "7" {
+		t.Fatalf("replay events = %#v, want approval captured before semantic failure",
+			snapshot.ReplayEvents)
+	}
+}
+
+func TestRecoverLiveReturnsCapturedReplayWithThreadReadError(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}`)
+	srv.replyError("thread/read", -32603, "read failed")
+	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1",` +
+		`"turn":{"id":"turn-1","status":"completed","items":[]}}}`)
+
+	snapshot, err := conv.RecoverLive(context.Background())
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("RecoverLive error = %v, want ErrChatRecoveryInconclusive", err)
+	}
+	if len(snapshot.ReplayEvents) != 1 || snapshot.ReplayEvents[0].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("replay events = %#v, want completion captured before RPC failure",
+			snapshot.ReplayEvents)
+	}
+}
+
+func TestRecoverLiveReturnsCapturedReplayWithThreadReadDecodeError(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t, `[]`)
+	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1",` +
+		`"turn":{"id":"turn-1","status":"completed","items":[]}}}`)
+
+	snapshot, err := conv.RecoverLive(context.Background())
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("RecoverLive error = %v, want ErrChatRecoveryInconclusive", err)
+	}
+	if len(snapshot.ReplayEvents) != 1 || snapshot.ReplayEvents[0].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("replay events = %#v, want completion captured before decode failure",
+			snapshot.ReplayEvents)
+	}
+}
+
+func TestClosingLiveReconnectBeforeRecoveryReleasesEventPump(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}`)
+
+	if err := conv.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// The test transport uses separate one-way pipes; close provider output too
+	// to model the full-duplex host socket that Close releases in production.
+	if err := srv.toClient.Close(); err != nil {
+		t.Fatalf("close provider output: %v", err)
+	}
+	select {
+	case <-conv.pumpDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("event pump remained blocked on recovery that never started")
+	}
+}
+
+func TestConcurrentProviderRequestAndNotificationPreserveWireOrder(t *testing.T) {
+	conv, srv := openConversation(t)
+	// Hold the approval registration at the conversation lock after the read loop
+	// has assigned it the earlier sequence. The later completion must not overtake
+	// it through the independent notification pump.
+	conv.mu.Lock()
+	srv.push(`{"id":7,"method":"item/commandExecution/requestApproval","params":{` +
+		`"threadId":"thread-1","turnId":"turn-1","itemId":"command-1",` +
+		`"command":"git push","availableDecisions":["accept","decline"]}}`)
+	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1",` +
+		`"turn":{"id":"turn-1","status":"completed","items":[]}}}`)
+
+	select {
+	case event := <-conv.Events():
+		conv.mu.Unlock()
+		t.Fatalf("later %s event overtook blocked approval registration", event.Kind)
+	case <-time.After(25 * time.Millisecond):
+	}
+	conv.mu.Unlock()
+
+	approval := nextEvent(t, conv.Events(), ports.ChatEventApprovalRequested)
+	if approval.RequestID != "7" {
+		t.Fatalf("first request id = %q, want 7", approval.RequestID)
+	}
+	completed := nextEvent(t, conv.Events(), ports.ChatEventTurnCompleted)
+	if completed.ProviderTurnID != "turn-1" {
+		t.Fatalf("completion turn = %q, want turn-1", completed.ProviderTurnID)
+	}
+}
+
+func TestPostRecoveryTailPreservesProviderWireOrder(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}`)
+	// Answer thread/read manually so the recovery boundary is fully finalized
+	// before injecting its concurrent live tail.
+	srv.mu.Lock()
+	delete(srv.responses, "thread/read")
+	srv.mu.Unlock()
+	type recoveryResult struct {
+		snapshot ports.ChatLiveRecoverySnapshot
+		err      error
+	}
+	recovered := make(chan recoveryResult, 1)
+	go func() {
+		snapshot, err := conv.RecoverLive(context.Background())
+		recovered <- recoveryResult{snapshot: snapshot, err: err}
+	}()
+	request := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/read" })
+	srv.push(`{"id":` + string(*request.ID) + `,"result":{` +
+		`"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}}`)
+	result := <-recovered
+	if result.err != nil {
+		t.Fatalf("RecoverLive: %v", result.err)
+	}
+	if len(result.snapshot.ReplayEvents) != 0 {
+		t.Fatalf("boundary replay = %#v, want no pre-response events", result.snapshot.ReplayEvents)
+	}
+	conv.CommitLiveRecovery()
+
+	conv.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			conv.mu.Unlock()
+		}
+	}()
+	srv.push(`{"id":7,"method":"item/commandExecution/requestApproval","params":{` +
+		`"threadId":"thread-1","turnId":"turn-1","itemId":"command-1",` +
+		`"command":"git push","availableDecisions":["accept","decline"]}}`)
+	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1",` +
+		`"turn":{"id":"turn-1","status":"completed","items":[]}}}`)
+	select {
+	case event := <-conv.Events():
+		conv.mu.Unlock()
+		locked = false
+		t.Fatalf("post-boundary %s overtook earlier approval registration", event.Kind)
+	case <-time.After(25 * time.Millisecond):
+	}
+	conv.mu.Unlock()
+	locked = false
+
+	if event := nextEvent(t, conv.Events(), ports.ChatEventApprovalRequested); event.RequestID != "7" {
+		t.Fatalf("first tail request id = %q, want 7", event.RequestID)
+	}
+	if event := nextEvent(t, conv.Events(), ports.ChatEventTurnCompleted); event.ProviderTurnID != "turn-1" {
+		t.Fatalf("second tail turn = %q, want turn-1", event.ProviderTurnID)
+	}
+}
+
+func TestAbortLiveRecoveryReturnsPostBoundaryEventsForDurableRetry(t *testing.T) {
+	conv, srv := openLiveRecoveryConversation(t,
+		`{"thread":{"id":"thread-1","status":{"type":"active","activeFlags":[]},"turns":[`+
+			`{"id":"turn-1","status":"inProgress","items":[]}]}}`)
+
+	snapshot, err := conv.RecoverLive(context.Background())
+	if err != nil {
+		t.Fatalf("RecoverLive: %v", err)
+	}
+	if len(snapshot.ReplayEvents) != 0 {
+		t.Fatalf("boundary replay = %#v, want no pre-response events", snapshot.ReplayEvents)
+	}
+
+	// Both frames were accepted by the attached transport after thread/read. A
+	// startup validation/persistence failure must get them back before detaching;
+	// the persistent host has already handed them to this daemon and cannot replay
+	// the completion on the next attachment.
+	srv.push(`{"id":7,"method":"item/commandExecution/requestApproval","params":{` +
+		`"threadId":"thread-1","turnId":"turn-1","itemId":"command-1",` +
+		`"command":"git push","availableDecisions":["accept","decline"]}}`)
+	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1",` +
+		`"turn":{"id":"turn-1","status":"completed","items":[]}}}`)
+
+	retryEvents, err := conv.AbortLiveRecovery(context.Background())
+	if err != nil {
+		t.Fatalf("AbortLiveRecovery: %v", err)
+	}
+	if len(retryEvents) != 2 ||
+		retryEvents[0].Kind != ports.ChatEventApprovalRequested ||
+		retryEvents[1].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("retry events = %#v, want approval then completion", retryEvents)
+	}
 }
 
 func TestReadHistoryReconstructsNativeTurnsForTheChatTimeline(t *testing.T) {
@@ -192,6 +682,33 @@ func TestRollbackCountsTurnsFromTheNamedOneToTheEnd(t *testing.T) {
 	}
 	if params.NumTurns != 2 {
 		t.Errorf("numTurns = %d, want 2 (the named turn and the one after it)", params.NumTurns)
+	}
+}
+
+func TestRollbackCountsCurrentPaginatedTurnsWithoutLegacyHydration(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply(methodThreadTurnsList, `{"data":[`+
+		`{"id":"turn-a","status":"completed","items":[],"itemsView":"full"},`+
+		`{"id":"turn-b","status":"completed","items":[],"itemsView":"full"},`+
+		`{"id":"turn-c","status":"completed","items":[],"itemsView":"full"}`+
+		`]}`)
+	srv.reply("thread/rollback", `{"thread":{"id":"thread-1","turns":[]}}`)
+
+	if err := conv.Rollback(context.Background(), "turn-b"); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if srv.sentMethod("thread/read") {
+		t.Fatal("paginated rollback unexpectedly used deprecated thread/read hydration")
+	}
+	rollback := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/rollback" })
+	var params struct {
+		NumTurns int `json:"numTurns"`
+	}
+	if err := json.Unmarshal(rollback.Params, &params); err != nil {
+		t.Fatalf("params: %v", err)
+	}
+	if params.NumTurns != 2 {
+		t.Errorf("numTurns = %d, want 2", params.NumTurns)
 	}
 }
 

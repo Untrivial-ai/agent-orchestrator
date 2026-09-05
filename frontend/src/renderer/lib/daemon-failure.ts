@@ -36,6 +36,8 @@ export function daemonFailureHint(status: DaemonStatus, t: TFunction = appI18n.t
 		case "spawn_failed":
 		case "exited":
 			return "";
+		case "startup_recovery_failed":
+			return "";
 		case "not_ready":
 			return t("daemon.hint.notReady");
 		case "not_configured":

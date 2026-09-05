@@ -30,6 +30,11 @@ type frame struct {
 	Params json.RawMessage  `json:"params,omitempty"`
 	Result json.RawMessage  `json:"result,omitempty"`
 	Error  *rpcError        `json:"error,omitempty"`
+
+	// inboundBefore is local sequencing metadata, never serialized. A response
+	// records the last notification/server request the read loop observed before
+	// it, allowing recovery callers to wait until those frames are captured.
+	inboundBefore int64
 }
 
 // rpcError is the error object on a failed response.
@@ -50,6 +55,7 @@ func (e *rpcError) Error() string {
 type notification struct {
 	Method string
 	Params json.RawMessage
+	seq    int64
 }
 
 // serverRequest is a server->client message that expects a reply. Approvals and
@@ -58,6 +64,15 @@ type serverRequest struct {
 	ID     json.RawMessage
 	Method string
 	Params json.RawMessage
+	seq    int64
+
+	captured func()
+}
+
+func (r serverRequest) markCaptured() {
+	if r.captured != nil {
+		r.captured()
+	}
 }
 
 // serverRequestHandler answers a server->client request. Returning an error
@@ -86,6 +101,16 @@ type conn struct {
 	pending map[int64]chan frame
 	closed  bool
 
+	// captureMu tracks ordered inbound work separately from response
+	// correlation. Notifications are complete when the conversation has
+	// normalized/published them; server requests are complete when the
+	// conversation has registered and published their pending interaction.
+	captureMu       sync.Mutex
+	nextInbound     int64
+	capturedThrough int64
+	captured        map[int64]bool
+	captureChanged  chan struct{}
+
 	// notificationInput decouples provider reads from notification consumption.
 	// The relay owns an ordered queue so a replay burst cannot block response
 	// correlation or silently drop a lifecycle frame.
@@ -97,6 +122,10 @@ type conn struct {
 	// done closes when the read loop exits, so a caller waiting on a response
 	// learns the process died instead of blocking forever.
 	done chan struct{}
+	// answers tracks provider->client request handlers. The notification pump
+	// owns closure of the public event stream, so it must wait until these other
+	// event producers have stopped before closing that stream.
+	answers sync.WaitGroup
 	// readErr is set before done closes when the loop failed for a reason other
 	// than clean EOF.
 	readErr error
@@ -116,6 +145,8 @@ func newConnAt(w io.WriteCloser, r io.Reader, log *slog.Logger, onReq serverRequ
 		w:                 w,
 		log:               log,
 		pending:           make(map[int64]chan frame),
+		captured:          make(map[int64]bool),
+		captureChanged:    make(chan struct{}),
 		notificationInput: make(chan notification),
 		notifications:     make(chan notification),
 		onServerRequest:   onReq,
@@ -225,12 +256,99 @@ func (c *conn) readLoop(r io.Reader) {
 
 		switch {
 		case f.ID != nil && f.Method != "":
-			go c.answer(serverRequest{ID: *f.ID, Method: f.Method, Params: f.Params})
+			seq, markCaptured := c.beginInbound()
+			c.answers.Add(1)
+			go func() {
+				defer c.answers.Done()
+				c.answer(serverRequest{
+					ID: *f.ID, Method: f.Method, Params: f.Params,
+					seq: seq, captured: markCaptured,
+				})
+			}()
 		case f.ID != nil:
+			f.inboundBefore = c.lastInbound()
 			c.deliver(f)
 		case f.Method != "":
-			c.notificationInput <- notification{Method: f.Method, Params: f.Params}
+			seq, _ := c.beginInbound()
+			c.notificationInput <- notification{Method: f.Method, Params: f.Params, seq: seq}
 		}
+	}
+}
+
+func (c *conn) beginInbound() (int64, func()) {
+	c.captureMu.Lock()
+	c.nextInbound++
+	seq := c.nextInbound
+	c.captureMu.Unlock()
+	var once sync.Once
+	return seq, func() {
+		once.Do(func() { c.markInboundCaptured(seq) })
+	}
+}
+
+func (c *conn) lastInbound() int64 {
+	c.captureMu.Lock()
+	defer c.captureMu.Unlock()
+	return c.nextInbound
+}
+
+func (c *conn) markInboundCaptured(seq int64) {
+	if seq <= 0 {
+		return
+	}
+	c.captureMu.Lock()
+	c.captured[seq] = true
+	advanced := false
+	for c.captured[c.capturedThrough+1] {
+		c.capturedThrough++
+		delete(c.captured, c.capturedThrough)
+		advanced = true
+	}
+	if advanced {
+		close(c.captureChanged)
+		c.captureChanged = make(chan struct{})
+	}
+	c.captureMu.Unlock()
+}
+
+func (c *conn) waitInboundCaptured(ctx context.Context, through int64) error {
+	for {
+		c.captureMu.Lock()
+		if c.capturedThrough >= through {
+			c.captureMu.Unlock()
+			return nil
+		}
+		changed := c.captureChanged
+		c.captureMu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			// As with response correlation, a committed capture boundary wins a
+			// simultaneous cancellation. Recheck under the tracker lock before
+			// deciding the caller truly timed out first.
+			c.captureMu.Lock()
+			captured := c.capturedThrough >= through
+			c.captureMu.Unlock()
+			if captured {
+				return nil
+			}
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (c *conn) waitAnswers(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		c.answers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -286,6 +404,7 @@ func (c *conn) deliver(f frame) {
 // own goroutine so a slow decision (a user staring at an approval card) does not
 // stall the read loop and starve streaming deltas.
 func (c *conn) answer(req serverRequest) {
+	defer req.markCaptured()
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() {
@@ -328,13 +447,37 @@ func (c *conn) write(v any) error {
 // request sends a client->server request and waits for its response. The caller's
 // context bounds the wait; a late response is discarded by deliver.
 func (c *conn) request(ctx context.Context, method string, params, out any) error {
+	_, _, err := c.requestWithCaptureBoundary(ctx, method, params, out, false)
+	return err
+}
+
+// requestThreadReadAfterInboundCapture sends the recovery thread/read request
+// but does not return its response until all notifications and server-request
+// registrations that preceded that response have reached the conversation. The
+// provider protocol itself is unchanged, so this also works with hosts created
+// by older AO builds. established remains true when that response carries an
+// RPC/decode error: its boundary is still valid and the captured prefix still
+// needs durable ownership.
+func (c *conn) requestThreadReadAfterInboundCapture(
+	ctx context.Context,
+	params, out any,
+) (boundary int64, established bool, err error) {
+	return c.requestWithCaptureBoundary(ctx, "thread/read", params, out, true)
+}
+
+func (c *conn) requestWithCaptureBoundary(
+	ctx context.Context,
+	method string,
+	params, out any,
+	waitForInbound bool,
+) (boundary int64, established bool, err error) {
 	id := c.nextID.Add(1)
 	ch := make(chan frame, 1)
 
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return fmt.Errorf("%s: %w", method, ErrConnClosed)
+		return 0, false, fmt.Errorf("%s: %w", method, ErrConnClosed)
 	}
 	c.pending[id] = ch
 	c.mu.Unlock()
@@ -347,30 +490,48 @@ func (c *conn) request(ctx context.Context, method string, params, out any) erro
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
-		return fmt.Errorf("%s: %w", method, err)
+		return 0, false, fmt.Errorf("%s: %w", method, err)
 	}
 
+	var f frame
+	var ok bool
 	select {
+	case f, ok = <-ch:
 	case <-ctx.Done():
+		// Correlation owns the race. If deliver/readLoop already removed this
+		// request from pending, a response or connection-close result is committed
+		// to ch and must win over simultaneous cancellation; it may carry the only
+		// replay boundary the detached host can no longer send again.
 		c.mu.Lock()
-		delete(c.pending, id)
+		_, stillPending := c.pending[id]
+		if stillPending {
+			delete(c.pending, id)
+		}
 		c.mu.Unlock()
-		return fmt.Errorf("%s: %w", method, ctx.Err())
-
-	case f, ok := <-ch:
-		if !ok {
-			return fmt.Errorf("%s: %w", method, ErrConnClosed)
+		if stillPending {
+			return 0, false, fmt.Errorf("%s: %w", method, ctx.Err())
 		}
-		if f.Error != nil {
-			return fmt.Errorf("%s: %w", method, f.Error)
-		}
-		if out != nil && len(f.Result) > 0 {
-			if err := json.Unmarshal(f.Result, out); err != nil {
-				return fmt.Errorf("%s: decode result: %w", method, err)
-			}
-		}
-		return nil
+		f, ok = <-ch
 	}
+	if !ok {
+		return 0, false, fmt.Errorf("%s: %w", method, ErrConnClosed)
+	}
+	if waitForInbound {
+		if err := c.waitInboundCaptured(ctx, f.inboundBefore); err != nil {
+			return f.inboundBefore, false, fmt.Errorf(
+				"%s: capture preceding provider events: %w", method, err)
+		}
+	}
+	if f.Error != nil {
+		return f.inboundBefore, waitForInbound, fmt.Errorf("%s: %w", method, f.Error)
+	}
+	if out != nil && len(f.Result) > 0 {
+		if err := json.Unmarshal(f.Result, out); err != nil {
+			return f.inboundBefore, waitForInbound, fmt.Errorf(
+				"%s: decode result: %w", method, err)
+		}
+	}
+	return f.inboundBefore, waitForInbound, nil
 }
 
 // notify sends a client->server notification, which expects no reply.

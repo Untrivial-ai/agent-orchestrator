@@ -8,6 +8,8 @@ package reaper
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -42,9 +44,9 @@ type Config struct {
 	// assertions don't race wallclock.
 	Clock func() time.Time
 	// Logger receives operational diagnostics (probe errors, skipped sessions,
-	// LCM call failures). The reaper logs but does not propagate these errors
-	// because a single failed probe must not kill the loop. nil means
-	// slog.Default.
+	// LCM call failures). The periodic loop logs but does not propagate these
+	// errors; boot-time Reconcile returns them so readiness cannot publish stale
+	// lifecycle state. nil means slog.Default.
 	Logger *slog.Logger
 }
 
@@ -151,6 +153,18 @@ func (r *Reaper) loop(ctx context.Context, done chan<- struct{}) {
 // circuits the rest of the cycle. Per-session ApplyRuntimeObservation failures
 // are logged but never propagated — one failed call must not bring down the loop.
 func (r *Reaper) Tick(ctx context.Context) error {
+	return r.runCycle(ctx, false)
+}
+
+// Reconcile runs one strict boot-time observation cycle. Unlike periodic Tick,
+// it returns per-session probe and lifecycle-fold failures after conservatively
+// reporting ProbeFailed facts. The daemon gates /readyz on this method so the UI
+// never renders durable status before every recoverable runtime was classified.
+func (r *Reaper) Reconcile(ctx context.Context) error {
+	return r.runCycle(ctx, true)
+}
+
+func (r *Reaper) runCycle(ctx context.Context, strict bool) error {
 	now := r.clock()
 
 	sessions, err := r.sessions.ListAllSessions(ctx)
@@ -163,16 +177,21 @@ func (r *Reaper) Tick(ctx context.Context) error {
 		facts ports.RuntimeFacts
 	}
 	var observations []observation
+	var cycleErrs []error
 	dead := 0
 	for _, sess := range sessions {
 		if sess.IsTerminated {
 			continue
 		}
-		facts, ok := r.probeOne(ctx, sess, now)
+		facts, ok, probeErr := r.probeOne(ctx, sess, now)
+		if strict && probeErr != nil {
+			cycleErrs = append(cycleErrs, probeErr)
+		}
 		if !ok {
 			continue
 		}
-		if facts.Runtime == ports.ProbeDead {
+		if facts.Runtime == ports.ProbeDead ||
+			(facts.Runtime == ports.ProbeAlive && facts.Workload == ports.ProbeDead) {
 			dead++
 		}
 		observations = append(observations, observation{id: sess.ID, facts: facts})
@@ -185,9 +204,19 @@ func (r *Reaper) Tick(ctx context.Context) error {
 		r.logger.Error("reaper: mass-death circuit breaker tripped, reporting the pass as inconclusive",
 			"dead", dead, "probed", len(observations))
 		for i := range observations {
-			if observations[i].facts.Runtime == ports.ProbeDead {
+			switch {
+			case observations[i].facts.Runtime == ports.ProbeDead:
 				observations[i].facts.Runtime = ports.ProbeFailed
+			case observations[i].facts.Runtime == ports.ProbeAlive &&
+				observations[i].facts.Workload == ports.ProbeDead:
+				observations[i].facts.Workload = ports.ProbeFailed
 			}
+		}
+		if strict {
+			cycleErrs = append(cycleErrs, fmt.Errorf(
+				"runtime reconciliation mass-death circuit breaker: %d of %d probes reported dead",
+				dead, len(observations),
+			))
 		}
 	}
 
@@ -195,9 +224,12 @@ func (r *Reaper) Tick(ctx context.Context) error {
 		if err := r.sink.ApplyRuntimeObservation(ctx, obs.id, obs.facts); err != nil {
 			r.logger.Error("reaper: ApplyRuntimeObservation failed",
 				"session", obs.id, "err", err)
+			if strict {
+				cycleErrs = append(cycleErrs, fmt.Errorf("apply runtime observation for %s: %w", obs.id, err))
+			}
 		}
 	}
-	return nil
+	return errors.Join(cycleErrs...)
 }
 
 // probeOne probes a single session and returns the resulting facts. Every
@@ -205,14 +237,18 @@ func (r *Reaper) Tick(ctx context.Context) error {
 // reaper does not optimize away the "alive" case; the reaper has no business
 // deciding what counts as a no-op. The LCM diffs and only writes on actual
 // change. ok is false for sessions that cannot or must not be runtime-probed.
-func (r *Reaper) probeOne(ctx context.Context, sess domain.SessionRecord, now time.Time) (ports.RuntimeFacts, bool) {
+func (r *Reaper) probeOne(
+	ctx context.Context,
+	sess domain.SessionRecord,
+	now time.Time,
+) (ports.RuntimeFacts, bool, error) {
 	// A chat session has no terminal runtime by design, so it has no handle to
 	// probe and its absence is not an anomaly. Terminal liveness and chat
 	// controller liveness are separate facts: inferring one from the other would
 	// let a healthy chat session look dead to the reaper. The chat controller
 	// reports its own health through the conversation's controller state.
 	if domain.NormalizeSessionMode(sess.Mode) == domain.SessionModeChat {
-		return ports.RuntimeFacts{}, false
+		return ports.RuntimeFacts{}, false, nil
 	}
 	handle, ok := handleFromRecord(sess)
 	if !ok {
@@ -220,10 +256,11 @@ func (r *Reaper) probeOne(ctx context.Context, sess domain.SessionRecord, now ti
 		// surfacing (MarkSpawned should have set both keys). Warn rather
 		// than Debug so it doesn't hide behind a noisy log level.
 		r.warnMissingHandleOnce(sess.ID)
-		return ports.RuntimeFacts{}, false
+		return ports.RuntimeFacts{}, false, fmt.Errorf("session %s has no runtime handle metadata", sess.ID)
 	}
 	alive, probeErr := r.runtime.IsAlive(ctx, handle)
 	facts := ports.RuntimeFacts{ObservedAt: now, LaunchID: sess.Metadata.RuntimeLaunchID, Workload: ports.ProbeFailed}
+	var observationErr error
 	switch {
 	case probeErr != nil:
 		// Failed probe must NOT be collapsed to alive — that would let a
@@ -233,6 +270,7 @@ func (r *Reaper) probeOne(ctx context.Context, sess domain.SessionRecord, now ti
 		facts.Runtime = ports.ProbeFailed
 		r.logger.Debug("reaper: probe error reported as failed fact",
 			"session", sess.ID, "err", probeErr)
+		observationErr = fmt.Errorf("session %s runtime probe: %w", sess.ID, probeErr)
 	case !alive:
 		facts.Runtime = ports.ProbeDead
 	default:
@@ -247,6 +285,7 @@ func (r *Reaper) probeOne(ctx context.Context, sess domain.SessionRecord, now ti
 				facts.Workload = ports.ProbeFailed
 				r.logger.Debug("reaper: workload probe error reported as failed fact",
 					"session", sess.ID, "launch", facts.LaunchID, "err", workloadErr)
+				observationErr = fmt.Errorf("session %s workload probe for launch %s: %w", sess.ID, facts.LaunchID, workloadErr)
 			case workloadAlive:
 				facts.Workload = ports.ProbeAlive
 			default:
@@ -255,7 +294,7 @@ func (r *Reaper) probeOne(ctx context.Context, sess domain.SessionRecord, now ti
 		}
 	}
 
-	return facts, true
+	return facts, true, observationErr
 }
 
 // warnMissingHandleOnce logs at most once per session for this Reaper's lifetime.

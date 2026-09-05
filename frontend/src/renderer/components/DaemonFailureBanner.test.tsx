@@ -31,6 +31,23 @@ describe("DaemonFailureBanner", () => {
 		expect(screen.getByText("go: go.mod requires go >= 1.25.7")).toBeInTheDocument();
 	});
 
+	it("offers to restart after terminal startup recovery failure", () => {
+		render(
+			<DaemonFailureBanner
+				status={{
+					state: "error",
+					code: "startup_recovery_failed",
+					message: "AO could not recover existing sessions.",
+				}}
+			/>,
+		);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("AO could not recover existing sessions.");
+		expect(screen.getByRole("alert")).toHaveStyle({ zIndex: "calc(var(--z-overlay) + 2)" });
+		expect(screen.getByText("startup_recovery_failed")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Restart daemon" })).toBeInTheDocument();
+	});
+
 	it("resets copy feedback when failure details change", async () => {
 		const { rerender } = render(
 			<DaemonFailureBanner status={{ state: "stopped", code: "exited", details: "first failure" }} />,

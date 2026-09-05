@@ -37,14 +37,17 @@ type notificationSink interface {
 	Resolve(context.Context, ports.NotificationResolution) error
 }
 
-// lifecycleStack owns the runtime reaper goroutine started with the lifecycle
-// reducer. The reducer itself is only used for wiring observations into storage.
+// lifecycleStack owns the lifecycle reducer and its periodic runtime observers.
+// The reducer is available during wiring and startup recovery, but observers do
+// not start until recovery has established durable runtime ownership.
 type lifecycleStack struct {
 	// LCM is the Lifecycle Manager (the canonical write path). It is exposed so
 	// startSession can share the same reducer the reaper drives, rather than
 	// standing up a second store+LCM pair that would diverge under writes.
 	LCM            *lifecycle.Manager
 	runtimeReaper  *reaper.Reaper
+	activityPoller *activityobserver.Observer
+	observersOnce  sync.Once
 	reaperDone     <-chan struct{}
 	activityDone   <-chan struct{}
 	autoReviewDone <-chan struct{}
@@ -52,11 +55,12 @@ type lifecycleStack struct {
 	trackerDone    <-chan struct{}
 }
 
-// startLifecycle constructs the Lifecycle Manager over the store and starts the
-// reaper. The goroutine stops when ctx is cancelled; Stop waits for it to drain.
+// startLifecycle constructs the Lifecycle Manager and its observers without
+// starting their periodic loops. The daemon first runs startup reconciliation
+// synchronously, then calls StartObservers immediately before publishing ready.
 // The messenger is the per-daemon agent messenger the LCM uses to nudge agents
 // in response to SCM observations (CI failure, review feedback, merge conflict).
-func startLifecycle(ctx context.Context, store *sqlite.Store, runtime ports.Runtime, messenger ports.AgentMessenger, notifier notificationSink, telemetry ports.EventSink, agents ports.AgentResolver, logger *slog.Logger) *lifecycleStack {
+func startLifecycle(store *sqlite.Store, runtime ports.Runtime, messenger ports.AgentMessenger, notifier notificationSink, telemetry ports.EventSink, agents ports.AgentResolver, logger *slog.Logger) *lifecycleStack {
 	lcm := lifecycle.New(store, messenger,
 		lifecycle.WithNotificationSink(notifier),
 		lifecycle.WithTelemetry(telemetry),
@@ -68,11 +72,21 @@ func startLifecycle(ctx context.Context, store *sqlite.Store, runtime ports.Runt
 	rp := reaper.New(lcm, store, runtime, reaper.Config{Logger: logger})
 	activityPoller := activityobserver.New(store, lcm, runtime, agents, activityobserver.Config{Logger: logger})
 	return &lifecycleStack{
-		LCM:           lcm,
-		runtimeReaper: rp,
-		reaperDone:    rp.Start(ctx),
-		activityDone:  activityPoller.Start(ctx),
+		LCM:            lcm,
+		runtimeReaper:  rp,
+		activityPoller: activityPoller,
 	}
+}
+
+// StartObservers begins periodic observation after startup reconciliation has
+// finished. Before this boundary, only the daemon's explicit ReconcileRuntime
+// pass may publish runtime facts, preventing an early tick from racing legacy
+// handle canonicalization and session-operation fencing.
+func (l *lifecycleStack) StartObservers(ctx context.Context) {
+	l.observersOnce.Do(func() {
+		l.reaperDone = l.runtimeReaper.Start(ctx)
+		l.activityDone = l.activityPoller.Start(ctx)
+	})
 }
 
 // startupSignalGatesInput resolves whether an adapter promises that its first
@@ -117,7 +131,7 @@ func urgentNudgeWaitingInputSafe(agents ports.AgentResolver) func(domain.AgentHa
 // the periodic reaper. The daemon calls it after session-manager reconciliation
 // so exits missed while AO was stopped are folded before the API starts serving.
 func (l *lifecycleStack) ReconcileRuntime(ctx context.Context) error {
-	return l.runtimeReaper.Tick(ctx)
+	return l.runtimeReaper.Reconcile(ctx)
 }
 
 // activeTurnSteering resolves the per-harness active-turn steering capability
@@ -142,7 +156,9 @@ func activeTurnSteering(agents ports.AgentResolver) func(domain.AgentHarness) bo
 // Stop waits for the reaper goroutine to exit. The caller must cancel the ctx
 // passed to startLifecycle before calling Stop.
 func (l *lifecycleStack) Stop() {
-	<-l.reaperDone
+	if l.reaperDone != nil {
+		<-l.reaperDone
+	}
 	if l.activityDone != nil {
 		<-l.activityDone
 	}
@@ -550,6 +566,8 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 				ProviderConversationID: out.ProviderConversationID,
 				ControllerGeneration:   out.ControllerGeneration,
 				Conversation:           out.Conversation,
+				ReconnectedLive:        out.ReconnectedLive,
+				RecoveredActivity:      out.RecoveredActivity,
 				ProviderBoundary:       out.ProviderBoundary,
 				CommitProviderHistory:  out.CommitProviderHistory,
 			})
@@ -565,6 +583,8 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 	return sessionmanager.ChatStarted{
 		ProviderConversationID: out.ProviderConversationID,
 		ControllerGeneration:   out.ControllerGeneration,
+		ReconnectedLive:        out.ReconnectedLive,
+		RecoveredActivity:      out.RecoveredActivity,
 	}, nil
 }
 

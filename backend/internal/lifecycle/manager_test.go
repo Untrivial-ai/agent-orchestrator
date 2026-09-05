@@ -28,12 +28,13 @@ type fakeStore struct {
 	prPolicies map[string]bool
 	signatures map[string]string
 
-	listPRsErr        error
-	listReviewsErr    error
-	signatureWriteErr error
-	signatureWrites   int
-	chatSpawnErr      error
-	chatSpawnCalls    []domain.ConversationBranch
+	listPRsErr          error
+	listReviewsErr      error
+	signatureWriteErr   error
+	signatureWrites     int
+	chatSpawnErr        error
+	chatSpawnCalls      []domain.ConversationBranch
+	beforeChatReconnect func()
 }
 
 func newFakeStore() *fakeStore {
@@ -110,6 +111,28 @@ func (f *fakeStore) ListSessions(_ context.Context, project domain.ProjectID) ([
 func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) error {
 	f.sessions[rec.ID] = rec
 	return nil
+}
+
+func (f *fakeStore) CommitChatLiveReconnect(
+	_ context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	recovered domain.Activity,
+	reconnectedAt time.Time,
+) (bool, error) {
+	if f.beforeChatReconnect != nil {
+		f.beforeChatReconnect()
+	}
+	rec, ok := f.sessions[id]
+	if !ok || rec.ControllerOwner() != expected {
+		return false, nil
+	}
+	rec.Activity = recovered
+	if rec.UpdatedAt.Before(reconnectedAt) {
+		rec.UpdatedAt = reconnectedAt
+	}
+	f.sessions[id] = rec
+	return true, nil
 }
 
 func (f *fakeStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord) (bool, error) {
@@ -698,6 +721,25 @@ func TestRuntimeObservation_ConfirmedDeathIsSuppressedDuringSessionMutation(t *t
 	}
 	if got := st.sessions["mer-1"]; got != rec {
 		t.Fatalf("runtime observation mutated session during exclusive operation: got %+v, want %+v", got, rec)
+	}
+}
+
+func TestRuntimeObservation_ExitedWorkloadIsSuppressedDuringSessionMutation(t *testing.T) {
+	m, st, _ := newManager()
+	m.SetSessionOperationGate(fixedSessionOperationGate(true))
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-1"
+	st.sessions["mer-1"] = rec
+
+	if err := m.ApplyRuntimeObservation(ctx, "mer-1", ports.RuntimeFacts{
+		Runtime:  ports.ProbeAlive,
+		Workload: ports.ProbeDead,
+		LaunchID: "launch-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.sessions["mer-1"]; got != rec {
+		t.Fatalf("workload observation mutated session during exclusive operation: got %+v, want %+v", got, rec)
 	}
 }
 
@@ -1758,6 +1800,256 @@ func TestMarkSpawnedPersistsAndPreservesDiffBase(t *testing.T) {
 	got = st.sessions["mer-1"].Metadata
 	if got.DiffBaseSHA != wantSHA || got.DiffBaseRef != wantRef {
 		t.Fatalf("restored diff base = sha:%q ref:%q, want preserved sha:%q ref:%q", got.DiffBaseSHA, got.DiffBaseRef, wantSHA, wantRef)
+	}
+}
+
+func TestMarkChatReconnectedPublishesAuthoritativeIdleActivity(t *testing.T) {
+	for _, state := range []domain.ActivityState{
+		domain.ActivityActive,
+		domain.ActivityIdle,
+		domain.ActivityWaitingInput,
+		domain.ActivityBlocked,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			m, st, _ := newManager()
+			activityAt := time.Date(2026, time.September, 2, 1, 2, 3, 0, time.UTC)
+			firstSignalAt := activityAt.Add(-time.Minute)
+			before := domain.SessionRecord{
+				ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+				Activity:      domain.Activity{State: state, LastActivityAt: activityAt},
+				FirstSignalAt: firstSignalAt,
+				Metadata: domain.SessionMetadata{
+					WorkspacePath:          "/ws",
+					ProviderConversationID: "thread-1",
+					ControllerGeneration:   "generation-old",
+				},
+			}
+			expected := before.ControllerOwner()
+			claimed := before
+			claimed.Metadata.ControllerGeneration = "generation-new"
+			st.sessions[before.ID] = claimed
+
+			if err := m.MarkChatReconnected(ctx, before.ID, expected, domain.SessionMetadata{
+				WorkspacePath:          "/ws",
+				ProviderConversationID: "thread-1",
+				ControllerGeneration:   "generation-new",
+			}, domain.Activity{State: domain.ActivityIdle, LastActivityAt: activityAt.Add(time.Second)}); err != nil {
+				t.Fatalf("MarkChatReconnected: %v", err)
+			}
+
+			got := st.sessions[before.ID]
+			wantActivity := domain.Activity{
+				State: domain.ActivityIdle, LastActivityAt: activityAt.Add(time.Second),
+			}
+			if got.Activity != wantActivity || !got.FirstSignalAt.Equal(firstSignalAt) {
+				t.Fatalf("live reconnect lifecycle = activity %+v firstSignalAt %v, want %+v / %v",
+					got.Activity, got.FirstSignalAt, wantActivity, firstSignalAt)
+			}
+			if got.Metadata.ControllerGeneration != "generation-new" ||
+				got.Metadata.ProviderConversationID != "thread-1" {
+				t.Fatalf("live reconnect owner = %+v", got.Metadata)
+			}
+		})
+	}
+}
+
+func TestMarkChatReconnectedRepairsContradictoryExitedActivity(t *testing.T) {
+	m, st, _ := newManager()
+	now := time.Date(2026, time.September, 2, 2, 3, 4, 0, time.UTC)
+	m.clock = func() time.Time { return now }
+	firstSignalAt := now.Add(-time.Hour)
+	before := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+		Activity:      domain.Activity{State: domain.ActivityExited, LastActivityAt: now.Add(-time.Minute)},
+		FirstSignalAt: firstSignalAt,
+		Metadata: domain.SessionMetadata{
+			ProviderConversationID: "thread-1",
+			ControllerGeneration:   "generation-old",
+		},
+	}
+	expected := before.ControllerOwner()
+	claimed := before
+	claimed.Metadata.ControllerGeneration = "generation-new"
+	st.sessions[before.ID] = claimed
+
+	if err := m.MarkChatReconnected(ctx, "mer-1", expected, domain.SessionMetadata{
+		ProviderConversationID: "thread-1",
+		ControllerGeneration:   "generation-new",
+	}, domain.Activity{State: domain.ActivityActive, LastActivityAt: now}); err != nil {
+		t.Fatalf("MarkChatReconnected: %v", err)
+	}
+
+	got := st.sessions["mer-1"]
+	if got.Activity.State != domain.ActivityActive || !got.Activity.LastActivityAt.Equal(now) {
+		t.Fatalf("activity = %+v, want active evidence from surviving turn", got.Activity)
+	}
+	if !got.FirstSignalAt.Equal(firstSignalAt) {
+		t.Fatalf("first signal = %v, want surviving provider evidence %v", got.FirstSignalAt, firstSignalAt)
+	}
+}
+
+func TestMarkChatReconnectedPublishesAuthoritativeWaitingInput(t *testing.T) {
+	m, st, _ := newManager()
+	now := time.Date(2026, time.September, 2, 2, 30, 0, 0, time.UTC)
+	m.clock = func() time.Time { return now }
+	before := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-time.Minute)},
+		Metadata: domain.SessionMetadata{
+			ProviderConversationID: "thread-1",
+			ControllerGeneration:   "generation-old",
+		},
+	}
+	expected := before.ControllerOwner()
+	claimed := before
+	claimed.Metadata.ControllerGeneration = "generation-new"
+	st.sessions[before.ID] = claimed
+
+	waiting := domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: now}
+	if err := m.MarkChatReconnected(ctx, before.ID, expected, domain.SessionMetadata{
+		ProviderConversationID: "thread-1",
+		ControllerGeneration:   "generation-new",
+	}, waiting); err != nil {
+		t.Fatalf("MarkChatReconnected: %v", err)
+	}
+	if got := st.sessions[before.ID].Activity; got != waiting {
+		t.Fatalf("activity = %+v, want %+v", got, waiting)
+	}
+}
+
+func TestMarkChatReconnectedSynchronizesNeedsInputNotifications(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		from            domain.ActivityState
+		to              domain.ActivityState
+		wantIntents     int
+		wantResolutions int
+	}{
+		{name: "active to waiting", from: domain.ActivityActive, to: domain.ActivityWaitingInput, wantIntents: 1},
+		{name: "waiting to active", from: domain.ActivityWaitingInput, to: domain.ActivityActive, wantResolutions: 1},
+		{name: "blocked to idle", from: domain.ActivityBlocked, to: domain.ActivityIdle, wantResolutions: 1},
+		{name: "blocked to waiting stays in family", from: domain.ActivityBlocked, to: domain.ActivityWaitingInput},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st := newFakeStore()
+			sink := &fakeNotificationSink{}
+			m := New(st, nil, WithNotificationSink(sink))
+			now := time.Date(2026, time.September, 2, 4, 5, 6, 0, time.UTC)
+			m.clock = func() time.Time { return now }
+			before := domain.SessionRecord{
+				ID: "mer-1", ProjectID: "mer", DisplayName: "checkout-flow", Mode: domain.SessionModeChat,
+				Activity: domain.Activity{State: tt.from, LastActivityAt: now.Add(-time.Minute)},
+				Metadata: domain.SessionMetadata{
+					ProviderConversationID: "thread-1",
+					ControllerGeneration:   "generation-old",
+				},
+			}
+			expected := before.ControllerOwner()
+			claimed := before
+			claimed.Metadata.ControllerGeneration = "generation-new"
+			st.sessions[before.ID] = claimed
+			recovered := domain.Activity{State: tt.to, LastActivityAt: now}
+
+			if err := m.MarkChatReconnected(ctx, before.ID, expected, domain.SessionMetadata{
+				ProviderConversationID: "thread-1",
+				ControllerGeneration:   "generation-new",
+			}, recovered); err != nil {
+				t.Fatalf("MarkChatReconnected: %v", err)
+			}
+			if got := len(sink.intents); got != tt.wantIntents {
+				t.Fatalf("notification intents = %d, want %d", got, tt.wantIntents)
+			}
+			if got := len(sink.resolutions); got != tt.wantResolutions {
+				t.Fatalf("notification resolutions = %d, want %d", got, tt.wantResolutions)
+			}
+			if tt.wantIntents != 0 {
+				got := sink.intents[0]
+				if got.SessionID != before.ID || got.ProjectID != before.ProjectID ||
+					got.SessionDisplayName != before.DisplayName || !got.CreatedAt.Equal(now) {
+					t.Fatalf("notification intent = %+v", got)
+				}
+			}
+			if tt.wantResolutions != 0 {
+				got := sink.resolutions[0]
+				if got.Type != domain.NotificationNeedsInput || got.SessionID != before.ID || !got.ResolvedAt.Equal(now) {
+					t.Fatalf("notification resolution = %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestMarkChatReconnectedLostCASDoesNotEmitNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	now := time.Date(2026, time.September, 2, 5, 6, 7, 0, time.UTC)
+	m.clock = func() time.Time { return now }
+	before := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-time.Minute)},
+		Metadata: domain.SessionMetadata{
+			ProviderConversationID: "thread-1",
+			ControllerGeneration:   "generation-old",
+		},
+	}
+	expected := before.ControllerOwner()
+	claimed := before
+	claimed.Metadata.ControllerGeneration = "generation-new"
+	st.sessions[before.ID] = claimed
+	st.beforeChatReconnect = func() {
+		replacement := st.sessions[before.ID]
+		replacement.Metadata.ControllerGeneration = "generation-replacement"
+		replacement.Activity = domain.Activity{State: domain.ActivityBlocked, LastActivityAt: now}
+		st.sessions[before.ID] = replacement
+	}
+
+	err := m.MarkChatReconnected(ctx, before.ID, expected, domain.SessionMetadata{
+		ProviderConversationID: "thread-1",
+		ControllerGeneration:   "generation-new",
+	}, domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: now})
+	if err == nil || !strings.Contains(err.Error(), "owner changed") {
+		t.Fatalf("MarkChatReconnected error = %v, want lost owner CAS", err)
+	}
+	if len(sink.intents) != 0 || len(sink.resolutions) != 0 {
+		t.Fatalf("lost CAS emitted notification side effects: intents=%+v resolutions=%+v", sink.intents, sink.resolutions)
+	}
+	if got := st.sessions[before.ID]; got.Metadata.ControllerGeneration != "generation-replacement" ||
+		got.Activity.State != domain.ActivityBlocked {
+		t.Fatalf("lost CAS overwrote replacement: %+v", got)
+	}
+}
+
+func TestMarkChatReconnectedRejectsStaleOwnerAfterReplacement(t *testing.T) {
+	m, st, _ := newManager()
+	activityAt := time.Date(2026, time.September, 2, 3, 4, 5, 0, time.UTC)
+	before := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: activityAt},
+		Metadata: domain.SessionMetadata{
+			ProviderConversationID: "thread-1",
+			ControllerGeneration:   "generation-old",
+		},
+	}
+	expected := before.ControllerOwner()
+	replacement := before
+	replacement.Activity = domain.Activity{State: domain.ActivityBlocked, LastActivityAt: activityAt.Add(time.Minute)}
+	replacement.Metadata.ControllerGeneration = "generation-replacement"
+	replacement.UpdatedAt = activityAt.Add(time.Minute)
+	st.sessions[before.ID] = replacement
+
+	err := m.MarkChatReconnected(ctx, before.ID, expected, domain.SessionMetadata{
+		ProviderConversationID: "thread-1",
+		ControllerGeneration:   "generation-stale",
+	}, domain.Activity{State: domain.ActivityIdle, LastActivityAt: activityAt.Add(2 * time.Minute)})
+	if err == nil || !strings.Contains(err.Error(), "owner changed") {
+		t.Fatalf("MarkChatReconnected error = %v, want owner-changed fence", err)
+	}
+
+	got := st.sessions[before.ID]
+	if got.ControllerOwner() != replacement.ControllerOwner() ||
+		got.Activity != replacement.Activity || !got.UpdatedAt.Equal(replacement.UpdatedAt) {
+		t.Fatalf("stale reconnect mutated replacement: got %+v, want %+v", got, replacement)
 	}
 }
 
@@ -3471,6 +3763,37 @@ type fakeNotificationSink struct {
 	err         error
 }
 
+type runtimeRecoveryFakeStore struct{ *fakeStore }
+
+func (f *runtimeRecoveryFakeStore) CanonicalizeRuntimeHandle(
+	context.Context,
+	domain.SessionID,
+	domain.SessionControllerOwner,
+	string,
+	string,
+	string,
+) (bool, error) {
+	return false, nil
+}
+
+func (f *runtimeRecoveryFakeStore) ReconcileRuntimeActivity(
+	_ context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	expectedHandleID string,
+	expectedActivity domain.Activity,
+	recovered domain.Activity,
+) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok || rec.ControllerOwner() != expected ||
+		rec.Metadata.RuntimeHandleID != expectedHandleID || rec.Activity != expectedActivity {
+		return false, nil
+	}
+	rec.Activity = recovered
+	f.sessions[id] = rec
+	return true, nil
+}
+
 func (f *fakeNotificationSink) Notify(_ context.Context, intent ports.NotificationIntent) error {
 	f.intents = append(f.intents, intent)
 	return f.err
@@ -3479,6 +3802,67 @@ func (f *fakeNotificationSink) Notify(_ context.Context, intent ports.Notificati
 func (f *fakeNotificationSink) Resolve(_ context.Context, res ports.NotificationResolution) error {
 	f.resolutions = append(f.resolutions, res)
 	return f.err
+}
+
+func TestReconcileRuntimeActivitySynchronizesNeedsInputNotification(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		from           domain.ActivityState
+		to             domain.ActivityState
+		wantIntent     bool
+		wantResolution bool
+	}{
+		{name: "recovered waiting entry", from: domain.ActivityActive, to: domain.ActivityWaitingInput, wantIntent: true},
+		{name: "recovered active exit", from: domain.ActivityBlocked, to: domain.ActivityActive, wantResolution: true},
+		{name: "recovered in-family change", from: domain.ActivityWaitingInput, to: domain.ActivityBlocked},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			base := newFakeStore()
+			st := &runtimeRecoveryFakeStore{fakeStore: base}
+			sink := &fakeNotificationSink{}
+			m := New(st, nil, WithNotificationSink(sink))
+			now := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+			m.clock = func() time.Time { return now }
+			rec := domain.SessionRecord{
+				ID: "mer-1", ProjectID: "mer", DisplayName: "checkout-flow",
+				Harness: domain.HarnessCodex, Mode: domain.SessionModeTUI,
+				Activity: domain.Activity{State: tt.from, LastActivityAt: now.Add(-time.Minute)},
+				Metadata: domain.SessionMetadata{RuntimeHandleID: "runtime-1", RuntimeLaunchID: "launch-1"},
+			}
+			base.sessions[rec.ID] = rec
+			recovered := domain.Activity{State: tt.to, LastActivityAt: now}
+
+			applied, err := m.ReconcileRuntimeActivity(
+				ctx, rec.ID, rec.ControllerOwner(), rec.Metadata.RuntimeHandleID, rec.Activity, recovered,
+			)
+			if err != nil || !applied {
+				t.Fatalf("ReconcileRuntimeActivity applied=%v err=%v", applied, err)
+			}
+			if got := len(sink.intents); got != boolInt(tt.wantIntent) {
+				t.Fatalf("notification intents = %d, want %d", got, boolInt(tt.wantIntent))
+			}
+			if got := len(sink.resolutions); got != boolInt(tt.wantResolution) {
+				t.Fatalf("notification resolutions = %d, want %d", got, boolInt(tt.wantResolution))
+			}
+			if tt.wantIntent {
+				got := sink.intents[0]
+				if got.SessionID != rec.ID || got.ProjectID != rec.ProjectID ||
+					got.SessionDisplayName != rec.DisplayName || !got.CreatedAt.Equal(now) {
+					t.Fatalf("notification intent = %+v", got)
+				}
+			}
+			if tt.wantResolution && !sink.resolutions[0].ResolvedAt.Equal(now) {
+				t.Fatalf("notification resolution = %+v", sink.resolutions[0])
+			}
+		})
+	}
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func TestActivity_WaitingInputTransitionEmitsNotification(t *testing.T) {

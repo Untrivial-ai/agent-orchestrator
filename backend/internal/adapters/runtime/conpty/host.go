@@ -39,10 +39,14 @@ type ptyConn interface {
 
 // ServeConfig carries everything the host needs.
 type ServeConfig struct {
-	SessionID string
-	Listener  net.Listener // caller provides (loopback); engine owns Accept loop
-	PTY       ptyConn
-	Ring      *Ring
+	SessionID       string
+	LaunchID        string
+	HostPID         int
+	HostToken       string
+	protocolVersion int          // zero selects the current protocol; tests model shipped v2 hosts
+	Listener        net.Listener // caller provides (loopback); engine owns Accept loop
+	PTY             ptyConn
+	Ring            *Ring
 }
 
 // Serve runs the host event loop until the listener closes or Shutdown is
@@ -252,7 +256,7 @@ func (h *host) pumpPTY() {
 
 	code, _ := h.cfg.PTY.ExitCode()
 	pid := h.cfg.PTY.PID()
-	h.broadcast(statusFrame(false, pid, &code))
+	h.broadcast(h.statusFrame(false, pid, &code))
 	// Keep-alive: do NOT shutdown here. The host stays up so clients can
 	// still connect and read scrollback.
 }
@@ -437,7 +441,7 @@ func (h *host) handleClientMsg(conn net.Conn, msgType byte, payload []byte) {
 		if exited {
 			codePtr = &code
 		}
-		h.sendTo(conn, statusFrame(alive, pid, codePtr))
+		h.sendTo(conn, h.statusFrame(alive, pid, codePtr))
 
 	case MsgKillReq:
 		// Trigger graceful shutdown; returns immediately (idempotent).
@@ -445,11 +449,24 @@ func (h *host) handleClientMsg(conn net.Conn, msgType byte, payload []byte) {
 	}
 }
 
-// statusFrame builds a MsgStatusRes frame.
-func statusFrame(alive bool, pid int, exitCode *int) []byte {
+// statusFrame builds a MsgStatusRes frame. Identity is immutable for the host
+// process lifetime and lets a replacement daemon prove that a registry route
+// still reaches the exact detached host it registered, rather than an
+// unrelated process that reused the PID or loopback port.
+func (h *host) statusFrame(alive bool, pid int, exitCode *int) []byte {
+	protocolVersion := h.cfg.protocolVersion
+	if protocolVersion == 0 {
+		protocolVersion = conPTYHostProtocolVersion
+	}
 	sp := StatusPayload{
 		Alive: alive, PID: pid, ExitCode: exitCode,
-		ProtocolVersion: conPTYHostProtocolVersion,
+		ProtocolVersion: protocolVersion,
+	}
+	if protocolVersion >= conPTYHostIdentityProtocolVersion {
+		sp.SessionID = h.cfg.SessionID
+		sp.LaunchID = h.cfg.LaunchID
+		sp.HostPID = h.cfg.HostPID
+		sp.HostToken = h.cfg.HostToken
 	}
 	b, _ := json.Marshal(sp)
 	frame, _ := EncodeMessage(MsgStatusRes, b) // b is small JSON, never overflows uint32

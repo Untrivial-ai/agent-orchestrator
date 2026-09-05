@@ -230,6 +230,61 @@ type SupervisedProcessRef struct {
 	LaunchID  string
 }
 
+// RuntimeHandleResolver upgrades a persisted legacy handle into the concrete
+// runtime adapter's durable handle format. Implementations must not mutate the
+// runtime while resolving. Legacy locators require an exhaustive search of the
+// adapter's owned namespaces before found may be false. A fully canonical
+// object-fenced handle is inspected only at its persisted route and must never
+// be rediscovered by a reusable name. Any incomplete or contradictory probe
+// must return an error instead.
+type RuntimeHandleResolver interface {
+	ResolveRuntimeHandle(ctx context.Context, legacy RuntimeHandle, owner SupervisedProcessRef) (resolved RuntimeHandle, found bool, err error)
+}
+
+// ExactRuntimeHandleResolver resolves only the runtime belonging to the exact
+// durable session/launch owner. It is the destructive-operation counterpart to
+// RuntimeHandleResolver: recovery may adopt a newer fully-proven generation,
+// while cleanup of a terminated row must never destroy that replacement.
+// Legacy locators may require an exhaustive namespace search for owner. Fully
+// canonical object-fenced handles must inspect only their persisted route and
+// fail closed instead of rediscovering a same-named replacement.
+type ExactRuntimeHandleResolver interface {
+	ResolveExactRuntimeHandle(ctx context.Context, handle RuntimeHandle, owner SupervisedProcessRef) (resolved RuntimeHandle, found bool, err error)
+}
+
+// RuntimeIdentity is immutable ownership provenance recovered from a surviving
+// runtime. OwnershipProven means the adapter matched this AO instance and
+// session, rather than merely finding a same-named runtime.
+type RuntimeIdentity struct {
+	LaunchID        string
+	OwnershipProven bool
+}
+
+// RuntimeIdentityInspector lets reconciliation repair stale durable launch
+// fences after canonicalizing a legacy handle. Implementations must inspect the
+// canonical runtime itself; process-local discovery caches are not evidence.
+type RuntimeIdentityInspector interface {
+	InspectRuntimeIdentity(ctx context.Context, handle RuntimeHandle, expectedSessionID domain.SessionID) (RuntimeIdentity, error)
+}
+
+// RuntimeHandleAmbiguityError reports that a legacy handle names more than one
+// live runtime and no unique owner could be proven. It unwraps
+// ErrRuntimeProbeInconclusive so callers automatically preserve existing state.
+type RuntimeHandleAmbiguityError struct {
+	Handle     RuntimeHandle
+	Candidates int
+}
+
+func (e RuntimeHandleAmbiguityError) Error() string {
+	return fmt.Sprintf("runtime: legacy handle %q is ambiguous across %d candidates", e.Handle.ID, e.Candidates)
+}
+
+func (e RuntimeHandleAmbiguityError) Unwrap() error { return ErrRuntimeProbeInconclusive }
+
+// RuntimeAmbiguity is a stable classification seam for adapters and callers
+// that need to distinguish collisions from other inconclusive probes.
+func (e RuntimeHandleAmbiguityError) RuntimeAmbiguity() bool { return true }
+
 // SupervisedProcessInspector is an optional runtime capability used by the
 // reaper for agents without native exit hooks. Implementations may also detect
 // a workload relaunched from a preserved runtime shell. A false result is

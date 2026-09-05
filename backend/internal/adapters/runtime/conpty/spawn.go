@@ -70,6 +70,11 @@ func stripEnvAssignments(argv []string) (assignments, rest []string) {
 // legacy tmux runtime.
 func interactiveTerminalEnv(base []string, configured map[string]string, assignments []string) []string {
 	env := make([]string, 0, len(base)+len(configured)+len(assignments)+2)
+	reserved := map[string]struct{}{
+		runtimeSessionIDEnv: {},
+		runtimeLaunchIDEnv:  {},
+		runtimeHostTokenEnv: {},
+	}
 	appendEntry := func(entry string, explicit bool) {
 		key, _, ok := strings.Cut(entry, "=")
 		if !ok {
@@ -84,6 +89,9 @@ func interactiveTerminalEnv(base []string, configured map[string]string, assignm
 				return
 			}
 		}
+		if _, isReserved := reserved[key]; isReserved {
+			return
+		}
 		env = append(env, entry)
 	}
 
@@ -95,6 +103,14 @@ func interactiveTerminalEnv(base []string, configured map[string]string, assignm
 	}
 	for _, entry := range assignments {
 		appendEntry(entry, true)
+	}
+	// Host/session identity is internal control data. Append the configured
+	// values exactly once and last so ambient or argv-level env assignments
+	// cannot replace the token that the registry will persist.
+	for _, key := range []string{runtimeSessionIDEnv, runtimeLaunchIDEnv, runtimeHostTokenEnv} {
+		if value, ok := configured[key]; ok {
+			env = append(env, key+"="+value)
+		}
 	}
 	env = append(env, "TERM=xterm-256color", "COLORTERM=truecolor")
 	return env

@@ -953,6 +953,46 @@ type ChatLiveReconnector interface {
 	ReconnectedLive() bool
 }
 
+// ChatLiveRecoverySnapshot is an ordered, provider-neutral observation taken
+// after attaching to a provider process that survived the daemon. ReplayEvents
+// contains every normalized inbound event that preceded the provider snapshot;
+// HistoryEvents is the provider's authoritative thread view at that boundary,
+// including a turn.started event for work that is still running.
+type ChatLiveRecoverySnapshot struct {
+	ReplayEvents  []ChatEvent
+	HistoryEvents []ChatEvent
+	ActivityState domain.ActivityState
+}
+
+// ChatLiveRecoveryReader establishes the restart linearization point for a
+// surviving provider. Implementations must not return until every notification
+// and server request preceding the snapshot response has reached ReplayEvents.
+// If the provider response is an RPC, decode, or semantic error, implementations
+// return that captured ReplayEvents prefix together with the error; callers must
+// durably project it before abandoning the attachment.
+// A reconnect that cannot provide this boundary is inconclusive and must not be
+// exposed as ready using stale durable activity.
+type ChatLiveRecoveryReader interface {
+	RecoverLive(ctx context.Context) (ChatLiveRecoverySnapshot, error)
+}
+
+// ChatLiveRecoveryFinalizer completes the ownership transfer begun by
+// ChatLiveRecoveryReader. The provider host has already handed its detached
+// frames to this daemon, so the caller must choose exactly one outcome:
+//
+//   - CommitLiveRecovery releases post-snapshot events to the live projector
+//     after the controller has been published.
+//   - AbortLiveRecovery detaches, drains every frame accepted by this attachment,
+//     and returns the complete capture for durable projection before retry.
+//
+// Abort may include ReplayEvents already returned in the snapshot. Provider
+// event projection is idempotent, and returning the complete capture avoids a
+// second loss window when failure happens while the prefix itself is persisted.
+type ChatLiveRecoveryFinalizer interface {
+	CommitLiveRecovery()
+	AbortLiveRecovery(ctx context.Context) ([]ChatEvent, error)
+}
+
 // ChatHistoryReader is optionally implemented by a conversation whose native
 // protocol can read the durable thread it resumed. Events are returned oldest
 // first, settled, and with stable ProviderEventID values so importing the same

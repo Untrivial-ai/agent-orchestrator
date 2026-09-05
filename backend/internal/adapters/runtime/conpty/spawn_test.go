@@ -86,26 +86,16 @@ func TestStartedHostKillFailureRetainsPartialCreateEvidence(t *testing.T) {
 	if !strings.Contains(err.Error(), "kill access denied") {
 		t.Fatalf("Create error lost cleanup outcome: %v", err)
 	}
-	runtime.pidIsAlive = func(int) bool { return true }
+	runtime.pidLiveness = func(int) (bool, error) { return true, nil }
 	runtime.destroyWait = 0
-	currentKillCalls := 0
-	runtime.processFinder = func(int) (processKiller, error) {
-		return processKillerFunc(func() error {
-			currentKillCalls++
-			return errors.New("current-owner force kill denied")
-		}), nil
-	}
-	if destroyErr := runtime.Destroy(context.Background(), effect.PossibleHandle()); destroyErr == nil || !strings.Contains(destroyErr.Error(), "current-owner force kill denied") {
-		t.Fatalf("Destroy current-owned partial create = %v, want controlled cleanup failure", destroyErr)
-	}
-	if currentKillCalls != 1 {
-		t.Fatalf("current-owned partial create force-kill calls = %d, want 1", currentKillCalls)
+	if destroyErr := runtime.Destroy(context.Background(), effect.PossibleHandle()); destroyErr == nil || !errors.Is(destroyErr, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("Destroy current-owned partial create = %v, want retained inconclusive error", destroyErr)
 	}
 
 	// The possible handle must remain fenceable even after a daemon restart.
 	// A live PID without a READY address is unknown, never exact absence.
 	recovered := New(Options{})
-	recovered.pidIsAlive = func(int) bool { return true }
+	recovered.pidLiveness = func(int) (bool, error) { return true, nil }
 	ref := ports.FencedRuntimeRef{
 		Handle: effect.PossibleHandle(), SessionID: "sess-kill-failed", Generation: "launch-kill-failed",
 	}
@@ -114,23 +104,8 @@ func TestStartedHostKillFailureRetainsPartialCreateEvidence(t *testing.T) {
 		t.Fatalf("ProbeFencedRuntime partial create = %+v, want unknown/probe_failed", probe)
 	}
 
-	recoveredKillCalls := 0
-	recovered.killHost = func(string) error {
-		recoveredKillCalls++
-		return nil
-	}
-	recovered.processFinder = func(int) (processKiller, error) {
-		recoveredKillCalls++
-		return processKillerFunc(func() error {
-			recoveredKillCalls++
-			return nil
-		}), nil
-	}
 	if destroyErr := recovered.Destroy(context.Background(), effect.PossibleHandle()); destroyErr == nil || !errors.Is(destroyErr, ports.ErrRuntimeProbeInconclusive) {
 		t.Fatalf("Destroy recovered partial create = %v, want retained inconclusive error", destroyErr)
-	}
-	if recoveredKillCalls != 0 {
-		t.Fatalf("Destroy recovered partial create made %d unverified kill calls, want 0", recoveredKillCalls)
 	}
 	probe = recovered.ProbeFencedRuntime(context.Background(), ref)
 	if probe.Liveness != ports.FencedUnknown {
@@ -200,13 +175,9 @@ func TestDefinitiveSpawnFailureRetainsCleanupAuthorityUntilUnregisterSucceeds(t 
 		unregisterCalls++
 		return nil
 	}
-	runtime.pidIsAlive = func(int) bool {
+	runtime.pidLiveness = func(int) (bool, error) {
 		t.Fatal("PID-zero reservation cleanup must not probe OS process liveness")
-		return false
-	}
-	runtime.processFinder = func(int) (processKiller, error) {
-		t.Fatal("PID-zero reservation cleanup must not resolve or kill an OS process")
-		return nil, errors.New("unreachable")
+		return false, nil
 	}
 	if err := runtime.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-cleanup-retry"}); err != nil {
 		t.Fatalf("Destroy retrying reservation cleanup: %v", err)

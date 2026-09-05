@@ -29,6 +29,8 @@ export type DaemonProbe = {
 	status: string;
 	service: string;
 	pid: number;
+	code?: "startup_recovery_failed";
+	message?: string;
 	executablePath?: string;
 	workingDirectory?: string;
 	startupWorkingDirectory?: string;
@@ -57,13 +59,23 @@ export function expectedDaemonPort(env: Record<string, string | undefined>): num
 export function parseDaemonProbe(endpoint: "healthz" | "readyz", body: unknown): DaemonProbe | null {
 	if (typeof body !== "object" || body === null) return null;
 	const candidate = body as Partial<DaemonProbe>;
-	if (candidate.status !== (endpoint === "healthz" ? "ok" : "ready")) return null;
+	const terminalRecoveryFailure =
+		endpoint === "readyz" &&
+		candidate.status === "error" &&
+		candidate.code === "startup_recovery_failed" &&
+		typeof candidate.message === "string" &&
+		candidate.message.length > 0;
+	const expectedStatus = endpoint === "healthz" ? candidate.status === "ok" : candidate.status === "ready";
+	if (!expectedStatus && !terminalRecoveryFailure) return null;
 	if (candidate.service !== DAEMON_SERVICE_NAME) return null;
 	if (typeof candidate.pid !== "number" || !Number.isInteger(candidate.pid)) return null;
 	return {
-		status: candidate.status,
+		status: terminalRecoveryFailure ? "error" : endpoint === "healthz" ? "ok" : "ready",
 		service: candidate.service,
 		pid: candidate.pid,
+		...(terminalRecoveryFailure
+			? { code: "startup_recovery_failed" as const, message: candidate.message }
+			: {}),
 		executablePath: typeof candidate.executablePath === "string" ? candidate.executablePath : undefined,
 		workingDirectory: typeof candidate.workingDirectory === "string" ? candidate.workingDirectory : undefined,
 		startupWorkingDirectory:
@@ -84,7 +96,8 @@ export type RunFileResolveDeps = {
 /**
  * Attach decision driven by the running.json handshake. Returns:
  *   - a "ready" status   → attach to the recorded daemon,
- *   - an "error" status  → a daemon is up but unusable (not ready / foreign);
+ *   - a "starting" status → a daemon is live but still recovering,
+ *   - an "error" status  → a daemon is up but unusable (foreign / inconsistent);
  *                          surface it rather than spawn,
  *   - null               → the run-file is absent/stale/inconsistent; the caller
  *                          should fall through to {@link resolveDaemonFromPort}.
@@ -114,8 +127,9 @@ export type PortProbeResolveDeps = {
  * Attach decision driven by a direct /healthz probe of the expected port,
  * independent of the run-file (issue #367 backstop). Returns:
  *   - a "ready" status  → attach to the daemon serving the port,
- *   - an "error" status → a daemon serves the port but is unusable (not ready, or
- *                         a foreign binary the identity check refuses); surface it
+ *   - a "starting" status → a daemon is live but still recovering,
+ *   - an "error" status → a daemon serves the port but is unusable (inconsistent,
+ *                         or a foreign binary the identity check refuses); surface it
  *                         rather than spawn (spawning would only collide and die),
  *   - null              → nothing genuine answers the port; the caller should spawn.
  *
@@ -133,9 +147,8 @@ export async function resolveDaemonFromPort(deps: PortProbeResolveDeps): Promise
 /**
  * Shared tail of both attach paths: given a daemon confirmed serving /healthz on
  * `port` with PID `pid`, confirm it is ready and is the daemon we expect, and
- * build the resulting DaemonStatus. Returns an "error" status (never null) — by
- * here a daemon is definitely occupying the port, so spawning is never the right
- * move.
+ * build the resulting DaemonStatus. Returns a status (never null) — by here a
+ * daemon is definitely occupying the port, so spawning is never the right move.
  */
 async function readinessStatus(
 	port: number,
@@ -145,7 +158,16 @@ async function readinessStatus(
 	identityError: (probe: DaemonProbe) => string | null,
 ): Promise<DaemonStatus> {
 	const ready = await probe(port, "readyz");
-	if (!ready || ready.pid !== pid) {
+	if (!ready) {
+		return {
+			state: "starting",
+			port,
+			pid,
+			executablePath: health.executablePath,
+			workingDirectory: health.workingDirectory,
+		};
+	}
+	if (ready.pid !== pid) {
 		return {
 			state: "error",
 			port,
@@ -154,6 +176,17 @@ async function readinessStatus(
 			workingDirectory: health.workingDirectory,
 			message: "An AO daemon is already running, but it is not ready yet.",
 			code: "not_ready",
+		};
+	}
+	if (ready.status === "error" && ready.code === "startup_recovery_failed") {
+		return {
+			state: "error",
+			port,
+			pid,
+			executablePath: ready.executablePath ?? health.executablePath,
+			workingDirectory: ready.workingDirectory ?? health.workingDirectory,
+			message: ready.message ?? "AO could not recover existing sessions.",
+			code: "startup_recovery_failed",
 		};
 	}
 
