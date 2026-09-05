@@ -124,6 +124,22 @@ func TestBuildRestoreCommands(t *testing.T) {
 			},
 		},
 		{
+			name: "claude forwards configured model",
+			cfg: RestoreConfig{
+				Harness:    HarnessClaudeCode,
+				Binary:     "claude",
+				SessionID:  "session-1",
+				Model:      "  claude-opus-4-5  ",
+				Permission: PermissionBypassPermissions,
+			},
+			want: []string{
+				"claude",
+				"--permission-mode", "bypassPermissions",
+				"--model", "claude-opus-4-5",
+				"--resume", ClaudeSessionID("session-1"),
+			},
+		},
+		{
 			name: "codex metadata identity",
 			cfg: RestoreConfig{
 				Harness:    HarnessCodex,
