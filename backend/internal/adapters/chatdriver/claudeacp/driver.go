@@ -71,34 +71,49 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 			return nil
 		},
 		Launch: func(ctx context.Context, cfg acpdriver.LaunchConfig) (acpdriver.Launch, error) {
-			runtimeLaunch, err := resolveRuntime(ctx)
-			if err != nil {
-				return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
-			}
 			claudeBinary, err := plugin.ResolveBinary(ctx)
 			if err != nil {
 				return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 			}
-			if err := validateClaudeACPExecutable(claudeBinary, runtime.GOOS); err != nil {
-				return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
-			}
-			env := make(map[string]string, len(cfg.Env)+1)
-			for key, value := range cfg.Env {
-				env[key] = value
-			}
-			// This is the line that prevents the adapter's optional native Claude
-			// package from becoming a second installation managed by AO.
-			env["CLAUDE_CODE_EXECUTABLE"] = claudeBinary
-			return acpdriver.Launch{
-				Command: runtimeLaunch.command,
-				Args:    runtimeLaunch.args,
-				Env:     env,
-			}, nil
+			return modelLaunch(ctx, claudeBinary, cfg.Env)
 		},
 		SessionMeta:    claudeSessionMeta,
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
 	}, log)
+}
+
+// DiscoverConfigOptions uses the same bundled adapter, settings and allowlists
+// as Chat. The temporary session performs only the handshake, never a user turn.
+func DiscoverConfigOptions(ctx context.Context, binary, workingDir string, env map[string]string, log *slog.Logger) ([]ports.ChatConfigOption, error) {
+	if workingDir == "" {
+		var err error
+		workingDir, err = os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve model discovery directory: %w", err)
+		}
+	}
+	launch, err := modelLaunch(ctx, binary, env)
+	if err != nil {
+		return nil, err
+	}
+	return acpdriver.DiscoverConfigOptions(ctx, launch, workingDir, log)
+}
+
+func modelLaunch(ctx context.Context, claudeBinary string, inputEnv map[string]string) (acpdriver.Launch, error) {
+	runtimeLaunch, err := resolveRuntime(ctx)
+	if err != nil {
+		return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
+	}
+	if err := validateClaudeACPExecutable(claudeBinary, runtime.GOOS); err != nil {
+		return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
+	}
+	env := make(map[string]string, len(inputEnv)+1)
+	for key, value := range inputEnv {
+		env[key] = value
+	}
+	env["CLAUDE_CODE_EXECUTABLE"] = claudeBinary
+	return acpdriver.Launch{Command: runtimeLaunch.command, Args: runtimeLaunch.args, Env: env}, nil
 }
 
 func validateClaudeACPExecutable(binary, goos string) error {

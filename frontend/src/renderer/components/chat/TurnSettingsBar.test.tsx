@@ -243,7 +243,8 @@ describe("ACP session config options", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: "Model" }));
-		await user.click(screen.getByRole("menuitem", { name: "Sonnet 5" }));
+		screen.getByRole("menuitem", { name: "Sonnet 5 (provider alias)" }).focus();
+ await user.keyboard("{Enter}");
 		expect(onChange).toHaveBeenCalledWith("model", { value: "sonnet" });
 	});
 
@@ -293,6 +294,32 @@ describe("ACP session config options", () => {
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
 			"Full access",
 		);
+	});
+
+	it("preserves an unlisted model through catalog refresh without borrowing default effort", async () => {
+		const user = userEvent.setup();
+		const props = { settings: { model: "gpt-6-astra" }, onChange: vi.fn() };
+		const { rerender } = render(<TurnSettingsBar {...props} models={[]} />);
+		const trigger = () => screen.getByRole("button", { name: "Model and reasoning effort for the next turn" });
+		expect(trigger()).toHaveTextContent("gpt-6-astra");
+		rerender(<TurnSettingsBar {...props} models={[{ id: "terra", displayName: "Terra", default: true, efforts: ["high"], defaultEffort: "high" }]} />);
+		expect(trigger()).toHaveTextContent("gpt-6-astra");
+		expect(trigger()).not.toHaveTextContent("High");
+		await user.click(trigger());
+		expect(screen.queryByRole("menuitem", { name: /^Effort/ })).not.toBeInTheDocument();
+	});
+
+	it("does not claim a catalog default is the native configured model", () => {
+		render(<TurnSettingsBar models={[{ id: "terra", displayName: "Terra", default: true, defaultEffort: "high", efforts: ["high"] }]} settings={{}} onChange={vi.fn()} />);
+		expect(screen.getByRole("button", { name: "Model and reasoning effort for the next turn" })).toHaveTextContent("Provider default");
+		expect(screen.getByRole("button", { name: "Model and reasoning effort for the next turn" })).not.toHaveTextContent("High");
+	});
+
+	it("identifies provider substitution for an unlisted request", () => {
+		render(<TurnSettingsBar models={[]} settings={{ model: "gpt-6-astra", reasoningEffort: "high" }} reroute={{ fromModel: "gpt-6-astra", toModel: "terra", reason: "capacity", at: "2026-09-05T00:00:00Z" }} onChange={vi.fn()} />);
+		const trigger = screen.getByRole("button", { name: "Model and reasoning effort for the next turn" });
+		expect(trigger).toHaveTextContent("terra High");
+		expect(trigger).toHaveAttribute("title", "The provider answered with terra instead of gpt-6-astra: capacity");
 	});
 
 	it("labels bypass permission policy plainly", () => {

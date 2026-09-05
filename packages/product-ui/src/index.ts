@@ -15,3 +15,4 @@ export * from "./session-presentation";
 export * from "./SessionInspectorView";
 export * from "./SessionsBoardView";
 export * from "./TaskComposerView";
+export { groupModelFamilies, modelVersionLabel, type FamilyModel, type ModelFamily } from "./model-families";

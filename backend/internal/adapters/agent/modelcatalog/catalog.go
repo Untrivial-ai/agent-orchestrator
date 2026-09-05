@@ -133,21 +133,25 @@ func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 
 // Discoverer implements the model-discovery port for production daemon wiring.
 type Discoverer struct {
-	CodexModels  CodexModelListFunc
-	ClineOptions ClineConfigOptionListFunc
+	CodexModels   CodexModelListFunc
+	ClineOptions  ConfigOptionListFunc
+	ClaudeOptions ConfigOptionListFunc
 }
 
 // CodexModelListFunc obtains Codex's account-scoped app-server catalog without
 // opening a provider thread.
 type CodexModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatModel, error)
 
-// ClineConfigOptionListFunc obtains Cline's provider-owned model choices from
+// ConfigOptionListFunc obtains provider-owned model choices from
 // the ACP configuration catalog advertised by session/new.
-type ClineConfigOptionListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error)
+type ConfigOptionListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error)
 
 // Discover uses the agent-owned model surface configured for this adapter.
 func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
 	if request.AgentID == "claude-code" {
+		if d.ClaudeOptions != nil {
+			return discoverACPCatalog(ctx, request, d.ClaudeOptions)
+		}
 		return discoverClaudeCatalog(request), nil
 	}
 	if request.AgentID == "muse" {
@@ -157,7 +161,7 @@ func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscov
 		return discoverCodexCatalog(ctx, request, d.CodexModels)
 	}
 	if request.AgentID == "cline" && d.ClineOptions != nil {
-		if catalog, err := discoverClineCatalog(ctx, request, d.ClineOptions); err == nil {
+		if catalog, err := discoverACPCatalog(ctx, request, d.ClineOptions); err == nil {
 			return catalog, nil
 		}
 		// Older Cline releases may not expose ACP config options. Fall back to
@@ -298,15 +302,15 @@ func discoverCodexCatalog(ctx context.Context, request ports.AgentModelDiscovery
 	return base, nil
 }
 
-func discoverClineCatalog(
+func discoverACPCatalog(
 	ctx context.Context,
 	request ports.AgentModelDiscoveryRequest,
-	list ClineConfigOptionListFunc,
+	list ConfigOptionListFunc,
 ) (ports.AgentModelCatalog, error) {
 	base := Base(request.AgentID)
 	options, err := list(ctx, request)
 	if err != nil {
-		return base, fmt.Errorf("cline ACP model discovery: %w", err)
+		return base, fmt.Errorf("%s ACP model discovery: %w", request.AgentID, err)
 	}
 	var models []ports.AgentModelInfo
 	for _, option := range options {
@@ -323,6 +327,9 @@ func discoverClineCatalog(
 			if label == "" {
 				label = id
 			}
+			if request.AgentID == "claude-code" {
+				label = claudeVersionLabel(label, choice.Description)
+			}
 			provider := strings.TrimSpace(choice.Group)
 			if provider == "" {
 				if prefix, _, ok := strings.Cut(id, "/"); ok {
@@ -337,7 +344,7 @@ func discoverClineCatalog(
 	}
 	models = normalize(models)
 	if len(models) == 0 {
-		return base, errors.New("cline ACP model discovery returned no models")
+		return base, fmt.Errorf("%s ACP model discovery returned no models", request.AgentID)
 	}
 	base.Models = models
 	base.Source = "acp"
@@ -503,7 +510,51 @@ func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string,
 // or "" when the catalog depends on the binary alone.
 func discoveryConfigInputs(agentID, workingDir string, env map[string]string) string {
 	if agentID == "claude-code" {
-		return "model=" + claudeCodeResolvedModel(workingDir, env)
+		hash := sha256.New()
+		_, _ = hash.Write([]byte("claude-acp-models-v1;model=" + claudeCodeResolvedModel(workingDir, env)))
+		effective := make(map[string]string)
+		for _, entry := range os.Environ() {
+			key, value, ok := strings.Cut(entry, "=")
+			if ok {
+				effective[key] = value
+			}
+		}
+		for key, value := range env {
+			effective[key] = value
+		}
+		keys := make([]string, 0)
+		for key := range effective {
+			if strings.HasPrefix(key, "ANTHROPIC_") || strings.HasPrefix(key, "CLAUDE_") || strings.HasPrefix(key, "AWS_") || strings.HasPrefix(key, "GOOGLE_") {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			_, _ = fmt.Fprintf(hash, "%s=%s\x00", key, effective[key])
+		}
+		paths := []string{}
+		if workingDir != "" {
+			paths = append(paths, filepath.Join(workingDir, ".claude", "settings.json"), filepath.Join(workingDir, ".claude", "settings.local.json"))
+		}
+		configDir := effective["CLAUDE_CONFIG_DIR"]
+		if configDir == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				configDir = filepath.Join(home, ".claude")
+			}
+		}
+		if configDir != "" {
+			paths = append(paths, filepath.Join(configDir, "settings.json"))
+		}
+		for _, path := range paths {
+			_, _ = hash.Write([]byte(path))
+			file, err := os.Open(path) //nolint:gosec // settings paths are derived from the project and user home
+			if err != nil {
+				continue
+			}
+			_, _ = io.Copy(hash, io.LimitReader(file, claudeCodeSettingsReadLimit))
+			_ = file.Close()
+		}
+		return fmt.Sprintf("claude-acp=%x", hash.Sum(nil))
 	}
 	if config := configDiscoveryFingerprint(agentID, workingDir, env); config != "" {
 		return "config=" + config
@@ -838,4 +889,15 @@ func normalize(models []ports.AgentModelInfo) []ports.AgentModelInfo {
 		return strings.ToLower(out[i].Label) < strings.ToLower(out[j].Label)
 	})
 	return out
+}
+
+// Claude includes its current version in the leading model description. Only
+// recognize known family/version prefixes; never turn prose into a selector.
+var claudeVersionPrefix = regexp.MustCompile(`(?i)^(Opus|Fable|Sonnet|Haiku|Mythos) [0-9]+(?:\.[0-9]+)*(?: with 1M context)?(?: \([^)]*\))?`)
+
+func claudeVersionLabel(label, description string) string {
+	if version := claudeVersionPrefix.FindString(strings.TrimSpace(description)); version != "" && strings.Contains(strings.ToLower(label), strings.ToLower(strings.Fields(version)[0])) {
+		return version
+	}
+	return label
 }

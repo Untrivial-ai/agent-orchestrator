@@ -1,3 +1,4 @@
+import { ModelFamilyOptions } from "../ModelFamilyOptions";
 import { ChevronDown, Search } from "lucide-react";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -231,7 +232,7 @@ export function AgentModelCombobox({
 							</DropdownMenuItem>
 						)}
 
-						{groups.map((group, groupIndex) => (
+						{normalizedSearch === "" && compact ? <ModelFamilyOptions models={visibleModels.map((item) => ({id: item.id, label: item.label, provider: item.provider}))} value={value} onSelect={selectModel} /> : (groups.map((group, groupIndex) => (
 							<div key={group.key}>
 								{!compact && (groupIndex > 0 || normalizedSearch === "") && <DropdownMenuSeparator />}
 								{!compact && <DropdownMenuLabel className="normal-case tracking-normal">{group.label}</DropdownMenuLabel>}
@@ -272,7 +273,7 @@ export function AgentModelCombobox({
 									),
 								)}
 							</div>
-						))}
+						)))}
 
 						{showCustomSearchAction && (
 							<DropdownMenuItem onSelect={() => onCustom(customSearchValue)} className={modelItemClass(false)}>

@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { groupModelFamilies, modelVersionLabel, type FamilyModel } from "../../../product-ui/src/model-families";
 import { Feather } from "@expo/vector-icons";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { haptics } from "../haptics";
@@ -37,7 +39,7 @@ export function ChatSettingsSheet({
 }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
-	const selected = models.find((model) => model.id === snapshot.settings.model) ?? models.find((model) => model.default);
+	const selected = models.find((model) => model.id === snapshot.settings.model);
 	const efforts = selected?.efforts ?? [];
 	const usesProviderOptions = can(snapshot, "config_options");
 	const hasProviderModel = options.some(
@@ -50,10 +52,13 @@ export function ChatSettingsSheet({
 			<SheetHeader title="Turn settings" subtitle="Changes apply to the next message." right={<Pressable accessibilityRole="button" accessibilityLabel="Refresh turn settings" disabled={refreshing} onPress={() => { haptics.tap(); onRefresh(); }} style={styles.refresh}>{refreshing ? <ActivityIndicator size="small" color={t.blue} /> : <><Feather name="refresh-cw" size={13} color={t.blue} /><Text style={styles.refreshText}>Refresh</Text></>}</Pressable>} />
 					{error ? <View accessibilityRole="alert" style={styles.error}><Feather name="alert-circle" size={14} color={t.red} /><Text style={styles.errorText}>{error}</Text></View> : null}
 					{snapshot.modelReroute ? <View style={styles.reroute}><Feather name="shuffle" size={14} color={t.amber} /><View style={{ flex: 1 }}><Text style={styles.rerouteTitle}>Currently answered by {snapshot.modelReroute.toModel}</Text><Text style={styles.rerouteCopy}>{snapshot.modelReroute.fromModel ? `${snapshot.modelReroute.fromModel} was requested. ` : ""}{snapshot.modelReroute.reason || "The provider selected a fallback model for this conversation."}</Text></View></View> : null}
-					{(!usesProviderOptions || !hasProviderModel) && models.length ? <SettingsSection icon="cpu" title="Model">
-						{models.map((model) => <Choice key={model.id} label={model.displayName} hint={model.description || (model.default ? "Provider default" : undefined)} selected={model.id === selected?.id} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, model: model.id, reasoningEffort: undefined })} />)}
+					{(!usesProviderOptions || !hasProviderModel) && (models.length || snapshot.settings.model) ? <SettingsSection icon="cpu" title="Model">
+						{!snapshot.settings.model ? <Choice label="Provider default" hint="Uses the native provider configuration" selected disabled onPress={() => {}} /> : null}
+						{snapshot.settings.model && !selected ? <Choice label={snapshot.settings.model} hint="Not in the provider catalog" selected disabled onPress={() => {}} /> : null}
+						<FamilyChoices models={models.map((model) => ({ id: model.id, label: model.displayName, description: model.description }))} selected={selected?.id} disabled={disabled} onSelect={(id) => onSettings({ ...snapshot.settings, model: id, reasoningEffort: undefined })} />
 					</SettingsSection> : null}
-					{(!usesProviderOptions || !hasProviderModel) && efforts.length ? <SettingsSection icon="activity" title="Reasoning effort">
+					{(!usesProviderOptions || !hasProviderModel) && (efforts.length || snapshot.settings.reasoningEffort) ? <SettingsSection icon="activity" title="Reasoning effort">
+						{snapshot.settings.reasoningEffort && !efforts.includes(snapshot.settings.reasoningEffort) ? <Choice label={capitalize(snapshot.settings.reasoningEffort)} hint="Requested effort" selected disabled onPress={() => {}} /> : null}
 						{efforts.map((effort) => <Choice key={effort} label={capitalize(effort)} selected={effort === (snapshot.settings.reasoningEffort ?? selected?.defaultEffort)} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, reasoningEffort: effort })} />)}
 					</SettingsSection> : null}
 					{(!usesProviderOptions || !hasProviderMode) ? <SettingsSection icon="shield" title="Approvals">
@@ -67,9 +72,19 @@ export function ChatSettingsSheet({
 	);
 }
 
+function FamilyChoices({ models, selected, disabled, onSelect }: { models: FamilyModel[]; selected?: string; disabled?: boolean; onSelect(id: string): void }) {
+ const [expanded, setExpanded] = useState<string | null>(null);
+ const styles = useThemedStyles(makeStyles);
+ return <>{groupModelFamilies(models).map((family) => <View key={family.key}>
+  {family.nested ? <Pressable accessibilityRole="button" accessibilityState={{ expanded: expanded === family.key, disabled }} disabled={disabled} onPress={() => setExpanded(expanded === family.key ? null : family.key)} style={styles.choice}><Text style={styles.choiceLabel}>{family.label}</Text><Text style={styles.choiceHint}>{expanded === family.key ? "−" : "+"}</Text></Pressable> : null}
+  {(!family.nested || expanded === family.key) ? family.models.map((model) => <Choice key={model.id} label={modelVersionLabel(model)} hint={model.id} selected={model.id === selected} disabled={disabled} onPress={() => onSelect(model.id)} />) : null}
+ </View>)}</>;
+}
+
 function GroupedChoices({ option, disabled, onOption }: { option: ChatConfigOption; disabled?: boolean; onOption(id: string, value: { value: string }): void }) {
 	const styles = useThemedStyles(makeStyles);
-	const groups = new Map<string, typeof option.choices>();
+	if (option.category === "model" || option.id === "model") return <FamilyChoices models={(option.choices ?? []).map((choice) => ({ id: choice.value, label: choice.name, description: choice.description, provider: choice.group }))} selected={option.currentValue} disabled={disabled} onSelect={(value) => onOption(option.id, { value })} />;
+ const groups = new Map<string, typeof option.choices>();
 	for (const choice of option.choices) {
 		const key = choice.groupName || choice.group || "";
 		groups.set(key, [...(groups.get(key) ?? []), choice]);
