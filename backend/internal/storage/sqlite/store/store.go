@@ -65,6 +65,11 @@ func (m *contextMutex) Unlock() {
 	m.token <- struct{}{}
 }
 
+// Ping verifies that the backing SQLite database is available for requests.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.readDB.PingContext(ctx)
+}
+
 type conversationProjectionTxKey struct{}
 
 // conversationWriter returns the transaction-bound query set when a provider

@@ -738,6 +738,7 @@ func Run() error {
 	bs.HostID = hostIdentity.HostID
 
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
+		ReadyCheck:         store.Ping,
 		Projects:           projectSvc,
 		HostID:             hostIdentity.HostID,
 		Endpoints:          bs,

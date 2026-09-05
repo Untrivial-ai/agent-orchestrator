@@ -3,6 +3,7 @@ package httpd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -38,6 +39,23 @@ func TestHealthProbes(t *testing.T) {
 		if ct := resp.Header.Get("Content-Type"); ct != "application/json; charset=utf-8" {
 			t.Errorf("GET %s Content-Type = %q, want JSON", path, ct)
 		}
+	}
+}
+
+func TestReadyProbeReportsDependencyFailure(t *testing.T) {
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{
+		ReadyCheck: func(context.Context) error { return errors.New("database unavailable") },
+	}, ControlDeps{})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := srv.Client().Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 }
 
