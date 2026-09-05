@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, statSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync, statSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,23 +10,30 @@ import { fileURLToPath } from "node:url";
 // Honest scope: the three real checks (codesign, spctl, stapler) cannot be
 // exercised here. Mocking them convincingly would require real Apple signing
 // material, and a mock that always passes proves nothing about the gate. The
-// meaningful verification of the core logic is the release pipeline's
-// post-staple gate running this script against real published artifacts
-// (#3288 workstream 1).
+// meaningful verification of the core logic happens against real published
+// artifacts: the public mac-update-e2e workflow runs this script against the
+// published baseline and the installed app, developers run it as the local
+// diagnostic, and the release conductor's pre-publication gate applies the
+// same nested-Node rules (frontend/docs/desktop-release.md).
 //
 // What IS covered here, on any platform with no signing material at all:
-// the script parses, and every usage/precondition path exits 2 with a clear
-// message before touching macOS-only tooling. That is the half that a
-// non-macOS CI runner can honestly assert.
+// the script parses, every usage/precondition path exits 2 with a clear
+// message, and mocked trust failures prove nested code is never executed before
+// verification succeeds. Real Apple trust decisions remain release evidence.
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "verify-mac-artifact.sh");
 
-function run(args) {
+function run(args, env = {}) {
 	return new Promise((resolve) => {
-		execFile("bash", [SCRIPT, ...args], (err, stdout, stderr) => {
+		execFile("bash", [SCRIPT, ...args], { env: { ...process.env, ...env } }, (err, stdout, stderr) => {
 			resolve({ code: err?.code ?? 0, stdout, stderr });
 		});
 	});
+}
+
+function writeExecutable(path, contents) {
+	writeFileSync(path, `#!/usr/bin/env bash\n${contents}`);
+	chmodSync(path, 0o755);
 }
 
 let dir;
@@ -117,6 +124,37 @@ describe("verify-mac-artifact.sh", () => {
 		expect(stderr).toContain("no such file");
 	});
 
+	it("never executes nested code when an artifact fails a trust check", async () => {
+		const mockBin = join(dir, "mock-bin");
+		const app = join(dir, "Untrusted.app");
+		const node = join(app, "Contents", "Resources", "acp-runtime", "node", "bin", "node");
+		const sentinel = join(dir, "nested-node-executed");
+		mkdirSync(mockBin, { recursive: true });
+		mkdirSync(dirname(node), { recursive: true });
+
+		writeExecutable(join(mockBin, "uname"), "echo Darwin\n");
+		writeExecutable(join(mockBin, "codesign"), 'if [[ "$1" == "-d" ]]; then echo "<plist><dict></dict></plist>"; fi\n');
+		writeExecutable(join(mockBin, "spctl"), "exit 1\n");
+		writeExecutable(join(mockBin, "xcrun"), "exit 0\n");
+		writeExecutable(join(mockBin, "ditto"), "exit 0\n");
+		writeExecutable(join(mockBin, "lipo"), "echo x86_64\n");
+		writeExecutable(
+			join(mockBin, "plutil"),
+			"echo '  \"com.apple.security.cs.allow-jit\" => true'\n" +
+				"echo '  \"com.apple.security.cs.allow-unsigned-executable-memory\" => true'\n",
+		);
+		writeExecutable(node, 'echo executed > "$ACP_NODE_SENTINEL"\n');
+
+		const { code, stderr } = await run([app], {
+			PATH: `${mockBin}:${process.env.PATH}`,
+			ACP_NODE_SENTINEL: sentinel,
+		});
+
+		expect(code).toBe(1);
+		expect(stderr).toContain("spctl failed");
+		expect(existsSync(sentinel)).toBe(false);
+	});
+
 	it("encodes the verified command set (ditto, spctl -vv, stapler validate)", async () => {
 		const { readFileSync } = await import("node:fs");
 		const src = readFileSync(SCRIPT, "utf8");
@@ -132,5 +170,15 @@ describe("verify-mac-artifact.sh", () => {
 		// ...and the dmg container must be assessed on open against the primary
 		// signature (#3267 decision 3 step 4), never with -t exec.
 		expect(src).toContain("spctl -a -vv -t open --context context:primary-signature");
+		// A valid outer seal can still contain the Intel Node regression from
+		// #3879, so the canonical gate also checks the final nested executable.
+		expect(src).toContain("Contents/Resources/acp-runtime/node/bin/node");
+		expect(src).toContain("com.apple.security.cs.allow-jit");
+		expect(src).toContain("com.apple.security.cs.allow-unsigned-executable-memory");
+		expect(src).toContain('console.log("ACP runtime JavaScript OK")');
+		expect(src).toContain('if [[ $failed -eq 0 && "$ARTIFACT" != *.dmg ]]');
+		expect(src.indexOf('run_check "ACP Node JavaScript execution"')).toBeGreaterThan(
+			src.indexOf('run_check "stapler"'),
+		);
 	});
 });

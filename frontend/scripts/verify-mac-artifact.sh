@@ -38,6 +38,18 @@
 #      decision 3 step 4 specifies. Using `-t exec` on a dmg assesses the wrong
 #      thing. `-vv` stays mandatory for both (rule 2).
 #
+#   5. A valid bundle seal does not prove that nested executables received the
+#      entitlements they need. The x64 ACP Node can pass `codesign --verify`
+#      while crashing as soon as V8 compiles JavaScript (#3879). Zip/app checks
+#      therefore inspect its final entitlements and execute the shipped binary.
+#      The arch decision here is made from the binary itself (`lipo -archs`),
+#      the same content-based invariant the signing-side selector implements
+#      (frontend/makers/macho-archs.ts) — never from the host architecture.
+#      Scope: this script is the local diagnostic and the public
+#      mac-update-e2e baseline check; the pre-publication gate for canonical
+#      releases is the release conductor's own verifier
+#      (frontend/docs/desktop-release.md).
+#
 # Exit codes: 0 all checks passed, 1 a check failed, 2 usage error.
 
 set -euo pipefail
@@ -51,6 +63,7 @@ Verifies a macOS release artifact is signed, notarized and stapled:
   spctl -a -vv -t exec                                  (.zip / .app)
   spctl -a -vv -t open --context context:primary-signature   (.dmg)
   xcrun stapler validate
+  bundled ACP Node entitlements + JavaScript execution       (.zip / .app)
 
 A .zip is extracted with `ditto -x -k` first (never `unzip`), and the single
 .app bundle inside it is checked. A .dmg is checked as the container it is,
@@ -115,7 +128,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 	exit 2
 fi
 
-for tool in codesign spctl xcrun ditto; do
+for tool in codesign spctl xcrun ditto grep lipo plutil; do
 	if ! command -v "$tool" >/dev/null 2>&1; then
 		echo "verify-mac-artifact: required tool not found: $tool" >&2
 		exit 2
@@ -163,10 +176,42 @@ run_check() {
 	fi
 }
 
+has_acp_node_entitlement() {
+	local entitlement="$1"
+	codesign -d --entitlements :- "$ACP_NODE" 2>/dev/null \
+		| plutil -p - \
+		| grep -Fq "\"$entitlement\" => true"
+}
+
 # Seal intact. --deep walks nested code (helpers, frameworks, the bundled
 # daemon); --strict rejects the loosened defaults. A .dmg has no nested code for
 # --deep to walk, so the same invocation is correct for both.
 run_check "codesign" codesign --verify --deep --strict --verbose=2 "$APP"
+
+# Prove the nested runtime works, not merely that its signature is structurally
+# valid. A dmg is intentionally not mounted by this verifier (rule 4), so the
+# matching zip/app verification is the place where nested code is checked.
+if [[ "$ARTIFACT" != *.dmg ]]; then
+	ACP_NODE="$APP/Contents/Resources/acp-runtime/node/bin/node"
+	run_check "ACP Node is bundled" test -x "$ACP_NODE"
+	if [[ -x "$ACP_NODE" ]]; then
+		run_check "ACP Node allow-jit entitlement" \
+			has_acp_node_entitlement "com.apple.security.cs.allow-jit"
+		echo "--> ACP Node architecture: lipo -archs $ACP_NODE"
+		if acp_node_archs="$(lipo -archs "$ACP_NODE")"; then
+			echo "    ok: ACP Node architecture ($acp_node_archs)"
+			case " $acp_node_archs " in
+			*" x86_64 "*)
+				run_check "ACP Node x64 executable-memory entitlement (archs:$acp_node_archs)" \
+					has_acp_node_entitlement "com.apple.security.cs.allow-unsigned-executable-memory"
+				;;
+			esac
+		else
+			echo "::error::verify-mac-artifact: ACP Node architecture inspection failed for $APP" >&2
+			failed=1
+		fi
+	fi
+fi
 
 # Gatekeeper would accept it. -vv is mandatory (rule 2); expect
 # "accepted" plus "source=Notarized Developer ID". The assessment type depends
@@ -180,6 +225,13 @@ fi
 
 # The notarization ticket is actually attached to these bytes (rule 3).
 run_check "stapler" xcrun stapler validate "$APP"
+
+# Never execute code from an artifact until every trust check above has passed.
+# Entitlement inspection is non-executing; this final smoke test is not.
+if [[ $failed -eq 0 && "$ARTIFACT" != *.dmg ]]; then
+	run_check "ACP Node JavaScript execution" "$ACP_NODE" -e \
+		'console.log("ACP runtime JavaScript OK")'
+fi
 
 if [[ $failed -ne 0 ]]; then
 	echo "verify-mac-artifact: FAILED for $ARTIFACT" >&2

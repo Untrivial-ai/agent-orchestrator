@@ -48,6 +48,45 @@ Windows installers follow the same boundary (#4502): the NSIS maker
 when signing credentials are present in the environment, so the public build
 stays unsigned while the conductor signs with its own credentials downstream.
 
+## macOS signing contract for the bundled ACP runtime
+
+This repository builds unsigned, so `packagerConfig.osxSign` — and the per-file
+hook `macSignOptionsForFile` in `frontend/forge.config.ts` — never runs on
+published bytes. The canonical signer re-signs the bundle downstream and is the
+only place the following contract is enforced. Whoever signs a bundle containing
+`<App>.app/Contents/Resources/acp-runtime/node/bin/node` must:
+
+- give the nested Node `com.apple.security.cs.allow-jit` **and**
+  `com.apple.security.cs.allow-unsigned-executable-memory` if and only if the
+  binary contains an x86_64 Mach-O slice (a thin x64 binary, or a universal
+  carrying an x64 slice); an arm64-only binary keeps `allow-jit` alone. V8 uses
+  mprotect for JIT on x64, which Hardened Runtime blocks without the second
+  entitlement, and the Node then crashes in `SetPermissions` (#3879);
+- derive that decision from the Mach-O header of the file being signed
+  (`frontend/makers/macho-archs.ts`, `machoHasX86_64Slice`), never from the
+  signing host's architecture (`process.arch`, `uname -m`): one signing host
+  handles both architectures;
+- fail the signing pass when that binary cannot be read or parsed — never fall
+  back to the host architecture or to no entitlements;
+- leave every other bundle file on `@electron/osx-sign` defaults; widening the
+  executable-memory entitlement beyond the x64 ACP Node is out of scope.
+
+Before publication, the final artifacts must prove the contract: the nested
+Node's entitlements are inspected in the signed bundle, and the shipped x64
+zip's Node actually executes JavaScript on a native Intel runner (the public
+build matrix's `macos-15-intel` leg is the precedent). Keep the arm64
+verification as well.
+
+The verifier-side counterpart is rule 5 of
+`frontend/scripts/verify-mac-artifact.sh`: `codesign -d --entitlements :-` on
+the nested Node, `lipo -archs` for the arch decision, and a guarded `node -e`
+execution only after codesign, Gatekeeper, and stapler all pass. The JS helper
+and `lipo` agree on the one invariant that matters — "contains an x86_64
+slice"; `lipo` may print `arm64e` for an arm64 slice (it names slices from
+cpusubtype) where the helper reports `arm64` (it classifies by cputype), which
+is intentional. Confirm what actually landed on the bytes with
+`codesign -d --entitlements :- <node> | plutil -p`.
+
 ## Channels
 
 - **Stable** releases are deliberate production cuts. After all verification
@@ -65,7 +104,8 @@ but changing it in this repository is not a release trigger.
 
 ## Artifact verification
 
-The conductor owns the authoritative verification and publication gates. For a
+The conductor owns the authoritative verification and publication gates; this
+script is the local diagnostic counterpart, not the publication gate. For a
 local diagnosis of a downloaded macOS artifact, use the repository's supported
 verification script:
 
