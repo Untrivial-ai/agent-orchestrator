@@ -69,14 +69,18 @@ func stripEnvAssignments(argv []string) (assignments, rest []string) {
 // support 24-bit SGR color, so advertise that capability consistently with the
 // legacy tmux runtime.
 func interactiveTerminalEnv(base []string, configured map[string]string, assignments []string) []string {
-	env := make([]string, 0, len(base)+len(configured)+len(assignments)+2)
+	values := make(map[string]string, len(base)+len(configured)+len(assignments)+2)
+	canonical := make(map[string]string, len(base)+len(configured)+len(assignments)+2)
+	order := make([]string, 0, len(base)+len(configured)+len(assignments)+2)
+	raw := make([]string, 0)
 	appendEntry := func(entry string, explicit bool) {
-		key, _, ok := strings.Cut(entry, "=")
+		key, value, ok := strings.Cut(entry, "=")
 		if !ok {
-			env = append(env, entry)
+			raw = append(raw, entry)
 			return
 		}
-		switch key {
+		folded := strings.ToUpper(key)
+		switch folded {
 		case "TERM", "COLORTERM":
 			return
 		case "NO_COLOR":
@@ -84,18 +88,62 @@ func interactiveTerminalEnv(base []string, configured map[string]string, assignm
 				return
 			}
 		}
-		env = append(env, entry)
+		if existing, ok := canonical[folded]; ok && existing != key {
+			delete(values, existing)
+		}
+		canonical[folded] = key
+		values[key] = value
+		order = append(order, key)
 	}
 
 	for _, entry := range base {
 		appendEntry(entry, false)
 	}
-	for key, value := range configured {
-		appendEntry(key+"="+value, true)
-	}
 	for _, entry := range assignments {
 		appendEntry(entry, true)
 	}
+	for _, entry := range orderedConfiguredEnv(configured) {
+		appendEntry(entry.key+"="+entry.value, true)
+	}
+
+	env := make([]string, 0, len(values)+len(raw)+2)
+	env = append(env, raw...)
+	seen := make(map[string]bool, len(values))
+	for _, key := range order {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		env = append(env, key+"="+value)
+	}
 	env = append(env, "TERM=xterm-256color", "COLORTERM=truecolor")
 	return env
+}
+
+type configuredEnvPair struct {
+	key   string
+	value string
+}
+
+func orderedConfiguredEnv(configured map[string]string) []configuredEnvPair {
+	out := make([]configuredEnvPair, 0, len(configured))
+	var pinnedPath configuredEnvPair
+	hasPinnedPath := false
+	for key, value := range configured {
+		pair := configuredEnvPair{key: key, value: value}
+		if key == "PATH" {
+			pinnedPath = pair
+			hasPinnedPath = true
+			continue
+		}
+		out = append(out, pair)
+	}
+	if hasPinnedPath {
+		out = append(out, pinnedPath)
+	}
+	return out
 }

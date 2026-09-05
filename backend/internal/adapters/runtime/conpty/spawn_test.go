@@ -60,6 +60,72 @@ func TestStripEnvAssignments(t *testing.T) {
 	}
 }
 
+func TestInteractiveTerminalEnvReplacesInheritedPathWithOverlay(t *testing.T) {
+	got := interactiveTerminalEnv(
+		[]string{`Path=C:\Users\me\AppData\Roaming\npm`, "AO_KEEP=parent"},
+		map[string]string{"PATH": `C:\Program Files\Agent Orchestrator\resources\daemon`},
+		nil,
+	)
+
+	seen := map[string]string{}
+	for _, entry := range got {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			seen[key] = value
+		}
+	}
+	if seen["Path"] != "" {
+		t.Fatalf("inherited Path survived alongside PATH: %v", got)
+	}
+	if seen["PATH"] != `C:\Program Files\Agent Orchestrator\resources\daemon` {
+		t.Fatalf("PATH = %q, want AO daemon path in %v", seen["PATH"], got)
+	}
+	if seen["AO_KEEP"] != "parent" {
+		t.Fatalf("AO_KEEP = %q, want parent", seen["AO_KEEP"])
+	}
+}
+
+func TestInteractiveTerminalEnvPinnedPATHWinsOverAssignments(t *testing.T) {
+	got := interactiveTerminalEnv(
+		[]string{`Path=C:\base`},
+		map[string]string{"PATH": `C:\overlay`},
+		[]string{`path=C:\assignment`},
+	)
+
+	seen := map[string]string{}
+	for _, entry := range got {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			seen[key] = value
+		}
+	}
+	if seen["Path"] != "" || seen["path"] != "" || seen["PATH"] != `C:\overlay` {
+		t.Fatalf("merged env = %v, want only AO-pinned PATH", got)
+	}
+}
+
+func TestInteractiveTerminalEnvPinnedPATHWinsOverProjectPath(t *testing.T) {
+	got := interactiveTerminalEnv(
+		[]string{`Path=C:\Users\me\AppData\Roaming\npm`},
+		map[string]string{
+			"Path": `C:\Project\node_modules\.bin`,
+			"PATH": `C:\Program Files\Agent Orchestrator\resources\daemon;C:\Project\node_modules\.bin`,
+		},
+		nil,
+	)
+
+	seen := map[string]string{}
+	for _, entry := range got {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			seen[key] = value
+		}
+	}
+	if seen["Path"] != "" || seen["PATH"] != `C:\Program Files\Agent Orchestrator\resources\daemon;C:\Project\node_modules\.bin` {
+		t.Fatalf("PATH entries = %v, want AO-pinned PATH in %v", seen, got)
+	}
+}
+
 func TestStartedHostKillFailureRetainsPartialCreateEvidence(t *testing.T) {
 	isolateRegistry(t)
 	startupErr := errors.New("pty-host READY response unavailable")
