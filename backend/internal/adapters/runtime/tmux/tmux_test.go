@@ -977,6 +977,52 @@ func TestDestroyIsIdempotentWhenNoServer(t *testing.T) {
 	}
 }
 
+// Same teardown generosity for the tmux ≥ 3.4 absent-server wording.
+func TestDestroyIsIdempotentWhenSocketAbsent(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{nil, []byte("error connecting to /tmp/tmux-1000/default (No such file or directory)")}
+	fr.err = &exec.ExitError{}
+
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy socket-absent: %v", err)
+	}
+}
+
+// The migration-deployment reboot case: every probe on both sockets hits the
+// absent-socket text, and kill-session still resolves to "nothing to kill"
+// instead of surfacing the probe failure.
+func TestDestroyIsIdempotentWhenBothMigrationSocketsAbsent(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	absent := fakeRunnerResult{
+		out: []byte("error connecting to /tmp/tmux-1000/missing (No such file or directory)"),
+		err: &exec.ExitError{},
+	}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{absent}} // repeated for every call
+	r.runner = fr
+
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	sawKill := false
+	for _, c := range fr.calls {
+		// Socket-qualified argv carries the "-L <name>" prefix, so scan for the
+		// subcommand instead of expecting it at args[0].
+		for _, a := range c.args {
+			if a == "kill-session" {
+				sawKill = true
+			}
+		}
+	}
+	if !sawKill {
+		t.Fatal("Destroy never reached kill-session")
+	}
+}
+
 func TestDestroyReportsUnexpectedFailures(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{nil, []byte("permission denied")}
@@ -1311,17 +1357,60 @@ func TestIsAliveReportsNoServerAsRuntimeUnavailable(t *testing.T) {
 	}
 }
 
-func TestIsAliveReportsErrorConnectingAsProbeInconclusive(t *testing.T) {
+// tmux ≥ 3.4 words an absent server "error connecting … (No such file or
+// directory)" instead of "no server running". The socket file does not exist,
+// so no server can be listening: this is the same conclusive server absence,
+// and the recovery paths (boot reconcile, restore, restart) key off
+// ErrRuntimeUnavailable.
+func TestIsAliveReportsAbsentSocketAsRuntimeUnavailable(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{[]byte("error connecting to /tmp/tmux-1000/default (No such file or directory)")}
 	fr.err = &exec.ExitError{}
 
 	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
-	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
-		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
 	}
 	if alive {
 		t.Fatal("alive = true, want false")
+	}
+}
+
+// After a reboot both the private and the legacy server are gone. The session
+// must come back as ErrRuntimeUnavailable, not ErrRuntimeProbeInconclusive:
+// an inconclusive probe dead-ends boot reconciliation ("a failed probe is not
+// proof of death: leave the session as-is") and leaves the session live-looking
+// but unrecoverable — kill 500s, restore refuses. Connection refused (socket
+// exists, no listener yet) stays inconclusive; see
+// TestIsAliveKeepsAmbiguousNamedSocketFailureInNamedNamespace.
+func TestIsAliveReportsUnavailableWhenBothSocketsAbsent(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	absent := fakeRunnerResult{
+		out: []byte("error connecting to /tmp/tmux-1000/missing (No such file or directory)"),
+		err: &exec.ExitError{},
+	}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{absent, absent, absent}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false")
+	}
+	if len(fr.calls) != 3 {
+		t.Fatalf("calls = %d, want private probe, legacy probe, resolved private probe", len(fr.calls))
+	}
+	for i, wantBinary := range []string{"bundled-tmux-test", "system-tmux-test", "bundled-tmux-test"} {
+		if fr.calls[i].name != wantBinary {
+			t.Fatalf("call %d binary = %q, want %q", i, fr.calls[i].name, wantBinary)
+		}
 	}
 }
 
