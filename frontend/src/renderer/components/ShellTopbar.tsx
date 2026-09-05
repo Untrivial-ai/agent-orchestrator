@@ -225,14 +225,14 @@ export function ShellTopbar({
 				{isSessionRoute && session ? (
 					<div className="flex min-w-0 items-center gap-2.5" data-testid="session-topbar-identity">
 						{isOrchestrator ? (
-							<span className={cn(topbarProjectLabelClass, "inline-flex min-w-0 items-center gap-1.5")}>
+							<span className={cn(topbarProjectLabelClass, "inline-flex min-w-0 items-center gap-1.5")} title={projectLabel}>
 								<Folder aria-hidden="true" className="size-icon-md shrink-0 text-muted-foreground" />
-								<span className="max-w-content-max truncate">{projectLabel}</span>
+								<span className="min-w-0 truncate">{projectLabel}</span>
 							</span>
 						) : (
-							<span className={cn(topbarProjectLabelClass, "max-w-content-max truncate")}>{session.title}</span>
+							<span className={cn(topbarProjectLabelClass, "min-w-0 truncate")} title={session.title}>{session.title}</span>
 						)}
-						<span aria-hidden="true" className="workspace-topbar__identity-separator" />
+						<span aria-hidden="true" className="workspace-topbar__identity-separator mx-0.5" />
 						<SessionStatusPill session={session} />
 					</div>
 				) : (isProjectBoardRoute && boardActionsInPanel) ||
