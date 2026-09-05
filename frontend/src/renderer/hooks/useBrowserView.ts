@@ -581,10 +581,18 @@ export function useBrowserView({
 		window.addEventListener("resize", handle);
 		window.addEventListener("scroll", handle, true);
 		document.addEventListener("fullscreenchange", handleFullscreenChange);
+		// The main process forwards OS-level window resize/move/maximize events
+		// here (see main.ts). The DOM's own resize/ResizeObserver signals do not
+		// reliably fire for every one of those on every platform/window manager,
+		// which otherwise leaves the native preview painted at stale bounds.
+		// Settle-measure to also catch move-triggered layout shifts (position-only,
+		// no DOM resize) the same way the pop-out/inspector-collapse paths do.
+		const offRemeasure = window.ao?.window.onRemeasure(() => scheduleSettleMeasure());
 		return () => {
 			window.removeEventListener("resize", handle);
 			window.removeEventListener("scroll", handle, true);
 			document.removeEventListener("fullscreenchange", handleFullscreenChange);
+			offRemeasure?.();
 			observerRef.current?.disconnect();
 			cancelScheduledMeasure();
 			if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);

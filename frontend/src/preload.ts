@@ -292,6 +292,17 @@ const api = {
 				ipcRenderer.off("window:fullscreen", wrapped);
 			};
 		},
+		// Fired by the main process on OS-level window resize/move/maximize/
+		// unmaximize, so panels whose bounds are computed in the renderer (the
+		// native browser preview) can re-measure even when the DOM's own
+		// resize/ResizeObserver signals don't fire for that change.
+		onRemeasure: (listener: () => void) => {
+			const wrapped = () => listener();
+			ipcRenderer.on("window:remeasure", wrapped);
+			return () => {
+				ipcRenderer.off("window:remeasure", wrapped);
+			};
+		},
 	},
 	theme: {
 		// Propagate the app's theme preference to Electron's nativeTheme so embedded

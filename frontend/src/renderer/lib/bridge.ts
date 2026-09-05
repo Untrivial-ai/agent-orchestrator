@@ -39,6 +39,7 @@ export const aoBridge: AoBridge =
 			onMaximized: () => () => undefined,
 			isFullScreen: async () => false,
 			onFullScreen: () => () => undefined,
+			onRemeasure: () => () => undefined,
 		},
 		theme: {
 			set: async () => undefined,

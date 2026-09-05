@@ -748,6 +748,65 @@ describe("useBrowserView", () => {
 		}
 	});
 
+	it("re-measures on a main-process window:remeasure signal (OS-level resize/move the DOM's own listeners can miss)", async () => {
+		vi.useFakeTimers();
+		try {
+			const bridge = setupBridge();
+			let remeasureListener: (() => void) | undefined;
+			const onRemeasure = vi.fn((listener: () => void) => {
+				remeasureListener = listener;
+				return () => {
+					remeasureListener = undefined;
+				};
+			});
+			window.ao = { ...window.ao!, window: { ...window.ao!.window, onRemeasure } };
+			const slot = createSlot();
+			const { result } = renderHook(() => useBrowserView({ sessionId: "sess-1", active: true, poppedOut: false }));
+			await act(async () => {
+				await Promise.resolve();
+			});
+			act(() =>
+				bridge.emit({
+					viewId: "42:sess-1",
+					url: "http://localhost:3000/",
+					title: "",
+					canGoBack: false,
+					canGoForward: false,
+					isLoading: false,
+				}),
+			);
+			act(() => result.current.slotRef(slot));
+			await act(async () => {
+				vi.advanceTimersByTime(300);
+			});
+			expect(onRemeasure).toHaveBeenCalled();
+			bridge.setBounds.mockClear();
+
+			// The OS moved/resized the window without the DOM's own resize/
+			// ResizeObserver signals firing for it; main forwards the raw event.
+			slot.getBoundingClientRect = vi.fn(() => ({
+				x: 400,
+				y: 50,
+				width: 320,
+				height: 240,
+				top: 50,
+				right: 720,
+				bottom: 290,
+				left: 400,
+				toJSON: () => ({}),
+			}));
+			act(() => remeasureListener?.());
+			await act(async () => {
+				vi.advanceTimersByTime(300);
+			});
+			expect(bridge.setBounds).toHaveBeenCalledWith(
+				expect.objectContaining({ rect: expect.objectContaining({ x: 400, width: 320 }) }),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("hides the native view when inactive and on unmount without destroying session state", async () => {
 		const bridge = setupBridge();
 		const slot = createSlot();

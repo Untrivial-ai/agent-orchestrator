@@ -720,6 +720,20 @@ async function createWindowInternal(): Promise<void> {
 	mainWindow.on("leave-full-screen", pushFullScreen);
 	mainWindow.on("maximize", pushMaximized);
 	mainWindow.on("unmaximize", pushMaximized);
+	// The native browser preview's bounds are entirely renderer-driven (measured
+	// from a placeholder DOM node via ResizeObserver/window "resize"). An
+	// OS-level window move, resize, or maximize toggle does not reliably fire
+	// those DOM signals on every platform/window manager, which leaves the
+	// WebContentsView painted at stale bounds. Forward these window events so
+	// the renderer can re-measure and re-send bounds regardless of whether its
+	// own listeners fired.
+	const pushRemeasure = () => {
+		getShellWebContents()?.send("window:remeasure");
+	};
+	mainWindow.on("resize", pushRemeasure);
+	mainWindow.on("move", pushRemeasure);
+	mainWindow.on("maximize", pushRemeasure);
+	mainWindow.on("unmaximize", pushRemeasure);
 	mainWindow.on("blur", () => {
 		keybindingRecordingActive = false;
 	});
