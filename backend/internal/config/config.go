@@ -533,6 +533,11 @@ func resolveDataDir() (string, error) {
 	return filepath.Join(stateDir, "data"), nil
 }
 
+// StateDir returns the canonical AO home directory (~/.ao) that holds
+// running.json, the data dir, and the CLI's remotes file. Exported for callers
+// that need the directory itself rather than a path Load already resolves.
+func StateDir() (string, error) { return defaultStateDir() }
+
 func defaultStateDir() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {

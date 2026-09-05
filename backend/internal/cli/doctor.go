@@ -159,7 +159,7 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 		switch st.State {
 		case stateStale, stateNotReady:
 			level = doctorWarn
-		case stateUnhealthy:
+		case stateUnhealthy, stateLockedOut:
 			level = doctorFail
 		}
 		msg := string(st.State)

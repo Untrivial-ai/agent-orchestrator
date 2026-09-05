@@ -534,6 +534,25 @@ func TestDoctorIncludesAOBinaryCheck(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsRemoteLockoutAsFailure(t *testing.T) {
+	setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("git version 2.43.0\n"), nil
+	})
+	c.remote = &remoteTarget{baseURL: srv.URL, token: "tok"}
+	c.deps.HTTPClient = srv.Client()
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "daemon")
+	if check.Level != doctorFail || !strings.Contains(check.Message, "locked_out") {
+		t.Fatalf("daemon check = %+v, want FAIL for remote lockout", check)
+	}
+}
+
 func doctorContext(t *testing.T, paths map[string]string, commandOutput func(context.Context, string, ...string) ([]byte, error)) *commandContext {
 	t.Helper()
 	t.Setenv("AO_TMUX_BINARY", "")
