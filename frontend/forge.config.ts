@@ -9,6 +9,7 @@ import MakerAppImage from "./makers/maker-appimage";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { BUNDLED_TMUX_VERSION } from "./scripts/tmux-version.mjs";
 
 // Default GitHub release target (production). Releases land on Untrivial-ai
 // (the org the repo was transferred to in July 2026; AgentWrapper and aoagents
@@ -172,7 +173,7 @@ const config: ForgeConfig = {
 				const binary = path.join(resourcesPath, "tmux", "bin", "tmux");
 				if (!existsSync(binary)) throw new Error(`packaged tmux missing from ${binary}`);
 				const version = spawnSync(binary, ["-V"], { encoding: "utf8" });
-				if (version.status !== 0 || version.stdout.trim() !== "tmux 3.5a") {
+				if (version.status !== 0 || version.stdout.trim() !== `tmux ${BUNDLED_TMUX_VERSION}`) {
 					throw new Error(`packaged tmux failed verification at ${binary}: ${version.stderr || version.stdout}`);
 				}
 			}

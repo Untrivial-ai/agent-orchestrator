@@ -13,13 +13,14 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BUNDLED_TMUX_SHA256, BUNDLED_TMUX_VERSION } from "./tmux-version.mjs";
 
 const TMUX = {
 	name: "tmux",
-	version: "3.5a",
-	url: "https://github.com/tmux/tmux/releases/download/3.5a/tmux-3.5a.tar.gz",
-	sha256: "16216bd0877170dfcc64157085ba9013610b12b082548c7c9542cc0103198951",
-	directory: "tmux-3.5a",
+	version: BUNDLED_TMUX_VERSION,
+	url: `https://github.com/tmux/tmux/releases/download/${BUNDLED_TMUX_VERSION}/tmux-${BUNDLED_TMUX_VERSION}.tar.gz`,
+	sha256: BUNDLED_TMUX_SHA256,
+	directory: `tmux-${BUNDLED_TMUX_VERSION}`,
 	license: "COPYING",
 };
 const LIBEVENT = {
