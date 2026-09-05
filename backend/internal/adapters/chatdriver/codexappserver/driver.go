@@ -594,6 +594,6 @@ func codexProcessEnv(ctx context.Context, bin string, env map[string]string) []s
 	if _, ok := overlay["PATH"]; !ok {
 		overlay["PATH"] = os.Getenv("PATH")
 	}
-	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, overlay, []string{bin}, exec.LookPath)
+	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, overlay, []string{bin}, exec.LookPath, agentlaunch.PinnedDir(os.Executable))
 	return envSlice(overlay)
 }

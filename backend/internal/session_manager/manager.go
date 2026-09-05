@@ -4283,26 +4283,13 @@ func chatControllerOwner(
 // prepending its directory would not change what `ao` resolves to. Exported so
 // the reviewer launcher can pin its pane's PATH the same way.
 func HookPATH(executable func() (string, error), getenv func(string) string, projectEnv map[string]string) (string, error) {
-	exe, err := executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve daemon executable: %w", err)
-	}
-	name := filepath.Base(exe)
-	if runtime.GOOS == "windows" {
-		name = strings.TrimSuffix(strings.ToLower(name), ".exe")
-	}
-	if name != hookBinaryName {
-		return "", fmt.Errorf("daemon executable %s is not named %q", exe, hookBinaryName)
-	}
-	base := projectEnv["PATH"]
-	if base == "" {
-		base = getenv("PATH")
-	}
-	dir := filepath.Dir(exe)
-	if base == "" {
-		return dir, nil
-	}
-	return dir + string(os.PathListSeparator) + base, nil
+	return agentlaunch.PinnedPATH(executable, getenv, projectEnv)
+}
+
+// PinnedHookDir returns the directory HookPATH places first, or an empty
+// string when the executable cannot provide an ao PATH pin.
+func PinnedHookDir(executable func() (string, error)) string {
+	return agentlaunch.PinnedDir(executable)
 }
 
 // provisionWorkspace applies the project's per-workspace setup after the
@@ -4746,14 +4733,14 @@ func launchBinary(argv []string) (string, bool) {
 }
 
 func (m *Manager) augmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string) {
-	AugmentRuntimePATHForLaunchBinary(ctx, env, argv, m.lookPath)
+	AugmentRuntimePATHForLaunchBinary(ctx, env, argv, m.lookPath, PinnedHookDir(m.executable))
 }
 
 // AugmentRuntimePATHForLaunchBinary is retained at the session-manager boundary
 // for reviewer launches; all agent child-process paths share agentlaunch's
 // executable-environment augmentation.
-func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string, lookPath func(string) (string, error)) {
-	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, lookPath)
+func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string, lookPath func(string) (string, error), pinnedDir string) {
+	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, lookPath, pinnedDir)
 }
 
 func (m *Manager) validateRuntimePrerequisites() error {

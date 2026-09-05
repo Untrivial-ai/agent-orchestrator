@@ -5631,7 +5631,10 @@ func TestSpawnAndRestore_PrependsResolvedBinaryAndNodeDirsToRuntimePATH(t *testi
 			t.Fatal(err)
 		}
 	}
-	want := strings.Join([]string{binDir, nodeDir, filepath.Dir(daemonExe), "/usr/bin"}, string(os.PathListSeparator))
+	// The daemon-dir pin stays at the HEAD: the agent binary is launched by
+	// absolute path and does not need its directory first, but a bare `ao` in
+	// the session must resolve to this daemon (see restorePinnedDir).
+	want := strings.Join([]string{filepath.Dir(daemonExe), binDir, nodeDir, "/usr/bin"}, string(os.PathListSeparator))
 
 	for _, operation := range []string{"spawn", "restore"} {
 		t.Run(operation, func(t *testing.T) {
@@ -5672,6 +5675,35 @@ func TestSpawnAndRestore_PrependsResolvedBinaryAndNodeDirsToRuntimePATH(t *testi
 	}
 }
 
+// TestSpawn_LaunchBinaryDirDoesNotShadowDaemonAO is issue #3562: the agent CLI
+// and a stale `ao` can live in the SAME directory (the legacy npm package
+// installs `ao` into the same global bin the agent CLIs use). Prepending the
+// launch binary's directory must not push the daemon-dir pin down, or that
+// stale `ao` wins every bare `ao` inside the session.
+func TestSpawn_LaunchBinaryDirDoesNotShadowDaemonAO(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	sharedBin := filepath.Join(t.TempDir(), "npm-global", "bin")
+	agentBin := filepath.Join(sharedBin, "claude")
+	daemonExe := filepath.Join(t.TempDir(), "daemon", "ao")
+
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	m := New(Deps{
+		Runtime: rt, Agents: singleAgent{agent: launchArgvAgent{argv: []string{agentBin}}},
+		Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath:   func(string) (string, error) { return agentBin, nil },
+		Executable: func() (string, error) { return daemonExe, nil },
+	})
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	want := strings.Join([]string{filepath.Dir(daemonExe), sharedBin, "/usr/bin"}, string(os.PathListSeparator))
+	if got := rt.lastCfg.Env["PATH"]; got != want {
+		t.Fatalf("runtime env PATH = %q, want %q", got, want)
+	}
+}
+
 func TestSpawn_DoesNotAddNodeRuntimeForNativeBinary(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin")
 	home := t.TempDir()
@@ -5704,7 +5736,7 @@ func TestSpawn_DoesNotAddNodeRuntimeForNativeBinary(t *testing.T) {
 	if nodeLookups != 0 {
 		t.Fatalf("node LookPath calls = %d, want 0 for native binary", nodeLookups)
 	}
-	want := strings.Join([]string{binDir, "/ao/bin", "/usr/bin"}, string(os.PathListSeparator))
+	want := strings.Join([]string{"/ao/bin", binDir, "/usr/bin"}, string(os.PathListSeparator))
 	if got := rt.lastCfg.Env["PATH"]; got != want {
 		t.Fatalf("runtime env PATH = %q, want %q", got, want)
 	}

@@ -3,6 +3,7 @@ package processenv
 
 import (
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -14,22 +15,23 @@ func Merge(overlay map[string]string) []string {
 	merged := make(map[string]string, len(os.Environ())+len(overlay))
 	for _, entry := range os.Environ() {
 		if key, value, ok := strings.Cut(entry, "="); ok {
+			if runtime.GOOS == "windows" {
+				key = strings.ToUpper(key)
+			}
 			merged[key] = value
 		}
 	}
 	for key, value := range overlay {
+		if runtime.GOOS == "windows" {
+			key = strings.ToUpper(key)
+		}
 		merged[key] = value
 	}
 
-	keys := make([]string, 0, len(merged))
-	for key := range merged {
-		keys = append(keys, key)
+	out := make([]string, 0, len(merged))
+	for key, value := range merged {
+		out = append(out, key+"="+value)
 	}
-	sort.Strings(keys)
-
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, key+"="+merged[key])
-	}
+	sort.Strings(out)
 	return out
 }

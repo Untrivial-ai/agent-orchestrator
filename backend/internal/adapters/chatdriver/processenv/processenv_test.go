@@ -7,6 +7,9 @@ import (
 )
 
 func TestMergeInheritsDaemonEnvironmentAndAppliesOverlay(t *testing.T) {
+	// Windows has prefix-related names such as PROGRAMFILES and PROGRAMFILES(X86).
+	t.Setenv("AO_PROCESSENV", "prefix")
+	t.Setenv("AO_PROCESSENV(X86)", "related")
 	t.Setenv("AO_PROCESSENV_INHERITED", "parent")
 	t.Setenv("AO_PROCESSENV_REPLACED", "old")
 
