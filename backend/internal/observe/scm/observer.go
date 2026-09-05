@@ -86,6 +86,7 @@ type Store interface {
 	ListPRsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.PullRequest, error)
 	ListChecks(ctx context.Context, prURL string) ([]domain.PullRequestCheck, error)
 	WriteSCMObservation(ctx context.Context, pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment, reviewMode ports.ReviewWriteMode) error
+	DetachPR(ctx context.Context, url string, sessionID domain.SessionID, source domain.PRAttachmentSource) (bool, error)
 }
 
 // Lifecycle is the provider-neutral lifecycle notification sink.
@@ -166,7 +167,8 @@ type Config struct {
 	Logger *slog.Logger
 	// CacheMax bounds each in-memory ETag/review cache. Zero uses DefaultCacheMax.
 	CacheMax int
-	// IdentityResolver resolves the active SCM account lazily. Nil preserves branch-based discovery.
+	// IdentityResolver resolves the active SCM account lazily. Automatic
+	// discovery is disabled when no authenticated human identity is available.
 	IdentityResolver ports.SCMIdentityResolver
 	// ScopedIdentityResolver resolves the authenticated identity per provider key.
 	// When set, the observer resolves identities for all providers upfront in
@@ -419,7 +421,11 @@ func (o *Observer) Poll(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	listedPRs, listedRepos := o.discoverNewPRs(ctx, sessionRepos, subjects, repoGuards, now, markRepoListFailed)
+	identity, identityKnown := o.authenticatedIdentity(ctx)
+	if identityKnown {
+		o.reconcilePRAttribution(ctx, subjects, identity)
+	}
+	listedPRs, listedRepos := o.discoverNewPRs(ctx, sessionRepos, subjects, repoGuards, identity, identityKnown, now, markRepoListFailed)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -973,12 +979,22 @@ func pendingRepoRefreshes(guards map[string]repoGuardState) map[string]bool {
 // PRs (its root plus stacked children). Repos whose PR-list guard reports
 // NotModified against a known ETag are skipped, since nothing new can have
 // appeared since the last poll.
-func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRepo, subjects map[string]*subject, guards map[string]repoGuardState, now time.Time, markRepoFailed func(ports.SCMRepo)) (listedPRs, listedRepos map[string]bool) {
+func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRepo, subjects map[string]*subject, guards map[string]repoGuardState, identity ports.SCMIdentity, identityKnown bool, now time.Time, markRepoFailed func(ports.SCMRepo)) (listedPRs, listedRepos map[string]bool) {
 	// Resolve identities per-provider when a ScopedIdentityResolver is wired.
 	// This ensures GitHub PRs are checked against the GitHub identity and
 	// GitLab PRs against the GitLab identity. Falls back to the single-
 	// provider IdentityResolver path for backward compatibility.
-	identities, identityKnown := o.resolveIdentities(ctx, sessionRepos)
+	identities := map[string]ports.SCMIdentity{}
+	if o.scopedIdentityResolver != nil {
+		identities, identityKnown = o.resolveIdentities(ctx, sessionRepos)
+	} else if identityKnown {
+		identities[fallbackIdentityKey] = identity
+	}
+	// Branch names are not ownership proof. Explicit claims remain available as
+	// the override when the active provider cannot identify a human account.
+	if !identityKnown {
+		return nil, nil
+	}
 	byRepo := map[string][]sessionRepo{}
 	repos := map[string]ports.SCMRepo{}
 	for _, sr := range sessionRepos {
@@ -1100,18 +1116,20 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 				continue
 			}
 			known := domain.PullRequest{
-				URL:          firstNonEmpty(pr.URL, pr.HTMLURL),
-				SessionID:    sr.session.ID,
-				Number:       pr.Number,
-				Draft:        pr.Draft,
-				SourceBranch: pr.SourceBranch,
-				TargetBranch: pr.TargetBranch,
-				HeadSHA:      pr.HeadSHA,
-				Provider:     repo.Provider,
-				Host:         repo.Host,
-				Repo:         repoFullName(repo),
-				ProviderID:   pr.ProviderID,
-				UpdatedAt:    now,
+				URL:              firstNonEmpty(pr.URL, pr.HTMLURL),
+				SessionID:        sr.session.ID,
+				Number:           pr.Number,
+				Draft:            pr.Draft,
+				SourceBranch:     pr.SourceBranch,
+				TargetBranch:     pr.TargetBranch,
+				HeadSHA:          pr.HeadSHA,
+				Author:           strings.TrimSpace(pr.Author),
+				Provider:         repo.Provider,
+				Host:             repo.Host,
+				Repo:             repoFullName(repo),
+				ProviderID:       pr.ProviderID,
+				UpdatedAt:        now,
+				AttachmentSource: domain.PRAttachmentAutomatic,
 			}
 			// Persist the discovered PR as an open baseline row immediately, before
 			// the refresh/lifecycle pass runs. A session can own several PRs, and a
@@ -1138,18 +1156,59 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 	return listedPRs, listedRepos
 }
 
+// reconcilePRAttribution removes persisted branch-namespace associations that
+// conflict with the authenticated human account. Explicit claims are never
+// eligible. Legacy rows are eligible only for the namespace-only match used by
+// the old discovery behavior; exact branch matches remain untouched because
+// their pre-provenance intent cannot be reconstructed safely.
+func (o *Observer) reconcilePRAttribution(ctx context.Context, subjects map[string]*subject, identity ports.SCMIdentity) {
+	for key, subj := range subjects {
+		pr := subj.known
+		source := pr.AttachmentSource.WithDefault()
+		if source == domain.PRAttachmentExplicit || strings.TrimSpace(pr.Author) == "" || strings.EqualFold(strings.TrimSpace(pr.Author), identity.Login) {
+			continue
+		}
+		if !matchesNamespaceOnly(subj.branch, pr.SourceBranch) {
+			continue
+		}
+		detached, err := o.store.DetachPR(ctx, pr.URL, subj.session.ID, source)
+		if err != nil {
+			o.logger.Error("scm observer: detach foreign automatically attributed PR failed", "session", subj.session.ID, "pr", pr.URL, "author", pr.Author, "err", err)
+			continue
+		}
+		if detached {
+			delete(subjects, key)
+			o.logger.Info("scm observer: detached foreign automatically attributed PR", "session", subj.session.ID, "pr", pr.URL, "author", pr.Author)
+		}
+	}
+}
+
+func matchesNamespaceOnly(sessionBranch, sourceBranch string) bool {
+	sessionBranch = strings.TrimSpace(sessionBranch)
+	sourceBranch = strings.TrimSpace(sourceBranch)
+	if sessionBranch == "" || sourceBranch == "" || sessionBranch == sourceBranch {
+		return false
+	}
+	for _, prefix := range sessionBranchPrefixes(sessionBranch) {
+		if strings.HasPrefix(sourceBranch, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func (o *Observer) authenticatedIdentity(ctx context.Context) (ports.SCMIdentity, bool) {
 	if o.identityResolver == nil {
 		return ports.SCMIdentity{}, false
 	}
 	identity, err := o.identityResolver.AuthenticatedIdentity(ctx)
 	if err != nil {
-		o.logger.Debug("scm observer: authenticated identity unavailable; preserving branch-based discovery", "err", err)
+		o.logger.Debug("scm observer: authenticated identity unavailable; automatic discovery disabled", "err", err)
 		return ports.SCMIdentity{}, false
 	}
 	identity.Login = strings.TrimSpace(identity.Login)
 	if !identity.Human || identity.Login == "" {
-		o.logger.Debug("scm observer: authenticated human identity unavailable; preserving branch-based discovery")
+		o.logger.Debug("scm observer: authenticated human identity unavailable; automatic discovery disabled")
 		return ports.SCMIdentity{}, false
 	}
 	return identity, true
@@ -1793,6 +1852,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 		ObservedAt:               observedAt,
 		CIObservedAt:             ciObservedAt,
 		ReviewObservedAt:         reviewObservedAt,
+		AttachmentSource:         local.AttachmentSource.WithDefault(),
 	}
 	checks := make([]domain.PullRequestCheck, 0, len(obs.CI.Checks))
 	for _, ch := range obs.CI.Checks {

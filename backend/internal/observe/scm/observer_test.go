@@ -117,6 +117,20 @@ func (s *fakeStore) WriteSCMObservation(_ context.Context, pr domain.PullRequest
 	return nil
 }
 
+func (s *fakeStore) DetachPR(_ context.Context, url string, sessionID domain.SessionID, source domain.PRAttachmentSource) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prs := s.prs[sessionID]
+	for i, pr := range prs {
+		if pr.URL != url || pr.AttachmentSource.WithDefault() != source.WithDefault() {
+			continue
+		}
+		s.prs[sessionID] = append(prs[:i], prs[i+1:]...)
+		return true, nil
+	}
+	return false, nil
+}
+
 type fakeProvider struct {
 	mu           sync.Mutex
 	repoGuards   map[string]ports.SCMGuardResult
@@ -273,8 +287,18 @@ func (l *fakeLifecycle) ApplySCMObservation(_ context.Context, _ domain.SessionI
 }
 
 func newTestObserver(store *fakeStore, provider *fakeProvider, lc Lifecycle, now time.Time) *Observer {
-	cfg := Config{Clock: func() time.Time { return now }, Tick: time.Hour, Logger: quietSlog(), CacheMax: 128, IdentityResolver: provider}
-	return New(provider, store, lc, cfg)
+	if provider.identity.Login == "" && provider.identityErr == nil {
+		provider.identity = ports.SCMIdentity{Login: "alice", Human: true}
+	}
+	for repo, prs := range provider.openPRs {
+		for i := range prs {
+			if prs[i].Author == "" {
+				prs[i].Author = "alice"
+			}
+		}
+		provider.openPRs[repo] = prs
+	}
+	return New(provider, store, lc, Config{Clock: func() time.Time { return now }, Tick: time.Hour, Logger: quietSlog(), CacheMax: 128, IdentityResolver: provider})
 }
 
 func TestDispatchOrderIsDeterministic(t *testing.T) {
@@ -648,6 +672,9 @@ func TestPoll_RepoETag200DiscoversPRAndRefreshesSamePoll(t *testing.T) {
 	if store.writes[0].pr.ProviderID != "PR_stable_1" {
 		t.Fatalf("discovery ProviderID = %q, want PR_stable_1", store.writes[0].pr.ProviderID)
 	}
+	if got := store.writes[0].pr.AttachmentSource; got != domain.PRAttachmentAutomatic {
+		t.Fatalf("discovered attachment source = %q, want automatic", got)
+	}
 }
 
 func TestPoll_DiscoversOnlyPRsFromAuthenticatedHuman(t *testing.T) {
@@ -684,7 +711,7 @@ func TestPoll_DiscoversOnlyPRsFromAuthenticatedHuman(t *testing.T) {
 	}
 }
 
-func TestPoll_PreservesBranchDiscoveryWithoutHumanIdentity(t *testing.T) {
+func TestPoll_DisablesAutomaticDiscoveryWithoutHumanIdentity(t *testing.T) {
 	tests := []struct {
 		name        string
 		identity    ports.SCMIdentity
@@ -707,8 +734,8 @@ func TestPoll_PreservesBranchDiscoveryWithoutHumanIdentity(t *testing.T) {
 			if err := obs.Poll(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if len(provider.fetchBatches) != 1 || provider.fetchBatches[0][0].Number != 1 {
-				t.Fatalf("branch fallback did not discover PR: %#v", provider.fetchBatches)
+			if len(provider.fetchBatches) != 0 || len(store.writes) != 0 {
+				t.Fatalf("automatic discovery must fail closed: batches=%#v writes=%#v", provider.fetchBatches, store.writes)
 			}
 		})
 	}
