@@ -1325,14 +1325,19 @@ func (s *Service) SetConfigOption(
 	}
 	controller.configMu.Lock()
 	defer controller.configMu.Unlock()
+	previous := controller.Settings()
 	options, err := configurer.SetConfigOption(ctx, configID, value)
 	if err != nil {
 		return nil, err
 	}
-	if settings, changed := settingsFromConfigOptions(controller.Settings(), options); changed {
+	if settings, changed := settingsFromConfigOptions(previous, options); changed {
 		if err := controller.SetSettings(ctx, settings); err != nil {
 			return nil, err
 		}
+		// The config-options route is how provider-owned pickers (e.g. Claude
+		// Code's model menu) change the model; it must persist the pick the same
+		// way the turn-settings route does.
+		s.persistPickedModel(id, previous, settings)
 	}
 	return options, nil
 }
@@ -1446,14 +1451,23 @@ func (s *Service) SetTurnSettings(
 	if err := controller.SetSettings(ctx, settings); err != nil {
 		return domain.ConversationSettings{}, err
 	}
-	// Persist the picked model onto the session BEFORE the next prompt routes.
-	// The conversation row is the chat-side source of truth; the session
-	// metadata is what a later TUI rebuild reads to keep the same model, so a
-	// model change must land there too before the user can switch interfaces.
-	if model := strings.TrimSpace(settings.Model); model != "" && model != strings.TrimSpace(previous.Model) && s.onModelChanged != nil {
-		s.onModelChanged(id, model)
-	}
+	s.persistPickedModel(id, previous, settings)
 	return controller.Settings(), nil
+}
+
+// persistPickedModel records a model the user picked in ChatUI onto the
+// session's durable metadata BEFORE the next prompt routes. The conversation
+// row is the chat-side source of truth; the session metadata is what a later
+// TUI rebuild reads to keep the same model, so a model change must land there
+// too before the user can switch interfaces. Every route that can change the
+// model funnels through here: the turn-settings PATCH and the provider
+// config-options route (e.g. Claude Code's model picker).
+func (s *Service) persistPickedModel(id domain.SessionID, previous, next domain.ConversationSettings) {
+	model := strings.TrimSpace(next.Model)
+	if model == "" || model == strings.TrimSpace(previous.Model) || s.onModelChanged == nil {
+		return
+	}
+	s.onModelChanged(id, model)
 }
 
 // RelayChatTurn delivers a message AO is carrying for someone else.

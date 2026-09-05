@@ -2822,6 +2822,103 @@ func TestControllerReadyDurableSettingsRefreshBeforeFirstDispatch(t *testing.T) 
 	}
 }
 
+// configOptionConversation models a provider that owns its own session config
+// (e.g. Claude Code's model picker), so SetConfigOption has a real surface to
+// drive.
+type configOptionConversation struct {
+	*fakeConversation
+	mu      sync.Mutex
+	applied []ports.ChatConfigOptionValue
+}
+
+func (c *configOptionConversation) ListConfigOptions(context.Context) ([]ports.ChatConfigOption, error) {
+	return c.catalog(), nil
+}
+
+func (c *configOptionConversation) SetConfigOption(_ context.Context, _ string, value ports.ChatConfigOptionValue) ([]ports.ChatConfigOption, error) {
+	c.mu.Lock()
+	c.applied = append(c.applied, value)
+	c.mu.Unlock()
+	return c.catalog(), nil
+}
+
+// catalog reflects the most recently applied model select, the way a provider
+// reports the post-change state back.
+func (c *configOptionConversation) catalog() []ports.ChatConfigOption {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current := ""
+	if len(c.applied) > 0 {
+		current = c.applied[len(c.applied)-1].Select
+	}
+	return []ports.ChatConfigOption{{
+		ID: "model", Category: "model",
+		Type:    ports.ChatConfigOptionSelect,
+		Current: ports.ChatConfigOptionValue{Select: current},
+	}}
+}
+
+// TestSetConfigOptionPersistsModelBeforeRouting covers the other model-change
+// route: provider-owned pickers like Claude Code's model menu go through the
+// config-options PATCH, which calls SetSettings directly. The pick must land on
+// the session's durable metadata the same way a turn-settings model change does
+// (#4893 follow-up), or a later TUI rebuild resumes with the stale model.
+func TestSetConfigOptionPersistsModelBeforeRouting(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	conv := &configOptionConversation{fakeConversation: newFakeConversation()}
+	var (
+		logMu sync.Mutex
+		log   []string
+	)
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "config-option-model-id" },
+		OnModelChanged: func(id domain.SessionID, model string) {
+			logMu.Lock()
+			defer logMu.Unlock()
+			log = append(log, string(id)+":"+model)
+		},
+	})
+	t.Cleanup(func() { _ = svc.Stop(ctx, testSession) })
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Picking a model through the config-options route persists it.
+	options, err := svc.SetConfigOption(ctx, testSession, "model", ports.ChatConfigOptionValue{Select: "5.6-haiku"})
+	if err != nil {
+		t.Fatalf("SetConfigOption: %v", err)
+	}
+	if len(options) == 0 || options[0].Current.Select != "5.6-haiku" {
+		t.Fatalf("post-change catalog = %+v, want the picked model", options)
+	}
+	if !reflect.DeepEqual(log, []string{string(testSession) + ":5.6-haiku"}) {
+		t.Fatalf("model persistence log = %v, want [%s:5.6-haiku]", log, testSession)
+	}
+
+	// Re-applying the same selection is a no-op.
+	if _, err := svc.SetConfigOption(ctx, testSession, "model", ports.ChatConfigOptionValue{Select: "5.6-haiku"}); err != nil {
+		t.Fatalf("SetConfigOption (same): %v", err)
+	}
+	if !reflect.DeepEqual(log, []string{string(testSession) + ":5.6-haiku"}) {
+		t.Fatalf("model persistence log after no-op = %v, want unchanged", log)
+	}
+
+	// A later pick through the same route supersedes the earlier one.
+	if _, err := svc.SetConfigOption(ctx, testSession, "model", ports.ChatConfigOptionValue{Select: "5.6-sonnet"}); err != nil {
+		t.Fatalf("SetConfigOption (sonnet): %v", err)
+	}
+	if !reflect.DeepEqual(log, []string{string(testSession) + ":5.6-haiku", string(testSession) + ":5.6-sonnet"}) {
+		t.Fatalf("model persistence log = %v, want haiku then sonnet", log)
+	}
+}
+
 // TestSetTurnSettingsPersistsModelBeforeRouting is the regression for the
 // ChatUI ↔ TUI model-persistence bug (#4893). A model the user picks in ChatUI
 // must be recorded on the session BEFORE the next prompt routes, so that when
