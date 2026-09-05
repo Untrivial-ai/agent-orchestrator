@@ -142,6 +142,15 @@ const REPLAY_MAX_BYTES = 1024 * 1024;
 // cover and yield between them; the user still sees one final reveal while
 // fullscreen/window input remains responsive.
 const REPLAY_WRITE_BATCH_BYTES = 256 * 1024;
+// Deadline on outstanding write accounting. Every decrement of
+// pendingReplayWrites lives inside a write callback, so a callback that never
+// arrives — a renderer addon that swallows it, a throw on the way in — leaves
+// the counter positive forever. That is not a cosmetic stall: while it is
+// positive every later PTY frame queues instead of reaching xterm and the
+// cover never lifts, so a healthy session shows a dead pane. Recover silently
+// rather than surfacing an error; the cost of a false trip is one imperfect
+// redraw, and the cost of no deadline is the black pane.
+export const REPLAY_WRITE_DEADLINE_MS = 2_000;
 // Cover-only grace on the first replay byte. A pane that has produced NOTHING
 // has no walk to hide, so holding the cover to the cap just shows a blank
 // overlay — and past the pane's label delay (REPLAY_COVER_LABEL_MS in
@@ -388,6 +397,42 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		let replayBatchTimer: ReturnType<typeof setTimeout> | null = null;
 		let replayBatchDone: (() => void) | null = null;
 		let replayWritesPreserved = false;
+		let replayWriteDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
+		let replayWritesAbandoned = false;
+
+		// Every decrement of pendingReplayWrites sits inside a write callback, and
+		// each of those callbacks returns early when the attachment has been
+		// superseded. Route the counter through these two helpers so no site can
+		// raise it without arming the deadline that bounds it.
+		// The terminal handle is supplied by the owner, so this hook cannot assume
+		// its write is guarded. Absorb a synchronous throw here too: the chunk is
+		// already lost, and letting it unwind would abort the replay mid-flight and
+		// strand the accounting the deadline below exists to protect.
+		const writeToTerminal = (bytes: Uint8Array, done?: () => void) => {
+			try {
+				terminal.write(bytes, done);
+			} catch {
+				done?.();
+			}
+		};
+		const clearReplayWriteDeadline = () => {
+			if (replayWriteDeadlineTimer === null) return;
+			clearTimeout(replayWriteDeadlineTimer);
+			replayWriteDeadlineTimer = null;
+		};
+		const beginReplayWrite = () => {
+			pendingReplayWrites += 1;
+			if (replayWriteDeadlineTimer === null) {
+				replayWriteDeadlineTimer = setTimeout(
+					() => abandonStalledReplayWrites(),
+					REPLAY_WRITE_DEADLINE_MS,
+				);
+			}
+		};
+		const endReplayWrite = () => {
+			pendingReplayWrites = Math.max(0, pendingReplayWrites - 1);
+			if (pendingReplayWrites === 0) clearReplayWriteDeadline();
+		};
 
 		// Reveal only after xterm has parsed the coalesced replay and any late tail
 		// frames have gone quiet. The tail itself streams straight into xterm behind
@@ -440,7 +485,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				const end = Math.min(current.length, replayBatchOffset + REPLAY_WRITE_BATCH_BYTES);
 				const batch = current.subarray(replayBatchOffset, end);
 				replayBatchOffset = end;
-				terminal.write(batch, () => {
+				writeToTerminal(batch, () => {
 					if (replayWritesPreserved) return;
 					if (!isCurrentAttachment(generation, handle, mux)) return;
 					if (replayBatchOffset >= current.length) {
@@ -456,6 +501,45 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			};
 			writeNext();
 		};
+		// The write accounting stalled: a callback never arrived, so the counter
+		// would stay positive for the life of the attachment. Give up on the
+		// outstanding writes and put the pane back into a working state — drain
+		// what is already queued straight into xterm and lift the cover. Recovery
+		// is silent: a false trip on a slow machine costs one imperfect redraw,
+		// while doing nothing costs the whole pane.
+		const abandonStalledReplayWrites = () => {
+			clearReplayWriteDeadline();
+			if (replayWritesPreserved || !isCurrentAttachment(generation, handle, mux)) return;
+			replayWritesAbandoned = true;
+			if (replayBatchTimer !== null) {
+				clearTimeout(replayBatchTimer);
+				replayBatchTimer = null;
+			}
+			// Whatever the stalled batch never got to is still ours to deliver.
+			if (replayBatchBytes && replayBatchOffset < replayBatchBytes.length) {
+				writeToTerminal(replayBatchBytes.subarray(replayBatchOffset));
+			}
+			replayBatchBytes = null;
+			replayBatchOffset = 0;
+			replayBatchDone = null;
+			for (const bytes of postReplayWriteQueue) writeToTerminal(bytes);
+			postReplayWriteQueue.length = 0;
+			postReplayWriteActive = false;
+			pendingReplayWrites = 0;
+			if (r.replayTailQuietTimer) {
+				clearTimeout(r.replayTailQuietTimer);
+				r.replayTailQuietTimer = null;
+			}
+			if (r.replayTailCapTimer) {
+				clearTimeout(r.replayTailCapTimer);
+				r.replayTailCapTimer = null;
+			}
+			r.replayTailPending = false;
+			replayRevealDeadlineReached = false;
+			terminal.showLatestOutput();
+			setReplaySettled(true);
+		};
+
 		const preservePendingReplayWrites = () => {
 			if (replayWritesPreserved) return;
 			replayWritesPreserved = true;
@@ -466,12 +550,12 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			if (replayBatchBytes && replayBatchOffset < replayBatchBytes.length) {
 				// The current batch is already in xterm's queue. Queue the remainder in
 				// one call before dispose so it cannot be overtaken or discarded.
-				terminal.write(replayBatchBytes.subarray(replayBatchOffset));
+				writeToTerminal(replayBatchBytes.subarray(replayBatchOffset));
 			}
 			replayBatchBytes = null;
 			replayBatchOffset = 0;
 			replayBatchDone = null;
-			for (const bytes of postReplayWriteQueue) terminal.write(bytes);
+			for (const bytes of postReplayWriteQueue) writeToTerminal(bytes);
 			postReplayWriteQueue.length = 0;
 			postReplayWriteActive = false;
 			pendingReplayWrites = 0;
@@ -497,12 +581,12 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				return;
 			}
 			postReplayWriteActive = true;
-			pendingReplayWrites += 1;
-			terminal.write(bytes, () => {
-				if (replayWritesPreserved) return;
+			beginReplayWrite();
+			writeToTerminal(bytes, () => {
+				if (replayWritesPreserved || replayWritesAbandoned) return;
 				if (!isCurrentAttachment(generation, handle, mux)) return;
 				postReplayWriteActive = false;
-				pendingReplayWrites = Math.max(0, pendingReplayWrites - 1);
+				endReplayWrite();
 				drainPostReplayWrites();
 			});
 		};
@@ -550,14 +634,15 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				offset += chunk.length;
 			}
 			if (preserveBeforeTeardown) {
-				terminal.write(replay);
+				writeToTerminal(replay);
 				preservePendingReplayWrites();
 				return;
 			}
-			pendingReplayWrites += 1;
+			beginReplayWrite();
 			writeReplayBatches(replay, () => {
+				if (replayWritesAbandoned) return;
 				if (!isCurrentAttachment(generation, handle, mux)) return;
-				pendingReplayWrites = Math.max(0, pendingReplayWrites - 1);
+				endReplayWrite();
 				drainPostReplayWrites();
 			});
 		};
@@ -594,7 +679,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 					drainPostReplayWrites();
 					return;
 				}
-				terminal.write(bytes);
+				writeToTerminal(bytes);
 			}),
 			mux.onOpened(handle, () => {
 				if (!isCurrentAttachment(generation, handle, mux)) return;

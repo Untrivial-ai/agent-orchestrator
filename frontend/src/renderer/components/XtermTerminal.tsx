@@ -129,6 +129,11 @@ const COPY_TOAST_MS = 1400;
 const COLOR_SCHEME_UPDATE_MODE = 2031;
 const COLOR_SCHEME_QUERY = 996;
 
+// Upper bound on hiding a pane while its activation settles. Generous next to
+// the fit budget (FIT_CAP_MS) plus two paint frames, so it only fires when a
+// callback is genuinely never coming.
+const ACTIVATION_WATCHDOG_MS = 2000;
+
 function preparePastedText(text: string): string {
 	return text.replace(/\r?\n/g, "\r");
 }
@@ -1111,15 +1116,24 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		shell.addEventListener("dragover", dragOverInput);
 		shell.addEventListener("drop", dropInput);
 
+		// Guarded: xterm can throw out of scrollToBottom/viewport access when its
+		// renderer was torn down underneath us (a force-lost WebGL context, a
+		// disposed viewport). A throw here must never strand the activation
+		// promise, because a cache entry stuck in "preparing" stays
+		// visibility:hidden — a permanently black pane over a live session.
 		const showLatestOutput = () => {
-			term.scrollToBottom();
-			// Hidden output can leave the offscreen DOM scrollbar stale even
-			// after xterm's logical viewport moves. Synchronize it before either
-			// the first-load cover or retained-cache container is revealed.
-			const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
-			if (!viewport) return;
-			viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-			scheduleScrollbarUpdate();
+			try {
+				term.scrollToBottom();
+				// Hidden output can leave the offscreen DOM scrollbar stale even
+				// after xterm's logical viewport moves. Synchronize it before either
+				// the first-load cover or retained-cache container is revealed.
+				const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
+				if (!viewport) return;
+				viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+				scheduleScrollbarUpdate();
+			} catch (error) {
+				console.warn("Unable to show latest terminal output", error);
+			}
 		};
 
 		let cancelActivationPreparation: (() => void) | null = null;
@@ -1128,16 +1142,23 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			return new Promise((resolve) => {
 				let firstFrame: number | null = null;
 				let paintFrame: number | null = null;
+				let watchdog: ReturnType<typeof setTimeout> | null = null;
 				let finished = false;
 				const finish = () => {
 					if (finished) return;
 					finished = true;
 					if (firstFrame !== null) cancelAnimationFrame(firstFrame);
 					if (paintFrame !== null) cancelAnimationFrame(paintFrame);
+					if (watchdog !== null) clearTimeout(watchdog);
 					if (cancelActivationPreparation === finish) cancelActivationPreparation = null;
 					resolve();
 				};
 				cancelActivationPreparation = finish;
+				// A settle callback or animation frame that never runs (background
+				// throttling, a renderer that stopped painting) would otherwise keep
+				// the entry hidden forever. Reveal on a deadline instead: a pane that
+				// is one frame short of settled beats a pane that is never shown.
+				watchdog = setTimeout(finish, ACTIVATION_WATCHDOG_MS);
 
 				const finishAcrossPaintFrames = () => {
 					if (finished) return;
@@ -1156,7 +1177,12 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				// The container is in its real slot but remains hidden. Wait for its
 				// dimensions to settle (including fullscreen/sidebar transitions), fit
 				// once, and avoid the old unconditional full-grid refresh.
-				scheduleStableFit(true, finishAcrossPaintFrames);
+				try {
+					scheduleStableFit(true, finishAcrossPaintFrames);
+				} catch (error) {
+					console.warn("Unable to prepare terminal for activation", error);
+					finish();
+				}
 			});
 		};
 
@@ -1172,6 +1198,12 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// Forward xterm's write callback: it fires once THIS chunk has been
 			// parsed into the buffer, which is what lets the attachment reveal the
 			// pane at the replay's settled scroll position (issue #3160).
+			//
+			// The caller decrements its outstanding-write count inside `done`, so a
+			// throw on the way in must not swallow it: losing the callback strands
+			// that count above zero, which queues every later frame away from xterm
+			// and leaves the reveal cover up for good. Call `done` exactly once —
+			// xterm may also invoke it for a chunk it accepted before throwing.
 			write: (data, done) => {
 				let hasEsc = false;
 				for (let i = 0; i < data.length; i++) {
@@ -1190,10 +1222,27 @@ export function XtermTerminal(props: XtermTerminalProps) {
 						notifyCursorScheme(callbacksRef.current.theme, true, true);
 					}
 				}
-				term.write(data, () => {
+				if (!done) {
+					try {
+						term.write(data);
+					} catch {
+						// The chunk is lost either way; a dropped repaint beats a
+						// dead pane.
+					}
+					return;
+				}
+				let settled = false;
+				const settle = () => {
+					if (settled) return;
+					settled = true;
 					scheduleScrollbarUpdate();
-					done?.();
-				});
+					done();
+				};
+				try {
+					term.write(data, settle);
+				} catch {
+					settle();
+				}
 			},
 			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
 			showLatestOutput,
