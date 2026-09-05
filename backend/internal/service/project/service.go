@@ -38,6 +38,8 @@ type Manager interface {
 	// Clone checks out a remote git repository and registers the resulting
 	// local repository as a project.
 	Clone(ctx context.Context, in CloneInput) (Project, error)
+	PrepareClone(ctx context.Context, in CloneInput) (ClonePreparationResult, error)
+	CleanupPreparedClone(ctx context.Context, in ClonePreparationCleanupInput) error
 
 	// InitializeRepository prepares a selected folder for project registration.
 	InitializeRepository(ctx context.Context, in InitializeRepositoryInput) (InitializeRepositoryResult, error)
@@ -301,6 +303,7 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register project")
 	}
+	removeClonePreparationMarker(path)
 	m.emitProjectAdded(ctx, row, projectCountBefore == 0)
 	return m.projectFromRow(ctx, row), nil
 }

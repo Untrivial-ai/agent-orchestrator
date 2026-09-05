@@ -315,7 +315,7 @@
 @utility dialog-overlay {
 	position: fixed;
 	inset: 0;
-	z-index: var(--z-overlay);
+	z-index: calc(var(--z-overlay) - 1);
 	background-color: var(--color-scrim);
 	-webkit-backdrop-filter: blur(var(--blur-overlay));
 	backdrop-filter: blur(var(--blur-overlay));

@@ -11,7 +11,6 @@ import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { useShell } from "../lib/shell-context";
 import { useUiStore } from "../stores/ui-store";
 import type { WorkspaceSummary } from "../types/workspace";
-import { BoardWelcome } from "./BoardEmptyStates";
 import { CreateProjectFlow } from "./CreateProjectFlow";
 import { DaemonStartupLoader } from "./DaemonStartupLoader";
 import { TopbarButton } from "./TopbarButton";
@@ -148,8 +147,6 @@ export function HomePage() {
 			</div>
 		);
 	}
-
-	if (projects.length === 0) return <BoardWelcome />;
 
 	return (
 		<div className="flex min-h-full items-center justify-center px-6 py-16">

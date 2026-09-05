@@ -213,6 +213,65 @@ func TestManager_CloneRegistersRepositoryAndPreservesOrigin(t *testing.T) {
 	}
 }
 
+func TestManager_PrepareClonePreservesEmptyRepositoryForImportSetup(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	emptySource := filepath.Join(t.TempDir(), "empty-repository")
+	if out, err := exec.Command("git", "init", "-b", "main", emptySource).CombinedOutput(); err != nil {
+		t.Fatalf("git init empty source: %v (%s)", err, out)
+	}
+	destinationParent := t.TempDir()
+	emptyURL := (&url.URL{Scheme: "file", Path: emptySource}).String()
+
+	prepared, err := m.PrepareClone(ctx, project.CloneInput{RemoteURL: emptyURL, DestinationParent: destinationParent})
+	if err != nil {
+		t.Fatalf("PrepareClone: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(prepared.Path) })
+	if prepared.RemoteURL != emptyURL {
+		t.Fatalf("PrepareClone remote URL = %q, want %q", prepared.RemoteURL, emptyURL)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.Path, ".git")); err != nil {
+		t.Fatalf("prepared checkout missing .git: %v", err)
+	}
+	if listed, err := m.List(ctx); err != nil || len(listed) != 0 {
+		t.Fatalf("List after PrepareClone = %#v, %v; preparation must not register", listed, err)
+	}
+	if err := m.CleanupPreparedClone(ctx, project.ClonePreparationCleanupInput{Path: prepared.Path}); err != nil {
+		t.Fatalf("CleanupPreparedClone: %v", err)
+	}
+	if _, err := os.Stat(prepared.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prepared checkout still exists after cleanup: %v", err)
+	}
+}
+
+func TestManager_PreparedCloneRemainsCleanupEligibleWhenRegistrationFails(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	source := gitRepo(t)
+	destinationParent := t.TempDir()
+
+	prepared, err := m.PrepareClone(ctx, project.CloneInput{
+		RemoteURL:         (&url.URL{Scheme: "file", Path: source}).String(),
+		DestinationParent: destinationParent,
+	})
+	if err != nil {
+		t.Fatalf("PrepareClone: %v", err)
+	}
+	_, err = m.Add(ctx, project.AddInput{
+		Path:   prepared.Path,
+		Config: &domain.ProjectConfig{AgentConfig: domain.AgentConfig{Permissions: "invalid"}},
+	})
+	wantCode(t, err, "INVALID_PROJECT_CONFIG")
+
+	if err := m.CleanupPreparedClone(ctx, project.ClonePreparationCleanupInput{Path: prepared.Path}); err != nil {
+		t.Fatalf("CleanupPreparedClone: %v", err)
+	}
+	if _, err := os.Stat(prepared.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prepared checkout still exists after failed registration cleanup: %v", err)
+	}
+}
+
 func TestManager_CloneRejectsUnsafeURLsAndExistingDestination(t *testing.T) {
 	ctx := context.Background()
 	m := newManager(t)

@@ -29,7 +29,8 @@ import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useTerminateSession } from "../hooks/useTerminateSession";
 import { cloudSessionsQueryKey, useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { NotificationCenter } from "./NotificationCenter";
-import { BoardWelcome, ProjectBoardEmpty } from "./BoardEmptyStates";
+import { ProjectBoardEmpty } from "./BoardEmptyStates";
+import { HomePage } from "./HomePage";
 import { OrchestratorIcon } from "./icons";
 import { OrchestratorActivityIndicator } from "./OrchestratorActivityIndicator";
 import { TopbarActionError, TopbarButton, topbarProjectLabelClass } from "./TopbarButton";
@@ -387,7 +388,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 				{workspaceStartupState === "error" || workspaceQuery.isError ? (
 					<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
 				) : showWelcome ? (
-					<BoardWelcome />
+					<HomePage />
 				) : showProjectEmpty ? (
 					<ProjectBoardEmpty
 						hasOrchestrator={orchestrator !== undefined}

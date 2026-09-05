@@ -165,7 +165,7 @@ describe("global board first launch", () => {
 			expect(getMock.mock.calls.some(([url]) => url === "/api/v1/projects")).toBe(true);
 			expect(getMock.mock.calls.some(([url]) => url === "/api/v1/sessions")).toBe(true);
 		});
-		expect(await screen.findByText("Add a project")).toBeInTheDocument();
+		expect(await screen.findByText("Jump back right in")).toBeInTheDocument();
 		expect(getMock.mock.calls.some(([url]) => url === "/api/v1/system/requirements")).toBe(true);
 	});
 
@@ -191,18 +191,13 @@ describe("global board first launch", () => {
 		expect(screen.getByTestId("daemon-startup-loader")).toBeInTheDocument();
 	});
 
-	it("shows the import chooser instead of empty columns when no projects exist", async () => {
+	it("shows the home page instead of empty columns when no projects exist", async () => {
 		respondWith([], []);
 		renderBoard(<SessionsBoard />);
 
-		expect(await screen.findByText("Add a project")).toBeInTheDocument();
-		expect(screen.getByText("Choose how you want to add code to Agent Orchestrator")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Clone from Git" })).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Import a workspace folder" })).toBeInTheDocument();
+		expect(await screen.findByText("Jump back right in")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Import an existing project" })).toBeInTheDocument();
 		expect(columnCount()).toBe(0);
-		// The welcome carries its own orientation — no dangling "Board" header.
-		expect(screen.queryByText("Board")).not.toBeInTheDocument();
 	});
 
 	it("opens the native folder picker from the Project card", async () => {

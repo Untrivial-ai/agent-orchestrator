@@ -295,6 +295,13 @@ func TestPrepareGitRunsApprovedMissingActionsInOrder(t *testing.T) {
 	if out, err := exec.Command("git", "-C", root, "remote", "get-url", "origin").CombinedOutput(); err != nil || string(out) != "https://example.invalid/repo.git\n" {
 		t.Fatalf("origin = %q, %v", out, err)
 	}
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read default README: %v", err)
+	}
+	if want := "# " + filepath.Base(root) + "\n"; string(readme) != want {
+		t.Fatalf("README.md = %q, want %q", readme, want)
+	}
 }
 
 func TestPrepareGitDoesNotOverwriteExistingOrigin(t *testing.T) {
@@ -414,6 +421,46 @@ func TestPrepareGitWorkspaceRunsPerRepositoryEvents(t *testing.T) {
 	}
 	if result.Events[3].RepoPath != plain || result.Events[3].Action != GitPreparationActionInit {
 		t.Fatalf("plain first event = %#v, want git_init", result.Events[3])
+	}
+}
+
+func TestPrepareGitWorkspaceCanRepairOneChildAtATime(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ready := gitRepoWithCommitWithOrigin(t, filepath.Join(root, "ready"), "https://example.invalid/ready.git")
+	noRemote := gitRepoWithCommitWithOrigin(t, filepath.Join(root, "no-remote"), "")
+	plain := filepath.Join(root, "plain")
+	if err := os.Mkdir(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(Deps{Store: newFakeStore()})
+
+	result, err := svc.PrepareGit(ctx, GitPreparationInput{
+		ImportKind: ImportKindWorkspace,
+		Path:       root,
+		Repositories: []GitRepositoryPreparationInput{{
+			RepoPath:        noRemote,
+			ApprovedActions: []string{GitPreparationActionSetRemote},
+			RemoteURL:       "https://example.invalid/no-remote.git",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("PrepareGit: %v", err)
+	}
+	if len(result.Events) != 3 || result.Events[2].State != GitPreparationEventSuccess {
+		t.Fatalf("events = %#v, want one successful set_remote action", result.Events)
+	}
+	byPath := childStatusByPath(result.Validation.ChildRepos)
+	if !byPath[ready].HasOrigin || !byPath[noRemote].HasOrigin {
+		t.Fatalf("ready statuses = %#v", byPath)
+	}
+	wantActions(t, byPath[plain].RequiredActions, []string{
+		GitPreparationActionInit,
+		GitPreparationActionCommit,
+		GitPreparationActionSetRemote,
+	})
+	if result.Validation.NextStep != ImportNextStepPrepareGit {
+		t.Fatalf("next step = %q, want remaining optional preparation", result.Validation.NextStep)
 	}
 }
 

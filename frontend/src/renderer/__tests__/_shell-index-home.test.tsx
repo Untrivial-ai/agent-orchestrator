@@ -34,10 +34,6 @@ vi.mock("../components/CreateProjectFlow", () => ({
 	CreateProjectFlow: () => null,
 }));
 
-vi.mock("../components/BoardEmptyStates", () => ({
-	BoardWelcome: () => <div data-testid="board-welcome" />,
-}));
-
 import { HomePage } from "../components/HomePage";
 
 beforeEach(() => {
@@ -46,11 +42,12 @@ beforeEach(() => {
 });
 
 describe("shell index route", () => {
-	it("restores first-run onboarding when no projects exist", async () => {
+	it("shows the home page when no projects exist", async () => {
 		render(<HomePage />);
 
-		expect(screen.getByTestId("board-welcome")).toBeInTheDocument();
-		expect(screen.queryByText("Jump back right in")).not.toBeInTheDocument();
+		expect(screen.getByText("Jump back right in")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Clone from Git" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Import an existing project" })).toBeInTheDocument();
 		expect(routeMocks.navigate).not.toHaveBeenCalled();
 	});
 

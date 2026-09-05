@@ -1,34 +1,9 @@
 import { Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useShell } from "../lib/shell-context";
-import { CreateProjectFlow } from "./CreateProjectFlow";
 import { TopbarButton } from "./TopbarButton";
-import { WelcomePanel } from "./WelcomePanel";
 import { OrchestratorIcon } from "./icons";
 
-// Board empty states: first-launch welcome (`BoardWelcome`) and project board
-// with no worker sessions yet (`ProjectBoardEmpty`).
-export function BoardWelcome() {
-	const { cloneProject, createProject, initializeProjectRepository } = useShell();
-	return (
-		<WelcomePanel>
-			<div
-				className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-8"
-				data-testid="board-welcome"
-			>
-				<CreateProjectFlow
-					embedded
-					mode="choose"
-					onCloneProject={cloneProject}
-					onCreateProject={createProject}
-					onInitializeProject={initializeProjectRepository}
-				/>
-			</div>
-		</WelcomePanel>
-	);
-}
-
-// Project board with a registered project but no worker sessions yet: a quiet
+// Project board with a registered project but no worker sessions: a quiet
 // invitation instead of four empty columns. Actions mirror the board header
 // (Orchestrator stays the primary, like the topbar) so the vocabulary holds.
 export function ProjectBoardEmpty({

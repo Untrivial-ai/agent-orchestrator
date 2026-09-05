@@ -203,11 +203,23 @@ func (m *Manager) Validate(ctx context.Context, in ImportValidationInput) (Impor
 	root := inspectImportRepo(ctx, path)
 	result.Root = root
 	if importKind == ImportKindWorkspace {
+		if root.IsRepo {
+			result.Warning = "This folder is already a Git project. AO will import it as a project instead of a workspace."
+			result.NextStep = ImportNextStepChooseImportKind
+			return result, nil
+		}
 		children, scanErr := directChildImportStatuses(ctx, path)
 		if scanErr != nil {
 			return invalidImportResult(importKind, path, "CHILD_REPO_SCAN_FAILED"), nil //nolint:nilerr // validation failures are reported in-band so the UI can show blocking errors
 		}
 		result.ChildRepos = children
+		if len(children) == 0 {
+			result.Root.BlockingErrors = append(result.Root.BlockingErrors, "WORKSPACE_CHILD_REPO_REQUIRED")
+			result.BlockingErrors = append(result.BlockingErrors, "WORKSPACE_CHILD_REPO_REQUIRED")
+			result.IsValid = false
+			result.NextStep = ImportNextStepError
+			return result, nil
+		}
 		for _, child := range children {
 			if len(child.BlockingErrors) > 0 {
 				result.BlockingErrors = append(result.BlockingErrors, child.BlockingErrors...)
@@ -360,6 +372,9 @@ func preparationTargets(validation ImportValidationResult, in GitPreparationInpu
 		repo.RepoPath = path
 		byPath[path] = repo
 	}
+	if len(byPath) == 0 {
+		return nil, apierr.Invalid("IMPORT_REPOSITORY_APPROVAL_REQUIRED", "Choose at least one repository to prepare.", nil)
+	}
 	var targets []gitPreparationTarget
 	for _, status := range validation.ChildRepos {
 		if len(status.RequiredActions) == 0 {
@@ -367,9 +382,12 @@ func preparationTargets(validation ImportValidationResult, in GitPreparationInpu
 		}
 		input, ok := byPath[status.RepoPath]
 		if !ok {
-			return nil, apierr.Invalid("IMPORT_REPOSITORY_APPROVAL_REQUIRED", "Every repository with missing Git preparation requires explicit approval.", map[string]any{"repoPath": status.RepoPath})
+			continue
 		}
 		targets = append(targets, gitPreparationTarget{Status: status, Input: input})
+	}
+	if len(targets) != len(byPath) {
+		return nil, apierr.Invalid("INVALID_REPOSITORY_PATH", "Each repository must be a direct child that still needs Git setup.", nil)
 	}
 	return targets, nil
 }
@@ -422,6 +440,14 @@ func runGitPreparationAction(ctx context.Context, path, action string, in GitRep
 			return fmt.Errorf("record default branch: %w", err)
 		}
 	case GitPreparationActionCommit:
+		if empty, err := importWorktreeIsEmpty(path); err != nil {
+			return fmt.Errorf("inspect files for initial commit: %w", err)
+		} else if empty {
+			name := filepath.Base(path)
+			if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+				return fmt.Errorf("create default README: %w", err)
+			}
+		}
 		if _, err := importGitOutput(ctx, path, "add", "-A"); err != nil {
 			return fmt.Errorf("stage files: %w", err)
 		}
@@ -443,6 +469,19 @@ func runGitPreparationAction(ctx context.Context, path, action string, in GitRep
 		return fmt.Errorf("unsupported action %q", action)
 	}
 	return nil
+}
+
+func importWorktreeIsEmpty(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Name() != ".git" {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func normalizeImportPath(raw string) (string, error) {
