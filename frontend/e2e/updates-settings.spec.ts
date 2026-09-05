@@ -45,3 +45,47 @@ test("downloaded update keeps the full version readable and actions aligned", as
 	const versionBox = await version.boundingBox();
 	expect(restartBox?.x ?? 0).toBeGreaterThan((versionBox?.x ?? 0) + (versionBox?.width ?? 0));
 });
+
+test("replacement progress can restart below A completion without losing either identity", async ({ page }) => {
+	await installFakeBridge(page, {
+		updateStatus: { state: "downloaded", version: "1.0.0", stagedAt: 100 },
+	});
+	await page.goto("/#/settings");
+	await page.getByRole("button", { name: "Updates" }).click();
+	await expect(page.getByRole("button", { name: "Restart & install" })).toBeVisible();
+
+	await page.evaluate(() => {
+		(window as typeof window & { __aoEmitUpdateStatus: (status: unknown) => void }).__aoEmitUpdateStatus({
+			state: "replacing",
+			version: "2.0.0",
+			percent: 7,
+			stagedCandidate: { version: "1.0.0", channel: "latest", operationId: "a" },
+			replacementCandidate: { version: "2.0.0", channel: "nightly", operationId: "b" },
+			replacementPhase: "differential",
+			installDisabledReason: "Replacement 2.0.0 is incomplete",
+		});
+	});
+
+	await expect(page.locator("#update-status-line")).toContainText("Downloading 2.0.0 to replace staged update 1.0.0");
+	await expect(page.locator("#update-status-line")).toContainText("Quitting now may install 1.0.0");
+	await expect(page.getByRole("progressbar", { name: "Download progress for 2.0.0" })).toHaveAttribute("aria-valuenow", "7");
+	await expect(page.getByRole("button", { name: "Restart & install" })).toBeHidden();
+});
+
+test("replacement discovery exposes Download while preserving the staged warning", async ({ page }) => {
+	await installFakeBridge(page, {
+		updateSettings: { enabled: false, channel: "latest", nightlyAck: false, feature: null },
+		updateStatus: {
+			state: "replacing",
+			version: "2.0.0",
+			stagedCandidate: { version: "1.0.0", channel: "latest", operationId: "a" },
+			replacementCandidate: { version: "2.0.0", channel: "latest", operationId: "b" },
+			replacementPhase: "checking",
+		},
+	});
+	await page.goto("/#/settings");
+	await page.getByRole("button", { name: "Updates", exact: true }).click();
+	await expect(page.getByRole("button", { name: /Update to.*2.0.0/i }).last()).toBeEnabled();
+	await expect(page.locator("#update-status-line")).toContainText("Quitting now may install 1.0.0");
+	await expect(page.getByRole("button", { name: "Restart & install" })).toBeHidden();
+});

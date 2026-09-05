@@ -2114,6 +2114,51 @@ describe("Sidebar", () => {
 		expect(screen.queryByLabelText(/Hide update/)).not.toBeInTheDocument();
 	});
 
+	it("keeps both staged and replacement identities visible while restart is disabled", async () => {
+		updateStatusMock.mockResolvedValue({
+			state: "replacing",
+			version: "2.0.0",
+			percent: 17,
+			stagedCandidate: { version: "1.0.0", channel: "latest", operationId: "a" },
+			replacementCandidate: { version: "2.0.0", channel: "nightly", operationId: "b" },
+			replacementPhase: "full-fallback",
+			installDisabledReason: "Replacement is incomplete",
+		});
+		renderSidebar();
+
+		const row = await screen.findByTestId("sidebar-update-replacing");
+		expect(within(row).getByText("Replacing 1.0.0 with 2.0.0")).toBeVisible();
+		expect(within(row).getByText("Quitting may still install 1.0.0")).toBeVisible();
+		expect(row).toBeDisabled();
+		expect(screen.queryByLabelText(/Restart to install update/)).not.toBeInTheDocument();
+	});
+
+	it("offers an explicit download for a replacement still awaiting consent", async () => {
+		updateStatusMock.mockResolvedValue({ state: "replacing", version: "2.0.0", stagedCandidate: { version: "1.0.0", channel: "latest", operationId: "a" }, replacementCandidate: { version: "2.0.0", channel: "latest", operationId: "b" }, replacementPhase: "checking" });
+		renderSidebar();
+		const [action] = await screen.findAllByRole("button", { name: /Update to.*2.0.0/i });
+		expect(action).toBeEnabled();
+		await userEvent.click(action);
+		expect(downloadUpdateMock).toHaveBeenCalledOnce();
+	});
+
+	it("offers retry B after replacement failure while retaining A warning", async () => {
+		updateStatusMock.mockResolvedValue({
+			state: "replacement-failed",
+			version: "2.0.0",
+			message: "network failed",
+			stagedCandidate: { version: "1.0.0", channel: "latest", operationId: "a" },
+			replacementCandidate: { version: "2.0.0", channel: "nightly", operationId: "b" },
+			replacementPhase: "differential",
+		});
+		renderSidebar();
+
+		const buttons = await screen.findAllByLabelText("Retry update 2.0.0");
+		expect(screen.getByText("Quitting may still install 1.0.0")).toBeVisible();
+		await userEvent.click(buttons[0]);
+		expect(downloadUpdateMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("offers a retry when automatic update checks keep failing", async () => {
 		// The state stays truthful (the suppressed automatic failure never
 		// replaced it); the flag is what makes the dead end visible.

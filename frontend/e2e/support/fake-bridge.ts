@@ -53,6 +53,10 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 	await page.addInitScript(
 		({ version, daemonState, daemonPort, updateStatus, updateSettings }) => {
 			const unsubscribe = () => () => undefined;
+			const updateStatusListeners = new Set<(status: UpdateStatus) => void>();
+			(window as typeof window & { __aoEmitUpdateStatus?: (status: UpdateStatus) => void }).__aoEmitUpdateStatus = (status) => {
+				for (const listener of updateStatusListeners) listener(status);
+			};
 			let currentUpdateSettings = updateSettings;
 			const status: DaemonStatus =
 				daemonState === "ready" ? { state: "ready", port: daemonPort } : { state: daemonState };
@@ -247,7 +251,10 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					returnHome: async () => undefined,
 					download: async () => undefined,
 					install: async () => undefined,
-					onStatus: unsubscribe,
+					onStatus: (listener: (status: UpdateStatus) => void) => {
+						updateStatusListeners.add(listener);
+						return () => updateStatusListeners.delete(listener);
+					},
 					onTelemetry: unsubscribe,
 				},
 				// UpdatesSection calls featureBuilds.getActive() immediately on mount; an
