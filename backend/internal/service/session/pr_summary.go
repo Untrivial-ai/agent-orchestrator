@@ -104,7 +104,7 @@ func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, review
 		Deletions:        pr.Deletions,
 		ChangedFiles:     pr.ChangedFiles,
 		CI:               summarizeCI(pr, checks),
-		Review:           summarizeReview(pr, comments, reviews),
+		Review:           summarizeReview(pr, comments, reviews, threads),
 		Mergeability:     summarizeMergeability(pr, threads),
 		StateChangedAt:   summarizePRStateChangedAt(pr),
 		CreatedAt:        pr.CreatedAtProvider,
@@ -154,8 +154,8 @@ func summarizeCI(pr domain.PullRequest, checks []domain.PullRequestCheck) PRCISu
 	return out
 }
 
-func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment, reviews []domain.PullRequestReview) PRReviewSummary {
-	out := PRReviewSummary{Decision: reviewOrNone(pr.Review)}
+func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread) PRReviewSummary {
+	out := PRReviewSummary{Decision: reviewOrNone(pr.Review), UnresolvedThreadCount: unresolvedHumanThreadCount(threads)}
 	if pr.Merged || pr.Closed {
 		return out
 	}
@@ -271,6 +271,16 @@ func latestReviewSummaries(reviews []domain.PullRequestReview) map[string]domain
 		}
 	}
 	return latestByReviewer
+}
+
+func unresolvedHumanThreadCount(threads []domain.PullRequestReviewThread) int {
+	count := 0
+	for _, thread := range threads {
+		if !thread.Resolved && !thread.IsBot {
+			count++
+		}
+	}
+	return count
 }
 
 // latestDecisiveReviews returns each reviewer's most recent decisive review —

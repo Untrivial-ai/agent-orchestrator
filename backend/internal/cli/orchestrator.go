@@ -49,7 +49,7 @@ func (c *commandContext) listOrchestrators(ctx context.Context, cmd *cobra.Comma
 	}
 	orchestrators := filterAndSortOrchestrators(res.Sessions)
 	if opts.json {
-		return writeJSON(cmd.OutOrStdout(), orchestratorListOutput{Data: sessionListEntries(orchestrators)})
+		return writeJSON(cmd.OutOrStdout(), orchestratorListOutput{Data: sessionListEntries(orchestrators, nil)})
 	}
 	return writeOrchestratorList(cmd, orchestrators)
 }

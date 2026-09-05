@@ -16,7 +16,8 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 	in := sessionsvc.PRSummary{
 		URL: "https://github.com/o/r/pull/7",
 		Review: sessionsvc.PRReviewSummary{
-			Decision: domain.ReviewChangesRequest,
+			Decision:              domain.ReviewChangesRequest,
+			UnresolvedThreadCount: 2,
 			UnresolvedBy: []sessionsvc.PRUnresolvedReviewer{{
 				ReviewerID: "bob",
 				Count:      1,
@@ -68,6 +69,9 @@ func TestNewSessionPRSummaryMapsProviderReviewEntries(t *testing.T) {
 	}
 	if got.Review.UnresolvedBy[0].Links[0].Body != "please fix this" {
 		t.Fatalf("unresolved comment body = %q, want body text", got.Review.UnresolvedBy[0].Links[0].Body)
+	}
+	if got.Review.UnresolvedThreadCount != 2 {
+		t.Fatalf("unresolvedThreadCount = %d, want 2", got.Review.UnresolvedThreadCount)
 	}
 }
 

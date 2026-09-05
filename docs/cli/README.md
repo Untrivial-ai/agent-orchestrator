@@ -46,7 +46,7 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | `ao agent ls`                       | `POST /api/v1/agents/readiness/ensure` (`display`) |
 | `ao agent ls --refresh`             | `POST /api/v1/agents/refresh` (forced checks) |
 | `ao spawn`                          | Targeted launch ensure, then `POST /api/v1/sessions` |
-| `ao session ls`                     | `GET /api/v1/sessions`                         |
+| `ao session ls`                     | `GET /api/v1/sessions` plus per-session PR summaries; shows branch, PR, CI, review, unresolved threads, activity, and age. |
 | `ao session get <id>`               | `GET /api/v1/sessions/{id}`                    |
 | `ao session kill <id>`              | `POST /api/v1/sessions/{id}/kill`              |
 | `ao session restore <id>`           | `POST /api/v1/sessions/{id}/restore`           |
