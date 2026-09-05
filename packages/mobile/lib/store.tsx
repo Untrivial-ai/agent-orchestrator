@@ -30,6 +30,7 @@ import { activeHost, loadHosts } from "./hosts";
 import { shouldReRace } from "./reRace";
 import { shouldRaceForUpgrade, UPGRADE_RACE_CHECK_MS } from "./upgradeRace";
 import { sameServerConfig } from "./sameConfig";
+import { keepUnchanged } from "./keepUnchanged";
 import { shouldShowLoading } from "./configLoading";
 import { shouldKeepPolling } from "./connectionError";
 import { primeInstallId } from "./installId";
@@ -221,7 +222,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// Read alongside the config so a failure can be explained: a stored
 			// tunnel that no longer answers is a rotated hostname, not a machine
 			// that is merely out of range.
-			setActiveEndpoints((await activeHost())?.endpoints ?? []);
+			const endpoints = (await activeHost())?.endpoints ?? [];
+			setActiveEndpoints((current) => keepUnchanged(current, endpoints));
 		} finally {
 			setConfigResolved(true);
 		}
@@ -291,11 +293,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// getSessions returns projects, so don't fetch /projects again alongside
 			// it — that duplicate doubled the auth attempts spent per failing tick.
 			const sess = await getSessions(c, "all");
-			setProjects(sess.projects);
-			setSessions(sess.sessions);
-			setOrchestrators(sess.orchestrators);
+			// Most ticks bring back the fleet exactly as it was; keep the previous
+			// value so React bails out of the render — see keepUnchanged.
+			setProjects((prev) => keepUnchanged(prev, sess.projects));
+			setSessions((prev) => keepUnchanged(prev, sess.sessions));
+			setOrchestrators((prev) => keepUnchanged(prev, sess.orchestrators));
 			setOrchestratorId(sess.orchestratorId);
-			setStats(sess.stats);
+			setStats((prev) => keepUnchanged(prev, sess.stats));
 			setError(null);
 			setErrorStatus(null);
 			setConnection("open");
@@ -515,6 +519,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		}),
 		[
 			config,
+			activeEndpoints,
 			projects,
 			sessions,
 			orchestrators,

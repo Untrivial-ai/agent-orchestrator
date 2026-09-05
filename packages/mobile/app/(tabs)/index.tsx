@@ -13,6 +13,7 @@ import { SessionCard } from "../../lib/SessionCard";
 import { useApp, useVisibleSessions } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
+import { MINUTE_MS, useNow } from "../../lib/useNow";
 import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
 import { Button, EmptyState, HeaderIconButton, ScreenHeader, SectionHeader } from "../../lib/ui";
 
@@ -35,6 +36,9 @@ export default function FleetScreen() {
 	const [archiveOpen, setArchiveOpen] = useState(false);
 
 	const listRef = useTabScrollToTop<SectionList<DashboardSession, ListSection>>();
+
+	// Relative timestamps go stale on their own; the board owns the clock.
+	const now = useNow(MINUTE_MS);
 
 	const { sections, archived } = useMemo(() => groupSessions(t, sessions), [t, sessions]);
 
@@ -166,7 +170,7 @@ export default function FleetScreen() {
 							<SectionHeader label={section.label} color={section.color} count={section.data.length} />
 						)
 					}
-					renderItem={({ item }) => <SessionCard session={item} showProject={activeProjectId === "all"} />}
+					renderItem={({ item }) => <SessionCard session={item} showProject={activeProjectId === "all"} now={now} />}
 					ListEmptyComponent={
 						error ? (
 							<EmptyState
