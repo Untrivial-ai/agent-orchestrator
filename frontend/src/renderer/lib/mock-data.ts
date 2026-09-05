@@ -5,6 +5,9 @@ import type { ShellTerminal } from "../hooks/useShellTerminals";
 const now = new Date().toISOString();
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60 * 1000).toISOString();
 const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+const previewAuthorAvatarUrl = `data:image/svg+xml,${encodeURIComponent(
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" rx="20" fill="#24292f"/><circle cx="20" cy="16" r="7" fill="#fff"/><path d="M8 36c1-8 6-12 12-12s11 4 12 12" fill="#fff"/></svg>',
+)}`;
 
 const demoPr = (
 	number: number,
@@ -244,7 +247,8 @@ const prSummary = (sessionId: string, number: number, overrides: Partial<Session
 		state: facts?.state ?? "open",
 		provider: "github",
 		repo: "Untrivial-ai/agent-orchestrator",
-		author: "preview-agent",
+		author: "octocat",
+		authorAvatarUrl: previewAuthorAvatarUrl,
 		sourceBranch: session?.branch ?? "",
 		targetBranch: "main",
 		headSha: `preview-${number}`,
@@ -312,6 +316,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 	// tab's Pull request pane has something to show in the browser preview.
 	"demo-needs-input": [
 		prSummary("demo-needs-input", 318, {
+			authorAvatarUrl: undefined,
 			changedFiles: 2,
 			additions: 68,
 			deletions: 12,

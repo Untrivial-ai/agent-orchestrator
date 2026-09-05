@@ -28,6 +28,7 @@ import {
 	type ProductUITranslator,
 } from "./session-presentation";
 import type { KanbanColumn, SessionActivity, SessionStatus } from "./session-models";
+import { UserAvatar } from "./UserAvatar";
 import { cn } from "./utils";
 
 export type BoardSessionPresentation = {
@@ -70,15 +71,15 @@ export type BoardSessionStatusPresentation = {
 
 export type BoardPullRequestState = "closed" | "open" | "draft" | "merged";
 
-export type BoardReviewerAvatar = {
-	login: string;
-	url?: string;
+export type BoardReviewerPresentation = {
+	id: string;
+	avatarUrl?: string;
 };
 
 export type BoardPullRequestPresentation = {
 	commentCount?: number;
 	number: number;
-	reviewerAvatars?: BoardReviewerAvatar[];
+	reviewers?: BoardReviewerPresentation[];
 	state: BoardPullRequestState;
 	url: string;
 };
@@ -428,13 +429,14 @@ function BoardPullRequestGroup({
 			<span className="sr-only">{statusLabel}</span>
 			{hasComments ? (
 				<div className="-ml-0.5 flex shrink-0 items-center pl-1">
-					{(pr.reviewerAvatars ?? [])
+					{(pr.reviewers ?? [])
 						.slice(0, 3)
-						.map((avatar, index) => (
-							<ReviewerAvatar
-								avatar={avatar}
-								className={index > 0 ? "-ml-1.5" : undefined}
-								key={`${avatar.login}-${index}`}
+						.map((reviewer, index) => (
+							<UserAvatar
+								className={cn("size-5 rounded-full border-2 border-surface object-cover ring-1 ring-border", index > 0 && "-ml-1.5")}
+								imageUrl={reviewer.avatarUrl}
+								key={`${reviewer.id}-${index}`}
+								name={reviewer.id}
 							/>
 						))}
 				</div>
@@ -456,34 +458,6 @@ function BoardPullRequestGroup({
 			})}
 		</div>
 	);
-}
-
-function reviewerInitials(login: string): string {
-	return login
-		.replace(/^@/, "")
-		.trim()
-		.split(/[-_\s]+/)
-		.filter(Boolean)
-		.slice(0, 2)
-		.map((part) => part[0]?.toUpperCase() ?? "")
-		.join("") || "?";
-}
-
-function ReviewerAvatar({ avatar, className }: { avatar: BoardReviewerAvatar; className?: string }) {
-	const [failed, setFailed] = useState(false);
-	const commonClassName = cn("size-5 rounded-full border-2 border-surface ring-1 ring-border", className);
-	if (avatar.url && !failed) {
-		return (
-			<img
-				alt=""
-				className={cn(commonClassName, "object-cover")}
-				onError={() => setFailed(true)}
-				referrerPolicy="no-referrer"
-				src={avatar.url}
-			/>
-		);
-	}
-	return <span aria-hidden="true" className={cn(commonClassName, "inline-flex items-center justify-center bg-muted text-[9px] font-semibold text-muted-foreground")}>{reviewerInitials(avatar.login)}</span>;
 }
 
 function PullRequestLifecycleIcon({ state }: { state: BoardPullRequestState }) {

@@ -158,6 +158,9 @@ type SCMPRObservation struct {
 	ChangedFiles int
 	// Author is the provider login/name of the PR author.
 	Author string
+	// AuthorAvatarURL is the provider-hosted profile image URL for the PR author.
+	// It is optional because not every provider or historical record supplies one.
+	AuthorAvatarURL string
 	// BaseSHA is the current base branch SHA when the provider supplies it.
 	BaseSHA string
 	// MergeCommitSHA is the merge commit SHA when the PR has one.

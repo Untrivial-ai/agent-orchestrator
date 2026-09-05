@@ -398,11 +398,11 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						columns={columns}
 						key={projectId ?? "all"}
 						labels={boardLabels}
-						renderSessionCard={(session) => (
-							<BoardSessionCardAdapter
-								onOpenSession={openSession}
-								onTerminateSession={terminateSession.mutate}
-								session={session}
+							renderSessionCard={(session) => (
+								<BoardSessionCardAdapter
+								onOpen={() => openSession(session)}
+									onTerminate={() => terminateSession.mutate(session)}
+									session={session}
 								usage={usageBySession.get(session.id)}
 							/>
 						)}

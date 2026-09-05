@@ -1,8 +1,9 @@
-import { memo, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
+	scmUserAvatarUrl,
 	SessionCardView,
 	SessionUsageMetricView,
 	type BoardPullRequestLabels,
@@ -24,7 +25,7 @@ import {
 } from "../lib/agent-switch-presentation";
 import type { WorkspaceSession } from "../types/workspace";
 import { canonicalTrackerIssueId } from "../types/workspace";
-import { useSessionScmSummary, type SessionPRSummary } from "../hooks/useSessionScmSummary";
+import { useSessionScmSummary } from "../hooks/useSessionScmSummary";
 import type { SessionUsageSummary } from "../hooks/useSessionUsageSummaries";
 import {
 	clearTerminateSessionState,
@@ -72,26 +73,26 @@ export function sessionsBoardLabels(t: TFunction): BoardColumnLabels {
 	};
 }
 
-export const BoardSessionCardAdapter = memo(function BoardSessionCardAdapter({
-	onOpenSession,
-	onTerminateSession,
+export function BoardSessionCardAdapter({
+	onOpen,
+	onTerminate,
 	session,
 	usage,
 }: {
-	onOpenSession: (session: WorkspaceSession) => void;
-	onTerminateSession: (session: WorkspaceSession) => void;
+	onOpen: () => void;
+	onTerminate: () => void;
 	session: WorkspaceSession;
 	usage?: SessionUsageSummary;
 }) {
 	return (
 		<DesktopSessionCard
-			onOpen={() => onOpenSession(session)}
-			onTerminate={() => onTerminateSession(session)}
+			onOpen={onOpen}
+			onTerminate={onTerminate}
 			session={session}
 			usage={usage}
 		/>
 	);
-});
+}
 
 export function ArchivedSessionCardAdapter({
 	isRestoreDisabled,
@@ -128,7 +129,7 @@ export function ArchivedSessionCardAdapter({
 	);
 }
 
-const DesktopSessionCard = memo(function DesktopSessionCard({
+function DesktopSessionCard({
 	action,
 	branchAction,
 	footer,
@@ -226,9 +227,13 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 			prs={summaries.map((pr) => ({
 				commentCount: pr.review.unresolvedBy.reduce((count, reviewer) => count + reviewer.count, 0),
 				number: pr.number,
-				reviewerAvatars: (pr.review.reviews ?? []).map((review) => ({
-					login: review.reviewerId,
-					url: reviewerAvatarUrl(pr, review.reviewerId),
+				reviewers: Array.from(
+					new Map(
+						pr.review.unresolvedBy.map((reviewer) => [reviewer.reviewerId, reviewer]),
+					).values(),
+				).map((reviewer) => ({
+					avatarUrl: scmUserAvatarUrl(pr.provider, prBrowserUrl(pr), reviewer.reviewerId),
+					id: reviewer.reviewerId,
 				})),
 				state: pr.state,
 				url: prBrowserUrl(pr),
@@ -247,7 +252,7 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 			usage={usagePresentation}
 		/>
 	);
-});
+}
 
 function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 	return {
@@ -259,20 +264,6 @@ function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 			open: t("pr.state.open"),
 		},
 	};
-}
-
-function reviewerAvatarUrl(pr: SessionPRSummary, reviewerId: string): string | undefined {
-	let origin: string;
-	try {
-		origin = new URL(prBrowserUrl(pr)).origin;
-	} catch {
-		return undefined;
-	}
-
-	const encodedReviewer = encodeURIComponent(reviewerId);
-	if (pr.provider === "github") return `${origin}/${encodedReviewer}.png`;
-	if (pr.provider === "gitlab") return `${origin}/-/avatar?username=${encodedReviewer}`;
-	return undefined;
 }
 
 // Keep the board metric scannable by showing cost only. The full cost/token

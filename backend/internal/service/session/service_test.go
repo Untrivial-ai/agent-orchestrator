@@ -4133,6 +4133,7 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 		Repo:                     "acme/repo",
 		Title:                    "Fix dashboard",
 		Author:                   "ada",
+		AuthorAvatarURL:          "https://avatars.githubusercontent.com/u/123?v=4",
 		SourceBranch:             "fix/dashboard",
 		TargetBranch:             "main",
 		HeadSHA:                  "abc123",
@@ -4166,6 +4167,9 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	pr := got[0]
 	if pr.Title != "Fix dashboard" || pr.State != domain.PRStateOpen || pr.Provider != "github" || pr.Repo != "acme/repo" || pr.HeadSHA != "abc123" {
 		t.Fatalf("metadata = %+v", pr)
+	}
+	if pr.Author != "ada" || pr.AuthorAvatarURL != "https://avatars.githubusercontent.com/u/123?v=4" {
+		t.Fatalf("author metadata = %+v", pr)
 	}
 	if len(pr.CI.FailingChecks) != 1 || pr.CI.FailingChecks[0].Name != "unit" || pr.CI.FailingChecks[0].URL == "" {
 		t.Fatalf("failing checks = %+v", pr.CI.FailingChecks)

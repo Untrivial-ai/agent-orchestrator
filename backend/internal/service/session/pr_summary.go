@@ -97,6 +97,7 @@ func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, review
 		Provider:         firstNonEmpty(pr.Provider, "github"),
 		Repo:             pr.Repo,
 		Author:           pr.Author,
+		AuthorAvatarURL:  pr.AuthorAvatarURL,
 		SourceBranch:     pr.SourceBranch,
 		TargetBranch:     pr.TargetBranch,
 		HeadSHA:          pr.HeadSHA,
