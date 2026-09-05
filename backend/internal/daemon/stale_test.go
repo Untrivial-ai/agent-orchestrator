@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -112,5 +114,36 @@ func TestRunFileOwnerServingNilOrZeroPort(t *testing.T) {
 	}
 	if runFileOwnerServing(client, "127.0.0.1", &runfile.Info{PID: 1, Port: 0}) {
 		t.Error("runFileOwnerServing(port 0) = true, want false")
+	}
+}
+
+func TestConventionalDataDirOwnerFindsPreLockDaemon(t *testing.T) {
+	pid := os.Getpid()
+	srv := httptest.NewServer(healthzBody(daemonmeta.ServiceName, pid))
+	defer srv.Close()
+	host, port := hostPort(t, srv.URL)
+
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	ownerRunFile := filepath.Join(root, "running.json")
+	configuredRunFile := filepath.Join(root, "dev", "running.json")
+	if err := runfile.Write(ownerRunFile, runfile.Info{PID: pid, Port: port}); err != nil {
+		t.Fatalf("write owner run-file: %v", err)
+	}
+
+	got, err := conventionalDataDirOwner(srv.Client(), host, dataDir, configuredRunFile)
+	if err != nil {
+		t.Fatalf("conventionalDataDirOwner: %v", err)
+	}
+	if got == nil || got.PID != pid || got.Port != port {
+		t.Fatalf("owner = %+v, want pid %d port %d", got, pid, port)
+	}
+
+	got, err = conventionalDataDirOwner(srv.Client(), host, dataDir, ownerRunFile)
+	if err != nil {
+		t.Fatalf("same configured run-file: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("same configured run-file owner = %+v, want nil (already checked by caller)", got)
 	}
 }

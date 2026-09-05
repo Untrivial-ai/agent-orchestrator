@@ -35,12 +35,12 @@ type Server struct {
 // which case the /mux terminal surface is not mounted.
 //
 // If the configured port is already held, it falls back to an OS-assigned
-// ephemeral port rather than failing. A genuine peer AO daemon is ruled out
-// upstream (the running.json + /healthz check in daemon.Run), so a conflict here
-// means a non-AO process owns the port; exiting would only leave the desktop
-// supervisor stuck on "daemon not ready". The actual bound port is logged
-// ("daemon listening") and written to running.json, both of which the supervisor
-// reads, so the fallback propagates to the renderer with no UI changes.
+// ephemeral port rather than failing. Port binding does not grant mutation
+// authority over AO_DATA_DIR: daemon.Run acquires an exclusive data-dir lease
+// before opening the store or reconciling. A second AO process exits before it
+// reaches this bind, so the lease holder may safely use the fallback when a
+// non-AO process owns the configured port. The actual bound port is logged and
+// written to running.json, which propagates it to the renderer.
 func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager, deps APIDeps) (*Server, error) {
 	log = loggerOrDefault(log)
 	ln, err := net.Listen("tcp", cfg.Addr())
@@ -48,12 +48,12 @@ func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager,
 		if !isAddrInUse(err) {
 			return nil, fmt.Errorf("bind %s: %w", cfg.Addr(), err)
 		}
-		// Configured port is taken by a non-AO process: retry on an ephemeral port.
+		// The lease holder may retry on an ephemeral port when this port is taken.
 		fallback, ferr := net.Listen("tcp", net.JoinHostPort(cfg.Host, "0"))
 		if ferr != nil {
 			return nil, fmt.Errorf("bind %s (in use) and ephemeral fallback: %w", cfg.Addr(), ferr)
 		}
-		log.Warn("configured port in use; bound an ephemeral port instead",
+		log.Warn("configured port in use; bound an ephemeral port instead (data-dir lease already held)",
 			"configured", cfg.Addr(), "bound", fallback.Addr().String())
 		ln = fallback
 	}

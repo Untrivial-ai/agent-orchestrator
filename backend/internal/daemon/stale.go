@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
@@ -13,6 +14,25 @@ import (
 // staleProbeTimeout bounds the startup ownership probe so a run-file pointing at
 // an unreachable port cannot stall daemon startup.
 const staleProbeTimeout = 2 * time.Second
+
+// conventionalDataDirOwner checks the running.json that older AO releases
+// place beside their data/ directory. Those releases predate daemon.lock, so
+// probing this conventional handshake closes the upgrade window where a new
+// daemon uses a different run file but points at an older live daemon's data.
+func conventionalDataDirOwner(client *http.Client, host, dataDir, configuredRunFile string) (*runfile.Info, error) {
+	ownerRunFile := filepath.Join(filepath.Dir(filepath.Clean(dataDir)), "running.json")
+	if filepath.Clean(ownerRunFile) == filepath.Clean(configuredRunFile) {
+		return nil, nil
+	}
+	live, err := runfile.CheckStale(ownerRunFile)
+	if err != nil {
+		return nil, err
+	}
+	if live == nil || !runFileOwnerServing(client, host, live) {
+		return nil, nil
+	}
+	return live, nil
+}
 
 // runFileOwnerServing reports whether an AO daemon matching info is actually
 // serving on the recorded loopback port.

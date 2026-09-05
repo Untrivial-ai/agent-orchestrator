@@ -12,7 +12,7 @@ Run the Electron application from the current checkout and verify it in the nati
 Ask only when the request does not make the desired data source clear.
 
 - Use **isolated mode** by default for implementation and destructive testing. Electron uses port `3002`, `~/.ao/dev/running.json`, `~/.ao/dev/data`, and `~/.ao/dev/electron`.
-- Use **real-data mode** only when the user explicitly asks to see this machine's actual AO projects or sessions. Start the checkout's dev daemon on the isolated dev port/run file while pointing `AO_DATA_DIR` at the real AO data directory. This is a separate daemon process using real data; do not describe it as the installed app's daemon.
+- Use **real-data mode** only when the user explicitly asks to see this machine's actual AO projects or sessions. The real data directory has one daemon owner: stop that owner before starting the checkout's daemon, and never run both against it. A newer checkout may migrate the database, so prefer isolated mode for backend or migration testing.
 - Never try to attach an unpackaged Electron app directly to a packaged daemon from another checkout. The supervisor intentionally rejects daemon identity mismatches.
 - Warn before actions in real-data mode that create, terminate, rename, or otherwise mutate sessions. Merely opening and inspecting the UI is expected.
 
@@ -57,7 +57,9 @@ npm run dev
 
 First resolve and report the actual data directory. In an AO worker session, `AO_DATA_DIR` normally already identifies it. Otherwise the repository default is the absolute path corresponding to `~/.ao/data`.
 
-Keep the real data directory but remove inherited port/run-file overrides so the dev app retains its own daemon handshake and port:
+Check its normal run file and health endpoint for a live owner. If one exists, report that stopping it will interrupt its desktop connection and active work, then obtain the user's authorization to stop that exact daemon. Proceed only after its process and listener are gone.
+
+With exclusive ownership established, keep the real data directory but remove inherited port/run-file overrides so the dev app uses its own daemon handshake and port:
 
 ```bash
 cd frontend
@@ -73,6 +75,8 @@ Remove-Item Env:AO_RUN_FILE, Env:AO_PORT -ErrorAction SilentlyContinue
 $env:AO_DATA_DIR = $realAoData
 npm run dev
 ```
+
+If startup reports that the data directory is already in use, keep the owner running and switch to isolated mode unless the user authorizes stopping it. Changing only the port or run file cannot create a second owner.
 
 Do not print unrelated environment variables: AO sessions may carry credentials. It is safe to report only `AO_DATA_DIR`, `AO_RUN_FILE`, and `AO_PORT`.
 
@@ -143,6 +147,7 @@ Once one PR merges, prefer rebasing the remaining PR onto current `main`; the no
   Without all three the instances still collide, on the profile lock, the run
   file, or the daemon's SQLite data.
 - An inherited `AO_DATA_DIR` changes dev mode from isolated data to real data. Always choose and report the mode instead of inheriting it accidentally.
+- A different `AO_PORT` or `AO_RUN_FILE` does not isolate SQLite. Every concurrent daemon needs a different `AO_DATA_DIR`.
 - Repeated `/healthz/` 404 entries from external probes can be noisy; readiness is determined by Electron's daemon status and successful API traffic, not by log volume.
 
 ## Completion report

@@ -32,6 +32,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/codexops"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon/supervisor"
+	"github.com/aoagents/agent-orchestrator/backend/internal/datadirlock"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
@@ -199,11 +200,31 @@ func Run() error {
 	// PID for unrelated processes. So a "live" PID is verified against an actual
 	// /healthz probe; a run-file left by a crashed/hard-killed/reused-PID
 	// predecessor is treated as stale and overwritten when the new server starts.
+	ownershipClient := &http.Client{Timeout: staleProbeTimeout}
 	if live, err := runfile.CheckStale(cfg.RunFilePath); err != nil {
 		return fmt.Errorf("inspect run-file: %w", err)
-	} else if live != nil && runFileOwnerServing(&http.Client{Timeout: staleProbeTimeout}, config.LoopbackHost, live) {
+	} else if live != nil && runFileOwnerServing(ownershipClient, config.LoopbackHost, live) {
 		return fmt.Errorf("daemon already running (pid %d, port %d); refusing to start", live.PID, live.Port)
 	}
+	if live, err := conventionalDataDirOwner(ownershipClient, config.LoopbackHost, cfg.DataDir, cfg.RunFilePath); err != nil {
+		return fmt.Errorf("inspect data-dir owner run-file: %w", err)
+	} else if live != nil {
+		return fmt.Errorf("data directory %q is already in use by daemon pid %d on port %d; stop it or choose a different AO_DATA_DIR", cfg.DataDir, live.PID, live.Port)
+	}
+
+	// Acquire durable mutation authority after the normal same-run-file diagnostic
+	// but before opening or migrating SQLite. Concurrent starts can both pass the
+	// run-file probe when they use different run files; this data-dir-scoped lease
+	// is the authoritative ownership gate in that case.
+	dataLease, err := datadirlock.Acquire(cfg.DataDir)
+	if err != nil {
+		if !errors.Is(err, datadirlock.ErrLocked) {
+			return fmt.Errorf("acquire data-dir ownership: %w", err)
+		}
+		return fmt.Errorf("data directory %q is already in use; stop its daemon or choose a different AO_DATA_DIR: %w", cfg.DataDir, err)
+	}
+	defer func() { _ = dataLease.Close() }()
+	log.Info("data-dir ownership acquired", "lock", dataLease.Path(), "pid", dataLease.PID())
 
 	// Open the durable store and bring up the CDC substrate: DB triggers capture
 	// changes into change_log, the poller tails it, and the broadcaster fans
