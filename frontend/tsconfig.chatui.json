@@ -1,0 +1,10 @@
+{
+	// Local-only typecheck for the opt-in ChatUI regression harness. CI uses
+	// tsconfig.e2e.json and does not reference this project or its npm script.
+	"extends": "./tsconfig.json",
+	"include": [
+		"chatui-regression/**/*.ts",
+		"playwright.chatui.config.ts",
+		"vitest.chatui.config.ts"
+	]
+}

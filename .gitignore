@@ -93,7 +93,7 @@ frontend/agent-browser/
 !.agents/skills/bug-triage/**
 skills-lock.json
 
-# e2e pod gate: downloaded pod logs/traces (uploaded as CI artifacts, not committed)
+# E2E evidence: pod-gate and opt-in ChatUI logs/traces (never committed)
 e2e-artifacts/
 
 # Local pnpm artifacts
