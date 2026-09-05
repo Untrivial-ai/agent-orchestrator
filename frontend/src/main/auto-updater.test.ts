@@ -9,6 +9,7 @@ type UpdateSettings = {
   channel: "latest" | "nightly";
   nightlyAck: boolean;
   feature: { pr: number } | null;
+  macDifferentialUpdates?: boolean;
 };
 
 type UpdateSettingsReader = ReturnType<
@@ -21,6 +22,7 @@ type ImportOptions = {
     settings: UpdateSettings,
   ) => Promise<{ settings: UpdateSettings; cleared: boolean }>;
   isPackaged?: boolean;
+  rolloutReady?: boolean;
 };
 
 type AutoUpdaterMock = {
@@ -34,6 +36,13 @@ type AutoUpdaterMock = {
   allowDowngrade: boolean;
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  disableDifferentialDownload: boolean;
+  logger: {
+    info: (message: unknown, ...args: unknown[]) => void;
+    warn: (message: unknown, ...args: unknown[]) => void;
+    error: (message: unknown, ...args: unknown[]) => void;
+    debug: (message: unknown, ...args: unknown[]) => void;
+  };
 };
 
 function createAutoUpdaterMock(): AutoUpdaterMock {
@@ -48,6 +57,13 @@ function createAutoUpdaterMock(): AutoUpdaterMock {
     allowDowngrade: false,
     autoDownload: false,
     autoInstallOnAppQuit: false,
+    disableDifferentialDownload: false,
+    logger: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    },
   };
 }
 
@@ -65,6 +81,216 @@ afterEach(() => {
 
 /** Alias kept for readability: a re-import is a simulated relaunch. */
 const importAutoUpdaterKeepingStagedFile = importAutoUpdater;
+describe("macOS differential update policy", () => {
+  let restorePlatform: () => void;
+  beforeEach(() => { restorePlatform = stubProcess("darwin", process.execPath); });
+  afterEach(() => { restorePlatform(); vi.restoreAllMocks(); });
+  const nightly: UpdateSettings = { enabled: true, channel: "nightly", nightlyAck: true, feature: null, macDifferentialUpdates: true };
+
+  it.each(["win32", "linux"] as const)("preserves %s differential policy across updater operations", async platform => {
+    const restore = stubProcess(platform, process.execPath);
+    try {
+      const { module, autoUpdater } = await importAutoUpdater(nightly);
+      expect(autoUpdater.disableDifferentialDownload).toBe(false);
+      for (const disabled of [false, true]) {
+        autoUpdater.disableDifferentialDownload = disabled;
+        await module.setMacDifferentialUpdates(stateDir, true);
+        await module.startAutoUpdates(stateDir);
+        await module.checkForUpdatesNow(stateDir);
+        await module.downloadUpdateNow();
+        await module.setMacDifferentialUpdates(stateDir, false);
+        expect(autoUpdater.disableDifferentialDownload).toBe(disabled);
+      }
+    } finally { restore(); }
+  });
+
+  it("keeps persisted opt-in disabled until renderer hydration", async () => {
+    const { module, autoUpdater } = await importAutoUpdater(nightly);
+    await module.startAutoUpdates(stateDir);
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+    await module.setMacDifferentialUpdates(stateDir, true);
+    expect(autoUpdater.disableDifferentialDownload).toBe(false);
+  });
+
+  it("preserves the Developer Mode mirror across stale settings writes and checks", async () => {
+    const { module, autoUpdater, readUpdateSettings } = await importAutoUpdater(nightly);
+    await module.setMacDifferentialUpdates(stateDir, true);
+    await module.setUpdateSettings(stateDir, { ...nightly, macDifferentialUpdates: false });
+    expect((await readUpdateSettings()).macDifferentialUpdates).toBe(true);
+    await module.setMacDifferentialUpdates(stateDir, false);
+    await module.checkForUpdatesNow(stateDir, { settings: nightly });
+    expect((await readUpdateSettings()).macDifferentialUpdates).toBe(false);
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+  });
+
+  it("re-applies policy for automatic, manual, pinned and return-home operations", async () => {
+    const { module, autoUpdater } = await importAutoUpdater(nightly);
+    await module.setMacDifferentialUpdates(stateDir, true);
+    autoUpdater.disableDifferentialDownload = true;
+    await module.startAutoUpdates(stateDir);
+    expect(autoUpdater.disableDifferentialDownload).toBe(false);
+    await module.setUpdateSettings(stateDir, { ...nightly, channel: "latest" });
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+    await module.checkForUpdatesNow(stateDir, { settings: { ...nightly, feature: { pr: 3288 } } });
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+    await module.returnToHome(stateDir);
+    expect(autoUpdater.disableDifferentialDownload).toBe(false);
+    autoUpdater.disableDifferentialDownload = true;
+    await module.downloadUpdateNow();
+    expect(autoUpdater.disableDifferentialDownload).toBe(false);
+  });
+
+  it("disables immediately while an updater operation is still in flight", async () => {
+    const { module, autoUpdater, updaterEvents, telemetryMessages } = await importAutoUpdater(nightly);
+    await module.setMacDifferentialUpdates(stateDir, true);
+    const blocked = deferred();
+    autoUpdater.checkForUpdates.mockReturnValueOnce(blocked.promise);
+    const check = module.checkForUpdatesNow(stateDir);
+    await flushMicrotasks();
+    updaterEvents.get("update-available")?.({ version: "2.0.0" });
+    const off = module.setMacDifferentialUpdates(stateDir, false);
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+    updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+    expect(telemetryMessages().at(-1)?.payload).toMatchObject({ differential_eligible: true });
+    blocked.resolve();
+    await Promise.all([check, off]);
+    await module.downloadUpdateNow();
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+  });
+
+  it("omits unavailable progress metrics and sanitizes dependency logs", async () => {
+    const { module, autoUpdater, updaterEvents, statusMessages, telemetryMessages } = await importAutoUpdater(nightly);
+    const base = autoUpdater.logger;
+    await module.checkForUpdatesNow(stateDir);
+    autoUpdater.logger.info("Download block maps (old: https://user:secret@host/old?token=secret)");
+    autoUpdater.logger.error("Cannot download differentially, fallback to full download: https://host?token=secret");
+    updaterEvents.get("download-progress")?.({ percent: 10 });
+    expect(statusMessages().at(-1)?.payload).not.toHaveProperty("transferred");
+    expect(statusMessages().at(-1)?.payload).not.toHaveProperty("total");
+    expect(statusMessages().at(-1)?.payload).not.toHaveProperty("bytesPerSecond");
+    updaterEvents.get("error")?.(new Error("checksum mismatch"));
+    expect(telemetryMessages().at(-1)?.payload).toMatchObject({ transfer_mode: "differential", fallback: true });
+    expect(JSON.stringify(base)).not.toContain("secret");
+    expect(JSON.stringify([vi.mocked(base.info).mock.calls, vi.mocked(base.error).mock.calls, vi.mocked(base.warn).mock.calls])).not.toContain("secret");
+  });
+
+  it("keeps production downloads full-only even after Developer Mode hydration", async () => {
+    const production = await vi.importActual<{ default: { enabled: boolean } }>("../../scripts/mac-differential-rollout.json");
+    expect(production.default.enabled).toBe(false);
+    const { module, autoUpdater } = await importAutoUpdater(nightly, { rolloutReady: production.default.enabled });
+    await module.setMacDifferentialUpdates(stateDir, true);
+    await module.checkForUpdatesNow(stateDir);
+    await module.downloadUpdateNow();
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+  });
+
+  it("starts fail-closed before settings hydration", async () => {
+    const { autoUpdater } = await importAutoUpdater();
+
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+  });
+
+  it("reports differential fallback and real transfer progress without signed URLs", async () => {
+    const { module, autoUpdater, updaterEvents, telemetryMessages, statusMessages } =
+      await importAutoUpdater({
+        enabled: true,
+        channel: "nightly",
+        nightlyAck: true,
+        feature: null,
+        macDifferentialUpdates: true,
+      });
+    await module.setMacDifferentialUpdates(stateDir, true);
+    module.applyUpdaterPolicy(
+      {
+        enabled: true,
+        channel: "nightly",
+        nightlyAck: true,
+        feature: null,
+        macDifferentialUpdates: true,
+      },
+      "darwin",
+    );
+    await module.checkForUpdatesNow(stateDir);
+    updaterEvents.get("update-available")?.({
+      version: "1.2.3",
+      files: [
+        { url: "AO-darwin-arm64.zip", size: 1000 },
+        { url: "AO-darwin-x64.zip", size: 1000 },
+      ],
+    });
+    autoUpdater.logger.info("Differential download: https://example.test/AO.zip?token=secret");
+    autoUpdater.logger.error("Cannot download differentially, fallback to full download: checksum mismatch");
+    updaterEvents.get("download-progress")?.({
+      percent: 25,
+      transferred: 250,
+      total: 1000,
+      bytesPerSecond: 125,
+    });
+    updaterEvents.get("update-downloaded")?.({ version: "1.2.3" });
+
+    expect(statusMessages().at(-2)?.payload).toMatchObject({
+      state: "downloading",
+      transferred: 250,
+      total: 1000,
+      bytesPerSecond: 125,
+    });
+    expect(telemetryMessages().at(-1)?.payload).toMatchObject({
+      event: "ao.renderer.update_downloaded",
+      transfer_mode: "differential",
+      fallback: true,
+      transferred_bytes: 250,
+      target_bytes: 1000,
+      to_version: "1.2.3",
+    });
+    expect(JSON.stringify(telemetryMessages())).not.toContain("secret");
+  });
+
+  it("enables only macOS Nightly Developer Mode without a feature pin", async () => {
+    const { module, autoUpdater } = await importAutoUpdater();
+
+    await module.setMacDifferentialUpdates(stateDir, true);
+    module.applyUpdaterPolicy(
+      {
+        enabled: true,
+        channel: "nightly",
+        nightlyAck: true,
+        feature: null,
+        macDifferentialUpdates: true,
+      },
+      "darwin",
+    );
+    expect(autoUpdater.disableDifferentialDownload).toBe(false);
+
+    module.applyUpdaterPolicy(
+      {
+        enabled: true,
+        channel: "nightly",
+        nightlyAck: true,
+        feature: { pr: 3288 },
+        macDifferentialUpdates: true,
+      },
+      "darwin",
+    );
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+  });
+
+  it("re-applies fail-closed policy before a manual download", async () => {
+    const { module, autoUpdater } = await importAutoUpdater({
+      enabled: true,
+      channel: "latest",
+      nightlyAck: false,
+      feature: null,
+      macDifferentialUpdates: true,
+    });
+    await module.checkForUpdatesNow(stateDir);
+    autoUpdater.disableDifferentialDownload = false;
+
+    await module.downloadUpdateNow();
+
+    expect(autoUpdater.disableDifferentialDownload).toBe(true);
+    expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
+  });
+});
 
 async function importAutoUpdater(
   settings: UpdateSettings | UpdateSettingsReader = {
@@ -105,6 +331,12 @@ async function importAutoUpdater(
   };
   const statusMessages = () => sent.filter((m) => m.channel === "updates:status");
   const telemetryMessages = () => sent.filter((m) => m.channel === "updates:telemetry");
+  // Most tests exercise the proposed policy. A separate test locks down the
+  // actual production release gate, which remains closed.
+  vi.doMock("../../scripts/mac-differential-rollout.json", () => ({ default: { enabled: options.rolloutReady ?? true } }));
+  vi.doMock("./mac-differential-v2-updater", () => ({
+    MacDifferentialV2Updater: class { constructor() { return autoUpdater; } },
+  }));
   vi.doMock("electron-updater", () => ({ autoUpdater }));
   vi.doMock("electron", () => ({
     app: {
@@ -114,26 +346,36 @@ async function importAutoUpdater(
     BrowserWindow,
     dialog,
   }));
+  let persisted = typeof settings === "function" ? undefined : settings;
   const readUpdateSettings =
     typeof settings === "function"
       ? settings
-      : vi.fn(() => Promise.resolve(settings));
+      : vi.fn(() => Promise.resolve(persisted!));
   const writeUpdateSettings = vi.fn<
     (_stateDir: string, settings: UpdateSettings) => Promise<void>
-  >(() => Promise.resolve());
+  >(async (_dir, next) => { persisted = next; });
   const updateUpdateSettings = vi.fn(
     async (
       _stateDir: string,
       update: (
         current: UpdateSettings,
       ) => UpdateSettings | Promise<UpdateSettings>,
-    ) => update(await readUpdateSettings()),
+    ) => {
+      const current = await readUpdateSettings();
+      const next = await update(current);
+      if (next !== current) await writeUpdateSettings(_stateDir, next);
+      return next;
+    },
   );
   vi.doMock("./update-settings", () => ({
     readUpdateSettings,
     writeUpdateSettings,
     updateUpdateSettings,
     UPDATE_SETTINGS_FILE_NAME: "update-settings.json",
+    macDifferentialUpdatesEnabled: ({ platform, settings }: {
+      platform: NodeJS.Platform;
+      settings: UpdateSettings;
+    }) => platform === "darwin" && settings.channel === "nightly" && settings.feature === null && settings.macDifferentialUpdates === true,
   }));
   vi.doMock("./feature-builds", () => ({
     reconcileFeaturePin:
@@ -1713,7 +1955,7 @@ describe("startAutoUpdates", () => {
       .mockImplementationOnce(() => {
         expect(writeUpdateSettings).toHaveBeenCalledWith(
           stateDir,
-          featureSettings,
+          { ...featureSettings, macDifferentialUpdates: false },
         );
         expect(autoUpdater.channel).toBe("pr2709");
         updaterEvents.get("update-available")?.({ version: "2.0.0-pr2709.1" });

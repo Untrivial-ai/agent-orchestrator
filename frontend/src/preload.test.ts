@@ -75,6 +75,17 @@ describe("preload repository branch bridge", () => {
 	});
 });
 
+describe("preload Developer Mode updater bridge", () => {
+	it("sends only the updater eligibility boolean to the main process", async () => {
+		await exposedBridge().updateSettings.setMacDifferentialUpdates(true);
+
+		expect(electronMocks.invoke).toHaveBeenCalledWith(
+			"updateSettings:setMacDifferentialUpdates",
+			true,
+		);
+	});
+});
+
 describe("preload telemetry generation bridge", () => {
 	it("tags captures with the latest broadcast generation without a renderer reload", async () => {
 		telemetryPolicyBroadcastListener?.({}, { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, state: "applied", environmentVeto: false, durabilitySupported: true });

@@ -1,4 +1,7 @@
-import { autoUpdater } from "electron-updater";
+import { autoUpdater as stockAutoUpdater } from "electron-updater";
+import { MacDifferentialV2Updater } from "./mac-differential-v2-updater";
+import macV2TrustedKeys from "../../scripts/mac-differential-v2-trust.json";
+import macDifferentialRollout from "../../scripts/mac-differential-rollout.json";
 import { CancellationToken } from "builder-util-runtime";
 import { app, BrowserWindow, dialog } from "electron";
 import { accessSync, constants as fsConstants, existsSync, readFileSync } from "node:fs";
@@ -7,6 +10,7 @@ import path from "node:path";
 import semver from "semver";
 import {
   readUpdateSettings,
+  macDifferentialUpdatesEnabled,
   updateUpdateSettings,
   writeUpdateSettings,
   UPDATE_SETTINGS_FILE_NAME,
@@ -20,10 +24,98 @@ import {
   isNetErrorMessage,
   normalizeReleaseNotes,
   updateFailureOutcome,
+  updateFailureCategory,
   type UpdateOutcome,
   type UpdatePhase,
   type UpdateTrigger,
 } from "../shared/update-telemetry";
+
+// Current AO uses the stock full-ZIP path. A future compatible build explicitly
+// selects the v2 subclass; old clients never learn its metadata or map URLs.
+const autoUpdater = process.platform === "darwin" && macDifferentialRollout.enabled === true
+  ? new MacDifferentialV2Updater({ trustedKeys: macV2TrustedKeys })
+  : stockAutoUpdater;
+
+const FAIL_CLOSED_UPDATE_SETTINGS: UpdateSettings = {
+  enabled: false,
+  channel: "latest",
+  nightlyAck: false,
+  feature: null,
+  macDifferentialUpdates: false,
+};
+let developerModeHydrated = false;
+let developerModeRequested = false;
+let differentialEligible = false;
+let pendingTargetBytes: number | undefined;
+let offeredUpdateVersion: string | undefined;
+let offeredMacFiles: Array<{ url: string; size?: number }> = [];
+
+function selectMacTargetBytes(arm64: boolean): void {
+  const hasArm64 = offeredMacFiles.some(file => file.url.includes("arm64"));
+  const file = offeredMacFiles.find(file =>
+    /\.zip(?:$|[?#])/i.test(file.url) && file.url.includes("arm64") === (arm64 && hasArm64));
+  pendingTargetBytes = typeof file?.size === "number" && Number.isFinite(file.size) && file.size >= 0
+    ? file.size : undefined;
+}
+let transferObservation = {
+  eligible: false,
+  attemptedDifferential: false,
+  fallback: false,
+  transferred: undefined as number | undefined,
+};
+let updaterLoggerWired = false;
+
+// electron-updater defaults this flag to false on macOS. Override it before
+// any renderer or settings hydration can race an update operation.
+if (process.platform === "darwin") autoUpdater.disableDifferentialDownload = true;
+
+export function applyUpdaterPolicy(
+  settings: UpdateSettings,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  // Keep this gate closed until the dependency and older-client feed isolation
+  // contracts pass. This repository never generates macOS release sidecars.
+  const eligible = macDifferentialRollout.enabled === true && developerModeHydrated && macDifferentialUpdatesEnabled({ platform, settings });
+  differentialEligible = eligible;
+  if (platform === "darwin") autoUpdater.disableDifferentialDownload = !eligible;
+  console.info("[auto-updater] mac differential policy", {
+    eligible,
+    platform,
+    channel: settings.channel,
+    featurePinned: settings.feature !== null,
+    developerMode: settings.macDifferentialUpdates === true,
+  });
+}
+
+// This observes the pinned dependency's phase messages, never its raw URLs,
+// paths, HTTP headers or error stacks. Unknown messages cannot leak credentials.
+function wireUpdaterLogger(): void {
+  if (updaterLoggerWired || process.platform !== "darwin") return;
+  updaterLoggerWired = true;
+  const base = autoUpdater.logger ?? console;
+  const observe = (level: "info" | "warn" | "error" | "debug", first: unknown) => {
+    const message = typeof first === "string" ? first : "";
+    if (message === "Checked for macOS Rosetta environment (isRosetta=true)" ||
+        message === "Checked 'uname -a': arm64=true") {
+      selectMacTargetBytes(true);
+    }
+    if (message.startsWith("Download block maps") || message.startsWith("Differential download:")) {
+      transferObservation.attemptedDifferential = true;
+      base.info("[auto-updater] differential transfer attempted");
+    } else if (/(?:fall(?:ing)? back|fallback) to full download/i.test(message)) {
+      transferObservation.fallback = true;
+      base.warn("[auto-updater] differential transfer fell back to full download");
+    } else if (level === "warn" || level === "error") {
+      base[level](`[auto-updater] ${updateFailureCategory(message)}`);
+    }
+  };
+  autoUpdater.logger = {
+    info: (first: unknown) => observe("info", first),
+    warn: (first: unknown) => observe("warn", first),
+    error: (first: unknown) => observe("error", first),
+    debug: (first: unknown) => observe("debug", first),
+  };
+}
 
 // reconcileAndPersist clears a pinned feature build whose PR has been retired
 // (merged/closed/deleted/expired) and persists the change, so the next check
@@ -203,6 +295,16 @@ let lastCheckedAtMs: number | undefined;
 // from "updates:status", so suppressing a status for UI reasons (as the
 // automatic path does) never suppresses the telemetry for it.
 function emitUpdateOutcome(outcome: UpdateOutcome): void {
+  if (outcome.phase === "download" && process.platform === "darwin") {
+    outcome = {
+      ...outcome,
+      differential_eligible: transferObservation.eligible,
+      transfer_mode: transferObservation.attemptedDifferential ? "differential" : "full",
+      fallback: transferObservation.fallback,
+      ...(transferObservation.transferred === undefined ? {} : { transferred_bytes: transferObservation.transferred }),
+      ...(pendingTargetBytes === undefined ? {} : { target_bytes: pendingTargetBytes }),
+    };
+  }
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send("updates:telemetry", outcome);
   }
@@ -740,7 +842,7 @@ async function runSerializedUpdaterOperation(
     activeUpdaterOperation = operation;
     activeUpdaterRequestId = requestId;
     activeUpdaterPhase = operation === "manual-download" ? "download" : "check";
-    pendingUpdateVersion = undefined;
+    pendingUpdateVersion = operation === "manual-download" ? offeredUpdateVersion : undefined;
     if (operation === "automatic-check") {
       automaticCheckNetFailureCounted = false;
       automaticCheckFailureCounted = false;
@@ -798,6 +900,7 @@ async function runRetirementPoll(stateDir: string): Promise<void> {
       if (settings.feature === null || settings.feature === undefined) {
         // Pin was cleared: drop the now-dead pr<N> channel right away instead of
         // waiting for the next manual or launch-time check to notice.
+        applyUpdaterPolicy(settings);
         configureFeed(settings);
       }
     });
@@ -886,6 +989,7 @@ function isManifest404Error(err: unknown): boolean {
 // to the renderer as an UpdateStatus. Idempotent: safe to call on every entry
 // point (launch auto-check and manual check).
 function wireUpdaterEvents(): void {
+  wireUpdaterLogger();
   if (eventsWired) return;
   eventsWired = true;
   // With a build staged, "checking" briefly hides the sidebar restart row; that
@@ -907,6 +1011,15 @@ function wireUpdaterEvents(): void {
     broadcastUpdaterStatus({ state: "checking" });
   });
   autoUpdater.on("update-available", (info) => {
+    offeredMacFiles = Array.isArray(info?.files) ? info.files : [];
+    offeredUpdateVersion = info?.version;
+    selectMacTargetBytes(process.arch === "arm64");
+    transferObservation = {
+      eligible: differentialEligible,
+      attemptedDifferential: false,
+      fallback: false,
+      transferred: undefined,
+    };
     // A successful check proves the network stack is healthy.
     consecutiveAutomaticNetFailures = 0;
     consecutiveAutomaticCheckFailures = 0;
@@ -945,10 +1058,17 @@ function wireUpdaterEvents(): void {
     failingChecksPublished = false;
     activeUpdaterPhase = "download";
     armDownloadStallWatchdog();
+    const transferred = Number.isFinite(p?.transferred) && p.transferred >= 0 ? p.transferred : undefined;
+    const total = Number.isFinite(p?.total) && p.total >= 0 ? p.total : undefined;
+    const bytesPerSecond = Number.isFinite(p?.bytesPerSecond) && p.bytesPerSecond >= 0 ? p.bytesPerSecond : undefined;
+    transferObservation.transferred = transferred;
     return broadcastUpdaterStatus({
       state: "downloading",
       version: pendingUpdateVersion,
       percent: Math.max(0, Math.min(100, Math.round(p?.percent ?? 0))),
+      ...(transferred === undefined ? {} : { transferred }),
+      ...(total === undefined ? {} : { total }),
+      ...(bytesPerSecond === undefined ? {} : { bytesPerSecond }),
     });
   });
   autoUpdater.on("update-downloaded", (info) => {
@@ -1100,6 +1220,7 @@ async function runAutomaticUpdateCheck(
 
       escalationStateDir = stateDir;
       wireUpdaterEvents();
+      applyUpdaterPolicy(settings);
       configureFeed(settings);
       // Discovery is always on for the selected release channel. This preference
       // controls only whether electron-updater downloads the discovered build or
@@ -1230,13 +1351,26 @@ export async function startAutoUpdates(stateDir: string): Promise<void> {
     schedulePeriodicAutomaticUpdateCheck(stateDir, intervalMs);
 }
 
+// The mirror belongs to Developer Mode IPC. A stale settings form must not
+// restore an old value when changing channel or automatic-download preference.
+async function persistRendererUpdateSettings(
+  stateDir: string,
+  settings: UpdateSettings,
+): Promise<UpdateSettings> {
+  return updateUpdateSettings(stateDir, current => ({
+    ...settings,
+    macDifferentialUpdates: current.macDifferentialUpdates === true,
+  }));
+}
+
 async function persistUpdaterSettings(
   stateDir: string,
   settings: UpdateSettings,
 ): Promise<void> {
-  await writeUpdateSettings(stateDir, settings);
-  configureFeed(settings);
-  reconcileAutomaticUpdateSchedule(stateDir, settings);
+  const next = await persistRendererUpdateSettings(stateDir, settings);
+  applyUpdaterPolicy(next);
+  configureFeed(next);
+  reconcileAutomaticUpdateSchedule(stateDir, next);
 }
 
 /** Persist settings and reconcile the live updater feed/timer as one updater operation. */
@@ -1283,12 +1417,11 @@ export async function checkForUpdatesNow(
     await runSerializedUpdaterOperation(
       "manual-check",
       async () => {
-        if (options.settings)
-          await writeUpdateSettings(stateDir, options.settings);
-        const settings = await reconcileAndPersist(
-          stateDir,
-          options.settings ?? (await readUpdateSettings(stateDir)),
-        );
+        const requested = options.settings
+          ? await persistRendererUpdateSettings(stateDir, options.settings)
+          : await readUpdateSettings(stateDir);
+        const settings = await reconcileAndPersist(stateDir, requested);
+        applyUpdaterPolicy(settings);
         reconcileAutomaticUpdateSchedule(stateDir, settings);
         configureFeed(settings);
         // Same reason as the automatic path: a channel switch leaves the old
@@ -1362,6 +1495,7 @@ export async function returnToHome(
           current.feature ? { ...current, feature: null } : current,
         );
         const settings = await reconcileAndPersist(stateDir, cleared);
+        applyUpdaterPolicy(settings);
         reconcileAutomaticUpdateSchedule(stateDir, settings);
         configureFeed(settings);
         // Leaving a pinned PR build is the same class of switch: its build is
@@ -1409,6 +1543,10 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
         // watchdog could report a stall but never release the request.
         const token = new CancellationToken();
         activeDownloadCancellation = token;
+        applyUpdaterPolicy(escalationStateDir
+          ? await readUpdateSettings(escalationStateDir)
+          : FAIL_CLOSED_UPDATE_SETTINGS);
+        transferObservation = { eligible: differentialEligible, attemptedDifferential: false, fallback: false, transferred: undefined };
         await autoUpdater.downloadUpdate(token);
       },
       requestId,
@@ -1430,6 +1568,29 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
       });
     }
   }
+}
+
+/** Persist the narrow Developer Mode mirror and apply its fail-closed policy. */
+export async function setMacDifferentialUpdates(
+  stateDir: string,
+  enabled: boolean,
+): Promise<void> {
+  if (typeof enabled !== "boolean") return;
+  developerModeRequested = enabled;
+  // Revoke eligibility synchronously, even while a previous operation is busy.
+  // An already-started dependency download retains its captured options.
+  if (!enabled) {
+    developerModeHydrated = false;
+    applyUpdaterPolicy(FAIL_CLOSED_UPDATE_SETTINGS);
+  }
+  await runSerializedUpdaterOperation("settings-write", async () => {
+    const settings = await updateUpdateSettings(stateDir, (current) => ({
+      ...current,
+      macDifferentialUpdates: enabled,
+    }));
+    developerModeHydrated = enabled && developerModeRequested;
+    applyUpdaterPolicy(settings);
+  });
 }
 
 // getMacInstallBlocker is the macOS install preflight. An app launched straight

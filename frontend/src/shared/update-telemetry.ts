@@ -41,6 +41,11 @@ export type UpdateOutcome = {
 	trigger: UpdateTrigger;
 	error_category?: UpdateFailureCategory;
 	to_version?: string;
+	differential_eligible?: boolean;
+	transfer_mode?: "differential" | "full";
+	fallback?: boolean;
+	transferred_bytes?: number;
+	target_bytes?: number;
 };
 
 /**
