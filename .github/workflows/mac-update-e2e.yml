@@ -31,8 +31,12 @@ name: macOS update e2e
 #
 # Deliberately NOT wired into any release workflow, and not to be wired in as
 # part of this file's current shape:
-#   - The release workflows are paused, and un-pausing them is a separate
-#     decision that does not belong to this change.
+#   - NOT because the release pipeline is paused. It is not: the release repo's
+#     workflows are active, nightly runs green daily, and stable ships
+#     regularly. An earlier version of this comment claimed they were paused;
+#     that was true when written and is not true now. The reasons this stays
+#     unwired are the cost argument below and the monitoring-not-a-gate
+#     argument above, neither of which a live pipeline changes.
 #   - macOS runner minutes are materially more expensive than Linux, and this
 #     project ships nightlies frequently. #3288 recommends concentrating spend on
 #     promotion to the STABLE channel specifically (the exact transition that
