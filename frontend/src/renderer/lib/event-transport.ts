@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { aoBridge } from "./bridge";
 import { getApiBaseUrl, hasTrustedApiBaseUrl, subscribeApiBaseUrl } from "./api-client";
 import { setEventsConnectionState } from "./events-connection";
@@ -16,7 +16,7 @@ export type EventTransport = {
 	connect: () => () => void;
 };
 
-const INVALIDATE_DEBOUNCE_MS = 150;
+const INVALIDATE_WINDOW_MS = 150;
 // EventSource.CLOSED, referenced numerically so test stubs without the static
 // constants still work.
 const EVENTSOURCE_CLOSED = 2;
@@ -25,7 +25,7 @@ const EVENTSOURCE_CLOSED = 2;
 // backend/internal/cdc/event.go). The SSE writer tags each frame with
 // `event: <type>`, so named events bypass EventSource.onmessage and must be
 // subscribed explicitly. Every one of these can change the project/session list
-// the sidebar renders, so they all trigger a (debounced) workspace refetch.
+// the sidebar renders, so they all trigger a (batched) workspace refetch.
 const CDC_EVENT_TYPES = [
 	"session_created",
 	"session_updated",
@@ -45,13 +45,13 @@ const CDC_EVENT_TYPES = [
  *   - the backend CDC stream over SSE (project/session/PR changes)
  *   - the Codex account stream over SSE (account, capacity, and switch state)
  * Both invalidate the ["workspaces"] query so the UI refetches. Invalidations are
- * debounced because a single user action can emit a burst of CDC events.
+ * batched because a single user action can emit a burst of CDC events.
  */
 export function createEventTransport(queryClient: QueryClient): EventTransport {
 	return {
 		connect() {
 			let healthAttempt = 0;
-			let debounce: ReturnType<typeof setTimeout> | undefined;
+			let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 			const pendingConversationSessions = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
 			let workspaceInvalidationPending = false;
@@ -61,8 +61,30 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let sourceBaseUrl: string | undefined;
 			let accountSource: EventSource | undefined;
 			let accountSourceBaseUrl: string | undefined;
+			let disposed = false;
+			// Do not repeatedly cancel a slow fetch under continuous CDC traffic. A
+			// key receives at most one in-flight refresh and one queued catch-up.
+			const refreshes = new Map<string, { dirty: boolean }>();
+			const invalidate = (queryKey: QueryKey) => {
+				if (disposed) return;
+				const key = JSON.stringify(queryKey);
+				const running = refreshes.get(key);
+				if (running) {
+					running.dirty = true;
+					return;
+				}
+				// A fetch from polling/mounting may already predate this event. Wait
+				// for it, then refresh once so joining its promise cannot lose the event.
+				const state = { dirty: queryClient.isFetching({ queryKey, type: "active" }) > 0 };
+				refreshes.set(key, state);
+				const settled = () => {
+					refreshes.delete(key);
+					if (state.dirty && !disposed) invalidate(queryKey);
+				};
+				void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(settled, settled);
+			};
 			const applyAccountEvent = (event: Event) => {
-				if (!("data" in event)) return;
+				if (disposed || !("data" in event)) return;
 				try {
 					const decoded = JSON.parse(String((event as MessageEvent).data)) as components["schemas"]["CodexAccountsResponse"];
 					writeCodexAccounts(queryClient, decoded, "replace");
@@ -71,6 +93,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				}
 			};
 			const refreshWorkspaces = (event?: Event) => {
+				if (disposed) return;
 				let conversationOnly = false;
 				if (event === undefined) {
 					// A lifecycle refresh -- reconnect, daemon status change, base-URL change --
@@ -122,30 +145,31 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					}
 				}
 				if (!conversationOnly) workspaceInvalidationPending = true;
-				if (debounce) clearTimeout(debounce);
-				debounce = setTimeout(() => {
+				// Keep the first event's deadline: a busy stream must not postpone
+				// visible updates until traffic stops. Later events join this window.
+				if (refreshTimer !== undefined) return;
+				refreshTimer = setTimeout(() => {
+					refreshTimer = undefined;
 					if (allConversationsInvalidationPending) {
-						void queryClient.invalidateQueries({ queryKey: conversationQueryRoot });
+						invalidate(conversationQueryRoot);
 						allConversationsInvalidationPending = false;
 					}
 					if (workspaceInvalidationPending) {
-						void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-						void queryClient.invalidateQueries({ queryKey: agentSwitchesQueryRoot });
-						void queryClient.invalidateQueries({ queryKey: sessionScmSummaryQueryKey() });
-						void queryClient.invalidateQueries({ queryKey: sessionUsageQueryRoot });
+						invalidate(workspaceQueryKey);
+						invalidate(agentSwitchesQueryRoot);
+						invalidate(sessionScmSummaryQueryKey());
+						invalidate(sessionUsageQueryRoot);
 						workspaceInvalidationPending = false;
 					}
 					for (const sessionId of pendingConversationSessions) {
-						void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) });
+						invalidate(conversationQueryKey(sessionId));
 					}
 					pendingConversationSessions.clear();
 					for (const sessionId of pendingInterfaceTransitionSessions) {
-						void queryClient.invalidateQueries({
-							queryKey: ["session-interface-transition", sessionId],
-						});
+						invalidate(["session-interface-transition", sessionId]);
 					}
 					pendingInterfaceTransitionSessions.clear();
-				}, INVALIDATE_DEBOUNCE_MS);
+				}, INVALIDATE_WINDOW_MS);
 			};
 
 			// Consecutive scheduled rebuilds since the stream last opened. Paces
@@ -154,7 +178,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let retries = 0;
 
 			const scheduleRetry = () => {
-				if (retryTimer) return;
+				if (disposed || retryTimer) return;
 				retries += 1;
 				retryTimer = setTimeout(() => {
 					retryTimer = undefined;
@@ -164,7 +188,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 
 			const connectSource = () => {
 				// EventSource is unavailable in jsdom (tests) and some preview surfaces; guard it.
-				if (typeof EventSource === "undefined") return;
+				if (disposed || typeof EventSource === "undefined") return;
 				if (!hasTrustedApiBaseUrl()) {
 					healthAttempt += 1;
 					source?.close();
@@ -185,6 +209,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					try {
 						accountSource = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/agents/codex/accounts/events`);
 						accountSource.onopen = () => {
+							if (disposed) return;
 							void queryClient.invalidateQueries({ queryKey: codexAccountsQueryKey });
 						};
 						accountSource.onerror = () => { if (accountSource?.readyState === EVENTSOURCE_CLOSED) scheduleRetry(); };
@@ -207,7 +232,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					source = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/events`);
 					const connectedSource = source;
 					source.onopen = () => {
-						if (source !== connectedSource) return;
+						if (disposed || source !== connectedSource) return;
 						healthAttempt += 1;
 						retries = 0;
 						setEventsConnectionState("connected");
@@ -217,7 +242,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						refreshWorkspaces();
 					};
 					source.onerror = () => {
-						if (source !== connectedSource) return;
+						if (disposed || source !== connectedSource) return;
 						// While readyState is CONNECTING the browser retries on its own;
 						// either way the stream is not delivering, so surface it instead
 						// of looping silently against a dead daemon.
@@ -262,7 +287,11 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 
 			return () => {
 				healthAttempt += 1;
-				if (debounce) clearTimeout(debounce);
+				disposed = true;
+				if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+				pendingConversationSessions.clear();
+				pendingInterfaceTransitionSessions.clear();
+				refreshes.clear();
 				if (retryTimer) clearTimeout(retryTimer);
 				removeDaemonListener();
 				removeBaseUrlListener();

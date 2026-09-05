@@ -1,0 +1,7 @@
+{
+  "protocol": "app:",
+  "textPreserved": true,
+  "codeCharacters": 51000,
+  "workerAsset": "code-highlight.worker-D4-urxfv.js",
+  "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://127.0.0.1:* https://github.com https://avatars.githubusercontent.com https://gitlab.com https://bitbucket.org https://unavatar.io; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https://us.i.posthog.com https://us-assets.i.posthog.com wss://staging-api.aoagents.dev wss://api.aoagents.dev; object-src 'none'; base-uri 'self'; frame-src 'none'"
+}

@@ -1020,6 +1020,30 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByRole("status")).toHaveTextContent(/tool servers? did not start/);
 	});
 
+	it("reuses anchor measurements while scrolling and refreshes after content mutations", () => {
+		useUiStore.setState({ inspectorSessions: { "ao-long": { isOpen: false, view: "summary" } } });
+		render(<ChatWorkspace snapshot={chatFixtureLongHistory(8)} />);
+		const log = screen.getByRole("log");
+		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 1000 });
+		const anchors = Array.from(log.querySelectorAll<HTMLElement>("[data-chat-scroll-anchor]"));
+		const reads = anchors.map((anchor) => vi.spyOn(anchor, "getBoundingClientRect"));
+		fireEvent.scroll(log);
+		for (const read of reads) read.mockClear();
+		for (let i = 0; i < 5; i++) {
+			log.scrollTop += 10;
+			fireEvent.scroll(log);
+		}
+		expect(reads.reduce((total, read) => total + read.mock.calls.length, 0)).toBe(0);
+		// Same overall content height can hide a changed prompt position. Detect
+		// DOM mutations too, including those queued before the observer callback.
+		reads[0]!.mockReturnValue({ top: 1000, height: 20 } as DOMRect);
+		anchors[0]!.setAttribute("style", "padding-top: 20px");
+		fireEvent.scroll(log);
+		expect(reads.every((read) => read.mock.calls.length > 0)).toBe(true);
+		const marker = screen.getByRole("scrollbar", { name: "Conversation scrollbar" }).querySelector<HTMLElement>("[data-chat-scroll-marker]");
+		expect(Number(marker?.dataset.scrollTarget)).toBe(1660);
+	});
+
 	it("provides an interactive conversation minimap", () => {
 		useUiStore.setState({
 			inspectorSessions: {

@@ -119,6 +119,12 @@ jobs:
 
       - run: npm ci
 
+      # The performance fixture imports real renderer components, which in turn
+      # typecheck product-ui source through the frontend's TS path alias.
+      - name: Install product UI dependencies
+        run: npm ci
+        working-directory: packages/product-ui
+
       - name: Typecheck e2e suite
         # Playwright transpiles specs without typechecking, so the
         # `satisfies AoBridge` guard in e2e/support/fake-bridge.ts (the

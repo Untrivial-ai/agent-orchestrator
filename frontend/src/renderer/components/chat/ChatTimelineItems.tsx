@@ -115,20 +115,23 @@ const STREAM_BASE_CHARACTERS_PER_SECOND = 58;
 const STREAM_TARGET_BACKLOG_CHARACTERS = 72;
 const STREAM_MAX_CHARACTERS_PER_SECOND = 720;
 const STREAM_MAX_FRAME_DELTA_MS = 100;
+const STREAM_MAX_DISPLAY_LAG_MS = 200;
 const STREAM_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function streamGraphemes(text: string): string[] {
 	return Array.from(STREAM_GRAPHEME_SEGMENTER.segment(text), ({ segment }) => segment);
 }
 
-function reconciledStreamPrefix(visibleText: string, targetGraphemes: string[]): string {
+function reconciledStreamPrefix(visibleText: string, targetGraphemes: string[]) {
 	let boundary = 0;
+	let count = 0;
 	for (const grapheme of targetGraphemes) {
 		const nextBoundary = boundary + grapheme.length;
 		if (nextBoundary > visibleText.length) break;
 		boundary = nextBoundary;
+		count++;
 	}
-	return visibleText.slice(0, boundary);
+	return { text: visibleText.slice(0, boundary), count };
 }
 
 function useSmoothStreamingText(message: ConversationMessage): string {
@@ -137,8 +140,9 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 	const [visibleText, setVisibleText] = useState(() => message.text);
 	const visibleRef = useRef(visibleText);
 	const targetRef = useRef(message.text);
-	const visibleGraphemesRef = useRef(streamGraphemes(visibleText));
-	const targetGraphemesRef = useRef(streamGraphemes(message.text));
+	const targetGraphemes = useMemo(() => streamGraphemes(message.text), [message.text]);
+	const visibleGraphemeCountRef = useRef(targetGraphemes.length);
+	const targetGraphemesRef = useRef(targetGraphemes);
 	const messageIdRef = useRef(message.id);
 	const frameRef = useRef<number | undefined>(undefined);
 	const lastFrameAtRef = useRef<number | undefined>(undefined);
@@ -165,14 +169,25 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 
 	const scheduleDrain = useCallback(() => {
 		if (frameRef.current !== undefined) return;
+		const drainStartedAt = performance.now();
 
 		const tick = (now: number) => {
 			frameRef.current = undefined;
 			const previousFrameAt = lastFrameAtRef.current ?? now;
 			lastFrameAtRef.current = now;
-			const backlog = targetGraphemesRef.current.length - visibleGraphemesRef.current.length;
+			const backlog = targetGraphemesRef.current.length - visibleGraphemeCountRef.current;
 			if (backlog <= 0) {
 				fractionalCharactersRef.current = 0;
+				return;
+			}
+
+			// New snapshots share this drain's deadline. Use real elapsed time so a
+			// background tab catches up even if it has not received its first frame.
+			if (now - drainStartedAt >= STREAM_MAX_DISPLAY_LAG_MS) {
+				visibleRef.current = targetRef.current;
+				visibleGraphemeCountRef.current = targetGraphemesRef.current.length;
+				setVisibleText(targetRef.current);
+				cancelDrain();
 				return;
 			}
 
@@ -191,15 +206,14 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 				return;
 			}
 			fractionalCharactersRef.current -= count;
-			const current = visibleGraphemesRef.current;
+			const currentCount = visibleGraphemeCountRef.current;
 			const target = targetGraphemesRef.current;
-			if (current.length >= target.length) return;
-			const nextGraphemes = target.slice(current.length, current.length + count);
-			const next = current.concat(nextGraphemes).join("");
+			const nextCount = Math.min(target.length, currentCount + count);
+			const next = visibleRef.current + target.slice(currentCount, nextCount).join("");
 			visibleRef.current = next;
-			visibleGraphemesRef.current = current.concat(nextGraphemes);
+			visibleGraphemeCountRef.current = nextCount;
 			setVisibleText(next);
-			if (visibleGraphemesRef.current.length < targetGraphemesRef.current.length) {
+			if (visibleGraphemeCountRef.current < targetGraphemesRef.current.length) {
 				frameRef.current = window.requestAnimationFrame(tick);
 			}
 		};
@@ -207,35 +221,36 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 		lastFrameAtRef.current = undefined;
 		fractionalCharactersRef.current = 0;
 		frameRef.current = window.requestAnimationFrame(tick);
-	}, []);
+	}, [cancelDrain]);
 
 	useEffect(() => {
 		if (message.id !== messageIdRef.current) {
 			cancelDrain();
 			messageIdRef.current = message.id;
 			targetRef.current = message.text;
-			targetGraphemesRef.current = streamGraphemes(message.text);
+			targetGraphemesRef.current = targetGraphemes;
 			const initial = message.text;
 			visibleRef.current = initial;
-			visibleGraphemesRef.current = streamGraphemes(initial);
+			visibleGraphemeCountRef.current = targetGraphemes.length;
 			setVisibleText(initial);
 			return;
 		}
 
 		targetRef.current = message.text;
-		targetGraphemesRef.current = streamGraphemes(message.text);
+		targetGraphemesRef.current = targetGraphemes;
 		if (!message.streaming || reducedMotion) {
 			cancelDrain();
 			visibleRef.current = message.text;
-			visibleGraphemesRef.current = targetGraphemesRef.current;
+			visibleGraphemeCountRef.current = targetGraphemes.length;
 			setVisibleText(message.text);
 			return;
 		}
 		// A provider correction or rollback can replace the current prefix. In that
 		// case the durable snapshot is authoritative and should be shown immediately.
 		if (!message.text.startsWith(visibleRef.current)) {
+			cancelDrain();
 			visibleRef.current = message.text;
-			visibleGraphemesRef.current = targetGraphemesRef.current;
+			visibleGraphemeCountRef.current = targetGraphemes.length;
 			setVisibleText(message.text);
 			return;
 		}
@@ -243,13 +258,13 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 		// different target grapheme. Reconcile that trailing fragment before using
 		// the old grapheme count, otherwise the drain can skip the merged suffix.
 		const reconciled = reconciledStreamPrefix(visibleRef.current, targetGraphemesRef.current);
-		if (reconciled !== visibleRef.current) {
-			visibleRef.current = reconciled;
-			visibleGraphemesRef.current = streamGraphemes(reconciled);
-			setVisibleText(reconciled);
+		if (reconciled.text !== visibleRef.current) {
+			visibleRef.current = reconciled.text;
+			visibleGraphemeCountRef.current = reconciled.count;
+			setVisibleText(reconciled.text);
 		}
-		if (visibleGraphemesRef.current.length < targetGraphemesRef.current.length) scheduleDrain();
-	}, [cancelDrain, message.id, message.text, message.streaming, reducedMotion, scheduleDrain]);
+		if (visibleGraphemeCountRef.current < targetGraphemesRef.current.length) scheduleDrain();
+	}, [cancelDrain, message.id, message.text, message.streaming, reducedMotion, scheduleDrain, targetGraphemes]);
 
 	useEffect(
 		() => cancelDrain,
