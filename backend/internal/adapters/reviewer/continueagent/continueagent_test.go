@@ -16,7 +16,7 @@ func testReviewer() *Reviewer {
 	return &Reviewer{resolveBinary: func(context.Context) (string, error) { return "/opt/continue/bin/cn", nil }}
 }
 
-func TestReviewCommandLaunchesReadonlyHostTrustedTUI(t *testing.T) {
+func TestReviewCommandLaunchesAutoApprovedHostTrustedTUI(t *testing.T) {
 	dataDir := t.TempDir()
 	spec, err := testReviewer().ReviewCommand(context.Background(), ports.ReviewInvocation{
 		DataDir: dataDir, ReviewerID: "review-worker-1", TaskPromptRoot: filepath.Join(dataDir, "prompts"),
@@ -25,7 +25,7 @@ func TestReviewCommandLaunchesReadonlyHostTrustedTUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(spec.Argv, []string{"/opt/continue/bin/cn", "--readonly"}) || spec.InitialMessage != "task-ref:opaque" || spec.WorkingDirectory != "/host/project" {
+	if !slices.Equal(spec.Argv, []string{"/opt/continue/bin/cn", "--auto"}) || spec.InitialMessage != "task-ref:opaque" || spec.WorkingDirectory != "/host/project" {
 		t.Fatalf("ReviewCommand spec = %+v", spec)
 	}
 	if spec.Env["HOME"] != filepath.Join(dataDir, "reviewer-runtime", "review-worker-1", "config") || spec.Env["CONTINUE_CLI_ENABLE_TELEMETRY"] != "0" {
@@ -161,7 +161,7 @@ func TestAuditedContinuePackagePin(t *testing.T) {
 
 func TestHostTrustWarningCoversUnsafeInteractiveSurfaces(t *testing.T) {
 	// These are independent escape/discovery surfaces in Continue 1.5.47.
-	// --readonly, an explicit config, neutral cwd, and replacement env reduce
+	// An explicit config, neutral cwd, and replacement env reduce
 	// ambient discovery but do not enforce a security boundary against them.
 	risks := []struct {
 		name    string
@@ -186,7 +186,7 @@ func TestHostTrustWarningCoversUnsafeInteractiveSurfaces(t *testing.T) {
 			t.Fatalf("risk %s needs an audited exploit surface", risk.name)
 		}
 	}
-	for _, phrase := range []string{"host-trusted", "not OS isolation", "readonly mode"} {
+	for _, phrase := range []string{"host-trusted", "without OS isolation", "auto mode"} {
 		if !strings.Contains(HostTrustWarning, phrase) {
 			t.Fatalf("warning %q missing %q", HostTrustWarning, phrase)
 		}

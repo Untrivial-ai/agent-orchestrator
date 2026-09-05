@@ -110,7 +110,7 @@ func TestReviewCommandLaunchesHostTrustedInteractiveRun(t *testing.T) {
 	if !reflect.DeepEqual(spec.Argv, want) || spec.InitialMessage != "" || spec.WorkingDirectory != "/host/worktree" {
 		t.Fatalf("ReviewCommand spec = %+v", spec)
 	}
-	if spec.Env["GOOSE_MODE"] != "smart_approve" || spec.Env["GOOSE_SYSTEM_PROMPT_FILE_PATH"] != "/host/ao/prompts/reviewer/system.md" {
+	if spec.Env["GOOSE_MODE"] != "auto" || spec.Env["GOOSE_SYSTEM_PROMPT_FILE_PATH"] != "/host/ao/prompts/reviewer/system.md" {
 		t.Fatalf("ReviewCommand env = %#v", spec.Env)
 	}
 	if spec.Env["HOME"] != hostHome || spec.Env["XDG_CONFIG_HOME"] != filepath.Join(hostHome, ".config") || spec.Env["XDG_DATA_HOME"] != filepath.Join(hostHome, ".local", "share") || spec.Env["XDG_STATE_HOME"] != filepath.Join(hostHome, ".local", "state") {

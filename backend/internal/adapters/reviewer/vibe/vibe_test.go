@@ -45,7 +45,7 @@ func invocation(t *testing.T) ports.ReviewInvocation {
 	}
 }
 
-func TestReviewCommandLaunchesHostTrustedPlanTUI(t *testing.T) {
+func TestReviewCommandLaunchesHostTrustedAutoApproveTUI(t *testing.T) {
 	inv := invocation(t)
 	r := testReviewer(t, "vibe 2.23.2", strings.Join(requiredFlags, "\n"))
 	if r.ReviewProcessReusable() {
@@ -55,7 +55,7 @@ func TestReviewCommandLaunchesHostTrustedPlanTUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/opt/vibe/bin/vibe", "--trust", "--workdir", inv.WorkspacePath, "--add-dir", inv.TaskPromptRoot, "--agent", "plan", inv.Prompt}
+	want := []string{"/opt/vibe/bin/vibe", "--trust", "--workdir", inv.WorkspacePath, "--add-dir", inv.TaskPromptRoot, "--agent", "auto-approve", inv.Prompt}
 	if !reflect.DeepEqual(spec.Argv, want) || spec.InitialMessage != "" || spec.WorkingDirectory != inv.WorkspacePath {
 		t.Fatalf("ReviewCommand spec = %+v, want argv %#v", spec, want)
 	}
