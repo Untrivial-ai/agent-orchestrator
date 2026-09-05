@@ -103,7 +103,7 @@ func writeBrowserError(w http.ResponseWriter, r *http.Request, err error) {
 			"AGENT_BROWSER_COMMAND_BLOCKED":
 			status = http.StatusBadRequest
 			typeName = "bad_request"
-		case "STALE_REFERENCE", "TAB_NOT_FOUND":
+		case "STALE_REFERENCE", "TAB_NOT_FOUND", "BROWSER_TARGET_MISMATCH":
 			status = http.StatusConflict
 			typeName = "conflict"
 		case "BROWSER_TARGET_UNAVAILABLE", "BROWSER_AUTOMATION_UNAVAILABLE", "AGENT_BROWSER_NOT_INSTALLED",

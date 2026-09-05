@@ -126,6 +126,11 @@ func TestBrowserCommandValidationAndErrors(t *testing.T) {
 	if status != http.StatusConflict || !containsAll(body, `"code":"STALE_REFERENCE"`) {
 		t.Fatalf("stale = %d body=%s", status, body)
 	}
+	runtime.err = browserruntime.CommandError{Code: "BROWSER_TARGET_MISMATCH", Message: "Browser automation could not target AO tab t2"}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/browser/commands", `{"sessionId":"ao-1","action":"click"}`)
+	if status != http.StatusConflict || !containsAll(body, `"code":"BROWSER_TARGET_MISMATCH"`, `"message":"Browser automation could not target AO tab t2"`) {
+		t.Fatalf("target mismatch = %d body=%s", status, body)
+	}
 }
 
 func containsAll(body []byte, parts ...string) bool {
