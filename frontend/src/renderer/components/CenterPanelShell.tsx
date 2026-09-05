@@ -18,12 +18,15 @@ export function CenterPanelShell({
 	className,
 	children,
 	titlebarAlign = true,
+	draggableSessionFrame = false,
 }: {
 	/** Extra classes on the outer frame. */
 	className?: string;
 	children: ReactNode;
 	/** When false, keep the default panel insets (Settings). */
 	titlebarAlign?: boolean;
+	/** Adds a macOS window-drag strip outside the session surface. */
+	draggableSessionFrame?: boolean;
 }) {
 	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);
 	const isFullScreen = useWindowFullScreen();
@@ -42,9 +45,11 @@ export function CenterPanelShell({
 				titlebarClearance && isFullScreen && "center-panel-shell--titlebar-clearance-fullscreen",
 				linuxTitlebarClearance && "center-panel-shell--titlebar-clearance-linux",
 				align && isFullScreen && "center-panel-shell--fullscreen",
+				draggableSessionFrame && "center-panel-shell--draggable-session-frame",
 				className,
 			)}
 		>
+			{draggableSessionFrame ? <div aria-hidden="true" className="center-panel-session-drag-strip" /> : null}
 			<div className="center-panel-surface">{children}</div>
 		</div>
 	);

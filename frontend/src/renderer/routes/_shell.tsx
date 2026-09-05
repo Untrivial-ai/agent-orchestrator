@@ -122,7 +122,7 @@ const ShellCenter = memo(function ShellCenter({
 		return selfFramedCenterPanel ? (
 			<Outlet />
 		) : (
-			<CenterPanelShell className={panelClassName}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={isSessionRoute && isMac}>
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
 				</div>
@@ -131,7 +131,7 @@ const ShellCenter = memo(function ShellCenter({
 	}
 	if (framedAppTopbar) {
 		return (
-			<CenterPanelShell className={panelClassName}>
+			<CenterPanelShell className={panelClassName} draggableSessionFrame={isSessionRoute && isMac}>
 				{isSessionRoute ? null : <ShellTopbar />}
 				<div className="flex min-h-0 flex-1 flex-col">
 					<Outlet />
@@ -140,7 +140,7 @@ const ShellCenter = memo(function ShellCenter({
 		);
 	}
 	return (
-		<CenterPanelShell className={panelClassName}>
+		<CenterPanelShell className={panelClassName} draggableSessionFrame={isSessionRoute && isMac}>
 			<div className="flex min-h-0 flex-1 flex-col">
 				<Outlet />
 			</div>

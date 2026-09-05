@@ -488,6 +488,18 @@
 	padding: 0;
 }
 
+/* Keep the session card intact: this strip belongs to its slate outer frame,
+ * above the complete card (tabs and inspector alike), so it is a native macOS
+ * drag target without introducing a seam inside session content. */
+.center-panel-shell--draggable-session-frame {
+	flex-direction: column;
+}
+
+.center-panel-session-drag-strip {
+	flex: 0 0 var(--space-2);
+	-webkit-app-region: drag;
+}
+
 /* Sidebar closed on mac: content panel expands to fill the full window.
  * Remove all padding and strip the surface border + radius so it's flush. */
 .sidebar-hidden .center-panel-shell.center-panel-shell--mac {

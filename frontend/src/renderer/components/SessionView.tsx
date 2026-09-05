@@ -1481,8 +1481,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						) : null}
 						{codexAccountActions.error ? <p className="text-xs text-error" role="alert">{codexAccountActions.error}</p> : null}
 					</div>
-				</div>
-			) : null}
+					</div>
+				) : null}
 			<div
 				className="session-split relative flex min-h-0 flex-1 overflow-hidden"
 				data-testid="panel-group"
