@@ -37,6 +37,8 @@ export async function restartProjectOrchestrator({
 	onError,
 	mode,
 }: RestartProjectOrchestratorOptions) {
+	const activeElement = document.activeElement;
+	if (activeElement instanceof HTMLElement) activeElement.blur();
 	setProjectRestarting(projectId, true);
 	setOrchestratorReplacementError(projectId, null);
 	try {

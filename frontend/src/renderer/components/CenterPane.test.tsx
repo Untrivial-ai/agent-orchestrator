@@ -580,6 +580,18 @@ describe("CenterPane toolbar session label", () => {
 		expect(screen.queryByTestId("agent-switch-terminal-overlay")).not.toBeInTheDocument();
 	});
 
+	it("requests terminal focus for a selected TUI worker", () => {
+		renderCenterPane({ session: { ...worker, mode: "tui" } });
+
+		expect(screen.getByText("terminal body")).toHaveAttribute("data-focus-requested", "true");
+	});
+
+	it("does not request worker terminal focus for a Chat session", () => {
+		renderCenterPane({ session: { ...worker, mode: "chat" } });
+
+		expect(screen.getByText("terminal body")).toHaveAttribute("data-focus-requested", "false");
+	});
+
 	it("settles a completed switch without reviving it after the target stops", () => {
 		vi.useFakeTimers();
 		const activeSwitch = switchRecord({ state: "delivering_context" });

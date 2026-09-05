@@ -723,7 +723,7 @@ export function CenterPane({
 						// switch; every other target is interactive as soon as it is on screen.
 						// Without this a worker terminal was only focused mid agent-switch, so
 						// switching sessions left keystrokes going nowhere until you clicked it.
-						focusRequested={target.kind !== "worker" || !workerInputDisabled}
+						focusRequested={target.kind !== "worker" || (session?.mode !== "chat" && !workerInputDisabled)}
 						isFullscreen={isFullscreen}
 						inputDisabled={workerInputDisabled}
 						onChangeFontSize={updateFontSize}

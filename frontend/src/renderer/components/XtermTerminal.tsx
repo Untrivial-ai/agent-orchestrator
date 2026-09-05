@@ -34,6 +34,7 @@ import type {
 	TerminalUserInputSource,
 } from "../hooks/useTerminalSession";
 import { aoBridge } from "../lib/bridge";
+import { isDialogOrMenuOpen } from "../lib/dom-selectors";
 import { TERMINAL_FONT_SIZE_DEFAULT } from "../lib/design-tokens";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
 import { isMacPlatform } from "../lib/platform";
@@ -67,7 +68,7 @@ export type XtermTerminalProps = {
 	/** Resize this terminal without changing application zoom. */
 	onChangeFontSize?: (delta: number) => void;
 	/** Enter or exit fullscreen for the terminal pane that owns this xterm. */
-	onToggleFullscreen?: () => void;
+	onToggleFullscreen?: () => void | Promise<void>;
 	/**
 	 * The pane app scrolls its transcript by keyboard (PageUp/PageDown) rather
 	 * than acting on SGR wheel reports — e.g. opencode, which enables mouse
@@ -126,6 +127,7 @@ function loadRenderer(term: Terminal): void {
 const SUPPRESS_NATIVE_PASTE_MS = 100;
 /** Long enough to notice, short enough that a second copy reads as a second copy. */
 const COPY_TOAST_MS = 1400;
+const AUTOFOCUS_RETRY_FRAMES = 2;
 const COLOR_SCHEME_UPDATE_MODE = 2031;
 const COLOR_SCHEME_QUERY = 996;
 
@@ -224,6 +226,21 @@ function normalizedTerminalShortcut(event: KeyboardEvent): string | null {
 function terminalHasFocus(host: HTMLElement): boolean {
 	const activeElement = document.activeElement;
 	return !!activeElement && host.contains(activeElement);
+}
+
+function canAutoFocusTerminal(host: HTMLElement): boolean {
+	if (isDialogOrMenuOpen()) return false;
+	const activeElement = document.activeElement;
+	if (!(activeElement instanceof HTMLElement) || activeElement === document.body || !activeElement.isConnected) return true;
+	if (host.contains(activeElement)) return true;
+	// Selecting a session in the sidebar deliberately leaves its navigation
+	// button focused. Terminal tabs are the same intentional handoff within the
+	// pane. Every other focused control remains authoritative.
+	return (
+		activeElement.matches("button[aria-current='page']") ||
+		(activeElement.matches("button[role='tab'][aria-current]") &&
+			activeElement.closest('[data-testid="session-workspace-topbar"]') !== null)
+	);
 }
 
 type XtermInternal = Terminal & {
@@ -352,6 +369,20 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// A retained terminal can be parked between closing search and this frame.
 		}
 	}, []);
+	const restoreTerminalFocus = useCallback(() => {
+		const activeElement = document.activeElement;
+		if (activeElement instanceof HTMLElement) activeElement.blur();
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => focusTerminal());
+		});
+	}, [focusTerminal]);
+	const toggleFullscreenAndRestoreFocus = useCallback(async () => {
+		try {
+			await callbacksRef.current.onToggleFullscreen?.();
+		} finally {
+			restoreTerminalFocus();
+		}
+	}, [restoreTerminalFocus]);
 
 	callbacksRef.current = props;
 	showCopiedToastRef.current = () => {
@@ -1276,13 +1307,31 @@ export function XtermTerminal(props: XtermTerminalProps) {
 
 	useEffect(() => {
 		if (!props.focusRequested || props.isVisible === false) return undefined;
-		try {
-			termRef.current?.focus();
-		} catch {
-			// The retained terminal may have been parked during this effect.
-		}
-		return undefined;
-	}, [props.focusRequested, props.isVisible]);
+		let retryFrame: number | null = null;
+		let retriesRemaining = AUTOFOCUS_RETRY_FRAMES;
+		let cancelled = false;
+		const focusIfAllowed = () => {
+			if (cancelled) return;
+			const host = hostRef.current;
+			if (!host || !canAutoFocusTerminal(host)) {
+				if (retriesRemaining === 0) return;
+				retriesRemaining -= 1;
+				retryFrame = requestAnimationFrame(() => {
+					retryFrame = null;
+					focusIfAllowed();
+				});
+				return;
+			}
+			focusTerminal();
+		};
+
+		focusIfAllowed();
+
+		return () => {
+			cancelled = true;
+			if (retryFrame !== null) cancelAnimationFrame(retryFrame);
+		};
+	}, [focusTerminal, props.focusRequested, props.isVisible]);
 
 	useLayoutEffect(() => {
 		if (props.isVisible === false) {
@@ -1427,7 +1476,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 						<DropdownMenuItem
 							onSelect={() => {
 								setContextMenuOpen(false);
-								callbacksRef.current.onToggleFullscreen?.();
+								void toggleFullscreenAndRestoreFocus();
 							}}
 						>
 							{props.isFullscreen ? t("terminal.exitFullscreen") : t("terminal.fullscreen")}

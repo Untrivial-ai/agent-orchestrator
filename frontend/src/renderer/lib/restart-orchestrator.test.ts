@@ -59,6 +59,26 @@ describe("restartProjectOrchestrator", () => {
 		expect(navigate).not.toHaveBeenCalled();
 	});
 
+	it("blurs the restart control so the replacement terminal can reclaim focus", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue();
+		const restartButton = document.createElement("button");
+		document.body.appendChild(restartButton);
+		restartButton.focus();
+		spawnMock.mockResolvedValue("session-2");
+
+		await restartProjectOrchestrator({
+			projectId: "proj-1",
+			queryClient,
+			navigate: vi.fn(),
+			setProjectRestarting: vi.fn(),
+			setOrchestratorReplacementError: vi.fn(),
+		});
+
+		expect(restartButton).not.toHaveFocus();
+		restartButton.remove();
+	});
+
 	it("still records the replacement error when workspace invalidation fails", async () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		vi.spyOn(queryClient, "invalidateQueries").mockRejectedValue(new Error("refetch failed"));
