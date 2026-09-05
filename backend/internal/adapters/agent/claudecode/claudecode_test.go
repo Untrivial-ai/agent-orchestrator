@@ -374,6 +374,131 @@ func TestProbeNativeSessionUnknownWithoutConfigDir(t *testing.T) {
 	}
 }
 
+// TestGetLaunchCommandMCPAndPluginFlags: a per-role MCP set and plugin list are
+// emitted as claude-code flags. MCP configs go to --mcp-config (one per entry),
+// Strict adds --strict-mcp-config, local plugin paths go to --plugin-dir, and
+// http(s) URLs go to --plugin-url.
+func TestGetLaunchCommandMCPAndPluginFlags(t *testing.T) {
+	p := &Plugin{resolvedBinary: "claude"}
+	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{
+			MCP:        &domain.MCPConfig{Configs: []string{"{\"a\":1}", "/p/m.json"}, Strict: true},
+			PluginDirs: []string{"/local/plugin", "https://example.com/p.zip"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"--mcp-config", "{\"a\":1}"}) {
+		t.Fatalf("cmd %#v missing --mcp-config inline entry", cmd)
+	}
+	if !containsSubsequence(cmd, []string{"--mcp-config", "/p/m.json"}) {
+		t.Fatalf("cmd %#v missing --mcp-config path entry", cmd)
+	}
+	if !contains(cmd, "--strict-mcp-config") {
+		t.Fatalf("cmd %#v missing --strict-mcp-config", cmd)
+	}
+	if !containsSubsequence(cmd, []string{"--plugin-dir", "/local/plugin"}) {
+		t.Fatalf("cmd %#v missing --plugin-dir for local path", cmd)
+	}
+	if !containsSubsequence(cmd, []string{"--plugin-url", "https://example.com/p.zip"}) {
+		t.Fatalf("cmd %#v missing --plugin-url for URL", cmd)
+	}
+}
+
+// TestIsPluginURLCaseInsensitive: URL schemes are case-insensitive (RFC 3986),
+// so HTTPS:// and HtTp:// must route to --plugin-url, not --plugin-dir.
+func TestIsPluginURLCaseInsensitive(t *testing.T) {
+	for _, in := range []string{"https://example.com/p.zip", "HTTPS://example.com/p.zip", "HtTp://example.com/p.zip", "http://example.com/p.zip"} {
+		if !isPluginURL(in) {
+			t.Errorf("isPluginURL(%q) = false, want true (scheme is case-insensitive)", in)
+		}
+	}
+	for _, in := range []string{"/local/plugin", "./relative", "ftp://example.com/p.zip", "example.com/p.zip"} {
+		if isPluginURL(in) {
+			t.Errorf("isPluginURL(%q) = true, want false", in)
+		}
+	}
+}
+
+// TestGetLaunchCommandNoMCPFlagsWhenUnset: a config with no MCP/plugin
+// configuration emits nothing, so an unset role inherits the global set.
+func TestGetLaunchCommandNoMCPFlagsWhenUnset(t *testing.T) {
+	p := &Plugin{resolvedBinary: "claude"}
+	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"--mcp-config", "--strict-mcp-config", "--plugin-dir", "--plugin-url"} {
+		if contains(cmd, flag) {
+			t.Fatalf("cmd %#v unexpectedly contains %s", cmd, flag)
+		}
+	}
+}
+
+// TestGetLaunchCommandMCPStrictAlone: Strict with no configs is valid isolation
+// and emits just --strict-mcp-config.
+func TestGetLaunchCommandMCPStrictAlone(t *testing.T) {
+	p := &Plugin{resolvedBinary: "claude"}
+	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{MCP: &domain.MCPConfig{Strict: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(cmd, "--strict-mcp-config") {
+		t.Fatalf("cmd %#v missing --strict-mcp-config", cmd)
+	}
+	if contains(cmd, "--mcp-config") {
+		t.Fatalf("cmd %#v unexpectedly contains --mcp-config", cmd)
+	}
+}
+
+// TestGetRestoreCommandReappliesMCPAndPluginFlags: like the system prompt, MCP
+// and plugin flags are rebuilt from flags on resume, so a restored worker keeps
+// its scoped MCP set and plugins.
+func TestGetRestoreCommandReappliesMCPAndPluginFlags(t *testing.T) {
+	cmd, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Config: ports.AgentConfig{
+			MCP:        &domain.MCPConfig{Configs: []string{"{\"a\":1}"}, Strict: true},
+			PluginDirs: []string{"https://example.com/p.zip"},
+		},
+		Session: ports.SessionRef{
+			ID:       "sess-r",
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "claude-native-1"},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
+	}
+	if !containsSubsequence(cmd, []string{"--mcp-config", "{\"a\":1}"}) {
+		t.Fatalf("restore cmd %#v missing --mcp-config", cmd)
+	}
+	if !contains(cmd, "--strict-mcp-config") {
+		t.Fatalf("restore cmd %#v missing --strict-mcp-config", cmd)
+	}
+	if !containsSubsequence(cmd, []string{"--plugin-url", "https://example.com/p.zip"}) {
+		t.Fatalf("restore cmd %#v missing --plugin-url", cmd)
+	}
+	// Flags must precede --resume.
+	if !flagsBeforeResume(cmd, "--strict-mcp-config") {
+		t.Fatalf("restore cmd %#v: MCP flag not before --resume", cmd)
+	}
+}
+
+// flagsBeforeResume reports whether flag appears before --resume in cmd.
+func flagsBeforeResume(cmd []string, flag string) bool {
+	for _, v := range cmd {
+		if v == "--resume" {
+			return false
+		}
+		if v == flag {
+			return true
+		}
+	}
+	return false
+}
+
 func TestClaudeSessionUUIDDeterministicAndUnique(t *testing.T) {
 	a1 := claudeSessionUUID("alpha")
 	a2 := claudeSessionUUID("alpha")

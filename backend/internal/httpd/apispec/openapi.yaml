@@ -6713,11 +6713,23 @@ components:
       type: object
     AgentConfig:
       properties:
+        env:
+          additionalProperties:
+            type: string
+          type: object
+        mcp:
+          $ref: '#/components/schemas/MCPConfig'
         mode:
           type: string
         model:
           type: string
         permissions:
+          type: string
+        pluginDirs:
+          items:
+            type: string
+          type: array
+        systemPrompt:
           type: string
       type: object
     AgentInfo:
@@ -9459,6 +9471,15 @@ components:
       - path
       - entries
       - truncated
+      type: object
+    MCPConfig:
+      properties:
+        configs:
+          items:
+            type: string
+          type: array
+        strict:
+          type: boolean
       type: object
     MarkAllNotificationsReadRequest:
       properties:

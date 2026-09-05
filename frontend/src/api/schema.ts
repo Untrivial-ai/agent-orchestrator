@@ -2355,9 +2355,15 @@ export interface components {
             state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
         };
         AgentConfig: {
+            env?: {
+                [key: string]: string;
+            };
+            mcp?: components["schemas"]["MCPConfig"];
             mode?: string;
             model?: string;
             permissions?: string;
+            pluginDirs?: string[];
+            systemPrompt?: string;
         };
         AgentInfo: {
             /**
@@ -3334,6 +3340,10 @@ export interface components {
             path: string;
             sessionId: string;
             truncated: boolean;
+        };
+        MCPConfig: {
+            configs?: string[];
+            strict?: boolean;
         };
         MarkAllNotificationsReadRequest: {
             /** @description Acknowledge exactly these notifications. Omit to acknowledge every unread notification; paginating clients should send the ids they actually rendered so later pages stay unread. */

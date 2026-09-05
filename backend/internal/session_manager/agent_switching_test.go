@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -589,6 +590,7 @@ type switchTestAgent struct {
 	restoreSystemPrompt string
 	launchSystemFile    string
 	restoreSystemFile   string
+	configDirEnv        map[string]string
 	preflightMu         sync.Mutex
 	preflightStarted    chan struct{}
 	preflightRelease    chan struct{}
@@ -776,7 +778,8 @@ func (a *switchTestAgent) ComposerIsEmpty(output string) bool {
 	return true
 }
 
-func (a *switchTestAgent) NativeSessionConfigDir(context.Context, map[string]string) (string, error) {
+func (a *switchTestAgent) NativeSessionConfigDir(_ context.Context, env map[string]string) (string, error) {
+	a.configDirEnv = maps.Clone(env)
 	return a.configDir, nil
 }
 
@@ -2756,6 +2759,47 @@ func TestSwitchAgentModelClaudeToCodexDropsSourceOverride(t *testing.T) {
 	}
 	if target.launchModel != "" {
 		t.Fatalf("Codex target launch model = %q, want no source override", target.launchModel)
+	}
+}
+
+func TestSwitchAgentPreservesRoleEnvForSourceAndTarget(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	project := store.projects["proj"]
+	project.Config.Env = map[string]string{
+		"PROJECT_ONLY": "project",
+		"SHARED":       "project",
+	}
+	project.Config.Worker.AgentConfig.Env = map[string]string{
+		"ROLE_ONLY": "role",
+		"SHARED":    "role",
+	}
+	store.projects[project.ID] = project
+	source := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+
+	if _, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "preserve-role-env",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, env := range map[string]map[string]string{
+		"source": source.configDirEnv,
+		"target": target.configDirEnv,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Helper()
+			if env["PROJECT_ONLY"] != "project" {
+				t.Fatalf("PROJECT_ONLY = %q, want project", env["PROJECT_ONLY"])
+			}
+			if env["ROLE_ONLY"] != "role" {
+				t.Fatalf("ROLE_ONLY = %q, want role", env["ROLE_ONLY"])
+			}
+			if env["SHARED"] != "role" {
+				t.Fatalf("SHARED = %q, want role", env["SHARED"])
+			}
+		})
 	}
 }
 
