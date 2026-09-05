@@ -36,7 +36,7 @@ conversation files remain in Pi's own session directory.
 | Images and attachments | Images are sent as native ACP image blocks. Text resources are sent as embedded context. Audio is not supported by pi-acp. |
 | Load/resume | AO stores the pi-acp session id and uses ACP `session/load`, including structured history replay. |
 | Models | pi-acp's live `model` config option drives AO's model selector; `thought_level` carries effort. |
-| MCP | pi-acp 0.17.1 accepts MCP fields but does not connect them to Pi. AO therefore does not claim MCP support; a session configured with per-session MCP servers is rejected during ACP setup instead of silently ignoring them. |
+| MCP | pi-acp 0.17.1 accepts MCP fields but does not connect them to Pi. Per-session MCP servers are not wired end-to-end in AO yet; once they are, a stdio server is forwarded to pi-acp and simply has no effect, while HTTP and SSE servers are still refused unless pi advertises the matching `mcp_capabilities` entry. Known gap: AO does not surface that forwarded stdio servers are inert, so the honest-refusal behavior this row previously described no longer holds. |
 
 For project instructions, AO uses pi-acp's resource-composition metadata to
 append the same generated AO standing prompt passed to `pi
