@@ -19,8 +19,9 @@ COPY --from=node-runtime /usr/local/ /usr/local/
 RUN npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && \
     claude --version && \
     mkdir -p /etc/skel/.local/bin && \
-    ln -s "$(readlink -f "$(command -v claude)")" \
-      /etc/skel/.local/bin/claude
+    ln -sfn "$(readlink -f "$(command -v claude)")" \
+      /etc/skel/.local/bin/claude && \
+    test -x /etc/skel/.local/bin/claude
 
 COPY --from=ao-release /ao-worker /usr/local/bin/ao-worker
 COPY --from=ao-release /ao /usr/local/bin/ao
