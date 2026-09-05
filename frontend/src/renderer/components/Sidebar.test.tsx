@@ -688,6 +688,50 @@ describe("Sidebar", () => {
 		expect(row).not.toHaveClass("scale-[0.97]");
 	});
 
+	it("shows the orchestrator activity dot left of the project name", () => {
+		const orchestrator: WorkspaceSession = {
+			...session,
+			id: "proj-1-orchestrator",
+			title: "Orchestrator",
+			kind: "orchestrator",
+			status: "working",
+			activity: { state: "waiting_input", lastActivityAt: "2026-06-30T00:00:00Z" },
+		};
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [orchestrator] }] });
+
+		const label = document.querySelector<HTMLElement>("[data-project-label]");
+		const dot = label?.previousElementSibling as HTMLElement | null;
+		expect(dot).toHaveAttribute("data-session-status");
+		// Dot colour is section-first (scmStatus ?? status), so a "working"
+		// orchestrator paints the working zone even while it awaits input; the
+		// waiting_input activity only stops the pulse.
+		expect(dot).toHaveClass("bg-status-working");
+		expect(dot).not.toHaveClass("animate-status-pulse");
+		// Dot-to-name spacing matches SessionRow's gap-1.5.
+		expect(label?.parentElement).toHaveClass("gap-1.5");
+	});
+
+	it("shows the latest orchestrator activity even when it has exited", () => {
+		const orchestrator: WorkspaceSession = {
+			...session,
+			id: "proj-1-orchestrator",
+			title: "Orchestrator",
+			kind: "orchestrator",
+			status: "exited",
+			isTerminated: true,
+			activity: { state: "exited", lastActivityAt: "2026-06-30T00:00:00Z" },
+		};
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [orchestrator] }] });
+
+		const label = document.querySelector<HTMLElement>("[data-project-label]");
+		const dot = label?.previousElementSibling as HTMLElement | null;
+		expect(dot).toHaveAttribute("data-session-status");
+		// Section-first colouring maps "exited" to the action zone (needs-you
+		// tone); the dot's presence is what proves the exited orchestrator still
+		// reports.
+		expect(dot).toHaveClass("bg-status-needs-you");
+	});
+
 	it("toggles project sessions from the folder icon without selecting the project first", async () => {
 		const user = userEvent.setup();
 		const other: WorkspaceSummary = {

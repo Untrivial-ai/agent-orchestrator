@@ -64,6 +64,7 @@ import { parseNightlyVersion } from "../lib/build-channel";
 import {
 	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
+	newestOrchestrator,
 	type WorkspaceSession,
 	type WorkspaceSummary,
 	sortedWorkerSessions,
@@ -1105,6 +1106,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		hasInteractedWithDisclosure.current = true;
 		onToggle(workspace.id);
 	};
+	const orchestratorStatus = newestOrchestrator(workspace.sessions);
 
 	// Mirrors ShellTopbar's launcher: attach to the running orchestrator, or
 	// spawn one via the daemon and follow it once the workspace refetches.
@@ -1299,11 +1301,13 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									>
 										{expanded ? <FolderOpen className="size-5" strokeWidth={1.75} /> : <Folder className="size-5" strokeWidth={1.75} />}
 									</span>
-									<span
-										className="sidebar-expanded-chrome min-w-0 flex-1 translate-y-px truncate group-data-[collapsible=icon]:hidden"
-										data-project-label=""
-									>
-										{workspace.name}
+									{/* Orchestrator activity sits left of the project name, mirroring worker rows.
+									    gap-1.5 matches SessionRow's dot-to-title spacing (the row itself uses gap-2). */}
+									<span className="sidebar-expanded-chrome flex min-w-0 flex-1 items-center gap-1.5 group-data-[collapsible=icon]:hidden">
+										{orchestratorStatus ? <SessionStatusDot session={orchestratorStatus} /> : null}
+										<span className="min-w-0 flex-1 translate-y-px truncate" data-project-label="">
+											{workspace.name}
+										</span>
 									</span>
 									{workspace.kind === "cloud" && (
 										<Badge

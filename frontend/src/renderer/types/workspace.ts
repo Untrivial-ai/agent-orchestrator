@@ -234,12 +234,15 @@ export function findProjectOrchestrator(
 	return newestActiveOrchestrator(workspace?.sessions ?? []);
 }
 
-export function newestActiveOrchestrator(sessions: WorkspaceSession[]): WorkspaceSession | undefined {
-	const active = sessions.filter((session) => isOrchestratorSession(session) && sessionIsActive(session));
-	return active.reduce<WorkspaceSession | undefined>(
+export function newestOrchestrator(sessions: WorkspaceSession[]): WorkspaceSession | undefined {
+	return sessions.filter(isOrchestratorSession).reduce<WorkspaceSession | undefined>(
 		(newest, session) => (!newest || sessionNewer(session, newest) ? session : newest),
 		undefined,
 	);
+}
+
+export function newestActiveOrchestrator(sessions: WorkspaceSession[]): WorkspaceSession | undefined {
+	return newestOrchestrator(sessions.filter(sessionIsActive));
 }
 
 function sessionNewer(a: WorkspaceSession, b: WorkspaceSession): boolean {
