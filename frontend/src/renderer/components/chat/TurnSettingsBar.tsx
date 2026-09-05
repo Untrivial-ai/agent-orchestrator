@@ -33,6 +33,7 @@ import { cn } from "../../lib/utils";
 import { Switch } from "../ui/switch";
 import type {
 	ApprovalMode,
+	ChatConfigChoice,
 	ChatConfigOption,
 	ChatConfigOptionValue,
 	ChatModel,
@@ -472,8 +473,8 @@ function PlanModeToggle({
 	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
 }) {
 	const planning = isPlanMode(option);
-	const planChoice = option.choices.find((choice) => isPlanChoice(choice));
-	const agentChoice = option.choices.find((choice) => !isPlanChoice(choice));
+	const planChoice = option.choices?.find((choice) => isPlanChoice(choice));
+	const agentChoice = option.choices?.find((choice) => !isPlanChoice(choice));
 	const next = planning ? agentChoice : planChoice;
 	if (!next) return null;
 	return (
@@ -501,7 +502,7 @@ function ConfigToggle({
 					onChange(option.id, { enabled });
 					return;
 				}
-				const next = option.choices.find((choice) => choiceIsEnabled(choice) === enabled);
+				const next = option.choices?.find((choice) => choiceIsEnabled(choice) === enabled);
 				if (next) onChange(option.id, { value: next.value });
 			}}
 		/>
@@ -669,10 +670,11 @@ function ConfigOptionChoices({
 		);
 	}
 
+	const choices = option.choices ?? [];
 	return (
 		<>
-			{option.choices.map((choice, index) => {
-				const previousGroup = index > 0 ? option.choices[index - 1]?.group : undefined;
+			{choices.map((choice, index) => {
+				const previousGroup = index > 0 ? choices[index - 1]?.group : undefined;
 				return (
 					<Fragment key={choice.value}>
 						{choice.group && choice.group !== previousGroup ? (
@@ -771,10 +773,10 @@ function isInlineToggleOption(option: ChatConfigOption): boolean {
 
 function optionIsEnabled(option: ChatConfigOption): boolean {
 	if (option.type === "boolean") return Boolean(option.currentBoolean);
-	return choiceIsEnabled(option.choices.find((choice) => choice.value === option.currentValue));
+	return choiceIsEnabled(option.choices?.find((choice) => choice.value === option.currentValue));
 }
 
-function choiceIsEnabled(choice: ChatConfigOption["choices"][number] | undefined): boolean {
+function choiceIsEnabled(choice: ChatConfigChoice | undefined): boolean {
 	return Boolean(choice && /(?:^|[\s_-])(on|enabled|true)(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`));
 }
 
@@ -797,6 +799,8 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	let mode: ChatConfigOption | undefined;
 	for (const option of options) {
 		if (isAgentOption(option)) continue;
+		const choices = option.choices ?? [];
+		if (option.type === "select" && choices.length === 0) continue;
 		if (isModelOption(option)) {
 			if (option.category === "model" || option.id === "model") primaryModel.push(option);
 			else otherModel.push(option);
@@ -811,9 +815,9 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 			continue;
 		}
 		if (isModeOption(option) && !mode) {
-			const permissionChoices = option.choices.filter((choice) => !isExecutionModeChoice(choice));
+			const permissionChoices = choices.filter((choice) => !isExecutionModeChoice(choice));
 			const executionChoices = addAgentModeChoice(
-				option.choices.filter(isExecutionModeChoice),
+				choices.filter(isExecutionModeChoice),
 				permissionChoices,
 			);
 			if (executionChoices.length > 0) {
@@ -835,7 +839,7 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
  * are not the same decision for a person composing a turn. Preserve the provider
  * values while presenting those choices under their respective controls.
  */
-function isExecutionModeChoice(choice: ChatConfigOption["choices"][number]): boolean {
+function isExecutionModeChoice(choice: ChatConfigChoice): boolean {
 	return /(?:^|[\s_-])(plan|agent)(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`);
 }
 
@@ -846,9 +850,9 @@ function isExecutionModeChoice(choice: ChatConfigOption["choices"][number]): boo
  * value. Other harnesses that advertise Agent Mode explicitly stay untouched.
  */
 function addAgentModeChoice(
-	executionChoices: ChatConfigOption["choices"],
-	permissionChoices: ChatConfigOption["choices"],
-): ChatConfigOption["choices"] {
+	executionChoices: ChatConfigChoice[],
+	permissionChoices: ChatConfigChoice[],
+): ChatConfigChoice[] {
 	if (executionChoices.some((choice) => /(?:^|[\s_-])agent(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`))) {
 		return executionChoices;
 	}
@@ -863,13 +867,13 @@ function isPlanMode(option: ChatConfigOption | undefined): boolean {
 	return Boolean(option?.currentValue && isPlanChoice({ value: option.currentValue, name: option.currentValue }));
 }
 
-function isPlanChoice(choice: Pick<ChatConfigOption["choices"][number], "name" | "value">): boolean {
+function isPlanChoice(choice: Pick<ChatConfigChoice, "name" | "value">): boolean {
 	return /(?:^|[\s_-])plan(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`);
 }
 
 function withChoices(
 	option: ChatConfigOption,
-	choices: ChatConfigOption["choices"],
+	choices: ChatConfigChoice[],
 	name = option.name,
 ): ChatConfigOption {
 	const currentValue = choices.some((choice) => choice.value === option.currentValue)
@@ -880,7 +884,7 @@ function withChoices(
 
 function optionCurrentLabel(option: ChatConfigOption): string {
 	if (option.type === "boolean") return option.currentBoolean ? "On" : "Off";
-	return option.choices.find((choice) => choice.value === option.currentValue)?.name
+	return option.choices?.find((choice) => choice.value === option.currentValue)?.name
 		?? option.currentValue
 		?? option.name;
 }

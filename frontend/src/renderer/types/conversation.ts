@@ -558,7 +558,7 @@ export interface ChatConfigOption {
 	type: "select" | "boolean";
 	currentValue?: string;
 	currentBoolean?: boolean;
-	choices: ChatConfigChoice[];
+	choices?: ChatConfigChoice[];
 }
 
 /** One value offered by a select config option. */

@@ -87,6 +87,36 @@ describe("ACP session config options", () => {
 		expect(screen.queryByText("More")).not.toBeInTheDocument();
 	});
 
+	it("keeps config controls usable when a select option has no choices", async () => {
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				models={[]}
+				settings={{}}
+				configOptions={[
+					{ id: "model", name: "Model", category: "model", type: "select" },
+					{
+						id: "mode",
+						name: "Mode",
+						category: "mode",
+						type: "select",
+						currentValue: "default",
+						choices: [
+							{ value: "default", name: "Default" },
+							{ value: "plan", name: "Plan" },
+							{ value: "auto", name: "Auto" },
+							{ value: "yolo", name: "YOLO" },
+						],
+					},
+				]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
+		expect(screen.getByRole("switch", { name: "Plan Mode" })).toBeInTheDocument();
+	});
+
 	it("maps Agent Mode back to the provider's Manual value", async () => {
 		const onChange = vi.fn();
 		const user = userEvent.setup();
