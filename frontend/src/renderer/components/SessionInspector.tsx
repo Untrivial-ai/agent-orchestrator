@@ -580,7 +580,7 @@ function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 				tooltipClassName="max-w-64"
 			/>
 			{error ? (
-				<p className="mt-1 text-2xs leading-normal text-error" role="status">
+				<p className="mt-1 select-text text-2xs leading-normal text-error" role="status">
 					{error}
 				</p>
 			) : null}
@@ -673,7 +673,7 @@ function AutoInjectReviewPolicyControl({ session }: { session: WorkspaceSession 
 				tooltipClassName="max-w-60"
 			/>
 			{error ? (
-				<p className="mt-1 text-2xs leading-normal text-error" role="status">
+				<p className="mt-1 select-text text-2xs leading-normal text-error" role="status">
 					{error}
 				</p>
 			) : null}
@@ -1049,7 +1049,7 @@ function ResumeAgentControl({ session }: { session: WorkspaceSession }) {
 				{resume.isPending ? t("inspector.resumingAgent") : t("inspector.resumeAgent")}
 			</Button>
 			{error ? (
-				<p className="mt-2 text-2xs leading-normal text-error" role="status">
+				<p className="mt-2 select-text text-2xs leading-normal text-error" role="status">
 					{error}
 				</p>
 			) : null}
@@ -1151,7 +1151,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 						tooltipClassName="max-w-60"
 					/>
 					{policyError ? (
-						<p className="mt-1 text-2xs leading-normal text-error" role="status">
+						<p className="mt-1 select-text text-2xs leading-normal text-error" role="status">
 							{policyError}
 						</p>
 					) : null}
@@ -2212,12 +2212,12 @@ function ReviewPanel({
 		<div className="mb-2.5 flex flex-col">
 				<Section surface title={t("inspector.review.controls")}>
 					{error ? (
-						<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error">
+						<p className="m-0 select-text rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error">
 							{apiErrorMessage(error, t("inspector.reviewRequestFailed"))}
 					</p>
 				) : null}
 				{autoReviewFailure ? (
-					<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error" role="status">
+					<p className="m-0 select-text rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error" role="status">
 						<span className="font-semibold">
 							{t("inspector.autoReview")} {t("inspector.review.failed")}:
 						</span>{" "}

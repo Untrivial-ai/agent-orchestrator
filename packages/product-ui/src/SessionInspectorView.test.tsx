@@ -198,14 +198,18 @@ describe("portable inspector presentations", () => {
         }}
       />,
     );
-    expect(
-      screen.getByRole("link", { name: "Portable inspector" }),
-    ).toHaveAttribute("href", "https://example.com/pull/12");
-    expect(
-      screen.getByRole("link", { name: "Open PR #12" }),
-    ).toBeInTheDocument();
+    const title = screen.getByText("Portable inspector");
+    const number = screen.getByText("PR #12");
+    expect(title.closest("a")).toBeNull();
+    expect(number.closest("a")).toBeNull();
+    expect(screen.getByRole("link", { name: "Open PR #12" })).toHaveAttribute(
+      "href",
+      "https://example.com/pull/12",
+    );
     expect(screen.getByText("Ready to merge")).toHaveClass("text-success");
     expect(screen.getByRole("button", { name: "Merge" })).toBeInTheDocument();
+    // #4268: PR details are copyable content, not app chrome — see plan.
+    expect(title.closest("article")).toHaveClass("select-text");
   });
 
   it("renders timeline events with current-state marker treatment", () => {
@@ -233,6 +237,9 @@ describe("portable inspector presentations", () => {
       background: "#60a5fa",
     });
     expect(screen.getByText("2h ago")).toHaveClass("font-mono", "text-passive");
+    // #4268: activity content and its timestamp are copyable content.
+    expect(events[0]).toHaveClass("select-text");
+    expect(events[1]).toHaveClass("select-text");
   });
 
   it("owns grouped review disclosure while the host supplies markdown and assets", () => {
@@ -295,6 +302,11 @@ describe("portable inspector presentations", () => {
     expect(row).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("Looks good.")).toBeInTheDocument();
     expect(screen.getByText("Ship it.")).toBeInTheDocument();
+    // #4268: the AO review card's actor/verdict/timestamp header is copyable
+    // content, distinct from its markdown body (already select-text).
+    expect(
+      screen.getAllByText("codex")[0]!.closest(".select-text"),
+    ).not.toBeNull();
     expect(screen.queryByRole("button", {
       name: /review-bot.*Approved/,
     })).not.toBeInTheDocument();
@@ -303,6 +315,10 @@ describe("portable inspector presentations", () => {
       .closest('[data-testid="github-review-summary"]');
     expect(githubSummary).toBeInTheDocument();
     expect(githubSummary).toHaveClass("select-text");
+    // #4268: reviewer id / bot marker / timestamp / verdict are copyable
+    // content when the header isn't a collapse-toggle button (short body,
+    // no inline comments — the case built by this fixture).
+    expect(screen.getByText("review-bot").closest(".select-text")).not.toBeNull();
     expect(screen.queryByText("Not injected")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "View on PR" })).not.toBeInTheDocument();
     expect(renderAvatar).toHaveBeenCalledWith("codex");
@@ -544,11 +560,22 @@ describe("portable inspector presentations", () => {
     expect(
       screen.queryByText("This branch leaks the resize listener on unmount."),
     ).not.toBeInTheDocument();
+    // #4268: this header IS the collapse toggle (inline comments force
+    // collapsible=true) — it must stay unselectable so a text-selection drag
+    // can't fire the toggle, matching the board-card click-target precedent.
+    expect(
+      screen.getByRole("button", { name: /maya.*Commented/i }),
+    ).not.toHaveClass("select-text");
     fireEvent.click(screen.getByRole("button", { name: /maya.*Commented/i }));
     expect(screen.getByTestId("github-inline-comments")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open comments · 2" })).toBeInTheDocument();
     expect(screen.getByText("#12 · 2 unresolved")).toBeInTheDocument();
     expect(screen.getByText("src/panel.tsx:42")).toBeInTheDocument();
+    // #4268: the comment row's own expand/collapse toggle (file label +
+    // preview) must stay unselectable — the whole row is its click target.
+    expect(
+      screen.getByText("src/panel.tsx:42").closest("div"),
+    ).not.toHaveClass("select-text");
     expect(
       screen.getByText("This branch leaks the resize listener on unmount."),
     ).toBeInTheDocument();
@@ -588,6 +615,9 @@ describe("portable inspector presentations", () => {
       }),
     );
     await waitFor(() => expect(screen.getByText("Resolved")).toBeInTheDocument());
+    // #4268: the resolve/send status line sits beside the toggle, not inside
+    // it, so it's copyable content.
+    expect(screen.getByText("Resolved")).toHaveClass("select-text");
     fireEvent.click(screen.getByRole("button", { name: "View in file" }));
     expect(onViewInlineCommentInFile).toHaveBeenCalledWith(
       expect.objectContaining({ file: "src/panel.tsx", line: 42 }),
@@ -663,6 +693,7 @@ describe("portable inspector presentations", () => {
     await waitFor(() =>
       expect(screen.getByText("Unable to send. Retry.")).toHaveClass(
         "text-error",
+        "select-text",
       ),
     );
     fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
@@ -672,6 +703,77 @@ describe("portable inspector presentations", () => {
     expect(
       screen.queryByRole("status", { name: "Sent to worker agent" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("surfaces inline review comment resolve failures as copyable text", async () => {
+    const onResolveInlineComment = vi
+      .fn()
+      .mockRejectedValue(new Error("resolve failed"));
+    render(
+      <InspectorReviewsView
+        externalLink={ExternalLink}
+        groups={[
+          {
+            github: {
+              entries: [
+                {
+                  body: undefined,
+                  id: "unresolved-maya",
+                  inlineComments: [
+                    {
+                      body: "Please tighten this spacing.",
+                      autoInjectReview: false,
+                      url: "https://example.com/comment",
+                    },
+                  ],
+                  reviewerId: "maya",
+                  reviewUrl: "https://example.com/review",
+                  submittedAt: "",
+                  submittedAtLabel: "",
+                  verdict: { label: "Commented", tone: "neutral" },
+                },
+              ],
+              unresolved: 1,
+              unresolvedBy: [
+                {
+                  count: 1,
+                  links: [
+                    {
+                      body: "Please tighten this spacing.",
+                      autoInjectReview: false,
+                      url: "https://example.com/comment",
+                    },
+                  ],
+                  reviewerId: "maya",
+                },
+              ],
+            },
+            meta: "#12 · 1 unresolved",
+            number: 12,
+            title: "Portable inspector",
+          },
+        ]}
+        isLoading={false}
+        labels={reviewLabels}
+        onResolveInlineComment={onResolveInlineComment}
+        renderAvatar={() => null}
+        renderMarkdown={(body) => <p>{body}</p>}
+      />,
+    );
+
+    expandFirstReviewGroup();
+    fireEvent.click(screen.getByRole("button", { name: /maya.*Commented/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resolve comment" }));
+
+    // #4268: the resolve-failed message is copyable content sitting beside
+    // the toggle, matching the send-failure and resolved-success cases above.
+    await waitFor(() =>
+      expect(screen.getByText("Unable to resolve. Retry.")).toHaveClass(
+        "text-error",
+        "select-text",
+      ),
+    );
   });
 
   it("keeps resolved comments collapsed until requested", () => {

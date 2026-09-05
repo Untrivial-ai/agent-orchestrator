@@ -510,11 +510,13 @@ describe("SessionInspector PR section", () => {
     expect(
       prSection("Pull request").getByText("Checks passing"),
     ).toBeInTheDocument();
+    const title = prSection("Pull request").getByText("PR 7", {
+      exact: true,
+    });
+    expect(title).toHaveClass("text-sm");
+    expect(title.closest("a")).toBeNull();
     expect(
-      prSection("Pull request").getByRole("link", { name: "PR 7" }),
-    ).toHaveClass("text-sm");
-    expect(
-      prSection("Pull request").getByRole("link", { name: "PR 7" }),
+      prSection("Pull request").getByRole("link", { name: "Open PR #7" }),
     ).toHaveAttribute("href", "https://github.com/acme/repo/pull/7");
     expect(prSection("Pull request").getByText("open")).toHaveClass(
       "text-[9px]",
