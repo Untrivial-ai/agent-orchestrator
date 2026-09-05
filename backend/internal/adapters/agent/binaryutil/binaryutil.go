@@ -72,14 +72,15 @@ type WinPath struct {
 	Parts []string
 }
 
-// ResolveBinary returns the path to spec's binary, searching PATH then the
-// platform's candidate install locations. It returns a wrapped
-// ports.ErrAgentBinaryNotFound when nothing matches, so callers surface a clear
-// "command not found" rather than launching an empty argv. ctx cancellation is
-// honored between probes.
-func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
+// ResolveBinaryCandidates returns spec's ordered binary candidates. PATH is
+// searched first, followed by the platform's configured paths, package-manager
+// paths, and (when enabled) version-manager paths. Candidates are deduplicated
+// while preserving their first occurrence. The returned paths are not all
+// necessarily executable; callers that need to validate a candidate should do
+// so themselves. ctx cancellation is honored while discovering candidates.
+func ResolveBinaryCandidates(ctx context.Context, spec BinarySpec) ([]string, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	names := spec.Names
@@ -87,16 +88,28 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 		names = spec.WinNames
 	}
 
+	candidates := make([]string, 0)
+	seen := make(map[string]struct{})
+	appendCandidate := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return nil, err
 		}
 		if path, err := exec.LookPath(name); err == nil && path != "" {
-			return path, nil
+			appendCandidate(path)
 		}
 	}
 
-	var candidates []string
 	if runtime.GOOS == "windows" {
 		home, _ := os.UserHomeDir()
 		appData := os.Getenv("APPDATA")
@@ -114,22 +127,63 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 			if base == "" {
 				continue
 			}
-			candidates = append(candidates, filepath.Join(append([]string{base}, wp.Parts...)...))
+			appendCandidate(filepath.Join(append([]string{base}, wp.Parts...)...))
 		}
-		candidates = append(candidates, WindowsPackageManagerBinCandidates(executableNames(spec)...)...)
+		for _, candidate := range WindowsPackageManagerBinCandidates(executableNames(spec)...) {
+			appendCandidate(candidate)
+		}
 	} else {
-		candidates = append(candidates, spec.UnixPaths...)
+		for _, candidate := range spec.UnixPaths {
+			appendCandidate(candidate)
+		}
 		if home, err := os.UserHomeDir(); err == nil {
-			candidates = append(candidates, joinAll(home, spec.UnixHomePaths)...)
-			candidates = append(candidates, UnixPackageManagerBinCandidates(home, spec.Names...)...)
+			for _, candidate := range joinAll(home, spec.UnixHomePaths) {
+				appendCandidate(candidate)
+			}
+			for _, candidate := range UnixPackageManagerBinCandidates(home, spec.Names...) {
+				appendCandidate(candidate)
+			}
 			if spec.NodeManaged {
 				nodeManagerCandidates, err := UnixNodeManagerBinCandidates(ctx, home, spec.Names...)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
-				candidates = append(candidates, nodeManagerCandidates...)
+				for _, candidate := range nodeManagerCandidates {
+					appendCandidate(candidate)
+				}
 			}
 		}
+	}
+
+	return candidates, nil
+}
+
+// ResolveBinary returns the path to spec's binary, searching PATH then the
+// platform's candidate install locations. It returns a wrapped
+// ports.ErrAgentBinaryNotFound when nothing matches, so callers surface a clear
+// "command not found" rather than launching an empty argv. ctx cancellation is
+// honored between probes.
+func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	names := spec.Names
+	if runtime.GOOS == "windows" {
+		names = spec.WinNames
+	}
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if path, err := exec.LookPath(name); err == nil && path != "" {
+			return path, nil
+		}
+	}
+
+	candidates, err := ResolveBinaryCandidates(ctx, spec)
+	if err != nil {
+		return "", err
 	}
 
 	for _, candidate := range candidates {

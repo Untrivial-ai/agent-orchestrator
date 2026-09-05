@@ -29,11 +29,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 const (
@@ -59,6 +61,7 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.AgentBinaryPresenceResolver = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -271,24 +274,79 @@ var gooseBinarySpec = binaryutil.BinarySpec{
 	},
 }
 
-// ResolveGooseBinary returns the path to the goose binary, or a wrapped
-// ports.ErrAgentBinaryNotFound when it is absent.
+// ResolveGooseBinary returns the Block/AI Goose path, or a wrapped
+// ports.ErrAgentBinaryNotFound when it is absent or a different goose CLI.
 func ResolveGooseBinary(ctx context.Context) (string, error) {
-	return binaryutil.ResolveBinary(ctx, gooseBinarySpec)
+	return resolveGooseBinary(ctx, gooseBinarySpec)
+}
+
+func resolveGooseBinary(ctx context.Context, spec binaryutil.BinarySpec) (string, error) {
+	candidates, err := binaryutil.ResolveBinaryCandidates(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if isOfficialGooseBinary(ctx, candidate) {
+			return candidate, nil
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("%s: %w", spec.Label, ports.ErrAgentBinaryNotFound)
+}
+
+func isOfficialGooseBinary(ctx context.Context, binary string) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	out, err := aoprocess.CommandContextForPath(probeCtx, binary, "--version").CombinedOutput()
+	if err != nil || probeCtx.Err() != nil {
+		return false
+	}
+	version := strings.TrimSpace(string(out))
+	return strings.HasPrefix(version, "goose ") && !strings.HasPrefix(version, "goose version:")
 }
 
 func (p *Plugin) gooseBinary(ctx context.Context) (string, error) {
-	p.binaryMu.Lock()
-	defer p.binaryMu.Unlock()
-
-	if p.resolvedBinary != "" {
-		return p.resolvedBinary, nil
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 
+	p.binaryMu.Lock()
+	binary := p.resolvedBinary
+	p.binaryMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if binary != "" {
+		return binary, nil
+	}
+
+	// Binary identity probing can execute an untrusted PATH collision and may
+	// take several seconds. Keep it outside the cache mutex so other callers
+	// can observe cancellation and do not queue behind the probe.
 	binary, err := ResolveGooseBinary(ctx)
 	if err != nil {
 		return "", err
 	}
-	p.resolvedBinary = binary
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	p.binaryMu.Lock()
+	if p.resolvedBinary != "" {
+		binary = p.resolvedBinary
+	} else {
+		p.resolvedBinary = binary
+	}
+	p.binaryMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	return binary, nil
 }

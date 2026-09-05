@@ -80,6 +80,22 @@ jobs:
       - name: Test workspace teardown and session kill
         run: go test -race -v -run 'Destroy|Discard|Sweep|Kill' ./internal/adapters/workspace/... ./internal/session_manager/
 
+  windows-goose:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - name: Test Goose adapter
+        run: go test ./internal/process ./internal/adapters/agent/goose
+
   lint:
     runs-on: ubuntu-latest
     steps:
