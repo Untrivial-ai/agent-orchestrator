@@ -125,6 +125,9 @@ func TestReviewRestoreCommandUsesNativeSessionIDAndReadOnlyPolicy(t *testing.T) 
 	if !ok {
 		t.Fatal("ReviewRestoreCommand ok = false, want true")
 	}
+	if !got.NativeResumed {
+		t.Fatal("ReviewRestoreCommand did not report native resume")
+	}
 	if strings.Join(got.Argv, " ") != "agent --session opencode-native-1" {
 		t.Fatalf("argv = %#v", got.Argv)
 	}

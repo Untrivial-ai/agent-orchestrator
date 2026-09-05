@@ -96,6 +96,9 @@ func TestReviewRestoreCommandUsesNativeSessionIDAndNoWriteSandbox(t *testing.T) 
 	if !ok {
 		t.Fatal("ReviewRestoreCommand ok = false, want true")
 	}
+	if !got.NativeResumed {
+		t.Fatal("ReviewRestoreCommand did not report native resume")
+	}
 	want := []string{"muse", "--trust-workspace", "--approval-mode", "never", "--disable-write", "resume", "muse-native-1"}
 	if !slices.Equal(got.Argv, want) {
 		t.Fatalf("argv = %#v, want %#v", got.Argv, want)

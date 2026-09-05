@@ -83,6 +83,9 @@ type LaunchSpec struct {
 type LaunchResult struct {
 	HandleID       string
 	AgentSessionID string
+	// NativeResumed reports whether the launch resumed the provider-native
+	// conversation instead of falling back to a fresh reviewer process.
+	NativeResumed bool
 }
 
 // reviewerRuntime is the runtime surface the launcher needs: create a pane,
@@ -380,7 +383,11 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (LaunchResul
 	if err != nil {
 		return LaunchResult{}, err
 	}
-	return l.launchReviewerTerminal(ctx, spec, inv)
+	// A retained native id means this stable reviewer has provider-owned
+	// history even though its terminal process is gone. Recreate the pane by
+	// resuming that conversation; a first launch has no id and still pins the
+	// adapter's deterministic fresh identity through ReviewCommand.
+	return l.launchReviewerTerminalWithMode(ctx, spec, inv, strings.TrimSpace(spec.AgentSessionID) != "")
 }
 
 func (l *agentLauncher) RestoreTerminal(ctx context.Context, spec LaunchSpec) (LaunchResult, error) {
@@ -389,10 +396,6 @@ func (l *agentLauncher) RestoreTerminal(ctx context.Context, spec LaunchSpec) (L
 		return LaunchResult{}, err
 	}
 	return l.launchReviewerTerminalWithMode(ctx, spec, inv, true)
-}
-
-func (l *agentLauncher) launchReviewerTerminal(ctx context.Context, spec LaunchSpec, inv ports.ReviewInvocation) (LaunchResult, error) {
-	return l.launchReviewerTerminalWithMode(ctx, spec, inv, false)
 }
 
 func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec LaunchSpec, inv ports.ReviewInvocation, restoring bool) (LaunchResult, error) {
@@ -406,6 +409,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 		}
 	}
 	var cmd ports.ReviewCommandSpec
+	nativeResumed := false
 	if restoring {
 		if restorer, ok := reviewer.(ports.ReviewerRestorer); ok {
 			restoreCmd, restoreOK, err := restorer.ReviewRestoreCommand(ctx, inv)
@@ -414,6 +418,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 			}
 			if restoreOK {
 				cmd = restoreCmd
+				nativeResumed = restoreCmd.NativeResumed
 			}
 		}
 	}
@@ -462,7 +467,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 	if agentSessionID == "" {
 		agentSessionID = strings.TrimSpace(spec.AgentSessionID)
 	}
-	return LaunchResult{HandleID: handle.ID, AgentSessionID: agentSessionID}, nil
+	return LaunchResult{HandleID: handle.ID, AgentSessionID: agentSessionID, NativeResumed: nativeResumed}, nil
 }
 
 func (l *agentLauncher) waitForPromptReadiness(ctx context.Context, reviewer ports.Reviewer, handle ports.RuntimeHandle) error {

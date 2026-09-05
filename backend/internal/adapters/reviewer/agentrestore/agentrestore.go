@@ -23,6 +23,13 @@ type Options struct {
 // still get the call when no hook-captured id is present.
 func Command(ctx context.Context, agent ports.Agent, inv ports.ReviewInvocation, opts Options) (ports.ReviewCommandSpec, bool, error) {
 	agentSessionID := strings.TrimSpace(inv.AgentSessionID)
+	prompt := ""
+	if strings.TrimSpace(inv.RunID) != "" {
+		// A dead reviewer relaunched for an active run must receive that run's
+		// task as the resume-time user turn. Idle terminal restoration leaves
+		// the existing conversation untouched until the next review trigger.
+		prompt = inv.Prompt
+	}
 	metadata := map[string]string{}
 	if agentSessionID != "" {
 		metadata[ports.MetadataKeyAgentSessionID] = agentSessionID
@@ -39,11 +46,16 @@ func Command(ctx context.Context, agent ports.Agent, inv ports.ReviewInvocation,
 		Permissions:      opts.Permissions,
 		AllowedTools:     opts.AllowedTools,
 		DisallowedTools:  opts.DisallowedTools,
+		Prompt:           prompt,
 		SystemPrompt:     inv.SystemPrompt,
 		SystemPromptFile: inv.SystemPromptFile,
 	})
 	if err != nil || !ok {
 		return ports.ReviewCommandSpec{}, ok, err
 	}
-	return ports.ReviewCommandSpec{Argv: argv, AgentSessionID: strings.TrimSpace(inv.AgentSessionID)}, true, nil
+	return ports.ReviewCommandSpec{
+		Argv:           argv,
+		AgentSessionID: strings.TrimSpace(inv.AgentSessionID),
+		NativeResumed:  true,
+	}, true, nil
 }
