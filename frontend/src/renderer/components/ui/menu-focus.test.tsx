@@ -1,6 +1,11 @@
 import { render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { keepFocusOnOpenedSurface, useMenuReturnTarget } from "./menu-focus";
+import {
+	composeMenuCloseAutoFocus,
+	type MenuTeardownDetail,
+	onMenuTeardownComplete,
+	useMenuReturnTarget,
+} from "./menu-focus";
 
 const MENU_ID = "menu-content";
 
@@ -59,7 +64,9 @@ async function openMenu() {
 /** Radix dispatches its unmount handler on the content element. */
 function closeMenu(menu: HTMLElement) {
 	const event = new CustomEvent("focusScope.autoFocusOnUnmount", { cancelable: true });
-	menu.addEventListener("focusScope.autoFocusOnUnmount", keepFocusOnOpenedSurface as EventListener, {
+	// The full composition, the way ui/dropdown-menu.tsx wires it — the hand-off
+	// guard plus the teardown report.
+	menu.addEventListener("focusScope.autoFocusOnUnmount", composeMenuCloseAutoFocus() as EventListener, {
 		once: true,
 	});
 	menu.dispatchEvent(event);
@@ -178,5 +185,53 @@ describe("keepFocusOnOpenedSurface", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(document.activeElement).toBe(elsewhere);
 		expect(document.activeElement).not.toBe(trigger);
+	});
+});
+
+// The teardown report is how a surface opened from a menu item (e.g. the
+// switch-agent dialog) learns that the opening interaction is over: the menu
+// content is gone and the deferred focus restore has been decided.
+describe("menu teardown signal", () => {
+	it("reports the menu and its trigger once the restore has been decided", async () => {
+		const { menu, trigger } = await openMenu();
+		const field = openDialogField();
+		const seen: MenuTeardownDetail[] = [];
+		const unsubscribe = onMenuTeardownComplete((detail) => seen.push(detail));
+
+		const event = closeMenu(menu); // keepFocusOnOpenedSurface preventDefaults the restore
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(seen).toHaveLength(1);
+		expect(seen[0].menu).toBe(menu);
+		expect(seen[0].trigger).toBe(trigger);
+		unsubscribe();
+		field.remove();
+	});
+
+	it("stops reporting once the listener unsubscribes", async () => {
+		const { menu } = await openMenu();
+		const field = openDialogField();
+		const seen: MenuTeardownDetail[] = [];
+		const unsubscribe = onMenuTeardownComplete((detail) => seen.push(detail));
+
+		closeMenu(menu);
+		unsubscribe();
+		closeMenu(menu);
+
+		expect(seen).toHaveLength(1);
+		field.remove();
+	});
+
+	it("reports even when nothing borrowed the caret", async () => {
+		const { menu } = await openMenu();
+		const seen: MenuTeardownDetail[] = [];
+		const unsubscribe = onMenuTeardownComplete((detail) => seen.push(detail));
+
+		// Radix restores focus to the trigger itself in this case.
+		expect(closeMenu(menu).defaultPrevented).toBe(false);
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0].menu).toBe(menu);
+		unsubscribe();
 	});
 });
