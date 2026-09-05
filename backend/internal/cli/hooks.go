@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -571,7 +572,13 @@ func (c *commandContext) emitSessionStartContext(agent, event, sessionID string)
 // $AO_DATA_DIR/hooks.log so the failure can be diagnosed after the fact.
 func (c *commandContext) reportHookFailure(agent, event, sessionID string, cause error) {
 	msg := fmt.Sprintf("ao hooks %s %s: %v", agent, event, cause)
-	_, _ = fmt.Fprintln(c.deps.Err, msg)
+	// A daemon that is not running is expected, not a failure: it flaps on every
+	// desktop takeover, and reconciliation recovers the missed activity from
+	// process state. Keep it out of stderr so the notice does not land in the
+	// agent's own context as a spurious error, but still record it below.
+	if !errors.Is(cause, ErrDaemonNotRunning) {
+		_, _ = fmt.Fprintln(c.deps.Err, msg)
+	}
 	dataDir := strings.TrimSpace(os.Getenv("AO_DATA_DIR"))
 	if dataDir == "" {
 		return
