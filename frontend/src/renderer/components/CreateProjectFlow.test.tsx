@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } from "./CreateProjectFlow";
+import { useUiStore } from "../stores/ui-store";
 
 const bridgeMocks = vi.hoisted(() => ({
 	checkAncestorRepo: vi.fn(),
@@ -115,7 +116,14 @@ vi.mock("./CreateProjectAgentSheet", () => ({
 // These tests only care whether the clone flow is on screen and that the
 // droppedPath guard leaves it alone, so a thin stub keeps the suite focused.
 vi.mock("./CloneRepositoryDialog", () => ({
-	default: ({ open }: { open: boolean }) => (open ? <div data-testid="clone-dialog" /> : null),
+	default: ({ open, onContinue }: { open: boolean; onContinue?: (selection: { remoteUrl: string; destinationParent: string; targetPath: string }) => void }) =>
+		open ? (
+			<div data-testid="clone-dialog">
+				<button type="button" onClick={() => onContinue?.({ remoteUrl: "file:///source/empty-repository.git", destinationParent: "/repo", targetPath: "/repo/empty-repository" })}>
+					Continue clone
+				</button>
+			</div>
+		) : null,
 }));
 
 function okScan(path: string) {
@@ -202,6 +210,7 @@ beforeEach(() => {
 	cloudMocks.createProject.mockReset();
 	cloudMocks.signIn.mockReset();
 	window.localStorage.clear();
+	useUiStore.setState({ globalToast: null, globalToasts: [] });
 });
 
 describe("CreateProjectFlow droppedPath", () => {
@@ -318,9 +327,89 @@ describe("CreateProjectFlow droppedPath", () => {
 		expect(screen.queryByRole("button", { name: "Import an existing project" })).not.toBeInTheDocument();
 		expect(bridgeMocks.chooseDirectory).not.toHaveBeenCalled();
 	});
+
+	it("routes an empty clone through Prepare project", async () => {
+		const user = userEvent.setup();
+		apiMocks.POST
+			.mockResolvedValueOnce({ data: { path: "/repo/empty-repository", remoteUrl: "file:///source/empty-repository.git" } })
+			.mockResolvedValueOnce({
+				data: projectValidation("/repo/empty-repository", {
+					nextStep: "prepare_git",
+					root: { requiredActions: ["git_commit", "set_remote"], hasCommit: false, hasOrigin: false },
+				}),
+			});
+
+		render(
+			<CreateProjectFlow mode="choose" {...noop}>
+				{({ choosePath }) => <button onClick={choosePath}>New project</button>}
+			</CreateProjectFlow>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "New project" }));
+		await user.click(await screen.findByRole("button", { name: "Clone from Git" }));
+		fireEvent.click(await screen.findByText("Continue clone"));
+
+		expect(await screen.findByText("Prepare project")).toBeInTheDocument();
+		expect(apiMocks.POST).toHaveBeenNthCalledWith(1, "/api/v1/projects/clone/prepare", expect.anything());
+		expect(apiMocks.POST).toHaveBeenNthCalledWith(2, "/api/v1/imports/validate", {
+			body: { importKind: "project", path: "/repo/empty-repository" },
+		});
+	});
+
+	it("keeps the clone dialog visible until preparation is ready", async () => {
+		const user = userEvent.setup();
+		let resolveClone!: (value: unknown) => void;
+		let resolveValidation!: (value: unknown) => void;
+		apiMocks.POST.mockImplementation((path: string) => {
+			if (path === "/api/v1/projects/clone/prepare") {
+				return new Promise((resolve) => {
+					resolveClone = resolve;
+				});
+			}
+			return new Promise((resolve) => {
+				resolveValidation = resolve;
+			});
+		});
+
+		render(
+			<CreateProjectFlow mode="choose" {...noop}>
+				{({ choosePath }) => <button onClick={choosePath}>New project</button>}
+			</CreateProjectFlow>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "New project" }));
+		await user.click(await screen.findByRole("button", { name: "Clone from Git" }));
+		fireEvent.click(await screen.findByText("Continue clone"));
+		expect(screen.getByTestId("clone-dialog")).toBeInTheDocument();
+
+		resolveClone({ data: { path: "/repo/empty-repository", remoteUrl: "file:///source/empty-repository.git" } });
+		await waitFor(() => expect(apiMocks.POST).toHaveBeenCalledWith("/api/v1/imports/validate", expect.anything()));
+		expect(screen.getByTestId("clone-dialog")).toBeInTheDocument();
+		resolveValidation({ data: projectValidation("/repo/empty-repository", { nextStep: "prepare_git" }) });
+		expect(await screen.findByText("Prepare project")).toBeInTheDocument();
+		expect(screen.queryByTestId("clone-dialog")).not.toBeInTheDocument();
+	});
 });
 
 describe("CreateProjectFlow project import validation", () => {
+	it("uses one shared backdrop while switching between flow modals", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project", { nextStep: "prepare_git" }) });
+
+		render(
+			<CreateProjectFlow mode="choose" {...noop}>
+				{({ choosePath }) => <button onClick={choosePath}>New project</button>}
+			</CreateProjectFlow>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "New project" }));
+		await user.click(await screen.findByRole("button", { name: "Import an existing project" }));
+		await screen.findByText("Prepare project");
+
+		expect(document.querySelectorAll(".dialog-overlay")).toHaveLength(1);
+	});
+
 	it("shows validation failure before agent selection", async () => {
 		const user = userEvent.setup();
 		bridgeMocks.chooseDirectory.mockResolvedValue("/bad-project");
@@ -341,11 +430,13 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(screen.getByRole("button", { name: "New project" }));
 		await user.click(await screen.findByRole("button", { name: "Import an existing project" }));
 
-		expect(await screen.findByText("Choose a folder AO can read.")).toBeInTheDocument();
+		await waitFor(() => expect(useUiStore.getState().globalToast?.body).toBe("Choose a folder AO can read."));
 		expect(screen.queryByTestId("agent-sheet")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Back to import source" }));
+		expect(screen.getByRole("button", { name: "Import an existing project" })).toBeInTheDocument();
 	});
 
-	it("suggests workspace import when a plain root contains child repositories", async () => {
+	it("continues plain roots with child repositories as projects by default", async () => {
 		const user = userEvent.setup();
 		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/parent");
 		apiMocks.POST.mockResolvedValueOnce({
@@ -372,6 +463,16 @@ describe("CreateProjectFlow project import validation", () => {
 				],
 			}),
 		});
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				events: [
+					{ repoPath: "/repo/parent", action: "git_init", state: "success" },
+					{ repoPath: "/repo/parent", action: "git_commit", state: "success" },
+					{ repoPath: "/repo/parent", action: "set_remote", state: "success" },
+				],
+				validation: projectValidation("/repo/parent"),
+			},
+		});
 
 		render(
 			<CreateProjectFlow mode="choose" {...noop}>
@@ -382,9 +483,12 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(screen.getByRole("button", { name: "New project" }));
 		await user.click(await screen.findByRole("button", { name: "Import an existing project" }));
 
-		expect(await screen.findByText("Contains child Git repos. Import as workspace if AO should keep them separate.")).toBeInTheDocument();
-		expect(await screen.findByText("Try importing as workspace")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+		expect(await screen.findByText("This folder contains child Git repos")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Clone from Git" })).not.toBeInTheDocument();
+		await user.click(await screen.findByRole("button", { name: "Continue" }));
+		expect(await screen.findByRole("dialog", { name: "Prepare project" })).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Continue" }));
+		expect(await screen.findByTestId("agent-sheet")).toHaveAttribute("data-path", "/repo/parent");
 	});
 
 	it("shows only the missing Git preparation steps for a project root", async () => {
@@ -415,6 +519,7 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(screen.queryByText("Git initialization")).not.toBeInTheDocument();
 		expect(screen.getByText("Initial commit")).toBeInTheDocument();
 		expect(screen.getByText("Remote setup")).toBeInTheDocument();
+		expect(screen.queryByText("Create the first commit so the project has a usable history.")).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Origin remote URL")).toBeInTheDocument();
 		expect(
 			screen.getByText(
@@ -476,6 +581,9 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(await screen.findByRole("button", { name: "Import an existing project" }));
 
 		const remoteAction = screen.getByRole("checkbox");
+		expect(remoteAction).toBeChecked();
+		await user.click(screen.getByLabelText("Origin remote URL"));
+		expect(remoteAction).toBeChecked();
 		await user.click(remoteAction);
 
 		expect(screen.getByText("Approve all required setup actions to continue importing this project.")).toBeInTheDocument();
@@ -608,8 +716,9 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(screen.getByRole("button", { name: "Continue" }));
 
 		expect(await screen.findByText("Running project setup. AO is preparing this repository now.")).toBeInTheDocument();
-		expect(screen.getByText("Running")).toBeInTheDocument();
-		expect(screen.getAllByText("Queued")).not.toHaveLength(0);
+		expect(screen.queryByText("Running")).not.toBeInTheDocument();
+		expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+		expect(screen.queryByText("Set URL")).not.toBeInTheDocument();
 
 		resolvePrepare({
 			data: {
@@ -668,7 +777,8 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.type(remoteInput, "https://github.com/acme/project.git");
 		await user.click(screen.getByRole("button", { name: "Continue" }));
 
-		expect(await screen.findByText(/failed while running Remote setup/i)).toBeInTheDocument();
+		await waitFor(() => expect(useUiStore.getState().globalToast?.body).toMatch(/failed while running Remote setup/i));
+		await waitFor(() => expect(screen.getByRole("dialog", { name: "Prepare project" })).toHaveClass("modal-shake"));
 		expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
 		expect(screen.queryByTestId("agent-sheet")).not.toBeInTheDocument();
 	});

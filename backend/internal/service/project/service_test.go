@@ -213,6 +213,38 @@ func TestManager_CloneRegistersRepositoryAndPreservesOrigin(t *testing.T) {
 	}
 }
 
+func TestManager_PrepareClonePreservesEmptyRepositoryForImportSetup(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	emptySource := filepath.Join(t.TempDir(), "empty-repository")
+	if out, err := exec.Command("git", "init", "-b", "main", emptySource).CombinedOutput(); err != nil {
+		t.Fatalf("git init empty source: %v (%s)", err, out)
+	}
+	destinationParent := t.TempDir()
+	emptyURL := (&url.URL{Scheme: "file", Path: emptySource}).String()
+
+	prepared, err := m.PrepareClone(ctx, project.CloneInput{RemoteURL: emptyURL, DestinationParent: destinationParent})
+	if err != nil {
+		t.Fatalf("PrepareClone: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(prepared.Path) })
+	if prepared.RemoteURL != emptyURL {
+		t.Fatalf("PrepareClone remote URL = %q, want %q", prepared.RemoteURL, emptyURL)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.Path, ".git")); err != nil {
+		t.Fatalf("prepared checkout missing .git: %v", err)
+	}
+	if listed, err := m.List(ctx); err != nil || len(listed) != 0 {
+		t.Fatalf("List after PrepareClone = %#v, %v; preparation must not register", listed, err)
+	}
+	if err := m.CleanupPreparedClone(ctx, project.ClonePreparationCleanupInput{Path: prepared.Path}); err != nil {
+		t.Fatalf("CleanupPreparedClone: %v", err)
+	}
+	if _, err := os.Stat(prepared.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prepared checkout still exists after cleanup: %v", err)
+	}
+}
+
 func TestManager_CloneRejectsUnsafeURLsAndExistingDestination(t *testing.T) {
 	ctx := context.Background()
 	m := newManager(t)
@@ -1432,6 +1464,56 @@ func TestManager_AddWorkspaceDoesNotRequireChildDefaultCheckout(t *testing.T) {
 	}
 	if len(proj.WorkspaceRepos) != 1 || proj.WorkspaceRepos[0].GitStatus != string(domain.GitStatusReady) {
 		t.Fatalf("WorkspaceRepos = %#v, want detached child ready", proj.WorkspaceRepos)
+	}
+}
+
+func TestManager_AddWorkspacePreservesAOInitializedChildDefaultBranchWithoutRemoteHead(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := project.New(store)
+
+	parent := t.TempDir()
+	child := filepath.Join(parent, "temp")
+	if out, err := exec.Command("git", "init", "-b", domain.DefaultBranchName, child).CombinedOutput(); err != nil {
+		t.Fatalf("git init child: %v (%s)", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(child, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", child, "add", "-A").CombinedOutput(); err != nil {
+		t.Fatalf("git add child: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", child, "-c", "user.name=Agent Orchestrator", "-c", "user.email=ao@example.com", "commit", "--allow-empty", "-m", "initial commit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit child: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", child, "config", "--local", gitdefault.ManagedDefaultConfigKey, domain.DefaultBranchName).CombinedOutput(); err != nil {
+		t.Fatalf("git config managed default: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", child, "remote", "add", "origin", "https://github.com/example/temp.git").CombinedOutput(); err != nil {
+		t.Fatalf("git remote add origin: %v (%s)", err, out)
+	}
+
+	proj, err := m.Add(ctx, project.AddInput{Path: parent, ProjectID: ptr("ws-managed-default"), AsWorkspace: true})
+	if err != nil {
+		t.Fatalf("Add workspace: %v", err)
+	}
+	if len(proj.WorkspaceRepos) != 1 {
+		t.Fatalf("WorkspaceRepos = %#v, want 1 child repo", proj.WorkspaceRepos)
+	}
+	registeredRepos, err := store.ListWorkspaceRepos(ctx, "ws-managed-default")
+	if err != nil {
+		t.Fatalf("list workspace repos: %v", err)
+	}
+	if len(registeredRepos) != 1 {
+		t.Fatalf("registered workspace repos = %#v, want 1", registeredRepos)
+	}
+	if got := registeredRepos[0].DefaultBranch; got != domain.DefaultBranchName {
+		t.Fatalf("registered child default branch = %q, want %q", got, domain.DefaultBranchName)
 	}
 }
 

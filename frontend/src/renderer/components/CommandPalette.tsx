@@ -640,6 +640,8 @@ export function CommandPalette() {
 				onCloneProject={cloneProject}
 				onCreateProject={createProject}
 				onInitializeProject={initializeProjectRepository}
+				existingProjectPaths={workspaces.map((workspace) => workspace.path)}
+				existingProjectNames={workspaces.map((workspace) => workspace.name)}
 			>
 				{({ choosePath }) => <BindChoosePath choosePath={choosePath} choosePathRef={choosePathRef} />}
 			</CreateProjectFlow>

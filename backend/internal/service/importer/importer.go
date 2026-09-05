@@ -10,8 +10,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -202,12 +204,30 @@ func (m *Manager) Validate(ctx context.Context, in ImportValidationInput) (Impor
 
 	root := inspectImportRepo(ctx, path)
 	result.Root = root
+	if len(root.BlockingErrors) > 0 {
+		result.BlockingErrors = append(result.BlockingErrors, root.BlockingErrors...)
+		result.IsValid = false
+		result.NextStep = ImportNextStepError
+		return result, nil
+	}
 	if importKind == ImportKindWorkspace {
-		children, scanErr := directChildImportStatuses(ctx, path)
+		if root.IsRepo {
+			result.Warning = "This folder is already a Git project. AO will import it as a project instead of a workspace."
+			result.NextStep = ImportNextStepChooseImportKind
+			return result, nil
+		}
+		children, scanErr := directChildImportRepos(ctx, path)
 		if scanErr != nil {
 			return invalidImportResult(importKind, path, "CHILD_REPO_SCAN_FAILED"), nil //nolint:nilerr // validation failures are reported in-band so the UI can show blocking errors
 		}
 		result.ChildRepos = children
+		if len(children) == 0 {
+			result.Root.BlockingErrors = append(result.Root.BlockingErrors, "WORKSPACE_CHILD_REPO_REQUIRED")
+			result.BlockingErrors = append(result.BlockingErrors, "WORKSPACE_CHILD_REPO_REQUIRED")
+			result.IsValid = false
+			result.NextStep = ImportNextStepError
+			return result, nil
+		}
 		for _, child := range children {
 			if len(child.BlockingErrors) > 0 {
 				result.BlockingErrors = append(result.BlockingErrors, child.BlockingErrors...)
@@ -274,6 +294,9 @@ func (m *Manager) PrepareGit(ctx context.Context, in GitPreparationInput) (GitPr
 		if required[GitPreparationActionSetRemote] && strings.TrimSpace(target.Input.RemoteURL) == "" {
 			return GitPreparationResult{}, apierr.Invalid("IMPORT_REMOTE_URL_REQUIRED", "remoteUrl is required before AO can add an origin remote.", map[string]any{"repoPath": target.Status.RepoPath})
 		}
+		if required[GitPreparationActionSetRemote] && !validImportRemoteURL(target.Input.RemoteURL) {
+			return GitPreparationResult{}, apierr.Invalid("INVALID_GIT_URL", "Enter a valid HTTPS, SSH, Git, or file repository URL.", map[string]any{"repoPath": target.Status.RepoPath})
+		}
 		for _, action := range []string{GitPreparationActionInit, GitPreparationActionCommit, GitPreparationActionSetRemote} {
 			if !required[action] {
 				continue
@@ -321,6 +344,9 @@ func inspectImportRepo(ctx context.Context, path string) RepoGitStatus {
 	status.HasCommit = status.IsRepo && importRepoHasCommit(ctx, path)
 	status.HasOrigin = status.IsRepo && resolveImportOriginURL(path) != ""
 	status.NeedsGitInit = !status.IsRepo
+	if status.IsRepo && status.HasCommit && importRepoHasDetachedHead(ctx, path) {
+		status.BlockingErrors = append(status.BlockingErrors, "DETACHED_HEAD")
+	}
 	if status.NeedsGitInit {
 		status.RequiredActions = append(status.RequiredActions, GitPreparationActionInit)
 	}
@@ -381,7 +407,7 @@ func directChildImportRepos(ctx context.Context, root string) ([]RepoGitStatus, 
 	}
 	repos := statuses[:0]
 	for _, status := range statuses {
-		if status.IsRepo {
+		if status.IsRepo || len(status.BlockingErrors) > 0 {
 			repos = append(repos, status)
 		}
 	}
@@ -524,6 +550,35 @@ func isBareImportRepo(ctx context.Context, path string) bool {
 func importRepoHasCommit(ctx context.Context, path string) bool {
 	_, err := importGitOutput(ctx, path, "rev-parse", "--verify", "HEAD")
 	return err == nil
+}
+
+func importRepoHasDetachedHead(ctx context.Context, path string) bool {
+	if _, err := importGitOutput(ctx, path, "symbolic-ref", "--quiet", "--short", "HEAD"); err != nil {
+		return true
+	}
+	return false
+}
+
+var importScpRemotePattern = regexp.MustCompile(`^[^/@:\s]+@[^/:\s]+:(.+)$`)
+
+func validImportRemoteURL(raw string) bool {
+	value := strings.TrimSpace(raw)
+	if value == "" || strings.ContainsAny(value, "\r\n\t ") || strings.HasPrefix(value, "-") {
+		return false
+	}
+	if match := importScpRemotePattern.FindStringSubmatch(value); len(match) == 2 {
+		return strings.Trim(match[1], "/\\") != ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	switch parsed.Scheme {
+	case "file", "git", "http", "https", "ssh":
+		return len(strings.FieldsFunc(parsed.Path, func(r rune) bool { return r == '/' || r == '\\' })) >= 1
+	default:
+		return false
+	}
 }
 
 func resolveImportOriginURL(path string) string {

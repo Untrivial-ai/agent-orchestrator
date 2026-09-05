@@ -38,6 +38,8 @@ type Manager interface {
 	// Clone checks out a remote git repository and registers the resulting
 	// local repository as a project.
 	Clone(ctx context.Context, in CloneInput) (Project, error)
+	PrepareClone(ctx context.Context, in CloneInput) (ClonePreparationResult, error)
+	CleanupPreparedClone(ctx context.Context, in ClonePreparationCleanupInput) error
 
 	// InitializeRepository prepares a selected folder for project registration.
 	InitializeRepository(ctx context.Context, in InitializeRepositoryInput) (InitializeRepositoryResult, error)
@@ -184,6 +186,7 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	removeClonePreparationMarker(path)
 	id := defaultProjectID(path)
 	if in.ProjectID != nil {
 		id = domain.ProjectID(strings.TrimSpace(*in.ProjectID))
