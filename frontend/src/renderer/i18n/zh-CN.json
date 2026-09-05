@@ -617,6 +617,8 @@
 	"pr.openPRFor": "打开 {{name}} 相关的拉取请求",
 	"pr.openReviewFrom": "打开来自 {{name}} 的修改请求评审",
 	"pr.overflow": "+{{n}} {{noun}}",
+	"pr.progress.merged_one": "{{count}} 个 PR 中已合并 {{merged}} 个",
+	"pr.progress.merged_other": "{{count}} 个 PR 中已合并 {{merged}} 个",
 	"pr.reason.behindBase": "分支落后于目标分支",
 	"pr.reason.changesRequested": "请求修改",
 	"pr.reason.ciFailing": "CI 失败",

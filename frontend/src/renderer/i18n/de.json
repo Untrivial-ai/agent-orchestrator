@@ -635,6 +635,8 @@
 	"pr.openPRFor": "Pull Request für {{name}} öffnen",
 	"pr.openReviewFrom": "Review mit Änderungswunsch von {{name}} öffnen",
 	"pr.overflow": "+{{n}} {{noun}}",
+	"pr.progress.merged_one": "{{merged}} von {{count}} PR gemergt",
+	"pr.progress.merged_other": "{{merged}} von {{count}} PRs gemergt",
 	"pr.reason.behindBase": "Branch hinter Basis",
 	"pr.reason.changesRequested": "Änderungen angefordert",
 	"pr.reason.ciFailing": "CI fehlgeschlagen",

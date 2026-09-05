@@ -635,6 +635,8 @@
 	"pr.openPRFor": "{{name}} のプルリクエストを開く",
 	"pr.openReviewFrom": "{{name}} からの変更リクエストレビューを開く",
 	"pr.overflow": "+{{n}} {{noun}}",
+	"pr.progress.merged_one": "{{count}} 件中 {{merged}} 件の PR がマージ済み",
+	"pr.progress.merged_other": "{{count}} 件中 {{merged}} 件の PR がマージ済み",
 	"pr.reason.behindBase": "ベースより遅れています",
 	"pr.reason.changesRequested": "変更リクエストあり",
 	"pr.reason.ciFailing": "CI 失敗",

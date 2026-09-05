@@ -635,6 +635,8 @@
 	"pr.openPRFor": "{{name}}의 풀 리퀘스트 열기",
 	"pr.openReviewFrom": "{{name}}의 변경 요청 리뷰 열기",
 	"pr.overflow": "+{{n}} {{noun}}",
+	"pr.progress.merged_one": "PR {{count}}개 중 {{merged}}개 병합됨",
+	"pr.progress.merged_other": "PR {{count}}개 중 {{merged}}개 병합됨",
 	"pr.reason.behindBase": "베이스보다 뒤처짐",
 	"pr.reason.changesRequested": "변경 요청됨",
 	"pr.reason.ciFailing": "CI 실패",

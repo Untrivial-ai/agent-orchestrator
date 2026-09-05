@@ -620,6 +620,8 @@
 	"pr.openPRFor": "Open pull request for {{name}}",
 	"pr.openReviewFrom": "Open requested-changes review from {{name}}",
 	"pr.overflow": "+{{n}} {{noun}}",
+	"pr.progress.merged_one": "{{merged}} of {{count}} PR merged",
+	"pr.progress.merged_other": "{{merged}} of {{count}} PRs merged",
 	"pr.reason.behindBase": "branch behind base",
 	"pr.reason.changesRequested": "changes requested",
 	"pr.reason.ciFailing": "CI failing",
