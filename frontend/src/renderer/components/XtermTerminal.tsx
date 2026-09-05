@@ -110,8 +110,24 @@ function loadRenderer(term: Terminal): void {
 	};
 	try {
 		const webgl = new WebglAddon();
+		let contextLost = false;
 		webgl.onContextLoss(() => {
-			webgl.dispose();
+			// Chromium keeps at most 16 live WebGL contexts per renderer process and
+			// evicts the least-recently-drawn one when a 17th is created. Every
+			// retained terminal holds one context, so long-parked panes are evicted
+			// first. Disposing the WebGL addon here can throw (observed 2026-09-05:
+			// the error's stack passed through this handler twice, re-entering from
+			// the addon's dispose-time renderer restore), and an uncaught throw
+			// skipped the canvas fallback, leaving the pane blank while its PTY
+			// attachment kept working. Handle the loss once, tolerate the throw, and
+			// always install the canvas renderer.
+			if (contextLost) return;
+			contextLost = true;
+			try {
+				webgl.dispose();
+			} catch (error) {
+				console.warn("xterm: WebGL addon dispose failed after context loss; loading the canvas renderer", error);
+			}
 			loadCanvasFallback();
 		});
 		term.loadAddon(webgl);
