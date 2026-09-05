@@ -118,6 +118,37 @@ func TestWatchDoesNotTurnGitStatusIndexRefreshIntoAChange(t *testing.T) {
 	waitForChange(t, changes)
 }
 
+func TestWatchStillReportsChangesWhenWorkspaceIsNestedInAnotherRepository(t *testing.T) {
+	parent := t.TempDir()
+	runGit(t, parent, "init")
+	runGit(t, parent, "config", "user.email", "ao@example.com")
+	runGit(t, parent, "config", "user.name", "AO Tests")
+
+	// The workspace sits inside the parent repository. Git's upward search
+	// resolves the parent repo, which tracks no files under the workspace; the
+	// watch must fall back to walking the tree instead of trusting that answer.
+	root := filepath.Join(parent, "workspace", "session")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir nested workspace: %v", err)
+	}
+	existing := filepath.Join(root, "src")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing directory: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	changes, err := Watch(ctx, root)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(existing, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write existing-directory file: %v", err)
+	}
+	waitForChange(t, changes)
+}
+
 func waitForChange(t *testing.T, changes <-chan struct{}) {
 	t.Helper()
 	select {

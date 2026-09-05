@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -113,6 +114,17 @@ type gitWorkspace struct {
 }
 
 func discoverGitWorkspace(ctx context.Context, root string) gitWorkspace {
+	// Git searches upward for a repository, so rev-parse can resolve a parent
+	// repo (or a stray .git above the workspace) instead of one that belongs
+	// to this workspace. Trusting that answer watches almost nothing: the git
+	// file list is empty for the workspace, so only the root directory is
+	// registered and the non-recursive fsnotify backends never see changes in
+	// subdirectories. Only use the git-derived watch set when the repository
+	// actually has this workspace as its toplevel.
+	topRaw, err := aoprocess.CommandContext(ctx, "git", "-C", root, "rev-parse", "--show-toplevel").Output()
+	if err != nil || !sameWorkspaceDir(filepath.Clean(filepath.FromSlash(strings.TrimSpace(string(topRaw)))), root) {
+		return gitWorkspace{}
+	}
 	gitDirRaw, err := aoprocess.CommandContext(ctx, "git", "-C", root, "rev-parse", "--absolute-git-dir").Output()
 	if err != nil {
 		return gitWorkspace{}
@@ -275,6 +287,19 @@ func gitIgnored(ctx context.Context, root, target string) bool {
 		return false
 	}
 	return aoprocess.CommandContext(ctx, "git", "-C", root, "check-ignore", "-q", "--", filepath.ToSlash(rel)).Run() == nil
+}
+
+// sameWorkspaceDir reports whether left and right point at the same
+// directory. Git prints forward slashes on Windows and the filesystem may be
+// case-insensitive there, so compare cleaned paths and fold case on Windows.
+func sameWorkspaceDir(left, right string) bool {
+	if left == right {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return false
 }
 
 func isWithin(root, target string) bool {
