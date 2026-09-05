@@ -438,11 +438,14 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		}
 	}
 
-	launchEnv := cfg.Env
+	var prepareEnv func(context.Context) (map[string]string, error)
 	if cfg.PrepareControllerEnv != nil {
-		launchEnv, err = cfg.PrepareControllerEnv(ctx, cfg.ExpectedControllerOwner)
-		if err != nil {
-			return nil, fmt.Errorf("prepare chat controller environment: %w", err)
+		prepareEnv = func(prepareCtx context.Context) (map[string]string, error) {
+			env, prepareErr := cfg.PrepareControllerEnv(prepareCtx, cfg.ExpectedControllerOwner)
+			if prepareErr != nil {
+				return nil, fmt.Errorf("prepare chat controller environment: %w", prepareErr)
+			}
+			return env, nil
 		}
 	}
 
@@ -453,7 +456,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			ProviderConversationID: cfg.ProviderConversationID,
 			DataDir:                cfg.DataDir,
 			WorkspacePath:          cfg.WorkspacePath,
-			Env:                    launchEnv,
+			Env:                    cfg.Env,
+			PrepareEnv:             prepareEnv,
 			Model:                  cfg.Model,
 			Effort:                 cfg.Effort,
 			Permissions:            cfg.Permissions,
@@ -467,7 +471,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			SessionID:             cfg.SessionID,
 			DataDir:               cfg.DataDir,
 			WorkspacePath:         cfg.WorkspacePath,
-			Env:                   launchEnv,
+			Env:                   cfg.Env,
+			PrepareEnv:            prepareEnv,
 			Model:                 cfg.Model,
 			Permissions:           cfg.Permissions,
 			SystemPrompt:          cfg.SystemPrompt,
@@ -546,7 +551,13 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
-		controller.restoreLiveTurnOwnership(liveRows.Turns)
+		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)
+		if activator, ok := conv.(ports.ChatLiveReconnectActivator); ok {
+			if err := activator.ActivateLiveReconnect(ctx, providerTurnID); err != nil {
+				cleanupUnpublishedConversation(conv, false)
+				return nil, err
+			}
+		}
 	}
 	if cfg.ProviderConversationID != "" && !cfg.SkipNativeHistoryImport && !liveReconnect {
 		// The provider's native thread is the continuity authority across TUI and
@@ -663,15 +674,21 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 }
 
 // cleanupUnpublishedConversation rolls back a provider opened before its AO
-// controller was published. A fresh thread has no durable resume handle and must
-// be destroyed; a resumed thread is detached so a transient AO persistence or
-// import failure cannot interrupt provider work that was already in flight.
+// controller was published. A fresh host must be destroyed even when it opened a
+// stored provider conversation; only a proven attachment to the same live host
+// is detached so transient AO persistence cannot interrupt work in flight.
 func cleanupUnpublishedConversation(conv ports.ChatConversation, fresh bool) {
-	if fresh {
-		if terminator, ok := conv.(ports.ChatProviderTerminator); ok {
-			_ = terminator.Terminate()
-			return
-		}
+	terminator, canTerminate := conv.(ports.ChatProviderTerminator)
+	liveReconnect := false
+	if reconnected, ok := conv.(ports.ChatLiveReconnector); ok {
+		liveReconnect = reconnected.ReconnectedLive()
+	}
+	// A newly launched persistent process must not be orphaned merely because it
+	// was opening an existing provider conversation. Only attachment to the same
+	// already-live process is preserve-on-failure ownership.
+	if canTerminate && (fresh || !liveReconnect) {
+		_ = terminator.Terminate()
+		return
 	}
 	_ = conv.Close()
 }

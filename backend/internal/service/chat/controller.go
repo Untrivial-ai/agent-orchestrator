@@ -330,7 +330,7 @@ func newController(
 // before a replacement daemon publishes a reconnected controller. The provider
 // kept running while AO was detached, so forgetting this turn would let a new
 // Send start a second root turn on the same native conversation.
-func (c *Controller) restoreLiveTurnOwnership(turns []domain.ConversationTurn) {
+func (c *Controller) restoreLiveTurnOwnership(turns []domain.ConversationTurn) string {
 	var latest *domain.ConversationTurn
 	for i := range turns {
 		turn := &turns[i]
@@ -342,11 +342,12 @@ func (c *Controller) restoreLiveTurnOwnership(turns []domain.ConversationTurn) {
 		}
 	}
 	if latest == nil {
-		return
+		return ""
 	}
 	c.pendingTurnID = latest.ProviderTurnID
 	c.ackedTurnID = latest.ProviderTurnID
 	c.state = ports.ChatControllerBusy
+	return latest.ProviderTurnID
 }
 
 // start begins live provider consumption after any durable native history has
@@ -2142,6 +2143,14 @@ func (c *Controller) project() {
 		} else if projected {
 			c.afterProject(ctx, event, primaryTurn)
 		}
+		if err == nil {
+			if acknowledger, ok := c.conv.(ports.ChatProviderEventAcknowledger); ok && event.ProviderEventID != "" {
+				if ackErr := acknowledger.AcknowledgeProviderEvent(ctx, event.ProviderEventID); ackErr != nil {
+					c.log.Warn("failed to acknowledge persistent provider event",
+						"session", c.sessionID, "providerEventId", event.ProviderEventID, "error", ackErr)
+				}
+			}
+		}
 		if lifecycle {
 			c.sendMu.Unlock()
 		}
@@ -2580,7 +2589,10 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 	case ports.ChatEventApprovalResolved:
 		// The provider resolved it, possibly through another client. Mark it so a
 		// card still on screen elsewhere stops being actionable.
-		detail, _ := json.Marshal(map[string]string{"resolvedBy": "provider"})
+		detail := event.Detail
+		if len(detail) == 0 {
+			detail, _ = json.Marshal(map[string]string{"resolvedBy": "provider"})
+		}
 		return c.store.ResolveApproval(ctx, c.conversation.ID, event.RequestID, string(detail), now)
 
 	case ports.ChatEventInputRequested:
@@ -2606,7 +2618,10 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			}, now)
 
 	case ports.ChatEventInputResolved:
-		detail, _ := json.Marshal(map[string]string{"resolvedBy": "provider"})
+		detail := event.Detail
+		if len(detail) == 0 {
+			detail, _ = json.Marshal(map[string]string{"resolvedBy": "provider"})
+		}
 		return c.store.ResolveApproval(ctx, c.conversation.ID, event.RequestID, string(detail), now)
 
 	case ports.ChatEventUsage:

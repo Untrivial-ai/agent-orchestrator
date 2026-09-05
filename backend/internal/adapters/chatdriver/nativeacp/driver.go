@@ -41,7 +41,10 @@ type VersionProbe func(ctx context.Context, bin string) error
 
 // Config describes the small provider-specific portion of a native ACP binding.
 type Config struct {
-	Harness                domain.AgentHarness
+	Harness domain.AgentHarness
+	// Persistent is an explicit provider-profile gate. New ACP bindings remain
+	// daemon-owned until their lifecycle has been reviewed for host adoption.
+	Persistent             bool
 	Capabilities           ports.ChatCapabilities
 	Configure              Configure
 	SessionMode            func(ports.PermissionMode) string
@@ -76,6 +79,7 @@ func buildConfig(plugin Plugin, cfg Config, log *slog.Logger) acpdriver.Config {
 	return acpdriver.Config{
 		Harness:      cfg.Harness,
 		Capabilities: capabilities,
+		Persistent:   cfg.Persistent,
 		Probe: func(ctx context.Context) error {
 			if cfg.Configure == nil {
 				return fmt.Errorf("%w: incomplete native ACP binding for %s",

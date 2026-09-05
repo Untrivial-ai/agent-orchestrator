@@ -19,8 +19,12 @@ func spawnDetached(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	args := make([]string, 0, 5+len(cfg.Argv))
-	args = append(args, "chat-host", cfg.SessionID, cfg.DataDir, cfg.Workdir, "--")
+	args := make([]string, 0, 6+len(cfg.Argv))
+	args = append(args, "chat-host", cfg.SessionID, cfg.DataDir, cfg.Workdir)
+	if cfg.Protocol != ProtocolRaw {
+		args = append(args, string(cfg.Protocol), cfg.LaunchFingerprint)
+	}
+	args = append(args, "--")
 	args = append(args, cfg.Argv...)
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = cfg.Workdir

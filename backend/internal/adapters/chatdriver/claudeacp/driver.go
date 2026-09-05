@@ -36,7 +36,8 @@ type claudePlugin interface {
 // both Chat and TUI modes.
 func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 	return acpdriver.New(acpdriver.Config{
-		Harness: domain.HarnessClaudeCode,
+		Harness:    domain.HarnessClaudeCode,
+		Persistent: true,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming:    true,
 			ports.ChatCapabilityTools:        true,

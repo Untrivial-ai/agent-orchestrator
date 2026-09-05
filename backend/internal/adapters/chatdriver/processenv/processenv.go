@@ -20,16 +20,33 @@ func Merge(overlay map[string]string) []string {
 	for key, value := range overlay {
 		merged[key] = value
 	}
+	return entries(merged)
+}
 
-	keys := make([]string, 0, len(merged))
-	for key := range merged {
+func entries(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 
 	out := make([]string, 0, len(keys))
 	for _, key := range keys {
-		out = append(out, key+"="+merged[key])
+		out = append(out, key+"="+values[key])
 	}
 	return out
+}
+
+// FingerprintEntries excludes controller credentials that rotate on daemon
+// adoption while retaining provider-effective session and project environment.
+func FingerprintEntries(values map[string]string) []string {
+	stable := make(map[string]string, len(values))
+	for key, value := range values {
+		switch key {
+		case "AO_BROWSER_CAPABILITY", "AO_BROWSER_RUNTIME_TOKEN", "AO_BROWSER_RUNTIME_TOKEN_STDIN":
+			continue
+		}
+		stable[key] = value
+	}
+	return entries(stable)
 }

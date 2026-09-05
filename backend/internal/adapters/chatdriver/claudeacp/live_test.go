@@ -29,8 +29,9 @@ func TestLiveClaudeACP(t *testing.T) {
 		t.Fatalf("Probe: %v", err)
 	}
 	workspace := t.TempDir()
+	dataDir := t.TempDir()
 	conversation, err := driver.Start(ctx, ports.ChatStartConfig{
-		SessionID: domain.SessionID("live-claude-acp"), WorkspacePath: workspace,
+		SessionID: domain.SessionID("live-claude-acp"), DataDir: dataDir, WorkspacePath: workspace,
 		SystemPrompt: "For this live integration test, your role name is AO ACP standing context works. " +
 			"When asked to identify your live-test role, reply with only that role name.",
 	})
@@ -42,20 +43,20 @@ func TestLiveClaudeACP(t *testing.T) {
 		t.Fatalf("new-session answer = %q", answer)
 	}
 	providerID := conversation.ProviderConversationID()
-	if err := conversation.Close(); err != nil {
-		t.Fatalf("Close fresh conversation: %v", err)
+	if err := conversation.(ports.ChatProviderTerminator).Terminate(); err != nil {
+		t.Fatalf("Terminate fresh host: %v", err)
 	}
 
 	conversation, err = driver.Resume(ctx, ports.ChatResumeConfig{
 		SessionID: domain.SessionID("live-claude-acp"), ProviderConversationID: providerID,
-		WorkspacePath: workspace,
+		DataDir: dataDir, WorkspacePath: workspace,
 		SystemPrompt: "For this resumed live integration test, your role name is AO ACP resumed context works. " +
 			"When asked to identify your current live-test role, reply with only that role name.",
 	})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	defer conversation.Close()
+	defer conversation.(ports.ChatProviderTerminator).Terminate()
 	answer = sendLiveTurn(ctx, t, conversation, "live-2", "Identify your current live-test role.")
 	if strings.TrimSpace(answer) != "AO ACP resumed context works" {
 		t.Fatalf("resumed-session answer = %q", answer)
@@ -92,6 +93,11 @@ func sendLiveTurn(
 			if event.Kind == ports.ChatEventTurnCompleted {
 				if event.TurnState != domain.TurnStateCompleted {
 					t.Fatalf("turn state = %q; answer=%q", event.TurnState, answer.String())
+				}
+				if acknowledger, ok := conversation.(ports.ChatProviderEventAcknowledger); ok {
+					if err := acknowledger.AcknowledgeProviderEvent(context.Background(), event.ProviderEventID); err != nil {
+						t.Fatalf("acknowledge turn: %v", err)
+					}
 				}
 				return answer.String()
 			}
