@@ -15,6 +15,8 @@ import {
 import { browserProfilePartition, type BrowserProfile } from "../shared/browser-profiles";
 import type { BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
+import { BrowserSiteSettingsStore } from "./browser-site-settings-store";
+import type { BrowserSiteSettings } from "../shared/browser-site-settings";
 import {
 	FOCUS_TERMINAL_SHORTCUT_CHANNEL,
 	NEW_SESSION_SHORTCUT_CHANNEL,
@@ -507,6 +509,7 @@ function setupTabHost(
 	failViewConstruction = false,
 	loadURLHook?: (viewIndex: number, url: string) => Promise<void>,
 	browserHistoryStore?: BrowserHistoryStore,
+	browserSiteSettingsStore?: BrowserSiteSettingsStore,
 ) {
 	const constructorOptions: Array<{ webPreferences: { partition?: string } }> = [];
 	const handlers = new Map<string, InvokeHandler>();
@@ -695,6 +698,7 @@ function setupTabHost(
 		agentBrowserRuntime: runtime,
 		browserProfileStore,
 		browserHistoryStore,
+		browserSiteSettingsStore,
 		// Kept only as a regression tripwire: the removed auto-send path used
 		// this option to discover the daemon before calling net.fetch.
 		...({ getDaemonPort: () => 43123 } as Record<string, unknown>),
@@ -1740,6 +1744,23 @@ describe("agent browser runtime", () => {
 			undefined,
 		);
 		expect(result).toMatchObject({ text: "t1" });
+	});
+
+	it("scopes site-setting mutations to the owned active tab, origin, and profile", async () => {
+		const store = new BrowserSiteSettingsStore("unused-temporary-settings");
+		const { invoke } = setupTabHost(undefined, false, undefined, undefined, store);
+		const nav = await invoke("browser:ensure", "site-worker") as BrowserNavState;
+		await invoke("browser:navigate", { viewId: nav.viewId, url: "https://example.com" });
+		const target = await invoke("browser:site:get", { viewId: nav.viewId }) as BrowserSiteSettings;
+		expect(target.permissions.camera).toBe("block");
+		const input = { ...target, permission: "camera", setting: "allow" };
+		await expect(invoke("browser:site:setPermission", { ...input, profileId: "another-profile" })).rejects.toThrow();
+		await expect(invoke("browser:site:setPermission", { ...input, viewId: "unowned" })).rejects.toThrow();
+		await expect(invoke("browser:site:setPermission", input)).resolves.toMatchObject({ permissions: { camera: "allow" } });
+		await invoke("browser:navigate", { viewId: nav.viewId, url: "https://other.example" });
+		await expect(invoke("browser:site:setPermission", input)).rejects.toThrow("page changed");
+		const other = await invoke("browser:site:get", { viewId: nav.viewId }) as BrowserSiteSettings;
+		expect(other.permissions.camera).toBe("block");
 	});
 
 	it("denies browser-partition permissions by default", async () => {

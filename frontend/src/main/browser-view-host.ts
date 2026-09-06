@@ -34,6 +34,9 @@ import type { AgentBrowserRuntime } from "./agent-browser-runtime";
 import type { AgentBrowserTarget, AgentBrowserTargetProvider } from "./agent-browser-cdp-bridge";
 import type { BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
+import type { BrowserSiteSettingsStore } from "./browser-site-settings-store";
+import { clearBrowserSiteData, installBrowserSitePermissions, type BrowserPermissionPrompt } from "./browser-site-permissions";
+import { browserSiteOrigin, type BrowserSiteTarget, type BrowserSiteSettings, type BrowserSitePermissionInput } from "../shared/browser-site-settings";
 import { matchInstruction } from "./browser-act-matcher";
 
 function isValidAnnotationContext(value: unknown): value is BrowserAnnotationContext {
@@ -238,7 +241,7 @@ type BrowserWebContents = Pick<
 	openDevTools?: (options?: Pick<OpenDevToolsOptions, "mode" | "activate">) => void;
 	closeDevTools?: () => void;
 	close?: () => void;
-	session?: Pick<Session, "setPermissionCheckHandler" | "setPermissionRequestHandler" | "webRequest">;
+	session?: Pick<Session, "setPermissionCheckHandler" | "setPermissionRequestHandler" | "webRequest"> & Partial<Pick<Session, "cookies" | "clearStorageData">>;
 };
 
 type BrowserElectronSession = NonNullable<BrowserWebContents["session"]>;
@@ -312,6 +315,8 @@ export type BrowserViewHostOptions = {
 	isCloseShellTerminalShortcutEnabled?: () => boolean;
 	browserProfileStore?: BrowserProfileStore;
 	browserHistoryStore?: BrowserHistoryStore;
+	browserSiteSettingsStore?: BrowserSiteSettingsStore;
+	promptBrowserPermission?: BrowserPermissionPrompt;
 	clearBrowserProfileData?: (partition: string) => Promise<void>;
 };
 
@@ -644,8 +649,10 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		applyBrowserViewBounds(view, OFFSCREEN_BOUNDS, false);
 		options.mainWindow.contentView.addChildView(view);
 		view.setBorderRadius?.(BROWSER_VIEW_BORDER_RADIUS);
-		view.webContents.session?.setPermissionCheckHandler?.(() => false);
-		view.webContents.session?.setPermissionRequestHandler?.((_contents, _permission, callback) => callback(false));
+		if (view.webContents.session) installBrowserSitePermissions(
+			view.webContents.session, session.profileId ?? session.profilePartition,
+			options.browserSiteSettingsStore, options.promptBrowserPermission,
+		);
 		let scrollbarStyleKey: string | undefined;
 		let scrollbarStyleUpdate = Promise.resolve();
 		const applyScrollbarStyle = (): void => {
@@ -1524,6 +1531,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		const session = entries.get(viewId);
 		if (!session) return;
 		session.signals.entries.length = 0;
+		if (!session.profileId) void options.browserSiteSettingsStore?.reset(session.profilePartition).catch(() => undefined);
 		unregisterBrowserSignalWatcher(session);
 		if (options.mainWindow.isDestroyed?.()) session.devtools = undefined;
 		else destroyDevTools(session);
@@ -1774,6 +1782,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		await Promise.all([
 			options.clearBrowserProfileData(partition),
 			options.browserHistoryStore?.clear(profileId) ?? Promise.resolve(),
+			options.browserSiteSettingsStore?.reset(profileId) ?? Promise.resolve(),
 		]);
 	};
 
@@ -1909,6 +1918,39 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		const profileId = entries.get(input.viewId)?.profileId;
 		if (!profileId || !options.browserHistoryStore) return [];
 		return options.browserHistoryStore.suggest(profileId, input.query);
+	});
+	const siteTarget = (event: IpcMainInvokeEvent, input: { viewId: string } & Partial<BrowserSiteTarget>, mutation = false) => {
+		if (!input || typeof input.viewId !== "string" || !isRendererOwned(event, input.viewId)) throw browserError("INVALID_ARGUMENT", "Invalid browser target");
+		const session = entries.get(input.viewId);
+		if (!session) throw browserError("INVALID_ARGUMENT", "Browser target is unavailable");
+		assertProfileStable(session);
+		const entry = activeEntry(session);
+		const origin = browserSiteOrigin(entry.view.webContents.getURL());
+		if (!origin || (mutation && (input.origin !== origin || input.tabId !== entry.tabId || input.profileId !== session.profileId))) {
+			throw browserError("INVALID_ARGUMENT", "The page changed. Reopen site settings.");
+		}
+		const store = options.browserSiteSettingsStore;
+		if (!store) throw browserError("INVALID_ARGUMENT", "Site settings are unavailable");
+		const scope = session.profileId ?? session.profilePartition;
+		const state = (): BrowserSiteSettings => ({ viewId: input.viewId, tabId: entry.tabId, profileId: session.profileId, origin, permissions: store.get(scope, origin) });
+		return { session, entry, origin, scope, store, state };
+	};
+	handle("browser:site:get", (event, input: { viewId: string }) => siteTarget(event, input).state());
+	handle("browser:site:setPermission", async (event, input: BrowserSitePermissionInput) => {
+		const target = siteTarget(event, input, true);
+		await target.store.set(target.scope, target.origin, input.permission, input.setting);
+		return target.state();
+	});
+	handle("browser:site:reset", async (event, input: BrowserSiteTarget) => {
+		const target = siteTarget(event, input, true);
+		await target.store.reset(target.scope, target.origin);
+		return target.state();
+	});
+	handle("browser:site:clearData", async (event, input: BrowserSiteTarget) => {
+		const target = siteTarget(event, input, true);
+		const electronSession = target.entry.view.webContents.session;
+		if (!electronSession?.cookies || !electronSession.clearStorageData) throw browserError("INVALID_ARGUMENT", "Site storage is unavailable");
+		await clearBrowserSiteData({ cookies: electronSession.cookies, clearStorageData: electronSession.clearStorageData.bind(electronSession) }, target.origin);
 	});
 	handle("browser:clear", (event, viewId: string) =>
 		isRendererOwned(event, viewId) ? clear(viewId) : emptyNavState(viewId),

@@ -65,6 +65,7 @@ import {
 import { Input } from "./ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { BrowserTabsRail, type BrowserTabsRailHandle } from "./BrowserTabsRail";
+import { BrowserSiteInfo } from "./BrowserSiteInfo";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { appI18n, type MessageKey } from "../i18n";
@@ -375,6 +376,7 @@ export function BrowserPanelView({
 	const [urlInput, setUrlInput] = useState(navState.url);
 	const [historySuggestions, setHistorySuggestions] = useState<Array<{ url: string; title?: string }>>([]);
 	const historyListId = useId();
+	const [selectedHistoryIndex, setSelectedHistoryIndex] = useState(-1);
 	const [urlEditing, setUrlEditing] = useState(false);
 	const urlTakeover = urlEditing && !poppedOut;
 	const { beginPicking, cancelPicking, enqueue, error, failPicking, queuedCount, retryQueued, status } =
@@ -510,33 +512,36 @@ export function BrowserPanelView({
 			if (urlInputRef.current) urlInputRef.current.scrollLeft = 0;
 		});
 		return () => window.cancelAnimationFrame(frame);
-	}, [navState.url]);
+	}, [navState.url, activeTabId, profileState.profileId]);
 
 	useEffect(() => {
 		const query = urlInput.trim();
+		setSelectedHistoryIndex(-1);
 		if (
 			!urlEditing ||
 			!window.ao?.browser ||
 			!viewId ||
 			!profileState.profileId ||
 			query === navState.url ||
-			query.length < 2
+			query.length < 1
 		) {
 			setHistorySuggestions([]);
 			return;
 		}
+		// Keep still-matching rows visible while IPC returns the complete batch.
+		const normalizedQuery = query.toLowerCase();
+		setHistorySuggestions((previous) => previous.filter((suggestion) =>
+			suggestion.url.toLowerCase().includes(normalizedQuery) || suggestion.title?.toLowerCase().includes(normalizedQuery),
+		));
 		let current = true;
-		const timer = window.setTimeout(() => {
-			void window.ao!.browser.historySuggestions({ viewId, query }).then(
-				(suggestions) => current && setHistorySuggestions(suggestions),
-				() => current && setHistorySuggestions([]),
-			);
-		}, 120);
+		void window.ao.browser.historySuggestions({ viewId, query }).then(
+			(suggestions) => current && setHistorySuggestions(suggestions),
+			() => current && setHistorySuggestions([]),
+		);
 		return () => {
 			current = false;
-			window.clearTimeout(timer);
 		};
-	}, [navState.url, profileState.profileId, urlEditing, urlInput, viewId]);
+	}, [activeTabId, navState.url, profileState.profileId, urlEditing, urlInput, viewId]);
 
 	useLayoutEffect(() => {
 		if (!urlEditing) return;
@@ -580,15 +585,13 @@ export function BrowserPanelView({
 
 	const submit = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
-		const nextURL = urlInput.trim();
+		const nextURL = historySuggestions[selectedHistoryIndex]?.url ?? urlInput.trim();
 		if (nextURL) navigateFromAddressBar(nextURL);
 	};
 
 	const handleURLChange = (value: string) => {
 		setUrlInput(value);
-		const selected = historySuggestions.find((suggestion) => suggestion.url === value.trim());
-		if (!selected) return;
-		navigateFromAddressBar(selected.url);
+		setSelectedHistoryIndex(-1);
 	};
 
 	const endUrlEditing = () => {
@@ -597,21 +600,36 @@ export function BrowserPanelView({
 		setHistorySuggestions([]);
 	};
 
-	const beginUrlEditing = () => {
+	useLayoutEffect(() => {
+		if (!urlEditing) return;
 		const input = urlInputRef.current;
 		const wrapper = input?.parentElement;
 		const toolbar = input?.closest<HTMLElement>(".browser-panel__toolbar");
-		if (!poppedOut && wrapper && toolbar) {
+		const panel = input?.closest<HTMLElement>(".browser-panel");
+		if (!wrapper || !toolbar || !panel) return;
+		const updateBounds = () => {
 			const wrapperRect = wrapper.getBoundingClientRect();
 			const toolbarRect = toolbar.getBoundingClientRect();
+			wrapper.style.setProperty("--browser-suggestions-height", `${Math.max(0, Math.min(panel.getBoundingClientRect().bottom, window.innerHeight) - wrapperRect.bottom - 12)}px`);
+			if (poppedOut) return;
 			const navigationButtons = toolbar.querySelectorAll<HTMLElement>(".browser-panel__navigation-btn");
 			const lastNavigationButton = navigationButtons.item(navigationButtons.length - 1);
 			const targetLeft = lastNavigationButton?.getBoundingClientRect().right ?? toolbarRect.left + 4;
 			wrapper.style.setProperty("--browser-url-expand-left", `${targetLeft + 2 - wrapperRect.left}px`);
 			wrapper.style.setProperty("--browser-url-expand-right", `${wrapperRect.right - toolbarRect.right + 4}px`);
-		}
-		setUrlEditing(true);
-	};
+		};
+		updateBounds();
+		const observer = new ResizeObserver(updateBounds);
+		observer.observe(toolbar);
+		observer.observe(panel);
+		window.addEventListener("resize", updateBounds);
+		return () => {
+			observer.disconnect();
+			window.removeEventListener("resize", updateBounds);
+		};
+	}, [urlEditing, poppedOut]);
+
+	const beginUrlEditing = () => setUrlEditing(true);
 
 	const openCurrentPageExternally = () => {
 		if (!isWebLink(navState.url)) return;
@@ -829,13 +847,36 @@ export function BrowserPanelView({
 					</span>
 				) : null}
 				<div className="browser-panel__url-wrap relative min-w-0 flex-1">
+					<BrowserSiteInfo key={`${activeTabId}:${profileState.profileId}:${navState.url}`} url={navState.url} native={hasNativeBrowser} viewId={viewId} tabId={activeTabId} />
 					<Input
 						aria-label={t("browser.url")}
+						role="combobox"
+						aria-autocomplete="list"
+						aria-expanded={urlEditing && historySuggestions.length > 0}
+						aria-controls={urlEditing && historySuggestions.length > 0 ? historyListId : undefined}
+						aria-activedescendant={selectedHistoryIndex >= 0 && historySuggestions[selectedHistoryIndex] ? `${historyListId}-${selectedHistoryIndex}` : undefined}
+						autoComplete="off"
 						className={cn(
 							"browser-panel__url-input h-browser-url font-mono text-xs",
 							poppedOut ? "pr-9" : !urlEditing && "px-9 text-center",
+							isWebLink(navState.url) && "pl-8",
 						)}
-						list={historySuggestions.length > 0 ? historyListId : undefined}
+						onKeyDown={(event) => {
+							if (event.nativeEvent.isComposing) return;
+							if (event.key === "Escape") {
+								event.preventDefault();
+								event.stopPropagation();
+								urlInputRef.current?.blur();
+								endUrlEditing();
+							} else if ((event.key === "ArrowDown" || event.key === "ArrowUp") && historySuggestions.length > 0) {
+								event.preventDefault();
+								const next = event.key === "ArrowDown"
+									? (selectedHistoryIndex + 1) % historySuggestions.length
+									: (selectedHistoryIndex <= 0 ? historySuggestions.length : selectedHistoryIndex) - 1;
+								setSelectedHistoryIndex(next);
+								urlInputRef.current?.parentElement?.querySelectorAll('[role="option"]')[next]?.scrollIntoView?.({ block: "nearest" });
+							}
+						}}
 						onBlur={endUrlEditing}
 						onChange={(event) => handleURLChange(event.target.value)}
 						onFocus={beginUrlEditing}
@@ -862,13 +903,32 @@ export function BrowserPanelView({
 							</TooltipContent>
 						</Tooltip>
 					) : null}
-					<datalist id={historyListId}>
-						{historySuggestions.map((suggestion) => (
-							<option key={suggestion.url} value={suggestion.url}>
-								{suggestion.title}
-							</option>
-						))}
-					</datalist>
+					{urlEditing && historySuggestions.length > 0 && (
+						<div
+							id={historyListId}
+							role="listbox"
+							aria-label={t("browser.historySuggestions")}
+							className="browser-panel__suggestions"
+							data-browser-native-overlay="true"
+							data-state="open"
+						>
+							{historySuggestions.map((suggestion, index) => (
+								<div
+									key={suggestion.url}
+									id={`${historyListId}-${index}`}
+									role="option"
+									aria-selected={index === selectedHistoryIndex}
+									className="browser-panel__suggestion"
+									onMouseDown={(event) => event.preventDefault()}
+									onClick={() => navigateFromAddressBar(suggestion.url)}
+									title={suggestion.url}
+								>
+									<span className="browser-panel__suggestion-title">{suggestion.title || suggestion.url}</span>
+									<span className="browser-panel__suggestion-url">{suggestion.url}</span>
+								</div>
+							))}
+						</div>
+					)}
 				</div>
 				{tabNotice ? (
 					<span className="max-w-24 truncate text-caption text-accent" role="status">

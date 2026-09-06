@@ -121,6 +121,8 @@ import {
 } from "./main/browser-view-host";
 import { createBrowserProfileStore } from "./main/browser-profile-store";
 import { BrowserHistoryStore } from "./main/browser-history-store";
+import { BrowserSiteSettingsStore } from "./main/browser-site-settings-store";
+import { catalogFor } from "./renderer/i18n/messages";
 import { BrowserProfileImportService } from "./main/browser-profile-import";
 import {
 	registerBrowserProfileIpc,
@@ -541,6 +543,13 @@ async function createWindowInternal(): Promise<void> {
 	}
 	const browserProfileStore = await createBrowserProfileStore({ stateDir: browserProfileStateDir() });
 	const browserHistoryStore = new BrowserHistoryStore({ stateDir: browserProfileStateDir() });
+	let browserSiteSettingsStore: BrowserSiteSettingsStore | undefined = new BrowserSiteSettingsStore(browserProfileStateDir());
+	try {
+		await browserSiteSettingsStore.initialize();
+	} catch {
+		console.error("Browser site settings could not be loaded; permissions remain blocked.");
+		browserSiteSettingsStore = undefined;
+	}
 	const profileImporter = new BrowserProfileImportService({
 		stateDir: browserProfileStateDir(),
 		profileStore: browserProfileStore,
@@ -669,6 +678,24 @@ async function createWindowInternal(): Promise<void> {
 		isCloseShellTerminalShortcutEnabled: () => closeShellTerminalShortcutEnabled,
 		browserProfileStore,
 		browserHistoryStore,
+		browserSiteSettingsStore,
+		promptBrowserPermission: async (origin, permissions) => {
+			const catalog = catalogFor((await readUiSettings(browserProfileStateDir())).locale);
+			const labels = { camera: "browser.siteCamera", microphone: "browser.siteMicrophone", location: "browser.siteLocation", notifications: "browser.siteNotifications" } as const;
+			const message = catalog["browser.sitePermissionRequest"]
+				.replace("{{origin}}", origin)
+				.replace("{{permissions}}", permissions.map((permission) => catalog[labels[permission]]).join(", "));
+			const result = await dialog.showMessageBox({
+				type: "question",
+				title: catalog["browser.sitePermissions"],
+				message,
+				buttons: [catalog["browser.siteBlock"], catalog["browser.siteAllowOnce"]],
+				defaultId: 0,
+				cancelId: 0,
+				noLink: true,
+			});
+			return result.response === 1;
+		},
 		clearBrowserProfileData: clearElectronBrowserProfileData,
 	});
 	browserProfileImporter = profileImporter;

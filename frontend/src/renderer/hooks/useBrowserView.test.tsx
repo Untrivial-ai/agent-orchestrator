@@ -109,6 +109,10 @@ function setupBridge() {
 		showProfileMenu: vi.fn(),
 		selectProfile: vi.fn(),
 		historySuggestions: vi.fn(async () => []),
+		getSiteSettings: vi.fn(async () => { throw new Error("Not used"); }),
+		setSitePermission: vi.fn(async () => { throw new Error("Not used"); }),
+		resetSitePermissions: vi.fn(async () => { throw new Error("Not used"); }),
+		clearSiteData: vi.fn(async () => undefined),
 		destroy: vi.fn(),
 		setAnnotationMode: vi.fn(async () => undefined),
 		onNavState: vi.fn((listener: Listener) => {

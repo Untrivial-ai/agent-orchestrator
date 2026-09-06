@@ -107,6 +107,10 @@ export const aoBridge: AoBridge =
 				isLoading: false,
 			}),
 			historySuggestions: async () => [],
+			getSiteSettings: async () => { throw new Error("Site settings unavailable"); },
+			setSitePermission: async () => { throw new Error("Site settings unavailable"); },
+			resetSitePermissions: async () => { throw new Error("Site settings unavailable"); },
+			clearSiteData: async () => { throw new Error("Site settings unavailable"); },
 			clear: async (viewId: string) => ({
 				viewId,
 				url: "",
