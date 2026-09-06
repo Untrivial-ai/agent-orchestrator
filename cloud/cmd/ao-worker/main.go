@@ -259,7 +259,10 @@ func run(logger *slog.Logger) error {
 		}
 		chatRunner = &workerexec.Supervisor{
 			Control: client, Builder: b, Runner: workerexec.OSRunner{},
-			Workspace: workspace, Logger: logger, PollInterval: time.Second,
+			// Use the supervisor's 100 ms default. A one-second worker-command
+			// poll makes every phase of a TUI <-> Chat handoff visibly laggy,
+			// particularly on remote Linux sandboxes.
+			Workspace: workspace, Logger: logger,
 		}
 		if committedInterface == workertransport.InterfaceTUI {
 			agentTerminal, err := client.ensureAgentTerminal(ctx)
