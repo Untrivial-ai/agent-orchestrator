@@ -518,9 +518,8 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		cached.Catalog.RefreshRecommended = true
 		return cached.Catalog, nil
 	}
-	if err := s.persistCatalogState(ctx, projectID, cached, hasCached, "refreshing", "", time.Time{}, generation); err != nil && !hasCached {
-		// Cache state is advisory; discovery remains usable without persistence.
-	}
+	// Cache state is advisory; discovery remains usable without persistence.
+	_ = s.persistCatalogState(ctx, projectID, cached, hasCached, "refreshing", "", time.Time{}, generation)
 	select {
 	case s.discoverySlots <- struct{}{}:
 		defer func() { <-s.discoverySlots }()

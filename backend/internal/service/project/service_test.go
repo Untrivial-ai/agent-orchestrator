@@ -1321,7 +1321,7 @@ func TestManager_InvalidatesModelScopeAfterProjectAndConfigWrites(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.SetConfig(context.Background(), domain.ProjectID(created.ID), project.SetConfigInput{Config: domain.ProjectConfig{Env: map[string]string{"MODEL_PROFILE": "new"}}}); err != nil {
+	if _, err := m.SetConfig(context.Background(), created.ID, project.SetConfigInput{Config: domain.ProjectConfig{Env: map[string]string{"MODEL_PROFILE": "new"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"catalog-scope", "catalog-scope"}; !reflect.DeepEqual(changed, want) {
