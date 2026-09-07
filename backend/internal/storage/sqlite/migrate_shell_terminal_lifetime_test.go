@@ -13,11 +13,11 @@ func TestShellTerminalLifetimeMigrationPreservesLegacyShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 127)
+	upTo(t, db, 128)
 	if _, err := db.Exec(`INSERT INTO shell_terminals (handle_id, working_dir, title, app_run_id, created_at) VALUES ('legacy-shell', '/worktree', 'Build', 'previous-launch', ?)`, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	upTo(t, db, 128)
+	upTo(t, db, 129)
 	var handle, title, dir string
 	if err := db.QueryRow(`SELECT handle_id, title, working_dir FROM shell_terminals WHERE transient = FALSE OR app_run_id = 'next-launch'`).Scan(&handle, &title, &dir); err != nil {
 		t.Fatal(err)
