@@ -62,6 +62,17 @@ func (s *Server) workerGitHubPATGrant(ctx context.Context, claims worker.Claims)
 	}, true
 }
 
+// patWriteGrant returns the session's decrypted PAT grant when a PAT write path
+// is wired and the session has a valid PAT, so GitHub write handlers can prefer
+// it over the possibly write-incapable checkout broker. Returns false to fall
+// back to the broker.
+func (s *Server) patWriteGrant(ctx context.Context, claims worker.Claims) (worker.CheckoutGrantResponse, bool) {
+	if s.patWrites == nil {
+		return worker.CheckoutGrantResponse{}, false
+	}
+	return s.workerGitHubPATGrant(ctx, claims)
+}
+
 // Worker events are namespaced so a compromised sandbox cannot forge a
 // control-plane or billing event onto its own session stream.
 var workerEventTypes = map[string]struct{}{
@@ -483,12 +494,27 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusBadRequest, "INVALID_HEAD_BRANCH", "The pushed branch name is required.")
 		return
 	}
-	pr, err := s.checkoutBroker.RaisePullRequest(r.Context(), claims.OrgID, claims.SessionID, domain.RaisePullRequest{
+	raiseInput := domain.RaisePullRequest{
 		Title:      input.Title,
 		Body:       input.Body,
 		HeadBranch: input.HeadBranch,
 		BaseBranch: input.BaseBranch,
-	})
+	}
+	// Prefer the user's PAT when one is configured: it can write back to GitHub
+	// even where the checkout broker is read-only (e.g. staging reaches GitHub
+	// through the remote capability broker, whose write methods are stubbed).
+	// This mirrors the PAT-first read/push grant path.
+	var (
+		pr  domain.PullRequest
+		err error
+	)
+	if grant, ok := s.patWriteGrant(r.Context(), claims); ok {
+		pr, err = s.patWrites.RaisePullRequest(
+			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, raiseInput,
+		)
+	} else {
+		pr, err = s.checkoutBroker.RaisePullRequest(r.Context(), claims.OrgID, claims.SessionID, raiseInput)
+	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")
 		return
@@ -537,7 +563,19 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusBadRequest, "INVALID_PULL_REQUEST", "A pull request number or URL is required.")
 		return
 	}
-	pr, err := s.checkoutBroker.ClaimPullRequest(r.Context(), claims.OrgID, claims.SessionID, input.Reference)
+	// PAT-first, mirroring workerRaisePullRequest: a configured PAT can claim
+	// (fetch + record) a PR even where the checkout broker is read-only.
+	var (
+		pr  domain.PullRequest
+		err error
+	)
+	if grant, ok := s.patWriteGrant(r.Context(), claims); ok {
+		pr, err = s.patWrites.ClaimPullRequest(
+			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, input.Reference,
+		)
+	} else {
+		pr, err = s.checkoutBroker.ClaimPullRequest(r.Context(), claims.OrgID, claims.SessionID, input.Reference)
+	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")
 		return

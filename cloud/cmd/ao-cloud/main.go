@@ -321,6 +321,21 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 	}
+	// PAT write fallback: a REST-only GitHub client plus the record store lets a
+	// worker's configured personal access token open and claim pull requests
+	// even where the checkout broker is read-only (staging reaches GitHub through
+	// the remote capability broker, whose write methods are stubbed). The PAT is
+	// decrypted per request in the handler via providerCipher; this only needs
+	// the REST client and the store. Constructed whenever PAT decryption is
+	// possible so PAT-first writes behave consistently with PAT-first reads.
+	var patWrites *githubapp.PATWriteService
+	if providerCipher != nil {
+		// Empty base URL defaults to https://api.github.com, matching the App
+		// client; a GitHub Enterprise host would need a config field here.
+		patWrites = githubapp.NewPATWriteService(
+			githubapp.NewRESTClient("", nil), store,
+		)
+	}
 	reconciler, err := newSandboxReconciler(cfg, store, logger)
 	if err != nil {
 		return err
@@ -376,6 +391,7 @@ func run(logger *slog.Logger) error {
 		Logger:                    logger,
 		GitHub:                    githubService,
 		CheckoutBroker:            checkoutBroker,
+		PATWrites:                 patWrites,
 		BrokerAuthToken:           cfg.RepositoryBrokerToken,
 		EnvironmentControlToken:   cfg.EnvironmentControlToken,
 		SecretCipher:              providerCipher,

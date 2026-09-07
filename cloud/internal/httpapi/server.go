@@ -153,6 +153,7 @@ type Server struct {
 	logger                  *slog.Logger
 	github                  *githubapp.Service
 	checkoutBroker          CheckoutBroker
+	patWrites               *githubapp.PATWriteService
 	brokerAuthToken         string
 	environmentControlToken string
 	secretCipher            *secrets.Cipher
@@ -185,6 +186,7 @@ type Options struct {
 	Logger                    *slog.Logger
 	GitHub                    *githubapp.Service
 	CheckoutBroker            CheckoutBroker
+	PATWrites                 *githubapp.PATWriteService
 	BrokerAuthToken           string
 	EnvironmentControlToken   string
 	SecretCipher              *secrets.Cipher
@@ -253,6 +255,7 @@ func New(options Options) *Server {
 		logger:                    logger,
 		github:                    options.GitHub,
 		checkoutBroker:            options.CheckoutBroker,
+		patWrites:                 options.PATWrites,
 		brokerAuthToken:           options.BrokerAuthToken,
 		environmentControlToken:   options.EnvironmentControlToken,
 		secretCipher:              options.SecretCipher,
