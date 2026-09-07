@@ -2605,8 +2605,19 @@ export interface components {
             customModelEntry: "none" | "direct" | "configured";
             /** Format: date-time */
             fetchedAt: string;
+            inputFingerprint?: string;
+            /** Format: date-time */
+            lastSuccessAt?: null | string;
+            metadata?: {
+                [key: string]: string;
+            };
             models: components["schemas"]["AgentModelInfo"][];
+            refreshError?: string;
             refreshRecommended?: boolean;
+            /** @enum {string} */
+            refreshState?: "idle" | "queued" | "refreshing" | "error";
+            /** Format: date-time */
+            retryAt?: string;
             /** @enum {string} */
             selectionMode: "catalog" | "text" | "mode";
             source: string;

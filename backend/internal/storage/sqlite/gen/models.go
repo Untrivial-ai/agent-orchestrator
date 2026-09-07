@@ -26,12 +26,20 @@ type AgentInstallJob struct {
 }
 
 type AgentModelCatalog struct {
-	AgentID       string
-	ProjectID     string
-	BinaryVersion string
-	CatalogJson   string
-	Source        string
-	FetchedAt     time.Time
+	AgentID          string
+	ProjectID        string
+	BinaryVersion    string
+	CatalogJson      string
+	Source           string
+	FetchedAt        time.Time
+	MetadataJson     string
+	InputFingerprint string
+	LastSuccessAt    sql.NullTime
+	RefreshState     string
+	RefreshError     string
+	RetryCount       int64
+	RetryAt          sql.NullTime
+	Generation       int64
 }
 
 type AgentNativeSession struct {

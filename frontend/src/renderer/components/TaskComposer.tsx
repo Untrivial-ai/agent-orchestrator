@@ -618,8 +618,12 @@ function TaskModelPicker({
 			customModelEntry={customModelEntry}
 			agentLabel={agentLabel}
 			onRefresh={onRefresh}
+			refreshing={catalog?.refreshState === "queued" || catalog?.refreshState === "refreshing"}
+			lastSuccessAt={catalog?.lastSuccessAt}
+			refreshError={catalog?.refreshError}
+			retryAt={catalog?.retryAt}
 			disabled={disabled || agentId === ""}
-			emptyLabel={fetching ? t("settings.models.loading") : noOverrideLabel}
+			emptyLabel={fetching && !catalog ? t("settings.models.loading") : noOverrideLabel}
 			requireSelection
 			onChange={selectCatalogModel}
 			onCustom={selectCustomModel}

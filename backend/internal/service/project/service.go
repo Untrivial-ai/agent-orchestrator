@@ -66,12 +66,13 @@ type SessionTeardowner interface {
 
 // Service implements project registration and lookup use-cases for controllers.
 type Service struct {
-	store          Store
-	sessions       SessionTeardowner
-	clock          func() time.Time
-	telemetry      ports.EventSink
-	defaultHarness domain.AgentHarness
-	logger         *slog.Logger
+	store               Store
+	sessions            SessionTeardowner
+	clock               func() time.Time
+	telemetry           ports.EventSink
+	defaultHarness      domain.AgentHarness
+	logger              *slog.Logger
+	onModelScopeChanged func(projectID string)
 	// addMu serialises the whole body of Add. Workspace registration performs
 	// filesystem mutations (git init, .gitignore writes, commits) that are not
 	// covered by the store's own writeMu, so path/id conflict checks plus the
@@ -95,6 +96,9 @@ type Deps struct {
 	// Logger receives structured logs. Left nil, the service falls back to
 	// slog.Default, keeping service-focused tests logger-free.
 	Logger *slog.Logger
+	// OnModelScopeChanged schedules non-blocking model-catalog invalidation
+	// after a project is created or its agent-relevant config changes.
+	OnModelScopeChanged func(projectID string)
 }
 
 // New returns a project service backed by the given durable store.
@@ -109,12 +113,13 @@ func NewWithDeps(d Deps) *Service {
 		defaultHarness = domain.AgentHarness(config.DefaultAgent)
 	}
 	s := &Service{
-		store:          d.Store,
-		sessions:       d.Sessions,
-		clock:          d.Clock,
-		telemetry:      d.Telemetry,
-		defaultHarness: defaultHarness,
-		logger:         d.Logger,
+		store:               d.Store,
+		sessions:            d.Sessions,
+		clock:               d.Clock,
+		telemetry:           d.Telemetry,
+		defaultHarness:      defaultHarness,
+		logger:              d.Logger,
+		onModelScopeChanged: d.OnModelScopeChanged,
 	}
 	if s.clock == nil {
 		s.clock = time.Now
@@ -292,6 +297,7 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		if err := m.store.UpsertWorkspaceProject(ctx, row, repos); err != nil {
 			return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register workspace project")
 		}
+		m.modelScopeChanged(row.ID)
 		if in.ClonePreparationID != "" {
 			removeClonePreparationMarker(path)
 		}
@@ -343,6 +349,7 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	if in.ClonePreparationID != "" {
 		removeClonePreparationMarker(path)
 	}
+	m.modelScopeChanged(row.ID)
 	m.emitProjectAdded(ctx, row, projectCountBefore == 0)
 	return m.projectFromRow(ctx, row), nil
 }
@@ -721,9 +728,15 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	}
 	row.DisplayName = displayName
 	row.Config = in.Config
+	m.modelScopeChanged(row.ID)
 	return m.projectFromRow(ctx, row), nil
 }
 
+func (m *Service) modelScopeChanged(projectID string) {
+	if m.onModelScopeChanged != nil {
+		m.onModelScopeChanged(projectID)
+	}
+}
 // SetConfig replaces the project's stored config. The typed config is validated
 // here so a bad value is rejected when set rather than surfacing at spawn.
 func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConfigInput) (Project, error) {
@@ -752,6 +765,7 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_CONFIG_UPDATE_FAILED", "Failed to update project config")
 	}
+	m.modelScopeChanged(row.ID)
 	return m.projectFromRow(ctx, row), nil
 }
 

@@ -995,6 +995,8 @@
 	"settings.models.refreshAria": "{{label}}の一覧を更新",
 	"settings.models.refreshFailed": "モデルを更新できませんでした。",
 	"settings.models.refresh": "モデルを更新",
+	"settings.models.lastSuccess": "最終更新: {{time}}",
+	"settings.models.retry": "更新を再試行",
 	"settings.models.searchAria": "{{label}}を検索",
 	"settings.models.searchPlaceholder": "モデルを検索…",
 	"settings.models.searchModelsOrProvidersPlaceholder": "モデルまたはプロバイダーを検索…",

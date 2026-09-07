@@ -7456,12 +7456,35 @@ components:
         fetchedAt:
           format: date-time
           type: string
+        inputFingerprint:
+          type: string
+        lastSuccessAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        metadata:
+          additionalProperties:
+            type: string
+          type: object
         models:
           items:
             $ref: '#/components/schemas/AgentModelInfo'
           type: array
+        refreshError:
+          type: string
         refreshRecommended:
           type: boolean
+        refreshState:
+          enum:
+          - idle
+          - queued
+          - refreshing
+          - error
+          type: string
+        retryAt:
+          format: date-time
+          type: string
         selectionMode:
           enum:
           - catalog
