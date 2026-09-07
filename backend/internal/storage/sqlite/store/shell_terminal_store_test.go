@@ -214,3 +214,36 @@ func TestSelectAndDeleteShellTerminalsFromPreviousAppRuns(t *testing.T) {
 		t.Errorf("remaining = %+v, want the current run's shell untouched", remaining)
 	}
 }
+
+func TestRestorableShellTerminalsAcrossAppLaunches(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		id, run   string
+		transient bool
+	}{
+		{"shell-old", "old", false}, {"command-old", "old", true},
+		{"shell-new", "new", false}, {"command-new", "new", true},
+	} {
+		rec := shellTerminalRecord(tc.id, tc.run)
+		rec.Transient = tc.transient
+		if err := s.InsertShellTerminal(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.SelectRestorableShellTerminals(ctx, "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("restorable rows = %+v", rows)
+	}
+	for _, row := range rows {
+		if row.HandleID == "command-old" {
+			t.Fatal("restored previous launch's command")
+		}
+		if row.HandleID == "command-new" && !row.Transient {
+			t.Fatal("lost transient lifetime")
+		}
+	}
+}

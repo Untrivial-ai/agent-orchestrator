@@ -48,12 +48,8 @@ type SessionWorkspaceLocator interface {
 
 // Service opens, lists, and closes standalone shell terminals.
 //
-// appRunID is minted once per desktop-app launch and is the mechanism behind
-// the feature's lifetime rule: shells must survive a DAEMON restart but die
-// with the APP. Rows tagged with the current run are re-attachable; rows tagged
-// with any other run are orphans from an app that exited without closing them
-// (a crash or force-kill, where the clean shutdown path never ran) and are
-// destroyed at boot by ReapShellTerminalsFromPreviousAppRuns.
+// User shells survive desktop and daemon restarts. appRunID scopes only trusted
+// command terminals, whose owning authentication flow ends with the app launch.
 type Service struct {
 	runtime  ShellRuntime
 	store    Store
@@ -239,7 +235,7 @@ func (s *Service) OpenShellTerminal(ctx context.Context, in OpenShellTerminalInp
 	if err != nil {
 		return ShellTerminal{}, err
 	}
-	openTerminals, err := s.store.SelectShellTerminalsByAppRunID(ctx, s.appRunID)
+	openTerminals, err := s.store.SelectRestorableShellTerminals(ctx, s.appRunID)
 	if err != nil {
 		return ShellTerminal{}, fmt.Errorf("open shell terminal: list existing terminals: %w", err)
 	}
@@ -404,6 +400,7 @@ func (s *Service) openTerminal(ctx context.Context, cfg openTerminalConfig) (She
 		WorkingDir: cfg.workingDir,
 		Title:      cfg.title,
 		AppRunID:   s.appRunID,
+		Transient:  cfg.exitOnCommandCompletion,
 		CreatedAt:  s.now().UTC(),
 	}
 	if err := s.store.InsertShellTerminal(ctx, rec); err != nil {
@@ -534,7 +531,8 @@ func (s *Service) CloseShellTerminal(ctx context.Context, handleID string) error
 	return nil
 }
 
-// ListShellTerminalsForCurrentAppRun returns the shells the running app owns,
+// ListShellTerminalsForCurrentAppRun returns durable shells from every launch
+// plus the current launch's trusted command terminals,
 // dropping any whose PTY has died (the user typed `exit`, or the machine
 // rebooted out from under a persisted row). Dead rows are deleted as they are
 // found, so the list the UI renders only ever contains attachable panes.
@@ -543,7 +541,7 @@ func (s *Service) CloseShellTerminal(ctx context.Context, handleID string) error
 // internal/terminal applies on attach — so a transient runtime hiccup cannot
 // silently delete a working terminal.
 func (s *Service) ListShellTerminalsForCurrentAppRun(ctx context.Context) ([]ShellTerminal, error) {
-	recs, err := s.store.SelectShellTerminalsByAppRunID(ctx, s.appRunID)
+	recs, err := s.store.SelectRestorableShellTerminals(ctx, s.appRunID)
 	if err != nil {
 		return nil, fmt.Errorf("list shell terminals: %w", err)
 	}
@@ -569,17 +567,9 @@ func (s *Service) ListShellTerminalsForCurrentAppRun(ctx context.Context) ([]She
 	return out, nil
 }
 
-// ReapShellTerminalsFromPreviousAppRuns destroys shells left behind by an
-// earlier app run and returns how many rows it cleared. This is the half of the
-// lifetime rule the clean shutdown path cannot cover: when the app crashes or
-// is force-killed, nothing gets to close its terminals, so they are swept here
-// on the next boot instead of leaking forever.
-//
-// Runtime teardown is per-handle and confirmed-dead (see destroyConfirmed): one
-// un-destroyable, still-alive PTY does not stop the rest from being reaped, but
-// its own row is deliberately kept rather than blindly wiped — a boot-time
-// reconciliation pass reading this session's shells later must still be able
-// to see it before removing the worktree it points at.
+// ReapShellTerminalsFromPreviousAppRuns prunes confirmed-dead user shells and
+// destroys abandoned trusted command terminals. Live or unknown user runtimes
+// are preserved with their original associations and attach handles.
 func (s *Service) ReapShellTerminalsFromPreviousAppRuns(ctx context.Context) (int64, error) {
 	orphans, err := s.store.SelectShellTerminalsFromPreviousAppRuns(ctx, s.appRunID)
 	if err != nil {
@@ -587,6 +577,25 @@ func (s *Service) ReapShellTerminalsFromPreviousAppRuns(ctx context.Context) (in
 	}
 	var cleared int64
 	for _, rec := range orphans {
+		if !rec.Transient {
+			alive, probeErr := s.runtime.IsAlive(ctx, ports.RuntimeHandle{ID: rec.HandleID})
+			if probeErr != nil {
+				s.log.Warn("shell terminal liveness probe failed; keeping row", "handleId", rec.HandleID, "error", probeErr)
+				continue
+			}
+			if alive {
+				continue
+			}
+			deleted, deleteErr := s.store.DeleteShellTerminalByHandleID(ctx, rec.HandleID)
+			if deleteErr != nil {
+				return cleared, fmt.Errorf("prune dead shell terminal: %w", deleteErr)
+			}
+			if deleted {
+				s.cleanupAuthWorkspace(rec.WorkingDir, rec.HandleID)
+				cleared++
+			}
+			continue
+		}
 		stillAlive, destroyErr := s.destroyConfirmed(ctx, rec)
 		if stillAlive {
 			s.log.Warn("reaping orphaned shell terminal: runtime still alive after destroy",
@@ -601,8 +610,8 @@ func (s *Service) ReapShellTerminalsFromPreviousAppRuns(ctx context.Context) (in
 	return cleared, nil
 }
 
-// destroyConfirmed is the one place a shell terminal's row is allowed to
-// disappear: it destroys the runtime behind handleID and deletes the row only
+// destroyConfirmed handles explicit teardown: it destroys the runtime behind
+// handleID and deletes the row only
 // once death is confirmed, so CloseShellTerminal, ReapShellTerminalsFromPreviousAppRuns,
 // and BeginSessionTeardown can't each independently forget a shell that
 // actually survived.
