@@ -225,6 +225,8 @@ func TestModelDiscoveryIsGloballyBoundedAtTwoAndDeduplicatedPerScope(t *testing.
 func TestManualRefreshBypassesPersistedRetryBackoff(t *testing.T) {
 	now := time.Now().UTC()
 	record := cachedModelRecord(t, "codex", "project-a", now.Add(-24*time.Hour), true)
+	record.BinaryVersion = "v1"
+	record.InputFingerprint = "v1"
 	record.RetryAt = now.Add(time.Hour)
 	record.RefreshState = "error"
 	record.RetryCount = 1
@@ -245,6 +247,65 @@ func TestManualRefreshBypassesPersistedRetryBackoff(t *testing.T) {
 	}
 }
 
+func TestChangedInputsAndQueuedInvalidationBypassPersistedRetryBackoff(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		fingerprint string
+		state       string
+	}{
+		{name: "changed fingerprint", fingerprint: "v2", state: "error"},
+		{name: "queued invalidation", fingerprint: "v1", state: "queued"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			record := cachedModelRecord(t, "codex", "project-a", now, true)
+			record.BinaryVersion = "v1"
+			record.InputFingerprint = "v1"
+			record.RetryAt = now.Add(time.Hour)
+			record.RefreshState = tc.state
+			record.RetryCount = 1
+			cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{"codex\x00project-a": record}}
+			discoverer := successfulModelDiscoverer()
+			discoverer.version = tc.fingerprint
+			svc := newService([]agentregistry.HarnessAgent{harnessAgent("codex", "Codex", nil)}, cache, nil, discoverer)
+
+			if _, err := svc.RevalidateModels(context.Background(), "codex", "project-a"); err != nil {
+				t.Fatal(err)
+			}
+			if got := discoverer.discoverCalls.Load(); got != 1 {
+				t.Fatalf("discoveries = %d, want changed or explicitly invalidated inputs to bypass backoff", got)
+			}
+		})
+	}
+}
+
+func TestChangedInputsStartANewRetrySequence(t *testing.T) {
+	now := time.Now().UTC()
+	record := cachedModelRecord(t, "codex", "project-a", now, true)
+	record.BinaryVersion = "v1"
+	record.InputFingerprint = "v1"
+	record.RetryAt = now.Add(time.Hour)
+	record.RefreshState = "error"
+	record.RetryCount = int64(modelCatalogMaxRetries)
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{"codex\x00project-a": record}}
+	discoverer := successfulModelDiscoverer()
+	discoverer.version = "v2"
+	discoverer.err = errors.New("offline")
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("codex", "Codex", nil)}, cache, nil, discoverer)
+	svc.now = func() time.Time { return now }
+
+	if _, err := svc.RevalidateModels(context.Background(), "codex", "project-a"); err != nil {
+		t.Fatal(err)
+	}
+	updated, ok, err := cache.GetAgentModelCatalog(context.Background(), "codex", "project-a")
+	if err != nil || !ok {
+		t.Fatalf("updated cache = (%#v, %v, %v)", updated, ok, err)
+	}
+	if updated.RetryCount != 1 || updated.RetryAt.IsZero() {
+		t.Fatalf("retry state = count:%d at:%s, want a new scheduled sequence", updated.RetryCount, updated.RetryAt)
+	}
+}
+
 func TestModelDiscoveryRetryBackoffStopsAfterBound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -253,8 +314,11 @@ func TestModelDiscoveryRetryBackoffStopsAfterBound(t *testing.T) {
 	discoverer.err = errors.New("offline")
 	svc := newService([]agentregistry.HarnessAgent{harnessAgent("codex", "Codex", nil)}, cache, nil, discoverer)
 	svc.ctx = ctx
+	var got ports.AgentModelCatalog
 	for range modelCatalogMaxRetries + 1 {
-		if _, err := svc.Models(context.Background(), "codex", "project-a", true); err != nil {
+		var err error
+		got, err = svc.Models(context.Background(), "codex", "project-a", true)
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -267,6 +331,16 @@ func TestModelDiscoveryRetryBackoffStopsAfterBound(t *testing.T) {
 	}
 	if !record.RetryAt.IsZero() {
 		t.Fatalf("retry remained scheduled after bound: %s", record.RetryAt)
+	}
+	if got.RetryAt != nil {
+		t.Fatalf("response retryAt = %s after retry bound, want absent", got.RetryAt)
+	}
+	wire, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wire), `"retryAt"`) {
+		t.Fatalf("response serialized an absent retry time: %s", wire)
 	}
 }
 

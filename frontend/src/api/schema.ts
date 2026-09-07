@@ -2617,7 +2617,7 @@ export interface components {
             /** @enum {string} */
             refreshState?: "idle" | "queued" | "refreshing" | "error";
             /** Format: date-time */
-            retryAt?: string;
+            retryAt?: null | string;
             /** @enum {string} */
             selectionMode: "catalog" | "text" | "mode";
             source: string;

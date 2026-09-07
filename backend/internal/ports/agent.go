@@ -207,7 +207,7 @@ type AgentModelCatalog struct {
 	LastSuccessAt *time.Time `json:"lastSuccessAt,omitempty"`
 	RefreshState  string     `json:"refreshState,omitempty" enum:"idle,queued,refreshing,error"`
 	RefreshError  string     `json:"refreshError,omitempty"`
-	RetryAt       time.Time  `json:"retryAt,omitempty"`
+	RetryAt       *time.Time `json:"retryAt,omitempty"`
 	// RefreshRecommended tells cache-first clients to revalidate in the
 	// background while continuing to display the cached catalog.
 	RefreshRecommended bool   `json:"refreshRecommended,omitempty"`

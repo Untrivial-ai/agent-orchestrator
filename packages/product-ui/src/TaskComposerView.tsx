@@ -66,7 +66,7 @@ export type TaskComposerModelCatalog = {
 	models: TaskComposerModelOption[];
 	refreshError?: string;
 	refreshState?: "idle" | "queued" | "refreshing" | "error";
-	retryAt?: string;
+	retryAt?: string | null;
 	selectionMode: "catalog" | "text" | "mode";
 };
 

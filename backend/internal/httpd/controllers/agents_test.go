@@ -268,6 +268,7 @@ func TestGetAndRefreshAgentModels(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lastSuccess := time.Date(2026, 9, 7, 8, 0, 0, 0, time.UTC)
+			retryAt := lastSuccess.Add(time.Minute)
 			catalog := &fakeAgentCatalog{models: ports.AgentModelCatalog{
 				AgentID:          "codex",
 				SelectionMode:    ports.ModelSelectionCatalog,
@@ -280,7 +281,7 @@ func TestGetAndRefreshAgentModels(t *testing.T) {
 				LastSuccessAt:    &lastSuccess,
 				RefreshState:     "error",
 				RefreshError:     "temporary failure",
-				RetryAt:          lastSuccess.Add(time.Minute),
+				RetryAt:          &retryAt,
 			}}
 			srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Agents: catalog}, httpd.ControlDeps{}))
 			defer srv.Close()

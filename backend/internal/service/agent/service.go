@@ -388,8 +388,10 @@ func (s *Service) InvalidateModelCatalogs(agentID string) {
 			if json.Unmarshal([]byte(record.CatalogJSON), &catalog) == nil {
 				catalog.RefreshRecommended = true
 				catalog.RefreshState = "queued"
+				catalog.RefreshError = ""
 				catalog.LastSuccessAt = nil
-				_ = s.saveCatalog(s.ctx, record.ProjectID, catalog, time.Now().UTC().UnixNano(), record.RetryCount)
+				catalog.RetryAt = nil
+				_ = s.saveCatalog(s.ctx, record.ProjectID, catalog, time.Now().UTC().UnixNano(), 0)
 			}
 			go func(projectID string) { _, _ = s.RevalidateModels(s.ctx, agentID, projectID) }(record.ProjectID)
 		}
@@ -501,6 +503,8 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	// Fingerprints the same inputs the discovery run would read, so a change to
 	// either the executable or the configuration behind it invalidates the cache.
 	version := s.discoverer.CatalogFingerprint(ctx, request)
+	inputsChanged := hasCached && cached.BinaryVersion != version
+	explicitlyInvalidated := hasCached && cached.RefreshState == "queued"
 	if hasCached && mode == modelLoadCached && cached.BinaryVersion == version {
 		// A command-backed catalog can drift without the binary or its config
 		// changing (a provider adds a model), which no fingerprint can see. Ask
@@ -511,12 +515,18 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		return cached.Catalog, nil
 	}
 
-	if mode != modelLoadRefresh && hasCached && !cached.RetryAt.IsZero() && s.now().Before(cached.RetryAt) {
+	if mode != modelLoadRefresh && hasCached && !inputsChanged && !explicitlyInvalidated && !cached.RetryAt.IsZero() && s.now().Before(cached.RetryAt) {
 		cached.Catalog.RefreshState = "error"
 		cached.Catalog.RefreshError = cached.RefreshError
-		cached.Catalog.RetryAt = cached.RetryAt
+		cached.Catalog.RetryAt = modelCatalogRetryAt(cached.RetryAt)
 		cached.Catalog.RefreshRecommended = true
 		return cached.Catalog, nil
+	}
+	if inputsChanged || explicitlyInvalidated {
+		cached.RetryCount = 0
+		cached.RetryAt = time.Time{}
+		cached.RefreshError = ""
+		cached.Catalog.RetryAt = nil
 	}
 	// Cache state is advisory; discovery remains usable without persistence.
 	_ = s.persistCatalogState(ctx, projectID, cached, hasCached, "refreshing", "", time.Time{}, generation)
@@ -584,7 +594,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	discovered.Metadata = catalogMetadata(request)
 	discovered.RefreshState = "idle"
 	discovered.RefreshError = ""
-	discovered.RetryAt = time.Time{}
+	discovered.RetryAt = nil
 	discovered.RefreshRecommended = false
 	if err := s.saveCatalog(ctx, projectID, discovered, generation, 0); err != nil {
 		discovered.Warning = appendCacheWarning(discovered.Warning)
@@ -703,7 +713,7 @@ func (s *Service) cachedCatalog(ctx context.Context, agentID, projectID string) 
 	}
 	catalog.RefreshState = record.RefreshState
 	catalog.RefreshError = record.RefreshError
-	catalog.RetryAt = record.RetryAt
+	catalog.RetryAt = modelCatalogRetryAt(record.RetryAt)
 	return decodedCatalog{Catalog: catalog, BinaryVersion: record.BinaryVersion, LastSuccessAt: catalogLastSuccess(catalog), RefreshState: record.RefreshState, RefreshError: record.RefreshError, RetryCount: record.RetryCount, RetryAt: record.RetryAt, Generation: record.Generation}, true, nil
 }
 
@@ -736,7 +746,7 @@ func (s *Service) saveCatalog(ctx context.Context, projectID string, catalog por
 		RefreshState:     catalog.RefreshState,
 		RefreshError:     catalog.RefreshError,
 		RetryCount:       retryCount,
-		RetryAt:          catalog.RetryAt,
+		RetryAt:          catalogRetryTime(catalog.RetryAt),
 		Generation:       generation,
 	})
 }
@@ -759,7 +769,7 @@ func (s *Service) persistCatalogState(ctx context.Context, projectID string, cac
 	catalog := cached.Catalog
 	catalog.RefreshState = state
 	catalog.RefreshError = message
-	catalog.RetryAt = retryAt
+	catalog.RetryAt = modelCatalogRetryAt(retryAt)
 	return s.saveCatalog(ctx, projectID, catalog, generation, cached.RetryCount)
 }
 
@@ -770,10 +780,11 @@ func (s *Service) saveFailedCatalog(ctx context.Context, projectID string, previ
 	catalog.RefreshError = catalog.Warning
 	catalog.InputFingerprint = catalog.BinaryVersion
 	catalog.Metadata = previous.Catalog.Metadata
-	catalog.RetryAt = time.Time{}
+	catalog.RetryAt = nil
 	if retryCount <= int64(modelCatalogMaxRetries) {
 		delay := modelCatalogRetryDelays[retryCount-1]
-		catalog.RetryAt = s.now().Add(delay).UTC()
+		retryAt := s.now().Add(delay).UTC()
+		catalog.RetryAt = &retryAt
 		time.AfterFunc(delay, func() {
 			if s.ctx.Err() == nil {
 				_, _ = s.RevalidateModels(s.ctx, catalog.AgentID, projectID)
@@ -781,6 +792,21 @@ func (s *Service) saveFailedCatalog(ctx context.Context, projectID string, previ
 		})
 	}
 	return s.saveCatalog(ctx, projectID, catalog, generation, retryCount)
+}
+
+func modelCatalogRetryAt(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	value = value.UTC()
+	return &value
+}
+
+func catalogRetryTime(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return value.UTC()
 }
 
 func (s *Service) agent(agentID string) (agentregistry.HarnessAgent, bool) {

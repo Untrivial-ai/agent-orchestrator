@@ -213,6 +213,15 @@ describe("AgentModelCombobox", () => {
 		expect(onRefresh).toHaveBeenCalledOnce();
 	});
 
+	it("does not display a retry time when no retry is scheduled", async () => {
+		renderCombobox([{ id: "cached", label: "Cached model" }], {
+			refreshError: "Retries exhausted",
+			retryAt: null,
+		});
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		expect(screen.getByRole("button", { name: /Retry refresh/ })).not.toHaveTextContent("·");
+	});
+
 	it("preserves a saved selection while a refreshed catalog no longer lists it", async () => {
 		const view = renderCombobox([{ id: "saved-model", label: "Saved model" }], { value: "saved-model" });
 		expect(screen.getByRole("button", { name: "Worker model" })).toHaveTextContent("Saved model");

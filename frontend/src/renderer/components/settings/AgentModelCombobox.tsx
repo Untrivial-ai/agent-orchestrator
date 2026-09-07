@@ -89,7 +89,7 @@ export function AgentModelCombobox({
 	refreshing?: boolean;
 	lastSuccessAt?: string | null;
 	refreshError?: string;
-	retryAt?: string;
+	retryAt?: string | null;
 	onChange: (value: string) => void;
 	onCustom: (value: string) => void;
 	/** Names what happens with no override, e.g. "Use codex's default". */
