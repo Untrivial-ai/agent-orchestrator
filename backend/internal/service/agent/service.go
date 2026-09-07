@@ -243,6 +243,7 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 		}
 	}
 	sort.SliceStable(records, func(i, j int) bool { return priority[records[i].AgentID] < priority[records[j].AgentID] })
+	jobs := make(chan ports.CachedAgentModelCatalog, len(records))
 	for _, record := range records {
 		if _, eligible := priority[record.AgentID]; !eligible {
 			continue
@@ -251,9 +252,24 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 			return
 		}
 		if force || catalogNeedsRevalidation(record.LastSuccessAt, s.now()) || record.RefreshState == "error" {
-			go func(agentID, projectID string) { _, _ = s.RevalidateModels(ctx, agentID, projectID) }(record.AgentID, record.ProjectID)
+			jobs <- record
 		}
 	}
+	close(jobs)
+	var workers sync.WaitGroup
+	for range cap(s.discoverySlots) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for record := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				_, _ = s.RevalidateModels(ctx, record.AgentID, record.ProjectID)
+			}
+		}()
+	}
+	workers.Wait()
 }
 
 // warmModelCatalogs retains the focused synchronous test seam used by the
@@ -446,8 +462,19 @@ func (s *Service) coalesceModelLoad(
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	loadCtx, cancel := context.WithTimeout(baseCtx, modelCatalogLoadTimeout)
 	go func() {
+		select {
+		case s.discoverySlots <- struct{}{}:
+			defer func() { <-s.discoverySlots }()
+		case <-baseCtx.Done():
+			call.err = baseCtx.Err()
+			s.modelCallMu.Lock()
+			delete(s.modelCalls, key)
+			close(call.done)
+			s.modelCallMu.Unlock()
+			return
+		}
+		loadCtx, cancel := context.WithTimeout(baseCtx, modelCatalogLoadTimeout)
 		defer cancel()
 		call.catalog, call.err = s.loadModels(loadCtx, agentID, projectID, mode, call.generation)
 		s.modelCallMu.Lock()
@@ -530,12 +557,6 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	}
 	// Cache state is advisory; discovery remains usable without persistence.
 	_ = s.persistCatalogState(ctx, projectID, cached, hasCached, "refreshing", "", time.Time{}, generation)
-	select {
-	case s.discoverySlots <- struct{}{}:
-		defer func() { <-s.discoverySlots }()
-	case <-ctx.Done():
-		return ports.AgentModelCatalog{}, ctx.Err()
-	}
 	discovered, discoverErr := s.discoverer.Discover(ctx, request)
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
@@ -781,17 +802,29 @@ func (s *Service) saveFailedCatalog(ctx context.Context, projectID string, previ
 	catalog.InputFingerprint = catalog.BinaryVersion
 	catalog.Metadata = previous.Catalog.Metadata
 	catalog.RetryAt = nil
+	var retryDelay time.Duration
 	if retryCount <= int64(modelCatalogMaxRetries) {
-		delay := modelCatalogRetryDelays[retryCount-1]
-		retryAt := s.now().Add(delay).UTC()
+		retryDelay = modelCatalogRetryDelays[retryCount-1]
+		retryAt := s.now().Add(retryDelay).UTC()
 		catalog.RetryAt = &retryAt
-		time.AfterFunc(delay, func() {
-			if s.ctx.Err() == nil {
-				_, _ = s.RevalidateModels(s.ctx, catalog.AgentID, projectID)
+	}
+	if err := s.saveCatalog(ctx, projectID, catalog, generation, retryCount); err != nil {
+		return err
+	}
+	if catalog.RetryAt != nil && s.cache != nil {
+		retryAt := *catalog.RetryAt
+		time.AfterFunc(retryDelay, func() {
+			if s.ctx.Err() != nil {
+				return
 			}
+			record, ok, err := s.cache.GetAgentModelCatalog(s.ctx, catalog.AgentID, projectID)
+			if err != nil || !ok || record.Generation != generation || record.RefreshState != "error" || !record.RetryAt.Equal(retryAt) {
+				return
+			}
+			_, _ = s.RevalidateModels(s.ctx, catalog.AgentID, projectID)
 		})
 	}
-	return s.saveCatalog(ctx, projectID, catalog, generation, retryCount)
+	return nil
 }
 
 func modelCatalogRetryAt(value time.Time) *time.Time {

@@ -123,6 +123,7 @@ type fakeModelDiscoverer struct {
 	catalog                ports.AgentModelCatalog
 	err                    error
 	discoverCalls          atomic.Int32
+	successfulCalls        atomic.Int32
 	lastRequest            ports.AgentModelDiscoveryRequest
 	fingerprintRequests    atomic.Int32
 	lastFingerprintRequest atomic.Pointer[ports.AgentModelDiscoveryRequest]
@@ -132,7 +133,7 @@ type fakeModelDiscoverer struct {
 	overlap                atomic.Bool
 }
 
-func (f *fakeModelDiscoverer) Discover(_ context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
+func (f *fakeModelDiscoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
 	f.discoverCalls.Add(1)
 	active := f.active.Add(1)
 	for {
@@ -146,12 +147,19 @@ func (f *fakeModelDiscoverer) Discover(_ context.Context, request ports.AgentMod
 	}
 	defer f.active.Add(-1)
 	if f.delay > 0 {
-		time.Sleep(f.delay)
+		timer := time.NewTimer(f.delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return ports.AgentModelCatalog{AgentID: request.AgentID, Models: []ports.AgentModelInfo{}}, ctx.Err()
+		}
 	}
 	f.mu.Lock()
 	f.lastRequest = request
-	f.mu.Unlock()
 	catalog := f.catalog
+	discoverErr := f.err
+	f.mu.Unlock()
 	if catalog.AgentID == "" {
 		catalog.AgentID = request.AgentID
 	}
@@ -161,7 +169,10 @@ func (f *fakeModelDiscoverer) Discover(_ context.Context, request ports.AgentMod
 	if catalog.FetchedAt.IsZero() {
 		catalog.FetchedAt = time.Now().UTC()
 	}
-	return catalog, f.err
+	if discoverErr == nil {
+		f.successfulCalls.Add(1)
+	}
+	return catalog, discoverErr
 }
 
 func TestCatalogFreshnessUsesMachineLocalDateAndTimezone(t *testing.T) {
@@ -201,6 +212,26 @@ func TestStartupPrefetchCreatesEveryUsableAgentProjectScope(t *testing.T) {
 	}
 	if got := discoverer.discoverCalls.Load(); got != 4 {
 		t.Fatalf("discoveries = %d, want two agents across two active projects", got)
+	}
+}
+
+func TestStartupPrefetchDoesNotConsumeDiscoveryTimeoutWhileQueued(t *testing.T) {
+	previousTimeout := modelCatalogLoadTimeout
+	modelCatalogLoadTimeout = 35 * time.Millisecond
+	t.Cleanup(func() { modelCatalogLoadTimeout = previousTimeout })
+	discoverer := successfulModelDiscoverer()
+	discoverer.delay = 20 * time.Millisecond
+	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
+		"one": {ID: "one", Path: t.TempDir()}, "two": {ID: "two", Path: t.TempDir()},
+		"three": {ID: "three", Path: t.TempDir()}, "four": {ID: "four", Path: t.TempDir()},
+	}}
+	svc := newService([]agentregistry.HarnessAgent{
+		harnessAgent("codex", "Codex", nil), harnessAgent("gemini", "Gemini", nil),
+	}, &fakeModelCache{}, projects, discoverer)
+
+	svc.prefetchModelCatalogs(context.Background(), false)
+	if got := discoverer.successfulCalls.Load(); got != 8 {
+		t.Fatalf("successful discoveries = %d, want every queued scope to receive a fresh timeout", got)
 	}
 }
 
@@ -341,6 +372,37 @@ func TestModelDiscoveryRetryBackoffStopsAfterBound(t *testing.T) {
 	}
 	if strings.Contains(string(wire), `"retryAt"`) {
 		t.Fatalf("response serialized an absent retry time: %s", wire)
+	}
+}
+
+func TestObsoleteRetryTimerDoesNotRunAfterManualRefreshSucceeds(t *testing.T) {
+	previousDelay := modelCatalogRetryDelays[0]
+	modelCatalogRetryDelays[0] = 80 * time.Millisecond
+	t.Cleanup(func() { modelCatalogRetryDelays[0] = previousDelay })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	cache := &fakeModelCache{}
+	discoverer := successfulModelDiscoverer()
+	discoverer.err = errors.New("offline")
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("codex", "Codex", nil)}, cache, nil, discoverer)
+	svc.ctx = ctx
+
+	if _, err := svc.Models(context.Background(), "codex", "project-a", true); err != nil {
+		t.Fatal(err)
+	}
+	discoverer.mu.Lock()
+	discoverer.err = nil
+	discoverer.mu.Unlock()
+	if _, err := svc.Models(context.Background(), "codex", "project-a", true); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * modelCatalogRetryDelays[0])
+	if got := discoverer.discoverCalls.Load(); got != 2 {
+		t.Fatalf("discoveries = %d, want obsolete retry timer to remain a no-op after success", got)
+	}
+	record, ok, err := cache.GetAgentModelCatalog(context.Background(), "codex", "project-a")
+	if err != nil || !ok || record.RefreshState != "idle" || record.RetryCount != 0 {
+		t.Fatalf("fresh catalog state = (%#v, %v, %v), want successful manual refresh preserved", record, ok, err)
 	}
 }
 

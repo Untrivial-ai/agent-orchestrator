@@ -737,6 +737,7 @@ func (m *Service) modelScopeChanged(projectID string) {
 		m.onModelScopeChanged(projectID)
 	}
 }
+
 // SetConfig replaces the project's stored config. The typed config is validated
 // here so a bad value is rejected when set rather than surfacing at spawn.
 func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConfigInput) (Project, error) {
