@@ -44,7 +44,7 @@ func (*Reviewer) Harness() domain.ReviewerHarness { return HarnessID }
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 
-// ReviewCommand launches Continue in readonly, auto-approved mode and injects
+// ReviewCommand launches Continue in readonly mode and injects
 // the task after readiness. CLI discovery and state are redirected to an
 // AO-owned profile.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
@@ -75,7 +75,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 		envVars["CONTINUE_API_KEY"] = key
 	}
 	return ports.ReviewCommandSpec{
-		Argv:             []string{binary, "--readonly", "--auto"},
+		Argv:             []string{binary, "--readonly"},
 		Env:              envVars,
 		InitialMessage:   inv.Prompt,
 		WorkingDirectory: inv.WorkspacePath,
