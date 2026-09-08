@@ -2,9 +2,11 @@ package chat
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -24,6 +26,7 @@ var ErrQueuedEditConflict = errors.New("queued message changed during editing")
 // QueuedMessageEdit retains server-owned content by public summary index and
 // appends newly uploaded blocks. Nil RetainedContent preserves existing content.
 type QueuedMessageEdit struct {
+	ClientMessageID  string
 	Text             string
 	Content          []ports.ChatContent
 	RetainedContent  *[]int
@@ -59,6 +62,26 @@ func (s *Service) EditQueuedTurn(
 	turnID string,
 	edit QueuedMessageEdit,
 ) error {
+	delivery, err := queuedEditDelivery(turnID, edit)
+	if err != nil {
+		return err
+	}
+	if delivery.ClientMessageID != "" {
+		conversation, err := s.store.ConversationForSession(ctx, id)
+		if err != nil {
+			return err
+		}
+		hash, found, err := s.store.QueuedEditDelivery(ctx, conversation.ID, delivery.ClientMessageID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if hash != delivery.RequestHash {
+				return ErrQueuedEditConflict
+			}
+			return nil
+		}
+	}
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return err
 	}
@@ -99,6 +122,22 @@ func (c *Controller) CancelQueuedTurn(ctx context.Context, turnID string) error 
 func (c *Controller) EditQueuedTurn(ctx context.Context, turnID string, edit QueuedMessageEdit) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	delivery, err := queuedEditDelivery(turnID, edit)
+	if err != nil {
+		return err
+	}
+	if delivery.ClientMessageID != "" {
+		hash, found, err := c.store.QueuedEditDelivery(ctx, c.conversation.ID, delivery.ClientMessageID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if hash != delivery.RequestHash {
+				return ErrQueuedEditConflict
+			}
+			return nil
+		}
+	}
 	if c.handoffActive() {
 		return ErrControllerHandoff
 	}
@@ -169,7 +208,21 @@ func (c *Controller) EditQueuedTurn(ctx context.Context, turnID string, edit Que
 		encoded = string(data)
 	}
 	return c.store.UpdateQueuedTurnMessage(ctx, c.conversation.ID, turnID,
-		edit.Text, encoded, message.Revision, c.now())
+		edit.Text, encoded, message.Revision, c.now(), delivery)
+}
+
+func queuedEditDelivery(turnID string, edit QueuedMessageEdit) (domain.ConversationQueuedEditDelivery, error) {
+	if edit.ClientMessageID == "" {
+		return domain.ConversationQueuedEditDelivery{}, nil
+	}
+	data, err := json.Marshal(struct {
+		TurnID string
+		Edit   QueuedMessageEdit
+	}{turnID, edit})
+	if err != nil {
+		return domain.ConversationQueuedEditDelivery{}, err
+	}
+	return domain.ConversationQueuedEditDelivery{ClientMessageID: edit.ClientMessageID, RequestHash: fmt.Sprintf("%x", sha256.Sum256(data))}, nil
 }
 
 // ReorderQueuedTurns permutes undispatched queue rows without changing their text.

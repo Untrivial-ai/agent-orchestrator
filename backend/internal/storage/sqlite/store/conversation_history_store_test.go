@@ -640,7 +640,7 @@ func TestUpdateQueuedTurnMessage(t *testing.T) {
 		t.Fatalf("append queued turn: created=%v err=%v", created, err)
 	}
 
-	if err := s.UpdateQueuedTurnMessage(ctx, conversation, "queued-1", "edited draft", "", 0, histClock.Add(time.Minute)); err != nil {
+	if err := s.UpdateQueuedTurnMessage(ctx, conversation, "queued-1", "edited draft", "", 0, histClock.Add(time.Minute), domain.ConversationQueuedEditDelivery{}); err != nil {
 		t.Fatalf("update queued turn message: %v", err)
 	}
 
@@ -651,7 +651,7 @@ func TestUpdateQueuedTurnMessage(t *testing.T) {
 	if got := texts(page.Messages); len(got) != 1 || got[0] != "edited draft" {
 		t.Fatalf("messages after edit = %#v, want [edited draft]", got)
 	}
-	if err := s.UpdateQueuedTurnMessage(ctx, conversation, "missing", "nope", "", 0, histClock.Add(2*time.Minute)); !errors.Is(err, store.ErrQueuedTurnNotAvailable) {
+	if err := s.UpdateQueuedTurnMessage(ctx, conversation, "missing", "nope", "", 0, histClock.Add(2*time.Minute), domain.ConversationQueuedEditDelivery{}); !errors.Is(err, store.ErrQueuedTurnNotAvailable) {
 		t.Fatalf("missing turn error = %v, want ErrQueuedTurnNotAvailable", err)
 	}
 }

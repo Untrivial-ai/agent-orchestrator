@@ -1850,8 +1850,10 @@ type ConversationImageContentRequest struct {
 // EditQueuedConversationMessageRequest changes an undispatched prompt. Omitted
 // retainedContent preserves the stored blocks; an empty list removes attachments.
 type EditQueuedConversationMessageRequest struct {
-	Text        string                            `json:"text"`
-	Attachments []ConversationImageContentRequest `json:"attachments,omitempty"`
+	// Stable retry key for this exact edit, including its attachments.
+	ClientMessageID string                            `json:"clientMessageId,omitempty"`
+	Text            string                            `json:"text"`
+	Attachments     []ConversationImageContentRequest `json:"attachments,omitempty"`
 	// Indices in the message's public content summary, in their original order.
 	RetainedContent *[]int `json:"retainedContent,omitempty"`
 	// Reject a stale editor before interpreting attachment indices.

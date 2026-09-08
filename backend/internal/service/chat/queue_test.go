@@ -92,3 +92,81 @@ func TestQueuedEditAttachmentChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestQueuedEditRetryAfterCommittedResponseIsLost(t *testing.T) {
+	h, provider := steerHarness(t)
+	ctx := context.Background()
+	turn, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "original", ClientMessageID: "queue-original", Origin: domain.MessageOriginHuman,
+		Content: []ports.ChatContent{{Type: "image", MIMEType: "image/png", Data: "b2xk"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := h.st.ConversationForSession(ctx, testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	edit := chatsvc.QueuedMessageEdit{
+		ClientMessageID: "queue-edit-receipt", Text: "updated", ExpectedRevision: &zero,
+		RetainedContent: &[]int{0},
+		Content:         []ports.ChatContent{{Type: "image", MIMEType: "image/png", Data: "bmV3"}},
+	}
+	// The first request commits, but the caller never receives its success.
+	if err := h.svc.EditQueuedTurn(ctx, testSession, turn.ID, edit); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := h.st.QueuedTurnMessage(ctx, conversation.ID, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed.Revision != 1 {
+		t.Fatalf("committed revision = %d, want 1", committed.Revision)
+	}
+	// The renderer retries the identical request with its original revision.
+	if err := h.svc.EditQueuedTurn(ctx, testSession, turn.ID, edit); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	retried, err := h.st.QueuedTurnMessage(ctx, conversation.ID, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Revision != committed.Revision || retried.Text != committed.Text || retried.DeliveryContentJSON != committed.DeliveryContentJSON {
+		t.Fatalf("retry mutated the committed message: before=%+v after=%+v", committed, retried)
+	}
+	for _, change := range []struct {
+		name   string
+		mutate func(*chatsvc.QueuedMessageEdit)
+	}{
+		{"text", func(e *chatsvc.QueuedMessageEdit) { e.Text = "different" }},
+		{"retained attachments", func(e *chatsvc.QueuedMessageEdit) { e.RetainedContent = &[]int{} }},
+		{"native bytes", func(e *chatsvc.QueuedMessageEdit) {
+			e.Content = []ports.ChatContent{{Type: "image", MIMEType: "image/png", Data: "eA=="}}
+		}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			changed := edit
+			change.mutate(&changed)
+			if err := h.svc.EditQueuedTurn(ctx, testSession, turn.ID, changed); !errors.Is(err, chatsvc.ErrQueuedEditConflict) {
+				t.Fatalf("changed request with reused key = %v, want conflict", err)
+			}
+		})
+	}
+	if _, err := h.svc.PromoteQueuedTurn(ctx, testSession, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.EditQueuedTurn(ctx, testSession, turn.ID, edit); err != nil {
+		t.Fatalf("retry after dispatch: %v", err)
+	}
+	if err := h.svc.Stop(ctx, testSession); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.EditQueuedTurn(ctx, testSession, turn.ID, edit); err != nil {
+		t.Fatalf("retry after controller teardown: %v", err)
+	}
+	calls := provider.steers()
+	if len(calls) != 1 || calls[0].msg.Text != "updated" || len(calls[0].msg.Content) != 2 || calls[0].msg.Content[0].Data != "b2xk" || calls[0].msg.Content[1].Data != "bmV3" {
+		t.Fatalf("provider must receive the edited text and attachments exactly once: %+v", calls)
+	}
+}

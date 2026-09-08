@@ -674,3 +674,10 @@ var ErrNoConversationTurn = errors.New("conversation turn not found")
 
 // ErrNoConversationBranch reports a branch id outside the named conversation.
 var ErrNoConversationBranch = errors.New("conversation branch not found")
+
+// ConversationQueuedEditDelivery identifies one exact queued-message mutation.
+// Only its digest is stored; uploaded image bytes remain with the message.
+type ConversationQueuedEditDelivery struct {
+	ClientMessageID string
+	RequestHash     string
+}

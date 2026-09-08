@@ -9347,6 +9347,8 @@ components:
           items:
             $ref: '#/components/schemas/ConversationImageContentRequest'
           type: array
+        clientMessageId:
+          type: string
         expectedRevision:
           type:
           - "null"

@@ -1861,31 +1861,51 @@ func (s *Store) QueuedTurnMessage(ctx context.Context, conversationID, turnID st
 	return messageToDomain(row), nil
 }
 
-// UpdateQueuedTurnMessage atomically replaces a still-queued prompt's text and content.
+// UpdateQueuedTurnMessage commits the prompt and its retry receipt atomically.
 func (s *Store) UpdateQueuedTurnMessage(
 	ctx context.Context,
 	conversationID, turnID, text, contentJSON string,
 	revision int64,
 	now time.Time,
+	delivery domain.ConversationQueuedEditDelivery,
 ) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.UpdateQueuedConversationMessageText(ctx,
-		gen.UpdateQueuedConversationMessageTextParams{
-			Text:                text,
-			DeliveryContentJson: contentJSON,
-			Revision:            revision,
-			UpdatedAt:           now,
-			ConversationID:      conversationID,
-			TurnID:              sql.NullString{String: turnID, Valid: true},
-		})
-	if err != nil {
-		return fmt.Errorf("update queued turn message %s: %w", turnID, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("%w: %s", ErrQueuedTurnNotAvailable, turnID)
-	}
-	return nil
+	return s.inTx(ctx, "update queued turn message", func(q *gen.Queries) error {
+		if delivery.ClientMessageID != "" {
+			hash, err := q.SelectConversationQueuedEditDelivery(ctx, gen.SelectConversationQueuedEditDeliveryParams{
+				ConversationID: conversationID, ClientMessageID: delivery.ClientMessageID,
+			})
+			if err == nil {
+				if hash != delivery.RequestHash {
+					return ErrQueuedEditDeliveryConflict
+				}
+				return nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+		rows, err := q.UpdateQueuedConversationMessageText(ctx,
+			gen.UpdateQueuedConversationMessageTextParams{
+				Text: text, DeliveryContentJson: contentJSON, Revision: revision,
+				UpdatedAt: now, ConversationID: conversationID,
+				TurnID: sql.NullString{String: turnID, Valid: true},
+			})
+		if err != nil {
+			return fmt.Errorf("update queued turn message %s: %w", turnID, err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("%w: %s", ErrQueuedTurnNotAvailable, turnID)
+		}
+		if delivery.ClientMessageID != "" {
+			return q.InsertConversationQueuedEditDelivery(ctx, gen.InsertConversationQueuedEditDeliveryParams{
+				ConversationID: conversationID, ClientMessageID: delivery.ClientMessageID,
+				RequestHash: delivery.RequestHash, CreatedAt: now,
+			})
+		}
+		return nil
+	})
 }
 
 // SettleTurnByID records a terminal state for a turn AO can name directly.
@@ -3218,4 +3238,17 @@ func (s *Store) RetryTurnIDForSource(ctx context.Context, conversationID, source
 		return "", false, err
 	}
 	return row, true, nil
+}
+
+// ErrQueuedEditDeliveryConflict refuses reuse of a key for a different mutation.
+var ErrQueuedEditDeliveryConflict = errors.New("queued edit delivery key reused")
+
+// QueuedEditDelivery finds the fingerprint of an atomically accepted queue edit.
+func (s *Store) QueuedEditDelivery(ctx context.Context, conversationID, clientMessageID string) (string, bool, error) {
+	hash, err := s.conversationReader(ctx).SelectConversationQueuedEditDelivery(ctx,
+		gen.SelectConversationQueuedEditDeliveryParams{ConversationID: conversationID, ClientMessageID: clientMessageID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return hash, err == nil, err
 }

@@ -304,6 +304,13 @@ type ConversationProviderEvent struct {
 	BranchID        string
 }
 
+type ConversationQueuedEditDelivery struct {
+	ConversationID  string
+	ClientMessageID string
+	RequestHash     string
+	CreatedAt       time.Time
+}
+
 type ConversationTurn struct {
 	ID                   string
 	ConversationID       string

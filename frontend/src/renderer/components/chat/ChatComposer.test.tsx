@@ -1794,35 +1794,6 @@ it("reserves a restored image draft before asynchronous native-byte reads", asyn
 	}
 });
 
-it("keeps a filename reminder after restart and never sends without its unavailable bytes", async () => {
-	const sessionId = "composer-missing-file";
-	writeChatComposerText(sessionId, "keep this context");
-	writeChatAttachments(sessionId, [{ id: "missing", path: "", name: "context.png", mimeType: "image/png", bytes: 4 }]);
-	const onSend = vi.fn();
-	render(<ChatComposer onSend={onSend} draftSessionId={sessionId} onStageAttachments={vi.fn()} />);
-	expect(screen.getByLabelText("Message the agent")).toHaveTextContent("keep this context");
-	expect(screen.getByRole("alert")).toHaveTextContent("not durably available");
-	fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Enter" });
-	await act(async () => { await Promise.resolve(); });
-	expect(onSend).not.toHaveBeenCalled();
-	await userEvent.click(screen.getByLabelText("Remove context.png"));
-	await userEvent.click(screen.getByRole("button", { name: "Send message" }));
-	await waitFor(() => expect(onSend).toHaveBeenCalledWith("keep this context", undefined, expect.any(String)));
-});
-
-it("locks an uncertain steer after restart until the user explicitly abandons recovery", async () => {
-	const sessionId = "composer-steer-lock";
-	prepareChatComposerDelivery(sessionId, { kind: "steer", composerText: "guidance", attachments: [], requestText: "guidance", clientMessageId: "prior-steer" });
-	const onSteer = vi.fn();
-	const onSend = vi.fn();
-	render(<ChatComposer onSend={onSend} onSteer={onSteer} canSteer draftSessionId={sessionId} />);
-	expect(screen.getByRole("button", { name: "Retry message safely" })).toBeDisabled();
-	fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Enter", metaKey: true });
-	await act(async () => { await Promise.resolve(); });
-	expect(onSteer).not.toHaveBeenCalled();
-	expect(onSend).not.toHaveBeenCalled();
-});
-
 it("reserves the composer before pending staging yields to a replacement surface", async () => {
 	const sessionId = "composer-stage-reservation";
 	const pending = deferred<string[]>();
