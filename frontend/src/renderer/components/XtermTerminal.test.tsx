@@ -10,7 +10,9 @@ import { XtermTerminal } from "./XtermTerminal";
 
 const state = vi.hoisted(() => ({
 	fit: vi.fn(),
+	lifecycle: [] as string[],
 	linkHandler: null as null | ((event: MouseEvent, uri: string) => void),
+	queueViewportSyncOnOpen: false,
 	searchAddon: null as null | {
 		clearDecorations: ReturnType<typeof vi.fn>;
 		findNext: ReturnType<typeof vi.fn>;
@@ -109,6 +111,9 @@ vi.mock("@xterm/xterm", () => ({
 		loadAddon() {}
 		open(host: HTMLElement) {
 			host.appendChild(document.createElement("textarea"));
+			if (state.queueViewportSyncOnOpen) {
+				window.setTimeout(() => state.lifecycle.push("viewport-sync"), 0);
+			}
 		}
 		write(data: Uint8Array, done?: () => void) {
 			this.writeBuffer += new TextDecoder().decode(data);
@@ -119,7 +124,9 @@ vi.mock("@xterm/xterm", () => ({
 			done?.();
 		}
 		writeln() {}
-		dispose = vi.fn();
+		dispose = vi.fn(() => {
+			state.lifecycle.push("dispose");
+		});
 		onData(listener: (data: string) => void) {
 			this.dataListeners.add(listener);
 			return { dispose: () => this.dataListeners.delete(listener) };
@@ -221,8 +228,10 @@ function setNavigatorPlatform(platform: string) {
 describe("XtermTerminal", () => {
 	beforeEach(() => {
 		state.fit.mockReset();
+		state.lifecycle.length = 0;
 		state.lastTerminal = null;
 		state.linkHandler = null;
+		state.queueViewportSyncOnOpen = false;
 		state.searchAddon = null;
 		setNavigatorPlatform("Linux x86_64");
 		window.ao!.clipboard.writeText = vi.fn().mockResolvedValue(undefined);
@@ -291,19 +300,23 @@ describe("XtermTerminal", () => {
 		}
 	});
 
-	it("defers disposal behind xterm's pending viewport callback", () => {
+	it.each([true, false])("lets xterm drain viewport initialization before disposal (DEV=%s)", (development) => {
+		vi.stubEnv("DEV", development);
 		vi.useFakeTimers();
+		state.queueViewportSyncOnOpen = true;
 		try {
-			const { unmount } = render(<XtermTerminal theme="dark" />);
+			const view = render(<XtermTerminal theme="dark" />);
 			const terminal = state.lastTerminal!;
+			view.unmount();
 
-			unmount();
 			expect(terminal.dispose).not.toHaveBeenCalled();
-
+			expect(state.lifecycle).toEqual([]);
 			act(() => vi.runOnlyPendingTimers());
+			expect(state.lifecycle).toEqual(["viewport-sync", "dispose"]);
 			expect(terminal.dispose).toHaveBeenCalledOnce();
 		} finally {
 			vi.useRealTimers();
+			vi.unstubAllEnvs();
 		}
 	});
 
