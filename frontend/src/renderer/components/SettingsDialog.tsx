@@ -145,6 +145,11 @@ export function SettingsDialog() {
 										t("settings.project.saveChanges")
 									)}
 								</Button>
+								{projectSaveState.phase === "failed" && projectSaveState.error && (
+									<p className="mt-1.5 px-0.5 text-xs text-destructive leading-tight" role="alert">
+										{projectSaveState.error}
+									</p>
+								)}
 								<span className="sr-only" role="status" aria-live="polite">
 									{projectSaveState.error ?? (projectSaveState.phase === "saved" ? t("settings.project.saved") : "")}
 								</span>

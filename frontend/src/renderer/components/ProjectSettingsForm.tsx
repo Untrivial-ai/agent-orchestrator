@@ -382,7 +382,9 @@ function SettingsBody({
 							? t("settings.project.agentsRequired")
 							: validation === "name_required"
 								? t("settings.project.nameRequired")
-								: t("settings.project.intakeAssigneeRequired"),
+								: validation === "name_too_long"
+									? t("settings.project.nameTooLong", { max: 100 })
+									: t("settings.project.intakeAssigneeRequired"),
 					);
 					return;
 				}

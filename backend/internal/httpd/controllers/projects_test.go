@@ -223,7 +223,7 @@ func TestProjectsAPI_UpdateSettings(t *testing.T) {
 	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/legacy-project", `{"displayName":"  ","config":{}}`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "DISPLAY_NAME_REQUIRED")
 
-	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/legacy-project", `{"displayName":"`+strings.Repeat("x", 21)+`","config":{}}`)
+	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/legacy-project", `{"displayName":"`+strings.Repeat("x", 101)+`","config":{}}`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "DISPLAY_NAME_TOO_LONG")
 
 	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/missing", `{"displayName":"Missing","config":{}}`)

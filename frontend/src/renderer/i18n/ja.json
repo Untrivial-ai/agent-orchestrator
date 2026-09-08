@@ -986,6 +986,7 @@
 	"settings.project.modelOverride": "モデルの上書き",
 	"settings.project.name": "プロジェクト名",
 	"settings.project.nameRequired": "プロジェクト名は必須です。",
+	"settings.project.nameTooLong": "プロジェクト名は{{max}}文字以下である必要があります。",
 	"settings.project.path": "path",
 	"settings.project.permissionAcceptEdits": "編集を受け入れる",
 	"settings.project.permissionAuto": "自動",

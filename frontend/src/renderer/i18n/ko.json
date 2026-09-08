@@ -986,6 +986,7 @@
 	"settings.project.modelOverride": "모델 재정의",
 	"settings.project.name": "프로젝트 이름",
 	"settings.project.nameRequired": "프로젝트 이름은 필수입니다.",
+	"settings.project.nameTooLong": "프로젝트 이름은 {{max}}자 이하이어야 합니다.",
 	"settings.project.path": "path",
 	"settings.project.permissionAcceptEdits": "편집 수락",
 	"settings.project.permissionAuto": "자동",

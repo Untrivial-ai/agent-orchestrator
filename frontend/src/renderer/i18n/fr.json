@@ -1005,6 +1005,7 @@
 	"settings.project.modelOverride": "Remplacement du modèle",
 	"settings.project.name": "Nom du projet",
 	"settings.project.nameRequired": "Le nom du projet est obligatoire.",
+	"settings.project.nameTooLong": "Le nom du projet doit comporter {{max}} caractères ou moins.",
 	"settings.project.path": "chemin",
 	"settings.project.permissionAcceptEdits": "Accepter les modifications",
 	"settings.project.permissionAuto": "Automatique",

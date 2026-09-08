@@ -866,7 +866,13 @@ func TestManager_AddPrefersOriginHeadNonMain(t *testing.T) {
 
 func TestManager_UpdateSettings(t *testing.T) {
 	ctx := context.Background()
-	m := newManager(t)
+	t.Setenv("GIT_CEILING_DIRECTORIES", os.TempDir())
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := project.New(store)
 	repo := gitRepo(t)
 
 	if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("ao")}); err != nil {
@@ -923,13 +929,56 @@ func TestManager_UpdateSettings(t *testing.T) {
 	wantCode(t, err, "DISPLAY_NAME_REQUIRED")
 
 	_, err = m.UpdateSettings(ctx, "ao", project.UpdateSettingsInput{
-		DisplayName: strings.Repeat("x", 21),
+		DisplayName: strings.Repeat("x", 101),
 		Config:      cfg,
 	})
 	wantCode(t, err, "DISPLAY_NAME_TOO_LONG")
 
 	_, err = m.UpdateSettings(ctx, "missing", project.UpdateSettingsInput{DisplayName: "Missing", Config: cfg})
 	wantCode(t, err, "PROJECT_NOT_FOUND")
+
+	// Unchanged legacy display name that exceeds maxDisplayNameLen should not block updating config.
+	legacyName := strings.Repeat("l", 110)
+	if _, err := store.UpdateProjectSettings(ctx, "ao", legacyName, cfg); err != nil {
+		t.Fatalf("UpdateProjectSettings: %v", err)
+	}
+	updatedWithLegacy, err := m.UpdateSettings(ctx, "ao", project.UpdateSettingsInput{
+		DisplayName: legacyName,
+		Config:      domain.ProjectConfig{DefaultBranch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings with unchanged legacy name: %v", err)
+	}
+	if updatedWithLegacy.Name != legacyName || updatedWithLegacy.DefaultBranch != "main" {
+		t.Fatalf("UpdateSettings result = %#v, want unchanged legacy name with new branch", updatedWithLegacy)
+	}
+}
+
+func TestManager_Add_DisplayNameValidationAndTruncation(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	repo := gitRepo(t)
+
+	// Explicit name exceeding maxDisplayNameLen is rejected.
+	tooLong := strings.Repeat("a", 101)
+	_, err := m.Add(ctx, project.AddInput{
+		Path: repo,
+		Name: &tooLong,
+	})
+	wantCode(t, err, "DISPLAY_NAME_TOO_LONG")
+
+	// 24-character repo name (like yandex-direct-mcp-plugin) is accepted cleanly.
+	valid24 := "yandex-direct-mcp-plugin"
+	p24, err := m.Add(ctx, project.AddInput{
+		Path: repo,
+		Name: &valid24,
+	})
+	if err != nil {
+		t.Fatalf("Add with 24-char name: %v", err)
+	}
+	if p24.Name != valid24 {
+		t.Fatalf("Add name = %q, want %q", p24.Name, valid24)
+	}
 }
 
 func TestManager_ListIncludesOnlySummarySafeProjectConfig(t *testing.T) {
