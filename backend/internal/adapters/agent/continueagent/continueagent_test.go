@@ -387,7 +387,7 @@ func TestGetAgentHooksDelegates(t *testing.T) {
 			t.Fatalf("settings missing %q: %s", want, body)
 		}
 	}
-	if strings.Contains(body, "ao hooks claude-code") {
+	if strings.Contains(body, "hooks claude-code") {
 		t.Fatalf("Continue hooks must use the Continue token, got: %s", body)
 	}
 }
@@ -427,7 +427,7 @@ func TestGetAgentHooksMigratesLegacyClaudeHooks(t *testing.T) {
 	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	legacy := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user stop hook"},{"type":"command","command":"ao hooks claude-code stop"}]}],"Notification":[{"hooks":[{"type":"command","command":"ao hooks claude-code notification"}]}]}}`
+	legacy := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user stop hook"},{"type":"command","command":"ao hooks claude-code stop"}]}],"Notification":[{"hooks":[{"type":"command","command":"\"${AO_CLI:?AO_CLI is not set}\" hooks claude-code notification"}]}]}}`
 	if err := os.WriteFile(filepath.Join(settingsDir, "settings.local.json"), []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestGetAgentHooksMigratesLegacyClaudeHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(data)
-	if strings.Contains(body, "ao hooks claude-code") {
+	if strings.Contains(body, "hooks claude-code") {
 		t.Fatalf("legacy Continue hooks were retained: %s", body)
 	}
 	if !strings.Contains(body, "user stop hook") {
@@ -478,7 +478,7 @@ func TestClaudeInstallReplacesContinueHooks(t *testing.T) {
 	if strings.Contains(body, "ao hooks continue ") {
 		t.Fatalf("Continue hooks were retained after Claude install: %s", body)
 	}
-	if !strings.Contains(body, "ao hooks claude-code stop") {
+	if !strings.Contains(body, "AO_CLI") || !strings.Contains(body, "hooks claude-code stop") {
 		t.Fatalf("Claude hooks missing after switch: %s", body)
 	}
 	if !strings.Contains(body, "user stop hook") {

@@ -172,12 +172,17 @@ func NewService(runtime ShellRuntime, store Store, projects ProjectRootLocator, 
 }
 
 func (s *Service) pinnedEnv() map[string]string {
+	env := make(map[string]string)
+	if err := agentlaunch.PinCLI(env, s.executable); err != nil {
+		s.log.Warn("canonical AO CLI unavailable in shell terminal", "err", err)
+	}
 	path, err := agentlaunch.PinnedPATH(s.executable, os.Getenv, nil, s.dataDir)
 	if err != nil {
 		s.log.Warn("shell terminal PATH not pinned to the daemon binary; a bare `ao` may resolve to a different install", "err", err)
-		return nil
+		return env
 	}
-	return map[string]string{"PATH": path}
+	env["PATH"] = path
+	return env
 }
 
 // sessionGateFor returns the gate for id, creating it on first use.

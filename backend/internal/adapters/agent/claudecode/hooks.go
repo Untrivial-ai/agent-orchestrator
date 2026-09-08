@@ -9,9 +9,13 @@ import (
 )
 
 const (
-	claudeSettingsDirName   = ".claude"
-	claudeSettingsFileName  = "settings.local.json"
-	claudeHookCommandPrefix = "ao hooks claude-code "
+	claudeSettingsDirName  = ".claude"
+	claudeSettingsFileName = "settings.local.json"
+	// Claude executes hooks with Bash, including Git Bash on Windows. The
+	// quoted launch-time reference survives PATH changes without persisting an
+	// application mount path in the workspace settings. Missing identity fails
+	// closed instead of invoking an incompatible CLI.
+	claudeHookCommandPrefix = `"${AO_CLI:?AO_CLI is not set}" hooks claude-code `
 	claudeHookTimeout       = 30
 )
 
@@ -54,7 +58,7 @@ var claudeManagedHooks = []hooksjson.HookSpec{
 var claudeHooks = hooksjson.Manager{
 	Label:                 "claude-code",
 	CommandPrefix:         claudeHookCommandPrefix,
-	LegacyCommandPrefixes: []string{"ao hooks continue "},
+	LegacyCommandPrefixes: []string{"ao hooks continue ", "ao hooks claude-code "},
 	Timeout:               claudeHookTimeout,
 	Path:                  claudeSettingsPath,
 	Managed:               claudeManagedHooks,

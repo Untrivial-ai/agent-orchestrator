@@ -664,6 +664,10 @@ func TestOpenShellTerminalPinsPATHToDaemonBinary(t *testing.T) {
 			if _, err := svc.OpenShellTerminal(context.Background(), OpenShellTerminalInput{}); err != nil {
 				t.Fatalf("OpenShellTerminal: %v", err)
 			}
+			exe, _ := tc.executable()
+			if filepath.IsAbs(exe) && rt.created[0].Env["AO_CLI"] != filepath.ToSlash(exe) {
+				t.Fatal("shell missing canonical AO_CLI")
+			}
 			if got := rt.created[0].Env["PATH"]; got != tc.want {
 				t.Fatalf("PATH = %q, want %q", got, tc.want)
 			}

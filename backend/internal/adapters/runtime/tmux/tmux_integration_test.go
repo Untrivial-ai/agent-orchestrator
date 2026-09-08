@@ -3,8 +3,10 @@ package tmux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -374,4 +376,47 @@ func waitForOutput(t *testing.T, r *Runtime, h ports.RuntimeHandle, want string,
 		time.Sleep(100 * time.Millisecond)
 	}
 	return out
+}
+
+// Exercise the actual child both at creation and pane restart, rather than
+// checking only the tmux command arguments or server environment.
+func TestRuntimeCanonicalCLIOnCreateAndRestart(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux unavailable")
+	}
+	shell, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh unavailable")
+	}
+	home, foreign := t.TempDir(), t.TempDir()
+	canonical := filepath.Join(t.TempDir(), "AO install", "ao")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		canonical:                        "#!/bin/sh\nprintf 'CANONICAL:%s\\n' \"$1\"\n",
+		filepath.Join(foreign, "ao"):     "#!/bin/sh\necho FOREIGN\n",
+		filepath.Join(home, ".zprofile"): "export PATH=\"$FOREIGN_DIR:$PATH\"\n",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(Options{Shell: "/bin/sh", SocketName: fmt.Sprintf("ao-cli-test-%d", time.Now().UnixNano()), Timeout: 5 * time.Second})
+	id := domain.SessionID("canonical-cli-test")
+	cfg := ports.RuntimeConfig{SessionID: id, WorkspacePath: home, Argv: []string{shell, "-l", "-c", `ao; "$AO_CLI" "$MARKER"`}, Env: map[string]string{"HOME": home, "ZDOTDIR": home, "FOREIGN_DIR": foreign, "PATH": filepath.Dir(canonical) + ":/usr/bin:/bin", "AO_CLI": canonical, "MARKER": "create", "AO_SUPERVISED_PROCESS": "1"}}
+	t.Cleanup(func() { _ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: string(id)}) })
+	h, err := r.Create(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := waitForOutput(t, r, h, "CANONICAL:create", 5*time.Second)
+	if !strings.Contains(output, "FOREIGN") {
+		t.Fatalf("login shell did not shadow bare ao: %s", output)
+	}
+	cfg.Env["MARKER"] = "restart"
+	if _, err := r.Restart(t.Context(), h, cfg); err != nil {
+		t.Fatal(err)
+	}
+	waitForOutput(t, r, h, "CANONICAL:restart", 5*time.Second)
 }

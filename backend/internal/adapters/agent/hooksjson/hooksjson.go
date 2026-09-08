@@ -169,7 +169,7 @@ type Manager struct {
 	// Install skips commands already present and uninstall/detect match on it.
 	CommandPrefix string
 	// LegacyCommandPrefixes identifies AO-owned command prefixes from an older
-	// installer that should be removed while installing the current hooks.
+	// installer that should be recognized and removed during reconciliation or uninstall.
 	LegacyCommandPrefixes []string
 	// Timeout is written into each installed hook entry.
 	Timeout int
@@ -274,6 +274,7 @@ func (m Manager) Uninstall(ctx context.Context, workspacePath string) error {
 			return fmt.Errorf("%s.UninstallHooks: %w", m.Label, err)
 		}
 		groups = removeManaged(groups, m.CommandPrefix)
+		groups = removeManagedPrefixes(groups, m.LegacyCommandPrefixes)
 		if err := marshalEvent(rawHooks, event, groups); err != nil {
 			return fmt.Errorf("%s.UninstallHooks: %w", m.Label, err)
 		}
@@ -311,8 +312,10 @@ func (m Manager) AreInstalled(ctx context.Context, workspacePath string) (bool, 
 		}
 		for _, group := range groups {
 			for _, hook := range group.Hooks {
-				if strings.HasPrefix(hook.Command, m.CommandPrefix) {
-					return true, nil
+				for _, prefix := range append([]string{m.CommandPrefix}, m.LegacyCommandPrefixes...) {
+					if strings.HasPrefix(hook.Command, prefix) {
+						return true, nil
+					}
 				}
 			}
 		}

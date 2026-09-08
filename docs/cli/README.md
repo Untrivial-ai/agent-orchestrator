@@ -17,6 +17,38 @@ go build -o ./bin/ao ./cmd/ao
 ./bin/ao agent ls
 ```
 
+## Canonical CLI in managed sessions
+
+AO exports `AO_CLI` from the daemon executable for worker and orchestrator
+launches (TUI and Chat), reviewer launches, and session shell terminals. Use
+`"$AO_CLI" browser snapshot` in POSIX shells or `& $env:AO_CLI browser snapshot`
+in PowerShell. On Windows the reference uses forward slashes, which both
+PowerShell and Git Bash accept. Project environment configuration cannot replace
+this value, including case variants on Windows.
+
+The PATH pin remains a convenience for bare commands. A nested login shell may
+prepend an old installation after that pin, so managed command guides use the
+explicit reference. Claude's managed hooks also use this reference, with no
+fallback when it is missing. They migrate on workspace preparation during a new
+launch or restore, preserving user hooks. Codex's managed hooks already invoke
+the daemon executable by absolute path.
+
+`ao doctor` compares the PATH CLI against the running daemon's executable and
+warns about a different installation. A ready daemon on port 3001 alone does not
+prove that the CLI supports the current command set. Packaged version stamping is a separate follow-up: unstamped builds may still
+report only `dev`. Go VCS fallback alone is insufficient in worktrees nested
+under another Git repository, where it can identify the enclosing repository.
+
+This does not change shell startup files, uninstall or repair legacy shims, or
+refresh the environment of an already-running agent. New launches and restores
+receive the current reference. A long-lived Linux AppImage session whose old
+mount disappears still needs restore to get the new executable path; staging a
+stable CLI across mount replacement and desktop startup/update reconciliation
+remain follow-ups to [#3562](https://github.com/Untrivial-ai/agent-orchestrator/issues/3562).
+Other harness-specific hook formats that still issue bare `ao` are not migrated
+by this change. It does not change tmux environment transport or inspector-tab
+selection.
+
 ## Current commands
 
 Every product command resolves to a daemon HTTP route. Run `ao <command>

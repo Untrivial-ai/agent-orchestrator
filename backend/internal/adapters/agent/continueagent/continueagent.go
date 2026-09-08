@@ -81,7 +81,7 @@ var continueManagedHooks = []hooksjson.HookSpec{
 var continueHooks = hooksjson.Manager{
 	Label:                 adapterID,
 	CommandPrefix:         continueHookCommandPrefix,
-	LegacyCommandPrefixes: []string{"ao hooks claude-code "},
+	LegacyCommandPrefixes: []string{"ao hooks claude-code ", `"${AO_CLI:?AO_CLI is not set}" hooks claude-code `},
 	Timeout:               continueHookTimeout,
 	Path:                  continueClaudeSettingsPath,
 	Managed:               continueManagedHooks,

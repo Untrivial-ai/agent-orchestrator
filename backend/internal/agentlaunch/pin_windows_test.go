@@ -138,3 +138,64 @@ func containsSameExecutable(t *testing.T, output, canonical string) bool {
 	}
 	return false
 }
+
+func TestCanonicalWindowsCLIIgnoresShellPATH(t *testing.T) {
+	if os.Getenv("AO_TEST_CANONICAL_CHILD") == "1" {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Println("IDENTITY=" + exe)
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	install := filepath.Join(t.TempDir(), "AO install's bin")
+	if err := os.MkdirAll(install, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(install, "ao.exe")
+	if err := os.WriteFile(canonical, binary, 0o700); err != nil {
+		t.Fatal(err)
+	} //nolint:gosec // executable test fixture
+	foreign := t.TempDir()
+	if err := os.WriteFile(filepath.Join(foreign, "ao.cmd"), []byte("@echo FOREIGN\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"ao_cli": "foreign", "AO_CLI": "foreign"}
+	if err := PinCLI(env, func() (string, error) { return canonical, nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, shell := range []struct {
+		name string
+		args []string
+	}{
+		{"powershell", []string{"-NoProfile", "-Command", `$env:PATH = $env:FOREIGN_DIR + ';' + $env:PATH; & $env:AO_CLI -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$`}},
+		{"bash", []string{"--noprofile", "--norc", "-c", `export PATH="$FOREIGN_DIR:$PATH"; "$AO_CLI" -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$`}},
+	} {
+		t.Run(shell.name, func(t *testing.T) {
+			shellPath, err := exec.LookPath(shell.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), shellPath, shell.args...)
+			for _, entry := range os.Environ() {
+				key, _, _ := strings.Cut(entry, "=")
+				if !strings.EqualFold(key, EnvCLI) {
+					cmd.Env = append(cmd.Env, entry)
+				}
+			}
+			cmd.Env = append(cmd.Env, EnvCLI+"="+env[EnvCLI], "FOREIGN_DIR="+filepath.ToSlash(foreign), "AO_TEST_CANONICAL_CHILD=1")
+			output, err := cmd.CombinedOutput()
+			if err != nil || !containsSameExecutable(t, string(output), canonical) {
+				t.Fatalf("canonical selection: %v: %s", err, output)
+			}
+		})
+	}
+}
