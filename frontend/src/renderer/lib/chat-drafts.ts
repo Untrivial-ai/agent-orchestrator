@@ -218,6 +218,14 @@ export function getChatComposerMutation(
 	return runtime.composer;
 }
 
+/** Async preparation may outlive authoritative replacement of this session. */
+export function isChatComposerMutationCurrent(
+	scope: ChatDraftScopeInput,
+	token: ChatDraftMutationToken,
+): boolean {
+	return draftRuntimes.get(draftRuntimeKey(scope))?.composerToken === token;
+}
+
 function beginDraftMutation(
 	scope: ChatDraftScopeInput,
 	kind: DraftMutationKind,
@@ -806,8 +814,8 @@ export function markChatComposerDeliveryAccepted(
 }
 
 /**
- * Remove a definitively refused steer journal without consuming its text. The
- * daemon proved that this guidance was not accepted, so the same composer
+ * Remove a definitively refused delivery journal without consuming its text. The
+ * daemon proved that this first attempt was not accepted, so the same composer
  * revision becomes an ordinary editable draft again.
  */
 export function clearRejectedChatComposerDelivery(
@@ -821,7 +829,7 @@ export function clearRejectedChatComposerDelivery(
 	if (
 		!loaded.ok ||
 		!delivery ||
-		delivery.kind !== "steer" ||
+		delivery.state !== "dispatching" ||
 		delivery.clientMessageId !== clientMessageId ||
 		delivery.revision !== revision
 	) {

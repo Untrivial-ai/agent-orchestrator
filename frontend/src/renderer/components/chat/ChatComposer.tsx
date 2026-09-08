@@ -50,7 +50,7 @@ import { ArrowUp, Loader2, Plus, Square, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "../../lib/utils";
-import { apiErrorMessage, getApiBaseUrl } from "../../lib/api-client";
+import { apiErrorCode, apiErrorMessage, getApiBaseUrl } from "../../lib/api-client";
 import { ComposerSuggestMenu } from "./ComposerSuggestMenu";
 import {
 	ComposerEditor,
@@ -78,6 +78,7 @@ import {
 	clearUncertainChatComposerDelivery,
 	finishChatComposerMutation,
 	getChatComposerMutation,
+	isChatComposerMutationCurrent,
 	markChatComposerDeliveryAccepted,
 	prepareChatComposerDelivery,
 	readChatSessionDraft,
@@ -91,6 +92,23 @@ import {
 } from "../../lib/chat-drafts";
 import { attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
 import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
+
+// These responses precede AppendUserMessage. Provider/transport errors can
+// follow durable acceptance and must keep the original delivery ID for recovery.
+const DEFINITIVE_SEND_REJECTIONS = new Set([
+	"INVALID_BODY",
+	"CHAT_MESSAGE_EMPTY",
+	"INVALID_RESOURCE",
+	"UNSUPPORTED_ATTACHMENT_TYPE",
+	"INVALID_ATTACHMENT_DATA",
+	"ATTACHMENT_TOO_LARGE",
+	"TOO_MANY_ATTACHMENTS",
+	"ATTACHMENTS_TOO_LARGE",
+	"SESSION_NOT_FOUND",
+	"SESSION_MODE_MISMATCH",
+	"CHAT_CONTROLLER_NOT_READY",
+	"CHAT_INTERFACE_TRANSITION",
+]);
 
 /**
  * Tell the agent to open the attached files. Mirrors the wording spawn uses for a task
@@ -1131,6 +1149,7 @@ export const ChatComposer = memo(function ChatComposer({
 		setSubmitting(true);
 		try {
 			if (!await restoreNativePayloads()) return;
+			if (!isChatComposerMutationCurrent(draftScope, mutationToken)) return;
 			if (delivery.kind === "steer") {
 				if (!onSteer) throw new Error("Steering is unavailable");
 				if (prepared.recovered) throw new Error("Steering acceptance is uncertain; inspect the conversation before discarding this recovery record.");
@@ -1165,7 +1184,23 @@ export const ChatComposer = memo(function ChatComposer({
 			mutationFinished = true;
 			setDismissedKey(null);
 			setHighlighted(0);
-		} catch {
+		} catch (error) {
+			// Refusal of a retry says nothing about a previous attempt whose response
+			// was lost. Only an initial, definitively unaccepted send can be edited.
+			if (
+				delivery.kind === "send" && !prepared.recovered &&
+				DEFINITIVE_SEND_REJECTIONS.has(apiErrorCode(error) ?? "")
+			) {
+				const cleared = clearRejectedChatComposerDelivery(
+					draftScope, delivery.clientMessageId, delivery.revision,
+				);
+				setDurableDelivery(cleared.draft.composer.delivery);
+				setDeliveryUncertain(false);
+				setDeliveryRecoveryNotice(null);
+				setTextDraftPersistenceError(cleared.ok ? null : "chat.draft.saveFailed");
+				setSendError(apiErrorMessage(error));
+				return;
+			}
 			setDeliveryUncertain(true);
 			setDeliveryRecoveryNotice(
 				delivery.kind === "steer"

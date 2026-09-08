@@ -9,6 +9,7 @@ import { ChatComposer } from "./ChatComposer";
 import { TooltipProvider } from "../ui/tooltip";
 import type { ChatSkill } from "../../types/conversation";
 import {
+	activateChatDraftScope,
 	prepareChatComposerDelivery,
 	readChatSessionDraft,
 	writeChatComposerText,
@@ -323,6 +324,50 @@ describe("send keys", () => {
 
 		expect(await screen.findByRole("alert")).toHaveTextContent("Your draft was kept");
 		expect(field.textContent).toBe("do not lose this task");
+	});
+
+	it("unlocks a definitively rejected first send and gives the edited send a new identity", async () => {
+		const sessionId = "composer-first-send-refused";
+		const onSend = vi.fn()
+			.mockRejectedValueOnce({ code: "CHAT_CONTROLLER_NOT_READY", message: "Controller is not running" })
+			.mockResolvedValue(undefined);
+		const first = render(<ChatComposer draftSessionId={sessionId} onSend={onSend} />);
+		const field = screen.getByLabelText("Message the agent");
+		await typeInComposer(field, "original request");
+		fireEvent.keyDown(field, { key: "Enter" });
+		await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+		await waitFor(() => expect(field).toHaveAttribute("contenteditable", "true"));
+		expect(screen.getByRole("alert")).toHaveTextContent("Controller is not running");
+		expect(readChatSessionDraft(sessionId).composer.delivery).toBeUndefined();
+		first.unmount();
+		render(<ChatComposer draftSessionId={sessionId} onSend={onSend} />);
+		const restored = screen.getByLabelText("Message the agent");
+		await waitFor(() => expect(restored).toHaveTextContent("original request"));
+		expect(restored).toHaveAttribute("contenteditable", "true");
+		await typeInComposer(restored, "edited request");
+		fireEvent.keyDown(restored, { key: "Enter" });
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+		expect(onSend.mock.calls[1]?.[2]).not.toBe(onSend.mock.calls[0]?.[2]);
+		await waitFor(() => expect(restored).toHaveTextContent(""));
+	});
+
+	it("keeps an uncertain earlier send locked when its retry is definitively refused", async () => {
+		const sessionId = "composer-recovery-send-refused";
+		const onSend = vi.fn()
+			.mockRejectedValueOnce(new Error("response lost"))
+			.mockRejectedValue({ code: "CHAT_CONTROLLER_NOT_READY", message: "Controller is not running" });
+		const first = render(<ChatComposer draftSessionId={sessionId} onSend={onSend} />);
+		await typeInComposer(screen.getByLabelText("Message the agent"), "possibly accepted request");
+		fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Enter" });
+		await waitFor(() => expect(screen.getByRole("button", { name: "Retry message safely" })).toBeEnabled());
+		first.unmount();
+		render(<ChatComposer draftSessionId={sessionId} onSend={onSend} />);
+		await userEvent.click(screen.getByRole("button", { name: "Retry message safely" }));
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(screen.getByRole("button", { name: "Retry message safely" })).toBeEnabled());
+		expect(onSend.mock.calls[1]).toEqual(onSend.mock.calls[0]);
+		expect(screen.getByLabelText("Message the agent")).toHaveAttribute("contenteditable", "false");
+		expect(readChatSessionDraft(sessionId).composer.delivery?.state).toBe("dispatching");
 	});
 
 	it("locks an accepted draft whose durable clear failed and clears without redispatch", async () => {
@@ -1743,4 +1788,41 @@ it("saves /compact as literal queued text without running the command", async ()
 	await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 	await waitFor(() => expect(onSend).toHaveBeenCalledWith("/compact", undefined, undefined, []));
 	expect(onCompact).not.toHaveBeenCalled();
+});
+
+it("does not dispatch a restored image after its session incarnation was replaced", async () => {
+	const scope = { sessionId: "composer-obsolete-native-read", incarnation: "2026-09-07T10:00:00Z" };
+	const replacement = { ...scope, incarnation: "2026-09-08T10:00:00Z" };
+	expect(activateChatDraftScope(scope).ok).toBe(true);
+	writeChatComposerText(scope, "old session prompt");
+	writeChatAttachments(scope, [{ id: "old-image", name: "old.png", mimeType: "image/png", bytes: 4, path: ".ao/attachments/old.png" }]);
+	const pending = deferred<Response>();
+	const fetch = vi.spyOn(globalThis, "fetch").mockReturnValue(pending.promise);
+	const readComplete = deferred<void>();
+	const readAsDataURL = FileReader.prototype.readAsDataURL;
+	const reader = vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (this: FileReader, blob) {
+		this.addEventListener("loadend", () => readComplete.resolve(), { once: true });
+		readAsDataURL.call(this, blob);
+	});
+	const onSend = vi.fn();
+	const view = render(<ChatComposer draftSessionId={scope.sessionId} draftSessionIncarnation={scope.incarnation} onSend={onSend} nativeImages />);
+	try {
+		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+		await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+		view.unmount();
+		expect(activateChatDraftScope(replacement)).toMatchObject({ ok: true, replaced: true });
+		writeChatComposerText(replacement, "replacement draft");
+		const response = new Response();
+		vi.spyOn(response, "blob").mockResolvedValue(new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }));
+		await act(async () => {
+			pending.resolve(response);
+			await readComplete.promise;
+		});
+		expect(onSend).not.toHaveBeenCalled();
+		expect(readChatSessionDraft(replacement).composer.text).toBe("replacement draft");
+	} finally {
+		view.unmount();
+		fetch.mockRestore();
+		reader.mockRestore();
+	}
 });
