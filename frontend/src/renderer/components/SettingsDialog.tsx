@@ -151,7 +151,7 @@ export function SettingsDialog() {
 									</p>
 								)}
 								<span className="sr-only" role="status" aria-live="polite">
-									{projectSaveState.error ?? (projectSaveState.phase === "saved" ? t("settings.project.saved") : "")}
+									{projectSaveState.phase === "saved" ? t("settings.project.saved") : ""}
 								</span>
 							</div>
 						)}

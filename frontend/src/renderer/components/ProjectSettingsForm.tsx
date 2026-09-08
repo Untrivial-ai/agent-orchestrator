@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
+	MAX_PROJECT_DISPLAY_NAME_LEN,
 	ProjectAgentsSettingsView,
 	ProjectGeneralSettingsView,
 	ProjectSettingsFormView,
@@ -383,7 +384,7 @@ function SettingsBody({
 							: validation === "name_required"
 								? t("settings.project.nameRequired")
 								: validation === "name_too_long"
-									? t("settings.project.nameTooLong", { max: 100 })
+									? t("settings.project.nameTooLong", { max: MAX_PROJECT_DISPLAY_NAME_LEN })
 									: t("settings.project.intakeAssigneeRequired"),
 					);
 					return;

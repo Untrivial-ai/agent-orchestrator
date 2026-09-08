@@ -69,6 +69,25 @@ describe("project models", () => {
 				intakeAssignee: "",
 			}),
 		).toBeNull();
+		// 100 astral symbols (e.g. emoji) have UTF-16 length 200, but 100 Unicode code points (runes)
+		expect(
+			validateProjectSettings({
+				displayName: "🚀".repeat(100),
+				workerAgent: "codex",
+				orchestratorAgent: "claude-code",
+				intakeEnabled: false,
+				intakeAssignee: "",
+			}),
+		).toBeNull();
+		expect(
+			validateProjectSettings({
+				displayName: "🚀".repeat(101),
+				workerAgent: "codex",
+				orchestratorAgent: "claude-code",
+				intakeEnabled: false,
+				intakeAssignee: "",
+			}),
+		).toBe("name_too_long");
 	});
 
 	it("gates project setup on agents and intake eligibility", () => {
