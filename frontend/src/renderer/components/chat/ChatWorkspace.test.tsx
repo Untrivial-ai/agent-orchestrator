@@ -1024,6 +1024,56 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute("contenteditable", "true");
 	});
 
+	// A session spawned seconds ago has no conversation row yet, so the daemon has
+	// no controller to report on. That is a startup, not a crash — the surface must
+	// not offer to resume an agent that has never run.
+	// https://github.com/Untrivial-ai/agent-orchestrator/issues/5131
+	it("says it is connecting while a brand-new session's controller is still coming up", () => {
+		const { rerender } = render(
+			<ChatWorkspace
+				snapshot={{
+					...chatFixtureEmpty,
+					conversationId: "",
+					controller: { state: "connecting" },
+				}}
+				onResumeAgent={vi.fn()}
+				onOpenShell={vi.fn()}
+			/>,
+		);
+
+		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		expect(screen.queryByText("The controller is not connected")).not.toBeInTheDocument();
+		// Announced as progress, never as an alert.
+		expect(screen.getByRole("status")).toHaveTextContent("Connecting to the agent…");
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		// The banner is the only place that says it: the composer stays empty rather
+		// than painting a second label over the editor.
+		expect(screen.getAllByText("Connecting to the agent…")).toHaveLength(1);
+		// Nothing exists to send to yet, so the composer stays inert.
+		expect(screen.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute("contenteditable", "false");
+
+		rerender(<ChatWorkspace snapshot={chatFixtureEmpty} />);
+		expect(screen.queryByText("Connecting to the agent…")).not.toBeInTheDocument();
+		expect(screen.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute("contenteditable", "true");
+	});
+
+	// A live controller that is reconnecting already has a conversation, and a send
+	// against it is durably queued. Disabling that composer would be a regression.
+	it("keeps the composer live while an existing conversation's controller reconnects", () => {
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...chatFixtureEmpty,
+					controller: { state: "connecting" },
+				}}
+			/>,
+		);
+
+		expect(screen.getByText("Connecting to the agent…")).toBeInTheDocument();
+		expect(screen.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute("contenteditable", "true");
+	});
+
 	it("announces thread and tool-server failures", () => {
 		const { rerender } = render(<ChatWorkspace snapshot={chatFixtureThreadError} />);
 		expect(screen.getByRole("alert")).toHaveTextContent("thread hit an internal error");

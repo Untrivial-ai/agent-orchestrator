@@ -943,6 +943,22 @@ type ConversationRows struct {
 	HasMoreBefore                    bool
 }
 
+// preConversationControllerState answers what a session that has never had a
+// conversation should report. Such a session has never had a controller either,
+// so "stopped" claims an ending that never happened — and the chat surface paints
+// that claim as a crash banner offering to resume an agent that has not yet run.
+//
+// The reading is taken from durable state alone, never from the row's age: a
+// terminated session, and one whose agent process exited, keep reporting stopped
+// from the first poll, so a real failure is never masked by a startup grace
+// period.
+func preConversationControllerState(record domain.SessionRecord) ports.ChatControllerState {
+	if record.IsTerminated || record.Activity.State == domain.ActivityExited {
+		return ports.ChatControllerStopped
+	}
+	return ports.ChatControllerConnecting
+}
+
 // Snapshot reads a session's conversation.
 //
 // It does not require a live controller: history must remain readable after the
@@ -964,7 +980,7 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 			SessionID:  id,
 			Harness:    record.Harness,
 			Mode:       domain.NormalizeSessionMode(record.Mode),
-			Controller: ports.ChatControllerStopped,
+			Controller: preConversationControllerState(record),
 		}, nil
 	}
 	if err != nil {
@@ -1016,7 +1032,7 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 			SessionID:  id,
 			Harness:    record.Harness,
 			Mode:       domain.NormalizeSessionMode(record.Mode),
-			Controller: ports.ChatControllerStopped,
+			Controller: preConversationControllerState(record),
 		}, nil
 	}
 	if err != nil {

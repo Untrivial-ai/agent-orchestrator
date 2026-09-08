@@ -473,6 +473,11 @@ export function ChatWorkspace({
 	mcpReloadError,
 }: ChatWorkspaceProps) {
 	const turn = activeTurn(snapshot);
+	// A session whose controller has not opened a conversation yet is still coming
+	// up, not connecting to something already there. It has nothing to send to, so
+	// the controls stay disabled exactly as before — but the copy must not claim a
+	// stop that never happened.
+	const controllerStarting = snapshot.controller.state === "connecting" && !snapshot.conversationId;
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
 			item.kind === "activity" &&
@@ -881,7 +886,7 @@ export function ChatWorkspace({
 					configPending={configOptionPending}
 					error={configOptionError}
 					disabled={
-						snapshot.controller.state === "stopped" || controllerTransitioning || configOptionPending || newWorkDisabled
+						snapshot.controller.state === "stopped" || controllerStarting || controllerTransitioning || configOptionPending || newWorkDisabled
 					}
 				/>
 			) : null,
@@ -889,6 +894,7 @@ export function ChatWorkspace({
 			configOptionError,
 			configOptionPending,
 			configOptions,
+			controllerStarting,
 			controllerTransitioning,
 			models,
 			newWorkDisabled,
@@ -1184,10 +1190,13 @@ export function ChatWorkspace({
 									settings={composerSettings}
 									busy={busy}
 									willQueue={Boolean(turn)}
-									disabled={snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled}
+									disabled={snapshot.controller.state === "stopped" || controllerStarting || controllerTransitioning || newWorkDisabled}
 									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
+									// A controller still coming up is the same kind of progress, and the
+									// controller banner already announces it, so the composer stays silent
+									// rather than claiming it is "not connected".
 									disabledPlaceholder={
-										controllerTransitioning || newWorkDisabled ? "" : undefined
+										controllerStarting || controllerTransitioning || newWorkDisabled ? "" : undefined
 									}
 									skills={skills}
 									filePaths={filePaths}
