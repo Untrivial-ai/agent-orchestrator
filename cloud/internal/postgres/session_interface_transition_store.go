@@ -408,12 +408,12 @@ func (s *Store) RenewCoordinatedInterfaceClaim(
 		tag, err := tx.Exec(ctx,
 			`UPDATE ao_interface_transitions
 			SET claimed_by = $1, claimed_at = now(), updated_at = now()
-			WHERE id = $2`, owner, transitionID)
+			WHERE id = $2 AND claimed_by = $1`, owner, transitionID)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() == 0 {
-			return ErrTransitionNotFound
+			return ErrTransitionStale
 		}
 		return nil
 	})
@@ -460,19 +460,29 @@ func (s *Store) AdvanceCoordinatedInterfaceTransition(
 // never disagrees with the row that explains an in-progress handoff.
 func (s *Store) CommitCoordinatedSessionInterface(
 	ctx context.Context,
-	owner, orgID, sessionID string,
+	owner, orgID, transitionID string,
 	interfaceValue domain.SessionInterface,
 ) (bool, error) {
 	var committed bool
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
-			`UPDATE ao_sessions
+			`UPDATE ao_sessions AS session
 			SET interface = $1, updated_at = now()
-			WHERE org_id = $2 AND id = $3`, interfaceValue, orgID, sessionID)
+			FROM ao_interface_transitions AS transition
+			WHERE transition.id = $2
+			  AND transition.org_id = $3
+			  AND transition.claimed_by = $4
+			  AND transition.phase = 'source_stopped'
+			  AND transition.org_id = session.org_id
+			  AND transition.session_id = session.id`,
+			interfaceValue, transitionID, orgID, owner)
 		if err != nil {
 			return err
 		}
-		committed = tag.RowsAffected() > 0
+		if tag.RowsAffected() == 0 {
+			return ErrTransitionStale
+		}
+		committed = true
 		return nil
 	})
 	return committed, err

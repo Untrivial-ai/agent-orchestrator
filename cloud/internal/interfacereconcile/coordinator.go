@@ -21,7 +21,7 @@ type Store interface {
 	ClaimCoordinatedInterfaceTransitions(ctx context.Context, owner string, limit int, lease time.Duration) ([]postgres.CoordinatedInterfaceTransition, error)
 	RenewCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string, lease time.Duration) error
 	AdvanceCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string, from, to domain.SessionInterfaceTransitionPhase, nativeConversationID, errorCode, errorDetail string) error
-	CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, sessionID string, interfaceValue domain.SessionInterface) (bool, error)
+	CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, transitionID string, interfaceValue domain.SessionInterface) (bool, error)
 	ReleaseCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string) error
 	EnqueueSessionInterfaceTransitionMessage(ctx context.Context, transitionID, clientMessageID, message string) error
 }
@@ -244,9 +244,12 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 				return c.retryOrFail(*transition, "NATIVE_ID_RESOLUTION_FAILED", err)
 			}
 			committed, err := c.store.CommitCoordinatedSessionInterface(
-				runCtx, c.owner, transition.OrgID, transition.SessionID, transition.TargetInterface,
+				runCtx, c.owner, transition.OrgID, transition.ID, transition.TargetInterface,
 			)
 			if err != nil {
+				if errors.Is(err, postgres.ErrTransitionStale) {
+					return errCoordinationLost
+				}
 				return c.fail(*transition, "SESSION_COMMIT_FAILED", err)
 			}
 			if !committed {

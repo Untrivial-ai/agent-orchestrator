@@ -17,7 +17,6 @@ import (
 type RequestStore interface {
 	CreateCoordinatedInterfaceRequest(ctx context.Context, orgID, sessionID, kind string, payload json.RawMessage) (domain.WorkerRequest, error)
 	GetCoordinatedInterfaceRequestResult(ctx context.Context, orgID, sessionID, requestID string) (domain.WorkerRequest, error)
-	CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, sessionID string, interfaceValue domain.SessionInterface) (bool, error)
 }
 
 // TransportDriver dispatches interface commands to a live worker through AO's

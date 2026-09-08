@@ -35,6 +35,7 @@ type fakeStore struct {
 	advances    []domain.SessionInterfaceTransitionPhase
 	claimErr    error
 	advanceErr  error
+	commitErr   error
 }
 
 func (f *fakeStore) ClaimCoordinatedInterfaceTransitions(context.Context, string, int, time.Duration) ([]postgres.CoordinatedInterfaceTransition, error) {
@@ -66,7 +67,10 @@ func (f *fakeStore) AdvanceCoordinatedInterfaceTransition(ctx context.Context, o
 	}
 	return nil
 }
-func (f *fakeStore) CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, sessionID string, v domain.SessionInterface) (bool, error) {
+func (f *fakeStore) CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, transitionID string, v domain.SessionInterface) (bool, error) {
+	if f.commitErr != nil {
+		return false, f.commitErr
+	}
 	f.committed = v
 	f.commitCalls++
 	return true, nil
@@ -142,10 +146,6 @@ func (fakeRequestStore) CreateCoordinatedInterfaceRequest(context.Context, strin
 func (fakeRequestStore) GetCoordinatedInterfaceRequestResult(context.Context, string, string, string) (domain.WorkerRequest, error) {
 	return domain.WorkerRequest{}, errors.New("no requests expected")
 }
-func (fakeRequestStore) CommitCoordinatedSessionInterface(context.Context, string, string, string, domain.SessionInterface) (bool, error) {
-	return false, nil
-}
-
 func TestReconcileHappyPath(t *testing.T) {
 	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
 	driver := &fakeDriver{Inspection: SourceInspection{Idle: true}, nativeID: "native-1"}
@@ -159,6 +159,23 @@ func TestReconcileHappyPath(t *testing.T) {
 	last := store.advances[len(store.advances)-1]
 	if last != domain.SessionInterfaceTransitionCompleted {
 		t.Fatalf("expected final phase completed, got %q", last)
+	}
+}
+
+func TestReconcileTreatsStaleCommitAsCoordinationLoss(t *testing.T) {
+	store := &fakeStore{
+		transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionSourceStopped)},
+		commitErr:   postgres.ErrTransitionStale,
+	}
+	driver := &fakeDriver{nativeID: "native-1"}
+	if err := newCoordinator(store, driver).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("stale coordinator should stop without failing the transition: %v", err)
+	}
+	if store.commitCalls != 0 {
+		t.Fatalf("stale commit should not be recorded as committed: %d calls", store.commitCalls)
+	}
+	if len(store.advances) != 0 {
+		t.Fatalf("stale coordinator must not advance the transition: %v", store.advances)
 	}
 }
 
