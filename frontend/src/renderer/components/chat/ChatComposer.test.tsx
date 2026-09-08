@@ -1326,6 +1326,21 @@ describe("attachments", () => {
 		]);
 	});
 
+	// A message claiming an attachment the agent cannot open is worse than a refusal.
+	it("does not accept a chip when durable staging fails, and says so", async () => {
+		const stage = vi.fn().mockRejectedValue(new Error("disk full"));
+		const { onSend, field } = renderComposer({ onStageAttachments: stage });
+
+		fireEvent.paste(field, { clipboardData: clipboardData([png()]) });
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Files couldn’t be saved. Nothing was attached.",
+		);
+		expect(stage).toHaveBeenCalledTimes(1);
+		expect(onSend).not.toHaveBeenCalled();
+		expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+		expect(field.textContent).toBe("");
+	});
+
 	it("keeps attachments after a failed send and reuses their staged paths on retry", async () => {
 		const stage = vi.fn().mockResolvedValue([".ao/attachments/attachment-retry.png"]);
 		const onSend = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
@@ -1464,6 +1479,53 @@ describe("attachments", () => {
 			fireEvent.paste(field, { clipboardData: clipboardData([png("safe-attachment.png")]) });
 			await screen.findByLabelText("Remove safe-attachment.png");
 			expect(getChatDraftBoundary(sessionId)).toBe("persistence-failed");
+		} finally {
+			view.unmount();
+			localStorage.mockRestore();
+		}
+	});
+
+	it("reports failed text persistence and pending attachment staging together", async () => {
+		const sessionId = "composer-mixed-storage-failure";
+		const durableStorage = window.localStorage;
+		let failTextWrite = true;
+		let finishStaging!: (paths: string[]) => void;
+		const storage = {
+			getItem: durableStorage.getItem.bind(durableStorage),
+			removeItem: durableStorage.removeItem.bind(durableStorage),
+			setItem: (key: string, value: string) => {
+				if (failTextWrite && key.includes(encodeURIComponent(sessionId))) {
+					failTextWrite = false;
+					throw new DOMException("full", "QuotaExceededError");
+				}
+				durableStorage.setItem(key, value);
+			},
+		} as Storage;
+		const localStorage = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+		const view = render(
+			<ChatComposer
+				onSend={vi.fn()}
+				draftSessionId={sessionId}
+				onStageAttachments={() =>
+					new Promise<string[]>((resolve) => {
+						finishStaging = resolve;
+					})
+				}
+			/>,
+		);
+		try {
+			const field = screen.getByLabelText("Message the agent");
+			await typeInComposer(field, "unsafe text");
+			await waitFor(() => expect(getChatDraftBoundary(sessionId)).toBe("persistence-failed"));
+
+			fireEvent.paste(field, { clipboardData: clipboardData([png("pending.png")]) });
+			await waitFor(() => expect(finishStaging).toBeTypeOf("function"));
+			expect(getChatDraftBoundaries(sessionId)).toEqual([
+				"persistence-failed",
+				"pending-attachments",
+			]);
+
+			await act(async () => finishStaging([".ao/attachments/pending.png"]));
 		} finally {
 			view.unmount();
 			localStorage.mockRestore();
@@ -1757,6 +1819,50 @@ it("locks an uncertain steer after restart until the user explicitly abandons re
 	await act(async () => { await Promise.resolve(); });
 	expect(onSteer).not.toHaveBeenCalled();
 	expect(onSend).not.toHaveBeenCalled();
+});
+
+it("reserves the composer before pending staging yields to a replacement surface", async () => {
+	const sessionId = "composer-stage-reservation";
+	const pending = deferred<string[]>();
+	const stage = vi.fn(() => pending.promise);
+	const send = vi.fn().mockResolvedValue(undefined);
+	let view = render(<ChatComposer onSend={send} onStageAttachments={stage} draftSessionId={sessionId} />);
+	let field = screen.getByLabelText("Message the agent");
+	await typeInComposer(field, "original request");
+	fireEvent.paste(field, { clipboardData: clipboardData([png("pending.png")]) });
+	await waitFor(() => expect(stage).toHaveBeenCalledOnce());
+	fireEvent.keyDown(field, { key: "Enter" });
+	view.unmount();
+	view = render(<ChatComposer onSend={send} onStageAttachments={stage} draftSessionId={sessionId} />);
+	field = screen.getByLabelText("Message the agent");
+	expect(field).toHaveAttribute("contenteditable", "false");
+	expect(send).not.toHaveBeenCalled();
+	await act(async () => { pending.resolve([".ao/attachments/pending.png"]); });
+	await waitFor(() => expect(send).toHaveBeenCalledOnce());
+	await waitFor(() => expect(field).toHaveTextContent(/^$/));
+	expect(readChatSessionDraft(sessionId).composer.text).toBe("");
+	view.unmount();
+});
+
+it("does not let Enter omit an image still staging on the previous surface", async () => {
+	const sessionId = "composer-shared-pending-image";
+	const pending = deferred<string[]>();
+	const stage = vi.fn(() => pending.promise);
+	const send = vi.fn().mockResolvedValue(undefined);
+	let view = render(<ChatComposer onSend={send} onStageAttachments={stage} draftSessionId={sessionId} />);
+	await typeInComposer(screen.getByLabelText("Message the agent"), "inspect the image");
+	fireEvent.paste(screen.getByLabelText("Message the agent"), { clipboardData: clipboardData([png("pending.png")]) });
+	await waitFor(() => expect(stage).toHaveBeenCalledOnce());
+	view.unmount();
+	view = render(<ChatComposer onSend={send} onStageAttachments={stage} draftSessionId={sessionId} />);
+	fireEvent.keyDown(screen.getByLabelText("Message the agent"), { key: "Enter" });
+	await act(async () => { await Promise.resolve(); });
+	expect(send).not.toHaveBeenCalled();
+	await act(async () => { pending.resolve([".ao/attachments/pending.png"]); });
+	await screen.findByLabelText("Remove pending.png");
+	await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+	await waitFor(() => expect(send).toHaveBeenCalledWith(expect.stringContaining(".ao/attachments/pending.png"), undefined, expect.any(String)));
+	view.unmount();
 });
 
 it("keeps staged paths authoritative across a remount until acceptance clears the exact draft", async () => {

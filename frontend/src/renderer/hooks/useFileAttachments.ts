@@ -80,12 +80,12 @@ export type PendingFileAttachmentCapture = {
 };
 
 function sharedAttachmentDescriptors(attachments: FileAttachment[]): FileAttachment[] {
-	return attachments.map(({ id, mimeType, bytes, name, stagedPath, data, dataUrl }) => ({
+	return attachments.map(({ id, mimeType, bytes, name, stagedPath }) => ({
 		id,
 		mimeType,
 		bytes,
 		name,
-		...(stagedPath ? { stagedPath } : { data, dataUrl }),
+		...(stagedPath ? { stagedPath } : {}),
 	}));
 }
 
@@ -492,21 +492,6 @@ export function useFileAttachments(options: FileAttachmentOptions = {}) {
 		setError(null);
 	}, [initialKey, onAttachmentsChange]);
 
-	const recordStagedPaths = useCallback((paths: ReadonlyMap<string, string>): FileAttachment[] => {
-		const next = attachmentsRef.current.map((attachment) => {
-			const path = paths.get(attachment.id);
-			return path ? { ...attachment, stagedPath: path } : attachment;
-		});
-		attachmentsRef.current = next;
-		setAttachments(next);
-		onAttachmentsChange?.(next);
-		if (initialKey) {
-			notifySharedAttachmentEntry(initialKey,
-				{ attachments: sharedAttachmentDescriptors(next) }, listenerTokenRef.current);
-		}
-		return next;
-	}, [initialKey, onAttachmentsChange]);
-
 	const clear = useCallback(() => {
 		generationRef.current++;
 		pendingReadsRef.current.clear();
@@ -575,7 +560,6 @@ export function useFileAttachments(options: FileAttachmentOptions = {}) {
 		preparing,
 		addFiles,
 		remove,
-		recordStagedPaths,
 		clear,
 		reconcilePersistedAttachments,
 		getAttachments: () => attachmentsRef.current,
