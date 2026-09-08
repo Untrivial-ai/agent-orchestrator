@@ -165,6 +165,9 @@ func TestCanonicalWindowsCLIIgnoresShellPATH(t *testing.T) {
 		t.Fatal(err)
 	} //nolint:gosec // executable test fixture
 	foreign := t.TempDir()
+	if err := os.WriteFile(filepath.Join(foreign, "ao.exe"), binary, 0o700); err != nil {
+		t.Fatal(err)
+	} //nolint:gosec // executable test fixture
 	if err := os.WriteFile(filepath.Join(foreign, "ao.cmd"), []byte("@echo FOREIGN\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -176,8 +179,8 @@ func TestCanonicalWindowsCLIIgnoresShellPATH(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"powershell", []string{"-NoProfile", "-Command", `$env:PATH = $env:FOREIGN_DIR + ';' + $env:PATH; & $env:AO_CLI -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$`}},
-		{"bash", []string{"--noprofile", "--norc", "-c", `export PATH="$FOREIGN_DIR:$PATH"; "$AO_CLI" -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$`}},
+		{"powershell", []string{"-NoProfile", "-Command", `$env:PATH = $env:FOREIGN_DIR + ';' + $env:PATH; ao -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$; & $env:AO_CLI -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$`}},
+		{"bash", []string{"--noprofile", "--norc", "-c", `export PATH="$(cygpath -u "$FOREIGN_DIR"):$PATH"; ao -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$; "$AO_CLI" -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$`}},
 	} {
 		t.Run(shell.name, func(t *testing.T) {
 			shellPath, err := exec.LookPath(shell.name)
@@ -191,10 +194,13 @@ func TestCanonicalWindowsCLIIgnoresShellPATH(t *testing.T) {
 					cmd.Env = append(cmd.Env, entry)
 				}
 			}
-			cmd.Env = append(cmd.Env, EnvCLI+"="+env[EnvCLI], "FOREIGN_DIR="+filepath.ToSlash(foreign), "AO_TEST_CANONICAL_CHILD=1")
+			cmd.Env = append(cmd.Env, EnvCLI+"="+env[EnvCLI], "FOREIGN_DIR="+filepath.ToSlash(foreign), "AO_TEST_CANONICAL_CHILD=1", "PATHEXT=.CMD;.EXE;.BAT;.COM")
 			output, err := cmd.CombinedOutput()
 			if err != nil || !containsSameExecutable(t, string(output), canonical) {
 				t.Fatalf("canonical selection: %v: %s", err, output)
+			}
+			if !strings.Contains(string(output), "FOREIGN") && !containsSameExecutable(t, string(output), filepath.Join(foreign, "ao.exe")) {
+				t.Fatalf("shell did not select foreign bare ao: %s", output)
 			}
 		})
 	}
