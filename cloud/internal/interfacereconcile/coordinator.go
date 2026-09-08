@@ -205,60 +205,75 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 		_ = c.store.ReleaseCoordinatedInterfaceClaim(ctx, c.owner, transition.ID)
 	}()
 
-	if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionPreflighting, "", ""); err != nil {
-		return err
-	}
-	if err := c.driver.PreflightTarget(runCtx, *transition); err != nil {
-		return c.retryOrFail(*transition, "TARGET_PREFLIGHT_FAILED", err)
-	}
-
-	if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionDraining, "", ""); err != nil {
-		return err
-	}
-	if err := c.drain(runCtx, *transition); err != nil {
-		return c.retryOrFail(*transition, "SOURCE_DRAIN_FAILED", err)
-	}
-
-	if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionSourceStopping, "", ""); err != nil {
-		return err
-	}
-	if err := c.driver.StopSource(runCtx, *transition); err != nil {
-		return c.retryOrFail(*transition, "SOURCE_STOP_FAILED", err)
-	}
-	if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionSourceStopped, "", ""); err != nil {
-		return err
-	}
-
-	nativeID, err := c.driver.ResolveNativeConversationID(runCtx, *transition)
-	if err != nil {
-		return c.retryOrFail(*transition, "NATIVE_ID_RESOLUTION_FAILED", err)
-	}
-	committed, err := c.store.CommitCoordinatedSessionInterface(
-		runCtx, c.owner, transition.OrgID, transition.SessionID, transition.TargetInterface,
-	)
-	if err != nil {
-		return c.fail(*transition, "SESSION_COMMIT_FAILED", err)
-	}
-	if !committed {
-		return c.fail(*transition, "SESSION_NOT_FOUND", errors.New("session changed before interface commit"))
-	}
-
-	if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionTargetStarting, nativeID, ""); err != nil {
-		return err
-	}
-	if err := c.driver.StartTarget(runCtx, *transition, nativeID); err != nil {
-		if !isRetryable(err) {
-			// The session is committed to the new interface. The target failed to
-			// start, so mark recovery instead of failing: a user must never be left
-			// with no controller.
-			return c.recover(*transition, "TARGET_START_FAILED", err)
+	// Every durable phase marks the *next* operation to perform. On a retry or
+	// coordinator restart we therefore resume at that phase instead of replaying
+	// earlier worker commands. The transition only advances after the preceding
+	// operation succeeds, so source stopping, native-id resolution, committing,
+	// and target start are never repeated once their following checkpoint is
+	// durable.
+	for {
+		switch transition.Phase {
+		case domain.SessionInterfaceTransitionRequested:
+			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionPreflighting, "", ""); err != nil {
+				return err
+			}
+		case domain.SessionInterfaceTransitionPreflighting:
+			if err := c.driver.PreflightTarget(runCtx, *transition); err != nil {
+				return c.retryOrFail(*transition, "TARGET_PREFLIGHT_FAILED", err)
+			}
+			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionDraining, "", ""); err != nil {
+				return err
+			}
+		case domain.SessionInterfaceTransitionDraining:
+			if err := c.drain(runCtx, *transition); err != nil {
+				return c.retryOrFail(*transition, "SOURCE_DRAIN_FAILED", err)
+			}
+			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionSourceStopping, "", ""); err != nil {
+				return err
+			}
+		case domain.SessionInterfaceTransitionSourceStopping:
+			if err := c.driver.StopSource(runCtx, *transition); err != nil {
+				return c.retryOrFail(*transition, "SOURCE_STOP_FAILED", err)
+			}
+			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionSourceStopped, "", ""); err != nil {
+				return err
+			}
+		case domain.SessionInterfaceTransitionSourceStopped:
+			nativeID, err := c.driver.ResolveNativeConversationID(runCtx, *transition)
+			if err != nil {
+				return c.retryOrFail(*transition, "NATIVE_ID_RESOLUTION_FAILED", err)
+			}
+			committed, err := c.store.CommitCoordinatedSessionInterface(
+				runCtx, c.owner, transition.OrgID, transition.SessionID, transition.TargetInterface,
+			)
+			if err != nil {
+				return c.fail(*transition, "SESSION_COMMIT_FAILED", err)
+			}
+			if !committed {
+				return c.fail(*transition, "SESSION_NOT_FOUND", errors.New("session changed before interface commit"))
+			}
+			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionTargetStarting, nativeID, ""); err != nil {
+				return err
+			}
+		case domain.SessionInterfaceTransitionTargetStarting:
+			if err := c.driver.StartTarget(runCtx, *transition, transition.NativeConversationID); err != nil {
+				if !isRetryable(err) {
+					// The session is committed to the new interface. The target failed to
+					// start, so mark recovery instead of failing: a user must never be left
+					// with no controller.
+					return c.recover(*transition, "TARGET_START_FAILED", err)
+				}
+				return c.retryOrFail(*transition, "TARGET_START_FAILED", err)
+			}
+			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionActivating, transition.NativeConversationID, ""); err != nil {
+				return err
+			}
+		case domain.SessionInterfaceTransitionActivating:
+			return c.advance(runCtx, transition, domain.SessionInterfaceTransitionCompleted, "", "")
+		default:
+			return nil
 		}
-		return c.retryOrFail(*transition, "TARGET_START_FAILED", err)
 	}
-	if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionActivating, nativeID, ""); err != nil {
-		return err
-	}
-	return c.advance(runCtx, transition, domain.SessionInterfaceTransitionCompleted, "", "")
 }
 
 // retryOrFail releases a pending retryable worker command, or fails the
