@@ -34,6 +34,25 @@ function transition(phase: SessionInterfaceTransition["phase"]): SessionInterfac
 }
 
 describe("SessionInterfaceSwitchButton", () => {
+	it("disables the action when Cloud reports a terminated session", () => {
+		const onClick = vi.fn();
+		render(
+			<TooltipProvider>
+				<SessionInterfaceSwitchButton
+					target="chat"
+					supported={false}
+					disabledReason="Terminated sessions must be restored before switching interfaces."
+					onClick={onClick}
+				/>
+			</TooltipProvider>,
+		);
+
+		const button = screen.getByRole("button", { name: "Switch to chat UI" });
+		expect(button).toBeDisabled();
+		fireEvent.click(button);
+		expect(onClick).not.toHaveBeenCalled();
+	});
+
 	it("uses the shared topbar spacing between adjacent session actions", () => {
 		render(
 			<SessionInterfaceActionGroup>

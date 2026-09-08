@@ -68,6 +68,7 @@ func (s *Server) getSessionInterfaceTransition(w http.ResponseWriter, r *http.Re
 		TargetMode: string(session.Interface.Opposite()),
 	}
 	if session.IsTerminated {
+		status.Supported = false
 		status.ReasonCode = "SESSION_TERMINATED"
 		status.Reason = "Terminated sessions must be restored before switching interfaces."
 	} else if !status.Supported {
@@ -114,6 +115,11 @@ func (s *Server) startSessionInterfaceTransition(w http.ResponseWriter, r *http.
 	session, err := s.store.GetSession(r.Context(), principalFrom(r), orgID, sessionID)
 	if err != nil {
 		s.writeStoreError(w, r, err)
+		return
+	}
+	if session.IsTerminated {
+		writeError(w, r, http.StatusConflict, "SESSION_TERMINATED",
+			"Terminated sessions must be restored before switching interfaces.")
 		return
 	}
 	if !s.interfaceTransitionSupported(session.Harness) {
