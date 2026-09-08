@@ -320,12 +320,13 @@ export function useSessionInterfaceTransition(
 			return data;
 		},
 		onSuccess: (response, variables) => {
-			if (!response || !("transition" in response)) return;
+			if (!response || isCloud) return;
+			const localResponse = response as unknown as { transition: SessionInterfaceTransition };
 			queryClient.setQueryData<SessionInterfaceTransitionStatus>(
 				sessionInterfaceTransitionQueryKey(variables.targetSessionId),
 				(current) =>
-					current?.transition?.id === response.transition.id
-						? { ...current, transition: response.transition }
+					current?.transition?.id === localResponse.transition.id
+						? { ...current, transition: localResponse.transition }
 						: current,
 			);
 		},
