@@ -4067,7 +4067,7 @@ func (m *Manager) aoSkillPointer() string {
 	browserFile := filepath.ToSlash(filepath.Join(dir, "commands", "browser.md"))
 	previewFile := filepath.ToSlash(filepath.Join(dir, "commands", "preview.md"))
 	return "\n\n" + "## Using the ao CLI\n\n" +
-		"Invoke `ao` as `\"$AO_CLI\"` (POSIX) or `& $env:AO_CLI` (PowerShell), never PATH.\n\n" +
+		"Invoke `ao` as `\"$AO_CLI\"` (POSIX) or `& $env:AO_CLI` (PowerShell).\n\n" +
 		"Read `" + skillFile + "` and only the relevant file under `" + commandsGlob + "`; do not load unrelated command guides.\n\n" +
 		"## AO desktop Browser panel\n\n" +
 		"For frontend work, read `" + previewFile + "` before previewing or starting an app. Static file targets passed to `ao preview` are relative to the session workspace root, regardless of the shell's current directory: use `ao preview README.md`, not `../README.md`. AO serves workspace files through its existing confined loopback preview; do not use `file://` or start a server just to display static files. Never create or modify `package.json` or install dependencies solely to display static files. Do not create `.ao/launch.json` unless the user asks. Automatically open the primary requested browser-displayable artifact immediately after creating or materially updating it, but do not replace an active application preview with a supporting asset. " +
