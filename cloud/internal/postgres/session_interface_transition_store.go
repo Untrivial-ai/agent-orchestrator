@@ -29,6 +29,20 @@ var (
 	ErrTransitionStale = errors.New("interface transition was claimed by another coordinator")
 )
 
+const renewCoordinatedInterfaceClaimSQL = `UPDATE ao_interface_transitions
+			SET claimed_by = $1, claimed_at = now(), updated_at = now()
+			WHERE id = $2 AND claimed_by = $1`
+
+const commitCoordinatedSessionInterfaceSQL = `UPDATE ao_sessions AS session
+			SET interface = $1, updated_at = now()
+			FROM ao_interface_transitions AS transition
+			WHERE transition.id = $2
+			  AND transition.org_id = $3
+			  AND transition.claimed_by = $4
+			  AND transition.phase = 'source_stopped'
+			  AND transition.org_id = session.org_id
+			  AND transition.session_id = session.id`
+
 // GetSessionInterfaceTransition returns one transition row by id under the
 // caller's tenant context.
 func (s *Store) GetSessionInterfaceTransition(
@@ -405,10 +419,7 @@ func (s *Store) RenewCoordinatedInterfaceClaim(
 	lease time.Duration,
 ) error {
 	return s.withService(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx,
-			`UPDATE ao_interface_transitions
-			SET claimed_by = $1, claimed_at = now(), updated_at = now()
-			WHERE id = $2 AND claimed_by = $1`, owner, transitionID)
+		tag, err := tx.Exec(ctx, renewCoordinatedInterfaceClaimSQL, owner, transitionID)
 		if err != nil {
 			return err
 		}
@@ -465,16 +476,7 @@ func (s *Store) CommitCoordinatedSessionInterface(
 ) (bool, error) {
 	var committed bool
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx,
-			`UPDATE ao_sessions AS session
-			SET interface = $1, updated_at = now()
-			FROM ao_interface_transitions AS transition
-			WHERE transition.id = $2
-			  AND transition.org_id = $3
-			  AND transition.claimed_by = $4
-			  AND transition.phase = 'source_stopped'
-			  AND transition.org_id = session.org_id
-			  AND transition.session_id = session.id`,
+		tag, err := tx.Exec(ctx, commitCoordinatedSessionInterfaceSQL,
 			interfaceValue, transitionID, orgID, owner)
 		if err != nil {
 			return err
