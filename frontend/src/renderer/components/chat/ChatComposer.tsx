@@ -73,6 +73,7 @@ import {
 	beginChatComposerMutation,
 	cancelChatComposerMutation,
 	chatDraftScopeKey,
+	chatQueuedAttachmentScopeKey,
 	clearAcceptedChatComposer,
 	clearRejectedChatComposerDelivery,
 	clearUncertainChatComposerDelivery,
@@ -271,7 +272,7 @@ export const ChatComposer = memo(function ChatComposer({
 	);
 	const draftScopeKey = draftScope ? chatDraftScopeKey(draftScope) : undefined;
 	const attachmentScopeKey = queuedDraftScope
-		? JSON.stringify([queuedDraftScope.sessionId, queuedDraftScope.incarnation, `queue:${draftSeed?.id}`])
+		? chatQueuedAttachmentScopeKey(queuedDraftScope, draftSeed?.id ?? "undefined")
 		: draftScopeKey;
 	const boundarySessionId = draftSessionId ?? queuedDraftScope?.sessionId;
 	const [retainedAttachments, setRetainedAttachments] = useState<StoredComposerAttachment[]>(draftSeed?.attachments ?? []);

@@ -130,6 +130,10 @@ export function chatDraftScopeKey(scope: ChatDraftScopeInput): string {
 	return JSON.stringify([identity.sessionId, identity.incarnation]);
 }
 
+export function chatQueuedAttachmentScopeKey(scope: ChatDraftScope, editorId: string): string {
+	return JSON.stringify([scope.sessionId, scope.incarnation, `queue:${editorId}`]);
+}
+
 export function chatDraftScopeSessionId(key: string): string | undefined {
 	try {
 		const parsed: unknown = JSON.parse(key);

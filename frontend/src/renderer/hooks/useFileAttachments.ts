@@ -236,13 +236,19 @@ export function discardPendingFileAttachmentsForSession(sessionId: string): void
  * durable worktree bytes are intentionally outside this registry and untouched.
  */
 export function purgeFileAttachmentsForSession(sessionId: string): void {
-	for (const [key, entry] of [...sharedAttachmentEntries]) {
-		if (!attachmentKeyBelongsToSession(key, sessionId)) continue;
-		entry.generation += 1;
-		entry.pending.clear();
-		notifySharedAttachmentEntry(key, { attachments: [], error: null });
-		if (entry.listeners.size === 0) sharedAttachmentEntries.delete(key);
+	for (const key of [...sharedAttachmentEntries.keys()]) {
+		if (attachmentKeyBelongsToSession(key, sessionId)) purgeFileAttachments(key);
 	}
+}
+
+/** Retire one completed owner without touching other drafts or staged bytes. */
+export function purgeFileAttachments(key: string): void {
+	const entry = sharedAttachmentEntries.get(key);
+	if (!entry) return;
+	entry.generation += 1;
+	entry.pending.clear();
+	notifySharedAttachmentEntry(key, { attachments: [], error: null });
+	if (entry.listeners.size === 0) sharedAttachmentEntries.delete(key);
 }
 
 // Client-side mirror of the backend image-preview allowlist. Non-image files can

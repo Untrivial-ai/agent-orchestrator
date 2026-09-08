@@ -1,8 +1,8 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
-import { purgeFileAttachmentsForSession } from "../../hooks/useFileAttachments";
+import { purgeFileAttachmentsForSession, useFileAttachments } from "../../hooks/useFileAttachments";
 import { readChatSessionDraft } from "../../lib/chat-drafts";
 import { chatFixture } from "../../lib/chat-fixture";
 import { typeInLexicalEditor } from "../../test/lexical";
@@ -187,6 +187,36 @@ describe("queued message attachments", () => {
 		await waitFor(() => expect(screen.getByRole("combobox")).toHaveTextContent("unrelated draft"));
 		expect(screen.getByLabelText("Remove unrelated.png")).toBeInTheDocument();
 	});
+
+	it.each(["cancel", "save", "replace", "unmount", "failed cleanup"])(
+		"retires only completed queue attachment owners after %s", async (action) => {
+			const view = setup();
+			await typeInLexicalEditor(screen.getByRole("combobox"), "ordinary draft");
+			await beginEdit();
+			await pasteImage(screen.getByRole("combobox"));
+			const edit = readChatSessionDraft(chatFixture.sessionId).queuedEdit!;
+			const initialKey = JSON.stringify([chatFixture.sessionId, chatFixture.sessionId, `queue:${edit.turnId}:${edit.ownerId}`]);
+			let storage: ReturnType<typeof vi.spyOn> | undefined;
+			try {
+				if (action === "save") {
+					await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+					await waitFor(() => expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit).toBeUndefined());
+				} else if (action === "replace") {
+					await beginEdit();
+				} else if (action !== "unmount") {
+					if (action === "failed cleanup") {
+						storage = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => { throw new Error("disk full"); });
+					}
+					await userEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+				}
+				view.unmount();
+				// Mounting the retired key with no durable seed exposes any leaked registry descriptors.
+				const cache = renderHook(() => useFileAttachments({ initialKey }));
+				expect(cache.result.current.attachments).toHaveLength(action === "unmount" || action === "failed cleanup" ? 1 : 0);
+				cache.unmount();
+			} finally { storage?.mockRestore(); }
+		},
+	);
 
 	it("keeps a failed edit for retry without staging the same image twice", async () => {
 		const { edit, send, stage } = setup();

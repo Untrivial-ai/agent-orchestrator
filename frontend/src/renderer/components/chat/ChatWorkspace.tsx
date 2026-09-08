@@ -37,6 +37,7 @@ import { cn } from "../../lib/utils";
 import {
 	activateChatDraftScope,
 	chatDraftScopeKey,
+	chatQueuedAttachmentScopeKey,
 	readChatSessionDraft,
 	writeChatQueuedEdit,
 	type ChatDraftQueuedEdit,
@@ -44,7 +45,7 @@ import {
 	type ChatDraftRetainedAttachment,
 	type ChatDraftScope,
 } from "../../lib/chat-drafts";
-import { purgeFileAttachmentsForSession } from "../../hooks/useFileAttachments";
+import { purgeFileAttachments, purgeFileAttachmentsForSession } from "../../hooks/useFileAttachments";
 import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
 import { sameContent, useStableList } from "../../lib/stable-list";
 import { useTabScrollEdges } from "../../hooks/useTabScrollEdges";
@@ -701,9 +702,14 @@ function ChatWorkspaceContent({
 			previous?.expectedRevision === expectedRevision ? previous?.written : undefined);
 		setQueueDraftError(result.ok ? undefined : "chat.draft.queueSaveLocalFailed");
 		if (result.ok) {
+			const retired = queueEditRef.current;
 			unprovenQueueWrite.current = undefined;
 			queueEditRef.current = result.draft.queuedEdit;
 			setQueueEdit(result.draft.queuedEdit);
+			if (retired && (!result.draft.queuedEdit || retired.ownerId !== result.draft.queuedEdit.ownerId)) {
+				purgeFileAttachments(chatQueuedAttachmentScopeKey(draftScope,
+					`${retired.turnId}:${retired.ownerId ?? retired.expectedRevision ?? "legacy"}`));
+			}
 		} else if (result.attempted) {
 			unprovenQueueWrite.current = { expectedRevision, written: result.attempted };
 		}
