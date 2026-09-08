@@ -681,3 +681,50 @@ type ConversationQueuedEditDelivery struct {
 	ClientMessageID string
 	RequestHash     string
 }
+
+// ConversationEditDelivery is AO's durable answer to one caller-owned inline
+// edit handle. Reserved means provider delivery may have happened and therefore
+// cannot be attempted automatically again. Accepted and rejected are replayable
+// across active-lineage changes and daemon restarts.
+type ConversationEditDelivery struct {
+	ConversationID   string
+	ClientMessageID  string
+	RequestJSON      string
+	State            ConversationEditDeliveryState
+	SourceBranchID   string
+	ActiveBranchID   string
+	Turn             ConversationTurn
+	RejectionKind    ConversationEditRejectionKind
+	RejectionMessage string
+	CreatedAt        time.Time
+	SettledAt        *time.Time
+}
+
+// ConversationEditDeliveryState records whether a reserved edit was accepted
+// or definitively rejected.
+type ConversationEditDeliveryState string
+
+// Conversation edit delivery states.
+const (
+	ConversationEditReserved ConversationEditDeliveryState = "reserved"
+	ConversationEditAccepted ConversationEditDeliveryState = "accepted"
+	ConversationEditRejected ConversationEditDeliveryState = "rejected"
+)
+
+// ConversationEditRejectionKind reconstructs errors.Is behavior for definitive
+// edit failures after the controller that observed them no longer exists.
+type ConversationEditRejectionKind string
+
+// Conversation edit rejection kinds.
+const (
+	ConversationEditRejectedInvalid             ConversationEditRejectionKind = "invalid_turn"
+	ConversationEditRejectedUnsupported         ConversationEditRejectionKind = "unsupported"
+	ConversationEditRejectedBusy                ConversationEditRejectionKind = "busy"
+	ConversationEditRejectedInterfaceTransition ConversationEditRejectionKind = "interface_transition"
+	ConversationEditRejectedByProvider          ConversationEditRejectionKind = "provider_refused"
+	// ConversationEditRejectedProviderFailure records a generic local preparation
+	// failure when AO can prove provider dispatch never occurred. It also replays
+	// reservations settled by older builds that treated generic provider/transport
+	// errors as definitive.
+	ConversationEditRejectedProviderFailure ConversationEditRejectionKind = "provider_failure"
+)

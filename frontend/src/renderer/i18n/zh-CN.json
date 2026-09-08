@@ -1912,7 +1912,19 @@
 	"chat.draft.queueReplaced": "此排队消息编辑已被替换。未发送任何内容。",
 	"chat.draft.queuePrepareFailed": "无法在本地保存草稿及其恢复 ID。未发送任何内容。请恢复本地存储后重试。",
 	"chat.draft.queueClearFailed": "内容已被接受，但仍需清除本地草稿。",
+	"chat.draft.clearEdit": "完成清除已接受的草稿",
 	"chat.draft.retryEdit": "安全重试",
+	"chat.draft.acceptedEdit": "内容已被接受，但仍需清除本地草稿。",
+	"chat.draft.editRestart": "AO 无法确定代理是否已收到此内容。请使用相同的投递 ID 安全重试，或放弃恢复后再编辑。放弃后再次发送可能导致重复投递。",
+	"chat.draft.clearEditFailed": "内容已被接受，但无法清除本地草稿。请在离开前重试清除；AO 不会再次发送。",
+	"chat.draft.recordEditFailed": "无法在本地记录接受结果。请使用相同的投递 ID 安全重试以确认结果。",
+	"chat.draft.abandonEditFailed": "无法清除本地记录，因此无法放弃恢复。不会自动重新发送任何内容。",
+	"chat.draft.abandonedEdit": "已放弃恢复。之前的内容可能已投递；再次发送可能导致重复。",
+	"chat.draft.editSaveFailed": "无法保存草稿。请保持此聊天打开，或在离开前复制草稿。",
+	"chat.draft.editDiscardFailed": "无法放弃此编辑。请保持此聊天打开并重试。",
+	"chat.draft.prepareEditFailed": "无法在本地保存草稿及其恢复 ID。未发送任何内容。请恢复本地存储后重试。",
+	"chat.draft.clearRefusedEditFailed": "投递被拒绝，但无法清除本地恢复记录。不会自动重新发送任何内容。",
+	"chat.draft.editUncertain": "AO 无法确定代理是否已收到此内容。请使用相同的投递 ID 安全重试，或放弃恢复后再编辑。放弃后再次发送可能导致重复投递。",
 	"chat.draft.abandon": "放弃恢复",
 	"chat.draft.filesUnavailable": "文件尚未持久保存。未发送任何内容。",
 	"chat.draftDiscard.title": "放弃尚未安全保存的聊天草稿？",
@@ -1923,5 +1935,6 @@
 	"chat.draftDiscard.nativeTitle": "未保存的聊天草稿",
 	"chat.draftDiscard.nativeMessage": "此聊天草稿尚未安全保存。",
 	"chat.draftDiscard.stay": "留下",
-	"chat.draftDiscard.leaveAnyway": "仍然离开"
+	"chat.draftDiscard.leaveAnyway": "仍然离开",
+	"chat.edit.abandonRecovery": "放弃编辑恢复"
 }

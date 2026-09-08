@@ -1,3 +1,4 @@
+import type { ChatEditOutcome } from "../types/conversation";
 import type { ChatSteerOutcome } from "../types/conversation";
 /**
  * Live conversation data for a Chat session.
@@ -882,18 +883,25 @@ export function useConversationCommands(sessionId: string | undefined) {
 						? retryTurn.variables?.sourceTurnId
 						: undefined,
 		},
-		editMessage: (turnId: string, text: string) => {
+		editMessage: async (turnId: string, text: string, clientMessageId?: string): Promise<ChatEditOutcome> => {
 			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
-			const requestId = crypto.randomUUID();
+			const requestId = clientMessageId ?? crypto.randomUUID();
 			if (!claimConversationDispatch(queryClient, sessionId, requestId, "edit", turnId)) {
 				return Promise.reject(new Error("Conversation work is already being sent for this session."));
 			}
-			return editMessage.mutateAsync({
+			try {
+			await editMessage.mutateAsync({
 				requestId,
 				sourceTurnId: turnId,
 				targetSessionId: sessionId,
 				text,
 			});
+			return { status: "accepted" };
+			} catch (error) {
+				const outcome = editNonAcceptance(error);
+				if (outcome) return outcome;
+				throw error;
+			}
 		},
 		editMessagePending:
 			trackedDispatch?.operation === "edit" ||
@@ -1518,4 +1526,29 @@ function steerNonAcceptance(error: unknown): ChatSteerOutcome | undefined {
 		status: "not-accepted",
 		reason: steerRefusal(error) ?? apiErrorMessage(error),
 	};
+}
+
+
+
+
+
+const DEFINITIVE_EDIT_NON_ACCEPTANCE_CODES = new Set([
+	"CHAT_EDIT_REJECTED",
+	"CHAT_EDIT_UNSUPPORTED",
+	"CHAT_EDIT_BUSY",
+	"CHAT_EDIT_TURN_INVALID",
+	"CHAT_PROVIDER_REFUSED",
+	"SESSION_MODE_MISMATCH",
+	"SESSION_NOT_FOUND",
+	"CHAT_CONTROLLER_NOT_READY",
+	"CHAT_AUTH_REQUIRED",
+]);
+
+
+
+
+function editNonAcceptance(error: unknown): ChatEditOutcome | undefined {
+	const code = apiErrorCode(error);
+	if (!code || !DEFINITIVE_EDIT_NON_ACCEPTANCE_CODES.has(code)) return undefined;
+	return { status: "not-accepted", reason: apiErrorMessage(error) };
 }

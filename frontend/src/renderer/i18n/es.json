@@ -1958,7 +1958,19 @@
 	"chat.draft.queueReplaced": "Esta edición del mensaje en cola se reemplazó. No se envió nada.",
 	"chat.draft.queuePrepareFailed": "No se pudieron guardar localmente el borrador y su ID de recuperación. No se envió nada. Restablece el almacenamiento local y reintenta.",
 	"chat.draft.queueClearFailed": "El contenido se aceptó, pero aún hay que borrar su borrador local.",
+	"chat.draft.clearEdit": "Terminar de borrar el borrador aceptado",
 	"chat.draft.retryEdit": "Reintentar de forma segura",
+	"chat.draft.acceptedEdit": "El contenido se aceptó, pero aún hay que borrar su borrador local.",
+	"chat.draft.editRestart": "AO no puede determinar si el agente ya recibió este contenido. Reintenta con el mismo ID de entrega o abandona la recuperación para editarlo. Volver a enviarlo tras abandonar puede duplicarlo.",
+	"chat.draft.clearEditFailed": "El contenido se aceptó, pero no se pudo borrar su borrador local. Reintenta borrarlo antes de salir; AO no lo enviará de nuevo.",
+	"chat.draft.recordEditFailed": "No se pudo registrar la aceptación localmente. Reintenta con el mismo ID de entrega para confirmarla.",
+	"chat.draft.abandonEditFailed": "No se pudo abandonar la recuperación porque no se pudo borrar su registro local. No se reenviará nada automáticamente.",
+	"chat.draft.abandonedEdit": "Se abandonó la recuperación. Es posible que el contenido anterior ya se haya entregado; volver a enviarlo puede duplicarlo.",
+	"chat.draft.editSaveFailed": "No se pudo guardar el borrador. Mantén este chat abierto o cópialo antes de salir.",
+	"chat.draft.editDiscardFailed": "No se pudo descartar la edición. Mantén este chat abierto y reintenta.",
+	"chat.draft.prepareEditFailed": "No se pudieron guardar localmente el borrador y su ID de recuperación. No se envió nada. Restablece el almacenamiento local y reintenta.",
+	"chat.draft.clearRefusedEditFailed": "Se rechazó el envío, pero no se pudo borrar su registro local de recuperación. No se reenviará nada automáticamente.",
+	"chat.draft.editUncertain": "AO no puede determinar si el agente ya recibió este contenido. Reintenta con el mismo ID de entrega o abandona la recuperación para editarlo. Volver a enviarlo tras abandonar puede duplicarlo.",
 	"chat.draft.abandon": "Abandonar recuperación",
 	"chat.draft.filesUnavailable": "Los archivos no están guardados de forma duradera. No se envió nada.",
 	"chat.draftDiscard.title": "¿Descartar el borrador de chat no guardado?",
@@ -1969,5 +1981,6 @@
 	"chat.draftDiscard.nativeTitle": "Borrador de chat sin guardar",
 	"chat.draftDiscard.nativeMessage": "Este borrador de chat aún no está guardado de forma segura.",
 	"chat.draftDiscard.stay": "Quedarse",
-	"chat.draftDiscard.leaveAnyway": "Salir de todos modos"
+	"chat.draftDiscard.leaveAnyway": "Salir de todos modos",
+	"chat.edit.abandonRecovery": "Abandonar recuperación de edición"
 }

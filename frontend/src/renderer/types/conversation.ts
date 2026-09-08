@@ -870,3 +870,9 @@ export function pendingUserInput(snapshot: ConversationSnapshot): ConversationAc
 			item.kind === "activity" && item.activityKind === "user_input" && item.status === "pending",
 	);
 }
+
+
+
+
+/** Durable inline-edit acceptance; uncertainty remains a rejected promise. */
+export type ChatEditOutcome = ChatSteerOutcome;

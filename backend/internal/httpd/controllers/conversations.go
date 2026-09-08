@@ -215,6 +215,18 @@ func (c *ConversationsController) activateBranch(w http.ResponseWriter, r *http.
 
 func writeConversationEditError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, chatsvc.ErrEditDeliveryUncertain):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EDIT_UNCERTAIN",
+			"the provider may have received this edit; retry only with the same recovery action", nil)
+	case errors.Is(err, chatsvc.ErrEditIdempotencyConflict):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EDIT_IDEMPOTENCY_CONFLICT",
+			"this delivery handle belongs to a different edit", nil)
+	case errors.Is(err, chatsvc.ErrEditDeliveryRejected):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EDIT_REJECTED",
+			"the edit was not accepted; retry deliberately with a new delivery handle", nil)
 	case errors.Is(err, chatsvc.ErrForkUnsupported):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_EDIT_UNSUPPORTED", "this agent cannot branch an earlier prompt", nil)

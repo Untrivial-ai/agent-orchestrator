@@ -1930,7 +1930,19 @@
 	"chat.draft.queueReplaced": "この待機中のメッセージの編集は置き換えられました。何も送信されていません。",
 	"chat.draft.queuePrepareFailed": "下書きと復元 ID をローカルに保存できませんでした。何も送信されていません。ローカルストレージへのアクセスを復旧して再試行してください。",
 	"chat.draft.queueClearFailed": "内容は受け付けられましたが、ローカルの下書きをまだ削除する必要があります。",
+	"chat.draft.clearEdit": "受け付け済みの下書きの削除を完了",
 	"chat.draft.retryEdit": "安全に再試行",
+	"chat.draft.acceptedEdit": "内容は受け付けられましたが、ローカルの下書きをまだ削除する必要があります。",
+	"chat.draft.editRestart": "この内容がすでにエージェントに届いたかどうかを AO は判断できません。同じ配信 ID で安全に再試行するか、復元を中止して編集してください。中止後の再送信は重複する可能性があります。",
+	"chat.draft.clearEditFailed": "内容は受け付けられましたが、ローカルの下書きを削除できませんでした。離れる前に削除を再試行してください。AO は再送信しません。",
+	"chat.draft.recordEditFailed": "受け付け結果をローカルに記録できませんでした。同じ配信 ID で安全に再試行して結果を確認してください。",
+	"chat.draft.abandonEditFailed": "ローカルの記録を削除できないため、復元を中止できませんでした。自動的に再送信されることはありません。",
+	"chat.draft.abandonedEdit": "復元を中止しました。以前の内容はすでに配信された可能性があります。再送信すると重複する場合があります。",
+	"chat.draft.editSaveFailed": "下書きを保存できませんでした。このチャットを開いたままにするか、離れる前に下書きをコピーしてください。",
+	"chat.draft.editDiscardFailed": "編集を破棄できませんでした。このチャットを開いたままにして再試行してください。",
+	"chat.draft.prepareEditFailed": "下書きと復元 ID をローカルに保存できませんでした。何も送信されていません。ローカルストレージへのアクセスを復旧して再試行してください。",
+	"chat.draft.clearRefusedEditFailed": "配信は拒否されましたが、ローカルの復元記録を削除できませんでした。自動的に再送信されることはありません。",
+	"chat.draft.editUncertain": "この内容がすでにエージェントに届いたかどうかを AO は判断できません。同じ配信 ID で安全に再試行するか、復元を中止して編集してください。中止後の再送信は重複する可能性があります。",
 	"chat.draft.abandon": "復元を中止",
 	"chat.draft.filesUnavailable": "ファイルはまだ永続的に保存されていません。何も送信されていません。",
 	"chat.draftDiscard.title": "安全に保存されていないチャットの下書きを破棄しますか？",
@@ -1941,5 +1953,6 @@
 	"chat.draftDiscard.nativeTitle": "未保存のチャットの下書き",
 	"chat.draftDiscard.nativeMessage": "このチャットの下書きはまだ安全に保存されていません。",
 	"chat.draftDiscard.stay": "留まる",
-	"chat.draftDiscard.leaveAnyway": "離れる"
+	"chat.draftDiscard.leaveAnyway": "離れる",
+	"chat.edit.abandonRecovery": "編集の復旧を中止"
 }

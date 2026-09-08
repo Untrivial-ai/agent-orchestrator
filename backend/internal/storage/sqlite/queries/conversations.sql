@@ -1389,3 +1389,48 @@ WHERE conversation_id = ? AND client_message_id = ?;
 INSERT INTO conversation_queued_edit_deliveries
 (conversation_id, client_message_id, request_hash, created_at)
 VALUES (?, ?, ?, ?);
+
+-- name: SelectConversationEditDelivery :one
+SELECT * FROM conversation_edit_deliveries
+WHERE conversation_id = ? AND client_message_id = ?
+LIMIT 1;
+
+
+-- name: InsertConversationEditDeliveryReservation :execrows
+INSERT OR IGNORE INTO conversation_edit_deliveries (
+    conversation_id, client_message_id, request_json, state, created_at
+) VALUES (?, ?, ?, 'reserved', ?);
+
+
+-- name: AcceptConversationEditDelivery :execrows
+UPDATE conversation_edit_deliveries
+SET state = 'accepted',
+    source_branch_id = ?,
+    active_branch_id = ?,
+    turn_id = ?,
+    handled_by_session_id = ?,
+    provider_turn_id = ?,
+    turn_state = ?,
+    turn_requested_at = ?,
+    rejection_kind = '',
+    rejection_message = '',
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';
+
+
+-- name: RejectConversationEditDelivery :execrows
+UPDATE conversation_edit_deliveries
+SET state = 'rejected',
+    rejection_kind = ?,
+    rejection_message = ?,
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';
+
+-- Stopping the agent stops the queue with it: a brake that starts new work
+-- instead of ending it would be the wrong shape for the button the user pressed.
+-- The cutoff is the moment the user pressed stop, so a message typed after that
+-- is still delivered rather than swept up by a cancellation it predates.

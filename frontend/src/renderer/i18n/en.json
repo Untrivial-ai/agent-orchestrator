@@ -1950,7 +1950,19 @@
 	"chat.draft.queueReplaced": "This queued edit was replaced. Nothing was sent.",
 	"chat.draft.queuePrepareFailed": "Queued edit could not be saved locally. Nothing was sent.",
 	"chat.draft.queueClearFailed": "The edit was saved, but its local draft could not be cleared.",
+	"chat.draft.clearEdit": "Finish clearing accepted edit",
 	"chat.draft.retryEdit": "Retry edit safely",
+	"chat.draft.acceptedEdit": "Edited message was accepted, but its local draft still needs to be cleared.",
+	"chat.draft.editRestart": "AO can’t determine whether the earlier edit may already have been delivered before Chat restarted. Retry safely with the same delivery ID, or abandon recovery to edit it. Sending it again after abandonment may duplicate it.",
+	"chat.draft.clearEditFailed": "Edited message was accepted, but its local draft couldn’t be cleared. Retry clearing before leaving; AO will not branch it again.",
+	"chat.draft.recordEditFailed": "Edited-message acceptance couldn’t be recorded locally. Retry safely to reconcile it with the same delivery ID.",
+	"chat.draft.abandonEditFailed": "Edit recovery couldn’t be abandoned because its local record could not be cleared. Nothing will be resent automatically.",
+	"chat.draft.abandonedEdit": "Recovery was abandoned. The earlier edit may already have been delivered; sending this edit again may duplicate it.",
+	"chat.draft.editSaveFailed": "Inline edit couldn’t be saved. Keep this chat open or copy it before leaving.",
+	"chat.draft.editDiscardFailed": "Inline edit couldn’t be discarded. Keep this chat open and try again.",
+	"chat.draft.prepareEditFailed": "This exact inline edit and its recovery ID couldn’t be saved locally. Nothing was sent. Restore local storage and try again.",
+	"chat.draft.clearRefusedEditFailed": "The edit was rejected, but its local recovery record couldn’t be cleared. Nothing will be resent automatically.",
+	"chat.draft.editUncertain": "AO can’t determine whether the earlier edit may already have been delivered. Retry safely with the same delivery ID, or abandon recovery to edit it. Sending it again after abandonment may duplicate it.",
 	"chat.draft.abandon": "Abandon recovery",
 	"chat.draft.filesUnavailable": "The files are not durably available. Nothing was sent.",
 	"chat.draftDiscard.title": "Discard unsafe Chat draft state?",
@@ -1961,5 +1973,6 @@
 	"chat.draftDiscard.nativeTitle": "Unsaved Chat draft",
 	"chat.draftDiscard.nativeMessage": "This Chat draft is not safely saved yet.",
 	"chat.draftDiscard.stay": "Stay",
-	"chat.draftDiscard.leaveAnyway": "Leave anyway"
+	"chat.draftDiscard.leaveAnyway": "Leave anyway",
+	"chat.edit.abandonRecovery": "Abandon edit recovery"
 }

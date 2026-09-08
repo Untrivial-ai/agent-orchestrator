@@ -1930,7 +1930,19 @@
 	"chat.draft.queueReplaced": "Diese Änderung der wartenden Nachricht wurde ersetzt. Es wurde nichts gesendet.",
 	"chat.draft.queuePrepareFailed": "Der Entwurf und seine Wiederherstellungs-ID konnten nicht lokal gespeichert werden. Es wurde nichts gesendet. Stellen Sie den lokalen Speicher wieder her und versuchen Sie es erneut.",
 	"chat.draft.queueClearFailed": "Der Inhalt wurde angenommen, aber der lokale Entwurf muss noch gelöscht werden.",
+	"chat.draft.clearEdit": "Angenommenen Entwurf fertig löschen",
 	"chat.draft.retryEdit": "Sicher erneut versuchen",
+	"chat.draft.acceptedEdit": "Der Inhalt wurde angenommen, aber der lokale Entwurf muss noch gelöscht werden.",
+	"chat.draft.editRestart": "AO kann nicht feststellen, ob dieser Inhalt den Agenten bereits erreicht hat. Versuchen Sie es mit derselben Zustellungs-ID erneut oder brechen Sie die Wiederherstellung ab, um ihn zu bearbeiten. Erneutes Senden nach dem Abbruch kann zu einer doppelten Zustellung führen.",
+	"chat.draft.clearEditFailed": "Der Inhalt wurde angenommen, aber der lokale Entwurf konnte nicht gelöscht werden. Versuchen Sie das Löschen vor dem Verlassen erneut; AO sendet ihn nicht noch einmal.",
+	"chat.draft.recordEditFailed": "Die Annahme konnte nicht lokal gespeichert werden. Versuchen Sie es mit derselben Zustellungs-ID erneut, um sie abzugleichen.",
+	"chat.draft.abandonEditFailed": "Die Wiederherstellung konnte nicht abgebrochen werden, da der lokale Eintrag nicht gelöscht werden konnte. Es wird nichts automatisch erneut gesendet.",
+	"chat.draft.abandonedEdit": "Die Wiederherstellung wurde abgebrochen. Der vorherige Inhalt wurde möglicherweise bereits zugestellt; erneutes Senden kann zu einer doppelten Zustellung führen.",
+	"chat.draft.editSaveFailed": "Der Entwurf konnte nicht gespeichert werden. Lassen Sie diesen Chat geöffnet oder kopieren Sie den Entwurf vor dem Verlassen.",
+	"chat.draft.editDiscardFailed": "Die Änderung konnte nicht verworfen werden. Lassen Sie diesen Chat geöffnet und versuchen Sie es erneut.",
+	"chat.draft.prepareEditFailed": "Der Entwurf und seine Wiederherstellungs-ID konnten nicht lokal gespeichert werden. Es wurde nichts gesendet. Stellen Sie den lokalen Speicher wieder her und versuchen Sie es erneut.",
+	"chat.draft.clearRefusedEditFailed": "Die Zustellung wurde abgelehnt, aber der lokale Wiederherstellungseintrag konnte nicht gelöscht werden. Es wird nichts automatisch erneut gesendet.",
+	"chat.draft.editUncertain": "AO kann nicht feststellen, ob dieser Inhalt den Agenten bereits erreicht hat. Versuchen Sie es mit derselben Zustellungs-ID erneut oder brechen Sie die Wiederherstellung ab, um ihn zu bearbeiten. Erneutes Senden nach dem Abbruch kann zu einer doppelten Zustellung führen.",
 	"chat.draft.abandon": "Wiederherstellung abbrechen",
 	"chat.draft.filesUnavailable": "Die Dateien sind nicht dauerhaft verfügbar. Es wurde nichts gesendet.",
 	"chat.draftDiscard.title": "Unsicheren Chat-Entwurf verwerfen?",
@@ -1941,5 +1953,6 @@
 	"chat.draftDiscard.nativeTitle": "Ungespeicherter Chatentwurf",
 	"chat.draftDiscard.nativeMessage": "Dieser Chatentwurf ist noch nicht sicher gespeichert.",
 	"chat.draftDiscard.stay": "Bleiben",
-	"chat.draftDiscard.leaveAnyway": "Trotzdem verlassen"
+	"chat.draftDiscard.leaveAnyway": "Trotzdem verlassen",
+	"chat.edit.abandonRecovery": "Bearbeitungswiederherstellung aufgeben"
 }

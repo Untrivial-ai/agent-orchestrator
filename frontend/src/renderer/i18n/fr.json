@@ -1958,7 +1958,19 @@
 	"chat.draft.queueReplaced": "Cette modification du message en attente a été remplacée. Rien n’a été envoyé.",
 	"chat.draft.queuePrepareFailed": "Le brouillon et son identifiant de récupération n’ont pas pu être enregistrés localement. Rien n’a été envoyé. Rétablissez le stockage local et réessayez.",
 	"chat.draft.queueClearFailed": "Le contenu a été accepté, mais son brouillon local doit encore être effacé.",
+	"chat.draft.clearEdit": "Terminer l’effacement du brouillon accepté",
 	"chat.draft.retryEdit": "Réessayer sans risque de doublon",
+	"chat.draft.acceptedEdit": "Le contenu a été accepté, mais son brouillon local doit encore être effacé.",
+	"chat.draft.editRestart": "AO ne peut pas déterminer si ce contenu a déjà été transmis à l’agent. Réessayez avec le même identifiant de livraison, ou abandonnez la récupération pour le modifier. Un nouvel envoi après abandon peut créer un doublon.",
+	"chat.draft.clearEditFailed": "Le contenu a été accepté, mais son brouillon local n’a pas pu être effacé. Réessayez de l’effacer avant de partir ; AO ne le renverra pas.",
+	"chat.draft.recordEditFailed": "L’acceptation n’a pas pu être enregistrée localement. Réessayez avec le même identifiant de livraison pour la confirmer.",
+	"chat.draft.abandonEditFailed": "Impossible d’abandonner la récupération : son enregistrement local n’a pas pu être effacé. Aucun renvoi automatique n’aura lieu.",
+	"chat.draft.abandonedEdit": "La récupération a été abandonnée. Le contenu précédent a peut-être déjà été transmis ; un nouvel envoi peut créer un doublon.",
+	"chat.draft.editSaveFailed": "Le brouillon n’a pas pu être enregistré. Gardez cette conversation ouverte ou copiez-le avant de partir.",
+	"chat.draft.editDiscardFailed": "La modification n’a pas pu être abandonnée. Gardez cette conversation ouverte et réessayez.",
+	"chat.draft.prepareEditFailed": "Le brouillon et son identifiant de récupération n’ont pas pu être enregistrés localement. Rien n’a été envoyé. Rétablissez le stockage local et réessayez.",
+	"chat.draft.clearRefusedEditFailed": "L’envoi a été refusé, mais son enregistrement de récupération local n’a pas pu être effacé. Aucun renvoi automatique n’aura lieu.",
+	"chat.draft.editUncertain": "AO ne peut pas déterminer si ce contenu a déjà été transmis à l’agent. Réessayez avec le même identifiant de livraison, ou abandonnez la récupération pour le modifier. Un nouvel envoi après abandon peut créer un doublon.",
 	"chat.draft.abandon": "Abandonner la récupération",
 	"chat.draft.filesUnavailable": "Les fichiers ne sont pas enregistrés durablement. Rien n’a été envoyé.",
 	"chat.draftDiscard.title": "Abandonner le brouillon de chat non sécurisé ?",
@@ -1969,5 +1981,6 @@
 	"chat.draftDiscard.nativeTitle": "Brouillon de conversation non enregistré",
 	"chat.draftDiscard.nativeMessage": "Ce brouillon de conversation n’est pas encore enregistré de façon sûre.",
 	"chat.draftDiscard.stay": "Rester",
-	"chat.draftDiscard.leaveAnyway": "Quitter quand même"
+	"chat.draftDiscard.leaveAnyway": "Quitter quand même",
+	"chat.edit.abandonRecovery": "Abandonner la récupération de la modification"
 }
