@@ -737,6 +737,23 @@ func (q *Queries) UpdateReviewActivity(ctx context.Context, arg UpdateReviewActi
 	return result.RowsAffected()
 }
 
+const updateReviewAgentSessionID = `-- name: UpdateReviewAgentSessionID :execrows
+UPDATE review SET agent_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+`
+
+type UpdateReviewAgentSessionIDParams struct {
+	AgentSessionID string
+	ID             string
+}
+
+func (q *Queries) UpdateReviewAgentSessionID(ctx context.Context, arg UpdateReviewAgentSessionIDParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateReviewAgentSessionID, arg.AgentSessionID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateReviewRunResult = `-- name: UpdateReviewRunResult :execrows
 UPDATE review_run SET status = ?, verdict = ?, body = ?, github_review_id = ?, auto_inject_review = ? WHERE id = ? AND status = 'running'
 `

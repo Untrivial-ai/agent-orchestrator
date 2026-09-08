@@ -32,6 +32,9 @@ UPDATE review SET reviewer_handle_id = '', updated_at = CURRENT_TIMESTAMP WHERE 
 -- name: ClearReviewerHandleByHarness :exec
 UPDATE review SET reviewer_handle_id = '', updated_at = CURRENT_TIMESTAMP WHERE session_id = ? AND harness = ?;
 
+-- name: UpdateReviewAgentSessionID :execrows
+UPDATE review SET agent_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;
+
 -- name: UpdateReviewActivity :execrows
 UPDATE review SET
     agent_session_id = CASE WHEN ? != '' THEN ? ELSE agent_session_id END,

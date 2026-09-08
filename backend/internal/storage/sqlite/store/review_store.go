@@ -100,6 +100,21 @@ func (s *Store) ClearReviewerHandleByHarness(ctx context.Context, id domain.Sess
 	return s.qw.ClearReviewerHandleByHarness(ctx, gen.ClearReviewerHandleByHarnessParams{SessionID: id, Harness: harness})
 }
 
+// UpdateReviewAgentSessionID records engine-owned reviewer native session
+// metadata without applying the reviewer-hook launch generation fence.
+func (s *Store) UpdateReviewAgentSessionID(ctx context.Context, id, agentSessionID string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.UpdateReviewAgentSessionID(ctx, gen.UpdateReviewAgentSessionIDParams{
+		AgentSessionID: agentSessionID,
+		ID:             id,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // UpdateReviewActivity records the native reviewer conversation id and/or
 // reviewer activity reported by the reviewer harness hooks.
 func (s *Store) UpdateReviewActivity(ctx context.Context, id string, state domain.ActivityState, agentSessionID, launchID string) (bool, error) {

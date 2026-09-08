@@ -502,7 +502,7 @@ func TestTriggerPreservesHookOwnedActivityStateAfterLaunch(t *testing.T) {
 	}
 	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
 
-	res, err := eng.Trigger(context.Background(), "mer-1", "")
+	res, err := eng.Trigger(context.Background(), "mer-1", "", domain.AgentConfig{})
 	if err != nil {
 		t.Fatalf("Trigger: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestTriggerClaimsNewLaunchBeforeSpawnHooksWithFencedStore(t *testing.T) {
 	}
 	eng := newEngineForTest(st, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
 
-	res, err := eng.Trigger(ctx, worker.ID, "")
+	res, err := eng.Trigger(ctx, worker.ID, "", domain.AgentConfig{})
 	if err != nil {
 		t.Fatalf("Trigger: %v", err)
 	}
@@ -1650,7 +1650,7 @@ func TestTriggerConfigOverrideRollbackUpsertFailureKeepsReplacementHandleTracked
 	store := &fakeStore{
 		review:        &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, ReviewerHandleID: "review-mer-1", AgentSessionID: "native-reviewer-1"},
 		upsertErr:     errors.New("rollback failed"),
-		upsertErrCall: 3,
+		upsertErrCall: 4,
 		runs: []domain.ReviewRun{{
 			ID: "run-1", SessionID: "mer-1", PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1",
 			Harness: domain.ReviewerClaudeCode,
@@ -1701,7 +1701,7 @@ func TestTriggerConfigOverrideFinalUpsertFailurePreservesStoredReviewerHandle(t 
 	store := &fakeStore{
 		review:        &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, ReviewerHandleID: "review-mer-1", AgentSessionID: "native-reviewer-1"},
 		upsertErr:     errors.New("write failed"),
-		upsertErrCall: 2,
+		upsertErrCall: 3,
 		runs: []domain.ReviewRun{{
 			ID: "run-1", SessionID: "mer-1", PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1",
 			Harness: domain.ReviewerClaudeCode,

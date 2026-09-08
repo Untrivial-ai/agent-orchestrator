@@ -468,7 +468,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	}
 	if hasConfigOverride && previousHandleID != "" && previousHandleID != handleID {
 		if err := e.launcher.Destroy(ctx, previousHandleID); err != nil {
-			if _, rollbackErr := e.upsertReview(ctx, worker, harness, previousHandleID, previousAgentSessionID, "", now); rollbackErr != nil {
+			if _, rollbackErr := e.upsertReview(ctx, worker, harness, previousHandleID, previousAgentSessionID, "", "", now); rollbackErr != nil {
 				return TriggerResult{}, failRuns(0, fmt.Errorf("destroy previous reviewer: %w; rollback review row: %w", err, rollbackErr))
 			}
 			if handleID != "" {
