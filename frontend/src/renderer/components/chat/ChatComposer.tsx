@@ -211,7 +211,7 @@ export const ChatComposer = memo(function ChatComposer({
 	 * Deliver this text into the turn already running. Absent means the harness
 	 * cannot steer and the choice is never offered.
 	 */
-	onSteer?: (text: string, attachments?: FileAttachmentPayload[], clientMessageId?: string) => Promise<ChatSteerOutcome | void>;
+	onSteer?: (text: string, attachments?: FileAttachmentPayload[], clientMessageId?: string, recoverOnly?: boolean) => Promise<ChatSteerOutcome | void>;
 	/** Stop the turn already running when there is no draft to send. */
 	onInterrupt?: () => void;
 	/** A turn is actually running, so there is something to steer into. */
@@ -470,7 +470,6 @@ export const ChatComposer = memo(function ChatComposer({
 	const canRecoverDelivery = Boolean(
 		durableDelivery &&
 			(!busy || durableDelivery.state === "accepted") &&
-			(durableDelivery.kind !== "steer" || durableDelivery.state === "accepted") &&
 			!disabled &&
 			!steerPending &&
 		!savingQueuedEditPending &&
@@ -1159,8 +1158,7 @@ export const ChatComposer = memo(function ChatComposer({
 			if (!isChatComposerMutationCurrent(draftScope, mutationToken)) return;
 			if (delivery.kind === "steer") {
 				if (!onSteer) throw new Error("Steering is unavailable");
-				if (prepared.recovered) throw new Error("Steering acceptance is uncertain; inspect the conversation before discarding this recovery record.");
-				const outcome = await onSteer(delivery.requestText, nativePayloads.length === 0 ? undefined : nativePayloads, delivery.clientMessageId);
+				const outcome = await onSteer(delivery.requestText, prepared.recovered || nativePayloads.length === 0 ? undefined : nativePayloads, delivery.clientMessageId, prepared.recovered);
 				if (outcome?.status === "not-accepted") {
 					const cleared = clearRejectedChatComposerDelivery(
 						draftScope,

@@ -66,9 +66,17 @@ export type ActivityStatus =
  */
 export type DeliveryState = "queued" | "sending" | "accepted" | "uncertain" | "failed";
 
+/**
+ * Result of attempting to steer a running turn. A typed non-acceptance proves
+ * that the provider did not receive this guidance; transport ambiguity rejects
+ * the promise instead and remains fail-closed in the composer.
+ */
 export type ChatSteerOutcome =
 	| { status: "accepted" }
 	| { status: "not-accepted"; reason: string };
+
+/** Durable inline-edit acceptance; uncertainty remains a rejected promise. */
+export type ChatEditOutcome = ChatSteerOutcome;
 
 /** How far the agent has got with one step of its plan. */
 export type PlanStepStatus = "pending" | "in_progress" | "completed";
@@ -870,9 +878,3 @@ export function pendingUserInput(snapshot: ConversationSnapshot): ConversationAc
 			item.kind === "activity" && item.activityKind === "user_input" && item.status === "pending",
 	);
 }
-
-
-
-
-/** Durable inline-edit acceptance; uncertainty remains a rejected promise. */
-export type ChatEditOutcome = ChatSteerOutcome;

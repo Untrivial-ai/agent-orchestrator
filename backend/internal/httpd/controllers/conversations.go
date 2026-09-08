@@ -35,6 +35,7 @@ type ConversationService interface {
 	ResolveInput(ctx context.Context, session domain.SessionID, requestID string, response ports.ChatInputResponse) error
 	Interrupt(ctx context.Context, session domain.SessionID) error
 	Steer(ctx context.Context, session domain.SessionID, msg ports.ChatUserMessage) (chatsvc.SteerResult, error)
+	RecoverSteer(ctx context.Context, session domain.SessionID, clientMessageID string) (chatsvc.SteerResult, error)
 	PromoteQueuedTurn(ctx context.Context, session domain.SessionID, turnID string) (chatsvc.PromoteQueuedTurnResult, error)
 	CancelQueuedTurn(ctx context.Context, session domain.SessionID, turnID string) error
 	EditQueuedTurn(ctx context.Context, session domain.SessionID, turnID string, edit chatsvc.QueuedMessageEdit) error

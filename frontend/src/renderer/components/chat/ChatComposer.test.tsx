@@ -814,6 +814,92 @@ describe("steering", () => {
 		expect(onSteer).toHaveBeenCalledTimes(1);
 	});
 
+	it("restores an unresolved steer and retries with its original client id", async () => {
+		const sessionId = "steer-stable-retry";
+		const onSteer = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("outcome unknown"))
+			.mockResolvedValueOnce(undefined);
+		const first = render(
+			<ChatComposer
+				onSend={vi.fn()}
+				onSteer={onSteer}
+				canSteer
+				willQueue
+				draftSessionId={sessionId}
+			/>,
+		);
+		const field = screen.getByLabelText("Message the agent");
+		await typeInComposer(field, "persist this steer");
+		fireEvent.keyDown(field, { key: "Enter", ctrlKey: true });
+		await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(1));
+		const clientMessageId = onSteer.mock.calls[0]?.[2];
+		expect(clientMessageId).toEqual(expect.any(String));
+		first.unmount();
+
+		render(
+			<ChatComposer
+				onSend={vi.fn()}
+				onSteer={onSteer}
+				canSteer
+				willQueue
+				draftSessionId={sessionId}
+			/>,
+		);
+		expect(screen.getByLabelText("Message the agent")).toHaveAttribute(
+			"contenteditable",
+			"false",
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Retry message safely" }));
+		await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(2));
+		expect(onSteer.mock.calls[1]?.[2]).toBe(clientMessageId);
+		await waitFor(() => expect(screen.getByLabelText("Message the agent")).toHaveTextContent(""));
+	});
+
+	it("warns before explicitly abandoning uncertain steer recovery across a remount", async () => {
+		const sessionId = "steer-explicit-abandon";
+		const incarnation = "2026-08-26T10:00:00.000Z";
+		const onSteer = vi.fn().mockRejectedValue(new Error("outcome unknown"));
+		const props = {
+			onSend: vi.fn(),
+			onSteer,
+			canSteer: true,
+			willQueue: true,
+			draftSessionId: sessionId,
+			draftSessionIncarnation: incarnation,
+		};
+		const first = render(<ChatComposer {...props} />);
+		const field = screen.getByLabelText("Message the agent");
+		await typeInComposer(field, "possibly delivered guidance");
+		fireEvent.keyDown(field, { key: "Enter", ctrlKey: true });
+
+		await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(1));
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"may already have received this guidance",
+			),
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("may duplicate it");
+		expect(field).toHaveAttribute("contenteditable", "false");
+		first.unmount();
+
+		render(<ChatComposer {...props} />);
+		const restored = screen.getByLabelText("Message the agent");
+		expect(restored).toHaveTextContent("possibly delivered guidance");
+		expect(restored).toHaveAttribute("contenteditable", "false");
+		expect(onSteer).toHaveBeenCalledTimes(1);
+
+		await userEvent.click(screen.getByRole("button", { name: "Abandon recovery" }));
+
+		await waitFor(() => expect(restored).toHaveAttribute("contenteditable", "true"));
+		expect(restored).toHaveTextContent("possibly delivered guidance");
+		expect(onSteer).toHaveBeenCalledTimes(1);
+		expect(screen.queryByRole("button", { name: "Retry message safely" })).not.toBeInTheDocument();
+		expect(screen.getByRole("status")).toHaveTextContent("may already have been delivered");
+		const draft = readChatSessionDraft({ sessionId, incarnation });
+		expect(draft.composer.text).toBe("possibly delivered guidance");
+		expect(draft.composer.delivery).toBeUndefined();
+	});
 
 	it("reconciles a restored steer from the daemon snapshot without redispatch", async () => {
 		const sessionId = "steer-snapshot-reconciliation";

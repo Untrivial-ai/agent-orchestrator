@@ -330,6 +330,19 @@ type ConversationQueuedEditDelivery struct {
 	CreatedAt       time.Time
 }
 
+type ConversationSteerDelivery struct {
+	ConversationID   string
+	ClientMessageID  string
+	RequestJson      string
+	State            string
+	ProviderTurnID   string
+	ActivityID       string
+	RejectionKind    string
+	RejectionMessage string
+	CreatedAt        time.Time
+	SettledAt        sql.NullTime
+}
+
 type ConversationTurn struct {
 	ID                   string
 	ConversationID       string

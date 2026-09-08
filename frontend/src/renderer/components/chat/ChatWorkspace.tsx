@@ -858,7 +858,8 @@ function ChatWorkspaceContent({
 			text: string,
 			attachments?: { mimeType: string; data: string }[],
 			clientMessageId?: string,
-		) => stableSteer(text, attachments, clientMessageId),
+			recoverOnly?: boolean,
+		) => stableSteer(text, attachments, clientMessageId, recoverOnly),
 		[stableSteer],
 	);
 	const acceptedClientMessageIds = useMemo(

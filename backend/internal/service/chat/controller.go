@@ -74,6 +74,10 @@ type Store interface {
 	ReserveQueuedTurnForPromotion(ctx context.Context, conversationID, turnID string, now time.Time) (domain.QueuedTurn, error)
 	ReleaseQueuedTurnPromotion(ctx context.Context, conversationID, turnID string) error
 	CompleteQueuedTurnPromotion(ctx context.Context, conversationID, sourceTurnID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error
+	SteerDelivery(ctx context.Context, conversationID, clientMessageID string) (domain.ConversationSteerDelivery, bool, error)
+	ReserveSteerDelivery(ctx context.Context, conversationID, clientMessageID, requestJSON string, now time.Time) (domain.ConversationSteerDelivery, bool, error)
+	CompleteSteerDelivery(ctx context.Context, conversationID, clientMessageID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error
+	RejectSteerDelivery(ctx context.Context, conversationID, clientMessageID string, kind domain.ConversationSteerRejectionKind, message string, now time.Time) error
 	EditDelivery(ctx context.Context, conversationID, clientMessageID string) (domain.ConversationEditDelivery, bool, error)
 	ReserveEditDelivery(ctx context.Context, conversationID, clientMessageID, requestJSON string, now time.Time) (domain.ConversationEditDelivery, bool, error)
 	BeginEditProviderWork(ctx context.Context, conversationID, clientMessageID, generation string) error
@@ -83,8 +87,8 @@ type Store interface {
 	CancelQueuedTurns(ctx context.Context, conversationID string, cutoff, now time.Time) error
 	CancelAllQueuedTurns(ctx context.Context, conversationID string, now time.Time) error
 	CancelQueuedTurnByID(ctx context.Context, conversationID, turnID string, now time.Time) error
-	QueuedEditDelivery(ctx context.Context, conversationID, clientMessageID string) (string, bool, error)
 	QueuedTurnMessage(ctx context.Context, conversationID, turnID string) (domain.ConversationMessage, error)
+	QueuedEditDelivery(ctx context.Context, conversationID, clientMessageID string) (string, bool, error)
 	UpdateQueuedTurnMessage(ctx context.Context, conversationID, turnID, text, contentJSON string, revision int64, now time.Time, delivery domain.ConversationQueuedEditDelivery) error
 	ReorderQueuedTurns(ctx context.Context, conversationID string, turnIDs []string) error
 
