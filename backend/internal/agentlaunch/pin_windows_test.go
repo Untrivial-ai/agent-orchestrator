@@ -134,7 +134,9 @@ func containsSameExecutable(t *testing.T, output, canonical string) bool {
 		}
 		got, gotErr := os.Stat(path)
 		want, wantErr := os.Stat(canonical)
-		return gotErr == nil && wantErr == nil && os.SameFile(got, want)
+		if gotErr == nil && wantErr == nil && os.SameFile(got, want) {
+			return true
+		}
 	}
 	return false
 }
@@ -179,7 +181,7 @@ func TestCanonicalWindowsCLIIgnoresShellPATH(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"powershell", []string{"-NoProfile", "-Command", `$env:PATH = $env:FOREIGN_DIR + ';' + $env:PATH; ao -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$; & $env:AO_CLI -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$`}},
+		{"powershell", []string{"-NoProfile", "-Command", `$env:PATH = $env:FOREIGN_DIR + ';' + $env:PATH; ao '-test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$'; & $env:AO_CLI '-test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$'`}},
 		{"bash", []string{"--noprofile", "--norc", "-c", `export PATH="$(cygpath -u "$FOREIGN_DIR"):$PATH"; ao -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$; "$AO_CLI" -test.run=^TestCanonicalWindowsCLIIgnoresShellPATH$`}},
 	} {
 		t.Run(shell.name, func(t *testing.T) {
