@@ -1,3 +1,5 @@
+import { attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
+import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
 /**
  * The Chat surface for a session whose persisted mode is `chat`.
  *
@@ -32,6 +34,8 @@ import { ArrowDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
+import { activateChatDraftScope, chatDraftScopeKey, type ChatDraftScope } from "../../lib/chat-drafts";
+import { purgeFileAttachmentsForSession } from "../../hooks/useFileAttachments";
 import { sameContent, useStableList } from "../../lib/stable-list";
 import { useTabScrollEdges } from "../../hooks/useTabScrollEdges";
 import { getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
@@ -45,7 +49,7 @@ import {
 import { isLinuxPlatform, isMacPlatform } from "../../lib/platform";
 import { handleTerminalTabListKeyDown } from "../../lib/terminal-tabs";
 import { agentLabel } from "../../lib/agent-options";
-import type { ApprovalMode } from "../../types/conversation";
+import type { ConversationContentSummary, ApprovalMode } from "../../types/conversation";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import { sidebarOccupiesLayout, useUiStore } from "../../stores/ui-store";
 import type { TerminalTarget } from "../../types/terminal";
@@ -77,7 +81,7 @@ import {
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider } from "./ChatMarkdown";
 import { ChatComposer, type StoredComposerAttachment } from "./ChatComposer";
-import { stagedAttachmentParts, attachmentName, attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
+import { stagedAttachmentParts, attachmentName } from "./messageAttachments";
 import type { QueuedMessageEditOptions } from "../../types/conversation";
 import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
 import { ActivityRun } from "./ActivityRun";
@@ -101,9 +105,9 @@ import {
 	type ChatConfigOptionValue,
 	type ChatModel,
 	type ChatSkill,
-	type ConversationActivity,
+	type ChatSteerOutcome,
+		type ConversationActivity,
 	type ConversationBranchPoint,
-	type ConversationContentSummary,
 	type ConversationItem,
 	type ConversationMessage,
 	type TurnDiff,
@@ -257,6 +261,7 @@ export interface ChatWorkspaceProps {
 	onSend?: (
 		text: string,
 		attachments?: { mimeType: string; data: string }[],
+		clientMessageId?: string,
 	) => void | Promise<unknown>;
 	onDecide?: (requestId: string, decisionId: string) => void;
 	onResolveInput?: (
@@ -364,7 +369,9 @@ export interface ChatWorkspaceProps {
 	onSteer?: (
 		text: string,
 		attachments?: { mimeType: string; data: string }[],
-	) => Promise<unknown>;
+		clientMessageId?: string,
+
+	) => Promise<ChatSteerOutcome | void>;
 	sendPending?: boolean;
 	steerPending?: boolean;
 	/** Why the last steer was refused, from the daemon's typed answer. */
@@ -382,7 +389,86 @@ export interface ChatWorkspaceProps {
 	mcpReloadError?: string;
 }
 
-export function ChatWorkspace({
+type ChatWorkspaceActivation =
+	| { key: string; state: "active" }
+	| { key: string; state: "failed"; reason: "obsolete" | "storage" };
+
+/**
+ * Do not mount any renderer draft owner until the daemon incarnation has
+ * authoritatively claimed its storage scope. The activation transition itself
+ * owns cleanup of the predecessor; callbacks from that obsolete surface can
+ * then only fail closed against the successor lease.
+ */
+export function ChatWorkspace(props: ChatWorkspaceProps) {
+	const translateDraft = useChatDraftTranslation();
+	const { snapshot, session } = props;
+	const draftScope = useMemo<ChatDraftScope>(
+		() => ({
+			sessionId: snapshot.sessionId,
+			// Live surfaces carry the daemon-created session timestamp. Snapshot-only
+			// fixtures retain the legacy logical scope for deterministic previews.
+			incarnation: session?.createdAt ?? snapshot.sessionId,
+		}),
+		[session?.createdAt, snapshot.sessionId],
+	);
+	const scopeKey = chatDraftScopeKey(draftScope);
+	const [activation, setActivation] = useState<ChatWorkspaceActivation>();
+	const [activationAttempt, setActivationAttempt] = useState(0);
+
+	useLayoutEffect(() => {
+		// Snapshot-only previews have no daemon session incarnation to arbitrate.
+		// Their legacy logical scope remains isolated to fixture/demo surfaces.
+		if (!session?.createdAt) {
+			setActivation({ key: scopeKey, state: "active" });
+			return;
+		}
+		const result = activateChatDraftScope(draftScope);
+		if (!result.ok) {
+			setActivation({ key: scopeKey, state: "failed", reason: result.reason });
+			return;
+		}
+		if (result.replaced) purgeFileAttachmentsForSession(draftScope.sessionId);
+		setActivation({ key: scopeKey, state: "active" });
+	}, [activationAttempt, draftScope, scopeKey, session?.createdAt]);
+
+	if (activation?.key !== scopeKey || activation.state !== "active") {
+		const failure = activation?.key === scopeKey && activation.state === "failed"
+			? activation.reason
+			: undefined;
+		return (
+			<section
+				aria-label="Chat"
+				className="cursor-chat-surface flex h-full min-h-0 flex-col items-center justify-center px-6 [font-size:var(--chat-font-size)]"
+				data-session-mode={snapshot.mode}
+				style={{ "--chat-font-size": `${CHAT_FONT_SIZE_DEFAULT}px` } as CSSProperties}
+			>
+				{failure ? (
+					<div className="max-w-lg rounded-lg border border-border bg-card p-4">
+						<p className="text-sm text-foreground" role="alert">
+							{failure === "obsolete"
+								? "This Chat view belongs to an older session incarnation. Reopen the current session to continue."
+								: translateDraft("chat.draft.storageUnavailable")}
+						</p>
+						{failure === "storage" ? (
+							<Button
+								className="mt-3"
+								onClick={() => setActivationAttempt((attempt) => attempt + 1)}
+								type="button"
+								variant="outline"
+							>
+								Retry draft restore
+							</Button>
+						) : null}
+					</div>
+				) : null}
+			</section>
+		);
+	}
+
+	return <ChatWorkspaceContent key={scopeKey} {...props} draftScope={draftScope} />;
+}
+
+function ChatWorkspaceContent({
 	snapshot,
 	sessionTitle,
 	sessionRole = "worker",
@@ -471,7 +557,9 @@ export function ChatWorkspace({
 	onReloadMcpServers,
 	reloadingMcpServers,
 	mcpReloadError,
-}: ChatWorkspaceProps) {
+	draftScope,
+}: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
+	const draftScopeKey = chatDraftScopeKey(draftScope);
 	const turn = activeTurn(snapshot);
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
@@ -603,7 +691,7 @@ export function ChatWorkspace({
 		[stableCancelQueuedTurn],
 	);
 	const handleComposerSend = useCallback(
-		async (text: string, attachments?: Parameters<NonNullable<typeof onSend>>[1], retainedContent?: number[]) => {
+		async (text: string, attachments?: Parameters<NonNullable<typeof onSend>>[1], clientMessageId?: string, retainedContent?: number[]) => {
 			if (queueEdit) {
 				if (!onEditQueuedTurn) {
 					throw new Error("Queued message edits are unavailable right now.");
@@ -615,7 +703,7 @@ export function ChatWorkspace({
 				setQueueEdit(undefined);
 				return;
 			}
-			return onSend?.(text, attachments);
+			return onSend?.(text, attachments, clientMessageId);
 		},
 		[onEditQueuedTurn, onSend, queueEdit],
 	);
@@ -653,7 +741,8 @@ export function ChatWorkspace({
 		async (
 			text: string,
 			attachments?: { mimeType: string; data: string }[],
-		) => stableSteer(text, attachments),
+					clientMessageId?: string,
+		) => stableSteer(text, attachments, clientMessageId),
 		[stableSteer],
 	);
 	// The turn a confirmation is open for. Undo is not reversible and it changes what
@@ -1106,7 +1195,11 @@ export function ChatWorkspace({
 					className="flex min-h-0 flex-1 flex-col"
 					data-testid="chat-conversation-panel"
 					hidden={reviewerActive || shellActive}
-					inert={reviewerActive || shellActive || agentInputDisabled ? true : undefined}
+					inert={
+						reviewerActive || shellActive || agentInputDisabled || controllerTransitioning
+							? true
+							: undefined
+					}
 					role="tabpanel"
 				>
 					{/* Ordered by what blocks what. A session that needs credentials cannot make
@@ -1139,6 +1232,7 @@ export function ChatWorkspace({
 					>
 						<ChatLinkProvider onLinkOpen={onLinkOpen}>
 							<Timeline
+								key={draftScopeKey}
 								snapshot={snapshot}
 								hasOlder={hasOlder}
 								loadingOlder={loadingOlder}
@@ -1169,6 +1263,7 @@ export function ChatWorkspace({
 							>
 								{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
 								<ChatComposer
+									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.revision}` : "composer"}`}
 									queuedDock={composerQueuedDock}
 									approval={composerApproval}
 									onSend={handleComposerSend}
@@ -1179,6 +1274,7 @@ export function ChatWorkspace({
 											editQueuedTurnPendingTurnId === queueEdit.turnId,
 									)}
 									onCancelQueuedEdit={cancelQueuedEdit}
+									queuedDraftScope={queueEdit ? draftScope : undefined}
 									onInterrupt={turn && !newWorkDisabled ? stableInterrupt : undefined}
 									commandError={commandError}
 									settings={composerSettings}
@@ -1207,6 +1303,8 @@ export function ChatWorkspace({
 									compacting={compacting}
 									compactUnavailable={compactUnavailable}
 									compactBlocked={Boolean(turn)}
+									draftSessionId={queueEdit ? undefined : snapshot.sessionId}
+									draftSessionIncarnation={draftScope.incarnation}
 								/>
 							</div>
 						</div>

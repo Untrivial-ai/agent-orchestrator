@@ -66,6 +66,10 @@ export type ActivityStatus =
  */
 export type DeliveryState = "queued" | "sending" | "accepted" | "uncertain" | "failed";
 
+export type ChatSteerOutcome =
+	| { status: "accepted" }
+	| { status: "not-accepted"; reason: string };
+
 /** How far the agent has got with one step of its plan. */
 export type PlanStepStatus = "pending" | "in_progress" | "completed";
 

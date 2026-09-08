@@ -2023,7 +2023,7 @@ describe("ChatWorkspace reviewer tabs", () => {
 			onOpenReviewerTerminal: vi.fn(),
 			onSelectChat: vi.fn(),
 			onEditMessage: vi.fn(async () => undefined),
-			onStageAttachments: vi.fn(async () => []),
+			onStageAttachments: vi.fn(async () => [".ao/attachments/review.png"]),
 		};
 		const view = render(<ChatWorkspace {...common} />);
 		const composer = screen.getByRole("combobox", {

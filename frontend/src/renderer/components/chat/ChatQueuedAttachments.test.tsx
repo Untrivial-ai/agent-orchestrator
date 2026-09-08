@@ -1,11 +1,14 @@
+import { purgeFileAttachmentsForSession } from "../../hooks/useFileAttachments";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { chatFixture } from "../../lib/chat-fixture";
 import { typeInLexicalEditor } from "../../test/lexical";
 import { TooltipProvider } from "../ui/tooltip";
 import type { ConversationContentSummary, ConversationSnapshot } from "../../types/conversation";
+
+beforeEach(() => { window.localStorage.clear(); purgeFileAttachmentsForSession(chatFixture.sessionId); });
 
 const path = ".ao/attachments/attachment-shot.png";
 const suffix = `Attached files (read these files in the workspace):\n- ${path}`;
@@ -49,7 +52,6 @@ function setup(text = "inspect this", content: ConversationContentSummary[] = []
 		send,
 		stage,
 		snapshot,
-		field: screen.getByRole("combobox"),
 		rerenderSnapshot: (next: ConversationSnapshot) =>
 			view.rerender(
 				<TooltipProvider>
@@ -71,8 +73,8 @@ async function beginEdit() {
 	);
 }
 
-async function pasteImage(field: HTMLElement, name = "shot.png") {
-	fireEvent.paste(field, {
+async function pasteImage(name = "shot.png") {
+	fireEvent.paste(screen.getByRole("combobox"), {
 		clipboardData: {
 			files: [new File([new Uint8Array([137, 80, 78, 71])], name, { type: "image/png" })],
 			items: [],
@@ -83,9 +85,9 @@ async function pasteImage(field: HTMLElement, name = "shot.png") {
 
 describe("queued message attachments", () => {
 	it("saves newly attached image bytes and their staged reference to the queued turn", async () => {
-		const { edit, send, stage, field } = setup();
+		const { edit, send, stage } = setup();
 		await beginEdit();
-		await pasteImage(field);
+		await pasteImage();
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		await waitFor(() =>
 			expect(edit).toHaveBeenCalledWith("q1", `inspect this\n\n${suffix}`, {
@@ -100,11 +102,11 @@ describe("queued message attachments", () => {
 	});
 
 	it("opens existing images as chips and retains their server-owned bytes when text changes", async () => {
-		const { edit, field } = setup(`inspect this\n\n${suffix}`, [{ type: "image", mimeType: "image/png" }]);
+		const { edit } = setup(`inspect this\n\n${suffix}`, [{ type: "image", mimeType: "image/png" }]);
 		await beginEdit();
 		expect(screen.getByLabelText("Remove attachment-shot.png")).toBeInTheDocument();
-		expect(field).not.toHaveTextContent(".ao/attachments");
-		await typeInLexicalEditor(field, " carefully");
+		expect(screen.getByRole("combobox")).not.toHaveTextContent(".ao/attachments");
+		await typeInLexicalEditor(screen.getByRole("combobox"), " carefully");
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		await waitFor(() =>
 			expect(edit).toHaveBeenCalledWith("q1", `inspect this carefully\n\n${suffix}`, {
@@ -131,10 +133,10 @@ describe("queued message attachments", () => {
 		const resources = Array.from({ length: count }, (_, index) => ({
 			type: "resource_link", uri: `file:///context-${index}.txt`, name: `Context ${index}`,
 		}));
-		const { edit, field } = setup("inspect this", resources);
+		const { edit } = setup("inspect this", resources);
 		await beginEdit();
-		await typeInLexicalEditor(field, " carefully");
-		if (count === 8) await pasteImage(field);
+		await typeInLexicalEditor(screen.getByRole("combobox"), " carefully");
+		if (count === 8) await pasteImage();
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		await waitFor(() => expect(edit).toHaveBeenCalledWith(
 			"q1", count === 8 ? `inspect this carefully\n\n${suffix}` : "inspect this carefully",
@@ -146,10 +148,10 @@ describe("queued message attachments", () => {
 	});
 
 	it.each(["image/png", "text/plain"])("counts only native images when adding %s to eight retained images", async (mimeType) => {
-		const { edit, field, stage } = setup("inspect this", Array.from({ length: 8 }, () => ({ type: "image", mimeType: "image/png" })));
+		const { edit, stage } = setup("inspect this", Array.from({ length: 8 }, () => ({ type: "image", mimeType: "image/png" })));
 		stage.mockResolvedValue([".ao/attachments/attachment-context.txt"]);
 		await beginEdit();
-		fireEvent.paste(field, { clipboardData: { files: [new File(["context"], "new-file", { type: mimeType })], items: [] } });
+		fireEvent.paste(screen.getByRole("combobox"), { clipboardData: { files: [new File(["context"], "new-file", { type: mimeType })], items: [] } });
 		await screen.findByLabelText("Remove new-file");
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		if (mimeType === "image/png") {
@@ -163,31 +165,31 @@ describe("queued message attachments", () => {
 	});
 
 	it.each(["cancel", "save"])("isolates the ordinary draft and restores it after %s", async (action) => {
-		const { field, edit } = setup();
-		await typeInLexicalEditor(field, "unrelated draft");
-		await pasteImage(field, "unrelated.png");
+		const { edit } = setup();
+		await typeInLexicalEditor(screen.getByRole("combobox"), "unrelated draft");
+		await pasteImage("unrelated.png");
 		await beginEdit();
-		expect(field).toHaveTextContent("inspect this");
+		expect(screen.getByRole("combobox")).toHaveTextContent("inspect this");
 		expect(screen.queryByLabelText("Remove unrelated.png")).not.toBeInTheDocument();
 		if (action === "save") {
 			await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 			await waitFor(() => expect(edit).toHaveBeenCalledOnce());
 		} else {
-			await userEvent.click(field);
+			await userEvent.click(screen.getByRole("combobox"));
 			await userEvent.keyboard("{Escape}");
 		}
-		await waitFor(() => expect(field).toHaveTextContent("unrelated draft"));
+		await waitFor(() => expect(screen.getByRole("combobox")).toHaveTextContent("unrelated draft"));
 		expect(screen.getByLabelText("Remove unrelated.png")).toBeInTheDocument();
 	});
 
 	it("keeps a failed edit for retry without staging the same image twice", async () => {
-		const { edit, send, stage, field } = setup();
+		const { edit, send, stage } = setup();
 		edit.mockRejectedValueOnce(new Error("Could not save queued message edit"));
 		await beginEdit();
-		await pasteImage(field);
+		await pasteImage();
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		await screen.findByText("Could not save queued message edit");
-		expect(field).toHaveTextContent("inspect this");
+		expect(screen.getByRole("combobox")).toHaveTextContent("inspect this");
 		expect(screen.getByLabelText("Remove shot.png")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		await waitFor(() => expect(edit).toHaveBeenCalledTimes(2));
@@ -198,10 +200,10 @@ describe("queued message attachments", () => {
 	});
 
 	it("keeps the edit target and draft when the turn dispatches before saving", async () => {
-		const { edit, send, snapshot, rerenderSnapshot, field } = setup();
+		const { edit, send, snapshot, rerenderSnapshot } = setup();
 		edit.mockRejectedValueOnce(new Error("that message is no longer queued"));
 		await beginEdit();
-		await pasteImage(field);
+		await pasteImage();
 		rerenderSnapshot({ ...snapshot, turns: snapshot.turns.map((turn) => ({ ...turn, state: "running" })) });
 		await waitFor(() => expect(screen.queryByTestId("queued-message-q1")).not.toBeInTheDocument());
 		expect(screen.getByText("Editing queued message")).toBeInTheDocument();
@@ -213,12 +215,12 @@ describe("queued message attachments", () => {
 			expect.objectContaining({ expectedRevision: 0 }),
 		);
 		expect(send).not.toHaveBeenCalled();
-		expect(field).toHaveTextContent("inspect this");
+		expect(screen.getByRole("combobox")).toHaveTextContent("inspect this");
 		expect(screen.getByLabelText("Remove shot.png")).toBeInTheDocument();
 	});
 
 	it("reloads retained attachments when reopening a newer revision of the same queued turn", async () => {
-		const { edit, snapshot, rerenderSnapshot, field } = setup(`inspect this\n\n${suffix}`, [
+		const { edit, snapshot, rerenderSnapshot } = setup(`inspect this\n\n${suffix}`, [
 			{ type: "image", mimeType: "image/png" },
 		]);
 		await beginEdit();
@@ -230,7 +232,7 @@ describe("queued message attachments", () => {
 			),
 		});
 		await beginEdit();
-		await waitFor(() => expect(field).toHaveTextContent("newer edit"));
+		await waitFor(() => expect(screen.getByRole("combobox")).toHaveTextContent("newer edit"));
 		expect(screen.queryByLabelText("Remove attachment-shot.png")).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 		await waitFor(() =>

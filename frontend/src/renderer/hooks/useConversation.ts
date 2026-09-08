@@ -1,3 +1,4 @@
+import type { ChatSteerOutcome } from "../types/conversation";
 /**
  * Live conversation data for a Chat session.
  *
@@ -55,6 +56,7 @@ type WireImageContent = components["schemas"]["ConversationImageContentRequest"]
 type WireResourceContent = components["schemas"]["ConversationResourceContentRequest"];
 
 export interface ConversationSendInput {
+	clientMessageId?: string;
 	text: string;
 	attachments?: WireImageContent[];
 	resources?: WireResourceContent[];
@@ -531,12 +533,12 @@ export function useConversationCommands(sessionId: string | undefined) {
 	 * means "wait and try again", and one means this harness cannot do it at all.
 	 */
 	const steer = useMutation({
-		mutationFn: async (input: { text: string; attachments?: WireImageContent[] }) => {
+		mutationFn: async (input: { text: string; attachments?: WireImageContent[]; clientMessageId?: string }) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/steer",
 				{
 					params: { path: { sessionId: sessionId as string } },
-					body: { ...input, clientMessageId: crypto.randomUUID() },
+					body: { ...input, clientMessageId: input.clientMessageId ?? crypto.randomUUID() },
 				},
 			);
 			if (error) throw error;
@@ -772,7 +774,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 	return {
 		send: (input: string | ConversationSendInput) => {
 			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
-			const clientMessageId = crypto.randomUUID();
+			const clientMessageId = (typeof input === "string" ? undefined : input.clientMessageId) ?? crypto.randomUUID();
 			// React cannot disable the composer until its next render. Claim the
 			// session in the shared registry synchronously so two Enter events in the
 			// same tick cannot both cross the transport boundary.
@@ -869,11 +871,16 @@ export function useConversationCommands(sessionId: string | undefined) {
 		activateBranch: (branchId: string) => activateBranch.mutateAsync(branchId),
 		activateBranchPending: activateBranch.isPending,
 		activateBranchError: activateBranch.error ? apiErrorMessage(activateBranch.error) : undefined,
-		steer: (text: string, attachments?: WireImageContent[]) =>
-			steer.mutateAsync({
-				text,
-				...(attachments?.length ? { attachments } : {}),
-			}),
+		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string): Promise<ChatSteerOutcome> => {
+			try {
+				await steer.mutateAsync({ text, attachments, clientMessageId });
+				return { status: "accepted" };
+			} catch (error) {
+				const outcome = steerNonAcceptance(error);
+				if (outcome) return outcome;
+				throw error;
+			}
+		},
 		promoteQueuedTurn: (turnId: string) => promoteQueuedTurn.mutateAsync(turnId),
 		cancelQueuedTurn: (turnId: string) => cancelQueuedTurn.mutateAsync(turnId),
 		editQueuedTurn: (turnId: string, text: string, options?: QueuedMessageEditOptions) => {
@@ -1439,4 +1446,27 @@ function isDecisionKind(value: unknown): value is NonNullable<DecisionOption["ki
 		value === "reject_once" ||
 		value === "reject_always"
 	);
+}
+
+const DEFINITIVE_STEER_NON_ACCEPTANCE_CODES = new Set([
+	"CHAT_NO_ACTIVE_TURN",
+	"CHAT_INTERFACE_TRANSITION",
+	"CHAT_TURN_NOT_STEERABLE",
+	"CHAT_STEER_UNSUPPORTED",
+	"CHAT_STEER_TEXT_REQUIRED",
+	"CHAT_UNSUPPORTED_STEER_CONTENT",
+	"CHAT_PROVIDER_REFUSED",
+	"SESSION_MODE_MISMATCH",
+	"SESSION_NOT_FOUND",
+	"CHAT_CONTROLLER_NOT_READY",
+	"CHAT_AUTH_REQUIRED",
+]);
+
+function steerNonAcceptance(error: unknown): ChatSteerOutcome | undefined {
+	const code = apiErrorCode(error);
+	if (!code || !DEFINITIVE_STEER_NON_ACCEPTANCE_CODES.has(code)) return undefined;
+	return {
+		status: "not-accepted",
+		reason: steerRefusal(error) ?? apiErrorMessage(error),
+	};
 }

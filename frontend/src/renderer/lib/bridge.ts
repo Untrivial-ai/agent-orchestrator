@@ -27,6 +27,7 @@ export const aoBridge: AoBridge =
 			onNewShellTerminalShortcut: () => () => undefined,
 			onCloseShellTerminalShortcut: () => () => undefined,
 			setCloseShellTerminalShortcutEnabled: () => undefined,
+			setChatDraftRisk: () => undefined,
 			onOpenSettingsShortcut: () => () => undefined,
 			onPreviousSessionShortcut: () => () => undefined,
 			onNextSessionShortcut: () => () => undefined,
