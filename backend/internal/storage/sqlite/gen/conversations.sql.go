@@ -2152,8 +2152,6 @@ type SelectConversationEditDeliveryParams struct {
 	ClientMessageID string
 }
 
-// Inline edit delivery uses the same fail-closed reservation model as steer,
-// but its accepted result also names the branch and durable replacement turn.
 func (q *Queries) SelectConversationEditDelivery(ctx context.Context, arg SelectConversationEditDeliveryParams) (ConversationEditDelivery, error) {
 	row := q.db.QueryRowContext(ctx, selectConversationEditDelivery, arg.ConversationID, arg.ClientMessageID)
 	var i ConversationEditDelivery
