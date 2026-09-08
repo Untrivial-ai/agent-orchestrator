@@ -278,12 +278,15 @@ export function useSessionInterfaceTransition(
 	const cancel = useMutation({
 		mutationKey: cancelInterfaceTransitionMutationKey,
 		mutationFn: async ({ targetSessionId }: InterfaceTransitionMutationTarget) => {
-			if (isCloud) return;
+			if (isCloud && cloud) {
+				return cloudCp.client.cancelInterfaceTransition(cloud.orgId, targetSessionId);
+			}
 			const { error } = await apiClient.DELETE(
 				"/api/v1/sessions/{sessionId}/interface-transition",
 				{ params: { path: { sessionId: targetSessionId } } },
 			);
 			if (error) throw error;
+			return undefined;
 		},
 		onSuccess: (_data, variables) => {
 			void queryClient.invalidateQueries({

@@ -84,6 +84,75 @@ describe("session-scoped interface transition mutations", () => {
 		expect(getMock).not.toHaveBeenCalled();
 	});
 
+	it("cancels a Cloud handoff through the control-plane client", async () => {
+		const cancelInterfaceTransition = vi.fn().mockResolvedValue({ ok: true });
+		cloudCpMock.client = {
+			getSession: vi.fn().mockResolvedValue({ session: { interfaceMode: "tui" } }),
+			getInterfaceTransition: vi.fn().mockResolvedValue({
+				supported: true,
+				targetMode: "chat",
+				transition: {
+					id: "transition-1",
+					sessionId: "session-a",
+					sourceMode: "tui",
+					targetMode: "chat",
+					policy: "drain",
+					phase: "draining",
+					createdAt: "2026-09-01T00:00:00Z",
+					updatedAt: "2026-09-01T00:00:01Z",
+				},
+			}),
+			cancelInterfaceTransition,
+		};
+		cloudCpMock.ready = true;
+
+		const { result } = renderHook(
+			() => useSessionInterfaceTransition("session-a", { orgId: "org-a" }),
+			{ wrapper },
+		);
+		await waitFor(() => expect(result.current.transition?.id).toBe("transition-1"));
+
+		await act(async () => {
+			await result.current.cancel();
+		});
+		expect(cancelInterfaceTransition).toHaveBeenCalledWith("org-a", "session-a");
+		expect(result.current.cancelError).toBeUndefined();
+	});
+
+	it("surfaces a Cloud cancellation failure instead of silently succeeding", async () => {
+		const cancelInterfaceTransition = vi.fn().mockRejectedValue(new Error("cancellation denied"));
+		cloudCpMock.client = {
+			getSession: vi.fn().mockResolvedValue({ session: { interfaceMode: "tui" } }),
+			getInterfaceTransition: vi.fn().mockResolvedValue({
+				supported: true,
+				targetMode: "chat",
+				transition: {
+					id: "transition-1",
+					sessionId: "session-a",
+					sourceMode: "tui",
+					targetMode: "chat",
+					policy: "drain",
+					phase: "draining",
+					createdAt: "2026-09-01T00:00:00Z",
+					updatedAt: "2026-09-01T00:00:01Z",
+				},
+			}),
+			cancelInterfaceTransition,
+		};
+		cloudCpMock.ready = true;
+
+		const { result } = renderHook(
+			() => useSessionInterfaceTransition("session-a", { orgId: "org-a" }),
+			{ wrapper },
+		);
+		await waitFor(() => expect(result.current.transition?.id).toBe("transition-1"));
+		await act(async () => {
+			await expect(result.current.cancel()).rejects.toThrow("cancellation denied");
+		});
+		await waitFor(() => expect(result.current.cancelError).toBe("request failed"));
+		expect(cancelInterfaceTransition).toHaveBeenCalledWith("org-a", "session-a");
+	});
+
 	it("keeps a deferred start attached to its initiating session after navigation", async () => {
 		const response = deferred<{
 			data: { ok: boolean };

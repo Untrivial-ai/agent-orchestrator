@@ -232,6 +232,11 @@ export interface CloudCpStartInterfaceTransitionResponse {
 	transition: CloudCpInterfaceTransition;
 }
 
+/** DELETE /orgs/{orgId}/sessions/{sessionId}/interface-transition */
+export interface CloudCpCancelInterfaceTransitionResponse {
+	ok: boolean;
+}
+
 export interface CloudCpSessionResponse {
 	session: CloudCpSession;
 }

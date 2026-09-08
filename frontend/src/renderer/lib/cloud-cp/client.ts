@@ -35,6 +35,7 @@ import type {
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
 	CloudCpSessionResponse,
+	CloudCpCancelInterfaceTransitionResponse,
 	CloudCpInterfaceTransitionStatusResponse,
 	CloudCpStartInterfaceTransitionRequest,
 	CloudCpStartInterfaceTransitionResponse,
@@ -127,6 +128,11 @@ export interface CloudCpClient {
 		body: CloudCpStartInterfaceTransitionRequest,
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpStartInterfaceTransitionResponse>;
+	cancelInterfaceTransition(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpCancelInterfaceTransitionResponse>;
 	deleteSession(
 		orgId: string,
 		sessionId: string,
@@ -378,6 +384,10 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				body,
 				signal: o?.signal,
 				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
+			}),
+		cancelInterfaceTransition: (orgId, sessionId, o) =>
+			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition`, {
+				signal: o?.signal,
 			}),
 		deleteSession: (orgId, sessionId, o) =>
 			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
