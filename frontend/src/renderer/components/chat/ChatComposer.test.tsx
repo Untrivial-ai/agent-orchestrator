@@ -6,6 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { Activity, Profiler } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "./ChatComposer";
+import { attachmentURL } from "./messageAttachments";
+import { getApiBaseUrl } from "../../lib/api-client";
 import { TooltipProvider } from "../ui/tooltip";
 import type { ChatSkill } from "../../types/conversation";
 import {
@@ -1931,4 +1933,24 @@ it("does not dispatch a restored image after its session incarnation was replace
 		fetch.mockRestore();
 		reader.mockRestore();
 	}
+});
+
+
+it("restores an image thumbnail from its durable path after the composer remounts", async () => {
+	const sessionId = "composer-restored-thumbnail";
+	const path = ".ao/attachments/restored-thumbnail.png";
+	const props = { onSend: vi.fn(), draftSessionId: sessionId,
+		onStageAttachments: vi.fn().mockResolvedValue([path]) };
+	const view = render(<ChatComposer {...props} />);
+	fireEvent.paste(screen.getByLabelText("Message the agent"), { clipboardData: clipboardData([png()]) });
+	await screen.findByLabelText("Remove shot.png");
+	expect(screen.getByRole("list", { name: "Attached files" }).querySelector("img"))
+		.toHaveAttribute("src", expect.stringContaining("data:image/png;base64,"));
+	view.unmount();
+	// A new renderer only has persisted descriptors, never cached image bytes.
+	purgeFileAttachmentsForSession(sessionId);
+	render(<ChatComposer {...props} />);
+	expect(screen.getByRole("list", { name: "Attached files" }).querySelector("img"))
+		.toHaveAttribute("src", attachmentURL(getApiBaseUrl(), sessionId, path));
+	expect(props.onStageAttachments).toHaveBeenCalledOnce();
 });

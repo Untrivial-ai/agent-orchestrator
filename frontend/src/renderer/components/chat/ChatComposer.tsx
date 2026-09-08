@@ -1417,13 +1417,17 @@ export const ChatComposer = memo(function ChatComposer({
 				) : null}
 				{staged ? (
 					<ul className="flex flex-wrap gap-1.5" aria-label="Attached files">
-						{[...visibleRetainedAttachments, ...fileAttachments.attachments].map((file) => (
+						{[...visibleRetainedAttachments, ...fileAttachments.attachments].map((file) => {
+							const path = "stagedPath" in file ? file.stagedPath : "path" in file ? file.path : undefined;
+							const preview = file.dataUrl ?? (path && IMAGE_ATTACHMENT_PATH.test(path)
+								? attachmentURL(getApiBaseUrl(), boundarySessionId ?? "", path) : undefined);
+							return (
 							<li
 								key={file.id}
 								className="flex items-center gap-1.5 rounded border border-border bg-background py-0.5 pl-0.5 pr-1"
 							>
-								{file.dataUrl || ("path" in file && file.path && IMAGE_ATTACHMENT_PATH.test(file.path)) ? (
-									<img src={file.dataUrl ?? ("path" in file && file.path ? attachmentURL(getApiBaseUrl(), boundarySessionId ?? "", file.path) : undefined)} alt="" className="size-6 rounded-sm object-cover" />
+								{preview ? (
+									<img src={preview} alt="" className="size-6 rounded-sm object-cover" />
 								) : (
 									<div className="flex size-6 items-center justify-center rounded-sm bg-surface">
 										<File aria-hidden="true" className="size-3.5 text-muted-foreground" />
@@ -1451,7 +1455,8 @@ export const ChatComposer = memo(function ChatComposer({
 									<X aria-hidden="true" className="size-3" />
 								</button>
 							</li>
-						))}
+							);
+						})}
 					</ul>
 				) : null}
 
