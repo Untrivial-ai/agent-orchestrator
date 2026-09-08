@@ -237,6 +237,11 @@ export interface CloudCpCancelInterfaceTransitionResponse {
 	ok: boolean;
 }
 
+/** PUT /orgs/{orgId}/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement */
+export interface CloudCpAcknowledgeInterfaceTransitionNoticeResponse {
+	ok: boolean;
+}
+
 export interface CloudCpSessionResponse {
 	session: CloudCpSession;
 }

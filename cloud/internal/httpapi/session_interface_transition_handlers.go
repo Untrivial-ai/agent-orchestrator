@@ -74,7 +74,7 @@ func (s *Server) getSessionInterfaceTransition(w http.ResponseWriter, r *http.Re
 		status.ReasonCode = "INTERFACE_HANDOFF_UNSUPPORTED"
 		status.Reason = session.Harness + " does not support interface handoff."
 	}
-	if transition, found, err := s.store.GetActiveSessionInterfaceTransition(
+	if transition, found, err := s.store.GetLatestRelevantSessionInterfaceTransition(
 		r.Context(), principalFrom(r), orgID, sessionID,
 	); err != nil {
 		s.writeStoreError(w, r, err)

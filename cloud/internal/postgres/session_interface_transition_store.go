@@ -96,9 +96,34 @@ func (s *Store) GetActiveSessionInterfaceTransition(
 	principal domain.Principal,
 	orgID, sessionID string,
 ) (domain.SessionInterfaceTransition, bool, error) {
+	return s.getLatestSessionInterfaceTransition(ctx, principal, orgID, sessionID, false)
+}
+
+// GetLatestRelevantSessionInterfaceTransition returns the active transition or
+// the latest failed/recovery-required transition for a session. Completed and
+// cancelled attempts are intentionally excluded: they are audit history, not
+// actionable status for a client.
+func (s *Store) GetLatestRelevantSessionInterfaceTransition(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID string,
+) (domain.SessionInterfaceTransition, bool, error) {
+	return s.getLatestSessionInterfaceTransition(ctx, principal, orgID, sessionID, true)
+}
+
+func (s *Store) getLatestSessionInterfaceTransition(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID string,
+	includeTerminal bool,
+) (domain.SessionInterfaceTransition, bool, error) {
 	var transition domain.SessionInterfaceTransition
 	var found bool
 	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+		phaseFilter := `t.phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')`
+		if includeTerminal {
+			phaseFilter = `t.phase IN ('requested', 'preflighting', 'draining', 'source_stopping', 'source_stopped', 'target_starting', 'activating', 'failed', 'recovery_required')`
+		}
 		var sourceInterface string
 		err := tx.QueryRow(
 			ctx,
@@ -108,9 +133,7 @@ func (s *Store) GetActiveSessionInterfaceTransition(
 				t.created_at, t.updated_at, t.completed_at
 			FROM ao_interface_transitions t
 			WHERE t.session_id = $1 AND t.org_id = $2
-				AND t.phase NOT IN (
-					'completed', 'failed', 'cancelled', 'recovery_required'
-				)
+				AND `+phaseFilter+`
 			ORDER BY t.created_at DESC, t.id DESC
 			LIMIT 1`,
 			sessionID,

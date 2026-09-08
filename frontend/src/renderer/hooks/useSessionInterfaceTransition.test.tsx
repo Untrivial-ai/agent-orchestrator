@@ -153,6 +153,45 @@ describe("session-scoped interface transition mutations", () => {
 		expect(cancelInterfaceTransition).toHaveBeenCalledWith("org-a", "session-a");
 	});
 
+	it("acknowledges a Cloud failure notice through the control-plane client", async () => {
+		const acknowledgeInterfaceTransitionNotice = vi.fn().mockResolvedValue({ ok: true });
+		cloudCpMock.client = {
+			getSession: vi.fn().mockResolvedValue({ session: { interfaceMode: "chat" } }),
+			getInterfaceTransition: vi.fn().mockResolvedValue({
+				supported: true,
+				targetMode: "tui",
+				transition: {
+					id: "transition-1",
+					sessionId: "session-a",
+					sourceMode: "tui",
+					targetMode: "chat",
+					policy: "drain",
+					phase: "failed",
+					createdAt: "2026-09-01T00:00:00Z",
+					updatedAt: "2026-09-01T00:00:01Z",
+				},
+			}),
+			acknowledgeInterfaceTransitionNotice,
+		};
+		cloudCpMock.ready = true;
+
+		const { result } = renderHook(
+			() => useSessionInterfaceTransition("session-a", { orgId: "org-a" }),
+			{ wrapper },
+		);
+		await waitFor(() => expect(result.current.transition?.id).toBe("transition-1"));
+
+		await act(async () => {
+			await result.current.acknowledgeNotice("transition-1");
+		});
+		expect(acknowledgeInterfaceTransitionNotice).toHaveBeenCalledWith(
+			"org-a",
+			"session-a",
+			"transition-1",
+		);
+		expect(result.current.acknowledgeNoticeError).toBeUndefined();
+	});
+
 	it("keeps a deferred start attached to its initiating session after navigation", async () => {
 		const response = deferred<{
 			data: { ok: boolean };
