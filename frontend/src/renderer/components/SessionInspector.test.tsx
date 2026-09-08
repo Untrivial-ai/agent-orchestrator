@@ -233,8 +233,9 @@ function mockCommonGets(
   _unusedRuns: unknown[] = [],
   reviewerHandleId = "",
   reviews: unknown[] = [],
+  reviewerActivityState?: string,
 ) {
-  getMock.mockImplementation(commonGetsResponder(_unusedRuns, reviewerHandleId, reviews));
+  getMock.mockImplementation(commonGetsResponder(_unusedRuns, reviewerHandleId, reviews, reviewerActivityState));
 }
 
 const approvedReview = {
