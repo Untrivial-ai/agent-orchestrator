@@ -526,6 +526,23 @@ describe("Sidebar", () => {
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
+	it("does not spawn from the sidebar while the orchestrator is provisioning", async () => {
+		const user = userEvent.setup();
+		useUiStore.getState().setProjectProvisioning("proj-1", true);
+		try {
+			renderSidebar();
+
+			const spawnButton = screen.getByRole("button", { name: "Spawn Project One orchestrator" });
+			expect(spawnButton).toBeDisabled();
+			await user.click(spawnButton);
+
+			expect(spawnMock).not.toHaveBeenCalled();
+			expect(navigateMock).not.toHaveBeenCalled();
+		} finally {
+			useUiStore.getState().setProjectProvisioning("proj-1", false);
+		}
+	});
+
 	it("shows a ConfirmDialog and calls onRemoveProject when confirmed", async () => {
 		const user = userEvent.setup();
 		const onRemoveProject = renderSidebar();
@@ -945,8 +962,8 @@ describe("Sidebar", () => {
 			await screen.findByRole("textbox", { name: "Repository URL" }),
 			"git@github.com:acme/web-app.git",
 		);
-		await user.click(screen.getByRole("button", { name: "Choose" }));
-		expect(window.ao!.app.chooseDirectory).toHaveBeenCalledWith("Choose where to clone the repository");
+		await user.click(screen.getByRole("button", { name: "Choose where to clone the repository" }));
+		expect(window.ao!.app.chooseDirectory).toHaveBeenCalledWith({ title: "Choose where to clone the repository", defaultPath: "~/ao/projects" });
 		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
 		await user.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -991,7 +1008,7 @@ describe("Sidebar", () => {
 			await screen.findByRole("textbox", { name: "Repository URL" }),
 			"git@github.com:acme/web-app.git",
 		);
-		await user.click(screen.getByRole("button", { name: "Choose" }));
+		await user.click(screen.getByRole("button", { name: "Choose where to clone the repository" }));
 		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
 		await user.click(await screen.findByRole("button", { name: "Continue" }));
 
@@ -2220,6 +2237,26 @@ describe("Sidebar", () => {
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
 		expect(within(readyRow).getByText("Nightly 0.12.11 · Sep 2")).toBeVisible();
+	});
+
+	it("shows the device-local calendar day for a UTC-day-boundary nightly", async () => {
+		// 03:00 UTC on Sep 7 is already Sep 7 in Kolkata but still Sep 6 in Los
+		// Angeles. The date-only label must follow the device-local calendar day
+		// of the correct instant, not the stamp digits re-read as local wall
+		// time (issue #5059). The expected label is derived from the absolute
+		// instant, so this holds in every timezone.
+		updateStatusMock.mockResolvedValue({
+			state: "downloaded",
+			version: "0.12.11-nightly.202609070300",
+			stagedAt: Date.now(),
+		});
+		renderSidebar();
+
+		const readyRow = await screen.findByTestId("sidebar-update-ready");
+		const expected = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(
+			new Date(Date.UTC(2026, 8, 7, 3, 0)),
+		);
+		expect(within(readyRow).getByText(`Nightly 0.12.11 · ${expected}`)).toBeVisible();
 	});
 
 	it("stays quiet for a one-off update failure that has not become a streak", async () => {

@@ -196,6 +196,7 @@ beforeEach(() => {
 	useUiStore.setState({
 		orchestratorReplacementErrors: {},
 		orchestratorStartupErrors: {},
+		provisioningProjectIds: new Set(),
 		restartingProjectIds: new Set(),
 		settingsModal: null,
 	});
@@ -506,6 +507,19 @@ describe("project board with no sessions", () => {
 
 		expect(await screen.findByText(/Project added, but orchestrator did not start/)).toBeInTheDocument();
 		expect(screen.getByText(/branch is already checked out/)).toBeInTheDocument();
+	});
+
+	it("shows a provisioning banner and gates actions while the orchestrator starts in the background", async () => {
+		respondWith([project], []);
+		useUiStore.getState().setProjectProvisioning("proj-1", true);
+		renderBoard(<SessionsBoard projectId="proj-1" />);
+
+		expect(await screen.findByRole("status")).toHaveTextContent(/Setting up the project/);
+		for (const button of screen.getAllByRole("button", { name: "Spawn Orchestrator" })) {
+			expect(button).toBeDisabled();
+		}
+		useUiStore.getState().setProjectProvisioning("proj-1", false);
+		await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
 	});
 
 	it("clears the project creation startup error when retrying orchestrator spawn", async () => {

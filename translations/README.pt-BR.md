@@ -17,7 +17,7 @@ Dê a cada tarefa de programação seu próprio agente, workspace e ciclo de fee
 Planeje e delegue objetivos maiores com um orquestrador que conhece o projeto.<br />
 Acompanhe cada worker, pull request, execução de CI e revisão em um Kanban ao vivo.
 
-[**Baixar o AO**](#instalação) &nbsp;&bull;&nbsp; [Documentação](https://aoagents.dev/docs) &nbsp;&bull;&nbsp; [Versões](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Como contribuir](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
+[**Baixar o AO**](#instalação) &nbsp;&bull;&nbsp; [Documentação](https://useao.dev/docs) &nbsp;&bull;&nbsp; [Versões](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Como contribuir](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · **Português (Brasil)**
 
@@ -161,7 +161,7 @@ O AO funciona com os agentes de programação e o fluxo de controle de versão q
   </tr>
 </table>
 
-[Consulte os guias de configuração dos agentes →](https://aoagents.dev/docs/plugins/agents)
+[Consulte os guias de configuração dos agentes →](https://useao.dev/docs/plugins/agents)
 
 **Use a interface adequada para cada momento: o Chat estruturado ou a interface nativa de terminal do agente.**
 
@@ -178,7 +178,7 @@ Baixe a versão mais recente do aplicativo desktop do AO para sua plataforma. O 
 | Linux (Debian/Ubuntu) | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
 | Linux (Fedora/RHEL)   | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
-Abra o Agent Orchestrator e indique o repositório que você deseja que o AO gerencie. O aplicativo desktop executa o daemon para você, portanto não é necessário usar a CLI. Consulte o [guia de instalação](https://aoagents.dev/docs/installation) para configurar as CLIs dos agentes e resolver problemas.
+Abra o Agent Orchestrator e indique o repositório que você deseja que o AO gerencie. O aplicativo desktop executa o daemon para você, portanto não é necessário usar a CLI. Consulte o [guia de instalação](https://useao.dev/docs/installation) para configurar as CLIs dos agentes e resolver problemas.
 
 ## Relatar um bug
 
@@ -213,7 +213,7 @@ Comece pelo [guia de desenvolvimento](../docs/development.md) para ver pré-requ
 
 | Documento                                                           | Comece aqui quando precisar de                                                                       |
 | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [Documentação do produto](https://aoagents.dev/docs)                | Instalação, configuração de agentes e uso cotidiano do produto.                                      |
+| [Documentação do produto](https://useao.dev/docs)                   | Instalação, configuração de agentes e uso cotidiano do produto.                                      |
 | [docs/architecture.md](../docs/architecture.md)                     | Modelo mental do backend, ciclo de vida, persistência, CDC, derivação de status e limites do daemon. |
 | [docs/backend-code-structure.md](../docs/backend-code-structure.md) | Responsabilidade dos pacotes e onde cada aspecto do backend deve ficar.                              |
 | [docs/cli/README.md](../docs/cli/README.md)                         | Comportamento da CLI e mapeamento das rotas do daemon.                                               |

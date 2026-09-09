@@ -20,10 +20,10 @@ describe("applyMarketingConsent", () => {
 	// or those first events leak untagged into the shared desktop project.
 	it("registers the marketing tag before opting a returning consented visitor in", () => {
 		const client = recordingClient();
-		applyMarketingConsent(client, "accepted", "aoagents.dev");
+		applyMarketingConsent(client, "accepted", "useao.dev");
 
 		expect(client.calls).toEqual([
-			'register:{"app_name":"marketing","domain":"aoagents.dev"}',
+			'register:{"app_name":"marketing","domain":"useao.dev"}',
 			"opt_in",
 		]);
 		// Order, not just presence: register must come first.
@@ -34,9 +34,9 @@ describe("applyMarketingConsent", () => {
 
 	it("still tags the client when the visitor has not consented, then opts out", () => {
 		const client = recordingClient();
-		applyMarketingConsent(client, null, "aoagents.dev");
+		applyMarketingConsent(client, null, "useao.dev");
 		expect(client.calls).toEqual([
-			'register:{"app_name":"marketing","domain":"aoagents.dev"}',
+			'register:{"app_name":"marketing","domain":"useao.dev"}',
 			"opt_out",
 		]);
 		expect(client.opt_in_capturing).not.toHaveBeenCalled();
@@ -45,7 +45,7 @@ describe("applyMarketingConsent", () => {
 	it("treats any non-accepted value as opt-out", () => {
 		for (const consent of ["", "declined", "pending", "ACCEPTED"]) {
 			const client = recordingClient();
-			applyMarketingConsent(client, consent, "aoagents.dev");
+			applyMarketingConsent(client, consent, "useao.dev");
 			expect(client.opt_out_capturing, `consent=${consent}`).toHaveBeenCalledOnce();
 			expect(client.opt_in_capturing).not.toHaveBeenCalled();
 		}
