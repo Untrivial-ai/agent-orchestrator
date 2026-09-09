@@ -441,6 +441,13 @@ var (
 	// recoverable on their own; the operator has to unlock or remove the
 	// registration first.
 	ErrWorkspaceLocked = errors.New("workspace: registered worktree is locked")
+	// ErrWorkspaceDeferred reports that teardown could not reclaim the
+	// workspace directory this run (typically a process still holding a handle
+	// on it past the removal retry budget, as on Windows), even though git has
+	// already unregistered the worktree so nothing is being reconciled.
+	// Callers treat it like ErrWorkspaceDirty: the session still terminates and
+	// the leftover directory is left for a later cleanup pass to retry.
+	ErrWorkspaceDeferred = errors.New("workspace: removal deferred")
 	// ErrPreservedConflict is returned by ApplyPreserved when replaying a
 	// preserved ref onto the worktree produces merge conflicts. The ref is
 	// kept intact (never deleted on conflict); the working tree is left with
