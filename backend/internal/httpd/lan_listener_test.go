@@ -45,7 +45,9 @@ func TestLANManagerAuthGatesSharedHandler(t *testing.T) {
 
 // TestLANManagerBlocksLoopbackOnlyControlRoutes proves the LAN listener never
 // serves /shutdown, /internal/*, /api/v1/mobile*, /api/v1/dev*,
-// /api/v1/browser*, or /api/v1/agents/codex* — even when the request carries a spoofed Host: 127.0.0.1
+// /api/v1/browser*, or the Codex credential routes under
+// /api/v1/agents/codex/accounts* and /api/v1/agents/codex/account-switches* —
+// even when the request carries a spoofed Host: 127.0.0.1
 // and valid LAN auth, since gating on Host alone (localControlRequest) is what
 // let a LAN client reach these routes.
 func TestLANManagerBlocksLoopbackOnlyControlRoutes(t *testing.T) {
@@ -103,6 +105,26 @@ func TestLANManagerBlocksLoopbackOnlyControlRoutes(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("agent install: got %d want 404", resp.StatusCode)
+	}
+
+	// The read-only Codex model routes are not credential surfaces and must
+	// stay reachable so mobile can list and refresh models.
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/v1/agents/codex/models"},
+		{http.MethodPost, "/api/v1/agents/codex/models/refresh"},
+	} {
+		req, _ := http.NewRequest(tc.method, fmt.Sprintf("http://127.0.0.1:%d%s", port, tc.path), nil)
+		req.Header.Set("Authorization", "Bearer secret12")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: request failed: %v", tc.path, err)
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			t.Fatalf("%s: got 404, must not be blocked by the control-route filter", tc.path)
+		}
 	}
 
 	// A normal app route must still be reachable through the LAN listener
