@@ -323,7 +323,7 @@ func codexBaseArgs(policy PermissionPolicy, providerArgs []string) []string {
 	return append(args, providerArgs...)
 }
 
-func appendCodexCommon(cmd []string, workspace, model, promptFile, prompt string) []string {
+func appendCodexCommon(cmd []string, _, model, promptFile, prompt string) []string {
 	if model = strings.TrimSpace(model); model != "" {
 		cmd = append(cmd, "--model", model)
 	}
@@ -335,7 +335,6 @@ func appendCodexCommon(cmd []string, workspace, model, promptFile, prompt string
 	}
 	return cmd
 }
-
 
 func codexTOMLString(value string) string {
 	if !containsTOMLControl(value) && !strings.Contains(value, "'") {

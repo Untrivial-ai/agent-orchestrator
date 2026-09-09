@@ -120,7 +120,6 @@ func shellQuoteHookExecutable(executable string) string {
 	return `'` + strings.ReplaceAll(executable, `'`, `'"'"'`) + `'`
 }
 
-
 func codexTOMLConfigString(s string) string {
 	if !containsTOMLControl(s) && !strings.Contains(s, "'") {
 		return codexTOMLLiteralString(s)
