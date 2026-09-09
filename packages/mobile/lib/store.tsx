@@ -15,9 +15,9 @@ import {
 	mergePR as apiMergePR,
 	restoreSession,
 	sendMessage,
-	type DashboardPR,
 	type DashboardSession,
 	type DashboardStats,
+	type MergePRInput,
 	type OrchestratorLink,
 	type ProjectInfo,
 	type SessionMode,
@@ -82,7 +82,7 @@ type AppState = {
 	setActiveProject: (id: string) => void;
 	spawn: (opts: SpawnOptions) => Promise<DashboardSession>;
 	launchConductor: (projectId: string, clean?: boolean, mode?: SessionMode) => Promise<OrchestratorLink>;
-	merge: (pr: DashboardPR) => Promise<void>;
+	merge: (pr: MergePRInput) => Promise<void>;
 	kill: (id: string) => Promise<void>;
 	restore: (id: string) => Promise<void>;
 	send: (id: string, message: string) => Promise<void>;
@@ -456,7 +456,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	);
 
 	const merge = useCallback(
-		async (pr: DashboardPR) =>
+		async (pr: MergePRInput) =>
 			trackFeature("merge", async () => {
 				await apiMergePR(cfgRef.current!, pr);
 				await fetchAll();
