@@ -98,6 +98,26 @@ func TestEmbeddedBrowserGuidanceKeepsNetworkCaptureOptional(t *testing.T) {
 	}
 }
 
+func TestEmbeddedSessionGuidanceDocumentsCanonicalInAppLinks(t *testing.T) {
+	body, err := files.ReadFile("using-ao/commands/session.md")
+	if err != nil {
+		t.Fatalf("read embedded session guidance: %v", err)
+	}
+	text := strings.Join(strings.Fields(string(body)), " ")
+	for _, required := range []string{
+		"ao://sessions/{project-id}/{session-id}",
+		"Never use display names as identity",
+		"Encode either ID with URL percent encoding",
+		"Do not append query strings, fragments, action names, credentials, authorities, or extra path segments",
+		"only inside a currently running AO desktop app",
+		"never sends a message, executes a command, or performs another action",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("session-link guidance missing %q:\n%s", required, body)
+		}
+	}
+}
+
 // TestInstall_WritesSkillAndIsIdempotent: Install must lay down the embedded
 // skill (SKILL.md plus a commands file) under <dataDir>/skills/using-ao, and a
 // second run must clobber cleanly, leaving no stale files. This is the whole
