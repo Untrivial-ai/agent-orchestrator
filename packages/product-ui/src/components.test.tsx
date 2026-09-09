@@ -83,6 +83,7 @@ describe("portable leaf components", () => {
 			<PRSummaryMeta
 				countNounLabel={(count, noun) => `${count} localized-${noun}`}
 				externalLink={ExternalLink}
+				leading={<span>PR #7</span>}
 				pr={{
 					provider: "github",
 					author: "ada",
@@ -104,15 +105,24 @@ describe("portable leaf components", () => {
 			"https://avatars.githubusercontent.com/u/123?v=4",
 		);
 		expect(screen.getByText("feature → main")).toHaveClass("break-words");
+		const metadata = screen.getByText("feature → main").closest("div.font-mono");
+		const identity = screen.getByText("feature → main").closest("div");
+		const details = screen.getByText("2 localized-file").closest("div");
+		expect(metadata).toHaveClass("space-y-0.5");
+		expect(metadata).toContainElement(screen.getByText("PR #7"));
+		expect(identity).toContainElement(screen.getByText("PR #7"));
+		expect(details).toContainElement(screen.getByRole("link", { name: "ada" }));
+		expect(identity).not.toBe(details);
+		expect(screen.queryByText("·")).not.toBeInTheDocument();
 	});
 
 	it("renders precomputed PR presentation without controller dependencies", () => {
 		const presentation: PRCardPresentation = {
 			primary: {
 				key: "review",
-				label: "Review required",
-				tone: "review",
-				links: [],
+				label: "Changes requested",
+				tone: "warning",
+				links: [{ label: "ada", href: "https://example.com/review" }],
 			},
 			supporting: [
 				{
@@ -124,14 +134,24 @@ describe("portable leaf components", () => {
 					links: [],
 				},
 			],
+			readiness: {
+				label: "Merge pending",
+				detail: "",
+				href: "https://example.com/pull",
+				tone: "passive",
+			},
 		};
 		const { container } = render(
 			<PRCardStatusSummary externalLink={ExternalLink} presentation={presentation} />,
 		);
 
-		expect(screen.getByText("Review required")).toBeInTheDocument();
-		expect(screen.getByRole("link", { name: "Checks running" })).toBeInTheDocument();
-		expect(container.querySelector(".animate-status-pulse")).toBeInTheDocument();
+		const statusLayout = screen.getByText("Changes requested").closest('[data-slot="pr-status-layout"]');
+		const secondaryStatuses = screen.getByRole("link", { name: "Merge pending" }).closest('[data-slot="pr-secondary-statuses"]');
+		expect(statusLayout).toContainElement(screen.getByRole("link", { name: "ada" }));
+		expect(secondaryStatuses).toContainElement(screen.getByRole("link", { name: "Checks running" }));
+		expect(secondaryStatuses).not.toContainElement(screen.getByRole("link", { name: "ada" }));
+		expect(secondaryStatuses?.querySelector(".lucide-loader-circle")).not.toBeInTheDocument();
+		expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
 	});
 
 	it("keeps review details compact and inline with the review detail", () => {

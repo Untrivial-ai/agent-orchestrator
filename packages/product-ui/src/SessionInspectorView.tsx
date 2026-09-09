@@ -286,42 +286,49 @@ export function InspectorPullRequestCardView({
 	pullRequestIcon?: ReactNode;
 	statusNotice?: ReactNode;
 }) {
+	const pullRequestLink = (
+		<ExternalLink
+			ariaLabel={openLabel}
+			className="inline-flex min-w-0 items-center gap-1 font-mono text-2xs font-medium text-settings-label decoration-muted-foreground underline-offset-2 hover:text-settings-label hover:underline focus-visible:rounded-sm focus-visible:text-settings-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+			href={pr.href}
+		>
+			{pullRequestIcon ?? <GitPullRequestIcon className="size-icon-sm shrink-0" />}
+			<span>PR #{pr.number}</span>
+			{externalIcon ?? <ArrowUpRightIcon className="size-icon-2xs shrink-0" />}
+		</ExternalLink>
+	);
+	const stateBadge = (
+		<span
+			className={cn(
+				"inline-flex h-5 shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-full border border-transparent px-1.5 py-0.5 text-[9px] leading-none font-medium transition-[background-color,border-color,color,box-shadow]",
+				"border-border text-foreground",
+				prStateTone[pr.state],
+			)}
+			data-slot="badge"
+		>
+			{pr.stateLabel}
+		</span>
+	);
 	return (
 		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-2.5">
-			{pr.title ? (
-				<ExternalLink
-					className="inline text-sm font-semibold leading-snug tracking-tight text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-					href={pr.href}
-				>
-					{pr.title}
-				</ExternalLink>
-			) : null}
-			<div className={cn("flex min-w-0 items-center gap-2", pr.title && "mt-1.5")}>
-				<ExternalLink
-					ariaLabel={openLabel}
-					className="inline-flex min-w-0 items-center gap-1 font-mono text-xs font-medium text-settings-label decoration-muted-foreground underline-offset-2 hover:text-settings-label hover:underline focus-visible:rounded-sm focus-visible:text-settings-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-					href={pr.href}
-				>
-					{pullRequestIcon ?? <GitPullRequestIcon className="size-icon-sm shrink-0" />}
-					<span>PR #{pr.number}</span>
-					{externalIcon ?? <ArrowUpRightIcon className="size-icon-2xs shrink-0" />}
-				</ExternalLink>
-				<span
-					className={cn(
-						"inline-flex h-5 shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-full border border-transparent px-2 py-0.5 text-xs font-medium transition-[background-color,border-color,color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&>svg]:pointer-events-none [&>svg]:size-3",
-						"border-border text-foreground hover:bg-muted",
-						"h-5 px-1.5 text-[9px] leading-none font-medium",
-						prStateTone[pr.state],
-					)}
-					data-slot="badge"
-				>
-					{pr.stateLabel}
-				</span>
+			<div className="flex min-w-0 items-start gap-2">
+				{pr.title ? (
+					<ExternalLink
+						className="min-w-0 flex-1 text-sm font-semibold leading-snug tracking-tight text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+						href={pr.href}
+					>
+						{pr.title}
+					</ExternalLink>
+				) : (
+					pullRequestLink
+				)}
+				{stateBadge}
 			</div>
 			<PRSummaryMeta
 				className="mt-1.5"
 				countNounLabel={countNounLabel}
 				externalLink={ExternalLink}
+				leading={pr.title ? pullRequestLink : undefined}
 				pr={pr}
 			/>
 			{pr.state !== "merged" ? (

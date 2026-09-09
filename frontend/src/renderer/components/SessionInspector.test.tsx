@@ -504,9 +504,8 @@ describe("SessionInspector PR section", () => {
     expect(screen.queryByText(/Pull requests \(/)).not.toBeInTheDocument();
     expect(prSection("Pull request").getByText("PR #7")).toBeInTheDocument();
     expect(
-      prSection("Pull request").getByText("Mergeable"),
+      prSection("Pull request").getByText("Ready to merge"),
     ).toBeInTheDocument();
-    expect(prSection("Pull request").getByText("PR approved")).toBeInTheDocument();
     expect(
       prSection("Pull request").getByText("Checks passing"),
     ).toBeInTheDocument();

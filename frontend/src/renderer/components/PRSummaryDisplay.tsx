@@ -22,7 +22,7 @@ export function PRSummaryMeta({
 	pr,
 }: {
 	className?: string;
-	leading?: string;
+	leading?: ReactNode;
 	pr: SessionPRSummary;
 }) {
 	return (
