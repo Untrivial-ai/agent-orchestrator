@@ -3,80 +3,17 @@ description: Something is broken or behaving unexpectedly.
 title: "[Bug]: "
 labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for reporting a bug. Fill this in so we can reproduce it quickly.
-        For realtime help, join [Discord](https://discord.com/invite/UZv7JjxbwG).
-
   - type: textarea
     id: summary
     attributes:
-      label: Summary
-      description: What went wrong in one or two sentences?
+      label: What went wrong?
+      description: Tell us what you did and what went wrong. Add a screenshot if you can.
     validations:
       required: true
 
-  - type: textarea
-    id: repro
+  - type: markdown
     attributes:
-      label: Steps to reproduce
-      description: Minimal steps someone else can follow.
-      placeholder: |
-        1. …
-        2. …
-        3. …
-    validations:
-      required: true
+      value: |
+        Optional: Ask your coding agent to use the [bug-triage skill](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/.agents/skills/bug-triage/SKILL.md) to help investigate the problem.
 
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected behavior
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual
-    attributes:
-      label: Actual behavior
-      description: Include error messages or screenshots if useful.
-    validations:
-      required: true
-
-  - type: input
-    id: ao-version
-    attributes:
-      label: AO version
-      description: Output of `ao --version` (or how you installed / which commit).
-      placeholder: e.g. ao 0.x.x / commit abc1234
-    validations:
-      required: true
-
-  - type: input
-    id: environment
-    attributes:
-      label: Environment
-      description: OS, arch, and relevant runtime (e.g. macOS 15 arm64, Go/Node versions if known).
-      placeholder: e.g. macOS 15.x arm64
-    validations:
-      required: true
-
-  - type: textarea
-    id: logs
-    attributes:
-      label: Logs / extra context
-      description: Relevant daemon logs, terminal output, or notes from `~/.ao` (redact secrets).
-      render: shell
-    validations:
-      required: false
-
-  - type: checkboxes
-    id: checks
-    attributes:
-      label: Before submitting
-      options:
-        - label: I searched existing issues for duplicates
-          required: true
-        - label: I removed secrets / tokens from logs and screenshots
-          required: true
+        Need help? Ask us on [Discord](https://discord.com/invite/UZv7JjxbwG).
