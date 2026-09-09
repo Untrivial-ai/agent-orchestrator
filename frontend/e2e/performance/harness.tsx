@@ -93,9 +93,14 @@ function SettingsDialogWorkload({
 	onCommit: (actualDuration: number, commitTime: number) => void;
 }) {
 	return (
-		<Profiler id="settings-dialog" onRender={(_id, _phase, actualDuration, _baseDuration, _startTime, commitTime) => onCommit(actualDuration, commitTime)}>
-			<SettingsDialog />
-		</Profiler>
+		<>
+			<div aria-hidden="true" data-testid="settings-shell-fixture">
+				{Array.from({ length: 1_500 }, (_, index) => <div key={index}>Shell item {index}</div>)}
+			</div>
+			<Profiler id="settings-dialog" onRender={(_id, _phase, actualDuration, _baseDuration, _startTime, commitTime) => onCommit(actualDuration, commitTime)}>
+				<SettingsDialog />
+			</Profiler>
+		</>
 	);
 }
 
