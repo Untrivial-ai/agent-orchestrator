@@ -157,6 +157,38 @@ type ListSessionsQuery struct {
 	Fresh            *bool  `query:"fresh,omitempty" description:"When true, return only fresh non-terminated sessions."`
 }
 
+// AffectedPermissionRelaunchResponse is the body of GET
+// /api/v1/projects/{id}/permission-relaunch/affected.
+type AffectedPermissionRelaunchResponse struct {
+	Affected []PermissionRelaunchSessionItem `json:"affected"`
+	Count    int                             `json:"count"`
+}
+
+// PermissionRelaunchSessionItem is one running worker whose approval policy
+// differs from the project's current default.
+type PermissionRelaunchSessionItem struct {
+	SessionID string `json:"sessionId"`
+	Title     string `json:"title"`
+	Kind      string `json:"kind"`
+	FromMode  string `json:"fromMode"`
+	ToMode    string `json:"toMode"`
+}
+
+// PermissionRelaunchResponse is the body of POST
+// /api/v1/projects/{id}/permission-relaunch.
+type PermissionRelaunchResponse struct {
+	Results    []PermissionRelaunchOutcomeItem `json:"results"`
+	Relaunched int                             `json:"relaunched"`
+	Failed     int                             `json:"failed"`
+}
+
+// PermissionRelaunchOutcomeItem reports one worker's relaunch result.
+type PermissionRelaunchOutcomeItem struct {
+	SessionID string `json:"sessionId"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+}
+
 // CleanupSessionsQuery is the query string accepted by POST /api/v1/sessions/cleanup.
 type CleanupSessionsQuery struct {
 	Project string `query:"project,omitempty" description:"Project id filter. When omitted, clean terminated sessions across all projects."`

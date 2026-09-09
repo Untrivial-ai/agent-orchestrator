@@ -2152,6 +2152,97 @@ paths:
       summary: Replace a project's per-project config
       tags:
       - projects
+  /api/v1/projects/{id}/permission-relaunch:
+    post:
+      operationId: relaunchForPermissionChange
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionRelaunchResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Relaunch live workers with the current project permission setting
+      tags:
+      - sessions
+  /api/v1/projects/{id}/permission-relaunch/affected:
+    get:
+      operationId: affectedByPermissionChange
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AffectedPermissionRelaunchResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List live workers that need a relaunch to apply the project permission
+        setting
+      tags:
+      - sessions
   /api/v1/projects/{id}/permissions:
     patch:
       operationId: setProjectPermissions
@@ -6813,6 +6904,18 @@ components:
       required:
       - path
       type: object
+    AffectedPermissionRelaunchResponse:
+      properties:
+        affected:
+          items:
+            $ref: '#/components/schemas/PermissionRelaunchSessionItem'
+          type: array
+        count:
+          type: integer
+      required:
+      - affected
+      - count
+      type: object
     AgentAuthPlan:
       properties:
         action:
@@ -10008,6 +10111,52 @@ components:
       - title
       - targetSha
       - status
+      type: object
+    PermissionRelaunchOutcomeItem:
+      properties:
+        error:
+          type: string
+        ok:
+          type: boolean
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - ok
+      type: object
+    PermissionRelaunchResponse:
+      properties:
+        failed:
+          type: integer
+        relaunched:
+          type: integer
+        results:
+          items:
+            $ref: '#/components/schemas/PermissionRelaunchOutcomeItem'
+          type: array
+      required:
+      - results
+      - relaunched
+      - failed
+      type: object
+    PermissionRelaunchSessionItem:
+      properties:
+        fromMode:
+          type: string
+        kind:
+          type: string
+        sessionId:
+          type: string
+        title:
+          type: string
+        toMode:
+          type: string
+      required:
+      - sessionId
+      - title
+      - kind
+      - fromMode
+      - toMode
       type: object
     PreviewServerStatusResponse:
       properties:

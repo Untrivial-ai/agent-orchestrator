@@ -116,6 +116,11 @@ type SessionService interface {
 	Unpin(ctx context.Context, id domain.SessionID) (domain.Session, error)
 }
 
+type permissionRelaunchService interface {
+	AffectedByPermissionChange(ctx context.Context, projectID domain.ProjectID) ([]sessionsvc.PermissionRelaunchSession, error)
+	RelaunchForPermissionChange(ctx context.Context, projectID domain.ProjectID) ([]sessionsvc.PermissionRelaunchOutcome, error)
+}
+
 // ActivityRecorder applies an agent activity-state signal to a session. It is
 // satisfied directly by *lifecycle.Manager: an activity signal is a pure
 // lifecycle reduction (no runtime/workspace teardown), so it bypasses
@@ -203,6 +208,51 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/orchestrators", c.spawnOrchestrator)
 	r.Post("/orchestrators/delegate", c.delegateTask)
 	r.Get("/orchestrators/{id}", c.getOrchestrator)
+	r.Get("/projects/{id}/permission-relaunch/affected", c.affectedByPermissionChange)
+	r.Post("/projects/{id}/permission-relaunch", c.relaunchForPermissionChange)
+}
+
+func (c *SessionsController) affectedByPermissionChange(w http.ResponseWriter, r *http.Request) {
+	service, ok := c.Svc.(permissionRelaunchService)
+	if !ok {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/projects/{id}/permission-relaunch/affected")
+		return
+	}
+	affected, err := service.AffectedByPermissionChange(r.Context(), projectID(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	items := make([]PermissionRelaunchSessionItem, 0, len(affected))
+	for _, item := range affected {
+		items = append(items, PermissionRelaunchSessionItem{
+			SessionID: string(item.SessionID), Title: item.Title, Kind: string(item.Kind),
+			FromMode: string(item.FromMode), ToMode: string(item.ToMode),
+		})
+	}
+	envelope.WriteJSON(w, http.StatusOK, AffectedPermissionRelaunchResponse{Affected: items, Count: len(items)})
+}
+
+func (c *SessionsController) relaunchForPermissionChange(w http.ResponseWriter, r *http.Request) {
+	service, ok := c.Svc.(permissionRelaunchService)
+	if !ok {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/projects/{id}/permission-relaunch")
+		return
+	}
+	outcomes, err := service.RelaunchForPermissionChange(r.Context(), projectID(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	items := make([]PermissionRelaunchOutcomeItem, 0, len(outcomes))
+	relaunched := 0
+	for _, item := range outcomes {
+		items = append(items, PermissionRelaunchOutcomeItem{SessionID: string(item.SessionID), OK: item.OK, Error: item.Error})
+		if item.OK {
+			relaunched++
+		}
+	}
+	envelope.WriteJSON(w, http.StatusOK, PermissionRelaunchResponse{Results: items, Relaunched: relaunched, Failed: len(items) - relaunched})
 }
 
 // RegisterStreams mounts long-lived session streams outside the REST timeout
