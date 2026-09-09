@@ -2,6 +2,7 @@ import { createDecipheriv, createHash, pbkdf2Sync, randomUUID } from "node:crypt
 import { constants } from "node:fs";
 import {
 	chmod,
+	copyFile,
 	lstat,
 	mkdir,
 	open,
@@ -689,6 +690,9 @@ async function findDatabase(profileRoot: string, relatives: string[]): Promise<s
 	return null;
 }
 
+const SQLITE_PREFLIGHT_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
+const SQLITE_COPY_SIDECAR_SUFFIXES = ["-wal", "-shm"] as const;
+
 async function snapshotSQLite(
 	database: string,
 	profileRoot: string,
@@ -697,28 +701,60 @@ async function snapshotSQLite(
 ): Promise<string> {
 	const destination = path.join(staging, `${randomUUID()}-${path.basename(database)}`);
 	const canonical = await preflightContainedFile(database, profileRoot, SOURCE_FILE_MAX_BYTES, budget);
-	for (const suffix of ["-wal", "-shm"]) {
+	for (const suffix of SQLITE_PREFLIGHT_SIDECAR_SUFFIXES) {
 		try {
 			await preflightContainedFile(`${database}${suffix}`, profileRoot, SOURCE_SIDECAR_MAX_BYTES, budget);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
-	const source = new Database(canonical, { readonly: true, fileMustExist: true, timeout: 5_000 });
+
+	let backedUp = false;
 	try {
-		source.pragma("query_only = ON");
-		await source.backup(destination);
-		const output = await stat(destination);
-		if (!output.isFile() || output.size > SOURCE_FILE_MAX_BYTES + SOURCE_SIDECAR_MAX_BYTES) {
-			throw new Error("Browser source database exceeds the snapshot size limit.");
+		const source = new Database(canonical, { readonly: true, fileMustExist: true, timeout: 5_000 });
+		try {
+			source.pragma("query_only = ON");
+			const progress = await source.backup(destination);
+			if (progress && progress.totalPages > 0) {
+				const output = await stat(destination).catch(() => null);
+				if (output?.isFile() && output.size <= SOURCE_FILE_MAX_BYTES + SOURCE_SIDECAR_MAX_BYTES) {
+					backedUp = true;
+				}
+			}
+		} finally {
+			source.close();
+		}
+	} catch {
+		// Online backup can fail or be blocked when the database is locked by an active browser instance.
+		// Fall back to direct file copy into staging below.
+	}
+
+	try {
+		if (!backedUp) {
+			await rm(destination, { force: true }).catch(() => undefined);
+			await copyFile(canonical, destination);
+			for (const suffix of SQLITE_COPY_SIDECAR_SUFFIXES) {
+				const sidecar = `${canonical}${suffix}`;
+				try {
+					await copyFile(sidecar, `${destination}${suffix}`);
+					await chmod(`${destination}${suffix}`, 0o600);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				}
+			}
+			const output = await stat(destination);
+			if (!output.isFile() || output.size > SOURCE_FILE_MAX_BYTES + SOURCE_SIDECAR_MAX_BYTES) {
+				throw new Error("Browser source database exceeds the snapshot size limit.");
+			}
 		}
 		await chmod(destination, 0o600);
 		return destination;
 	} catch (error) {
 		await rm(destination, { force: true }).catch(() => undefined);
+		for (const suffix of SQLITE_COPY_SIDECAR_SUFFIXES) {
+			await rm(`${destination}${suffix}`, { force: true }).catch(() => undefined);
+		}
 		throw error;
-	} finally {
-		source.close();
 	}
 }
 

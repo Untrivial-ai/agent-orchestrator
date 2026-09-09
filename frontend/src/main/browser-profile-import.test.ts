@@ -808,4 +808,53 @@ describe("BrowserProfileImportService", () => {
 			warnings: [expect.objectContaining({ code: "history-database-missing" })],
 		});
 	});
+
+	it("imports Chromium history when the database has a rollback journal and online backup is locked", async () => {
+		const root = await fixtureRoot();
+		const { localAppData, profileRoot } = await createChromeFixture(root);
+		await writeFile(path.join(profileRoot, "History-journal"), "mock-journal-content");
+
+		const backupSpy = vi.spyOn(Database.prototype, "backup").mockImplementation(async () => {
+			return { totalPages: 0, remainingPages: 0 };
+		});
+
+		try {
+			const stateDir = path.join(root, "ao-state");
+			const profileStore = new BrowserProfileStore({ stateDir });
+			await profileStore.load();
+			const historyStore = new BrowserHistoryStore({ stateDir });
+			const service = new BrowserProfileImportService({
+				stateDir,
+				profileStore,
+				historyStore,
+				platform: "win32",
+				homeDir: root,
+				env: { LOCALAPPDATA: localAppData },
+				fromPartition: () => ({
+					cookies: { set: async () => undefined },
+					clearStorageData: async () => undefined,
+					clearCache: async () => undefined,
+				}),
+			});
+
+			const source = (await service.discover()).sources[0]!;
+			const result = await service.import({
+				requestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+				sourceId: source.id,
+				profileIds: [source.profiles[0]!.id],
+				includeCookies: false,
+				includeHistory: true,
+				destination: { mode: "merge", name: "Recovered History" },
+			}, vi.fn());
+
+			expect(result.entries[0]).toMatchObject({
+				importedHistoryEntries: 2,
+			});
+			const suggestions = await historyStore.suggest(result.entries[0]!.destinationProfile.id, "openai");
+			expect(suggestions).toHaveLength(1);
+			expect(suggestions[0]!.url).toBe("https://github.com/openai");
+		} finally {
+			backupSpy.mockRestore();
+		}
+	});
 });
