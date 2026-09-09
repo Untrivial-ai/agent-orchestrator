@@ -308,7 +308,7 @@ export default function CloneRepositoryDialog({
 								<Label htmlFor="cloneDestination" className="text-[13px] font-semibold text-[var(--color-text-import-title)]">
 									{t("createProject.cloneDestination")}
 								</Label>
-								<div className="flex items-center overflow-hidden rounded-md bg-[var(--color-bg-import-card)]">
+								<div className="flex h-control-form items-center overflow-hidden rounded-md border border-transparent bg-[var(--color-bg-import-card)] text-[13px] text-foreground outline-none focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/50">
 									<div className="relative min-w-0 flex-1">
 										<Folder className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--color-text-import-muted)]" aria-hidden="true" />
 										<Input
@@ -325,9 +325,15 @@ export default function CloneRepositoryDialog({
 											onChange={(event) => onChange({ ...value, destinationParent: event.target.value })}
 										/>
 									</div>
-									<Button type="button" aria-label={t("createProject.cloneChooseDestination")} variant="ghost" className="shrink-0 rounded-none border-l border-border/60" disabled={disabled || choosingDestination} onClick={() => void chooseDestination()}>
+									<button
+										aria-label={t("createProject.cloneChooseDestination")}
+										className="flex h-full shrink-0 items-center border-l border-border/60 px-4 text-foreground outline-none transition-colors hover:bg-foreground/10 focus-visible:bg-foreground/10 disabled:pointer-events-none disabled:opacity-50"
+										disabled={disabled || choosingDestination}
+										type="button"
+										onClick={() => void chooseDestination()}
+									>
 										{t("createProject.cloneChoose")}
-									</Button>
+									</button>
 								</div>
 								<p id="cloneDestinationHelp" className="text-pretty text-[12px] leading-5 text-[var(--color-text-import-muted)]">
 									{targetPath
