@@ -117,12 +117,12 @@ describe("launchContext", () => {
 
 describe("externalReferrer", () => {
 	it("drops same-site referrers, including subdomains, and keeps external ones", () => {
-		expect(externalReferrer("https://aoagents.dev/", "aoagents.dev")).toBe("");
-		expect(externalReferrer("https://www.aoagents.dev/download", "aoagents.dev")).toBe("");
-		expect(externalReferrer("https://www.producthunt.com/", "aoagents.dev")).toBe(
+		expect(externalReferrer("https://useao.dev/", "useao.dev")).toBe("");
+		expect(externalReferrer("https://www.useao.dev/download", "useao.dev")).toBe("");
+		expect(externalReferrer("https://www.producthunt.com/", "useao.dev")).toBe(
 			"https://www.producthunt.com/",
 		);
-		expect(externalReferrer("", "aoagents.dev")).toBe("");
+		expect(externalReferrer("", "useao.dev")).toBe("");
 	});
 });
 
@@ -130,7 +130,7 @@ describe("launchContextFromBrowser", () => {
 	const read = (over: Partial<BrowserLaunchRead>): BrowserLaunchRead => ({
 		campaign: () => ({}),
 		referrer: "",
-		hostname: "aoagents.dev",
+		hostname: "useao.dev",
 		userAgent: "Macintosh",
 		touchPoints: 0,
 		...over,
@@ -147,7 +147,7 @@ describe("launchContextFromBrowser", () => {
 					utm_source: "product_hunt",
 					utm_campaign: "launch_day",
 				}),
-				referrer: "https://aoagents.dev/download",
+				referrer: "https://useao.dev/download",
 			}),
 		);
 		expect(context.source).toBe("product_hunt");
@@ -156,7 +156,7 @@ describe("launchContextFromBrowser", () => {
 
 	it("classifies an untagged same-site reload as direct with no campaign", () => {
 		const context = launchContextFromBrowser(
-			read({ referrer: "https://aoagents.dev/" }),
+			read({ referrer: "https://useao.dev/" }),
 		);
 		expect(context.source).toBe("direct");
 		expect(context.campaign).toBeUndefined();
@@ -197,7 +197,7 @@ describe("launchContextFromBrowser", () => {
 		expect(session.get("ao.launch.source")).toBe("product_hunt");
 
 		const reload = launchContextFromBrowser(
-			read({ referrer: "https://aoagents.dev/" }),
+			read({ referrer: "https://useao.dev/" }),
 			sessionStorage,
 		);
 		expect(reload.source).toBe("product_hunt");
@@ -214,7 +214,7 @@ describe("launchContextFromBrowser", () => {
 		expect(session.has("ao.launch.source")).toBe(false);
 		// A later same-site load with nothing remembered is direct.
 		expect(
-			launchContextFromBrowser(read({ referrer: "https://aoagents.dev/" }), sessionStorage).source,
+			launchContextFromBrowser(read({ referrer: "https://useao.dev/" }), sessionStorage).source,
 		).toBe("direct");
 	});
 

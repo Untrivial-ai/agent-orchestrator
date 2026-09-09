@@ -8,6 +8,7 @@ import type { ChatConfigOption, ConversationSnapshot } from "../../types/convers
 import type { AgentSwitchSummary, WorkspaceSession } from "../../types/workspace";
 import { useUiStore } from "../../stores/ui-store";
 import { workspaceQueryKey } from "../../hooks/useWorkspaceQuery";
+import { useConversationConfigOptions, useConversationModels, useConversationSkills } from "../../hooks/useConversation";
 
 const LINK = "http://localhost:5173";
 
@@ -81,9 +82,9 @@ vi.mock("../../hooks/useConversation", () => ({
 			: undefined,
 	}),
 	useConversationCommands: () => conversationCommandState,
-	useConversationConfigOptions: () => configState,
-	useConversationModels: () => ({ models: [] }),
-	useConversationSkills: () => ({ skills: [] }),
+	useConversationConfigOptions: vi.fn(() => configState),
+	useConversationModels: vi.fn(() => ({ models: [] })),
+	useConversationSkills: vi.fn(() => ({ skills: [] })),
 	useStageAttachments: () => undefined,
 	useWorkspaceFilePaths: () => ({ paths: [], truncated: false }),
 }));
@@ -729,6 +730,31 @@ describe("SessionChatSurface link routing", () => {
 	});
 });
 
+
+describe("controller catalogs during an interface handoff", () => {
+	it.each(["stopped", "connecting", "ready"] as const)("waits through handoff with a %s snapshot, then loads catalogs", (state) => {
+		conversationState.snapshot = { capabilities: ["config_options"], controller: { state } };
+		const client = new QueryClient();
+		const { rerender } = render(<Wrapper client={client}><SessionChatSurface session={session} controllerTransitioning /></Wrapper>);
+		for (const hook of [useConversationConfigOptions, useConversationModels, useConversationSkills]) {
+			expect(hook).toHaveBeenLastCalledWith(session.id, false);
+		}
+
+		conversationState.snapshot = { capabilities: ["config_options"], controller: { state: "ready" } };
+		rerender(<Wrapper client={client}><SessionChatSurface session={session} /></Wrapper>);
+		for (const hook of [useConversationConfigOptions, useConversationModels, useConversationSkills]) {
+			expect(hook).toHaveBeenLastCalledWith(session.id, true);
+		}
+	});
+
+	it("does not poll an unavailable controller after a failed handoff", () => {
+		conversationState.snapshot = { capabilities: ["config_options"], controller: { state: "stopped" } };
+		render(<Wrapper client={new QueryClient()}><SessionChatSurface session={session} /></Wrapper>);
+		for (const hook of [useConversationConfigOptions, useConversationModels, useConversationSkills]) {
+			expect(hook).toHaveBeenLastCalledWith(session.id, false);
+		}
+	});
+});
 
 describe("project remembering waits for provider permissions", () => {
 	it.each([undefined, "Catalog unavailable"])("withholds Remember when provider catalog is not known (%s)", (error) => {

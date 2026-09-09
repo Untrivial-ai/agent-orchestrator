@@ -304,7 +304,9 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 			const { error } = await apiClient.POST("/api/v1/mobile/disable");
 			if (error) throw new Error(apiErrorMessage(error));
 		},
-		onSuccess: invalidate,
+		// Shutdown can finish before returning an error. Refresh the actual
+		// server state while retaining the mutation error for the user.
+		onSettled: invalidate,
 		onError: () => setOptimisticEnabled(null),
 	});
 

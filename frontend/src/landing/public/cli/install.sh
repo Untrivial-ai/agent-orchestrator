@@ -2,7 +2,7 @@
 # Agent Orchestrator CLI installer
 #
 # Usage:
-#   curl -fsSL https://aoagents.dev/cli/install.sh | sh
+#   curl -fsSL https://useao.dev/cli/install.sh | sh
 #
 # Installs the `ao` CLI via the Homebrew tap. For the desktop app, download it
 # from https://github.com/Untrivial-ai/agent-orchestrator/releases/latest.

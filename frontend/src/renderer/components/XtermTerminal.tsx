@@ -45,6 +45,7 @@ import {
 } from "../lib/cursor-color-scheme";
 import {
 	buildOscColorReports,
+	createCursorPositionReportForwarder,
 	createOscColorReportForwarder,
 	type OscTerminalColors,
 } from "../lib/osc-color-report";
@@ -1033,15 +1034,23 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// those bytes through the mux writes dirty input into the real Codex PTY and
 		// corrupts the TUI. Keyboard is the only safe generic text path here; paste,
 		// composition, shortcuts, and wheel reports are emitted explicitly below.
-		// Forward validated OSC 4/10/11/12 color replies only. xterm answers them
-		// on onData; other bytes must not reach the PTY or agent TUIs break.
+		// Forward validated OSC 4/10/11/12 color replies and cursor-position
+		// reports only. Interactive prompts such as `gh auth login` use DSR to ask
+		// xterm for the cursor position and block until the corresponding CPR reaches
+		// the PTY. Other onData bytes must not reach the PTY or agent TUIs break.
 		// Retained terminals can change providers without remounting. Keep the
 		// listener mounted for every provider so standard color replies continue to
 		// reach the PTY after a provider change.
 		const oscColorForwarder = createOscColorReportForwarder((report) => {
 			emitUserInput(report, "protocol");
 		});
-		const oscColorInput = term.onData((data) => oscColorForwarder.push(data));
+		const cursorPositionForwarder = createCursorPositionReportForwarder((report) => {
+			emitUserInput(report, "protocol");
+		});
+		const protocolInput = term.onData((data) => {
+			oscColorForwarder.push(data);
+			cursorPositionForwarder.push(data);
+		});
 		const keyInput = term.onKey(({ key }) => emitUserInput(key, "keyboard"));
 
 		// Translate wheel motion into SGR wheel reports for the pane (see
@@ -1218,7 +1227,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// Forward xterm's write callback: it fires once THIS chunk has been
 			// parsed into the buffer, which is what lets the attachment reveal the
 			// pane at the replay's settled scroll position (issue #3160).
-			write: (data, done) => {
+			write: (data, done, source = "live") => {
 				let hasEsc = false;
 				for (let i = 0; i < data.length; i++) {
 					if (data[i] === 0x1b) {
@@ -1226,14 +1235,24 @@ export function XtermTerminal(props: XtermTerminalProps) {
 						break;
 					}
 				}
-				if (hasEsc) {
+				if (source === "replay") {
+					// Existing panes replay historical DSRs through xterm. Clear any old
+					// correlation credits so their generated CPRs cannot reach the live PTY.
+					cursorPositionForwarder.dispose();
+				}
+				if (hasEsc || cursorPositionForwarder.hasPartialRequest()) {
+					// A DSR can be split immediately after ESC. Decode an ESC-free chunk
+					// only while a request prefix from the preceding chunk is incomplete.
 					const chunk = new TextDecoder().decode(data);
-					const reply = callbacksRef.current.supportsCursorColorScheme
-						? cursorColorSchemeReplyForOutput(chunk, callbacksRef.current.theme)
-						: null;
-					if (reply) {
-						announcedCursorSchemeRef.current = null;
-						notifyCursorScheme(callbacksRef.current.theme, true, true);
+					if (source === "live") cursorPositionForwarder.observeOutput(chunk);
+					if (hasEsc) {
+						const reply = callbacksRef.current.supportsCursorColorScheme
+							? cursorColorSchemeReplyForOutput(chunk, callbacksRef.current.theme)
+							: null;
+						if (reply) {
+							announcedCursorSchemeRef.current = null;
+							notifyCursorScheme(callbacksRef.current.theme, true, true);
+						}
 					}
 				}
 				term.write(data, () => {
@@ -1306,16 +1325,28 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			for (const timer of schemeRetryTimers) window.clearTimeout(timer);
 			schemeRetryTimers = [];
 			oscColorForwarder.dispose();
-			oscColorInput.dispose();
+			cursorPositionForwarder.dispose();
+			protocolInput.dispose();
 			keyInput.dispose();
 			notifyCursorSchemeRef.current = () => {};
 			announcedCursorSchemeRef.current = null;
 			userInputListeners.clear();
-			try {
-				term.dispose();
-			} catch {
-				// Some renderer addons can throw during dispose in certain GPU
-				// environments; the terminal is being torn down regardless.
+			const disposeTerminal = () => {
+				try {
+					term.dispose();
+				} catch {
+					// Some renderer addons can throw during dispose in certain GPU
+					// environments; the terminal is being torn down regardless.
+				}
+			};
+			if (import.meta.env.DEV) {
+				// xterm's Viewport constructor queues an untracked zero-delay
+				// syncScrollArea(). React StrictMode immediately runs this cleanup after
+				// its development probe mount; queue disposal behind that callback so it
+				// cannot read the already-cleared renderer dimensions.
+				window.setTimeout(disposeTerminal, 0);
+			} else {
+				disposeTerminal();
 			}
 		};
 	}, []);

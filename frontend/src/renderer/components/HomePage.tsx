@@ -141,6 +141,10 @@ export function HomePage() {
 	const openProject = (projectId: string) => {
 		void navigate({ to: "/projects/$projectId", params: { projectId } });
 	};
+	const openExistingProject = (path: string) => {
+		const project = projects.find((candidate) => candidate.path === path);
+		if (project) void navigate({ to: "/projects/$projectId", params: { projectId: project.id } });
+	};
 
 	if (workspaceStartupState === "error" || workspaceQuery.isError) {
 		return (
@@ -159,8 +163,10 @@ export function HomePage() {
 					<div className="flex items-center justify-between gap-4 px-3">
 						<h1 className="text-[17px] font-medium tracking-[-0.01em] text-foreground/80">{t("home.jumpBack")}</h1>
 						<TopbarButton
-							className="!transition-none !border-0 shrink-0 font-mono text-[15px] tracking-[0.03em] hover:bg-interactive-hover hover:text-foreground active:bg-interactive-hover active:scale-[0.96]"
-							onClick={() => void aoBridge.app.openExternal(`${GITHUB_REPOSITORY_URL}/stargazers`)}
+
+							className="shrink-0 font-mono text-[15px] tracking-[0.03em] transition-[transform,filter,background,color,border-color] duration-150 ease-out active:scale-[0.96] motion-reduce:transform-none"
+							onClick={() => void aoBridge.app.openExternal(GITHUB_REPOSITORY_URL)}
+
 							variant="accent"
 						>
 							<Star className="size-4" strokeWidth={1.8} aria-hidden="true" />
@@ -168,9 +174,7 @@ export function HomePage() {
 						</TopbarButton>
 					</div>
 
-					<GitHubOnboardingNotice />
-
-					<div className="-mt-3 grid grid-cols-2 gap-3 px-3">
+					<div className="grid grid-cols-2 gap-3 px-3">
 						<HomeActionCard
 							ariaLabel={t("createProject.cloneFromGit")}
 							icon={<GitFork className="size-4" aria-hidden="true" />}
@@ -209,13 +213,18 @@ export function HomePage() {
 							/>
 						))}
 					</div>
+
+					<GitHubOnboardingNotice />
 				</div>
 
 				<CreateProjectFlow
+					existingProjectNames={projects.map((project) => project.name)}
+					existingProjectPaths={projects.map((project) => project.path)}
 					mode="choose"
 					onCloneProject={cloneProject}
 					onCreateProject={createProject}
 					onInitializeProject={initializeProjectRepository}
+					onOpenExistingProject={openExistingProject}
 					sourceSignal={sourceSignal}
 				/>
 			</div>

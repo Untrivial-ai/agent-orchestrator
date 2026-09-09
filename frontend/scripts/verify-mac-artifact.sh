@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# verify-mac-artifact.sh <path-to-.zip-or-.app-or-.dmg>
+# verify-mac-artifact.sh <path-to-.zip-or-.app-or-.dmg-or-.pkg>
 #
 # The one canonical way to check that a shipped macOS artifact is sealed,
 # notarized and stapled. CI gates and humans debugging by hand must both use
@@ -56,18 +56,21 @@ set -euo pipefail
 
 usage() {
 	cat >&2 <<'EOF'
-usage: verify-mac-artifact.sh <path-to-.zip-or-.app-or-.dmg>
+usage: verify-mac-artifact.sh <path-to-.zip-or-.app-or-.dmg-or-.pkg>
 
 Verifies a macOS release artifact is signed, notarized and stapled:
   codesign --verify --deep --strict
   spctl -a -vv -t exec                                  (.zip / .app)
   spctl -a -vv -t open --context context:primary-signature   (.dmg)
+  pkgutil --check-signature                            (.pkg)
+  spctl -a -vv -t install                               (.pkg)
   xcrun stapler validate
   bundled ACP Node entitlements + JavaScript execution       (.zip / .app)
 
 A .zip is extracted with `ditto -x -k` first (never `unzip`), and the single
 .app bundle inside it is checked. A .dmg is checked as the container it is,
-without mounting it.
+without mounting it. A .pkg is checked as a signed/notarized container without
+installing it; its payload must also pass the .app check during packaging.
 EOF
 }
 
@@ -106,6 +109,12 @@ case "$ARTIFACT" in
 		exit 2
 	fi
 	;;
+*.pkg)
+	if [[ ! -f "$ARTIFACT" ]]; then
+		echo "verify-mac-artifact: expected a .pkg file, got a directory: $ARTIFACT" >&2
+		exit 2
+	fi
+	;;
 *.app)
 	if [[ ! -d "$ARTIFACT" ]]; then
 		echo "verify-mac-artifact: expected an .app bundle directory: $ARTIFACT" >&2
@@ -113,7 +122,7 @@ case "$ARTIFACT" in
 	fi
 	;;
 *)
-	echo "verify-mac-artifact: unsupported artifact type: $ARTIFACT (expected .zip, .app or .dmg)" >&2
+	echo "verify-mac-artifact: unsupported artifact type: $ARTIFACT (expected .zip, .app, .dmg or .pkg)" >&2
 	usage
 	exit 2
 	;;
@@ -175,6 +184,25 @@ run_check() {
 		failed=1
 	fi
 }
+
+# Installer packages use an Installer certificate, not a code signature.
+# Assess the container without installing or executing its payload. The builder
+# separately expands and verifies the app payload with this same verifier.
+if [[ "$ARTIFACT" == *.pkg ]]; then
+	if ! command -v pkgutil >/dev/null 2>&1; then
+		echo "verify-mac-artifact: required tool not found: pkgutil" >&2
+		exit 2
+	fi
+	run_check "package signature" pkgutil --check-signature "$ARTIFACT"
+	run_check "spctl" spctl -a -vv -t install "$ARTIFACT"
+	run_check "stapler" xcrun stapler validate "$ARTIFACT"
+	if [[ $failed -ne 0 ]]; then
+		echo "verify-mac-artifact: FAILED for $ARTIFACT" >&2
+		exit 1
+	fi
+	echo "verify-mac-artifact: OK ($ARTIFACT)"
+	exit 0
+fi
 
 has_acp_node_entitlement() {
 	local entitlement="$1"

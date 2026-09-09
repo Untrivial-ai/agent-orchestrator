@@ -7,6 +7,7 @@ import {
 	SessionCardView,
 	SessionUsageMetricView,
 	type BoardPullRequestLabels,
+	type BoardPullRequestProgress,
 	type BoardSessionPresentation,
 	type BoardColumnLabels,
 	type BoardUsagePresentation,
@@ -47,6 +48,7 @@ export function toBoardSessionPresentation(
 		activity: session.activity,
 		branch: session.branch,
 		id: session.id,
+		isTerminated: session.isTerminated,
 		kanbanColumn: session.kanbanColumn,
 		displayStatus: session.displayStatus,
 		provider: session.provider,
@@ -256,6 +258,7 @@ function DesktopSessionCard({
 
 function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 	return {
+		progress: (progress) => pullRequestProgressLabel(progress, t),
 		short: t("pr.short"),
 		states: {
 			closed: t("pr.state.closed"),
@@ -264,6 +267,20 @@ function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 			open: t("pr.state.open"),
 		},
 	};
+}
+
+function pullRequestProgressLabel(
+	{ closed, draft, merged, open, total }: BoardPullRequestProgress,
+	t: TFunction,
+): string {
+	return [
+		t("pr.progress.merged", { count: total, merged }),
+		open > 0 ? t("pr.progress.open", { count: open }) : undefined,
+		draft > 0 ? t("pr.progress.draft", { count: draft }) : undefined,
+		closed > 0 ? t("pr.progress.closed", { count: closed }) : undefined,
+	]
+		.filter((part): part is string => part !== undefined)
+		.join(" · ");
 }
 
 // Keep the board metric scannable by showing cost only. The full cost/token

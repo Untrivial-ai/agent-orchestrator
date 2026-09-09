@@ -144,12 +144,12 @@ func TestImportAPI_PrepareGit(t *testing.T) {
 		},
 	}}
 	srv := newImportTestServer(t, svc)
-	body, status, headers := doRequest(t, srv, "POST", "/api/v1/imports/prepare-git", `{"importKind":"project","path":"/repo","approvedActions":["git_init"],"remoteUrl":"https://example.invalid/repo.git"}`)
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/imports/prepare-git", `{"importKind":"project","path":"/repo","approvedActions":["git_init"],"remoteUrl":"https://example.invalid/repo.git","stepwise":true}`)
 	if status != http.StatusOK {
 		t.Fatalf("POST /imports/prepare-git = %d, want 200; body=%s", status, body)
 	}
 	assertJSON(t, headers)
-	if svc.prepareIn.Path != "/repo" || len(svc.prepareIn.ApprovedActions) != 1 || svc.prepareIn.RemoteURL == "" {
+	if svc.prepareIn.Path != "/repo" || len(svc.prepareIn.ApprovedActions) != 1 || svc.prepareIn.RemoteURL == "" || !svc.prepareIn.Stepwise {
 		t.Fatalf("PrepareGit input = %#v", svc.prepareIn)
 	}
 	var resp importsvc.GitPreparationResult

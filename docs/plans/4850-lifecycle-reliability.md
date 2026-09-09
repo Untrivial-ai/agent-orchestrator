@@ -342,7 +342,7 @@ Implementation decisions and recovery limits:
   verified cleanup and retains an unresolved handle when cleanup fails. Trigger,
   switch, and restore paths check the pending cleanup state under their worker
   lock before starting a reviewer. Termination deadlines include lock waiting.
-- Startup ownership is journaled in migration 0129. Rollback uses one detached
+- Startup ownership is journaled in migration 0130. Rollback uses one detached
   deadline, compares operation and controller generation before destructive
   work, and retains partial workspace resources. An absent in-memory Chat
   controller cannot establish provider exit. Startup-only changes emit the
@@ -405,3 +405,35 @@ and Windows checks.
 The follow-up suggestions posted on the issue are separate from this change:
 show recovery details in the inspector, bound background recovery scheduling,
 and add an explicit resolution action for uncertain startup completion.
+
+CI follow-up: fresh-host testing exposed an absent legacy tmux socket after
+verified teardown. Socket selection now handles that absence while preserving
+inconclusive liveness errors. Integration tests isolate both tmux namespaces.
+After upstream added migration 0129 for change-log retention, the startup
+migration moved to 0130 without modifying the upstream migration.
+
+The upstream persistent Chat host can acknowledge shutdown before its provider
+exits. Startup rollback now retains controller and workspace ownership after
+that acknowledgement, including when projection failure previously detached
+the controller. An exact-generation stop request remains fenced by the session
+gate. These cases remain pending for inspection until host exit can be verified;
+they cannot authorize workspace removal.
+
+After integrating upstream, frontend typechecks and all 4,131 unit tests passed
+(six skipped), as did all 59 renderer smoke tests. Cloud client checks and its
+21 tests passed; product UI checks and its 126 tests passed. Local backend
+verification encountered a full disk, so those failed attempts are retained in
+the local logs and do not count as passing checks.
+
+The complete merged backend race suites passed after moving temporary files to
+task-scoped scratch space outside the full filesystem. Every non-SQLite package
+passed in one invocation; SQLite, its helpers, and the store passed in a second
+invocation (490.382 and 284.731 seconds for SQLite and store). Backend build,
+vet, formatting, and golangci-lint 2.12.2 passed with zero findings. Native Linux
+CLI end-to-end checks passed, including all 319 top-level tests, with one
+macOS-only skip. API generation reproduced both artifacts without drift.
+
+The merged fresh-install container and native macOS/Windows checks were not
+repeated locally and require verification in the new remote jobs. The reporter's
+Raspberry Pi workload and native macOS tmux descendant teardown remain separate
+runtime validation gaps.

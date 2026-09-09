@@ -92,6 +92,7 @@ function toWorkspaceSession(
 		kanbanColumn,
 		displayStatus: session.displayStatus || undefined,
 		isTerminated: session.isTerminated,
+		chatProviderPreserved: session.chatProviderPreserved,
 		terminateOnPrMerge: session.terminateOnPrMerge ?? false,
 		autoInjectReview: session.autoInjectReview ?? true,
 		autoInjectCI: session.autoInjectCI ?? true,

@@ -30,6 +30,26 @@ func (p *Plugin) InspectTerminalSurface(output string) ports.TerminalSurfaceObse
 	case observation.Composer != ports.TerminalComposerUnknown:
 		observation.Work = ports.TerminalSurfaceWorkIdle
 	}
+	if observation.Work == ports.TerminalSurfaceWorkIdle && observation.Composer == ports.TerminalComposerEmpty {
+		// The banner must still be visible, with only the current composer and
+		// no provider response. An empty composer alone also follows real work.
+		header, prompts, response := false, 0, false
+		for _, line := range terminalui.PlainTerminalLines(output) {
+			line = strings.TrimSpace(line)
+			// The startup mascot animation can overwrite the brand separator
+			// in the captured viewport while leaving both banner labels intact.
+			if strings.Contains(line, "Claude") && strings.Contains(line, "Code v") {
+				header = true
+			}
+			if strings.HasPrefix(line, "❯") {
+				prompts++
+			}
+			if strings.HasPrefix(line, "⏺") {
+				response = true
+			}
+		}
+		observation.NativeConversationNotStarted = header && prompts == 1 && !response
+	}
 	return observation
 }
 

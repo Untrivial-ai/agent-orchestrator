@@ -15,6 +15,12 @@ const openExternalMock = vi.hoisted(() => vi.fn());
 const writeTextMock = vi.hoisted(() => vi.fn());
 const restoreMock = vi.hoisted(() => vi.fn());
 const workspaceSubscriptionMock = vi.hoisted(() => vi.fn());
+const createProjectFlowMock = vi.hoisted(() => ({
+	props: null as null | {
+		existingProjectPaths?: readonly string[];
+		onOpenExistingProject?: (path: string) => void | Promise<void>;
+	},
+}));
 
 const ctx = vi.hoisted(() => {
 	const workspaces: WorkspaceSummary[] = [
@@ -175,8 +181,14 @@ vi.mock("./TaskComposer", () => ({
 }));
 
 vi.mock("./CreateProjectFlow", () => ({
-	CreateProjectFlow: ({ children }: { children: (state: { choosePath: () => void }) => ReactNode }) =>
-		children({ choosePath: choosePathMock }),
+	CreateProjectFlow: (props: {
+		children: (state: { choosePath: () => void }) => ReactNode;
+		existingProjectPaths?: readonly string[];
+		onOpenExistingProject?: (path: string) => void | Promise<void>;
+	}) => {
+		createProjectFlowMock.props = props;
+		return props.children({ choosePath: choosePathMock });
+	},
 }));
 
 import { CommandPalette } from "./CommandPalette";
@@ -235,6 +247,7 @@ beforeEach(() => {
 	writeTextMock.mockReset();
 	restoreMock.mockReset();
 	workspaceSubscriptionMock.mockReset();
+	createProjectFlowMock.props = null;
 	restoreMock.mockResolvedValue({ status: "success" });
 	act(() => {
 		useUiStore.setState({
@@ -613,6 +626,20 @@ describe("CommandPalette actions", () => {
 		fireEvent.click(screen.getByText("New project"));
 		await waitFor(() => expect(choosePathMock).toHaveBeenCalledTimes(1));
 		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+
+	it("opens an already registered project selected by the import flow", async () => {
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+
+		expect(createProjectFlowMock.props?.existingProjectPaths).toEqual(["/repos/app", "/repos/lib"]);
+		await act(async () => createProjectFlowMock.props?.onOpenExistingProject?.("/repos/lib"));
+
+		expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId",
+			params: { projectId: "proj-2" },
+		});
 	});
 });
 
