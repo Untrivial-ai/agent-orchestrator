@@ -89,11 +89,15 @@ type Engine struct {
 	clock    func() time.Time
 	newID    func() string
 
-	// triggerMu guards triggerLocks; triggerLocks holds one mutex per worker
-	// session so concurrent Trigger calls for the same worker serialise (see
-	// lockWorker). Distinct workers never contend.
+	// triggerMu guards triggerLocks and their reference counts. Each entry
+	// serialises operations for one worker and lives only while held or awaited.
 	triggerMu    sync.Mutex
-	triggerLocks map[domain.SessionID]*sync.Mutex
+	triggerLocks map[domain.SessionID]*workerLock
+}
+
+type workerLock struct {
+	held chan struct{}
+	refs int
 }
 
 const autoReviewFailedRetryLimit = 3
@@ -116,28 +120,55 @@ func New(d Deps) *Engine {
 		launcher:     d.Launcher,
 		clock:        clock,
 		newID:        newID,
-		triggerLocks: make(map[domain.SessionID]*sync.Mutex),
+		triggerLocks: make(map[domain.SessionID]*workerLock),
 	}
 }
 
-// lockWorker serialises Trigger calls for a single worker session and returns
+// lockWorker serialises operations for a single worker session and returns
 // the unlock func. Without it, two concurrent triggers for the same worker can
 // both pass the per-commit idempotency check and each spawn a reviewer against
 // the same deterministic handle, leaving two running runs for one commit (#242).
 //
-// The per-worker mutex is created on first use and kept for the lifetime of the
-// engine; the entry is a single pointer, so the unbounded-by-session-count map
-// is a negligible, bounded-in-practice cost.
-func (e *Engine) lockWorker(id domain.SessionID) func() {
-	e.triggerMu.Lock()
-	mu, ok := e.triggerLocks[id]
-	if !ok {
-		mu = &sync.Mutex{}
-		e.triggerLocks[id] = mu
+// References include the holder and every waiter so releasing or cancelling
+// one caller cannot replace an entry still used by another. Waiting is
+// cancellable; the holder keeps the lock until its operation returns.
+func (e *Engine) lockWorker(ctx stdctx.Context, id domain.SessionID) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	e.triggerMu.Lock()
+	lock := e.triggerLocks[id]
+	if lock == nil {
+		lock = &workerLock{held: make(chan struct{}, 1)}
+		e.triggerLocks[id] = lock
+	}
+	lock.refs++
 	e.triggerMu.Unlock()
-	mu.Lock()
-	return mu.Unlock
+	release := func() {
+		e.triggerMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(e.triggerLocks, id)
+		}
+		e.triggerMu.Unlock()
+	}
+	select {
+	case <-ctx.Done():
+		release()
+		return nil, ctx.Err()
+	case lock.held <- struct{}{}:
+		unlock := sync.OnceFunc(func() {
+			<-lock.held
+			release()
+		})
+		// Cancellation and acquisition can become ready together. Do not start
+		// an operation for a caller already cancelled during the handoff.
+		if err := ctx.Err(); err != nil {
+			unlock()
+			return nil, err
+		}
+		return unlock, nil
+	}
 }
 
 // TriggerResult is the outcome of a trigger: the (new or existing) run, the live
@@ -214,7 +245,10 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	// below (and the reviewer spawn that follows it) can't be raced into a
 	// double-spawn. Held across the spawn deliberately: the loser then re-reads
 	// the freshly-recorded run and short-circuits to Created:false.
-	unlock := e.lockWorker(workerID)
+	unlock, err := e.lockWorker(ctx, workerID)
+	if err != nil {
+		return TriggerResult{}, err
+	}
 	defer unlock()
 
 	worker, ok, err := e.sessions.GetSession(ctx, workerID)
@@ -514,7 +548,10 @@ func (e *Engine) SwitchReviewer(
 	if err := config.Validate(); err != nil {
 		return SessionReviews{}, fmt.Errorf("%w: reviewer config: %w", ErrInvalid, err)
 	}
-	unlock := e.lockWorker(workerID)
+	unlock, err := e.lockWorker(ctx, workerID)
+	if err != nil {
+		return SessionReviews{}, err
+	}
 	defer unlock()
 
 	worker, ok, err := e.sessions.GetSession(ctx, workerID)
@@ -618,7 +655,10 @@ func (e *Engine) RestoreReviewer(ctx stdctx.Context, workerID domain.SessionID) 
 	if workerID == "" {
 		return RestoreReviewerResult{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
-	unlock := e.lockWorker(workerID)
+	unlock, err := e.lockWorker(ctx, workerID)
+	if err != nil {
+		return RestoreReviewerResult{}, err
+	}
 	defer unlock()
 	worker, ok, err := e.sessions.GetSession(ctx, workerID)
 	if err != nil {
@@ -651,7 +691,10 @@ func (e *Engine) SnapshotCodexReviewer(ctx stdctx.Context, workerID domain.Sessi
 	if workerID == "" {
 		return ports.CodexReviewerControllerSnapshot{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
-	unlock := e.lockWorker(workerID)
+	unlock, err := e.lockWorker(ctx, workerID)
+	if err != nil {
+		return ports.CodexReviewerControllerSnapshot{}, err
+	}
 	defer unlock()
 	reviewRow, ok, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, domain.ReviewerCodex)
 	if err != nil || !ok {
@@ -713,7 +756,10 @@ func (e *Engine) SuspendCodexReviewerExact(ctx stdctx.Context, workerID domain.S
 	if workerID == "" {
 		return false, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
-	unlock := e.lockWorker(workerID)
+	unlock, err := e.lockWorker(ctx, workerID)
+	if err != nil {
+		return false, err
+	}
 	defer unlock()
 	reviewRow, ok, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, domain.ReviewerCodex)
 	if err != nil || !ok || reviewRow.ReviewerHandleID == "" {
@@ -751,7 +797,10 @@ func (e *Engine) RestoreCodexReviewerExact(ctx stdctx.Context, workerID domain.S
 	if workerID == "" {
 		return fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
-	unlock := e.lockWorker(workerID)
+	unlock, err := e.lockWorker(ctx, workerID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	worker, ok, err := e.sessions.GetSession(ctx, workerID)
 	if err != nil {
@@ -856,7 +905,10 @@ func (e *Engine) TeardownReviewerTerminal(ctx stdctx.Context, workerID domain.Se
 	if workerID == "" {
 		return fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
-	unlock := e.lockWorker(workerID)
+	unlock, err := e.lockWorker(ctx, workerID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	reviews, err := e.store.ListReviewsBySession(ctx, workerID)
 	if err != nil {
@@ -1200,7 +1252,10 @@ func (e *Engine) TerminateReviewer(ctx stdctx.Context, workerID domain.SessionID
 	if workerID == "" {
 		return TerminateResult{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
-	unlock := e.lockWorker(workerID)
+	unlock, err := e.lockWorker(ctx, workerID)
+	if err != nil {
+		return TerminateResult{}, err
+	}
 	defer unlock()
 	reviews, err := e.store.ListReviewsBySession(ctx, workerID)
 	if err != nil {
