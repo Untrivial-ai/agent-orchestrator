@@ -1221,14 +1221,12 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			{handoffMenuItem}
 		</SessionActionsMenu>
 	);
-	const compactSessionChrome = adaptiveWorkspaceActive;
 	const sessionHeaderActions = (
 		<div
-			className="session-topbar-session-chrome flex shrink-0 items-center gap-1"
-			data-compact-session-chrome={compactSessionChrome ? "true" : "false"}
+			className="session-topbar-session-chrome flex shrink-0 items-center"
+			data-compact-session-chrome="false"
 		>
 			<ShellTopbar
-				compactActions={compactSessionChrome}
 				embedded
 				sessionAction={cloudInterfaceSwitchAction}
 			/>
