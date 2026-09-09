@@ -40,6 +40,7 @@ export function PermissionRelaunchDialog({ open, projectId, onOpenChange }: Perm
 		},
 	});
 	const count = affectedQuery.data?.count ?? 0;
+	const affected = affectedQuery.data?.affected ?? [];
 
 	useEffect(() => {
 		if (affectedQuery.data && count === 0) onOpenChange(false);
@@ -85,7 +86,7 @@ export function PermissionRelaunchDialog({ open, projectId, onOpenChange }: Perm
 					) : null}
 					{affectedQuery.data && !result ? (
 						<ul className="space-y-2 text-sm">
-							{affectedQuery.data.affected.map((session) => (
+							{affected.map((session) => (
 								<li key={session.sessionId} className="flex items-center justify-between gap-3">
 									<span className="truncate font-medium">{session.title}</span>
 									<span className="shrink-0 text-settings-muted">{session.fromMode} → {session.toMode}</span>
