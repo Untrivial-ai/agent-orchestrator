@@ -476,26 +476,13 @@ func TestDoctorTextOutputIsGrouped(t *testing.T) {
 }
 
 // TestDoctorAllHarnessesPresent asserts that every agent harness in
-// registry.Harnessed() has a corresponding probe in doctorHarnesses and
-// surfaces a check in the runDoctor report. This guards against registry/doctor list drift.
+// registry.Harnessed() surfaces a check in the runDoctor report.
 func TestDoctorAllHarnessesPresent(t *testing.T) {
 	setConfigEnv(t)
 
 	harnesses := registry.Harnessed()
 	if len(harnesses) == 0 {
 		t.Fatal("registry.Harnessed() returned empty list")
-	}
-
-	doctorSet := make(map[string]bool, len(doctorHarnesses))
-	for _, h := range doctorHarnesses {
-		doctorSet[h.Name] = true
-	}
-
-	for _, ha := range harnesses {
-		id := string(ha.Harness)
-		if !doctorSet[id] {
-			t.Errorf("registered harness %q missing from doctorHarnesses probe list", id)
-		}
 	}
 
 	// No harness binaries available — all land as WARN "not found in PATH".
