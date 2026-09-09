@@ -233,6 +233,21 @@ func TestProjectsAPI_UpdateSettings(t *testing.T) {
 	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
 }
 
+func TestProjectsAPI_UpdateSettingsPreservesLegacyLongName(t *testing.T) {
+	srv := newTestServer(t)
+	repo := gitRepo(t, "04-registered-project")
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/projects", `{"path":`+quote(repo)+`,"projectId":"04-registered-project"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("seed create = %d, want 201; body=%s", status, body)
+	}
+
+	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/04-registered-project", `{"displayName":"04-registered-project","config":{"agentConfig":{"permissions":"bypass-permissions"}}}`)
+	if status != http.StatusOK {
+		t.Fatalf("PUT settings for unchanged legacy name = %d, want 200; body=%s", status, body)
+	}
+}
+
 func TestProjectsAPI_AddValidationAndConflicts(t *testing.T) {
 
 	srv := newTestServer(t)

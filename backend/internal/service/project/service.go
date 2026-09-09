@@ -601,22 +601,25 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if err := validateProjectID(id); err != nil {
 		return Project{}, err
 	}
-	displayName := strings.TrimSpace(in.DisplayName)
-	if displayName == "" {
-		return Project{}, apierr.Invalid("DISPLAY_NAME_REQUIRED", "Display name is required", nil)
-	}
-	if utf8.RuneCountInString(displayName) > maxDisplayNameLen {
-		return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", "Display name must be 20 characters or fewer", nil)
-	}
-	if err := in.Config.Validate(); err != nil {
-		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
-	}
 	row, ok, err := m.store.GetProject(ctx, string(id))
 	if err != nil {
 		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load project")
 	}
 	if !ok || !row.ArchivedAt.IsZero() {
 		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
+	}
+	displayName := strings.TrimSpace(in.DisplayName)
+	if displayName == "" {
+		return Project{}, apierr.Invalid("DISPLAY_NAME_REQUIRED", "Display name is required", nil)
+	}
+	// Keep settings saves working for projects created before the 20-character
+	// limit was introduced. An unchanged legacy name is safe to preserve, but
+	// newly changing it still enforces the current limit.
+	if utf8.RuneCountInString(displayName) > maxDisplayNameLen && displayName != row.DisplayName {
+		return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", "Display name must be 20 characters or fewer", nil)
+	}
+	if err := in.Config.Validate(); err != nil {
+		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
 	if row.Kind.WithDefault() == domain.ProjectKindScratch {
 		if err := validateScratchProjectConfig(in.Config); err != nil {
