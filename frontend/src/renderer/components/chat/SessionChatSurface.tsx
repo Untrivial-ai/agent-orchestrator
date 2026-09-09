@@ -8,7 +8,7 @@
  */
 
 import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { memo, useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	findActiveAgentSwitch,
@@ -50,7 +50,7 @@ export interface ConversationWorkState {
 	queuedTurnCount: number;
 }
 
-export function SessionChatSurface({
+export const SessionChatSurface = memo(function SessionChatSurface({
 	session,
 	reviewerTerminal,
 	onOpenReviewerTerminal,
@@ -139,7 +139,12 @@ export function SessionChatSurface({
 	const snapshot = queriedSnapshot?.sessionId === session.id ? queriedSnapshot : undefined;
 	const commands = useConversationCommands(session.id);
 	const projectPermissions = useRememberProjectPermissions(session.workspaceId, snapshot?.harness);
-	const { acknowledgeAcceptedTurn, pendingAcceptedTurnId } = commands;
+	const {
+		acknowledgeAcceptedTurn,
+		acknowledgeLocalEcho,
+		localEchos = [],
+		pendingAcceptedTurnId,
+	} = commands;
 	const conversationWorkKnown = Boolean(snapshot);
 	const acceptedLocalTurnObserved = Boolean(
 		pendingAcceptedTurnId && snapshot?.turns.some((turn) => turn.id === pendingAcceptedTurnId),
@@ -154,6 +159,19 @@ export function SessionChatSurface({
 			acknowledgeAcceptedTurn(pendingAcceptedTurnId);
 		}
 	}, [acceptedLocalTurnObserved, acknowledgeAcceptedTurn, pendingAcceptedTurnId]);
+	useEffect(() => {
+		if (!snapshot) return;
+		const durableHumanTurnIds = new Set(
+			snapshot.items.flatMap((item) =>
+				item.kind === "message" && item.role === "user" && item.origin === "human" && item.turnId
+					? [item.turnId]
+					: [],
+			),
+		);
+		for (const echo of localEchos) {
+			if (echo.turnId && durableHumanTurnIds.has(echo.turnId)) acknowledgeLocalEcho?.(echo.turnId);
+		}
+	}, [acknowledgeLocalEcho, localEchos, snapshot]);
 	useEffect(() => {
 		if (!conversationWorkKnown) return;
 		onConversationWorkChange?.({ controllerBusy, hasRunningTurn, queuedTurnCount });
@@ -399,6 +417,7 @@ export function SessionChatSurface({
 				skills={skills}
 				filePaths={paths}
 				filePathsTruncated={truncated}
+				localEchos={localEchos}
 				onStageAttachments={stageAttachments}
 				nativeImages={can(renderSnapshot, "images")}
 				// Gated on what the daemon advertises, so the control is never drawn for a
@@ -445,7 +464,7 @@ export function SessionChatSurface({
 			) : null}
 		</div>
 	);
-}
+});
 
 function ChatAgentSwitchStatus({
 	auxiliaryActive,

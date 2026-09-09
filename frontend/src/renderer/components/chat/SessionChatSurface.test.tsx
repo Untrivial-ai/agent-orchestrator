@@ -771,7 +771,10 @@ describe("project remembering waits for provider permissions", () => {
 		expect(screen.getByTestId("remember-available")).toHaveTextContent("false");
 		configState.loaded = true;
 		configState.options = [{ id: "model", name: "Model", category: "model", type: "select", choices: [] }];
-		rerender(<Wrapper client={client}><SessionChatSurface session={session} /></Wrapper>);
+		// The real query observer schedules this component when catalog data lands.
+		// The lightweight hook mock has no subscription, so change the parent
+		// session identity to model that notification through the memo boundary.
+		rerender(<Wrapper client={client}><SessionChatSurface session={{ ...session }} /></Wrapper>);
 		expect(screen.getByTestId("remember-available")).toHaveTextContent("true");
 	});
 });

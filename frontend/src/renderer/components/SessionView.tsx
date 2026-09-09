@@ -121,6 +121,14 @@ const shellTopbarHiddenByPlatform = hidesShellTopbar();
 const isMac = isMacPlatform();
 const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as CSSProperties) : undefined;
 const newTerminalShortcutLabel = shortcutBindingLabel(defaultShortcutBindings("new-shell-terminal", isMac)[0], isMac);
+const sessionHeaderActions = (
+	<div
+		className="session-topbar-session-chrome flex shrink-0 items-center"
+		data-compact-session-chrome="false"
+	>
+		<ShellTopbar embedded />
+	</div>
+);
 
 type ReviewsResponse = components["schemas"]["ListReviewsResponse"];
 type ReviewerTerminalTarget = { handleId: string; harness: string };
@@ -271,8 +279,12 @@ function SessionInspectorRail({
 	}
 	const minWidth = useCallback(() => rangeRef.current.min, []);
 	const maxWidth = useCallback(() => rangeRef.current.max, []);
+	const gapRef = useRef<HTMLDivElement>(null);
+	const panelRef = useRef<HTMLDivElement>(null);
+	const getResizeTargets = useCallback(() => [gapRef.current, panelRef.current], []);
 	const { onPointerDown, onCollapsedPointerDown, onDoubleClick } = useResizable({
 		cssVar: inspectorWidthVar,
+		getCssTargets: getResizeTargets,
 		storageKey: sizing.storageKey,
 		defaultWidth: sizing.defaultWidth,
 		min: minWidth,
@@ -314,6 +326,7 @@ function SessionInspectorRail({
 				className="relative max-w-(--session-inspector-max-width) shrink-0"
 				data-slot="inspector-gap"
 				initial={false}
+				ref={gapRef}
 				animate={{ width: isOpen ? `var(${inspectorWidthVar}, ${sizing.defaultWidth}px)` : 0 }}
 				transition={transition}
 			/>
@@ -332,6 +345,7 @@ function SessionInspectorRail({
 				initial={false}
 				animate={{ x: isOpen ? "0%" : "100%" }}
 				onAnimationComplete={handleAnimationComplete}
+				ref={panelRef}
 				style={{ width: `var(${inspectorWidthVar}, ${sizing.defaultWidth}px)` }}
 				transition={transition}
 			>
@@ -853,9 +867,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		(next: InspectorView) => {
 			if (next === inspectorView) return;
 			if (next === "browser") {
-				const currentWidth = Number.parseFloat(
-					document.documentElement.style.getPropertyValue(inspectorWidthVar),
-				);
+				const currentWidth = Number(window.localStorage.getItem(sizing.storageKey));
 				browserEntryWidthFloorRef.current = Number.isFinite(currentWidth) ? currentWidth : null;
 			} else {
 				browserEntryWidthFloorRef.current = null;
@@ -976,7 +988,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		!interfaceSwitchUnsupported && (interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError),
 	);
 	const newTerminalError = openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined;
-	const newShellTerminalAction =
+	const newShellTerminalAction = useMemo(() =>
 		session && !isOrchestrator ? (
 			<Tooltip>
 				<TooltipTrigger asChild>
@@ -993,7 +1005,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					{newTerminalError ?? t("terminal.newWithShortcut", { shortcut: newTerminalShortcutLabel })}
 				</TooltipContent>
 			</Tooltip>
-		) : null;
+		) : null,
+		[addShellTerminal, isOrchestrator, newTerminalError, session, t],
+	);
 	const fileAnnotation = useFileAnnotation(sessionId);
 	const centerFileTabs = useMemo(
 		() =>
@@ -1094,7 +1108,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		if (handoffSwitchError) setHandoffDialogOpen(true);
 	}, [handoffSwitchError]);
-	const interfaceSwitchInlineStatus =
+	const interfaceSwitchInlineStatus = useMemo(() =>
 		session && showInterfaceSwitchAction && activeInterfaceTransition ? (
 			<SessionInterfaceSwitchButton
 				target={interfaceTarget}
@@ -1113,8 +1127,23 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					void interfaceSwitch.cancel().catch(() => {});
 				}}
 			/>
-		) : null;
-	const interfaceSwitchMenuItem =
+		) : null,
+		[
+			activeInterfaceTransition,
+			interfaceSwitch.cancelError,
+			interfaceSwitch.cancelling,
+			interfaceSwitch.isLoading,
+			interfaceSwitch.starting,
+			interfaceSwitch.status,
+			interfaceSwitch.statusError,
+			interfaceSwitch.transition,
+			interfaceTarget,
+			requestInterfaceSwitch,
+			session,
+			showInterfaceSwitchAction,
+		],
+	);
+	const interfaceSwitchMenuItem = useMemo(() =>
 		session && showInterfaceSwitchAction && !activeInterfaceTransition ? (
 			<SessionInterfaceSwitchMenuItem
 				target={interfaceTarget}
@@ -1127,8 +1156,20 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				pending={interfaceSwitch.starting}
 				onClick={requestInterfaceSwitch}
 			/>
-		) : null;
-	const handoffMenuItem = session ? (
+		) : null,
+		[
+			activeInterfaceTransition,
+			interfaceSwitch.isLoading,
+			interfaceSwitch.starting,
+			interfaceSwitch.status,
+			interfaceSwitch.statusError,
+			interfaceTarget,
+			requestInterfaceSwitch,
+			session,
+			showInterfaceSwitchAction,
+		],
+	);
+	const handoffMenuItem = useMemo(() => session ? (
 		<TerminalSwitchAgentButton
 			key={session.id}
 			variant="menu-item"
@@ -1139,21 +1180,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			session={session}
 			switchError={handoffSwitchError}
 		/>
-	) : null;
-	const sessionTabActions = (
+	) : null, [handoffAgentSwitch, handoffControlPresentation, handoffDialogOpen, handoffSwitchError, handleHandoffDialogOpenChange, session]);
+	const sessionTabActions = useMemo(() => (
 		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
-	);
-	const sessionHeaderActions = (
-		<div
-			className="session-topbar-session-chrome flex shrink-0 items-center"
-			data-compact-session-chrome="false"
-		>
-			<ShellTopbar embedded />
-		</div>
-	);
+	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem]);
 
 	useEffect(() => {
 		setHandoffDialogOpen(false);
@@ -1641,12 +1674,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						settledClosed={!isInspectorOpen && inspectorSettledClosed}
 						splitRef={sessionSplitRef}
 					>
-						<SessionInspector
-							browserAnnotationQueue={browserAnnotationQueue}
-							browserPoppedOut={browserPoppedOut}
-							filesView={
-								session ? (
-									<SessionFileExplorer
+							<SessionInspector
+								browserAnnotationQueue={inspectorView === "browser" ? browserAnnotationQueue : undefined}
+								browserPoppedOut={browserPoppedOut}
+								filesView={
+									inspectorView === "files" && session ? (
+										<SessionFileExplorer
 										onOpenFile={openCenterFile}
 										onToggleMaximized={handleToggleFilesPopOut}
 										revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
@@ -1655,13 +1688,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								) : null
 							}
 							isInspectorVisible={inspectorPanelVisible}
-							onOpenFiles={handleOpenFiles}
-							onOpenReviewFile={handleOpenReviewFile}
-							onOpenReviewerTerminal={selectReviewerTerminal}
-							onToggleBrowserPopOut={handleToggleBrowserPopOut}
-							onViewChange={transitionInspectorView}
-							view={inspectorView}
-							browserView={browserView}
+								onOpenFiles={handleOpenFiles}
+								onOpenReviewFile={handleOpenReviewFile}
+								onOpenReviewerTerminal={selectReviewerTerminal}
+								onToggleBrowserPopOut={handleToggleBrowserPopOut}
+								onViewChange={transitionInspectorView}
+								view={inspectorView}
+								browserView={inspectorView === "browser" ? browserView : undefined}
 							session={session}
 						/>
 					</SessionInspectorRail>

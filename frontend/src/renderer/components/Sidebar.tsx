@@ -55,6 +55,7 @@ import {
 	type MouseEvent,
 	type PointerEvent as ReactPointerEvent,
 	type ReactNode,
+	type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -340,6 +341,8 @@ type SidebarProps = {
 	onCreateProject: (input: CreateProjectInput) => Promise<void>;
 	onInitializeProject: (path: string) => Promise<void>;
 	onRemoveProject: (projectId: string) => Promise<void>;
+	/** Fixed shell chrome that also consumes the live sidebar width. */
+	resizeAuxiliaryTargetRef?: RefObject<HTMLElement | null>;
 };
 
 // Selection state comes from the URL: which project/session is active is the
@@ -416,6 +419,7 @@ export function Sidebar({
 	onCreateProject,
 	onInitializeProject,
 	onRemoveProject,
+	resizeAuxiliaryTargetRef,
 }: SidebarProps) {
 	const { t } = useTranslation();
 	const selection = useSelection();
@@ -481,16 +485,27 @@ export function Sidebar({
 	const isNightly = typeof appVersion === "string" && appVersion.includes("-nightly.");
 
 	// agent-orchestrator's sidebar resize: drag the right edge (200-420px,
-	// persisted), double-click to reset to 240px. Drives --ao-sidebar-w on :root,
-	// which the provider forwards into shadcn's --sidebar-width. Dragging clamps
+	// persisted), double-click to reset to 240px. The width variable is written
+	// only to the two layout consumers and fixed titlebar strip, rather than
+	// :root. Dragging clamps
 	// at SIDEBAR_MIN_WIDTH — collapsing stays on the explicit toggle (⌘B /
 	// titlebar button), never on a drag.
+	const resizeScopeRef = useRef<HTMLDivElement>(null);
+	const getResizeTargets = useCallback(() => {
+		const scope = resizeScopeRef.current;
+		return [
+			scope?.querySelector<HTMLElement>('[data-slot="sidebar-gap"]') ?? null,
+			scope?.querySelector<HTMLElement>('[data-slot="sidebar-container"]') ?? null,
+			resizeAuxiliaryTargetRef?.current ?? null,
+		];
+	}, [resizeAuxiliaryTargetRef]);
 	const {
 		onPointerDown: onResizePointerDown,
 		onCollapsedPointerDown: onCollapsedResizePointerDown,
 		onDoubleClick: onResizeDoubleClick,
 	} = useResizable({
 		cssVar: "--ao-sidebar-w",
+		getCssTargets: getResizeTargets,
 		storageKey: "ao-sidebar-w",
 		defaultWidth: SIDEBAR_DEFAULT_WIDTH,
 		min: SIDEBAR_MIN_WIDTH,
@@ -516,6 +531,8 @@ export function Sidebar({
 	const reorderSensors = useReorderSensors();
 	const projectDragClickGuard = usePostDragClickGuard();
 	const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
+	const [projectDropSettling, setProjectDropSettling] = useState(false);
+	const projectDropSettleTimerRef = useRef<number | null>(null);
 	const projectDragBoundsRef = useRef<DragBounds | null>(null);
 	const projectDropTargetRef = useRef<{ overId: string; placement: ProjectDropPlacement } | null>(null);
 	const projectDropNodesRef = useRef(new Map<string, HTMLElement>());
@@ -553,6 +570,14 @@ export function Sidebar({
 	const commitProjectOrder = useCallback((next: string[] | null) => {
 		if (next) setProjectOrder(next);
 	}, []);
+	const clearProjectDropSettling = useCallback(() => {
+		if (projectDropSettleTimerRef.current !== null) {
+			window.clearTimeout(projectDropSettleTimerRef.current);
+			projectDropSettleTimerRef.current = null;
+		}
+		setProjectDropSettling(false);
+	}, []);
+	useEffect(() => () => clearProjectDropSettling(), [clearProjectDropSettling]);
 	const setProjectDropIndicator = useCallback((next: { overId: string; placement: ProjectDropPlacement } | null) => {
 		const previous = projectDropTargetRef.current;
 		if (previous && (previous.overId !== next?.overId || previous.placement !== next?.placement)) {
@@ -578,11 +603,21 @@ export function Sidebar({
 			projectDragBoundsRef.current = null;
 			setProjectDropIndicator(null);
 			projectDropNodesRef.current.clear();
+			// Keep Motion layout and nested session DnD detached through the drop
+			// event. Re-enabling both can otherwise turn a cheap pointer-up into a
+			// full sidebar measurement/commit before the browser can acknowledge it.
+			clearProjectDropSettling();
+			setProjectDropSettling(true);
+			projectDropSettleTimerRef.current = window.setTimeout(() => {
+				projectDropSettleTimerRef.current = null;
+				setProjectDropSettling(false);
+			}, 0);
 			setDraggingProjectId(null);
 		},
-		[commitProjectOrder, projectDragClickGuard, projectIds, setProjectDropIndicator],
+		[clearProjectDropSettling, commitProjectOrder, projectDragClickGuard, projectIds, setProjectDropIndicator],
 	);
 	const onProjectDragStart = useCallback(({ active }: DragStartEvent) => {
+		clearProjectDropSettling();
 		const projectId = String(active.id);
 		projectDragBoundsRef.current = null;
 		projectDropTargetRef.current = null;
@@ -598,7 +633,7 @@ export function Sidebar({
 			};
 		}
 		setDraggingProjectId(projectId);
-	}, []);
+	}, [clearProjectDropSettling]);
 	const updateProjectDropTarget = useCallback(({ active, activatorEvent, delta, over }: DragMoveEvent | DragOverEvent) => {
 		const activeId = String(active.id);
 		const overId = over ? String(over.id) : null;
@@ -619,11 +654,12 @@ export function Sidebar({
 		setProjectDropIndicator(changesOrder ? { overId: overId!, placement } : null);
 	}, [projectIds, setProjectDropIndicator]);
 	const onProjectDragCancel = useCallback(() => {
+		clearProjectDropSettling();
 		projectDragBoundsRef.current = null;
 		setProjectDropIndicator(null);
 		projectDropNodesRef.current.clear();
 		setDraggingProjectId(null);
-	}, [setProjectDropIndicator]);
+	}, [clearProjectDropSettling, setProjectDropIndicator]);
 
 	const pinnedSessions = useMemo(
 		() => workspaces
@@ -641,6 +677,7 @@ export function Sidebar({
 		// Pinned sidebars start below shell chrome.
 		<SidebarRoot
 			collapsible="offcanvas"
+			resizeScopeRef={resizeScopeRef}
 			data-expanded-chrome={expandedChromeVisible ? "visible" : "hidden"}
 			data-topbar-offset={underTopbar ? topbarOffset : undefined}
 			className={cn(
@@ -785,13 +822,14 @@ export function Sidebar({
 							>
 								<SidebarMenu className="min-h-full gap-0.5 rounded-lg group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:rounded-none">
 									{orderedWorkspaces.map((workspace) => (
-										<ProjectItem
+											<ProjectItem
 											key={workspace.id}
 											workspace={workspace}
 											expanded={expandedIds.has(workspace.id) || (initialActiveSessionProjectId === workspace.id && !dismissedInitialActiveProjectIds.has(workspace.id))}
 											suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
 											selection={selection}
-											draggingProjectId={draggingProjectId}
+												draggingProjectId={draggingProjectId}
+												projectDropSettling={projectDropSettling}
 											consumeDragClick={projectDragClickGuard.consumeClick}
 											onSessionOrderChange={recordSessionOrder}
 											onToggle={toggleProjectDisclosure}
@@ -943,6 +981,7 @@ type ProjectItemProps = {
 	expanded: boolean;
 	selection: Selection;
 	draggingProjectId?: string | null;
+	projectDropSettling: boolean;
 	consumeDragClick: (id: string) => boolean;
 	onSessionOrderChange: (projectId: string, order: string[]) => void;
 	onToggle: (projectId: string) => void;
@@ -1009,6 +1048,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	expanded,
 	selection,
 	draggingProjectId,
+	projectDropSettling,
 	consumeDragClick,
 	onSessionOrderChange,
 	onToggle,
@@ -1065,7 +1105,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// being dragged, leave the session lists as plain rows: otherwise every
 	// expanded project's DnD context measures its sortable descendants on drop.
 	// With a dense sidebar that turns one project drop into a full-tree layout.
-	const projectDragInProgress = draggingProjectId !== null && draggingProjectId !== undefined;
+	const projectDragInProgress = Boolean(draggingProjectId) || projectDropSettling;
 	const sessionSensors = useReorderSensors();
 	const sessionDragClickGuard = usePostDragClickGuard();
 	const [sessionDragging, setSessionDragging] = useState(false);
@@ -1221,7 +1261,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					data-drop-indicator={undefined}
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
-					layout={draggingProjectId ? false : "position"}
+						layout={projectDragInProgress ? false : "position"}
 					ref={setDroppableNodeRef}
 					transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
 				>

@@ -1,7 +1,7 @@
 /// <reference path="../../src/renderer/global.d.ts" />
 // Browser-only workload fixture: real AO rendering, deterministic synthetic data.
 // This entry is never imported by the application or included in its build.
-import { type ReactNode } from "react";
+import { Profiler, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import {
@@ -13,13 +13,19 @@ import { I18nextProvider } from "react-i18next";
 import { appI18n } from "../../src/renderer/i18n";
 import { TooltipProvider } from "../../src/renderer/components/ui/tooltip";
 import { AssistantMessage } from "../../src/renderer/components/chat/ChatTimelineItems";
+import { ChatComposer } from "../../src/renderer/components/chat/ChatComposer";
 import { ChatWorkspace } from "../../src/renderer/components/chat/ChatWorkspace";
 import { chatFixtureLongHistory } from "../../src/renderer/lib/chat-fixture";
 import { highlight } from "../../src/renderer/lib/code-highlight";
 import { createEventTransport } from "../../src/renderer/lib/event-transport";
 import { useUiStore } from "../../src/renderer/stores/ui-store";
 import { setApiBaseUrl } from "../../src/renderer/lib/api-client";
-import type { ConversationMessage } from "../../src/renderer/types/conversation";
+import { useConversationCommands } from "../../src/renderer/hooks/useConversation";
+import { buildCommands, displayGroups } from "../../src/renderer/lib/command-palette";
+import { settingsQueryKey } from "../../src/renderer/hooks/useSettings";
+import { SettingsDialog } from "../../src/renderer/components/SettingsDialog";
+import type { ChatSkill, ConversationMessage } from "../../src/renderer/types/conversation";
+import type { WorkspaceSummary } from "../../src/renderer/types/workspace";
 import "../../src/renderer/styles.css";
 
 const root = createRoot(document.getElementById("performance-root")!);
@@ -30,6 +36,86 @@ const wait = (ms: number) =>
 	new Promise<void>((resolve) => setTimeout(resolve, ms));
 const frame = () =>
 	new Promise<number>((resolve) => requestAnimationFrame(resolve));
+let composerSample: {
+	frameGaps: number[];
+	beforeInputDurations: number[];
+	longTasks: number[];
+	lastFrame: number;
+	observer?: PerformanceObserver;
+	removeBeforeInputTiming: () => void;
+	frame: number;
+} | undefined;
+const LOCAL_ECHO_TEXT = "Show a local acknowledgement before the daemon responds";
+const inspectorTimelineSnapshot = chatFixtureLongHistory(250);
+let localEchoSample:
+	| {
+		startedAt?: number;
+		rowCommittedAt?: number;
+		firstPaintAt?: number;
+		requestPending: boolean;
+		sendError?: string;
+		requestFinished: Promise<void>;
+		observer: MutationObserver;
+		originalFetch: typeof window.fetch;
+	}
+	| undefined;
+
+function LocalEchoWorkload() {
+	const { send, localEchos } = useConversationCommands("performance-session");
+	return (
+		<>
+			<button
+				type="button"
+				onClick={() => {
+					if (localEchoSample) localEchoSample.startedAt = performance.now();
+					void send(LOCAL_ECHO_TEXT).catch((error) => {
+						if (localEchoSample) localEchoSample.sendError = String(error);
+					});
+				}}
+			>
+				Benchmark local echo
+			</button>
+			<ChatWorkspace
+				snapshot={{
+					...chatFixtureLongHistory(0),
+					sessionId: "performance-session",
+					controller: { state: "ready" },
+				}}
+				localEchos={localEchos}
+			/>
+		</>
+	);
+}
+
+function SettingsDialogWorkload({
+	onCommit,
+}: {
+	onCommit: (actualDuration: number, commitTime: number) => void;
+}) {
+	return (
+		<Profiler id="settings-dialog" onRender={(_id, _phase, actualDuration, _baseDuration, _startTime, commitTime) => onCommit(actualDuration, commitTime)}>
+			<SettingsDialog />
+		</Profiler>
+	);
+}
+
+function InspectorTimelineWorkload() {
+	return (
+		<>
+			<button
+				type="button"
+				onClick={() => useUiStore.getState().setInspectorOpen(inspectorTimelineSnapshot.sessionId, true)}
+			>
+				Open inspector for long timeline
+			</button>
+			<ChatWorkspace
+				snapshot={inspectorTimelineSnapshot}
+				sessionTitle="AO responsiveness benchmark"
+			/>
+		</>
+	);
+}
+
 function render(node: ReactNode) {
 	flushSync(() =>
 		root.render(
@@ -55,7 +141,191 @@ function assistant(text: string, streaming = true): ConversationMessage {
 	};
 }
 
+async function prepareComposerCompletion(node: ReactNode) {
+	composerSample?.observer?.disconnect();
+	composerSample?.removeBeforeInputTiming();
+	if (composerSample) cancelAnimationFrame(composerSample.frame);
+	render(node);
+	await frame();
+	const sample = {
+		frameGaps: [] as number[],
+		beforeInputDurations: [] as number[],
+		longTasks: [] as number[],
+		lastFrame: performance.now(),
+		observer: undefined as PerformanceObserver | undefined,
+		removeBeforeInputTiming: () => {},
+		frame: 0,
+	};
+	// React delegates editor events at the root container. A document-level
+	// capture/bubble pair therefore brackets Lexical plus the composer's
+	// synchronous React work for every actual browser `beforeinput` event.
+	const starts = new WeakMap<Event, number>();
+	const onBeforeInputCapture = (event: Event) => starts.set(event, performance.now());
+	const onBeforeInputBubble = (event: Event) => {
+		const started = starts.get(event);
+		if (started !== undefined) sample.beforeInputDurations.push(performance.now() - started);
+	};
+	document.addEventListener("beforeinput", onBeforeInputCapture, true);
+	document.addEventListener("beforeinput", onBeforeInputBubble);
+	sample.removeBeforeInputTiming = () => {
+		document.removeEventListener("beforeinput", onBeforeInputCapture, true);
+		document.removeEventListener("beforeinput", onBeforeInputBubble);
+	};
+	if (typeof PerformanceObserver !== "undefined") {
+		try {
+			sample.observer = new PerformanceObserver((list) => {
+				for (const entry of list.getEntries()) sample.longTasks.push(entry.duration);
+			});
+			// Collection begins only after the workload has mounted. Replaying
+			// buffered entries would incorrectly attribute an expensive long-history
+			// mount to the subsequent typing interaction.
+			sample.observer.observe({ type: "longtask" });
+		} catch {
+			// Long Task entries are unavailable in some Chromium configurations.
+		}
+	}
+	const tick = (now: number) => {
+		sample.frameGaps.push(now - sample.lastFrame);
+		sample.lastFrame = now;
+		sample.frame = requestAnimationFrame(tick);
+	};
+	sample.frame = requestAnimationFrame(tick);
+	composerSample = sample;
+}
+
+async function finishComposerCompletion() {
+	const sample = composerSample;
+	if (!sample) throw new Error("Composer-completion benchmark was not prepared");
+	cancelAnimationFrame(sample.frame);
+	sample.observer?.disconnect();
+	sample.removeBeforeInputTiming();
+	composerSample = undefined;
+	await frame();
+	const items = document.querySelectorAll('[role="listbox"] [role="option"]');
+	return {
+		visibleSuggestions: items.length,
+		beforeInputDurationsMs: sample.beforeInputDurations,
+		maxFrameGapMs: Math.max(...sample.frameGaps, 0),
+		longTaskCount: sample.longTasks.length,
+		maxLongTaskMs: Math.max(...sample.longTasks, 0),
+	};
+}
+
 export const performanceHarness = {
+	async prepareInspectorTimeline() {
+		useUiStore.setState({
+			inspectorSessions: {
+				[inspectorTimelineSnapshot.sessionId]: { isOpen: false, view: "summary" },
+			},
+		});
+		render(<InspectorTimelineWorkload />);
+		await document.fonts.ready;
+		await wait(500);
+		const timeline = document.querySelector<HTMLElement>('[role="log"][aria-label="Conversation"]');
+		if (!timeline) throw new Error("Long conversation did not mount");
+		return {
+			loadedTurns: 250,
+			mountedTurns: timeline.querySelectorAll("[data-chat-scroll-anchor]").length,
+			domElementCount: document.querySelectorAll("*").length,
+		};
+	},
+	async commandPalette() {
+		const workspaceCount = 100;
+		const sessionsPerWorkspace = 50;
+		const workspaces: WorkspaceSummary[] = Array.from({ length: workspaceCount }, (_, workspaceIndex) => {
+			const workspaceId = `perf-project-${workspaceIndex}`;
+			return {
+				id: workspaceId,
+				name: `Performance project ${workspaceIndex}`,
+				path: `/repos/performance-project-${workspaceIndex}`,
+				type: "main",
+				sessions: Array.from({ length: sessionsPerWorkspace }, (_, sessionIndex) => {
+					const sessionId = `${workspaceId}-session-${sessionIndex}`;
+					const prNumber = workspaceIndex * sessionsPerWorkspace + sessionIndex + 1;
+					return {
+						id: sessionId,
+						workspaceId,
+						workspaceName: `Performance project ${workspaceIndex}`,
+						title: `Fix performance task ${sessionIndex}`,
+						provider: "codex",
+						kind: "worker",
+						branch: `perf/${workspaceIndex}/${sessionIndex}`,
+						status: "working",
+						updatedAt: "2026-09-09T00:00:00Z",
+						prs: sessionIndex % 5 === 0
+							? [{
+								url: `https://github.com/aoagents/performance/pull/${prNumber}`,
+								number: prNumber,
+								state: "open",
+								ci: "passing",
+								review: "pending",
+								mergeability: "clean",
+								reviewComments: false,
+								updatedAt: "2026-09-09T00:00:00Z",
+							}]
+							: [],
+					};
+				}),
+			};
+		});
+		const buildStarted = performance.now();
+		const items = buildCommands({ workspaces, currentProjectId: workspaces[0]?.id });
+		const buildMs = performance.now() - buildStarted;
+		const queries = ["fix", "project 42", "#100", "copy pr", "no-matches"];
+		const querySamples = queries.map((query) => {
+			const started = performance.now();
+			const groups = displayGroups(items, query);
+			return {
+				query,
+				elapsedMs: performance.now() - started,
+				visibleItems: groups.reduce((count, group) => count + group.items.length, 0),
+			};
+		});
+		return {
+			workspaceCount,
+			sessionCount: workspaceCount * sessionsPerWorkspace,
+			commandItemCount: items.length,
+			buildMs,
+			querySamples,
+		};
+	},
+	async settingsDialog() {
+		// This isolates renderer mount work. The live daemon settings query is
+		// intentionally warm because SettingsDialog subscribes to it even while
+		// closed in the application shell.
+		client.setQueryDefaults(settingsQueryKey, { staleTime: Infinity });
+		client.setQueryData(settingsQueryKey, {
+			defaultSessionMode: "chat",
+			chatHarnesses: ["codex"],
+			client: "performance-harness",
+			localEnabled: true,
+			cloudOffering: false,
+			cloudEnabled: false,
+			cloudControlPlaneUrl: "",
+		});
+		useUiStore.setState({ settingsModal: null });
+		const commits: Array<{ actualDurationMs: number; commitOffsetMs: number }> = [];
+		let startedAt = 0;
+		render(
+			<SettingsDialogWorkload
+				onCommit={(actualDuration, commitTime) => {
+					if (startedAt > 0) commits.push({
+						actualDurationMs: actualDuration,
+						commitOffsetMs: commitTime - startedAt,
+					});
+				}}
+			/>,
+		);
+		await frame();
+		startedAt = performance.now();
+		useUiStore.getState().openGlobalSettings("general");
+		await frame();
+		const dialogFirstPaintMs = performance.now() - startedAt;
+		await frame();
+		const bodyFirstPaintMs = performance.now() - startedAt;
+		useUiStore.getState().closeSettings();
+		return { dialogFirstPaintMs, bodyFirstPaintMs, commits };
+	},
 	async events() {
 		const original = window.EventSource;
 		const sources: BenchSource[] = [];
@@ -256,6 +526,124 @@ export const performanceHarness = {
 			maxFrameGapMs: Math.max(...frameGaps),
 			frameGaps,
 		};
+	},
+	/**
+	 * Split preparation from collection so Playwright produces real keyboard input
+	 * against Lexical, rather than this fixture simulating an editor event.
+	 */
+	async prepareFileCompletion() {
+		const filePaths = Array.from(
+			{ length: 5_000 },
+			(_, index) => `packages/workspace-${index % 100}/src/components/ChatComposer${index}.tsx`,
+		);
+		await prepareComposerCompletion(<ChatComposer autoFocus={false} filePaths={filePaths} onSend={() => undefined} />);
+		return { candidatePaths: filePaths.length };
+	},
+	async finishFileCompletion() {
+		return {
+			candidatePaths: 5_000,
+			...(await finishComposerCompletion()),
+		};
+	},
+	async prepareLongHistoryTyping() {
+		useUiStore.setState({
+			inspectorSessions: { "ao-long": { isOpen: false, view: "summary" } },
+		});
+		await prepareComposerCompletion(
+			<ChatWorkspace
+				snapshot={chatFixtureLongHistory(250)}
+				sessionTitle="AO responsiveness benchmark"
+			/>,
+		);
+		const timeline = document.querySelector<HTMLElement>('[role="log"][aria-label="Conversation"]');
+		if (!timeline) throw new Error("Long conversation did not mount");
+		return {
+			mountedTurns: timeline.querySelectorAll("[data-chat-scroll-anchor]").length,
+			domElementCount: document.querySelectorAll("*").length,
+		};
+	},
+	async finishLongHistoryTyping() {
+		return finishComposerCompletion();
+	},
+	async prepareSkillCompletion() {
+		const skills: ChatSkill[] = Array.from({ length: 5_000 }, (_, index) => ({
+			name: `chatcomposer-${index}`,
+			displayName: `Chat composer ${index}`,
+			description: `Benchmark command ${index} for testing a large completion catalog.`,
+			source: "workspace",
+		}));
+		await prepareComposerCompletion(<ChatComposer autoFocus={false} onSend={() => undefined} skills={skills} />);
+		return { candidateSkills: skills.length };
+	},
+	async finishSkillCompletion() {
+		return {
+			candidateSkills: 5_000,
+			...(await finishComposerCompletion()),
+		};
+	},
+	async prepareLocalEcho() {
+		localEchoSample?.observer.disconnect();
+		if (localEchoSample) window.fetch = localEchoSample.originalFetch;
+		client.clear();
+		const originalFetch = window.fetch;
+		let resolveRequest!: () => void;
+		const requestFinished = new Promise<void>((resolve) => {
+			resolveRequest = resolve;
+		});
+		const sample = {
+			requestPending: true,
+			requestFinished,
+			observer: new MutationObserver(() => {
+				if (
+					sample.startedAt !== undefined &&
+					sample.rowCommittedAt === undefined &&
+					document.body.textContent?.includes(LOCAL_ECHO_TEXT)
+				) {
+					sample.rowCommittedAt = performance.now();
+					requestAnimationFrame(() => {
+						sample.firstPaintAt = performance.now();
+					});
+				}
+			}),
+			originalFetch,
+			startedAt: undefined as number | undefined,
+			rowCommittedAt: undefined as number | undefined,
+			firstPaintAt: undefined as number | undefined,
+		};
+		sample.observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+		window.fetch = async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			if (!url.includes("/conversation/messages")) return originalFetch(input, init);
+			await wait(600);
+			sample.requestPending = false;
+			resolveRequest();
+			return new Response(JSON.stringify({ turnId: "performance-local-echo" }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		};
+		localEchoSample = sample;
+		setApiBaseUrl(window.location.origin);
+		render(<LocalEchoWorkload />);
+		await frame();
+		return { daemonDelayMs: 600 };
+	},
+	async finishLocalEcho() {
+		const sample = localEchoSample;
+		if (!sample || sample.startedAt === undefined) throw new Error("Local-echo benchmark was not started");
+		while (sample.firstPaintAt === undefined && performance.now() - sample.startedAt < 5_000) await frame();
+		const result = {
+			localRowCommitMs: sample.rowCommittedAt === undefined ? null : sample.rowCommittedAt - sample.startedAt,
+			localRowFirstPaintMs: sample.firstPaintAt === undefined ? null : sample.firstPaintAt - sample.startedAt,
+			httpWasPendingAtFirstPaint: sample.requestPending,
+			sendError: sample.sendError,
+			rowPresentAtEnd: document.body.textContent?.includes(LOCAL_ECHO_TEXT) ?? false,
+		};
+		await sample.requestFinished;
+		sample.observer.disconnect();
+		window.fetch = sample.originalFetch;
+		localEchoSample = undefined;
+		return result;
 	},
 };
 (

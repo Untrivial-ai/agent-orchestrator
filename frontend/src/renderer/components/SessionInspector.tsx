@@ -140,7 +140,7 @@ const prStateLabelKeys: Record<SessionPRSummary["state"], MessageKey> = {
 /**
  * Tabbed inspector rail beside the terminal (Summary · Reviews · Browser · Files).
  */
-export function SessionInspector({
+export const SessionInspector = memo(function SessionInspector({
 	session,
 	onOpenReviewerTerminal,
 	browserPoppedOut = false,
@@ -245,7 +245,7 @@ export function SessionInspector({
 			/>
 		</div>
 	);
-}
+});
 
 function reviewsTabVisible(session: WorkspaceSession | undefined): boolean {
 	if (!session) return true;

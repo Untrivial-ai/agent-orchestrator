@@ -91,6 +91,43 @@ beforeEach(() => {
 });
 
 describe("accepted conversation sends", () => {
+	it("keeps a local echo through acceptance until its durable turn is observed", async () => {
+		const response = deferred<{ data: { turnId: string }; error: undefined }>();
+		postMock.mockReturnValue(response.promise);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationCommands("ao-local-echo"), {
+			wrapper: HookWrapper,
+		});
+
+		let sending!: Promise<unknown>;
+		act(() => {
+			sending = result.current.send("show my message first");
+		});
+		await waitFor(() => {
+			expect(result.current.localEchos).toHaveLength(1);
+		});
+		expect(result.current.localEchos[0]).toMatchObject({ text: "show my message first" });
+		expect(result.current.localEchos[0]?.turnId).toBeUndefined();
+
+		response.resolve({ data: { turnId: "turn-local-echo" }, error: undefined });
+		await act(async () => {
+			await sending;
+		});
+		await waitFor(() =>
+			expect(result.current.localEchos).toMatchObject([
+				{ text: "show my message first", turnId: "turn-local-echo" },
+			]),
+		);
+
+		act(() => result.current.acknowledgeLocalEcho("turn-local-echo"));
+		await waitFor(() => expect(result.current.localEchos).toEqual([]));
+	});
+
 	it("keeps each accepted turn attached to the session that initiated it", async () => {
 		const firstResponse = deferred<{
 			data: { turnId: string };

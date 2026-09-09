@@ -290,6 +290,20 @@ describe("send keys", () => {
 		expect(field.textContent).toBe("do not lose this task");
 	});
 
+	it("clears a plain-text draft as soon as the local send acknowledgement starts", async () => {
+		const pending = deferred<void>();
+		const onSend = vi.fn().mockReturnValue(pending.promise);
+		render(<ChatComposer onSend={onSend} />);
+		const field = screen.getByLabelText("Message the agent") as HTMLElement;
+
+		await typeInComposer(field, "show this immediately");
+		await userEvent.keyboard("{Enter}");
+
+		expect(onSend).toHaveBeenCalledWith("show this immediately");
+		expect(field).toHaveTextContent("");
+		pending.resolve();
+	});
+
 	it("renders command failures from the live surface", () => {
 		render(<ChatComposer onSend={vi.fn()} commandError="The approval could not be submitted" />);
 		expect(screen.getByRole("alert")).toHaveTextContent("The approval could not be submitted");

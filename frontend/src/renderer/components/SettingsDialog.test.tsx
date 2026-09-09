@@ -75,6 +75,15 @@ describe("SettingsDialog", () => {
 		expect(screen.getByRole("button", { name: "Mobile" })).toHaveAttribute("aria-current", "page");
 	});
 
+	it("mounts dialog chrome before the selected settings form", async () => {
+		useUiStore.getState().openGlobalSettings("general");
+		renderSettingsDialog();
+
+		expect(screen.getByTestId("settings-dialog-body-pending")).toBeInTheDocument();
+		expect(screen.queryByTestId("global-settings-section")).not.toBeInTheDocument();
+		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("general");
+	});
+
 	it("does not expose Downloads as a standalone settings page", async () => {
 		useUiStore.getState().openGlobalSettings("browserProfiles");
 		renderSettingsDialog();

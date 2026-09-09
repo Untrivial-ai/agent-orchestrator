@@ -950,6 +950,26 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// hidden behind the cover. A normally parked terminal still ignores them.
 		const scheduleVisibleFit = () => scheduleStableFit(fitAllowsHidden);
 		fitRef.current = scheduleVisibleFit;
+		// ResizeObserver delivers after layout and before paint. Calling fit() from
+		// that callback reads xterm geometry and can allocate its renderer while
+		// Chromium is still resolving the inspector/terminal split, turning one
+		// rail frame into a nested layout cycle. A controlled rail only needs xterm
+		// to follow on the next frame; the final quiet-window fit remains exact.
+		// Coalescing also handles multiple observer deliveries in one frame.
+		let liveFitFrame: number | null = null;
+		const scheduleLiveFit = () => {
+			if (liveFitFrame !== null) return;
+			liveFitFrame = requestAnimationFrame(() => {
+				liveFitFrame = null;
+				if (host.closest('[data-terminal-live-resize="true"]')) {
+					fitTerminal();
+					return;
+				}
+				// The marker may have cleared while this frame was queued. Keep the
+				// ordinary final-fit path rather than skipping the terminal's last size.
+				scheduleVisibleFit();
+			});
+		};
 
 		const raf = requestAnimationFrame(fitTerminal);
 		// 50/250ms catch the common settle; 600/1200ms are a session-bounded
@@ -965,7 +985,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		}
 		const observer = new ResizeObserver(() => {
 			if (host.closest('[data-terminal-live-resize="true"]')) {
-				fitTerminal();
+				scheduleLiveFit();
 				return;
 			}
 			scheduleVisibleFit();
@@ -1292,6 +1312,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			if (searchAddonRef.current === searchAddon) searchAddonRef.current = null;
 			fitRef.current = null;
 			cancelAnimationFrame(raf);
+			if (liveFitFrame !== null) cancelAnimationFrame(liveFitFrame);
 			for (const timer of settleTimers) window.clearTimeout(timer);
 			if (fitQuietTimer !== null) clearTimeout(fitQuietTimer);
 			if (fitCapTimer !== null) clearTimeout(fitCapTimer);
@@ -1353,6 +1374,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 
 	useEffect(() => {
 		if (!props.focusRequested || props.isVisible === false) return undefined;
+		let initialFocusTimer: number | null = null;
 		let retryFrame: number | null = null;
 		let retriesRemaining = AUTOFOCUS_RETRY_FRAMES;
 		let cancelled = false;
@@ -1371,10 +1393,24 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			focusTerminal();
 		};
 
-		focusIfAllowed();
+		// A terminal tab/session click has already made the retained xterm visible.
+		// Calling `focus()` in this same discrete React effect can synchronously
+		// trigger browser focus/layout work while the click is still being handled.
+		// Defer only an already-permitted focus to a later task. A blocked focus
+		// keeps the existing rAF retry path so a closing dialog is handled promptly.
+		const initialHost = hostRef.current;
+		if (initialHost && canAutoFocusTerminal(initialHost)) {
+			initialFocusTimer = window.setTimeout(() => {
+				initialFocusTimer = null;
+				focusIfAllowed();
+			}, 0);
+		} else {
+			focusIfAllowed();
+		}
 
 		return () => {
 			cancelled = true;
+			if (initialFocusTimer !== null) window.clearTimeout(initialFocusTimer);
 			if (retryFrame !== null) cancelAnimationFrame(retryFrame);
 		};
 	}, [focusTerminal, props.focusRequested, props.isVisible]);

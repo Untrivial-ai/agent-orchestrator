@@ -89,14 +89,20 @@ export function FileTree({
 	const queryClient = useQueryClient();
 	const treeApiRef = useRef<TreeApi<TreeNode> | null>(null);
 	const loadedDirsRef = useRef<Set<string>>(new Set());
+	const searchHydrationRef = useRef<{ sessionId: string; started: boolean }>({
+		sessionId,
+		started: false,
+	});
 	const [lazyData, setLazyData] = useState<TreeNode[]>([]);
 	const [containerRef, size] = useContainerSize();
+	const searchActive = Boolean(filterText.trim());
 
 	const rootQuery = useQuery({ ...sessionWorkspaceTreeQueryOptions(sessionId, ""), enabled: !changedOnly });
 
 	useEffect(() => {
 		setLazyData([]);
 		loadedDirsRef.current = new Set();
+		searchHydrationRef.current = { sessionId, started: false };
 	}, [sessionId]);
 
 	useEffect(() => {
@@ -106,7 +112,13 @@ export function FileTree({
 	}, [changedOnly, rootQuery.data]);
 
 	useEffect(() => {
-		if (changedOnly || !filterText.trim() || !rootQuery.data) return;
+		if (changedOnly || !searchActive || !rootQuery.data) return;
+		const hydration = searchHydrationRef.current;
+		if (hydration.sessionId !== sessionId) {
+			searchHydrationRef.current = { sessionId, started: false };
+		}
+		if (searchHydrationRef.current.started) return;
+		searchHydrationRef.current.started = true;
 		let cancelled = false;
 		const loadDirectory = async (entries: WorkspaceTreeEntry[]): Promise<TreeNode[]> =>
 			Promise.all(
@@ -127,11 +139,15 @@ export function FileTree({
 			.catch(() => {
 				// Keep the already loaded tree usable; React Query retains the
 				// request error so a later search can retry the missing branch.
+				if (!cancelled) searchHydrationRef.current.started = false;
 			});
 		return () => {
 			cancelled = true;
 		};
-	}, [changedOnly, filterText, queryClient, rootQuery.data, sessionId, t]);
+		// `filterText` is intentionally reduced to whether search is active. The
+		// recursive read makes a complete local tree once; repeating it for every
+		// character turns fast typing into overlapping workspace scans.
+	}, [changedOnly, queryClient, rootQuery.data, searchActive, sessionId, t]);
 
 	const loadChildren = useCallback(
 		async (dir: string) => {

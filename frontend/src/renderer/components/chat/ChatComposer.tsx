@@ -613,7 +613,16 @@ export const ChatComposer = memo(function ChatComposer({
 			return;
 		}
 
+		// A plain-text send now has a local timeline echo. Clear the editor at the
+		// same time so the user sees one acknowledgement rather than their draft
+		// stranded in the composer until the daemon round trip completes. Attachments
+		// retain the established settle-and-retry path because their FileReader state
+		// cannot be reconstructed after a failed upload.
+		const clearForLocalEcho =
+			!editingQueuedTurnId && !hasAttachments && visibleRetainedAttachments.length === 0;
+
 		try {
+			if (clearForLocalEcho) clearEditor();
 			if (editingQueuedTurnId) {
 				const retainedContent = visibleRetainedAttachments.flatMap((attachment) =>
 					attachment.contentIndex === undefined ? [] : [attachment.contentIndex],
@@ -626,6 +635,12 @@ export const ChatComposer = memo(function ChatComposer({
 			if (nativeImages && nativePayloads.length > 0) await onSend(message, nativePayloads);
 			else await onSend(message);
 		} catch (error) {
+			if (clearForLocalEcho) {
+				textRef.current = currentText;
+				hasTextRef.current = currentText.trim().length > 0;
+				setHasText(hasTextRef.current);
+				editor.current?.setText(currentText);
+			}
 			setSendError(
 				editingQueuedTurnId
 					? apiErrorMessage(error, "Could not save that queued message edit. Your draft was kept.")

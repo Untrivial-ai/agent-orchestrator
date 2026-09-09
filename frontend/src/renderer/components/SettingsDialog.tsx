@@ -44,6 +44,18 @@ export function SettingsDialog() {
 	const lastSettingsRef = useRef<SettingsModal | null>(settingsModal);
 	if (settingsModal !== null) lastSettingsRef.current = settingsModal;
 	const displaySettings = lastSettingsRef.current;
+	// The dialog chrome needs to mount in the same commit as `open={true}` so
+	// Radix can register its DismissableLayer. The selected settings page is
+	// independent from that registration and includes several store/query
+	// subscribers, so mount it in the following frame. This keeps the keyboard
+	// shortcut or click that opens Settings from paying for the whole form.
+	const [bodySettings, setBodySettings] = useState<SettingsModal | null>(null);
+	useEffect(() => {
+		if (settingsModal === null) return;
+		const frame = requestAnimationFrame(() => setBodySettings(settingsModal));
+		return () => cancelAnimationFrame(frame);
+	}, [settingsModal]);
+	const isBodyReady = bodySettings === displaySettings;
 
 	const globalSections = visibleGlobalSettings({ cloudEnabled });
 
@@ -167,18 +179,25 @@ export function SettingsDialog() {
 								<X aria-hidden="true" className="size-4" />
 							</DialogClose>
 						</DialogHeader>
-						<div className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}>
-							{displaySettings?.scope === "project" ? (
-								<ProjectSettingsForm
-									projectId={displaySettings.projectId}
-									section={activeProjectSection}
-									onSaveState={setProjectSaveState}
-								/>
+						<div
+							aria-busy={!isBodyReady}
+							className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}
+						>
+							{isBodyReady ? (
+								displaySettings?.scope === "project" ? (
+									<ProjectSettingsForm
+										projectId={displaySettings.projectId}
+										section={activeProjectSection}
+										onSaveState={setProjectSaveState}
+									/>
+								) : (
+									<GlobalSettingsForm
+										cloudEnabled={cloudEnabled}
+										section={activeSection}
+									/>
+								)
 							) : (
-								<GlobalSettingsForm
-									cloudEnabled={cloudEnabled}
-									section={activeSection}
-								/>
+								<div aria-hidden="true" className="h-full" data-testid="settings-dialog-body-pending" />
 							)}
 						</div>
 					</div>
