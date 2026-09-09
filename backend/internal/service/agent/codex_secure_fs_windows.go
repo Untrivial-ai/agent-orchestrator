@@ -74,12 +74,44 @@ func validateCodexDirectoryAncestors(path string) error {
 		if openErr != nil {
 			return errors.New("codex directory ancestor could not be verified")
 		}
-		_ = windows.CloseHandle(handle)
 		if !codexWindowsPathMetadataIsSafe(codexWindowsMetadata(info, ownerTrusted, aclSafe), true, false) {
+			_ = windows.CloseHandle(handle)
 			return errors.New("codex directory ancestor ACL is unsafe")
+		}
+		_, _, safeEmpty, securityErr := codexWindowsHandleSecurityForPath(handle, false, true)
+		_ = windows.CloseHandle(handle)
+		// A writable directory can become a junction if emptied. Require a
+		// child that untrusted callers cannot remove, either via DELETE on the
+		// child or DELETE_CHILD on this parent (already rejected above).
+		if securityErr != nil || (!safeEmpty && !codexWindowsHasProtectedChild(current)) {
+			return errors.New("codex ancestor can be converted to a reparse point")
 		}
 		if parent := filepath.Dir(current); parent == current {
 			return nil
+		}
+	}
+}
+
+func codexWindowsHasProtectedChild(path string) bool {
+	dir, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer dir.Close()
+	for {
+		entries, readErr := dir.Readdir(32)
+		for _, entry := range entries {
+			handle, info, _, ownerTrusted, aclSafe, err := openCodexWindowsPath(filepath.Join(path, entry.Name()), entry.IsDir(), false)
+			if err != nil {
+				continue
+			}
+			_ = windows.CloseHandle(handle)
+			if codexWindowsPathMetadataIsSafe(codexWindowsMetadata(info, ownerTrusted, aclSafe), entry.IsDir(), false) {
+				return true
+			}
+		}
+		if readErr != nil {
+			return false
 		}
 	}
 }
@@ -131,6 +163,10 @@ func codexWindowsMetadata(info windows.ByHandleFileInformation, ownerTrusted, ac
 }
 
 func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (bool, bool, bool, error) {
+	return codexWindowsHandleSecurityForPath(handle, requirePrivate, false)
+}
+
+func codexWindowsHandleSecurityForPath(handle windows.Handle, requirePrivate, emptyAncestor bool) (bool, bool, bool, error) {
 	token, err := windows.OpenCurrentProcessToken()
 	if err != nil {
 		return false, false, false, err
@@ -158,6 +194,16 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 	}
 	ownerCurrent := owner.Equals(user.User.Sid)
 	ownerTrusted := ownerCurrent || owner.Equals(system) || owner.Equals(administrators)
+	// Windows system directories (including the volume root on some installs)
+	// can belong to the Windows Modules Installer service. This is ancestor
+	// ownership only: private credential directories must still be user-owned.
+	trustedInstaller, err := windows.StringToSid("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")
+	if err != nil {
+		return false, false, false, err
+	}
+	if !requirePrivate && owner.Equals(trustedInstaller) {
+		ownerTrusted = true
+	}
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
 		return ownerCurrent, ownerTrusted, false, nil
@@ -184,6 +230,15 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 		aces = append(aces, ace)
 	}
 	aclSafe := codexWindowsAncestorACLIsSafe(ownerTrusted, aces)
+	if emptyAncestor {
+		// Keep read-only ancestors usable, but do not accept rights that could
+		// turn an empty ancestor into a reparse point before its child exists.
+		for _, ace := range aces {
+			if ace.Allowed && !ace.PrincipalTrusted && ace.Mask&(codexWindowsGenericWrite|codexWindowsWriteData|codexWindowsAppendData|codexWindowsWriteEA|codexWindowsWriteAttributes) != 0 {
+				aclSafe = false
+			}
+		}
+	}
 	if requirePrivate {
 		aclSafe = codexWindowsVaultACLIsSafe(ownerTrusted, aces)
 	}

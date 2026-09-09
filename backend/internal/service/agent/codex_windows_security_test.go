@@ -37,6 +37,22 @@ func TestWindowsAncestorACLPolicyAllowsReadButRejectsMutation(t *testing.T) {
 	}
 }
 
+func TestWindowsAncestorACLSeparatesSiblingCreationFromReplacement(t *testing.T) {
+	for _, mask := range []uint32{codexWindowsWriteData, codexWindowsAppendData, codexWindowsGenericWrite, codexWindowsWriteEA | codexWindowsWriteAttributes} {
+		if !codexWindowsAncestorACLIsSafe(true, []codexWindowsACE{{Allowed: true, Mask: mask}}) {
+			t.Fatalf("directory creation/metadata rights rejected: %#x", mask)
+		}
+		if codexWindowsVaultACLIsSafe(true, []codexWindowsACE{{Allowed: true, Mask: mask}}) {
+			t.Fatalf("credential vault accepted untrusted access: %#x", mask)
+		}
+	}
+	for _, mask := range []uint32{codexWindowsDelete, codexWindowsDeleteChild, codexWindowsWriteDAC, codexWindowsWriteOwner, codexWindowsGenericAll} {
+		if codexWindowsAncestorACLIsSafe(true, []codexWindowsACE{{Allowed: true, Mask: mask}}) {
+			t.Fatalf("ancestor replacement rights accepted: %#x", mask)
+		}
+	}
+}
+
 func TestWindowsNoFollowAndWriteThroughPolicies(t *testing.T) {
 	if got := codexWindowsNoFollowOpenFlags(); got&codexWindowsOpenReparsePoint == 0 || got&codexWindowsBackupSemantics == 0 {
 		t.Fatalf("no-follow open flags = %#x", got)

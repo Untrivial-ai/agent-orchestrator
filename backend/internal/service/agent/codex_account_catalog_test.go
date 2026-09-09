@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -56,7 +57,21 @@ func TestCodexAccountCatalogCommitsStrictPrivateOpaqueSlot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := info.Mode().Perm(); got != want {
+		if runtime.GOOS == "windows" {
+			// Windows privacy is enforced by the DACL, not Unix mode bits.
+			if info.IsDir() {
+				if err := validateCodexDirectory(path, true); err != nil {
+					t.Error(err)
+				}
+			} else {
+				file, err := openCodexFileNoFollow(path)
+				if err != nil {
+					t.Error(err)
+				} else {
+					_ = file.Close()
+				}
+			}
+		} else if got := info.Mode().Perm(); got != want {
 			t.Errorf("%s mode = %o, want %o", path, got, want)
 		}
 	}

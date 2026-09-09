@@ -55,9 +55,11 @@ func codexWindowsSameStableIdentity(left, right codexWindowsPathMetadata) bool {
 	return left.VolumeSerial == right.VolumeSerial && left.FileIndexHigh == right.FileIndexHigh && left.FileIndexLow == right.FileIndexLow
 }
 
-const codexWindowsMutationMask = codexWindowsWriteData | codexWindowsAppendData | codexWindowsWriteEA |
-	codexWindowsDeleteChild | codexWindowsWriteAttributes | codexWindowsDelete | codexWindowsWriteDAC |
-	codexWindowsWriteOwner | codexWindowsGenericAll | codexWindowsGenericWrite
+// Directory ADD_FILE/ADD_SUBDIRECTORY rights create siblings; they do not
+// authorize replacing an existing child. Keep replacement and ACL takeover
+// rights separate from the much stricter credential-file policy below.
+const codexWindowsAncestorReplacementMask = codexWindowsDeleteChild | codexWindowsDelete |
+	codexWindowsWriteDAC | codexWindowsWriteOwner | codexWindowsGenericAll
 
 type codexWindowsACE struct {
 	Allowed          bool
@@ -85,7 +87,7 @@ func codexWindowsAncestorACLIsSafe(ownerTrusted bool, aces []codexWindowsACE) bo
 		return false
 	}
 	for _, ace := range aces {
-		if ace.Allowed && !ace.PrincipalTrusted && ace.Mask&codexWindowsMutationMask != 0 {
+		if ace.Allowed && !ace.PrincipalTrusted && ace.Mask&codexWindowsAncestorReplacementMask != 0 {
 			return false
 		}
 	}
