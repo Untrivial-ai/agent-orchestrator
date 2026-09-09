@@ -31,6 +31,10 @@ trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessio
 - Most read commands accept `--json` for machine-readable output.
 - `-p / --project` scopes session subcommand lookups to one project.
 - Session and project ids are shown by `ao session ls` and `ao project ls`.
+- To refer to a session in AO Chat or the AO terminal, use the canonical in-app
+  link `ao://sessions/{project-id}/{session-id}`. Read
+  [commands/session.md](commands/session.md) for identity, encoding, and safety
+  rules before constructing one.
 - `--agent` is an alias for `--harness` on `ao spawn`.
 - Every command accepts `-h / --help` for the full flag list.
 - For frontend launch, preview selection, or artifact handoff, read

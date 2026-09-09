@@ -61,6 +61,8 @@ export type GlobalToast = {
 	nonce: number;
 };
 
+export type SessionLinkNotice = { message: string; nonce: number };
+
 // Selection (which project/session is open) now lives in the URL — the router
 // is the single source of truth, read via route params. This store holds only
 // ephemeral UI: theme, sidebar collapse, command palette, per-session inspector
@@ -115,6 +117,9 @@ export type UiState = {
 	// session. Surfaces outside the session subtree (the notification runtime)
 	// need that distinction, and SessionView's own target is local state.
 	visibleTerminalKindBySession: Record<string, TerminalTarget["kind"]>;
+	sessionLinkError: string | null;
+	sessionLinkNotices: SessionLinkNotice[];
+	sessionLinkNoticeSequence: number;
 	setWorkbenchTab: (tab: WorkbenchTab) => void;
 	setThemePreference: (theme: ThemePreference) => void;
 	setThemeStyle: (style: ThemeStyle) => void;
@@ -157,6 +162,9 @@ export type UiState = {
 	setActiveShellTerminal: (handleId: string | null) => void;
 	setVisibleTerminalKind: (sessionId: string, kind: TerminalTarget["kind"]) => void;
 	clearVisibleTerminalKind: (sessionId: string) => void;
+	setSessionLinkError: (error: string | null) => void;
+	showSessionLinkNotice: (message: string) => void;
+	dismissSessionLinkNotice: (nonce: number) => void;
 };
 
 export type OrchestratorReplacementFailure = {
@@ -218,6 +226,9 @@ export const useUiStore = create<UiState>((set, get) => ({
 	newShellTerminalNonce: 0,
 	activeShellTerminalHandleId: null,
 	visibleTerminalKindBySession: {},
+	sessionLinkError: null,
+	sessionLinkNotices: [],
+	sessionLinkNoticeSequence: 0,
 	setWorkbenchTab: (workbenchTab) => set({ workbenchTab }),
 	setThemePreference: (themePreference) => {
 		if (get().themePreference === themePreference) return;
@@ -408,6 +419,17 @@ export const useUiStore = create<UiState>((set, get) => ({
 				? state
 				: { visibleTerminalKindBySession: { ...state.visibleTerminalKindBySession, [sessionId]: kind } },
 		),
+	setSessionLinkError: (sessionLinkError) => set({ sessionLinkError }),
+	showSessionLinkNotice: (message) =>
+		set((state) => {
+			const nonce = state.sessionLinkNoticeSequence + 1;
+			return {
+				sessionLinkNotices: [...state.sessionLinkNotices, { message, nonce }],
+				sessionLinkNoticeSequence: nonce,
+			};
+		}),
+	dismissSessionLinkNotice: (nonce) =>
+		set((state) => ({ sessionLinkNotices: state.sessionLinkNotices.filter((notice) => notice.nonce !== nonce) })),
 	clearVisibleTerminalKind: (sessionId) =>
 		set((state) => {
 			if (!(sessionId in state.visibleTerminalKindBySession)) return state;
