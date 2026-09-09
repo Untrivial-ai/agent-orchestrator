@@ -100,6 +100,13 @@ UPDATE task_runs SET status = ?, result_summary = COALESCE(result_summary, ?), e
 -- name: BindTaskRunSession :exec
 UPDATE task_runs SET session_id = ? WHERE id = ? AND session_id = '';
 
+-- name: ListTaskRunsByStatus :many
+SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at
+FROM task_runs WHERE status = ? ORDER BY created_at;
+
+-- name: UpdateTaskRunSnapshot :exec
+UPDATE task_runs SET session_id = ?, provider_id = ?, provider_model_id = ?, provider_display_name = ?, provider_model_name = ?, executor_type = ? WHERE id = ?;
+
 -- ---- run_reviews ----
 
 -- name: CreateRunReview :exec

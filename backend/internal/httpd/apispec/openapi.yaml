@@ -5647,6 +5647,160 @@ paths:
       summary: Start a confirmed plan (requires at least one stage)
       tags:
       - workflow
+  /api/v1/workflow/runs:
+    post:
+      operationId: createRun
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersCreateRunRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersRunResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Create a new task run in pending status
+      tags:
+      - workflow
+  /api/v1/workflow/runs/{id}:
+    get:
+      operationId: getRun
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersRunResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Get a task run by ID
+      tags:
+      - workflow
+  /api/v1/workflow/runs/{id}/cancel:
+    post:
+      operationId: cancelRun
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersRunResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Cancel a run and kill the active session if any
+      tags:
+      - workflow
+  /api/v1/workflow/runs/{id}/start:
+    post:
+      operationId: startRun
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersRunResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: 'Start a run: spawn session, bind, transition to running'
+      tags:
+      - workflow
   /api/v1/workflow/stages:
     post:
       operationId: createStage
@@ -6333,6 +6487,33 @@ paths:
       summary: Submit a running task for review
       tags:
       - workflow
+  /api/v1/workflow/tasks/{id}/runs:
+    get:
+      operationId: listRunsByTask
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersListRunsResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List all runs for a task
+      tags:
+      - workflow
   /api/v1/workflow/tasks/{id}/start:
     post:
       operationId: startTask
@@ -6823,6 +7004,35 @@ components:
         disabled:
           type: boolean
       type: object
+    ControllersCreateRunRequest:
+      properties:
+        agentRoleId:
+          description: Agent role for this run.
+          type: string
+        executorType:
+          description: Executor type (e.g. claude-code).
+          type: string
+        providerId:
+          description: Provider override.
+          type: string
+        providerModelId:
+          description: Provider model override.
+          type: string
+        taskId:
+          description: Parent task identifier.
+          type: string
+      required:
+      - taskId
+      type: object
+    ControllersListRunsResponse:
+      properties:
+        runs:
+          items:
+            $ref: '#/components/schemas/ControllersRunView'
+          type: array
+      required:
+      - runs
+      type: object
     ControllersProviderDetailResponse:
       properties:
         models:
@@ -6933,6 +7143,69 @@ components:
           type: boolean
       required:
       - ok
+      type: object
+    ControllersRunResponse:
+      properties:
+        run:
+          $ref: '#/components/schemas/ControllersRunView'
+      required:
+      - run
+      type: object
+    ControllersRunView:
+      properties:
+        agentRoleId:
+          type: string
+        attempt:
+          type: integer
+        createdAt:
+          format: date-time
+          type: string
+        errorMessage:
+          type: string
+        executorType:
+          type: string
+        finishedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        id:
+          description: Run identifier.
+          type: string
+        providerDisplayName:
+          type: string
+        providerId:
+          type: string
+        providerModelId:
+          type: string
+        providerModelName:
+          type: string
+        resultSummary:
+          type: string
+        sessionId:
+          type: string
+        startedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        status:
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - cancelled
+          type: string
+        taskId:
+          description: Parent task identifier.
+          type: string
+      required:
+      - id
+      - taskId
+      - attempt
+      - status
+      - createdAt
       type: object
     ControllersSecurePairingStatus:
       properties:

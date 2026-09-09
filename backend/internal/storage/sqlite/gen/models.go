@@ -545,6 +545,7 @@ type Session struct {
 	ProviderModelID           domain.ProviderModelID
 	ProviderDisplayName       string
 	ProviderModelName         string
+	TerminationReason         string
 }
 
 type SessionCleanupFact struct {

@@ -261,6 +261,7 @@ UPDATE sessions SET
     latest_user_prompt = sqlc.arg(latest_user_prompt),
     latest_assistant_update = sqlc.arg(latest_assistant_update),
     native_transcript_path = sqlc.arg(native_transcript_path),
+    termination_reason = CASE WHEN sessions.termination_reason = '' THEN sqlc.arg(termination_reason) ELSE sessions.termination_reason END,
     updated_at = sqlc.arg(updated_at)
 WHERE sessions.id = sqlc.arg(id)
   AND sessions.is_terminated = 0

@@ -48,6 +48,8 @@ import (
 	providersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/provider"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
+	workflowsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/workflow"
+	"github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
@@ -360,6 +362,26 @@ func Run() error {
 	if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
 		log.Error("reconcile agent processes on boot failed", "err", reconcileErr)
 	}
+
+	// Workflow service: bridges TaskRun lifecycle to Session runtime.
+	// Runs after session + runtime reconcile so session truth is already restored
+	// before workflow checks which runs are still logically active.
+	var workflowSvc *workflowsvc.Service
+	if mgr, ok := sessMgr.(*sessionmanager.Manager); ok {
+		workflowSvc = workflowsvc.New(store).WithRuntime(&workflowSessionRuntime{mgr: mgr})
+		// Startup reconcile: finalize any runs whose sessions terminated while
+		// the daemon was down. Non-fatal — a failure leaves runs as-is for the
+		// periodic observer to catch on its next tick.
+		if n, err := workflowSvc.ReconcileRunningRuns(ctx); err != nil {
+			log.Error("workflow: startup reconcile failed", "err", err)
+		} else if n > 0 {
+			log.Info("workflow: startup reconcile finalized runs", "count", n)
+		}
+		// StartCompletionObserver uses the daemon's ctx, which is cancelled on
+		// SIGINT/SIGTERM. The goroutine exits when ctx is done, so no leak.
+		workflowSvc.StartCompletionObserver(ctx, 0)
+	}
+
 	autoReview := autoreview.New(store, reviewSvc, autoreview.Config{Logger: log})
 	lcStack.autoReviewDone = autoReview.Start(ctx)
 	// Push-device registry: persisted phones that receive OS push notifications.
@@ -419,6 +441,7 @@ func Run() error {
 		Conversations:      chatSvc,
 		Settings:           settingsSvc,
 		Providers:          providerSvc,
+		Workflow:           workflowSvc,
 		CDC:                store,
 		Events:             cdcPipe.Broadcaster,
 		Activity:           lcStack.LCM,
@@ -575,4 +598,21 @@ func stabilizeWorkingDirectory(dataDir string) error {
 		return fmt.Errorf("daemon working directory: chdir %s: %w", dataDir, err)
 	}
 	return nil
+}
+
+// workflowSessionRuntime adapts the Session Manager to the workflow service's
+// SessionRuntime interface. Spawn discards the two int return values that the
+// Session Manager returns (session index, launch counter) — workflow only needs
+// the SessionRecord.
+type workflowSessionRuntime struct {
+	mgr *sessionmanager.Manager
+}
+
+func (a *workflowSessionRuntime) SpawnSession(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error) {
+	rec, _, _, err := a.mgr.Spawn(ctx, cfg)
+	return rec, err
+}
+
+func (a *workflowSessionRuntime) KillSession(ctx context.Context, id domain.SessionID) (bool, error) {
+	return a.mgr.Kill(ctx, id)
 }

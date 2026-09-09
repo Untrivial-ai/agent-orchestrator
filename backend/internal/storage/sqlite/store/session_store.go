@@ -55,6 +55,7 @@ func (s *Store) UpdateSessionFromActivitySignal(ctx context.Context, rec domain.
 		LatestUserPrompt:             rec.Metadata.LatestUserPrompt,
 		LatestAssistantUpdate:        rec.Metadata.LatestAssistantUpdate,
 		NativeTranscriptPath:         rec.Metadata.NativeTranscriptPath,
+		TerminationReason:            rec.Metadata.TerminationReason,
 		UpdatedAt:                    rec.UpdatedAt,
 		ID:                           rec.ID,
 		ExpectedHarness:              rec.Harness,
@@ -406,6 +407,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			BrowserCapabilityVerifier: row.BrowserCapabilityVerifier,
 			ProviderConversationID:    row.ProviderConversationID,
 			ControllerGeneration:      row.ControllerGeneration,
+			TerminationReason:         row.TerminationReason,
 		},
 		CleanupGeneration: row.CleanupGeneration,
 		CreatedAt:         row.CreatedAt,
@@ -470,6 +472,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProviderModelID:           rec.Metadata.ProviderModelID,
 		ProviderDisplayName:       rec.Metadata.ProviderDisplayName,
 		ProviderModelName:         rec.Metadata.ProviderModelName,
+		TerminationReason:         rec.Metadata.TerminationReason,
 		CreatedAt:                 rec.CreatedAt,
 		UpdatedAt:                 rec.UpdatedAt,
 	}
@@ -517,6 +520,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		ProviderModelID:           rec.Metadata.ProviderModelID,
 		ProviderDisplayName:       rec.Metadata.ProviderDisplayName,
 		ProviderModelName:         rec.Metadata.ProviderModelName,
+		TerminationReason:         rec.Metadata.TerminationReason,
 		UpdatedAt:                 rec.UpdatedAt,
 	}
 }

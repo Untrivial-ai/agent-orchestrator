@@ -11,13 +11,14 @@ INSERT INTO sessions (
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
-    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
+    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
+    termination_reason
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?
+    ?, ?, ?, ?, ?
 );
 
 -- name: UpdateSession :exec
@@ -31,7 +32,8 @@ UPDATE sessions SET
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?,
     provider_id = ?, provider_model_id = ?, provider_display_name = ?, provider_model_name = ?, updated_at = ?,
-    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
+    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?,
+    termination_reason = ?
 WHERE id = ?;
 
 -- name: RecordSessionLatestUserPrompt :execrows
@@ -83,7 +85,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled
+    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
+    termination_reason
 FROM sessions WHERE id = ?;
 
 -- name: ListSessionsByProject :many
@@ -96,7 +99,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled
+    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
+    termination_reason
 FROM sessions WHERE project_id = ? ORDER BY num;
 
 -- name: ListAllSessions :many
@@ -109,7 +113,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled
+    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
+    termination_reason
 FROM sessions ORDER BY project_id, num;
 
 

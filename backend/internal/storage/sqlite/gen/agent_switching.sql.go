@@ -1012,20 +1012,21 @@ UPDATE sessions SET
     latest_user_prompt = ?6,
     latest_assistant_update = ?7,
     native_transcript_path = ?8,
-    updated_at = ?9
-WHERE sessions.id = ?10
+    termination_reason = CASE WHEN sessions.termination_reason = '' THEN ?9 ELSE sessions.termination_reason END,
+    updated_at = ?10
+WHERE sessions.id = ?11
   AND sessions.is_terminated = 0
-  AND sessions.harness = ?11
-  AND sessions.session_mode = ?12
+  AND sessions.harness = ?12
+  AND sessions.session_mode = ?13
   AND (
       (
-          ?12 <> 'chat'
-          AND sessions.runtime_launch_id = ?13
+          ?13 <> 'chat'
+          AND sessions.runtime_launch_id = ?14
       )
       OR
       (
-          ?12 = 'chat'
-          AND sessions.controller_generation = ?14
+          ?13 = 'chat'
+          AND sessions.controller_generation = ?15
       )
   )
   AND NOT EXISTS (
@@ -1048,6 +1049,7 @@ type UpdateSessionFromActivitySignalParams struct {
 	LatestUserPrompt             string
 	LatestAssistantUpdate        string
 	NativeTranscriptPath         string
+	TerminationReason            string
 	UpdatedAt                    time.Time
 	ID                           domain.SessionID
 	ExpectedHarness              domain.AgentHarness
@@ -1071,6 +1073,7 @@ func (q *Queries) UpdateSessionFromActivitySignal(ctx context.Context, arg Updat
 		arg.LatestUserPrompt,
 		arg.LatestAssistantUpdate,
 		arg.NativeTranscriptPath,
+		arg.TerminationReason,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.ExpectedHarness,

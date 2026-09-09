@@ -52,6 +52,12 @@ type mockWorkflowService struct {
 	unblockTaskFn       func(ctx context.Context, id domain.DevelopmentTaskID) (domain.DevelopmentTask, error)
 	cancelTaskFn        func(ctx context.Context, id domain.DevelopmentTaskID) (domain.DevelopmentTask, error)
 	assignTaskFn        func(ctx context.Context, id domain.DevelopmentTaskID, roleID domain.AgentRoleID, providerID domain.ProviderID, modelID domain.ProviderModelID) (domain.DevelopmentTask, error)
+	// Run
+	createRunFn     func(ctx context.Context, in workflow.CreateRunInput) (domain.TaskRun, error)
+	getRunFn        func(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
+	listRunsByTaskFn func(ctx context.Context, taskID domain.DevelopmentTaskID) ([]domain.TaskRun, error)
+	startRunFn      func(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
+	cancelRunFn     func(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
 }
 
 func (m *mockWorkflowService) CreatePlan(ctx context.Context, in workflow.CreatePlanInput) (domain.DevelopmentPlan, error) {
@@ -140,6 +146,21 @@ func (m *mockWorkflowService) CancelTask(ctx context.Context, id domain.Developm
 }
 func (m *mockWorkflowService) AssignTask(ctx context.Context, id domain.DevelopmentTaskID, roleID domain.AgentRoleID, providerID domain.ProviderID, modelID domain.ProviderModelID) (domain.DevelopmentTask, error) {
 	return m.assignTaskFn(ctx, id, roleID, providerID, modelID)
+}
+func (m *mockWorkflowService) CreateRun(ctx context.Context, in workflow.CreateRunInput) (domain.TaskRun, error) {
+	return m.createRunFn(ctx, in)
+}
+func (m *mockWorkflowService) GetRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error) {
+	return m.getRunFn(ctx, id)
+}
+func (m *mockWorkflowService) ListRunsByTask(ctx context.Context, taskID domain.DevelopmentTaskID) ([]domain.TaskRun, error) {
+	return m.listRunsByTaskFn(ctx, taskID)
+}
+func (m *mockWorkflowService) StartRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error) {
+	return m.startRunFn(ctx, id)
+}
+func (m *mockWorkflowService) CancelRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error) {
+	return m.cancelRunFn(ctx, id)
 }
 
 // ---------------------------------------------------------------------------
@@ -980,5 +1001,39 @@ func TestWorkflowController_NilSvc(t *testing.T) {
 	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/plans/plan-1", nil))
 	if rr.Code != http.StatusNotImplemented {
 		t.Fatalf("expected 501, got %d", rr.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Workflow API not-501 when service is configured
+// ---------------------------------------------------------------------------
+
+func TestRunAPI_Not501_WhenServiceConfigured(t *testing.T) {
+	// With a mock service (non-nil), a GET on a nonexistent run should return
+	// a business 404 — not 501 Not Implemented.
+	mock := &mockWorkflowService{
+		getRunFn: func(_ context.Context, id domain.TaskRunID) (domain.TaskRun, error) {
+			return domain.TaskRun{}, workflow.ErrNotFound
+		},
+	}
+	r := newTestRouter(mock)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/runs/nonexistent", nil))
+	if rr.Code == http.StatusNotImplemented {
+		t.Fatal("run API returned 501 — workflow service not wired to controller")
+	}
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestRunAPI_501_WhenServiceNil(t *testing.T) {
+	r := chi.NewRouter()
+	ctrl := &WorkflowController{Svc: nil}
+	ctrl.Register(r)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/workflow/runs/run-1", nil))
+	if rr.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for nil service, got %d", rr.Code)
 	}
 }

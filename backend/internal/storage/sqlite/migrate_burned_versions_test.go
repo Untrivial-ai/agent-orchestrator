@@ -107,6 +107,7 @@ var shippedMigrations = map[int64]string{
 	101: "0101_provider_configuration.sql",
 	102: "0102_session_provider_selection.sql",
 	103: "0103_development_workflow.sql",
+	104: "0104_add_termination_reason.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

@@ -586,6 +586,51 @@ func (q *Queries) ListRunReviewsByRun(ctx context.Context, runID string) ([]RunR
 	return items, nil
 }
 
+const listTaskRunsByStatus = `-- name: ListTaskRunsByStatus :many
+SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at
+FROM task_runs WHERE status = ? ORDER BY created_at
+`
+
+func (q *Queries) ListTaskRunsByStatus(ctx context.Context, status string) ([]TaskRun, error) {
+	rows, err := q.db.QueryContext(ctx, listTaskRunsByStatus, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TaskRun{}
+	for rows.Next() {
+		var i TaskRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.Attempt,
+			&i.SessionID,
+			&i.AgentRoleID,
+			&i.ProviderID,
+			&i.ProviderModelID,
+			&i.ProviderDisplayName,
+			&i.ProviderModelName,
+			&i.ExecutorType,
+			&i.Status,
+			&i.ResultSummary,
+			&i.ErrorMessage,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTaskRunsByTask = `-- name: ListTaskRunsByTask :many
 SELECT id, task_id, attempt, session_id, agent_role_id, provider_id, provider_model_id, provider_display_name, provider_model_name, executor_type, status, result_summary, error_message, created_at, started_at, finished_at
 FROM task_runs WHERE task_id = ? ORDER BY attempt
@@ -792,6 +837,33 @@ type UpdateRunReviewStatusParams struct {
 
 func (q *Queries) UpdateRunReviewStatus(ctx context.Context, arg UpdateRunReviewStatusParams) error {
 	_, err := q.db.ExecContext(ctx, updateRunReviewStatus, arg.Status, arg.CompletedAt, arg.ID)
+	return err
+}
+
+const updateTaskRunSnapshot = `-- name: UpdateTaskRunSnapshot :exec
+UPDATE task_runs SET session_id = ?, provider_id = ?, provider_model_id = ?, provider_display_name = ?, provider_model_name = ?, executor_type = ? WHERE id = ?
+`
+
+type UpdateTaskRunSnapshotParams struct {
+	SessionID           string
+	ProviderID          string
+	ProviderModelID     string
+	ProviderDisplayName string
+	ProviderModelName   string
+	ExecutorType        string
+	ID                  string
+}
+
+func (q *Queries) UpdateTaskRunSnapshot(ctx context.Context, arg UpdateTaskRunSnapshotParams) error {
+	_, err := q.db.ExecContext(ctx, updateTaskRunSnapshot,
+		arg.SessionID,
+		arg.ProviderID,
+		arg.ProviderModelID,
+		arg.ProviderDisplayName,
+		arg.ProviderModelName,
+		arg.ExecutorType,
+		arg.ID,
+	)
 	return err
 }
 

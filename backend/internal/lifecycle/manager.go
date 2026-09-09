@@ -406,6 +406,10 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		next := cur
 		next.IsTerminated = true
 		next.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: timeOr(f.ObservedAt, now)}
+		// Record first terminal evidence for Phase 2.3 reconcile.
+		if next.Metadata.TerminationReason == "" {
+			next.Metadata.TerminationReason = "reaper"
+		}
 		// Reaper-driven death (crash/SIGKILL) never fires a session-end hook,
 		// so this is the last chance to release the session's tool-flight
 		// state; a leaked entry would otherwise persist for the daemon's life
@@ -591,6 +595,11 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		// hook; a runtime observation or explicit lifecycle action owns that
 		// fact. No tool/permission correlation survives an agent process exit.
 		delete(m.flights, id)
+		// Record the first terminal evidence for Phase 2.3 reconcile.
+		// s.Event is "session-end" or "process-exited".
+		if next.Metadata.TerminationReason == "" {
+			next.Metadata.TerminationReason = s.Event
+		}
 	}
 	next.UpdatedAt = now
 	applied, err := m.store.UpdateSessionFromActivitySignal(ctx, next)
@@ -974,6 +983,8 @@ func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata
 		// a stale "signals worked once" fact.
 		rec.FirstSignalAt = time.Time{}
 		rec.Metadata = mergeMetadata(rec.Metadata, metadata)
+		// Clear termination reason on re-spawn: the session is alive again.
+		rec.Metadata.TerminationReason = ""
 		rec.UpdatedAt = now
 		if err := m.store.UpdateSession(ctx, rec); err != nil {
 			return nil, err
@@ -1144,6 +1155,10 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 			default:
 				cur.IsTerminated = true
 				cur.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: now}
+				// Record first terminal evidence for Phase 2.3 reconcile.
+				if cur.Metadata.TerminationReason == "" {
+					cur.Metadata.TerminationReason = "explicit"
+				}
 				delete(m.flights, id) // runs under m.mu (mutate holds it)
 				outcome = terminationApplied
 				return cur, true

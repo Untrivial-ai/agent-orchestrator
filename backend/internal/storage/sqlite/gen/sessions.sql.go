@@ -117,7 +117,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled
+    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
+    termination_reason
 FROM sessions WHERE id = ?
 `
 
@@ -166,6 +167,7 @@ type GetSessionRow struct {
 	AutoInjectReview          bool
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
+	TerminationReason         string
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -216,6 +218,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.AutoInjectReview,
 		&i.AutoInjectCI,
 		&i.AutoReviewEnabled,
+		&i.TerminationReason,
 	)
 	return i, err
 }
@@ -230,13 +233,14 @@ INSERT INTO sessions (
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
-    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
+    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
+    termination_reason
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?
+    ?, ?, ?, ?, ?
 )
 `
 
@@ -285,6 +289,7 @@ type InsertSessionParams struct {
 	PinnedAt                  sql.NullTime
 	AutoInjectReview          bool
 	AutoInjectCI              bool
+	TerminationReason         string
 }
 
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
@@ -333,6 +338,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.PinnedAt,
 		arg.AutoInjectReview,
 		arg.AutoInjectCI,
+		arg.TerminationReason,
 	)
 	return err
 }
@@ -347,7 +353,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled
+    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
+    termination_reason
 FROM sessions ORDER BY project_id, num
 `
 
@@ -396,6 +403,7 @@ type ListAllSessionsRow struct {
 	AutoInjectReview          bool
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
+	TerminationReason         string
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -452,6 +460,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.AutoInjectReview,
 			&i.AutoInjectCI,
 			&i.AutoReviewEnabled,
+			&i.TerminationReason,
 		); err != nil {
 			return nil, err
 		}
@@ -476,7 +485,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     reviewer_harness, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled
+    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
+    termination_reason
 FROM sessions WHERE project_id = ? ORDER BY num
 `
 
@@ -525,6 +535,7 @@ type ListSessionsByProjectRow struct {
 	AutoInjectReview          bool
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
+	TerminationReason         string
 }
 
 func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.ProjectID) ([]ListSessionsByProjectRow, error) {
@@ -581,6 +592,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.AutoInjectReview,
 			&i.AutoInjectCI,
 			&i.AutoReviewEnabled,
+			&i.TerminationReason,
 		); err != nil {
 			return nil, err
 		}
@@ -820,7 +832,8 @@ UPDATE sessions SET
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?,
     provider_id = ?, provider_model_id = ?, provider_display_name = ?, provider_model_name = ?, updated_at = ?,
-    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
+    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?,
+    termination_reason = ?
 WHERE id = ?
 `
 
@@ -864,6 +877,7 @@ type UpdateSessionParams struct {
 	PinnedAt                  sql.NullTime
 	AutoInjectReview          bool
 	AutoInjectCI              bool
+	TerminationReason         string
 	ID                        domain.SessionID
 }
 
@@ -908,6 +922,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.PinnedAt,
 		arg.AutoInjectReview,
 		arg.AutoInjectCI,
+		arg.TerminationReason,
 		arg.ID,
 	)
 	return err
