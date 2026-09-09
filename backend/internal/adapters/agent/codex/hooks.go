@@ -12,7 +12,6 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
 // Codex (0.136+) never loads hook config from AO's per-session worktrees, so
@@ -28,6 +27,11 @@ import (
 //     replaces) the user's own hooks from `~/.codex`. They carry no persisted
 //     trust hash, so the launch command also passes
 //     `--dangerously-bypass-hook-trust` to let them run.
+//
+// AO does NOT inject invocation-scoped workspace trust for the session
+// worktree. Without trust injection, Codex will not load repository-supplied
+// `.codex/` project config (including hooks) from untrusted directories,
+// closing the repo-to-execution chain described in issue #3280.
 const (
 	codexHooksDirName  = ".codex"
 	codexHooksFileName = "hooks.json"
@@ -116,20 +120,6 @@ func shellQuoteHookExecutable(executable string) string {
 	return `'` + strings.ReplaceAll(executable, `'`, `'"'"'`) + `'`
 }
 
-// appendWorkspaceTrustFlag marks the session's worktree as a trusted Codex
-// project for this invocation only, so spawns into never-before-trusted repos
-// don't hang on the interactive "Do you trust this directory?" prompt.
-//
-// The override is shaped as a single `projects={...}` value (not a dotted
-// `projects."<path>".trust_level` key) because Codex splits `-c` key paths on
-// every dot without honoring quoted segments, which corrupts path keys. The
-// inline table deep-merges with the user's persisted projects map. Both the
-// literal and symlink-resolved paths are trusted because Codex looks trust up
-// by the canonicalized cwd first and the literal path second (on macOS the two
-// commonly differ, e.g. /tmp vs /private/tmp).
-func appendWorkspaceTrustFlag(cmd *[]string, workspacePath string) {
-	*cmd = append(*cmd, agentruntime.CodexWorkspaceTrustArgs(workspacePath)...)
-}
 
 func codexTOMLConfigString(s string) string {
 	if !containsTOMLControl(s) && !strings.Contains(s, "'") {

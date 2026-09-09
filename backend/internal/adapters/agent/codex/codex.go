@@ -113,9 +113,8 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 
 // GetLaunchCommand builds the argv to start a new Codex session, applying the
 // no-update-check, hook-trust bypass, and approval flags, AO's session-flag
-// activity hooks, the workspace trust override, optional system-prompt
-// instructions, and the initial prompt (passed after `--` so a leading "-" is
-// not read as a flag).
+// activity hooks, optional system-prompt instructions, and the initial prompt
+// (passed after `--` so a leading "-" is not read as a flag).
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (cmd []string, err error) {
 	binary, err := p.codexBinary(ctx)
 	if err != nil {
@@ -474,7 +473,6 @@ func DoctorLaunchProbes() [][]string {
 		// resolved, while real session launches fail closed above.
 		appendSessionHookFlagsForExecutable(&overrideProbe, "ao")
 	}
-	appendWorkspaceTrustFlag(&overrideProbe, os.TempDir())
 	return [][]string{flagProbe, overrideProbe}
 }
 
