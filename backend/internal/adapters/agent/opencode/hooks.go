@@ -44,9 +44,9 @@ const (
 	opencodeHookCommandPrefix = "ao hooks opencode "
 
 	// opencodeSkillSubDir is where opencode discovers project skills
-	// (`.opencode/skills/<name>/SKILL.md`). AO materializes the using-ao skill
-	// here so opencode's native `skill` tool can see it — the data-dir install
-	// alone is invisible to that discovery path.
+	// (`.opencode/skills/<name>/SKILL.md`). AO materializes its skills here so
+	// opencode's native `skill` tool can see them — the data-dir install alone
+	// is invisible to that discovery path.
 	opencodeSkillSubDir = "skills"
 
 	// opencodeSkillMarkerFile lives beside the skill directory (not inside it) so
@@ -57,6 +57,9 @@ const (
 	// opencodeSkillSentinel is written into the marker file. Keep it distinct
 	// from the plugin sentinel so ownership checks stay file-specific.
 	opencodeSkillSentinel = "agent-orchestrator: managed opencode using-ao skill"
+
+	opencodeBrowserSkillMarkerFile = ".ao-browser.ao-managed"
+	opencodeBrowserSkillSentinel   = "agent-orchestrator: managed opencode ao-browser skill"
 )
 
 // opencodePluginSource is the AO-managed opencode plugin, embedded so it ships
@@ -74,8 +77,8 @@ var opencodePluginSource string
 var opencodeManagedEvents = []string{"session-start", "user-prompt-submit", "active", "stop", "permission-blocked"}
 
 // GetAgentHooks installs AO's opencode activity plugin into the worktree-local
-// .opencode/plugins/ directory, and materializes the using-ao skill into
-// .opencode/skills/using-ao/ so opencode's native `skill` tool can discover it.
+// .opencode/plugins/ directory, and materializes AO's skills under
+// .opencode/skills/ so opencode's native `skill` tool can discover them.
 // Unlike Claude Code and Codex, opencode has no native command-hook config to
 // merge into; its only lifecycle-extensibility surface is a JS/TS plugin. AO
 // therefore writes a dedicated, AO-owned plugin file. The write is atomic and
@@ -123,7 +126,7 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 	return nil
 }
 
-// UninstallHooks removes AO's opencode plugin and the AO-managed using-ao skill
+// UninstallHooks removes AO's opencode plugin and AO-managed skills
 // from the workspace-local .opencode/ tree. It deletes the plugin only when it
 // carries the AO sentinel, and the skill directory only when the AO marker is
 // present, so user files that happen to share those paths are left in place. A
@@ -177,6 +180,10 @@ func opencodeSkillDir(workspacePath string) string {
 	return filepath.Join(workspacePath, opencodePluginDirName, opencodeSkillSubDir, skillassets.SkillName)
 }
 
+func opencodeBrowserSkillDir(workspacePath string) string {
+	return filepath.Join(workspacePath, opencodePluginDirName, opencodeSkillSubDir, skillassets.BrowserSkillName)
+}
+
 func opencodeSkillsDir(workspacePath string) string {
 	return filepath.Join(workspacePath, opencodePluginDirName, opencodeSkillSubDir)
 }
@@ -185,42 +192,77 @@ func opencodeSkillMarkerPath(workspacePath string) string {
 	return filepath.Join(opencodeSkillsDir(workspacePath), opencodeSkillMarkerFile)
 }
 
-// installUsingAOSkill materializes the embedded using-ao skill into
-// .opencode/skills/using-ao/ so opencode's skill tool can discover it. It
-// refuses to overwrite a same-named directory that is not AO-managed.
+func opencodeBrowserSkillMarkerPath(workspacePath string) string {
+	return filepath.Join(opencodeSkillsDir(workspacePath), opencodeBrowserSkillMarkerFile)
+}
+
+type opencodeManagedSkill struct {
+	name        string
+	dir         string
+	markerPath  string
+	sentinel    string
+	materialize func(string) error
+}
+
+func opencodeManagedSkills(workspacePath string) []opencodeManagedSkill {
+	return []opencodeManagedSkill{
+		{
+			name:        skillassets.SkillName,
+			dir:         opencodeSkillDir(workspacePath),
+			markerPath:  opencodeSkillMarkerPath(workspacePath),
+			sentinel:    opencodeSkillSentinel,
+			materialize: skillassets.Materialize,
+		},
+		{
+			name:        skillassets.BrowserSkillName,
+			dir:         opencodeBrowserSkillDir(workspacePath),
+			markerPath:  opencodeBrowserSkillMarkerPath(workspacePath),
+			sentinel:    opencodeBrowserSkillSentinel,
+			materialize: skillassets.MaterializeBrowser,
+		},
+	}
+}
+
+// installUsingAOSkill materializes AO's embedded skills where opencode can
+// discover them. It refuses to overwrite a same-named directory that is not
+// AO-managed.
 func installUsingAOSkill(workspacePath string) error {
-	skillDir := opencodeSkillDir(workspacePath)
-	if info, err := os.Stat(skillDir); err == nil {
-		if !info.IsDir() {
-			return fmt.Errorf("refusing to overwrite non-directory at %s — move it so AO can install using-ao", skillDir)
+	skills := opencodeManagedSkills(workspacePath)
+	for _, skill := range skills {
+		if info, err := os.Stat(skill.dir); err == nil {
+			if !info.IsDir() {
+				return fmt.Errorf("refusing to overwrite non-directory at %s — move it so AO can install %s", skill.dir, skill.name)
+			}
+			managed, err := isAOManagedSkillMarker(skill.markerPath, skill.sentinel)
+			if err != nil {
+				return err
+			}
+			if !managed {
+				return fmt.Errorf("refusing to overwrite non-AO skill at %s — move it so AO can install %s", skill.dir, skill.name)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat skill dir: %w", err)
 		}
-		managed, err := isAOManagedSkill(workspacePath)
-		if err != nil {
-			return err
-		}
-		if !managed {
-			return fmt.Errorf("refusing to overwrite non-AO skill at %s — move it so AO can install using-ao", skillDir)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat skill dir: %w", err)
 	}
 
 	skillsParent := opencodeSkillsDir(workspacePath)
 	if err := os.MkdirAll(skillsParent, 0o750); err != nil {
 		return fmt.Errorf("create skills dir: %w", err)
 	}
-	// Write ownership before Materialize clobbers using-ao/, so a crash mid-tree
-	// write leaves a marker that allows the next install attempt to recover.
-	if err := hookutil.AtomicWriteFile(opencodeSkillMarkerPath(workspacePath), []byte(opencodeSkillSentinel+"\n"), 0o600); err != nil {
-		return fmt.Errorf("write skill marker: %w", err)
+	for _, skill := range skills {
+		// Write ownership before materialization so a crash mid-tree leaves a
+		// marker that allows the next install attempt to recover.
+		if err := hookutil.AtomicWriteFile(skill.markerPath, []byte(skill.sentinel+"\n"), 0o600); err != nil {
+			return fmt.Errorf("write %s skill marker: %w", skill.name, err)
+		}
+		if err := skill.materialize(skill.dir); err != nil {
+			return fmt.Errorf("materialize %s skill: %w", skill.name, err)
+		}
+		if err := ensureSkillTreeGitignored(skill.dir); err != nil {
+			return fmt.Errorf("%s skill gitignore: %w", skill.name, err)
+		}
 	}
-	if err := skillassets.Materialize(skillDir); err != nil {
-		return fmt.Errorf("materialize using-ao skill: %w", err)
-	}
-	if err := ensureSkillTreeGitignored(skillDir); err != nil {
-		return fmt.Errorf("skill gitignore: %w", err)
-	}
-	if err := hookutil.EnsureWorkspaceGitignore(skillsParent, opencodeSkillMarkerFile); err != nil {
+	if err := hookutil.EnsureWorkspaceGitignore(skillsParent, opencodeSkillMarkerFile, opencodeBrowserSkillMarkerFile); err != nil {
 		return fmt.Errorf("skill marker gitignore: %w", err)
 	}
 	return nil
@@ -253,22 +295,23 @@ func ensureSkillTreeGitignored(skillRoot string) error {
 	return nil
 }
 
-// uninstallUsingAOSkill removes the AO-managed using-ao skill directory. A
-// missing directory, or a same-named directory without the AO marker, is a no-op.
+// uninstallUsingAOSkill removes AO-managed skill directories. A missing
+// directory, or a same-named directory without its AO marker, is a no-op.
 func uninstallUsingAOSkill(workspacePath string) error {
-	managed, err := isAOManagedSkill(workspacePath)
-	if err != nil {
-		return err
-	}
-	if !managed {
-		return nil
-	}
-	if err := os.RemoveAll(opencodeSkillDir(workspacePath)); err != nil {
-		return fmt.Errorf("remove skill dir: %w", err)
-	}
-	markerPath := opencodeSkillMarkerPath(workspacePath)
-	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove skill marker: %w", err)
+	for _, skill := range opencodeManagedSkills(workspacePath) {
+		managed, err := isAOManagedSkillMarker(skill.markerPath, skill.sentinel)
+		if err != nil {
+			return err
+		}
+		if !managed {
+			continue
+		}
+		if err := os.RemoveAll(skill.dir); err != nil {
+			return fmt.Errorf("remove %s skill dir: %w", skill.name, err)
+		}
+		if err := os.Remove(skill.markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s skill marker: %w", skill.name, err)
+		}
 	}
 	return nil
 }
@@ -289,12 +332,16 @@ func isAOManagedPlugin(path string) (bool, error) {
 // isAOManagedSkill reports whether the AO ownership marker beside the skill
 // directory exists. A missing marker yields (false, nil).
 func isAOManagedSkill(workspacePath string) (bool, error) {
-	data, err := os.ReadFile(opencodeSkillMarkerPath(workspacePath)) //nolint:gosec // path built from caller-owned workspace dir
+	return isAOManagedSkillMarker(opencodeSkillMarkerPath(workspacePath), opencodeSkillSentinel)
+}
+
+func isAOManagedSkillMarker(markerPath, sentinel string) (bool, error) {
+	data, err := os.ReadFile(markerPath) //nolint:gosec // path built from caller-owned workspace dir
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read skill marker: %w", err)
 	}
-	return strings.Contains(string(data), opencodeSkillSentinel), nil
+	return strings.Contains(string(data), sentinel), nil
 }

@@ -241,11 +241,11 @@ func Run() error {
 		return fmt.Errorf("synchronize agent switch reporting policy: %w", err)
 	}
 
-	// Refresh the embedded using-ao skill into the data dir so worker sessions
+	// Refresh AO's embedded skills into the data dir so worker sessions
 	// in any project can read the ao CLI catalog from a stable absolute path.
 	// Non-fatal: the skill is an enhancement over `ao --help`, not required.
 	if err := skillassets.Install(cfg.DataDir); err != nil {
-		log.Warn("install using-ao skill", "err", err)
+		log.Warn("install AO skills", "err", err)
 	}
 
 	telemetryCfg := cfg

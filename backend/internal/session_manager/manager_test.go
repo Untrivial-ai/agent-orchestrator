@@ -4411,6 +4411,7 @@ func TestSpawnOrchestrator_UsesCoordinatorPrompt(t *testing.T) {
 		"`ao session get <worker-session-id>`",
 		"Delegate implementation, fixes, tests, and PR ownership to worker sessions",
 		filepath.ToSlash(filepath.Join("skills", "using-ao", "SKILL.md")),
+		filepath.ToSlash(filepath.Join("skills", "ao-browser", "SKILL.md")),
 		"AO desktop Browser panel",
 		"agent.browsers.get(\"iab\")",
 		"same live page the user sees",
@@ -4570,6 +4571,9 @@ func TestSystemPrompt_AppendsConfidentialityGuard(t *testing.T) {
 			}
 			if !strings.Contains(sp, filepath.ToSlash(filepath.Join("skills", "using-ao", "SKILL.md"))) {
 				t.Fatalf("%s: system prompt missing using-ao skill pointer:\n%s", tc.name, sp)
+			}
+			if !strings.Contains(sp, filepath.ToSlash(filepath.Join("skills", "ao-browser", "SKILL.md"))) {
+				t.Fatalf("%s: system prompt missing ao-browser skill pointer:\n%s", tc.name, sp)
 			}
 			if !strings.Contains(sp, "AO desktop Browser panel") || !strings.Contains(sp, "agent.browsers.get(\"iab\")") {
 				t.Fatalf("%s: system prompt missing AO browser routing guidance:\n%s", tc.name, sp)

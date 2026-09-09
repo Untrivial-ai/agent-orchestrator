@@ -1,7 +1,7 @@
 ---
 name: using-ao
-description: "Catalog of the AO (Agent Orchestrator) `ao` CLI: spawning workers, managing sessions and projects, sending messages, controlling the shared browser, previewing pages, and daemon control. Use when using the ao CLI, spawning workers, or managing AO sessions in an AO workspace."
-trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessions/projects, sending messages, controlling or previewing pages."
+description: "Catalog of the AO (Agent Orchestrator) `ao` CLI for spawning workers, managing sessions and projects, sending messages, previewing pages, and daemon control. Browser interaction is handled by the separate ao-browser skill."
+trigger: "Using the ao CLI for worker, session, project, coordination, preview, or daemon workflows in an AO workspace."
 ---
 
 # AO CLI Catalog
@@ -17,7 +17,7 @@ trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessio
 | `review` | Submit a reviewer result for a worker's PR | Completing a code review loop | [commands/review.md](commands/review.md) |
 | `send` | Send a message to a running agent session | Correcting or directing a live agent | [commands/send.md](commands/send.md) |
 | `preview` | Start a session-owned app or open an exact URL/file | Running and showing the worker's relevant app, Markdown, HTML, PDF, or image | [commands/preview.md](commands/preview.md) |
-| `browser` | Inspect and control the session's shared live browser | Verifying a web app through snapshots, interactions, waits, screenshots, console, and errors | [commands/browser.md](commands/browser.md) |
+| `browser` | Inspect and control the session's shared live browser | Use the independently discoverable [`ao-browser`](../ao-browser/SKILL.md) skill |
 | `start` | Fetch (if needed) and open the AO desktop app | Launching the app | [commands/start.md](commands/start.md) |
 | `stop` | Stop the AO daemon | Shutting down AO | [commands/stop.md](commands/stop.md) |
 | `status` | Show daemon status | Verifying the daemon is up and healthy | [commands/status.md](commands/status.md) |
@@ -36,9 +36,9 @@ trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessio
 - For frontend launch, preview selection, or artifact handoff, read
   [commands/preview.md](commands/preview.md) before acting. Its static-file,
   project-runtime, and automatic-handoff rules are load-bearing.
-- For page inspection, interaction, or request diagnosis, read
-  [commands/browser.md](commands/browser.md). It defines shared-tab behavior
-  and the opt-in network policy.
+- For page inspection, interaction, or request diagnosis, use the standalone
+  [`ao-browser`](../ao-browser/SKILL.md) skill. Do not load unrelated command
+  guides first.
 
 Use [references.md](references.md) only when a natural-language request does
 not map clearly to a command above.
