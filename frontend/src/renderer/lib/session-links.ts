@@ -1,5 +1,9 @@
 export type SessionLinkTarget = { projectId: string; sessionId: string };
-export type SessionLinkWorkspace = { id: string; sessions: Array<{ id: string }> };
+export type ResolvedSessionLink = SessionLinkTarget & { isTerminated: boolean };
+export type SessionLinkWorkspace = {
+	id: string;
+	sessions: Array<{ id: string; isTerminated?: boolean; status?: string }>;
+};
 
 const SESSION_LINK_PREFIX = "ao://sessions/";
 const RAW_SESSION_LINK = /ao:\/\/sessions\/\S+/g;
@@ -23,11 +27,13 @@ export function isSessionLink(value: string): boolean {
 	return parseSessionLink(value) !== undefined;
 }
 
-export function resolveSessionLink(value: string, workspaces: SessionLinkWorkspace[]): SessionLinkTarget | undefined {
+export function resolveSessionLink(value: string, workspaces: SessionLinkWorkspace[]): ResolvedSessionLink | undefined {
 	const target = parseSessionLink(value);
 	if (!target) return undefined;
 	const project = workspaces.find((workspace) => workspace.id === target.projectId);
-	return project?.sessions.some((session) => session.id === target.sessionId) ? target : undefined;
+	const session = project?.sessions.find((candidate) => candidate.id === target.sessionId);
+	if (!session) return undefined;
+	return { ...target, isTerminated: session.isTerminated === true || session.status === "terminated" };
 }
 
 /** Find raw links without swallowing prose punctuation adjacent to them. */
