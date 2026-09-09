@@ -294,6 +294,71 @@ func TestSessionList_EnrichesPRColumnsAndKeepsFallbackFacts(t *testing.T) {
 	}
 }
 
+func TestSessionList_ThreadCountUnknownVersusObservedZero(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/sessions":
+			if r.URL.Query().Get("active") == "false" {
+				_, _ = io.WriteString(w, `{"sessions":[]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"sessions":[
+				{"id":"old-1","projectId":"demo","kind":"worker","activity":{"state":"idle","lastActivityAt":"2026-06-02T11:55:00Z"},"isTerminated":false,"createdAt":"2026-06-02T11:00:00Z","updatedAt":"2026-06-02T12:00:00Z","status":"idle","prs":[{"number":1,"ci":"passing","review":"approved"}]},
+				{"id":"zero-1","projectId":"demo","kind":"worker","activity":{"state":"idle","lastActivityAt":"2026-06-02T11:55:00Z"},"isTerminated":false,"createdAt":"2026-06-02T11:00:00Z","updatedAt":"2026-06-02T12:00:00Z","status":"idle","prs":[{"number":2,"ci":"passing","review":"approved"}]}
+			]}`)
+		case "/api/v1/sessions/old-1/pr":
+			// A pre-change daemon: the summary endpoint succeeds but does not
+			// carry unresolvedThreadCount. That must read as unknown, not zero.
+			_, _ = io.WriteString(w, `{"sessionId":"old-1","prs":[{"number":1,"ci":{"state":"passing"},"review":{"decision":"approved"}}]}`)
+		case "/api/v1/sessions/zero-1/pr":
+			_, _ = io.WriteString(w, `{"sessionId":"zero-1","prs":[{"number":2,"ci":{"state":"passing"},"review":{"decision":"approved","unresolvedThreadCount":0}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+		Now:          func() time.Time { return time.Date(2026, 6, 2, 12, 5, 0, 0, time.UTC) },
+	}, "session", "ls", "--project", "demo", "--json")
+	if err != nil {
+		t.Fatalf("session ls --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got sessionListOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode JSON: %v\noutput=%s", err, out)
+	}
+	if len(got.Data) != 2 {
+		t.Fatalf("len(data) = %d, want 2; data=%#v", len(got.Data), got.Data)
+	}
+	if got.Data[0].PRs[0].Threads != nil {
+		t.Fatalf("older-daemon entry threads = %#v, want unknown (nil)", got.Data[0].PRs[0].Threads)
+	}
+	if got.Data[1].PRs[0].Threads == nil || *got.Data[1].PRs[0].Threads != 0 {
+		t.Fatalf("observed-zero entry threads = %#v, want explicit 0", got.Data[1].PRs[0].Threads)
+	}
+
+	out, errOut, err = executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+		Now:          func() time.Time { return time.Date(2026, 6, 2, 12, 5, 0, 0, time.UTC) },
+	}, "session", "ls", "--project", "demo")
+	if err != nil {
+		t.Fatalf("session ls failed: %v\nstderr=%s", err, errOut)
+	}
+	for _, row := range []string{"old-1", "zero-1"} {
+		if !strings.Contains(out, row) {
+			t.Fatalf("output missing %q:\n%s", row, out)
+		}
+	}
+	if !strings.Contains(out, "-") {
+		t.Fatalf("table output missing unknown-count dash:\n%s", out)
+	}
+}
+
 func TestSessionList_AllIncludesOrchestratorsWithoutHiddenHint(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, _ := sessionCommandServer(t)

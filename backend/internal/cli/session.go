@@ -81,8 +81,10 @@ type sessionPRSummaryDTO struct {
 		State string `json:"state"`
 	} `json:"ci"`
 	Review struct {
+		// A pointer keeps a pre-change daemon's successful-but-fieldless
+		// response unknown rather than decoding absence as a known zero.
 		Decision              string `json:"decision"`
-		UnresolvedThreadCount int    `json:"unresolvedThreadCount"`
+		UnresolvedThreadCount *int   `json:"unresolvedThreadCount"`
 	} `json:"review"`
 }
 
@@ -861,8 +863,10 @@ func listPRsForSession(sess sessionDTO, summaries []sessionPRSummaryDTO) []sessi
 	if len(summaries) > 0 {
 		out := make([]sessionListPR, 0, len(summaries))
 		for _, pr := range summaries {
-			threads := pr.Review.UnresolvedThreadCount
-			out = append(out, sessionListPR{Number: pr.Number, CI: pr.CI.State, Review: pr.Review.Decision, Threads: &threads})
+			// Threads stays nil (rendered as "-") when the daemon did not
+			// publish a count: an older daemon or an only-partially observed
+			// thread snapshot must read as unknown, not zero.
+			out = append(out, sessionListPR{Number: pr.Number, CI: pr.CI.State, Review: pr.Review.Decision, Threads: pr.Review.UnresolvedThreadCount})
 		}
 		return out
 	}

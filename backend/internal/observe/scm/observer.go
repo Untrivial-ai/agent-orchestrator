@@ -1753,6 +1753,13 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 	if opts.reviewFetched || reviewObservedAt.IsZero() {
 		reviewObservedAt = obs.ObservedAt
 	}
+	// Partial-ness follows the last fetched review observation; when this pass
+	// did not fetch reviews, keep the local record so the summary layer can
+	// keep treating stored thread rows as a partial view.
+	reviewPartial := local.ReviewPartial
+	if opts.reviewFetched {
+		reviewPartial = obs.Review.Partial
+	}
 	pr := domain.PullRequest{
 		URL:                      firstNonEmpty(obs.PR.URL, obs.PR.HTMLURL),
 		URLAlias:                 obs.PR.URLAlias,
@@ -1794,6 +1801,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 		ObservedAt:               observedAt,
 		CIObservedAt:             ciObservedAt,
 		ReviewObservedAt:         reviewObservedAt,
+		ReviewPartial:            reviewPartial,
 	}
 	checks := make([]domain.PullRequestCheck, 0, len(obs.CI.Checks))
 	for _, ch := range obs.CI.Checks {
