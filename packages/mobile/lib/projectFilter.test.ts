@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { DashboardSession } from "./api";
-import { ALL_PROJECTS, NO_PROJECTS_KNOWN, activeProjectLabel, filteredEmptyCopy, resolveActiveProject, retainProjects } from "./projectFilter";
+import {
+	ALL_PROJECTS,
+	NO_PROJECTS_KNOWN,
+	activeProjectLabel,
+	filteredEmptyCopy,
+	projectsForMachine,
+	resolveActiveProject,
+	retainProjects,
+	type KnownProjects,
+} from "./projectFilter";
 
 const listed = [
 	{ id: "scratch", name: "Scratch" },
@@ -127,18 +136,25 @@ describe("retainProjects", () => {
 	// listed project, one worker in it. Before this, getSessions folded a failed
 	// /projects into [] and an empty list was not judged, so the rejected filter
 	// came back on the failing tick and the worker vanished with it.
+	// What the store does with one answer, as one expression, so a sequence test
+	// exercises the same rule the store applies rather than a copy of it.
+	const board = (state: KnownProjects, activeMachine: string, saved: string, workers: DashboardSession[]) => {
+		const visible = projectsForMachine(state, activeMachine);
+		const applied = resolveActiveProject(saved, visible.projects, visible.known);
+		return {
+			applied,
+			visible: (applied === ALL_PROJECTS ? workers : workers.filter((s) => s.projectId === applied)).length,
+		};
+	};
+
 	it("does not let a failed /projects tick reactivate a rejected filter", () => {
 		const workers = [session("remaining")];
 		const ticks: (typeof remaining | null)[] = [remaining, null, remaining];
 		let known = NO_PROJECTS_KNOWN;
-		const rows: { applied: string; visible: number }[] = [];
-		for (const projects of ticks) {
-			known = retainProjects(known, { machine: A, projects });
-			const applied = resolveActiveProject("removed", known.projects, known.known);
-			// What the board renders: the store filters on the applied value.
-			const visible = applied === ALL_PROJECTS ? workers : workers.filter((s) => s.projectId === applied);
-			rows.push({ applied, visible: visible.length });
-		}
+		const rows = ticks.map((projects) => {
+			known = retainProjects(known, { machine: A, projects }, A);
+			return board(known, A, "removed", workers);
+		});
 		expect(rows).toEqual([
 			{ applied: "all", visible: 1 },
 			{ applied: "all", visible: 1 },
@@ -146,15 +162,47 @@ describe("retainProjects", () => {
 		]);
 	});
 
+	// Round 2 of the review. fetchAll has no staleness guard, so a request from
+	// the machine the user just left still lands. Recording it as A's was not
+	// enough: it displaced the list B had just given us, and B's next failure
+	// then found nothing retained for B, went unknown, and the saved filter came
+	// back to hide B's workers. Received "removed" before the guard.
+	it("survives a late answer from the machine the user just left", () => {
+		const workers = [session("remaining")];
+		let known = retainProjects(NO_PROJECTS_KNOWN, { machine: B, projects: remaining }, B);
+		expect(board(known, B, "removed", workers)).toEqual({ applied: "all", visible: 1 });
+
+		// A's in-flight request completes while the app is on B.
+		known = retainProjects(known, { machine: A, projects: [{ id: "a-only", name: "A only" }] }, B);
+		expect(board(known, B, "removed", workers)).toEqual({ applied: "all", visible: 1 });
+
+		// B's next /projects fails. B's own list must still be what answers.
+		known = retainProjects(known, { machine: B, projects: null }, B);
+		expect(board(known, B, "removed", workers)).toEqual({ applied: "all", visible: 1 });
+	});
+
+	// The write guard cannot cover the window before the new machine has answered
+	// at all, because the state still holds the old machine's list. The read side
+	// is its own guard: the spawn sheet re-checks its seed against this too, so
+	// exposing A's list on B would invalidate a legitimate pick.
+	it("reports unknown until the machine the app is on has answered", () => {
+		const onA = retainProjects(NO_PROJECTS_KNOWN, { machine: A, projects: remaining }, A);
+		expect(projectsForMachine(onA, B)).toBe(NO_PROJECTS_KNOWN);
+		expect(projectsForMachine(onA, A)).toBe(onA);
+		expect(resolveActiveProject("remaining", projectsForMachine(onA, B).projects, projectsForMachine(onA, B).known)).toBe(
+			"remaining",
+		);
+	});
+
 	it("keeps the list a machine last answered with when the next tick fails", () => {
-		const first = retainProjects(NO_PROJECTS_KNOWN, { machine: A, projects: remaining });
-		expect(retainProjects(first, { machine: A, projects: null })).toBe(first);
+		const first = retainProjects(NO_PROJECTS_KNOWN, { machine: A, projects: remaining }, A);
+		expect(retainProjects(first, { machine: A, projects: null }, A)).toBe(first);
 	});
 
 	// Nothing has been retained for this machine, so there is still no list to
 	// judge against — the cold-start state, not "this daemon has no projects".
 	it("stays unknown when the first tick for a machine fails", () => {
-		expect(retainProjects(NO_PROJECTS_KNOWN, { machine: A, projects: null })).toEqual({
+		expect(retainProjects(NO_PROJECTS_KNOWN, { machine: A, projects: null }, A)).toEqual({
 			machine: A,
 			projects: [],
 			known: false,
@@ -164,8 +212,8 @@ describe("retainProjects", () => {
 	// Re-pairing: the old machine's projects are not evidence about the new one,
 	// so the filter saved for B must not be judged against A's list.
 	it("drops another machine's list rather than retaining it", () => {
-		const onA = retainProjects(NO_PROJECTS_KNOWN, { machine: A, projects: remaining });
-		const onB = retainProjects(onA, { machine: B, projects: null });
+		const onA = retainProjects(NO_PROJECTS_KNOWN, { machine: A, projects: remaining }, A);
+		const onB = retainProjects(onA, { machine: B, projects: null }, B);
 		expect(onB).toEqual({ machine: B, projects: [], known: false });
 		expect(resolveActiveProject("remaining", onB.projects, onB.known)).toBe("remaining");
 	});
@@ -173,7 +221,7 @@ describe("retainProjects", () => {
 	// A daemon with no projects answers []. That is a list, and the filter is
 	// judged against it — see resolveActiveProject.
 	it("counts a successful empty list as known", () => {
-		expect(retainProjects(NO_PROJECTS_KNOWN, { machine: A, projects: [] })).toEqual({
+		expect(retainProjects(NO_PROJECTS_KNOWN, { machine: A, projects: [] }, A)).toEqual({
 			machine: A,
 			projects: [],
 			known: true,

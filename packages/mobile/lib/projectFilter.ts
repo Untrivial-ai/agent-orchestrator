@@ -36,16 +36,43 @@ export const NO_PROJECTS_KNOWN: KnownProjects = { machine: "", projects: [], kno
  * about this one's — re-pairing must not judge the new machine's filter against
  * the old machine's list. Returns `prev` unchanged when there is nothing to
  * change, so a failing tick costs no re-render.
+ *
+ * `activeMachine` is the machine the app is on NOW, and an answer from any other
+ * one is dropped whole. fetchAll has no staleness guard, so a request already in
+ * flight when the user re-pairs still lands: recording it as its own machine's
+ * is not enough, because it DISPLACES the list the current machine had just
+ * given us, and the current machine's next failed /projects then finds nothing
+ * retained for itself and goes unknown — resurrecting the very filter this
+ * fixes. Dropping it keeps the guarantee to "the last list THIS machine gave
+ * us, until this machine gives us another" (#5058 review, round 2).
  */
 export function retainProjects(
 	prev: KnownProjects,
 	answer: { machine: string; projects: ProjectInfo[] | null },
+	activeMachine: string,
 ): KnownProjects {
+	if (answer.machine !== activeMachine) return prev;
 	// Explicitly against null, not truthiness: a successful [] takes this branch
 	// and becomes known, which is the distinction the whole type exists for.
 	if (answer.projects !== null) return { machine: answer.machine, projects: answer.projects, known: true };
 	if (prev.machine === answer.machine && prev.known) return prev;
 	return { machine: answer.machine, projects: [], known: false };
+}
+
+/**
+ * What is known about the machine the app is on, and nothing else.
+ *
+ * The write side above drops foreign answers, but a re-pair still leaves the
+ * previous machine's list in state until the new machine answers for the first
+ * time. Reading it in that window would judge the new machine's filter against
+ * the old machine's projects, and the spawn sheet would re-check its seed
+ * against them too — invalidating a legitimate pick and clearing the model
+ * chosen under it. Unknown is the honest answer until this machine has spoken.
+ *
+ * Identity-stable in both branches, so it adds no re-render.
+ */
+export function projectsForMachine(state: KnownProjects, activeMachine: string): KnownProjects {
+	return state.machine === activeMachine ? state : NO_PROJECTS_KNOWN;
 }
 
 /**

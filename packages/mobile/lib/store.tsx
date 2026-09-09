@@ -35,7 +35,7 @@ import { shouldShowLoading } from "./configLoading";
 import { shouldKeepPolling } from "./connectionError";
 import { primeInstallId } from "./installId";
 import { collectPRs } from "./prView";
-import { ALL_PROJECTS, NO_PROJECTS_KNOWN, resolveActiveProject, retainProjects, type KnownProjects } from "./projectFilter";
+import { ALL_PROJECTS, NO_PROJECTS_KNOWN, projectsForMachine, resolveActiveProject, retainProjects, type KnownProjects } from "./projectFilter";
 import { MOBILE_EVENTS } from "./telemetry/events";
 import { mobileTelemetry, trackFeature } from "./telemetry/runtime";
 import { useConversationEventTransport } from "./chat/conversationEvents";
@@ -129,7 +129,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// tick's result, and split apart they could disagree — see that helper for
 	// why a failed /projects must not read as "this daemon has no projects".
 	const [knownProjects, setKnownProjects] = useState<KnownProjects>(NO_PROJECTS_KNOWN);
-	const { projects, known: projectsKnown } = knownProjects;
 	const [sessions, setSessions] = useState<DashboardSession[]>([]);
 	const [orchestrators, setOrchestrators] = useState<OrchestratorLink[]>([]);
 	const [orchestratorId, setOrchestratorId] = useState<string | null>(null);
@@ -308,16 +307,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// Most ticks bring back the fleet exactly as it was; keep the previous
 			// value so React bails out of the render — see keepUnchanged.
 			//
-			// Keyed on which machine answered, not just stored: a list retained
-			// across a re-pair would have the new machine's filter judged against
-			// the old machine's projects. fetchAll has no staleness guard, so a
-			// late answer from the machine the user just left can still land here —
-			// it is recorded as THAT machine's, so the next tick from this one
-			// replaces it rather than inheriting it. retainProjects holds identity
+			// Keyed on which machine answered AND checked against the machine the
+			// app is on now: fetchAll has no staleness guard, so a request already
+			// in flight when the user re-pairs still lands here, and folding it in
+			// would displace the list the current machine had just given us. Only
+			// the project write is guarded, deliberately — guarding every write in
+			// this function would also swallow the connection and loading state on
+			// a re-pair, which is a different change. retainProjects holds identity
 			// when it keeps what it has, but a successful tick builds a fresh
 			// object, so it goes through keepUnchanged like everything else.
 			setKnownProjects((prev) =>
-				keepUnchanged(prev, retainProjects(prev, { machine: machineIdentity(c), projects: sess.projects })),
+				keepUnchanged(
+					prev,
+					retainProjects(
+						prev,
+						{ machine: machineIdentity(c), projects: sess.projects },
+						machineIdentity(cfgRef.current ?? c),
+					),
+				),
 			);
 			setSessions((prev) => keepUnchanged(prev, sess.sessions));
 			setOrchestrators((prev) => keepUnchanged(prev, sess.orchestrators));
@@ -440,6 +447,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		setChosenProjectId(id);
 		AsyncStorage.setItem(ACTIVE_PROJECT_KEY, id).catch(() => {});
 	}, []);
+
+	// Only this machine's answers are visible as this machine's projects; see
+	// projectsForMachine for the re-pair window that makes the read side its own
+	// guard rather than a consequence of the write side.
+	const { projects, known: projectsKnown } = projectsForMachine(
+		knownProjects,
+		config && isConfigured(config) ? machineIdentity(config) : "",
+	);
 
 	// A filter whose project the daemon no longer lists applies as "all" (#4843).
 	// Derived on every list rather than reset and written back: the project can
