@@ -8364,6 +8364,7 @@ components:
       - id
       - name
       - type
+      - choices
       type: object
     ConversationConfigOptionsResponse:
       properties:

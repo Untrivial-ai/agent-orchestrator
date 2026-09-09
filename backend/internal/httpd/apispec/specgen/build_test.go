@@ -69,6 +69,26 @@ func TestBuild_MatchesEmbedded(t *testing.T) {
 	}
 }
 
+func TestBuild_ConfigOptionChoicesAreRequired(t *testing.T) {
+	got, err := specgen.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var doc struct {
+		Components struct {
+			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("parse generated OpenAPI: %v", err)
+	}
+
+	required := doc.Components.Schemas["ConversationConfigOptionResponse"].Required
+	if !slices.Contains(required, "choices") {
+		t.Fatalf("ConversationConfigOptionResponse required = %v, missing choices", required)
+	}
+}
+
 func TestBuild_InstallJobTargetRemainsAnEnum(t *testing.T) {
 	got, err := specgen.Build()
 	if err != nil {
