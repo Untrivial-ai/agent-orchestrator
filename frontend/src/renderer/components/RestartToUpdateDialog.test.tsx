@@ -86,12 +86,35 @@ it("names the sessions that would lose a turn and waits for confirmation", async
 });
 
 it("stays quiet when nothing is at risk", async () => {
-	workspaceData.current = [{ sessions: [session({ mode: "tui" }), session({ id: "s3", provider: "codex" })] }];
+	workspaceData.current = [
+		{
+			sessions: [
+				session({ mode: "tui" }),
+				session({ id: "s2", provider: "codex", chatProviderPreserved: true }),
+				session({ id: "s3", provider: "claude-code", chatProviderPreserved: true }),
+				session({ id: "s4", provider: "cursor", chatProviderPreserved: true }),
+			],
+		},
+	];
 	useUiStore.setState({ updateInstallPromptOpen: true });
 	renderDialog({ state: "downloaded", version: "1.2.3" });
 	await screen.findByTestId("restart-to-update-dialog");
 	expect(screen.queryByTestId("restart-sessions-warning")).toBeNull();
 });
+
+it.each([false, undefined])(
+	"warns about Codex when persistent ownership is %s",
+	async (chatProviderPreserved) => {
+		workspaceData.current = [{ sessions: [session({ provider: "codex", chatProviderPreserved })] }];
+		useUiStore.setState({ updateInstallPromptOpen: true });
+		renderDialog({ state: "downloaded", version: "1.2.3" });
+
+		const warning = await screen.findByTestId("restart-sessions-warning");
+		expect(warning).toHaveTextContent("1 chat session will lose its current turn");
+		expect(warning).toHaveTextContent("agent-orchestrator · Fix the updater");
+		expect(updInstall).not.toHaveBeenCalled();
+	},
+);
 
 it("cancelling never installs", async () => {
 	useUiStore.setState({ updateInstallPromptOpen: true });
