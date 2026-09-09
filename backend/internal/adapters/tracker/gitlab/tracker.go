@@ -210,9 +210,10 @@ type gqlError struct {
 
 // gqlWorkItem is the subset of fields we read off a GraphQL Work Item node.
 // Work item details (assignees, labels) are exposed as typed widgets in the
-// GraphQL response.
+// GraphQL response. The ID field (global GraphQL ID) is fetched for future
+// use but not currently surfaced to the domain.
 type gqlWorkItem struct {
-	ID          string `json:"id"`
+	ID string `json:"id"` // global GraphQL ID; not yet surfaced to domain
 	IID         string `json:"iid"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
@@ -326,11 +327,18 @@ func issueFromGraphQL(projectPath string, wi gqlWorkItem) domain.Issue {
 			}
 		}
 	}
-	iid, _ := strconv.Atoi(wi.IID)
+	// IID is typed as ID! in the GraphQL schema but is always numeric in
+	// practice. If parsing fails, fall back to the raw string so the ID
+	// is still useful for debugging rather than silently becoming #0.
+	iid, err := strconv.Atoi(wi.IID)
+	nativeIID := wi.IID
+	if err == nil {
+		nativeIID = strconv.Itoa(iid)
+	}
 	out := domain.Issue{
 		ID: domain.TrackerID{
 			Provider: domain.TrackerProviderGitLab,
-			Native:   fmt.Sprintf("%s#%d", projectPath, iid),
+			Native:   fmt.Sprintf("%s#%s", projectPath, nativeIID),
 		},
 		Title:     wi.Title,
 		Body:      wi.Description,

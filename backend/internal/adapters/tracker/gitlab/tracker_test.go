@@ -103,30 +103,6 @@ func gqlVars(t *testing.T, body string) map[string]any {
 	return req.Variables
 }
 
-// gqlQueryField extracts the top-level query field name from a GraphQL
-// request body, e.g. "workItem" or "project".
-func gqlQueryField(t *testing.T, body string) string {
-	t.Helper()
-	var req struct {
-		Query string `json:"query"`
-	}
-	if err := json.Unmarshal([]byte(body), &req); err != nil {
-		t.Fatalf("failed to decode graphql query: %v", err)
-	}
-	// crude: find the first query/mutation field name after the opening paren
-	s := req.Query
-	if i := strings.Index(s, "{"); i >= 0 {
-		s = s[i+1:]
-	}
-	s = strings.TrimSpace(s)
-	// first identifier after {
-	fields := strings.Fields(s)
-	if len(fields) == 0 {
-		return ""
-	}
-	return fields[0]
-}
-
 // workItemJSON builds a GraphQL work item node JSON suitable for test responses.
 func workItemJSON(iid int, title, desc, state, webURL string, labels []string, assignees []string) string {
 	var widgets []string
@@ -481,6 +457,46 @@ func TestGet_NoDescription(t *testing.T) {
 	}
 	if issue.Body != "" {
 		t.Fatalf("Body = %q, want empty", issue.Body)
+	}
+}
+
+func TestGet_GraphQLErrorGeneric(t *testing.T) {
+	f := newFakeGL(t)
+	f.on("POST", "/graphql", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"errors":[{"message":"Something went wrong","extensions":{"code":"INTERNAL"}}]}`))
+	})
+	tr := newTrackerForTest(t, f)
+	_, err := tr.Get(ctx(), domain.TrackerID{Provider: domain.TrackerProviderGitLab, Native: "o/r#1"})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, should not be ErrNotFound for non-NOT_FOUND code", err)
+	}
+	if !strings.Contains(err.Error(), "Something went wrong") {
+		t.Fatalf("err = %v, want message containing 'Something went wrong'", err)
+	}
+}
+
+func TestGet_ReversedWidgetOrder(t *testing.T) {
+	f := newFakeGL(t)
+	f.on("POST", "/graphql", func(w http.ResponseWriter, r *http.Request) {
+		// Labels widget before assignees widget — verifies iteration order doesn't matter.
+		_, _ = w.Write([]byte(`{"data":{"workItem":{"iid":"1","title":"t","description":"d","state":"opened","webUrl":"https://gitlab.com/o/r/-/issues/1","widgets":[
+			{"type":"LABELS","labels":{"nodes":[{"title":"bug"},{"title":"critical"}]}},
+			{"type":"ASSIGNEES","assignees":{"nodes":[{"username":"alice"}]}}
+		]}}}`))
+	})
+	tr := newTrackerForTest(t, f)
+	issue, err := tr.Get(ctx(), domain.TrackerID{Provider: domain.TrackerProviderGitLab, Native: "o/r#1"})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(issue.Labels, []string{"bug", "critical"}) {
+		t.Fatalf("Labels = %#v, want [bug critical]", issue.Labels)
+	}
+	if !reflect.DeepEqual(issue.Assignees, []string{"alice"}) {
+		t.Fatalf("Assignees = %#v, want [alice]", issue.Assignees)
 	}
 }
 
