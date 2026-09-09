@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/google/uuid"
@@ -324,7 +323,6 @@ func codexBaseArgs(policy PermissionPolicy, providerArgs []string) []string {
 }
 
 func appendCodexCommon(cmd []string, workspace, model, promptFile, prompt string) []string {
-	cmd = append(cmd, CodexWorkspaceTrustArgs(workspace)...)
 	if model = strings.TrimSpace(model); model != "" {
 		cmd = append(cmd, "--model", model)
 	}
@@ -337,23 +335,6 @@ func appendCodexCommon(cmd []string, workspace, model, promptFile, prompt string
 	return cmd
 }
 
-// CodexWorkspaceTrustArgs returns the invocation-scoped project trust override
-// for a checkout, including its resolved path when it differs.
-func CodexWorkspaceTrustArgs(workspace string) []string {
-	path := strings.TrimSpace(workspace)
-	if path == "" {
-		return nil
-	}
-	keys := []string{path}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
-		keys = append(keys, resolved)
-	}
-	entries := make([]string, 0, len(keys))
-	for _, key := range keys {
-		entries = append(entries, codexTOMLString(key)+`={trust_level="trusted"}`)
-	}
-	return []string{"-c", "projects={" + strings.Join(entries, ",") + "}"}
-}
 
 func codexTOMLString(value string) string {
 	if !containsTOMLControl(value) && !strings.Contains(value, "'") {

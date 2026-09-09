@@ -64,7 +64,6 @@ func TestBuildLaunchCommands(t *testing.T) {
 				"--ask-for-approval", "on-request",
 				"-c", `approvals_reviewer="auto_review"`,
 				"-c", "hooks.SessionStart=[]",
-				"-c", "projects={'/workspace'={trust_level=\"trusted\"}}",
 				"--model", "gpt-5",
 				"-c", "developer_instructions='act as worker'",
 				"--", "fix auth",
