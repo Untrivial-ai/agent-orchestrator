@@ -167,6 +167,49 @@ func TestSpawnRejectsEmptySessionID(t *testing.T) {
 	}
 }
 
+// TestReviewSubmitBatchRejectsEmptyEntries ensures batch review submit fails
+// instead of printing success when any returned entry is missing its run ID
+// or verdict — including empty objects and JSON nulls.
+func TestReviewSubmitBatchRejectsEmptyEntries(t *testing.T) {
+	batchInput := `[{"runId":"run-1","verdict":"approved"}]`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"empty entry", `{"reviews":[{}]}`},
+		{"null entry", `{"reviews":[null]}`},
+		{"id-only entry", `{"reviews":[{"id":"run-1"}]}`},
+		{"verdict-only entry", `{"reviews":[{"verdict":"approved"}]}`},
+		{"one bad entry among good", `{"reviews":[{"id":"run-1","verdict":"approved"},{}]}`},
+		{"empty array and empty single", `{"reviews":[]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+
+			deps := Deps{ProcessAlive: func(int) bool { return true }}
+			deps.In = strings.NewReader(batchInput)
+			out, _, err := executeCLI(t, deps,
+				"review", "submit", "sess-1", "--reviews", "-")
+			if err == nil {
+				t.Fatalf("body %q: expected batch submit error, got nil", tt.body)
+			}
+			if !strings.Contains(err.Error(), "empty review result") {
+				t.Fatalf("body %q: err = %q, want empty review result", tt.body, err.Error())
+			}
+			if strings.Contains(out, "recorded") {
+				t.Fatalf("body %q: must not print success, got %q", tt.body, out)
+			}
+		})
+	}
+}
+
 // TestReviewSubmitRejectsEmptyResult ensures review submit fails instead of
 // reporting a recorded review when the daemon returns nothing useful: an
 // empty body fails at the transport layer, while a valid-but-empty document

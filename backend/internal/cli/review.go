@@ -221,9 +221,17 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 	if err := c.postJSON(cmd.Context(), path, submitReviewRequest{Reviews: reviews}, &res); err != nil {
 		return err
 	}
-	// Batch success is the recorded runs array, falling back to a
-	// fully-populated single review. Anything less is a broken contract.
-	if len(res.Reviews) == 0 && (strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "") {
+	// Batch success is the recorded runs array: every returned entry must
+	// carry its run ID and verdict. An empty array falls back to requiring
+	// a fully-populated single review. Anything less is a broken contract,
+	// not a success to print.
+	if len(res.Reviews) > 0 {
+		for _, run := range res.Reviews {
+			if strings.TrimSpace(run.ID) == "" || strings.TrimSpace(run.Verdict) == "" {
+				return fmt.Errorf("daemon returned empty review result for %s", session)
+			}
+		}
+	} else if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
 		return fmt.Errorf("daemon returned empty review result for %s", session)
 	}
 	count := len(res.Reviews)
