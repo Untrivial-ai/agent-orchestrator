@@ -14,13 +14,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/cline"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/codex"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/continueagent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/copilot"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/crush"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/cursor"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/devin"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/droid"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/goose"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/grok"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/kilocode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/kimchi"
@@ -53,13 +51,11 @@ func Constructors() []Adapter {
 		claudecode.New(),
 		cline.New(),
 		codex.New(),
-		continueagent.New(),
 		copilot.New(),
 		cursor.New(),
 		devin.New(),
 		droid.New(),
 		crush.New(),
-		goose.New(),
 		grok.New(),
 		kimchi.New(),
 		kilocode.New(),

@@ -21,8 +21,6 @@ const (
 	ReviewerPi         ReviewerHarness = "pi"
 	ReviewerQwen       ReviewerHarness = "qwen"
 	ReviewerAgy        ReviewerHarness = "agy"
-	ReviewerContinue   ReviewerHarness = "continue"
-	ReviewerGoose      ReviewerHarness = "goose"
 	ReviewerVibe       ReviewerHarness = "vibe"
 	ReviewerDevin      ReviewerHarness = "devin"
 	ReviewerDroid      ReviewerHarness = "droid"
@@ -51,8 +49,6 @@ var AllReviewerHarnesses = []ReviewerHarness{
 	ReviewerPi,
 	ReviewerQwen,
 	ReviewerAgy,
-	ReviewerContinue,
-	ReviewerGoose,
 	ReviewerVibe,
 	ReviewerDevin,
 	ReviewerDroid,

@@ -20,7 +20,7 @@ import (
 
 const (
 	pinnedVersion            = "2.23.2"
-	hostTrustedReviewerAgent = "auto-approve"
+	hostTrustedReviewerAgent = "plan"
 	containedReviewerAgent   = "plan"
 )
 
@@ -115,7 +115,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 	if strings.TrimSpace(inv.TaskPromptRoot) != "" {
 		argv = append(argv, "--add-dir", inv.TaskPromptRoot)
 	}
-	argv = append(argv, "--agent", hostTrustedReviewerAgent)
+	argv = append(argv, "--agent", hostTrustedReviewerAgent, "--auto-approve")
 	if strings.TrimSpace(inv.Prompt) != "" {
 		argv = append(argv, inv.Prompt)
 	}

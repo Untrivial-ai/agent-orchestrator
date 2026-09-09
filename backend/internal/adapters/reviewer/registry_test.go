@@ -20,7 +20,6 @@ func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 		domain.ReviewerAider:  true,
 		domain.ReviewerAuggie: true,
 		domain.ReviewerDroid:  true,
-		domain.ReviewerGoose:  true,
 		domain.ReviewerQwen:   true,
 		domain.ReviewerVibe:   true,
 	}
@@ -42,7 +41,7 @@ func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 			t.Errorf("reviewer harness %q cancel spec: %v", h, err)
 		} else {
 			switch h {
-			case domain.ReviewerCodex, domain.ReviewerKiro, domain.ReviewerPi, domain.ReviewerQwen, domain.ReviewerContinue, domain.ReviewerVibe, domain.ReviewerMuse:
+			case domain.ReviewerCodex, domain.ReviewerKiro, domain.ReviewerPi, domain.ReviewerQwen, domain.ReviewerVibe, domain.ReviewerMuse:
 				if spec.Mode != ports.ReviewCancelInput {
 					t.Errorf("reviewer harness %q cancel mode = %q, want %q", h, spec.Mode, ports.ReviewCancelInput)
 				}
@@ -56,7 +55,7 @@ func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 				if len(spec.Inputs) != 2 || spec.Inputs[0] != "\x1b" || spec.Inputs[1] != "\x1b" {
 					t.Errorf("reviewer harness %q cancel inputs = %#v, want double escape", h, spec.Inputs)
 				}
-			case domain.ReviewerAgy, domain.ReviewerGoose, domain.ReviewerDevin, domain.ReviewerDroid:
+			case domain.ReviewerAgy, domain.ReviewerDevin, domain.ReviewerDroid:
 				if spec.Mode != ports.ReviewCancelInterrupt {
 					t.Errorf("reviewer harness %q cancel mode = %q, want %q", h, spec.Mode, ports.ReviewCancelInterrupt)
 				}
@@ -98,6 +97,11 @@ func TestNewResolverResolvesShippedReviewers(t *testing.T) {
 	}
 	if _, ok := resolver.Reviewer("nope"); ok {
 		t.Error("resolver returned an adapter for an unknown harness")
+	}
+	for _, removed := range []domain.ReviewerHarness{"continue", "goose"} {
+		if _, ok := resolver.Reviewer(removed); ok {
+			t.Errorf("resolver returned removed reviewer %q", removed)
+		}
 	}
 }
 
