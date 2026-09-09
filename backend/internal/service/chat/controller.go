@@ -2119,7 +2119,7 @@ func (c *Controller) project() {
 	// controller, and must keep persisting until the provider stream ends.
 	ctx := context.WithoutCancel(context.Background())
 
-	for event := range c.conv.Events() {
+	for event := range coalesceChatDeltas(c.conv.Events()) {
 		c.mu.Lock()
 		preserveProvider := c.preserveProviderOnStop
 		c.mu.Unlock()
