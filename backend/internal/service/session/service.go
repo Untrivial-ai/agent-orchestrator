@@ -874,19 +874,35 @@ func (s *Service) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	return out, nil
 }
 
-// TeardownProject stops every live session in a project, then asks the session
-// manager to reclaim terminal workspaces. Dirty worktrees are preserved by Kill
-// and Cleanup; callers only see hard teardown failures.
+// TeardownProject stops every live session in a project concurrently, then asks
+// the session manager to reclaim terminal workspaces. The expensive per-session
+// work (agent/runtime shutdown, controller teardown) is independent, so running
+// the kills in parallel is what makes removing a many-session project fast;
+// sessions of the same project that reach the shared repository are serialized
+// by the workspace adapter's per-repo teardown lock. Dirty worktrees are
+// preserved by Kill and Cleanup; callers only see hard teardown failures.
 func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID) error {
 	recs, err := s.listRecords(ctx, project)
 	if err != nil {
 		return err
 	}
-	for _, rec := range recs {
-		if rec.IsTerminated {
+	errs := make([]error, len(recs))
+	var wg sync.WaitGroup
+	for i := range recs {
+		if recs[i].IsTerminated {
 			continue
 		}
-		if _, err := s.Kill(ctx, rec.ID); err != nil {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := s.Kill(ctx, recs[i].ID); err != nil {
+				errs[i] = err
+			}
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
 			return err
 		}
 	}

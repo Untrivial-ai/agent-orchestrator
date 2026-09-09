@@ -2229,6 +2229,8 @@ type fakeCommander struct {
 	restoreErr      error
 	restoreResult   sessionmanager.RestoreResult
 	readyErr        error
+	killFunc        func(domain.SessionID)
+	killMu          sync.Mutex
 }
 
 func (f *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
@@ -2286,7 +2288,12 @@ func (f *fakeCommander) Kill(_ context.Context, id domain.SessionID) (bool, erro
 	if f.killErr != nil {
 		return false, f.killErr
 	}
+	f.killMu.Lock()
 	f.killed = append(f.killed, id)
+	f.killMu.Unlock()
+	if f.killFunc != nil {
+		f.killFunc(id)
+	}
 	return true, nil
 }
 func (f *fakeCommander) RetireForReplacement(_ context.Context, id domain.SessionID) error {
@@ -2362,6 +2369,65 @@ func TestTeardownProjectKillsActiveSessionsThenCleansProject(t *testing.T) {
 	}
 	if len(fc.killed) != 1 || fc.killed[0] != "mer-1" {
 		t.Fatalf("killed = %#v, want only mer-1", fc.killed)
+	}
+	if len(fc.cleanupProjects) != 1 || fc.cleanupProjects[0] != "mer" {
+		t.Fatalf("cleanup projects = %#v, want [mer]", fc.cleanupProjects)
+	}
+}
+
+// Project removal must tear live sessions down in parallel: the per-session
+// cost (agent/runtime shutdown, controller teardown) dominates and is
+// independent, which is exactly what makes removing a many-session project
+// slow when kills run one after another. Stalling one session's kill must not
+// delay the others.
+func TestTeardownProjectKillsActiveSessionsConcurrently(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	st.sessions["mer-2"] = domain.SessionRecord{ID: "mer-2", ProjectID: "mer"}
+	st.sessions["other-1"] = domain.SessionRecord{ID: "other-1", ProjectID: "other"}
+	mer1Entered := make(chan struct{})
+	mer2Killed := make(chan struct{})
+	releaseMer1 := make(chan struct{})
+	fc := &fakeCommander{killFunc: func(id domain.SessionID) {
+		switch id {
+		case "mer-1":
+			close(mer1Entered)
+			<-releaseMer1
+		case "mer-2":
+			close(mer2Killed)
+		}
+	}}
+	svc := &Service{manager: fc, store: st}
+
+	done := make(chan error, 1)
+	go func() { done <- svc.TeardownProject(context.Background(), "mer") }()
+
+	select {
+	case <-mer1Entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("kill of mer-1 never started")
+	}
+	select {
+	case <-mer2Killed:
+		// mer-2 was killed while mer-1's teardown was still blocked.
+	case <-time.After(5 * time.Second):
+		t.Fatal("kill of mer-2 waited for mer-1's teardown to finish; kills are serial, not parallel")
+	}
+	close(releaseMer1)
+	if err := <-done; err != nil {
+		t.Fatalf("TeardownProject: %v", err)
+	}
+
+	fc.killMu.Lock()
+	killed := append([]domain.SessionID(nil), fc.killed...)
+	fc.killMu.Unlock()
+	if len(killed) != 2 {
+		t.Fatalf("killed = %#v, want mer-1 and mer-2", killed)
+	}
+	for _, id := range killed {
+		if id != "mer-1" && id != "mer-2" {
+			t.Fatalf("unexpected session killed: %s", id)
+		}
 	}
 	if len(fc.cleanupProjects) != 1 || fc.cleanupProjects[0] != "mer" {
 		t.Fatalf("cleanup projects = %#v, want [mer]", fc.cleanupProjects)

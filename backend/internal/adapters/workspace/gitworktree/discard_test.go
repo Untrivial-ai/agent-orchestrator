@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -397,5 +400,87 @@ func TestForceDestroyKeepsTheWorktreeWhenPruneFails(t *testing.T) {
 	ws.waitForDiscards()
 	if _, statErr := os.Stat(filepath.Join(path, "keep.txt")); statErr != nil {
 		t.Fatalf("worktree must survive a failed prune so the caller can retry: %v", statErr)
+	}
+}
+
+// Project removal now kills every live session of a project concurrently, and
+// those kills all reach `git worktree` commands against the one shared repo.
+// The per-repo teardown lock must serialize a single repo's destroy sequences
+// (interleaved prune/remove/list writes to .git/worktrees would race) while
+// leaving different repositories free to tear down in parallel.
+func TestDestroySerializesGitCommandsPerRepository(t *testing.T) {
+	root := t.TempDir()
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+	ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"projA": repoA, "projB": repoB}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	var (
+		mu           sync.Mutex
+		active       = map[string]bool{}
+		activeCount  int
+		sawSameRepo  bool
+		sawOtherRepo bool
+	)
+	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		repo := ""
+		for i, a := range args {
+			if a == "-C" && i+1 < len(args) {
+				repo = args[i+1]
+			}
+		}
+		mu.Lock()
+		if activeCount > 0 {
+			if active[repo] {
+				sawSameRepo = true
+			} else {
+				sawOtherRepo = true
+			}
+		}
+		active[repo] = true
+		activeCount++
+		mu.Unlock()
+		time.Sleep(40 * time.Millisecond)
+		mu.Lock()
+		delete(active, repo)
+		activeCount--
+		mu.Unlock()
+		return nil, nil
+	}
+
+	ctx := context.Background()
+	seed := func(proj, sess string) string {
+		p := filepath.Join(ws.managedRoot, proj, sess)
+		if err := mkdirFile(p, "stray.txt"); err != nil {
+			t.Fatalf("seed %s: %v", p, err)
+		}
+		return p
+	}
+	paths := []string{
+		seed("projA", "sess-1"),
+		seed("projA", "sess-2"),
+		seed("projB", "sess-1"),
+	}
+	projects := []domain.ProjectID{"projA", "projA", "projB"}
+	done := make(chan error, len(paths))
+	for i, p := range paths {
+		i, p := i, p
+		go func() {
+			done <- ws.Destroy(ctx, ports.WorkspaceInfo{Path: p, ProjectID: projects[i], SessionID: "sess", Branch: "feature/one"})
+		}()
+	}
+	for range paths {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent destroy: %v", err)
+		}
+	}
+	ws.waitForDiscards()
+
+	if sawSameRepo {
+		t.Fatal("two git worktree sequences ran concurrently against the same repo")
+	}
+	if !sawOtherRepo {
+		t.Fatal("git worktree sequences from different repos never overlapped; the lock is global, not per-repo")
 	}
 }
