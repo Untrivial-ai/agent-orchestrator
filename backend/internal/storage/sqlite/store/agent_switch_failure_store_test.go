@@ -14,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/sentryobs"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 
 	_ "modernc.org/sqlite"
 )
@@ -42,11 +43,7 @@ func testAgentSwitchFailureEventMetadata() domain.AgentSwitchEventMetadata {
 func openAgentSwitchFailureFixtureWithMetadata(t *testing.T, configureMetadata bool) agentSwitchFailureFixture {
 	t.Helper()
 	dataDir := t.TempDir()
-	st, err := sqlite.Open(dataDir)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := sqlitetest.MustOpenAt(t, dataDir)
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "ao.db")+failureStorePragmas)
 	if err != nil {
 		t.Fatalf("open fixture database: %v", err)
