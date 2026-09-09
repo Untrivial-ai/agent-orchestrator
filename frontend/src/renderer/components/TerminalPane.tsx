@@ -507,7 +507,7 @@ export function TerminalCacheProvider({
 				entry.kind === "worker" &&
 				session &&
 				(session.terminalHandleId !== entry.handleId ||
-					(session.terminalGeneration ?? "") !== (entry.generation ?? ""))
+					(session.terminalGeneration ?? "initial") !== (entry.generation ?? "initial"))
 			) {
 				removeEntry(entry.cacheKey);
 				continue;
