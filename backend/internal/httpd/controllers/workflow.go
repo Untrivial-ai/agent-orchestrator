@@ -50,6 +50,12 @@ type WorkflowService interface {
 	UnblockTask(ctx context.Context, id domain.DevelopmentTaskID) (domain.DevelopmentTask, error)
 	CancelTask(ctx context.Context, id domain.DevelopmentTaskID) (domain.DevelopmentTask, error)
 	AssignTask(ctx context.Context, id domain.DevelopmentTaskID, roleID domain.AgentRoleID, providerID domain.ProviderID, modelID domain.ProviderModelID) (domain.DevelopmentTask, error)
+	// Run (Phase 2.3)
+	CreateRun(ctx context.Context, in workflow.CreateRunInput) (domain.TaskRun, error)
+	GetRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
+	ListRunsByTask(ctx context.Context, taskID domain.DevelopmentTaskID) ([]domain.TaskRun, error)
+	StartRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
+	CancelRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
 }
 
 // Compile-time check: *workflow.Service must satisfy WorkflowService.
@@ -100,6 +106,15 @@ func (c *WorkflowController) Register(r chi.Router) {
 	r.Post("/workflow/tasks/{id}/unblock", c.unblockTask)
 	r.Post("/workflow/tasks/{id}/cancel", c.cancelTask)
 	r.Patch("/workflow/tasks/{id}/assignment", c.assignTask)
+
+	// Task → Runs (child)
+	r.Get("/workflow/tasks/{id}/runs", c.listRunsByTask)
+
+	// Run
+	r.Post("/workflow/runs", c.createRun)
+	r.Get("/workflow/runs/{id}", c.getRun)
+	r.Post("/workflow/runs/{id}/start", c.startRun)
+	r.Post("/workflow/runs/{id}/cancel", c.cancelRun)
 
 	// Project child route
 	r.Get("/projects/{id}/plans", c.listPlansByProject)
@@ -156,6 +171,15 @@ type AssignTaskRequest struct {
 	AgentRoleID     string `json:"agentRoleId" description:"Agent role identifier."`
 	ProviderID      string `json:"providerId" description:"Provider identifier."`
 	ProviderModelID string `json:"providerModelId" description:"Provider model identifier."`
+}
+
+// CreateRunRequest is the body of POST /workflow/runs.
+type CreateRunRequest struct {
+	TaskID          string `json:"taskId" description:"Parent task identifier."`
+	AgentRoleID     string `json:"agentRoleId,omitempty" description:"Agent role for this run."`
+	ProviderID      string `json:"providerId,omitempty" description:"Provider override."`
+	ProviderModelID string `json:"providerModelId,omitempty" description:"Provider model override."`
+	ExecutorType    string `json:"executorType,omitempty" description:"Executor type (e.g. claude-code)."`
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +262,36 @@ type ListTasksResponse struct {
 	Tasks []TaskView `json:"tasks"`
 }
 
+// RunView is the wire representation of a TaskRun.
+type RunView struct {
+	ID                string  `json:"id" description:"Run identifier."`
+	TaskID            string  `json:"taskId" description:"Parent task identifier."`
+	Attempt           int     `json:"attempt"`
+	SessionID         string  `json:"sessionId,omitempty"`
+	AgentRoleID       string  `json:"agentRoleId,omitempty"`
+	ProviderID        string  `json:"providerId,omitempty"`
+	ProviderModelID   string  `json:"providerModelId,omitempty"`
+	ProviderDisplayName string `json:"providerDisplayName,omitempty"`
+	ProviderModelName string  `json:"providerModelName,omitempty"`
+	ExecutorType      string  `json:"executorType,omitempty"`
+	Status            string  `json:"status" enum:"pending,running,succeeded,failed,cancelled"`
+	ResultSummary     string  `json:"resultSummary,omitempty"`
+	ErrorMessage      string  `json:"errorMessage,omitempty"`
+	CreatedAt         string  `json:"createdAt" format:"date-time"`
+	StartedAt         *string `json:"startedAt,omitempty" format:"date-time"`
+	FinishedAt        *string `json:"finishedAt,omitempty" format:"date-time"`
+}
+
+// RunResponse wraps a single run.
+type RunResponse struct {
+	Run RunView `json:"run"`
+}
+
+// ListRunsResponse wraps a list of runs.
+type ListRunsResponse struct {
+	Runs []RunView `json:"runs"`
+}
+
 // WorkflowIDParam is the {id} path parameter for /workflow/*/{id} routes.
 type WorkflowIDParam struct {
 	ID string `path:"id" description:"Resource identifier."`
@@ -306,6 +360,27 @@ func taskToView(t domain.DevelopmentTask) TaskView {
 		CreatedAt:          t.CreatedAt.Format(time.RFC3339),
 		StartedAt:          timePtr(t.StartedAt),
 		CompletedAt:        timePtr(t.CompletedAt),
+	}
+}
+
+func runToView(r domain.TaskRun) RunView {
+	return RunView{
+		ID:                  string(r.ID),
+		TaskID:              string(r.TaskID),
+		Attempt:             r.Attempt,
+		SessionID:           string(r.SessionID),
+		AgentRoleID:         string(r.AgentRoleID),
+		ProviderID:          string(r.ProviderID),
+		ProviderModelID:     string(r.ProviderModelID),
+		ProviderDisplayName: r.ProviderDisplayName,
+		ProviderModelName:   r.ProviderModelName,
+		ExecutorType:        r.ExecutorType,
+		Status:              string(r.Status),
+		ResultSummary:       r.ResultSummary,
+		ErrorMessage:        r.ErrorMessage,
+		CreatedAt:           r.CreatedAt.Format(time.RFC3339),
+		StartedAt:           timePtr(r.StartedAt),
+		FinishedAt:          timePtr(r.FinishedAt),
 	}
 }
 
@@ -835,4 +910,92 @@ func (c *WorkflowController) assignTask(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, TaskResponse{Task: taskToView(task)})
+}
+
+// ---------------------------------------------------------------------------
+// Run handlers (Phase 2.3)
+// ---------------------------------------------------------------------------
+
+func runIDParam(r *http.Request) domain.TaskRunID {
+	return domain.TaskRunID(chi.URLParam(r, "id"))
+}
+
+func (c *WorkflowController) createRun(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/workflow/runs")
+		return
+	}
+	var in CreateRunRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	run, err := c.Svc.CreateRun(r.Context(), workflow.CreateRunInput{
+		TaskID:          domain.DevelopmentTaskID(in.TaskID),
+		AgentRoleID:     domain.AgentRoleID(in.AgentRoleID),
+		ProviderID:      domain.ProviderID(in.ProviderID),
+		ProviderModelID: domain.ProviderModelID(in.ProviderModelID),
+		ExecutorType:    in.ExecutorType,
+	})
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusCreated, RunResponse{Run: runToView(run)})
+}
+
+func (c *WorkflowController) getRun(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/workflow/runs/{id}")
+		return
+	}
+	run, err := c.Svc.GetRun(r.Context(), runIDParam(r))
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, RunResponse{Run: runToView(run)})
+}
+
+func (c *WorkflowController) listRunsByTask(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/workflow/tasks/{id}/runs")
+		return
+	}
+	runs, err := c.Svc.ListRunsByTask(r.Context(), taskIDParam(r))
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	views := make([]RunView, len(runs))
+	for i, run := range runs {
+		views[i] = runToView(run)
+	}
+	envelope.WriteJSON(w, http.StatusOK, ListRunsResponse{Runs: views})
+}
+
+func (c *WorkflowController) startRun(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/workflow/runs/{id}/start")
+		return
+	}
+	run, err := c.Svc.StartRun(r.Context(), runIDParam(r))
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, RunResponse{Run: runToView(run)})
+}
+
+func (c *WorkflowController) cancelRun(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/workflow/runs/{id}/cancel")
+		return
+	}
+	run, err := c.Svc.CancelRun(r.Context(), runIDParam(r))
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, RunResponse{Run: runToView(run)})
 }

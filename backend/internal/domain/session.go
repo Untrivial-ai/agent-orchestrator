@@ -149,6 +149,11 @@ type SessionMetadata struct {
 	// session. Keeping the verifier durable lets a surviving worker authenticate
 	// after the desktop app or daemon restarts.
 	BrowserCapabilityVerifier string `json:"-"`
+	// TerminationReason records the first terminal evidence observed for
+	// this session. Written once (first-terminal-evidence-wins) by
+	// lifecycle/manager.go: session-end, process-exited, reaper, explicit.
+	// Used by Phase 2.3 reconcile to map session exit → TaskRun status.
+	TerminationReason string `json:"terminationReason,omitempty"`
 }
 
 // SessionRecord is the persistence shape. It intentionally stores only durable

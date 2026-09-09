@@ -280,6 +280,7 @@ UPDATE sessions SET
     conversation_checkpoint_turn_id = sqlc.arg(conversation_checkpoint_turn_id),
     native_checkpoint_evidence = sqlc.arg(native_checkpoint_evidence),
     native_transcript_path = sqlc.arg(native_transcript_path),
+    termination_reason = CASE WHEN sessions.termination_reason = '' THEN sqlc.arg(termination_reason) ELSE sessions.termination_reason END,
     updated_at = sqlc.arg(updated_at)
 WHERE sessions.id = sqlc.arg(id)
   AND sessions.revision = sqlc.arg(expected_revision)

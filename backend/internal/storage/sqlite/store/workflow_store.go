@@ -345,6 +345,42 @@ func (s *Store) BindTaskRunSession(ctx context.Context, id domain.TaskRunID, ses
 	return err
 }
 
+// ListTaskRunsByStatus returns all task runs with the given status.
+// Used by Reconcile to find PENDING/RUNNING runs that may need attention.
+func (s *Store) ListTaskRunsByStatus(ctx context.Context, status domain.TaskRunStatus) ([]domain.TaskRun, error) {
+	rows, err := s.readDB.QueryContext(ctx,
+		`SELECT id,task_id,attempt,session_id,agent_role_id,provider_id,provider_model_id,provider_display_name,provider_model_name,executor_type,status,result_summary,error_message,created_at,started_at,finished_at
+FROM task_runs WHERE status=? ORDER BY created_at`, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.TaskRun, 0)
+	for rows.Next() {
+		var r domain.TaskRun
+		if err := rows.Scan(&r.ID, &r.TaskID, &r.Attempt, &r.SessionID, &r.AgentRoleID,
+			&r.ProviderID, &r.ProviderModelID, &r.ProviderDisplayName, &r.ProviderModelName,
+			&r.ExecutorType, &r.Status, &r.ResultSummary, &r.ErrorMessage,
+			&r.CreatedAt, &r.StartedAt, &r.FinishedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// UpdateTaskRunSnapshot sets provider/session metadata on an existing run.
+// Used by StartRun to bind session info after spawn.
+// Only updates non-empty fields; caller should set fields selectively.
+func (s *Store) UpdateTaskRunSnapshot(ctx context.Context, id domain.TaskRunID, sessionID domain.SessionID, providerID domain.ProviderID, providerModelID domain.ProviderModelID, providerDisplayName, providerModelName, executorType string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.writeDB.ExecContext(ctx,
+		`UPDATE task_runs SET session_id=?,provider_id=?,provider_model_id=?,provider_display_name=?,provider_model_name=?,executor_type=? WHERE id=?`,
+		sessionID, providerID, providerModelID, providerDisplayName, providerModelName, executorType, id)
+	return err
+}
+
 // ---- run_reviews ----
 
 func (s *Store) CreateRunReview(ctx context.Context, r domain.RunReview) error {

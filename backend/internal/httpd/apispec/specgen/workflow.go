@@ -328,5 +328,59 @@ func workflowOperations() []operation {
 				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},
+		// ---- Run (Phase 2.3) ----
+		{
+			method: http.MethodPost, path: "/api/v1/workflow/runs", id: "createRun", tag: "workflow",
+			summary: "Create a new task run in pending status",
+			reqBody: controllers.CreateRunRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.RunResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/workflow/runs/{id}", id: "getRun", tag: "workflow",
+			summary:    "Get a task run by ID",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.RunResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/workflow/tasks/{id}/runs", id: "listRunsByTask", tag: "workflow",
+			summary:    "List all runs for a task",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListRunsResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/workflow/runs/{id}/start", id: "startRun", tag: "workflow",
+			summary:    "Start a run: spawn session, bind, transition to running",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.RunResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/workflow/runs/{id}/cancel", id: "cancelRun", tag: "workflow",
+			summary:    "Cancel a run and kill the active session if any",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.RunResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
 	}
 }
