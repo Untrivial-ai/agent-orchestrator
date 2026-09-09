@@ -113,19 +113,22 @@ describe("createWindowComposition", () => {
 			setBounds: vi.fn(),
 			setVisible: vi.fn(),
 		};
+		// A real `contentView` is a stable object; keep the spies stable too so
+		// the assertions below observe what dispose() actually touched.
+		const contentView = {
+			addChildView: vi.fn(),
+			getBounds: () => ({ x: 0, y: 0, width: 900, height: 640 }),
+			on: vi.fn(),
+			removeChildView: vi.fn(),
+			removeListener: vi.fn(),
+		};
 		let destroyed = false;
 		const mainWindow = {
 			get contentView() {
 				// Electron throws this exact error for any property access on a
 				// destroyed BaseWindow; `closed` fires after the window is gone.
 				if (destroyed) throw new TypeError("Object has been destroyed");
-				return {
-					addChildView: vi.fn(),
-					getBounds: () => ({ x: 0, y: 0, width: 900, height: 640 }),
-					on: vi.fn(),
-					removeChildView: vi.fn(),
-					removeListener: vi.fn(),
-				};
+				return contentView;
 			},
 			isDestroyed: () => destroyed,
 		};
@@ -140,6 +143,10 @@ describe("createWindowComposition", () => {
 
 		destroyed = true;
 		expect(() => composition.dispose()).not.toThrow();
+		// The getter throws before either call is reached, but the shell
+		// WebContents teardown must still run.
+		expect(contentView.removeListener).not.toHaveBeenCalled();
+		expect(contentView.removeChildView).not.toHaveBeenCalled();
 		expect(close).toHaveBeenCalledOnce();
 	});
 });
