@@ -806,9 +806,10 @@ func (r *Runtime) socketForSession(ctx context.Context, id string) (string, erro
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	if sessionMissingOutput(string(legacyOut)) || serverNotRunningOutput(string(legacyOut)) {
-		// Both known sockets definitively lack the session. Return the private
-		// target so IsAlive's ordinary exact-session handling reports false.
+	if sessionMissingOutput(string(legacyOut)) || serverNotRunningOutput(string(legacyOut)) || migrationSocketAbsentOutput(string(legacyOut)) {
+		// The legacy socket cannot serve this session. Return the private target
+		// and preserve its ordinary liveness classification: an absent socket
+		// still yields an error, rather than proof that a workload has exited.
 		return r.socketName, nil
 	}
 	return "", fmt.Errorf(
@@ -1042,10 +1043,9 @@ func serverNotRunningOutput(out string) bool {
 	return strings.Contains(s, "no server running")
 }
 
-// migrationSocketAbsentOutput identifies a named migration target whose Unix
-// socket does not exist. This is definitive only for choosing whether to
-// inspect the legacy default socket; it must not become per-session evidence
-// of death, because the session may still be alive on that legacy server.
+// migrationSocketAbsentOutput identifies a missing Unix socket during socket
+// selection. This decides which socket to inspect, never whether a workload
+// has exited: an orphaned process can survive the loss of its tmux server.
 func migrationSocketAbsentOutput(out string) bool {
 	s := strings.ToLower(out)
 	return strings.Contains(s, "error connecting") &&

@@ -913,28 +913,72 @@ func TestIsAliveReportsIncompatibleLegacyClientAsProbeInconclusive(t *testing.T)
 	}
 }
 
-func TestIsAliveReportsTransientLegacyConnectionAsProbeInconclusive(t *testing.T) {
-	r := New(Options{
-		Binary:       "bundled-tmux-test",
-		LegacyBinary: "system-tmux-test",
-		SocketName:   "ao",
-		Timeout:      time.Second,
-	})
-	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
-		{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}},
-		{out: []byte("error connecting to /tmp/tmux-1000/default (Connection refused)"), err: &exec.ExitError{}},
-	}}
-	r.runner = fr
+func TestIsAliveReportsLegacyConnectionFailuresAsProbeInconclusive(t *testing.T) {
+	for _, tc := range []struct{ name, output string }{
+		{"connection refused", "error connecting to /tmp/tmux-1000/default (Connection refused)"},
+		{"permission denied", "error connecting to /tmp/tmux-1000/default (Permission denied)"},
+		{"protocol mismatch", "protocol version mismatch"},
+		{"missing executable", "fork/exec tmux: no such file or directory"},
+		{"empty diagnostic", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(Options{Binary: "bundled-tmux-test", LegacyBinary: "system-tmux-test", SocketName: "ao", Timeout: time.Second})
+			fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+				{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}},
+				{out: []byte(tc.output), err: &exec.ExitError{}},
+			}}
+			r.runner = fr
+			alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+			if alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+				t.Fatalf("IsAlive = (%v, %v), want inconclusive probe", alive, err)
+			}
+			if len(fr.calls) != 2 {
+				t.Fatalf("calls = %d, want private then legacy probes only", len(fr.calls))
+			}
+		})
+	}
+}
 
-	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
-	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
-		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+func TestIsAliveHandlesAbsentLegacySocket(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		privateOut string
+		wantErr    error
+	}{
+		{"missing session", "can't find session: sess-1", nil},
+		{"missing server", "no server running on /tmp/tmux-1000/ao", ports.ErrRuntimeUnavailable},
+		{"missing socket", "error connecting to /tmp/tmux-1000/ao (No such file or directory)", ports.ErrRuntimeProbeInconclusive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(Options{Binary: "bundled-tmux-test", LegacyBinary: "system-tmux-test", SocketName: "ao", Timeout: time.Second})
+			private := fakeRunnerResult{out: []byte(tc.privateOut), err: &exec.ExitError{}}
+			fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+				private,
+				{out: []byte("error connecting to /tmp/tmux-1000/default (No such file or directory)"), err: &exec.ExitError{}},
+				private,
+			}}
+			r.runner = fr
+			alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+			if alive || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("IsAlive = (%v, %v), want (false, %v)", alive, err, tc.wantErr)
+			}
+			if len(fr.calls) != 3 || fr.calls[2].name != "bundled-tmux-test" {
+				t.Fatalf("calls = %#v, want private probe after absent legacy socket", fr.calls)
+			}
+		})
 	}
-	if alive {
-		t.Fatal("alive = true, want false with inconclusive error")
+}
+
+func TestDestroyRetriesWhenBothSocketsAbsent(t *testing.T) {
+	r := New(Options{Binary: "bundled-tmux-test", LegacyBinary: "system-tmux-test", SocketName: "ao", Timeout: time.Second, RunFilePath: filepath.Join(t.TempDir(), "running.json")})
+	absent := fakeRunnerResult{out: []byte("error connecting to /tmp/tmux-1000/default (No such file or directory)"), err: &exec.ExitError{}}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{absent, absent, absent, absent, absent, absent}}
+	r.runner = fr
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy with no private or legacy socket: %v", err)
 	}
-	if len(fr.calls) != 2 {
-		t.Fatalf("calls = %d, want private then legacy probes only", len(fr.calls))
+	if len(fr.calls) != 6 || fr.calls[5].name != "bundled-tmux-test" || fr.calls[5].args[2] != "kill-session" {
+		t.Fatalf("calls = %#v, want teardown on private socket", fr.calls)
 	}
 }
 
