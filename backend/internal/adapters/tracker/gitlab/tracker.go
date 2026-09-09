@@ -213,7 +213,7 @@ type gqlError struct {
 // GraphQL response. The ID field (global GraphQL ID) is fetched for future
 // use but not currently surfaced to the domain.
 type gqlWorkItem struct {
-	ID string `json:"id"` // global GraphQL ID; not yet surfaced to domain
+	ID          string `json:"id"` // global GraphQL ID; not yet surfaced to domain
 	IID         string `json:"iid"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
