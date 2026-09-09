@@ -44,6 +44,15 @@ vi.mock("./FileContentPane", () => ({
 	FileContentPane: ({ path }: { path: string | null }) => <div data-testid="content-pane">{path ?? "none"}</div>,
 }));
 
+vi.mock("./diffs/WorkspaceReviewPane", () => ({
+	WorkspaceReviewPane: ({ filter, onBrowseAll }: { filter: string; onBrowseAll: () => void }) => (
+		<div data-testid="review-pane">
+			<span data-testid="review-filter">{filter}</span>
+			<button onClick={onBrowseAll} type="button">Browse all files</button>
+		</div>
+	),
+}));
+
 function renderWithQuery(children: ReactNode) {
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	return {
@@ -58,11 +67,24 @@ function renderWithQuery(children: ReactNode) {
 
 describe("SessionFileExplorer", () => {
 	beforeEach(() => {
-		getMock.mockReset().mockResolvedValue({ data: { sessionId: "sess-1", files: [], truncated: false } });
+		window.localStorage.clear();
+		useUiStore.setState({ inspectorSessions: {} });
+		getMock.mockReset().mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				files: [],
+				sections: { committed: [], staged: [], unstaged: [], untracked: [] },
+				commits: [],
+				summary: { additions: 0, deletions: 0, files: 0 },
+				truncated: false,
+				workspaceVersion: "version-1",
+			},
+		});
 		postMock.mockReset();
 	});
 
 	it("passes the filter input down to the tree and shows the selected file in the content pane", async () => {
+		useUiStore.getState().setFilesChangedOnly("sess-explorer-1", false);
 		renderWithQuery(<SessionFileExplorer sessionId="sess-explorer-1" />);
 
 		const input = screen.getByRole("textbox", { name: "Filter files" });
@@ -77,6 +99,7 @@ describe("SessionFileExplorer", () => {
 	});
 
 	it("returns to the tree when the back button is pressed, docked", async () => {
+		useUiStore.getState().setFilesChangedOnly("sess-explorer-back", false);
 		renderWithQuery(<SessionFileExplorer sessionId="sess-explorer-back" />);
 
 		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
@@ -89,6 +112,7 @@ describe("SessionFileExplorer", () => {
 
 	it("previews docked files before explicitly opening them in the center workspace", async () => {
 		const onOpenFile = vi.fn();
+		useUiStore.getState().setFilesChangedOnly("sess-explorer-center", false);
 		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-explorer-center" />);
 
 		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
@@ -121,6 +145,7 @@ describe("SessionFileExplorer", () => {
 
 	it("keeps the tree and content side by side when maximized", async () => {
 		const widthSpy = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(500);
+		useUiStore.getState().setFilesChangedOnly("sess-explorer-maximized", false);
 		const { container } = renderWithQuery(<SessionFileExplorer isMaximized sessionId="sess-explorer-maximized" />);
 
 		// Maximized: both are mounted at once, with no back button.
@@ -139,15 +164,15 @@ describe("SessionFileExplorer", () => {
 		widthSpy.mockRestore();
 	});
 
-	it("toggles the changed-only setting in the ui store and reflects it in the tree", async () => {
+	it("defaults to the continuous changes review and can switch to the full file tree", async () => {
 		const sessionId = "sess-explorer-2";
 		renderWithQuery(<SessionFileExplorer sessionId={sessionId} />);
 
-		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("false");
+		expect(await screen.findByTestId("review-pane")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("switch", { name: "Changed only" }));
 
-		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
-		expect(useUiStore.getState().inspectorSessions[sessionId]?.filesChangedOnly).toBe(true);
+		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("false");
+		expect(useUiStore.getState().inspectorSessions[sessionId]?.filesChangedOnly).toBe(false);
 	});
 
 	it("toggles between unified and split diff layout", async () => {

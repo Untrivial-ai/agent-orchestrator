@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
 	ChevronLeft,
@@ -9,9 +9,15 @@ import {
 	PanelTopOpen,
 	Rows3,
 	Search,
+	WrapText,
 } from "lucide-react";
 import { cn } from "../lib/utils";
-import { sessionWorkspaceFilesQueryOptions } from "../hooks/useSessionWorkspaceFiles";
+import {
+	sessionWorkspaceFilesQueryOptions,
+	useWorkspaceFileConnectionState,
+	workspaceFilesRefetchInterval,
+} from "../hooks/useSessionWorkspaceFiles";
+import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { buildChangedOnlyTree, type TreeNode } from "../hooks/useSessionWorkspaceTree";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useUiStore } from "../stores/ui-store";
@@ -22,6 +28,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./ui/resizable";
 import { FileTree } from "./FileTree";
 import { FileContentPane } from "./FileContentPane";
+import { PanelMessage, RetryButton } from "./WorkspaceDiffView";
+import { WorkspaceReviewPane } from "./diffs/WorkspaceReviewPane";
 
 type SessionFileExplorerProps = {
 	sessionId: string;
@@ -40,17 +48,20 @@ export function SessionFileExplorer({
 }: SessionFileExplorerProps) {
 	const { t } = useTranslation();
 	const [filter, setFilter] = useState("");
-	const [split, setSplit] = useState(false);
+	const [split, setSplit] = useState(() => window.localStorage.getItem("ao.files.diffStyle") === "split");
+	const [wrap, setWrap] = useState(() => window.localStorage.getItem("ao.files.wrap") !== "false");
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 	const rootRef = useRef<HTMLElement>(null);
 	const annotation = useFileAnnotation(sessionId);
+	const queryClient = useQueryClient();
+	const connectionState = useWorkspaceFileConnectionState(sessionId);
 
-	const changedOnly = useUiStore((state) => Boolean(state.inspectorSessions[sessionId]?.filesChangedOnly));
+	const changedOnly = useUiStore((state) => state.inspectorSessions[sessionId]?.filesChangedOnly ?? true);
 	const setFilesChangedOnly = useUiStore((state) => state.setFilesChangedOnly);
 
 	const filesQuery = useQuery({
 		...sessionWorkspaceFilesQueryOptions(sessionId, t("files.error.loadWorkspace")),
-		enabled: changedOnly,
+		refetchInterval: workspaceFilesRefetchInterval(connectionState),
 	});
 	const changedOnlyData = useMemo(
 		() => (filesQuery.data ? buildChangedOnlyTree(filesQuery.data.files) : []),
@@ -62,9 +73,19 @@ export function SessionFileExplorer({
 		setFilter("");
 	}, [sessionId]);
 
+	useEffect(() => subscribeWorkspaceFileChanges(sessionId, queryClient), [queryClient, sessionId]);
 	useEffect(() => {
-		if (revealRequest) setSelectedPath(revealRequest.path);
-	}, [revealRequest]);
+		window.localStorage.setItem("ao.files.diffStyle", split ? "split" : "unified");
+	}, [split]);
+	useEffect(() => {
+		window.localStorage.setItem("ao.files.wrap", String(wrap));
+	}, [wrap]);
+
+	useEffect(() => {
+		if (!revealRequest) return;
+		setFilesChangedOnly(sessionId, false);
+		setSelectedPath(revealRequest.path);
+	}, [revealRequest, sessionId, setFilesChangedOnly]);
 
 	// Routes vertical wheel scroll landing on the diff's own horizontal
 	// scrollbar back up to the shared scroll root, so scrolling down over a
@@ -94,6 +115,11 @@ export function SessionFileExplorer({
 
 	const handleSelectPath = (node: TreeNode) => {
 		setSelectedPath(node.path);
+	};
+	const handleOpenFullFile = (path: string) => {
+		setFilesChangedOnly(sessionId, false);
+		setSelectedPath(path);
+		onOpenFile?.(path);
 	};
 	const treeSelectedPath = selectedPath;
 
@@ -142,6 +168,21 @@ export function SessionFileExplorer({
 					</TooltipTrigger>
 					<TooltipContent side="bottom">{split ? t("files.unifiedDiff") : t("files.splitDiff")}</TooltipContent>
 				</Tooltip>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={t("files.wrapLines")}
+							aria-pressed={wrap}
+							onClick={() => setWrap((current) => !current)}
+							size="icon-sm"
+							type="button"
+							variant={wrap ? "secondary" : "ghost"}
+						>
+							<WrapText className="size-icon-sm" aria-hidden="true" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{t("files.wrapLines")}</TooltipContent>
+				</Tooltip>
 				{onToggleMaximized ? (
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -164,13 +205,32 @@ export function SessionFileExplorer({
 					</Tooltip>
 				) : null}
 			</header>
-			{isMaximized ? (
+			{changedOnly ? (
+				filesQuery.isPending ? (
+					<PanelMessage>{t("files.loading")}</PanelMessage>
+				) : filesQuery.isError ? (
+					<PanelMessage action={<RetryButton onClick={() => void filesQuery.refetch()} />}>
+						{filesQuery.error.message || t("files.error.loadWorkspace")}
+					</PanelMessage>
+				) : filesQuery.data ? (
+					<WorkspaceReviewPane
+						annotation={annotation}
+						data={filesQuery.data}
+						filter={filter}
+						onBrowseAll={() => setFilesChangedOnly(sessionId, false)}
+						onOpenFile={handleOpenFullFile}
+						sessionId={sessionId}
+						split={split}
+						wrap={wrap}
+					/>
+				) : null
+			) : isMaximized ? (
 				// Maximized gives the explorer the full window — plenty of room for
 				// the tree and the content side by side, like a real editor.
 				<ResizablePanelGroup className="min-h-0 flex-1">
 					<ResizablePanel defaultSize="26%" minSize="18%" maxSize="50%">
 						<FileTree
-							changedOnly={changedOnly}
+							changedOnly={false}
 							changedOnlyData={changedOnlyData}
 							filterText={filter}
 							onSelectPath={handleSelectPath}
@@ -181,7 +241,7 @@ export function SessionFileExplorer({
 					<ResizableHandle />
 					<ResizablePanel defaultSize="74%" minSize="40%">
 						<ContentScrollArea>
-							<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} split={split} wrap={true} />
+							<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} split={split} wrap={wrap} />
 						</ContentScrollArea>
 					</ResizablePanel>
 				</ResizablePanelGroup>
@@ -195,7 +255,7 @@ export function SessionFileExplorer({
 				<div className="flex min-h-0 flex-1 flex-col">
 					<div className={cn("min-h-0 flex-1", selectedPath && "hidden")}>
 						<FileTree
-							changedOnly={changedOnly}
+							changedOnly={false}
 							changedOnlyData={changedOnlyData}
 							filterText={filter}
 							onSelectPath={handleSelectPath}
@@ -238,7 +298,7 @@ export function SessionFileExplorer({
 								) : null}
 							</div>
 							<ContentScrollArea>
-								<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} split={split} wrap={true} />
+								<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} split={split} wrap={wrap} />
 							</ContentScrollArea>
 						</div>
 					) : null}

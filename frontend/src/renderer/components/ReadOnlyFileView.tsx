@@ -11,15 +11,15 @@ function formatBytes(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function workspaceRawImageUrl(sessionId: string, path: string): string {
-	const query = new URLSearchParams({ path, side: "after" });
+function workspaceRawImageUrl(sessionId: string, path: string, side: "before" | "after"): string {
+	const query = new URLSearchParams({ path, side });
 	return `${getApiBaseUrl()}/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/file/blob?${query}`;
 }
 
 // Renders an untouched (unmodified) workspace file: an agent didn't write
 // this one, so there's no diff to show, just its current content. Binary and
 // oversized files short-circuit before any tokenization is attempted.
-export function ReadOnlyFileView({ detail, sessionId }: { detail: WorkspaceFileDetail; sessionId: string }) {
+export function ReadOnlyFileView({ detail, sessionId, side = "after" }: { detail: WorkspaceFileDetail; sessionId: string; side?: "before" | "after" }) {
 	const { t } = useTranslation();
 	if (detail.binary) {
 		if (detail.imageMediaType) {
@@ -28,7 +28,7 @@ export function ReadOnlyFileView({ detail, sessionId }: { detail: WorkspaceFileD
 					<img
 						alt={detail.path}
 						className="max-h-[70vh] max-w-full object-contain"
-						src={workspaceRawImageUrl(sessionId, detail.path)}
+						src={workspaceRawImageUrl(sessionId, detail.path, side)}
 					/>
 				</div>
 			);

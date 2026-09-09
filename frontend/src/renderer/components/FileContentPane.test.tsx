@@ -87,6 +87,70 @@ describe("FileContentPane", () => {
 		expect(await screen.findByText("hello")).toBeInTheDocument();
 	});
 
+	it("switches a changed file from its diff to the complete file", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				path: "src/App.tsx",
+				status: "modified",
+				additions: 1,
+				deletions: 1,
+				size: 18,
+				binary: false,
+				deleted: false,
+				content: "export const next = 2;\n",
+				contentTruncated: false,
+				diff: "@@ -1,1 +1,1 @@\n-export const next = 1;\n+export const next = 2;\n",
+				diffTruncated: false,
+			},
+		});
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="src/App.tsx" sessionId="sess-1" split={false} wrap />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "File" }));
+		expect(await screen.findByText((_, element) => element?.tagName === "CODE" && element.textContent === "export const next = 2;\n")).toBeInTheDocument();
+	});
+
+	it("loads the before revision when opening the complete view of a deleted file", async () => {
+		getMock.mockImplementation(async (path: string) => path.endsWith("/revision") ? {
+			data: {
+				sessionId: "sess-1",
+				path: "removed.txt",
+				side: "before",
+				revision: "old-1",
+				workspaceVersion: "workspace-1",
+				size: 12,
+				exists: true,
+				binary: false,
+				truncated: false,
+				content: "removed text\n",
+			},
+		} : {
+			data: {
+				sessionId: "sess-1",
+				path: "removed.txt",
+				status: "deleted",
+				additions: 0,
+				deletions: 1,
+				size: 12,
+				binary: false,
+				deleted: true,
+				content: "",
+				contentTruncated: false,
+				diff: "@@ -1,1 +0,0 @@\n-removed text\n",
+				diffTruncated: false,
+			},
+		});
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="removed.txt" sessionId="sess-1" split={false} wrap />);
+		await userEvent.click(await screen.findByRole("button", { name: "File" }));
+
+		expect(await screen.findByText("removed text")).toBeInTheDocument();
+		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/file/revision", expect.objectContaining({
+			params: expect.objectContaining({ query: expect.objectContaining({ path: "removed.txt", side: "before" }) }),
+		}));
+	});
+
 	it("falls back to current content when a changed extensionless file has no renderable diff", async () => {
 		getMock.mockResolvedValue({
 			data: {
