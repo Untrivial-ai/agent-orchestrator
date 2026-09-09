@@ -750,9 +750,13 @@ async function createWindowInternal(): Promise<void> {
 		disposeBrowserRuntimeLink();
 		keybindingRecordingActive = false;
 		if (windowComposition === composition) windowComposition = null;
-		void disposeBrowserViewHost().finally(() => {
-			composition.dispose();
-		});
+		void disposeBrowserViewHost()
+			.finally(() => {
+				composition.dispose();
+			})
+			.catch((error) => {
+				console.error("AO: window teardown failed:", error);
+			});
 		mainWindow = null;
 		// Drop any pending dock bounce with the window it was attached to: its
 		// focus listener died with the window, so leaving the id set would make
