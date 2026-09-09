@@ -18,15 +18,17 @@ func (s *Service) structuredCodexAuthentication(ctx context.Context, agentID str
 	if agentID != string(domain.HarnessCodex) || s.codexAccounts == nil || s.codexAccounts.factory == nil {
 		return domain.AgentAuthenticationObservation{}, false
 	}
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
+		// Account management is optional for ordinary Codex use. When AO's
+		// local account store cannot answer safely, fall back to the native
+		// readiness path instead of treating that as proof Codex is signed out.
+		return domain.AgentAuthenticationObservation{}, false
+	}
 	if purpose == domain.AgentReadinessPurposeLaunch {
-		if err := s.WaitCodexAccountBootstrap(ctx); err != nil {
-			return failedAuthentication(s.codexAccounts.now(), domain.AgentReadinessReasonAuthCheckFailed, "Codex account setup did not complete."), true
-		}
-	} else {
 		s.codexAccounts.mu.Lock()
-		bootstrapped := s.codexAccounts.bootstrapped
+		verified := s.codexAccounts.reconciliation.Status == domain.CodexDeviceReconciliationVerified
 		s.codexAccounts.mu.Unlock()
-		if !bootstrapped {
+		if !verified {
 			return domain.AgentAuthenticationObservation{}, false
 		}
 	}
@@ -59,6 +61,9 @@ func (s *Service) CachedCodexAccounts(ctx context.Context) (CodexAccounts, error
 	if s.codexAccounts == nil {
 		return CodexAccounts{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
+		return CodexAccounts{}, err
+	}
 	result := s.codexAccounts.cached()
 	if s.codexSwitches != nil {
 		if sw, ok, err := s.codexSwitches.GetActiveCodexAccountSwitch(ctx); err == nil && ok {
@@ -81,9 +86,13 @@ func (s *Service) EnsureCodexAccounts(ctx context.Context, ids []string, include
 		}
 		return s.codexAccounts.cached(), nil
 	}
-	if err := s.WaitCodexAccountBootstrap(ctx); err != nil {
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
 		return CodexAccounts{}, err
 	}
+	// Settings refreshes must prompt device discovery, but a temporary native
+	// failure must not turn this local account read into a 503. The daemon-owned
+	// reconciliation coordinator applies singleflight and cooldown semantics.
+	go func() { _ = s.codexAccounts.reconcileGlobal(s.codexAccounts.ctx) }()
 	installation, err := s.readiness.EnsureInstallation(ctx, []string{string(domain.HarnessCodex)}, domain.AgentReadinessPurposeDisplay)
 	if err != nil {
 		return CodexAccounts{}, err
@@ -107,7 +116,7 @@ func (s *Service) ConsumeCodexAccountResetCredit(ctx context.Context, accountID,
 	if s.codexSwitches != nil && s.codexSwitches.CodexAccountSwitchInProgress() {
 		return CodexAccounts{}, apierr.Conflict("CODEX_ACCOUNT_SWITCH_IN_PROGRESS", "Wait for the Codex account switch to finish before using a reset", nil)
 	}
-	if err := s.WaitCodexAccountBootstrap(ctx); err != nil {
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
 		return CodexAccounts{}, err
 	}
 	if err := s.codexAccounts.consumeResetCredit(ctx, accountID, idempotencyKey); err != nil {
@@ -120,6 +129,9 @@ func (s *Service) ConsumeCodexAccountResetCredit(ctx context.Context, accountID,
 func (s *Service) SubscribeCodexAccounts(ctx context.Context) (<-chan CodexAccounts, error) {
 	if s.codexAccounts == nil {
 		return nil, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
+	}
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
+		return nil, err
 	}
 	source := s.codexAccounts.subscribe(ctx)
 	out := make(chan CodexAccounts, 1)
@@ -170,7 +182,7 @@ func (s *Service) OpenCodexAccountLoginTerminal(ctx context.Context) (CodexAccou
 	if s.codexSwitches != nil && s.codexSwitches.CodexAccountSwitchInProgress() {
 		return CodexAccountLoginTerminalStart{}, apierr.Conflict("CODEX_ACCOUNT_SWITCH_IN_PROGRESS", "A Codex account switch is already in progress", nil)
 	}
-	if err := s.WaitCodexAccountBootstrap(ctx); err != nil {
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
 		return CodexAccountLoginTerminalStart{}, err
 	}
 	if err := s.requireCodexAccountInstallation(ctx); err != nil {
@@ -196,8 +208,14 @@ func (s *Service) OpenCodexAccountReauthenticationTerminal(ctx context.Context, 
 	if s.codexSwitches != nil && s.codexSwitches.CodexAccountSwitchInProgress() {
 		return CodexAccountLoginTerminalStart{}, apierr.Conflict("CODEX_ACCOUNT_SWITCH_IN_PROGRESS", "A Codex account switch is already in progress", nil)
 	}
-	if err := s.WaitCodexAccountBootstrap(ctx); err != nil {
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
 		return CodexAccountLoginTerminalStart{}, err
+	}
+	accountID = strings.TrimSpace(accountID)
+	if s.codexAccounts.activeAccountID() == accountID {
+		if err := s.EnsureCodexDeviceAccountReconciled(ctx); err != nil {
+			return CodexAccountLoginTerminalStart{}, err
+		}
 	}
 	if err := s.requireCodexAccountInstallation(ctx); err != nil {
 		return CodexAccountLoginTerminalStart{}, err
@@ -206,7 +224,7 @@ func (s *Service) OpenCodexAccountReauthenticationTerminal(ctx context.Context, 
 	if capabilities.AccountManagement.State != domain.CodexCapabilitySupported {
 		return CodexAccountLoginTerminalStart{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management capability could not be verified")
 	}
-	return s.codexAccounts.openLoginTerminal(ctx, strings.TrimSpace(accountID))
+	return s.codexAccounts.openLoginTerminal(ctx, accountID)
 }
 
 // LogoutCodexAccount removes one AO-saved credential while retaining the
@@ -222,10 +240,16 @@ func (s *Service) LogoutCodexAccount(ctx context.Context, accountID string) (Cod
 	if s.CodexAccountLoginInProgress() {
 		return CodexAccounts{}, apierr.Conflict("CODEX_ACCOUNT_LOGIN_IN_PROGRESS", "Finish or close the Codex account login before logging out", nil)
 	}
-	if err := s.WaitCodexAccountBootstrap(ctx); err != nil {
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
 		return CodexAccounts{}, err
 	}
-	if err := s.codexAccounts.logout(ctx, strings.TrimSpace(accountID)); err != nil {
+	accountID = strings.TrimSpace(accountID)
+	if s.codexAccounts.activeAccountID() == accountID {
+		if err := s.EnsureCodexDeviceAccountReconciled(ctx); err != nil {
+			return CodexAccounts{}, err
+		}
+	}
+	if err := s.codexAccounts.logout(ctx, accountID); err != nil {
 		return CodexAccounts{}, err
 	}
 	s.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
@@ -243,7 +267,7 @@ func (s *Service) DeleteCodexAccount(ctx context.Context, accountID string) (Cod
 	if s.CodexAccountLoginInProgress() {
 		return CodexAccounts{}, apierr.Conflict("CODEX_ACCOUNT_LOGIN_IN_PROGRESS", "Finish or close the Codex account login before deleting an account", nil)
 	}
-	if err := s.WaitCodexAccountBootstrap(ctx); err != nil {
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
 		return CodexAccounts{}, err
 	}
 	if err := s.codexAccounts.deleteAccount(ctx, strings.TrimSpace(accountID)); err != nil {
@@ -258,8 +282,13 @@ func (s *Service) VerifyCodexAccountLogin(ctx context.Context, operationID strin
 		return domain.CodexAccountLoginOperation{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
 	result, err := s.codexAccounts.verifyLogin(ctx, strings.TrimSpace(operationID))
-	if err == nil && result.Status == domain.CodexAccountLoginCompleted && result.Account != nil && result.Account.Active && s.readiness != nil {
-		s.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+	if err == nil && result.Status == domain.CodexAccountLoginCompleted && result.Account != nil {
+		if result.Account.Active && s.readiness != nil {
+			s.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+		}
+		// A successful isolated login may make a previously inconclusive device
+		// state observable. Reconcile again without delaying the HTTP response.
+		go func() { _ = s.codexAccounts.reconcileGlobal(s.codexAccounts.ctx) }()
 	}
 	return result, err
 }
@@ -306,15 +335,19 @@ func (s *Service) ObserveActiveCodexAccountCapacity(observation ports.CodexCapac
 	}
 }
 
-// WarmCodexAccounts starts asynchronous bootstrap and observation warming.
+// WarmCodexAccounts starts asynchronous local-store initialization, device
+// reconciliation, and saved-account observation warming.
 func (s *Service) WarmCodexAccounts() {
 	if s.codexAccounts == nil {
 		return
 	}
 	go func() {
-		if err := s.codexAccounts.waitBootstrap(s.codexAccounts.ctx); err != nil {
+		if err := s.codexAccounts.waitAccountStore(s.codexAccounts.ctx); err != nil {
 			return
 		}
+		// Native device discovery is independent of saved-account authentication
+		// and capacity checks. A slow or failed global read must not delay them.
+		go func() { _ = s.codexAccounts.reconcileGlobal(s.codexAccounts.ctx) }()
 		capabilities := s.codexAccounts.detectCapabilities(s.codexAccounts.ctx)
 		records, err := s.codexAccounts.catalog.recordsFor(nil)
 		if err != nil {
@@ -331,21 +364,48 @@ func (s *Service) WarmCodexAccounts() {
 	}()
 }
 
-// WaitCodexAccountBootstrap waits for the daemon-owned bootstrap gate.
-func (s *Service) WaitCodexAccountBootstrap(ctx context.Context) error {
+// WaitCodexAccountStoreReady waits only for AO-owned local account state. It
+// never starts Codex or inspects the device-global credential.
+func (s *Service) WaitCodexAccountStoreReady(ctx context.Context) error {
 	if s.codexAccounts == nil {
 		return apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
-	err := s.codexAccounts.waitBootstrap(ctx)
+	err := s.codexAccounts.waitAccountStore(ctx)
 	if err == nil {
 		return nil
 	}
-	var failure *codexBootstrapFailure
+	var failure *codexAccountStoreFailure
 	if !errors.As(err, &failure) {
 		return err
 	}
 	return apierr.New(apierr.KindUnavailable, "CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account setup did not complete", map[string]any{
 		"reasonCode": failure.reason, "retryable": failure.retryable,
+	})
+}
+
+// EnsureCodexDeviceAccountReconciled conclusively identifies the canonical
+// device account before an operation is allowed to mutate it.
+func (s *Service) EnsureCodexDeviceAccountReconciled(ctx context.Context) error {
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
+		return err
+	}
+	err := s.codexAccounts.reconcileGlobal(ctx)
+	s.codexAccounts.mu.Lock()
+	state := s.codexAccounts.reconciliation
+	s.codexAccounts.mu.Unlock()
+	if err == nil && state.Status == domain.CodexDeviceReconciliationVerified {
+		return nil
+	}
+	reason, retryable := state.ReasonCode, state.Retryable
+	if err != nil {
+		failure := classifyDeviceReconciliationFailure(err)
+		reason, retryable = failure.reason, failure.retryable
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "account_reconciliation_unavailable"
+	}
+	return apierr.New(apierr.KindUnavailable, "CODEX_DEVICE_ACCOUNT_UNVERIFIED", "The device Codex account could not be verified", map[string]any{
+		"reasonCode": reason, "retryable": retryable,
 	})
 }
 
@@ -395,8 +455,13 @@ func (s *Service) VerifyCodexAccountForSwitch(ctx context.Context, accountID str
 	if s.codexAccounts == nil || s.codexAccounts.factory == nil {
 		return apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
-	if err := s.WaitCodexAccountBootstrap(ctx); err != nil {
-		return err
+	s.codexAccounts.mu.Lock()
+	reconciliation := s.codexAccounts.reconciliation
+	s.codexAccounts.mu.Unlock()
+	if reconciliation.Status != domain.CodexDeviceReconciliationVerified || !reconciliation.ActiveAccountVerified {
+		return apierr.New(apierr.KindUnavailable, "CODEX_DEVICE_ACCOUNT_UNVERIFIED", "The device Codex account could not be verified", map[string]any{
+			"reasonCode": reconciliation.ReasonCode, "retryable": reconciliation.Retryable,
+		})
 	}
 	if s.CodexAccountLoginInProgress() {
 		return apierr.Conflict("CODEX_ACCOUNT_LOGIN_IN_PROGRESS", "Finish or close the Codex account login before switching accounts", nil)

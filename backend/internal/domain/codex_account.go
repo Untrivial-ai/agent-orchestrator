@@ -22,6 +22,38 @@ const (
 	CodexAccountStatusBroken CodexAccountStatus = "broken"
 )
 
+// CodexDeviceReconciliationStatus describes whether AO has conclusively
+// identified the account currently installed in Codex's device-global home.
+// It is runtime state only; the durable active-account pointer remains the
+// last known selection across daemon restarts.
+type CodexDeviceReconciliationStatus string
+
+const (
+	// CodexDeviceReconciliationNotChecked means device discovery has not run.
+	CodexDeviceReconciliationNotChecked CodexDeviceReconciliationStatus = "not_checked"
+	// CodexDeviceReconciliationChecking means device discovery is in progress.
+	CodexDeviceReconciliationChecking CodexDeviceReconciliationStatus = "checking"
+	// CodexDeviceReconciliationVerified means the canonical device state was conclusively identified.
+	CodexDeviceReconciliationVerified CodexDeviceReconciliationStatus = "verified"
+	// CodexDeviceReconciliationTemporarilyUnavailable means discovery failed and will be retried.
+	CodexDeviceReconciliationTemporarilyUnavailable CodexDeviceReconciliationStatus = "temporarily_unavailable"
+	// CodexDeviceReconciliationBlocked means switching requires a user or environment change.
+	CodexDeviceReconciliationBlocked CodexDeviceReconciliationStatus = "blocked"
+)
+
+// CodexDeviceReconciliation is the display-safe, ephemeral state of device
+// discovery. Provider output, credential paths, and secret-bearing errors must
+// never be copied into this projection.
+type CodexDeviceReconciliation struct {
+	Status                CodexDeviceReconciliationStatus `json:"status" enum:"not_checked,checking,verified,temporarily_unavailable,blocked"`
+	ActiveAccountVerified bool                            `json:"activeAccountVerified"`
+	ReasonCode            string                          `json:"reasonCode"`
+	Retryable             bool                            `json:"retryable"`
+	AttemptedAt           *time.Time                      `json:"attemptedAt,omitempty"`
+	VerifiedAt            *time.Time                      `json:"verifiedAt,omitempty"`
+	NextRetryAt           *time.Time                      `json:"nextRetryAt,omitempty"`
+}
+
 // CodexAuthMethod identifies the provider authentication mechanism.
 type CodexAuthMethod string
 

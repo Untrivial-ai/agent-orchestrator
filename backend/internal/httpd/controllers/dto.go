@@ -1101,9 +1101,22 @@ type CodexAccountsResponse struct {
 	AccountRevision        int64                                `json:"accountRevision"`
 	Accounts               []CodexAccountResponse               `json:"accounts"`
 	Capabilities           CodexAccountCapabilitiesResponse     `json:"capabilities"`
+	DeviceReconciliation   CodexDeviceReconciliationResponse    `json:"deviceReconciliation"`
 	UnmanagedGlobalAccount *CodexUnmanagedGlobalAccountResponse `json:"unmanagedGlobalAccount,omitempty"`
 	ActiveLogin            *CodexActiveLoginResponse            `json:"activeLogin,omitempty"`
 	CurrentSwitch          *CodexAccountSwitchResponse          `json:"currentSwitch,omitempty"`
+}
+
+// CodexDeviceReconciliationResponse reports whether the durable active pointer
+// has been verified against Codex's canonical device credential.
+type CodexDeviceReconciliationResponse struct {
+	Status                string     `json:"status" enum:"not_checked,checking,verified,temporarily_unavailable,blocked"`
+	ActiveAccountVerified bool       `json:"activeAccountVerified"`
+	ReasonCode            string     `json:"reasonCode"`
+	Retryable             bool       `json:"retryable"`
+	AttemptedAt           *time.Time `json:"attemptedAt,omitempty"`
+	VerifiedAt            *time.Time `json:"verifiedAt,omitempty"`
+	NextRetryAt           *time.Time `json:"nextRetryAt,omitempty"`
 }
 
 // CodexAccountResponse contains UI account facts without provider or storage identity.

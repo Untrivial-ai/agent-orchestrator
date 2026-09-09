@@ -15,6 +15,12 @@ func newCodexAccountsResponse(input agentsvc.CodexAccounts) CodexAccountsRespons
 	response := CodexAccountsResponse{
 		ActiveAccountID: input.ActiveAccountID, AccountRevision: input.AccountRevision,
 		Accounts: accounts, Capabilities: newCodexCapabilitiesResponse(input.Capabilities),
+		DeviceReconciliation: CodexDeviceReconciliationResponse{
+			Status: string(input.DeviceReconciliation.Status), ActiveAccountVerified: input.DeviceReconciliation.ActiveAccountVerified,
+			ReasonCode: input.DeviceReconciliation.ReasonCode, Retryable: input.DeviceReconciliation.Retryable,
+			AttemptedAt: input.DeviceReconciliation.AttemptedAt, VerifiedAt: input.DeviceReconciliation.VerifiedAt,
+			NextRetryAt: input.DeviceReconciliation.NextRetryAt,
+		},
 	}
 	if input.UnmanagedGlobalAccount != nil {
 		response.UnmanagedGlobalAccount = &CodexUnmanagedGlobalAccountResponse{

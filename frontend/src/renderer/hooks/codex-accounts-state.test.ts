@@ -13,6 +13,7 @@ function response(accounts: ReturnType<typeof account>[], activeAccountId = "b")
 		activeAccountId,
 		accounts,
 		capabilities: {},
+		deviceReconciliation: { status: "verified", activeAccountVerified: true, reasonCode: "verified", retryable: false },
 	} as CodexAccountsResponse;
 }
 

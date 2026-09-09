@@ -167,10 +167,13 @@ func (m *Manager) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAc
 	} else if active {
 		return domain.CodexAccountSwitch{}, ErrCodexAccountSwitchInProgress
 	}
-	// Bootstrap reconciliation mutates the active pointer and therefore needs
-	// this same token. Complete it before admission, then perform all account
-	// and target revalidation below while the token is held.
-	if err := credentials.WaitCodexAccountBootstrap(ctx); err != nil {
+	if err := credentials.WaitCodexAccountStoreReady(ctx); err != nil {
+		return domain.CodexAccountSwitch{}, err
+	}
+	// Device-global mutation remains fail-closed. Reconcile immediately before
+	// taking the durable switch admission fences, then revalidate again inside
+	// the existing activation transaction.
+	if err := credentials.EnsureCodexDeviceAccountReconciled(ctx); err != nil {
 		return domain.CodexAccountSwitch{}, err
 	}
 	if err := m.acquireCodexAccountSwitchGate(ctx); err != nil {
@@ -1211,7 +1214,9 @@ func (m *Manager) ReconcileCodexAccountSwitches(ctx context.Context) error {
 	if err != nil || !ok {
 		return err
 	}
-	if err := credentials.WaitCodexAccountBootstrap(ctx); err != nil {
+	// Recovery must restore the durable fence from AO-owned state first. It must
+	// not depend on ordinary device discovery, which can be temporarily down.
+	if err := credentials.WaitCodexAccountStoreReady(ctx); err != nil {
 		return err
 	}
 	sw, err = m.loadCodexAccountSwitchSessions(ctx, store, sw)

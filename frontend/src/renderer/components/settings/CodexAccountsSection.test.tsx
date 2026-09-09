@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { writeCodexAccounts } from "../../hooks/codex-accounts-state";
+import type { CodexAccountsResponse } from "../../hooks/useCodexAccountsQuery";
 import { useUiStore } from "../../stores/ui-store";
 import { CodexAccountsSection } from "./CodexAccountsSection";
 
@@ -41,6 +42,7 @@ const accountResponse = {
 		accountRead: capability(), nativeLogin: capability(), capacityRead: capability(), usageRead: capability("unsupported"),
 		resetCreditConsume: capability(), threadResume: capability(), accountManagement: capability(), globalSwitch: capability(),
 	},
+	deviceReconciliation: { status: "verified", activeAccountVerified: true, reasonCode: "verified", retryable: false },
 };
 const pendingLogin = {
 	operation: { operationId: "login-1", status: "pending", reasonCode: "login_pending", reason: "Waiting for Codex sign-in.", expiresAt: "2026-08-31T10:15:00Z" },
@@ -125,6 +127,62 @@ it("does not offer switching when the device account has no reconciled source", 
 	renderSection();
 	expect(await screen.findByText("This device account cannot be switched safely.")).toBeInTheDocument();
 	expect(screen.queryByRole("button", { name: "Switch to this account" })).not.toBeInTheDocument();
+});
+
+it("keeps saved accounts and local actions available while device reconciliation retries", async () => {
+	const degraded = {
+		...accountResponse,
+		deviceReconciliation: {
+			status: "temporarily_unavailable",
+			activeAccountVerified: false,
+			reasonCode: "account_read_inconclusive",
+			retryable: true,
+			nextRetryAt: "2026-09-09T10:00:01Z",
+		},
+	};
+	getMock.mockResolvedValue({ data: degraded });
+	postMock.mockImplementation((path: string) => path === "/api/v1/agents/codex/accounts/ensure"
+		? Promise.resolve({ data: degraded })
+		: Promise.resolve({ data: {} }));
+	const { container } = renderSection();
+
+	expect((await screen.findAllByText("Couldn't confirm the active Codex account. Retrying.")).length).toBeGreaterThan(0);
+	expect(screen.getByText("active@example.com")).toBeInTheDocument();
+	expect(screen.getByText("other@example.com")).toBeInTheDocument();
+	expect(screen.queryByText("In use")).not.toBeInTheDocument();
+	expect(screen.getByRole("button", { name: "Add account" })).toBeEnabled();
+	expect(screen.queryByRole("button", { name: "Switch account" })).not.toBeInTheDocument();
+
+	const durablePointerRow = container.querySelector(`[data-account-id="${activeAccount.id}"]`) as HTMLElement;
+	fireEvent.click(within(durablePointerRow).getByRole("button", { name: /active@example.com/i }));
+	expect(within(durablePointerRow).getByRole("button", { name: "Log out" })).toBeDisabled();
+
+	const inactiveRow = container.querySelector(`[data-account-id="${inactiveAccount.id}"]`) as HTMLElement;
+	fireEvent.click(within(inactiveRow).getByRole("button", { name: /other@example.com/i }));
+	expect(within(inactiveRow).getByRole("button", { name: "Log out" })).toBeEnabled();
+});
+
+it("announces when device reconciliation recovers", async () => {
+	const degraded = {
+		...accountResponse,
+		deviceReconciliation: {
+			status: "temporarily_unavailable",
+			activeAccountVerified: false,
+			reasonCode: "account_read_inconclusive",
+			retryable: true,
+		},
+	};
+	getMock.mockResolvedValue({ data: degraded });
+	postMock.mockResolvedValue({ data: degraded });
+	const { queryClient } = renderSection();
+	await screen.findAllByText("Couldn't confirm the active Codex account. Retrying.");
+
+	act(() => writeCodexAccounts(queryClient, accountResponse as unknown as CodexAccountsResponse));
+
+	const recovered = await screen.findByText("The active Codex account is confirmed.");
+	expect(recovered).toHaveAttribute("role", "status");
+	expect(recovered).toHaveAttribute("aria-live", "polite");
+	expect(screen.getByText("In use")).toBeInTheDocument();
 });
 
 it("shows recovery as an action instead of indefinite switch progress", async () => {

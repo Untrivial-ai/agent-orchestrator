@@ -58,7 +58,8 @@ type CodexReviewerControllerSnapshot struct {
 // coordinator. It exposes account identities and atomic credential activation,
 // never credential bytes or homes.
 type CodexAccountCredentialManager interface {
-	WaitCodexAccountBootstrap(context.Context) error
+	WaitCodexAccountStoreReady(context.Context) error
+	EnsureCodexDeviceAccountReconciled(context.Context) error
 	BeginCodexAccountMutation(context.Context) error
 	EndCodexAccountMutation()
 	CurrentCodexActiveAccount() domain.CodexActiveAccount

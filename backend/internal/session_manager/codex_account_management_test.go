@@ -45,42 +45,19 @@ func (c *rollbackTrackingCredentials) VerifyCurrentCodexAccount(_ context.Contex
 	return nil
 }
 
-type blockingBootstrapAdmissionCredentials struct {
-	*bootstrapOrderingCredentials
-	entered chan struct{}
-	release chan struct{}
-	once    sync.Once
-}
-
-func (c *blockingBootstrapAdmissionCredentials) WaitCodexAccountBootstrap(ctx context.Context) error {
-	c.once.Do(func() { close(c.entered) })
-	select {
-	case <-c.release:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 func (c *bootstrapOrderingCredentials) record(call string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls = append(c.calls, call)
 }
 
-func TestCodexControllerAdmissionWaitsForBootstrapBeforeReadingGate(t *testing.T) {
+func TestCodexControllerAdmissionWaitsOnlyForActiveDeviceGate(t *testing.T) {
 	gate := codexops.NewGate()
 	bootstrapLease, err := gate.AcquireExclusive(context.Background())
 	if err != nil {
 		t.Fatalf("acquire bootstrap lease: %v", err)
 	}
-	credentials := &blockingBootstrapAdmissionCredentials{
-		bootstrapOrderingCredentials: &bootstrapOrderingCredentials{},
-		entered:                      make(chan struct{}),
-		release:                      make(chan struct{}),
-	}
 	manager := New(Deps{CodexOperationGate: gate})
-	manager.SetAgentReadiness(credentials)
 
 	type admissionResult struct {
 		release func()
@@ -93,11 +70,6 @@ func TestCodexControllerAdmissionWaitsForBootstrapBeforeReadingGate(t *testing.T
 	}()
 
 	select {
-	case <-credentials.entered:
-	case <-time.After(time.Second):
-		t.Fatal("Codex controller admission did not wait for account bootstrap")
-	}
-	select {
 	case result := <-done:
 		if result.release != nil {
 			result.release()
@@ -107,7 +79,6 @@ func TestCodexControllerAdmissionWaitsForBootstrapBeforeReadingGate(t *testing.T
 	}
 
 	bootstrapLease.Release()
-	close(credentials.release)
 	select {
 	case result := <-done:
 		if result.err != nil {
@@ -125,17 +96,27 @@ func (c *bootstrapOrderingCredentials) EnsureAgentReadiness(context.Context, str
 func (*bootstrapOrderingCredentials) InvalidateAgentInstallation(string)   {}
 func (*bootstrapOrderingCredentials) InvalidateAgentAuthentication(string) {}
 func (*bootstrapOrderingCredentials) RecheckAgent(string)                  {}
-func (c *bootstrapOrderingCredentials) WaitCodexAccountBootstrap(context.Context) error {
-	c.record("bootstrap")
+func (c *bootstrapOrderingCredentials) WaitCodexAccountStoreReady(context.Context) error {
+	c.record("store")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.bootstrapped {
 		return nil
 	}
 	if c.mutationHeld {
-		return errors.New("bootstrap reconciliation blocked by held mutation token")
+		return errors.New("account store initialization blocked by held mutation token")
 	}
 	c.bootstrapped = true
+	return nil
+}
+func (c *bootstrapOrderingCredentials) EnsureCodexDeviceAccountReconciled(context.Context) error {
+	c.record("reconcile")
+	c.mu.Lock()
+	held := c.mutationHeld
+	c.mu.Unlock()
+	if held {
+		return errors.New("device reconciliation started after mutation token")
+	}
 	return nil
 }
 func (c *bootstrapOrderingCredentials) BeginCodexAccountMutation(context.Context) error {
@@ -155,7 +136,7 @@ func (*bootstrapOrderingCredentials) CurrentCodexActiveAccount() domain.CodexAct
 	return domain.CodexActiveAccount{AccountID: "source", Revision: 1}
 }
 func (*bootstrapOrderingCredentials) CodexAccountLoginInProgress() bool { return false }
-func (c *bootstrapOrderingCredentials) VerifyCodexAccountForSwitch(ctx context.Context, _ string) error {
+func (c *bootstrapOrderingCredentials) VerifyCodexAccountForSwitch(_ context.Context, _ string) error {
 	c.record("verify")
 	c.mu.Lock()
 	held := c.mutationHeld
@@ -163,7 +144,7 @@ func (c *bootstrapOrderingCredentials) VerifyCodexAccountForSwitch(ctx context.C
 	if !held {
 		return errors.New("target verification ran outside mutation token")
 	}
-	return c.WaitCodexAccountBootstrap(ctx)
+	return nil
 }
 func (*bootstrapOrderingCredentials) VerifyCurrentCodexAccount(context.Context, string) error {
 	return nil
@@ -293,7 +274,7 @@ func TestCodexAccountSwitchFingerprintIsVersionedAndStable(t *testing.T) {
 	}
 }
 
-func TestCodexAccountSwitchBootstrapsBeforeHoldingMutationToken(t *testing.T) {
+func TestCodexAccountSwitchReconcilesBeforeHoldingMutationToken(t *testing.T) {
 	credentials := &bootstrapOrderingCredentials{}
 	store := &bootstrapOrderingStore{fakeStore: newFakeStore(), collectingCodexSwitchStore: &collectingCodexSwitchStore{}}
 	manager := New(Deps{Store: store, Runtime: &fakeRuntime{}})
@@ -312,7 +293,7 @@ func TestCodexAccountSwitchBootstrapsBeforeHoldingMutationToken(t *testing.T) {
 	credentials.mu.Lock()
 	calls := append([]string(nil), credentials.calls...)
 	credentials.mu.Unlock()
-	if len(calls) < 4 || !slices.Equal(calls[:4], []string{"bootstrap", "begin", "verify", "bootstrap"}) {
+	if len(calls) < 4 || !slices.Equal(calls[:4], []string{"store", "reconcile", "begin", "verify"}) {
 		t.Fatalf("admission order = %v", calls)
 	}
 }

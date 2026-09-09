@@ -100,6 +100,10 @@ func codexAccountsFixture() agentsvc.CodexAccounts {
 	return agentsvc.CodexAccounts{
 		ActiveAccountID: "72d4db6e-da2c-414c-a6a9-fdbd09a006b6",
 		AccountRevision: 3,
+		DeviceReconciliation: domain.CodexDeviceReconciliation{
+			Status: domain.CodexDeviceReconciliationVerified, ActiveAccountVerified: true,
+			ReasonCode: "verified",
+		},
 		Accounts: []domain.CodexAccountSnapshot{{
 			ID: "72d4db6e-da2c-414c-a6a9-fdbd09a006b6", Label: "person@example.com", Source: domain.CodexAccountSourceManaged,
 			Status: domain.CodexAccountStatusValid, ReasonCode: domain.CodexAccountReasonValid, Reason: "available", Active: true,
@@ -166,6 +170,9 @@ func TestCodexAccountRoutesExposeSafeCachedAndEnsureShapes(t *testing.T) {
 	if len(response.Accounts) != 1 {
 		t.Fatalf("decoded accounts = %#v", response.Accounts)
 	}
+	if response.DeviceReconciliation.Status != string(domain.CodexDeviceReconciliationVerified) || !response.DeviceReconciliation.ActiveAccountVerified {
+		t.Fatalf("decoded device reconciliation = %#v", response.DeviceReconciliation)
+	}
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":["a","a"],"includeUsage":true}`)
 	if status != http.StatusOK || len(fake.ensureIDs) != 2 || !fake.includeUsage {
 		t.Fatalf("ensure status=%d ids=%#v includeUsage=%v body=%s", status, fake.ensureIDs, fake.includeUsage, body)
@@ -173,6 +180,33 @@ func TestCodexAccountRoutesExposeSafeCachedAndEnsureShapes(t *testing.T) {
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":[],"force":true}`)
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_JSON"`) {
 		t.Fatalf("strict ensure status=%d body=%s", status, body)
+	}
+}
+
+func TestCodexAccountReadRoutesStayAvailableDuringDeviceReconciliationFailure(t *testing.T) {
+	fixture := codexAccountsFixture()
+	fixture.DeviceReconciliation = domain.CodexDeviceReconciliation{
+		Status:     domain.CodexDeviceReconciliationTemporarilyUnavailable,
+		ReasonCode: "account_read_inconclusive", Retryable: true,
+	}
+	fixture.Accounts[0].Active = false
+	fake := &fakeCodexAccounts{result: fixture}
+	srv := newCodexAccountServer(t, fake)
+	defer srv.Close()
+
+	for _, request := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/agents/codex/accounts"},
+		{method: http.MethodPost, path: "/api/v1/agents/codex/accounts/ensure", body: `{"accountIds":[]}`},
+	} {
+		body, status, _ := doRequest(t, srv, request.method, request.path, request.body)
+		if status != http.StatusOK || !strings.Contains(string(body), `"status":"temporarily_unavailable"`) ||
+			!strings.Contains(string(body), `"reasonCode":"account_read_inconclusive"`) || strings.Contains(string(body), `"active":true`) {
+			t.Fatalf("%s %s status=%d body=%s", request.method, request.path, status, body)
+		}
 	}
 }
 

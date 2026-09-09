@@ -63,7 +63,8 @@ func newCodexLaunchReadinessFixture(t *testing.T) *codexLaunchReadinessFixture {
 		t.Fatal(err)
 	}
 	manager.active = state.active
-	manager.bootstrapped = true
+	manager.accountStoreReady = true
+	manager.reconciliation = domain.CodexDeviceReconciliation{Status: domain.CodexDeviceReconciliationVerified, ActiveAccountVerified: true, ReasonCode: "verified"}
 	fixture := &codexLaunchReadinessFixture{t: t, manager: manager, active: active, other: other}
 	manager.factory = &fakeCodexAccountFactory{capabilities: supportedCodexAccountCapabilities(), open: func(account ports.CodexAccountContext) (ports.CodexAccountClient, error) {
 		global := !account.Managed
@@ -145,6 +146,26 @@ func TestSettingsEnsureDoesNotPresentTheActiveAccountAsLaunchReady(t *testing.T)
 	}
 	if fixture.refreshCapableReads() != before {
 		t.Fatalf("launch repeated the refresh-capable read: %d then %d", before, fixture.refreshCapableReads())
+	}
+}
+
+func TestLaunchFallsBackToNativeReadinessWhileDeviceReconciliationIsUnavailable(t *testing.T) {
+	fixture := newCodexLaunchReadinessFixture(t)
+	fixture.manager.mu.Lock()
+	fixture.manager.reconciliation = domain.CodexDeviceReconciliation{
+		Status:     domain.CodexDeviceReconciliationTemporarilyUnavailable,
+		ReasonCode: "account_read_inconclusive", Retryable: true,
+	}
+	fixture.manager.mu.Unlock()
+
+	authentication, handled := fixture.service.structuredCodexAuthentication(
+		context.Background(), string(domain.HarnessCodex), domain.AgentReadinessPurposeLaunch,
+	)
+	if handled {
+		t.Fatalf("unverified device authentication was handled = %#v", authentication)
+	}
+	if fixture.refreshCapableReads() != 0 {
+		t.Fatalf("structured account path performed a native read: %#v", fixture.reads)
 	}
 }
 
@@ -302,6 +323,9 @@ func TestReplacedCredentialsReVerifyALaunchFailure(t *testing.T) {
 	// not survive the rest of the display window.
 	fixture.signIn()
 	if err := writeGlobalCredentialAtomic(fixture.manager.globalCredentialPath(), []byte("replacement-opaque-credential")); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.manager.reconcileGlobal(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 

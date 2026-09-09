@@ -35,6 +35,7 @@ type CodexAccounts struct {
 	AccountRevision        int64                               `json:"accountRevision"`
 	Accounts               []domain.CodexAccountSnapshot       `json:"accounts"`
 	Capabilities           domain.CodexAccountCapabilities     `json:"capabilities"`
+	DeviceReconciliation   domain.CodexDeviceReconciliation    `json:"deviceReconciliation"`
 	UnmanagedGlobalAccount *domain.CodexUnmanagedGlobalAccount `json:"unmanagedGlobalAccount,omitempty"`
 	ActiveLogin            *CodexActiveLogin                   `json:"activeLogin,omitempty"`
 	CurrentSwitch          *domain.CodexAccountSwitch          `json:"currentSwitch,omitempty"`
@@ -125,6 +126,7 @@ type codexAccountManager struct {
 	operationGate     ports.CodexOperationGate
 	logger            *slog.Logger
 	now               func() time.Time
+	after             func(time.Duration) <-chan time.Time
 	newID             func() string
 	processes         chan struct{}
 	mutations         chan struct{}
@@ -134,22 +136,25 @@ type codexAccountManager struct {
 	pendingRoot       string
 	switchStagingRoot string
 
-	mu                 sync.Mutex
-	bootstrapCall      *accountReconcileCall
-	bootstrapErr       error
-	bootstrapNextRetry time.Time
-	bootstrapFailures  int
-	auth               map[string]*accountAuthState
-	usage              map[string]*accountUsageState
-	capabilities       domain.CodexAccountCapabilities
-	active             domain.CodexActiveAccount
-	globalAuth         domain.AgentAuthenticationObservation
-	unmanaged          *domain.CodexUnmanagedGlobalAccount
-	login              *accountLoginOperation
-	reconcile          *accountReconcileCall
-	bootstrapped       bool
-	capacity           *codexCapacityCoordinator
-	subscribers        map[chan CodexAccounts]struct{}
+	mu                    sync.Mutex
+	accountStoreCall      *accountReconcileCall
+	accountStoreErr       error
+	accountStoreNextRetry time.Time
+	accountStoreFailures  int
+	auth                  map[string]*accountAuthState
+	usage                 map[string]*accountUsageState
+	capabilities          domain.CodexAccountCapabilities
+	active                domain.CodexActiveAccount
+	globalAuth            domain.AgentAuthenticationObservation
+	unmanaged             *domain.CodexUnmanagedGlobalAccount
+	login                 *accountLoginOperation
+	reconcile             *accountReconcileCall
+	reconciliation        domain.CodexDeviceReconciliation
+	reconcileFailures     int
+	reconcileScheduled    bool
+	accountStoreReady     bool
+	capacity              *codexCapacityCoordinator
+	subscribers           map[chan CodexAccounts]struct{}
 }
 
 func newCodexAccountManager(ctx context.Context, accountRoot, pendingRoot, switchStagingRoot, globalHome string, factory ports.CodexAccountClientFactory, stateStore CodexAccountStateStore, logger *slog.Logger, operationGates ...ports.CodexOperationGate) *codexAccountManager {
@@ -166,11 +171,15 @@ func newCodexAccountManager(ctx context.Context, accountRoot, pendingRoot, switc
 	m := &codexAccountManager{
 		ctx: ctx, catalog: newCodexAccountCatalog(accountRoot, logger), factory: factory, stateStore: stateStore, operationGate: operationGate,
 		logger: logger, now: func() time.Time { return time.Now().UTC() }, newID: uuid.NewString,
+		after:     time.After,
 		processes: make(chan struct{}, codexAccountProcessLimit), mutations: make(chan struct{}, 1), executable: os.Executable,
 		globalHome: canonicalPath(globalHome), pendingRoot: canonicalPath(pendingRoot), switchStagingRoot: canonicalPath(switchStagingRoot),
 		auth: map[string]*accountAuthState{}, usage: map[string]*accountUsageState{},
 		capabilities: unavailableCodexCapabilities(), subscribers: map[chan CodexAccounts]struct{}{},
 		globalAuth: uncheckedAuthentication(),
+		reconciliation: domain.CodexDeviceReconciliation{
+			Status: domain.CodexDeviceReconciliationNotChecked, ReasonCode: "not_checked",
+		},
 	}
 	m.mutations <- struct{}{}
 	m.capacity = newCodexCapacityCoordinator(m)
@@ -235,7 +244,7 @@ func (m *codexAccountManager) view(ids []string) (CodexAccounts, error) {
 		return CodexAccounts{}, mapUnknownCodexAccount(err)
 	}
 	m.mu.Lock()
-	active, capabilities, unmanaged := m.active, m.capabilities, m.unmanaged
+	active, capabilities, unmanaged, reconciliation := m.active, m.capabilities, m.unmanaged, m.reconciliation
 	var activeLogin *CodexActiveLogin
 	if m.login != nil && m.login.terminalHandle != "" && !terminalLoginStatus(m.login.snapshot.Status) {
 		activeLogin = &CodexActiveLogin{
@@ -251,7 +260,7 @@ func (m *codexAccountManager) view(ids []string) (CodexAccounts, error) {
 	accounts := make([]domain.CodexAccountSnapshot, 0, len(records))
 	for _, record := range records {
 		snapshot := record.Snapshot
-		snapshot.Active = snapshot.ID == active.AccountID
+		snapshot.Active = reconciliation.ActiveAccountVerified && snapshot.ID == active.AccountID
 		snapshot.Capacity = m.capacity.snapshot(snapshot.ID)
 		m.mu.Lock()
 		if usage := m.usage[snapshot.ID]; usage != nil && usage.value != nil {
@@ -261,7 +270,7 @@ func (m *codexAccountManager) view(ids []string) (CodexAccounts, error) {
 		m.mu.Unlock()
 		accounts = append(accounts, snapshot)
 	}
-	if active.AccountID != "" {
+	if reconciliation.ActiveAccountVerified && active.AccountID != "" {
 		for i := range accounts {
 			if accounts[i].ID == active.AccountID && i > 0 {
 				item := accounts[i]
@@ -271,7 +280,7 @@ func (m *codexAccountManager) view(ids []string) (CodexAccounts, error) {
 			}
 		}
 	}
-	return CodexAccounts{ActiveAccountID: active.AccountID, AccountRevision: active.Revision, Accounts: accounts, Capabilities: capabilities, UnmanagedGlobalAccount: unmanaged, ActiveLogin: activeLogin}, nil
+	return CodexAccounts{ActiveAccountID: active.AccountID, AccountRevision: active.Revision, Accounts: accounts, Capabilities: capabilities, DeviceReconciliation: reconciliation, UnmanagedGlobalAccount: unmanaged, ActiveLogin: activeLogin}, nil
 }
 
 func (m *codexAccountManager) cached() CodexAccounts { result, _ := m.view(nil); return result }
@@ -280,9 +289,9 @@ func (m *codexAccountManager) accountContext(record codexAccountRecord) ports.Co
 	home := record.Home
 	m.mu.Lock()
 	active := m.active.AccountID
-	unmanaged := m.unmanaged != nil
+	verified := m.reconciliation.ActiveAccountVerified
 	m.mu.Unlock()
-	if record.Snapshot.ID == active && !unmanaged {
+	if record.Snapshot.ID == active && verified {
 		return ports.CodexAccountContext{Home: m.globalHome, Managed: false}
 	}
 	return ports.CodexAccountContext{Home: home, Managed: true}
@@ -298,9 +307,6 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	}
 	if installation == domain.AgentInstallationNotInstalled {
 		return m.view(ids)
-	}
-	if err := m.reconcileGlobal(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		m.logger.Debug("Codex global account reconciliation degraded", "failure_category", "global_account_reconciliation")
 	}
 	capabilities := m.detectCapabilities(ctx)
 	for _, record := range records {

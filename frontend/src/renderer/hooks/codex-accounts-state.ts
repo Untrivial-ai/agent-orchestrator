@@ -16,7 +16,7 @@ export function mergeCodexAccounts(
 		: [...incoming.accounts];
 	const normalized = accounts.map((account) => ({
 		...account,
-		active: account.id === incoming.activeAccountId,
+		active: Boolean(incoming.deviceReconciliation?.activeAccountVerified) && account.id === incoming.activeAccountId,
 	}));
 	normalized.sort((left, right) => {
 		if (left.active !== right.active) return left.active ? -1 : 1;

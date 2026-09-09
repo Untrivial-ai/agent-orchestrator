@@ -7720,12 +7720,15 @@ components:
           $ref: '#/components/schemas/CodexAccountCapabilitiesResponse'
         currentSwitch:
           $ref: '#/components/schemas/CodexAccountSwitchResponse'
+        deviceReconciliation:
+          $ref: '#/components/schemas/CodexDeviceReconciliationResponse'
         unmanagedGlobalAccount:
           $ref: '#/components/schemas/CodexUnmanagedGlobalAccountResponse'
       required:
       - accountRevision
       - accounts
       - capabilities
+      - deviceReconciliation
       type: object
     CodexActiveLoginResponse:
       properties:
@@ -7852,6 +7855,43 @@ components:
           - integer
       required:
       - usedPercent
+      type: object
+    CodexDeviceReconciliationResponse:
+      properties:
+        activeAccountVerified:
+          type: boolean
+        attemptedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        nextRetryAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        reasonCode:
+          type: string
+        retryable:
+          type: boolean
+        status:
+          enum:
+          - not_checked
+          - checking
+          - verified
+          - temporarily_unavailable
+          - blocked
+          type: string
+        verifiedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+      required:
+      - status
+      - activeAccountVerified
+      - reasonCode
+      - retryable
       type: object
     CodexResetCreditsSummaryResponse:
       properties:

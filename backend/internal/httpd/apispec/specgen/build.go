@@ -267,6 +267,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersEnsureCodexAccountsRequest":               "EnsureCodexAccountsRequest",
 	"ControllersConsumeCodexAccountResetCreditRequest":    "ConsumeCodexAccountResetCreditRequest",
 	"ControllersCodexAccountsResponse":                    "CodexAccountsResponse",
+	"ControllersCodexDeviceReconciliationResponse":        "CodexDeviceReconciliationResponse",
 	"ControllersCodexAccountResponse":                     "CodexAccountResponse",
 	"ControllersCodexAuthenticationResponse":              "CodexAuthenticationResponse",
 	"ControllersCodexAccountCapacityResponse":             "CodexAccountCapacityResponse",

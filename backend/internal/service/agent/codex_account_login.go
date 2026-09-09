@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -203,10 +204,14 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 		active := m.active
 		m.mu.Unlock()
 		if active.AccountID == targetAccountID {
+			expectedGlobal, verifyErr := m.verifyActiveAccountCredentialLocked(ctx, target)
+			if verifyErr != nil {
+				return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "The device Codex account changed. Try again.", nil), nil
+			}
 			if descriptorErr := m.catalog.updateVerifiedDescriptor(targetAccountID, observation); descriptorErr != nil {
 				return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "The verified Codex account could not be saved.", nil), nil
 			}
-			if _, activateErr := m.activateFromCredentialLocked(m.ctx, targetAccountID, active.Revision, filepath.Join(home, codexCredentialFilename), nil); activateErr != nil {
+			if _, activateErr := m.activateFromCredentialLocked(m.ctx, targetAccountID, active.Revision, filepath.Join(home, codexCredentialFilename), expectedGlobal); activateErr != nil {
 				return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "The account was verified but could not be activated.", nil), nil
 			}
 			record, _ = m.catalog.record(targetAccountID)
@@ -265,6 +270,32 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 		_ = m.terminal.CloseShellTerminal(context.WithoutCancel(ctx), terminalHandle)
 	}
 	return result, nil
+}
+
+// verifyActiveAccountCredentialLocked performs the commit-time half of active
+// reauthentication admission. The caller already owns both AO mutation gates;
+// this verifies the canonical identity and captures the exact bytes that the
+// subsequent replacement is allowed to overwrite.
+func (m *codexAccountManager) verifyActiveAccountCredentialLocked(ctx context.Context, record codexAccountRecord) ([]byte, error) {
+	globalPath := m.globalCredentialPath()
+	credential, admitted, err := readCodexFileState(globalPath, false)
+	if err != nil {
+		return nil, err
+	}
+	verifyCtx, cancel := context.WithTimeout(ctx, codexAccountAuthTimeout)
+	defer cancel()
+	client, err := m.factory.Open(verifyCtx, ports.CodexAccountContext{Home: m.globalHome, Managed: false})
+	if err != nil {
+		return nil, err
+	}
+	observation, readErr := client.Read(verifyCtx, false)
+	_ = client.Close()
+	latestCredential, latest, latestErr := readCodexFileState(globalPath, false)
+	if readErr != nil || latestErr != nil || !sameCodexFileState(admitted, latest) || !bytes.Equal(credential, latestCredential) ||
+		!m.observationAndCredentialIdentifyRecord(record, observation, latestCredential) {
+		return nil, ports.ErrCodexGlobalAccountChanged
+	}
+	return latestCredential, nil
 }
 
 func (m *codexAccountManager) finishLoginUnverified(id, reason string) domain.CodexAccountLoginOperation {

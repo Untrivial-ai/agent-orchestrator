@@ -2740,6 +2740,7 @@ export interface components {
             activeLogin?: components["schemas"]["CodexActiveLoginResponse"];
             capabilities: components["schemas"]["CodexAccountCapabilitiesResponse"];
             currentSwitch?: components["schemas"]["CodexAccountSwitchResponse"];
+            deviceReconciliation: components["schemas"]["CodexDeviceReconciliationResponse"];
             unmanagedGlobalAccount?: components["schemas"]["CodexUnmanagedGlobalAccountResponse"];
         };
         CodexActiveLoginResponse: {
@@ -2784,6 +2785,19 @@ export interface components {
             /** Format: double */
             usedPercent: number;
             windowDurationMinutes?: null | number;
+        };
+        CodexDeviceReconciliationResponse: {
+            activeAccountVerified: boolean;
+            /** Format: date-time */
+            attemptedAt?: null | string;
+            /** Format: date-time */
+            nextRetryAt?: null | string;
+            reasonCode: string;
+            retryable: boolean;
+            /** @enum {string} */
+            status: "not_checked" | "checking" | "verified" | "temporarily_unavailable" | "blocked";
+            /** Format: date-time */
+            verifiedAt?: null | string;
         };
         CodexResetCreditsSummaryResponse: {
             /** Format: int64 */

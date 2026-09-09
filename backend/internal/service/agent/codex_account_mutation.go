@@ -107,6 +107,7 @@ func (m *codexAccountManager) logout(ctx context.Context, accountID string) erro
 		}
 		m.mu.Lock()
 		m.active = cleared
+		m.markDeviceReconciledLocked(false, m.now())
 		m.mu.Unlock()
 		m.setGlobalAuthentication(signedOutAuthentication(m.now(), "Codex is signed out."))
 	}
@@ -238,6 +239,7 @@ func (m *codexAccountManager) activateFromCredentialLocked(ctx context.Context, 
 	m.mu.Lock()
 	m.active = active
 	m.unmanaged = nil
+	m.markDeviceReconciledLocked(true, now)
 	m.mu.Unlock()
 	if refreshed, readErr := readOpaqueCredential(globalPath); readErr == nil {
 		_ = writePrivateFileAtomic(filepath.Join(record.Home, codexCredentialFilename), refreshed)
