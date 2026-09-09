@@ -526,6 +526,23 @@ describe("Sidebar", () => {
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
+	it("does not spawn from the sidebar while the orchestrator is provisioning", async () => {
+		const user = userEvent.setup();
+		useUiStore.getState().setProjectProvisioning("proj-1", true);
+		try {
+			renderSidebar();
+
+			const spawnButton = screen.getByRole("button", { name: "Spawn Project One orchestrator" });
+			expect(spawnButton).toBeDisabled();
+			await user.click(spawnButton);
+
+			expect(spawnMock).not.toHaveBeenCalled();
+			expect(navigateMock).not.toHaveBeenCalled();
+		} finally {
+			useUiStore.getState().setProjectProvisioning("proj-1", false);
+		}
+	});
+
 	it("shows a ConfirmDialog and calls onRemoveProject when confirmed", async () => {
 		const user = userEvent.setup();
 		const onRemoveProject = renderSidebar();

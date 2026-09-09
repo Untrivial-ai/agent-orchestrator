@@ -1122,7 +1122,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// Expand a collapsed project so opening the orchestrator also reveals its
 	// session list — otherwise the tree stays shut while you're inside it.
 	const openOrchestrator = async () => {
-		if (isProjectRestarting) return;
+		if (isProjectRestarting || isProvisioning) return;
 		if (!expanded) toggleDisclosure();
 		if (orchestrator) {
 			selection.goSession(workspace.id, orchestrator.id);
@@ -1366,8 +1366,8 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																name: workspace.name,
 															})
 												}
-												className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
-												disabled={isSpawning || isProjectRestarting}
+											className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
+											disabled={isSpawning || isProjectRestarting || isProvisioning}
 												onClick={() => void openOrchestrator()}
 												type="button"
 											>
