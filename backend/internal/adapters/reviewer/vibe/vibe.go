@@ -31,7 +31,7 @@ const HarnessID domain.ReviewerHarness = "vibe"
 const HostTrustWarning = "experimental host-trusted reviewer: Vibe exposes a shell, external editor, and approval-mode changes without OS isolation"
 
 var (
-	requiredFlags               = []string{"--agent", "--workdir", "--trust"}
+	requiredFlags               = []string{"--agent", "--workdir", "--trust", "--auto-approve"}
 	safeID                      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	uncontainedInteractiveRisks = []string{
 		"terminal shell escape",

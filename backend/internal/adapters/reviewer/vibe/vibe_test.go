@@ -225,9 +225,11 @@ func TestCompatibilityProbeAcceptsMinimumVibe2232AndInteractiveFlags(t *testing.
 			t.Fatalf("version %q err = %v, want minimum-version rejection", version, err)
 		}
 	}
-	missing := testReviewer(t, "vibe 2.23.2", strings.Replace(help, "--workdir", "", 1))
-	if err := missing.verifyCompatibility(context.Background(), "/opt/vibe/bin/vibe", nil); err == nil || !strings.Contains(err.Error(), "--workdir") {
-		t.Fatalf("missing flag err = %v", err)
+	for _, missingFlag := range requiredFlags {
+		missing := testReviewer(t, "vibe 2.23.2", strings.Replace(help, missingFlag, "", 1))
+		if err := missing.verifyCompatibility(context.Background(), "/opt/vibe/bin/vibe", nil); err == nil || !strings.Contains(err.Error(), missingFlag) {
+			t.Fatalf("missing flag %s err = %v", missingFlag, err)
+		}
 	}
 }
 
