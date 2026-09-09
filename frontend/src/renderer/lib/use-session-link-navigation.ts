@@ -8,6 +8,7 @@ export function useSessionLinkNavigation(): (url: string) => boolean {
 	const workspaceQuery = useWorkspaceQuery();
 	const navigateToSession = useNavigateToSession();
 	const setSessionLinkError = useUiStore((state) => state.setSessionLinkError);
+	const showSessionLinkNotice = useUiStore((state) => state.showSessionLinkNotice);
 	return useCallback((url: string) => {
 		const target = parseSessionLink(url);
 		if (!target) {
@@ -24,7 +25,11 @@ export function useSessionLinkNavigation(): (url: string) => boolean {
 			return false;
 		}
 		setSessionLinkError(null);
+		if (resolved.isTerminated) {
+			showSessionLinkNotice(`Session ${resolved.sessionId} is terminated`);
+			return false;
+		}
 		navigateToSession(resolved.projectId, resolved.sessionId);
 		return true;
-	}, [navigateToSession, setSessionLinkError, workspaceQuery.data, workspaceQuery.isSuccess]);
+	}, [navigateToSession, setSessionLinkError, showSessionLinkNotice, workspaceQuery.data, workspaceQuery.isSuccess]);
 }

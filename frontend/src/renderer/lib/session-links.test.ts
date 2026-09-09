@@ -22,9 +22,9 @@ describe("session links", () => {
 		]);
 	});
 
-	it("resolves by stable project and session IDs regardless of title or termination", () => {
-		const workspaces = [{ id: "p", sessions: [{ id: "s", title: "renamed", isTerminated: true }] }];
-		expect(resolveSessionLink("ao://sessions/p/s", workspaces)).toEqual({ projectId: "p", sessionId: "s" });
+	it("resolves by stable project and session IDs with termination state", () => {
+		const workspaces = [{ id: "p", sessions: [{ id: "s", title: "renamed", status: "terminated" }] }];
+		expect(resolveSessionLink("ao://sessions/p/s", workspaces)).toEqual({ projectId: "p", sessionId: "s", isTerminated: true });
 		expect(resolveSessionLink("ao://sessions/p/missing", workspaces)).toBeUndefined();
 	});
 });
