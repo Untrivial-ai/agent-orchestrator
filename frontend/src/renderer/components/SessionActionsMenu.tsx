@@ -20,8 +20,7 @@ export function SessionActionsMenu({
 	if (menuItems.length === 0 && !inlineStatus) return null;
 
 	return (
-		<div className="inline-flex shrink-0 items-center gap-1">
-			{inlineStatus}
+		<div className="inline-flex shrink-0 items-center gap-0.5">
 			{menuItems.length > 0 ? (
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
@@ -41,6 +40,7 @@ export function SessionActionsMenu({
 					</DropdownMenuContent>
 				</DropdownMenu>
 			) : null}
+			{inlineStatus}
 		</div>
 	);
 }

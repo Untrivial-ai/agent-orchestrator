@@ -47,19 +47,28 @@ describe("SessionInterfaceSwitchButton", () => {
 		expect(group).not.toHaveClass("gap-px");
 	});
 
-	it("keeps a draining switch in the top bar with an adjacent Cancel action", () => {
+	it("keeps a draining switch in the top bar as an icon-only loader with Cancel", () => {
 		const onCancel = vi.fn();
 		render(
-			<SessionInterfaceSwitchButton
-				target="chat"
-				supported
-				transition={transition("draining")}
-				onClick={vi.fn()}
-				onCancel={onCancel}
-			/>,
+			<TooltipProvider>
+				<SessionInterfaceSwitchButton
+					target="chat"
+					supported
+					transition={transition("draining")}
+					onClick={vi.fn()}
+					onCancel={onCancel}
+				/>
+			</TooltipProvider>,
 		);
 
-		expect(screen.getByRole("status")).toHaveTextContent("Waiting to switch… Chat UI");
+		const status = screen.getByRole("status");
+		expect(status).toHaveAttribute(
+			"aria-label",
+			"Waiting to switch… Switching to Chat UI.",
+		);
+		expect(status).not.toHaveTextContent("Waiting to switch…");
+		expect(status).not.toHaveTextContent("Chat UI");
+		expect(status.querySelector(".animate-spin")).not.toBeNull();
 		const cancel = screen.getByRole("button", { name: "Cancel switch to Chat UI" });
 		fireEvent.click(cancel);
 		expect(onCancel).toHaveBeenCalledOnce();
@@ -67,16 +76,23 @@ describe("SessionInterfaceSwitchButton", () => {
 
 	it("stays non-interactive after the source controller begins stopping", () => {
 		render(
-			<SessionInterfaceSwitchButton
-				target="chat"
-				supported
-				transition={transition("source_stopping")}
-				onClick={vi.fn()}
-				onCancel={vi.fn()}
-			/>,
+			<TooltipProvider>
+				<SessionInterfaceSwitchButton
+					target="chat"
+					supported
+					transition={transition("source_stopping")}
+					onClick={vi.fn()}
+					onCancel={vi.fn()}
+				/>
+			</TooltipProvider>,
 		);
 
-		expect(screen.getByRole("status")).toHaveTextContent("Stopping controller… Chat UI");
+		const status = screen.getByRole("status");
+		expect(status).toHaveAttribute(
+			"aria-label",
+			"Stopping controller… Switching to Chat UI.",
+		);
+		expect(status).not.toHaveTextContent("Stopping controller…");
 		expect(screen.queryByRole("button", { name: "Cancel switch to Chat UI" })).not.toBeInTheDocument();
 	});
 

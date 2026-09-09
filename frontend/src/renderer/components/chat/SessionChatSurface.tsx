@@ -71,6 +71,7 @@ export function SessionChatSurface({
 	onOpenFile,
 	headerActions,
 	sessionTabAction,
+	sessionTabActionWide = false,
 	tabStripAction,
 	handoffDialogOpen = false,
 	workspaceTabs,
@@ -107,6 +108,7 @@ export function SessionChatSurface({
 	onOpenFile?: (path: string) => void;
 	headerActions?: ReactNode;
 	sessionTabAction?: ReactNode;
+	sessionTabActionWide?: boolean;
 	tabStripAction?: ReactNode;
 	handoffDialogOpen?: boolean;
 	workspaceTabs?: Array<{ key: string; content: ReactNode; onSelect: () => void }>;
@@ -346,6 +348,7 @@ export function SessionChatSurface({
 				theme={theme}
 				headerActions={headerActions}
 				sessionTabAction={sessionTabAction}
+				sessionTabActionWide={sessionTabActionWide}
 				tabStripAction={tabStripAction}
 				workspaceTabs={workspaceTabs}
 				workspaceTabActions={workspaceTabActions}

@@ -78,39 +78,48 @@ export function SessionInterfaceSwitchButton({
 }) {
 	if (transition && interfaceTransitionIsActive(transition)) {
 		const cancellable = interfaceTransitionIsCancellable(transition) && Boolean(onCancel);
+		const statusLabel = cancelError
+			? cancelError
+			: `${phaseCopy[transition.phase]} Switching to ${targetTitleLabel(transition.targetMode)}.`;
 		return (
 			<div
 				role="status"
 				aria-live="polite"
-				className={cn(
-					"flex h-7 items-center gap-1 rounded-md bg-muted/55 pl-2 text-xs text-muted-foreground",
-					cancellable ? "pr-0.5" : "pr-2",
-					className,
-				)}
-				title={cancelError || `${phaseCopy[transition.phase]} Switching to ${targetTitleLabel(transition.targetMode)}.`}
+				aria-label={statusLabel}
+				className={cn("inline-flex h-7 shrink-0 items-center gap-0.5", className)}
 			>
-				<Loader2 aria-hidden="true" className="size-3.5 shrink-0 animate-spin" />
-				<span className="whitespace-nowrap">
-					{phaseCopy[transition.phase]} <span className="text-foreground">{targetTitleLabel(transition.targetMode)}</span>
-				</span>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span className="inline-flex size-7 items-center justify-center text-muted-foreground">
+							<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+						</span>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{statusLabel}</TooltipContent>
+				</Tooltip>
 				{cancellable ? (
-					<Button
-						type="button"
-						size="sm"
-						variant="ghost"
-						className="ml-1 h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-						disabled={cancelling}
-						onClick={onCancel}
-						aria-label={`Cancel switch to ${targetTitleLabel(transition.targetMode)}`}
-					>
-						{cancelling ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : <X aria-hidden="true" className="size-3" />}
-						{cancelling ? "Cancelling" : "Cancel"}
-					</Button>
-				) : null}
-				{cancelError ? (
-					<span role="alert" className="ml-1 whitespace-nowrap pr-1.5 text-[11px] text-destructive">
-						Cancel failed
-					</span>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span className="inline-flex">
+								<TopbarButton
+									type="button"
+									variant="icon"
+									disabled={cancelling}
+									onClick={onCancel}
+									aria-label={`Cancel switch to ${targetTitleLabel(transition.targetMode)}`}
+									className="text-muted-foreground hover:text-foreground"
+								>
+									{cancelling ? (
+										<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+									) : (
+										<X aria-hidden="true" className="size-3.5" />
+									)}
+								</TopbarButton>
+							</span>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">
+							{cancelling ? "Cancelling…" : `Cancel switch to ${targetTitleLabel(transition.targetMode)}`}
+						</TooltipContent>
+					</Tooltip>
 				) : null}
 			</div>
 		);

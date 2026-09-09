@@ -1146,6 +1146,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			{handoffMenuItem}
 		</SessionActionsMenu>
 	);
+	const sessionTabActionWide = Boolean(interfaceSwitchInlineStatus);
 	const sessionHeaderActions = (
 		<div
 			className="session-topbar-session-chrome flex shrink-0 items-center"
@@ -1549,6 +1550,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									theme={theme}
 									headerActions={sessionHeaderActions}
 									sessionTabAction={sessionTabActions}
+									sessionTabActionWide={sessionTabActionWide}
 									tabStripAction={newShellTerminalAction}
 									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
@@ -1585,6 +1587,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									theme={theme}
 									topbarActions={sessionHeaderActions}
 									sessionTabAction={sessionTabActions}
+									sessionTabActionWide={sessionTabActionWide}
 									tabStripAction={newShellTerminalAction}
 									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
