@@ -1193,6 +1193,7 @@
 	"shell.projectSettings": "プロジェクト設定",
 	"shell.restart": "再起動",
 	"shell.remove": "削除",
+	"shell.removeCloudProjectBody": "プロジェクトを AO Cloud から削除し、そのセッションを実行しているサンドボックスを破棄します。セッション履歴は保持されます。",
 	"shell.removeProjectBody": "稼働中のセッションを停止し、サイドバーから削除しますが、リポジトリフォルダーと保存済み履歴はディスクに残ります。",
 	"shell.removeProjectLead": "{{name}} を AO から削除します",
 	"shell.removeProjectTitle": "プロジェクトを削除",

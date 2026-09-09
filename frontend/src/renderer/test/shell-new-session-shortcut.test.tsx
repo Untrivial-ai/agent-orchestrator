@@ -178,6 +178,13 @@ vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({ client: {}, ready: false, baseUrl: "" }),
 }));
 
+// The shell resolves the cloud org so it can delete a cloud project through the
+// control plane. This provider-free harness has no QueryClient for the org
+// query, and these tests only exercise local projects.
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({ org: undefined, isLoading: false, error: undefined, ready: false }),
+}));
+
 // The shell layout opens standalone terminals; this suite only covers the
 // shortcut subscriptions, so the mutation is stubbed rather than driven.
 vi.mock("../hooks/useShellTerminals", () => ({

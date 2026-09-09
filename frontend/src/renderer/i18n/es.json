@@ -1214,6 +1214,7 @@
 	"shell.projectSettings": "Ajustes del proyecto",
 	"shell.restart": "Reiniciar",
 	"shell.remove": "Eliminar",
+	"shell.removeCloudProjectBody": "Esto elimina el proyecto de AO Cloud y destruye los sandboxes que ejecutan sus sesiones. El historial de sesiones se conserva.",
 	"shell.removeProjectBody": "Esto detiene sus sesiones activas y lo quita de la barra lateral, pero conserva la carpeta del repositorio y el historial almacenado en disco.",
 	"shell.removeProjectLead": "Esto eliminará {{name}} de AO",
 	"shell.removeProjectTitle": "Eliminar proyecto",
