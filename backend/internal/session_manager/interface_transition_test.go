@@ -1847,6 +1847,91 @@ func TestInterfaceTransitionChatToTUIInterruptsThenStopsBeforeStarting(t *testin
 	}
 }
 
+// modelRecordingTransitionAgent records the restore config the TUI rebuild
+// hands the harness, so a Chat-to-TUI handoff test can assert which model the
+// rebuilt terminal resumes with.
+type modelRecordingTransitionAgent struct {
+	transitionAgent
+	mu             sync.Mutex
+	restoreConfigs []ports.RestoreConfig
+}
+
+func (a *modelRecordingTransitionAgent) GetRestoreCommand(_ context.Context, cfg ports.RestoreConfig) ([]string, bool, error) {
+	a.mu.Lock()
+	a.restoreConfigs = append(a.restoreConfigs, cfg)
+	a.mu.Unlock()
+	if cfg.Session.Metadata[ports.MetadataKeyAgentSessionID] == "" {
+		return nil, false, nil
+	}
+	return []string{"resume"}, true, nil
+}
+
+func (a *modelRecordingTransitionAgent) restores() []ports.RestoreConfig {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]ports.RestoreConfig(nil), a.restoreConfigs...)
+}
+
+// TestInterfaceTransitionChatToTUIRebuildUsesChatModel is the regression for
+// the ChatUI ↔ TUI model-persistence bug (#4893), including the handoff race
+// where the old terminal is still closing: the transition interrupts and stops
+// the Chat source before starting the TUI target, and the rebuilt TUI harness
+// restore command must carry the model the user picked in ChatUI — refreshed
+// from the session's durable metadata, not the project default — while still
+// resuming the SAME native conversation.
+func TestInterfaceTransitionChatToTUIRebuildUsesChatModel(t *testing.T) {
+	manager, store, runtime, _, log := newTransitionManager(t, domain.SessionModeChat)
+	// The project default would otherwise win: the ChatUI choice persisted on
+	// the session must take precedence in the rebuilt TUI restore command.
+	store.projects["proj"] = domain.ProjectRecord{
+		ID: "proj", Path: "/repo",
+		Config: domain.ProjectConfig{AgentConfig: domain.AgentConfig{Model: "project-default-model"}},
+	}
+	seedSessionModel := store.sessions["session-1"]
+	seedSessionModel.Metadata.Model = "5.6-luna"
+	store.sessions["session-1"] = seedSessionModel
+	agent := &modelRecordingTransitionAgent{}
+	manager.agents = singleAgent{agent: agent}
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("phase = %s, error = %s", settled.Phase, settled.ErrorDetail)
+	}
+
+	// The preflight and the rebuild both resume with the ChatUI model — every
+	// restore command the handoff builds (target preflight happens while the
+	// old terminal is still closing, then the rebuild itself) carries it.
+	restores := agent.restores()
+	if len(restores) != 2 {
+		t.Fatalf("harness restore calls = %d, want 2 (target preflight + rebuild)", len(restores))
+	}
+	for i, cfg := range restores {
+		if cfg.Config.Model != "5.6-luna" {
+			t.Fatalf("restore call %d model = %q, want the ChatUI choice 5.6-luna", i, cfg.Config.Model)
+		}
+	}
+
+	// History is preserved across the handoff: same native conversation, no new
+	// session, and the terminal was rebuilt exactly once.
+	rec := store.sessions["session-1"]
+	if rec.Mode != domain.SessionModeTUI {
+		t.Fatalf("mode = %s, want tui", rec.Mode)
+	}
+	if rec.Metadata.AgentSessionID != "native-1" {
+		t.Fatalf("agent session = %q, want native-1 (conversation must be preserved)", rec.Metadata.AgentSessionID)
+	}
+	if runtime.created != 1 {
+		t.Fatalf("terminal runtime created %d times, want 1", runtime.created)
+	}
+	if got := fmt.Sprint(*log); got != "[prepare:chat:interrupt stop:chat start:tui]" {
+		t.Fatalf("controller order = %s", got)
+	}
+}
+
 func TestInterfaceTransitionChatToTUIArmsInterruptBeforeReturning(t *testing.T) {
 	manager, store, _, chat, _ := newTransitionManager(t, domain.SessionModeChat)
 	transition, err := manager.StartInterfaceTransition(

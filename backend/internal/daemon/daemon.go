@@ -441,6 +441,18 @@ func Run() error {
 			}
 			agentSvc.ObserveActiveCodexAccountCapacity(observation)
 		},
+		// A model the user picked in ChatUI must land on the session before the
+		// next prompt routes, so a later TUI rebuild resumes with the same model
+		// instead of reverting to the project default.
+		OnModelChanged: func(sessionID domain.SessionID, model string) {
+			if sessMgr == nil {
+				return
+			}
+			if err := sessMgr.PersistChatModel(ctx, sessionID, model); err != nil {
+				log.Warn("persist ChatUI model on session failed; a TUI rebuild may resume with a different model",
+					"sessionID", sessionID, "model", model, "error", err)
+			}
+		},
 	})
 
 	codexModelDriver := codexappserver.New(codexagent.New(), log)

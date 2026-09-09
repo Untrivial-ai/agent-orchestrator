@@ -969,6 +969,9 @@ func (f *fakeSessionLifecycle) GetActiveCodexAccountSwitch(context.Context) (dom
 	return domain.CodexAccountSwitch{}, false, nil
 }
 func (f *fakeSessionLifecycle) SetCodexAccountSwitchObserver(func()) {}
+func (f *fakeSessionLifecycle) PersistChatModel(_ context.Context, _ domain.SessionID, _ string) error {
+	return nil
+}
 
 // TestWiring_SessionLifecycleInterfaceInvokedByDaemon asserts the
 // sessionLifecycle interface is satisfied by *sessionmanager.Manager (compile

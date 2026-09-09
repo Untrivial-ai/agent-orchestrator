@@ -2250,9 +2250,18 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		return RestoreResult{}, fmt.Errorf("%s %s: system prompt file: %w", operation, rec.ID, err)
 	}
 
-	// Restore resolves the project model while retaining this session's pinned
-	// permission policy independently of future project defaults.
+	// Restore re-applies the project's resolved agent config so a configured
+	// model/permissions carry across a restore, matching fresh spawn. This
+	// session's own durable choices then win over future project defaults: a
+	// pinned permission policy is retained (see #4956), and the model is
+	// refreshed from the session's persisted selection — ChatUI writes its
+	// chosen model to session metadata before routing a prompt, so a later
+	// TUI rebuild must keep that choice rather than silently reverting to the
+	// project default.
 	agentConfig := effectiveAgentConfig(rec.Kind, project.Config)
+	if model := strings.TrimSpace(rec.Metadata.Model); model != "" {
+		agentConfig.Model = model
+	}
 	if rec.Metadata.Permissions != "" {
 		agentConfig.Permissions = rec.Metadata.Permissions
 	}
@@ -2409,6 +2418,31 @@ func (m *Manager) getRecord(ctx context.Context, id domain.SessionID) (domain.Se
 		return domain.SessionRecord{}, fmt.Errorf("get %s: %w", id, ErrNotFound)
 	}
 	return rec, nil
+}
+
+// PersistChatModel records the model the user picked in ChatUI onto the
+// session before the next prompt routes. The durable, API-visible session
+// metadata is the exact source a TUI rebuild reads to refresh the model, so a
+// later interface transition back to TUI keeps the same selection instead of
+// reverting to the project's configured default. Model-only writes never touch
+// the conversation or spawn a new provider session, so history is preserved.
+func (m *Manager) PersistChatModel(ctx context.Context, id domain.SessionID, model string) error {
+	want := strings.TrimSpace(model)
+	if want == "" {
+		return nil
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return fmt.Errorf("persist chat model %s: %w", id, err)
+	}
+	if !ok {
+		return fmt.Errorf("persist chat model %s: %w", id, ErrNotFound)
+	}
+	if strings.TrimSpace(rec.Metadata.Model) == want {
+		return nil
+	}
+	rec.Metadata.Model = want
+	return m.store.UpdateSession(ctx, rec)
 }
 
 // SaveAndTeardownAll captures uncommitted work and tears down every live

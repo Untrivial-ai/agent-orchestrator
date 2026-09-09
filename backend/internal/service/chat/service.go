@@ -44,6 +44,10 @@ type Service struct {
 	now                    Clock
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// onModelChanged records a model the user picked in ChatUI onto the
+	// session's durable metadata before the next prompt routes, so a later TUI
+	// rebuild can resume with the same model.
+	onModelChanged func(domain.SessionID, string)
 
 	mu           sync.RWMutex
 	controllers  map[domain.SessionID]*Controller
@@ -90,6 +94,11 @@ type Options struct {
 	// globally active AO Codex account. The callback owns profile-independent
 	// account state; conversation rows are not the authority for Codex capacity.
 	OnCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// OnModelChanged persists a model the user picked in ChatUI onto the
+	// session's durable metadata before the next prompt routes. Nil leaves the
+	// session model unchanged (production always wires it so the choice survives
+	// a later TUI rebuild).
+	OnModelChanged func(domain.SessionID, string)
 }
 
 // New builds a Chat service.
@@ -114,6 +123,7 @@ func New(opts Options) *Service {
 		now:                    now,
 		onAccountChanged:       opts.OnAccountChanged,
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
+		onModelChanged:         opts.OnModelChanged,
 		controllers:            make(map[domain.SessionID]*Controller),
 		startConfigs:           make(map[domain.SessionID]StartConfig),
 		gates:                  make(map[domain.SessionID]controllerGate),
@@ -1318,15 +1328,20 @@ func (s *Service) SetConfigOption(
 	}
 	controller.configMu.Lock()
 	defer controller.configMu.Unlock()
+	previous := controller.Settings()
 	options, err := configurer.SetConfigOption(ctx, configID, value)
 	if err != nil {
 		return nil, err
 	}
 	options = permissionConfigOptions(record.Harness, options)
-	if settings, changed := settingsFromConfigOptions(controller.Settings(), options); changed {
+	if settings, changed := settingsFromConfigOptions(previous, options); changed {
 		if err := controller.SetSettings(ctx, settings); err != nil {
 			return nil, err
 		}
+		// The config-options route is how provider-owned pickers (e.g. Claude
+		// Code's model menu) change the model; it must persist the pick the same
+		// way the turn-settings route does.
+		s.persistPickedModel(id, previous, settings)
 	}
 	return options, nil
 }
@@ -1441,10 +1456,27 @@ func (s *Service) SetTurnSettings(
 	if err != nil {
 		return domain.ConversationSettings{}, err
 	}
+	previous := controller.Settings()
 	if err := controller.SetSettings(ctx, settings); err != nil {
 		return domain.ConversationSettings{}, err
 	}
+	s.persistPickedModel(id, previous, settings)
 	return controller.Settings(), nil
+}
+
+// persistPickedModel records a model the user picked in ChatUI onto the
+// session's durable metadata BEFORE the next prompt routes. The conversation
+// row is the chat-side source of truth; the session metadata is what a later
+// TUI rebuild reads to keep the same model, so a model change must land there
+// too before the user can switch interfaces. Every route that can change the
+// model funnels through here: the turn-settings PATCH and the provider
+// config-options route (e.g. Claude Code's model picker).
+func (s *Service) persistPickedModel(id domain.SessionID, previous, next domain.ConversationSettings) {
+	model := strings.TrimSpace(next.Model)
+	if model == "" || model == strings.TrimSpace(previous.Model) || s.onModelChanged == nil {
+		return
+	}
+	s.onModelChanged(id, model)
 }
 
 // RelayChatTurn delivers a message AO is carrying for someone else.

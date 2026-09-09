@@ -3374,6 +3374,93 @@ func TestRestore_AppliesProjectAgentConfig(t *testing.T) {
 	}
 }
 
+// TestRestore_RefreshesModelFromSessionMetadata is the regression for the
+// ChatUI ↔ TUI model-persistence bug (#4893). When TUI is rebuilt (from an
+// interface transition or a daemon restore), the harness restore command must
+// carry the model the user last selected in ChatUI — refreshed from the
+// session's durable metadata — rather than silently reverting to the project
+// configured default. It must also still resume the SAME conversation, never
+// minting a new session.
+func TestRestore_RefreshesModelFromSessionMetadata(t *testing.T) {
+	st := newFakeStore()
+	// The project default would otherwise win; the session's own persisted model
+	// (the ChatUI choice) must take precedence for the rebuild.
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{AgentConfig: domain.AgentConfig{Model: "project-default-model"}}}
+	seedTerminal(st, "mer-1", domain.SessionMetadata{
+		WorkspacePath:  "/ws/mer-1",
+		Branch:         "b",
+		AgentSessionID: "agent-x",
+		Model:          "5.6-luna",
+	})
+	agent := &recordingAgent{}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	m := New(Deps{Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
+
+	res, err := m.RestoreWithMode(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("RestoreWithMode: %v", err)
+	}
+	// The ChatUI model, not the project default, reaches the harness restore cmd.
+	if agent.lastConfig.Model != "5.6-luna" {
+		t.Fatalf("restore config model = %q, want the session's ChatUI choice 5.6-luna", agent.lastConfig.Model)
+	}
+	// History is preserved: the restore resumed the existing native conversation
+	// (agent-x) rather than spawning a new session.
+	if !reflect.DeepEqual(agent.lastRestore.Session.Metadata[ports.MetadataKeyAgentSessionID], "agent-x") {
+		t.Fatalf("resume identity = %q, want agent-x (conversation must be preserved)", agent.lastRestore.Session.Metadata[ports.MetadataKeyAgentSessionID])
+	}
+	if res.Mode != RestoreModeNative {
+		t.Fatalf("restore mode = %q, want native (no new session)", res.Mode)
+	}
+}
+
+// TestPersistChatModel is the regression for the ChatUI-side half of #4893. The
+// manager must record a model the user picked in ChatUI onto the session's
+// durable metadata before the next prompt routes, and a model-only write must
+// never disturb the conversation identity or terminating state.
+func TestPersistChatModel(t *testing.T) {
+	m, st, _, _ := newManager()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath:   "/ws/mer-1",
+			RuntimeHandleID: "h1",
+			AgentSessionID:  "claude-native-1",
+			Branch:          "ao/mer-1",
+		},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+
+	if err := m.PersistChatModel(ctx, "mer-1", "5.6-luna"); err != nil {
+		t.Fatalf("PersistChatModel: %v", err)
+	}
+	rec := st.sessions["mer-1"]
+	if rec.Metadata.Model != "5.6-luna" {
+		t.Fatalf("persisted model = %q, want 5.6-luna", rec.Metadata.Model)
+	}
+	// The conversation/history and terminating state are untouched.
+	if rec.Metadata.AgentSessionID != "claude-native-1" {
+		t.Fatalf("resume identity changed to %q, want claude-native-1 preserved", rec.Metadata.AgentSessionID)
+	}
+	if rec.Metadata.RuntimeHandleID != "h1" {
+		t.Fatalf("runtime handle changed to %q, want h1 preserved", rec.Metadata.RuntimeHandleID)
+	}
+	if rec.Activity.State != domain.ActivityActive || rec.IsTerminated {
+		t.Fatalf("session state changed, want active and non-terminated: %+v", rec)
+	}
+
+	// Persisting an empty model is a no-op: it never clears a durable choice.
+	if err := m.PersistChatModel(ctx, "mer-1", ""); err != nil {
+		t.Fatalf("PersistChatModel(empty): %v", err)
+	}
+	if st.sessions["mer-1"].Metadata.Model != "5.6-luna" {
+		t.Fatalf("empty persist blanked model to %q, want it preserved", st.sessions["mer-1"].Metadata.Model)
+	}
+}
+
 func TestRestore_ForwardsManagerDataDir(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}

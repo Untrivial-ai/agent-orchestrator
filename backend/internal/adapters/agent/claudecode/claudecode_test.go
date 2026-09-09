@@ -690,6 +690,27 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	}
 }
 
+func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
+	// ChatUI can change the model on the session; rebuilding the TUI must pass
+	// that model into the harness restore command so the resumed Claude session
+	// does not silently flip back to a different model (#4893).
+	cmd, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Permissions: ports.PermissionModeBypassPermissions,
+		Config:      ports.AgentConfig{Model: "claude-opus-4-5"},
+		Session: ports.SessionRef{
+			ID:       "sess-r",
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "claude-native-1"},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
+	}
+	want := []string{"claude", "--permission-mode", "bypassPermissions", "--model", "claude-opus-4-5", "--resume", "claude-native-1"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
+	}
+}
+
 func TestGetRestoreCommandReappendsSystemPrompt(t *testing.T) {
 	// --resume rebuilds the system prompt from flags, so standing instructions
 	// (e.g. the orchestrator role) must be re-appended on restore.
