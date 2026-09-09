@@ -231,20 +231,31 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 	if got := effectiveAgentConfig(domain.HarnessAider, domain.KindWorker, cfg); got.Model != "base" || got.Mode != "low" || got.Permissions != domain.PermissionModeAuto {
 		t.Fatalf("mismatched-harness worker config = %#v, want model=base mode=low permissions=auto", got)
 	}
-	// A role override with no harness pinned is deliberately treated as
-	// "applies to any harness", so its model/mode are inherited whichever
-	// harness the session launches with. This is a behavior decision, not a
-	// side effect: assert it across two unrelated harnesses so it cannot
-	// silently flip back to the old drop-on-every-switch behavior.
+	// A role override that pins no harness cannot claim one, so its model/mode
+	// are dropped rather than applied to whatever agent happens to launch: the
+	// values were authored against some specific harness and nothing records
+	// which. Permissions is harness-neutral and survives. Assert it across two
+	// unrelated harnesses so the leak cannot silently come back.
 	unpinned := domain.ProjectConfig{
 		AgentConfig: domain.AgentConfig{Model: "base", Mode: "low"},
-		Worker:      domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "worker", Mode: "high"}},
+		Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{
+			Model: "custom/gpt-5.5", Mode: "high", Permissions: domain.PermissionModeAuto,
+		}},
 	}
 	for _, harness := range []domain.AgentHarness{domain.HarnessAider, domain.HarnessCodex} {
 		got := effectiveAgentConfig(harness, domain.KindWorker, unpinned)
-		if got.Model != "worker" || got.Mode != "high" {
-			t.Fatalf("unpinned worker config for %q = %#v, want model=worker mode=high", harness, got)
+		if got.Model != "base" || got.Mode != "low" {
+			t.Fatalf("unpinned worker config for %q = %#v, want model=base mode=low", harness, got)
 		}
+		if got.Permissions != domain.PermissionModeAuto {
+			t.Fatalf("unpinned worker permissions for %q = %q, want auto", harness, got.Permissions)
+		}
+	}
+
+	// effectiveHarness reads only the pinned harness, so an unpinned override
+	// still resolves to "no harness" and leaves the caller's choice intact.
+	if h := effectiveHarness("", domain.KindWorker, unpinned); h != "" {
+		t.Fatalf("unpinned worker harness = %q, want empty", h)
 	}
 }
 

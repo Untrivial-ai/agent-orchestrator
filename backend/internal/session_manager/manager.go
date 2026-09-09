@@ -1526,11 +1526,30 @@ func validateSpawnModel(harness domain.AgentHarness, model string) error {
 	return fmt.Errorf("model %q is not supported by harness %q", model, harness)
 }
 
+// roleOverride returns the role-specific override for kind, with an unpinned
+// override's Model/Mode dropped.
+//
+// A role Model/Mode is authored against a specific harness — a provider alias
+// like "custom/gpt-5.5" is meaningful only to the agent it was configured for.
+// An override that pins no Harness cannot claim one, and effectiveAgentConfig
+// treats an empty role harness as matching any launch harness, so leaving the
+// values in place would apply them to whatever agent happens to launch.
+//
+// The settings form already enforces this: the role agent is required, and
+// changing it clears the role's model and mode. ProjectConfig.Validate does
+// not, so a config written through the API, edited by hand, or saved before
+// the agent became required can still carry this shape. Normalizing on read
+// repairs those without failing to load them.
 func roleOverride(kind domain.SessionKind, cfg domain.ProjectConfig) domain.RoleOverride {
+	role := cfg.Worker
 	if kind == domain.KindOrchestrator {
-		return cfg.Orchestrator
+		role = cfg.Orchestrator
 	}
-	return cfg.Worker
+	if role.Harness == "" {
+		role.AgentConfig.Model = ""
+		role.AgentConfig.Mode = ""
+	}
+	return role
 }
 
 // sessionPrefix returns the display prefix for a project: the explicit
