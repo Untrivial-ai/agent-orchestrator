@@ -47,17 +47,20 @@ describe("SessionInterfaceSwitchButton", () => {
 		expect(group).not.toHaveClass("gap-px");
 	});
 
-	it("keeps a draining switch in the top bar as an icon-only loader with Cancel", () => {
+	it("shows a spinner while switching and reveals cancel on the tab hover target", () => {
 		const onCancel = vi.fn();
 		render(
 			<TooltipProvider>
-				<SessionInterfaceSwitchButton
-					target="chat"
-					supported
-					transition={transition("draining")}
-					onClick={vi.fn()}
-					onCancel={onCancel}
-				/>
+				{/* TerminalTabFrame marks the session tab with Tailwind `group`. */}
+				<div className="group">
+					<SessionInterfaceSwitchButton
+						target="chat"
+						supported
+						transition={transition("draining")}
+						onClick={vi.fn()}
+						onCancel={onCancel}
+					/>
+				</div>
 			</TooltipProvider>,
 		);
 
@@ -66,10 +69,9 @@ describe("SessionInterfaceSwitchButton", () => {
 			"aria-label",
 			"Waiting to switch… Switching to Chat UI.",
 		);
-		expect(status).not.toHaveTextContent("Waiting to switch…");
-		expect(status).not.toHaveTextContent("Chat UI");
 		expect(status.querySelector(".animate-spin")).not.toBeNull();
 		const cancel = screen.getByRole("button", { name: "Cancel switch to Chat UI" });
+		expect(cancel).toHaveClass("opacity-0", "group-hover:opacity-100");
 		fireEvent.click(cancel);
 		expect(onCancel).toHaveBeenCalledOnce();
 	});
@@ -92,7 +94,7 @@ describe("SessionInterfaceSwitchButton", () => {
 			"aria-label",
 			"Stopping controller… Switching to Chat UI.",
 		);
-		expect(status).not.toHaveTextContent("Stopping controller…");
+		expect(status.querySelector(".animate-spin")).not.toBeNull();
 		expect(screen.queryByRole("button", { name: "Cancel switch to Chat UI" })).not.toBeInTheDocument();
 	});
 

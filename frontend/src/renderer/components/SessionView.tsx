@@ -1146,7 +1146,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			{handoffMenuItem}
 		</SessionActionsMenu>
 	);
-	const sessionTabActionWide = Boolean(interfaceSwitchInlineStatus);
+	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
+	// wider action slot while switching.
+	const sessionTabActionWide = false;
 	const sessionHeaderActions = (
 		<div
 			className="session-topbar-session-chrome flex shrink-0 items-center"

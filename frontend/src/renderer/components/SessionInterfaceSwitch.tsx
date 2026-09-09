@@ -78,48 +78,47 @@ export function SessionInterfaceSwitchButton({
 }) {
 	if (transition && interfaceTransitionIsActive(transition)) {
 		const cancellable = interfaceTransitionIsCancellable(transition) && Boolean(onCancel);
-		const statusLabel = cancelError
-			? cancelError
-			: `${phaseCopy[transition.phase]} Switching to ${targetTitleLabel(transition.targetMode)}.`;
+		const statusLabel =
+			cancelError ||
+			`${phaseCopy[transition.phase]} Switching to ${targetTitleLabel(transition.targetMode)}.`;
+		const cancelLabel = `Cancel switch to ${targetTitleLabel(transition.targetMode)}`;
 		return (
 			<div
 				role="status"
 				aria-live="polite"
 				aria-label={statusLabel}
-				className={cn("inline-flex h-7 shrink-0 items-center gap-0.5", className)}
+				className={cn("relative inline-flex size-7 shrink-0 items-center justify-center text-muted-foreground", className)}
+				title={statusLabel}
 			>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<span className="inline-flex size-7 items-center justify-center text-muted-foreground">
-							<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
-						</span>
-					</TooltipTrigger>
-					<TooltipContent side="bottom">{statusLabel}</TooltipContent>
-				</Tooltip>
+				{/* TerminalTabFrame is a Tailwind `group`; tab hover swaps spinner → cancel. */}
+				<Loader2
+					aria-hidden="true"
+					className={cn(
+						"size-3.5 animate-spin",
+						cancellable && "pointer-events-none group-hover:opacity-0",
+					)}
+				/>
 				{cancellable ? (
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<span className="inline-flex">
-								<TopbarButton
-									type="button"
-									variant="icon"
-									disabled={cancelling}
-									onClick={onCancel}
-									aria-label={`Cancel switch to ${targetTitleLabel(transition.targetMode)}`}
-									className="text-muted-foreground hover:text-foreground"
-								>
-									{cancelling ? (
-										<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
-									) : (
-										<X aria-hidden="true" className="size-3.5" />
-									)}
-								</TopbarButton>
-							</span>
-						</TooltipTrigger>
-						<TooltipContent side="bottom">
-							{cancelling ? "Cancelling…" : `Cancel switch to ${targetTitleLabel(transition.targetMode)}`}
-						</TooltipContent>
-					</Tooltip>
+					<button
+						type="button"
+						aria-label={cancelLabel}
+						title={cancelling ? "Cancelling…" : cancelLabel}
+						disabled={cancelling}
+						onClick={(event) => {
+							event.stopPropagation();
+							onCancel?.();
+						}}
+						className={cn(
+							"absolute inset-0 inline-flex items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50 group-hover:opacity-100",
+							cancelling && "opacity-100",
+						)}
+					>
+						{cancelling ? (
+							<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+						) : (
+							<X aria-hidden="true" className="size-3.5" />
+						)}
+					</button>
 				) : null}
 			</div>
 		);
