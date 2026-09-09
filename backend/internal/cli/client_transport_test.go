@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -125,8 +126,8 @@ func TestTransportDistinguishesEmptyResponses(t *testing.T) {
 		c := transportContext(t, cfg, srv)
 		var out spawnResult
 		err := c.postJSON(ctx, "sessions", struct{}{}, &out)
-		apiErr, ok := err.(apiResponseError)
-		if !ok {
+		var apiErr apiResponseError
+		if !errors.As(err, &apiErr) {
 			t.Fatalf("error type = %T, want apiResponseError", err)
 		}
 		if apiErr.ErrorBody.Code != "NOT_FOUND" || apiErr.ErrorBody.RequestID != "req-1" {
