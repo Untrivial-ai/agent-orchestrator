@@ -711,7 +711,7 @@ describe("Sidebar", () => {
 		expect(row).toContainElement(screen.getByLabelText("Pin session"));
 	});
 
-	it("keeps action pointer presses from triggering the session press surface", () => {
+	it("does not apply a tap scale effect to session rows", () => {
 		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
 
 		const openSession = screen.getByLabelText("Open fix login");
@@ -719,11 +719,6 @@ describe("Sidebar", () => {
 		if (!row) throw new Error("Session row not found");
 
 		fireEvent.pointerDown(openSession);
-		expect(row).toHaveClass("scale-[0.97]");
-		fireEvent.pointerUp(openSession);
-		expect(row).not.toHaveClass("scale-[0.97]");
-
-		fireEvent.pointerDown(screen.getByLabelText("Pin session"));
 		expect(row).not.toHaveClass("scale-[0.97]");
 	});
 
@@ -1727,23 +1722,16 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Project actions for Project One")).not.toHaveClass("opacity-0");
 	});
 
-	it("scales project actions with the row without scaling for action-button presses", () => {
+	it("does not apply a tap scale effect to project rows", () => {
 		renderSidebar();
 
 		const projectRow = screen.getByText("Project One").closest('button, [role="button"]');
-		const pressSurface = projectRow?.closest<HTMLElement>("[data-project-press]");
-		const projectActions = screen.getByLabelText("Project actions for Project One");
+		const dragRow = projectRow?.closest<HTMLElement>("[data-project-drag-row]");
 
-		if (!projectRow || !pressSurface) throw new Error("Project press surface not found");
-		expect(pressSurface).toContainElement(projectActions);
+		if (!projectRow || !dragRow) throw new Error("Project drag row not found");
 
 		fireEvent.pointerDown(projectRow);
-		expect(pressSurface).toHaveClass("scale-[0.98]");
-		fireEvent.pointerUp(projectRow);
-		expect(pressSurface).not.toHaveClass("scale-[0.98]");
-
-		fireEvent.pointerDown(projectActions);
-		expect(pressSurface).not.toHaveClass("scale-[0.98]");
+		expect(dragRow.firstElementChild).not.toHaveClass("scale-[0.98]");
 	});
 
 	it("optically aligns the project folder and label with its action icons", () => {

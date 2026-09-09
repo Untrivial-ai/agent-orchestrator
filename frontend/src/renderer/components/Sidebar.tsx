@@ -1074,7 +1074,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const [isRemoving, setIsRemoving] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const [isSpawning, setIsSpawning] = useState(false);
-	const [projectPressed, setProjectPressed] = useState(false);
 	// Skip enter animation on first mount — sessions arrive async and we don't
 	// want them to slide in on every sidebar load. Only animate on subsequent
 	// expand/collapse toggles.
@@ -1100,7 +1099,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		[sessionOrder, visibleSessions],
 	);
 	const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
-	const sessionLayoutDependency = useMemo(() => sessionIds.join("\u0000"), [sessionIds]);
 	// Project and session reordering use nested DnD contexts. While a project is
 	// being dragged, leave the session lists as plain rows: otherwise every
 	// expanded project's DnD context measures its sortable descendants on drop.
@@ -1108,7 +1106,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const projectDragInProgress = Boolean(draggingProjectId) || projectDropSettling;
 	const sessionSensors = useReorderSensors();
 	const sessionDragClickGuard = usePostDragClickGuard();
-	const [sessionDragging, setSessionDragging] = useState(false);
 	const [dropTransitionDisabledId, setDropTransitionDisabledId] = useState<string | null>(null);
 
 	const commitSessionOrder = useCallback((next: string[] | null) => {
@@ -1121,7 +1118,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		const sessionId = String(active.id);
 		sessionDragClickGuard.markDragEnded(sessionId);
 		if (!over) {
-			setSessionDragging(false);
 			setDropTransitionDisabledId(null);
 			if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 			return;
@@ -1131,17 +1127,15 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		const next = reorderById(sessionIds, sessionId, String(over.id));
 		// Commit the destination DOM order before dnd-kit removes its live transform.
 		// Otherwise the row briefly snaps back to its derived (usually top) position,
-		// then Motion animates it forward to the persisted destination.
+		// then dnd-kit animates it forward to the persisted destination.
 		flushSync(() => {
 			commitSessionOrder(next);
-			setSessionDragging(false);
 			setDropTransitionDisabledId(sessionId);
 		});
 		requestAnimationFrame(() => setDropTransitionDisabledId(null));
 		if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 	}, [commitSessionOrder, sessionDragClickGuard, sessionIds]);
 	const onSessionDragCancel = useCallback(() => {
-		setSessionDragging(false);
 		setDropTransitionDisabledId(null);
 		if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 	}, []);
@@ -1250,7 +1244,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<motion.li
+				<li
 					className={cn(
 						"group/menu-item relative group-data-[collapsible=icon]:mb-0",
 						projectIsDragging && "opacity-0",
@@ -1261,9 +1255,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					data-drop-indicator={undefined}
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
-						layout={projectDragInProgress ? false : "position"}
 					ref={setDroppableNodeRef}
-					transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
 				>
 					<div
 						aria-hidden="true"
@@ -1275,26 +1267,13 @@ const ProjectItemContent = memo(function ProjectItemContent({
 						className="pointer-events-none absolute inset-x-0 bottom-0 z-[70] h-px bg-foreground opacity-0 group-data-[drop-indicator=after]/menu-item:opacity-100"
 						data-project-drop-indicator="after"
 					/>
-					{/* The whole visual row scales when its navigation surface is pressed.
-		    Action-button presses stop before reaching this boundary. */}
 					<div
 						className="relative"
 						data-project-drag-row=""
 						data-project-id={workspace.id}
 						ref={setDraggableNodeRef}
 					>
-						<div
-							className={cn(
-								"relative transition-[transform] duration-[100ms] ease-out",
-								projectPressed && !projectIsDragging && "scale-[0.98]",
-								projectIsDragging && "cursor-grabbing transition-none",
-							)}
-							data-project-press=""
-							onPointerCancel={() => setProjectPressed(false)}
-							onPointerDown={() => setProjectPressed(true)}
-							onPointerLeave={() => setProjectPressed(false)}
-							onPointerUp={() => setProjectPressed(false)}
-						>
+						<div className={cn("relative", projectIsDragging && "cursor-grabbing")}>
 							<div>
 								{/* project-sidebar__proj-row */}
 								<SidebarMenuButton
@@ -1514,7 +1493,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 															key={session.id}
 															session={session}
 															active={selection.activeSessionId === session.id}
-															disableLayout
 															onOpen={() => openSession(session.id)}
 														/>
 													))}
@@ -1524,7 +1502,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 													collisionDetection={closestCenter}
 													modifiers={[restrictToListBounds]}
 													id={sessionDndId(workspace.id)}
-													onDragStart={() => setSessionDragging(true)}
 													onDragCancel={onSessionDragCancel}
 													onDragEnd={onSessionDragEnd}
 													sensors={sessionSensors}
@@ -1540,8 +1517,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																	session={session}
 																	active={selection.activeSessionId === session.id}
 																	consumeDragClick={sessionDragClickGuard.consumeClick}
-																	layoutDependency={sessionLayoutDependency}
-																	listIsDragging={sessionDragging}
 																	dropTransitionDisabled={dropTransitionDisabledId === session.id}
 																	onOpen={openSession}
 																/>
@@ -1568,7 +1543,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 						destructive
 						onConfirm={handleConfirmRemove}
 					/>
-				</motion.li>
+				</li>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
 				<ContextMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
@@ -1663,16 +1638,12 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	session,
 	active,
 	consumeDragClick,
-	layoutDependency,
-	listIsDragging,
 	dropTransitionDisabled,
 	onOpen,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
 	consumeDragClick: (id: string) => boolean;
-	layoutDependency: string;
-	listIsDragging: boolean;
 	dropTransitionDisabled: boolean;
 	onOpen: (sessionId: string) => void;
 }) {
@@ -1686,8 +1657,6 @@ const SortableSessionRow = memo(function SortableSessionRow({
 			onOpen={() => {
 				if (!consumeDragClick(session.id)) onOpen(session.id);
 			}}
-			layoutDependency={layoutDependency}
-			listIsDragging={listIsDragging}
 			reorder={{
 				isDragging,
 				listeners,
@@ -1712,25 +1681,17 @@ function SessionRow({
 	session,
 	active,
 	indented = true,
-	layoutDependency,
-	listIsDragging = false,
-	disableLayout = false,
 	onOpen,
 	reorder,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
 	indented?: boolean;
-	layoutDependency?: string;
-	listIsDragging?: boolean;
-	/** Project drags pause nested session projection work. */
-	disableLayout?: boolean;
 	onOpen: () => void;
 	/** Present only for rows inside a reorderable project list. */
 	reorder?: SessionReorder;
 }) {
 	const { t } = useTranslation();
-	const prefersReducedMotion = useReducedMotion();
 	useGrabbingCursor(Boolean(reorder?.isDragging));
 	const switchPresentation = deriveSessionAgentSwitchPresentation(session);
 	const switchLabel = switchPresentation
@@ -1744,7 +1705,6 @@ function SessionRow({
 		[queryClient],
 	);
 	const rename = useSessionRename(session, refreshWorkspaces);
-	const [sessionPressed, setSessionPressed] = useState(false);
 	const lastTouchAtRef = useRef(0);
 	const suppressTouchOpenRef = useRef(false);
 	const beginRename = useCallback(() => {
@@ -1800,26 +1760,14 @@ function SessionRow({
 					ref={reorder?.setNodeRef}
 					style={reorder ? sortableRowStyle(reorder) : undefined}
 				>
-			<motion.div
-				layout={disableLayout || listIsDragging ? false : "position"}
-				layoutDependency={disableLayout ? undefined : layoutDependency}
-				transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
-			>
 				<div
 					className={cn(
-						"group/session-row flex h-8 w-full items-center rounded-lg transition-[transform] duration-[100ms] ease-out",
+						"group/session-row flex h-8 w-full items-center rounded-lg",
 						"hover:bg-interactive-hover hover:text-foreground",
 						active && "bg-interactive-active text-foreground",
-						sessionPressed && !reorder?.isDragging && "scale-[0.97]",
-						reorder?.isDragging && "transition-none",
 					)}
-					data-session-press=""
 					data-session-row=""
 					data-dragging={reorder?.isDragging ? "true" : undefined}
-					onPointerCancel={() => setSessionPressed(false)}
-					onPointerDown={() => setSessionPressed(true)}
-					onPointerLeave={() => setSessionPressed(false)}
-					onPointerUp={() => setSessionPressed(false)}
 				>
 					<div className={cn("flex min-w-0 flex-1", reorder?.isDragging && "cursor-grabbing")}>
 						<button
@@ -1892,7 +1840,6 @@ function SessionRow({
 						session={session}
 					/>
 				</div>
-			</motion.div>
 				</SidebarMenuSubItem>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
