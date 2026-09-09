@@ -142,8 +142,14 @@ func (w *Workspace) ResolveDefaultBranch(ctx context.Context, repoPath, configur
 	}
 	branch := strings.TrimSpace(configuredBranch)
 	if branch == "" {
+		// Local-only by contract (ports.WorkspaceDefaultBranchRefresher): the
+		// spawn path calls this once per workspace repo before the budgeted
+		// FetchDefaultBranch pass, so a live remote probe here would multiply
+		// spawn latency by the number of child repos. Repos with no
+		// cached HEAD fall back to the budgeted live lookup in
+		// CreateWorkspaceProject.
 		resolver := gitdefault.New(w.binary, gitdefault.Runner(w.run))
-		resolution, err := resolver.Resolve(ctx, ctx, repo)
+		resolution, err := resolver.ResolveLocal(ctx, repo)
 		if err != nil {
 			return ports.WorkspaceDefaultBranch{}, fmt.Errorf("gitworktree: resolve repository default for %q: %w", repo, err)
 		}
