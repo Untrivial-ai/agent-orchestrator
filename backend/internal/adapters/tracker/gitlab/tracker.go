@@ -202,7 +202,7 @@ type gqlResponse struct {
 }
 
 type gqlError struct {
-	Message string `json:"message"`
+	Message    string `json:"message"`
 	Extensions struct {
 		Code string `json:"code"`
 	} `json:"extensions"`
@@ -418,7 +418,7 @@ func (t *Tracker) List(ctx context.Context, repo domain.TrackerRepo, filter doma
 
 	vars := map[string]any{
 		"fullPath": projectPath,
-		"first":   listPageSize,
+		"first":    listPageSize,
 	}
 	if stateFilter != "all" {
 		vars["state"] = stateFilter
