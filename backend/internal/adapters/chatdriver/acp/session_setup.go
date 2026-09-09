@@ -38,9 +38,12 @@ func normalizeMCPServers(configs []ports.ChatMCPServerConfig, caps acpsdk.McpCap
 	if len(configs) == 0 {
 		return []acpsdk.McpServer{}, nil
 	}
-	if !caps.Acp && !caps.Http && !caps.Sse {
-		return nil, fmt.Errorf("ACP agent does not support per-session MCP servers")
-	}
+	// Each transport gates itself below. There is deliberately no blanket
+	// capability check here: stdio is the baseline every agent is required to
+	// implement ("All Agents MUST support this transport" on McpServer.Stdio),
+	// so gating it behind the optional acp/http/sse capabilities refused the
+	// mandatory transport and failed session start for any agent that
+	// advertises only what it must.
 	servers := make([]acpsdk.McpServer, 0, len(configs))
 	for _, config := range configs {
 		name := strings.TrimSpace(config.Name)
