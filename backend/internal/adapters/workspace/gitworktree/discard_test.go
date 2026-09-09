@@ -465,10 +465,9 @@ func TestDestroySerializesGitCommandsPerRepository(t *testing.T) {
 	projects := []domain.ProjectID{"projA", "projA", "projB"}
 	done := make(chan error, len(paths))
 	for i, p := range paths {
-		i, p := i, p
-		go func() {
+		go func(i int, p string) {
 			done <- ws.Destroy(ctx, ports.WorkspaceInfo{Path: p, ProjectID: projects[i], SessionID: "sess", Branch: "feature/one"})
-		}()
+		}(i, p)
 	}
 	for range paths {
 		if err := <-done; err != nil {
