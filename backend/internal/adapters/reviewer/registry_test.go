@@ -21,7 +21,6 @@ func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 		domain.ReviewerAuggie: true,
 		domain.ReviewerDroid:  true,
 		domain.ReviewerQwen:   true,
-		domain.ReviewerVibe:   true,
 	}
 	for _, a := range Constructors() {
 		h := a.Harness()
@@ -41,7 +40,7 @@ func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 			t.Errorf("reviewer harness %q cancel spec: %v", h, err)
 		} else {
 			switch h {
-			case domain.ReviewerCodex, domain.ReviewerKiro, domain.ReviewerPi, domain.ReviewerQwen, domain.ReviewerVibe, domain.ReviewerMuse:
+			case domain.ReviewerCodex, domain.ReviewerKiro, domain.ReviewerPi, domain.ReviewerQwen, domain.ReviewerMuse:
 				if spec.Mode != ports.ReviewCancelInput {
 					t.Errorf("reviewer harness %q cancel mode = %q, want %q", h, spec.Mode, ports.ReviewCancelInput)
 				}
@@ -98,7 +97,7 @@ func TestNewResolverResolvesShippedReviewers(t *testing.T) {
 	if _, ok := resolver.Reviewer("nope"); ok {
 		t.Error("resolver returned an adapter for an unknown harness")
 	}
-	for _, removed := range []domain.ReviewerHarness{"continue", "goose"} {
+	for _, removed := range []domain.ReviewerHarness{"continue", "goose", "vibe"} {
 		if _, ok := resolver.Reviewer(removed); ok {
 			t.Errorf("resolver returned removed reviewer %q", removed)
 		}

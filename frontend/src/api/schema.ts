@@ -2485,7 +2485,7 @@ export interface components {
         };
         SetSessionReviewerRequest: {
             /** @enum {string} */
-            harness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "kiro" | "pi" | "qwen" | "agy" | "vibe" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
+            harness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "kiro" | "pi" | "qwen" | "agy" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
         };
         SettingsResponse: {
             chatHarnesses: string[];
@@ -2610,7 +2610,7 @@ export interface components {
         };
         TriggerReviewRequest: {
             /** @enum {string} */
-            harness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "kiro" | "pi" | "qwen" | "agy" | "vibe" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
+            harness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "kiro" | "pi" | "qwen" | "agy" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
         };
         TriggerReviewResponse: {
             /** @description True when a new review pass was started; false when an existing run for the same commit was reused. */
