@@ -109,6 +109,49 @@ export function parseRunFile(contents: string): RunFileInfo | null {
 }
 
 /**
+ * Subdirectory of ~/.ao holding dev-profile state, so a `npm run dev` daemon
+ * never collides with a concurrently running installed-app one. main.ts derives
+ * the dev data and state dirs from this same constant, and the subdir also
+ * isolates supervise.sock on Unix (the backend derives it as
+ * dir(RunFilePath)/supervise.sock) and the named pipe on Windows
+ * (supervisorPipeFromRunFile derives it from the same dir basename).
+ */
+export const DEV_STATE_SUBDIR = "dev";
+
+/**
+ * Run file the Electron dev daemon writes. Kept here so the Vite dev-server
+ * config and main.ts agree on one path instead of each spelling out
+ * `~/.ao/dev/running.json`.
+ */
+export function devRunFilePath(homeDir: string, joinPath: (...parts: string[]) => string): string {
+	return joinPath(homeDir, ".ao", DEV_STATE_SUBDIR, "running.json");
+}
+
+/**
+ * Whether a pid names a live process.
+ *
+ * `process.kill(pid, 0)` sends no signal; it throws iff the pid cannot be
+ * signalled. EPERM means the process exists but belongs to another user, so it
+ * counts as alive — treating it as dead would discard a perfectly good run
+ * file written by a daemon running under a different account.
+ *
+ * Non-positive pids are rejected before the call, not passed through:
+ * `process.kill(0, 0)` signals the caller's own process group and a negative
+ * pid signals the group named by its absolute value, so either would answer
+ * "alive" for a pid that names no process. parseRunFile reports a missing or
+ * non-integer pid as 0, so that is exactly what a malformed run file yields.
+ */
+export function processIsAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/**
  * Where the daemon writes running.json when AO_RUN_FILE is unset. Matches
  * backend/internal/config's canonical AO home default so the supervisor reads
  * the same file the daemon writes. Returns null when the user home directory

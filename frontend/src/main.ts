@@ -61,7 +61,14 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { type DaemonLaunchSpec, bundledDaemonIdentityError, resolveDaemonLaunch } from "./shared/daemon-launch";
-import { createListenPortScanner, defaultRunFilePath, parseRunFile } from "./shared/daemon-discovery";
+import {
+	DEV_STATE_SUBDIR,
+	createListenPortScanner,
+	defaultRunFilePath,
+	devRunFilePath,
+	parseRunFile,
+	processIsAlive,
+} from "./shared/daemon-discovery";
 import type { DaemonStatus } from "./shared/daemon-status";
 import {
 	refreshSlowDaemonStartupDetails,
@@ -81,8 +88,10 @@ import {
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
 } from "./shared/tray";
 import {
+	DEV_DAEMON_PORT,
 	type DaemonProbe,
 	expectedDaemonPort,
+	expectedDevDaemonPort,
 	parseDaemonProbe,
 	resolveDaemonFromPort,
 	resolveDaemonFromRunFile,
@@ -303,13 +312,6 @@ let pendingBounce: { id: number; critical: boolean } | null = null;
 let soundNotificationsEnabled = DEFAULT_UI_SETTINGS.soundNotificationsEnabled;
 
 const isDev = !app.isPackaged;
-
-// Dev mode uses a separate port and state subdirectory so it never collides with
-// a concurrently running installed-app daemon. The subdir also isolates supervise.sock
-// on Unix (backend derives it as dir(RunFilePath)/supervise.sock) and the named pipe
-// on Windows (supervisorPipeFromRunFile derives it from the same dir basename).
-const DEV_DAEMON_PORT = 3002;
-const DEV_STATE_SUBDIR = "dev"; // ~/.ao/dev/
 
 // Traffic lights stay fixed across sidebar expand/collapse. Y matches the
 // natural macOS titlebar band (TitlebarNav is h-traffic-light-clearance).
@@ -800,7 +802,7 @@ const DAEMON_PROBE_TIMEOUT_MS = 2_000;
 
 function runFilePath(): string | null {
 	if (process.env.AO_RUN_FILE) return process.env.AO_RUN_FILE;
-	if (isDev) return path.join(os.homedir(), ".ao", DEV_STATE_SUBDIR, "running.json");
+	if (isDev) return devRunFilePath(os.homedir(), path.join);
 	return defaultRunFilePath(process.platform, process.env, os.homedir());
 }
 
@@ -1095,16 +1097,6 @@ function pathInside(child: string, parent: string): boolean {
 	return childKey === parentKey || childKey.startsWith(parentKey + path.sep);
 }
 
-function processAlive(pid: number): boolean {
-	if (!pid) return false;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 async function readDaemonProbe(port: number, endpoint: "healthz" | "readyz"): Promise<DaemonProbe | null> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), DAEMON_PROBE_TIMEOUT_MS);
@@ -1244,7 +1236,7 @@ async function inspectExistingDaemon(
 	}
 	const status = await resolveDaemonFromRunFile({
 		runFileContents,
-		isProcessAlive: processAlive,
+		isProcessAlive: processIsAlive,
 		probe: readDaemonProbe,
 		identityError: (probe) => daemonIdentityError(launch, probe),
 	});
@@ -1316,7 +1308,7 @@ async function startDaemon(): Promise<DaemonStatus> {
 // separate port isolates the dev daemon from the installed-app daemon.
 // AO_PORT always wins if set explicitly.
 function resolvedDaemonPort(): number {
-	return isDev && !process.env.AO_PORT ? DEV_DAEMON_PORT : expectedDaemonPort(process.env);
+	return isDev ? expectedDevDaemonPort(process.env) : expectedDaemonPort(process.env);
 }
 
 function daemonLaunchEnv(): NodeJS.ProcessEnv {
@@ -1476,16 +1468,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 			// run-file absent or unreadable; proceed without a PID.
 		}
 	}
-	// process.kill(pid, 0) does not kill; it throws iff the PID is not live.
-	let holderPidAlive = false;
-	if (runFilePid) {
-		try {
-			process.kill(runFilePid, 0);
-			holderPidAlive = true;
-		} catch {
-			holderPidAlive = false;
-		}
-	}
+	const holderPidAlive = processIsAlive(runFilePid ?? 0);
 	if (shouldReplacePortHolder(orphanProbe, holderPidAlive)) {
 		// Use the run-file PID when available; fall back to the probe's reported
 		// PID as a last resort (a wedged daemon may not have written a fresh run-file).

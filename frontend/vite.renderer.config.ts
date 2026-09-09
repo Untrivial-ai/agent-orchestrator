@@ -8,6 +8,9 @@ import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { DEFAULT_POSTHOG_HOST } from "./src/shared/posthog-config";
+import { resolveDevApiTarget } from "./src/shared/dev-api-target";
+
+const devApiTarget = resolveDevApiTarget();
 
 const POSTHOG_ORIGINS = (() => {
 	const configured = process.env.VITE_AO_POSTHOG_HOST?.trim() || DEFAULT_POSTHOG_HOST;
@@ -168,14 +171,20 @@ export default defineConfig({
 	// Dev proxy for VITE_NO_ELECTRON=1 browser preview — forwards /api and /mux
 	// to the daemon so the renderer can be tested against a running daemon from
 	// a plain browser without an Electron shell.
+	//
+	// The target is resolved rather than fixed: `npm run dev` supervises a daemon
+	// on a dev-only port, and pointing at the standalone default while that one is
+	// running makes every /api/v1 request 502 out of this proxy (see
+	// ./src/shared/dev-api-target.ts and issue #4324). Resolved once at config
+	// load, so start the daemon before the dev server, or set AO_DEV_API_TARGET.
 	server: {
 		proxy: {
 			"/api": {
-				target: process.env.AO_DEV_API_TARGET ?? "http://127.0.0.1:3001",
+				target: devApiTarget,
 				changeOrigin: false,
 			},
 			"/mux": {
-				target: process.env.AO_DEV_API_TARGET ?? "http://127.0.0.1:3001",
+				target: devApiTarget,
 				changeOrigin: false,
 				ws: true,
 			},
