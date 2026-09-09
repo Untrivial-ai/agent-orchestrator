@@ -28,7 +28,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/opencode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/pi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/qwen"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/vibe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -65,7 +64,6 @@ func Constructors() []Adapter {
 		opencode.New(),
 		pi.New(),
 		qwen.New(),
-		vibe.New(),
 	}
 }
 
