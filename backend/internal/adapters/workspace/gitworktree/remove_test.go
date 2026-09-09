@@ -124,7 +124,7 @@ func TestRemoveAllWithRetryDoesNotRetryMissingPath(t *testing.T) {
 	}
 }
 
-// TestRemoveAllWithRetrySkipsRetryOffWindows: the sharing violation is a
+// TestRemoveAllWithRetryCanBeDisabled: the sharing violation is a
 // Windows handle-release artifact, so elsewhere a removal failure is real and
 // immediate. Sleeping out the budget there would only make every genuine
 // failure ~7s slower before returning the identical error.
@@ -172,5 +172,15 @@ func TestRemoveAllWithRetryStopsOnContextCancellation(t *testing.T) {
 	}
 	if calls > 3 {
 		t.Errorf("removeAll calls = %d, want the loop to stop right after cancellation, not run all 50", calls)
+	}
+}
+
+// TestRemoveAllWithRetryEnabledByDefault guards against regressing the retry
+// back to Windows-only. The transient unlinkat race that stranded worktrees on
+// macOS/Linux (a just-killed child briefly holding the dir after `ao session
+// kill`) is only absorbed when the retry runs on every platform.
+func TestRemoveAllWithRetryEnabledByDefault(t *testing.T) {
+	if !removeAllRetryEnabled {
+		t.Fatal("removeAllRetryEnabled must default true so the transient worktree-remove race is retried on macOS/Linux, not just Windows")
 	}
 }

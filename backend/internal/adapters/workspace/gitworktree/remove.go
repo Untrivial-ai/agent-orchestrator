@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"os"
-	"runtime"
 	"time"
 )
 
-// Worktree removal races process exit on Windows. A PTY (or any agent child)
-// rooted in the worktree can still hold a handle on that directory for a short
-// window AFTER the call that killed it returned — the OS releases handles
+// Worktree removal races process exit on every platform. A PTY (or any agent
+// child) rooted in the worktree can still hold a handle on that directory for a
+// short window AFTER the call that killed it returned — the OS releases handles
 // asynchronously during process teardown, and the process is already gone from
-// every liveness probe by then. os.RemoveAll fails with
+// every liveness probe by then. os.RemoveAll then fails transiently: on Windows
 // ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED ("The process cannot access the
-// file because it is being used by another process"), even though nothing is
-// meaningfully using the directory anymore and a retry a moment later succeeds.
+// file because it is being used by another process"); on macOS/Linux an
+// unlinkat EACCES / ENOTEMPTY / EBUSY. In every case nothing is meaningfully
+// using the directory anymore and a retry a moment later succeeds.
 //
 // This is reachable from `ao session kill` on a session whose scoped shell
 // terminals were just destroyed: Session Manager closes the shells, then
@@ -45,14 +45,19 @@ var (
 	removeAllAttempts   = 18
 	removeAllBackoff    = 50 * time.Millisecond
 	removeAllBackoffCap = 500 * time.Millisecond
-	// removeAllRetryEnabled gates the retry to the platform whose handle
-	// semantics need it. Elsewhere a failure from os.RemoveAll is real and
-	// immediate, and sleeping out the budget before returning the identical
-	// error only makes every genuine failure slower. A var, not a bare
-	// runtime.GOOS check at the call site, so tests exercise the retry loop on
-	// every platform CI runs — otherwise the coverage below would silently
-	// evaporate everywhere but Windows.
-	removeAllRetryEnabled = runtime.GOOS == "windows"
+	// removeAllRetryEnabled turns on the bounded retry. It defaults on for every
+	// platform: the transient race is not Windows-only. On macOS/Linux a
+	// just-killed agent child can still hold the worktree dir for a short window
+	// after `ao session kill` destroys its shells (the kernel releases handles
+	// asynchronously), so os.RemoveAll fails with a transient unlinkat
+	// EACCES/ENOTEMPTY/EBUSY and a retry a moment later succeeds. Gating this to
+	// Windows stranded worktrees and 500'd the kill on Unix in production. The
+	// tradeoff is that a genuinely permanent Unix failure now sleeps out the
+	// (ctx-bounded, ~7.25s) budget before returning; that is strictly better than
+	// stranding the worktree, and a caller that gives up cancels ctx to stop it.
+	// Still a var so tests can drive both the enabled and disabled paths on any
+	// platform CI runs.
+	removeAllRetryEnabled = true
 	// removeAll is os.RemoveAll in production; tests substitute a stub to drive
 	// the retry loop deterministically instead of depending on platform
 	// filesystem locking semantics (the real sharing violation only reproduces
