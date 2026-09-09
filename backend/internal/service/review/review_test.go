@@ -300,6 +300,25 @@ func TestSubmitPersistsThenAppliesThenStampsDelivered(t *testing.T) {
 	}
 }
 
+func TestSubmitRejectsLateResultForCancelledReview(t *testing.T) {
+	store := &fakeStore{
+		ok: true,
+		run: domain.ReviewRun{
+			ID: "run-cancelled", SessionID: "mer-1", BatchID: "batch-1",
+			PRURL: "pr1", TargetSHA: "sha1", Status: domain.ReviewRunCancelled, Body: "cancelled by user",
+		},
+		prs: []domain.PullRequest{{URL: "pr1", HeadSHA: "sha1"}},
+	}
+	reducer := &fakeReducer{outcome: lifecycle.ReviewDeliverySent}
+	svc := New(nil, store, WithLifecycleReducer(reducer))
+	if _, err := svc.Submit(context.Background(), "mer-1", "run-cancelled", domain.VerdictChangesRequested, "late review result", "123"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("late submit error = %v, want rejected cancelled run", err)
+	}
+	if store.run.Status != domain.ReviewRunCancelled || store.run.Body != "cancelled by user" || store.updateCalls != 0 || store.markCalls != 0 || reducer.batchCalls != 0 {
+		t.Fatalf("late submission changed or delivered cancelled review: run=%+v writes=%d deliveries=%d", store.run, store.updateCalls, reducer.batchCalls)
+	}
+}
+
 func TestApplyReviewActivitySignalPersistsNativeReviewerSessionID(t *testing.T) {
 	st := &fakeStore{
 		reviewOK: true,

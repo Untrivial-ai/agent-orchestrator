@@ -75,10 +75,18 @@ type PullRequestFailingCheck struct {
 	URL        string        `json:"url,omitempty"`
 }
 
+// PullRequestBlockedCheck is a check requiring intervention before execution.
+type PullRequestBlockedCheck struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+	URL    string `json:"url,omitempty"`
+}
+
 // PullRequestCISummary is the latest aggregate CI observation.
 type PullRequestCISummary struct {
 	State         CIState                   `json:"state"`
 	FailingChecks []PullRequestFailingCheck `json:"failingChecks"`
+	BlockedChecks []PullRequestBlockedCheck `json:"blockedChecks,omitempty"`
 	AutoInjectCI  bool                      `json:"autoInjectCI"`
 }
 

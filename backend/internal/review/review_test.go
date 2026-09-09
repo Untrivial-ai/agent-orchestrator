@@ -211,6 +211,21 @@ func (f *fakeStore) CancelRunningReviewRunsBySessionAndHarness(_ context.Context
 	}
 	return n, nil
 }
+func (f *fakeStore) CancelReviewRunsAndClearHandle(ctx context.Context, sessionID domain.SessionID, harness domain.ReviewerHarness, body string) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if harness == "" {
+		if err := f.ClearReviewerHandle(ctx, sessionID); err != nil {
+			return 0, err
+		}
+		return f.CancelRunningReviewRunsBySession(ctx, sessionID, body)
+	}
+	if err := f.ClearReviewerHandleByHarness(ctx, sessionID, harness); err != nil {
+		return 0, err
+	}
+	return f.CancelRunningReviewRunsBySessionAndHarness(ctx, sessionID, harness, body)
+}
 func (f *fakeStore) GetReviewRun(_ context.Context, id string) (domain.ReviewRun, bool, error) {
 	for _, r := range f.runs {
 		if r.ID == id {
@@ -510,7 +525,7 @@ func TestRestoreCodexReviewerDoesNotApplyAnotherHarnessProjectConfig(t *testing.
 	}
 }
 
-func TestCancelInterruptsReviewerAndCancelsRunningRuns(t *testing.T) {
+func TestCancelStopsReviewerAndCancelsRunningRuns(t *testing.T) {
 	store := &fakeStore{
 		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, ReviewerHandleID: "review-mer-1"},
 		runs: []domain.ReviewRun{
@@ -534,6 +549,12 @@ func TestCancelInterruptsReviewerAndCancelsRunningRuns(t *testing.T) {
 	}
 	if launcher.cancelledHarness != domain.ReviewerCodex {
 		t.Fatalf("cancel harness = %q, want codex", launcher.cancelledHarness)
+	}
+	if !launcher.destroyed || launcher.destroyedHandle != "review-mer-1" {
+		t.Fatalf("reviewer teardown was not verified: %+v", launcher)
+	}
+	if res.ReviewerHandleID != "" || store.review.ReviewerHandleID != "" {
+		t.Fatalf("stopped reviewer still has a handle: result=%q stored=%q", res.ReviewerHandleID, store.review.ReviewerHandleID)
 	}
 	if len(res.CancelledRuns) != 1 || res.CancelledRuns[0].ID != "run-1" {
 		t.Fatalf("cancelled runs = %+v", res.CancelledRuns)
@@ -602,8 +623,8 @@ func TestCancelDoesNotInterruptIdleReviewer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if launcher.cancelled {
-		t.Fatalf("idle reviewer should not be interrupted: %+v", launcher)
+	if launcher.cancelled || launcher.destroyed {
+		t.Fatalf("idle reviewer should remain available: %+v", launcher)
 	}
 	if len(res.CancelledRuns) != 0 {
 		t.Fatalf("cancelled runs = %+v, want none", res.CancelledRuns)
@@ -639,7 +660,7 @@ func TestCancelMarksRunsCancelledWhenReviewerHandleIsGone(t *testing.T) {
 	}
 }
 
-func TestCancelKeepsRunsRunningWhenReviewerCancelFailsAndHandleIsAlive(t *testing.T) {
+func TestCancelKeepsRunsRunningWhenReviewerTeardownFails(t *testing.T) {
 	store := &fakeStore{
 		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, ReviewerHandleID: "review-mer-1"},
 		runs: []domain.ReviewRun{{
@@ -647,14 +668,17 @@ func TestCancelKeepsRunsRunningWhenReviewerCancelFailsAndHandleIsAlive(t *testin
 			PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning,
 		}},
 	}
-	launcher := &fakeLauncher{alive: true, cancelErr: errors.New("interrupt failed")}
+	launcher := &fakeLauncher{alive: true, destroyErr: errors.New("reviewer still running")}
 	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
 
 	if _, err := eng.Cancel(context.Background(), "mer-1"); err == nil {
-		t.Fatal("Cancel err = nil, want interrupt failure")
+		t.Fatal("Cancel err = nil, want teardown failure")
 	}
 	if got := store.runs[0]; got.Status != domain.ReviewRunRunning {
 		t.Fatalf("run should remain running when reviewer is still alive: %+v", got)
+	}
+	if store.review.ReviewerHandleID != "review-mer-1" {
+		t.Fatal("teardown failure discarded the handle needed for retry")
 	}
 }
 

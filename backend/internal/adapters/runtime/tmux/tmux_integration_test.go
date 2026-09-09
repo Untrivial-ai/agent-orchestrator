@@ -3,8 +3,10 @@ package tmux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +22,7 @@ func TestRuntimeIntegration(t *testing.T) {
 
 	ctx := context.Background()
 	id := strings.ReplaceAll(t.Name(), "/", "_")
-	r := New(Options{Timeout: 5 * time.Second})
+	r := newIntegrationRuntime(t)
 
 	// Ensure clean slate: ignore errors (session may not exist).
 	_ = r.Destroy(ctx, ports.RuntimeHandle{ID: id})
@@ -95,7 +97,7 @@ func TestRuntimeIntegrationExactSessionParsing(t *testing.T) {
 	longID := base + "_long"
 	prefixID := base
 
-	r := New(Options{Timeout: 5 * time.Second})
+	r := newIntegrationRuntime(t)
 	_ = r.Destroy(ctx, ports.RuntimeHandle{ID: longID})
 	_ = r.Destroy(ctx, ports.RuntimeHandle{ID: prefixID})
 
@@ -179,6 +181,7 @@ func TestRuntimeIntegrationLegacyDefaultSocketIgnoresInheritedTMUX(t *testing.T)
 	}
 
 	r := New(Options{
+		RunFilePath:  filepath.Join(t.TempDir(), "running.json"),
 		Binary:       systemTmux,
 		LegacyBinary: systemTmux,
 		SocketName:   "ao",
@@ -234,6 +237,7 @@ func TestRuntimeIntegrationAdoptsLegacyDefaultWhenNamedSocketDoesNotExist(t *tes
 	}
 
 	r := New(Options{
+		RunFilePath:  filepath.Join(t.TempDir(), "running.json"),
 		Binary:       systemTmux,
 		LegacyBinary: systemTmux,
 		SocketName:   "ao",
@@ -265,7 +269,7 @@ func TestRuntimeIntegrationSupervisedExitKeepsInteractiveShell(t *testing.T) {
 	ctx := context.Background()
 	id := strings.ReplaceAll(t.Name(), "/", "_")
 	const launchID = "launch-1"
-	r := New(Options{Timeout: 5 * time.Second})
+	r := newIntegrationRuntime(t)
 	tmuxID := SessionName(id)
 	workspace := t.TempDir()
 	_ = r.Destroy(ctx, ports.RuntimeHandle{ID: tmuxID})
@@ -374,4 +378,12 @@ func waitForOutput(t *testing.T, r *Runtime, h ports.RuntimeHandle, want string,
 		time.Sleep(100 * time.Millisecond)
 	}
 	return out
+}
+
+func newIntegrationRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	socket := fmt.Sprintf("ao-test-%d-%d", os.Getpid(), time.Now().UnixNano())
+	r := New(Options{SocketName: socket, Shell: "/bin/sh", RunFilePath: filepath.Join(t.TempDir(), "running.json"), Timeout: 5 * time.Second})
+	t.Cleanup(func() { _ = exec.Command(r.binary, "-L", socket, "kill-server").Run() })
+	return r
 }

@@ -1856,6 +1856,12 @@ func sessionView(s domain.Session) SessionView {
 		active := agentSwitchView(*s.ActiveAgentSwitch)
 		view.ActiveAgentSwitch = &active
 	}
+	if startup := s.Metadata.Startup; startup != nil {
+		view.Startup = &SessionStartupView{
+			ID: startup.ID, Stage: startup.Stage,
+			StartedAt: startup.StartedAt, LastError: startup.LastError,
+		}
+	}
 	return view
 }
 

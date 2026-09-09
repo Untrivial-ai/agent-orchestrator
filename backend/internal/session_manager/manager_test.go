@@ -27,17 +27,18 @@ import (
 var ctx = context.Background()
 
 type fakeStore struct {
-	sessions         map[domain.SessionID]domain.SessionRecord
-	pr               map[domain.SessionID]domain.PRFacts
-	projects         map[string]domain.ProjectRecord
-	workspaceRepo    map[string][]domain.WorkspaceRepoRecord
-	num              int
-	deleteErr        error
-	upsertWTErr      error
-	listAllErr       error
-	getProjectErr    error
-	getSessionErr    error
-	updateSessionErr error
+	browserVerifierErr error
+	sessions           map[domain.SessionID]domain.SessionRecord
+	pr                 map[domain.SessionID]domain.PRFacts
+	projects           map[string]domain.ProjectRecord
+	workspaceRepo      map[string][]domain.WorkspaceRepoRecord
+	num                int
+	deleteErr          error
+	upsertWTErr        error
+	listAllErr         error
+	getProjectErr      error
+	getSessionErr      error
+	updateSessionErr   error
 	// agentSwitchStore is wired only by agent-switch tests so fakeLCM can model
 	// Lifecycle Manager's atomic ownership-boundary commands.
 	agentSwitchStore any
@@ -81,6 +82,9 @@ func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) e
 	return nil
 }
 func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string, updatedAt time.Time) (bool, error) {
+	if f.browserVerifierErr != nil {
+		return false, f.browserVerifierErr
+	}
 	if f.updateSessionErr != nil {
 		return false, f.updateSessionErr
 	}
@@ -447,6 +451,17 @@ func (r *blockingRestartRuntime) Destroy(ctx context.Context, handle ports.Runti
 	return r.fakeRuntime.Destroy(ctx, handle)
 }
 
+type fakeRuntimeCreateFailure struct{ error }
+
+func (e fakeRuntimeCreateFailure) Unwrap() error                       { return e.error }
+func (e fakeRuntimeCreateFailure) PossibleHandle() ports.RuntimeHandle { return ports.RuntimeHandle{} }
+func (e fakeRuntimeCreateFailure) EffectOutcome() ports.RuntimeEffectOutcome {
+	return ports.RuntimeEffectNone
+}
+func (e fakeRuntimeCreateFailure) CleanupOutcome() ports.RuntimeCleanupOutcome {
+	return ports.RuntimeCleanupNotAttempted
+}
+
 func (r *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	createErr := r.createErr
 	if len(r.createErrSequence) > 0 {
@@ -454,7 +469,11 @@ func (r *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.
 		r.createErrSequence = r.createErrSequence[1:]
 	}
 	if createErr != nil {
-		return ports.RuntimeHandle{}, createErr
+		var effect ports.RuntimeEffectError
+		if errors.As(createErr, &effect) {
+			return ports.RuntimeHandle{}, createErr
+		}
+		return ports.RuntimeHandle{}, fakeRuntimeCreateFailure{createErr}
 	}
 	r.lastCfg = cfg
 	r.created++
@@ -5372,8 +5391,8 @@ func TestSpawn_MissingBinaryPreservesNonEmptyScratchWorkspaceForRetry(t *testing
 	if !errors.Is(err, ports.ErrAgentBinaryNotFound) {
 		t.Fatalf("retry err = %v, want ErrAgentBinaryNotFound", err)
 	}
-	if errors.Is(err, ports.ErrWorkspaceDirty) {
-		t.Fatalf("retry reused preserved workspace: %v", err)
+	if second := st.sessions["scratch-2"]; second.Metadata.WorkspacePath == failed.Metadata.WorkspacePath {
+		t.Fatalf("retry reused preserved workspace: %s", second.Metadata.WorkspacePath)
 	}
 	if _, ok := st.sessions["scratch-2"]; !ok {
 		t.Fatal("retry did not allocate a fresh scratch session")

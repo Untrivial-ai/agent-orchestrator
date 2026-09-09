@@ -25,6 +25,9 @@ const (
 // SessionMetadata is the typed, off-status metadata for a session: operational
 // handles and seed inputs used by Session Manager and reaper.
 type SessionMetadata struct {
+	// Startup records an unfinished launch and the resources it may own. It is
+	// cleared only after launch and initial prompt delivery have committed.
+	Startup *SessionStartup `json:"startup,omitempty"`
 	// Permissions pins the resolved launch policy independently of future project defaults.
 	Permissions PermissionMode `json:"permissions,omitempty"`
 
@@ -86,6 +89,29 @@ type SessionMetadata struct {
 	// session. Keeping the verifier durable lets a surviving worker authenticate
 	// after the desktop app or daemon restarts.
 	BrowserCapabilityVerifier string `json:"-"`
+}
+
+// SessionStartup is a durable operation fact, not a display status. Resource
+// handles live alongside it in SessionMetadata and belong to this operation.
+type SessionStartup struct {
+	ID                   string            `json:"id"`
+	Stage                string            `json:"stage"`
+	StartedAt            time.Time         `json:"startedAt"`
+	RuntimePossible      bool              `json:"runtimePossible,omitempty"`
+	WorkspaceUncertain   bool              `json:"workspaceUncertain,omitempty"`
+	ControllerGeneration string            `json:"controllerGeneration,omitempty"`
+	ControllerPossible   bool              `json:"controllerPossible,omitempty"`
+	Committed            bool              `json:"committed,omitempty"`
+	LastError            string            `json:"lastError,omitempty"`
+	Worktrees            []StartupWorktree `json:"worktrees,omitempty"`
+}
+
+// StartupWorktree preserves child workspace ownership before registry writes.
+type StartupWorktree struct {
+	RepoName string `json:"repoName"`
+	RepoPath string `json:"repoPath"`
+	Path     string `json:"path"`
+	Branch   string `json:"branch"`
 }
 
 // SessionRecord is the persistence shape. It intentionally stores only durable

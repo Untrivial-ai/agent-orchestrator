@@ -196,6 +196,36 @@ func (s *Store) CancelRunningReviewRunsBySessionAndHarness(ctx context.Context, 
 	})
 }
 
+// CancelReviewRunsAndClearHandle records verified reviewer shutdown atomically.
+// An empty harness selects every reviewer owned by the worker. If persistence
+// fails, the old handles and running runs remain available for a teardown retry.
+func (s *Store) CancelReviewRunsAndClearHandle(ctx context.Context, sessionID domain.SessionID, harness domain.ReviewerHarness, body string) (int64, error) {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return 0, err
+	}
+	defer s.writeMu.Unlock()
+	var cancelled int64
+	err := s.inTx(ctx, "record reviewer shutdown", func(q *gen.Queries) error {
+		var err error
+		if harness == "" {
+			if err := q.ClearReviewerHandle(ctx, sessionID); err != nil {
+				return err
+			}
+			cancelled, err = q.CancelRunningReviewRunsBySession(ctx, gen.CancelRunningReviewRunsBySessionParams{SessionID: sessionID, Body: body})
+		} else {
+			if err := q.ClearReviewerHandleByHarness(ctx, gen.ClearReviewerHandleByHarnessParams{SessionID: sessionID, Harness: harness}); err != nil {
+				return err
+			}
+			cancelled, err = q.CancelRunningReviewRunsBySessionAndHarness(ctx, gen.CancelRunningReviewRunsBySessionAndHarnessParams{SessionID: sessionID, Harness: harness, Body: body})
+		}
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return cancelled, nil
+}
+
 // MarkReviewRunDelivered records that lifecycle delivered the worker nudge for
 // a completed AO-internal review pass.
 func (s *Store) MarkReviewRunDelivered(ctx context.Context, id string, deliveredAt time.Time) (bool, error) {

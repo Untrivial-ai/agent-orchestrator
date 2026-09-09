@@ -44,6 +44,7 @@ type Store interface {
 	SupersedeStaleRunningReviewRuns(ctx stdctx.Context, sessionID domain.SessionID, prURL, targetSHA, body string) (int64, error)
 	CancelRunningReviewRunsBySession(ctx stdctx.Context, sessionID domain.SessionID, body string) (int64, error)
 	CancelRunningReviewRunsBySessionAndHarness(ctx stdctx.Context, sessionID domain.SessionID, harness domain.ReviewerHarness, body string) (int64, error)
+	CancelReviewRunsAndClearHandle(ctx stdctx.Context, sessionID domain.SessionID, harness domain.ReviewerHarness, body string) (int64, error)
 	GetReviewRun(ctx stdctx.Context, id string) (domain.ReviewRun, bool, error)
 	GetReviewRunBySessionPRAndSHA(ctx stdctx.Context, id domain.SessionID, prURL, targetSHA string) (domain.ReviewRun, bool, error)
 	GetReviewRunBySessionPRSHAAndHarness(ctx stdctx.Context, id domain.SessionID, prURL, targetSHA string, harness domain.ReviewerHarness) (domain.ReviewRun, bool, error)
@@ -89,14 +90,18 @@ type Engine struct {
 	clock    func() time.Time
 	newID    func() string
 
-	// triggerMu guards triggerLocks; triggerLocks holds one mutex per worker
-	// session so concurrent Trigger calls for the same worker serialise (see
+	// triggerMu guards triggerLocks; triggerLocks holds one gate per worker
+	// session so trigger and teardown operations for the same worker serialise (see
 	// lockWorker). Distinct workers never contend.
 	triggerMu    sync.Mutex
-	triggerLocks map[domain.SessionID]*sync.Mutex
+	triggerLocks map[domain.SessionID]chan struct{}
 }
 
-const autoReviewFailedRetryLimit = 3
+const (
+	autoReviewFailedRetryLimit = 3
+	reviewerTeardownBudget     = 30 * time.Second
+	reviewerInterruptBudget    = 2 * time.Second
+)
 
 // New wires an Engine from its dependencies, defaulting the clock and id source.
 func New(d Deps) *Engine {
@@ -116,28 +121,42 @@ func New(d Deps) *Engine {
 		launcher:     d.Launcher,
 		clock:        clock,
 		newID:        newID,
-		triggerLocks: make(map[domain.SessionID]*sync.Mutex),
+		triggerLocks: make(map[domain.SessionID]chan struct{}),
 	}
 }
 
-// lockWorker serialises Trigger calls for a single worker session and returns
+// lockWorker serialises reviewer operations for a single worker and returns
 // the unlock func. Without it, two concurrent triggers for the same worker can
 // both pass the per-commit idempotency check and each spawn a reviewer against
 // the same deterministic handle, leaving two running runs for one commit (#242).
 //
-// The per-worker mutex is created on first use and kept for the lifetime of the
-// engine; the entry is a single pointer, so the unbounded-by-session-count map
-// is a negligible, bounded-in-practice cost.
+// Each worker gate is created on first use and kept for the engine's lifetime.
 func (e *Engine) lockWorker(id domain.SessionID) func() {
+	unlock, _ := e.lockWorkerContext(stdctx.Background(), id)
+	return unlock
+}
+
+func (e *Engine) lockWorkerContext(ctx stdctx.Context, id domain.SessionID) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	e.triggerMu.Lock()
-	mu, ok := e.triggerLocks[id]
+	gate, ok := e.triggerLocks[id]
 	if !ok {
-		mu = &sync.Mutex{}
-		e.triggerLocks[id] = mu
+		gate = make(chan struct{}, 1)
+		e.triggerLocks[id] = gate
 	}
 	e.triggerMu.Unlock()
-	mu.Lock()
-	return mu.Unlock
+	select {
+	case gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-gate
+			return nil, err
+		}
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // TriggerResult is the outcome of a trigger: the (new or existing) run, the live
@@ -231,6 +250,9 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	}
 	if worker.IsTerminated {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q is terminated", ErrInvalid, workerID)
+	}
+	if reviewerCleanupPending(worker) {
+		return TriggerResult{}, fmt.Errorf("%w: worker session %q has pending cleanup", ErrInvalid, workerID)
 	}
 	if worker.Metadata.WorkspacePath == "" {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q has no workspace to review", ErrInvalid, workerID)
@@ -386,9 +408,11 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	}
 
 	failRuns := func(start int, err error) error {
+		failureCtx, cancel := stdctx.WithTimeout(stdctx.WithoutCancel(ctx), reviewerTeardownBudget)
+		defer cancel()
 		for _, run := range created[start:] {
-			if _, updateErr := e.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, err.Error(), "", run.AutoInjectReview); updateErr != nil {
-				return updateErr
+			if _, updateErr := e.store.UpdateReviewRunResult(failureCtx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, err.Error(), "", run.AutoInjectReview); updateErr != nil {
+				return errors.Join(err, fmt.Errorf("record failed review run %q: %w", run.ID, updateErr))
 			}
 		}
 		return err
@@ -423,6 +447,11 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		}
 		launch, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID))
 		if err != nil {
+			if launch.HandleID != "" {
+				// Cleanup could not prove this reviewer stopped. Keep its runs
+				// unresolved and its handle available to Cancel/worker teardown.
+				return TriggerResult{ReviewerHandleID: launch.HandleID}, e.retainFailedReviewerLaunch(ctx, worker, harness, launch, fmt.Errorf("launch reviewer: %w", err))
+			}
 			return TriggerResult{}, failRuns(0, fmt.Errorf("launch reviewer: %w", err))
 		}
 		handleID = launch.HandleID
@@ -432,14 +461,6 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	} else {
 		if err := e.launcher.Notify(ctx, handleID, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID)); err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("notify reviewer: %w", err))
-		}
-	}
-	for _, stale := range pendingSupersedes {
-		if _, err := e.store.SupersedeStaleRunningReviewRuns(ctx, workerID, stale.prURL, stale.targetSHA, "superseded by a review trigger for a newer commit"); err != nil {
-			if handleID != "" {
-				_ = e.launcher.Destroy(ctx, handleID)
-			}
-			return TriggerResult{}, failRuns(0, err)
 		}
 	}
 	if hasConfigOverride && persistedAgentSessionID == "" && reviewRow.ID != "" {
@@ -470,6 +491,16 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 			return TriggerResult{}, failRuns(0, fmt.Errorf("destroy previous reviewer: %w", err))
 		}
 	}
+	// Do not finalize the previous pass until its replacement has proved the
+	// retired runtime stopped. A failed teardown must leave that pass retryable.
+	for _, stale := range pendingSupersedes {
+		if _, err := e.store.SupersedeStaleRunningReviewRuns(ctx, workerID, stale.prURL, stale.targetSHA, "superseded by a review trigger for a newer commit"); err != nil {
+			if handleID != "" {
+				_ = e.launcher.Destroy(ctx, handleID)
+			}
+			return TriggerResult{}, failRuns(0, err)
+		}
+	}
 	for i := range created {
 		created[i].ReviewID = reviewRow.ID
 	}
@@ -495,6 +526,12 @@ func autoReviewSessionReason(worker domain.SessionRecord, now time.Time) string 
 	default:
 		return ""
 	}
+}
+
+func reviewerCleanupPending(worker domain.SessionRecord) bool {
+	// Cleanup records this before taking the reviewer lock, so a later start
+	// cannot recreate a runtime between reviewer teardown and workspace removal.
+	return worker.Metadata.Startup != nil && worker.Metadata.Startup.Stage == "cleanup_pending"
 }
 
 // SwitchReviewer serializes reviewer preference changes with trigger/restore
@@ -523,6 +560,9 @@ func (e *Engine) SwitchReviewer(
 	}
 	if !ok {
 		return SessionReviews{}, fmt.Errorf("%w: worker session %q", ErrNotFound, workerID)
+	}
+	if reviewerCleanupPending(worker) {
+		return SessionReviews{}, fmt.Errorf("%w: worker session %q has pending cleanup", ErrInvalid, workerID)
 	}
 	previousSelected, previousConfig, err := e.reviewerSelection(ctx, worker)
 	if err != nil {
@@ -574,6 +614,8 @@ func reviewRunsContainRunningForHarness(runs []domain.ReviewRun, harness domain.
 }
 
 func (e *Engine) destroyOtherReviewerHandles(ctx stdctx.Context, workerID domain.SessionID, selected domain.ReviewerHarness, reviews []domain.Review) error {
+	ctx, cancel := stdctx.WithTimeout(stdctx.WithoutCancel(ctx), reviewerTeardownBudget)
+	defer cancel()
 	for _, review := range reviews {
 		if review.Harness == selected || review.ReviewerHandleID == "" {
 			continue
@@ -581,10 +623,7 @@ func (e *Engine) destroyOtherReviewerHandles(ctx stdctx.Context, workerID domain
 		if err := e.launcher.Destroy(ctx, review.ReviewerHandleID); err != nil {
 			return err
 		}
-		if err := e.store.ClearReviewerHandleByHarness(ctx, workerID, review.Harness); err != nil {
-			return err
-		}
-		if _, err := e.store.CancelRunningReviewRunsBySessionAndHarness(ctx, workerID, review.Harness, "cancelled because reviewer agent was switched"); err != nil {
+		if _, err := e.store.CancelReviewRunsAndClearHandle(ctx, workerID, review.Harness, "cancelled because reviewer agent was switched"); err != nil {
 			return err
 		}
 	}
@@ -627,7 +666,7 @@ func (e *Engine) RestoreReviewer(ctx stdctx.Context, workerID domain.SessionID) 
 	if !ok {
 		return RestoreReviewerResult{}, fmt.Errorf("%w: worker session %q", ErrNotFound, workerID)
 	}
-	if worker.IsTerminated || worker.Metadata.WorkspacePath == "" {
+	if worker.IsTerminated || worker.Metadata.WorkspacePath == "" || reviewerCleanupPending(worker) {
 		return RestoreReviewerResult{}, nil
 	}
 	harness, config, err := e.reviewerSelection(ctx, worker)
@@ -760,7 +799,7 @@ func (e *Engine) RestoreCodexReviewerExact(ctx stdctx.Context, workerID domain.S
 	if !ok {
 		return fmt.Errorf("%w: worker session %q", ErrNotFound, workerID)
 	}
-	if worker.IsTerminated || worker.Metadata.WorkspacePath == "" {
+	if worker.IsTerminated || worker.Metadata.WorkspacePath == "" || reviewerCleanupPending(worker) {
 		return nil
 	}
 	reviewRow, found, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, domain.ReviewerCodex)
@@ -837,6 +876,9 @@ func (e *Engine) restoreReviewerLocked(
 		PreviousRuns:         previousRuns,
 	})
 	if err != nil {
+		if launch.HandleID != "" {
+			return RestoreReviewerResult{ReviewerHandleID: launch.HandleID}, e.retainFailedReviewerLaunch(ctx, worker, harness, launch, fmt.Errorf("restore reviewer: %w", err))
+		}
 		return RestoreReviewerResult{}, fmt.Errorf("restore reviewer: %w", err)
 	}
 	if launch.AgentSessionID != "" {
@@ -847,6 +889,15 @@ func (e *Engine) restoreReviewerLocked(
 		return RestoreReviewerResult{}, err
 	}
 	return RestoreReviewerResult{ReviewerHandleID: launch.HandleID, Restored: true}, nil
+}
+
+func (e *Engine) retainFailedReviewerLaunch(ctx stdctx.Context, worker domain.SessionRecord, harness domain.ReviewerHarness, launch LaunchResult, launchErr error) error {
+	ctx, cancel := stdctx.WithTimeout(stdctx.WithoutCancel(ctx), reviewerTeardownBudget)
+	defer cancel()
+	if _, err := e.upsertReview(ctx, worker, harness, launch.HandleID, launch.AgentSessionID, e.clock()); err != nil {
+		return errors.Join(launchErr, fmt.Errorf("retain reviewer cleanup handle %q: %w", launch.HandleID, err))
+	}
+	return launchErr
 }
 
 // TeardownReviewerTerminal destroys reviewer panes before shutdown removes the
@@ -931,7 +982,14 @@ func (e *Engine) cancelStaleRunningRuns(ctx stdctx.Context, workerID domain.Sess
 	if alive {
 		return false, nil
 	}
-	if _, err := e.store.CancelRunningReviewRunsBySession(ctx, workerID, "cancelled because reviewer terminal is unavailable"); err != nil {
+	// A missing pane can still have surviving descendants. Require the runtime
+	// to finish owned-process cleanup before retiring its active reviews.
+	ctx, cancel := stdctx.WithTimeout(stdctx.WithoutCancel(ctx), reviewerTeardownBudget)
+	defer cancel()
+	if err := e.launcher.Destroy(ctx, reviewRow.ReviewerHandleID); err != nil {
+		return false, err
+	}
+	if _, err := e.store.CancelReviewRunsAndClearHandle(ctx, workerID, reviewRow.Harness, "cancelled because reviewer terminal is unavailable"); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -1074,12 +1132,17 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 	return SessionReviews{ReviewerHandleID: handle, ReviewerHarness: reviewerHarness, Runs: runs, Reviews: Plan(prs, runs)}, nil
 }
 
-// Cancel interrupts the live reviewer pane for a worker and marks running
-// review runs as cancelled so they no longer block a fresh trigger.
+// Cancel stops the active reviewer before recording cancellation. Idle panes
+// remain available for inspection when no review is running.
 func (e *Engine) Cancel(ctx stdctx.Context, workerID domain.SessionID) (CancelResult, error) {
 	if workerID == "" {
 		return CancelResult{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
+	unlock, err := e.lockWorkerContext(ctx, workerID)
+	if err != nil {
+		return CancelResult{}, err
+	}
+	defer unlock()
 	worker, ok, err := e.sessions.GetSession(ctx, workerID)
 	if err != nil {
 		return CancelResult{}, err
@@ -1121,28 +1184,19 @@ func (e *Engine) Cancel(ctx stdctx.Context, workerID domain.SessionID) (CancelRe
 	if !ok || review.ReviewerHandleID == "" {
 		return CancelResult{}, fmt.Errorf("%w: reviewer for worker session %q", ErrNotFound, workerID)
 	}
-	if err := e.launcher.Cancel(ctx, review.ReviewerHandleID, review.Harness); err != nil {
-		alive, aliveErr := e.launcher.Alive(ctx, review.ReviewerHandleID)
-		if aliveErr != nil {
-			return CancelResult{}, err
-		}
-		if alive {
-			return CancelResult{}, err
-		}
+	// Once accepted, finish teardown even if the HTTP request disconnects. The
+	// adapter has no acknowledgement that its interrupt stopped the active turn,
+	// so delivery alone must never finalize a run.
+	ctx, cancel := stdctx.WithTimeout(stdctx.WithoutCancel(ctx), reviewerTeardownBudget)
+	defer cancel()
+	interruptCtx, cancelInterrupt := stdctx.WithTimeout(ctx, reviewerInterruptBudget)
+	interruptErr := e.launcher.Cancel(interruptCtx, review.ReviewerHandleID, review.Harness)
+	cancelInterrupt()
+	if err := e.launcher.Destroy(ctx, review.ReviewerHandleID); err != nil {
+		return CancelResult{}, fmt.Errorf("stop reviewer: %w", errors.Join(err, interruptErr))
 	}
-	if _, err := e.store.CancelRunningReviewRunsBySessionAndHarness(ctx, workerID, review.Harness, "cancelled by user"); err != nil {
+	if _, err := e.store.CancelReviewRunsAndClearHandle(ctx, workerID, review.Harness, "cancelled by user"); err != nil {
 		return CancelResult{}, err
-	}
-	cancelled := make([]domain.ReviewRun, 0, len(running))
-	for _, run := range running {
-		if run.Harness != review.Harness && run.Harness != "" {
-			continue
-		}
-		run.Status = domain.ReviewRunCancelled
-		run.Verdict = domain.VerdictNone
-		run.Body = "cancelled by user"
-		run.GithubReviewID = ""
-		cancelled = append(cancelled, run)
 	}
 	prs, err := e.prs.ListPRsBySession(ctx, workerID)
 	if err != nil {
@@ -1152,7 +1206,23 @@ func (e *Engine) Cancel(ctx stdctx.Context, workerID domain.SessionID) (CancelRe
 	if err != nil {
 		return CancelResult{}, err
 	}
-	return CancelResult{ReviewerHandleID: review.ReviewerHandleID, Reviews: Plan(prs, runs), CancelledRuns: cancelled}, nil
+	// A result submitted while teardown was in flight may already be complete.
+	// Report the persisted state instead of labelling that completed run cancelled.
+	return CancelResult{Reviews: Plan(prs, runs), CancelledRuns: cancelledReviewRuns(running, runs)}, nil
+}
+
+func cancelledReviewRuns(running, persisted []domain.ReviewRun) []domain.ReviewRun {
+	activeIDs := make(map[string]struct{}, len(running))
+	for _, run := range running {
+		activeIDs[run.ID] = struct{}{}
+	}
+	cancelled := make([]domain.ReviewRun, 0, len(running))
+	for _, run := range persisted {
+		if _, wasRunning := activeIDs[run.ID]; wasRunning && run.Status == domain.ReviewRunCancelled {
+			cancelled = append(cancelled, run)
+		}
+	}
+	return cancelled
 }
 
 func (e *Engine) currentReviewForCancel(ctx stdctx.Context, workerID domain.SessionID, selected domain.ReviewerHarness, running []domain.ReviewRun) (domain.Review, bool, error) {
@@ -1200,7 +1270,14 @@ func (e *Engine) TerminateReviewer(ctx stdctx.Context, workerID domain.SessionID
 	if workerID == "" {
 		return TerminateResult{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
-	unlock := e.lockWorker(workerID)
+	// The owning lifecycle operation supplies its cleanup context. Preserve
+	// that remaining budget, including time spent waiting for a running trigger.
+	ctx, cancel := stdctx.WithTimeout(ctx, reviewerTeardownBudget)
+	defer cancel()
+	unlock, err := e.lockWorkerContext(ctx, workerID)
+	if err != nil {
+		return TerminateResult{}, err
+	}
 	defer unlock()
 	reviews, err := e.store.ListReviewsBySession(ctx, workerID)
 	if err != nil {
@@ -1222,26 +1299,17 @@ func (e *Engine) TerminateReviewer(ctx stdctx.Context, workerID domain.SessionID
 			destroyedHandle = review.ReviewerHandleID
 		}
 	}
-	if len(reviews) > 0 {
-		if err := e.store.ClearReviewerHandle(ctx, workerID); err != nil {
-			return TerminateResult{}, err
-		}
-	}
 	if body == "" {
 		body = "cancelled by worker session lifecycle"
 	}
-	if _, err := e.store.CancelRunningReviewRunsBySession(ctx, workerID, body); err != nil {
+	if _, err := e.store.CancelReviewRunsAndClearHandle(ctx, workerID, "", body); err != nil {
 		return TerminateResult{}, err
 	}
-	cancelled := make([]domain.ReviewRun, 0, len(running))
-	for _, run := range running {
-		run.Status = domain.ReviewRunCancelled
-		run.Verdict = domain.VerdictNone
-		run.Body = body
-		run.GithubReviewID = ""
-		cancelled = append(cancelled, run)
+	runs, err := e.store.ListReviewRunsBySession(ctx, workerID)
+	if err != nil {
+		return TerminateResult{}, err
 	}
-	return TerminateResult{ReviewerHandleID: destroyedHandle, CancelledRuns: cancelled}, nil
+	return TerminateResult{ReviewerHandleID: destroyedHandle, CancelledRuns: cancelledReviewRuns(running, runs)}, nil
 }
 
 // reviewerHarness resolves which harness reviews the worker's PR: a persisted

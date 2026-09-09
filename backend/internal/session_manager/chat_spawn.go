@@ -55,6 +55,12 @@ type ChatLauncher interface {
 	StopChat(ctx context.Context, id domain.SessionID) error
 }
 
+// chatStartupStopper proves shutdown of the exact controller generation.
+// A missing in-memory controller after restart is an unknown outcome.
+type chatStartupStopper interface {
+	StopChatStartup(context.Context, domain.SessionID, string) (bool, error)
+}
+
 // ChatStart is what the launcher needs. It mirrors the terminal path's
 // LaunchConfig in spirit: everything resolved, nothing left to look up.
 type ChatStart struct {
@@ -138,6 +144,7 @@ func interfaceTransitionProviderBoundaryID(transitionID string) string {
 // chatSpawn bundles the shared state the chat launch needs from Spawn, so the
 // signature does not grow to a dozen positional arguments.
 type chatSpawn struct {
+	attempt          *spawnAttempt
 	cfg              ports.SpawnConfig
 	project          domain.ProjectRecord
 	projectKind      domain.ProjectKind
@@ -158,7 +165,6 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	id := in.record.ID
 	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, in.cfg.Harness)
 	if err != nil {
-		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false)
 		return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
 	}
 	defer releaseCodexAdmission()
@@ -183,6 +189,12 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		controllerCommitted bool
 		completionErr       error
 	)
+	in.attempt.fact.Stage = "controller_creating"
+	in.attempt.fact.ControllerPossible = true
+	if err := m.persistStartup(ctx, in.attempt); err != nil {
+		in.attempt.fact.ControllerPossible = false
+		return domain.SessionRecord{}, err
+	}
 	_, err = m.chat.StartChat(ctx, ChatStart{
 		SessionID:               id,
 		ProjectID:               in.cfg.ProjectID,
@@ -201,6 +213,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 				launchCtx, in.record, in.project.Config.Env, expected,
 			)
 			if prepareErr != nil {
+				in.attempt.fact.ControllerPossible = false
 				return nil, fmt.Errorf("%w: %w", ErrSpawnBrowser, prepareErr)
 			}
 			if agent, ok := m.agents.Agent(in.cfg.Harness); ok {
@@ -210,7 +223,10 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 			return launchEnv, nil
 		},
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
+			in.attempt.fact.Committed = true
+			in.attempt.fact.ControllerGeneration = started.ControllerGeneration
 			metadata := domain.SessionMetadata{
+				Startup:           in.attempt.snapshot(),
 				Permissions:       in.record.Metadata.Permissions,
 				Branch:            in.workspace.Branch,
 				WorkspacePath:     in.workspace.Path,
@@ -242,17 +258,13 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	})
 	if err != nil {
 		if completionErr != nil || controllerCommitted {
-			m.stopChatBestEffort(ctx, id)
-			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
-			m.markSpawnFailedTerminated(ctx, id)
 			if completionErr != nil {
 				return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnCommit, completionErr)
 			}
 			return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
 		}
-		// No controller exists, so nothing provider-side needs closing. The
-		// runtime was never touched, hence runtimeDestroyed=false.
-		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false)
+		// A failed launch may still own a provider process; the shared rollback
+		// verifies StopChat before removing its workspace.
 		return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
 	}
 
@@ -261,13 +273,13 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	// provider either accepts the turn or reports why.
 	if in.prompt != "" {
 		if _, err := m.chat.StartChatTurn(ctx, id, in.prompt); err != nil {
-			m.stopChatBestEffort(ctx, id)
-			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
-			m.markSpawnFailedTerminated(ctx, id)
 			return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err)
 		}
 	}
 
+	if err := m.finishStartup(ctx, in.attempt); err != nil {
+		return domain.SessionRecord{}, err
+	}
 	return m.getRecord(ctx, id)
 }
 

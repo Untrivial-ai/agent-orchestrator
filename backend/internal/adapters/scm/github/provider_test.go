@@ -1249,7 +1249,7 @@ func TestSCMThreadFromGraphQLMarksThreadBotOnlyWhenAllCommentsAreBots(t *testing
 	}
 }
 
-func TestSCMObservationUsesRollupStateWhenContextsPaginated(t *testing.T) {
+func TestSCMObservationRequiresCompleteContextsBeforeTrustingRollupFailure(t *testing.T) {
 	fx := basePRFixture()
 	var pr map[string]any
 	fx.prData(func(m map[string]any) {
@@ -1265,8 +1265,8 @@ func TestSCMObservationUsesRollupStateWhenContextsPaginated(t *testing.T) {
 		ctxs["pageInfo"] = map[string]any{"hasNextPage": true}
 	})
 	obs := scmObservationFromGraphQL(ports.SCMPRRef{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello", Repo: "octocat/hello"}, Number: 42}, pr)
-	if obs.CI.Summary != string(domain.CIFailing) {
-		t.Fatalf("observer CI summary = %q, want failing from aggregate rollup state", obs.CI.Summary)
+	if obs.CI.Summary != string(domain.CIUnknown) {
+		t.Fatalf("observer CI summary = %q, want unknown until hidden checks are classified", obs.CI.Summary)
 	}
 }
 

@@ -8058,6 +8058,8 @@ components:
           - mergeable
           - merged
           type: string
+        startup:
+          $ref: '#/components/schemas/SessionStartupView'
         status:
           enum:
           - working
@@ -10586,10 +10588,26 @@ components:
       - supported
       - targetMode
       type: object
+    SessionPRBlockedCheck:
+      properties:
+        name:
+          type: string
+        reason:
+          type: string
+        url:
+          type: string
+      required:
+      - name
+      - reason
+      type: object
     SessionPRCISummary:
       properties:
         autoInjectCI:
           type: boolean
+        blockedChecks:
+          items:
+            $ref: '#/components/schemas/SessionPRBlockedCheck'
+          type: array
         failingChecks:
           items:
             $ref: '#/components/schemas/SessionPRFailingCheck'
@@ -10904,6 +10922,23 @@ components:
           $ref: '#/components/schemas/ControllersSessionView'
       required:
       - session
+      type: object
+    SessionStartupView:
+      properties:
+        id:
+          type: string
+        lastError:
+          maxLength: 2048
+          type: string
+        stage:
+          type: string
+        startedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - stage
+      - startedAt
       type: object
     SessionUsageResponse:
       properties:

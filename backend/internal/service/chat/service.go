@@ -1490,6 +1490,32 @@ func (s *Service) StopChat(ctx context.Context, id domain.SessionID) error {
 	return s.Stop(ctx, id)
 }
 
+// StopChatStartup confirms shutdown only for a controller this service still
+// owns. Absence after a daemon restart cannot prove that its provider stopped.
+func (s *Service) StopChatStartup(ctx context.Context, id domain.SessionID, generation string) (bool, error) {
+	gate := s.controllerGate(id)
+	if err := gate.lock(ctx); err != nil {
+		return false, err
+	}
+	defer gate.unlock()
+	s.mu.RLock()
+	controller, ok := s.controllers[id]
+	s.mu.RUnlock()
+	if !ok || generation == "" || controller.Generation() != generation {
+		return false, nil
+	}
+	if err := controller.Terminate(ctx); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	if current := s.controllers[id]; current == controller {
+		delete(s.controllers, id)
+		delete(s.startConfigs, id)
+	}
+	s.mu.Unlock()
+	return true, nil
+}
+
 // permissionConfigOptions annotates only provider controls whose semantics are
 // known. In particular, plan and dontAsk are not AO approval policies.
 func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatConfigOption) []ports.ChatConfigOption {

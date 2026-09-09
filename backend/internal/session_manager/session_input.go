@@ -13,6 +13,7 @@ import (
 type agentOperationKind string
 
 const (
+	agentOperationSpawn              agentOperationKind = "spawn"
 	agentOperationSwitch             agentOperationKind = "switch"
 	agentOperationExit               agentOperationKind = "exit"
 	agentOperationResume             agentOperationKind = "resume"

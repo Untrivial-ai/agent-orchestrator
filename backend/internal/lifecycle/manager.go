@@ -1481,6 +1481,7 @@ func sameActivity(a, b domain.Activity) bool {
 }
 
 func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
+	base.Startup = in.Startup
 	set := func(dst *string, v string) {
 		if v != "" {
 			*dst = v
