@@ -78,7 +78,8 @@ type hostEntry struct {
 	tokens  scmgitlab.TokenSource
 }
 
-// Tracker implements ports.Tracker against the GitLab GraphQL Work Items API.
+// Tracker implements ports.Tracker against the GitLab API. List and Get use
+// GraphQL Work Items; Preflight uses REST.
 //
 // Construction performs a fail-fast token presence check (no network call).
 // The first Preflight call validates the token against GitLab itself; a

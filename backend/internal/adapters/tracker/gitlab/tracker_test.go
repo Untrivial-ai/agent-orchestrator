@@ -827,6 +827,66 @@ func TestList_EmptyResults(t *testing.T) {
 	}
 }
 
+func TestList_NullDescription(t *testing.T) {
+	f := newFakeGL(t)
+	f.on("POST", "/graphql", func(w http.ResponseWriter, r *http.Request) {
+		// Work item with null description in the GraphQL response
+		_, _ = w.Write([]byte(`{"data":{"project":{"workItems":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[{"iid":"1","title":"no desc","description":"","state":"opened","webUrl":"https://gitlab.com/o/r/-/issues/1","widgets":[]}]}}}}`))
+	})
+	tr := newTrackerForTest(t, f)
+	issues, err := tr.List(ctx(), domain.TrackerRepo{Provider: domain.TrackerProviderGitLab, Native: "o/r"}, domain.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("len = %d, want 1", len(issues))
+	}
+	if issues[0].Body != "" {
+		t.Fatalf("Body = %q, want empty string", issues[0].Body)
+	}
+}
+
+func TestList_BothLabelsAndAssignees(t *testing.T) {
+	f := newFakeGL(t)
+	f.on("POST", "/graphql", func(w http.ResponseWriter, r *http.Request) {
+		wi := workItemJSON(1, "full", "body", "opened",
+			"https://gitlab.com/o/r/-/issues/1",
+			[]string{"bug", "critical"}, []string{"alice", "bob"})
+		_, _ = w.Write([]byte(`{"data":` + workItemsListJSON([]string{wi}, "", false) + `}`))
+	})
+	tr := newTrackerForTest(t, f)
+	issues, err := tr.List(ctx(), domain.TrackerRepo{Provider: domain.TrackerProviderGitLab, Native: "o/r"}, domain.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("len = %d, want 1", len(issues))
+	}
+	if len(issues[0].Labels) != 2 || issues[0].Labels[0] != "bug" || issues[0].Labels[1] != "critical" {
+		t.Fatalf("Labels = %#v, want [bug critical]", issues[0].Labels)
+	}
+	if len(issues[0].Assignees) != 2 || issues[0].Assignees[0] != "alice" || issues[0].Assignees[1] != "bob" {
+		t.Fatalf("Assignees = %#v, want [alice bob]", issues[0].Assignees)
+	}
+}
+
+func TestList_FirstStaysAtPageSizeWhenLimitExceeds(t *testing.T) {
+	f := newFakeGL(t)
+	f.on("POST", "/graphql", func(w http.ResponseWriter, r *http.Request) {
+		vars := gqlVars(t, readBody(r))
+		first := vars["first"]
+		if first != float64(listPageSize) {
+			t.Errorf("first = %v, want %d (listPageSize) even when Limit > 100", first, listPageSize)
+		}
+		_, _ = w.Write([]byte(`{"data":` + workItemsListJSON(nil, "", false) + `}`))
+	})
+	tr := newTrackerForTest(t, f)
+	_, err := tr.List(ctx(), domain.TrackerRepo{Provider: domain.TrackerProviderGitLab, Native: "o/r"}, domain.ListFilter{Limit: 9999})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Domain validation
 // ---------------------------------------------------------------------------
