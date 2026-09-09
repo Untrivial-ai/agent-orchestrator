@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { LoaderCircle, PanelRight, Plus } from "lucide-react";
-import { useBlocker } from "@tanstack/react-router";
+import { LoaderCircle, PanelRight, Plus, RotateCw } from "lucide-react";
+import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { motion, useReducedMotion } from "motion/react";
 import {
 	useCallback,
@@ -40,6 +40,7 @@ import {
 	SessionInterfaceTransitionNotice,
 } from "./SessionInterfaceSwitch";
 import { ShellTopbar } from "./ShellTopbar";
+import { DropdownMenuItem } from "./ui/dropdown-menu";
 import { SwitchAgentDialog } from "./SwitchAgentDialog";
 import { SessionTopbarHost } from "./SessionTopbarPortal";
 import { TerminalSwitchAgentButton } from "./TerminalSwitchAgentButton";
@@ -69,6 +70,7 @@ import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { sessionWorkspaceFilesQueryOptions } from "../hooks/useSessionWorkspaceFiles";
 import { matchWorkspaceFilePath } from "../lib/workspace-file-path";
 import { aoBridge } from "../lib/bridge";
@@ -524,6 +526,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[sessionId],
 	);
 	const queryClient = useQueryClient();
+	const navigate = useNavigate();
+	const setProjectRestarting = useUiStore((state) => state.setProjectRestarting);
+	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const refreshWorkspaces = useCallback(
 		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
 		[queryClient],
@@ -1125,6 +1130,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		);
 	}, [availableReviewerTerminal, reviewerQuery.isFetched]);
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
+	const isProjectRestarting = useUiStore((state) =>
+		session ? state.restartingProjectIds.has(session.workspaceId) : false,
+	);
+	const restartOrchestrator = useCallback(async () => {
+		if (!session) return;
+		await restartProjectOrchestrator({
+			projectId: session.workspaceId,
+			queryClient,
+			navigate,
+			setProjectRestarting,
+			setOrchestratorReplacementError,
+		});
+	}, [session, queryClient, navigate, setProjectRestarting, setOrchestratorReplacementError]);
 	// Orchestrators get the full workspace width; only workers need the inspector rail.
 	const hasInspector = Boolean(session && !isOrchestrator);
 	const sizing = useMemo(() => inspectorSizing(inspectorView), [inspectorView]);
@@ -1536,12 +1554,33 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			switchError={handoffSwitchError}
 		/>
 	) : null, [handoffAgentSwitch, handoffControlPresentation, handoffDialogOpen, handoffSwitchError, handleHandoffDialogOpenChange, session]);
+	// Manual counterpart to the health-banner restart on the board topbar: that
+	// one only appears once AO's own health check flags the orchestrator as
+	// stuck (restart_needed/duplicates). Project config changes
+	// (agentRules/orchestratorRules, including file-based rules read at spawn
+	// time) never trigger that health check, and resuming an existing
+	// conversation cannot pick up a changed system prompt at all (the
+	// underlying ACP session-load path keys off the conversation id, not
+	// content) — a fresh orchestrator session is the only way. This surfaces
+	// that fresh-spawn path from inside the session itself, since a user
+	// wanting to pick up a rules edit is looking at the orchestrator, not the
+	// board.
+	const restartMenuItem = useMemo(() =>
+		session && isOrchestrator ? (
+			<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => void restartOrchestrator()}>
+				<RotateCw aria-hidden="true" className="size-icon-lg" />
+				{t("shell.restart")}
+			</DropdownMenuItem>
+		) : null,
+		[isOrchestrator, isProjectRestarting, restartOrchestrator, session, t],
+	);
 	const sessionTabActions = useMemo(() => (
 		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
+			{restartMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
-	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem]);
+	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem, restartMenuItem]);
 	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
 	// wider action slot while switching.
 	const sessionTabActionWide = false;

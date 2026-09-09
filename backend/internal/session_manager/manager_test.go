@@ -4461,6 +4461,35 @@ func TestSpawnOrchestrator_ProjectRulesInSystemPrompt(t *testing.T) {
 	}
 }
 
+// TestSpawnOrchestrator_OrchestratorRulesFileInSystemPrompt covers
+// OrchestratorRulesFile: a repo-relative file read fresh on every spawn and
+// restore, mirroring AgentRulesFile for the worker role. Unlike inline
+// OrchestratorRules (persisted as config text), editing this file's contents
+// takes effect on the session's next spawn/restore without any config write.
+func TestSpawnOrchestrator_OrchestratorRulesFileInSystemPrompt(t *testing.T) {
+	dir := t.TempDir()
+	rulesPath := filepath.Join(dir, "orchestrator-rules.md")
+	if err := os.WriteFile(rulesPath, []byte("Delegate architecture reviews to architect-agent.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testRoleAgents()
+	cfg.OrchestratorRulesFile = "orchestrator-rules.md"
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: dir, Config: cfg}
+	agent := &recordingAgent{}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	m := New(Deps{Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator}); err != nil {
+		t.Fatal(err)
+	}
+
+	systemPrompt := agent.lastLaunch.SystemPrompt
+	if !strings.Contains(systemPrompt, "Delegate architecture reviews to architect-agent.") {
+		t.Fatalf("orchestratorRulesFile contents missing from system prompt:\n%s", systemPrompt)
+	}
+}
+
 func TestSpawnOrchestrator_WorkspaceProjectPromptListsRepos(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}

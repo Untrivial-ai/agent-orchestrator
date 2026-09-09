@@ -157,9 +157,9 @@ func TestBuildProjectRules_ReadsInlineAndFileRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := buildProjectRules(projectRulesConfig{
-		ProjectPath:    dir,
-		AgentRules:     "Inline rule.",
-		AgentRulesFile: "rules.md",
+		ProjectPath: dir,
+		Rules:       "Inline rule.",
+		RulesFile:   "rules.md",
 	})
 	if err != nil {
 		t.Fatal(err)

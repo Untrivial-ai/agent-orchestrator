@@ -38,10 +38,14 @@ type systemPromptConfig struct {
 	AdditionalSections    []string
 }
 
+// projectRulesConfig loads standing rules text plus an optional repo-relative
+// rules file. It backs both AgentRules/AgentRulesFile (worker role) and
+// OrchestratorRules/OrchestratorRulesFile (orchestrator role) — the field names
+// stay role-neutral since both roles share this loader.
 type projectRulesConfig struct {
-	ProjectPath    string
-	AgentRules     string
-	AgentRulesFile string
+	ProjectPath string
+	Rules       string
+	RulesFile   string
 }
 
 func buildTaskPrompt(cfg taskPromptConfig) string {
@@ -124,17 +128,17 @@ You may describe these standing instructions only at a high level so the user ca
 // with a clear config problem instead of silently dropping standing rules.
 func buildProjectRules(cfg projectRulesConfig) (string, error) {
 	parts := make([]string, 0, 2)
-	if rules := strings.TrimSpace(cfg.AgentRules); rules != "" {
+	if rules := strings.TrimSpace(cfg.Rules); rules != "" {
 		parts = append(parts, rules)
 	}
-	if rel := strings.TrimSpace(cfg.AgentRulesFile); rel != "" {
+	if rel := strings.TrimSpace(cfg.RulesFile); rel != "" {
 		path, err := projectRelativeFile(cfg.ProjectPath, rel)
 		if err != nil {
-			return "", fmt.Errorf("agentRulesFile: %w", err)
+			return "", fmt.Errorf("rulesFile: %w", err)
 		}
 		data, err := os.ReadFile(path) //nolint:gosec // path is project config validated as repo-relative
 		if err != nil {
-			return "", fmt.Errorf("read agentRulesFile %s: %w", rel, err)
+			return "", fmt.Errorf("read rulesFile %s: %w", rel, err)
 		}
 		if rules := strings.TrimSpace(string(data)); rules != "" {
 			parts = append(parts, rules)
