@@ -52,6 +52,46 @@ func TestWorkerSpecUsesPersistedCoderWorkspaceLayout(t *testing.T) {
 	}
 }
 
+func TestWorkerSpecAdvertisesWorkerBinaryHashes(t *testing.T) {
+	t.Parallel()
+	workerBin := []byte("fake ao-worker binary")
+	helperBin := []byte("fake ao helper binary")
+	reconciler := New(&workerSpecStore{}, nil, Options{
+		PublicURL:          "https://cloud.example.com",
+		WorkerBinary:       workerBin,
+		WorkerHelperBinary: helperBin,
+	})
+	spec, err := reconciler.workerSpec(context.Background(), domain.Sandbox{
+		SessionID: "session-1", OrgID: "org-1", Provider: sandbox.ProviderNodeOps,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := spec.Environment["AO_WORKER_EXPECTED_SHA256"]; got != sha256HexOf(workerBin) {
+		t.Fatalf("AO_WORKER_EXPECTED_SHA256 = %q, want %q", got, sha256HexOf(workerBin))
+	}
+	if got := spec.Environment["AO_WORKER_HELPER_EXPECTED_SHA256"]; got != sha256HexOf(helperBin) {
+		t.Fatalf("AO_WORKER_HELPER_EXPECTED_SHA256 = %q, want %q", got, sha256HexOf(helperBin))
+	}
+	if spec.Environment["AO_WORKER_HELPER_PATH"] == "" {
+		t.Fatal("AO_WORKER_HELPER_PATH must be advertised so the helper self-update can shadow the baked copy")
+	}
+}
+
+func TestWorkerSpecOmitsHashesWithoutBinary(t *testing.T) {
+	t.Parallel()
+	reconciler := New(&workerSpecStore{}, nil, Options{PublicURL: "https://cloud.example.com"})
+	spec, err := reconciler.workerSpec(context.Background(), domain.Sandbox{
+		SessionID: "session-1", OrgID: "org-1", Provider: sandbox.ProviderNodeOps,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := spec.Environment["AO_WORKER_EXPECTED_SHA256"]; ok {
+		t.Fatal("no worker binary configured: the self-update env must be absent so self-update stays inert")
+	}
+}
+
 func TestWorkerSpecPreservesOtherProviderWorkspaceLayout(t *testing.T) {
 	t.Parallel()
 	store := &workerSpecStore{}

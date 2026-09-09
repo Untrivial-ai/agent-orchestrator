@@ -160,7 +160,10 @@ type Server struct {
 	webhookMaxBody          int64
 	terminalStreamEnabled   bool
 	terminalStreams         *terminalStreams
-	handler                 http.Handler
+	// workerBinariesBySHA serves the content-addressed worker/helper binaries
+	// so a worker with a stale baked copy can heal itself to this exact build.
+	workerBinariesBySHA map[string][]byte
+	handler             http.Handler
 }
 
 type Options struct {
@@ -173,6 +176,8 @@ type Options struct {
 	Provisioning              sandbox.ProvisioningDefaults
 	WorkerTokens              WorkerTokens
 	WorkerTokenTTL            time.Duration
+	WorkerBinary              []byte
+	WorkerHelperBinary        []byte
 	WorkerRequestTimeout      time.Duration
 	MaxSandboxes              int
 	Environment               string
@@ -256,6 +261,7 @@ func New(options Options) *Server {
 		terminalStreamEnabled:     options.TerminalStreamEnabled,
 		terminalStreams:           newTerminalStreams(),
 	}
+	server.workerBinariesBySHA = indexWorkerBinaries(options.WorkerBinary, options.WorkerHelperBinary)
 	if server.credentialValidator == nil {
 		server.credentialValidator = newAgentCredentialValidator(nil)
 	}
@@ -316,9 +322,18 @@ func New(options Options) *Server {
 		// server.authenticate. Bootstrap is gated by a one-time ticket;
 		// everything after it by a short-lived worker token.
 		router.Post("/worker/bootstrap", server.workerBootstrap)
+		// A worker heals a stale baked binary by fetching the exact version the
+		// control plane runs, addressed by its hash. The bytes are not secret —
+		// they ship in every sandbox image — so this is content-addressed and
+		// unauthenticated like bootstrap itself.
+		router.Get("/worker/binary/{sha256}", server.serveWorkerBinary)
 		router.Group(func(router chi.Router) {
 			router.Use(server.workerAuth)
 			router.Post("/worker/heartbeat", server.workerHeartbeat)
+			// A restarted worker re-presents its persisted token and asks for its
+			// durable launch context here, so it never redeems a fresh bootstrap
+			// ticket for a sandbox it is already registered on.
+			router.Get("/worker/reconnect", server.workerReconnect)
 			router.Post("/worker/events", server.workerEvent)
 			router.Post("/worker/turns/claim", server.workerClaimTurn)
 			router.Get("/worker/turns/{turnId}/cancellation", server.workerTurnCancellation)

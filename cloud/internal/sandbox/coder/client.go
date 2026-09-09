@@ -370,6 +370,15 @@ func (c *Client) selectAgent(view workspace) (workspaceAgent, bool) {
 // BootstrapWorker installs and starts AO through the Coder agent PTY. The
 // bootstrap archive travels as terminal input, so worker credentials never
 // appear in the Coder request URL, process arguments, or control-plane logs.
+//
+// The archive still carries the worker binary because the Coder workspace
+// template is customer-operated and external: this repo cannot bake ao-worker
+// into it. The launch environment written here already includes
+// AO_WORKER_EXPECTED_SHA256, so a baked coder worker self-heals to the control
+// plane's exact build. Eliminating the multi-megabyte stream (mirroring the
+// createos launch-baked path) is a fast-follow gated on the customer template
+// baking ao-worker at Destination; until then the stream remains the delivery
+// channel.
 func (c *Client) BootstrapWorker(ctx context.Context, id sandbox.ID, bootstrap sandbox.WorkerBootstrap) error {
 	if err := validateBootstrap(bootstrap); err != nil {
 		return err

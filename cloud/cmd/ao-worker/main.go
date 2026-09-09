@@ -81,9 +81,9 @@ func run(logger *slog.Logger) error {
 	if sessionID == "" {
 		return errors.New("AO_CLOUD_SESSION_ID is required")
 	}
-	if bootstrapToken == "" {
-		return errors.New("AO_WORKER_BOOTSTRAP_TOKEN is required")
-	}
+	// AO_WORKER_BOOTSTRAP_TOKEN is not required up front: a restarted worker
+	// reconnects with its persisted token, and connect() validates that a ticket
+	// is present only when no valid token exists.
 	if workspace == "" {
 		return errors.New("AO_WORKSPACE_DIR is required")
 	}
@@ -109,21 +109,25 @@ func run(logger *slog.Logger) error {
 		tokenFile: filepath.Join(dataDir, "worker-token"),
 	}
 
-	bootstrap, err := client.bootstrap(ctx, bootstrapToken)
+	// Heal a stale baked binary before any credential-bearing work, so the
+	// control plane's exact worker version runs even when the template lags a
+	// deployment. A no-op when the control plane advertised no expected hash.
+	if err := selfUpdateIfStale(ctx, logger, publicURL, dataDir); err != nil {
+		logger.Warn("worker self-update check failed; continuing", "error", err)
+	}
+
+	bootstrap, err := client.connect(ctx, logger, bootstrapToken)
 	if err != nil {
-		return fmt.Errorf("bootstrap: %w", err)
-	}
-	if bootstrap.SessionID != sessionID {
-		return errors.New("bootstrap session does not match AO_CLOUD_SESSION_ID")
-	}
-	// The ticket is single-use and now spent; from here the only credential is
-	// the rotating worker token.
-	_ = os.Unsetenv("AO_WORKER_BOOTSTRAP_TOKEN")
-	bootstrapToken = ""
-	if err := client.setToken(bootstrap.WorkerToken); err != nil {
 		return err
 	}
-	logger.Info("worker bootstrapped",
+	if bootstrap.SessionID != sessionID {
+		return errors.New("worker session does not match AO_CLOUD_SESSION_ID")
+	}
+	// Any ticket was single-use and is now spent; from here the only credential
+	// is the rotating worker token, already persisted by connect.
+	_ = os.Unsetenv("AO_WORKER_BOOTSTRAP_TOKEN")
+	bootstrapToken = ""
+	logger.Info("worker connected",
 		"session_id", bootstrap.SessionID,
 		"worker_id", bootstrap.WorkerID,
 		"epoch", bootstrap.Epoch,
@@ -366,6 +370,74 @@ func (c *client) bootstrap(ctx context.Context, bootstrapToken string) (worker.B
 	}
 	if response.WorkerToken == "" {
 		return worker.BootstrapResponse{}, errors.New("control plane returned no worker token")
+	}
+	return response, nil
+}
+
+// connect establishes the worker's live credential. It prefers a persisted
+// token so a rebooted or crash-restarted worker reconnects without a fresh
+// ticket — the single-use bootstrap ticket baked into the sandbox environment is
+// only spent to register a genuinely new sandbox. It falls back to redeeming the
+// ticket when no valid token exists.
+func (c *client) connect(
+	ctx context.Context, logger *slog.Logger, bootstrapToken string,
+) (worker.BootstrapResponse, error) {
+	if persisted := c.loadPersistedToken(); persisted != "" {
+		c.mu.Lock()
+		c.token = persisted
+		c.mu.Unlock()
+		if renewed, err := c.heartbeat(ctx); err == nil {
+			if err := c.setToken(renewed); err != nil {
+				return worker.BootstrapResponse{}, err
+			}
+			resp, err := c.reconnect(ctx)
+			if err == nil {
+				logger.Info("worker reconnected with a persisted credential",
+					"session_id", resp.SessionID, "worker_id", resp.WorkerID, "epoch", resp.Epoch)
+				return resp, nil
+			}
+			logger.Warn("reconnect after heartbeat failed; bootstrapping fresh", "error", err)
+		} else {
+			logger.Info("persisted worker credential is no longer valid; bootstrapping fresh", "error", err)
+		}
+		c.mu.Lock()
+		c.token = ""
+		c.mu.Unlock()
+	}
+	if strings.TrimSpace(bootstrapToken) == "" {
+		return worker.BootstrapResponse{}, errors.New(
+			"no valid worker credential and AO_WORKER_BOOTSTRAP_TOKEN is required")
+	}
+	resp, err := c.bootstrap(ctx, bootstrapToken)
+	if err != nil {
+		return worker.BootstrapResponse{}, fmt.Errorf("bootstrap: %w", err)
+	}
+	if err := c.setToken(resp.WorkerToken); err != nil {
+		return worker.BootstrapResponse{}, err
+	}
+	return resp, nil
+}
+
+func (c *client) loadPersistedToken() string {
+	if c.tokenFile == "" {
+		return ""
+	}
+	data, err := os.ReadFile(c.tokenFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// reconnect fetches the durable launch context for a worker that re-presented a
+// persisted token, so a restart does not need to redeem a bootstrap ticket.
+func (c *client) reconnect(ctx context.Context) (worker.BootstrapResponse, error) {
+	var response worker.BootstrapResponse
+	if err := c.doMethod(ctx, http.MethodGet, "/worker/reconnect", nil, &response); err != nil {
+		return worker.BootstrapResponse{}, err
+	}
+	if response.SessionID == "" {
+		return worker.BootstrapResponse{}, errors.New("control plane returned no session on reconnect")
 	}
 	return response, nil
 }

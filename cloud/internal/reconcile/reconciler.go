@@ -5,6 +5,8 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -142,6 +144,19 @@ type Reconciler struct {
 	owner     string
 	lease     time.Duration
 	log       *slog.Logger
+	// workerBinarySHA256 and workerHelperBinarySHA256 are advertised to each
+	// worker in its environment so a stale baked copy can self-update to this
+	// exact build instead of the control plane uploading it on every provision.
+	workerBinarySHA256       string
+	workerHelperBinarySHA256 string
+}
+
+func sha256HexOf(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // New creates a sandbox reconciler.
@@ -195,12 +210,14 @@ func New(store Store, providers Resolver, options Options) *Reconciler {
 		options.Logger = slog.Default()
 	}
 	return &Reconciler{
-		store:     store,
-		providers: providers,
-		options:   options,
-		owner:     uuid.NewString(),
-		lease:     options.LeaseDuration,
-		log:       options.Logger,
+		store:                    store,
+		providers:                providers,
+		options:                  options,
+		owner:                    uuid.NewString(),
+		lease:                    options.LeaseDuration,
+		log:                      options.Logger,
+		workerBinarySHA256:       sha256HexOf(options.WorkerBinary),
+		workerHelperBinarySHA256: sha256HexOf(options.WorkerHelperBinary),
 	}
 }
 
@@ -1106,6 +1123,17 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 	}
 	if r.options.TerminalStreamEnabled {
 		workerEnvironment["AO_CLOUD_TERMINAL_STREAM"] = "1"
+	}
+	// Advertise the exact binary hashes this control plane runs so a worker with
+	// a stale baked copy heals itself from /worker/binary/{sha} instead of the
+	// reconciler uploading megabytes on every provision. Absent hashes (no worker
+	// binary configured) leave self-update inert.
+	if r.workerBinarySHA256 != "" {
+		workerEnvironment["AO_WORKER_EXPECTED_SHA256"] = r.workerBinarySHA256
+	}
+	if r.workerHelperBinarySHA256 != "" {
+		workerEnvironment["AO_WORKER_HELPER_EXPECTED_SHA256"] = r.workerHelperBinarySHA256
+		workerEnvironment["AO_WORKER_HELPER_PATH"] = r.options.WorkerHelperDestination
 	}
 	return sandbox.Spec{
 		Name:             "ao-" + record.SessionID,
