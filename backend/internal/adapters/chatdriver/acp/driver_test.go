@@ -35,7 +35,9 @@ type fakeAgent struct {
 	loadCalls           int
 	resumeCalls         int
 	promptParams        acpsdk.PromptRequest
+	promptHistory       []acpsdk.PromptRequest
 	promptNoPermission  bool
+	promptExtension     string
 	elicitation         *acpsdk.UnstableCreateElicitationRequest
 	elicitationResponse acpsdk.UnstableCreateElicitationResponse
 	promptErr           error
@@ -346,7 +348,10 @@ func (a *fakeAgent) SetSessionMode(_ context.Context, params acpsdk.SetSessionMo
 func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsdk.PromptResponse, error) {
 	a.mu.Lock()
 	a.promptParams = params
+	a.promptHistory = append(a.promptHistory, params)
+	promptNumber := len(a.promptHistory)
 	promptNoPermission := a.promptNoPermission
+	promptExtension := a.promptExtension
 	elicitation := a.elicitation
 	promptErr := a.promptErr
 	promptBlock := a.promptBlock
@@ -354,6 +359,11 @@ func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (ac
 	a.mu.Unlock()
 	if promptErr != nil {
 		return acpsdk.PromptResponse{}, promptErr
+	}
+	if promptNumber == 1 && promptExtension != "" {
+		if _, err := a.conn.CallExtension(ctx, promptExtension, map[string]any{}); err != nil {
+			return acpsdk.PromptResponse{}, err
+		}
 	}
 	if promptBlock {
 		if promptStarted != nil {
@@ -402,6 +412,72 @@ func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (ac
 		})
 	}
 	return acpsdk.PromptResponse{StopReason: acpsdk.StopReasonEndTurn}, nil
+}
+
+func TestACPDriverContinuesTheActiveTurnAfterAnExtensionRequest(t *testing.T) {
+	agent := &fakeAgent{promptNoPermission: true, promptExtension: "_test/continue"}
+	driver := New(Config{
+		Harness: domain.HarnessCursor,
+		Probe:   func(context.Context) error { return nil },
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			return Launch{Command: "fake"}, nil
+		},
+		ClientExtension: func(
+			ctx context.Context,
+			bridge ClientExtensionBridge,
+			method string,
+			_ json.RawMessage,
+		) (any, bool, error) {
+			if method != "test/continue" {
+				return nil, false, nil
+			}
+			if err := bridge.RequestTurnContinuation(ctx, "Implement the approved plan now."); err != nil {
+				return nil, true, err
+			}
+			return map[string]any{"outcome": "accepted"}, true, nil
+		},
+		ClientExtensionAliases: map[string]string{"test/continue": "_test/continue"},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.spawn = fakeSpawn(agent)
+
+	conversation, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		WorkspacePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conversation.Close()
+	_ = nextEvent(t, conversation.Events()) // controller.ready
+	ref, err := conversation.SendTurn(context.Background(), ports.ChatUserMessage{Text: "Make a plan."})
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if err := conversation.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+		t.Fatalf("StartDeferredTurn: %v", err)
+	}
+	started, completed := 0, 0
+	for completed == 0 {
+		event := nextEvent(t, conversation.Events())
+		switch event.Kind {
+		case ports.ChatEventTurnStarted:
+			started++
+		case ports.ChatEventTurnCompleted:
+			completed++
+			if event.TurnState != domain.TurnStateCompleted {
+				t.Fatalf("turn state = %q", event.TurnState)
+			}
+		}
+	}
+	agent.mu.Lock()
+	history := append([]acpsdk.PromptRequest(nil), agent.promptHistory...)
+	agent.mu.Unlock()
+	if started != 1 || completed != 1 || len(history) != 2 {
+		t.Fatalf("turn events/prompts = started %d, completed %d, prompts %d", started, completed, len(history))
+	}
+	if len(history[1].Prompt) != 1 || history[1].Prompt[0].Text == nil ||
+		history[1].Prompt[0].Text.Text != "Implement the approved plan now." {
+		t.Fatalf("continuation prompt = %#v", history[1].Prompt)
+	}
 }
 
 func TestACPDriverDefersPromptUntilDurableTurnBinding(t *testing.T) {

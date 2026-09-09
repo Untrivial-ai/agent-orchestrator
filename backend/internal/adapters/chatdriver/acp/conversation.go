@@ -89,6 +89,7 @@ type conversation struct {
 	sessionID         string
 	capabilities      ports.ChatCapabilities
 	prepared          *preparedTurn
+	continuation      []acpsdk.ContentBlock
 	activeTurn        string
 	settlingTurn      string
 	turnCancel        context.CancelFunc
@@ -427,6 +428,7 @@ func (c *conversation) StartDeferredTurn(providerTurnID string) error {
 	}
 	turn := *c.prepared
 	c.prepared = nil
+	c.continuation = nil
 	c.activeTurn = turn.id
 	c.settlingTurn = ""
 	turnCtx, cancel := context.WithCancel(context.Background())
@@ -457,11 +459,22 @@ func (c *conversation) runTurn(ctx context.Context, sessionID string, turn prepa
 	if messageID == "" {
 		messageID = uuid.NewString()
 	}
-	resp, err := c.conn.Prompt(ctx, acpsdk.PromptRequest{
-		SessionId: acpsdk.SessionId(sessionID),
-		MessageId: &messageID,
-		Prompt:    turn.prompt,
-	})
+	prompt := turn.prompt
+	var resp acpsdk.PromptResponse
+	var err error
+	for {
+		resp, err = c.conn.Prompt(ctx, acpsdk.PromptRequest{
+			SessionId: acpsdk.SessionId(sessionID),
+			MessageId: &messageID,
+			Prompt:    prompt,
+		})
+		continuation := c.takeTurnContinuation(turn.id)
+		if err != nil || resp.StopReason != acpsdk.StopReasonEndTurn || len(continuation) == 0 {
+			break
+		}
+		messageID = uuid.NewString()
+		prompt = continuation
+	}
 
 	c.mu.Lock()
 	c.settlingTurn = turn.id
@@ -521,6 +534,44 @@ func (c *conversation) runTurn(ctx context.Context, sessionID string, turn prepa
 		}
 	}
 	c.mu.Unlock()
+}
+
+// RequestTurnContinuation schedules one provider prompt after the current ACP
+// prompt returns. It remains part of the active AO turn, so provider-specific
+// approval flows can perform an explicit user-approved transition without
+// creating an unattributed or detached durable turn.
+func (c *conversation) RequestTurnContinuation(ctx context.Context, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) == "" {
+		return errors.New("ACP turn continuation is empty")
+	}
+	prompt, err := c.promptContent(ports.ChatUserMessage{Text: text})
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.activeTurn == "" || c.settlingTurn != "" {
+		return ports.ErrChatNoActiveTurn
+	}
+	if len(c.continuation) > 0 {
+		return errors.New("ACP turn continuation is already scheduled")
+	}
+	c.continuation = prompt
+	return nil
+}
+
+func (c *conversation) takeTurnContinuation(turnID string) []acpsdk.ContentBlock {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.activeTurn != turnID {
+		return nil
+	}
+	prompt := c.continuation
+	c.continuation = nil
+	return prompt
 }
 
 func turnState(reason acpsdk.StopReason) domain.TurnState {
