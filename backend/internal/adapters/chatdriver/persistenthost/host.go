@@ -33,6 +33,8 @@ const (
 	startupTimeout   = 10 * time.Second
 	// Host hello is local control-plane I/O and must not stall daemon recovery.
 	handshakeTimeout = time.Second
+	// A stalled controller is detached; its provider and replay state survive.
+	controllerWriteTimeout = 5 * time.Second
 )
 
 // Protocol selects the provider-wire behavior owned by the host.
@@ -522,6 +524,8 @@ func Shutdown(ctx context.Context, dataDir, sessionID string) error {
 
 // Run owns the provider until it exits or an authenticated shutdown arrives.
 func Run(ctx context.Context, cfg Config) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if len(cfg.Argv) == 0 || !filepath.IsAbs(cfg.Workdir) {
 		return errors.New("chat host requires provider argv and absolute workdir")
 	}
@@ -580,7 +584,12 @@ func Run(ctx context.Context, cfg Config) error {
 			_ = killProviderProcess(context.WithoutCancel(ctx), child)
 			return err
 		}
-		defer func() { _ = h.acp.close(context.WithoutCancel(ctx)) }()
+		defer func() {
+			cancel()
+			h.outputMu.Lock()
+			defer h.outputMu.Unlock()
+			_ = h.acp.close(context.WithoutCancel(ctx))
+		}()
 	}
 	h.cond = sync.NewCond(&h.mu)
 	providerDone := make(chan error, 1)
@@ -605,6 +614,7 @@ func Run(ctx context.Context, cfg Config) error {
 	case runErr = <-providerDone:
 		_ = killProviderProcess(context.WithoutCancel(ctx), child)
 	case <-h.shutdown:
+		cancel()
 		stopProvider()
 	case <-ctx.Done():
 		runErr = ctx.Err()
@@ -615,6 +625,7 @@ func Run(ctx context.Context, cfg Config) error {
 			return err
 		}
 	}
+	cancel()
 	_ = listener.Close()
 	_ = child.Wait()
 	return runErr
@@ -628,6 +639,10 @@ type host struct {
 	token    string
 	acp      *acpRelay
 
+	// outputMu orders controller replay, live frames and relay responses. Take it
+	// before mu, and release mu for network I/O. Detach never needs outputMu.
+	// Relay state also stays stable while its journal is replayed to a controller.
+	outputMu         sync.Mutex
 	mu               sync.Mutex
 	cond             *sync.Cond
 	client           net.Conn
@@ -657,6 +672,12 @@ func (h *host) accept() error {
 }
 
 func (h *host) handle(conn net.Conn) {
+	defer h.detach(conn)
+	stop := context.AfterFunc(h.ctx, func() { _ = conn.Close() })
+	defer stop()
+	if err := conn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return
+	}
 	reader := bufio.NewReader(conn)
 	var request hello
 	if err := json.NewDecoder(reader).Decode(&request); err != nil {
@@ -686,11 +707,42 @@ func (h *host) handle(conn net.Conn) {
 	}
 
 	h.mu.Lock()
+	attached := h.client != nil
+	h.mu.Unlock()
+	if attached {
+		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrAttached.Error()})
+		return
+	}
+	generation, err := h.attachController(conn)
+	if err != nil {
+		return
+	}
+
+	for {
+		frame, readErr := reader.ReadBytes('\n')
+		if len(frame) > 0 {
+			if err := h.forwardClientFrame(conn, generation, frame); err != nil {
+				return
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
+}
+
+func (h *host) attachController(conn net.Conn) (uint64, error) {
+	h.outputMu.Lock()
+	defer h.outputMu.Unlock()
+	h.mu.Lock()
 	if h.client != nil {
 		h.mu.Unlock()
 		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrAttached.Error()})
-		_ = conn.Close()
-		return
+		return 0, ErrAttached
+	}
+	if err := h.ctx.Err(); err != nil {
+		h.mu.Unlock()
+		return 0, err
 	}
 	h.client = conn
 	h.clientGeneration++
@@ -699,16 +751,30 @@ func (h *host) handle(conn net.Conn) {
 	if h.acp != nil {
 		response.ACPState = h.acp.snapshot()
 	}
+	detached := append([][]byte(nil), h.detached...)
+	h.mu.Unlock()
 	writeErr := json.NewEncoder(conn).Encode(response)
+	if writeErr == nil {
+		// The authenticated controller outlives the hello budget. Replay has one
+		// total write budget, including every journal span and detached frame.
+		writeErr = conn.SetDeadline(time.Time{})
+	}
+	if writeErr == nil {
+		writeErr = conn.SetWriteDeadline(time.Now().Add(controllerWriteTimeout))
+	}
 	if writeErr == nil && h.acp != nil {
 		writeErr = h.acp.replayTo(h.ctx, conn)
 	}
 	if writeErr == nil {
-		for _, frame := range h.detached {
+		for _, frame := range detached {
 			if _, writeErr = conn.Write(frame); writeErr != nil {
 				break
 			}
 		}
+	}
+	h.mu.Lock()
+	if writeErr == nil && h.client != conn {
+		writeErr = net.ErrClosed
 	}
 	if writeErr == nil {
 		h.detached = h.detached[:0]
@@ -719,49 +785,50 @@ func (h *host) handle(conn net.Conn) {
 		h.cond.Broadcast()
 	}
 	h.mu.Unlock()
-	if writeErr != nil {
-		h.detach(conn)
-		return
-	}
+	return generation, writeErr
+}
 
-	for {
-		frame, readErr := reader.ReadBytes('\n')
-		if len(frame) > 0 {
-			providerFrame := frame
-			var clientFrame []byte
-			h.mu.Lock()
-			if h.acp != nil {
-				var relayErr error
-				var relayed acpClientFrames
-				relayed, relayErr = h.acp.clientFrame(h.ctx, frame, generation)
-				providerFrame = relayed.provider
-				clientFrame = relayed.client
-				if relayErr != nil {
-					h.shutdownOnce.Do(func() { close(h.shutdown) })
-					h.mu.Unlock()
-					h.detach(conn)
-					return
-				}
-			}
-			h.mu.Unlock()
-			if len(providerFrame) > 0 {
-				if _, err := h.stdin.Write(providerFrame); err != nil {
-					readErr = err
-				} else {
-					h.observeClientFrame(providerFrame)
-				}
-			}
-			if readErr == nil && len(clientFrame) > 0 {
-				if _, err := conn.Write(clientFrame); err != nil {
-					readErr = err
-				}
-			}
-		}
-		if readErr != nil {
-			h.detach(conn)
-			return
+func (h *host) forwardClientFrame(conn net.Conn, generation uint64, frame []byte) error {
+	h.outputMu.Lock()
+	h.mu.Lock()
+	if h.client != conn || h.clientGeneration != generation || h.ctx.Err() != nil {
+		h.mu.Unlock()
+		h.outputMu.Unlock()
+		return net.ErrClosed
+	}
+	frames := acpClientFrames{provider: frame}
+	var err error
+	if h.acp != nil {
+		frames, err = h.acp.clientFrame(h.ctx, frame, generation)
+		if err != nil {
+			h.shutdownOnce.Do(func() { close(h.shutdown) })
 		}
 	}
+	h.mu.Unlock()
+	if err == nil && len(frames.client) > 0 {
+		err = writeControllerFrame(conn, frames.client)
+	}
+	h.outputMu.Unlock()
+	if err != nil {
+		return err
+	}
+	// Provider stdin can apply backpressure independently of controller output.
+	// Never keep output ownership while waiting for the provider to read stdin.
+	if len(frames.provider) > 0 {
+		if _, err := h.stdin.Write(frames.provider); err != nil {
+			return err
+		}
+		h.observeClientFrame(frames.provider)
+	}
+	return nil
+}
+
+func writeControllerFrame(conn net.Conn, frame []byte) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(controllerWriteTimeout)); err != nil {
+		return err
+	}
+	_, err := conn.Write(frame)
+	return err
 }
 
 func (h *host) observeClientFrame(frame []byte) {
@@ -804,61 +871,88 @@ func (h *host) detach(conn net.Conn) {
 }
 
 func (h *host) forwardProvider(stdout io.Reader) error {
+	stop := context.AfterFunc(h.ctx, func() {
+		h.mu.Lock()
+		h.cond.Broadcast()
+		h.mu.Unlock()
+	})
+	defer stop()
 	reader := bufio.NewReader(stdout)
 	for {
 		frame, err := reader.ReadBytes('\n')
 		if len(frame) > 0 {
-			h.mu.Lock()
-			retainedByACP := false
-			if h.acp != nil {
-				var relayErr error
-				frame, retainedByACP, relayErr = h.acp.providerFrame(
-					h.ctx, frame, h.clientGeneration, h.client != nil,
-				)
-				if relayErr != nil {
-					h.mu.Unlock()
-					return relayErr
-				}
+			if forwardErr := h.forwardProviderFrame(frame); forwardErr != nil {
+				return forwardErr
 			}
-			if len(frame) == 0 {
-				h.mu.Unlock()
-				if err != nil {
-					return err
-				}
-				continue
-			}
-			if requestID, ok := serverRequestID(frame); ok && !retainedByACP {
-				if _, exists := h.pendingRequests[requestID]; !exists {
-					h.pendingRequests[requestID] = &pendingRequest{frame: append([]byte(nil), frame...)}
-					h.pendingOrder = append(h.pendingOrder, requestID)
-				}
-			}
-			for h.client == nil && h.detachedBytes+len(frame) > maxDetachedBytes {
-				h.cond.Wait()
-			}
-			if h.client != nil {
-				if _, writeErr := h.client.Write(frame); writeErr != nil {
-					_ = h.client.Close()
-					h.client = nil
-					h.bufferPendingRequestsLocked()
-					if _, pending := serverRequestID(frame); !pending && !retainedByACP {
-						h.bufferFrameLocked(frame)
-					}
-				}
-			} else if !retainedByACP {
-				if requestID, pending := serverRequestID(frame); !pending || !h.pendingRequests[requestID].buffered {
-					h.bufferFrameLocked(frame)
-					if pending {
-						h.pendingRequests[requestID].buffered = true
-					}
-				}
-			}
-			h.mu.Unlock()
 		}
 		if err != nil {
 			return err
 		}
 	}
+}
+
+func (h *host) forwardProviderFrame(frame []byte) error {
+	h.outputMu.Lock()
+	defer h.outputMu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.ctx.Err(); err != nil {
+		return err
+	}
+	retainedByACP := false
+	if h.acp != nil {
+		var err error
+		frame, retainedByACP, err = h.acp.providerFrame(h.ctx, frame, h.clientGeneration, h.client != nil)
+		if err != nil {
+			return err
+		}
+	}
+	if len(frame) == 0 {
+		return nil
+	}
+	if requestID, ok := serverRequestID(frame); ok && !retainedByACP {
+		if _, exists := h.pendingRequests[requestID]; !exists {
+			h.pendingRequests[requestID] = &pendingRequest{frame: append([]byte(nil), frame...)}
+			h.pendingOrder = append(h.pendingOrder, requestID)
+		}
+	}
+	for h.client == nil && !retainedByACP && h.detachedBytes+len(frame) > maxDetachedBytes {
+		if err := h.ctx.Err(); err != nil {
+			return err
+		}
+		// A replacement must acquire output ownership to drain the replay. Drop
+		// that ownership while waiting, then restore the normal lock order.
+		h.outputMu.Unlock()
+		h.cond.Wait()
+		h.mu.Unlock()
+		h.outputMu.Lock()
+		h.mu.Lock()
+	}
+	if conn := h.client; conn != nil {
+		h.mu.Unlock()
+		writeErr := writeControllerFrame(conn, frame)
+		h.mu.Lock()
+		if writeErr != nil {
+			if h.client == conn {
+				h.client = nil
+				h.bufferPendingRequestsLocked()
+			}
+			if _, pending := serverRequestID(frame); !pending && !retainedByACP {
+				h.bufferFrameLocked(frame)
+			}
+			h.mu.Unlock()
+			_ = conn.Close()
+			h.mu.Lock()
+		}
+	} else if !retainedByACP {
+		if requestID, pending := serverRequestID(frame); !pending || !h.pendingRequests[requestID].buffered {
+			h.bufferFrameLocked(frame)
+			if pending {
+				h.pendingRequests[requestID].buffered = true
+			}
+		}
+	}
+	return nil
 }
 
 func serverRequestID(frame []byte) (string, bool) {
