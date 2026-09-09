@@ -373,30 +373,15 @@ function ShellLayout() {
 		[queryClient],
 	);
 
-	const completeProjectCreation = useCallback(
+	// Background orchestrator provisioning for a newly created project. Owns
+	// the provisioning flag, the hung-spawn timeout, the session refresh, and
+	// the retry error end to end — callers must fire and forget it, never await.
+	const provisionOrchestrator = useCallback(
 		async (
-			project: components["schemas"]["Project"],
+			workspace: WorkspaceSummary,
 			input: CreateProjectConfigInput,
 			source: "project_add" | "project_clone",
 		) => {
-			const workspace: WorkspaceSummary = {
-				id: project.id,
-				name: project.name,
-				kind: toProjectKind(project.kind),
-				path: project.path,
-				workspaceRepos: project.workspaceRepos,
-				type: "main",
-				orchestratorAgent: input.orchestratorAgent as WorkspaceSummary["orchestratorAgent"],
-				sessions: [],
-			};
-		void captureRendererEvent(`ao.renderer.${source}_succeeded`, { project_id: workspace.id });
-		updateWorkspaces((current) => [workspace, ...current.filter((item) => item.id !== workspace.id)]);
-		setOrchestratorStartupError(workspace.id, null);
-		setProjectProvisioning(workspace.id, true);
-		// Navigate to the project board immediately so the IDE paints while
-		// the orchestrator spawn (git fetch + worktree + runtime) finishes in
-		// the background. Session actions stay gated until it settles.
-		void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
 		// Safety: a hung spawn must never wedge the board behind the
 		// provisioning gate. If it outlives this budget, release the gate and
 		// surface the retry banner; a late success still navigates below and
@@ -458,8 +443,38 @@ function ShellLayout() {
 			setOrchestratorStartupError(workspace.id, startupMessage);
 		}
 	},
-	[navigate, queryClient, setOrchestratorStartupError, setProjectProvisioning, updateWorkspaces],
+	[navigate, queryClient, setOrchestratorStartupError, setProjectProvisioning],
 );
+
+	const completeProjectCreation = useCallback(
+		async (
+			project: components["schemas"]["Project"],
+			input: CreateProjectConfigInput,
+			source: "project_add" | "project_clone",
+		) => {
+			const workspace: WorkspaceSummary = {
+				id: project.id,
+				name: project.name,
+				kind: toProjectKind(project.kind),
+				path: project.path,
+				workspaceRepos: project.workspaceRepos,
+				type: "main",
+				orchestratorAgent: input.orchestratorAgent as WorkspaceSummary["orchestratorAgent"],
+				sessions: [],
+			};
+			void captureRendererEvent(`ao.renderer.${source}_succeeded`, { project_id: workspace.id });
+			updateWorkspaces((current) => [workspace, ...current.filter((item) => item.id !== workspace.id)]);
+			setOrchestratorStartupError(workspace.id, null);
+			setProjectProvisioning(workspace.id, true);
+			// Navigate to the project board immediately so the IDE paints, then
+			// hand off to the detached provisioning flow. Resolving here (rather
+			// than after the spawn) is what closes the setup modal and makes
+			// the board usable while the orchestrator starts in the background.
+			void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
+			void provisionOrchestrator(workspace, input, source);
+		},
+		[navigate, provisionOrchestrator, setOrchestratorStartupError, setProjectProvisioning, updateWorkspaces],
+	);
 
 	const createProject = useCallback(
 		async (input: {
