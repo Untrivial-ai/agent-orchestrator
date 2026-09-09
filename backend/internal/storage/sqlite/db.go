@@ -194,6 +194,81 @@ func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
 // touch goose.
 var gooseMu sync.Mutex
 
+// expectedMigrationVersion returns the highest version number among the
+// embedded migration files. This is the version a fully-migrated database must
+// have recorded as applied in goose_db_version.
+func expectedMigrationVersion() (int64, error) {
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return 0, fmt.Errorf("set goose dialect: %w", err)
+	}
+	migrations, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
+	if err != nil {
+		return 0, fmt.Errorf("collect migrations: %w", err)
+	}
+	if len(migrations) == 0 {
+		return 0, fmt.Errorf("no embedded migrations found")
+	}
+	return migrations[len(migrations)-1].Version, nil
+}
+
+// OpenPreMigrated opens an already-fully-migrated SQLite database under
+// dataDir, skipping all migration and repair logic. It is intended for test
+// helpers that clone a known-good template database and need to open the copy
+// without paying the ~55 ms migration overhead on every clone.
+//
+// It verifies that the database's goose_db_version records the expected
+// current migration version; if the database is stale or has never been
+// migrated, it returns an error so the caller can fall back to the production
+// Open path rather than silently using an incompatible schema.
+//
+// Migration tests and any code that needs the production startup path must
+// continue to call Open, not this function.
+func OpenPreMigrated(dataDir string) (*Store, error) {
+	want, err := expectedMigrationVersion()
+	if err != nil {
+		return nil, fmt.Errorf("determine expected migration version: %w", err)
+	}
+
+	dsn := databaseURI(dataDir) + pragmas
+
+	writeDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite writer: %w", err)
+	}
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
+
+	var got int64
+	if err := writeDB.QueryRow(
+		`SELECT COALESCE(MAX(version_id), 0) FROM goose_db_version WHERE is_applied = 1`,
+	).Scan(&got); err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("read applied migration version: %w", err)
+	}
+	if got != want {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf(
+			"database schema version mismatch: database has version %d but binary expects %d; "+
+				"the template is stale — rebuild it with a full sqlite.Open call",
+			got, want,
+		)
+	}
+
+	readDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("open sqlite reader: %w", err)
+	}
+	readDB.SetMaxOpenConns(maxReaders)
+	readDB.SetMaxIdleConns(maxReaders)
+
+	return sqlitestore.NewStore(writeDB, readDB), nil
+}
+
 func migrate(db *sql.DB) error {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
