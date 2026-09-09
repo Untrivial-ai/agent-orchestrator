@@ -58,12 +58,13 @@ const (
 
 // WorkspaceFiles is the read model for the session workspace file browser.
 type WorkspaceFiles struct {
-	SessionID      domain.SessionID
-	CompareBaseSHA string
-	CompareBaseRef string
-	CompareMode    WorkspaceCompareMode
-	Files          []WorkspaceFileSummary
-	Truncated      bool
+	SessionID        domain.SessionID
+	WorkspaceVersion string
+	CompareBaseSHA   string
+	CompareBaseRef   string
+	CompareMode      WorkspaceCompareMode
+	Files            []WorkspaceFileSummary
+	Truncated        bool
 	// Sections splits the same working tree into git-state groups (staged,
 	// unstaged, untracked, committed-since-base), independent of the
 	// base..worktree Files list above. Only populated for single-repo
@@ -124,13 +125,14 @@ type WorkspaceSummary struct {
 
 // WorkspaceFileSummary is one file row in the session workspace browser.
 type WorkspaceFileSummary struct {
-	Path         string
-	PreviousPath string
-	Status       WorkspaceFileStatus
-	Additions    int
-	Deletions    int
-	Size         int64
-	Binary       bool
+	Path            string
+	PreviousPath    string
+	Status          WorkspaceFileStatus
+	Additions       int
+	Deletions       int
+	Size            int64
+	Binary          bool
+	FileFingerprint string
 }
 
 // WorkspaceFileDetail is the selected file's current content and diff.
@@ -153,6 +155,8 @@ type WorkspaceFileDetail struct {
 	CompareBaseSHA     string
 	CompareBaseRef     string
 	CompareMode        WorkspaceCompareMode
+	WorkspaceVersion   string
+	FileFingerprint    string
 }
 
 // WorkspaceWatchPaths returns every worktree that contributes files to a
@@ -217,10 +221,14 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (
 		if err != nil {
 			return WorkspaceFiles{}, err
 		}
-		return WorkspaceFiles{SessionID: id, Files: files, Truncated: truncated}, nil
+		return finalizeWorkspaceFiles(WorkspaceFiles{SessionID: id, Files: files, Truncated: truncated}), nil
 	}
 	if projectKind == domain.ProjectKindWorkspace {
-		return s.listWorkspaceProjectFiles(ctx, rec, project)
+		result, err := s.listWorkspaceProjectFiles(ctx, rec, project)
+		if err != nil {
+			return WorkspaceFiles{}, err
+		}
+		return finalizeWorkspaceFiles(result), nil
 	}
 	prs, err := s.workspaceComparePRs(ctx, rec.ID)
 	if err != nil {
@@ -238,7 +246,7 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (
 	if err != nil {
 		return WorkspaceFiles{}, err
 	}
-	return WorkspaceFiles{
+	return finalizeWorkspaceFiles(WorkspaceFiles{
 		SessionID:      id,
 		CompareBaseSHA: compare.BaseSHA,
 		CompareBaseRef: compare.BaseRef,
@@ -250,7 +258,7 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (
 		Summary:        workspaceSummaryFromFiles(files),
 		Ahead:          ahead,
 		Behind:         behind,
-	}, nil
+	}), nil
 }
 
 // GetWorkspaceFile returns one session-worktree file's current text content and
@@ -264,9 +272,11 @@ func (s *Service) GetWorkspaceFile(ctx context.Context, id domain.SessionID, raw
 		return WorkspaceFileDetail{}, err
 	}
 	if target.scratch {
-		return scratchWorkspaceFile(target.root, id, target.rel)
+		detail, err := scratchWorkspaceFile(target.root, id, target.rel)
+		return finalizeWorkspaceFileDetail(detail), err
 	}
-	return workspaceFileDetail(ctx, id, target.root, target.prefix, target.rel, section, target.compare, target.changes)
+	detail, err := workspaceFileDetail(ctx, id, target.root, target.prefix, target.rel, section, target.compare, target.changes)
+	return finalizeWorkspaceFileDetail(detail), err
 }
 
 // workspaceFileTarget is one resolved workspace path: the worktree that owns
@@ -1833,7 +1843,7 @@ func workspaceFileDiff(ctx context.Context, root, base, rel string, status Works
 	// vs HEAD); unstaged mirrors the bare diff sections.Unstaged is built from
 	// (worktree vs index). Anything else falls back to base..worktree, the
 	// combined change shown before per-section diffs existed.
-	args := []string{"diff", "--no-ext-diff", "--find-renames", "--unified=3"}
+	args := []string{"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3"}
 	switch section {
 	case WorkspaceFileSectionStaged:
 		args = append(args, "--cached")
@@ -2012,7 +2022,9 @@ func truncateUTF8(in string, limit int) (string, bool) {
 }
 
 func gitWorkspaceOutput(ctx context.Context, root string, args ...string) (string, error) {
-	cmd := aoprocess.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	globalArgs := make([]string, 0, 10+len(args))
+	globalArgs = append(globalArgs, "--no-pager", "--no-optional-locks", "-c", "core.hooksPath="+os.DevNull, "-c", "diff.external=", "-c", "core.fsmonitor=false", "-C", root)
+	cmd := aoprocess.CommandContext(ctx, "git", append(globalArgs, args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -2034,6 +2046,46 @@ func gitWorkspaceOutput(ctx context.Context, root string, args ...string) (strin
 		return "", fmt.Errorf("git -C %s %s: %w: %s", root, strings.Join(args, " "), err, detail)
 	}
 	return string(out), nil
+}
+
+type cappedWorkspaceOutput struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *cappedWorkspaceOutput) Write(p []byte) (int, error) {
+	written := len(p)
+	remaining := w.limit - w.buffer.Len()
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		_, _ = w.buffer.Write(p[:remaining])
+	}
+	if remaining < len(p) {
+		w.truncated = true
+	}
+	return written, nil
+}
+
+// gitWorkspaceOutputCapped drains all output while retaining only a bounded
+// prefix, preventing large diffs from becoming an unbounded in-memory buffer.
+func gitWorkspaceOutputCapped(ctx context.Context, root string, limit int, args ...string) (string, bool, error) {
+	globalArgs := make([]string, 0, 10+len(args))
+	globalArgs = append(globalArgs, "--no-pager", "--no-optional-locks", "-c", "core.hooksPath="+os.DevNull, "-c", "diff.external=", "-c", "core.fsmonitor=false", "-C", root)
+	cmd := aoprocess.CommandContext(ctx, "git", append(globalArgs, args...)...)
+	stdout := &cappedWorkspaceOutput{limit: limit}
+	stderr := &cappedWorkspaceOutput{limit: 64 * 1024}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if workspaceRepoUnavailable(root) {
+			return "", false, fmt.Errorf("workspace git command: %w", ports.ErrWorkspaceRepoUnavailable)
+		}
+		return "", false, fmt.Errorf("workspace git command failed: %w: %s", err, strings.TrimSpace(stderr.buffer.String()))
+	}
+	return stdout.buffer.String(), stdout.truncated, nil
 }
 
 // workspaceRepoUnavailable reports whether a worktree root can no longer reach

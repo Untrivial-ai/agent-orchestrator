@@ -183,6 +183,22 @@ type WorkspaceFileBlobQuery struct {
 	V    string `query:"v,omitempty" description:"Cache-busting token. Ignored by the server; the response is never cached."`
 }
 
+// WorkspaceFileRevisionQuery selects one text-capable comparison side.
+type WorkspaceFileRevisionQuery struct {
+	Path             string `query:"path" required:"true" description:"Session-worktree-relative file path."`
+	Scope            string `query:"scope,omitempty" enum:"combined,committed,staged,unstaged,untracked" description:"Comparison scope. Defaults to combined."`
+	Side             string `query:"side,omitempty" enum:"before,after" description:"Comparison side. Defaults to after."`
+	WorkspaceVersion string `query:"workspaceVersion,omitempty" description:"Opaque workspace snapshot token used for consistency checks."`
+	ExpectedRevision string `query:"expectedRevision,omitempty" description:"Opaque revision token used for optimistic consistency checks."`
+}
+
+// WorkspaceSearchQuery is the query string accepted by the workspace path search.
+type WorkspaceSearchQuery struct {
+	Query  string `query:"query" required:"true" description:"Case-insensitive path substring."`
+	Cursor string `query:"cursor,omitempty" description:"Opaque pagination cursor returned by the previous page."`
+	Limit  int    `query:"limit,omitempty" minimum:"1" maximum:"100" description:"Maximum results. Defaults to 50."`
+}
+
 // WorkspaceTreeQuery is the query string accepted by GET /api/v1/sessions/{sessionId}/workspace/tree.
 type WorkspaceTreeQuery struct {
 	Path string `query:"path,omitempty" description:"Directory path relative to the session workspace root. Empty or omitted lists the root."`
@@ -374,12 +390,13 @@ type StageSessionAttachmentsResponse struct {
 
 // ListWorkspaceFilesResponse is the body of GET /api/v1/sessions/{sessionId}/workspace/files.
 type ListWorkspaceFilesResponse struct {
-	SessionID      domain.SessionID                `json:"sessionId"`
-	CompareBaseSHA string                          `json:"compareBaseSha,omitempty"`
-	CompareBaseRef string                          `json:"compareBaseRef,omitempty"`
-	CompareMode    sessionsvc.WorkspaceCompareMode `json:"compareMode,omitempty" enum:"base,head_fallback"`
-	Files          []WorkspaceFileSummary          `json:"files"`
-	Truncated      bool                            `json:"truncated"`
+	SessionID        domain.SessionID                `json:"sessionId"`
+	WorkspaceVersion string                          `json:"workspaceVersion"`
+	CompareBaseSHA   string                          `json:"compareBaseSha,omitempty"`
+	CompareBaseRef   string                          `json:"compareBaseRef,omitempty"`
+	CompareMode      sessionsvc.WorkspaceCompareMode `json:"compareMode,omitempty" enum:"base,head_fallback"`
+	Files            []WorkspaceFileSummary          `json:"files"`
+	Truncated        bool                            `json:"truncated"`
 	// Sections groups the same working tree into git-state sections. Only
 	// populated for single-repo sessions; empty for workspace-project
 	// (multi-repo) and scratch sessions.
@@ -422,13 +439,14 @@ type WorkspaceSummary struct {
 
 // WorkspaceFileSummary is one file row in the session workspace browser.
 type WorkspaceFileSummary struct {
-	Path         string                         `json:"path"`
-	PreviousPath string                         `json:"previousPath,omitempty"`
-	Status       sessionsvc.WorkspaceFileStatus `json:"status" enum:"unmodified,modified,added,deleted,renamed"`
-	Additions    int                            `json:"additions"`
-	Deletions    int                            `json:"deletions"`
-	Size         int64                          `json:"size"`
-	Binary       bool                           `json:"binary"`
+	Path            string                         `json:"path"`
+	PreviousPath    string                         `json:"previousPath,omitempty"`
+	Status          sessionsvc.WorkspaceFileStatus `json:"status" enum:"unmodified,modified,added,deleted,renamed"`
+	Additions       int                            `json:"additions"`
+	Deletions       int                            `json:"deletions"`
+	Size            int64                          `json:"size"`
+	Binary          bool                           `json:"binary"`
+	FileFingerprint string                         `json:"fileFingerprint"`
 }
 
 // WorkspaceFileResponse is the body of GET /api/v1/sessions/{sessionId}/workspace/file.
@@ -450,6 +468,80 @@ type WorkspaceFileResponse struct {
 	CompareBaseSHA   string                          `json:"compareBaseSha,omitempty"`
 	CompareBaseRef   string                          `json:"compareBaseRef,omitempty"`
 	CompareMode      sessionsvc.WorkspaceCompareMode `json:"compareMode,omitempty" enum:"base,head_fallback"`
+	WorkspaceVersion string                          `json:"workspaceVersion"`
+	FileFingerprint  string                          `json:"fileFingerprint"`
+}
+
+// WorkspaceDiffRequest requests renderer-independent unified patches.
+type WorkspaceDiffRequest struct {
+	Scope            string   `json:"scope" enum:"combined,committed,staged,unstaged,untracked"`
+	Paths            []string `json:"paths" minItems:"1" maxItems:"100"`
+	ContextLines     int      `json:"contextLines" minimum:"0" maximum:"20"`
+	IgnoreWhitespace bool     `json:"ignoreWhitespace"`
+	WorkspaceVersion string   `json:"workspaceVersion,omitempty"`
+}
+
+// WorkspaceDiffDeferredResponse describes a file omitted from an initial patch.
+type WorkspaceDiffDeferredResponse struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason" enum:"binary,oversized,generated,long_line,budget_exceeded"`
+}
+
+// WorkspaceDiffGroupResponse is one repository-local grouped patch.
+type WorkspaceDiffGroupResponse struct {
+	Repository    string                          `json:"repository,omitempty"`
+	Patch         string                          `json:"patch"`
+	Truncated     bool                            `json:"truncated"`
+	IncludedPaths []string                        `json:"includedPaths"`
+	Deferred      []WorkspaceDiffDeferredResponse `json:"deferred"`
+	Errors        []WorkspaceDiffErrorResponse    `json:"errors"`
+}
+
+// WorkspaceDiffErrorResponse is a redacted repository-local patch failure.
+type WorkspaceDiffErrorResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// WorkspaceDiffsResponse returns renderer-independent patches for one snapshot.
+type WorkspaceDiffsResponse struct {
+	SessionID        domain.SessionID             `json:"sessionId"`
+	WorkspaceVersion string                       `json:"workspaceVersion"`
+	Groups           []WorkspaceDiffGroupResponse `json:"groups"`
+}
+
+// WorkspaceFileRevisionResponse returns one bounded side of a file comparison.
+type WorkspaceFileRevisionResponse struct {
+	SessionID        domain.SessionID                 `json:"sessionId"`
+	Path             string                           `json:"path"`
+	Side             sessionsvc.WorkspaceFileBlobSide `json:"side" enum:"before,after"`
+	Revision         string                           `json:"revision,omitempty"`
+	WorkspaceVersion string                           `json:"workspaceVersion"`
+	MediaType        string                           `json:"mediaType,omitempty"`
+	Encoding         string                           `json:"encoding,omitempty"`
+	Size             int64                            `json:"size"`
+	Exists           bool                             `json:"exists"`
+	Binary           bool                             `json:"binary"`
+	Truncated        bool                             `json:"truncated"`
+	Content          string                           `json:"content"`
+}
+
+// WorkspaceFileSearchResultResponse is one path search match.
+type WorkspaceFileSearchResultResponse struct {
+	Path            string                         `json:"path"`
+	Status          sessionsvc.WorkspaceFileStatus `json:"status" enum:"unmodified,modified,added,deleted,renamed"`
+	Size            int64                          `json:"size"`
+	Binary          bool                           `json:"binary"`
+	FileFingerprint string                         `json:"fileFingerprint"`
+}
+
+// WorkspaceFileSearchResponse is a bounded page of workspace path matches.
+type WorkspaceFileSearchResponse struct {
+	SessionID  domain.SessionID                    `json:"sessionId"`
+	Query      string                              `json:"query"`
+	Results    []WorkspaceFileSearchResultResponse `json:"results"`
+	NextCursor string                              `json:"nextCursor,omitempty"`
+	Truncated  bool                                `json:"truncated"`
 }
 
 // DesktopWorkspaceLocationResponse is returned only by the LAN-blocked desktop

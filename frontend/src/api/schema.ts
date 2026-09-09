@@ -2094,6 +2094,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/workspace/diffs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read grouped unified patches for a bounded set of workspace files */
+        post: operations["getSessionWorkspaceDiffs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/workspace/events": {
         parameters: {
             query?: never;
@@ -2145,6 +2162,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/workspace/file/revision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one text-capable side of a workspace comparison */
+        get: operations["getSessionWorkspaceFileRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/workspace/files": {
         parameters: {
             query?: never;
@@ -2154,6 +2188,23 @@ export interface paths {
         };
         /** List files in a session workspace with git change status */
         get: operations["listSessionWorkspaceFiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/workspace/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search visible workspace file paths */
+        get: operations["searchSessionWorkspaceFiles"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3436,6 +3487,7 @@ export interface components {
             sessionId: string;
             summary: components["schemas"]["WorkspaceSummary"];
             truncated: boolean;
+            workspaceVersion: string;
         };
         ListWorkspaceTreeResponse: {
             entries: components["schemas"]["WorkspaceTreeEntry"][];
@@ -4306,6 +4358,36 @@ export interface components {
             /** Format: date-time */
             timestamp: string;
         };
+        WorkspaceDiffDeferredResponse: {
+            path: string;
+            /** @enum {string} */
+            reason: "binary" | "oversized" | "generated" | "long_line" | "budget_exceeded";
+        };
+        WorkspaceDiffErrorResponse: {
+            code: string;
+            message: string;
+        };
+        WorkspaceDiffGroupResponse: {
+            deferred: components["schemas"]["WorkspaceDiffDeferredResponse"][];
+            errors: components["schemas"]["WorkspaceDiffErrorResponse"][];
+            includedPaths: string[];
+            patch: string;
+            repository?: string;
+            truncated: boolean;
+        };
+        WorkspaceDiffRequest: {
+            contextLines: number;
+            ignoreWhitespace: boolean;
+            paths: string[];
+            /** @enum {string} */
+            scope: "combined" | "committed" | "staged" | "unstaged" | "untracked";
+            workspaceVersion?: string;
+        };
+        WorkspaceDiffsResponse: {
+            groups: components["schemas"]["WorkspaceDiffGroupResponse"][];
+            sessionId: string;
+            workspaceVersion: string;
+        };
         WorkspaceFileResponse: {
             additions: number;
             binary: boolean;
@@ -4319,10 +4401,44 @@ export interface components {
             deletions: number;
             diff: string;
             diffTruncated: boolean;
+            fileFingerprint: string;
             imageMediaType?: string;
             path: string;
             previousPath?: string;
             sessionId: string;
+            /** Format: int64 */
+            size: number;
+            /** @enum {string} */
+            status: "unmodified" | "modified" | "added" | "deleted" | "renamed";
+            workspaceVersion: string;
+        };
+        WorkspaceFileRevisionResponse: {
+            binary: boolean;
+            content: string;
+            encoding?: string;
+            exists: boolean;
+            mediaType?: string;
+            path: string;
+            revision?: string;
+            sessionId: string;
+            /** @enum {string} */
+            side: "before" | "after";
+            /** Format: int64 */
+            size: number;
+            truncated: boolean;
+            workspaceVersion: string;
+        };
+        WorkspaceFileSearchResponse: {
+            nextCursor?: string;
+            query: string;
+            results: components["schemas"]["WorkspaceFileSearchResultResponse"][];
+            sessionId: string;
+            truncated: boolean;
+        };
+        WorkspaceFileSearchResultResponse: {
+            binary: boolean;
+            fileFingerprint: string;
+            path: string;
             /** Format: int64 */
             size: number;
             /** @enum {string} */
@@ -4338,6 +4454,7 @@ export interface components {
             additions: number;
             binary: boolean;
             deletions: number;
+            fileFingerprint: string;
             path: string;
             previousPath?: string;
             /** Format: int64 */
@@ -11940,6 +12057,78 @@ export interface operations {
             };
         };
     };
+    getSessionWorkspaceDiffs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceDiffRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDiffsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     streamSessionWorkspaceChanges: {
         parameters: {
             query?: never;
@@ -12120,6 +12309,85 @@ export interface operations {
             };
         };
     };
+    getSessionWorkspaceFileRevision: {
+        parameters: {
+            query: {
+                /** @description Session-worktree-relative file path. */
+                path: string;
+                /** @description Comparison scope. Defaults to combined. */
+                scope?: "combined" | "committed" | "staged" | "unstaged" | "untracked";
+                /** @description Comparison side. Defaults to after. */
+                side?: "before" | "after";
+                /** @description Opaque workspace snapshot token used for consistency checks. */
+                workspaceVersion?: string;
+                /** @description Opaque revision token used for optimistic consistency checks. */
+                expectedRevision?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFileRevisionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     listSessionWorkspaceFiles: {
         parameters: {
             query?: never;
@@ -12139,6 +12407,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListWorkspaceFilesResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    searchSessionWorkspaceFiles: {
+        parameters: {
+            query: {
+                /** @description Case-insensitive path substring. */
+                query: string;
+                /** @description Opaque pagination cursor returned by the previous page. */
+                cursor?: string;
+                /** @description Maximum results. Defaults to 50. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFileSearchResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Not Found */

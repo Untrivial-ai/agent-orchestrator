@@ -34,38 +34,50 @@ import (
 )
 
 type fakeSessionService struct {
-	sessions             map[domain.SessionID]domain.Session
-	sent                 string
-	sentAttachment       *ports.SpawnAttachment
-	delegationInput      sessionsvc.DelegateTaskInput
-	delegationErr        error
-	cleanupProjects      []domain.ProjectID
-	cleanupResult        []domain.SessionID
-	cleanupSkipped       []sessionsvc.CleanupSkipped
-	workspaceFiles       sessionsvc.WorkspaceFiles
-	workspaceFile        sessionsvc.WorkspaceFileDetail
-	workspaceFileSection sessionsvc.WorkspaceFileSection
-	workspaceBlob        sessionsvc.WorkspaceFileBlob
-	workspaceTree        sessionsvc.WorkspaceTree
-	workspaceTreePath    string
-	workspacePaths       []string
-	spawnErr             error
-	lastSpawn            ports.SpawnConfig
-	orchestratorMode     domain.SessionMode
-	claimErr             error
-	listPRErr            error
-	workspaceErr         error
-	staged               []ports.SpawnAttachment
-	stagedPaths          []string
-	stageErr             error
-	agentSwitches        map[domain.AgentSwitchID]domain.AgentSwitch
-	switchConfig         sessionsvc.SwitchAgentInput
-	switchErr            error
-	recoveredSwitch      domain.AgentSwitchID
-	handoff              json.RawMessage
-	handoffSource        domain.AgentGenerationID
-	autoInjectCISession  domain.SessionID
-	autoInjectCIEnabled  bool
+	sessions                  map[domain.SessionID]domain.Session
+	sent                      string
+	sentAttachment            *ports.SpawnAttachment
+	delegationInput           sessionsvc.DelegateTaskInput
+	delegationErr             error
+	cleanupProjects           []domain.ProjectID
+	cleanupResult             []domain.SessionID
+	cleanupSkipped            []sessionsvc.CleanupSkipped
+	workspaceFiles            sessionsvc.WorkspaceFiles
+	workspaceFile             sessionsvc.WorkspaceFileDetail
+	workspaceFileSection      sessionsvc.WorkspaceFileSection
+	workspaceBlob             sessionsvc.WorkspaceFileBlob
+	workspaceDiffs            sessionsvc.WorkspaceDiffs
+	workspaceDiffInput        sessionsvc.WorkspaceDiffInput
+	workspaceRevision         sessionsvc.WorkspaceFileRevision
+	workspaceRevisionPath     string
+	workspaceRevisionScope    sessionsvc.WorkspaceDiffScope
+	workspaceRevisionSide     sessionsvc.WorkspaceFileBlobSide
+	workspaceRevisionVersion  string
+	workspaceExpectedRevision string
+	workspaceSearch           sessionsvc.WorkspaceFileSearch
+	workspaceSearchQuery      string
+	workspaceSearchCursor     string
+	workspaceSearchLimit      int
+	workspaceTree             sessionsvc.WorkspaceTree
+	workspaceTreePath         string
+	workspacePaths            []string
+	spawnErr                  error
+	lastSpawn                 ports.SpawnConfig
+	orchestratorMode          domain.SessionMode
+	claimErr                  error
+	listPRErr                 error
+	workspaceErr              error
+	staged                    []ports.SpawnAttachment
+	stagedPaths               []string
+	stageErr                  error
+	agentSwitches             map[domain.AgentSwitchID]domain.AgentSwitch
+	switchConfig              sessionsvc.SwitchAgentInput
+	switchErr                 error
+	recoveredSwitch           domain.AgentSwitchID
+	handoff                   json.RawMessage
+	handoffSource             domain.AgentGenerationID
+	autoInjectCISession       domain.SessionID
+	autoInjectCIEnabled       bool
 }
 
 type fakeInterfaceTransitionSessionService struct {
@@ -599,6 +611,54 @@ func (f *fakeSessionService) GetWorkspaceFileBlob(_ context.Context, id domain.S
 		return blob, nil
 	}
 	return sessionsvc.WorkspaceFileBlob{Path: path, Side: side, MediaType: "image/png"}, nil
+}
+
+func (f *fakeSessionService) GetWorkspaceDiffs(_ context.Context, id domain.SessionID, input sessionsvc.WorkspaceDiffInput) (sessionsvc.WorkspaceDiffs, error) {
+	f.workspaceDiffInput = input
+	if f.workspaceErr != nil {
+		return sessionsvc.WorkspaceDiffs{}, f.workspaceErr
+	}
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceDiffs{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if f.workspaceDiffs.SessionID != "" {
+		return f.workspaceDiffs, nil
+	}
+	return sessionsvc.WorkspaceDiffs{SessionID: id}, nil
+}
+
+func (f *fakeSessionService) GetWorkspaceFileRevision(_ context.Context, id domain.SessionID, path string, scope sessionsvc.WorkspaceDiffScope, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision string) (sessionsvc.WorkspaceFileRevision, error) {
+	f.workspaceRevisionPath = path
+	f.workspaceRevisionScope = scope
+	f.workspaceRevisionSide = side
+	f.workspaceRevisionVersion = workspaceVersion
+	f.workspaceExpectedRevision = expectedRevision
+	if f.workspaceErr != nil {
+		return sessionsvc.WorkspaceFileRevision{}, f.workspaceErr
+	}
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceFileRevision{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if f.workspaceRevision.SessionID != "" {
+		return f.workspaceRevision, nil
+	}
+	return sessionsvc.WorkspaceFileRevision{SessionID: id, Path: path, Side: side, Revision: expectedRevision, Exists: true}, nil
+}
+
+func (f *fakeSessionService) SearchWorkspaceFiles(_ context.Context, id domain.SessionID, query, cursor string, limit int) (sessionsvc.WorkspaceFileSearch, error) {
+	f.workspaceSearchQuery = query
+	f.workspaceSearchCursor = cursor
+	f.workspaceSearchLimit = limit
+	if f.workspaceErr != nil {
+		return sessionsvc.WorkspaceFileSearch{}, f.workspaceErr
+	}
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceFileSearch{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if f.workspaceSearch.SessionID != "" {
+		return f.workspaceSearch, nil
+	}
+	return sessionsvc.WorkspaceFileSearch{SessionID: id, Query: query}, nil
 }
 
 func (f *fakeSessionService) ListWorkspaceTree(_ context.Context, id domain.SessionID, path string) (sessionsvc.WorkspaceTree, error) {
@@ -2372,6 +2432,67 @@ func TestSessionsAPI_GetWorkspaceFileRequiresPath(t *testing.T) {
 	body, status, headers := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/workspace/file", "")
 	assertJSON(t, headers)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "WORKSPACE_PATH_REQUIRED")
+}
+
+func TestSessionsAPI_GetWorkspaceDiffs(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.workspaceDiffs = sessionsvc.WorkspaceDiffs{
+		SessionID: "ao-1", WorkspaceVersion: "version-1",
+		Groups: []sessionsvc.WorkspaceDiffGroup{{Repository: "frontend", Patch: "diff --git a/App.tsx b/App.tsx\n", IncludedPaths: []string{"frontend/App.tsx"}}},
+	}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/workspace/diffs", `{"scope":"staged","paths":["frontend/App.tsx"],"contextLines":5,"ignoreWhitespace":true,"workspaceVersion":"version-1"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("POST workspace diffs = %d body=%s", status, body)
+	}
+	if svc.workspaceDiffInput.Scope != sessionsvc.WorkspaceDiffStaged || len(svc.workspaceDiffInput.Paths) != 1 || svc.workspaceDiffInput.ContextLines != 5 || !svc.workspaceDiffInput.IgnoreWhitespace {
+		t.Fatalf("service input = %#v", svc.workspaceDiffInput)
+	}
+	var got controllers.WorkspaceDiffsResponse
+	mustJSON(t, body, &got)
+	if got.WorkspaceVersion != "version-1" || len(got.Groups) != 1 || got.Groups[0].Repository != "frontend" {
+		t.Fatalf("response = %#v", got)
+	}
+}
+
+func TestSessionsAPI_GetWorkspaceFileRevision(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.workspaceRevision = sessionsvc.WorkspaceFileRevision{SessionID: "ao-1", Path: "README.md", Side: sessionsvc.WorkspaceBlobBefore, Revision: "rev-1", WorkspaceVersion: "version-1", Exists: true, Encoding: "utf-8", Content: "hello\n", Size: 6}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/workspace/file/revision?path=README.md&scope=unstaged&side=before&workspaceVersion=version-1&expectedRevision=rev-1", "")
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("GET workspace revision = %d body=%s", status, body)
+	}
+	if headers.Get("Cache-Control") != "no-store" || headers.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("security headers = %#v", headers)
+	}
+	if svc.workspaceRevisionPath != "README.md" || svc.workspaceRevisionScope != sessionsvc.WorkspaceDiffUnstaged || svc.workspaceRevisionSide != sessionsvc.WorkspaceBlobBefore || svc.workspaceRevisionVersion != "version-1" || svc.workspaceExpectedRevision != "rev-1" {
+		t.Fatalf("service args = path:%q scope:%q side:%q version:%q expected:%q", svc.workspaceRevisionPath, svc.workspaceRevisionScope, svc.workspaceRevisionSide, svc.workspaceRevisionVersion, svc.workspaceExpectedRevision)
+	}
+}
+
+func TestSessionsAPI_SearchWorkspaceFiles(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.workspaceSearch = sessionsvc.WorkspaceFileSearch{SessionID: "ao-1", Query: "read", Results: []sessionsvc.WorkspaceFileSearchResult{{Path: "README.md", Status: sessionsvc.WorkspaceFileModified}}, NextCursor: "1"}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/workspace/search?query=read&cursor=0&limit=20", "")
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("GET workspace search = %d body=%s", status, body)
+	}
+	if svc.workspaceSearchQuery != "read" || svc.workspaceSearchCursor != "0" || svc.workspaceSearchLimit != 20 {
+		t.Fatalf("service args = query:%q cursor:%q limit:%d", svc.workspaceSearchQuery, svc.workspaceSearchCursor, svc.workspaceSearchLimit)
+	}
+	var got controllers.WorkspaceFileSearchResponse
+	mustJSON(t, body, &got)
+	if len(got.Results) != 1 || got.Results[0].Path != "README.md" || got.NextCursor != "1" {
+		t.Fatalf("response = %#v", got)
+	}
 }
 
 func TestSessionsAPI_GetWorkspaceFileBlob(t *testing.T) {
