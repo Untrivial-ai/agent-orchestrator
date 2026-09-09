@@ -62,6 +62,13 @@ function useContainerSize(): [RefObject<HTMLDivElement | null>, { width: number;
 		const observer = new ResizeObserver(([entry]) => {
 			if (!entry) return;
 			const { width, height } = entry.contentRect;
+			// Docked, SessionFileExplorer keeps the tree mounted but display:none
+			// behind the file preview, and the browser reports that as a 0x0
+			// resize. Unmounting react-arborist's <Tree> there would throw away
+			// the open/closed state it holds internally, so going back from a
+			// file would drop the user at a collapsed root instead of the folder
+			// they opened it from. Keep the last measured size instead.
+			if (width === 0 || height === 0) return;
 			setSize({ width, height });
 		});
 		observer.observe(el);
