@@ -44,7 +44,7 @@ var (
 
 // RateLimitError is an alias for httpkit.RateLimitError so existing callers
 // that use errors.As with *RateLimitError continue to work. The sentinel
-// field is set to ErrRateLimited by the adapter's classifyError.
+// field is set to ErrRateLimited by the adapter's classifyHTTPError.
 type RateLimitError = httpkit.RateLimitError
 
 // Options configures a Tracker. All fields except Token are optional —
@@ -78,7 +78,7 @@ type hostEntry struct {
 	tokens  scmgitlab.TokenSource
 }
 
-// Tracker implements ports.Tracker against the GitLab REST API v4.
+// Tracker implements ports.Tracker against the GitLab GraphQL Work Items API.
 //
 // Construction performs a fail-fast token presence check (no network call).
 // The first Preflight call validates the token against GitLab itself; a
@@ -582,19 +582,6 @@ func (t *Tracker) graphql(ctx context.Context, he hostEntry, query string, varia
 
 // classifyHTTPError maps an HTTP error response to a sentinel error.
 func classifyHTTPError(resp *http.Response, body []byte) error {
-	msg := httpkit.Message(body)
-	switch resp.StatusCode {
-	case http.StatusNotFound:
-		return fmt.Errorf("%w: %s", ErrNotFound, msg)
-	case http.StatusTooManyRequests:
-		return httpkit.BuildRateLimitError(resp, msg, ErrRateLimited)
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return fmt.Errorf("%w: %s", ErrAuthFailed, msg)
-	}
-	return fmt.Errorf("gitlab tracker: %d %s", resp.StatusCode, msg)
-}
-
-func classifyError(resp *http.Response, body []byte) error {
 	msg := httpkit.Message(body)
 	switch resp.StatusCode {
 	case http.StatusNotFound:
