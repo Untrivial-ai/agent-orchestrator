@@ -30,6 +30,7 @@ type fakeStore struct {
 	sessions         map[domain.SessionID]domain.SessionRecord
 	pr               map[domain.SessionID]domain.PRFacts
 	projects         map[string]domain.ProjectRecord
+	conversations    map[domain.SessionID]domain.ConversationRecord
 	workspaceRepo    map[string][]domain.WorkspaceRepoRecord
 	num              int
 	deleteErr        error
@@ -53,6 +54,7 @@ func newFakeStore() *fakeStore {
 		sessions:      map[domain.SessionID]domain.SessionRecord{},
 		pr:            map[domain.SessionID]domain.PRFacts{},
 		projects:      map[string]domain.ProjectRecord{},
+		conversations: map[domain.SessionID]domain.ConversationRecord{},
 		workspaceRepo: map[string][]domain.WorkspaceRepoRecord{},
 		worktrees:     map[domain.SessionID][]domain.SessionWorktreeRecord{},
 	}
@@ -112,6 +114,13 @@ func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.S
 	}
 	r, ok := f.sessions[id]
 	return r, ok, nil
+}
+func (f *fakeStore) ConversationForSession(_ context.Context, id domain.SessionID) (domain.ConversationRecord, error) {
+	conversation, ok := f.conversations[id]
+	if !ok {
+		return domain.ConversationRecord{}, domain.ErrNoConversation
+	}
+	return conversation, nil
 }
 func (f *fakeStore) ListSessions(_ context.Context, p domain.ProjectID) ([]domain.SessionRecord, error) {
 	var out []domain.SessionRecord
@@ -1370,6 +1379,44 @@ func TestSpawn_ResolvesProjectConfig(t *testing.T) {
 	}
 	if got := ws.lastCfg.BaseBranch; got != "" {
 		t.Fatalf("automatic workspace base branch = %q, want empty for adapter inference", got)
+	}
+}
+
+func TestSpawn_InheritsChatOrchestratorPermissions(t *testing.T) {
+	m, st, rt, _ := newManager()
+	st.sessions["mer-0"] = domain.SessionRecord{
+		ID: "mer-0", ProjectID: "mer", Kind: domain.KindOrchestrator,
+	}
+	st.conversations["mer-0"] = domain.ConversationRecord{
+		SessionID: "mer-0", Settings: domain.ConversationSettings{ApprovalMode: domain.PermissionModeAuto},
+	}
+
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: "mer-0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.Harness; got != domain.HarnessClaudeCode {
+		t.Fatalf("harness = %q, want claude-code", got)
+	}
+	if got := rt.lastCfg.Env[EnvPermissionMode]; got != string(domain.PermissionModeAuto) {
+		t.Fatalf("worker permission environment = %q, want %q", got, domain.PermissionModeAuto)
+	}
+}
+
+func TestSpawn_IgnoresNonOrchestratorParent(t *testing.T) {
+	m, st, rt, _ := newManager()
+	st.sessions["mer-0"] = domain.SessionRecord{ID: "mer-0", ProjectID: "mer", Kind: domain.KindWorker}
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: "mer-0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.lastCfg.Env[EnvPermissionMode]; got != string(domain.PermissionModeDefault) {
+		t.Fatalf("worker permission environment = %q, want project default %q", got, domain.PermissionModeDefault)
 	}
 }
 

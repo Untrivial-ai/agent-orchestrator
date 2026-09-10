@@ -14,6 +14,10 @@ var ErrSessionNotFound = errors.New("session not found")
 type SpawnConfig struct {
 	ProjectID domain.ProjectID
 	IssueID   domain.IssueID
+	// ParentSessionID identifies the AO orchestrator that requested this worker
+	// through `ao spawn`. The daemon validates this reference and derives any
+	// inherited settings itself; callers never supply an inherited policy.
+	ParentSessionID domain.SessionID
 	// TrackerProvider is the issue-tracker provider hint from the CLI's
 	// --tracker-provider flag (defaults to "github"). It is used as a fallback
 	// when the project's SCM origin cannot be classified by the configured
