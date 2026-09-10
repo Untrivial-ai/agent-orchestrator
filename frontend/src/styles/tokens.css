@@ -116,7 +116,7 @@
 	--color-status-validating: #facc15;
 	--color-status-in-review: #f59e0b;
 	--color-status-ready: #4ade80;
-	--color-status-merged: #f87171;
+	--color-status-merged: #c084fc;
 	--color-status-idle: var(--muted-foreground);
 	--color-status-exited: var(--destructive);
 	--color-status-terminated: var(--chart-3);
@@ -724,7 +724,7 @@
 	--color-status-validating: #ca8a04;
 	--color-status-in-review: #d97706;
 	--color-status-ready: #16a34a;
-	--color-status-merged: #dc2626;
+	--color-status-merged: #9333ea;
 	--color-status-idle: var(--muted-foreground);
 	--color-status-exited: var(--destructive);
 	--color-status-terminated: var(--chart-3);
