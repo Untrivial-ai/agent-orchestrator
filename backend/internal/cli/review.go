@@ -248,6 +248,7 @@ func newReviewCancelCommand(ctx *commandContext) *cobra.Command {
 		Use:     "cancel [worker-session-id]",
 		Aliases: []string{"stop"},
 		Short:   "Cancel any running review for a worker's PR",
+		Long:    "Stop the active reviewer process and cancel its running review passes. Completed review history is preserved. An idle reviewer pane stays open; a later trigger starts a new process after an active review is cancelled.",
 		Args:    atMostOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return ctx.stopReview(cmd, args, opts)

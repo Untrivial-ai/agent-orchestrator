@@ -12,7 +12,9 @@ import (
 
 // UpsertSessionWorktree records or updates one repo worktree for a session.
 func (s *Store) UpsertSessionWorktree(ctx context.Context, row domain.SessionWorktreeRecord) error {
-	s.writeMu.Lock()
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer s.writeMu.Unlock()
 	// ponytail: session_worktrees.state is unused multi-repo scaffolding; no
 	// live code path sets domain.SessionWorktreeRecord.State, so it arrives
@@ -63,7 +65,9 @@ func (s *Store) ListSessionWorktrees(ctx context.Context, sessionID domain.Sessi
 
 // DeleteSessionWorktrees deletes the per-repo worktree rows for a session.
 func (s *Store) DeleteSessionWorktrees(ctx context.Context, sessionID domain.SessionID) error {
-	s.writeMu.Lock()
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer s.writeMu.Unlock()
 	return s.qw.DeleteSessionWorktrees(ctx, sessionID)
 }

@@ -40,19 +40,19 @@ func New(log *slog.Logger, runFilePath string) Runtime {
 		return conpty.New(conpty.Options{RunFilePath: runFilePath})
 	case "darwin":
 		return newHybridRuntime(
-			tmux.New(tmux.Options{}),
+			tmux.New(tmux.Options{RunFilePath: runFilePath}),
 			conpty.New(conpty.Options{RunFilePath: runFilePath}),
 			log,
 			"macOS",
 		)
 	case "linux":
 		return newHybridRuntime(
-			tmux.New(tmux.Options{}),
+			tmux.New(tmux.Options{RunFilePath: runFilePath}),
 			conpty.New(conpty.Options{RunFilePath: runFilePath}),
 			log,
 			"Linux",
 		)
 	default:
-		return tmux.New(tmux.Options{})
+		return tmux.New(tmux.Options{RunFilePath: runFilePath})
 	}
 }

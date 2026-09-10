@@ -3,8 +3,10 @@ package tmux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +22,7 @@ func TestRuntimeIntegration(t *testing.T) {
 
 	ctx := context.Background()
 	id := strings.ReplaceAll(t.Name(), "/", "_")
-	r := New(Options{Timeout: 5 * time.Second})
+	r := newIntegrationRuntime(t)
 
 	// Ensure clean slate: ignore errors (session may not exist).
 	_ = r.Destroy(ctx, ports.RuntimeHandle{ID: id})
@@ -67,15 +69,15 @@ func TestRuntimeIntegration(t *testing.T) {
 		t.Fatalf("output after SendMessage = %q, want hello-send", out)
 	}
 
-	// Destroy and verify liveness goes false. When this was the server's last
-	// session the server itself exits with it, and the probe reports the
-	// server-level outage as ErrRuntimeUnavailable rather than a per-session
-	// false result (issue #3475); both outcomes mean the tmux handle is gone.
+	// Destroy verifies owned process exit. Removing the server's last session
+	// also shuts down its socket, so a later liveness probe can only report a
+	// server-level error. Depending on tmux's diagnostic, that error is either
+	// unavailable or inconclusive; neither substitutes for verified teardown.
 	if err := r.Destroy(ctx, h); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
 	alive, err = r.IsAlive(ctx, h)
-	if err != nil && !errors.Is(err, ports.ErrRuntimeUnavailable) {
+	if err != nil && !errors.Is(err, ports.ErrRuntimeUnavailable) && !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
 		t.Fatalf("IsAlive after destroy: %v", err)
 	}
 	if alive {
@@ -95,7 +97,7 @@ func TestRuntimeIntegrationExactSessionParsing(t *testing.T) {
 	longID := base + "_long"
 	prefixID := base
 
-	r := New(Options{Timeout: 5 * time.Second})
+	r := newIntegrationRuntime(t)
 	_ = r.Destroy(ctx, ports.RuntimeHandle{ID: longID})
 	_ = r.Destroy(ctx, ports.RuntimeHandle{ID: prefixID})
 
@@ -179,6 +181,7 @@ func TestRuntimeIntegrationLegacyDefaultSocketIgnoresInheritedTMUX(t *testing.T)
 	}
 
 	r := New(Options{
+		RunFilePath:  filepath.Join(t.TempDir(), "running.json"),
 		Binary:       systemTmux,
 		LegacyBinary: systemTmux,
 		SocketName:   "ao",
@@ -234,6 +237,7 @@ func TestRuntimeIntegrationAdoptsLegacyDefaultWhenNamedSocketDoesNotExist(t *tes
 	}
 
 	r := New(Options{
+		RunFilePath:  filepath.Join(t.TempDir(), "running.json"),
 		Binary:       systemTmux,
 		LegacyBinary: systemTmux,
 		SocketName:   "ao",
@@ -265,7 +269,7 @@ func TestRuntimeIntegrationSupervisedExitKeepsInteractiveShell(t *testing.T) {
 	ctx := context.Background()
 	id := strings.ReplaceAll(t.Name(), "/", "_")
 	const launchID = "launch-1"
-	r := New(Options{Timeout: 5 * time.Second})
+	r := newIntegrationRuntime(t)
 	tmuxID := SessionName(id)
 	workspace := t.TempDir()
 	_ = r.Destroy(ctx, ports.RuntimeHandle{ID: tmuxID})
@@ -374,4 +378,20 @@ func waitForOutput(t *testing.T, r *Runtime, h ports.RuntimeHandle, want string,
 		time.Sleep(100 * time.Millisecond)
 	}
 	return out
+}
+
+func newIntegrationRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	// Isolate the legacy default socket too, including its absence on a fresh
+	// host. A developer's existing default server must not affect these tests.
+	tmuxTmpDir, err := os.MkdirTemp("/tmp", "ao-tmux-runtime-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxTmpDir) })
+	t.Setenv("TMUX_TMPDIR", tmuxTmpDir)
+	socket := fmt.Sprintf("ao-test-%d-%d", os.Getpid(), time.Now().UnixNano())
+	r := New(Options{SocketName: socket, Shell: "/bin/sh", RunFilePath: filepath.Join(t.TempDir(), "running.json"), Timeout: 5 * time.Second})
+	t.Cleanup(func() { _ = exec.Command(r.binary, "-L", socket, "kill-server").Run() })
+	return r
 }

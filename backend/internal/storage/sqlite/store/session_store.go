@@ -19,7 +19,9 @@ import (
 // run on the writer connection under writeMu, so two concurrent creates in the
 // same project can't collide on num.
 func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, error) {
-	s.writeMu.Lock()
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return domain.SessionRecord{}, err
+	}
 	defer s.writeMu.Unlock()
 
 	num, err := s.qw.NextSessionNum(ctx, rec.ProjectID)
@@ -33,12 +35,25 @@ func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (do
 	return rec, nil
 }
 
-// UpdateSession writes the full mutable state of an existing session. The
-// id/project/num/created_at are immutable and not touched here.
+// UpdateSession writes mutable session facts while preserving the startup
+// journal. Only a launch commit or the startup operation's CAS may change that
+// journal; an observation can carry a snapshot taken before either write.
 func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) error {
-	s.writeMu.Lock()
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer s.writeMu.Unlock()
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
+}
+
+// CommitSessionSpawn publishes the launch facts and its startup journal in one
+// write. Lifecycle uses this explicit boundary after a successful runtime start.
+func (s *Store) CommitSessionSpawn(ctx context.Context, rec domain.SessionRecord) error {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.qw.UpdateSession(ctx, recordToSpawnUpdate(rec))
 }
 
 // UpdateBrowserCapabilityVerifier rotates only the verifier when the caller's
@@ -51,7 +66,9 @@ func (s *Store) UpdateBrowserCapabilityVerifier(
 	verifier string,
 	updatedAt time.Time,
 ) (bool, error) {
-	s.writeMu.Lock()
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return false, err
+	}
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.UpdateBrowserCapabilityVerifier(ctx, gen.UpdateBrowserCapabilityVerifierParams{
 		BrowserCapabilityVerifier:      verifier,
@@ -320,7 +337,9 @@ func (s *Store) SetSessionAutoReview(ctx context.Context, id domain.SessionID, e
 // already progressed past seed state). The latter case is benign — the caller
 // should fall back to MarkTerminated.
 func (s *Store) DeleteSession(ctx context.Context, id domain.SessionID) (bool, error) {
-	s.writeMu.Lock()
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return false, err
+	}
 	defer s.writeMu.Unlock()
 	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -447,6 +466,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		AutoInjectReview:   row.AutoInjectReview,
 		AutoInjectCI:       row.AutoInjectCI,
 		Metadata: domain.SessionMetadata{
+			Startup:                   unmarshalSessionStartup(row.StartupOperation),
 			Branch:                    row.Branch,
 			WorkspacePath:             row.WorkspacePath,
 			WorkspaceRepoPath:         row.WorkspaceRepoPath,
@@ -531,6 +551,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,
 		ControllerGeneration:      rec.Metadata.ControllerGeneration,
 		Model:                     rec.Metadata.Model,
+		StartupOperation:          marshalSessionStartup(rec.Metadata.Startup),
 		SessionPermissions:        string(rec.Metadata.Permissions),
 		CreatedAt:                 rec.CreatedAt,
 		UpdatedAt:                 rec.UpdatedAt,
@@ -580,8 +601,15 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,
 		ControllerGeneration:      rec.Metadata.ControllerGeneration,
 		Model:                     rec.Metadata.Model,
+		StartupOperation:          marshalSessionStartup(rec.Metadata.Startup),
 		UpdatedAt:                 rec.UpdatedAt,
 	}
+}
+
+func recordToSpawnUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
+	params := recordToUpdate(rec)
+	params.CommitStartup = true
+	return params
 }
 
 func marshalAgentConfig(cfg domain.AgentConfig) (string, error) {
@@ -663,4 +691,52 @@ func normalActivity(a domain.Activity, fallback time.Time) domain.Activity {
 	// rather than trusting each caller's clock.
 	a.LastActivityAt = a.LastActivityAt.UTC()
 	return a
+}
+
+func marshalSessionStartup(startup *domain.SessionStartup) string {
+	if startup == nil {
+		return ""
+	}
+	data, err := json.Marshal(startup)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func unmarshalSessionStartup(data string) *domain.SessionStartup {
+	if data == "" {
+		return nil
+	}
+	var startup domain.SessionStartup
+	if err := json.Unmarshal([]byte(data), &startup); err != nil {
+		return &domain.SessionStartup{Stage: "cleanup_pending", LastError: "invalid startup operation record"}
+	}
+	return &startup
+}
+
+// UpdateSessionStartup changes only resource ownership for this unfinished
+// startup. A committed restore or replacement clears its operation identity.
+func (s *Store) UpdateSessionStartup(ctx context.Context, rec domain.SessionRecord, operationID string, expected domain.SessionControllerOwner) (bool, error) {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return false, err
+	}
+	defer s.writeMu.Unlock()
+	// sqlc's SQLite rewrite drops tokens in this JSON ownership predicate.
+	// Keep this narrow CAS explicit, as with the seed deletion below.
+	result, err := s.writeDB.ExecContext(ctx, `UPDATE sessions SET
+		startup_operation = ?, branch = ?, workspace_path = ?, workspace_repo_path = ?,
+		runtime_handle_id = ?, runtime_launch_id = ?
+		WHERE id = ? AND json_extract(NULLIF(startup_operation, ''), '$.id') = ?
+		AND runtime_launch_id = ? AND controller_generation = ?
+		AND harness = ? AND session_mode = ? AND is_terminated = ?`,
+		marshalSessionStartup(rec.Metadata.Startup), rec.Metadata.Branch,
+		rec.Metadata.WorkspacePath, rec.Metadata.WorkspaceRepoPath,
+		rec.Metadata.RuntimeHandleID, rec.Metadata.RuntimeLaunchID,
+		rec.ID, operationID, expected.RuntimeLaunchID, expected.ControllerGeneration, expected.Harness, expected.Mode, expected.IsTerminated)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows > 0, err
 }

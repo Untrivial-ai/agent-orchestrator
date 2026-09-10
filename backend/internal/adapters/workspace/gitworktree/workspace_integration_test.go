@@ -776,7 +776,7 @@ func TestWorkspaceIntegrationWorkspaceProjectInfersPerRepoDefaultBranches(t *tes
 	}
 }
 
-func TestWorkspaceIntegrationWorkspaceProjectCopiesAssetsAndCleansSessionCopy(t *testing.T) {
+func TestWorkspaceIntegrationWorkspaceProjectCopiesAssetsAndPreservesUntrackedSessionCopy(t *testing.T) {
 	git := requireGit(t)
 	tmp := t.TempDir()
 	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
@@ -831,8 +831,19 @@ func TestWorkspaceIntegrationWorkspaceProjectCopiesAssetsAndCleansSessionCopy(t 
 	if _, err := os.Stat(filepath.Join(info.Root.Path, "api", "README.md")); err != nil {
 		t.Fatalf("child worktree missing: %v", err)
 	}
+	if err := ws.DestroyWorkspaceProject(context.Background(), info); !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("cleanup of untracked copied asset = %v, want preserved workspace", err)
+	}
+	copiedLink := filepath.Join(info.Root.Path, "notes", "latest")
+	if target, err := os.Readlink(copiedLink); err != nil || target != "nested/context.txt" {
+		t.Fatalf("cleanup removed the untracked copied asset: target=%q err=%v", target, err)
+	}
+	// Remove only this fixture's untracked copy before retrying normal cleanup.
+	if err := os.Remove(copiedLink); err != nil {
+		t.Fatal(err)
+	}
 	if err := ws.DestroyWorkspaceProject(context.Background(), info); err != nil {
-		t.Fatalf("destroy workspace project: %v", err)
+		t.Fatalf("retry clean workspace cleanup: %v", err)
 	}
 	if _, err := os.Stat(info.Root.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("session copy still exists after cleanup: %v", err)
@@ -884,7 +895,7 @@ func TestWorkspaceIntegrationWorkspaceProjectRepairsRemotelessRootDefault(t *tes
 	}
 }
 
-func TestWorkspaceIntegrationWorkspaceProjectAssetCopyFailureRollsBackRoot(t *testing.T) {
+func TestWorkspaceIntegrationWorkspaceProjectAssetCopyFailureRetainsRootForCallerCleanup(t *testing.T) {
 	git := requireGit(t)
 	tmp := t.TempDir()
 	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
@@ -900,7 +911,7 @@ func TestWorkspaceIntegrationWorkspaceProjectAssetCopyFailureRollsBackRoot(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+	info, err := ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
 		ProjectID: "proj", SessionID: "sess", Kind: "worker", Branch: "ao/assets-fail",
 		RootRepoPath: rootRepo,
 		Assets: []ports.WorkspaceProjectAssetConfig{
@@ -911,9 +922,17 @@ func TestWorkspaceIntegrationWorkspaceProjectAssetCopyFailureRollsBackRoot(t *te
 	if err == nil {
 		t.Fatal("expected conflicting asset destination to fail")
 	}
-	rootPath := filepath.Join(tmp, "managed", "proj", "worker", "sess")
-	if _, statErr := os.Stat(rootPath); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("root worktree was not rolled back: %v", statErr)
+	if info.Root.Path == "" || len(info.Worktrees) != 1 || info.Worktrees[0].Path != info.Root.Path {
+		t.Fatalf("asset failure lost the created root: %+v", info)
+	}
+	if _, statErr := os.Stat(filepath.Join(info.Root.Path, "README.md")); statErr != nil {
+		t.Fatalf("root worktree vanished before caller cleanup: %v", statErr)
+	}
+	if err := ws.DestroyWorkspaceProject(context.Background(), info); err != nil {
+		t.Fatalf("caller cleanup: %v", err)
+	}
+	if _, statErr := os.Stat(info.Root.Path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("caller cleanup left the clean root worktree: %v", statErr)
 	}
 }
 

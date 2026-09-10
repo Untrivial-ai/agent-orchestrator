@@ -1249,7 +1249,7 @@ func TestSCMThreadFromGraphQLMarksThreadBotOnlyWhenAllCommentsAreBots(t *testing
 	}
 }
 
-func TestSCMObservationUsesRollupStateWhenContextsPaginated(t *testing.T) {
+func TestSCMObservationRequiresCompleteContextsBeforeTrustingRollupFailure(t *testing.T) {
 	fx := basePRFixture()
 	var pr map[string]any
 	fx.prData(func(m map[string]any) {
@@ -1265,8 +1265,8 @@ func TestSCMObservationUsesRollupStateWhenContextsPaginated(t *testing.T) {
 		ctxs["pageInfo"] = map[string]any{"hasNextPage": true}
 	})
 	obs := scmObservationFromGraphQL(ports.SCMPRRef{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello", Repo: "octocat/hello"}, Number: 42}, pr)
-	if obs.CI.Summary != string(domain.CIFailing) {
-		t.Fatalf("observer CI summary = %q, want failing from aggregate rollup state", obs.CI.Summary)
+	if obs.CI.Summary != string(domain.CIUnknown) {
+		t.Fatalf("observer CI summary = %q, want unknown until hidden checks are classified", obs.CI.Summary)
 	}
 }
 
@@ -1462,7 +1462,7 @@ func TestFetchPullRequestsFetchesRemainingCheckContexts(t *testing.T) {
 	}
 }
 
-func TestFetchPullRequestsFailsWhenCheckContextFallbackFails(t *testing.T) {
+func TestFetchPullRequestsAttachesCheckContextFallbackError(t *testing.T) {
 	fake := newFakeGH(t)
 	fx := basePRFixture()
 	var pr map[string]any
@@ -1485,8 +1485,9 @@ func TestFetchPullRequestsFailsWhenCheckContextFallbackFails(t *testing.T) {
 		http.Error(w, `{"message":"graphql down"}`, http.StatusInternalServerError)
 	})
 	p := newProviderForTest(t, fake)
-	if _, err := p.FetchPullRequests(ctx(), []ports.SCMPRRef{{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello", Repo: "octocat/hello"}, Number: 42}}); err == nil {
-		t.Fatal("FetchPullRequests error = nil, want fallback failure")
+	obs, err := p.FetchPullRequests(ctx(), []ports.SCMPRRef{{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello", Repo: "octocat/hello"}, Number: 42}})
+	if err != nil || len(obs) != 1 || obs[0].Fetched || obs[0].Error == nil {
+		t.Fatalf("FetchPullRequests = %#v, %v; want an unfetched PR with its fallback error", obs, err)
 	}
 }
 

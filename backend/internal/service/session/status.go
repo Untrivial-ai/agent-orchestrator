@@ -31,8 +31,12 @@ func deriveSCMStatus(prs []domain.PRFacts) domain.SessionStatus {
 }
 
 func toContractSessionFacts(rec domain.SessionRecord, signalCapable bool) contract.SessionFacts {
+	activity := rec.Activity.State
+	if startup := rec.Metadata.Startup; startup != nil && (startup.Stage == "cleanup_pending" || startup.LastError != "") {
+		activity = domain.ActivityBlocked
+	}
 	return contract.SessionFacts{
-		Activity:       contract.ActivityState(rec.Activity.State),
+		Activity:       contract.ActivityState(activity),
 		LastActivityAt: rec.Activity.LastActivityAt,
 		HasSignal:      !rec.FirstSignalAt.IsZero(),
 		SignalExpected: signalCapable && rec.Mode != domain.SessionModeChat,

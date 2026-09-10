@@ -42,6 +42,8 @@ type Launcher interface {
 	Preflight(ctx context.Context, harness domain.ReviewerHarness, workspacePath string) error
 	// live pane (stable per worker, reused across passes) plus any native agent
 	// session id known at launch time.
+	// On error, a nonempty result handle identifies incomplete cleanup and must
+	// be retained by the engine for a later teardown attempt.
 	Spawn(ctx context.Context, spec LaunchSpec) (LaunchResult, error)
 	// RestoreTerminal launches an idle reviewer pane for a worker that already
 	// has review history, without creating or starting a new review run.
@@ -53,10 +55,10 @@ type Launcher interface {
 	// Reusable reports whether the harness accepts another review task in its
 	// existing TUI. Reviewers with launch-fixed context return false.
 	Reusable(harness domain.ReviewerHarness) bool
-	// Cancel interrupts a running reviewer pane while keeping the terminal alive.
+	// Cancel requests a graceful interrupt. Delivery does not acknowledge that
+	// the review stopped; the engine follows it with verified Destroy.
 	Cancel(ctx context.Context, handleID string, harness domain.ReviewerHarness) error
-	// Destroy tears down a reviewer pane entirely. This is used when the owning
-	// worker session itself is torn down, not for user-facing review cancellation.
+	// Destroy returns success only after the reviewer runtime has stopped.
 	Destroy(ctx context.Context, handleID string) error
 }
 
@@ -448,14 +450,20 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 		Env:           l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env),
 	})
 	if err != nil {
+		var effect ports.RuntimeEffectError
+		if errors.As(err, &effect) && effect.CleanupOutcome() != ports.RuntimeCleanupSucceeded {
+			if possible := effect.PossibleHandle(); possible.ID != "" {
+				return l.cleanupFailedLaunch(ctx, possible, fmt.Errorf("reviewer runtime: %w", err))
+			}
+		}
 		return LaunchResult{}, fmt.Errorf("reviewer runtime: %w", err)
 	}
 	if cmd.InitialMessage != "" {
 		if err := l.waitForPromptReadiness(ctx, reviewer, handle); err != nil {
-			return LaunchResult{}, fmt.Errorf("reviewer prompt readiness: %w", err)
+			return l.cleanupFailedLaunch(ctx, handle, fmt.Errorf("reviewer prompt readiness: %w", err))
 		}
 		if err := l.runtime.SendMessage(ctx, handle, cmd.InitialMessage); err != nil {
-			return LaunchResult{}, fmt.Errorf("reviewer initial message: %w", err)
+			return l.cleanupFailedLaunch(ctx, handle, fmt.Errorf("reviewer initial message: %w", err))
 		}
 	}
 	agentSessionID := strings.TrimSpace(cmd.AgentSessionID)
@@ -463,6 +471,15 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 		agentSessionID = strings.TrimSpace(spec.AgentSessionID)
 	}
 	return LaunchResult{HandleID: handle.ID, AgentSessionID: agentSessionID}, nil
+}
+
+func (l *agentLauncher) cleanupFailedLaunch(ctx context.Context, handle ports.RuntimeHandle, launchErr error) (LaunchResult, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reviewerTeardownBudget)
+	defer cancel()
+	if err := l.runtime.Destroy(ctx, handle); err != nil {
+		return LaunchResult{HandleID: handle.ID}, errors.Join(launchErr, fmt.Errorf("cleanup reviewer runtime %q: %w", handle.ID, err))
+	}
+	return LaunchResult{}, launchErr
 }
 
 func (l *agentLauncher) waitForPromptReadiness(ctx context.Context, reviewer ports.Reviewer, handle ports.RuntimeHandle) error {

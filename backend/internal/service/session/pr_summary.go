@@ -135,14 +135,17 @@ func summarizePRStateChangedAt(pr domain.PullRequest) time.Time {
 func summarizeCI(pr domain.PullRequest, checks []domain.PullRequestCheck) PRCISummary {
 	state := ciOrUnknown(pr.CI)
 	out := PRCISummary{State: state, AutoInjectCI: pr.AutoInjectCI}
-	if state != domain.CIFailing || pr.Merged || pr.Closed {
+	if (state != domain.CIFailing && state != domain.CIUnknown) || pr.Merged || pr.Closed {
 		return out
 	}
 	for _, ch := range checks {
-		if ch.Status != domain.PRCheckFailed && ch.Status != domain.PRCheckCancelled {
+		if pr.HeadSHA != "" && ch.CommitHash != "" && !strings.EqualFold(ch.CommitHash, pr.HeadSHA) {
 			continue
 		}
-		if pr.HeadSHA != "" && ch.CommitHash != "" && !strings.EqualFold(ch.CommitHash, pr.HeadSHA) {
+		if ch.Status == domain.PRCheckUnknown && ch.Conclusion == "failure" && ch.LogTail == domain.CIBillingBlockedReason {
+			out.BlockedChecks = append(out.BlockedChecks, contract.PullRequestBlockedCheck{Name: ch.Name, Reason: ch.LogTail, URL: ch.URL})
+		}
+		if state != domain.CIFailing || (ch.Status != domain.PRCheckFailed && ch.Status != domain.PRCheckCancelled) {
 			continue
 		}
 		out.FailingChecks = append(out.FailingChecks, PRFailingCheck{

@@ -280,6 +280,8 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 // child repo is created at its relative path inside that root. All repos share
 // one branch name; if the requested branch already exists in any repo, one
 // suffixed branch that is free in every repo is selected and used everywhere.
+// On failure, the result retains completed and attempted worktree identities
+// for caller-owned rollback; DestroyWorkspaceProject revalidates them first.
 func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.WorkspaceProjectConfig) (ports.WorkspaceProjectInfo, error) {
 	if err := validateWorkspaceProjectConfig(cfg); err != nil {
 		return ports.WorkspaceProjectInfo{}, err
@@ -363,31 +365,16 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 		repos[i].seedRef = refs.seedRef
 		repos[i].baseRef = refs.baseRef
 	}
-	created := make([]workspaceProjectRepo, 0, len(repos))
 	out := ports.WorkspaceProjectInfo{Worktrees: make([]ports.WorkspaceRepoInfo, 0, len(repos))}
 	for repoIndex, repo := range repos {
-		baseSHA, err := w.createWorkspaceProjectRepo(ctx, repo, branch)
-		if err != nil {
-			for i := len(created) - 1; i >= 0; i-- {
-				_ = w.forceDestroyPath(ctx, created[i].repoPath, created[i].outputPath)
-			}
-			return ports.WorkspaceProjectInfo{}, err
-		}
-		created = append(created, repo)
-		if repoIndex == 0 {
-			if err := copyWorkspaceAssets(rootRepo, rootPath, cfg.Assets); err != nil {
-				for i := len(created) - 1; i >= 0; i-- {
-					_ = w.forceDestroyPath(ctx, created[i].repoPath, created[i].outputPath)
-				}
-				return ports.WorkspaceProjectInfo{}, err
-			}
-		}
+		// A failed add can already have registered or populated its directory.
+		// Return that attempted identity with every earlier worktree so the
+		// caller can persist it and run cleanup under its own bounded context.
 		info := ports.WorkspaceRepoInfo{
 			RepoName:     repo.name,
 			RepoPath:     repo.repoPath,
 			Path:         repo.outputPath,
 			Branch:       branch,
-			BaseSHA:      baseSHA,
 			BaseRef:      repo.baseRef,
 			SessionID:    cfg.SessionID,
 			ProjectID:    cfg.ProjectID,
@@ -395,7 +382,17 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 		}
 		out.Worktrees = append(out.Worktrees, info)
 		if repo.name == domain.RootWorkspaceRepoName {
-			out.Root = ports.WorkspaceInfo{Path: repo.outputPath, Branch: branch, BaseRef: repo.baseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID}
+			out.Root = ports.WorkspaceInfo{Path: repo.outputPath, Branch: branch, BaseRef: repo.baseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: repo.repoPath}
+		}
+		baseSHA, err := w.createWorkspaceProjectRepo(ctx, repo, branch)
+		if err != nil {
+			return out, err
+		}
+		out.Worktrees[len(out.Worktrees)-1].BaseSHA = baseSHA
+		if repoIndex == 0 {
+			if err := copyWorkspaceAssets(rootRepo, rootPath, cfg.Assets); err != nil {
+				return out, err
+			}
 		}
 	}
 	return out, nil
@@ -567,12 +564,10 @@ func hasWorkspaceManagedComponent(path string) bool {
 	return false
 }
 
-// DestroyWorkspaceProject removes every worktree in a workspace project,
-// children first and the parent/root last. It uses the same force path as spawn
-// rollback because normal interactive cleanup still goes through Destroy and
-// the full dirty-preserve matrix is implemented separately.
+// DestroyWorkspaceProject removes children before their parent. Creation may
+// return attempted worktrees whose result is unknown, so prove registration
+// ownership and preserve dirty or unproven paths before removing anything.
 func (w *Workspace) DestroyWorkspaceProject(ctx context.Context, info ports.WorkspaceProjectInfo) error {
-	var firstErr error
 	for i := len(info.Worktrees) - 1; i >= 0; i-- {
 		wt := info.Worktrees[i]
 		if wt.Path == "" {
@@ -580,16 +575,35 @@ func (w *Workspace) DestroyWorkspaceProject(ctx context.Context, info ports.Work
 		}
 		repoPath := wt.RepoPath
 		if repoPath == "" {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("gitworktree: missing repo path for worktree %q", wt.Path)
-			}
-			continue
+			return fmt.Errorf("gitworktree: missing repo path for worktree %q", wt.Path)
 		}
-		if err := w.forceDestroyPath(ctx, repoPath, wt.Path); err != nil && firstErr == nil {
-			firstErr = err
+		path, err := w.validateManagedPath(wt.Path)
+		if err != nil {
+			return err
+		}
+		records, err := w.listRecords(ctx, repoPath)
+		if err != nil {
+			return err
+		}
+		registered, found := findWorktree(records, path)
+		if !found {
+			if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+				continue
+			} else if err != nil {
+				return fmt.Errorf("gitworktree: inspect partial worktree %q: %w", path, err)
+			}
+			return fmt.Errorf("gitworktree: preserve partial worktree %q: registration ownership is unknown", path)
+		}
+		if wt.Branch == "" || registered.Branch != wt.Branch || registered.Bare || registered.Detached {
+			return fmt.Errorf("gitworktree: preserve partial worktree %q: registered branch %q differs from startup branch %q", path, registered.Branch, wt.Branch)
+		}
+		if err := w.Destroy(ctx, ports.WorkspaceInfo{Path: path, RepoPath: repoPath, Branch: wt.Branch, ProjectID: wt.ProjectID, SessionID: wt.SessionID}); err != nil {
+			// Removing a parent after a child refuses cleanup could erase that
+			// child's files even when the parent ignores the nested repository.
+			return err
 		}
 	}
-	return firstErr
+	return nil
 }
 
 // Destroy removes the session's worktree and prunes it from the repo, refusing
@@ -1481,38 +1495,6 @@ func (w *Workspace) createWorkspaceProjectRepo(ctx context.Context, repo workspa
 		return "", fmt.Errorf("gitworktree: workspace repo %q worktree add branch %q from %q: %w", repo.name, branch, seedRef, err)
 	}
 	return baseSHA, nil
-}
-
-func (w *Workspace) forceDestroyPath(ctx context.Context, repo, path string) error {
-	if err := w.requireReachableRepo(repo); err != nil {
-		return err
-	}
-	// Force teardown has no refusal to honour, so the move is unconditional:
-	// rename the directory out of the way, drop the registration, unlink in the
-	// background.
-	if discarded, ok := w.discard(path); ok {
-		if err := w.pruneWorktrees(ctx, repo); err != nil {
-			w.undiscard(discarded, path)
-			return err
-		}
-		w.removeInBackground(discarded)
-		return nil
-	}
-	_, _ = w.run(ctx, w.binary, worktreeForceRemoveArgs(repo, path)...)
-	if err := w.pruneWorktrees(ctx, repo); err != nil {
-		return err
-	}
-	if err := removeAllWithRetry(ctx, path); err != nil {
-		return fmt.Errorf("gitworktree: force remove path %q: %w", path, err)
-	}
-	return nil
-}
-
-func (w *Workspace) pruneWorktrees(ctx context.Context, repo string) error {
-	if _, err := w.run(ctx, w.binary, worktreePruneArgs(repo)...); err != nil {
-		return fmt.Errorf("gitworktree: worktree prune: %w", err)
-	}
-	return nil
 }
 
 func isMissingRegisteredWorktreeError(err error) bool {

@@ -1044,7 +1044,7 @@ func TestChatSpawnCapabilityFailurePreventsControllerStart(t *testing.T) {
 			launcher := &recordingLauncher{}
 			mgr, store, runtime := newChatManager(launcher)
 			mgr.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{tt.issue}}
-			store.updateSessionErr = tt.persistErr
+			store.browserVerifierErr = tt.persistErr
 
 			_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 				ProjectID:     chatTestProject,
@@ -1297,4 +1297,10 @@ func TestSendRefusedForTerminatedChatSession(t *testing.T) {
 	if len(launcher.relayed) != 0 {
 		t.Errorf("a terminated session still received %v", launcher.relayed)
 	}
+}
+
+// This fake creates no provider process on a failed start and knows when its
+// simulated controller stops. Production launchers must provide exact proof.
+func (l *recordingLauncher) StopChatStartup(ctx context.Context, id domain.SessionID, _ string) (bool, error) {
+	return true, l.StopChat(ctx, id)
 }

@@ -157,7 +157,7 @@ export function prStatusRows(pr: SessionPRSummary): PRStatusRow[] {
 		key: part.key,
 		label: part.label,
 		value: part.status,
-		detail: part.key === "merge" ? formatDiffSummary(pr) : undefined,
+		detail: part.key === "merge" ? formatDiffSummary(pr) : part.key === "ci" ? ciSummary(pr) : undefined,
 		tone: part.tone,
 	}));
 }
@@ -175,6 +175,8 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 		primary = cardStatus("lifecycle", "pr.card.closed", "passive");
 	} else if (pr.ci.state === "failing") {
 		primary = cardStatus("ci", "pr.card.checksFailing", "error", ciSummary(pr), ciLinks(pr));
+	} else if (pr.ci.blockedChecks?.length) {
+		primary = cardStatus("ci", "pr.merge.blocked", "warning", ciSummary(pr), ciLinks(pr), prChecksUrl(pr));
 	} else if (pr.mergeability.state === "conflicting") {
 		primary = cardStatus("merge", "pr.card.mergeConflict", "error", mergeSummary(pr), mergeLinks(pr));
 	} else if (pr.review.decision === "changes_requested" || pr.review.hasUnresolvedHumanComments) {
@@ -222,12 +224,14 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 			statusRows.push(cardStatus("ci", "pr.card.checksPassing", "success", undefined, [], prChecksUrl(pr)));
 		} else if (pr.ci.state === "failing") {
 			statusRows.push(cardStatus("ci", "pr.card.checksFailing", "error", undefined, [], prChecksUrl(pr)));
+		} else if (pr.ci.blockedChecks?.length) {
+			statusRows.push(cardStatus("ci", "pr.merge.blocked", "warning", ciSummary(pr), ciLinks(pr), prChecksUrl(pr)));
 		} else if (pr.ci.state === "pending" || pr.ci.state === "unknown") {
 			statusRows.push(cardStatus("ci", pr.ci.state === "pending" ? "pr.card.checksPending" : "pr.card.checksLoading", "neutral", undefined, [], prChecksUrl(pr), true));
 		}
 		statusRows.push(cardStatus("review", "pr.card.reviewStatus", reviewTone(pr.review.decision, pr.review.hasUnresolvedHumanComments), reviewStatusDetail(pr)));
 		const mergeable = pr.mergeability.state !== "conflicting" && pr.ci.state === "passing" && pr.review.decision === "approved";
-		const checkingReadiness = pr.ci.state === "pending" || pr.ci.state === "unknown" || pr.mergeability.state === "unknown";
+		const checkingReadiness = !pr.ci.blockedChecks?.length && (pr.ci.state === "pending" || pr.ci.state === "unknown" || pr.mergeability.state === "unknown");
 		return { primary, supporting, statusRows, readiness: {
 			label: appI18n.t(checkingReadiness ? "pr.merge.checkingReadiness" : mergeable ? "pr.merge.mergeable" : "pr.merge.notMergeableYet"),
 			detail: checkingReadiness ? appI18n.t("pr.merge.checkingDetail") : mergeReadinessDetail(pr),
@@ -243,6 +247,7 @@ function cardStatus(
 		| "pr.card.merged"
 		| "pr.card.closed"
 		| "pr.card.checksFailing"
+		| "pr.merge.blocked"
 		| "pr.card.mergeConflict"
 		| "pr.card.changesRequested"
 		| "pr.card.reviewRequired"
@@ -277,6 +282,7 @@ function reviewStatusDetail(pr: SessionPRSummary): string {
 function mergeReadinessDetail(pr: SessionPRSummary): string {
 	if (pr.mergeability.state === "conflicting") return appI18n.t("pr.merge.reasonConflict");
 	if (pr.ci.state === "failing") return appI18n.t("pr.merge.reasonChecksFailing");
+	if (pr.ci.blockedChecks?.length) return ciSummary(pr)!;
 	if (pr.review.decision !== "approved") return appI18n.t("pr.merge.reasonReview");
 	return appI18n.t("pr.merge.reasonReady");
 }
@@ -286,13 +292,13 @@ export function prSummaryParts(pr: SessionPRSummary): PRSummaryPart[] {
 		{
 			key: "ci",
 			label: appI18n.t("pr.section.ci"),
-			status: ciLabel(pr.ci.state),
+			status: pr.ci.state !== "failing" && pr.ci.blockedChecks?.length ? appI18n.t("pr.merge.blocked") : ciLabel(pr.ci.state),
 			summary: ciSummary(pr),
 			links: ciLinks(pr),
-			linkTotal: pr.ci.state === "failing" ? pr.ci.failingChecks.length : 0,
-			overflowLabel: pr.ci.state === "failing" ? overflowLabel(pr.ci.failingChecks.length, 3, "check") : undefined,
+			linkTotal: ciLinkTotal(pr),
+			overflowLabel: overflowLabel(ciLinkTotal(pr), 3, "check"),
 			overflowNoun: "check",
-			tone: ciTone(pr.ci.state),
+			tone: pr.ci.state !== "failing" && pr.ci.blockedChecks?.length ? "warning" : ciTone(pr.ci.state),
 		},
 		{
 			key: "merge",
@@ -335,6 +341,9 @@ export function prDiffSummary(pr: SessionPRSummary): string | undefined {
 }
 
 function ciSummary(pr: SessionPRSummary): string | undefined {
+	if (pr.ci.blockedChecks?.length) {
+		return [...new Set(pr.ci.blockedChecks.map((check) => check.reason))].join(" ");
+	}
 	if (pr.ci.state === "failing") {
 		return pr.ci.failingChecks.length === 0 ? appI18n.t("pr.ci.noFailingLink") : undefined;
 	}
@@ -342,14 +351,21 @@ function ciSummary(pr: SessionPRSummary): string | undefined {
 }
 
 function ciLinks(pr: SessionPRSummary): PRSummaryLink[] {
-	if (pr.ci.state !== "failing") {
-		return [];
-	}
-	return pr.ci.failingChecks.slice(0, 3).map((check) => ({
+	const failing = pr.ci.state === "failing" ? pr.ci.failingChecks.map((check) => ({
 		label: check.name,
 		href: check.url || undefined,
 		title: check.conclusion || check.status,
+	})) : [];
+	const blocked = (pr.ci.blockedChecks ?? []).map((check) => ({
+		label: check.name,
+		href: check.url || undefined,
+		title: check.reason,
 	}));
+	return [...failing, ...blocked].slice(0, 3);
+}
+
+function ciLinkTotal(pr: SessionPRSummary): number {
+	return (pr.ci.state === "failing" ? pr.ci.failingChecks.length : 0) + (pr.ci.blockedChecks?.length ?? 0);
 }
 
 function reviewSummary(pr: SessionPRSummary): string | undefined {

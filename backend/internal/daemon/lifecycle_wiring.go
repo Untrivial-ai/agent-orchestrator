@@ -616,3 +616,7 @@ func (c chatLauncher) AbortChatHandoff(id domain.SessionID) {
 func (c chatLauncher) StopChat(ctx context.Context, id domain.SessionID) error {
 	return c.svc.StopChat(ctx, id)
 }
+
+func (c chatLauncher) StopChatStartup(ctx context.Context, id domain.SessionID, generation string) (bool, error) {
+	return c.svc.StopChatStartup(ctx, id, generation)
+}

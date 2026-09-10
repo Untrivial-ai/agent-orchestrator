@@ -32,6 +32,31 @@ const summary = (overrides: Partial<SessionPRSummary> = {}): SessionPRSummary =>
 });
 
 describe("PRSummaryParts", () => {
+	it("shows an account-blocked check with its reason instead of a loading indicator", () => {
+		const reason = "Job execution was blocked by account billing or spending limits.";
+		const pr = summary({ ci: {
+			autoInjectCI: true,
+			state: "unknown",
+			failingChecks: [],
+			blockedChecks: [{ name: "build", reason, url: "https://checks.example/build" }],
+		} });
+		const { container } = render(<PRSummaryParts pr={pr} />);
+		expect(screen.getByText(reason, { exact: false })).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "build" })).toHaveAttribute("href", "https://checks.example/build");
+		expect(container.querySelector(".animate-status-pulse")).not.toBeInTheDocument();
+	});
+
+	it("keeps blocked CI static in the card and explains why merge readiness cannot advance", () => {
+		const reason = "Job execution was blocked by account billing or spending limits.";
+		const { container } = render(<PRCardStatusSummary pr={summary({
+			ci: { autoInjectCI: true, state: "unknown", failingChecks: [], blockedChecks: [{ name: "build", reason }] },
+		})} />);
+		expect(screen.getByText("Blocked")).toBeInTheDocument();
+		expect(screen.getAllByText(reason, { exact: false }).length).toBeGreaterThan(0);
+		expect(screen.queryByText("Checking merge readiness")).not.toBeInTheDocument();
+		expect(container.querySelector(".animate-status-pulse")).not.toBeInTheDocument();
+	});
+
 	it("links GitHub authors and successful checks to their provider pages", () => {
 		render(
 			<>

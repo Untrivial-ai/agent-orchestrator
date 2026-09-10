@@ -465,7 +465,7 @@ func (s *Service) triggerWithSource(
 	return result, nil
 }
 
-// Cancel stops the live reviewer pane and marks running review passes as failed.
+// Cancel stops the active reviewer and records its running passes as cancelled.
 func (s *Service) Cancel(ctx context.Context, workerID domain.SessionID) (reviewcore.CancelResult, error) {
 	result, err := s.engine.Cancel(ctx, workerID)
 	if err != nil {

@@ -2887,6 +2887,7 @@ export interface components {
             reviewerHarness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "kiro" | "pi" | "qwen" | "agy" | "continue" | "goose" | "vibe" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
             /** @enum {string} */
             scmStatus?: "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "approved" | "mergeable" | "merged";
+            startup?: components["schemas"]["SessionStartupView"];
             /** @enum {string} */
             status: "working" | "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "approved" | "mergeable" | "merged" | "needs_input" | "exited" | "idle" | "terminated" | "no_signal";
             terminalGeneration?: string;
@@ -3839,8 +3840,14 @@ export interface components {
             targetMode: "chat" | "tui";
             transition?: components["schemas"]["SessionInterfaceTransition"];
         };
+        SessionPRBlockedCheck: {
+            name: string;
+            reason: string;
+            url?: string;
+        };
         SessionPRCISummary: {
             autoInjectCI: boolean;
+            blockedChecks?: components["schemas"]["SessionPRBlockedCheck"][];
             failingChecks: components["schemas"]["SessionPRFailingCheck"][];
             /** @enum {string} */
             state: "unknown" | "pending" | "passing" | "failing";
@@ -3953,6 +3960,13 @@ export interface components {
         };
         SessionResponse: {
             session: components["schemas"]["ControllersSessionView"];
+        };
+        SessionStartupView: {
+            id: string;
+            lastError?: string;
+            stage: string;
+            /** Format: date-time */
+            startedAt: string;
         };
         SessionUsageResponse: {
             harnesses: components["schemas"]["UsageHarnessResponse"][];

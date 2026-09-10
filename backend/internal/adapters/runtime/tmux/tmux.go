@@ -51,6 +51,7 @@ var getenv = os.Getenv
 // Options configures a tmux Runtime. Every field has a sensible default (see
 // New), so the zero value is usable.
 type Options struct {
+	RunFilePath  string        // resolved daemon run-file; scopes pending process cleanup to this instance
 	Binary       string        // default configured/bundled/system tmux resolution
 	LegacyBinary string        // default system tmux from PATH when SocketName is set; used only for pre-private-socket sessions
 	SocketName   string        // default $AO_TMUX_SOCKET_NAME; empty uses tmux's machine-wide default socket
@@ -73,7 +74,10 @@ type Runtime struct {
 	enterDelay     time.Duration
 	reapGrace      time.Duration
 	runner         runner
-	reapSessions   func(ctx context.Context, pids []int, grace time.Duration)
+	cleanupDir     string
+	cleanupMu      sync.Map // session ID -> mutation gate (chan struct{})
+	processes      func(context.Context) ([]ownedProcess, error)
+	signalProcess  func(context.Context, ownedProcess, bool) error
 	socketMu       sync.RWMutex
 	sessionSockets map[string]string
 }
@@ -105,120 +109,6 @@ func tmuxPossibleCreateFailure(err error, handle ports.RuntimeHandle, cleanup po
 
 type runner interface {
 	Run(ctx context.Context, env []string, name string, args ...string) ([]byte, error)
-}
-
-// killSessionsByPID force-terminates every process in each pid's tmux pane
-// session. tmux runs each pane in its own session (pane pid == session id), so
-// signaling the session reaps the pane's background children — e.g. a dev
-// server a worker started with `&` — that `kill-session`'s SIGHUP leaves
-// running. It SIGTERMs, waits grace for a clean exit, then
-// SIGKILLs survivors. Best-effort: `pkill` is absent on Windows, where tmux is
-// never the runtime, so the calls simply no-op there.
-func killSessionsByPID(ctx context.Context, pids []int, grace time.Duration) {
-	reapPaneSessions(ctx, pids, grace, signalSessions, sessionsHaveProcesses)
-}
-
-// reapPaneSessions is killSessionsByPID's logic with the pkill/pgrep calls
-// injected, so the SIGTERM → wait → SIGKILL sequence is testable without real
-// processes.
-func reapPaneSessions(
-	ctx context.Context,
-	pids []int,
-	grace time.Duration,
-	signal func(ctx context.Context, pids []int, sig string) bool,
-	hasProcesses func(ctx context.Context, pids []int) bool,
-) {
-	if len(pids) == 0 {
-		return
-	}
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), grace+5*time.Second)
-	defer cancel()
-
-	// `-s` is a Linux procps extension; BSD/macOS pkill rejects it outright. When
-	// the platform cannot signal by session id, no amount of waiting reaps
-	// anything — the SIGTERM never landed and the SIGKILL would not either — so
-	// return instead of blocking the caller for the whole grace. Destroy runs
-	// inside the shell-terminal DELETE handler, and that dead wait was the
-	// several-second delay users saw when closing a terminal on macOS.
-	if !signal(cleanupCtx, pids, "-TERM") {
-		return
-	}
-	if !hasProcesses(cleanupCtx, pids) {
-		return
-	}
-
-	// Poll rather than sleep the whole grace. Callers block on this (Destroy runs
-	// inside the shell-terminal DELETE handler), and the common case — an
-	// interactive shell with nothing behind it — is empty almost immediately. A
-	// process that really needs the time still gets the full grace before SIGKILL.
-	deadline := time.NewTimer(grace)
-	defer deadline.Stop()
-	ticker := time.NewTicker(reapPollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-cleanupCtx.Done():
-			return
-		case <-ticker.C:
-			if !hasProcesses(cleanupCtx, pids) {
-				return
-			}
-		case <-deadline.C:
-			if !hasProcesses(cleanupCtx, pids) {
-				return
-			}
-			signal(cleanupCtx, pids, "-KILL")
-			return
-		}
-	}
-}
-
-// signalSessions sends a pkill signal flag (e.g. "-TERM") to every process in
-// each pane session, matched by session id via `pkill -s`. It reports whether
-// the platform supports signalling by session id at all: exit 2 is a usage
-// error on both procps and BSD pkill, which is how macOS answers `-s`, and
-// there the call reaches no process.
-func signalSessions(ctx context.Context, pids []int, sig string) bool {
-	supported := false
-	for _, pid := range pids {
-		err := exec.CommandContext(ctx, "pkill", sig, "-s", strconv.Itoa(pid)).Run()
-		if !isUnsupportedMatcher(err) {
-			supported = true
-		}
-	}
-	return supported
-}
-
-// isUnsupportedMatcher reports whether a pgrep/pkill invocation failed because
-// the platform rejects the matcher itself (exit 2, a usage error) rather than
-// because nothing matched (exit 1) or the process is missing entirely.
-func isUnsupportedMatcher(err error) bool {
-	if err == nil {
-		return false
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode() >= 2
-	}
-	// pkill/pgrep absent (Windows, minimal containers): equally unusable.
-	return true
-}
-
-// sessionsHaveProcesses reports whether any process remains in the pane
-// sessions. `pgrep` exit 1 means no matches; other failures are treated as
-// survivors so Destroy stays conservative and still attempts SIGKILL.
-func sessionsHaveProcesses(ctx context.Context, pids []int) bool {
-	for _, pid := range pids {
-		err := exec.CommandContext(ctx, "pgrep", "-s", strconv.Itoa(pid)).Run()
-		if err == nil || ctx.Err() != nil {
-			return true
-		}
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-			return true
-		}
-	}
-	return false
 }
 
 type execRunner struct{}
@@ -332,7 +222,9 @@ func New(opts Options) *Runtime {
 		enterDelay:     enterDelay,
 		reapGrace:      reapGrace,
 		runner:         execRunner{},
-		reapSessions:   killSessionsByPID,
+		cleanupDir:     cleanupDirectory(opts.RunFilePath),
+		processes:      readOwnedProcesses,
+		signalProcess:  signalOwnedProcess,
 		sessionSockets: make(map[string]string),
 	}
 }
@@ -342,6 +234,14 @@ func New(opts Options) *Runtime {
 func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	id, err := tmuxSessionName(cfg.SessionID)
 	if err != nil {
+		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
+	}
+	unlock, err := r.lockMutation(ctx, id)
+	if err != nil {
+		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
+	}
+	defer unlock()
+	if err := r.requireCompletedTeardown(id); err != nil {
 		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
 	}
 	if cfg.WorkspacePath == "" {
@@ -399,7 +299,7 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 }
 
 func (r *Runtime) failedCreatedRuntime(handle ports.RuntimeHandle, cause error) error {
-	if cleanupErr := r.Destroy(context.Background(), handle); cleanupErr != nil {
+	if cleanupErr := r.destroyLocked(context.Background(), handle.ID); cleanupErr != nil {
 		return tmuxPossibleCreateFailure(errors.Join(cause, cleanupErr), handle, ports.RuntimeCleanupFailed)
 	}
 	return tmuxPossibleCreateFailure(cause, handle, ports.RuntimeCleanupSucceeded)
@@ -411,6 +311,14 @@ func (r *Runtime) failedCreatedRuntime(handle ports.RuntimeHandle, cause error) 
 func (r *Runtime) Restart(ctx context.Context, handle ports.RuntimeHandle, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	id, err := handleID(handle)
 	if err != nil {
+		return ports.RuntimeHandle{}, err
+	}
+	unlock, err := r.lockMutation(ctx, id)
+	if err != nil {
+		return ports.RuntimeHandle{}, err
+	}
+	defer unlock()
+	if err := r.requireCompletedTeardown(id); err != nil {
 		return ports.RuntimeHandle{}, err
 	}
 	expectedID, err := tmuxSessionName(cfg.SessionID)
@@ -492,62 +400,6 @@ func (r *Runtime) verifyPaneWorkingDirectory(ctx context.Context, id, want strin
 		)
 	}
 	return lastErr
-}
-
-// Destroy kills the handle's tmux session and reaps the pane processes it
-// leaves behind. `tmux kill-session` only SIGHUPs each pane's foreground
-// process, so a worker's backgrounded children (e.g. a dev server started with
-// `&`, later reparented to init) survive it and hold their ports indefinitely
-// (issue #2523). To catch those, Destroy records each pane's session id before
-// teardown and, after kill-session, signals the whole session (see
-// killSessionsByPID). An already-gone session is treated as success (idempotent).
-func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {
-	id, err := handleID(handle)
-	if err != nil {
-		return err
-	}
-	// Capture pane session ids while the session still exists; a missing
-	// session lists no panes and reaps nothing. Best-effort: failures here must
-	// not block the kill-session below.
-	sessionIDs := r.paneSessionIDs(ctx, id)
-
-	out, err := r.runForSession(ctx, id, killSessionArgs(id)...)
-	// Reap regardless of the kill-session result: orphaned children outlive the
-	// session, so they must be cleaned up even when the session was already
-	// gone (a benign double-kill).
-	r.reapSessions(ctx, sessionIDs, r.reapGrace)
-
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && killSessionMissingOutput(string(out)) {
-			r.forgetSessionSocket(id)
-			return nil
-		}
-		return fmt.Errorf("tmux runtime: destroy session %s: %w", id, err)
-	}
-	r.forgetSessionSocket(id)
-	return nil
-}
-
-// paneSessionIDs lists the pid of every pane in the session. tmux launches each
-// pane in its own session (setsid), so a pane's pid is also its session id —
-// the handle killSessionsByPID uses to reap the pane's descendants. Best-effort:
-// any error (including a missing session) or unparseable line yields no ids,
-// and pids <= 1 are skipped so we never signal init or the "current session".
-func (r *Runtime) paneSessionIDs(ctx context.Context, id string) []int {
-	out, err := r.runForSession(ctx, id, listPanePIDsArgs(id)...)
-	if err != nil {
-		return nil
-	}
-	var ids []int
-	for _, line := range strings.Split(string(out), "\n") {
-		pid, convErr := strconv.Atoi(strings.TrimSpace(line))
-		if convErr != nil || pid <= 1 {
-			continue
-		}
-		ids = append(ids, pid)
-	}
-	return ids
 }
 
 // IsAlive reports whether the handle's session still exists via `tmux
@@ -954,9 +806,10 @@ func (r *Runtime) socketForSession(ctx context.Context, id string) (string, erro
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	if sessionMissingOutput(string(legacyOut)) || serverNotRunningOutput(string(legacyOut)) {
-		// Both known sockets definitively lack the session. Return the private
-		// target so IsAlive's ordinary exact-session handling reports false.
+	if sessionMissingOutput(string(legacyOut)) || serverNotRunningOutput(string(legacyOut)) || migrationSocketAbsentOutput(string(legacyOut)) {
+		// The legacy socket cannot serve this session. Return the private target
+		// and preserve its ordinary liveness classification: an absent socket
+		// still yields an error, rather than proof that a workload has exited.
 		return r.socketName, nil
 	}
 	return "", fmt.Errorf(
@@ -1190,10 +1043,9 @@ func serverNotRunningOutput(out string) bool {
 	return strings.Contains(s, "no server running")
 }
 
-// migrationSocketAbsentOutput identifies a named migration target whose Unix
-// socket does not exist. This is definitive only for choosing whether to
-// inspect the legacy default socket; it must not become per-session evidence
-// of death, because the session may still be alive on that legacy server.
+// migrationSocketAbsentOutput identifies a missing Unix socket during socket
+// selection. This decides which socket to inspect, never whether a workload
+// has exited: an orphaned process can survive the loss of its tmux server.
 func migrationSocketAbsentOutput(out string) bool {
 	s := strings.ToLower(out)
 	return strings.Contains(s, "error connecting") &&

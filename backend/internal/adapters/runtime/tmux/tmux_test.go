@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,29 +48,18 @@ func (f *fakeRunner) Run(ctx context.Context, env []string, name string, args ..
 	return out, nil
 }
 
-// -- reapSessions test seam --
-
-// recordingReaper captures reapSessions calls instead of signaling real
-// processes, so unit tests exercising Destroy never touch the host's process
-// table.
-type recordingReaper struct {
-	pids   [][]int
-	graces []time.Duration
-}
-
-func (rr *recordingReaper) reap(_ context.Context, pids []int, grace time.Duration) {
-	rr.pids = append(rr.pids, append([]int(nil), pids...))
-	rr.graces = append(rr.graces, grace)
-}
-
 // -- helpers --
 
-func newTestRuntime(chunkSize int) (*Runtime, *fakeRunner) {
+func newTestRuntime(t *testing.T, chunkSize int) (*Runtime, *fakeRunner) {
+	t.Helper()
 	fr := &fakeRunner{}
-	r := New(Options{Binary: "tmux-test", Timeout: time.Second, Shell: "/bin/sh", ChunkSize: chunkSize})
+	r := New(Options{Binary: "tmux-test", Timeout: time.Second, Shell: "/bin/sh", ChunkSize: chunkSize, RunFilePath: filepath.Join(t.TempDir(), "running.json")})
+	r.socketName = ""
 	r.runner = fr
-	r.enterDelay = 0                           // tests must not pay the real 300ms pre-Enter pause
-	r.reapSessions = (&recordingReaper{}).reap // never signal real processes from unit tests
+	r.enterDelay = 0
+	// Unit tests never inspect or signal host processes.
+	r.processes = func(context.Context) ([]ownedProcess, error) { return nil, nil }
+	r.signalProcess = func(context.Context, ownedProcess, bool) error { return errors.New("unexpected process signal") }
 	return r, fr
 }
 
@@ -263,8 +251,8 @@ func TestCommandBuilders(t *testing.T) {
 		t.Fatalf("panePIDArgs = %#v, want %#v", got, want)
 	}
 	// list-panes reaps whole-session (-s) with exact-match target and prints pane pids.
-	if got, want := listPanePIDsArgs("sess-1"), []string{"list-panes", "-s", "-t", "=sess-1", "-F", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("listPanePIDsArgs = %#v, want %#v", got, want)
+	if got, want := listPaneStatesArgs("sess-1"), []string{"list-panes", "-s", "-t", "=sess-1", "-F", "#{pane_pid} #{pane_dead}"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("listPaneStatesArgs = %#v, want %#v", got, want)
 	}
 	if got, want := sendKeysLiteralArgs("sess-1", "hello"), []string{"send-keys", "-t", "sess-1", "-l", "hello"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sendKeysLiteralArgs = %#v, want %#v", got, want)
@@ -324,7 +312,7 @@ func TestSessionNameMatchesCreateNaming(t *testing.T) {
 // -- env key validation --
 
 func TestCreateRejectsInvalidEnvKeys(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	_ = fr
 	_, err := r.Create(context.Background(), ports.RuntimeConfig{
 		SessionID:     "sess-1",
@@ -342,7 +330,7 @@ func TestCreateRejectsInvalidEnvKeys(t *testing.T) {
 func TestCreateIssuesNewSessionAndStatusOff(t *testing.T) {
 	// new-session, display-message cwd verification, set-option status,
 	// set-option mouse, set-option window-size, has-session (exit 0 = alive)
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
 
 	h, err := r.Create(context.Background(), ports.RuntimeConfig{
@@ -408,7 +396,7 @@ func TestCreateIssuesNewSessionAndStatusOff(t *testing.T) {
 }
 
 func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
 
 	_, err := r.Create(context.Background(), ports.RuntimeConfig{
@@ -434,7 +422,7 @@ func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
 }
 
 func TestCreateCommandTerminalExitsWhenCommandCompletes(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
 
 	_, err := r.Create(context.Background(), ports.RuntimeConfig{
@@ -466,7 +454,7 @@ func TestCreateLaunchCommandExportsEnvVars(t *testing.T) {
 	}
 	defer func() { getenv = oldGetenv }()
 
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
 
 	_, err := r.Create(context.Background(), ports.RuntimeConfig{
@@ -517,7 +505,7 @@ func TestBuildLaunchCommandPreservesExplicitNoColor(t *testing.T) {
 }
 
 func TestCreateDestroysAndReturnsErrorWhenPaneCWDDoesNotMatch(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	// new-session, then a stale pane cwd on every one of the paneCwdVerifyAttempts
 	// retries: the pane never settles on the workspace, so Create must exhaust
 	// all attempts and fail with the typed mismatch error.
@@ -552,7 +540,7 @@ func TestCreateDestroysAndReturnsErrorWhenPaneCWDDoesNotMatch(t *testing.T) {
 // Losing it would make the caller fall back to an opaque, unclassifiable
 // error and regress the whole point of Fix 4 (mapping to a typed apierr).
 func TestVerifyPaneWorkingDirectoryKeepsMismatchErrorAfterLaterProbeFailure(t *testing.T) {
-	r, _ := newTestRuntime(0)
+	r, _ := newTestRuntime(t, 0)
 	fr := &fakeRunnerSequence{
 		results: []fakeRunnerResult{
 			{out: []byte("/deleted/shipit\n")},                // attempt 1: mismatch
@@ -577,7 +565,7 @@ func TestVerifyPaneWorkingDirectoryKeepsMismatchErrorAfterLaterProbeFailure(t *t
 // about to land in the right place. Create must not fail on that stale first
 // sample if a later sample matches.
 func TestVerifyPaneWorkingDirectoryRetriesUntilMatch(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	// new-session, then a stale sample, then a matching sample.
 	fr.outputs = [][]byte{nil, []byte("/deleted/shipit\n"), []byte("/tmp/ws\n"), nil, nil, nil}
 
@@ -601,7 +589,7 @@ func TestVerifyPaneWorkingDirectoryRetriesUntilMatch(t *testing.T) {
 // select on ctx.Done() actually aborts a pending retry instead of always
 // sleeping out the full retry budget.
 func TestVerifyPaneWorkingDirectoryHonorsCancellation(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("/deleted/shipit\n")}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -623,7 +611,7 @@ func TestVerifyPaneWorkingDirectoryHonorsCancellation(t *testing.T) {
 func TestCreateDestroysAndReturnsErrorWhenNotAlive(t *testing.T) {
 	// Every setup command succeeds; only the has-session liveness probe reports the
 	// session as gone, so Create must fail on the liveness check specifically.
-	r2, _ := newTestRuntime(0)
+	r2, _ := newTestRuntime(t, 0)
 	fr3 := &fakeRunnerSelectiveErr{
 		exitErrOn: "has-session",
 		errOutput: []byte("can't find session: sess-1"),
@@ -714,7 +702,7 @@ func (f *fakeRunnerSequence) Run(_ context.Context, env []string, name string, a
 }
 
 func TestRestartRespawnsExistingPaneAndPreservesHandle(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	handle := ports.RuntimeHandle{ID: "sess-1"}
 	cfg := ports.RuntimeConfig{
 		SessionID:     "sess-1",
@@ -742,7 +730,7 @@ func TestRestartRespawnsExistingPaneAndPreservesHandle(t *testing.T) {
 }
 
 func TestRestartRejectsMismatchedSessionHandle(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	_, err := r.Restart(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, ports.RuntimeConfig{
 		SessionID:     "sess-2",
 		WorkspacePath: "/tmp/ws",
@@ -925,38 +913,82 @@ func TestIsAliveReportsIncompatibleLegacyClientAsProbeInconclusive(t *testing.T)
 	}
 }
 
-func TestIsAliveReportsTransientLegacyConnectionAsProbeInconclusive(t *testing.T) {
-	r := New(Options{
-		Binary:       "bundled-tmux-test",
-		LegacyBinary: "system-tmux-test",
-		SocketName:   "ao",
-		Timeout:      time.Second,
-	})
-	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
-		{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}},
-		{out: []byte("error connecting to /tmp/tmux-1000/default (Connection refused)"), err: &exec.ExitError{}},
-	}}
-	r.runner = fr
+func TestIsAliveReportsLegacyConnectionFailuresAsProbeInconclusive(t *testing.T) {
+	for _, tc := range []struct{ name, output string }{
+		{"connection refused", "error connecting to /tmp/tmux-1000/default (Connection refused)"},
+		{"permission denied", "error connecting to /tmp/tmux-1000/default (Permission denied)"},
+		{"protocol mismatch", "protocol version mismatch"},
+		{"missing executable", "fork/exec tmux: no such file or directory"},
+		{"empty diagnostic", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(Options{Binary: "bundled-tmux-test", LegacyBinary: "system-tmux-test", SocketName: "ao", Timeout: time.Second})
+			fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+				{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}},
+				{out: []byte(tc.output), err: &exec.ExitError{}},
+			}}
+			r.runner = fr
+			alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+			if alive || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+				t.Fatalf("IsAlive = (%v, %v), want inconclusive probe", alive, err)
+			}
+			if len(fr.calls) != 2 {
+				t.Fatalf("calls = %d, want private then legacy probes only", len(fr.calls))
+			}
+		})
+	}
+}
 
-	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
-	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
-		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+func TestIsAliveHandlesAbsentLegacySocket(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		privateOut string
+		wantErr    error
+	}{
+		{"missing session", "can't find session: sess-1", nil},
+		{"missing server", "no server running on /tmp/tmux-1000/ao", ports.ErrRuntimeUnavailable},
+		{"missing socket", "error connecting to /tmp/tmux-1000/ao (No such file or directory)", ports.ErrRuntimeProbeInconclusive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(Options{Binary: "bundled-tmux-test", LegacyBinary: "system-tmux-test", SocketName: "ao", Timeout: time.Second})
+			private := fakeRunnerResult{out: []byte(tc.privateOut), err: &exec.ExitError{}}
+			fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+				private,
+				{out: []byte("error connecting to /tmp/tmux-1000/default (No such file or directory)"), err: &exec.ExitError{}},
+				private,
+			}}
+			r.runner = fr
+			alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+			if alive || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("IsAlive = (%v, %v), want (false, %v)", alive, err, tc.wantErr)
+			}
+			if len(fr.calls) != 3 || fr.calls[2].name != "bundled-tmux-test" {
+				t.Fatalf("calls = %#v, want private probe after absent legacy socket", fr.calls)
+			}
+		})
 	}
-	if alive {
-		t.Fatal("alive = true, want false with inconclusive error")
+}
+
+func TestDestroyRetriesWhenBothSocketsAbsent(t *testing.T) {
+	r := New(Options{Binary: "bundled-tmux-test", LegacyBinary: "system-tmux-test", SocketName: "ao", Timeout: time.Second, RunFilePath: filepath.Join(t.TempDir(), "running.json")})
+	absent := fakeRunnerResult{out: []byte("error connecting to /tmp/tmux-1000/default (No such file or directory)"), err: &exec.ExitError{}}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{absent, absent, absent, absent, absent, absent}}
+	r.runner = fr
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy with no private or legacy socket: %v", err)
 	}
-	if len(fr.calls) != 2 {
-		t.Fatalf("calls = %d, want private then legacy probes only", len(fr.calls))
+	if len(fr.calls) != 6 || fr.calls[5].name != "bundled-tmux-test" || fr.calls[5].args[2] != "kill-session" {
+		t.Fatalf("calls = %#v, want teardown on private socket", fr.calls)
 	}
 }
 
 // -- Destroy tests --
 
 func TestDestroyIsIdempotentWhenSessionMissing(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	// First output feeds list-panes (which also errors here → no sids); the
 	// missing-session marker must land on the kill-session call.
-	fr.outputs = [][]byte{nil, []byte("can't find session: sess-1")}
+	fr.outputs = [][]byte{[]byte("can't find session: sess-1"), []byte("can't find session: sess-1")}
 	fr.err = &exec.ExitError{}
 
 	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
@@ -968,8 +1000,8 @@ func TestDestroyIsIdempotentWhenSessionMissing(t *testing.T) {
 }
 
 func TestDestroyIsIdempotentWhenNoServer(t *testing.T) {
-	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, []byte("no server running on /tmp/tmux-1000/default")}
+	r, fr := newTestRuntime(t, 0)
+	fr.outputs = [][]byte{[]byte("no server running on /tmp/tmux-1000/default"), []byte("no server running on /tmp/tmux-1000/default")}
 	fr.err = &exec.ExitError{}
 
 	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
@@ -978,7 +1010,7 @@ func TestDestroyIsIdempotentWhenNoServer(t *testing.T) {
 }
 
 func TestDestroyReportsUnexpectedFailures(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{nil, []byte("permission denied")}
 	fr.err = &exec.ExitError{}
 
@@ -988,7 +1020,7 @@ func TestDestroyReportsUnexpectedFailures(t *testing.T) {
 }
 
 func TestDestroyArgs(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{nil, nil}
 
 	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
@@ -996,7 +1028,7 @@ func TestDestroyArgs(t *testing.T) {
 	}
 	// list-panes discovers pane sessions; kill-session (exact-match target
 	// =<id>) tears the session down.
-	if got, want := fr.calls[0].args, listPanePIDsArgs("sess-1"); !reflect.DeepEqual(got, want) {
+	if got, want := fr.calls[0].args, listPaneStatesArgs("sess-1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("list-panes args = %#v, want %#v", got, want)
 	}
 	if got, want := fr.calls[1].args, killSessionArgs("sess-1"); !reflect.DeepEqual(got, want) {
@@ -1005,7 +1037,7 @@ func TestDestroyArgs(t *testing.T) {
 }
 
 func TestIsSupervisedProcessAliveFindsExactDescendant(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{
 		[]byte("100\n"),
 		[]byte("100 1 /bin/sh -c launch\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-2 -- codex\n102 101 codex\n"),
@@ -1063,7 +1095,7 @@ func TestIsSupervisedProcessAliveFindsManualRelaunchFromPreservedShell(t *testin
 }
 
 func TestIsExactSupervisedProcessAliveRejectsManualRelaunchFromPreservedShell(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{
 		[]byte("100\n"),
 		[]byte("100 1 /bin/zsh -i\n101 100 codex resume native-1\n102 101 codex worker\n"),
@@ -1078,7 +1110,7 @@ func TestIsExactSupervisedProcessAliveRejectsManualRelaunchFromPreservedShell(t 
 }
 
 func TestProbeFencedRuntimeExactProcessMatchIsAlive(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{
 		nil,
 		[]byte("100\n"),
@@ -1094,7 +1126,7 @@ func TestProbeFencedRuntimeExactProcessMatchIsAlive(t *testing.T) {
 }
 
 func TestProbeFencedRuntimeAmbiguousIdentityIsUnknown(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{
 		nil,
 		[]byte("100\n"),
@@ -1110,7 +1142,7 @@ func TestProbeFencedRuntimeAmbiguousIdentityIsUnknown(t *testing.T) {
 }
 
 func TestProbeFencedRuntimeExactSupervisorWithoutChildIsDead(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{
 		nil,
 		[]byte("100\n"),
@@ -1126,7 +1158,7 @@ func TestProbeFencedRuntimeExactSupervisorWithoutChildIsDead(t *testing.T) {
 }
 
 func TestProbeFencedRuntimeManualRelaunchWithoutSupervisorIsUnknown(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{
 		nil,
 		[]byte("100\n"),
@@ -1142,7 +1174,7 @@ func TestProbeFencedRuntimeManualRelaunchWithoutSupervisorIsUnknown(t *testing.T
 }
 
 func TestProbeFencedRuntimeMalformedProcessRowIsUnknown(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{
 		nil,
 		[]byte("100\n"),
@@ -1158,7 +1190,7 @@ func TestProbeFencedRuntimeMalformedProcessRowIsUnknown(t *testing.T) {
 }
 
 func TestProbeFencedRuntimeMultipleSupervisorGenerationsIsUnknown(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{
 		nil,
 		[]byte("100\n"),
@@ -1190,7 +1222,7 @@ func (r *partialCreateFailureRunner) Run(_ context.Context, _ []string, _ string
 			return nil, errors.New("set status response lost")
 		}
 	case "list-panes":
-		return []byte("4242\n"), nil
+		return []byte("4242 0\n"), nil
 	case "kill-session":
 		return nil, errors.New("cleanup failed")
 	}
@@ -1198,9 +1230,12 @@ func (r *partialCreateFailureRunner) Run(_ context.Context, _ []string, _ string
 }
 
 func TestPartialCreateCleanupFailureExposesRuntimeEffectEvidence(t *testing.T) {
-	r := New(Options{Binary: "tmux-test", Shell: "/bin/sh", Timeout: time.Second})
+	r, _ := newTestRuntime(t, 0)
 	r.runner = &partialCreateFailureRunner{}
-	r.reapSessions = (&recordingReaper{}).reap
+	r.processes = func(context.Context) ([]ownedProcess, error) {
+		return []ownedProcess{testOwnedProcess(4242, 1, "pane")}, nil
+	}
+	r.signalProcess = func(context.Context, ownedProcess, bool) error { return errors.New("cleanup failed") }
 
 	handle, err := r.Create(context.Background(), ports.RuntimeConfig{
 		SessionID: "sess-partial", WorkspacePath: "/tmp/ws", Argv: []string{"codex"},
@@ -1228,7 +1263,7 @@ func TestIsSupervisedProcessAliveRejectsBarePreservedShell(t *testing.T) {
 }
 
 func TestIsSupervisedProcessAliveRejectsInvalidPanePID(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("not-a-pid\n")}
 
 	if _, err := r.IsSupervisedProcessAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, ports.SupervisedProcessRef{}); err == nil {
@@ -1236,35 +1271,10 @@ func TestIsSupervisedProcessAliveRejectsInvalidPanePID(t *testing.T) {
 	}
 }
 
-// Destroy must reap the pane sessions it discovered so a worker's backgrounded
-// dev servers do not outlive the session.
-func TestDestroyReapsDiscoveredPaneSessions(t *testing.T) {
-	r, fr := newTestRuntime(0)
-	// list-panes lists two pane pids (one per line, plus noise the parser must
-	// drop); kill-session then succeeds.
-	fr.outputs = [][]byte{[]byte("4242\n4243\n\n1\n"), nil}
-	reaper := &recordingReaper{}
-	r.reapSessions = reaper.reap
-
-	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
-		t.Fatalf("Destroy: %v", err)
-	}
-	if len(reaper.pids) != 1 {
-		t.Fatalf("reaper called %d times, want 1", len(reaper.pids))
-	}
-	// pids <= 1 and blank lines are dropped; the real sids reach the reaper.
-	if got, want := reaper.pids[0], []int{4242, 4243}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("reaped session ids = %#v, want %#v", got, want)
-	}
-	if reaper.graces[0] != r.reapGrace {
-		t.Fatalf("reap grace = %v, want %v", reaper.graces[0], r.reapGrace)
-	}
-}
-
 // -- IsAlive tests --
 
 func TestIsAliveReturnsTrueOnExitZero(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{nil}
 
 	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
@@ -1280,7 +1290,7 @@ func TestIsAliveReturnsTrueOnExitZero(t *testing.T) {
 }
 
 func TestIsAliveReturnsFalseNilOnCantFindSession(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("can't find session: sess-1")}
 	fr.err = &exec.ExitError{}
 
@@ -1298,7 +1308,7 @@ func TestIsAliveReturnsFalseNilOnCantFindSession(t *testing.T) {
 // sentinel rather than a per-session false result: the reaper treats errors as
 // failed probes, while explicit recovery paths may recreate the missing server.
 func TestIsAliveReportsNoServerAsRuntimeUnavailable(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("no server running on /tmp/tmux-1000/default")}
 	fr.err = &exec.ExitError{}
 
@@ -1312,7 +1322,7 @@ func TestIsAliveReportsNoServerAsRuntimeUnavailable(t *testing.T) {
 }
 
 func TestIsAliveReportsErrorConnectingAsProbeInconclusive(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("error connecting to /tmp/tmux-1000/default (No such file or directory)")}
 	fr.err = &exec.ExitError{}
 
@@ -1328,7 +1338,7 @@ func TestIsAliveReportsErrorConnectingAsProbeInconclusive(t *testing.T) {
 // IsAlive must treat any non-"missing" non-zero exit as a probe error so the
 // reaper never reads a transient failure as proof of death.
 func TestIsAliveReportsOtherExitFailuresAsProbeErrors(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("unexpected internal error")}
 	fr.err = &exec.ExitError{}
 
@@ -1344,7 +1354,7 @@ func TestIsAliveReportsOtherExitFailuresAsProbeErrors(t *testing.T) {
 // -- SendMessage tests --
 
 func TestSendMessageChunksAndSendsEnter(t *testing.T) {
-	r, fr := newTestRuntime(5) // chunkSize=5
+	r, fr := newTestRuntime(t, 5) // chunkSize=5
 	// "hello世界": hello=5 bytes, 世=3 bytes, 界=3 bytes => 3 sends + 1 Enter
 	if err := r.SendMessage(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, "hello世界"); err != nil {
 		t.Fatalf("SendMessage: %v", err)
@@ -1367,7 +1377,7 @@ func TestSendMessageChunksAndSendsEnter(t *testing.T) {
 }
 
 func TestSendMessageUsesLiteralFlag(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	if err := r.SendMessage(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, "Enter"); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -1384,7 +1394,7 @@ func TestSendMessageUsesLiteralFlag(t *testing.T) {
 // (nudge) message skips the pause — there is no paste ahead of a catch-up Enter.
 func TestSendMessageDelaysBeforeEnter(t *testing.T) {
 	// enterDelay=0 (the test default) => no pause: SendMessage is near-instant.
-	r0, _ := newTestRuntime(0)
+	r0, _ := newTestRuntime(t, 0)
 	r0.enterDelay = 0
 	start := time.Now()
 	if err := r0.SendMessage(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, "hi"); err != nil {
@@ -1396,7 +1406,7 @@ func TestSendMessageDelaysBeforeEnter(t *testing.T) {
 
 	// enterDelay>0 => SendMessage blocks at least enterDelay before Enter, but
 	// only for a non-empty message.
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	r.enterDelay = 30 * time.Millisecond
 	start = time.Now()
 	if err := r.SendMessage(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, "hello"); err != nil {
@@ -1414,7 +1424,7 @@ func TestSendMessageDelaysBeforeEnter(t *testing.T) {
 	}
 
 	// Empty (nudge) message: no paste, no pause — even with enterDelay set.
-	rNudge, frNudge := newTestRuntime(0)
+	rNudge, frNudge := newTestRuntime(t, 0)
 	rNudge.enterDelay = 30 * time.Millisecond
 	start = time.Now()
 	if err := rNudge.SendMessage(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, ""); err != nil {
@@ -1438,7 +1448,7 @@ func TestSendMessageDelaysBeforeEnter(t *testing.T) {
 // a retried send would double-paste. The pause and Enter run on a context
 // detached from the caller's, so SendMessage completes (chunks then Enter).
 func TestSendMessageEnterSurvivesCallerCancel(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	// A pause long enough that the 50ms-delayed cancel deterministically lands
 	// inside it (the chunk send is near-instant against the fake runner).
 	r.enterDelay = 200 * time.Millisecond
@@ -1459,7 +1469,7 @@ func TestSendMessageEnterSurvivesCallerCancel(t *testing.T) {
 }
 
 func TestSendMessageRemainingChunksSurviveCallerCancel(t *testing.T) {
-	r, fr := newTestRuntime(5)
+	r, fr := newTestRuntime(t, 5)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1508,7 +1518,7 @@ func TestSendMessageCompletionBudgetScalesWithChunks(t *testing.T) {
 }
 
 func TestSendMessageCancellationBeforeFirstChunkAborts(t *testing.T) {
-	r, fr := newTestRuntime(5)
+	r, fr := newTestRuntime(t, 5)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	fr.hook = func(runCtx context.Context, _ int) error {
@@ -1525,7 +1535,7 @@ func TestSendMessageCancellationBeforeFirstChunkAborts(t *testing.T) {
 }
 
 func TestInterruptSendsCtrlC(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	if err := r.Interrupt(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
@@ -1535,7 +1545,7 @@ func TestInterruptSendsCtrlC(t *testing.T) {
 }
 
 func TestSendInputSendsEscapeWithoutEnter(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	if err := r.SendInput(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, "\x1b"); err != nil {
 		t.Fatalf("SendInput: %v", err)
 	}
@@ -1550,7 +1560,7 @@ func TestSendInputSendsEscapeWithoutEnter(t *testing.T) {
 // -- GetOutput tests --
 
 func TestGetOutputValidatesLines(t *testing.T) {
-	r, _ := newTestRuntime(0)
+	r, _ := newTestRuntime(t, 0)
 	_, err := r.GetOutput(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, 0)
 	if err == nil {
 		t.Fatal("GetOutput lines=0: got nil, want error")
@@ -1558,7 +1568,7 @@ func TestGetOutputValidatesLines(t *testing.T) {
 }
 
 func TestGetOutputTrimsLines(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("one\ntwo\nthree\n")}
 
 	out, err := r.GetOutput(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, 2)
@@ -1571,7 +1581,7 @@ func TestGetOutputTrimsLines(t *testing.T) {
 }
 
 func TestGetOutputTrimsTrailingScreenPaddingBeforeTailing(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("ready\nprompt> echo hi\nhi\n\n\n\n")}
 
 	out, err := r.GetOutput(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, 2)
@@ -1584,7 +1594,7 @@ func TestGetOutputTrimsTrailingScreenPaddingBeforeTailing(t *testing.T) {
 }
 
 func TestGetOutputArgs(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("output\n")}
 
 	_, err := r.GetOutput(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, 10)
@@ -1597,7 +1607,7 @@ func TestGetOutputArgs(t *testing.T) {
 }
 
 func TestGetStyledOutputPreservesCaptureMode(t *testing.T) {
-	r, fr := newTestRuntime(0)
+	r, fr := newTestRuntime(t, 0)
 	fr.outputs = [][]byte{[]byte("› \x1b[2mplaceholder\x1b[0m\n")}
 
 	out, err := r.GetStyledOutput(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, 10)
@@ -1723,117 +1733,4 @@ func TestTrimTrailingBlankLines(t *testing.T) {
 	if got := trimTrailingBlankLines(""); got != "" {
 		t.Fatalf("trimTrailingBlankLines empty = %q", got)
 	}
-}
-
-// -- reap tests --
-
-// The reap used to sleep the whole grace before rechecking, and Destroy blocks
-// the shell-terminal DELETE handler, so closing a plain terminal took the full
-// 5s no matter how fast the shell exited. Polling must return as soon as the
-// pane session is empty.
-func TestReapPaneSessionsReturnsAsSoonAsSessionsAreEmpty(t *testing.T) {
-	grace := 3 * time.Second
-	var signals []string
-	calls := 0
-	hasProcesses := func(context.Context, []int) bool {
-		calls++
-		// Alive for the SIGTERM check, gone by the first poll.
-		return calls == 1
-	}
-
-	start := time.Now()
-	reapPaneSessions(context.Background(), []int{4242}, grace,
-		func(_ context.Context, _ []int, sig string) bool { signals = append(signals, sig); return true },
-		hasProcesses,
-	)
-	elapsed := time.Since(start)
-
-	if elapsed >= grace {
-		t.Fatalf("reap took %v, want well under the %v grace", elapsed, grace)
-	}
-	if !reflect.DeepEqual(signals, []string{"-TERM"}) {
-		t.Fatalf("signals = %#v, want just -TERM: a process that already exited must not be SIGKILLed", signals)
-	}
-}
-
-// The grace still exists for what it was added for (issue #2523): a dev server
-// a worker backgrounded gets the full window to release its ports, and is only
-// then forced.
-func TestReapPaneSessionsSigkillsSurvivorsAfterGrace(t *testing.T) {
-	grace := 150 * time.Millisecond
-	var signals []string
-
-	start := time.Now()
-	reapPaneSessions(context.Background(), []int{4242}, grace,
-		func(_ context.Context, _ []int, sig string) bool { signals = append(signals, sig); return true },
-		func(context.Context, []int) bool { return true },
-	)
-	elapsed := time.Since(start)
-
-	if elapsed < grace {
-		t.Fatalf("reap took %v, want at least the %v grace before forcing", elapsed, grace)
-	}
-	if !reflect.DeepEqual(signals, []string{"-TERM", "-KILL"}) {
-		t.Fatalf("signals = %#v, want -TERM then -KILL", signals)
-	}
-}
-
-// An empty pane list means there is nothing to reap; signalling anything there
-// would be pkill against no session at all.
-func TestReapPaneSessionsIgnoresEmptyPidList(t *testing.T) {
-	called := false
-	reapPaneSessions(context.Background(), nil, time.Second,
-		func(context.Context, []int, string) bool { called = true; return true },
-		func(context.Context, []int) bool { return true },
-	)
-	if called {
-		t.Fatal("no pane sessions should mean no signals sent")
-	}
-}
-
-// Regression: macOS pkill/pgrep have no `-s` (session id) matcher — it is a
-// Linux procps extension — so every signal and probe failed with a usage error
-// and the probe's conservative "assume survivors" kept the full grace running.
-// The reap accomplished nothing and cost 5s on every close.
-func TestReapPaneSessionsSkipsWaitWhenSessionMatcherUnsupported(t *testing.T) {
-	grace := 3 * time.Second
-	probed := false
-
-	start := time.Now()
-	reapPaneSessions(context.Background(), []int{4242}, grace,
-		func(context.Context, []int, string) bool { return false },
-		func(context.Context, []int) bool { probed = true; return true },
-	)
-	elapsed := time.Since(start)
-
-	if elapsed >= grace {
-		t.Fatalf("reap took %v; a platform that cannot signal by session id must not wait out the grace", elapsed)
-	}
-	if probed {
-		t.Fatal("no point probing for survivors when the matcher itself is unsupported")
-	}
-}
-
-func TestIsUnsupportedMatcher(t *testing.T) {
-	if isUnsupportedMatcher(nil) {
-		t.Fatal("a successful match is supported")
-	}
-	if isUnsupportedMatcher(exitCodeErr(t, 1)) {
-		t.Fatal("exit 1 means nothing matched, which is a supported outcome")
-	}
-	if !isUnsupportedMatcher(exitCodeErr(t, 2)) {
-		t.Fatal("exit 2 is a usage error: the matcher is unsupported")
-	}
-	if !isUnsupportedMatcher(errors.New("exec: \"pkill\": executable file not found")) {
-		t.Fatal("a missing pkill is equally unusable")
-	}
-}
-
-func exitCodeErr(t *testing.T, code int) error {
-	t.Helper()
-	err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
-	if err == nil {
-		t.Fatalf("sh -c 'exit %d' should fail", code)
-	}
-	return err
 }

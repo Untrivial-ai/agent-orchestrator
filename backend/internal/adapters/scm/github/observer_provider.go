@@ -227,6 +227,8 @@ func stableCheckFingerprint(parts []string) string {
 // observer marks that ref refresh-incomplete and can log the permanent miss
 // distinctly from a transient provider failure. The observer owns chunking;
 // this method rejects larger batches so tests catch accidental over-batching.
+// A check-pagination failure likewise stays attached to its PR, preserving
+// complete observations for the other refs in the batch.
 func (p *Provider) FetchPullRequests(ctx context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -241,22 +243,25 @@ func (p *Provider) FetchPullRequests(ctx context.Context, refs []ports.SCMPRRef)
 	}
 	out := make([]ports.SCMObservation, len(refs))
 	for i, ref := range refs {
+		out[i] = ports.SCMObservation{
+			Provider: ref.Repo.Provider,
+			Host:     ref.Repo.Host,
+			Repo:     repoFullName(ref.Repo),
+			PR:       ports.SCMPRObservation{Number: ref.Number, URL: ref.URL},
+		}
 		repoData, _ := data[aliases[i]].(map[string]any)
 		pr, _ := repoData["pullRequest"].(map[string]any)
 		if pr == nil {
-			out[i] = ports.SCMObservation{
-				Fetched:  false,
-				Provider: ref.Repo.Provider,
-				Host:     ref.Repo.Host,
-				Repo:     repoFullName(ref.Repo),
-				PR:       ports.SCMPRObservation{Number: ref.Number, URL: ref.URL},
-				Error:    fmt.Errorf("%w: pull request %s#%d not in batch response", ErrNotFound, repoFullName(ref.Repo), ref.Number),
-			}
+			out[i].Error = fmt.Errorf("%w: pull request %s#%d not in batch response", ErrNotFound, repoFullName(ref.Repo), ref.Number)
 			continue
 		}
 		if scmContextsPaginated(pr) {
 			if err := p.fetchRemainingCheckContexts(ctx, ref, pr); err != nil {
-				return nil, err
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				out[i].Error = err
+				continue
 			}
 		}
 		out[i] = scmObservationFromGraphQL(ref, pr)
@@ -396,7 +401,7 @@ author{ login avatarUrl }
 mergeCommit{ oid }
 commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state contexts(first:CONTEXT_LIMIT){ nodes{
   __typename
-  ... on CheckRun { name status conclusion detailsUrl url databaseId }
+  ... on CheckRun { `+checkRunFields+` }
   ... on StatusContext { context state targetUrl }
 } pageInfo{ hasNextPage endCursor } } } } } }
 `, "CONTEXT_LIMIT", strconv.Itoa(scmBatchCheckContextLimit))
@@ -411,7 +416,7 @@ func (p *Provider) fetchRemainingCheckContexts(ctx context.Context, ref ports.SC
 	if cursor == "" {
 		return fmt.Errorf("github scm: paginated check contexts for %s#%d missing end cursor", repoFullName(ref.Repo), ref.Number)
 	}
-	for {
+	for page := 1; page < githubCheckRunsMaxPages; page++ {
 		query := buildCheckContextsQuery(ref, cursor)
 		data, err := p.client.doGraphQL(ctx, query, nil)
 		if err != nil {
@@ -426,28 +431,34 @@ func (p *Provider) fetchRemainingCheckContexts(ctx context.Context, ref ports.SC
 		if pageContexts == nil {
 			return fmt.Errorf("github scm: check context fallback for %s#%d returned no contexts", repoFullName(ref.Repo), ref.Number)
 		}
+		if head, pageHead := latestCommitOID(pr), latestCommitOID(pagePR); head != "" && pageHead != "" && head != pageHead {
+			return fmt.Errorf("github scm: head changed while fetching check contexts for %s#%d", repoFullName(ref.Repo), ref.Number)
+		}
 		appendStatusContextNodes(contexts, pageContexts)
 		if !pageInfoHasMore(pageContexts) {
-			break
+			return nil
 		}
-		cursor = pageInfoEndCursor(pageContexts)
-		if cursor == "" {
-			return fmt.Errorf("github scm: paginated check context page for %s#%d missing end cursor", repoFullName(ref.Repo), ref.Number)
+		nextCursor := pageInfoEndCursor(pageContexts)
+		if nextCursor == "" || nextCursor == cursor {
+			return fmt.Errorf("github scm: paginated check context page for %s#%d missing or repeated end cursor", repoFullName(ref.Repo), ref.Number)
 		}
+		cursor = nextCursor
 	}
-	return nil
+	return fmt.Errorf("github scm: check contexts for %s#%d exceed %d pages", repoFullName(ref.Repo), ref.Number, githubCheckRunsMaxPages)
 }
 
 func buildCheckContextsQuery(ref ports.SCMPRRef, cursor string) string {
+	// Follow-up requests contain one PR, so use the full connection page size.
+	// The initial multi-PR query keeps its smaller page to bound batch cost.
 	return fmt.Sprintf(`query{
 repo: repository(owner:%s,name:%s){ pullRequest(number:%d){
-  commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:%d, after:%s){ nodes{
+  commits(last:1){ nodes{ commit{ oid statusCheckRollup{ contexts(first:%d, after:%s){ nodes{
     __typename
-    ... on CheckRun { name status conclusion detailsUrl url databaseId }
+    ... on CheckRun { `+checkRunFields+` }
     ... on StatusContext { context state targetUrl }
   } pageInfo{ hasNextPage endCursor } } } } } }
 } }
-}`, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, scmBatchCheckContextLimit, graphQLString(cursor))
+}`, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, graphQLCheckContextLimit, graphQLString(cursor))
 }
 
 func statusContexts(pr map[string]any) map[string]any {
@@ -479,7 +490,7 @@ func pageInfoEndCursor(connection map[string]any) string {
 func scmObservationFromGraphQL(ref ports.SCMPRRef, pr map[string]any) ports.SCMObservation {
 	checks := scmChecksFromGraphQL(pr)
 	failed := failedSCMChecks(checks)
-	ci := string(ciSummaryFromRollupState(pr))
+	ci := string(ciSummaryFromGraphQL(pr))
 	prURL := firstNonEmpty(str(pr["url"]), ref.URL)
 	review := string(reviewDecisionFromGraphQL(pr))
 	providerMergeable := str(pr["mergeable"])
@@ -542,14 +553,6 @@ func scmObservationFromGraphQL(ref ports.SCMPRRef, pr map[string]any) ports.SCMO
 	return obs
 }
 
-func ciSummaryFromRollupState(pr map[string]any) domain.CIState {
-	roll := statusRollup(pr)
-	if roll == nil {
-		return domain.CIUnknown
-	}
-	return mapRollupState(str(roll["state"]))
-}
-
 func scmContextsPaginated(pr map[string]any) bool {
 	return pageInfoHasMore(statusContexts(pr))
 }
@@ -567,6 +570,7 @@ func scmChecksFromGraphQL(pr map[string]any) []ports.SCMCheckObservation {
 			ch.Name = str(n["name"])
 			ch.Status = string(checkStatusFromGraphQL(n))
 			ch.Conclusion = strings.ToLower(str(n["conclusion"]))
+			ch.LogTail = checkBlockingReason(n)
 			ch.URL = firstNonEmpty(str(n["detailsUrl"]), str(n["url"]))
 			if id := int64(num(n["databaseId"])); id > 0 {
 				ch.ProviderID = strconv.FormatInt(id, 10)

@@ -239,9 +239,18 @@ type SessionView struct {
 	Model string `json:"model,omitempty"`
 	// LastUserMessageAt is the latest real user-authored task direction time.
 	// Lifecycle and internal automation updates do not advance it.
-	LastUserMessageAt *time.Time       `json:"lastUserMessageAt,omitempty"`
-	PRs               []SessionPRFacts `json:"prs"`
-	ActiveAgentSwitch *AgentSwitchView `json:"activeAgentSwitch,omitempty"`
+	LastUserMessageAt *time.Time          `json:"lastUserMessageAt,omitempty"`
+	PRs               []SessionPRFacts    `json:"prs"`
+	ActiveAgentSwitch *AgentSwitchView    `json:"activeAgentSwitch,omitempty"`
+	Startup           *SessionStartupView `json:"startup,omitempty"`
+}
+
+// SessionStartupView exposes recovery progress without internal resource handles.
+type SessionStartupView struct {
+	ID        string    `json:"id"`
+	Stage     string    `json:"stage"`
+	StartedAt time.Time `json:"startedAt"`
+	LastError string    `json:"lastError,omitempty" maxLength:"2048"`
 }
 
 // ListSessionsResponse is the body of GET /api/v1/sessions.
@@ -818,6 +827,7 @@ type SessionPRSummary struct {
 type SessionPRCISummary struct {
 	State         domain.CIState          `json:"state" enum:"unknown,pending,passing,failing"`
 	FailingChecks []SessionPRFailingCheck `json:"failingChecks"`
+	BlockedChecks []SessionPRBlockedCheck `json:"blockedChecks,omitempty"`
 	AutoInjectCI  bool                    `json:"autoInjectCI"`
 }
 
@@ -827,6 +837,13 @@ type SessionPRFailingCheck struct {
 	Status     domain.PRCheckStatus `json:"status" enum:"failed,cancelled"`
 	Conclusion string               `json:"conclusion"`
 	URL        string               `json:"url,omitempty"`
+}
+
+// SessionPRBlockedCheck describes a check that could not execute.
+type SessionPRBlockedCheck struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+	URL    string `json:"url,omitempty"`
 }
 
 // SessionPRReviewSummary is the review state block for a session PR summary.
@@ -931,7 +948,11 @@ func newSessionPRCISummary(in sessionsvc.PRCISummary) SessionPRCISummary {
 	for _, ch := range in.FailingChecks {
 		checks = append(checks, SessionPRFailingCheck{Name: ch.Name, Status: ch.Status, Conclusion: ch.Conclusion, URL: ch.URL})
 	}
-	return SessionPRCISummary{State: in.State, FailingChecks: checks, AutoInjectCI: in.AutoInjectCI}
+	blocked := make([]SessionPRBlockedCheck, 0, len(in.BlockedChecks))
+	for _, ch := range in.BlockedChecks {
+		blocked = append(blocked, SessionPRBlockedCheck{Name: ch.Name, Reason: ch.Reason, URL: ch.URL})
+	}
+	return SessionPRCISummary{State: in.State, FailingChecks: checks, BlockedChecks: blocked, AutoInjectCI: in.AutoInjectCI}
 }
 
 func newSessionPRReviewSummary(in sessionsvc.PRReviewSummary) SessionPRReviewSummary {

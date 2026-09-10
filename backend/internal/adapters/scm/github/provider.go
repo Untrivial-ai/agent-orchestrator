@@ -22,6 +22,14 @@ import (
 // usual "X tests failed" tail without bloating the per-PR row.
 const ciFailureLogTailLines = 20
 
+// Keep execution evidence identical for single, batch, and paginated reads.
+// Billing refusals have a short annotation; bounding this connection avoids
+// loading every diagnostic emitted by a large test run.
+const checkRunFields = `name status conclusion detailsUrl url databaseId
+  steps(first:1){ totalCount }
+  checkSuite{ app{ slug } }
+  annotations(first:5){ nodes{ message } }`
+
 // ProviderOptions configures a Provider. Production code typically sets
 // Token; tests inject a pre-built Client pointed at httptest.
 type ProviderOptions struct {
@@ -259,7 +267,7 @@ const prObservationQuery = `query($owner:String!,$repo:String!,$number:Int!){
           contexts(first:CONTEXT_LIMIT){
             nodes{
               __typename
-              ... on CheckRun  { name status conclusion detailsUrl url databaseId }
+              ... on CheckRun  { ` + checkRunFields + ` }
               ... on StatusContext { context state targetUrl }
             }
             pageInfo{ hasNextPage }
@@ -316,7 +324,7 @@ func (p *Provider) fetchJobLogTail(ctx context.Context, owner, repo string, jobI
 
 // ciSummaryFromGraphQL maps the per-PR status rollup onto domain.CIState.
 // If ANY visible context concluded failure-class we return CIFailing.
-// Otherwise any pending context wins over passing. An empty rollup is
+// Otherwise unknown evidence stays unknown, and pending wins over passing. An empty rollup is
 // CIUnknown. When the rollup is paginated (pageInfo.hasNextPage=true)
 // the verdict is conservative: a known failure is still safe — failures
 // don't get un-failed by more pages — but passing/pending/unknown
@@ -335,7 +343,7 @@ func ciSummaryFromGraphQL(pr map[string]any) domain.CIState {
 		// rather than returning CIUnknown for an otherwise-decided PR.
 		return mapRollupState(str(roll["state"]))
 	}
-	pending, passing := false, false
+	pending, passing, unknown := false, false, false
 	for _, n := range rawNodes {
 		st := checkStatusFromGraphQL(n)
 		switch st {
@@ -345,12 +353,24 @@ func ciSummaryFromGraphQL(pr map[string]any) domain.CIState {
 			pending = true
 		case domain.PRCheckPassed:
 			passing = true
+		case domain.PRCheckSkipped:
+			// Conditional skips satisfy checks, but the shared status mapper
+			// also labels STALE runs skipped. Those do not establish success.
+			if strings.EqualFold(strings.TrimSpace(str(n["conclusion"])), "SKIPPED") {
+				passing = true
+			} else {
+				unknown = true
+			}
+		case domain.PRCheckUnknown:
+			unknown = true
 		}
 	}
 	if pageInfoHasMore(contexts) {
 		return domain.CIUnknown
 	}
 	switch {
+	case unknown:
+		return domain.CIUnknown
 	case pending:
 		return domain.CIPending
 	case passing:
@@ -493,6 +513,7 @@ func checksFromGraphQL(pr map[string]any, headSHA string) []ports.PRCheckObserva
 			CommitHash: headSHA,
 			Status:     checkStatusFromGraphQL(n),
 			URL:        urlOut,
+			LogTail:    checkBlockingReason(n),
 		})
 	}
 	return out
@@ -605,7 +626,12 @@ func checkStatusFromGraphQL(n map[string]any) domain.PRCheckStatus {
 	switch conclusion {
 	case "SUCCESS", "NEUTRAL":
 		return domain.PRCheckPassed
-	case "FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
+	case "FAILURE":
+		if checkBlockingReason(n) != "" {
+			return domain.PRCheckUnknown
+		}
+		return domain.PRCheckFailed
+	case "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
 		return domain.PRCheckFailed
 	case "CANCELLED":
 		return domain.PRCheckCancelled
@@ -623,6 +649,33 @@ func checkStatusFromGraphQL(n map[string]any) domain.PRCheckStatus {
 		return domain.PRCheckUnknown
 	}
 	return domain.PRCheckUnknown
+}
+
+// A failed check with no steps may still be a malformed workflow or a
+// third-party check. Only an explicit Actions billing refusal proves this
+// failure needs account intervention instead of a code repair.
+func checkBlockingReason(n map[string]any) string {
+	if str(n["__typename"]) != "CheckRun" || !strings.EqualFold(str(n["conclusion"]), "FAILURE") {
+		return ""
+	}
+	suite, _ := n["checkSuite"].(map[string]any)
+	app, _ := suite["app"].(map[string]any)
+	if str(app["slug"]) != "github-actions" {
+		return ""
+	}
+	steps, _ := n["steps"].(map[string]any)
+	if num(steps["totalCount"]) > 0 {
+		return ""
+	}
+	annotations, _ := n["annotations"].(map[string]any)
+	for _, annotation := range nodes(annotations["nodes"]) {
+		message := strings.ToLower(strings.TrimSpace(str(annotation["message"])))
+		if strings.HasPrefix(message, "the job was not started because") &&
+			(strings.Contains(message, "recent account payments have failed") || strings.Contains(message, "spending limit needs to be increased")) {
+			return domain.CIBillingBlockedReason
+		}
+	}
+	return ""
 }
 
 func isFailingCheckStatus(s domain.PRCheckStatus) bool {

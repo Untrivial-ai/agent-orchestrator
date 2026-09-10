@@ -799,10 +799,33 @@ func failedPRChecks(checks []ports.PRCheckObservation) []ports.PRCheckObservatio
 
 func ciFailureSignature(checks []ports.PRCheckObservation) string {
 	parts := make([]string, 0, len(checks))
+	seen := make(map[string]bool, len(checks))
 	for _, ch := range checks {
-		parts = append(parts, strings.Join([]string{ch.Name, ch.CommitHash, string(ch.Status), ch.URL, ch.LogTail}, "\x00"))
+		// URLs identify an attempt, so rerunning the same failure changes its
+		// URL without giving the worker anything new to repair.
+		part := strings.Join([]string{ch.Name, ch.CommitHash, string(ch.Status), ciFailureContent(ch.LogTail)}, "\x00")
+		if !seen[part] {
+			parts = append(parts, part)
+			seen[part] = true
+		}
 	}
+	sort.Strings(parts)
 	return strings.Join(parts, "\x01")
+}
+
+func ciFailureContent(logTail string) string {
+	lines := strings.Split(logTail, "\n")
+	for i, line := range lines {
+		// Actions prefixes downloaded log lines with an RFC3339 timestamp.
+		// Keep the diagnostic, including any timestamps inside it, unchanged.
+		stamp, content, ok := strings.Cut(line, " ")
+		if ok {
+			if _, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+				lines[i] = content
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func formatCIFailureMessage(checks []ports.PRCheckObservation) string {
@@ -824,7 +847,7 @@ func formatCIFailureMessage(checks []ports.PRCheckObservation) string {
 		if ch.LogTail != "" {
 			// LogTail is raw CI job output; sanitize before it reaches the
 			// agent's live pane so embedded escape sequences can't drive the
-			// terminal (the dedup signature stays on the raw bytes). The fence
+			// terminal. Dedup strips only transport timestamp prefixes. The fence
 			// grows to contain embedded backtick fences without mutating logs.
 			tail := domain.SanitizeControlChars(ch.LogTail)
 			fence := markdownCodeFence(tail)
