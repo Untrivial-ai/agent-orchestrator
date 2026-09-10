@@ -1,6 +1,6 @@
 //go:build windows
 
-package claudecode
+package agentlaunch_test
 
 import (
 	"encoding/json"
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -33,11 +34,11 @@ func TestMain(m *testing.M) {
 
 func TestWindowsInstalledClaudeHook(t *testing.T) {
 	workspace := t.TempDir()
-	p := &Plugin{}
+	p := &claudecode.Plugin{}
 	if err := p.GetAgentHooks(t.Context(), ports.WorkspaceHookConfig{WorkspacePath: workspace}); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(claudeSettingsPath(workspace))
+	data, err := os.ReadFile(filepath.Join(workspace, ".claude", "settings.local.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
