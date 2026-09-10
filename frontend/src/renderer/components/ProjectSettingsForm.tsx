@@ -768,7 +768,10 @@ function AgentModelField({
 						value={effort}
 						efforts={selectedEfforts}
 						onChange={onEffortChange}
-						disabled={query.isFetching || agentId === ""}
+						// Effort belongs to a model, so it stays inert until one is
+						// picked. The control still occupies its place so the row does
+						// not reflow as models are tried.
+						disabled={query.isFetching || agentId === "" || model === ""}
 					/>
 				</div>
 			</SettingsRow>

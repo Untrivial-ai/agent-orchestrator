@@ -10,42 +10,51 @@ import { SettingsOptionMenu } from "./SettingsOptionMenu";
  * five — so a static enum would be wrong for most of the catalog and would go
  * further out of date with every model release.
  *
- * When the selected model advertises no levels this renders nothing rather than
- * an empty or disabled control. An effort dropdown on a model that ignores
- * effort is a promise the agent will not keep.
+ * The control always renders so it holds its place beside the model picker
+ * rather than making the row jump as models are tried. It is inert until a
+ * model is chosen and that model advertises levels, because effort is a
+ * property of the model: with nothing selected there is no list to offer, and
+ * on a model that ignores effort a live dropdown would be a promise the agent
+ * will not keep.
  */
 export function AgentEffortSelect({
 	value,
 	efforts,
 	onChange,
 	disabled,
+	triggerClassName,
 	"aria-label": ariaLabel,
 }: {
 	value: string;
 	efforts: string[] | undefined;
 	onChange: (value: string) => void;
 	disabled?: boolean;
+	triggerClassName?: string;
 	"aria-label"?: string;
 }) {
 	const { t } = useTranslation();
-	if (!efforts || efforts.length === 0) return null;
+	const available = efforts ?? [];
+	const inert = disabled || available.length === 0;
 
 	// The empty value is a real choice, not a placeholder: it leaves whatever
 	// default the agent would pick on its own, which is what a user who has
 	// never touched this setting already has.
 	const options = [
 		{ value: "", label: t("settings.models.agentDefaultEffort") },
-		...efforts.map((effort) => ({ value: effort, label: effortLabel(effort) })),
+		...available.map((effort) => ({ value: effort, label: effortLabel(effort) })),
 	];
 
 	return (
 		<SettingsOptionMenu
 			aria-label={ariaLabel ?? t("settings.models.effort")}
-			value={value}
+			// A stale level must never be shown against a model that cannot take
+			// it, so an inert control reads as the agent default regardless of
+			// what happens to be stored.
+			value={inert ? "" : value}
 			options={options}
 			onChange={onChange}
-			disabled={disabled}
-			triggerClassName="justify-end"
+			disabled={inert}
+			triggerClassName={triggerClassName ?? "justify-end"}
 		/>
 	);
 }

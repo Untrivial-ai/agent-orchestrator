@@ -8924,6 +8924,9 @@ components:
         brief:
           maxLength: 16384
           type: string
+        effort:
+          maxLength: 32
+          type: string
         mode:
           enum:
           - tui

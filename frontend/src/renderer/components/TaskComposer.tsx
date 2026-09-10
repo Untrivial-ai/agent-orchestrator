@@ -29,6 +29,7 @@ import {
 	refreshAgentModels,
 	revalidateAgentModels,
 } from "../hooks/useAgentModelsQuery";
+import { AgentEffortSelect } from "./settings/AgentEffortSelect";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
@@ -40,6 +41,7 @@ type CreateTaskInput = {
 	brief: string;
 	agent?: DelegateAgent;
 	model?: string;
+	effort?: string;
 	mode?: "tui";
 	approvalMode?: "bypass-permissions";
 	attachments?: FileAttachmentPayload[];
@@ -98,6 +100,7 @@ export function TaskComposer({
 	const [isPromptDirty, setIsPromptDirty] = useState(false);
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
+	const [effort, setEffort] = useState("");
 	const [agent, setAgent] = useState("");
 	const [agentTouched, setAgentTouched] = useState(false);
 	const [modelTouched, setModelTouched] = useState(false);
@@ -160,6 +163,7 @@ export function TaskComposer({
 						brief: input.brief,
 						agent: input.agent,
 						model: input.model,
+						...(input.effort ? { effort: input.effort } : {}),
 						...(input.mode ? { mode: input.mode } : {}),
 						...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
 						...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
@@ -349,6 +353,10 @@ export function TaskComposer({
 				// or the resolved default, so spawning names it explicitly.
 				agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
 				model: requestedModel,
+				// Only send a level the requested model actually vouches for. The
+				// selection is cleared on model change, but a resolved project
+				// default can arrive without one.
+				effort: requestedModel ? effort : "",
 				mode: interfaceMode,
 				approvalMode,
 				attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
@@ -403,6 +411,7 @@ export function TaskComposer({
 					setAgentTouched(true);
 					setModel("");
 					setMode("");
+					setEffort("");
 					setModelTouched(false);
 				},
 			}}
@@ -423,11 +432,19 @@ export function TaskComposer({
 					setModel(value);
 					setMode("");
 					setModelTouched(true);
+					// Effort levels are per-model, so a level the newly chosen model
+					// does not advertise has to be dropped rather than carried over.
+					const nextEfforts =
+						modelCatalog?.models?.find((item) => item.id === value)?.efforts ?? [];
+					setEffort((current) => (current !== "" && !nextEfforts.includes(current) ? "" : current));
 				},
 				onModeChange: (value) => {
 					setMode(value);
 					setModel("");
 					setModelTouched(true);
+					// A mode replaces the model entirely, so no model vouches for a
+					// previously chosen level any more.
+					setEffort("");
 				},
 			}}
 			attachments={{
@@ -448,7 +465,21 @@ export function TaskComposer({
 				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
 			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
-			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels} />}
+			renderModelControl={(control) => (
+				<div className="flex min-w-0 items-center gap-1">
+					<TaskModelPicker {...control} onRefresh={refreshSelectedModels} />
+					<AgentEffortSelect
+						aria-label={t("settings.models.effort")}
+						value={effort}
+						efforts={modelCatalog?.models?.find((item) => item.id === model)?.efforts}
+						onChange={setEffort}
+						// Effort belongs to a model, so it stays inert until one is
+						// chosen; the control keeps its place either way.
+						disabled={isSubmitting || selectedAgent === "" || model === ""}
+						triggerClassName="composer-chip composer-toolbar-option justify-between"
+					/>
+				</div>
+			)}
 		/>
 	);
 }

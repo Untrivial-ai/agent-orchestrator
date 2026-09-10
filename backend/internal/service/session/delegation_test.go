@@ -272,3 +272,41 @@ func TestDelegateTaskReturnsBeforeTitleRequestCompletes(t *testing.T) {
 func runInline(work func()) {
 	work()
 }
+
+// The New Task effort selection has to reach the spawned worker's agent
+// config, or it is silently discarded and the session launches at whatever
+// level the agent picks on its own.
+func TestDelegateTaskCarriesEffortToTheSpawnedWorker(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   string
+	}{
+		{name: "chosen level reaches the worker", effort: "xhigh", want: "xhigh"},
+		{name: "surrounding whitespace is trimmed", effort: "  high  ", want: "high"},
+		{name: "no level stays unset", effort: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
+			// An orchestrator has to exist, or DelegateTask spawns one for the
+			// title handoff and that second spawn is what the fake records.
+			st.sessions["orch"] = domain.SessionRecord{
+				ID: "orch", ProjectID: "ao", Kind: domain.KindOrchestrator, CreatedAt: time.Now().UTC(),
+			}
+			cmd := &fakeCommander{}
+			svc := &Service{store: st, manager: cmd, runBackground: runInline}
+
+			if _, err := svc.DelegateTask(context.Background(), DelegateTaskInput{
+				ProjectID: "ao", Brief: "do the thing",
+				RequestedAgent: domain.HarnessClaudeCode, Model: "claude-opus-5", Effort: tt.effort,
+			}); err != nil {
+				t.Fatalf("DelegateTask: %v", err)
+			}
+			if got := cmd.spawnedCfg.AgentConfig.Effort; got != tt.want {
+				t.Fatalf("spawned effort = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

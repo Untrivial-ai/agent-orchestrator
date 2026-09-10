@@ -3164,6 +3164,7 @@ export interface components {
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
             brief: string;
+            effort?: string;
             /** @enum {string} */
             mode?: "tui" | "chat";
             model?: string;

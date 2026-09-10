@@ -53,6 +53,10 @@ export type TaskComposerAgentControl = {
 };
 
 export type TaskComposerModelOption = {
+	// Efforts are the reasoning levels this specific model accepts, in the
+	// provider's order. Absent or empty means the model takes no effort
+	// setting, which is a real answer rather than a missing one.
+	efforts?: string[];
 	id: string;
 	isDefault?: boolean;
 	label: string;
