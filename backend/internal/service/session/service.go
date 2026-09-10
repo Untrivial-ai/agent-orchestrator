@@ -189,7 +189,14 @@ type Service struct {
 	// deliver activity signals at all. Only capable harnesses are eligible for
 	// the no_signal downgrade: a hook-less harness staying silent forever is
 	// normal, not a broken pipeline. nil means "unknown": never downgrade.
-	signalCapable func(domain.AgentHarness) bool
+	signalCapable         func(domain.AgentHarness) bool
+	chatProviderPreserved func(domain.SessionID) bool
+}
+
+// SetChatProviderPreserver wires the live Chat lifetime observation after both
+// services have been constructed. It performs no provider or filesystem probes.
+func (s *Service) SetChatProviderPreserver(preserves func(domain.SessionID) bool) {
+	s.chatProviderPreserved = preserves
 }
 
 // New wires a controller-facing session service over an internal session Manager.
@@ -999,7 +1006,9 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 	now := s.now()
 	presentation := deriveKanbanPresentation(rec, prs, runs, now, s.harnessSignals(rec.Harness))
 	return domain.Session{
-		SessionRecord:    rec,
+		SessionRecord: rec,
+		ChatProviderPreserved: rec.Mode == domain.SessionModeChat && !rec.IsTerminated &&
+			s.chatProviderPreserved != nil && s.chatProviderPreserved(rec.ID),
 		Status:           deriveStatus(rec, prs, now, s.harnessSignals(rec.Harness)),
 		SCMStatus:        deriveSCMStatus(prs),
 		KanbanColumn:     presentation.Column,

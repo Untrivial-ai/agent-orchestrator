@@ -369,7 +369,7 @@ describe("ChatWorkspace timeline", () => {
 		const user = userEvent.setup();
 		const onDecide = vi.fn();
 		const view = render(<ChatWorkspace snapshot={idleSnapshot()} newWorkDisabled />);
-		expect(screen.getByText("Switching to terminal UI…")).toBeInTheDocument();
+		expect(screen.queryByText("Switching to terminal UI…")).not.toBeInTheDocument();
 		expect(screen.queryByText("The controller is not connected")).not.toBeInTheDocument();
 
 		expect(screen.getByTestId("chat-conversation-panel")).not.toHaveAttribute("inert");
@@ -1045,7 +1045,9 @@ describe("ChatWorkspace timeline", () => {
 
 		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
-		expect(screen.getByText("Connecting to the agent…")).toBeInTheDocument();
+		// Progress is the topbar spinner; the composer stays empty rather than
+		// painting a second "Connecting…" / "Switching…" label over the editor.
+		expect(screen.queryByText("Connecting to the agent…")).not.toBeInTheDocument();
 		expect(screen.queryByText("The controller is not connected")).not.toBeInTheDocument();
 		expect(screen.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute("contenteditable", "false");
 

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import { EventEmitter } from "node:events";
 import semver from "semver";
 import { CancellationToken } from "builder-util-runtime";
 import nodePath from "node:path";
@@ -19,6 +20,7 @@ type UpdateSettingsReader = ReturnType<
 type UpdaterEventHandler = (...args: any[]) => void;
 
 type ImportOptions = {
+  nativeReadyManually?: boolean;
   reconcileFeaturePin?: (
     settings: UpdateSettings,
   ) => Promise<{ settings: UpdateSettings; cleared: boolean }>;
@@ -90,9 +92,27 @@ async function importAutoUpdater(
   vi.resetModules();
   const updaterEvents = new Map<string, UpdaterEventHandler>();
   const autoUpdater = createAutoUpdaterMock();
+  const nativeUpdaterEvents = new Map<string, UpdaterEventHandler>();
+  const nativeAutoUpdater = new EventEmitter();
+  // Record each native handler so a test can fire it directly with explicit
+  // args (nativeUpdaterEvents.get), while emit()/listenerCount() still work for
+  // the macOS restart tests.
+  const nativeEmitterOn = nativeAutoUpdater.on.bind(nativeAutoUpdater);
+  (nativeAutoUpdater as unknown as { on: (event: string, handler: UpdaterEventHandler) => unknown }).on = (
+    event,
+    handler,
+  ) => {
+    nativeUpdaterEvents.set(event, handler);
+    return nativeEmitterOn(event, handler);
+  };
+  const startMacUpdateProgress = vi.fn(async () => ({ assertAlive: vi.fn(), fail: vi.fn(async () => undefined) }));
+  vi.doMock("./mac-update-progress", () => ({ startMacUpdateProgress }));
   autoUpdater.on.mockImplementation(
     (event: string, handler: UpdaterEventHandler) => {
-      updaterEvents.set(event, handler);
+      updaterEvents.set(event, (...args: any[]) => {
+        handler(...args);
+        if (event === "update-downloaded" && !options.nativeReadyManually) nativeAutoUpdater.emit("update-downloaded");
+      });
       return autoUpdater;
     },
   );
@@ -118,21 +138,14 @@ async function importAutoUpdater(
   const statusMessages = () => sent.filter((m) => m.channel === "updates:status");
   const telemetryMessages = () => sent.filter((m) => m.channel === "updates:telemetry");
   vi.doMock("electron-updater", () => ({ autoUpdater }));
-  const nativeUpdaterEvents = new Map<string, UpdaterEventHandler>();
-  const nativeAutoUpdater = {
-    on: vi.fn((event: string, handler: UpdaterEventHandler) => {
-      nativeUpdaterEvents.set(event, handler);
-      return nativeAutoUpdater;
-    }),
-  };
   vi.doMock("electron", () => ({
+    autoUpdater: nativeAutoUpdater,
     app: {
       isPackaged: options.isPackaged ?? true,
       getVersion: () => options.version ?? "1.0.0",
     },
     BrowserWindow,
     dialog,
-    autoUpdater: nativeAutoUpdater,
   }));
   const readUpdateSettings =
     typeof settings === "function"
@@ -164,6 +177,8 @@ async function importAutoUpdater(
   const module = await import("./auto-updater");
   module.setRendererSink(() => ({ send: rendererSend }));
   return {
+    nativeAutoUpdater,
+    startMacUpdateProgress,
     sent,
     rendererSend,
     statusMessages,
@@ -173,7 +188,6 @@ async function importAutoUpdater(
     dialog,
     BrowserWindow,
     updaterEvents,
-    nativeAutoUpdater,
     nativeUpdaterEvents,
     readUpdateSettings,
     writeUpdateSettings,
@@ -231,6 +245,155 @@ describe("startAutoUpdates", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.resetModules();
+  });
+
+  it("recovers a macOS ShipIt missing-file failure instead of retaining a ready update", async () => {
+    const restore = stubProcess("darwin", "/usr/local/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents, nativeAutoUpdater } = await importAutoUpdater({ enabled: false, channel: "latest", nightlyAck: false, feature: null }, { nativeReadyManually: true });
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      await flushMicrotasks();
+      const failure = new Error(
+        "ditto: Could not lstat /Users/test/Library/Caches/dev.agent-orchestrator.desktop.ShipIt/update.abc/Agent Orchestrator.app/Contents/Resources/acp-runtime/node_modules/.bin/node-which: No such file or directory",
+      );
+      updaterEvents.get("error")?.(failure);
+      nativeAutoUpdater.emit("error", failure);
+      expect(module.getUpdateStatus()).toMatchObject({ state: "error", message: expect.stringContaining("prepare the update") });
+      expect(module.getUpdateStatus().staged).toBeUndefined();
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Check for updates/);
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      // A check and an explicit download can retry the SAME release, without
+      // touching ShipIt's files or deleting a cache concurrently with a download.
+      autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: "2.1.0" } });
+      await module.checkForUpdatesNow(stateDir);
+      expect(module.getUpdateStatus().state).toBe("available");
+      autoUpdater.downloadUpdate.mockImplementation(async () => {
+        updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      });
+      const retry = module.downloadUpdateNow();
+      await flushMicrotasks();
+      // A retry is not installable until the native updater finishes preparing it.
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      nativeAutoUpdater.emit("update-downloaded");
+      await retry;
+      expect(module.getUpdateStatus().staged?.version).toBe("2.1.0");
+      await module.quitAndInstallUpdate();
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("keeps native preparation failures visible during an automatic check and retries next time", async () => {
+    const restore = stubProcess("darwin", "/usr/local/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      const error = new Error("ditto: /cache/app.ShipIt/update.abc/AO.app/Contents/Resources/._app.asar__: No such file or directory");
+      autoUpdater.checkForUpdates.mockImplementationOnce(async () => {
+        updaterEvents.get("checking-for-update")?.();
+        updaterEvents.get("error")?.(error);
+        throw error;
+      });
+      await module.startAutoUpdates(stateDir);
+      expect(module.getUpdateStatus()).toMatchObject({ state: "error", message: expect.stringContaining("prepare the update") });
+      expect(module.getUpdateStatus().staged).toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const second = await importAutoUpdaterKeepingStagedFile();
+      await second.module.startAutoUpdates(stateDir);
+      expect(second.module.getUpdateStatus().staged).toBeUndefined();
+      expect(second.autoUpdater.autoDownload).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("handles a reject-only native failure before AO has recorded a staged build", async () => {
+    const restore = stubProcess("darwin", "/usr/local/bin/node");
+    try {
+      const { module, autoUpdater } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      autoUpdater.downloadUpdate.mockRejectedValue(new Error(
+        "ditto: /cache/app.ShipIt/update.abc/AO.app/Contents/Resources/._app.asar__: No such file or directory",
+      ));
+      await module.downloadUpdateNow("failed-download");
+      expect(module.getUpdateStatus()).toMatchObject({ state: "error", requestId: "failed-download", message: expect.stringContaining("prepare the update") });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Check for updates/);
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not let an in-flight escalation check restore a failed installation", async () => {
+    const restore = stubProcess("darwin", "/usr/local/bin/node");
+    try {
+      const { module, updaterEvents, readUpdateSettings } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      const pendingSettings = deferred<UpdateSettings>();
+      readUpdateSettings.mockReturnValueOnce(pendingSettings.promise);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      updaterEvents.get("error")?.(new Error(
+        "ditto: /cache/app.ShipIt/update.abc/AO.app/Contents/Resources/._app.asar__: No such file or directory",
+      ));
+      pendingSettings.resolve({ enabled: true, channel: "latest", nightlyAck: false, feature: null });
+      await flushMicrotasks();
+      expect(module.getUpdateStatus().state).toBe("error");
+      expect(module.getUpdateStatus().staged).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
+  it("preserves replacement provenance when staging immediately follows a failure", async () => {
+    const restore = stubProcess("darwin", "/usr/local/bin/node");
+    try {
+      const { module, updaterEvents } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      updaterEvents.get("error")?.(new Error(
+        "ditto: /cache/app.ShipIt/update.abc/AO.app/Contents/Resources/._app.asar__: No such file or directory",
+      ));
+      updaterEvents.get("update-downloaded")?.({ version: "2.2.0" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const second = await importAutoUpdaterKeepingStagedFile();
+      await second.module.startAutoUpdates(stateDir);
+      expect(second.module.getUpdateStatus().staged?.version).toBe("2.2.0");
+    } finally {
+      restore();
+    }
+  });
+
+  it.each(["download", "check", "return-home"])("allows retry after the previous %s rejects", async (operation) => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      const failure = new Error("ditto: /cache/app.ShipIt/update.abc/AO.app/Contents/Resources/._app.asar__: No such file or directory");
+      autoUpdater.downloadUpdate.mockImplementation(async () => {
+        updaterEvents.get("update-downloaded")?.({ version: "2.2.0" });
+      });
+      if (operation === "download") autoUpdater.downloadUpdate.mockRejectedValueOnce(failure);
+      else autoUpdater.checkForUpdates.mockRejectedValueOnce(failure);
+      const failed = operation === "download" ? module.downloadUpdateNow("failed")
+        : operation === "check" ? module.checkForUpdatesNow(stateDir, { requestId: "failed" })
+        : module.returnToHome(stateDir, "failed");
+      await failed;
+      await module.downloadUpdateNow("retry");
+      expect(module.getUpdateStatus().staged?.version).toBe("2.2.0");
+      expect(autoUpdater.autoInstallOnAppQuit).toBe(true);
+    } finally { restore(); }
+  });
+
+  it("does not invalidate a staged update for an unrelated missing file", async () => {
+    const { module, updaterEvents } = await importAutoUpdater();
+    await module.startAutoUpdates(stateDir);
+    updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+    await flushMicrotasks();
+    updaterEvents.get("error")?.(new Error("ENOENT: no such file or directory, open /tmp/download.zip"));
+    expect(module.getUpdateStatus().staged?.version).toBe("2.1.0");
   });
 
   it("runs the automatic updater check immediately on launch", async () => {
@@ -351,6 +514,108 @@ describe("startAutoUpdates", () => {
         useMultipleRangeRequest: false,
       });
       expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+      expect(autoUpdater.setFeedURL).toHaveBeenNthCalledWith(2, {
+        provider: "github",
+        owner: "Untrivial-ai",
+        repo: "agent-orchestrator",
+      });
+    } finally {
+      if (originalResourcesPath) {
+        Object.defineProperty(process, "resourcesPath", originalResourcesPath);
+      } else {
+        Reflect.deleteProperty(process, "resourcesPath");
+      }
+      rmSync(resourcesPath, { recursive: true, force: true });
+    }
+  });
+
+  it("revalidates release history without a second body and refreshes when a release changes", async () => {
+    const platformManifest =
+      process.platform === "darwin"
+        ? "nightly-mac.yml"
+        : process.platform === "linux"
+          ? "nightly-linux.yml"
+          : "nightly.yml";
+    const resourcesPath = mkdtempSync(
+      nodePath.join(os.tmpdir(), "ao-nightly-feed-"),
+    );
+    writeFileSync(
+      nodePath.join(resourcesPath, "app-update.yml"),
+      "provider: github\nowner: Untrivial-ai\nrepo: agent-orchestrator\n",
+    );
+    const originalResourcesPath = Object.getOwnPropertyDescriptor(
+      process,
+      "resourcesPath",
+    );
+    Object.defineProperty(process, "resourcesPath", {
+      configurable: true,
+      value: resourcesPath,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            tag_name: "v1.0.1-nightly.202608231518",
+            draft: false,
+            prerelease: true,
+            assets: [{ name: "Agent.Orchestrator.dmg" }],
+          },
+          {
+            tag_name: "v1.0.1-nightly.202608231517",
+            draft: false,
+            prerelease: true,
+            assets: [{ name: platformManifest }],
+          },
+          {
+            tag_name: "v1.0.1-nightly.202608231350",
+            draft: false,
+            prerelease: true,
+            assets: [{ name: platformManifest }],
+          },
+        ]),
+        { status: 200, headers: { etag: '"release-v1"' } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { module, autoUpdater } = await importAutoUpdater({
+        enabled: true,
+        channel: "nightly",
+        nightlyAck: true,
+        feature: null,
+      });
+
+      await module.checkForUpdatesNow(stateDir);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.github.com/repos/Untrivial-ai/agent-orchestrator/releases?per_page=100",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+      expect(autoUpdater.setFeedURL).toHaveBeenNthCalledWith(1, {
+        provider: "generic",
+        url: "https://github.com/Untrivial-ai/agent-orchestrator/releases/download/v1.0.1-nightly.202608231517",
+        channel: "nightly",
+        useMultipleRangeRequest: false,
+      });
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 304 }));
+      await module.checkForUpdatesNow(stateDir);
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.objectContaining({ headers: expect.objectContaining({ "If-None-Match": '"release-v1"' }) }),
+      );
+      expect(autoUpdater.setFeedURL).toHaveBeenNthCalledWith(3, expect.objectContaining({
+        url: "https://github.com/Untrivial-ai/agent-orchestrator/releases/download/v1.0.1-nightly.202608231517",
+      }));
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([{
+        tag_name: "v1.0.2-nightly.202608241000", draft: false, prerelease: true,
+        assets: [{ name: platformManifest }],
+      }]), { status: 200, headers: { etag: '"release-v2"' } }));
+      await module.checkForUpdatesNow(stateDir);
+      expect(autoUpdater.setFeedURL).toHaveBeenNthCalledWith(5, expect.objectContaining({
+        url: "https://github.com/Untrivial-ai/agent-orchestrator/releases/download/v1.0.2-nightly.202608241000",
+      }));
+      expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(3);
       expect(autoUpdater.setFeedURL).toHaveBeenNthCalledWith(2, {
         provider: "github",
         owner: "Untrivial-ai",
@@ -2609,132 +2874,292 @@ describe("quitAndInstallUpdate", () => {
     vi.resetModules();
   });
 
-  it("shows an actionable dialog instead of installing when running translocated on macOS", async () => {
+  it("requires new confirmation before downloading a changed remembered target", async () => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({ version: "2.1.0", stagedAt: Date.now(), channel: "latest" }));
+      const { module, autoUpdater, updaterEvents, startMacUpdateProgress } = await importAutoUpdater({ enabled: false, channel: "latest", nightlyAck: false, feature: null });
+      await module.startAutoUpdates(stateDir);
+      autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: "2.2.0", releaseNotes: "New release B" } });
+      autoUpdater.downloadUpdate.mockImplementation(async () => {
+        updaterEvents.get("update-downloaded")?.({ version: "2.2.0" });
+        return [];
+      });
+      await expect(module.quitAndInstallUpdate("2.1.0")).resolves.toEqual({
+        state: "confirmation-required", version: "2.2.0", releaseNotes: "New release B",
+      });
+      expect(autoUpdater.downloadUpdate).not.toHaveBeenCalled();
+      expect(startMacUpdateProgress).not.toHaveBeenCalled();
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      await module.quitAndInstallUpdate("2.2.0");
+      expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+    } finally { restore(); }
+  });
+
+  it("does not install a newer build already staged after the dialog opened", async () => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents, startMacUpdateProgress } = await importAutoUpdater();
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.2.0", releaseNotes: "Staged release B" });
+      await expect(module.quitAndInstallUpdate("2.1.0")).resolves.toMatchObject({ state: "confirmation-required", version: "2.2.0", releaseNotes: "Staged release B" });
+      expect(startMacUpdateProgress).not.toHaveBeenCalled();
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      await module.quitAndInstallUpdate("2.2.0");
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+    } finally { restore(); }
+  });
+
+  it("requires confirmation again if the feed changes a second time", async () => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({ version: "2.1.0", stagedAt: Date.now(), channel: "latest" }));
+      const { module, autoUpdater } = await importAutoUpdater({ enabled: false, channel: "latest", nightlyAck: false, feature: null });
+      await module.startAutoUpdates(stateDir);
+      for (const [confirmed, offered] of [["2.1.0", "2.2.0"], ["2.2.0", "2.3.0"]]) {
+        autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: offered } });
+        await expect(module.quitAndInstallUpdate(confirmed)).resolves.toMatchObject({ state: "confirmation-required", version: offered });
+      }
+      expect(autoUpdater.downloadUpdate).not.toHaveBeenCalled();
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    } finally { restore(); }
+  });
+
+  it("prepares a remembered macOS update again before requesting restart", async () => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({ version: "2.1.0", stagedAt: Date.now(), channel: "latest" }));
+      const { module, autoUpdater, updaterEvents, nativeAutoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await module.startAutoUpdates(stateDir);
+      const downloaded = deferred();
+      autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: "2.1.0" } });
+      autoUpdater.downloadUpdate.mockImplementation(async () => {
+        updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+        await downloaded.promise;
+      });
+      const install = module.quitAndInstallUpdate();
+      const duplicate = module.quitAndInstallUpdate();
+      await flushMicrotasks();
+      expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
+      const afterDownloadedEvent = module.quitAndInstallUpdate();
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      downloaded.resolve();
+      await flushMicrotasks();
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      nativeAutoUpdater.emit("update-downloaded");
+      await Promise.all([install, duplicate, afterDownloadedEvent]);
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    } finally {
+      restore();
+    }
+  });
+
+  it.each(["no longer available", "download failed"])("keeps AO open when restart preparation is %s", async (failure) => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({ version: "2.1.0", stagedAt: Date.now(), channel: "latest" }));
+      const { module, autoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await module.startAutoUpdates(stateDir);
+      autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: failure === "download failed", updateInfo: { version: "2.1.0" } });
+      autoUpdater.downloadUpdate.mockRejectedValue(new Error("download failed"));
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow();
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(module.getUpdateStatus().state).toBe("error");
+    } finally {
+      restore();
+    }
+  });
+
+  it("rejects a translocated installation without quitting", async () => {
     const restore = stubProcess("darwin", TRANSLOCATED_EXEC_PATH);
     try {
-      const { module, autoUpdater, dialog } = await importAutoUpdater();
-
-      module.quitAndInstallUpdate();
-
+      const { module, autoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Applications/);
       expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
-      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
-      const box = dialog.showMessageBox.mock.calls[0][0] as {
-        message: string;
-        detail: string;
-      };
-      expect(box.detail).toContain("/Applications");
-    } finally {
-      restore();
-    }
+    } finally { restore(); }
   });
 
-  it("shows the dialog when the app bundle is not writable", async () => {
+  it.each(["bundle", "parent"])("rejects an unwritable %s without quitting", async (location) => {
     const { root, bundle, execPath } = makeBundle();
-    chmodSync(bundle, 0o555);
+    chmodSync(location === "bundle" ? bundle : root, 0o555);
     const restore = stubProcess("darwin", execPath);
     try {
-      const { module, autoUpdater, dialog } = await importAutoUpdater();
-
-      module.quitAndInstallUpdate();
-
+      const { module, autoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/writ/);
       expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
-      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
     } finally {
-      restore();
-      chmodSync(bundle, 0o755);
+      restore(); chmodSync(root, 0o755); chmodSync(bundle, 0o755);
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  // The correction to #3529's check: ShipIt swaps by moving the bundle aside
-  // and moving the new one in, so a writable bundle inside an unwritable
-  // PARENT still fails, silently, exactly like the case above.
-  it("shows the dialog when the enclosing directory is not writable", async () => {
-    const { root, bundle, execPath } = makeBundle();
-    chmodSync(root, 0o555);
-    const restore = stubProcess("darwin", execPath);
-    try {
-      const { module, autoUpdater, dialog } = await importAutoUpdater();
-
-      module.quitAndInstallUpdate();
-
-      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
-      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
-      const box = dialog.showMessageBox.mock.calls[0][0] as { detail: string };
-      expect(box.detail).toContain(root);
-      // Must NOT tell a user already sitting in /Applications to move there.
-      expect(box.detail).not.toContain("move Agent Orchestrator.app into /Applications");
-    } finally {
-      restore();
-      chmodSync(root, 0o755);
-      chmodSync(bundle, 0o755);
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("installs when both the bundle and its parent are writable", async () => {
+  it("does not quit without a staged update even in a writable app", async () => {
     const { root, execPath } = makeBundle();
     const restore = stubProcess("darwin", execPath);
     try {
-      const { module, autoUpdater, dialog, updaterEvents, nativeUpdaterEvents } = await importAutoUpdater();
-
-      await module.checkForUpdatesNow(stateDir);
-      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
-      nativeUpdaterEvents.get("update-downloaded")?.({}, "notes", "2.0.0");
-      module.quitAndInstallUpdate();
-
-      expect(dialog.showMessageBox).not.toHaveBeenCalled();
-      expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
-    } finally {
-      restore();
-      rmSync(root, { recursive: true, force: true });
-    }
+      const { module, autoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Check for updates/);
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    } finally { restore(); rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("fails open and installs when the derived bundle path does not exist", async () => {
-    const restore = stubProcess(
-      "darwin",
-      "/nonexistent-ao-test/Agent Orchestrator.app/Contents/MacOS/agent-orchestrator",
-    );
+  it.each(["error", "timeout"])("does not quit when native preparation ends with %s", async (outcome) => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    vi.useFakeTimers();
     try {
-      const { module, autoUpdater, dialog, updaterEvents, nativeUpdaterEvents } = await importAutoUpdater();
-
-      await module.checkForUpdatesNow(stateDir);
-      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
-      nativeUpdaterEvents.get("update-downloaded")?.({}, "notes", "2.0.0");
-      module.quitAndInstallUpdate();
-
-      expect(dialog.showMessageBox).not.toHaveBeenCalled();
-      expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
-    } finally {
-      restore();
-    }
+      const { module, autoUpdater, updaterEvents, nativeAutoUpdater, startMacUpdateProgress } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      const install = module.quitAndInstallUpdate();
+      const assertion = expect(install).rejects.toThrow();
+      await flushMicrotasks();
+      if (outcome === "error") nativeAutoUpdater.emit("error", new Error("signature rejected"));
+      else await vi.advanceTimersByTimeAsync(180_000);
+      await assertion;
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(startMacUpdateProgress).not.toHaveBeenCalled();
+      expect(nativeAutoUpdater.listenerCount("update-downloaded")).toBe(1);
+      expect(nativeAutoUpdater.listenerCount("error")).toBe(1);
+    } finally { vi.useRealTimers(); restore(); }
   });
 
-  // Under `npm start` and in tests execPath is a bare node/electron binary, so
-  // the derived path is an unrelated ancestor dir. Its permissions must not
-  // decide anything.
-  it("fails open when execPath is not inside a .app bundle", async () => {
+  it("times out a remembered native transfer that never settles and rejects late retries", async () => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    vi.useFakeTimers();
+    try {
+      writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({ version: "2.1.0", stagedAt: Date.now(), channel: "latest" }));
+      const { module, autoUpdater, updaterEvents, nativeAutoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await module.startAutoUpdates(stateDir);
+      const transfer = deferred();
+      autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: "2.1.0" } });
+      autoUpdater.downloadUpdate.mockImplementation(() => {
+        updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+        return transfer.promise;
+      });
+      const assertion = expect(module.quitAndInstallUpdate()).rejects.toThrow(/Close and reopen AO/);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(180_000);
+      await assertion;
+      nativeAutoUpdater.emit("update-downloaded");
+      transfer.resolve();
+      await flushMicrotasks();
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Close and reopen AO/);
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); restore(); }
+  });
+
+  it("ignores duplicate downloads during native preparation and accepts a later replacement", async () => {
     const restore = stubProcess("darwin", "/usr/bin/node");
     try {
-      const { module, autoUpdater, dialog, updaterEvents, nativeUpdaterEvents } = await importAutoUpdater();
+      const { module, autoUpdater, updaterEvents, nativeAutoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await module.startAutoUpdates(stateDir);
+      autoUpdater.downloadUpdate
+        .mockImplementationOnce(async () => { updaterEvents.get("update-downloaded")?.({ version: "2.1.0" }); })
+        .mockImplementationOnce(async () => { updaterEvents.get("update-downloaded")?.({ version: "2.2.0" }); });
+      const first = module.downloadUpdateNow();
+      await flushMicrotasks();
+      const second = module.downloadUpdateNow();
+      await flushMicrotasks();
+      expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
+      nativeAutoUpdater.emit("update-downloaded");
+      await first;
+      await second;
+      expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
+      autoUpdater.autoDownload = false;
+      updaterEvents.get("update-available")?.({ version: "2.2.0" });
+      const replacement = module.downloadUpdateNow();
+      await flushMicrotasks();
+      expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(2);
+      const install = module.quitAndInstallUpdate();
+      await flushMicrotasks();
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      nativeAutoUpdater.emit("update-downloaded");
+      await Promise.all([replacement, install]);
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+    } finally { restore(); }
+  });
 
+  it("serializes a stale-channel replacement even when automatic downloads are disabled", async () => {
+    writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({ version: "2.1.0", stagedAt: Date.now(), channel: "nightly" }));
+    const { module, autoUpdater } = await importAutoUpdater({ enabled: false, channel: "latest", nightlyAck: false, feature: null });
+    const transfer = deferred();
+    autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: "2.1.0" }, downloadPromise: transfer.promise, cancellationToken: new CancellationToken() });
+    const first = module.startAutoUpdates(stateDir);
+    await vi.waitFor(() => expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1));
+    expect(autoUpdater.autoDownload).toBe(true);
+    const second = module.checkForUpdatesNow(stateDir);
+    await flushMicrotasks();
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+    transfer.resolve();
+    await Promise.all([first, second]);
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["check", "return-home"])("keeps provider-owned downloads serialized during %s", async (operation) => {
+    const { module, autoUpdater } = await importAutoUpdater();
+    await module.startAutoUpdates(stateDir);
+    const transfer = deferred();
+    autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: "2.1.0" }, downloadPromise: transfer.promise, cancellationToken: new CancellationToken() });
+    const before = autoUpdater.checkForUpdates.mock.calls.length;
+    const first = operation === "check" ? module.checkForUpdatesNow(stateDir) : module.returnToHome(stateDir);
+    await flushMicrotasks();
+    const second = module.checkForUpdatesNow(stateDir);
+    await flushMicrotasks();
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(before + 1);
+    transfer.resolve();
+    await Promise.all([first, second]);
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(before + 2);
+  });
+
+  it("recovers the window and helper when the native quit handoff fails asynchronously", async () => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      const { module, updaterEvents, nativeAutoUpdater, startMacUpdateProgress } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      nativeAutoUpdater.emit("update-downloaded");
+      const failed = vi.fn();
+      module.setUpdateRestartFailureHandler(failed);
+      await module.quitAndInstallUpdate();
+      expect(module.isUpdateRestartRequested()).toBe(true);
+      nativeAutoUpdater.emit("error", new Error("could not persist the installer request"));
+      expect(module.isUpdateRestartRequested()).toBe(false);
+      expect(failed).toHaveBeenCalledOnce();
+      const progress = await startMacUpdateProgress.mock.results[0].value;
+      expect(progress.fail).toHaveBeenCalledWith("could not persist the installer request");
+    } finally { restore(); }
+  });
+
+  it("requires a visible helper before quitting an already native-ready update", async () => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents, nativeAutoUpdater, startMacUpdateProgress } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      nativeAutoUpdater.emit("update-downloaded");
+      startMacUpdateProgress.mockRejectedValueOnce(new Error("helper unavailable"));
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow("helper unavailable");
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    } finally { restore(); }
+  });
+
+  it.each(["win32", "linux"] as const)("rejects an install without a staged build on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      const { module, autoUpdater } = await importAutoUpdater();
       await module.checkForUpdatesNow(stateDir);
-      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
-      nativeUpdaterEvents.get("update-downloaded")?.({}, "notes", "2.0.0");
-      module.quitAndInstallUpdate();
-
-      expect(dialog.showMessageBox).not.toHaveBeenCalled();
-      expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
-    } finally {
-      restore();
-    }
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/not ready/);
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    } finally { restore(); }
   });
 
   it("never blocks off macOS, even for translocation-looking paths", async () => {
     const restore = stubProcess("win32", TRANSLOCATED_EXEC_PATH);
     try {
-      const { module, autoUpdater, dialog, updaterEvents } = await importAutoUpdater();
+      const { module, autoUpdater, dialog, updaterEvents } = await importAutoUpdater(undefined, { nativeReadyManually: true });
 
       await module.checkForUpdatesNow(stateDir);
       updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
@@ -2794,23 +3219,27 @@ describe("install-on-quit policy", () => {
   // and Linux BaseUpdater.addQuitHandler re-reads autoInstallOnAppQuit at quit
   // time, so quitting before the replacement landed installed the channel the
   // user had just left.
-  it("disables install-on-quit while a stale staged build awaits replacement", async () => {
-    const { module, autoUpdater, updaterEvents } = await importAutoUpdater({
-      enabled: false,
-      channel: "nightly",
-      nightlyAck: true,
-      feature: null,
-    });
-
-    await module.checkForUpdatesNow(stateDir);
-    updaterEvents.get("update-downloaded")?.({ version: "2.1.0-nightly.1" });
-    expect(autoUpdater.autoInstallOnAppQuit).toBe(true);
-
-    await module.checkForUpdatesNow(stateDir, {
-      settings: { enabled: false, channel: "latest", nightlyAck: false, feature: null },
-    });
-
-    expect(autoUpdater.autoInstallOnAppQuit).toBe(false);
+  it.each(["darwin", "win32", "linux"] as const)("blocks explicit install while a stale build awaits replacement on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater({
+        enabled: false,
+        channel: "nightly",
+        nightlyAck: true,
+        feature: null,
+      });
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0-nightly.1" });
+      expect(autoUpdater.autoInstallOnAppQuit).toBe(true);
+      await module.checkForUpdatesNow(stateDir, {
+        settings: { enabled: false, channel: "latest", nightlyAck: false, feature: null },
+      });
+      expect(autoUpdater.autoInstallOnAppQuit).toBe(false);
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Check for updates/);
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
   });
 
   it("re-enables install-on-quit once the replacement is staged", async () => {
@@ -3378,7 +3807,7 @@ describe("e2e staging sentinel", () => {
     const sentinel = nodePath.join(stateDir, "sentinel.json");
     process.env.AO_E2E_UPDATE_SENTINEL = sentinel;
     const { module, nativeUpdaterEvents, updaterEvents } =
-      await importAutoUpdater();
+      await importAutoUpdater(undefined, { nativeReadyManually: true });
 
     await module.checkForUpdatesNow(stateDir);
     // electron-updater's own update-downloaded fires BEFORE Squirrel is told to
@@ -3394,11 +3823,18 @@ describe("e2e staging sentinel", () => {
     });
   });
 
-  it("registers nothing when the env var is unset", async () => {
+  it("registers no sentinel writer when the env var is unset", async () => {
     delete process.env.AO_E2E_UPDATE_SENTINEL;
-    const { module, nativeAutoUpdater } = await importAutoUpdater();
+    const sentinel = nodePath.join(stateDir, "sentinel.json");
+    const { module, nativeUpdaterEvents } = await importAutoUpdater();
     await module.checkForUpdatesNow(stateDir);
-    expect(nativeAutoUpdater.on).not.toHaveBeenCalled();
+    // The sentinel was never wired at import (env unset), so a native
+    // update-downloaded writes nothing even if the env var is set afterwards.
+    // (Other native handlers, e.g. the macOS restart handler, may exist.)
+    process.env.AO_E2E_UPDATE_SENTINEL = sentinel;
+    nativeUpdaterEvents.get("update-downloaded")?.({}, "notes", "2.1.0");
+    delete process.env.AO_E2E_UPDATE_SENTINEL;
+    expect(existsSync(sentinel)).toBe(false);
   });
 });
 
@@ -3472,17 +3908,17 @@ describe("live download-to-install flow", () => {
   it("does not offer installation at 100% or before native macOS readiness", async () => {
     const restore = stubProcess("darwin", process.execPath);
     try {
-      const { module, updaterEvents, nativeUpdaterEvents, autoUpdater } = await importAutoUpdater();
+      const { module, updaterEvents, nativeUpdaterEvents, autoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
       await module.checkForUpdatesNow(stateDir);
       updaterEvents.get("download-progress")?.({ percent: 100, transferred: 1000, total: 1000 });
       expect(module.getUpdateStatus().state).toBe("preparing");
       updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
       expect(module.getUpdateStatus()).toMatchObject({ state: "preparing", staged: { ready: false } });
-      module.quitAndInstallUpdate();
+      const install = module.quitAndInstallUpdate();
       expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
       nativeUpdaterEvents.get("update-downloaded")?.({}, "notes", "2.0.0");
       expect(module.getUpdateStatus().state).toBe("downloaded");
-      module.quitAndInstallUpdate();
+      await install;
       expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
     } finally { restore(); }
   });
@@ -3497,19 +3933,19 @@ describe("live download-to-install flow", () => {
   });
 });
 
-it("keeps stalled native preparation non-installable and recovers on real readiness", async () => {
+it("keeps timed-out native preparation non-installable even after a late event", async () => {
   vi.useFakeTimers();
   const restore = stubProcess("darwin", process.execPath);
   try {
-    const { module, updaterEvents, nativeUpdaterEvents, autoUpdater } = await importAutoUpdater();
+    const { module, updaterEvents, nativeUpdaterEvents, autoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
     await module.checkForUpdatesNow(stateDir);
     updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
-    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
     expect(module.getUpdateStatus()).toMatchObject({ state: "error", staged: { ready: false } });
-    expect(module.getUpdateStatus().message).toContain("preparation stopped responding");
-    module.quitAndInstallUpdate();
+    expect(module.getUpdateStatus().message).toContain("stopped responding while preparing");
+    await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Close and reopen AO/);
     expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
     nativeUpdaterEvents.get("update-downloaded")?.({}, "notes", "2.0.0");
-    expect(module.getUpdateStatus().state).toBe("downloaded");
+    expect(module.getUpdateStatus().state).toBe("error");
   } finally { restore(); vi.useRealTimers(); }
 });

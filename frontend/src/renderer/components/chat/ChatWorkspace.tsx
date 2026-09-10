@@ -232,6 +232,8 @@ export interface ChatWorkspaceProps {
 	headerActions?: ReactNode;
 	/** Agent-session actions on the primary chat tab (interface switch, handoff). */
 	sessionTabAction?: ReactNode;
+	/** Widen the primary tab action slot only while an interface switch spinner is showing. */
+	sessionTabActionWide?: boolean;
 	/** Pinned beside the tab strip, before the workspace topbar actions. */
 	tabStripAction?: ReactNode;
 	/** File tabs coordinated by SessionView, appended to the native chat tab strip. */
@@ -389,6 +391,7 @@ export function ChatWorkspace({
 	sessionRole = "worker",
 	headerActions,
 	sessionTabAction,
+	sessionTabActionWide = false,
 	tabStripAction,
 	workspaceTabs,
 	workspaceTabActions,
@@ -1046,6 +1049,7 @@ export function ChatWorkspace({
 				session={session}
 				onSessionRenamed={onSessionRenamed}
 				sessionTabAction={sessionTabAction}
+				sessionTabActionWide={sessionTabActionWide}
 				tabStripAction={tabStripAction}
 				workspaceTabActions={workspaceTabActions}
 				workspaceActiveTabKey={workspaceActiveTabKey}
@@ -1186,9 +1190,10 @@ export function ChatWorkspace({
 									busy={busy}
 									willQueue={Boolean(turn)}
 									disabled={snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled}
-									disabledPlaceholder={controllerTransitioning
-										? "Connecting to the agent…"
-										: newWorkDisabled ? "Switching to terminal UI…" : undefined}
+									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
+									disabledPlaceholder={
+										controllerTransitioning || newWorkDisabled ? "" : undefined
+									}
 									skills={skills}
 									filePaths={filePaths}
 									filePathsTruncated={filePathsTruncated}
@@ -1368,6 +1373,7 @@ function ChatHeader({
 	onTabsKeyDown,
 	headerActions,
 	sessionTabAction,
+	sessionTabActionWide = false,
 	tabStripAction,
 	workspaceTabActions,
 	workspaceActiveTabKey,
@@ -1394,6 +1400,7 @@ function ChatHeader({
 	onTabsKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 	headerActions?: ReactNode;
 	sessionTabAction?: ReactNode;
+	sessionTabActionWide?: boolean;
 	tabStripAction?: ReactNode;
 	workspaceTabActions?: ReactNode;
 	workspaceActiveTabKey?: string;
@@ -1462,6 +1469,7 @@ function ChatHeader({
 								onRenamed={onSessionRenamed}
 								session={session}
 								tabAction={sessionTabAction}
+								tabActionWide={sessionTabActionWide}
 							/>
 						) : (
 							<button

@@ -1,5 +1,5 @@
 import { createFileRoute, Outlet, useMatchRoute, useNavigate, useParams } from "@tanstack/react-router";
-import { isCancelledError, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { isCancelledError, useQueryClient } from "@tanstack/react-query";
 import { memo, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderPlus } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -96,21 +96,10 @@ export function createProjectConfig(input: CreateProjectConfigInput): components
 	};
 }
 
-async function waitForWorkspaceSession(
-	queryClient: QueryClient,
-	projectId: string,
-	sessionId: string,
-): Promise<boolean> {
-	for (let attempt = 0; attempt < 3; attempt += 1) {
-		const workspaces = await queryClient.fetchQuery({ ...workspaceQueryOptions, staleTime: 0 });
-		const found = workspaces
-			.find((workspace) => workspace.id === projectId)
-			?.sessions.some((session) => session.id === sessionId);
-		if (found) return true;
-		await new Promise((resolve) => window.setTimeout(resolve, 250));
-	}
-	return false;
-}
+// Upper bound for the background orchestrator spawn after project creation.
+// Past this the board releases the provisioning gate and shows the retry
+// banner instead of staying gated forever on a hung spawn.
+const PROVISIONING_TIMEOUT_MS = 120_000;
 
 const isMac = isMacPlatform();
 const isWindows = isWindowsPlatform();
@@ -347,6 +336,7 @@ function ShellLayout() {
 	const orchestratorReplacementErrors = useUiStore((state) => state.orchestratorReplacementErrors);
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const setOrchestratorStartupError = useUiStore((state) => state.setOrchestratorStartupError);
+	const setProjectProvisioning = useUiStore((state) => state.setProjectProvisioning);
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const replacementErrorProjectId = Object.keys(orchestratorReplacementErrors)[0] ?? null;
 	const isStartupLoading =
@@ -384,6 +374,79 @@ function ShellLayout() {
 		[queryClient],
 	);
 
+	// Background orchestrator provisioning for a newly created project. Owns
+	// the provisioning flag, the hung-spawn timeout, the session refresh, and
+	// the retry error end to end — callers must fire and forget it, never await.
+	const provisionOrchestrator = useCallback(
+		async (
+			workspace: WorkspaceSummary,
+			input: CreateProjectConfigInput,
+			source: "project_add" | "project_clone",
+		) => {
+		// Safety: a hung spawn must never wedge the board behind the
+		// provisioning gate. If it outlives this budget, release the gate and
+		// surface the retry banner; a late success still navigates below and
+		// the board clears the banner once the orchestrator appears.
+		const provisioningGuard = window.setTimeout(() => {
+			setProjectProvisioning(workspace.id, false);
+			setOrchestratorStartupError(
+				workspace.id,
+				"Project added, but the orchestrator is taking longer than expected to start. Retry from the board if it does not appear.",
+			);
+		}, PROVISIONING_TIMEOUT_MS);
+		try {
+			void captureRendererEvent("ao.renderer.orchestrator_spawn_requested", {
+				project_id: workspace.id,
+				source,
+			});
+			const {
+				data: spawnData,
+				error: spawnError,
+				response: spawnResponse,
+			} = await apiClient.POST("/api/v1/sessions", {
+				body: {
+					projectId: workspace.id,
+					kind: "orchestrator",
+					harness: input.orchestratorAgent as components["schemas"]["SpawnSessionRequest"]["harness"],
+				},
+			});
+			if (spawnError || !spawnData?.session?.id) {
+				const message = spawnError
+					? apiErrorMessage(spawnError, `Failed to spawn orchestrator (${spawnResponse.status})`)
+					: `Failed to spawn orchestrator (${spawnResponse.status})`;
+				throw new Error(message);
+			}
+			void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", {
+				project_id: workspace.id,
+				source,
+			});
+			const sessionId = spawnData.session.id;
+			window.clearTimeout(provisioningGuard);
+			setProjectProvisioning(workspace.id, false);
+			// Wait for the refetch so the session route never renders before
+			// the new session is in the workspace query (which would flash
+			// the session-not-found state). The daemon just created it, so
+			// one invalidate is enough — no polling loop.
+			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+			void navigate({
+				to: "/projects/$projectId/sessions/$sessionId",
+				params: { projectId: workspace.id, sessionId },
+			});
+		} catch (spawnError) {
+			window.clearTimeout(provisioningGuard);
+			setProjectProvisioning(workspace.id, false);
+			void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
+				project_id: workspace.id,
+				source,
+			});
+			const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";
+			const startupMessage = `Project added, but orchestrator did not start: ${message}`;
+			setOrchestratorStartupError(workspace.id, startupMessage);
+		}
+	},
+	[navigate, queryClient, setOrchestratorStartupError, setProjectProvisioning],
+);
+
 	const completeProjectCreation = useCallback(
 		async (
 			project: components["schemas"]["Project"],
@@ -403,53 +466,15 @@ function ShellLayout() {
 			void captureRendererEvent(`ao.renderer.${source}_succeeded`, { project_id: workspace.id });
 			updateWorkspaces((current) => [workspace, ...current.filter((item) => item.id !== workspace.id)]);
 			setOrchestratorStartupError(workspace.id, null);
-			try {
-				void captureRendererEvent("ao.renderer.orchestrator_spawn_requested", {
-					project_id: workspace.id,
-					source,
-				});
-				const {
-					data: spawnData,
-					error: spawnError,
-					response: spawnResponse,
-				} = await apiClient.POST("/api/v1/sessions", {
-					body: {
-						projectId: workspace.id,
-						kind: "orchestrator",
-						harness: input.orchestratorAgent as components["schemas"]["SpawnSessionRequest"]["harness"],
-					},
-				});
-				if (spawnError || !spawnData?.session?.id) {
-					const message = spawnError
-						? apiErrorMessage(spawnError, `Failed to spawn orchestrator (${spawnResponse.status})`)
-						: `Failed to spawn orchestrator (${spawnResponse.status})`;
-					throw new Error(message);
-				}
-					void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", {
-						project_id: workspace.id,
-						source,
-					});
-					const sessionId = spawnData.session.id;
-					const sessionVisible = await waitForWorkspaceSession(queryClient, workspace.id, sessionId);
-					if (!sessionVisible) {
-						await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-					}
-					void navigate({
-						to: "/projects/$projectId/sessions/$sessionId",
-						params: { projectId: workspace.id, sessionId },
-				});
-			} catch (spawnError) {
-				void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
-					project_id: workspace.id,
-					source,
-				});
-				void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
-				const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";
-				const startupMessage = `Project added, but orchestrator did not start: ${message}`;
-				setOrchestratorStartupError(workspace.id, startupMessage);
-			}
+			setProjectProvisioning(workspace.id, true);
+			// Navigate to the project board immediately so the IDE paints, then
+			// hand off to the detached provisioning flow. Resolving here (rather
+			// than after the spawn) is what closes the setup modal and makes
+			// the board usable while the orchestrator starts in the background.
+			void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
+			void provisionOrchestrator(workspace, input, source);
 		},
-		[navigate, queryClient, setOrchestratorStartupError, updateWorkspaces],
+		[navigate, provisionOrchestrator, setOrchestratorStartupError, setProjectProvisioning, updateWorkspaces],
 	);
 
 	const createProject = useCallback(

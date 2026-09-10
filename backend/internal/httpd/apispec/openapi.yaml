@@ -8019,6 +8019,8 @@ components:
           type: boolean
         branch:
           type: string
+        chatProviderPreserved:
+          type: boolean
         createdAt:
           format: date-time
           type: string
@@ -8177,6 +8179,7 @@ components:
       - createdAt
       - updatedAt
       - isPinned
+      - chatProviderPreserved
       - status
       - kanbanColumn
       - displayStatus

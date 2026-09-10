@@ -423,6 +423,34 @@ describe("GlobalSettingsForm", () => {
 		await waitFor(() => expect(screen.getByTestId("installed-update-channel")).toHaveTextContent("Nightly"));
 	});
 
+	it("shows a repeated timeout once and keeps manual retry available", async () => {
+		const message = "Update check timed out. Check your connection and try again.";
+		updGetStatus.mockResolvedValue({ state: "error", message, checkError: message });
+		renderForm("updates");
+		await screen.findByText(message);
+		expect(screen.getAllByText(message)).toHaveLength(1);
+		const retry = screen.getByRole("button", { name: "Check for updates" });
+		expect(retry).toBeEnabled();
+		await userEvent.click(retry);
+		expect(updCheck).toHaveBeenCalledTimes(1);
+	});
+
+	it("preserves a check failure beside a staged update", async () => {
+		const message = "Update check timed out. Check your connection and try again.";
+		updGetStatus.mockResolvedValue({ state: "downloaded", version: "2.0.0", checkError: message });
+		renderForm("updates");
+		expect(await screen.findByText(message)).toBeVisible();
+		expect(screen.getAllByText(message)).toHaveLength(1);
+		expect(screen.getByRole("button", { name: "Install Update" })).toBeEnabled();
+	});
+
+	it("preserves a different check failure beside an install error", async () => {
+		updGetStatus.mockResolvedValue({ state: "error", message: "Installation failed", checkError: "Update check timed out" });
+		renderForm("updates");
+		expect(await screen.findByText("Installation failed")).toBeVisible();
+		expect(screen.getByText("Update check timed out")).toBeVisible();
+	});
+
 	it("shows an explicit idle update state and triggers a manual check", async () => {
 		renderForm();
 		await waitFor(() => expect(screen.getByTestId("app-version")).toHaveTextContent("v1.4.0"));

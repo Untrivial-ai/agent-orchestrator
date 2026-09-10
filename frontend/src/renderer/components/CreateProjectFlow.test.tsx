@@ -1157,43 +1157,60 @@ describe("CreateProjectFlow project import validation", () => {
 		await waitFor(() => expect(sheet).toHaveClass("modal-shake"));
 	});
 
-	it.each(["single_repo", "workspace"] as const)("passes the checked-out root branch when importing %s", async (kind) => {
+	it("submits single_repo imports without a blocking branch lookup", async () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn(async () => undefined);
 		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
-		bridgeMocks.getRepositoryBranch.mockResolvedValue("main");
-		if (kind === "workspace") {
-			bridgeMocks.scanImportFolder.mockResolvedValue({
-				path: "/repo/project",
-				repos: [{ ...okScan("/repo/project/app").repos[0], name: "app", relativePath: "app" }],
-			});
-			apiMocks.POST.mockResolvedValueOnce({
-				data: {
-					...projectValidation("/repo/project", {
-						root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true },
-						childRepos: [{
-							repoPath: "/repo/project/app", isRepo: true, hasCommit: true, hasOrigin: true,
-							isEmptyFolder: false, needsGitInit: false, requiredActions: [], blockingErrors: [],
-						}],
-					}),
-					importKind: "workspace",
-				},
-			});
-		} else {
-			apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project") });
-		}
+		apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project") });
 
 		renderChooseFlow({ onCreateProject });
-		await openSource(user, kind === "workspace" ? "Import a workspace folder" : "Import an existing project");
-		if (kind === "workspace") {
-			await user.click(await screen.findByRole("button", { name: "Continue" }));
-		}
+		await openSource(user, "Import an existing project");
 		await user.click(await screen.findByRole("button", { name: "Submit agents" }));
 
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith({
 				path: "/repo/project",
-				asWorkspace: kind === "workspace",
+				asWorkspace: false,
+				workerAgent: "codex",
+				orchestratorAgent: "codex",
+			}),
+		);
+		// The daemon resolves the base branch itself; the import must not
+		// block on a branch lookup before submitting.
+		expect(bridgeMocks.getRepositoryBranch).not.toHaveBeenCalled();
+	});
+
+	it("preserves the checked-out root branch when importing a workspace", async () => {
+		const user = userEvent.setup();
+		const onCreateProject = vi.fn(async () => undefined);
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		bridgeMocks.getRepositoryBranch.mockResolvedValue("main");
+		bridgeMocks.scanImportFolder.mockResolvedValue({
+			path: "/repo/project",
+			repos: [{ ...okScan("/repo/project/app").repos[0], name: "app", relativePath: "app" }],
+		});
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/project", {
+					root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true },
+					childRepos: [{
+						repoPath: "/repo/project/app", isRepo: true, hasCommit: true, hasOrigin: true,
+						isEmptyFolder: false, needsGitInit: false, requiredActions: [], blockingErrors: [],
+					}],
+				}),
+				importKind: "workspace",
+			},
+		});
+
+		renderChooseFlow({ onCreateProject });
+		await openSource(user, "Import a workspace folder");
+		await user.click(await screen.findByRole("button", { name: "Continue" }));
+		await user.click(await screen.findByRole("button", { name: "Submit agents" }));
+
+		await waitFor(() =>
+			expect(onCreateProject).toHaveBeenCalledWith({
+				path: "/repo/project",
+				asWorkspace: true,
 				defaultBranch: "main",
 				workerAgent: "codex",
 				orchestratorAgent: "codex",

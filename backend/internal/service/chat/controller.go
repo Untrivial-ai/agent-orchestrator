@@ -331,7 +331,7 @@ func newController(
 // before a replacement daemon publishes a reconnected controller. The provider
 // kept running while AO was detached, so forgetting this turn would let a new
 // Send start a second root turn on the same native conversation.
-func (c *Controller) restoreLiveTurnOwnership(turns []domain.ConversationTurn) {
+func (c *Controller) restoreLiveTurnOwnership(turns []domain.ConversationTurn) string {
 	var latest *domain.ConversationTurn
 	for i := range turns {
 		turn := &turns[i]
@@ -343,11 +343,12 @@ func (c *Controller) restoreLiveTurnOwnership(turns []domain.ConversationTurn) {
 		}
 	}
 	if latest == nil {
-		return
+		return ""
 	}
 	c.pendingTurnID = latest.ProviderTurnID
 	c.ackedTurnID = latest.ProviderTurnID
 	c.state = ports.ChatControllerBusy
+	return latest.ProviderTurnID
 }
 
 // start begins live provider consumption after any durable native history has
@@ -2118,6 +2119,7 @@ func (c *Controller) project() {
 	// Detached from any request context: this outlives the call that started the
 	// controller, and must keep persisting until the provider stream ends.
 	ctx := context.WithoutCancel(context.Background())
+	acknowledger, persistent := c.conv.(ports.ChatProviderEventAcknowledger)
 
 	for event := range c.conv.Events() {
 		c.mu.Lock()
@@ -2134,6 +2136,29 @@ func (c *Controller) project() {
 			c.sendMu.Lock()
 		}
 		projected, primaryTurn, err := c.projectEvent(ctx, event)
+		// A terminal receipt compacts the entire prompt, so it cannot pass a
+		// failed earlier projection. Retry transient store errors in order; if
+		// still failing, detach and leave the journal for a replacement controller.
+		for attempt := 0; err != nil && persistent && attempt < 3; attempt++ {
+			time.Sleep(20 * time.Millisecond)
+			projected, primaryTurn, err = c.projectEvent(ctx, event)
+		}
+		if err == nil && persistent && event.ProviderEventID != "" {
+			err = acknowledger.AcknowledgeProviderEvent(ctx, event.ProviderEventID)
+		}
+		if err != nil && persistent {
+			c.log.Error("persistent chat projection stopped; provider retained for replay",
+				"session", c.sessionID, "kind", event.Kind, "error", err)
+			c.mu.Lock()
+			c.preserveProviderOnStop = true
+			c.state = ports.ChatControllerStopped
+			c.mu.Unlock()
+			if lifecycle {
+				c.sendMu.Unlock()
+			}
+			c.once.Do(func() { c.closeErr = c.conv.Close() })
+			return
+		}
 		if err != nil {
 			// A projection failure must not kill the provider stream. The store
 			// rolls the archive back with its projection, so durable state remains
@@ -2581,7 +2606,10 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 	case ports.ChatEventApprovalResolved:
 		// The provider resolved it, possibly through another client. Mark it so a
 		// card still on screen elsewhere stops being actionable.
-		detail, _ := json.Marshal(map[string]string{"resolvedBy": "provider"})
+		detail := event.Detail
+		if len(detail) == 0 {
+			detail, _ = json.Marshal(map[string]string{"resolvedBy": "provider"})
+		}
 		return c.store.ResolveApproval(ctx, c.conversation.ID, event.RequestID, string(detail), now)
 
 	case ports.ChatEventInputRequested:
@@ -2607,7 +2635,10 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			}, now)
 
 	case ports.ChatEventInputResolved:
-		detail, _ := json.Marshal(map[string]string{"resolvedBy": "provider"})
+		detail := event.Detail
+		if len(detail) == 0 {
+			detail, _ = json.Marshal(map[string]string{"resolvedBy": "provider"})
+		}
 		return c.store.ResolveApproval(ctx, c.conversation.ID, event.RequestID, string(detail), now)
 
 	case ports.ChatEventUsage:

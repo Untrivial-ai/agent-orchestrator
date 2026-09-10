@@ -1187,6 +1187,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			{handoffMenuItem}
 		</SessionActionsMenu>
 	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem]);
+	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
+	// wider action slot while switching.
+	const sessionTabActionWide = false;
 
 	useEffect(() => {
 		setHandoffDialogOpen(false);
@@ -1582,6 +1585,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									theme={theme}
 									headerActions={sessionHeaderActions}
 									sessionTabAction={sessionTabActions}
+									sessionTabActionWide={sessionTabActionWide}
 									tabStripAction={newShellTerminalAction}
 									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
@@ -1618,6 +1622,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									theme={theme}
 									topbarActions={sessionHeaderActions}
 									sessionTabAction={sessionTabActions}
+									sessionTabActionWide={sessionTabActionWide}
 									tabStripAction={newShellTerminalAction}
 									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}

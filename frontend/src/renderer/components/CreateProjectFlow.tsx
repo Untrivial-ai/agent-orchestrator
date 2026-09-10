@@ -485,15 +485,19 @@ export function CreateProjectFlow({
 				setIsInitializing(false);
 				setIsCreating(true);
 			}
-			// Workspace imports can adopt an existing local Git root too. Preserve
-			// its branch just as for a single repository; child defaults stay separate.
-			const defaultBranch = await aoBridge.app.getRepositoryBranch(selectedPath);
-			await onCreateProject({
-				path: selectedPath,
-				asWorkspace: selectedKind === "workspace",
-				...(defaultBranch ? { defaultBranch } : {}),
-				...selection,
-			});
+		// Workspace imports can adopt an existing local Git root. Preserve its
+		// checked-out branch as the workspace default (child defaults stay
+		// separate); the daemon resolves it at spawn time. Single-repo imports
+		// skip this lookup entirely — the daemon resolves their base branch
+		// itself, saving a blocking IPC round-trip on the critical path.
+		const defaultBranch =
+			selectedKind === "workspace" ? await aoBridge.app.getRepositoryBranch(selectedPath) : undefined;
+		await onCreateProject({
+			path: selectedPath,
+			asWorkspace: selectedKind === "workspace",
+			...(defaultBranch ? { defaultBranch } : {}),
+			...selection,
+		});
 			if (showProgress) {
 				setCreateProgress({ open: true, stage: "complete", value: 100 });
 				await new Promise((resolve) => window.setTimeout(resolve, 180));
