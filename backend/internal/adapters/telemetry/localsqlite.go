@@ -15,14 +15,24 @@ import (
 
 const (
 	localBufferSize      = 128
-	localRetention       = 30 * 24 * time.Hour
 	localPruneEvery      = time.Hour
-	localPruneBatchLimit = int64(1000)
+	localPruneBatchLimit = int64(5000)
+	localPruneBatchPause = 50 * time.Millisecond
+	localVacuumThreshold = int64(256)
+	localVacuumPages     = int64(256)
 )
+
+// DefaultRetention is the default local telemetry retention period.
+const DefaultRetention = 30 * 24 * time.Hour
+
+// MinRetention is the shortest allowed retention period.
+const MinRetention = 24 * time.Hour
 
 type localStore interface {
 	CreateTelemetryEvent(ctx context.Context, rec sqlitestore.TelemetryEventRecord) error
 	PruneTelemetryEventsBefore(ctx context.Context, before time.Time, limit int64) (int64, error)
+	FreelistCount(ctx context.Context) (int64, error)
+	IncrementalVacuum(ctx context.Context, pages int64) error
 }
 
 // LocalSQLiteSink persists telemetry events into the daemon's SQLite database
@@ -30,24 +40,31 @@ type localStore interface {
 type LocalSQLiteSink struct {
 	store     localStore
 	log       *slog.Logger
+	retention time.Duration
 	ch        chan ports.TelemetryEvent
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 	now       func() time.Time
 	newID     func() string
+	sleep     func(time.Duration)
 
 	pruneMu   sync.Mutex
 	lastPrune time.Time
 }
 
 // NewLocalSQLiteSink starts a buffered SQLite-backed telemetry sink.
-func NewLocalSQLiteSink(store localStore, log *slog.Logger) *LocalSQLiteSink {
+func NewLocalSQLiteSink(store localStore, log *slog.Logger, retention time.Duration) *LocalSQLiteSink {
+	if retention < MinRetention {
+		retention = DefaultRetention
+	}
 	s := &LocalSQLiteSink{
-		store: store,
-		log:   log,
-		ch:    make(chan ports.TelemetryEvent, localBufferSize),
-		now:   time.Now,
-		newID: func() string { return "tev_" + uuid.NewString() },
+		store:     store,
+		log:       log,
+		retention: retention,
+		ch:        make(chan ports.TelemetryEvent, localBufferSize),
+		now:       time.Now,
+		newID:     func() string { return "tev_" + uuid.NewString() },
+		sleep:     time.Sleep,
 	}
 	s.wg.Add(1)
 	go s.loop()
@@ -118,7 +135,41 @@ func (s *LocalSQLiteSink) maybePrune() {
 		return
 	}
 	s.lastPrune = now
-	if _, err := s.store.PruneTelemetryEventsBefore(context.Background(), now.Add(-localRetention), localPruneBatchLimit); err != nil {
-		s.log.Warn("telemetry local sink prune failed", "error", err)
+	cutoff := now.Add(-s.retention)
+
+	var totalDeleted int64
+	for {
+		n, err := s.store.PruneTelemetryEventsBefore(context.Background(), cutoff, localPruneBatchLimit)
+		if err != nil {
+			s.log.Warn("telemetry prune failed", "error", err)
+			break
+		}
+		totalDeleted += n
+		if n < localPruneBatchLimit {
+			break
+		}
+		s.sleep(localPruneBatchPause)
 	}
+
+	if totalDeleted > 0 {
+		s.log.Debug("telemetry pruned", "rows", totalDeleted)
+	}
+
+	s.maybeVacuum()
+}
+
+func (s *LocalSQLiteSink) maybeVacuum() {
+	free, err := s.store.FreelistCount(context.Background())
+	if err != nil {
+		s.log.Warn("telemetry freelist check failed", "error", err)
+		return
+	}
+	if free < localVacuumThreshold {
+		return
+	}
+	if err := s.store.IncrementalVacuum(context.Background(), localVacuumPages); err != nil {
+		s.log.Warn("telemetry vacuum failed", "error", err)
+		return
+	}
+	s.log.Debug("telemetry vacuum reclaimed pages", "requested", localVacuumPages)
 }
