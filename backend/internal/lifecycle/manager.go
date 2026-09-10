@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 )
 
@@ -182,6 +184,20 @@ func WithStartupSignalGate(pred func(domain.AgentHarness) bool) Option {
 	}
 }
 
+// WithUrgentNudgeGate supplies the adapter capability predicate that decides
+// whether an urgent (merge-conflict) nudge may reach a session at a
+// waiting_input prompt: true only for harnesses that report a permission dialog
+// as blocked rather than as waiting_input. Without it the reducer treats every
+// waiting_input prompt as a possible masked decision and withholds the urgent
+// nudge until the session is active or idle.
+func WithUrgentNudgeGate(pred func(domain.AgentHarness) bool) Option {
+	return func(m *Manager) {
+		if pred != nil {
+			m.urgentNudgeWaitingInputSafe = pred
+		}
+	}
+}
+
 // Manager reduces runtime, activity, spawn, and termination observations into durable session facts.
 // It also owns agent nudges caused by PR observations, including merge-conflict, CI-failure, and review-feedback prompts.
 type Manager struct {
@@ -224,6 +240,12 @@ type Manager struct {
 	// unknown harness is only written to while idle.
 	steerActive             func(domain.AgentHarness) bool
 	startupSignalGatesInput func(domain.AgentHarness) bool
+	// urgentNudgeWaitingInputSafe reports whether a harness surfaces a permission
+	// dialog AS blocked (rather than as waiting_input), so an urgent merge-conflict
+	// nudge is safe to paste at a waiting_input prompt. Supplied by the agent
+	// adapter via WithUrgentNudgeGate; the default answers false, so an unknown
+	// harness never takes an urgent write while waiting_input.
+	urgentNudgeWaitingInputSafe func(domain.AgentHarness) bool
 }
 
 // New builds a Lifecycle Manager over the session store it writes and the messenger it uses for agent nudges.
@@ -234,14 +256,15 @@ func New(store sessionStore, messenger ports.AgentMessenger, opts ...Option) *Ma
 	// WithClock option may still override this in tests.
 	clock := func() time.Time { return time.Now().UTC() }
 	m := &Manager{
-		store:                   store,
-		window:                  defaultRecentActivityWindow,
-		clock:                   clock,
-		react:                   newReactionState(),
-		flights:                 map[domain.SessionID]*toolFlight{},
-		pendingLaunches:         map[domain.SessionID]pendingLaunch{},
-		steerActive:             func(domain.AgentHarness) bool { return false },
-		startupSignalGatesInput: func(domain.AgentHarness) bool { return false },
+		store:                       store,
+		window:                      defaultRecentActivityWindow,
+		clock:                       clock,
+		react:                       newReactionState(),
+		flights:                     map[domain.SessionID]*toolFlight{},
+		pendingLaunches:             map[domain.SessionID]pendingLaunch{},
+		steerActive:                 func(domain.AgentHarness) bool { return false },
+		startupSignalGatesInput:     func(domain.AgentHarness) bool { return false },
+		urgentNudgeWaitingInputSafe: func(domain.AgentHarness) bool { return false },
 	}
 	if messenger != nil {
 		m.guard = sessionguard.New(store, messenger, nil)
@@ -542,13 +565,21 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		m.mu.Unlock()
 		return nil
 	}
-	if rec.Metadata.RuntimeLaunchID != "" && s.LaunchID != rec.Metadata.RuntimeLaunchID {
+	mode := domain.NormalizeSessionMode(rec.Mode)
+	currentChatController := mode == domain.SessionModeChat &&
+		s.ControllerGeneration != "" &&
+		s.ControllerGeneration == rec.Metadata.ControllerGeneration
+	// Controller ownership is mode-specific. A Chat controller has no terminal
+	// launch id, so stale TUI metadata must not veto its current generation.
+	// Provider hooks inherited from a shell never receive that internal
+	// credential and therefore cannot mutate structured Chat lifecycle facts.
+	if mode != domain.SessionModeChat && rec.Metadata.RuntimeLaunchID != "" &&
+		s.LaunchID != rec.Metadata.RuntimeLaunchID {
 		m.mu.Unlock()
 		return nil
 	}
-	if s.ControllerGeneration != "" &&
-		(domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat ||
-			s.ControllerGeneration != rec.Metadata.ControllerGeneration) {
+	if (mode == domain.SessionModeChat && !currentChatController) ||
+		(mode != domain.SessionModeChat && s.ControllerGeneration != "") {
 		m.mu.Unlock()
 		return nil
 	}
@@ -739,11 +770,25 @@ func (m *Manager) acknowledgeAgentSwitchTarget(ctx context.Context, id domain.Se
 	if !found || sw.State != domain.AgentSwitchDelivering {
 		return nil
 	}
-	_, err = store.AcknowledgeAgentSwitchTarget(ctx, sw.ID, id, domain.AgentGenerationID(signal.LaunchID), at)
-	if err != nil {
-		return fmt.Errorf("lifecycle: acknowledge agent switch %s target: %w", sw.ID, err)
+	changed, ackErr := store.AcknowledgeAgentSwitchTarget(ctx, sw.ID, id, domain.AgentGenerationID(signal.LaunchID), at)
+	if changed && ackErr == nil {
+		return nil
 	}
-	return nil
+	current, found, readErr := store.GetAgentSwitch(ctx, sw.ID)
+	if readErr != nil {
+		return ownership.Own(fmt.Errorf("lifecycle: read back agent switch %s acknowledgement: %w", sw.ID, readErr), ownership.OwnerAgentSwitchSaga)
+	}
+	if !found || current.State.Terminal() || current.State != domain.AgentSwitchDelivering ||
+		current.TargetGenerationID != domain.AgentGenerationID(signal.LaunchID) || current.TargetAcknowledgedAt != nil {
+		return nil
+	}
+	if ackErr != nil {
+		return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: %w", sw.ID, ackErr), ownership.OwnerAgentSwitchSaga)
+	}
+	if changed {
+		return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: commit was not observable", sw.ID), ownership.OwnerAgentSwitchSaga)
+	}
+	return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: changed=false with unchanged durable predicate", sw.ID), ownership.OwnerAgentSwitchSaga)
 }
 
 // toolFlight tracks one session's in-flight tool executions and the pending
@@ -1021,6 +1066,9 @@ func (m *Manager) emitTelemetry(ctx context.Context, ev ports.TelemetryEvent) {
 	if m.telemetry == nil {
 		return
 	}
+	if ev.RequestID == "" {
+		ev.RequestID = reqid.FromContext(ctx)
+	}
 	m.telemetry.Emit(ctx, ev)
 }
 
@@ -1122,6 +1170,14 @@ func (m *Manager) markSpawned(
 		// a stale "signals worked once" fact.
 		rec.FirstSignalAt = time.Time{}
 		rec.Metadata = mergeMetadata(rec.Metadata, metadata)
+		if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
+			strings.TrimSpace(metadata.ControllerGeneration) != "" {
+			// A committed Chat controller is the sole session owner. Clear any
+			// terminal identity retained by an older handoff/recovery build so it
+			// cannot confuse runtime observation or a later daemon restart.
+			rec.Metadata.RuntimeHandleID = ""
+			rec.Metadata.RuntimeLaunchID = ""
+		}
 		rec.UpdatedAt = now
 		if boundary == nil {
 			if err := m.store.UpdateSession(ctx, rec); err != nil {
@@ -1265,8 +1321,8 @@ func (m *Manager) ActivateAgentSwitchTarget(
 	return writer.ActivateAgentSwitchTarget(ctx, activation)
 }
 
-// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session to
-// the structured controller generation that Chat Service already claimed.
+// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session
+// from the fenced source generation to the structured target controller.
 func (m *Manager) ActivateChatAgentSwitchTarget(
 	ctx context.Context,
 	activation domain.AgentSwitchChatTargetActivation,
@@ -1446,6 +1502,7 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	}
 	set(&base.LatestAssistantUpdate, in.LatestAssistantUpdate)
 	set(&base.NativeTranscriptPath, in.NativeTranscriptPath)
+	set(&base.Model, in.Model)
 	set(&base.BrowserCapabilityVerifier, in.BrowserCapabilityVerifier)
 	// The chat controller's resume handle. Without this a restart has no thread to
 	// resume and the conversation is stranded — the provider still holds it, but

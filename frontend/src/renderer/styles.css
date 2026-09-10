@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 @import "../styles/tokens.css";
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
@@ -24,6 +25,16 @@
 ::view-transition-new(root) {
 	animation: none;
 	mix-blend-mode: normal;
+}
+
+/* While data-theme flips, kill per-element color tweens (composer, search,
+   switches). Without this they animate for hundreds of ms and read as a
+   white box in dark mode / a black strip in light mode. */
+:root[data-theme-transition="active"] *,
+:root[data-theme-transition="active"] *::before,
+:root[data-theme-transition="active"] *::after {
+	transition-duration: 0ms !important;
+	transition-delay: 0ms !important;
 }
 @theme inline {
 	--font-sans: var(--font-family-base);
@@ -272,6 +283,7 @@
 	--color-error: var(--bridge-danger);
 	--color-status-working: var(--bridge-status-working);
 	--color-status-needs-you: var(--bridge-status-needs-you);
+	--color-status-validating: var(--bridge-status-validating);
 	--color-status-in-review: var(--bridge-status-in-review);
 	--color-status-ready: var(--bridge-status-ready);
 	--color-status-merged: var(--bridge-status-merged);
@@ -307,6 +319,18 @@
 	background-color: var(--color-scrim);
 	-webkit-backdrop-filter: blur(var(--blur-overlay));
 	backdrop-filter: blur(var(--blur-overlay));
+}
+
+@utility modal-shake {
+	animation: project-import-shake 280ms ease-in-out;
+}
+
+@utility toast-enter {
+	animation: toast-enter 180ms var(--ease-out);
+}
+
+@utility toast-exit {
+	animation: toast-exit 180ms ease-in forwards;
 }
 
 @utility agent-switch-terminal-scrim {
@@ -505,6 +529,23 @@
 	border-radius: 0;
 }
 
+/* A persistent edge fade signals that the tab strip can scroll horizontally. */
+.session-tab-scroll-fade {
+	pointer-events: none;
+	position: absolute;
+	inset-block: 0;
+	right: 0;
+	z-index: 2;
+	width: var(--space-8);
+	background: linear-gradient(90deg, transparent 0%, var(--color-bg-primary) 82%);
+}
+
+.session-tab-scroll-fade--left {
+	left: 0;
+	right: auto;
+	background: linear-gradient(270deg, transparent 0%, var(--color-bg-primary) 82%);
+}
+
 /* Session actions are portaled into the center pane. Make their responsive
  * labels follow that pane's width instead of the full window width. */
 .workspace-topbar-container {
@@ -517,6 +558,41 @@
  * the compact panel inset instead of retaining the windowed 79px reserve. */
 .session-topbar-titlebar-clearance-mac {
 	padding-left: var(--size-titlebar-content-offset);
+}
+
+/* Browser pressure keeps a 48px navigation rail in layout. Native macOS
+ * traffic lights extend to the 72px titlebar boundary, so reserve only the
+ * missing slice instead of applying the full off-canvas navigation clearance. */
+.session-topbar-terminal-region {
+	transition: padding-left 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Preserve the established tab chrome while preventing flex pressure from
+ * erasing the agent icon. This class controls sizing only. */
+.session-tab-icon-floor {
+	min-width: calc(var(--size-icon-base) + var(--space-6));
+}
+
+.session-tab-icon-floor--closable {
+	width: auto;
+	min-width: var(--size-shell-tab-min);
+	max-width: var(--size-shell-tab-connected);
+}
+
+.session-tab-icon-floor[data-editing="true"] {
+	flex-shrink: 0;
+	width: var(--size-shell-tab-connected);
+	min-width: var(--size-shell-tab-connected);
+}
+
+.session-topbar-traffic-light-clearance-mac {
+	padding-left: calc(var(--size-titlebar-cluster-left) - var(--size-sidebar-icon));
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.session-topbar-terminal-region {
+		transition-duration: 0ms;
+	}
 }
 
 .native-fullscreen .session-topbar-titlebar-clearance-mac {
@@ -632,12 +708,6 @@ button.settings-row-bar {
 	background-color: var(--color-bg-settings-row);
 }
 
-button.settings-link-row:hover,
-button.settings-link-row:active {
-	background-color: var(--color-bg-settings-row-hover);
-	color: var(--color-text-settings-title);
-}
-
 /* Grouped rows size around the shared action control, keeping its top/bottom
  * inset equal to the row's right and left inset. */
 .settings-grouped-rows .settings-row-bar {
@@ -648,15 +718,15 @@ button.settings-link-row:active {
 	border-radius: 0;
 }
 
+/* The dialog body owns the page inset. Rows must not add a second left/right
+ * gutter or their labels drift from the dialog title and section headings. */
+.settings-dialog-body .settings-row-bar {
+	padding-inline: 0;
+}
+
 /* The update summary is a content row, not a compact control row. */
 .settings-grouped-rows .update-status-row {
 	padding-block: var(--space-4);
-}
-
-/* Button/link rows (e.g. Connect Mobile, Keyboard Shortcuts) keep rounded
- * corners even though the shared group container lost its outer border. */
-.settings-grouped-rows .settings-link-row.settings-row-bar {
-	border-radius: var(--radius-md);
 }
 
 @utility settings-menu-item {
@@ -1597,6 +1667,33 @@ textarea,
 	}
 }
 
+@keyframes attention-card-pulse {
+	0%,
+	100% {
+		opacity: 0.15;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+
+.animate-attention-card-pulse::before {
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	background-color: color-mix(in srgb, var(--color-status-needs-you) 9%, transparent);
+	pointer-events: none;
+	content: "";
+	animation: attention-card-pulse 3.5s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.animate-attention-card-pulse::before {
+		animation: none;
+		opacity: 0.5;
+	}
+}
+
 .agent-switch-transfer-pulse {
 	animation: agent-switch-transfer 1.35s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
@@ -1819,6 +1916,22 @@ textarea,
 	}
 }
 
+@keyframes project-import-shake {
+	0%, 100% { transform: translate(-50%, -50%); }
+	25% { transform: translate(calc(-50% - 6px), -50%); }
+	75% { transform: translate(calc(-50% + 6px), -50%); }
+}
+
+@keyframes toast-enter {
+	from { opacity: 0; transform: translateY(8px) scale(0.98); }
+	to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-exit {
+	from { opacity: 1; transform: translateY(0) scale(1); }
+	to { opacity: 0; transform: translateY(8px) scale(0.98); }
+}
+
 @keyframes modal-out {
 	from {
 		opacity: 1;
@@ -1990,6 +2103,39 @@ html.sidebar-reordering * {
 	transform: scale(0.96);
 }
 
+/* Timeline summaries are disclosure controls, not raised buttons. Keeping their
+   footprint fixed prevents the label from shifting when the pointer lands. */
+.cursor-chat-surface .activity-summary-button:not(:disabled):active {
+	transform: none;
+}
+
+.activity-run-toggle {
+	border-bottom: 1px solid color-mix(in oklch, var(--color-border) 48%, transparent);
+	color: var(--color-text-muted);
+}
+
+.activity-run-toggle:hover,
+.activity-subgroup-toggle:hover {
+	color: var(--color-text-primary);
+}
+
+.activity-summary-button:hover > .activity-summary-label {
+	color: var(--color-text-primary);
+}
+
+.activity-row-toggle:hover > .activity-row-label {
+	color: var(--color-text-primary);
+}
+
+.cursor-chat-surface .activity-summary-button:not(:disabled),
+.cursor-chat-surface .activity-row-toggle:not(:disabled) {
+	transition: none;
+}
+
+.activity-subgroup {
+	min-width: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.cursor-chat-surface button:not(:disabled) {
 		transition: none;
@@ -2110,11 +2256,199 @@ html.sidebar-reordering * {
 	border-color: var(--composer-border);
 	background: var(--composer-bg);
 	box-shadow: none;
+	/* Border only — background must snap with the view-transition theme cut. */
+	transition: border-color 150ms ease-out;
 }
 
 .cursor-chat-composer[data-attached-top] {
+	border-top: none;
 	border-top-left-radius: 0;
 	border-top-right-radius: 0;
+}
+
+@keyframes queue-dock-in {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+.queue-dock-enter {
+	animation: queue-dock-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* The parent reserves one compact footprint; the expanded dock floats above it. */
+.cursor-chat-composer-queue {
+	--queue-dock-header-height: 2rem;
+	--queue-dock-row-height: 2.5rem;
+	--queue-dock-collapsed-height: calc(var(--queue-dock-header-height) + var(--queue-dock-row-height));
+	position: relative;
+	height: var(--queue-dock-collapsed-height);
+	min-height: var(--queue-dock-collapsed-height);
+	flex-shrink: 0;
+}
+
+.cursor-chat-composer-queue .queue-dock {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	left: 0;
+}
+
+/* Clip-height collapse: one row stays visible when folded; up to five when open. */
+.queue-dock-body {
+	--queue-dock-row-height: 2.5rem;
+	--queue-dock-visible-rows: 5;
+	position: relative;
+	z-index: 0;
+	isolation: isolate;
+	overflow: hidden;
+	min-width: 0;
+	height: var(--queue-dock-row-height);
+	transition: height 420ms cubic-bezier(0.16, 1, 0.3, 1);
+	will-change: height;
+}
+
+.queue-dock[data-reordering="true"] .queue-dock-body,
+.queue-dock[data-reordering="true"] .queue-dock-scroll {
+	overflow: hidden;
+}
+
+.queue-dock {
+	height: var(--queue-dock-collapsed-height, 4.5rem);
+	min-width: 0;
+	max-width: 100%;
+	transition: height 420ms cubic-bezier(0.16, 1, 0.3, 1);
+	will-change: height;
+}
+
+.queue-dock[data-collapsible="true"][data-expanded="true"] {
+	height: calc(
+		var(--queue-dock-header-height, 2rem) +
+		var(--queue-dock-row-height, 2.5rem) * var(--queue-dock-expanded-rows, 5)
+	);
+}
+
+.queue-dock-body[data-collapsible="true"][data-expanded="false"] {
+	height: var(--queue-dock-row-height);
+}
+
+.queue-dock-body[data-collapsible="true"][data-expanded="true"] {
+	height: calc(var(--queue-dock-row-height) * var(--queue-dock-expanded-rows, 5));
+}
+
+.queue-dock-body[data-collapsible="false"] {
+	height: calc(var(--queue-dock-row-height) * var(--queue-dock-expanded-rows, 1));
+}
+
+.queue-dock-actions {
+	flex-shrink: 0;
+}
+
+.queue-dock-actions svg {
+	display: block;
+	flex: none;
+}
+
+.cursor-chat-surface .queue-dock-toggle:not(:disabled):active {
+	transform: none;
+}
+
+.cursor-chat-surface .queue-dock-toggle:hover .queue-dock-label {
+	color: var(--color-foreground);
+}
+
+.queue-dock-scroll {
+	display: flex;
+	min-height: 100%;
+	min-width: 0;
+	max-width: 100%;
+	flex-direction: column;
+	justify-content: flex-end;
+	overflow: hidden;
+}
+
+.queue-dock-scroll > .queue-dock-row {
+	flex: none;
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
+	overflow: hidden;
+}
+
+.queue-dock-row-content {
+	height: var(--queue-dock-row-height, 2.5rem);
+	max-width: 100%;
+}
+
+.queue-dock-row-text {
+	display: block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.queue-dock[data-reordering="true"] .queue-dock-row:not([data-dragging="true"]) .queue-dock-actions button {
+	transition: none;
+}
+
+.queue-dock-scroll-active {
+	min-height: 0;
+	max-height: 100%;
+	height: 100%;
+	justify-content: flex-start;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+	scrollbar-color: var(--color-scrollbar-board) transparent;
+}
+
+.queue-dock-body[data-expanded="false"] .queue-dock-row[aria-hidden="true"] {
+	display: none;
+}
+
+.queue-dock-scroll::-webkit-scrollbar {
+	width: 8px;
+}
+
+.queue-dock-scroll::-webkit-scrollbar-button {
+	display: none;
+	width: 0;
+	height: 0;
+}
+
+.queue-dock-scroll::-webkit-scrollbar-track,
+.queue-dock-scroll::-webkit-scrollbar-corner {
+	background: transparent;
+}
+
+.queue-dock-scroll::-webkit-scrollbar-thumb {
+	border-radius: 999px;
+	background: var(--color-scrollbar-board);
+}
+
+.queue-dock-scroll::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in oklch, var(--color-scrollbar-board) 80%, var(--color-text-muted));
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.queue-dock-enter {
+		animation: none;
+	}
+
+	.queue-dock-body {
+		transition: none;
+		will-change: auto;
+	}
+
+	.queue-dock {
+		transition: none;
+		will-change: auto;
+	}
 }
 
 .cursor-chat-composer:hover:not(:focus-within) {
@@ -2394,18 +2728,13 @@ html.sidebar-reordering * {
 	min-width: 0;
 	flex: 0 0 auto;
 	align-items: center;
-	gap: var(--space-2);
+	gap: var(--space-1);
 }
 
-.workspace-topbar__utility-separator,
 .workspace-topbar__identity-separator {
 	width: 1px;
 	flex: 0 0 1px;
 	background: color-mix(in srgb, var(--color-text-topbar) 28%, transparent);
-}
-
-.workspace-topbar__utility-separator {
-	height: calc(var(--size-topbar-control) - var(--space-3));
 }
 
 .workspace-topbar__identity-separator {
@@ -2421,6 +2750,7 @@ html.sidebar-reordering * {
 	border-radius: var(--radius-topbar-control);
 	font-size: var(--font-size-sm-md);
 	transition:
+		transform var(--duration-fast) ease-out,
 		background-color var(--duration-fast) ease,
 		border-color var(--duration-fast) ease,
 		color var(--duration-fast) ease,
@@ -2429,18 +2759,25 @@ html.sidebar-reordering * {
 		padding-inline var(--duration-normal) ease;
 }
 
+.workspace-topbar-actions .topbar-control:active:not(:disabled) {
+	transform: scale(0.96);
+}
+
 .workspace-topbar-actions .topbar-control--labeled,
 .workspace-topbar-actions .topbar-control--feature {
 	padding-inline: var(--space-2_5);
 }
 
-/* Split workspace handoff control. The generic .topbar-control rule above rounds
-   all four corners and clamps every control to a square minimum, which makes the
-   two halves read as separate chips crammed together rather than one button.
-   Square the joining edge, let the label half breathe, and keep the chevron half
-   narrower than a full square so the pair stays compact. */
+.topbar-control--disabled-affordance:disabled {
+	cursor: not-allowed;
+	opacity: var(--opacity-control-disabled);
+}
+
+/* The editor handoff stays one joined split control. All measurements use the
+   shared spacing/control tokens; only gaps between separate controls use the
+   workspace toolbar gap. */
 .workspace-topbar-actions .topbar-control--split-main {
-	padding-inline: var(--space-3);
+	padding-inline: var(--space-2_5);
 	gap: var(--space-1_5);
 	border-start-end-radius: 0;
 	border-end-end-radius: 0;
@@ -2505,12 +2842,12 @@ html.sidebar-reordering * {
 	-webkit-app-region: no-drag;
 	position: absolute;
 	top: 0;
-	right: var(--space-3);
+	right: var(--space-1);
 	z-index: var(--z-index-chrome);
 	display: flex;
 	height: var(--size-inspector-tabs);
 	align-items: center;
-	gap: var(--space-2);
+	gap: var(--space-1);
 }
 
 .session-inspector-actions-spacer {
@@ -3192,57 +3529,6 @@ html.sidebar-reordering * {
 .session-inspector__tab-button {
 	flex: none;
 	gap: 0;
-}
-
-.session-inspector__responsive-label {
-	max-width: 5.5rem;
-	margin-left: var(--space-0_5);
-	overflow: hidden;
-	/* Clip during the collapse animation — never ellipsize mid-label. */
-	text-overflow: clip;
-	opacity: 1;
-	transform: translateX(0);
-	transition:
-		max-width 170ms cubic-bezier(0.2, 0.8, 0.2, 1),
-		margin-left 170ms cubic-bezier(0.2, 0.8, 0.2, 1),
-		opacity 120ms ease-out,
-		transform 170ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.session-inspector__tablist {
-	container: inspector-tabs / inline-size;
-	justify-content: flex-start;
-}
-
-/* Keep labels until they nearly meet the pinned actions, then collapse to a
- * tight icon cluster. Tuned just under the ~270px labeled content width so the
- * default inspector (~274px tablist) still shows full words. */
-@container inspector-tabs (max-width: 268px) {
-	.session-inspector__responsive-label {
-		max-width: 0;
-		margin-left: 0;
-		opacity: 0;
-		transform: translateX(-4px);
-	}
-}
-
-/* Keep one label layout for the full automatic panel transition. Without this
- * lock, crossing the compact container threshold near the end of the resize
- * makes the tab text reflow after the inspector itself has nearly settled. */
-.session-split[data-terminal-live-resize="true"][data-inspector-label-mode="expanded"]
-	.session-inspector__responsive-label {
-	max-width: 5.5rem;
-	margin-left: var(--space-0_5);
-	opacity: 1;
-	transform: translateX(0);
-}
-
-.session-split[data-terminal-live-resize="true"][data-inspector-label-mode="compact"]
-	.session-inspector__responsive-label {
-	max-width: 0;
-	margin-left: 0;
-	opacity: 0;
-	transform: translateX(-4px);
 }
 
 .session-inspector__toggle {
@@ -4005,6 +4291,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__toolbar {
+	container-name: browser-toolbar;
+	container-type: inline-size;
 	display: flex;
 	align-items: center;
 	gap: 2px;
@@ -4026,6 +4314,38 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 		inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
 		0 1px 0 color-mix(in srgb, black 22%, transparent);
 	backdrop-filter: blur(10px);
+}
+
+/* Keep the URL field useful in the narrow inspector. The selected profile name
+   remains available through the button tooltip, accessible label, and native
+   menu; only its inline label collapses at constrained toolbar widths. */
+@container browser-toolbar (max-width: 34rem) {
+	.browser-profile-button {
+		width: var(--size-control-md);
+		max-width: var(--size-control-md);
+		flex-shrink: 0;
+		justify-content: center;
+		gap: 0;
+		padding-inline: 0;
+	}
+
+	.browser-profile-button__label,
+	.browser-profile-button__chevron {
+		display: none;
+	}
+}
+
+.browser-panel__toolbar > :not(.browser-panel__url-wrap):not(button) {
+	transition:
+		opacity 140ms ease,
+		visibility 0s linear;
+}
+
+.browser-panel__toolbar--url-takeover > :not(.browser-panel__url-wrap):not(.browser-panel__navigation-btn):not(.browser-panel__navigation-control) {
+	visibility: hidden;
+	opacity: 0;
+	pointer-events: none;
+	transition-delay: 0s, 140ms;
 }
 
 .browser-panel {
@@ -4076,6 +4396,26 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	background: transparent;
 }
 
+.browser-panel__tab--drag-placeholder {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.browser-panel__tab--drag-overlay {
+	width: 100%;
+	min-width: 0;
+	max-width: none;
+	flex: none;
+	color: var(--fg);
+	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
+	background: var(--surface);
+	box-shadow:
+		inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
+		0 6px 16px color-mix(in srgb, black 22%, transparent);
+	cursor: grabbing;
+	pointer-events: none;
+}
+
 .browser-panel__tab:not(:last-child)::after {
 	position: absolute;
 	top: 8px;
@@ -4092,8 +4432,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 .browser-panel__tab:has(+ .browser-panel__tab--active)::after,
 .browser-panel__tab:hover::after,
 .browser-panel__tab:has(+ .browser-panel__tab:hover)::after,
-.browser-panel__tab--dragging::after,
-.browser-panel__tab:has(+ .browser-panel__tab--dragging)::after {
+.browser-panel__tab--drag-placeholder::after,
+.browser-panel__tab:has(+ .browser-panel__tab--drag-placeholder)::after {
 	opacity: 0;
 }
 
@@ -4188,6 +4528,11 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	background: transparent;
 }
 
+.browser-panel__tab-new--dragging {
+	visibility: hidden;
+	pointer-events: none;
+}
+
 .browser-panel__tab-new:not(:disabled):hover {
 	color: var(--fg);
 	background: var(--surface-hover);
@@ -4219,13 +4564,19 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	flex: 1;
 }
 
+.browser-panel__url-wrap {
+	height: 29px;
+}
+
 .browser-panel__toolbar button {
 	border-radius: 7px;
 	transition:
 		background var(--duration-fast) ease,
 		color var(--duration-fast) ease,
 		transform var(--duration-fast) ease,
-		box-shadow var(--duration-fast) ease;
+		box-shadow var(--duration-fast) ease,
+		opacity 140ms ease,
+		visibility 0s linear;
 }
 
 .browser-panel__toolbar button:not(:disabled):hover {
@@ -4243,21 +4594,14 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	color: var(--fg);
 }
 
-.browser-panel__url-icon {
-	position: absolute;
-	left: 10px;
-	top: 50%;
-	z-index: 1;
-	width: 15px;
-	height: 15px;
-	transform: translateY(-50%);
-	color: var(--fg-passive);
-	pointer-events: none;
-}
-
 .browser-panel__url-input {
+	position: absolute;
+	top: 0;
+	right: 0;
+	left: 0;
+	z-index: 0;
+	width: auto;
 	height: 29px;
-	padding-left: 29px;
 	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
 	border-radius: 7px;
 	background:
@@ -4267,12 +4611,41 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 		0 1px 8px color-mix(in srgb, black 9%, transparent);
 	font-family: var(--font-mono);
 	font-size: 12px;
+	transition:
+		left 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+		right 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+		box-shadow var(--duration-fast) ease,
+		background-color var(--duration-fast) ease;
+}
+
+.browser-panel__toolbar--url-takeover .browser-panel__url-input {
+	left: var(--browser-url-expand-left, 0);
+	right: var(--browser-url-expand-right, 0);
+	z-index: 2;
 }
 
 .browser-panel__url-input:focus {
 	box-shadow:
 		inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
 		0 1px 8px color-mix(in srgb, black 9%, transparent);
+}
+
+.browser-panel__url-external {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	z-index: 3;
+	width: 23px;
+	height: 23px;
+	color: var(--fg-muted);
+	opacity: 0;
+	pointer-events: none;
+}
+
+.browser-panel__url-wrap:hover:not(:has(.browser-panel__url-input:focus)) .browser-panel__url-external,
+.browser-panel__url-external:focus-visible {
+	opacity: 1;
+	pointer-events: auto;
 }
 
 .browser-panel__content {
@@ -4447,6 +4820,16 @@ html[data-native-browser-composition="true"] .browser-popout-backdrop {
 	background: transparent;
 }
 
+/* The popped-out frame is the direct wrapper of the maximized browser panel
+ * (SessionView.tsx's portal) and paints its own opaque `background: var(--bg)`
+ * plate. It is NOT covered by the `:has(.browser-popout-overlay)` shell clears
+ * above — those target ancestors under #root — and leaving it opaque blanked
+ * the live page to black on Windows whenever an overlay (tooltip, menu) raised
+ * the transparent shell over the native view in a maximized window. */
+html[data-native-browser-composition="true"] .browser-popout-frame {
+	background: transparent;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.browser-popout-frame,
 	.browser-popout-backdrop {
@@ -4454,7 +4837,9 @@ html[data-native-browser-composition="true"] .browser-popout-backdrop {
 	}
 
 	.browser-panel,
-	.browser-panel__toolbar button {
+	.browser-panel__toolbar button,
+	.browser-panel__toolbar > :not(.browser-panel__url-wrap),
+	.browser-panel__url-input {
 		transition: none;
 	}
 
@@ -4484,8 +4869,7 @@ html[data-native-browser-composition="true"] .browser-popout-backdrop {
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.notification-row-enter,
-	.session-inspector__responsive-label {
+	.notification-row-enter {
 		animation: none;
 		transition: none;
 	}
@@ -4504,4 +4888,101 @@ html[data-native-browser-composition="true"] .browser-popout-backdrop {
 @utility reviews-agent-menu-item {
 	padding-inline: var(--space-2_5);
 	padding-block: var(--space-2);
+}
+
+/* Connect Mobile: the pairing QR and the wait before it. The placeholder is a
+   real QR carrying decoy data, so it can dissolve into the finished code
+   instead of being swapped for it. See PairingQr.tsx. */
+/* The library's SVG includes a generous quiet zone. Enlarge the artwork
+   inside the fixed card so the preview and the finished code share the same
+   visible bounds while the card still supplies the clipping edge. */
+.ao-qr-visual > svg {
+	transform: scale(0.885);
+	transform-origin: center;
+}
+
+/* A triangular ramp occupying half the cycle. With four layers offset by a
+   quarter cycle, two are always mid-ramp in opposite directions, so the
+   composite dissolves continuously instead of swapping one code for the next. */
+@keyframes ao-qr-decoy-cycle {
+	0% {
+		opacity: 0;
+	}
+	25% {
+		opacity: 0.5;
+	}
+	50% {
+		opacity: 0;
+	}
+	100% {
+		opacity: 0;
+	}
+}
+
+/* A slow wander, so the panel reads as working rather than frozen. Small
+   enough that it never looks like a layout bug. */
+@keyframes ao-qr-drift {
+	0%,
+	100% {
+		transform: translate3d(0, 0, 0);
+	}
+	25% {
+		transform: translate3d(-3px, 2px, 0);
+	}
+	50% {
+		transform: translate3d(2px, -3px, 0);
+	}
+	75% {
+		transform: translate3d(3px, 2px, 0);
+	}
+}
+
+@keyframes ao-qr-resolve-in {
+	from {
+		opacity: 0;
+		filter: blur(4px);
+	}
+	to {
+		opacity: 1;
+		filter: blur(0);
+	}
+}
+
+@keyframes ao-qr-decoy-settle {
+	to {
+		opacity: 0;
+		filter: blur(4px);
+	}
+}
+
+.ao-qr-decoy {
+	opacity: 0;
+	animation: ao-qr-decoy-cycle 4800ms linear infinite;
+}
+
+.ao-qr-drift {
+	animation: ao-qr-drift 9s ease-in-out infinite;
+}
+
+/* The real code has arrived: stop cycling and clear away together. */
+.ao-qr-decoy--settling {
+	animation: ao-qr-decoy-settle 260ms ease-out forwards;
+}
+
+.ao-qr-resolved {
+	animation: ao-qr-resolve-in ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.ao-qr-decoy {
+		animation-duration: 9000ms;
+	}
+
+	.ao-qr-drift {
+		animation: none;
+	}
+
+	.ao-qr-resolved {
+		animation: none;
+	}
 }

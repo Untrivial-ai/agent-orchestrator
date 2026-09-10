@@ -10,14 +10,14 @@
 [![GitHub release](https://img.shields.io/github/v/release/Untrivial-ai/agent-orchestrator?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest)
 [![GitHub downloads](https://img.shields.io/github/downloads/Untrivial-ai/agent-orchestrator/total?style=flat&logo=github)](https://github.com/Untrivial-ai/agent-orchestrator/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](LICENSE)
-[![X](https://img.shields.io/badge/@aoagents-555?style=flat&logo=x&logoColor=white)](https://x.com/aoagents)
+[![X](https://img.shields.io/badge/@ao__build-555?style=flat&logo=x&logoColor=white)](https://x.com/ao_build)
 [![Discord](https://img.shields.io/badge/Discord-555?style=flat&logo=discord&logoColor=white)](https://discord.com/invite/UZv7JjxbwG)
 
 Give every coding task its own agent, workspace, and feedback loop.<br />
 Plan and delegate larger outcomes with a project-aware orchestrator.<br />
 Follow every worker, pull request, CI run, and review in a live Kanban.
 
-[**Download AO**](#install) &nbsp;&bull;&nbsp; [Documentation](https://aoagents.dev/docs) &nbsp;&bull;&nbsp; [Releases](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contributing](CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
+[**Download AO**](#install) &nbsp;&bull;&nbsp; [Documentation](https://useao.dev/docs) &nbsp;&bull;&nbsp; [Releases](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contributing](CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 **English** · [简体中文](translations/README.zh-CN.md) · [日本語](translations/README.ja.md) · [한국어](translations/README.ko.md) · [Español](translations/README.es.md) · [Français](translations/README.fr.md) · [Deutsch](translations/README.de.md) · [Português (Brasil)](translations/README.pt-BR.md)
 
@@ -33,6 +33,21 @@ One coding agent can handle a task. Running several across a project creates a d
 AO is a local desktop workspace built for that job. Add a repository and create a worker session with the coding agent, model, and interface that fit the task. For Git-backed work, AO gives the worker its own branch and worktree. The task, conversation, terminal, changed files, browser preview, pull request, CI, and review state stay attached to that session from start to finish.
 
 Behind the desktop app, AO's local daemon watches agent activity and source-control state. The result is a shared, live view of the project instead of a collection of disconnected terminals, branches, and browser tabs.
+
+## Install
+
+Download the latest AO desktop app for your platform. AO checks for updates automatically.
+
+| Platform              | Download                                                                                                                      |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| macOS (Apple silicon) | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-arm64.dmg)   |
+| macOS (Intel)         | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-x64.dmg)     |
+| Windows               | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-win32-x64.exe)      |
+| Linux (AppImage)      | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.AppImage) |
+| Linux (Debian/Ubuntu) | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
+| Linux (Fedora/RHEL)   | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
+
+Open Agent Orchestrator and point it at the repository you want AO to manage. The desktop app runs the daemon for you, so no CLI is required. See the [installation guide](https://useao.dev/docs/installation) for agent CLI setup and troubleshooting.
 
 <img src="docs/assets/readme/tui.png" alt="Agent Orchestrator workspace showing a coding agent's native terminal UI" width="100%" />
 
@@ -111,7 +126,7 @@ AO works with the coding agents and source-control workflow you already use. Age
 
 ## Supported agents
 
-**26 coding agents supported** through one supervised workflow.
+**27 coding agents supported** through one supervised workflow.
 
 <table>
   <tr valign="middle">
@@ -157,28 +172,13 @@ AO works with the coding agents and source-control workflow you already use. Age
   <tr valign="middle">
     <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/kimchi.svg" alt="Kimchi" width="24" height="24" align="middle" /> &nbsp; <b>Kimchi</b></td>
     <td valign="middle" nowrap><img src="docs/assets/readme/agents/prime-agent.svg" alt="Prime Agent" width="24" height="24" align="middle" /> &nbsp; <b>Prime Agent</b></td>
-    <td valign="middle" nowrap></td>
+    <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/omp.png" alt="OMP" width="24" height="24" align="middle" /> &nbsp; <b>OMP</b></td>
   </tr>
 </table>
 
-[Browse agent setup guides →](https://aoagents.dev/docs/plugins/agents)
+[Browse agent setup guides →](https://useao.dev/docs/plugins/agents)
 
 **Use the interface that fits the moment: structured Chat or the agent's native terminal UI.**
-
-## Install
-
-Download the latest AO desktop app for your platform. AO checks for updates automatically.
-
-| Platform              | Download                                                                                                                      |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| macOS (Apple silicon) | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-arm64.dmg)   |
-| macOS (Intel)         | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-x64.dmg)     |
-| Windows               | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-win32-x64.exe)      |
-| Linux (AppImage)      | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.AppImage) |
-| Linux (Debian/Ubuntu) | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
-| Linux (Fedora/RHEL)   | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
-
-Open Agent Orchestrator and point it at the repository you want AO to manage. The desktop app runs the daemon for you, so no CLI is required. See the [installation guide](https://aoagents.dev/docs/installation) for agent CLI setup and troubleshooting.
 
 ## Report a bug
 
@@ -211,7 +211,7 @@ Start with the [development guide](docs/development.md) for prerequisites, local
 
 | Document                                                         | Start here when you need                                                                     |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| [Product documentation](https://aoagents.dev/docs)               | Installation, agent setup, and day-to-day product usage.                                     |
+| [Product documentation](https://useao.dev/docs)                  | Installation, agent setup, and day-to-day product usage.                                     |
 | [docs/architecture.md](docs/architecture.md)                     | Backend mental model, lifecycle, persistence, CDC, status derivation, and daemon boundaries. |
 | [docs/backend-code-structure.md](docs/backend-code-structure.md) | Package ownership and where each backend concern belongs.                                    |
 | [docs/cli/README.md](docs/cli/README.md)                         | CLI behavior and daemon route mapping.                                                       |
@@ -237,7 +237,7 @@ Start with the [development guide](docs/development.md) for prerequisites, local
 
 ## Community
 
-Join [Discord](https://discord.com/invite/UZv7JjxbwG) for help and contributor discussion, follow [@aoagents](https://x.com/aoagents) for updates, or start a conversation in [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues).
+Join [Discord](https://discord.com/invite/UZv7JjxbwG) for help and contributor discussion, follow [@ao_build](https://x.com/ao_build) for updates, or start a conversation in [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues).
 
 ## Anonymous telemetry
 

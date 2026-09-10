@@ -1,4 +1,5 @@
 import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
+import { motion, useReducedMotion } from "motion/react";
 import type { ExternalLinkComponent } from "./external-link";
 import {
 	ArrowUpRightIcon,
@@ -17,8 +18,9 @@ import type {
 	PRCardPresentation,
 	PRSummaryMetadata,
 } from "./pull-request-models";
+import { scmUserAvatarUrl } from "./scm-avatar";
 import { cn } from "./utils";
-import { GithubAvatar } from "./GithubAvatar";
+import { UserAvatar } from "./UserAvatar";
 
 export type InspectorView = "summary" | "reviews" | "browser" | "files";
 
@@ -62,6 +64,11 @@ export function SessionInspectorShellView({
 	summaryView?: ReactNode;
 	tabs: InspectorTab[];
 }) {
+	const prefersReducedMotion = useReducedMotion();
+	const tabIndicatorTransition = prefersReducedMotion
+		? { duration: 0 }
+		: { type: "spring" as const, duration: 0.3, bounce: 0 };
+
 	if (loadingText) {
 		return (
 			<aside className={inspectorShellClass} aria-label={ariaLabel}>
@@ -100,9 +107,9 @@ export function SessionInspectorShellView({
 
 	return (
 		<aside className={inspectorShellClass} aria-label={ariaLabel}>
-			<div className="session-inspector__topbar flex h-inspector-tabs shrink-0 items-center border-b border-border pl-2.5">
+			<div className="session-inspector__topbar flex h-inspector-tabs shrink-0 items-center border-b border-border pl-1">
 				{isVisible ? (
-					<div className="session-inspector__tablist flex min-w-0 flex-1 items-center justify-start gap-0" role="tablist">
+					<div className="session-inspector__tablist flex min-w-0 flex-1 items-center justify-start gap-1" role="tablist">
 						{tabs.map((tab, index) => (
 							<button
 								aria-label={tab.label}
@@ -112,14 +119,23 @@ export function SessionInspectorShellView({
 								aria-selected={activeView === tab.id}
 								tabIndex={activeView === tab.id ? 0 : -1}
 								className={cn(
-									"session-inspector__tab-button inline-flex h-control-md shrink-0 items-center justify-center rounded-md px-1 font-semibold text-passive transition-[background,color] duration-fast hover:bg-interactive-hover hover:text-foreground",
-									activeView === tab.id && "bg-interactive-active text-foreground",
+									"session-inspector__tab-button relative inline-flex size-control-md shrink-0 items-center justify-center rounded-md p-0 font-semibold text-passive transition-[color] duration-fast hover:bg-interactive-hover hover:text-foreground",
+									activeView === tab.id && "text-foreground",
 								)}
 								onClick={() => onViewChange(tab.id)}
 								onKeyDown={(event) => selectAdjacentTab(event, index)}
 								title={tab.label}
 							>
-								<span className="relative inline-flex shrink-0 [&_svg]:size-icon-md">
+								{activeView === tab.id ? (
+									<motion.span
+										aria-hidden="true"
+										className="absolute inset-0 rounded-md bg-interactive-active"
+										initial={false}
+										layoutId="session-inspector-tab-indicator"
+										transition={tabIndicatorTransition}
+									/>
+								) : null}
+								<span className="relative z-[1] inline-flex shrink-0 [&_svg]:size-icon-md">
 									{tab.icon}
 									{tab.badge ? (
 										<span
@@ -132,7 +148,7 @@ export function SessionInspectorShellView({
 										</span>
 									) : null}
 								</span>
-								<span className="session-inspector__responsive-label whitespace-nowrap text-2xs">
+								<span className="sr-only">
 									{tab.displayLabel ?? tab.label}
 								</span>
 							</button>
@@ -958,7 +974,11 @@ function ExternalReviewCard({
 	const collapsible = bodyOverflows || hasNestedContent;
 	const headerContent = (
 		<>
-			<GithubAvatar className="size-6 shrink-0" login={entry.reviewerId} />
+			<UserAvatar
+				className="size-6 shrink-0"
+				imageUrl={scmUserAvatarUrl("github", entry.pullRequestUrl, entry.reviewerId)}
+				name={entry.reviewerId}
+			/>
 			<span className="flex min-w-0 flex-col gap-0.5">
 				<span className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-foreground">
 					<span className="min-w-0 break-words">{entry.reviewerId}</span>

@@ -125,4 +125,15 @@ describe("useObservedAgentSwitchLifecycle", () => {
 		expect(result.current.isObserved(activeSwitch.id)).toBe(false);
 		expect(result.current.isRetired(activeSwitch.id)).toBe(false);
 	});
+
+	it("does not present a terminal failure first discovered as history", () => {
+		const historicalFailure = switchRecord({ id: "historical", state: "failed", errorCode: "switch_failed" });
+		const { result } = renderHook(() => useObservedAgentSwitchLifecycle({
+			sessionId: "session-1",
+			agentSwitches: [historicalFailure],
+			nonterminalCandidates: [],
+		}));
+		expect(result.current.observedTerminalSwitch).toBeUndefined();
+		expect(result.current.isObserved(historicalFailure.id)).toBe(false);
+	});
 });

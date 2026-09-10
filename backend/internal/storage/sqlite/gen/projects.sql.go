@@ -120,6 +120,23 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 	return items, nil
 }
 
+const pinProjectSessionPermissions = `-- name: PinProjectSessionPermissions :exec
+UPDATE sessions SET session_permissions = ?1
+WHERE project_id = ?2 AND kind = ?3
+  AND LENGTH(session_permissions) = 0
+`
+
+type PinProjectSessionPermissionsParams struct {
+	Permissions string
+	ProjectID   domain.ProjectID
+	Kind        domain.SessionKind
+}
+
+func (q *Queries) PinProjectSessionPermissions(ctx context.Context, arg PinProjectSessionPermissionsParams) error {
+	_, err := q.db.ExecContext(ctx, pinProjectSessionPermissions, arg.Permissions, arg.ProjectID, arg.Kind)
+	return err
+}
+
 const updateProjectSettings = `-- name: UpdateProjectSettings :execrows
 UPDATE projects
 SET display_name = ?, config = ?

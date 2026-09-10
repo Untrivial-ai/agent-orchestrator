@@ -64,6 +64,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 
 	cmd := make([]string, 0, 5)
 	cmd = append(cmd, binary)
+	appendOMPExtensionFlag(&cmd, cfg.WorkspacePath)
 	if err := appendSystemPrompt(&cmd, cfg.SystemPrompt, cfg.SystemPromptFile); err != nil {
 		return nil, err
 	}
@@ -92,6 +93,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 	cmd := make([]string, 0, 5)
 	cmd = append(cmd, binary)
+	appendOMPExtensionFlag(&cmd, cfg.Session.WorkspacePath)
 	if err := appendSystemPrompt(&cmd, cfg.SystemPrompt, cfg.SystemPromptFile); err != nil {
 		return nil, false, err
 	}

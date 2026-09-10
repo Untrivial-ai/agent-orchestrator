@@ -7,7 +7,6 @@ import {
 	type OpenSessionTargetInput,
 	type OpenSessionTargetResult,
 	type OpenTarget,
-	type OpenTargetId,
 } from "../shared/editor-handoff";
 
 type Platform = NodeJS.Platform;
@@ -22,30 +21,51 @@ type EditorCandidate = {
 	name: string;
 	commands: string[];
 	macApps?: string[];
+	/**
+	 * Windows-only fallback install locations, relative to a resolved root
+	 * (e.g. `%LOCALAPPDATA%\Programs\Cursor\bin`). These are probed only on
+	 * win32 and only AFTER a PATH scan fails, so an explicit PATH install
+	 * always wins. Paths are built from environment variables at resolve time,
+	 * never hard-coded to a specific machine.
+	 */
+	winInstallDirs?: string[][];
 };
 
+const PROGRAM_FILES = "%ProgramFiles%";
+const PROGRAM_FILES_X86 = "%ProgramFiles(x86)%";
+const LOCAL_APPDATA_PROGRAMS = "%LOCALAPPDATA%\\Programs";
+
 const EDITOR_CANDIDATES: EditorCandidate[] = [
-	{ id: "cursor", name: "Cursor", commands: ["cursor"], macApps: ["Cursor"] },
-	{ id: "vscode", name: "VS Code", commands: ["code"], macApps: ["Visual Studio Code"] },
-	{ id: "windsurf", name: "Windsurf", commands: ["windsurf"], macApps: ["Windsurf"] },
-	{ id: "zed", name: "Zed", commands: ["zed"], macApps: ["Zed"] },
-	{ id: "trae", name: "Trae", commands: ["trae"], macApps: ["Trae"] },
-	{ id: "kiro", name: "Kiro", commands: ["kiro"], macApps: ["Kiro"] },
-	{ id: "positron", name: "Positron", commands: ["positron"], macApps: ["Positron"] },
-	{ id: "vscodium", name: "VSCodium", commands: ["codium"], macApps: ["VSCodium"] },
-	{ id: "vscode-insiders", name: "VS Code Insiders", commands: ["code-insiders"], macApps: ["Visual Studio Code - Insiders"] },
-	{ id: "sublime", name: "Sublime Text", commands: ["subl"], macApps: ["Sublime Text"] },
-	{ id: "intellij", name: "IntelliJ IDEA", commands: ["idea"], macApps: ["IntelliJ IDEA", "IntelliJ IDEA CE"] },
-	{ id: "webstorm", name: "WebStorm", commands: ["webstorm"], macApps: ["WebStorm"] },
-	{ id: "pycharm", name: "PyCharm", commands: ["pycharm"], macApps: ["PyCharm", "PyCharm CE"] },
-	{ id: "goland", name: "GoLand", commands: ["goland"], macApps: ["GoLand"] },
-	{ id: "phpstorm", name: "PhpStorm", commands: ["phpstorm"], macApps: ["PhpStorm"] },
-	{ id: "rubymine", name: "RubyMine", commands: ["rubymine"], macApps: ["RubyMine"] },
-	{ id: "clion", name: "CLion", commands: ["clion"], macApps: ["CLion"] },
-	{ id: "rider", name: "Rider", commands: ["rider"], macApps: ["Rider"] },
-	{ id: "android-studio", name: "Android Studio", commands: ["studio"], macApps: ["Android Studio"] },
-	{ id: "fleet", name: "Fleet", commands: ["fleet"], macApps: ["Fleet"] },
+	{ id: "cursor", name: "Cursor", commands: ["cursor"], macApps: ["Cursor"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Cursor", "resources", "app", "bin"], [PROGRAM_FILES, "Cursor", "bin"]] },
+	{ id: "vscode", name: "VS Code", commands: ["code"], macApps: ["Visual Studio Code"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Microsoft VS Code", "bin"], [PROGRAM_FILES, "Microsoft VS Code", "bin"]] },
+	{ id: "windsurf", name: "Windsurf", commands: ["windsurf"], macApps: ["Windsurf"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Windsurf", "resources", "app", "bin"], [PROGRAM_FILES, "Windsurf", "bin"]] },
+	{ id: "zed", name: "Zed", commands: ["zed"], macApps: ["Zed"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Zed", "bin"]] },
+	{ id: "trae", name: "Trae", commands: ["trae"], macApps: ["Trae"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Trae", "resources", "app", "bin"], [PROGRAM_FILES, "Trae", "bin"]] },
+	{ id: "kiro", name: "Kiro", commands: ["kiro"], macApps: ["Kiro"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Kiro", "bin"]] },
+	{ id: "positron", name: "Positron", commands: ["positron"], macApps: ["Positron"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Positron", "resources", "app", "bin"]] },
+	{ id: "vscodium", name: "VSCodium", commands: ["codium"], macApps: ["VSCodium"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "VSCodium", "resources", "app", "bin"], [PROGRAM_FILES, "VSCodium", "bin"]] },
+	{ id: "vscode-insiders", name: "VS Code Insiders", commands: ["code-insiders"], macApps: ["Visual Studio Code - Insiders"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Microsoft VS Code Insiders", "bin"], [PROGRAM_FILES, "Microsoft VS Code Insiders", "bin"]] },
+	{ id: "sublime", name: "Sublime Text", commands: ["subl"], macApps: ["Sublime Text"], winInstallDirs: [[PROGRAM_FILES, "Sublime Text"], [PROGRAM_FILES, "Sublime Text 3"], [LOCAL_APPDATA_PROGRAMS, "Sublime Text"]] },
+	{ id: "intellij", name: "IntelliJ IDEA", commands: ["idea"], macApps: ["IntelliJ IDEA", "IntelliJ IDEA CE"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "IntelliJ IDEA", "bin"], [LOCAL_APPDATA_PROGRAMS, "JetBrains", "IntelliJ IDEA", "bin"]] },
+	{ id: "webstorm", name: "WebStorm", commands: ["webstorm"], macApps: ["WebStorm"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "WebStorm", "bin"], [LOCAL_APPDATA_PROGRAMS, "JetBrains", "WebStorm", "bin"]] },
+	{ id: "pycharm", name: "PyCharm", commands: ["pycharm"], macApps: ["PyCharm", "PyCharm CE"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "PyCharm", "bin"], [LOCAL_APPDATA_PROGRAMS, "JetBrains", "PyCharm", "bin"]] },
+	{ id: "goland", name: "GoLand", commands: ["goland"], macApps: ["GoLand"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "GoLand", "bin"], [LOCAL_APPDATA_PROGRAMS, "JetBrains", "GoLand", "bin"]] },
+	{ id: "phpstorm", name: "PhpStorm", commands: ["phpstorm"], macApps: ["PhpStorm"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "PhpStorm", "bin"], [LOCAL_APPDATA_PROGRAMS, "JetBrains", "PhpStorm", "bin"]] },
+	{ id: "rubymine", name: "RubyMine", commands: ["rubymine"], macApps: ["RubyMine"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "RubyMine", "bin"], [LOCAL_APPDATA_PROGRAMS, "JetBrains", "RubyMine", "bin"]] },
+	{ id: "clion", name: "CLion", commands: ["clion"], macApps: ["CLion"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "CLion", "bin"], [LOCAL_APPDATA_PROGRAMS, "JetBrains", "CLion", "bin"]] },
+	{ id: "rider", name: "Rider", commands: ["rider"], macApps: ["Rider"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "Rider", "bin"], [LOCAL_APPDATA_PROGRAMS, "JetBrains", "Rider", "bin"]] },
+	{ id: "android-studio", name: "Android Studio", commands: ["studio"], macApps: ["Android Studio"], winInstallDirs: [[PROGRAM_FILES, "Android", "Android Studio", "bin"]] },
+	{ id: "fleet", name: "Fleet", commands: ["fleet"], macApps: ["Fleet"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "Fleet", "bin"]] },
 ];
+
+const WIN_INSTALL_ROOTS: Record<string, (env: NodeJS.ProcessEnv) => string | undefined> = {
+	[LOCAL_APPDATA_PROGRAMS]: (env) => {
+		const localAppData = env.LOCALAPPDATA;
+		return localAppData ? path.join(localAppData, "Programs") : undefined;
+	},
+	[PROGRAM_FILES]: (env) => env.ProgramFiles || env.PROGRAMFILES,
+	[PROGRAM_FILES_X86]: (env) => env["ProgramFiles(x86)"] || env.PROGRAMFILES_X86,
+};
 
 export type EditorHandoffDeps = {
 	platform: Platform;
@@ -86,7 +106,16 @@ function defaultIsDirectory(candidatePath: string): boolean {
 function executableNames(command: string, platform: Platform, env: NodeJS.ProcessEnv): string[] {
 	if (platform !== "win32" || path.extname(command)) return [command];
 	const extensions = (env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-	return [command, ...extensions.map((extension) => command + extension.toLowerCase()), ...extensions.map((extension) => command + extension.toUpperCase())];
+	const extended = [
+		...extensions.map((extension) => command + extension.toLowerCase()),
+		...extensions.map((extension) => command + extension.toUpperCase()),
+	];
+	// On win32, probe Windows-native launchers (.exe/.cmd/.bat/etc.) before the
+	// bare, extension-less name. Editors like VS Code and Cursor ship a `.cmd`
+	// batch shim and a bare `#!/usr/bin/env sh` script side by side; returning
+	// the bare script makes spawn fail because Windows cannot execute an `sh`
+	// script directly. Preferring the extension shims keeps the real launcher.
+	return [...extended, command];
 }
 
 function commandSearchDirs(platform: Platform, env: NodeJS.ProcessEnv): string[] {
@@ -111,6 +140,39 @@ function resolveOnPath(
 	return undefined;
 }
 
+// Expands a candidate's Windows install locations into real paths. Each entry
+// is a sequence of path segments whose root is one of the WIN_INSTALL_ROOTS
+// keys (resolved from env) followed by literal segments. Returns the concrete
+// directories, skipping any whose root env var is unset.
+function winInstallDirsFor(candidate: EditorCandidate, env: NodeJS.ProcessEnv): string[] {
+	const dirs: string[] = [];
+	for (const segments of candidate.winInstallDirs ?? []) {
+		const [rootToken, ...rest] = segments;
+		const resolver = WIN_INSTALL_ROOTS[rootToken];
+		if (!resolver) continue;
+		const root = resolver(env);
+		if (!root) continue;
+		dirs.push(path.join(root, ...rest));
+	}
+	return dirs;
+}
+
+function resolveInDirs(
+	command: string,
+	platform: Platform,
+	env: NodeJS.ProcessEnv,
+	dirs: readonly string[],
+	isExecutable: (candidatePath: string) => boolean,
+): string | undefined {
+	for (const directory of dirs) {
+		for (const name of executableNames(command, platform, env)) {
+			const candidatePath = path.join(directory, name);
+			if (isExecutable(candidatePath)) return candidatePath;
+		}
+	}
+	return undefined;
+}
+
 function resolveEditor(
 	candidate: EditorCandidate,
 	deps: EditorHandoffDeps,
@@ -120,6 +182,16 @@ function resolveEditor(
 	for (const command of candidate.commands) {
 		const resolved = resolveOnPath(command, deps.platform, deps.env, isExecutable);
 		if (resolved) return { command: resolved };
+	}
+	// Windows-only fallback: probe standard per-user and system install locations
+	// after PATH misses. Keep this on the PATH-first path so an explicit PATH
+	// install always wins, and gate strictly on win32 so macOS/Linux are untouched.
+	if (deps.platform === "win32") {
+		const installDirs = winInstallDirsFor(candidate, deps.env);
+		for (const command of candidate.commands) {
+			const resolved = resolveInDirs(command, deps.platform, deps.env, installDirs, isExecutable);
+			if (resolved) return { command: resolved };
+		}
 	}
 	if (deps.platform !== "darwin") return undefined;
 	for (const appName of candidate.macApps ?? []) {
@@ -163,24 +235,31 @@ function resolveTerminal(
 export function createEditorHandoff(deps: EditorHandoffDeps): EditorHandoff {
 	const isExecutable = deps.isExecutable ?? ((candidatePath) => defaultIsExecutable(candidatePath, deps.platform));
 	const isDirectory = deps.isDirectory ?? defaultIsDirectory;
-	const editors = EDITOR_CANDIDATES.flatMap((candidate) => {
-		const command = resolveEditor(candidate, deps, isExecutable, isDirectory);
-		return command ? [{ target: { id: candidate.id, name: candidate.name, kind: "editor" } as OpenTarget, command }] : [];
-	});
 	const fileManager: OpenTarget = {
 		id: "file-manager",
 		name: deps.platform === "darwin" ? "Finder" : deps.platform === "win32" ? "File Explorer" : "File Manager",
 		kind: "file_manager",
 	};
-	const terminal = resolveTerminal(deps, isExecutable);
-	const targets = [...editors.map(({ target }) => target), fileManager, ...(terminal ? [terminal.target] : [])];
 
-	const resolveTarget = (targetId: OpenTargetId) => targets.find((target) => target.id === targetId);
+	// Re-resolve editors and terminal on every call instead of freezing them at
+	// construction. Editor discovery reads deps.env each time, so an editor
+	// installed (or removed) after startup is picked up instead of being stale.
+	const resolveAll = () => {
+		const editors = EDITOR_CANDIDATES.flatMap((candidate) => {
+			const command = resolveEditor(candidate, deps, isExecutable, isDirectory);
+			return command ? [{ target: { id: candidate.id, name: candidate.name, kind: "editor" } as OpenTarget, command }] : [];
+		});
+		const terminal = resolveTerminal(deps, isExecutable);
+		const targets = [...editors.map(({ target }) => target), fileManager, ...(terminal ? [terminal.target] : [])];
+		return { editors, terminal, targets };
+	};
+
 	const workspaceUnavailable = (error: unknown) =>
 		error instanceof Error && error.message.trim() ? error.message : "Session workspace is not available.";
 
 	return {
 		async getState(sessionId) {
+			const { targets } = resolveAll();
 			const preferredEditorId = await deps.readPreference();
 			try {
 				await deps.resolveWorkspace(sessionId);
@@ -198,12 +277,13 @@ export function createEditorHandoff(deps: EditorHandoffDeps): EditorHandoff {
 		async open(input) {
 			const sessionId = input.sessionId.trim();
 			if (!sessionId) throw new Error("Session is required.");
+			const { editors, terminal, targets } = resolveAll();
 			const preferredEditorId = await deps.readPreference();
 			const targetId = input.targetId ?? preferredEditorId;
 			if (input.targetId && input.targetId !== "file-manager" && input.targetId !== "terminal" && !isEditorId(input.targetId)) {
 				throw new Error("That open target is not supported.");
 			}
-			const target = resolveTarget(targetId);
+			const target = targets.find((target) => target.id === targetId);
 			if (!target) {
 				if (isEditorId(targetId)) throw new Error("That editor is not installed. Choose another option.");
 				throw new Error("That open target is not available.");

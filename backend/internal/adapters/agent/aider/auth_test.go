@@ -74,6 +74,27 @@ func TestAiderLocalAuthStatusAuthorizedWithDotEnv(t *testing.T) {
 	}
 }
 
+func TestAiderLocalAuthStatusAuthorizedWithOAuthKeysFile(t *testing.T) {
+	clearAiderAuthEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.Mkdir(filepath.Join(home, ".aider"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".aider", "oauth-keys.env"), []byte("OPENROUTER_API_KEY=oauth-test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, ok, err := aiderLocalAuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	}
+}
+
 func TestAiderLocalAuthStatusUnknownWhenMissing(t *testing.T) {
 	clearAiderAuthEnv(t)
 	home := t.TempDir()

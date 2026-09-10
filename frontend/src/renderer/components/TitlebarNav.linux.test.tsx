@@ -1,6 +1,12 @@
-import { render } from "@testing-library/react";
+import { render as rtlRender } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
+import { TooltipProvider } from "./ui/tooltip";
+
+function render(ui: ReactElement) {
+	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+}
 
 const { history } = vi.hoisted(() => ({
 	history: {

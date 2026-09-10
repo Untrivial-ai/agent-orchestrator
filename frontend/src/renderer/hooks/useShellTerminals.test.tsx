@@ -3,13 +3,30 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { deleteMock, postMock } = vi.hoisted(() => ({ deleteMock: vi.fn(), postMock: vi.fn() }));
+const { patchMock } = vi.hoisted(() => ({ patchMock: vi.fn() }));
+const shellStoreMock = vi.hoisted(() => ({
+	load: vi.fn(async () => undefined),
+	setPreference: vi.fn(async () => undefined),
+	preference: { kind: "auto" as string, path: undefined as string | undefined },
+}));
+const { deleteMock, postMock, isWindowsMock } = vi.hoisted(() => ({
+	deleteMock: vi.fn(),
+	postMock: vi.fn(),
+	isWindowsMock: vi.fn(() => false),
+}));
 
 vi.mock("../lib/api-client", () => ({
-	apiClient: { DELETE: deleteMock, POST: postMock },
+	apiClient: { DELETE: deleteMock, PATCH: patchMock, POST: postMock },
 	apiErrorCode: (error: unknown) =>
 		typeof error === "object" && error !== null && "code" in error ? (error as { code?: string }).code : undefined,
 	hasTrustedApiBaseUrl: () => true,
+}));
+
+vi.mock("../lib/platform", () => ({ isWindowsPlatform: isWindowsMock }));
+vi.mock("../stores/terminal-shell-store", () => ({
+	terminalShellRequestValue: (preference: { kind: string; path?: string }) =>
+		preference.kind === "custom" ? preference.path?.trim() || "auto" : preference.kind,
+		useTerminalShellStore: { getState: () => shellStoreMock },
 }));
 
 import {
@@ -17,6 +34,7 @@ import {
 	shellTerminalsQueryKey,
 	useCloseShellTerminal,
 	useOpenShellTerminal,
+	useRenameShellTerminal,
 } from "./useShellTerminals";
 
 const shells: ShellTerminal[] = [
@@ -50,7 +68,12 @@ function queryClientWithShells() {
 
 beforeEach(() => {
 	deleteMock.mockReset();
+	patchMock.mockReset();
 	postMock.mockReset();
+	isWindowsMock.mockReturnValue(false);
+	shellStoreMock.load.mockClear();
+	shellStoreMock.setPreference.mockClear();
+	shellStoreMock.preference = { kind: "auto", path: undefined };
 });
 
 describe("useOpenShellTerminal", () => {
@@ -75,6 +98,76 @@ describe("useOpenShellTerminal", () => {
 		await act(async () => result.current.mutateAsync({}));
 
 		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([shell]);
+	});
+
+	it("sends the saved Windows shell preference to the daemon", async () => {
+		isWindowsMock.mockReturnValue(true);
+		shellStoreMock.preference = { kind: "git-bash", path: undefined };
+		postMock.mockResolvedValue({ data: { shellTerminal: { ...shells[0] } } });
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
+
+		await act(async () => result.current.mutateAsync({ projectId: "project-1" }));
+
+		expect(shellStoreMock.load).toHaveBeenCalledOnce();
+		expect(postMock).toHaveBeenCalledWith("/api/v1/shell-terminals", {
+			body: { projectId: "project-1", shell: "git-bash" },
+		});
+	});
+
+	it("lets an explicit shell override the saved preference", async () => {
+		isWindowsMock.mockReturnValue(true);
+		shellStoreMock.preference = { kind: "git-bash", path: undefined };
+		postMock.mockResolvedValue({ data: { shellTerminal: { ...shells[0] } } });
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
+
+		await act(async () => result.current.mutateAsync({ shell: "C:\\Tools\\bash.exe" }));
+
+		expect(postMock).toHaveBeenCalledWith("/api/v1/shell-terminals", {
+			body: { shell: "C:\\Tools\\bash.exe" },
+		});
+	});
+
+	it("omits the shell field outside Windows", async () => {
+		postMock.mockResolvedValue({ data: { shellTerminal: { ...shells[0] } } });
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
+
+		await act(async () => result.current.mutateAsync({}));
+
+		expect(postMock).toHaveBeenCalledWith("/api/v1/shell-terminals", { body: {} });
+		expect(shellStoreMock.load).not.toHaveBeenCalled();
+	});
+
+	it("normalizes an unavailable configured shell back to Automatic", async () => {
+		isWindowsMock.mockReturnValue(true);
+		shellStoreMock.preference = { kind: "custom", path: "C:\\missing\\shell.exe" };
+		postMock.mockResolvedValue({ error: { code: "SHELL_TERMINAL_SHELL_UNAVAILABLE" } });
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
+
+		await expect(act(async () => result.current.mutateAsync({}))).rejects.toEqual({
+			code: "SHELL_TERMINAL_SHELL_UNAVAILABLE",
+		});
+		await waitFor(() => expect(shellStoreMock.setPreference).toHaveBeenCalledWith({ kind: "auto" }));
+	});
+});
+
+describe("useRenameShellTerminal", () => {
+	it("updates the visible tab title before the daemon responds", async () => {
+		let finishRename!: (result: { data: { shellTerminal: ShellTerminal } }) => void;
+		patchMock.mockReturnValue(new Promise((resolve) => (finishRename = resolve)));
+		const queryClient = queryClientWithShells();
+		const { result } = renderHook(() => useRenameShellTerminal(), { wrapper: wrapper(queryClient) });
+
+		act(() => result.current.mutate({ handleId: shells[0].handleId, title: "server — zsh" }));
+
+		await waitFor(() =>
+			expect(queryClient.getQueryData<ShellTerminal[]>(shellTerminalsQueryKey)?.[0]?.title).toBe("server — zsh"),
+		);
+		act(() => finishRename({ data: { shellTerminal: { ...shells[0], title: "server — zsh" } } }));
+		await waitFor(() => expect(result.current.isPending).toBe(false));
 	});
 });
 
@@ -121,9 +214,7 @@ describe("useCloseShellTerminal", () => {
 		const queryClient = queryClientWithShells();
 		const { result } = renderHook(() => useCloseShellTerminal(), { wrapper: wrapper(queryClient) });
 
-		await expect(result.current.mutateAsync(shells[0].handleId)).rejects.toEqual({
-			code: "SHELL_TERMINAL_NOT_FOUND",
-		});
+		await expect(result.current.mutateAsync(shells[0].handleId)).resolves.toBeUndefined();
 		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([shells[1]]);
 	});
 });

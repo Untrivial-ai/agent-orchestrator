@@ -96,12 +96,16 @@ environments plus the local worker image, starts PostgreSQL on
 role, grants only runtime DML privileges to the separate non-superuser
 `ao_cloud_app` role, disables login for the image-bootstrap superuser, and
 exposes the API on
-`http://127.0.0.1:8081` (avoiding the desktop daemon's usual port). Local auth
-is enabled. The command then starts the Cloud UI on `http://127.0.0.1:3000`;
-create a development account with email/password on its sign-in screen. The
-browser receives only an HttpOnly session cookie. The Docker socket is mounted
-only into the control-plane container so it can create sibling workers; worker
-containers never receive the socket. Local Docker workers do not auto-pause.
+`http://127.0.0.1:8081` (avoiding the desktop daemon's usual port), and leaves
+the stack running. Local auth is enabled; point the desktop app at it with
+`AO_CLOUD_OFFERING=on AO_CLOUD_CONTROL_PLANE_URL=http://127.0.0.1:8081 npm run dev`
+from `frontend/` and register a development email/password account in-app to
+sign in. The optional private Next.js Cloud UI on `http://127.0.0.1:3000`
+requires the (uninitialized) `private/ao-cloud` submodule and is not needed for
+desktop-app testing; when run it receives only an HttpOnly session cookie. The
+Docker socket is mounted only into the control-plane container so it can create
+sibling workers; worker containers never receive the socket. Local Docker
+workers do not auto-pause.
 
 Use `npm run cloud:local:down` to stop containers while retaining data and
 `npm run cloud:local:reset` to stop them and delete the local database

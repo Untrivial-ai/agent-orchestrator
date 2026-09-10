@@ -1,4 +1,4 @@
-//go:build !windows && !darwin
+//go:build !windows && !darwin && !linux
 
 // spawn_other.go - stub for platforms without a detached PTY host.
 package conpty

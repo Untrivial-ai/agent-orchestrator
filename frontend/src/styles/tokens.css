@@ -112,10 +112,11 @@
 
 	/* Board lane signals, matched to the landing hero's board preview. */
 	--color-status-working: #60a5fa;
-	--color-status-needs-you: #fb923c;
-	--color-status-in-review: #facc15;
+	--color-status-needs-you: #f06445;
+	--color-status-validating: #facc15;
+	--color-status-in-review: #f59e0b;
 	--color-status-ready: #4ade80;
-	--color-status-merged: var(--color-status-ready);
+	--color-status-merged: #c084fc;
 	--color-status-idle: var(--muted-foreground);
 	--color-status-exited: var(--destructive);
 	--color-status-terminated: var(--chart-3);
@@ -191,6 +192,9 @@
 	/* Motion */
 	--duration-fast: 120ms;
 	--duration-normal: 150ms;
+
+	/* State opacity */
+	--opacity-control-disabled: 0.35;
 
 	/* ═══════════════════════════════════════════════════════════════
 	   SPACING — 4px base (audit: 4/6/8/10/12/14/16/18 most common)
@@ -457,10 +461,6 @@
 	--radius-settings-panel: 14px;
 	--radius-settings-row: 16px;
 	--size-settings-row: 52px;
-	--size-settings-content-width: 768px;
-	--size-settings-panel-padding-top: 64px;
-	--size-settings-panel-padding-x: 32px;
-	--size-settings-panel-padding-bottom: 80px;
 	--size-settings-section-gap: 32px;
 	--size-settings-section-inner-gap: 12px;
 	--size-settings-row-padding: 16px;
@@ -591,6 +591,7 @@
 	--bridge-danger-strong: var(--color-danger-strong);
 	--bridge-status-working: var(--color-status-working);
 	--bridge-status-needs-you: var(--color-status-needs-you);
+	--bridge-status-validating: var(--color-status-validating);
 	--bridge-status-in-review: var(--color-status-in-review);
 	--bridge-status-ready: var(--color-status-ready);
 	--bridge-status-merged: var(--color-status-merged);
@@ -719,10 +720,11 @@
 
 	/* Same lane hues as dark, deepened so they hold contrast on a light canvas. */
 	--color-status-working: #2563eb;
-	--color-status-needs-you: #ea580c;
-	--color-status-in-review: #ca8a04;
+	--color-status-needs-you: #c2412d;
+	--color-status-validating: #ca8a04;
+	--color-status-in-review: #d97706;
 	--color-status-ready: #16a34a;
-	--color-status-merged: var(--color-status-ready);
+	--color-status-merged: #9333ea;
 	--color-status-idle: var(--muted-foreground);
 	--color-status-exited: var(--destructive);
 	--color-status-terminated: var(--chart-3);

@@ -7,6 +7,7 @@ import { cloudProjectsQueryKey, cloudSessionsQueryKey } from "../hooks/useWorksp
 import { hasValidAgentConnection, useProviderConnections } from "../hooks/useProviderConnections";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { CloudCredentialDialog } from "./CloudCredentialDialog";
+import { CloudLocalSignInDialog } from "./CloudLocalSignInDialog";
 
 // Mounted once at the app root. When the cloud offering is on and the developer
 // has signed in but their org has no validated coding-agent connection yet, it
@@ -50,5 +51,10 @@ export function CloudOnboardingGate() {
 	}, [signedIn, org, connections.isSuccess, connections.data, openDialog]);
 
 	if (!cloudEnabled) return null;
-	return <CloudCredentialDialog />;
+	return (
+		<>
+			<CloudCredentialDialog />
+			<CloudLocalSignInDialog />
+		</>
+	);
 }

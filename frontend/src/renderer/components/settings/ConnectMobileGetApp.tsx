@@ -6,19 +6,23 @@ import { aoBridge } from "../../lib/bridge";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
-/** TestFlight beta for the Agent Orchestrator iOS app. */
-export const TESTFLIGHT_URL = "https://testflight.apple.com/join/t4U3fu2H";
+// Public App Store listing for the Agent Orchestrator iOS app. No storefront
+// segment ("/us/") on purpose: Apple redirects a bare /app/ link to the
+// visitor's own storefront, while a pinned one sends everyone outside that
+// country to a "not available" page. The landing site holds the same two URLs
+// (frontend/src/landing/packages/shared/src/constants.ts) — change both.
+export const IOS_APP_STORE_URL = "https://apps.apple.com/app/ao-mobile/id6792552173";
 
 /** Public Google Play listing for the Agent Orchestrator Android app. */
 export const ANDROID_PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=aoagents.dev&pcampaignid=web_share";
 
 /** Deliberately smaller than the pairing QR so it never competes with it. */
-const TESTFLIGHT_QR_SIZE = 140;
+const STORE_QR_SIZE = 140;
 
 // ConnectMobileGetApp is step zero of pairing: the pairing QR below it is
 // meaningless until the app is installed. It sits outside the modal's
 // enable-collapse because installing the app has nothing to do with whether
-// the LAN bridge is running. The QR (of the TestFlight URL itself) hides
+// the LAN bridge is running. The QR (of the store listing itself) hides
 // behind a disclosure so the widened modal keeps its height.
 export function ConnectMobileGetApp() {
 	const { t } = useTranslation();
@@ -41,10 +45,10 @@ export function ConnectMobileGetApp() {
 						type="button"
 						variant="footer"
 						className="rounded-md"
-						aria-label={t("mobile.joinTestFlightAria")}
-						onClick={() => void aoBridge.app.openExternal(TESTFLIGHT_URL)}
+						aria-label={t("mobile.iosStoreAria")}
+						onClick={() => void aoBridge.app.openExternal(IOS_APP_STORE_URL)}
 					>
-						{t("mobile.joinBeta")}
+						{t("mobile.getApp")}
 					</Button>
 					<button
 						type="button"
@@ -62,7 +66,7 @@ export function ConnectMobileGetApp() {
 			</div>
 
 			<div
-				data-testid="testflight-qr"
+				data-testid="ios-store-qr"
 				className={cn(
 					"grid transition-[grid-template-rows] duration-300 ease-out",
 					showQR ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
@@ -77,7 +81,7 @@ export function ConnectMobileGetApp() {
 						)}
 					>
 						<div className="rounded-md border border-(--color-border-settings-input) bg-white p-2">
-							<QRCodeSVG value={TESTFLIGHT_URL} size={TESTFLIGHT_QR_SIZE} className="block" />
+							<QRCodeSVG value={IOS_APP_STORE_URL} size={STORE_QR_SIZE} className="block" />
 						</div>
 						<p className="mt-2 text-caption text-settings-muted">{t("mobile.qrHint")}</p>
 					</div>

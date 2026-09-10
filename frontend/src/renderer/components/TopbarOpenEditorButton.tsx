@@ -1,4 +1,5 @@
 import { ChevronDown, Code2, FolderOpen, SquareTerminal } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { OpenTarget, OpenTargetId } from "../../shared/editor-handoff";
 import { useEditorHandoffState, useOpenSessionTarget } from "../hooks/useEditorHandoff";
@@ -11,6 +12,7 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import {
 	AndroidStudioIcon,
 	CursorIcon,
@@ -64,16 +66,21 @@ function TargetIcon({ target, className }: { target?: OpenTarget; className?: st
 export function TopbarOpenEditorButton({
 	sessionId,
 	projectId,
+	sessionCreatedAt,
+	sessionTerminated,
 	style,
 }: {
 	sessionId: string;
 	projectId: string;
+	sessionCreatedAt?: string;
+	sessionTerminated?: boolean;
 	style?: React.CSSProperties;
 }) {
 	const { t } = useTranslation();
-	const stateQuery = useEditorHandoffState(sessionId);
+	const stateQuery = useEditorHandoffState(sessionId, { sessionCreatedAt, sessionTerminated });
 	const open = useOpenSessionTarget();
 	const state = stateQuery.data;
+	const [menuOpen, setMenuOpen] = useState(false);
 	const targets = state?.targets ?? [];
 	const editors = targets.filter((target) => target.kind === "editor");
 	const preferred = editors.find((target) => target.id === state?.preferredEditorId);
@@ -95,9 +102,10 @@ export function TopbarOpenEditorButton({
 		: !stateQuery.isPending && editors.length === 0
 			? t("editor.noEditorGuidance", { fileManager: fileManagerName, terminal: terminalName })
 			: null;
-	const mainLabel = open.isPending ? t("editor.opening") : preferred ? t("editor.open") : t("editor.chooseEditor");
-	const mainTitle = guidance
-		?? (preferred ? t("editor.openWorkspaceInTitle", { name: preferred.name }) : t("editor.chooseEditorTitle"));
+	const mainTitle = stateQuery.isPending
+		? t("editor.preparingWorkspace")
+		: (guidance
+			?? (preferred ? t("editor.openWorkspaceInTitle", { name: preferred.name }) : t("editor.chooseEditorTitle")));
 
 	return (
 		<>
@@ -106,24 +114,49 @@ export function TopbarOpenEditorButton({
 					{launchError ?? guidance}
 				</TopbarActionError>
 			) : null}
-			<div className="inline-flex items-center" style={style}>
-				<TopbarButton
-					aria-label={preferred ? t("editor.openInAria", { name: preferred.name }) : t("editor.chooseEditor")}
-					data-priority="primary"
-					disabled={mainDisabled}
-					onClick={() => launch()}
-					title={mainTitle}
-					variant="splitMain"
-				>
-					<TargetIcon target={preferred} className="size-icon-lg" />
-					<span data-compact-label>{mainLabel}</span>
-				</TopbarButton>
-				<DropdownMenu>
-					<DropdownMenuTrigger asChild>
-						<TopbarButton aria-label={t("editor.openOptionsAria")} disabled={menuDisabled} variant="splitTrigger">
-							<ChevronDown className="size-icon-sm" aria-hidden="true" />
-						</TopbarButton>
-					</DropdownMenuTrigger>
+			<div
+				className="inline-flex items-center gap-0 rounded-md transition-colors hover:bg-interactive-hover data-[state=open]:bg-interactive-hover"
+				data-state={menuOpen ? "open" : "closed"}
+				style={style}
+			>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span className="inline-flex">
+							<TopbarButton
+								aria-label={stateQuery.isPending
+									? t("editor.preparingWorkspace")
+									: preferred
+										? t("editor.openInAria", { name: preferred.name })
+										: t("editor.chooseEditor")}
+								className="hover:bg-transparent"
+								disabled={mainDisabled}
+								onClick={() => launch()}
+								variant="icon"
+							>
+								<TargetIcon target={preferred} className="size-icon-md" />
+							</TopbarButton>
+						</span>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{mainTitle}</TooltipContent>
+				</Tooltip>
+				<DropdownMenu onOpenChange={setMenuOpen}>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span className="inline-flex">
+								<DropdownMenuTrigger asChild>
+									<TopbarButton
+										aria-label={t("editor.openOptionsAria")}
+										className="hover:bg-transparent"
+										disabled={menuDisabled}
+										variant="icon"
+									>
+										<ChevronDown className="size-icon-sm" aria-hidden="true" />
+									</TopbarButton>
+								</DropdownMenuTrigger>
+							</span>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">{t("editor.openOptionsAria")}</TooltipContent>
+					</Tooltip>
 					<DropdownMenuContent align="end" className="min-w-52">
 						{safeTargets.map((target) => (
 							<DropdownMenuItem key={target.id} onSelect={() => launch(target.id)}>

@@ -1,9 +1,14 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
+import { agentReadiness } from "../src/renderer/test/agent-readiness-fixtures";
 import { installFakeAgent } from "./support/fake-bridge";
+import { openSwitchAgentDialog } from "./support/open-switch-agent-menu";
 
 const projectId = "switch-agent-dialog";
 
-async function openSwitchAgentDialog(page: Page) {
+async function setupSwitchAgentDialogTest(page: Page): Promise<{
+	dialog: Locator;
+	terminalPanel: Locator;
+}> {
 	await page.emulateMedia({ reducedMotion: "reduce" });
 	await installFakeAgent(page, {
 		projectId,
@@ -12,6 +17,14 @@ async function openSwitchAgentDialog(page: Page) {
 	});
 	await page.route("http://127.0.0.1:8080/api/v1/**", async (route) => {
 		const pathname = new URL(route.request().url()).pathname;
+		if (pathname === "/api/v1/agents/readiness" || pathname === "/api/v1/agents/readiness/ensure") {
+			await route.fulfill({
+				json: {
+					agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+				},
+			});
+			return;
+		}
 		if (pathname === `/api/v1/projects/${projectId}`) {
 			await route.fulfill({
 				json: {
@@ -43,7 +56,6 @@ async function openSwitchAgentDialog(page: Page) {
 	});
 
 	await page.goto(`/#/projects/${projectId}/sessions/switch-worker`);
-	const switchAgentButton = page.getByRole("button", { name: "Switch agent", exact: true });
 	const primaryTerminalTab = page.locator('[data-terminal-role="primary"]');
 	const primaryTabBox = await primaryTerminalTab.boundingBox();
 	const terminalRegionBox = await page.getByTestId("session-terminal-region").boundingBox();
@@ -52,9 +64,7 @@ async function openSwitchAgentDialog(page: Page) {
 	expect(primaryTabBox!.x + primaryTabBox!.width).toBeLessThanOrEqual(
 		terminalRegionBox!.x + terminalRegionBox!.width,
 	);
-	await switchAgentButton.click();
-	const dialog = page.getByRole("dialog", { name: "Switch agent" });
-	await expect(dialog).toBeVisible();
+	const dialog = await openSwitchAgentDialog(page);
 	return {
 		dialog,
 		terminalPanel: page.getByRole("tabpanel", { name: "Switch worker terminal" }),
@@ -62,7 +72,7 @@ async function openSwitchAgentDialog(page: Page) {
 }
 
 test("renderer: switch-agent selector remains compact inside a wide terminal @T0", async ({ page }) => {
-	const { dialog, terminalPanel } = await openSwitchAgentDialog(page);
+	const { dialog, terminalPanel } = await setupSwitchAgentDialogTest(page);
 	await expect(dialog).toHaveCSS("width", "420px");
 	await expect
 		.poll(async () => (await terminalPanel.boundingBox())?.width ?? 0)
@@ -71,7 +81,7 @@ test("renderer: switch-agent selector remains compact inside a wide terminal @T0
 
 test("renderer: switch-agent selector stays inside a narrow terminal @T0", async ({ page }) => {
 	await page.setViewportSize({ width: 960, height: 720 });
-	const { dialog, terminalPanel } = await openSwitchAgentDialog(page);
+	const { dialog, terminalPanel } = await setupSwitchAgentDialogTest(page);
 	const dialogBox = await dialog.boundingBox();
 	const terminalBox = await terminalPanel.boundingBox();
 

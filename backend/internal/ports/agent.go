@@ -79,6 +79,16 @@ type AgentBinaryPresenceResolver interface {
 	ResolveBinaryPresence(ctx context.Context) (path string, err error)
 }
 
+// AgentReadinessProvider is the daemon-owned coordination boundary used by
+// launch and policy consumers. Implementations coalesce native checks and keep
+// the resulting snapshots in memory.
+type AgentReadinessProvider interface {
+	EnsureAgentReadiness(ctx context.Context, agentID string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error)
+	InvalidateAgentInstallation(agentID string)
+	InvalidateAgentAuthentication(agentID string)
+	RecheckAgent(agentID string)
+}
+
 // AgentNativeSessionTerminator is an optional adapter capability used before
 // AO destroys a terminal runtime or worktree whose agent may keep running in a
 // detached native process. Implementations must affect only the supplied
@@ -119,12 +129,26 @@ type AgentInterfaceHandoffHistoryProbe interface {
 type ModelSelectionMode string
 
 const (
-	// ModelSelectionCatalog renders a searchable list with a custom-id escape hatch.
+	// ModelSelectionCatalog renders a model list reported by the selected agent.
 	ModelSelectionCatalog ModelSelectionMode = "catalog"
 	// ModelSelectionText renders a free-form model id input.
 	ModelSelectionText ModelSelectionMode = "text"
 	// ModelSelectionModeList renders an agent-owned mode list rather than model ids.
 	ModelSelectionModeList ModelSelectionMode = "mode"
+)
+
+// CustomModelEntryMode tells clients how an agent handles models that are not
+// present in its current catalog.
+type CustomModelEntryMode string
+
+const (
+	// CustomModelEntryNone means the agent only accepts its reported choices.
+	CustomModelEntryNone CustomModelEntryMode = "none"
+	// CustomModelEntryDirect means AO may pass a user-entered model id directly.
+	CustomModelEntryDirect CustomModelEntryMode = "direct"
+	// CustomModelEntryConfigured means custom models must first be configured in
+	// the agent and then discovered by AO as ordinary catalog entries.
+	CustomModelEntryConfigured CustomModelEntryMode = "configured"
 )
 
 // AgentModelInfo is one model or mode that an adapter reports as selectable.
@@ -137,11 +161,13 @@ type AgentModelInfo struct {
 
 // AgentModelCatalog is AO's normalized model-picker response.
 type AgentModelCatalog struct {
-	AgentID       string             `json:"agentId"`
-	SelectionMode ModelSelectionMode `json:"selectionMode" enum:"catalog,text,mode"`
-	Models        []AgentModelInfo   `json:"models"`
-	AllowCustom   bool               `json:"allowCustom"`
-	Source        string             `json:"source"`
+	AgentID          string               `json:"agentId"`
+	SelectionMode    ModelSelectionMode   `json:"selectionMode" enum:"catalog,text,mode"`
+	Models           []AgentModelInfo     `json:"models"`
+	CustomModelEntry CustomModelEntryMode `json:"customModelEntry" enum:"none,direct,configured"`
+	// AllowCustom is retained for compatibility and is true only for direct entry.
+	AllowCustom bool   `json:"allowCustom"`
+	Source      string `json:"source"`
 	// BinaryVersion is the legacy wire name for AO's non-sensitive executable
 	// and configuration metadata fingerprint.
 	BinaryVersion string    `json:"binaryVersion,omitempty"`
@@ -165,17 +191,11 @@ type CachedAgentModelCatalog struct {
 	FetchedAt     time.Time
 }
 
-// AgentInventoryCache persists the last successful advisory installation and
-// authentication probe across daemon restarts.
-type AgentInventoryCache interface {
-	GetAgentInventoryCache(ctx context.Context) (inventoryJSON string, observedAt time.Time, ok bool, err error)
-	UpsertAgentInventoryCache(ctx context.Context, inventoryJSON string, observedAt time.Time) error
-}
-
 // AgentModelCatalogCache persists normalized model catalogs across daemon
 // restarts. Implementations must treat agent+project as the logical key.
 type AgentModelCatalogCache interface {
 	GetAgentModelCatalog(ctx context.Context, agentID, projectID string) (CachedAgentModelCatalog, bool, error)
+	ListAgentModelCatalogsByAgent(ctx context.Context, agentID string) ([]CachedAgentModelCatalog, error)
 	UpsertAgentModelCatalog(ctx context.Context, record CachedAgentModelCatalog) error
 }
 

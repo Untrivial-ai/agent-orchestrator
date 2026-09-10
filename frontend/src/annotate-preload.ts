@@ -5,6 +5,8 @@ import {
 	createBrowserAnnotationContext,
 	type BrowserAnnotationCancelReason,
 	type BrowserAnnotationContext,
+	type BrowserAnnotationDraft,
+	type BrowserAnnotationPageMode,
 	type BrowserAnnotationPageSubmitPayload,
 } from "./shared/browser-annotations";
 import { promptPositionForRect, type AnnotationRectLike } from "./shared/browser-annotation-overlay";
@@ -29,34 +31,47 @@ const TEXTAREA_MIN_HEIGHT = 32;
 const MARKDOWN_ANNOTATION_TARGETS =
 	"h1, h2, h3, h4, h5, h6, p, ul, ol, li, blockquote, pre, table, th, td, figure, figcaption, img, hr, details, summary";
 
-ipcRenderer.on("browser:annotation:setMode", (_event, input: { enabled?: boolean }) => {
-	setEnabled(Boolean(input?.enabled), "disabled");
+ipcRenderer.on("browser:annotation:setMode", (_event, input: BrowserAnnotationPageMode) => {
+	setEnabled(Boolean(input?.enabled), "disabled", input?.draft);
 });
 
 window.addEventListener("beforeunload", () => {
-	if (enabled) sendCancel("navigation");
 	cleanupOverlay();
 	enabled = false;
 });
 
-function setEnabled(next: boolean, cancelReason: BrowserAnnotationCancelReason): void {
-	if (enabled === next) return;
+function setEnabled(next: boolean, cancelReason: BrowserAnnotationCancelReason, draft?: BrowserAnnotationDraft): void {
+	if (enabled === next) {
+		if (next && draft) {
+			resetSelectionState();
+			cleanupOverlay();
+			ensureOverlay();
+			renderHint();
+			restoreDraft(draft);
+		}
+		return;
+	}
 	enabled = next;
-	selectedElement = null;
-	selectedContext = null;
-	multiSelectActive = false;
-	multiSelectElements = [];
-	multiSelectContexts = null;
+	resetSelectionState();
 	if (hintFadeTimer) clearTimeout(hintFadeTimer);
 	if (enabled) {
 		ensureOverlay();
 		installListeners();
 		renderHint();
+		if (draft) restoreDraft(draft);
 	} else {
 		removeListeners();
 		cleanupOverlay();
 		if (cancelReason !== "disabled") sendCancel(cancelReason);
 	}
+}
+
+function resetSelectionState(): void {
+	selectedElement = null;
+	selectedContext = null;
+	multiSelectActive = false;
+	multiSelectElements = [];
+	multiSelectContexts = null;
 }
 
 function installListeners(): void {
@@ -115,7 +130,12 @@ function handleClick(event: MouseEvent): void {
 	}
 	selectedElement = target;
 	selectedContext = createBrowserAnnotationContext(target);
-	renderPrompt(target, selectedContext);
+	const draft: BrowserAnnotationDraft = {
+		instruction: "",
+		selection: { kind: "element", context: selectedContext },
+	};
+	sendDraft(draft);
+	renderPrompt(target, selectedContext, "");
 }
 
 function handleKeyDown(event: KeyboardEvent): void {
@@ -154,6 +174,11 @@ function finishMultiSelect(): void {
 		return;
 	}
 	multiSelectContexts = multiSelectElements.map(createBrowserAnnotationContext);
+	const draft: BrowserAnnotationDraft = {
+		instruction: "",
+		selection: { kind: "elements", contexts: multiSelectContexts },
+	};
+	sendDraft(draft);
 	renderMultiPrompt(multiSelectElements, multiSelectContexts);
 }
 
@@ -506,12 +531,12 @@ function renderMultiSelections(): void {
 	}
 }
 
-function renderPrompt(element: Element, context: BrowserAnnotationContext): void {
+function renderPrompt(element: Element, context: BrowserAnnotationContext, instruction = ""): void {
 	renderHighlight(element, true);
 	openPrompt(element.getBoundingClientRect(), (instruction) => ({
 		instruction,
 		selection: { kind: "element", context },
-	}));
+	}), instruction);
 }
 
 function renderMultiPrompt(elements: Element[], contexts: BrowserAnnotationContext[]): void {
@@ -519,12 +544,13 @@ function renderMultiPrompt(elements: Element[], contexts: BrowserAnnotationConte
 	openPrompt(unionRect(elements), (instruction) => ({
 		instruction,
 		selection: { kind: "elements", contexts },
-	}));
+	}), "");
 }
 
 function openPrompt(
 	rect: AnnotationRectLike,
 	buildPayload: (instruction: string) => BrowserAnnotationPageSubmitPayload,
+	instruction: string,
 ): void {
 	const root = ensureOverlay();
 	const mount = root.querySelector<HTMLDivElement>(".mount");
@@ -543,6 +569,7 @@ function openPrompt(
 	const form = mount.querySelector<HTMLFormElement>("form")!;
 	repositionPrompt(rect);
 	const textarea = form.querySelector<HTMLTextAreaElement>("textarea")!;
+	textarea.value = instruction;
 	const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
 	const updateSubmitState = (): void => {
 		submitButton.disabled = textarea.value.trim().length === 0;
@@ -572,7 +599,11 @@ function openPrompt(
 		event.preventDefault();
 		submitAnnotation();
 	});
-	textarea.addEventListener("input", updateSubmitState);
+	textarea.addEventListener("input", () => {
+		updateSubmitState();
+		sendDraft(buildPayload(textarea.value));
+	});
+	updateSubmitState();
 	textarea.addEventListener("keydown", (event) => {
 		event.stopPropagation();
 		if (event.key === "Escape") {
@@ -584,6 +615,41 @@ function openPrompt(
 		}
 	});
 	setTimeout(() => textarea.focus(), 0);
+}
+
+function restoreDraft(draft: BrowserAnnotationDraft): void {
+	if (draft.selection.kind === "element") {
+		const element = resolveDraftElement(draft.selection.context);
+		if (element) {
+			selectedElement = element;
+			selectedContext = draft.selection.context;
+			renderPrompt(element, draft.selection.context, draft.instruction);
+			return;
+		}
+	} else {
+		const resolved = draft.selection.contexts.map(resolveDraftElement);
+		if (resolved.every((item): item is Element => item !== null)) {
+			const elements = resolved;
+			multiSelectElements = elements;
+			multiSelectContexts = draft.selection.contexts;
+			renderMultiSelections();
+			openPrompt(unionRect(elements), (instruction) => ({ instruction, selection: draft.selection }), draft.instruction);
+			return;
+		}
+	}
+	openPrompt({ left: 14, top: 14, bottom: 14 }, (instruction) => ({
+		instruction,
+		selection: draft.selection,
+	}), draft.instruction);
+}
+
+function resolveDraftElement(context: BrowserAnnotationContext): Element | null {
+	try {
+		const matches = document.querySelectorAll(context.selector);
+		return matches.length === 1 ? matches[0] : null;
+	} catch {
+		return null;
+	}
 }
 
 function currentViewport(): { width: number; height: number } {
@@ -678,6 +744,10 @@ function cleanupOverlay(): void {
 
 function sendCancel(reason: BrowserAnnotationCancelReason): void {
 	ipcRenderer.send("browser:annotation:cancel", { reason });
+}
+
+function sendDraft(draft: BrowserAnnotationDraft): void {
+	ipcRenderer.send("browser:annotation:draft", draft);
 }
 
 function isOverlayEvent(event: Event): boolean {

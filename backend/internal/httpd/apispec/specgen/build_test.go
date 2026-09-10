@@ -23,6 +23,37 @@ type openAPISchemaNode struct {
 	OneOf      []openAPISchemaNode          `yaml:"oneOf"`
 }
 
+func TestBuild_CodexSwitchContractIsRedactedAndOnlyMountedRoutesAreDocumented(t *testing.T) {
+	got, err := specgen.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var doc struct {
+		Paths      map[string]any `yaml:"paths"`
+		Components struct {
+			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("parse generated OpenAPI: %v", err)
+	}
+
+	phase := doc.Components.Schemas["CodexAccountSwitchResponse"].Properties["phase"]
+	want := []string{
+		"requested", "stopping_sessions", "sessions_stopped", "checkpointing_source", "activating_target",
+		"verifying_target", "restarting_sessions", "rollback_required", "recovery_required", "completed", "failed",
+	}
+	if !slices.Equal(phase.Enum, want) {
+		t.Fatalf("CodexAccountSwitchResponse.phase enum = %v, want %v", phase.Enum, want)
+	}
+	if _, ok := doc.Paths["/api/v1/agents/codex/account-switches/{switchId}"]; ok {
+		t.Fatal("stale switch GET path remains in generated contract")
+	}
+	if _, ok := doc.Paths["/api/v1/agents/codex/account-switches/{switchId}/cancel"]; ok {
+		t.Fatal("stale switch cancel path remains in generated contract")
+	}
+}
+
 // TestBuild_MatchesEmbedded is the drift guard: the committed (embedded)
 // openapi.yaml must equal fresh Build() output. If this fails, run
 // `go generate ./...` and commit the result.
@@ -35,6 +66,27 @@ func TestBuild_MatchesEmbedded(t *testing.T) {
 	if !bytes.Equal(normalizeYAML(got), normalizeYAML(embedded)) {
 		t.Fatalf("embedded openapi.yaml is stale — run `go generate ./...` and commit.\n"+
 			"len(fresh)=%d len(embedded)=%d", len(got), len(embedded))
+	}
+}
+
+func TestBuild_InstallJobTargetRemainsAnEnum(t *testing.T) {
+	got, err := specgen.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var doc struct {
+		Components struct {
+			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("parse generated OpenAPI: %v", err)
+	}
+	targets := doc.Components.Schemas["InstallJob"].Properties["target"].Enum
+	for _, target := range []string{"tmux", "cloudflared", "cursor", "prime-agent"} {
+		if !slices.Contains(targets, target) {
+			t.Fatalf("InstallJob.target enum = %v, missing %q", targets, target)
+		}
 	}
 }
 

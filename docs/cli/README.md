@@ -43,13 +43,15 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | `ao project get <id>`               | `GET /api/v1/projects/{id}`                    |
 | `ao project set-config <id>`        | `PUT /api/v1/projects/{id}/config`             |
 | `ao project rm <id>`                | `DELETE /api/v1/projects/{id}`                 |
-| `ao agent ls`                       | `GET /api/v1/agents`                           |
-| `ao agent ls --refresh`             | `POST /api/v1/agents/refresh`                  |
-| `ao spawn`                          | `POST /api/v1/sessions`                        |
+| `ao agent ls`                       | `POST /api/v1/agents/readiness/ensure` (`display`) |
+| `ao agent ls --refresh`             | `POST /api/v1/agents/refresh` (forced checks) |
+| `ao spawn`                          | Targeted launch ensure, then `POST /api/v1/sessions` |
 | `ao session ls`                     | `GET /api/v1/sessions`                         |
 | `ao session get <id>`               | `GET /api/v1/sessions/{id}`                    |
 | `ao session kill <id>`              | `POST /api/v1/sessions/{id}/kill`              |
 | `ao session restore <id>`           | `POST /api/v1/sessions/{id}/restore`           |
+| `ao session exit-agent <id>`        | `POST /api/v1/sessions/{id}/exit-agent`        |
+| `ao session resume-agent <id>`      | `POST /api/v1/sessions/{id}/resume-agent`      |
 | `ao session switch-agent <id> <target-harness>` | `POST /api/v1/sessions/{id}/switch-agent` |
 | `ao session agent-switch ls <session-id>` | `GET /api/v1/sessions/{id}/agent-switches` |
 | `ao session handoff submit`         | `POST /api/v1/sessions/{id}/agent-switches/{switchId}/handoff` |
@@ -63,9 +65,10 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | `ao browser ...`                    | `GET /api/v1/browser/status`, `POST /api/v1/browser/commands` |
 | `ao hooks <agent> <event>`          | `POST /api/v1/sessions/{id}/activity` (hidden) |
 
-`ao agent ls` prints the daemon-supported agent catalog with local install/auth
-readiness. Use `--refresh` to rerun the bounded local probes and `--json` to
-print the raw inventory response.
+`ao agent ls` asks the daemon to ensure display readiness, then prints the
+existing table or legacy JSON projection. The daemon alone decides whether a
+native check is needed. `--refresh` is a deprecated compatibility flag that
+forces fresh installation and authentication checks before printing.
 
 `ao spawn` resolves project context in this order: explicit `--project`,
 `AO_PROJECT_ID`, `AO_SESSION_ID` (by fetching the current session from the
@@ -112,11 +115,12 @@ explicitly with `ao session claim-pr <session-id> <pr-ref>`. The explicit form
 remains supported for backward compatibility and cross-session coordination.
 
 If `--agent` / `--harness` is omitted, `ao spawn` uses the resolved project's
-`worker.agent` config. Before spawning, the CLI refreshes the advisory agent
-catalog and fails early when the selected agent is unsupported, not installed,
-or unauthorized. It warns-but-continues when auth remains unknown because daemon
-spawn remains the authoritative runtime validation point. Use
-`--skip-agent-check` to bypass only this CLI-side preflight.
+`worker.agent` config. Before spawning, the CLI performs one targeted launch
+ensure. It fails early for unsupported or definitely missing harnesses and
+warns-but-continues for unauthorized or unknown observations; daemon session
+creation repeats launch validation and native launch remains authoritative.
+`--skip-agent-check` suppresses only the CLI warnings and early check, never the
+daemon validation.
 
 `ao preview` resolves its session from the `AO_SESSION_ID` environment variable
 (it is meant to run inside a session), not a flag. With no argument it
@@ -222,3 +226,41 @@ actions.
 
 Do not port old in-process TypeScript CLI behavior that mixed command handling
 with storage and runtime implementation details.
+
+### Claiming upstream PRs from a fork
+
+The registered origin remains the checkout and push repository. An optional
+`canonicalRepoURL` in project config explicitly authorizes one upstream repository
+for PR claims. Git remotes, including a remote named `upstream`, never grant claim
+permission automatically. Both identities must have the same provider and host;
+claims match the entire namespace and repository, including GitLab subgroups.
+
+For a project with no other config:
+
+```bash
+ao project set-config my-project \
+  --canonical-repo-url https://github.com/my-org/my-repo
+```
+
+`set-config` replaces the whole config. For an existing configured project, read
+`ao project get my-project --json`, preserve its `project.config` fields, add
+`canonicalRepoURL`, and submit the complete object with `--config-json`. The same
+object is accepted by `PUT /api/v1/projects/{id}/config` as `{"config": {...}}`.
+Use an HTTPS repository URL, without a PR/MR suffix, credentials, query, or fragment.
+Self-managed GitLab URLs and nested namespaces are supported. Explicit ports
+are preserved and must match too; `gitlab.example.com:8443` is a different
+authority from `gitlab.example.com`.
+
+Both `ao session claim-pr 42` and `ao spawn --claim-pr 42` resolve numbers against
+canonical when configured, otherwise origin. A full PR/MR URL may name either
+identity. Unrelated repositories and different hosts/providers remain rejected.
+Removing `canonicalRepoURL` restores origin-only claims. This does not unlink PRs
+already claimed or move existing worktrees. Repository identity is read at claim
+time, so existing sessions need no restart or duplicate project.
+
+Migration 0126 adds an empty canonical identity to existing non-NULL config JSON
+where absent, preserving all other settings and any explicit canonical value.
+NULL configs retain their defaults. No Git discovery runs during migration, and
+no earlier migration is modified. Downgrading preserves config data; older
+versions do not support canonical claims and may drop this field when saving
+project settings.

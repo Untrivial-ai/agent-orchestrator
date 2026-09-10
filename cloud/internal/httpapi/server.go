@@ -89,6 +89,7 @@ type Store interface {
 	QueueTerminalResize(context.Context, domain.TerminalSession, uint16, uint16) error
 	CloseTerminal(context.Context, domain.TerminalSession) error
 	AppendTerminalOutput(context.Context, string, string, string, string, int64, []byte) (int64, error)
+	ClaimTerminalInput(context.Context, string, string, string, int64, string, time.Duration) (domain.WorkerRequest, bool, error)
 	MarkTerminalExited(context.Context, string, string, string, string, int64, int) error
 	EnsureWorkerAgentTerminal(context.Context, string, string, string, int64, time.Duration) (domain.TerminalSession, error)
 	ListTerminalOutput(context.Context, domain.TerminalSession, int64, int) ([]domain.TerminalOutput, string, error)
@@ -149,6 +150,8 @@ type Server struct {
 	secretCipher            *secrets.Cipher
 	credentialValidator     credentialValidator
 	webhookMaxBody          int64
+	terminalStreamEnabled   bool
+	terminalStreams         *terminalStreams
 	handler                 http.Handler
 }
 
@@ -173,6 +176,7 @@ type Options struct {
 	SecretCipher            *secrets.Cipher
 	CredentialValidator     credentialValidator
 	WebhookMaxBody          int64
+	TerminalStreamEnabled   bool
 }
 
 func New(options Options) *Server {
@@ -229,6 +233,8 @@ func New(options Options) *Server {
 		secretCipher:            options.SecretCipher,
 		credentialValidator:     options.CredentialValidator,
 		webhookMaxBody:          webhookMaxBody,
+		terminalStreamEnabled:   options.TerminalStreamEnabled,
+		terminalStreams:         newTerminalStreams(),
 	}
 	if server.credentialValidator == nil {
 		server.credentialValidator = newAgentCredentialValidator(nil)
@@ -311,6 +317,7 @@ func New(options Options) *Server {
 			router.Post("/worker/transport/{requestId}/complete", server.workerCompleteTransport)
 			router.Post("/worker/transport/{requestId}/fail", server.workerFailTransport)
 			router.Post("/worker/terminals/{terminalId}/output", server.workerTerminalOutput)
+			router.Get("/worker/terminals/{terminalId}/stream", server.workerTerminalStream)
 			router.Post("/worker/terminals/{terminalId}/exit", server.workerTerminalExit)
 			router.Post("/worker/terminals/agent", server.workerEnsureAgentTerminal)
 		})

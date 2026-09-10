@@ -264,6 +264,18 @@ type TerminalCommand struct {
 	Rows       uint16 `json:"rows,omitempty"`
 }
 
+// TerminalStreamFrame is one message on the persistent duplex terminal
+// stream between a worker and the control plane. "output" carries PTY bytes
+// up (acked with the persisted row sequence); "input" pushes user keystrokes
+// down; "error" tells the worker to fall back to the polled transport.
+type TerminalStreamFrame struct {
+	Type     string `json:"type"`
+	Data     []byte `json:"data,omitempty"`
+	ID       int64  `json:"id,omitempty"`
+	Sequence int64  `json:"sequence,omitempty"`
+	Code     string `json:"code,omitempty"`
+}
+
 type TerminalOutputRequest struct {
 	Data []byte `json:"data"`
 }

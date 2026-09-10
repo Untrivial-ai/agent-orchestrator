@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 )
 
 // Manager is the controller-facing contract for the /api/v1/projects surface.
@@ -36,6 +38,8 @@ type Manager interface {
 	// Clone checks out a remote git repository and registers the resulting
 	// local repository as a project.
 	Clone(ctx context.Context, in CloneInput) (Project, error)
+	PrepareClone(ctx context.Context, in CloneInput) (ClonePreparationResult, error)
+	CleanupPreparedClone(ctx context.Context, in ClonePreparationCleanupInput) error
 
 	// InitializeRepository prepares a selected folder for project registration.
 	InitializeRepository(ctx context.Context, in InitializeRepositoryInput) (InitializeRepositoryResult, error)
@@ -43,6 +47,7 @@ type Manager interface {
 	// UpdateSettings atomically replaces a project's user-facing display name
 	// and per-project config, returning the updated read-model.
 	UpdateSettings(ctx context.Context, id domain.ProjectID, in UpdateSettingsInput) (Project, error)
+	SetPermissions(ctx context.Context, id domain.ProjectID, in SetPermissionsInput) (Project, error)
 
 	// SetConfig replaces a project's per-project config, returning the updated
 	// read-model.
@@ -66,6 +71,7 @@ type Service struct {
 	clock          func() time.Time
 	telemetry      ports.EventSink
 	defaultHarness domain.AgentHarness
+	logger         *slog.Logger
 	// addMu serialises the whole body of Add. Workspace registration performs
 	// filesystem mutations (git init, .gitignore writes, commits) that are not
 	// covered by the store's own writeMu, so path/id conflict checks plus the
@@ -86,6 +92,9 @@ type Deps struct {
 	Sessions       SessionTeardowner
 	Clock          func() time.Time
 	Telemetry      ports.EventSink
+	// Logger receives structured logs. Left nil, the service falls back to
+	// slog.Default, keeping service-focused tests logger-free.
+	Logger *slog.Logger
 }
 
 // New returns a project service backed by the given durable store.
@@ -105,9 +114,13 @@ func NewWithDeps(d Deps) *Service {
 		clock:          d.Clock,
 		telemetry:      d.Telemetry,
 		defaultHarness: defaultHarness,
+		logger:         d.Logger,
 	}
 	if s.clock == nil {
 		s.clock = time.Now
+	}
+	if s.logger == nil {
+		s.logger = slog.Default()
 	}
 	return s
 }
@@ -120,6 +133,13 @@ func (m *Service) List(ctx context.Context) ([]Summary, error) {
 	}
 	out := make([]Summary, 0, len(projects))
 	for _, row := range projects {
+		folderMissing := false
+		exists, err := folderExists(row.Path)
+		if err != nil {
+			m.logger.Warn("project: stat failed", "path", row.Path, "error", err)
+		} else {
+			folderMissing = !exists
+		}
 		out = append(out, Summary{
 			ID:                domain.ProjectID(row.ID),
 			Name:              displayName(row),
@@ -127,6 +147,7 @@ func (m *Service) List(ctx context.Context) ([]Summary, error) {
 			Kind:              row.Kind.WithDefault(),
 			SessionPrefix:     resolveSessionPrefix(row),
 			OrchestratorAgent: row.Config.Orchestrator.Harness,
+			FolderMissing:     folderMissing,
 		})
 	}
 	return out, nil
@@ -150,7 +171,7 @@ func (m *Service) Get(ctx context.Context, id domain.ProjectID) (GetResult, erro
 		if err != nil {
 			return GetResult{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load workspace repositories")
 		}
-		p.WorkspaceRepos = workspaceReposFromRecords(repos)
+		p.WorkspaceRepos = workspaceReposFromRecords(row.Path, repos)
 	}
 	return GetResult{Status: "ok", Project: &p}, nil
 }
@@ -176,11 +197,22 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 
 	m.addMu.Lock()
 	defer m.addMu.Unlock()
+	if in.ClonePreparationID != "" {
+		markerID, exists, markerErr := readClonePreparationID(path)
+		if markerErr != nil {
+			return Project{}, apierr.Invalid("CLONE_PREPARATION_FAILED", "The prepared clone could not be inspected.", map[string]any{"path": path})
+		}
+		if !exists || !sameClonePreparationID(markerID, in.ClonePreparationID) {
+			return Project{}, apierr.Conflict("CLONE_PREPARATION_MISMATCH", "This checkout belongs to a different clone preparation.", map[string]any{"path": path})
+		}
+	}
 
-	projectCountBefore, err := m.activeProjectCount(ctx)
+	activeProjects, err := m.store.ListProjects(ctx)
 	if err != nil {
 		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load project")
 	}
+
+	projectCountBefore := len(activeProjects)
 
 	name := string(id)
 	if in.Name != nil {
@@ -190,21 +222,44 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		name = string(id)
 	}
 
-	if existing, ok, err := m.store.FindProjectByPath(ctx, path); err != nil {
+	existing, registered, err := m.store.FindProjectByPath(ctx, path)
+	if err != nil {
 		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load project")
-	} else if ok {
+	}
+	if !registered {
+		// Existing records retain the user's chosen path. Compare directory
+		// identity as well, so aliases (including macOS /tmp and /private/tmp)
+		// cannot register the same repository under a second project ID.
+		if selectedInfo, statErr := os.Stat(path); statErr == nil && selectedInfo.IsDir() {
+			for _, candidate := range activeProjects {
+				registeredInfo, statErr := os.Stat(candidate.Path)
+				if statErr == nil && os.SameFile(selectedInfo, registeredInfo) {
+					existing, registered = candidate, true
+					break
+				}
+			}
+		}
+	}
+	if registered {
 		return Project{}, apierr.Conflict("PATH_ALREADY_REGISTERED", "A project at this path is already registered", map[string]any{
 			"existingProjectId":  existing.ID,
 			"suggestedProjectId": string(m.suggestID(ctx, id)),
 		})
 	}
+
 	if existing, ok, err := m.store.GetProject(ctx, string(id)); err != nil {
 		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load project")
 	} else if ok && existing.ArchivedAt.IsZero() && existing.Path != path {
-		return Project{}, apierr.Conflict("ID_ALREADY_REGISTERED", "A project with this id is already registered for a different path", map[string]any{
-			"existingProjectId":  existing.ID,
-			"suggestedProjectId": string(m.suggestID(ctx, id)),
-		})
+		if in.ProjectID != nil {
+			return Project{}, apierr.Conflict("ID_ALREADY_REGISTERED", "A project with this id is already registered for a different path", map[string]any{
+				"existingProjectId":  existing.ID,
+				"suggestedProjectId": string(m.suggestID(ctx, id)),
+			})
+		}
+		// A caller that omitted projectId asked the service to derive one from
+		// the basename. Resolve that derived collision here; explicit IDs retain
+		// their conflict semantics so user intent is never silently rewritten.
+		id = m.suggestID(ctx, id)
 	}
 
 	var projectConfig domain.ProjectConfig
@@ -231,28 +286,64 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		}
 		row.Kind = domain.ProjectKindWorkspace
 		row.RepoOriginURL = resolveGitOriginURL(path)
+		if err := row.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
+			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
+		}
 		if err := m.store.UpsertWorkspaceProject(ctx, row, repos); err != nil {
 			return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register workspace project")
 		}
-		m.emitProjectAdded(row, projectCountBefore == 0)
+		if in.ClonePreparationID != "" {
+			removeClonePreparationMarker(path)
+		}
+		m.emitProjectAdded(ctx, row, projectCountBefore == 0)
 		p := m.projectFromRow(ctx, row)
-		p.WorkspaceRepos = workspaceReposFromRecords(repos)
+		p.WorkspaceRepos = workspaceReposFromRecords(row.Path, repos)
 		return p, nil
 	}
-	if !isGitRepo(path) {
+	// The three repository probes are independent git subprocesses; run them
+	// concurrently so registration pays one wave instead of three serial
+	// spawns. Error precedence stays sequential below (not-a-repo wins over
+	// unborn), preserving the existing error contract.
+	var (
+		isRepo    bool
+		hasCommit bool
+		originURL string
+	)
+	var probes sync.WaitGroup
+	probes.Add(3)
+	go func() {
+		defer probes.Done()
+		isRepo = isGitRepo(path)
+	}()
+	go func() {
+		defer probes.Done()
+		hasCommit = repoHasCommit(ctx, path)
+	}()
+	go func() {
+		defer probes.Done()
+		originURL = resolveGitOriginURL(path)
+	}()
+	probes.Wait()
+	if !isRepo {
 		return Project{}, apierr.Invalid("NOT_A_GIT_REPO", "AO needs a Git repository with an initial commit before it can create agent workspaces.", nil)
 	}
-	if !repoHasCommit(ctx, path) {
+	if !hasCommit {
 		return Project{}, apierr.Invalid("PROJECT_UNBORN", "AO needs a Git repository with an initial commit before it can create agent workspaces.", map[string]any{
 			"path":         path,
 			"suggestedFix": "Run `git commit --allow-empty -m \"initial commit\"` in this folder, then try again.",
 		})
 	}
-	row.RepoOriginURL = resolveGitOriginURL(path)
+	row.RepoOriginURL = originURL
+	if err := row.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
+		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
+	}
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register project")
 	}
-	m.emitProjectAdded(row, projectCountBefore == 0)
+	if in.ClonePreparationID != "" {
+		removeClonePreparationMarker(path)
+	}
+	m.emitProjectAdded(ctx, row, projectCountBefore == 0)
 	return m.projectFromRow(ctx, row), nil
 }
 
@@ -299,19 +390,7 @@ func (m *Service) InitializeRepository(ctx context.Context, in InitializeReposit
 			return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not initialize a Git repository in this folder.", map[string]any{"error": err.Error()})
 		}
 	}
-	managedBranch := domain.DefaultBranchName
-	if target == repositorySetupUnbornRepo {
-		out, err := gitOutput(ctx, path, "symbolic-ref", "--quiet", "--short", "HEAD")
-		if err != nil || strings.TrimSpace(out) == "" {
-			detail := "empty symbolic HEAD"
-			if err != nil {
-				detail = err.Error()
-			}
-			return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not determine the initial branch for this repository.", map[string]any{"error": detail})
-		}
-		managedBranch = strings.TrimSpace(out)
-	}
-	if _, err := gitOutput(ctx, path, "config", "--local", gitdefault.ManagedDefaultConfigKey, managedBranch); err != nil {
+	if err := gitdefault.New("git", nil).RecordInitialBranch(ctx, path); err != nil {
 		return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not record the default branch for this repository.", map[string]any{"error": err.Error()})
 	}
 
@@ -475,15 +554,7 @@ func nestedGitRepositoryPaths(root string) ([]string, error) {
 	return nested, nil
 }
 
-func (m *Service) activeProjectCount(ctx context.Context) (int, error) {
-	projects, err := m.store.ListProjects(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return len(projects), nil
-}
-
-func (m *Service) emitProjectAdded(row domain.ProjectRecord, firstProject bool) {
+func (m *Service) emitProjectAdded(ctx context.Context, row domain.ProjectRecord, firstProject bool) {
 	if m.telemetry == nil {
 		return
 	}
@@ -504,6 +575,7 @@ func (m *Service) emitProjectAdded(row domain.ProjectRecord, firstProject bool) 
 		OccurredAt: at,
 		Level:      ports.TelemetryLevelInfo,
 		ProjectID:  &projectID,
+		RequestID:  reqid.FromContext(ctx),
 		Payload:    payload,
 	})
 	if !firstProject {
@@ -515,6 +587,7 @@ func (m *Service) emitProjectAdded(row domain.ProjectRecord, firstProject bool) 
 		OccurredAt: at,
 		Level:      ports.TelemetryLevelInfo,
 		ProjectID:  &projectID,
+		RequestID:  reqid.FromContext(ctx),
 		Payload:    payload,
 	})
 }
@@ -573,6 +646,9 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 		if err := validateScratchProjectConfig(in.Config); err != nil {
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 		}
+	}
+	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
+		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
 	updated, err := m.store.UpdateProjectSettings(ctx, string(id), displayName, in.Config)
 	if err != nil {
@@ -658,6 +734,9 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 		}
 	}
+	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
+		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
+	}
 	row.Config = in.Config
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_CONFIG_UPDATE_FAILED", "Failed to update project config")
@@ -666,6 +745,9 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 }
 
 func validateScratchProjectConfig(cfg domain.ProjectConfig) error {
+	if cfg.CanonicalRepoURL != "" {
+		return errors.New("scratch projects do not support canonicalRepoURL")
+	}
 	if strings.TrimSpace(cfg.DefaultBranch) != "" {
 		return errors.New("scratch projects do not support defaultBranch")
 	}
@@ -742,11 +824,20 @@ func (m *Service) suggestID(ctx context.Context, base domain.ProjectID) domain.P
 
 func (m *Service) projectFromRow(ctx context.Context, row domain.ProjectRecord) Project {
 	kind := row.Kind.WithDefault()
+	folderMissing := false
+	exists, err := folderExists(row.Path)
+	if err != nil {
+		m.logger.Warn("project: stat failed", "path", row.Path, "error", err)
+	} else {
+		folderMissing = !exists
+	}
 	defaultBranch := ""
 	if kind != domain.ProjectKindScratch {
 		defaultBranch = row.Config.WorktreeBaseBranch()
 		if defaultBranch == "" {
-			defaultBranch = resolveDefaultBranch(ctx, row.Path)
+			if !folderMissing {
+				defaultBranch = resolveDefaultBranch(ctx, row.Path)
+			}
 			if defaultBranch == "" {
 				defaultBranch = domain.DefaultBranchAuto
 			}
@@ -760,6 +851,7 @@ func (m *Service) projectFromRow(ctx context.Context, row domain.ProjectRecord) 
 		Repo:          row.RepoOriginURL,
 		DefaultBranch: defaultBranch,
 		Agent:         string(m.defaultHarness),
+		FolderMissing: folderMissing,
 	}
 	p.Config = projectConfigPtr(row.Config)
 	return p
@@ -801,6 +893,23 @@ func normalizePath(raw string) (string, error) {
 		return "", apierr.Invalid("INVALID_PATH", "Repository path is invalid", nil)
 	}
 	return filepath.Clean(abs), nil
+}
+
+// folderExists reports whether path currently exists as a directory. Only
+// os.ErrNotExist (or a path that is not a directory) means "missing". All other
+// stat errors are surfaced so the caller can log them and avoid guessing.
+func folderExists(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, nil
+	}
+	return true, nil
 }
 
 func ensureDirectoryPath(path string) error {
@@ -902,4 +1011,31 @@ func sessionPrefix(id string) string {
 		return id
 	}
 	return id[:12]
+}
+
+// SetPermissions remembers the approval policy for future sessions of either role.
+func (m *Service) SetPermissions(ctx context.Context, id domain.ProjectID, in SetPermissionsInput) (Project, error) {
+	if err := validateProjectID(id); err != nil {
+		return Project{}, err
+	}
+	if in.Permissions == "" || !in.Permissions.Valid() {
+		return Project{}, apierr.Invalid("INVALID_PERMISSIONS", "A valid permission mode is required", nil)
+	}
+	if in.SourceHarness != "" && !in.SourceHarness.IsKnown() {
+		return Project{}, apierr.Invalid("INVALID_HARNESS", "Unknown source harness", nil)
+	}
+	// Codex default grants full access; remember its portable equivalent so
+	// another harness does not interpret it as its own manual baseline.
+	permissions := in.Permissions
+	if in.SourceHarness == domain.HarnessCodex && permissions == domain.PermissionModeDefault {
+		permissions = domain.PermissionModeBypassPermissions
+	}
+	row, ok, err := m.store.SetProjectPermissions(ctx, string(id), permissions)
+	if err != nil {
+		return Project{}, apierr.Internal("PROJECT_PERMISSIONS_UPDATE_FAILED", "Failed to update project permissions")
+	}
+	if !ok {
+		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
+	}
+	return m.projectFromRow(ctx, row), nil
 }

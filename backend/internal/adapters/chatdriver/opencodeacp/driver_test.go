@@ -3,6 +3,8 @@ package opencodeacp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
@@ -67,5 +69,64 @@ func TestSessionOptionsUseProviderAdvertisedModelOption(t *testing.T) {
 	got := sessionOptions(ports.ChatTurnSettings{Model: "anthropic/claude-sonnet"})
 	if len(got) != 1 || got[0].ID != "model" || got[0].Value != "anthropic/claude-sonnet" {
 		t.Fatalf("model settings = %#v", got)
+	}
+}
+
+func TestRejectsProviderNameBeforeLaunchingOpenCode(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		name := "start"
+		if resume {
+			name = "resume"
+		}
+		t.Run(name, func(t *testing.T) {
+			plugin := &unresolvedPlugin{}
+			driver := New(plugin, nil)
+			cfg := ports.ChatStartConfig{WorkspacePath: t.TempDir(), Model: "TensorMux"}
+			var err error
+			if resume {
+				_, err = driver.Resume(context.Background(), ports.ChatResumeConfig{WorkspacePath: cfg.WorkspacePath, Model: cfg.Model, ProviderConversationID: "existing"})
+			} else {
+				_, err = driver.Start(context.Background(), cfg)
+			}
+			if !errors.Is(err, ports.ErrChatConfigOptionInvalid) || !strings.Contains(err.Error(), "provider/model") {
+				t.Fatalf("error = %v, want model format validation with recovery guidance", err)
+			}
+			if plugin.resolved {
+				t.Fatal("invalid model reached OpenCode binary resolution")
+			}
+		})
+	}
+}
+
+type unresolvedPlugin struct{ resolved bool }
+
+func (p *unresolvedPlugin) ResolveBinary(context.Context) (string, error) {
+	p.resolved = true
+	return "", errors.New("unexpected binary resolution")
+}
+func (*unresolvedPlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusUnknown, nil
+}
+
+func TestValidateTurnSettingsModelFormat(t *testing.T) {
+	for _, model := range []string{"", "tensormux/glm-4-7-flash", "openrouter/vendor/model", "custom-provider/private-model:latest"} {
+		t.Run("valid/"+model, func(t *testing.T) {
+			settings := ports.ChatTurnSettings{Model: model}
+			if err := validateTurnSettings(ports.PermissionModeDefault, settings); err != nil {
+				t.Fatal(err)
+			}
+			options := sessionOptions(settings)
+			if model != "" && (len(options) != 1 || options[0].Value != model) {
+				t.Fatalf("model ID changed: %#v", options)
+			}
+		})
+	}
+	for _, model := range []string{"TensorMux", "glm-4-7-flash", " ", "/model", "provider/", " /model", "provider/ "} {
+		t.Run("invalid/"+model, func(t *testing.T) {
+			err := validateTurnSettings(ports.PermissionModeDefault, ports.ChatTurnSettings{Model: model})
+			if !errors.Is(err, ports.ErrChatConfigOptionInvalid) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }

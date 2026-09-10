@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -39,11 +41,12 @@ type scriptedServer struct {
 	t        *testing.T
 	toClient io.WriteCloser
 
-	mu        sync.Mutex
-	responses map[string]string
-	failures  map[string]string
-	seen      []frame
-	seenCh    chan frame
+	mu                sync.Mutex
+	responses         map[string]string
+	responseSequences map[string][]string
+	failures          map[string]string
+	seen              []frame
+	seenCh            chan frame
 }
 
 // replyError scripts a JSON-RPC error for a method, which is how a test exercises a
@@ -58,6 +61,12 @@ func (s *scriptedServer) respondTo(method, resultJSON string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.responses[method] = resultJSON
+}
+
+func (s *scriptedServer) respondSequence(method string, results ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responseSequences[method] = append([]string(nil), results...)
 }
 
 func (s *scriptedServer) push(raw string) {
@@ -129,8 +138,9 @@ func newTestDriver(t *testing.T) (*Driver, *scriptedServer) {
 			"turn/interrupt": `{}`,
 			"thread/resume":  `{"thread":{"id":"thread-1"}}`,
 		},
-		failures: map[string]string{},
-		seenCh:   make(chan frame, 64),
+		responseSequences: map[string][]string{},
+		failures:          map[string]string{},
+		seenCh:            make(chan frame, 64),
 	}
 
 	go func() {
@@ -151,6 +161,10 @@ func newTestDriver(t *testing.T) (*Driver, *scriptedServer) {
 			srv.mu.Lock()
 			srv.seen = append(srv.seen, f)
 			reply, known := srv.responses[f.Method]
+			if sequence := srv.responseSequences[f.Method]; len(sequence) > 0 {
+				reply, known = sequence[0], true
+				srv.responseSequences[f.Method] = sequence[1:]
+			}
 			failure, refused := srv.failures[f.Method]
 			srv.mu.Unlock()
 
@@ -248,6 +262,74 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 	// Default permissions must match what AO already gives a Codex TUI session.
 	if params.ApprovalPolicy != "never" || params.Sandbox != "danger-full-access" {
 		t.Errorf("default posture = %q/%q, want never/danger-full-access", params.ApprovalPolicy, params.Sandbox)
+	}
+}
+
+func TestResumeReconnectsInitializedHostWithoutNativeResume(t *testing.T) {
+	d, srv := newTestDriver(t)
+	prepareCalls := 0
+	proc, err := d.spawn(context.Background(), "codex", "/tmp/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.persistent = true
+	d.connectHost = func(context.Context, persistenthost.Config) (*persistenthost.Transport, error) {
+		return &persistenthost.Transport{
+			Stdin: proc.stdin, Stdout: proc.stdout, Reconnected: true, NextRequestID: 41,
+		}, nil
+	}
+
+	conv, err := d.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "ao-reconnect", ProviderConversationID: "thread-survived",
+		DataDir: t.TempDir(), WorkspacePath: "/tmp/ws",
+		PrepareEnv: func(context.Context) (map[string]string, error) {
+			prepareCalls++
+			return map[string]string{"AO_BROWSER_CAPABILITY": "rotated"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	defer func() { _ = conv.Close() }()
+	if got := conv.ProviderConversationID(); got != "thread-survived" {
+		t.Fatalf("provider conversation id = %q", got)
+	}
+	if prepareCalls != 0 {
+		t.Fatalf("live Codex reconnect prepared launch-only environment %d times", prepareCalls)
+	}
+	if srv.sentMethod("initialize") || srv.sentMethod("thread/resume") {
+		t.Fatalf("reconnect repeated handshake: initialize=%v resume=%v",
+			srv.sentMethod("initialize"), srv.sentMethod("thread/resume"))
+	}
+
+	lister := conv.(ports.ChatModelLister)
+	if _, err := lister.ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	request := srv.awaitFrame(func(f frame) bool { return f.Method == "model/list" })
+	if request.ID == nil || string(*request.ID) != "42" {
+		t.Fatalf("first request id after reconnect = %v, want 42", request.ID)
+	}
+}
+
+func TestResumeDoesNotCompeteWithAttachedHostDuringDaemonOverlap(t *testing.T) {
+	d, srv := newTestDriver(t)
+	d.persistent = true
+	d.connectHost = func(context.Context, persistenthost.Config) (*persistenthost.Transport, error) {
+		return nil, persistenthost.ErrAttached
+	}
+	_, err := d.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "ao-overlap", ProviderConversationID: "thread-live",
+		DataDir: t.TempDir(), WorkspacePath: "/tmp/ws",
+	})
+	if err == nil || !errors.Is(err, persistenthost.ErrAttached) {
+		t.Fatalf("Resume error = %v, want attached-host refusal", err)
+	}
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("Resume error = %v, want recovery-inconclusive classification", err)
+	}
+	if srv.sentMethod("initialize") || srv.sentMethod("thread/resume") {
+		t.Fatal("daemon overlap launched a competing direct provider")
 	}
 }
 
@@ -598,6 +680,7 @@ func TestResumeReappliesWorkspaceAndStandingInstructions(t *testing.T) {
 		ProviderConversationID: "thread-1",
 		WorkspacePath:          "/tmp/ws",
 		Model:                  "selected-resume-model",
+		Effort:                 "high",
 		SystemPrompt:           "current AO standing instructions",
 	})
 	if err != nil {
@@ -607,10 +690,11 @@ func TestResumeReappliesWorkspaceAndStandingInstructions(t *testing.T) {
 
 	resume := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/resume" })
 	var params struct {
-		ThreadID              string `json:"threadId"`
-		Cwd                   string `json:"cwd"`
-		Model                 string `json:"model"`
-		DeveloperInstructions string `json:"developerInstructions"`
+		ThreadID              string            `json:"threadId"`
+		Cwd                   string            `json:"cwd"`
+		Model                 string            `json:"model"`
+		Config                map[string]string `json:"config"`
+		DeveloperInstructions string            `json:"developerInstructions"`
 	}
 	if err := json.Unmarshal(resume.Params, &params); err != nil {
 		t.Fatalf("thread/resume params: %v", err)
@@ -620,6 +704,9 @@ func TestResumeReappliesWorkspaceAndStandingInstructions(t *testing.T) {
 	}
 	if params.Model != "selected-resume-model" {
 		t.Fatalf("thread resume model = %q, want selected-resume-model", params.Model)
+	}
+	if params.Config["model_reasoning_effort"] != "high" {
+		t.Fatalf("thread resume effort config = %q, want high", params.Config["model_reasoning_effort"])
 	}
 	if params.DeveloperInstructions != "current AO standing instructions" {
 		t.Fatalf("developerInstructions = %q", params.DeveloperInstructions)
@@ -634,13 +721,15 @@ func TestResumeRequiresStoredThreadID(t *testing.T) {
 	}
 }
 
-func TestProbeReportsAuthRequired(t *testing.T) {
-	d := &Driver{
-		plugin: fakePlugin{bin: "codex", authStatus: ports.AgentAuthStatusUnauthorized},
-		log:    slog.New(slog.DiscardHandler),
+func TestProbeIgnoresAmbientAuthStatus(t *testing.T) {
+	d, _ := newTestDriver(t)
+	d.plugin = fakePlugin{bin: "codex", authStatus: ports.AgentAuthStatusUnauthorized}
+	caps, err := d.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
 	}
-	if _, err := d.Probe(context.Background()); !errors.Is(err, ports.ErrChatAuthRequired) {
-		t.Fatalf("err = %v, want ErrChatAuthRequired", err)
+	if missing := ports.MissingProductionCapabilities(caps); len(missing) != 0 {
+		t.Fatalf("codex is missing production capabilities: %v", missing)
 	}
 }
 
@@ -714,6 +803,46 @@ func TestInstalledCodexVersionAugmentsNodePATHForNPMLauncher(t *testing.T) {
 	d.versionProbe = installedCodexVersion
 	if _, err := d.Probe(context.Background()); err != nil {
 		t.Fatalf("Probe with augmented npm launcher: %v", err)
+	}
+}
+
+// Run under the production executable name so os.Executable identifies the AO pin.
+func TestCodexProcessEnvPreservesDaemonPATH(t *testing.T) {
+	if os.Getenv("AO_TEST_CODEX_PATH_PIN") == "1" {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Dir(exe)
+		launcher := filepath.Join(t.TempDir(), "codex")
+		env := codexProcessEnv(context.Background(), launcher, map[string]string{
+			"PATH": dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		})
+		if got := strings.Split(envValue(env, "PATH"), string(os.PathListSeparator))[0]; got != dir {
+			t.Fatalf("first PATH directory = %q, want daemon directory %q", got, dir)
+		}
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "ao"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	copyPath := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(copyPath, binary, 0o700); err != nil { //nolint:gosec // executable test fixture
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(context.Background(), copyPath, "-test.run=^TestCodexProcessEnvPreservesDaemonPATH$")
+	cmd.Env = append(os.Environ(), "AO_TEST_CODEX_PATH_PIN=1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("AO-named test process: %v\n%s", err, output)
 	}
 }
 
@@ -842,18 +971,19 @@ func TestProbeReportsMissingBinary(t *testing.T) {
 // Chat must not be quietly stricter than the terminal path for the same setting.
 func TestApprovalSettingsMirrorTUIPosture(t *testing.T) {
 	for _, tc := range []struct {
-		mode            ports.PermissionMode
-		policy, sandbox string
+		mode                      ports.PermissionMode
+		policy, sandbox, reviewer string
 	}{
-		{ports.PermissionModeDefault, "never", "danger-full-access"},
-		{ports.PermissionModeBypassPermissions, "never", "danger-full-access"},
-		{ports.PermissionModeAcceptEdits, "on-request", "workspace-write"},
-		{ports.PermissionModeAuto, "on-request", "workspace-write"},
-		{ports.PermissionMode("nonsense"), "never", "danger-full-access"},
+		{ports.PermissionModeDefault, "never", "danger-full-access", "user"},
+		{ports.PermissionModeBypassPermissions, "never", "danger-full-access", "user"},
+		{ports.PermissionModeAcceptEdits, "on-request", "workspace-write", "user"},
+		{ports.PermissionModeAuto, "on-request", "workspace-write", "auto_review"},
+		{ports.PermissionMode("nonsense"), "never", "danger-full-access", "user"},
 	} {
 		policy, sandbox := approvalSettings(tc.mode)
-		if policy != tc.policy || sandbox != tc.sandbox {
-			t.Errorf("approvalSettings(%q) = %q/%q, want %q/%q", tc.mode, policy, sandbox, tc.policy, tc.sandbox)
+		reviewer := approvalReviewer(tc.mode)
+		if policy != tc.policy || sandbox != tc.sandbox || reviewer != tc.reviewer {
+			t.Errorf("approval settings(%q) = %q/%q/%q, want %q/%q/%q", tc.mode, policy, sandbox, reviewer, tc.policy, tc.sandbox, tc.reviewer)
 		}
 	}
 }
@@ -1012,6 +1142,77 @@ func TestListModelsKeepsCatalogAndUsesThreadEffort(t *testing.T) {
 	}
 	if models[0].DefaultEffort != "xhigh" {
 		t.Errorf("default effort = %q, want the thread's xhigh", models[0].DefaultEffort)
+	}
+}
+
+func TestListModelsUsesConfiguredThreadDefault(t *testing.T) {
+	for _, configured := range []string{"nano", "custom-model"} {
+		t.Run(configured, func(t *testing.T) {
+			d, srv := newTestDriver(t)
+			srv.reply("thread/start", `{"thread":{"id":"thread-1"},"model":"`+configured+`","cwd":"/tmp/ws"}`)
+			srv.reply("model/list", `{"data":[{"id":"astra","isDefault":true},{"id":"nano","isDefault":false}]}`)
+			conv, err := d.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: "/tmp/ws"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conv.Close() }()
+			models, err := conv.(ports.ChatModelLister).ListModels(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, model := range models {
+				if model.Default != (model.ID == configured) {
+					t.Errorf("model %q default = %v, configured thread model = %q", model.ID, model.Default, configured)
+				}
+			}
+		})
+	}
+}
+
+func TestDiscoverModelsReadsCatalogWithoutOpeningThread(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.reply("model/list", `{"data":[{"id":"gpt-visible","displayName":"GPT Visible","isDefault":true,"hidden":false},{"id":"gpt-hidden","displayName":"GPT Hidden","hidden":true}]}`)
+
+	models, err := d.DiscoverModels(context.Background(), "/tmp/ws", map[string]string{"CODEX_HOME": "/tmp/codex-home"})
+	if err != nil {
+		t.Fatalf("DiscoverModels: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-visible" || models[0].DisplayName != "GPT Visible" || !models[0].Default {
+		t.Fatalf("models = %#v", models)
+	}
+	if srv.sentMethod("thread/start") {
+		t.Fatal("model discovery opened a provider thread")
+	}
+}
+
+func TestDiscoverModelsDrainsEveryModelListPage(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.respondSequence("model/list",
+		`{"data":[{"id":"gpt-first","displayName":"First"}],"nextCursor":"page-2"}`,
+		`{"data":[{"id":"gpt-second","displayName":"Second"}]}`,
+	)
+
+	models, err := d.DiscoverModels(context.Background(), "/tmp/ws", nil)
+	if err != nil {
+		t.Fatalf("DiscoverModels: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models = %#v, want two pages", models)
+	}
+	if got := []string{models[0].ID, models[1].ID}; !reflect.DeepEqual(got, []string{"gpt-first", "gpt-second"}) {
+		t.Fatalf("model ids = %v, want both pages", got)
+	}
+	second := srv.awaitFrame(func(f frame) bool {
+		if f.Method != "model/list" {
+			return false
+		}
+		var params struct {
+			Cursor string `json:"cursor"`
+		}
+		return json.Unmarshal(f.Params, &params) == nil && params.Cursor == "page-2"
+	})
+	if second.Method != "model/list" {
+		t.Fatalf("second page request = %#v", second)
 	}
 }
 

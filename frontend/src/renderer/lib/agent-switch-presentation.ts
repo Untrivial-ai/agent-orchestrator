@@ -33,6 +33,14 @@ export type AgentSwitchPresentationInput = {
 	isTerminated: boolean;
 };
 
+export function agentSwitchVisibilityPresentationKind(
+	presentation: Pick<AgentSwitchPresentation, "outcome"> | undefined,
+): "terminal_failure" | "recovery_required" | undefined {
+	if (presentation?.outcome === "failure") return "terminal_failure";
+	if (presentation?.outcome === "recovery") return "recovery_required";
+	return undefined;
+}
+
 export type AgentSwitchStatusVisual = {
 	className: string;
 	indicatorClassName: string;

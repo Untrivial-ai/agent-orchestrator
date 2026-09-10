@@ -1,4 +1,7 @@
+import { isDisplayStatus, isKanbanColumn } from "./session-models";
 import type {
+	DisplayStatus,
+	KanbanColumn,
 	SessionActivity,
 	SessionActivityState,
 	SessionStatus,
@@ -9,7 +12,9 @@ export type SessionPresentationMessageKey =
 	| `activity.${SessionActivityState}`
 	| `status.${SessionStatus}`
 	| `zone.${AttentionZone}`
-	| `timeline.${SessionTimelinePillStatus}`;
+	| `column.${KanbanColumn}`
+	| `timeline.${SessionTimelinePillStatus}`
+	| (typeof displayStatusLabelKeys)[DisplayStatus];
 
 export type ProductUITranslator = (
 	key: SessionPresentationMessageKey,
@@ -43,10 +48,88 @@ const englishLabels: Record<SessionPresentationMessageKey, string> = {
 	"zone.pending": "In review",
 	"zone.working": "Working",
 	"zone.done": "Terminated",
+	"column.building": "Building",
+	"column.validating": "Validating",
+	// Deliberate: this lane is the review-feedback loop, not a queue of PRs
+	// awaiting a first human review. It is the fallthrough of
+	// derivePRKanbanColumn, so a card lands here whenever the PR is in its
+	// review cycle and no AO loop is turning it -- awaiting review, carrying
+	// feedback someone has to answer, or holding a failing check someone has to
+	// decide about. The next turn is a person's, but the loop is the same one
+	// "validating" holds while AO turns it. The enum stays needs_review, so
+	// different wording later is one string per locale.
+	"column.needs_review": "In review",
+	"column.ready": "Ready",
+	"column.archive": "Archive",
 	"timeline.no_signal": "No Signal",
 	"timeline.ci_failed": "CI Failed",
 	"timeline.changes_requested": "Changes Requested",
+	"displayStatus.working": "Working",
+	"displayStatus.blocked": "Blocked",
+	"displayStatus.exited": "Exited",
+	"displayStatus.noSignal": "No signal",
+	"displayStatus.awaitingPr": "Awaiting PR",
+	"displayStatus.fixingCiFailures": "Fixing CI failures",
+	"displayStatus.addressingComments": "Addressing comments",
+	"displayStatus.needsReview": "Needs review",
+	"displayStatus.reviewScheduled": "Review scheduled",
+	"displayStatus.reviewing": "Reviewing",
+	"displayStatus.reviewPending": "Review pending",
+	"displayStatus.draft": "Draft",
+	"displayStatus.ciFailing": "CI failing",
+	"displayStatus.commented": "Commented",
+	"displayStatus.changesRequested": "Changes requested",
+	"displayStatus.needsHumanReview": "Needs human review",
+	"displayStatus.mergeable": "Mergeable",
+	"displayStatus.approved": "Approved",
+	"displayStatus.merged": "Merged",
+	"displayStatus.closedWithoutMerge": "Closed without merge",
+	"displayStatus.terminated": "Terminated",
 };
+
+/**
+ * Exhaustive mapping from the daemon's wire phrase to a stable, namespaced
+ * translation key -- decoupled from the exact English wording so a future
+ * phrase edit on the daemon does not silently break every locale's lookup.
+ */
+export const displayStatusLabelKeys: Record<DisplayStatus, `displayStatus.${string}`> = {
+	Working: "displayStatus.working",
+	Blocked: "displayStatus.blocked",
+	Exited: "displayStatus.exited",
+	"No signal": "displayStatus.noSignal",
+	"Awaiting PR": "displayStatus.awaitingPr",
+	"Fixing CI failures": "displayStatus.fixingCiFailures",
+	"Addressing comments": "displayStatus.addressingComments",
+	"Needs review": "displayStatus.needsReview",
+	"Review scheduled": "displayStatus.reviewScheduled",
+	Reviewing: "displayStatus.reviewing",
+	"Review pending": "displayStatus.reviewPending",
+	Draft: "displayStatus.draft",
+	"CI failing": "displayStatus.ciFailing",
+	Commented: "displayStatus.commented",
+	"Changes requested": "displayStatus.changesRequested",
+	"Needs human review": "displayStatus.needsHumanReview",
+	Mergeable: "displayStatus.mergeable",
+	Approved: "displayStatus.approved",
+	Merged: "displayStatus.merged",
+	"Closed without merge": "displayStatus.closedWithoutMerge",
+	Terminated: "displayStatus.terminated",
+};
+
+/**
+ * Translates the daemon's `displayStatus` phrase for the current locale. A
+ * phrase this build does not recognize yet (a newer daemon added one before
+ * the frontend shipped a translation for it) falls back to the raw English
+ * text the API guarantees is already renderable, exactly as an older client
+ * without this lookup would show it.
+ */
+export function getDisplayStatusLabel(
+	displayStatus: string,
+	translate: ProductUITranslator = defaultProductUITranslator,
+): string {
+	if (!isDisplayStatus(displayStatus)) return displayStatus;
+	return translate(displayStatusLabelKeys[displayStatus]);
+}
 
 export const defaultProductUITranslator: ProductUITranslator = (key) => englishLabels[key];
 
@@ -233,6 +316,117 @@ const attentionZoneBases: Record<AttentionZone, AttentionZoneBase> = {
 
 export const attentionZoneOrder: AttentionZone[] = ["merge", "action", "pending", "working", "done"];
 export const boardAttentionZoneOrder: AttentionZone[] = ["working", "action", "pending", "merge"];
+
+/**
+ * Board lanes in delivery order: building -> validating -> in review ->
+ * ready. The middle two are the same review-feedback loop seen from either
+ * side: validating while AO turns it, in review while a person does.
+ * `archive` is deliberately absent — terminated sessions render in the archive
+ * sheet, not as a lane.
+ */
+export const boardKanbanColumnOrder: KanbanColumn[] = [
+	"building",
+	"validating",
+	"needs_review",
+	"ready",
+];
+
+/**
+ * Resolve the lane a session belongs in. The daemon derives the column from
+ * durable delivery facts and clients render what it sends; this only fills the
+ * gap when the field is absent or unrecognized.
+ *
+ * The fallback keeps the placement the session already had. A daemon that
+ * predates `kanbanColumn` still reports `status`, and mapping that through the
+ * attention zone reproduces exactly the lane the board used before the column
+ * existed — so a mixed-version upgrade leaves cards where the user last saw
+ * them instead of collapsing every live session into the leftmost lane.
+ */
+export function toKanbanColumn(column: string | undefined, status: SessionStatus): KanbanColumn {
+	if (column && isKanbanColumn(column)) return column;
+	switch (attentionZone(status)) {
+		case "merge":
+			return "ready";
+		case "action":
+			return "needs_review";
+		case "pending":
+			return "validating";
+		case "done":
+			return "archive";
+		case "working":
+			return "building";
+	}
+}
+
+export type KanbanColumnView = {
+	column: KanbanColumn;
+	label: string;
+	glow: string;
+	dot: string;
+	dotGlow: boolean;
+	titleClassName: string;
+	dotClassName: string;
+};
+
+type KanbanColumnBase = Omit<KanbanColumnView, "label"> & {
+	labelKey: SessionPresentationMessageKey;
+};
+
+const kanbanColumnBases: Record<KanbanColumn, KanbanColumnBase> = {
+	building: {
+		column: "building",
+		labelKey: "column.building",
+		glow: "color-mix(in srgb, var(--color-status-working) 7%, transparent)",
+		dot: "var(--color-status-working)",
+		dotGlow: true,
+		titleClassName: "text-status-working",
+		dotClassName: "bg-status-working",
+	},
+	validating: {
+		column: "validating",
+		labelKey: "column.validating",
+		glow: "color-mix(in srgb, var(--color-status-validating) 5%, transparent)",
+		dot: "var(--color-status-validating)",
+		dotGlow: false,
+		titleClassName: "text-status-validating",
+		dotClassName: "bg-status-validating",
+	},
+	needs_review: {
+		column: "needs_review",
+		labelKey: "column.needs_review",
+		glow: "color-mix(in srgb, var(--color-status-in-review) 5%, transparent)",
+		dot: "var(--color-status-in-review)",
+		dotGlow: false,
+		titleClassName: "text-status-in-review",
+		dotClassName: "bg-status-in-review",
+	},
+	ready: {
+		column: "ready",
+		labelKey: "column.ready",
+		glow: "color-mix(in srgb, var(--color-status-ready) 7%, transparent)",
+		dot: "var(--color-status-ready)",
+		dotGlow: true,
+		titleClassName: "text-status-ready",
+		dotClassName: "bg-status-ready",
+	},
+	archive: {
+		column: "archive",
+		labelKey: "column.archive",
+		glow: "var(--color-overlay-faint)",
+		dot: "var(--color-status-terminated)",
+		dotGlow: false,
+		titleClassName: "text-status-terminated-foreground",
+		dotClassName: "bg-status-terminated",
+	},
+};
+
+export function getKanbanColumnView(
+	column: KanbanColumn,
+	translate: ProductUITranslator = defaultProductUITranslator,
+): KanbanColumnView {
+	const { labelKey, ...view } = kanbanColumnBases[column];
+	return { ...view, label: translate(labelKey) };
+}
 
 export function attentionZone(input: SessionStatus | SessionStatusModel): AttentionZone {
 	const status = typeof input === "string" ? input : input.status;

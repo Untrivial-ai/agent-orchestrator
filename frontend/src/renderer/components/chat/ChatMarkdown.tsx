@@ -10,7 +10,10 @@
  *
  *   - Raw HTML is escaped, not rendered. Agent output is only as trustworthy as the
  *     files it just read, so `rehype-raw` is deliberately absent; markdown-only is
- *     the whole sanitization story and there is no schema to get wrong. Syntax
+ *     the whole sanitization story and there is no schema to get wrong, with one
+ *     exception: ```mermaid fences render as diagrams through `MermaidBlock`,
+ *     whose SVG passes through mermaid's strict mode plus DOMPurify with
+ *     active-content tags forbidden. Syntax
  *     highlighting keeps that property — it renders a token tree as elements
  *     rather than injecting the highlighter's HTML string.
  *   - Nothing here re-parses or re-orders content. It renders exactly the text the
@@ -46,8 +49,24 @@ import {
 	ContextMenuTrigger,
 } from "../ui/context-menu";
 import { HighlightedCode } from "./HighlightedCode";
+import { MermaidBlock } from "./MermaidBlock";
 import { CopyButton } from "./CopyButton";
 import "./code-theme.css";
+
+// Activity titles live inside disclosure buttons: keep inline formatting, but
+// unwrap block elements and links so provider text cannot nest interactive UI.
+const TITLE_ELEMENTS = ["code", "em", "strong", "del"];
+const TITLE_COMPONENTS: Components = {
+	code: ({ children }) => <code className="font-mono text-[0.95em]">{children}</code>,
+};
+
+export const ActivityTitle = memo(function ActivityTitle({ text }: { text: string }) {
+	return (
+		<Markdown allowedElements={TITLE_ELEMENTS} unwrapDisallowed components={TITLE_COMPONENTS}>
+			{text}
+		</Markdown>
+	);
+});
 
 /** GitHub-flavoured markdown: tables, strikethrough, task lists, autolinks. */
 const PLUGINS = [remarkGfm];
@@ -238,6 +257,19 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 	);
 }
 
+/**
+ * A mermaid fence with the streaming state it was rendered under.
+ *
+ * A separate component rather than a hook call in the `pre` override because
+ * overrides are not components: hooks are illegal there, and `COMPONENTS`
+ * must stay module-level so react-markdown's memoization survives polling.
+ */
+function MermaidFence({ code }: { code: string }) {
+	const streaming = useContext(StreamingProse);
+	const onLinkOpen = useContext(OpenChatLink);
+	return <MermaidBlock code={code} streaming={streaming} onLinkOpen={onLinkOpen} />;
+}
+
 const COMPONENTS: Components = {
 	// Headings step down in size but stay in the conversation's voice — an agent's
 	// "## Findings" is a paragraph label, not a page title.
@@ -293,7 +325,11 @@ const COMPONENTS: Components = {
 	// on the class alone rendered those as inline code.
 	pre: ({ children }) => {
 		const fence = fenceOf(children);
-		return fence ? <CodeBlock code={fence.code} language={fence.language} /> : <>{children}</>;
+		if (!fence) return <>{children}</>;
+		// Mermaid is a diagram, not source: it renders through the sandboxed SVG
+		// path rather than the highlighter. See `MermaidBlock.tsx`.
+		if (fence.language?.toLowerCase() === "mermaid") return <MermaidFence code={fence.code} />;
+		return <CodeBlock code={fence.code} language={fence.language} />;
 	},
 	// Only inline code reaches here; `pre` above takes every fence.
 	code: ({ children }) => (

@@ -67,6 +67,11 @@ type Config struct {
 	// PRStatusPollInterval is how often the pull-request status scanner
 	// refreshes CI, review, and mergeability state from GitHub.
 	PRStatusPollInterval time.Duration
+	// TerminalStreamEnabled turns on the low-latency terminal path: workers
+	// hold a persistent stream to the control plane and Postgres NOTIFY
+	// replaces the input/output polling loops. Off means the polled
+	// store-and-forward behavior, byte for byte.
+	TerminalStreamEnabled bool
 
 	NodeOpsBaseURL       string
 	NodeOpsAPIKey        string
@@ -153,6 +158,7 @@ func Load() (Config, error) {
 		LocalAuthEnabled:       boolEnv("AO_CLOUD_LOCAL_AUTH", false),
 		LocalSessionTTL:        durationEnv("AO_CLOUD_LOCAL_SESSION_TTL", 24*time.Hour),
 		AllowAnonymousCheckout: boolEnv("AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT", false),
+		TerminalStreamEnabled:  boolEnv("AO_CLOUD_TERMINAL_STREAM", false),
 		SandboxProvider: strings.ToLower(
 			envOrDefault("AO_CLOUD_SANDBOX_PROVIDER", defaultSandboxProvider(hosted)),
 		),

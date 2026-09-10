@@ -10,7 +10,9 @@
  *
  *   - `rehype-raw` is deliberately absent. A worker's markdown file is agent-
  *     produced content; markdown-only is the whole sanitization story and there
- *     is no schema to get wrong.
+ *     is no schema to get wrong — except ```mermaid fences, which render as
+ *     diagrams through the shared `MermaidBlock` (strict mode plus DOMPurify,
+ *     active-content tags forbidden), matching the chat surface.
  *   - Fenced code reuses the app's existing lowlight/highlight.js engine
  *     (`lib/code-highlight.ts`) rather than Shiki: the renderer's CSP
  *     (`script-src 'self'`, no `wasm-unsafe-eval`) blocks Shiki's default WASM
@@ -36,6 +38,7 @@ import { canonicalLanguage } from "../../lib/code-highlight";
 import { fenceOf } from "../../lib/markdown-fence";
 import { isWebLink } from "../../lib/external-link-policy";
 import { HighlightedCode } from "../chat/HighlightedCode";
+import { MermaidBlock } from "../chat/MermaidBlock";
 import "../chat/code-theme.css";
 import "github-markdown-css/github-markdown.css";
 import { MarkdownFileContext } from "./markdown-file-context";
@@ -100,6 +103,12 @@ export function MarkdownFileView({
 			pre: ({ children }) => {
 				const fence = fenceOf(children);
 				if (!fence) return <>{children}</>;
+				// Diagrams render through the same sandboxed SVG path as chat;
+				// a markdown preview that showed source where chat showed a
+				// picture would disagree with the conversation about the file.
+				if (fence.language?.toLowerCase() === "mermaid") {
+					return <MermaidBlock code={fence.code} />;
+				}
 				return (
 					<pre className="markdown-code">
 						<code>

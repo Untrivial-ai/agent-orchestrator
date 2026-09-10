@@ -38,6 +38,11 @@ var (
 	// resumed. Callers must surface a recovery choice, never silently start a
 	// new provider conversation.
 	ErrChatResumeFailed = errors.New("chat conversation resume failed")
+	// ErrChatRecoveryInconclusive means a detached provider host may still own
+	// live work, but this daemon could not safely attach to it. Startup recovery
+	// must preserve the durable session and worktree rather than treating the
+	// failed attachment as proof that the provider died.
+	ErrChatRecoveryInconclusive = errors.New("chat conversation recovery is inconclusive")
 	// ErrChatNoActiveTurn means an interrupt found nothing to cancel — either AO
 	// has no turn in flight, or the provider no longer considers the named turn
 	// active. A driver must translate its provider's refusal into this rather than
@@ -215,6 +220,10 @@ type ChatStartConfig struct {
 	// shell commands the agent runs. AO passes a HookPATH-augmented copy so the
 	// agent can invoke `ao` — that is how an orchestrator delegates.
 	Env map[string]string
+	// PrepareEnv rotates launch-only credentials. Persistent drivers defer it
+	// until they know a new provider process is required; live adoption must keep
+	// the verifier for the bearer already held by the surviving process.
+	PrepareEnv func(context.Context) (map[string]string, error)
 	// Model is optional; empty defers to the provider's configured default.
 	Model string
 	// Permissions is AO's existing per-session approval policy. Drivers map it
@@ -241,8 +250,12 @@ type ChatResumeConfig struct {
 	DataDir                string
 	WorkspacePath          string
 	Env                    map[string]string
+	// See ChatStartConfig.PrepareEnv.
+	PrepareEnv func(context.Context) (map[string]string, error)
 	// Model is optional; empty keeps the provider conversation's current model.
-	Model       string
+	Model string
+	// Effort is optional; empty keeps the provider conversation's current effort.
+	Effort      string
 	Permissions PermissionMode
 	// SystemPrompt is recomputed by the session manager on restore and reapplied
 	// to the provider process. It is not persisted in the conversation transcript.
@@ -382,11 +395,12 @@ type ChatConfigOptionValue struct {
 // agent's organization without making grouped menus a protocol concern above
 // the adapter.
 type ChatConfigOptionChoice struct {
-	Value       string
-	Name        string
-	Description string
-	Group       string
-	GroupName   string
+	PermissionMode PermissionMode
+	Value          string
+	Name           string
+	Description    string
+	Group          string
+	GroupName      string
 }
 
 // ChatConfigOption is one live provider-owned session control.
@@ -452,6 +466,10 @@ type ChatRateLimits struct {
 	SecondaryResetsInSeconds int64
 	// PlanLabel is the provider's name for the account tier, when it says.
 	PlanLabel string
+	// CodexCapacity carries the normalized full/sparse provider observation to
+	// the daemon-owned account coordinator. It is never persisted with the
+	// conversation quota projection.
+	CodexCapacity *CodexCapacityObservation
 }
 
 // ChatTurnDiff is the running diff of what a turn changed on disk.
@@ -914,6 +932,36 @@ type ChatConversation interface {
 	Events() <-chan ChatEvent
 	// Close releases the controller. It does not delete provider-side history.
 	Close() error
+}
+
+// ChatProviderPreserver is optionally implemented when Close only detaches the
+// daemon-side controller and deliberately leaves provider work alive.
+type ChatProviderPreserver interface {
+	PreservesProviderOnClose() bool
+}
+
+// ChatProviderTerminator is optionally implemented when explicit session
+// destruction must do more than detach the controller.
+type ChatProviderTerminator interface {
+	Terminate() error
+}
+
+// ChatLiveReconnector identifies attachment to the same initialized provider
+// process, as distinct from native resume in a replacement process.
+type ChatLiveReconnector interface {
+	ReconnectedLive() bool
+}
+
+// ChatLiveReconnectActivator releases provider replay only after the service
+// has restored the durable active-turn correlation for the same live process.
+type ChatLiveReconnectActivator interface {
+	ActivateLiveReconnect(ctx context.Context, providerTurnID string) error
+}
+
+// ChatProviderEventAcknowledger lets a persistent provider discard replay
+// state only after the controller commits the matching event.
+type ChatProviderEventAcknowledger interface {
+	AcknowledgeProviderEvent(ctx context.Context, providerEventID string) error
 }
 
 // ChatHistoryReader is optionally implemented by a conversation whose native

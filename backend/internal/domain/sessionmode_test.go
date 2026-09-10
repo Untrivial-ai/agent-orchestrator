@@ -91,6 +91,7 @@ func TestTurnStateTerminal(t *testing.T) {
 		// as its own status and AO must not relabel it as an error.
 		{TurnStateInterrupted, true},
 		{TurnStateFailed, true},
+		{TurnStateCancelled, true},
 	} {
 		if got := tc.state.Terminal(); got != tc.want {
 			t.Errorf("TurnState(%q).Terminal() = %v, want %v", tc.state, got, tc.want)

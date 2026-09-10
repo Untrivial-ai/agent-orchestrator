@@ -236,7 +236,7 @@ func TestCommandBuilders(t *testing.T) {
 		t.Fatalf("newSessionArgs = %#v, want %#v", got, want)
 	}
 	if got, want := respawnPaneArgs("sess-1", "/tmp/ws", "/bin/sh", "echo hi"),
-		[]string{"respawn-pane", "-k", "-t", "sess-1:0.0", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
+		[]string{"respawn-pane", "-k", "-t", "sess-1", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("respawnPaneArgs = %#v, want %#v", got, want)
 	}
 	// set-option uses pane-targeting (no = prefix).
@@ -259,7 +259,7 @@ func TestCommandBuilders(t *testing.T) {
 	if got, want := hasSessionArgs("sess-1"), []string{"has-session", "-t", "=sess-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("hasSessionArgs = %#v, want %#v", got, want)
 	}
-	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1:0.0", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
+	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("panePIDArgs = %#v, want %#v", got, want)
 	}
 	// list-panes reaps whole-session (-s) with exact-match target and prints pane pids.
@@ -430,6 +430,29 @@ func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
 	}
 	if !strings.Contains(launchCmd, "'myagent'") {
 		t.Fatalf("launch command missing quoted argv: %q", launchCmd)
+	}
+}
+
+func TestCreateCommandTerminalExitsWhenCommandCompletes(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
+
+	_, err := r.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:               "command-1",
+		WorkspacePath:           "/tmp/ws",
+		Argv:                    []string{"ao", "codex-login"},
+		ExitOnCommandCompletion: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	args := fr.calls[0].args
+	launchCmd := args[len(args)-1]
+	if !strings.HasSuffix(launchCmd, "; exit $?") {
+		t.Fatalf("command terminal launch = %q, want command exit propagation", launchCmd)
+	}
+	if strings.Contains(launchCmd, `exec "${SHELL:-/bin/sh}" -i`) || strings.Contains(launchCmd, `exec cat >/dev/null`) {
+		t.Fatalf("command terminal launch unexpectedly keeps the pane alive: %q", launchCmd)
 	}
 }
 
@@ -710,7 +733,7 @@ func TestRestartRespawnsExistingPaneAndPreservesHandle(t *testing.T) {
 	if len(fr.calls) != 2 {
 		t.Fatalf("calls = %d, want respawn + liveness probe", len(fr.calls))
 	}
-	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "sess-1:0.0" || args[5] != "/tmp/ws" {
+	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "sess-1" || args[5] != "/tmp/ws" {
 		t.Fatalf("respawn args = %#v", args)
 	}
 	if args := fr.calls[1].args; !reflect.DeepEqual(args, hasSessionArgs("sess-1")) {
@@ -1051,6 +1074,146 @@ func TestIsExactSupervisedProcessAliveRejectsManualRelaunchFromPreservedShell(t 
 	})
 	if err != nil || alive {
 		t.Fatalf("IsExactSupervisedProcessAlive = (%v, %v), want (false, nil)", alive, err)
+	}
+}
+
+func TestProbeFencedRuntimeExactProcessMatchIsAlive(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-2 -- codex\n102 101 codex worker\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedAlive || got.Reason != ports.FencedReasonExactMatch {
+		t.Fatalf("ProbeFencedRuntime exact process = %+v, want alive/exact_match", got)
+	}
+}
+
+func TestProbeFencedRuntimeAmbiguousIdentityIsUnknown(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-other -- codex\n102 101 codex worker\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonGenerationMismatch {
+		t.Fatalf("ProbeFencedRuntime ambiguous process = %+v, want unknown/generation_mismatch", got)
+	}
+}
+
+func TestProbeFencedRuntimeExactSupervisorWithoutChildIsDead(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-2 -- codex\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedDead || got.Reason != ports.FencedReasonExactAbsent {
+		t.Fatalf("ProbeFencedRuntime exited exact process = %+v, want dead/exact_absent", got)
+	}
+}
+
+func TestProbeFencedRuntimeManualRelaunchWithoutSupervisorIsUnknown(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 codex resume native-1\n102 101 codex worker\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonIdentityMissing {
+		t.Fatalf("ProbeFencedRuntime manual relaunch = %+v, want unknown/identity_missing", got)
+	}
+}
+
+func TestProbeFencedRuntimeMalformedProcessRowIsUnknown(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonProbeFailed {
+		t.Fatalf("ProbeFencedRuntime malformed scan = %+v, want unknown/probe_failed", got)
+	}
+}
+
+func TestProbeFencedRuntimeMultipleSupervisorGenerationsIsUnknown(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-2 -- codex\n201 100 /opt/ao agent-process supervise --session sess-1 --launch launch-other -- codex\n202 201 codex worker\n"),
+	}
+
+	got := r.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-1"}, SessionID: "sess-1", Generation: "launch-2",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonGenerationMismatch {
+		t.Fatalf("ProbeFencedRuntime multi-generation scan = %+v, want unknown/generation_mismatch", got)
+	}
+}
+
+type partialCreateFailureRunner struct {
+	statusFailed bool
+}
+
+func (r *partialCreateFailureRunner) Run(_ context.Context, _ []string, _ string, args ...string) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	switch args[0] {
+	case "display-message":
+		return []byte("/tmp/ws\n"), nil
+	case "set-option":
+		if !r.statusFailed {
+			r.statusFailed = true
+			return nil, errors.New("set status response lost")
+		}
+	case "list-panes":
+		return []byte("4242\n"), nil
+	case "kill-session":
+		return nil, errors.New("cleanup failed")
+	}
+	return nil, nil
+}
+
+func TestPartialCreateCleanupFailureExposesRuntimeEffectEvidence(t *testing.T) {
+	r := New(Options{Binary: "tmux-test", Shell: "/bin/sh", Timeout: time.Second})
+	r.runner = &partialCreateFailureRunner{}
+	r.reapSessions = (&recordingReaper{}).reap
+
+	handle, err := r.Create(context.Background(), ports.RuntimeConfig{
+		SessionID: "sess-partial", WorkspacePath: "/tmp/ws", Argv: []string{"codex"},
+	})
+	if handle.ID != "" || err == nil {
+		t.Fatalf("Create partial = (%+v, %v), want empty direct handle and evidence error", handle, err)
+	}
+	var effect ports.RuntimeEffectError
+	if !errors.As(err, &effect) {
+		t.Fatalf("Create error %T does not implement RuntimeEffectError", err)
+	}
+	if effect.PossibleHandle().ID != "sess-partial" || effect.EffectOutcome() != ports.RuntimeEffectPossible || effect.CleanupOutcome() != ports.RuntimeCleanupFailed {
+		t.Fatalf("Create effect evidence = handle %+v effect %q cleanup %q", effect.PossibleHandle(), effect.EffectOutcome(), effect.CleanupOutcome())
 	}
 }
 

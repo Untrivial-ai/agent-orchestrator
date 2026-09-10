@@ -155,6 +155,12 @@ func (s *Service) EditMessage(
 	turnID string,
 	msg ports.ChatUserMessage,
 ) (EditMessageResult, error) {
+	gate := s.controllerGate(id)
+	if err := gate.lock(ctx); err != nil {
+		return EditMessageResult{}, err
+	}
+	defer gate.unlock()
+
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return EditMessageResult{}, err
 	}
@@ -241,13 +247,18 @@ func (s *Service) EditMessage(
 			if closeErr := source.closeForBranchHandoff(operationCtx); closeErr != nil {
 				err = fmt.Errorf("close source writer after fork: %w", closeErr)
 			} else {
-				provider, err = driver.Resume(operationCtx, ports.ChatResumeConfig{
-					SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
-					DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env,
-					Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
-					ProviderScopeID:       sourceBranch.ProviderScopeID,
-					AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
-				})
+				launchEnv, prepareErr := s.prepareBranchControllerEnv(operationCtx, cfg)
+				if prepareErr != nil {
+					err = prepareErr
+				} else {
+					provider, err = driver.Resume(operationCtx, ports.ChatResumeConfig{
+						SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
+						DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
+						Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
+						ProviderScopeID:       sourceBranch.ProviderScopeID,
+						AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
+					})
+				}
 			}
 		}
 	} else {
@@ -262,14 +273,30 @@ func (s *Service) EditMessage(
 				return EditMessageResult{}, fmt.Errorf("prepare edited conversation: %w", replayErr)
 			}
 		}
-		provider, err = driver.Start(ctx, ports.ChatStartConfig{
-			SessionID: cfg.SessionID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath,
-			Env: cfg.Env, Model: cfg.Model, Permissions: cfg.Permissions,
-			SystemPrompt: cfg.SystemPrompt, AdditionalDirectories: cfg.AdditionalDirectories,
-			MCPServers: cfg.MCPServers, ProviderScopeID: providerScopeID,
-		})
-		if err == nil {
-			providerConversationID = provider.ProviderConversationID()
+		// A fresh replay process is also a controller replacement. Stop the old
+		// bearer holder before rotating its verifier and launching the child.
+		detachedCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), nativeEditHandoffLimit)
+		defer cancel()
+		operationCtx = detachedCtx
+		sourceStopInitiated = true
+		if closeErr := source.closeForBranchHandoff(operationCtx); closeErr != nil {
+			err = fmt.Errorf("close source writer before edited conversation: %w", closeErr)
+		} else {
+			launchEnv, prepareErr := s.prepareBranchControllerEnv(operationCtx, cfg)
+			if prepareErr != nil {
+				err = prepareErr
+			} else {
+				provider, err = driver.Start(operationCtx, ports.ChatStartConfig{
+					SessionID: cfg.SessionID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath,
+					Env: launchEnv, Model: cfg.Model, Permissions: cfg.Permissions,
+					SystemPrompt: cfg.SystemPrompt, AdditionalDirectories: cfg.AdditionalDirectories,
+					MCPServers: cfg.MCPServers, ProviderScopeID: providerScopeID,
+				})
+				if err == nil {
+					providerConversationID = provider.ProviderConversationID()
+				}
+			}
 		}
 	}
 	if err != nil {
@@ -301,7 +328,16 @@ func (s *Service) EditMessage(
 	}
 	if replayContent.Type != "" && !supportsApproximateReplay(provider) {
 		_ = provider.Close()
-		return EditMessageResult{}, ErrForkUnsupported
+		unsupportedErr := ErrForkUnsupported
+		if sourceStopInitiated {
+			if restoreErr := s.restoreClosedSourceController(
+				ctx, id, source, sourceBranch, cfg, driver); restoreErr != nil {
+				unsupportedErr = errors.Join(unsupportedErr, restoreErr)
+			} else {
+				abortSource = false
+			}
+		}
+		return EditMessageResult{}, unsupportedErr
 	}
 
 	branchID := s.newID()
@@ -320,7 +356,7 @@ func (s *Service) EditMessage(
 	}
 	conversation := source.conversation
 	conversation.ActiveBranchID = branchID
-	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
+	replacement := newController(id, conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
 	if err := s.store.CreateAndActivateConversationBranch(
 		operationCtx, id, branch, generation, s.now(),
 	); err != nil {
@@ -514,7 +550,7 @@ func (s *Service) sendEditedMessage(
 			sendErr = errors.New("edited message was not dispatched")
 		}
 		if restoreConclusiveFailure {
-			if _, err := s.ActivateBranch(ctx, controller.sessionID, sourceBranchID); err != nil {
+			if _, err := s.activateBranchLocked(ctx, controller.sessionID, sourceBranchID); err != nil {
 				sendErr = errors.Join(sendErr, fmt.Errorf("restore source after undispatched edit: %w", err))
 			}
 		}
@@ -526,7 +562,7 @@ func (s *Service) sendEditedMessage(
 		}
 		var refusal providerRefusal
 		if restoreConclusiveFailure && errors.As(sendErr, &refusal) && refusal.ChatRefusal() {
-			if _, err := s.ActivateBranch(ctx, controller.sessionID, sourceBranchID); err != nil {
+			if _, err := s.activateBranchLocked(ctx, controller.sessionID, sourceBranchID); err != nil {
 				sendErr = errors.Join(sendErr, fmt.Errorf("restore source after refused edit: %w", err))
 			}
 		}
@@ -550,6 +586,15 @@ type EditMessageResult struct {
 // ActivateBranch resumes a durable provider branch in the same worktree and
 // swaps controllers without sending a new prompt.
 func (s *Service) ActivateBranch(ctx context.Context, id domain.SessionID, branchID string) (string, error) {
+	gate := s.controllerGate(id)
+	if err := gate.lock(ctx); err != nil {
+		return "", err
+	}
+	defer gate.unlock()
+	return s.activateBranchLocked(ctx, id, branchID)
+}
+
+func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID, branchID string) (string, error) {
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return "", err
 	}
@@ -588,26 +633,64 @@ func (s *Service) ActivateBranch(ctx context.Context, id domain.SessionID, branc
 			source.AbortHandoff()
 		}
 	}()
-	provider, err := driver.Resume(ctx, ports.ChatResumeConfig{
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), nativeEditHandoffLimit)
+	defer cancel()
+	if err := source.closeForBranchHandoff(operationCtx); err != nil {
+		closeErr := fmt.Errorf("close source before branch activation: %w", err)
+		if source.State() == ports.ChatControllerStopped {
+			if restoreErr := s.restoreClosedSourceController(
+				operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {
+				closeErr = errors.Join(closeErr, restoreErr)
+			} else {
+				abortSource = false
+			}
+		}
+		return "", closeErr
+	}
+	launchEnv, err := s.prepareBranchControllerEnv(operationCtx, cfg)
+	if err != nil {
+		if restoreErr := s.restoreClosedSourceController(
+			operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {
+			err = errors.Join(err, restoreErr)
+		} else {
+			abortSource = false
+		}
+		return "", err
+	}
+	provider, err := driver.Resume(operationCtx, ports.ChatResumeConfig{
 		SessionID: cfg.SessionID, ProviderConversationID: branch.ProviderConversationID,
-		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env,
+		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
 		Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 		ProviderScopeID:       branch.ProviderScopeID,
 		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 	})
 	if err != nil {
-		return "", fmt.Errorf("resume conversation branch %s: %w", branchID, err)
+		resumeErr := fmt.Errorf("resume conversation branch %s: %w", branchID, err)
+		if restoreErr := s.restoreClosedSourceController(
+			operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {
+			resumeErr = errors.Join(resumeErr, restoreErr)
+		} else {
+			abortSource = false
+		}
+		return "", resumeErr
 	}
 	generation := s.newID()
 	conversation := source.conversation
 	conversation.ActiveBranchID = branch.ID
-	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
-	if err := s.store.ActivateConversationBranch(ctx, id, conversation.ID, branch.ID,
+	replacement := newController(id, conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+	if err := s.store.ActivateConversationBranch(operationCtx, id, conversation.ID, branch.ID,
 		branch.ProviderConversationID, generation, s.now()); err != nil {
-		_ = provider.Close()
-		return "", err
+		cleanupUnpublishedConversation(provider, true)
+		activateErr := err
+		if restoreErr := s.restoreClosedSourceController(
+			operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {
+			activateErr = errors.Join(activateErr, restoreErr)
+		} else {
+			abortSource = false
+		}
+		return "", activateErr
 	}
-	if err := s.installBranchController(ctx, id, source, replacement, source.conversation.ActiveBranchID); err != nil {
+	if err := s.installBranchController(operationCtx, id, source, replacement, source.conversation.ActiveBranchID); err != nil {
 		return "", err
 	}
 	abortSource = false
@@ -630,6 +713,17 @@ func (s *Service) branchLaunchConfig(
 		return StartConfig{}, nil, fmt.Errorf("chat driver for %s: %w", cfg.Harness, err)
 	}
 	return cloneStartConfig(cfg), driver, nil
+}
+
+func (s *Service) prepareBranchControllerEnv(ctx context.Context, cfg StartConfig) (map[string]string, error) {
+	if cfg.PrepareControllerEnv == nil {
+		return cloneStartConfig(cfg).Env, nil
+	}
+	env, err := cfg.PrepareControllerEnv(ctx, cfg.ExpectedControllerOwner)
+	if err != nil {
+		return nil, fmt.Errorf("prepare replacement controller environment: %w", err)
+	}
+	return env, nil
 }
 
 // restoreClosedSourceController reopens the original provider branch when a
@@ -662,9 +756,13 @@ func (s *Service) restoreClosedSourceController(
 		}
 	}
 	providerConversationID := source.ProviderConversationID()
+	launchEnv, err := s.prepareBranchControllerEnv(recoveryCtx, cfg)
+	if err != nil {
+		return fmt.Errorf("rotate source browser capability after failed native edit: %w", err)
+	}
 	provider, err := driver.Resume(recoveryCtx, ports.ChatResumeConfig{
 		SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
-		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env,
+		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
 		Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 		ProviderScopeID:       branch.ProviderScopeID,
 		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
@@ -676,7 +774,7 @@ func (s *Service) restoreClosedSourceController(
 	conversation := source.conversation
 	conversation.ActiveBranchID = branch.ID
 	replacement := newController(
-		id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
+		id, conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
 	if err := s.store.ActivateConversationBranch(recoveryCtx, id, conversation.ID, branch.ID,
 		providerConversationID, generation, s.now()); err != nil {
 		_ = provider.Close()
@@ -711,7 +809,7 @@ func (s *Service) installStartedBranchController(
 	s.mu.Lock()
 	if s.controllers[id] != source {
 		s.mu.Unlock()
-		_ = replacement.Close(ctx)
+		_ = replacement.Terminate(ctx)
 		if err := s.store.ActivateConversationBranch(ctx, id, source.conversation.ID,
 			sourceBranchID, source.ProviderConversationID(), source.generation, s.now()); err != nil {
 			return fmt.Errorf("restore source branch after controller swap conflict: %w", err)
@@ -720,6 +818,15 @@ func (s *Service) installStartedBranchController(
 	}
 	source.prepareBranchHandoffStop()
 	s.controllers[id] = replacement
+	if cfg, ok := s.startConfigs[id]; ok {
+		cfg.ExpectedControllerOwner.Harness = cfg.Harness
+		cfg.ExpectedControllerOwner.Mode = domain.SessionModeChat
+		cfg.ExpectedControllerOwner.IsTerminated = false
+		cfg.ExpectedControllerOwner.RuntimeLaunchID = ""
+		cfg.ExpectedControllerOwner.ProviderConversationID = replacement.ProviderConversationID()
+		cfg.ExpectedControllerOwner.ControllerGeneration = replacement.Generation()
+		s.startConfigs[id] = cfg
+	}
 	s.mu.Unlock()
 
 	go func() {

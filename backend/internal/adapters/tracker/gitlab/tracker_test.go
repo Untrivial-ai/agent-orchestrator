@@ -677,11 +677,11 @@ func TestTrackerIntakeConfig_ValidateRejectsUnknownProvider(t *testing.T) {
 	}
 }
 
-func TestTrackerIntakeConfig_WithDefaultsStillGitHub(t *testing.T) {
+func TestTrackerIntakeConfig_WithDefaultsLeavesProviderEmpty(t *testing.T) {
 	c := domain.TrackerIntakeConfig{Enabled: true, Assignee: "alice"}
 	c = c.WithDefaults()
-	if c.Provider != domain.TrackerProviderGitHub {
-		t.Fatalf("WithDefaults: Provider = %q, want %q", c.Provider, domain.TrackerProviderGitHub)
+	if c.Provider != "" {
+		t.Fatalf("WithDefaults: Provider = %q, want empty (inferred at use time)", c.Provider)
 	}
 }
 

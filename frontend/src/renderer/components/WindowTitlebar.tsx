@@ -21,6 +21,7 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 // Windows-only: macOS keeps its system menu bar and inset traffic lights; Linux
 // keeps the existing minimal chrome. Only Windows loses the native title bar and
@@ -163,16 +164,22 @@ export function WindowTitlebar() {
     };
   }, []);
 
-  // Tell main to forget the last-focused panel whenever real shell UI (not this menu) gets focus, so its fallback target doesn't go stale.
+  // Tell main when a non-browser shell surface is used. BrowserPanel reports
+  // its own interactions separately; the titlebar menu intentionally preserves
+  // the previous target so its actions still apply to the underlying panel.
   useEffect(() => {
-    if (!isWindows) return;
-    const onFocusIn = (event: FocusEvent) => {
+    const onShellUse = (event: Event) => {
       const target = event.target as HTMLElement | null;
       if (target?.closest('[class*="window-titlebar"]')) return;
+      if (target?.closest('[data-testid="browser-panel"]')) return;
       void window.ao?.menu?.notifyShellFocus();
     };
-    document.addEventListener("focusin", onFocusIn);
-    return () => document.removeEventListener("focusin", onFocusIn);
+    document.addEventListener("focusin", onShellUse);
+    document.addEventListener("pointerdown", onShellUse, true);
+    return () => {
+      document.removeEventListener("focusin", onShellUse);
+      document.removeEventListener("pointerdown", onShellUse, true);
+    };
   }, []);
 
   if (!isWindows) return null;
@@ -182,50 +189,68 @@ export function WindowTitlebar() {
       {/* Sidebar collapse toggle — same ui-store path as the macOS TitlebarNav
 			    cluster, so it stays in sync with the SidebarProvider. The brand
 			    logo + name stay in the sidebar header instead of duplicating here. */}
-      <button
-        aria-label={
-          isSidebarOpen ? t("shell.collapseSidebar") : t("shell.expandSidebar")
-        }
-        className="window-titlebar__toggle"
-        onClick={toggleSidebar}
-        title={
-          isSidebarOpen
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            aria-label={
+              isSidebarOpen
+                ? t("shell.collapseSidebar")
+                : t("shell.expandSidebar")
+            }
+            className="window-titlebar__toggle"
+            onClick={toggleSidebar}
+            type="button"
+          >
+            <PanelLeft
+              aria-hidden="true"
+              className="window-titlebar__toggle-icon"
+            />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          {isSidebarOpen
             ? t("shell.collapseSidebarTitle")
-            : t("shell.expandSidebarTitle")
-        }
-        type="button"
-      >
-        <PanelLeft
-          aria-hidden="true"
-          className="window-titlebar__toggle-icon"
-        />
-      </button>
-      <button
-        aria-label={t("titlebar.goBack")}
-        className="window-titlebar__toggle"
-        disabled={!canGoBack}
-        onClick={() => router.history.back()}
-        title={t("titlebar.goBack")}
-        type="button"
-      >
-        <ArrowLeft
-          aria-hidden="true"
-          className="window-titlebar__toggle-icon"
-        />
-      </button>
-      <button
-        aria-label={t("titlebar.goForward")}
-        className="window-titlebar__toggle"
-        disabled={!canGoForward}
-        onClick={() => router.history.forward()}
-        title={t("titlebar.goForward")}
-        type="button"
-      >
-        <ArrowRight
-          aria-hidden="true"
-          className="window-titlebar__toggle-icon"
-        />
-      </button>
+            : t("shell.expandSidebarTitle")}
+        </TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex">
+            <button
+              aria-label={t("titlebar.goBack")}
+              className="window-titlebar__toggle"
+              disabled={!canGoBack}
+              onClick={() => router.history.back()}
+              type="button"
+            >
+              <ArrowLeft
+                aria-hidden="true"
+                className="window-titlebar__toggle-icon"
+              />
+            </button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{t("titlebar.goBack")}</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex">
+            <button
+              aria-label={t("titlebar.goForward")}
+              className="window-titlebar__toggle"
+              disabled={!canGoForward}
+              onClick={() => router.history.forward()}
+              type="button"
+            >
+              <ArrowRight
+                aria-hidden="true"
+                className="window-titlebar__toggle-icon"
+              />
+            </button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{t("titlebar.goForward")}</TooltipContent>
+      </Tooltip>
       <nav className="window-titlebar__menus">
         <TopMenu
           id="view"

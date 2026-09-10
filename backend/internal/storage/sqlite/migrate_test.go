@@ -607,6 +607,118 @@ FROM usage_bindings WHERE harness = 'kimi';`, now, now); err != nil {
 	}
 }
 
+func TestCompletedPlanMigrationRepairsStructuredStateWithoutChangingProviderEvents(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	upTo(t, db, 118)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(`
+INSERT INTO projects (id, path, registered_at, config)
+VALUES ('plan-migration', '/repo/plan', ?, '{}');
+INSERT INTO sessions (
+    id, project_id, num, harness, activity_last_at, created_at, updated_at, session_mode
+) VALUES ('plan-migration-1', 'plan-migration', 1, 'codex', ?, ?, ?, 'chat');
+INSERT INTO conversations (
+    id, scope, project_id, session_id, current_session_id, latest_sequence,
+    created_at, updated_at, active_branch_id
+) VALUES (
+    'conversation-1', 'session', 'plan-migration', 'plan-migration-1',
+    'plan-migration-1', 2, ?, ?, 'branch-1'
+);
+INSERT INTO conversation_branches (
+    id, conversation_id, session_id, provider_conversation_id, created_at
+) VALUES ('branch-1', 'conversation-1', 'plan-migration-1', 'thread-1', ?);
+INSERT INTO conversation_turns (
+    id, conversation_id, handled_by_session_id, provider_turn_id, state,
+    requested_at, completed_at, plan_json, branch_id
+) VALUES
+    ('turn-completed', 'conversation-1', 'plan-migration-1', 'provider-completed',
+     'completed', ?, ?,
+     '{"steps":[{"text":"one","status":"in_progress"},{"text":"two","status":"pending"}]}',
+     'branch-1'),
+    ('turn-failed', 'conversation-1', 'plan-migration-1', 'provider-failed',
+     'failed', ?, ?,
+     '{"steps":[{"text":"one","status":"in_progress"},{"text":"two","status":"pending"}]}',
+     'branch-1');
+INSERT INTO conversation_activities (
+    id, conversation_id, turn_id, sequence, revision, kind, status, summary,
+    detail_json, provider_item_id, created_at, updated_at, branch_id
+) VALUES
+    ('activity-completed', 'conversation-1', 'turn-completed', 1, 3, 'plan',
+     'completed', 'Plan 0/2: one',
+     '{"event":"plan","steps":[{"text":"one","status":"in_progress"},{"text":"two","status":"pending"}]}',
+     'ao-plan-provider-completed', ?, ?, 'branch-1'),
+    ('activity-failed', 'conversation-1', 'turn-failed', 2, 4, 'plan',
+     'failed', 'Plan 0/2: one',
+     '{"event":"plan","steps":[{"text":"one","status":"in_progress"},{"text":"two","status":"pending"}]}',
+     'ao-plan-provider-failed', ?, ?, 'branch-1');
+INSERT INTO conversation_provider_events (
+    conversation_id, session_id, provider_event_id, method, payload_json, received_at, branch_id
+) VALUES
+    ('conversation-1', 'plan-migration-1', 'event-plan', 'turn.plan', '{"raw":"plan"}', ?, 'branch-1'),
+    ('conversation-1', 'plan-migration-1', 'event-completed', 'turn.completed', '{"raw":"completed"}', ?, 'branch-1');`,
+		now, now, now, now, now, now, now, now, now, now, now, now, now, now, now, now); err != nil {
+		t.Fatalf("seed stale completed plan: %v", err)
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("apply completed-plan migration: %v", err)
+	}
+
+	var turnStatuses, activityStatuses, summary string
+	var revision int
+	if err := db.QueryRow(`
+SELECT json_extract(turn.plan_json, '$.steps[0].status') || ',' ||
+       json_extract(turn.plan_json, '$.steps[1].status'),
+       json_extract(activity.detail_json, '$.steps[0].status') || ',' ||
+       json_extract(activity.detail_json, '$.steps[1].status'),
+       activity.summary, activity.revision
+FROM conversation_turns turn
+JOIN conversation_activities activity ON activity.turn_id = turn.id
+WHERE turn.id = 'turn-completed'`).Scan(
+		&turnStatuses, &activityStatuses, &summary, &revision,
+	); err != nil {
+		t.Fatalf("read repaired completed plan: %v", err)
+	}
+	if turnStatuses != "completed,completed" || activityStatuses != "completed,completed" ||
+		summary != "Plan 2/2 steps done" || revision != 4 {
+		t.Fatalf("repaired plan = turn:%q activity:%q summary:%q revision:%d",
+			turnStatuses, activityStatuses, summary, revision)
+	}
+
+	var failedTurnStatus, failedActivityStatus string
+	var failedRevision int
+	if err := db.QueryRow(`
+SELECT json_extract(turn.plan_json, '$.steps[0].status'),
+       json_extract(activity.detail_json, '$.steps[0].status'), activity.revision
+FROM conversation_turns turn
+JOIN conversation_activities activity ON activity.turn_id = turn.id
+WHERE turn.id = 'turn-failed'`).Scan(
+		&failedTurnStatus, &failedActivityStatus, &failedRevision,
+	); err != nil {
+		t.Fatalf("read failed plan control: %v", err)
+	}
+	if failedTurnStatus != "in_progress" || failedActivityStatus != "in_progress" || failedRevision != 4 {
+		t.Fatalf("failed plan was changed = turn:%q activity:%q revision:%d",
+			failedTurnStatus, failedActivityStatus, failedRevision)
+	}
+
+	var rawEvents string
+	if err := db.QueryRow(`
+SELECT group_concat(method || ':' || payload_json, '|')
+FROM (SELECT method, payload_json FROM conversation_provider_events ORDER BY id)`).Scan(&rawEvents); err != nil {
+		t.Fatalf("read raw provider archive: %v", err)
+	}
+	if rawEvents != `turn.plan:{"raw":"plan"}|turn.completed:{"raw":"completed"}` {
+		t.Fatalf("provider archive changed: %q", rawEvents)
+	}
+}
+
 func openMigratedTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)

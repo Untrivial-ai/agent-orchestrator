@@ -33,6 +33,7 @@ export function FileContentPane({
 		...sessionWorkspaceFileQueryOptions(sessionId, path ?? "", t("files.error.loadWorkspaceFile")),
 		enabled: Boolean(path) && !selectionOrMenuActive,
 	});
+	const refetch = query.refetch;
 
 	if (!path) {
 		return <PanelMessage>{t("files.explorer.selectFile")}</PanelMessage>;
@@ -42,12 +43,18 @@ export function FileContentPane({
 	}
 	if (query.error) {
 		return (
-			<PanelMessage action={<RetryButton onClick={() => void query.refetch()} />}>
+			<PanelMessage action={<RetryButton onClick={() => void refetch()} />}>
 				{query.error.message || t("files.error.loadFile")}
 			</PanelMessage>
 		);
 	}
-	if (!query.data) return null;
+	if (!query.data) {
+		return (
+			<PanelMessage action={<RetryButton onClick={() => void refetch()} />}>
+				{t("files.error.loadFile")}
+			</PanelMessage>
+		);
+	}
 
 	const detail = query.data;
 	if (detail.status !== "unmodified") {
@@ -56,6 +63,11 @@ export function FileContentPane({
 				annotation={annotation}
 				detail={detail}
 				detailLoadedAt={query.dataUpdatedAt}
+				emptyFallback={
+					!detail.binary && !detail.contentTruncated && !detail.deleted && detail.content ? (
+						<ReadOnlyFileView detail={detail} sessionId={sessionId} />
+					) : undefined
+				}
 				filePath={path}
 				onActiveSelectionChange={setSelectionOrMenuActive}
 				sessionId={sessionId}

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "./ui/tooltip";
 
 const { navigateMock } = vi.hoisted(() => ({
   navigateMock: vi.fn(),
@@ -58,7 +59,11 @@ describe("WindowTitlebar", () => {
   it("renders custom Windows controls and dispatches window actions", async () => {
     const { WindowTitlebar } = await loadWindowTitlebar();
 
-    render(<WindowTitlebar />);
+    render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
 
     await userEvent.click(screen.getByRole("button", { name: "Minimize" }));
     await userEvent.click(
@@ -74,7 +79,11 @@ describe("WindowTitlebar", () => {
   it("shows only View and Help in the top menu", async () => {
     const { WindowTitlebar } = await loadWindowTitlebar();
 
-    render(<WindowTitlebar />);
+    render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
 
     expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Help" })).toBeInTheDocument();
@@ -92,7 +101,11 @@ describe("WindowTitlebar", () => {
   it("renders the back and forward navigation buttons", async () => {
     const { WindowTitlebar } = await loadWindowTitlebar();
 
-    render(<WindowTitlebar />);
+    render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
 
     expect(screen.getByRole("button", { name: "Go back" })).toBeInTheDocument();
     expect(
@@ -109,7 +122,11 @@ describe("WindowTitlebar", () => {
     };
     const { WindowTitlebar } = await loadWindowTitlebar();
 
-    render(<WindowTitlebar />);
+    render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
     const maximizeButton = screen.getByRole("button", {
       name: "Maximize / Restore",
     });
@@ -128,7 +145,11 @@ describe("WindowTitlebar", () => {
     async (platform) => {
       const { WindowTitlebar } = await loadWindowTitlebar(platform);
 
-      const { container } = render(<WindowTitlebar />);
+      const { container } = render(
+        <TooltipProvider>
+          <WindowTitlebar />
+        </TooltipProvider>,
+      );
 
       expect(container).toBeEmptyDOMElement();
       expect(actionMock).not.toHaveBeenCalled();

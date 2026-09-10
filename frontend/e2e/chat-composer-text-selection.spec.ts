@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { agentReadiness } from "../src/renderer/test/agent-readiness-fixtures";
 import { installFakeAgent } from "./support/fake-bridge";
 
 const projectId = "chat-composer-selection";
@@ -26,6 +27,10 @@ test("typed chat composer text is visibly selected with a pointer drag @T0", asy
 	});
 	await page.route("http://127.0.0.1:8080/api/v1/**", async (route) => {
 		const pathname = new URL(route.request().url()).pathname;
+		if (pathname === "/api/v1/agents/readiness" || pathname === "/api/v1/agents/readiness/ensure") {
+			await route.fulfill({ json: { agents: [agentReadiness("codex", "Codex")] } });
+			return;
+		}
 		if (pathname === `/api/v1/projects/${projectId}`) {
 			await route.fulfill({
 				json: {

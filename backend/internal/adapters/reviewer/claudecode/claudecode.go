@@ -75,6 +75,7 @@ var reviewerDisallowedTools = []string{
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	agentSessionID := workeragent.SessionUUID(inv.ReviewerID)
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
+		Config: inv.Config,
 		// Pin the same deterministic reviewer-native id we persist. Hooks can
 		// later replace it with Claude's reported id, but restore must never start
 		// from an id that the process was not launched with.
@@ -114,6 +115,7 @@ func (r *Reviewer) PreLaunch(ctx context.Context, inv ports.ReviewInvocation) er
 		return nil
 	}
 	return pl.PreLaunch(ctx, ports.LaunchConfig{
+		Config:        inv.Config,
 		SessionID:     workeragent.SessionUUID(inv.ReviewerID),
 		WorkspacePath: inv.WorkspacePath,
 	})

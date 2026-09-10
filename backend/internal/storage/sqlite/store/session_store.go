@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -38,6 +39,37 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
+}
+
+// UpdateBrowserCapabilityVerifier rotates only the verifier when the caller's
+// controller-owner snapshot is still current. It deliberately leaves every
+// other mutable session field untouched.
+func (s *Store) UpdateBrowserCapabilityVerifier(
+	ctx context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	verifier string,
+	updatedAt time.Time,
+) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.UpdateBrowserCapabilityVerifier(ctx, gen.UpdateBrowserCapabilityVerifierParams{
+		BrowserCapabilityVerifier:      verifier,
+		UpdatedAt:                      updatedAt,
+		ID:                             id,
+		ExpectedHarness:                expected.Harness,
+		ExpectedSessionMode:            domain.NormalizeSessionMode(expected.Mode),
+		ExpectedIsTerminated:           expected.IsTerminated,
+		ExpectedRuntimeLaunchID:        expected.RuntimeLaunchID,
+		ExpectedAgentSessionID:         expected.AgentSessionID,
+		ExpectedAgentSessionIDLaunchID: expected.AgentSessionIDLaunchID,
+		ExpectedProviderConversationID: expected.ProviderConversationID,
+		ExpectedControllerGeneration:   expected.ControllerGeneration,
+	})
+	if err != nil {
+		return false, fmt.Errorf("update browser capability verifier for %s: %w", id, err)
+	}
+	return rows > 0, nil
 }
 
 // UpdateSessionFromActivitySignal projects activity-derived session metadata
@@ -227,17 +259,28 @@ func (s *Store) SetSessionAutoInjectCI(ctx context.Context, id domain.SessionID,
 	return updated, nil
 }
 
-// SetSessionReviewerHarness persists the reviewer preference for one session.
-func (s *Store) SetSessionReviewerHarness(ctx context.Context, id domain.SessionID, harness domain.ReviewerHarness, updatedAt time.Time) (bool, error) {
+// SetSessionReviewerConfig persists the reviewer preference for one session.
+func (s *Store) SetSessionReviewerConfig(
+	ctx context.Context,
+	id domain.SessionID,
+	harness domain.ReviewerHarness,
+	config domain.AgentConfig,
+	updatedAt time.Time,
+) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.SetSessionReviewerHarness(ctx, gen.SetSessionReviewerHarnessParams{
-		ReviewerHarness: harness,
-		UpdatedAt:       updatedAt,
-		ID:              id,
+	encoded, err := marshalAgentConfig(config)
+	if err != nil {
+		return false, fmt.Errorf("set reviewer config for %s: %w", id, err)
+	}
+	rows, err := s.qw.SetSessionReviewerConfig(ctx, gen.SetSessionReviewerConfigParams{
+		ReviewerHarness:     harness,
+		ReviewerAgentConfig: encoded,
+		UpdatedAt:           updatedAt,
+		ID:                  id,
 	})
 	if err != nil {
-		return false, fmt.Errorf("set reviewer harness for %s: %w", id, err)
+		return false, fmt.Errorf("set reviewer config for %s: %w", id, err)
 	}
 	return rows > 0, nil
 }
@@ -388,6 +431,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		Kind:              row.Kind,
 		Harness:           row.Harness,
 		ReviewerHarness:   row.ReviewerHarness,
+		ReviewerConfig:    unmarshalAgentConfig(row.ReviewerAgentConfig),
 		AutoReviewEnabled: row.AutoReviewEnabled,
 		DisplayName:       row.DisplayName,
 		Mode:              domain.NormalizeSessionMode(row.SessionMode),
@@ -423,6 +467,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			ProviderConversationID:    row.ProviderConversationID,
 			ControllerGeneration:      row.ControllerGeneration,
 			Model:                     row.Model,
+			Permissions:               domain.PermissionMode(row.SessionPermissions),
 		},
 		CleanupGeneration: row.CleanupGeneration,
 		CreatedAt:         row.CreatedAt,
@@ -452,6 +497,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		Kind:                      rec.Kind,
 		Harness:                   rec.Harness,
 		ReviewerHarness:           rec.ReviewerHarness,
+		ReviewerAgentConfig:       mustMarshalAgentConfig(rec.ReviewerConfig),
 		AutoReviewEnabled:         rec.AutoReviewEnabled,
 		DisplayName:               rec.DisplayName,
 		ActivityState:             activity.State,
@@ -485,11 +531,14 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,
 		ControllerGeneration:      rec.Metadata.ControllerGeneration,
 		Model:                     rec.Metadata.Model,
+		SessionPermissions:        string(rec.Metadata.Permissions),
 		CreatedAt:                 rec.CreatedAt,
 		UpdatedAt:                 rec.UpdatedAt,
 	}
 }
 
+// Permissions are immutable after insertion (or the focused legacy pin), so
+// generic session updates cannot overwrite them with a stale record.
 func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 	activity := normalActivity(rec.Activity, rec.UpdatedAt)
 	return gen.UpdateSessionParams{
@@ -498,6 +547,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		Kind:                      rec.Kind,
 		Harness:                   rec.Harness,
 		ReviewerHarness:           rec.ReviewerHarness,
+		ReviewerAgentConfig:       mustMarshalAgentConfig(rec.ReviewerConfig),
 		AutoReviewEnabled:         rec.AutoReviewEnabled,
 		DisplayName:               rec.DisplayName,
 		ActivityState:             activity.State,
@@ -532,6 +582,36 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		Model:                     rec.Metadata.Model,
 		UpdatedAt:                 rec.UpdatedAt,
 	}
+}
+
+func marshalAgentConfig(cfg domain.AgentConfig) (string, error) {
+	if cfg.IsZero() {
+		return "", nil
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return "", fmt.Errorf("marshal agent config: %w", err)
+	}
+	return string(data), nil
+}
+
+func mustMarshalAgentConfig(cfg domain.AgentConfig) string {
+	data, err := marshalAgentConfig(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+func unmarshalAgentConfig(data string) domain.AgentConfig {
+	if data == "" {
+		return domain.AgentConfig{}
+	}
+	var cfg domain.AgentConfig
+	if err := json.Unmarshal([]byte(data), &cfg); err != nil {
+		return domain.AgentConfig{}
+	}
+	return cfg
 }
 
 // nullTimeToTime / timeToNullTime bridge the nullable first_signal_at column
@@ -574,5 +654,13 @@ func normalActivity(a domain.Activity, fallback time.Time) domain.Activity {
 	if a.LastActivityAt.IsZero() {
 		a.LastActivityAt = time.Now().UTC()
 	}
+	// The driver stores a time.Time by its String() form, so the zone and any
+	// monotonic reading survive into the column. Rows written from a local-zone
+	// clock ("… +0700 +07 m=+995.1") then stop comparing as timestamps against
+	// UTC rows, and activity_last_at is compared directly in SQL — the
+	// agent-switch source-stop predicate is one such comparison, and a mismatched
+	// row silently matches zero rows there. Normalize every writer's value here
+	// rather than trusting each caller's clock.
+	a.LastActivityAt = a.LastActivityAt.UTC()
 	return a
 }

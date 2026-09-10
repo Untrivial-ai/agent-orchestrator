@@ -34,12 +34,23 @@ import type {
 	TerminalUserInputSource,
 } from "../hooks/useTerminalSession";
 import { aoBridge } from "../lib/bridge";
+import { isDialogOrMenuOpen } from "../lib/dom-selectors";
 import { TERMINAL_FONT_SIZE_DEFAULT } from "../lib/design-tokens";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
 import { isMacPlatform } from "../lib/platform";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
+import {
+	buildCursorColorSchemeNotification,
+	cursorColorSchemeReplyForOutput,
+} from "../lib/cursor-color-scheme";
+import {
+	buildOscColorReports,
+	createCursorPositionReportForwarder,
+	createOscColorReportForwarder,
+	type OscTerminalColors,
+} from "../lib/osc-color-report";
 import { buildTerminalThemes } from "../lib/terminal-themes";
-import { useUiStore, type Theme } from "../stores/ui-store";
+import { useUiStore, type Theme, type ThemeStyle } from "../stores/ui-store";
 import { TerminalSearch } from "./TerminalSearch";
 import {
 	DropdownMenu,
@@ -58,7 +69,7 @@ export type XtermTerminalProps = {
 	/** Resize this terminal without changing application zoom. */
 	onChangeFontSize?: (delta: number) => void;
 	/** Enter or exit fullscreen for the terminal pane that owns this xterm. */
-	onToggleFullscreen?: () => void;
+	onToggleFullscreen?: () => void | Promise<void>;
 	/**
 	 * The pane app scrolls its transcript by keyboard (PageUp/PageDown) rather
 	 * than acting on SGR wheel reports — e.g. opencode, which enables mouse
@@ -74,6 +85,8 @@ export type XtermTerminalProps = {
 	onVisibleSize?: (cols: number, rows: number) => void;
 	/** Hidden retained terminals keep parsing output but expose no UI overlays. */
 	isVisible?: boolean;
+	/** Cursor Agent understands AO's terminal color protocol; generic terminals do not. */
+	supportsCursorColorScheme?: boolean;
 	/** Move keyboard focus into xterm when a controller needs human input. */
 	focusRequested?: boolean;
 	/**
@@ -115,6 +128,9 @@ function loadRenderer(term: Terminal): void {
 const SUPPRESS_NATIVE_PASTE_MS = 100;
 /** Long enough to notice, short enough that a second copy reads as a second copy. */
 const COPY_TOAST_MS = 1400;
+const AUTOFOCUS_RETRY_FRAMES = 2;
+const COLOR_SCHEME_UPDATE_MODE = 2031;
+const COLOR_SCHEME_QUERY = 996;
 
 function preparePastedText(text: string): string {
 	return text.replace(/\r?\n/g, "\r");
@@ -213,6 +229,21 @@ function terminalHasFocus(host: HTMLElement): boolean {
 	return !!activeElement && host.contains(activeElement);
 }
 
+function canAutoFocusTerminal(host: HTMLElement): boolean {
+	if (isDialogOrMenuOpen()) return false;
+	const activeElement = document.activeElement;
+	if (!(activeElement instanceof HTMLElement) || activeElement === document.body || !activeElement.isConnected) return true;
+	if (host.contains(activeElement)) return true;
+	// Selecting a session in the sidebar deliberately leaves its navigation
+	// button focused. Terminal tabs are the same intentional handoff within the
+	// pane. Every other focused control remains authoritative.
+	return (
+		activeElement.matches("button[aria-current='page']") ||
+		(activeElement.matches("button[role='tab'][aria-current]") &&
+			activeElement.closest('[data-testid="session-workspace-topbar"]') !== null)
+	);
+}
+
 type XtermInternal = Terminal & {
 	_core?: {
 		element?: HTMLElement;
@@ -293,8 +324,13 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	const scrollbarTrackRef = useRef<HTMLDivElement | null>(null);
 	const scrollbarThumbRef = useRef<HTMLDivElement | null>(null);
 	const termRef = useRef<Terminal | null>(null);
+	const notifyCursorSchemeRef = useRef<(scheme: Theme, force?: boolean, retry?: boolean) => void>(() => {});
+	const announcedCursorSchemeRef = useRef<Theme | null>(null);
 	const searchAddonRef = useRef<SearchAddon | null>(null);
 	const fitRef = useRef<(() => void) | null>(null);
+	const colorSchemeReporterRef = useRef<
+		((theme: Theme, themeStyle: ThemeStyle, force?: boolean) => void) | null
+	>(null);
 	const contextMenuActionsRef = useRef<TerminalContextMenuActions | null>(null);
 	const [contextMenu, setContextMenu] = useState<TerminalContextMenuState>({
 		canCopy: false,
@@ -334,6 +370,35 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// A retained terminal can be parked between closing search and this frame.
 		}
 	}, []);
+	const restoreFocusFrameIdsRef = useRef<number[]>([]);
+	const cancelPendingFocusRestore = useCallback(() => {
+		for (const id of restoreFocusFrameIdsRef.current) cancelAnimationFrame(id);
+		restoreFocusFrameIdsRef.current = [];
+	}, []);
+	const restoreTerminalFocus = useCallback(() => {
+		cancelPendingFocusRestore();
+		const frameA = requestAnimationFrame(() => {
+			const frameB = requestAnimationFrame(() => {
+				restoreFocusFrameIdsRef.current = [];
+				// The terminal may have been hidden or reassigned to another
+				// session during these two frames (e.g. navigation away from
+				// this pane); re-check before stealing focus back from
+				// whatever now legitimately owns it.
+				const host = hostRef.current;
+				if (!host || callbacksRef.current.isVisible === false || !canAutoFocusTerminal(host)) return;
+				focusTerminal();
+			});
+			restoreFocusFrameIdsRef.current = [frameB];
+		});
+		restoreFocusFrameIdsRef.current = [frameA];
+	}, [cancelPendingFocusRestore, focusTerminal]);
+	const toggleFullscreenAndRestoreFocus = useCallback(async () => {
+		try {
+			await callbacksRef.current.onToggleFullscreen?.();
+		} finally {
+			restoreTerminalFocus();
+		}
+	}, [restoreTerminalFocus]);
 
 	callbacksRef.current = props;
 	showCopiedToastRef.current = () => {
@@ -365,7 +430,14 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		if (!term) return;
 		const { dark, light } = buildTerminalThemes();
 		term.options.theme = props.theme === "dark" ? dark : light;
+		colorSchemeReporterRef.current?.(props.theme, themeStyle);
 	}, [props.theme, themeStyle]);
+
+	useEffect(() => {
+		if (!termRef.current || !props.supportsCursorColorScheme) return;
+		announcedCursorSchemeRef.current = null;
+		notifyCursorSchemeRef.current(props.theme, true, true);
+	}, [props.theme, props.supportsCursorColorScheme]);
 
 	useEffect(() => {
 		const term = termRef.current;
@@ -602,11 +674,90 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				});
 			return true;
 		};
-		const userInputListeners = new Set<(data: string, source: TerminalUserInputSource) => void>();
+		const userInputListeners = new Set<(data: string, source: TerminalUserInputSource) => boolean | void>();
 		const emitUserInput = (data: string, source: TerminalUserInputSource) => {
-			if (data.length === 0) return;
-			userInputListeners.forEach((listener) => listener(data, source));
+			if (data.length === 0) return false;
+			let accepted = false;
+			userInputListeners.forEach((listener) => {
+				if (listener(data, source) === true) accepted = true;
+			});
+			return accepted;
 		};
+		// xterm 5 does not implement the modern terminal color-scheme protocol.
+		// OpenTUI clients use it to receive live light/dark changes after startup.
+		let colorSchemeUpdatesEnabled = false;
+		let currentColorScheme = props.theme;
+		let currentThemeStyle = themeStyle;
+		const reportColorScheme = (theme: Theme, nextThemeStyle: ThemeStyle, force = false) => {
+			const changed = theme !== currentColorScheme || nextThemeStyle !== currentThemeStyle;
+			currentColorScheme = theme;
+			currentThemeStyle = nextThemeStyle;
+			if (!force && (!colorSchemeUpdatesEnabled || !changed)) return;
+			emitUserInput(`\x1b[?997;${theme === "dark" ? 1 : 2}n`, "protocol");
+		};
+		const hasCsiMode = (params: (number | number[])[], mode: number) =>
+			params.some((param) => param === mode);
+		colorSchemeReporterRef.current = reportColorScheme;
+		const setColorSchemeUpdates = term.parser.registerCsiHandler(
+			{ prefix: "?", final: "h" },
+			(params) => {
+				if (!hasCsiMode(params, COLOR_SCHEME_UPDATE_MODE)) return false;
+				colorSchemeUpdatesEnabled = true;
+				currentColorScheme = callbacksRef.current.theme;
+				currentThemeStyle = useUiStore.getState().themeStyle;
+				return params.length === 1;
+			},
+		);
+		const resetColorSchemeUpdates = term.parser.registerCsiHandler(
+			{ prefix: "?", final: "l" },
+			(params) => {
+				if (!hasCsiMode(params, COLOR_SCHEME_UPDATE_MODE)) return false;
+				colorSchemeUpdatesEnabled = false;
+				return params.length === 1;
+			},
+		);
+		const queryColorSchemeCapability = term.parser.registerCsiHandler(
+			{ prefix: "?", intermediates: "$", final: "p" },
+			(params) => {
+				if (!hasCsiMode(params, COLOR_SCHEME_UPDATE_MODE)) return false;
+				emitUserInput(`\x1b[?${COLOR_SCHEME_UPDATE_MODE};${colorSchemeUpdatesEnabled ? 1 : 2}$y`, "protocol");
+				return params.length === 1;
+			},
+		);
+		const queryColorScheme = term.parser.registerCsiHandler(
+			{ prefix: "?", final: "n" },
+			(params) => {
+				if (!hasCsiMode(params, COLOR_SCHEME_QUERY)) return false;
+				reportColorScheme(
+					callbacksRef.current.theme,
+					useUiStore.getState().themeStyle,
+					true,
+				);
+				return params.length === 1;
+			},
+		);
+		const terminalColorsForScheme = (scheme: Theme): OscTerminalColors => {
+			const palette = buildTerminalThemes()[scheme];
+			return {
+				foreground: palette.foreground ?? "",
+				background: palette.background ?? "",
+				cursor: palette.cursor ?? palette.foreground ?? "",
+			};
+		};
+		const notifyCursorScheme = (scheme: Theme, force = false, retry = false) => {
+			if (!force && announcedCursorSchemeRef.current === scheme) return;
+			announcedCursorSchemeRef.current = scheme;
+			const bytes =
+				buildOscColorReports(terminalColorsForScheme(scheme)) +
+				buildCursorColorSchemeNotification(scheme);
+			const send = () => emitUserInput(bytes, "protocol");
+			send();
+			if (!retry) return;
+			for (const timer of schemeRetryTimers) window.clearTimeout(timer);
+			schemeRetryTimers = [50, 200].map((delayMs) => window.setTimeout(send, delayMs));
+		};
+		let schemeRetryTimers: number[] = [];
+		notifyCursorSchemeRef.current = notifyCursorScheme;
 		const pasteText = (text: string) => {
 			const prepared = preparePastedText(text);
 			const bracketed = term.modes.bracketedPasteMode && term.options.ignoreBracketedPasteMode !== true;
@@ -883,6 +1034,23 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// those bytes through the mux writes dirty input into the real Codex PTY and
 		// corrupts the TUI. Keyboard is the only safe generic text path here; paste,
 		// composition, shortcuts, and wheel reports are emitted explicitly below.
+		// Forward validated OSC 4/10/11/12 color replies and cursor-position
+		// reports only. Interactive prompts such as `gh auth login` use DSR to ask
+		// xterm for the cursor position and block until the corresponding CPR reaches
+		// the PTY. Other onData bytes must not reach the PTY or agent TUIs break.
+		// Retained terminals can change providers without remounting. Keep the
+		// listener mounted for every provider so standard color replies continue to
+		// reach the PTY after a provider change.
+		const oscColorForwarder = createOscColorReportForwarder((report) => {
+			emitUserInput(report, "protocol");
+		});
+		const cursorPositionForwarder = createCursorPositionReportForwarder((report) => {
+			emitUserInput(report, "protocol");
+		});
+		const protocolInput = term.onData((data) => {
+			oscColorForwarder.push(data);
+			cursorPositionForwarder.push(data);
+		});
 		const keyInput = term.onKey(({ key }) => emitUserInput(key, "keyboard"));
 
 		// Translate wheel motion into SGR wheel reports for the pane (see
@@ -1059,14 +1227,52 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// Forward xterm's write callback: it fires once THIS chunk has been
 			// parsed into the buffer, which is what lets the attachment reveal the
 			// pane at the replay's settled scroll position (issue #3160).
-			write: (data, done) =>
+			write: (data, done, source = "live") => {
+				let hasEsc = false;
+				for (let i = 0; i < data.length; i++) {
+					if (data[i] === 0x1b) {
+						hasEsc = true;
+						break;
+					}
+				}
+				if (source === "replay") {
+					// Existing panes replay historical DSRs through xterm. Clear any old
+					// correlation credits so their generated CPRs cannot reach the live PTY.
+					cursorPositionForwarder.dispose();
+				}
+				if (hasEsc || cursorPositionForwarder.hasPartialRequest()) {
+					// A DSR can be split immediately after ESC. Decode an ESC-free chunk
+					// only while a request prefix from the preceding chunk is incomplete.
+					const chunk = new TextDecoder().decode(data);
+					if (source === "live") cursorPositionForwarder.observeOutput(chunk);
+					if (hasEsc) {
+						const reply = callbacksRef.current.supportsCursorColorScheme
+							? cursorColorSchemeReplyForOutput(chunk, callbacksRef.current.theme)
+							: null;
+						if (reply) {
+							announcedCursorSchemeRef.current = null;
+							notifyCursorScheme(callbacksRef.current.theme, true, true);
+						}
+					}
+				}
 				term.write(data, () => {
 					scheduleScrollbarUpdate();
 					done?.();
-				}),
+				});
+			},
 			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
 			showLatestOutput,
 			prepareForActivation,
+			// Live buffer discriminator for predictive local echo on cloud panes:
+			// predictions run only while the NORMAL buffer is active (alt-screen
+			// TUIs repaint too aggressively to predict into).
+			bufferType: () => term.buffer.active.type,
+			notifyCursorColorScheme: () => {
+				if (callbacksRef.current.supportsCursorColorScheme) {
+					notifyCursorScheme(callbacksRef.current.theme, false, true);
+				}
+			},
+			sendUserInput: (data, source = "shortcut") => emitUserInput(data, source),
 			onUserInput: (listener) => {
 				userInputListeners.add(listener);
 				return { dispose: () => userInputListeners.delete(listener) };
@@ -1111,26 +1317,67 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			contextMenuActionsRef.current = null;
 			cancelActivationPreparation?.();
 			clearSuppressNativePaste();
+			if (colorSchemeReporterRef.current === reportColorScheme) colorSchemeReporterRef.current = null;
+			setColorSchemeUpdates.dispose();
+			resetColorSchemeUpdates.dispose();
+			queryColorSchemeCapability.dispose();
+			queryColorScheme.dispose();
+			for (const timer of schemeRetryTimers) window.clearTimeout(timer);
+			schemeRetryTimers = [];
+			oscColorForwarder.dispose();
+			cursorPositionForwarder.dispose();
+			protocolInput.dispose();
 			keyInput.dispose();
+			notifyCursorSchemeRef.current = () => {};
+			announcedCursorSchemeRef.current = null;
 			userInputListeners.clear();
-			try {
-				term.dispose();
-			} catch {
-				// Some renderer addons can throw during dispose in certain GPU
-				// environments; the terminal is being torn down regardless.
+			const disposeTerminal = () => {
+				try {
+					term.dispose();
+				} catch {
+					// Some renderer addons can throw during dispose in certain GPU
+					// environments; the terminal is being torn down regardless.
+				}
+			};
+			if (import.meta.env.DEV) {
+				// xterm's Viewport constructor queues an untracked zero-delay
+				// syncScrollArea(). React StrictMode immediately runs this cleanup after
+				// its development probe mount; queue disposal behind that callback so it
+				// cannot read the already-cleared renderer dimensions.
+				window.setTimeout(disposeTerminal, 0);
+			} else {
+				disposeTerminal();
 			}
 		};
 	}, []);
 
 	useEffect(() => {
 		if (!props.focusRequested || props.isVisible === false) return undefined;
-		try {
-			termRef.current?.focus();
-		} catch {
-			// The retained terminal may have been parked during this effect.
-		}
-		return undefined;
-	}, [props.focusRequested, props.isVisible]);
+		let retryFrame: number | null = null;
+		let retriesRemaining = AUTOFOCUS_RETRY_FRAMES;
+		let cancelled = false;
+		const focusIfAllowed = () => {
+			if (cancelled) return;
+			const host = hostRef.current;
+			if (!host || !canAutoFocusTerminal(host)) {
+				if (retriesRemaining === 0) return;
+				retriesRemaining -= 1;
+				retryFrame = requestAnimationFrame(() => {
+					retryFrame = null;
+					focusIfAllowed();
+				});
+				return;
+			}
+			focusTerminal();
+		};
+
+		focusIfAllowed();
+
+		return () => {
+			cancelled = true;
+			if (retryFrame !== null) cancelAnimationFrame(retryFrame);
+		};
+	}, [focusTerminal, props.focusRequested, props.isVisible]);
 
 	useLayoutEffect(() => {
 		if (props.isVisible === false) {
@@ -1142,8 +1389,11 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				window.clearTimeout(copiedToastTimerRef.current);
 				copiedToastTimerRef.current = undefined;
 			}
+			cancelPendingFocusRestore();
 		}
-	}, [props.isVisible, setContextMenuOpen]);
+	}, [props.isVisible, setContextMenuOpen, cancelPendingFocusRestore]);
+
+	useEffect(() => cancelPendingFocusRestore, [cancelPendingFocusRestore]);
 
 	const wasVisibleRef = useRef(props.isVisible !== false);
 	useEffect(() => {
@@ -1275,7 +1525,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 						<DropdownMenuItem
 							onSelect={() => {
 								setContextMenuOpen(false);
-								callbacksRef.current.onToggleFullscreen?.();
+								void toggleFullscreenAndRestoreFocus();
 							}}
 						>
 							{props.isFullscreen ? t("terminal.exitFullscreen") : t("terminal.fullscreen")}

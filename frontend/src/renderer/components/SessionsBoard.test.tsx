@@ -3,6 +3,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import { toKanbanColumn } from "@aoagents/product-ui";
 import { appI18n } from "../i18n";
 
 // Instant motion updates so height tweens do not leave tests waiting on timers.
@@ -37,6 +38,13 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	workspaceQueryKey: ["workspaces"],
 	useWorkspaceQuery: workspaceQueryMock,
+	useWorkspaceScope: (projectId?: string) => {
+		const query = workspaceQueryMock();
+		return {
+			...query,
+			data: { project: query.data?.find((workspace: WorkspaceSummary) => workspace.id === projectId) },
+		};
+	},
 }));
 
 vi.mock("../hooks/useSessionUsageSummaries", () => ({
@@ -151,7 +159,10 @@ describe("SessionsBoard", () => {
 		try {
 			renderBoard("p1");
 			expect(screen.getByRole("button", { name: "终止 localized worker" })).toBeInTheDocument();
-			expect(screen.getByLabelText("#42 已打开")).toHaveTextContent("已打开");
+			expect(screen.getByRole("link", { name: "PR #42 已打开" })).toHaveAttribute(
+				"href",
+				"https://github.com/acme/repo/pull/42",
+			);
 		} finally {
 			await appI18n.changeLanguage("en");
 		}
@@ -379,33 +390,28 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 
-		// The card shows cost and tokens and nothing else. The word "processed"
-		// only survives where a screen reader needs the count named.
-		const activeUsage = screen.getByText("$1.24 · 12.3K");
+		// The card shows dollar cost by default; the token count remains in the
+		// hover tooltip and accessible label.
+		const activeUsage = screen.getByText("$1.24", { selector: "span" });
 		expect(activeUsage).toHaveAttribute("aria-hidden", "true");
 		expect(screen.getByText("$1.24 · 12,300 tokens")).toHaveClass("sr-only");
 		expect(screen.queryByText(/processed/i)).not.toBeInTheDocument();
-		// A null estimate stays explicit even when the summary has no tokens.
+		// Sessions without a dollar estimate stay visible if they still have
+		// token usage; sessions with no cost and no tokens still show nothing.
 		const emptyCard = screen.getByText("empty worker").closest('[data-testid="board-session-card"]') as HTMLElement;
-		const emptyCost = within(emptyCard).getAllByText("Unavailable");
-		expect(emptyCost).toHaveLength(2);
-		expect(emptyCost.some((node) => node.getAttribute("aria-hidden") === "true")).toBe(true);
-		expect(emptyCost.some((node) => node.classList.contains("sr-only"))).toBe(true);
+		expect(within(emptyCard).queryByText("Unavailable")).not.toBeInTheDocument();
+		expect(within(emptyCard).queryByText("0 tokens")).not.toBeInTheDocument();
 		const tokensOnlyCard = screen.getByText("tokens worker").closest('[data-testid="board-session-card"]') as HTMLElement;
-		expect(within(tokensOnlyCard).getByText("Unavailable · 800")).toHaveAttribute("aria-hidden", "true");
-		expect(within(tokensOnlyCard).getByText("Unavailable · 800 tokens")).toHaveClass("sr-only");
-		expect(tokensOnlyCard).not.toHaveTextContent(/[≈≥]\$/);
+		expect(within(tokensOnlyCard).getByText("800", { selector: "span" })).toHaveAttribute("aria-hidden", "true");
+		expect(within(tokensOnlyCard).getByText("800 tokens")).toHaveClass("sr-only");
 		expect(usageQueryMock).toHaveBeenCalledWith("p1");
 
 		const archive = await expandArchive();
+		expect(within(archive).getByText("$0.02")).toHaveAttribute("aria-hidden", "true");
 		expect(within(archive).getByText("$0.02 · 1,900 tokens")).toHaveClass("sr-only");
 	});
 
-	// The breakdown lived behind a tooltip whose trigger was a real button, so
-	// every priced card added a tab stop between the terminate control and the
-	// next card. A board is for scanning; the per-component figures belong on
-	// the session's own surface, so the metric is plain text again.
-	it("shows the usage metric as plain text without a tab stop or tooltip", async () => {
+	it("shows cost by default and cost plus tokens on hover without a tab stop", async () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
@@ -440,25 +446,59 @@ describe("SessionsBoard", () => {
 		renderBoard("p1");
 
 		const card = screen.getByText("keyboard worker").closest('[data-testid="board-session-card"]') as HTMLElement;
-		const usage = within(card).getByText("$1.24 · 12.4K");
+		const usage = within(card).getByText("$1.24", { selector: "span" });
 		expect(usage.tagName).toBe("SPAN");
 		// The compact text is decorative; the full label is real off-screen text
 		// rather than an aria-label on a generic span, which is not reliably
-		// exposed. Neither is a tab stop and neither opens a tooltip.
+		// exposed. The hover trigger is not a tab stop.
 		expect(usage).toHaveAttribute("aria-hidden", "true");
 		expect(within(card).getByText("$1.24 · 12,400 tokens")).toHaveClass("sr-only");
-		expect(within(card).queryByRole("button", { name: /Estimated cost/ })).not.toBeInTheDocument();
 
 		within(card).getByRole("button", { name: "keyboard worker" }).focus();
 		await userEvent.tab();
 		expect(within(card).getByRole("button", { name: "Terminate keyboard worker" })).toHaveFocus();
 
 		await userEvent.hover(usage);
-		expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-		expect(card).not.toHaveTextContent("Cached input");
+		expect(await screen.findByRole("tooltip")).toHaveTextContent("$1.24 · 12,400 tokens");
 	});
 
-	it("pulses the shared activity indicator on an actively working session card", () => {
+	it("shows token-only usage when pricing is unavailable", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "s-tokens", title: "tokens worker", status: "idle" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		usageQueryMock.mockReturnValue({
+			data: new Map([
+				[
+					"s-tokens",
+					{
+						estimatedCost: null,
+						incomplete: false,
+						sessionId: "s-tokens",
+						processedTokens: 12_400,
+						totalTokens: 12_400,
+					},
+				],
+			]),
+		});
+
+		renderBoard("p1");
+
+		const card = screen.getByText("tokens worker").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const usage = within(card).getByText("12.4K", { selector: "span" });
+		expect(usage).toHaveAttribute("aria-hidden", "true");
+		expect(within(card).getByText("12,400 tokens")).toHaveClass("sr-only");
+
+		await userEvent.hover(usage);
+		expect(await screen.findByRole("tooltip")).toHaveTextContent("12,400 tokens");
+	});
+
+	it("styles a working card from its building lane without inferring from runtime activity", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
@@ -477,7 +517,88 @@ describe("SessionsBoard", () => {
 		renderBoard("p1");
 		const card = screen.getByText("active-card-task").closest('[data-testid="board-session-card"]') as HTMLElement;
 		const working = within(card).getByText("Working").parentElement as HTMLElement;
-		expect(working.querySelector('[aria-hidden="true"]')).toHaveClass("bg-status-working", "animate-status-pulse");
+		expect(working).toHaveAttribute("data-kanban-column", "building");
+		expect(working).toHaveClass("text-status-working");
+		expect(working.style.getPropertyValue("--session-status-tone")).toBe("");
+		expect(working.querySelector('[aria-hidden="true"]')).toHaveClass("animate-spin");
+	});
+
+	// A multi-PR session aggregates `status` from its worst open PR while
+	// `displayStatus` comes from its best one, so a settled "Mergeable" card can
+	// carry status `review_pending`. The loader must follow the label the card
+	// actually shows, not the hidden aggregate, or an idle session spins forever.
+	it("does not spin a settled Mergeable card whose worst PR aggregates to review_pending", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-mergeable",
+						title: "mergeable-card-task",
+						status: "review_pending",
+						displayStatus: "Mergeable",
+						kanbanColumn: "ready",
+						activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("mergeable-card-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const status = within(card).getByTestId("session-status");
+		expect(status).toHaveTextContent("Mergeable");
+		expect(status.querySelector(".animate-spin")).toBeNull();
+	});
+
+	it("keeps the loader on a Review pending card", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-review-pending",
+						title: "review-pending-card-task",
+						status: "review_pending",
+						displayStatus: "Review pending",
+						kanbanColumn: "needs_review",
+						activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("review-pending-card-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const status = within(card).getByTestId("session-status");
+		expect(status).toHaveTextContent("Review pending");
+		expect(status.querySelector(".animate-spin")).not.toBeNull();
+	});
+
+	it("keeps the loader on a Mergeable card while its agent is actually working", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-mergeable-active",
+						title: "mergeable-active-task",
+						status: "working",
+						displayStatus: "Mergeable",
+						kanbanColumn: "ready",
+						activity: { state: "active", lastActivityAt: "2026-01-01T00:00:00Z" },
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("mergeable-active-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const status = within(card).getByTestId("session-status");
+		expect(status.querySelector(".animate-spin")).not.toBeNull();
 	});
 
 	it("keeps a spawning card labeled Working when raw activity has not become active", () => {
@@ -524,11 +645,13 @@ describe("SessionsBoard", () => {
 		const card = screen.getByText("switching worker").closest('[data-testid="board-session-card"]') as HTMLElement;
 		const status = within(card).getByText("Switching to Codex").parentElement as HTMLElement;
 		expect(status).toHaveClass("text-status-working");
-		expect(status.querySelector("span")).toHaveClass("animate-status-pulse");
+		expect(status).not.toHaveAttribute("data-kanban-column");
+		expect(status.style.getPropertyValue("--session-status-tone")).toBe("");
+		expect(status.querySelector(".animate-status-pulse")).toBeNull();
 		expect(within(card).queryByText("Exited")).not.toBeInTheDocument();
 	});
 
-	it("uses distinct card badge tones for idle, no signal, and draft PR sessions", () => {
+	it("styles legacy statuses from their status-implied Kanban columns", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				{
@@ -583,12 +706,21 @@ describe("SessionsBoard", () => {
 		const noSignalCard = screen.getByText("no-signal-card-task").closest('[data-testid="board-session-card"]') as HTMLElement;
 		const draftCard = screen.getByText("draft-card-task").closest('[data-testid="board-session-card"]') as HTMLElement;
 
-		expect(within(idleCard).getByText("Idle").parentElement).toHaveClass("text-status-idle");
-		expect(within(noSignalCard).getByText("No signal").parentElement).toHaveClass("text-status-unknown");
-		expect(within(draftCard).getByText("Draft PR").parentElement).toHaveClass("text-status-in-review");
+		expect(within(idleCard).getByText("Idle").parentElement).toHaveAttribute(
+			"data-kanban-column",
+			"building",
+		);
+		expect(within(noSignalCard).getByText("No signal").parentElement).toHaveAttribute(
+			"data-kanban-column",
+			"needs_review",
+		);
+		expect(within(draftCard).getByText("Draft PR").parentElement).toHaveAttribute(
+			"data-kanban-column",
+			"validating",
+		);
 	});
 
-	it("places an exited live session in Needs you with an Exited badge", () => {
+	it("keeps a PR-less exited session in the building lane with an Exited badge", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
@@ -600,6 +732,10 @@ describe("SessionsBoard", () => {
 						provider: "codex",
 						branch: "ao/exited",
 						status: "exited",
+						// What the daemon derives for a worker with no PR, whatever its
+						// runtime status. Set explicitly so this covers the daemon path,
+						// not the older-daemon fallback.
+						kanbanColumn: "building",
 						activity: { state: "exited", lastActivityAt: "2026-01-01T00:00:00Z" },
 						updatedAt: "2026-01-01T00:00:00Z",
 						prs: [],
@@ -612,195 +748,17 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 
-		const needsYouColumn = screen.getByText("Needs you").closest("section") as HTMLElement;
-		expect(needsYouColumn.firstElementChild).toHaveClass("h-12");
-		expect(within(needsYouColumn).getByText("agent-exited-task")).toBeInTheDocument();
-		expect(within(needsYouColumn).getByText("Exited").parentElement).toHaveClass("text-status-exited");
+		// Lanes follow the daemon's column: a worker with no PR is still building,
+		// whatever its runtime status. The card keeps its Exited badge.
+		const buildingColumn = screen.getByLabelText("Building sessions");
+		expect(within(buildingColumn).getByText("agent-exited-task")).toBeInTheDocument();
+		expect(within(buildingColumn).getByText("Exited").parentElement).toHaveAttribute(
+			"data-kanban-column",
+			"building",
+		);
 	});
 
-	it("renders an idle-first work lane with a separate lower working section", () => {
-		workspaceQueryMock.mockReturnValue({
-			data: [
-				workspaceWithSessions([
-					boardSession({
-						id: "s-active",
-						title: "active-task",
-						status: "working",
-						activity: { state: "active", lastActivityAt: "2026-01-01T00:00:00Z" },
-					}),
-					boardSession({
-						id: "s-idle-1",
-						title: "idle-no-pr-task",
-						status: "idle",
-						activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
-					}),
-					boardSession({
-						id: "s-idle-2",
-						title: "second-idle-task",
-						status: "idle",
-						activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
-					}),
-					boardSession({
-						id: "s-review",
-						title: "idle-with-pr-task",
-						status: "pr_open",
-						activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
-						prs: [
-							{
-								number: 7,
-								url: "https://github.com/acme/radic/pull/7",
-								state: "open",
-								ci: "unknown",
-								review: "none",
-								mergeability: "unknown",
-								reviewComments: false,
-								updatedAt: "2026-01-01T00:00:00Z",
-							},
-						],
-					}),
-				]),
-			],
-			isError: false,
-		});
-
-		renderBoard("p1");
-
-		const workLane = screen.getByRole("region", { name: "Idle / Working sessions" });
-		const idleRegion = within(workLane).getByRole("region", { name: "Idle sessions" });
-		const workingRegion = within(workLane).getByRole("region", { name: "Working sessions" });
-		const reviewRegion = screen.getByRole("region", { name: "In review sessions" });
-		const workSummary = within(workLane).getByRole("group", { name: "Idle / Working lane summary" });
-
-		expect(within(workSummary).getByText("Idle").querySelector("span")).toHaveClass("bg-status-idle");
-		expect(within(workSummary).getByText("Working").querySelector("span")).toHaveClass("bg-status-working");
-		expect(workSummary).toHaveClass("font-mono", "text-2xs", "uppercase");
-		expect(workSummary.parentElement).toHaveClass("h-12");
-		expect(workingRegion.firstElementChild).toHaveClass("py-2.5");
-		expect(within(workLane).getByLabelText("2 idle sessions")).toHaveTextContent("2");
-		expect(within(workLane).getByLabelText("1 working session")).toHaveTextContent("1");
-		expect(screen.queryByRole("button", { name: /idle sessions/i })).not.toBeInTheDocument();
-		expect(workLane.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
-		expect(idleRegion).toHaveClass("flex-none");
-		expect(idleRegion).not.toHaveClass("overflow-y-auto", "board-scrollbar");
-		expect(workingRegion).toHaveClass("flex-1", "border-t");
-		expect(workingRegion.className).not.toContain("rounded-t");
-		expect(workingRegion).not.toHaveClass("overflow-y-auto", "board-scrollbar");
-		expect(within(idleRegion).getByText("idle-no-pr-task")).toBeInTheDocument();
-		expect(within(idleRegion).getByText("second-idle-task")).toBeInTheDocument();
-		expect(within(workingRegion).getByText("active-task")).toBeInTheDocument();
-		expect(within(reviewRegion).getByText("idle-with-pr-task")).toBeInTheDocument();
-		expect(within(workLane).queryByText("idle-with-pr-task")).not.toBeInTheDocument();
-
-		const idleCard = screen.getByText("idle-no-pr-task").closest('[data-testid="board-session-card"]') as HTMLElement;
-		const badge = within(idleCard).getByText("Idle").parentElement;
-		expect(badge).toHaveClass("text-status-idle");
-		expect(badge).not.toHaveClass("text-status-working");
-	});
-
-	it("uses one shared scrollbar when a short idle section sits above many working sessions", () => {
-		workspaceQueryMock.mockReturnValue({
-			data: [
-				workspaceWithSessions([
-					boardSession({
-						id: "s-idle",
-						title: "single-idle-task",
-						status: "idle",
-						activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
-					}),
-					...Array.from({ length: 7 }, (_, index) =>
-						boardSession({
-							id: `s-working-${index + 1}`,
-							title: `working-task-${index + 1}`,
-							status: "working",
-							activity: { state: "active", lastActivityAt: "2026-01-01T00:00:00Z" },
-						}),
-					),
-				]),
-			],
-			isError: false,
-		});
-
-		renderBoard("p1");
-
-		const workLane = screen.getByRole("region", { name: "Idle / Working sessions" });
-		const idleRegion = within(workLane).getByRole("region", { name: "Idle sessions" });
-		const workingRegion = within(workLane).getByRole("region", { name: "Working sessions" });
-		const laneScrollers = Array.from(workLane.querySelectorAll<HTMLElement>(".overflow-y-auto"));
-
-		expect(laneScrollers).toHaveLength(1);
-		expect(laneScrollers[0]).toHaveClass("board-scrollbar", "overflow-y-auto");
-		expect(laneScrollers[0]).toContainElement(idleRegion);
-		expect(laneScrollers[0]).toContainElement(workingRegion);
-		expect(idleRegion).toHaveClass("flex-none");
-		expect(workingRegion).toHaveClass("flex-1");
-		expect(idleRegion.querySelector(".overflow-y-auto")).not.toBeInTheDocument();
-		expect(workingRegion.querySelector(".overflow-y-auto")).not.toBeInTheDocument();
-		expect(within(idleRegion).getByText("single-idle-task")).toBeInTheDocument();
-		expect(within(workingRegion).getAllByTestId("board-session-card")).toHaveLength(7);
-	});
-
-	it("lets idle sessions fill the lane when no working sessions exist", () => {
-		workspaceQueryMock.mockReturnValue({
-			data: [
-				workspaceWithSessions([
-					boardSession({
-						id: "s-idle",
-						title: "idle-task",
-						status: "idle",
-						activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
-					}),
-				]),
-			],
-			isError: false,
-		});
-
-		renderBoard("p1");
-
-		const workLane = screen.getByRole("region", { name: "Idle / Working sessions" });
-		const idleRegion = within(workLane).getByRole("region", { name: "Idle sessions" });
-		expect(within(workLane).getByLabelText("1 idle session")).toHaveTextContent("1");
-		expect(within(workLane).getByLabelText("0 working sessions")).toHaveTextContent("0");
-		expect(idleRegion).toHaveClass("flex-1");
-		expect(within(idleRegion).getByText("idle-task")).toBeInTheDocument();
-		expect(within(workLane).queryByRole("region", { name: "Working sessions" })).not.toBeInTheDocument();
-	});
-
-	it("lets working sessions fill the lane when no idle sessions exist", () => {
-		workspaceQueryMock.mockReturnValue({
-			data: [
-				workspaceWithSessions([
-					boardSession({
-						id: "s-working-1",
-						title: "first-working-task",
-						status: "working",
-						activity: { state: "active", lastActivityAt: "2026-01-01T00:00:00Z" },
-					}),
-					boardSession({
-						id: "s-working-2",
-						title: "second-working-task",
-						status: "working",
-						activity: { state: "active", lastActivityAt: "2026-01-01T00:00:00Z" },
-					}),
-				]),
-			],
-			isError: false,
-		});
-
-		renderBoard("p1");
-
-		const workLane = screen.getByRole("region", { name: "Idle / Working sessions" });
-		const workingRegion = within(workLane).getByRole("region", { name: "Working sessions" });
-		expect(within(workLane).getByLabelText("0 idle sessions")).toHaveTextContent("0");
-		expect(within(workLane).getByLabelText("2 working sessions")).toHaveTextContent("2");
-		expect(within(workLane).queryByRole("region", { name: "Idle sessions" })).not.toBeInTheDocument();
-		expect(workingRegion).toHaveClass("flex-1");
-		expect(workingRegion).not.toHaveClass("flex-[2]", "border-t");
-		expect(workLane.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
-		expect(within(workingRegion).getByText("first-working-task")).toBeInTheDocument();
-		expect(within(workingRegion).getByText("second-working-task")).toBeInTheDocument();
-	});
-
-	it("keeps idle and working sections visible when navigating between project boards", () => {
+	it("swaps the building lane's cards when navigating between project boards", () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		workspaceQueryMock.mockReturnValue({
 			data: [
@@ -871,9 +829,9 @@ describe("SessionsBoard", () => {
 		});
 		const view = renderBoardWithClient(queryClient, "p1");
 
-		const p1Lane = screen.getByRole("region", { name: "Idle / Working sessions" });
-		expect(within(p1Lane).getByRole("region", { name: "Idle sessions" })).toHaveTextContent("p1 idle");
-		expect(within(p1Lane).getByRole("region", { name: "Working sessions" })).toHaveTextContent("p1 active");
+		const p1Lane = screen.getByRole("region", { name: "Building sessions" });
+		expect(p1Lane).toHaveTextContent("p1 idle");
+		expect(p1Lane).toHaveTextContent("p1 active");
 
 		view.rerender(
 			<QueryClientProvider client={queryClient}>
@@ -883,10 +841,10 @@ describe("SessionsBoard", () => {
 			</QueryClientProvider>,
 		);
 
-		const p2Lane = screen.getByRole("region", { name: "Idle / Working sessions" });
+		const p2Lane = screen.getByRole("region", { name: "Building sessions" });
 		expect(screen.queryByText("p1 idle")).not.toBeInTheDocument();
-		expect(within(p2Lane).getByRole("region", { name: "Idle sessions" })).toHaveTextContent("p2 idle");
-		expect(within(p2Lane).getByRole("region", { name: "Working sessions" })).toHaveTextContent("p2 active");
+		expect(p2Lane).toHaveTextContent("p2 idle");
+		expect(p2Lane).toHaveTextContent("p2 active");
 	});
 
 	it("shows a static archive card with a persistent restore action", async () => {
@@ -930,30 +888,53 @@ describe("SessionsBoard", () => {
 		expect(terminatedCard).not.toHaveClass("min-h-28");
 		expect(within(terminatedCard!).queryByRole("button", { name: "Open dead worker" })).not.toBeInTheDocument();
 		expect(within(terminatedCard!).getByText("Terminated")).toBeInTheDocument();
+		expect(within(terminatedCard!).getByTestId("session-pr-progress")).toHaveTextContent(
+			"1 of 2 PRs merged · 1 open",
+		);
 		// Agent shown as its brand logo with an accessible name (not a text label).
 		expect(within(terminatedCard!).getByRole("img", { name: "claude-code" })).toBeInTheDocument();
 		expect(screen.getByText("ao/dead-worker")).toBeInTheDocument();
-		expect(screen.getByText("github:INT-17")).toBeInTheDocument();
-		const prStatus = screen.getByLabelText("#42 merged");
-		expect(prStatus).toHaveTextContent("PR#42merged");
-		expect(within(prStatus).getByText("merged")).toHaveClass("text-status-merged");
-		const openPrStatus = screen.getByLabelText("#41 open");
-		expect(openPrStatus.parentElement).toBe(prStatus.parentElement);
-		expect(prStatus.parentElement).toHaveClass("flex-wrap");
-		expect(within(terminatedCard!).getByRole("link", { name: "#42" })).toHaveAttribute(
+		expect(within(terminatedCard!).queryByText("github:INT-17")).not.toBeInTheDocument();
+		expect(within(terminatedCard!).getByRole("link", { name: "PR #42 merged" })).toHaveAttribute(
 			"href",
 			"https://github.com/example/radic/pull/42",
 		);
+		expect(within(terminatedCard!).getByRole("link", { name: "PR #41 open" })).toHaveAttribute(
+			"href",
+			"https://github.com/example/radic/pull/41",
+		);
 		expect(within(terminatedCard!).getByRole("button", { name: "Copy branch ao/dead-worker" })).toBeInTheDocument();
-		const divider = terminatedCard!.querySelector("div[aria-hidden='true'].h-px.bg-border");
+		const divider = terminatedCard!.querySelector("div.border-t.border-border");
 		expect(divider).not.toBeNull();
-		expect(divider!.compareDocumentPosition(prStatus) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+		const mergedPrLink = within(terminatedCard!).getByRole("link", { name: "PR #42 merged" });
+		expect(divider!.compareDocumentPosition(mergedPrLink) & Node.DOCUMENT_POSITION_PRECEDING).not.toBe(0);
 		expect(
 			screen.getByText("ao/dead-worker").compareDocumentPosition(divider!) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).not.toBe(0);
 		expect(screen.getByRole("button", { name: "Restore dead worker" })).toBeInTheDocument();
 
 		expect(screen.queryByRole("group", { name: "Archive layout" })).not.toBeInTheDocument();
+	});
+
+	it("hides PR progress for a live merged session that has not actually terminated", () => {
+		const liveMergedSession = terminatedSession({
+			id: "s-live-merged",
+			title: "live merged worker",
+			status: "merged",
+			isTerminated: false,
+			kanbanColumn: "ready",
+		});
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([liveMergedSession])],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		const card = screen.getByText("live merged worker").closest<HTMLElement>("[data-testid='board-session-card']");
+		expect(card).not.toBeNull();
+		expect(within(card!).queryByTestId("session-pr-progress")).not.toBeInTheDocument();
 	});
 
 	it("keeps archive cards mounted after collapse so reopen does not remount them", async () => {
@@ -1225,7 +1206,7 @@ describe("SessionsBoard", () => {
 		expect(screen.queryByText("Session can no longer be restored")).not.toBeInTheDocument();
 	});
 
-	it("shows a merged-only lane and opens its card without showing restore", async () => {
+	it("keeps a live merged session in the ready lane and opens its card without restore", async () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [workspaceWithSessions([boardSession({ id: "s-merged", title: "merged worker", status: "merged" })])],
 			isError: false,
@@ -1234,16 +1215,9 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 
-		const mergeLane = screen.getByRole("region", { name: "Ready to merge / Merged sessions" });
-		const mergedRegion = within(mergeLane).getByRole("region", { name: "Merged sessions" });
-		const mergeSummary = within(mergeLane).getByRole("group", { name: "Ready to merge / Merged lane summary" });
-		expect(within(mergeSummary).getByText("Ready to merge").querySelector("span")).toHaveClass("bg-status-ready");
-		expect(within(mergeSummary).getByText("Merged").querySelector("span")).toHaveClass("bg-status-merged");
-		expect(within(mergeLane).getByLabelText("0 ready to merge sessions")).toHaveTextContent("0");
-		expect(within(mergeLane).getByLabelText("1 merged session")).toHaveTextContent("1");
-		expect(within(mergeLane).queryByRole("region", { name: "Ready to merge sessions" })).not.toBeInTheDocument();
-		expect(mergedRegion).toHaveClass("flex-1");
-		expect(within(mergedRegion).getByText("merged worker")).toBeInTheDocument();
+		const readyLane = screen.getByRole("region", { name: "Ready sessions" });
+		expect(within(readyLane).getByText("Ready")).toHaveClass("text-status-ready");
+		expect(within(readyLane).getByText("merged worker")).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /archive/i })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Restore merged worker" })).not.toBeInTheDocument();
 
@@ -1256,12 +1230,31 @@ describe("SessionsBoard", () => {
 		});
 	});
 
-	it("splits ready and merged sessions into upper and lower regions", () => {
+	it("groups lanes by the daemon's Kanban column, not by display status", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
-					boardSession({ id: "s-ready", title: "ready worker", status: "mergeable" }),
-					boardSession({ id: "s-merged", title: "merged worker", status: "merged" }),
+					// Both are "working" on the card; only the column decides the lane.
+					boardSession({
+						id: "s-validating",
+						title: "validating worker",
+						status: "working",
+						kanbanColumn: "validating",
+					}),
+					boardSession({
+						id: "s-building",
+						title: "building worker",
+						status: "working",
+						kanbanColumn: "building",
+					}),
+					// Mergeable on the card, but no AO loop is turning it, so the
+					// review-feedback loop is on a person's turn.
+					boardSession({
+						id: "s-needs-review",
+						title: "in review worker",
+						status: "mergeable",
+						kanbanColumn: "needs_review",
+					}),
 				]),
 			],
 			isError: false,
@@ -1270,20 +1263,125 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 
-		const mergeLane = screen.getByRole("region", { name: "Ready to merge / Merged sessions" });
-		const readyRegion = within(mergeLane).getByRole("region", { name: "Ready to merge sessions" });
-		const mergedRegion = within(mergeLane).getByRole("region", { name: "Merged sessions" });
-		expect(within(mergeLane).getByLabelText("1 ready to merge session")).toHaveTextContent("1");
-		expect(within(mergeLane).getByLabelText("1 merged session")).toHaveTextContent("1");
-		expect(mergeLane.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
-		expect(readyRegion).toHaveClass("flex-none");
-		expect(readyRegion).not.toHaveClass("overflow-y-auto", "board-scrollbar");
-		expect(mergedRegion).toHaveClass("flex-1", "border-t");
-		expect(mergedRegion.className).not.toContain("rounded-t");
-		expect(mergedRegion).not.toHaveClass("overflow-y-auto", "board-scrollbar");
-		expect(within(readyRegion).getByText("ready worker")).toBeInTheDocument();
-		expect(within(mergedRegion).getByText("merged worker")).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /archive/i })).not.toBeInTheDocument();
+		const lane = (label: string) => screen.getByLabelText(label);
+		expect(within(lane("Building sessions")).getByText("building worker")).toBeInTheDocument();
+		expect(within(lane("Validating sessions")).getByText("validating worker")).toBeInTheDocument();
+		expect(within(lane("In review sessions")).getByText("in review worker")).toBeInTheDocument();
+		expect(within(lane("Ready sessions")).queryByText("in review worker")).toBeNull();
+	});
+
+	it("renders the daemon's display status on the card", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-ci",
+						title: "ci worker",
+						status: "ci_failed",
+						kanbanColumn: "validating",
+						displayStatus: "Fixing CI failures",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		expect(screen.getByText("Fixing CI failures")).toBeInTheDocument();
+		expect(screen.queryByText("CI failed")).not.toBeInTheDocument();
+	});
+
+	it("highlights every user-attention status while leaving ordinary cards neutral", () => {
+		const attentionStatuses = [
+			"ci_failed",
+			"changes_requested",
+		] as const;
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					...attentionStatuses.map((status) =>
+						boardSession({
+							id: `s-${status}`,
+							kanbanColumn: "building",
+							status,
+							title: `${status} worker`,
+						}),
+					),
+					boardSession({ id: "s-idle", title: "idle worker", status: "idle" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		for (const status of attentionStatuses) {
+			const card = screen
+				.getByText(`${status} worker`)
+				.closest('[data-testid="board-session-card"]');
+			expect(card).toHaveClass(
+				"animate-attention-card-pulse",
+				"border-status-needs-you",
+				"bg-[color-mix(in_srgb,var(--color-status-needs-you)_8%,var(--color-surface))]",
+			);
+		}
+
+		const ordinaryCard = screen
+			.getByText("idle worker")
+			.closest('[data-testid="board-session-card"]');
+		expect(ordinaryCard).toHaveClass("border-border", "bg-surface");
+		expect(ordinaryCard).not.toHaveClass("animate-attention-card-pulse");
+	});
+
+	// Mixed-version upgrade: an older daemon sends no kanbanColumn at all. Cards
+	// must stay in the lanes their status already put them in, not pile into the
+	// leftmost one.
+	it("keeps an older daemon's sessions in their status-implied lanes", () => {
+		const legacy = (id: string, title: string, status: WorkspaceSession["status"]): WorkspaceSession => {
+			const session = boardSession({ id, title, status });
+			delete session.kanbanColumn;
+			return session;
+		};
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					legacy("s-ready", "legacy ready worker", "mergeable"),
+					legacy("s-action", "legacy action worker", "changes_requested"),
+					legacy("s-review", "legacy review worker", "review_pending"),
+					legacy("s-working", "legacy working worker", "working"),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		const lane = (label: string) => screen.getByLabelText(label);
+		expect(within(lane("Building sessions")).getByText("legacy working worker")).toBeInTheDocument();
+		expect(within(lane("Validating sessions")).getByText("legacy review worker")).toBeInTheDocument();
+		expect(within(lane("In review sessions")).getByText("legacy action worker")).toBeInTheDocument();
+		expect(within(lane("Ready sessions")).getByText("legacy ready worker")).toBeInTheDocument();
+	});
+
+	it("orders the lanes building, validating, in review, then ready", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({ id: "s-one", title: "worker one", status: "idle" })])],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		expect(screen.getAllByTestId("board-column").map((column) => column.dataset.column)).toEqual([
+			"building",
+			"validating",
+			"needs_review",
+			"ready",
+		]);
 	});
 
 	it("uses the shared minimal scrollbar styling for every Kanban lane", () => {
@@ -1313,7 +1411,7 @@ describe("SessionsBoard", () => {
 		}
 	});
 
-	it("archives a terminated merged runtime without duplicating it in the merged lane", async () => {
+	it("archives a terminated merged runtime without duplicating it in the ready lane", async () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
@@ -1327,9 +1425,9 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 
-		const mergedRegion = screen.getByRole("region", { name: "Merged sessions" });
-		expect(within(mergedRegion).getByText("live merged worker")).toBeInTheDocument();
-		expect(within(mergedRegion).queryByText("archived merged worker")).not.toBeInTheDocument();
+		const readyLane = screen.getByRole("region", { name: "Ready sessions" });
+		expect(within(readyLane).getByText("live merged worker")).toBeInTheDocument();
+		expect(within(readyLane).queryByText("archived merged worker")).not.toBeInTheDocument();
 
 		await expandArchive();
 		const archive = screen.getByRole("list", { name: "Archived sessions" });
@@ -1343,7 +1441,10 @@ describe("SessionsBoard", () => {
 		expect(
 			within(archivedMergedCard!).queryByRole("button", { name: "Terminate archived merged worker" }),
 		).not.toBeInTheDocument();
-		expect(within(archivedMergedCard!).getByText("Merged").parentElement).toHaveClass("text-status-merged");
+		expect(within(archivedMergedCard!).getByText("Merged").parentElement).toHaveAttribute(
+			"data-kanban-column",
+			"archive",
+		);
 		expect(within(archive).getByRole("button", { name: "Restore archived merged worker" })).toBeInTheDocument();
 	});
 
@@ -1438,6 +1539,22 @@ describe("SessionsBoard", () => {
 		expect(await screen.findByRole("alert")).toHaveTextContent("Failed to terminate session (500)");
 		expect(screen.getByRole("button", { name: "Terminate merged worker" })).toBeEnabled();
 	});
+
+	it("shows a folder-missing banner when the project root no longer exists on disk", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [{ ...workspaceWithSessions([]), folderMissing: true }],
+		});
+		renderBoard("p1");
+		expect(screen.getByText(appI18n.t("home.folderMissing"))).toBeInTheDocument();
+	});
+
+	it("does not show the folder-missing banner when the project folder exists", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [{ ...workspaceWithSessions([]), folderMissing: false }],
+		});
+		renderBoard("p1");
+		expect(screen.queryByText(appI18n.t("home.folderMissing"))).not.toBeInTheDocument();
+	});
 });
 
 function workspaceWithSessions(sessions: WorkspaceSession[]): WorkspaceSummary {
@@ -1457,6 +1574,7 @@ function boardSession(
 		workspaceName: "radic",
 		provider: "claude-code",
 		branch: `ao/${overrides.id}`,
+		kanbanColumn: toKanbanColumn(undefined, overrides.status),
 		updatedAt: "2026-01-01T00:00:00Z",
 		prs: [],
 		...overrides,
@@ -1488,6 +1606,7 @@ function terminatedSession(overrides: Partial<WorkspaceSession> = {}): Workspace
 		kind: "worker",
 		branch: "ao/dead-worker",
 		status: "terminated",
+		kanbanColumn: "archive",
 		isTerminated: true,
 		updatedAt: "2026-01-01T00:00:00Z",
 		prs: [

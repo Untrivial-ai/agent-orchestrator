@@ -21,8 +21,8 @@ import {
 } from "./ui/dialog";
 
 type InstallJob = components["schemas"]["InstallJob"];
-type InstallTarget = InstallJob["target"];
-type AgentInstallTarget = Extract<InstallTarget, "claude" | "codex" | "opencode" | "copilot">;
+type InstallTarget = "tmux" | "gh" | "claude" | "codex" | "opencode" | "copilot";
+type AgentInstallTarget = Exclude<InstallTarget, "tmux" | "gh">;
 
 // Labels are the CLIs' own product names — not translated, same treatment as
 // "Agent Orchestrator" itself. Descriptions are ordinary UI copy and go
@@ -42,6 +42,10 @@ const AGENT_INSTALL_DESCRIPTION_KEYS: Record<AgentInstallTarget, MessageKey> = {
 };
 
 const POLL_INTERVAL_MS = 1_000;
+
+export function isActiveInstallJob(job: InstallJob | undefined): boolean {
+	return job?.status === "running" || job?.status === "installing" || job?.status === "verifying";
+}
 
 /** Sequential single-target install job runner: POST to start, GET on an
  *  interval while running. One target is ever in flight at a time — this
@@ -76,7 +80,7 @@ function useInstallRunner(onSucceeded: () => void) {
 				});
 				if (error || !data) return; // transient — try again next tick
 				setJob(data);
-				if (data.status === "running") return;
+				if (isActiveInstallJob(data)) return;
 				stopPolling();
 				if (data.status === "succeeded") onSucceededRef.current();
 			})();
@@ -115,7 +119,7 @@ function useInstallRunner(onSucceeded: () => void) {
 			});
 			if (error || !data) throw new Error(apiErrorMessage(error, "Could not start the install."));
 			setJob(data);
-			if (data.status === "running") poll(nextTarget);
+			if (isActiveInstallJob(data)) poll(nextTarget);
 			else if (data.status === "succeeded") onSucceededRef.current();
 		} catch (err) {
 			setStartError(err instanceof Error ? err.message : "Could not start the install.");
@@ -124,7 +128,7 @@ function useInstallRunner(onSucceeded: () => void) {
 		}
 	};
 
-	const running = isStarting || job?.status === "running";
+	const running = isStarting || isActiveInstallJob(job);
 	const jobFor = (nextTarget: InstallTarget) => (target === nextTarget ? job : previews[nextTarget]);
 	const inspectionFinished = (nextTarget: InstallTarget) => inspectedTargets[nextTarget] === true;
 	return { target, startError, running, start, inspect, jobFor, inspectionFinished };
@@ -346,7 +350,7 @@ function InstallAction({
 	onInstall: () => void;
 	t: TFunction;
 }) {
-	const running = job?.status === "running";
+	const running = isActiveInstallJob(job);
 	const failed = job?.status === "failed";
 	const unsupported = job?.status === "unsupported";
 

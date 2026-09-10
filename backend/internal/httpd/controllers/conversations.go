@@ -36,6 +36,9 @@ type ConversationService interface {
 	Interrupt(ctx context.Context, session domain.SessionID) error
 	Steer(ctx context.Context, session domain.SessionID, msg ports.ChatUserMessage) (chatsvc.SteerResult, error)
 	PromoteQueuedTurn(ctx context.Context, session domain.SessionID, turnID string) (chatsvc.PromoteQueuedTurnResult, error)
+	CancelQueuedTurn(ctx context.Context, session domain.SessionID, turnID string) error
+	EditQueuedTurn(ctx context.Context, session domain.SessionID, turnID string, edit chatsvc.QueuedMessageEdit) error
+	ReorderQueuedTurns(ctx context.Context, session domain.SessionID, turnIDs []string) error
 	Models(ctx context.Context, session domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error)
 	ConfigOptions(ctx context.Context, session domain.SessionID) ([]ports.ChatConfigOption, error)
 	SetConfigOption(ctx context.Context, session domain.SessionID, configID string, value ports.ChatConfigOptionValue) ([]ports.ChatConfigOption, error)
@@ -70,6 +73,9 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/conversation/interrupt", c.interrupt)
 	r.Post("/sessions/{sessionId}/conversation/steer", c.steer)
 	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/steer", c.promoteQueuedTurn)
+	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/cancel", c.cancelQueuedTurn)
+	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/queue/edit", c.editQueuedTurn)
+	r.Post("/sessions/{sessionId}/conversation/queue/reorder", c.reorderQueuedTurns)
 	r.Post("/sessions/{sessionId}/conversation/compact", c.compact)
 	r.Get("/sessions/{sessionId}/conversation/models", c.models)
 	r.Get("/sessions/{sessionId}/conversation/config-options", c.configOptions)
@@ -468,11 +474,12 @@ func configOptionsPayload(options []ports.ChatConfigOption) ConversationConfigOp
 		}
 		for _, choice := range option.Choices {
 			item.Choices = append(item.Choices, ConversationConfigChoiceResponse{
-				Value:       choice.Value,
-				Name:        choice.Name,
-				Description: choice.Description,
-				Group:       choice.Group,
-				GroupName:   choice.GroupName,
+				PermissionMode: choice.PermissionMode,
+				Value:          choice.Value,
+				Name:           choice.Name,
+				Description:    choice.Description,
+				Group:          choice.Group,
+				GroupName:      choice.GroupName,
 			})
 		}
 		out.Options = append(out.Options, item)

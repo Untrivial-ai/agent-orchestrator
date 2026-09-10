@@ -450,6 +450,62 @@ describe("session-scoped interface transition mutations", () => {
 			});
 		},
 	);
+
+	it("clears a local start refusal once another client opens a newer transition", async () => {
+		getMock.mockResolvedValue({
+			data: { supported: false, targetMode: "tui", reasonCode: "NATIVE_SESSION_MISSING" },
+			error: undefined,
+		});
+		postMock.mockResolvedValue({ data: undefined, error: { code: "NATIVE_SESSION_MISSING" } });
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useSessionInterfaceTransition("session-a"), {
+			wrapper: HookWrapper,
+		});
+
+		await act(async () => {
+			await result.current.start({ targetMode: "tui", policy: "drain" }).catch(() => {});
+		});
+		await waitFor(() => expect(result.current.startError).toBe("request failed"));
+
+		// Another client starts and progresses the switch; this client's poll picks
+		// up the durable row, whose createdAt is newer than the refused attempt.
+		getMock.mockResolvedValue({
+			data: {
+				supported: true,
+				targetMode: "tui",
+				transition: {
+					id: "transition-remote",
+					sessionId: "session-a",
+					phase: "draining",
+					policy: "drain",
+					sourceMode: "chat",
+					targetMode: "tui",
+					createdAt: "2099-01-01T00:00:00Z",
+					updatedAt: "2099-01-01T00:00:00Z",
+				},
+			},
+			error: undefined,
+		});
+		await act(async () => {
+			await queryClient.invalidateQueries({
+				queryKey: ["session-interface-transition", "session-a"],
+			});
+		});
+
+		await waitFor(() => expect(result.current.transition?.id).toBe("transition-remote"));
+		expect(result.current.startError).toBeUndefined();
+		// The stale mutation state is dropped, so the refusal cannot reappear.
+		expect(
+			queryClient
+				.getMutationCache()
+				.findAll({ mutationKey: ["start-session-interface-transition"] }),
+		).toHaveLength(0);
+	});
 });
 
 describe("interface switch readiness", () => {

@@ -2,7 +2,6 @@ import posthog from "posthog-js/dist/module.full.no-external";
 import { aoBridge } from "./bridge";
 import { isLoopbackHostname } from "./loopback";
 import { ORCHESTRATOR_SPAWN_SOURCES } from "./orchestrator-spawn-sources";
-import { KNOWN_REVIEWER_HARNESS_IDS } from "./reviewer-harnesses";
 import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "../../shared/posthog-config";
 import { EDITOR_IDS } from "../../shared/editor-handoff";
 import { captureExceptionToSentry, initSentry } from "./sentry";
@@ -593,54 +592,10 @@ export async function sanitizeRendererProperties(
 			}
 			if (properties?.outcome === "succeeded" || properties?.outcome === "failed") safe.outcome = properties.outcome;
 			break;
-		case "ao.renderer.review_settings_changed": {
-			// Which review controls a user actually touches is the question behind
-			// simplifying this surface: a dropdown nobody changes is a checkpoint
-			// that can become a default. Harness ids come from AO's own reviewer
-			// registry (see reviewer-harnesses.ts), never from user input.
-			const projectIDHash = await hashedTelemetryID(properties?.project_id);
-			if (projectIDHash) safe.project_id_hash = projectIDHash;
-			if (typeof properties?.auto_review === "boolean") safe.auto_review = properties.auto_review;
-			if (typeof properties?.reviewer_harness === "string" && KNOWN_REVIEWER_HARNESS_IDS.has(properties.reviewer_harness)) {
-				safe.reviewer_harness = properties.reviewer_harness;
-			}
-			if (typeof properties?.harness_is_default === "boolean") {
-				safe.harness_is_default = properties.harness_is_default;
-			}
-			for (const key of ["auto_review_changed", "reviewer_harness_changed"] as const) {
-				if (typeof properties?.[key] === "boolean") safe[key] = properties[key];
-			}
-			break;
-		}
 		case "ao.renderer.review_auto_review_toggled":
 			// The session-scoped switch duplicates a project-level setting, so
 			// whether anyone reaches for it decides if it stays a separate control.
 			if (typeof properties?.enabled === "boolean") safe.enabled = properties.enabled;
-			break;
-		case "ao.renderer.review_triggered":
-			// Manual review is the low-commitment on-ramp for users who will not
-			// enable the automatic pass, so its volume relative to auto runs is the
-			// adoption signal. action mirrors the button's own label.
-			//
-			// All four values reviewRunActionKind can return are accepted, "reviewing"
-			// included: a trigger that lands while a pass is already running is a real
-			// thing to report, and narrowing this list to three would drop the
-			// property silently rather than record what happened.
-			if (
-				properties?.action === "run" ||
-				properties?.action === "rerun" ||
-				properties?.action === "run_latest" ||
-				properties?.action === "reviewing"
-			) {
-				safe.action = properties.action;
-			}
-			if (typeof properties?.has_override === "boolean") safe.has_override = properties.has_override;
-			// Which surface the user reached for. The command palette and the
-			// inspector are separate on-ramps, and only one of them was instrumented
-			// before, so palette runs went uncounted.
-			if (properties?.source === "inspector" || properties?.source === "command_palette") {
-				safe.source = properties.source;
-			}
 			break;
 		case "ao.renderer.mobile_bridge_toggled":
 			// The host, port, and connection password in the QR never leave the
@@ -743,7 +698,8 @@ export async function initTelemetry(): Promise<boolean> {
 			...telemetryContext,
 			surface: "renderer",
 		});
-		// Same consent gate as PostHog. No-op unless VITE_AO_SENTRY_DSN is set.
+		// Typed renderer fault intake has its own main-owned policy gate. PostHog
+		// product analytics are intentionally independent of that preference.
 		void initSentry({
 			release: bootstrap.appVersion,
 			channel,
@@ -790,6 +746,17 @@ export async function initTelemetry(): Promise<boolean> {
 	initPromise = attempt;
 	return attempt;
 }
+
+/**
+ * Acknowledges the renderer part of failure-reporting cleanup. Renderer fault
+ * intake forwards directly through preload and owns no durable or retry queue;
+ * PostHog product-analytics queues are deliberately outside this policy.
+ */
+export function clearRendererTelemetryQueues(): void {}
+
+// Failure-reporting enablement is enforced in preload/main. It never opts the
+// independent PostHog client in or out.
+export function applyRendererTelemetryPolicy(_enabled: boolean): void {}
 
 export async function captureRendererEvent(event: string, properties?: Record<string, unknown>): Promise<void> {
 	// Checked before the reservations so a silenced stream does not consume a

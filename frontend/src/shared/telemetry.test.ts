@@ -11,6 +11,7 @@ import {
 } from "./telemetry";
 
 const tempDirs: string[] = [];
+const enabledPolicy = { eventsEnabled: true, consentGeneration: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true };
 
 afterEach(async () => {
 	await Promise.all(
@@ -38,7 +39,7 @@ test("loadOrCreateTelemetryInstallId persists a stable install id", async () => 
 });
 
 test("buildTelemetryBootstrap returns null when no home dir is available", async () => {
-	await expect(buildTelemetryBootstrap({}, "1.2.3", "linux", "")).resolves.toBeNull();
+	await expect(buildTelemetryBootstrap({}, "1.2.3", "linux", "", true, enabledPolicy)).resolves.toBeNull();
 });
 
 test("renderer telemetry is off on unpackaged builds unless explicitly opted in", () => {
@@ -54,9 +55,21 @@ test("buildTelemetryBootstrap withholds the bootstrap on an unpackaged build", a
 	const dir = await mkdtemp(path.join(os.tmpdir(), "ao-telemetry-"));
 	tempDirs.push(dir);
 
-	await expect(buildTelemetryBootstrap({}, "0.11.2", "linux", dir, false)).resolves.toBeNull();
-	const optedIn = await buildTelemetryBootstrap({ AO_TELEMETRY_RENDERER: "on" }, "0.11.2", "linux", dir, false);
+	const disabled = await buildTelemetryBootstrap({}, "0.11.2", "linux", dir, false, enabledPolicy);
+	expect(disabled).toBeNull();
+	const optedIn = await buildTelemetryBootstrap({ AO_TELEMETRY_RENDERER: "on" }, "0.11.2", "linux", dir, false, enabledPolicy);
 	expect(optedIn?.appVersion).toBe("0.11.2");
+});
+
+test("failure-reporting opt-out does not withhold PostHog identity", async () => {
+	const dir = await mkdtemp(path.join(os.tmpdir(), "ao-telemetry-"));
+	tempDirs.push(dir);
+	const bootstrap = await buildTelemetryBootstrap({}, "0.11.2", "linux", dir, true, {
+		...enabledPolicy,
+		eventsEnabled: false,
+	});
+	expect(bootstrap?.eventsEnabled).toBe(false);
+	expect(bootstrap?.distinctId).toMatch(/^ins_/);
 });
 
 test("buildTelemetryBootstrap carries the deny list across the process boundary", async () => {
@@ -69,6 +82,7 @@ test("buildTelemetryBootstrap carries the deny list across the process boundary"
 		"linux",
 		dir,
 		true,
+		enabledPolicy,
 	);
 	expect(bootstrap?.disabledEvents).toEqual(["ao.v2.app.active", "ao.renderer.*"]);
 });

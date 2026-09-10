@@ -15,10 +15,8 @@ import {
 import {
 	openReviewStatesFor,
 	reviewIsRunning,
-	reviewRunActionKind,
 	reviewSessionRunAction,
 	type PRReviewState,
-	type ReviewRunActionKind,
 } from "./session-reviews";
 import { appI18n, type MessageKey } from "../i18n";
 
@@ -40,7 +38,7 @@ export type CommandAction =
 	| { kind: "copy-branch"; branch: string }
 	| { kind: "open-pr"; url: string }
 	| { kind: "copy-pr-url"; url: string }
-	| { kind: "trigger-review"; reviewAction: ReviewRunActionKind; sessionId: string }
+	| { kind: "trigger-review"; sessionId: string }
 	| { kind: "toggle-theme" };
 
 export type CommandItem = {
@@ -394,9 +392,8 @@ function prReviewCommand(
 		: ineligible
 			? t("command.notEligibleForReview")
 			: undefined;
-	const states = prReviewState ? [prReviewState] : [];
 	const runLabel = prReviewState
-		? reviewSessionRunAction(states, false)
+		? reviewSessionRunAction([prReviewState], false)
 		: t("inspector.review.run");
 	return {
 		id: `pr-review:${session.id}:${pr.number}`,
@@ -407,9 +404,7 @@ function prReviewCommand(
 		searchOnly: true,
 		disabled,
 		disabledReason,
-		// The action kind rides along so the palette's telemetry reports the same
-		// enum the inspector does, rather than the translated label above it.
-		action: { kind: "trigger-review", reviewAction: reviewRunActionKind(states, false), sessionId: session.id },
+		action: { kind: "trigger-review", sessionId: session.id },
 	};
 }
 

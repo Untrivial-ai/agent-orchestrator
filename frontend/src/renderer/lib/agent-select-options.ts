@@ -1,6 +1,18 @@
-import type { components } from "../../api/schema";
-
-type AgentInfo = components["schemas"]["AgentInfo"];
+export type AgentInfo = {
+	authentication: {
+		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+		freshness: "fresh" | "stale" | "checking";
+	};
+	effectiveReadiness: "ready" | "not_ready" | "unknown";
+	id: string;
+	installation: {
+		state: "installed" | "not_installed" | "unknown";
+		freshness: "fresh" | "stale" | "checking";
+	};
+	label: string;
+	lastUsedAt?: string | null;
+	usageCount: number;
+};
 
 export const DEFAULT_AGENT_PRIORITY = ["claude-code", "codex", "cursor", "opencode", "aider"] as const;
 export const DEFAULT_AGENT_PRIORITY_RANK = new Map<string, number>(
@@ -17,6 +29,24 @@ export type RankedAgentOption = AgentInfo & {
 	statusTone: AgentStatusTone;
 };
 
+export function unknownAgentReadiness(id: string, label: string): AgentInfo {
+	return {
+		id,
+		label,
+		installation: {
+			state: "unknown",
+			freshness: "stale",
+		},
+		authentication: {
+			state: "unknown",
+			freshness: "stale",
+		},
+		effectiveReadiness: "unknown",
+		usageCount: 0,
+		lastUsedAt: null,
+	};
+}
+
 export function agentLabelCompare(a: AgentInfo, b: AgentInfo): number {
 	return a.label.localeCompare(b.label) || a.id.localeCompare(b.id);
 }
@@ -29,59 +59,59 @@ export function agentUsageCompare(a: AgentInfo, b: AgentInfo): number {
 	return 0;
 }
 
-function agentStatus(
-	installedAgent: AgentInfo | undefined,
-	isAuthorized: boolean,
-	isAuthUnknown: boolean,
-): Pick<RankedAgentOption, "status" | "statusTone"> {
-	if (!installedAgent) {
+function agentStatus(agent: AgentInfo): Pick<RankedAgentOption, "status" | "statusTone"> {
+	if (agent.installation.state === "not_installed") {
 		return { status: "Needs install", statusTone: "muted" };
 	}
-	if (isAuthUnknown) {
-		return { status: "Auth unknown", statusTone: "warning" };
-	}
-	if (!isAuthorized) {
+	if (agent.authentication.state === "unauthorized") {
 		return { status: "Needs auth", statusTone: "warning" };
 	}
-	// Authorized agents stay clean — only surface problem statuses in the menu.
+	if (agent.installation.state === "unknown") {
+		return { status: "Install unknown", statusTone: "warning" };
+	}
+	if (agent.authentication.state === "unknown") {
+		return { status: "Auth unknown", statusTone: "warning" };
+	}
+	// Known-good agents stay selectable even while stale or checking; freshness
+	// is informative coordinator state, not a reason for the renderer to block.
 	return { status: "", statusTone: "success" };
 }
 
 export function buildRankedAgentOptions({
-	supported,
-	installed,
-	authorized,
+	agents,
 	priorityRank,
 	fallbackAgents,
 	filter,
 }: {
-	supported?: AgentInfo[];
-	installed?: AgentInfo[];
-	authorized?: AgentInfo[];
+	agents?: AgentInfo[];
 	priorityRank: Map<string, number>;
 	fallbackAgents: AgentInfo[];
 	filter?: (agent: AgentInfo) => boolean;
 }): RankedAgentOption[] {
-	const supportedAgents = (supported ?? fallbackAgents).filter((agent) => (filter ? filter(agent) : true));
-	const installedAgents = installed ?? supportedAgents;
-	const authorizedAgents = authorized ?? supportedAgents;
-	const authorizedIds = new Set(authorizedAgents.map((agent) => agent.id));
-	const installedById = new Map(installedAgents.map((agent) => [agent.id, agent]));
-
-	return supportedAgents
+	return (agents ?? fallbackAgents)
+		.filter((agent) => (filter ? filter(agent) : true))
 		.map((agent) => {
-			const installedAgent = installedById.get(agent.id);
-			const authStatus = installedAgent?.authStatus;
-			const isAuthorized = authorizedIds.has(agent.id) || authStatus === "authorized";
-			const isAuthUnknown = Boolean(installedAgent) && !isAuthorized && authStatus !== "unauthorized";
-			const isSelectable = isAuthorized || isAuthUnknown;
-			const rank = isAuthorized ? 0 : isAuthUnknown ? 1 : installedAgent ? 2 : 3;
+			const isInstallationUnknown = agent.installation.state === "unknown";
+			const isAuthUnknown = agent.authentication.state === "unknown";
+			const isAuthorized =
+				agent.authentication.state === "authorized" || agent.authentication.state === "not_applicable";
+			const isDefinitelyUnavailable =
+				agent.installation.state === "not_installed" || agent.authentication.state === "unauthorized";
+			const isSelectable = !isDefinitelyUnavailable;
+			const rank =
+				isAuthorized && agent.installation.state === "installed"
+					? 0
+					: !isDefinitelyUnavailable && (isInstallationUnknown || isAuthUnknown)
+						? 1
+						: agent.installation.state === "installed"
+							? 2
+							: 3;
 			return {
 				...agent,
 				disabled: !isSelectable,
 				priorityRank: priorityRank.get(agent.id) ?? Number.MAX_SAFE_INTEGER,
 				rank,
-				...agentStatus(installedAgent, isAuthorized, isAuthUnknown),
+				...agentStatus(agent),
 			};
 		})
 		.sort(

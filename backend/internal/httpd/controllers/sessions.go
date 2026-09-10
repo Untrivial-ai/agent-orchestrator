@@ -36,7 +36,7 @@ import (
 )
 
 const (
-	maxPromptLen      = 4096
+	maxPromptLen      = 16 << 10
 	maxMessageLen     = 4096
 	maxModelLen       = 256
 	maxDisplayNameLen = 20
@@ -85,6 +85,7 @@ type SessionService interface {
 	SpawnOrchestrator(ctx context.Context, projectID domain.ProjectID, clean bool, requestedMode domain.SessionMode) (domain.Session, error)
 	Get(ctx context.Context, id domain.SessionID) (domain.Session, error)
 	Restore(ctx context.Context, id domain.SessionID) (sessionsvc.RestoreOutcome, error)
+	ExitAgent(ctx context.Context, id domain.SessionID) (sessionsvc.ExitAgentOutcome, error)
 	ResumeAgent(ctx context.Context, id domain.SessionID) (sessionsvc.ResumeAgentOutcome, error)
 	SwitchAgent(ctx context.Context, id domain.SessionID, in sessionsvc.SwitchAgentInput) (domain.AgentSwitch, error)
 	RecoverAgentSwitch(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID) (domain.AgentSwitch, error)
@@ -98,7 +99,7 @@ type SessionService interface {
 	SetTerminateOnPRMerge(ctx context.Context, id domain.SessionID, terminate bool) (domain.Session, error)
 	SetAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool) (domain.Session, error)
 	SetAutoInjectCI(ctx context.Context, id domain.SessionID, autoInject bool) (domain.Session, error)
-	SetReviewerHarness(ctx context.Context, id domain.SessionID, harness domain.ReviewerHarness) (domain.Session, error)
+	SetReviewerHarness(ctx context.Context, id domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (domain.Session, error)
 	SetAutoReview(ctx context.Context, id domain.SessionID, enabled bool) (domain.Session, error)
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
 	DelegateTask(ctx context.Context, in sessionsvc.DelegateTaskInput) (sessionsvc.DelegateTaskOutcome, error)
@@ -182,6 +183,7 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Put("/sessions/{sessionId}/reviewer", c.setReviewer)
 	r.Put("/sessions/{sessionId}/auto-review", c.setAutoReview)
 	r.Post("/sessions/{sessionId}/restore", c.restore)
+	r.Post("/sessions/{sessionId}/exit-agent", c.exitAgent)
 	r.Post("/sessions/{sessionId}/resume-agent", c.resumeAgent)
 	r.Post("/sessions/{sessionId}/switch-agent", c.switchAgent)
 	r.Get("/sessions/{sessionId}/agent-switches", c.listAgentSwitches)
@@ -254,7 +256,7 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	in.Mode = mode
 	if len(in.Prompt) > maxPromptLen {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "PROMPT_TOO_LONG", "prompt is too long", nil)
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "PROMPT_TOO_LONG", "Prompt must be 16 KiB or fewer", nil)
 		return
 	}
 	// displayName is optional at the API (the desktop new-task dialog omits it
@@ -1084,7 +1086,7 @@ func (c *SessionsController) setReviewer(w http.ResponseWriter, r *http.Request)
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	sess, err := c.Svc.SetReviewerHarness(r.Context(), sessionID(r), in.Harness)
+	sess, err := c.Svc.SetReviewerHarness(r.Context(), sessionID(r), in.Harness, in.AgentConfig)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -1168,6 +1170,23 @@ func (c *SessionsController) resumeAgent(w http.ResponseWriter, r *http.Request)
 		SessionID:  sessionID(r),
 		ResumeMode: out.Mode,
 		Session:    sessionView(out.Session),
+	})
+}
+
+func (c *SessionsController) exitAgent(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/exit-agent")
+		return
+	}
+	out, err := c.Svc.ExitAgent(r.Context(), sessionID(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, ExitAgentResponse{
+		OK:        true,
+		SessionID: sessionID(r),
+		Session:   sessionView(out.Session),
 	})
 }
 
@@ -1314,7 +1333,9 @@ func (c *SessionsController) cleanup(w http.ResponseWriter, r *http.Request) {
 	for _, skip := range out.Skipped {
 		skipped = append(skipped, CleanupSkippedSession{SessionID: skip.SessionID, Reason: skip.Reason})
 	}
-	envelope.WriteJSON(w, http.StatusOK, CleanupSessionsResponse{OK: true, Cleaned: out.Cleaned, Skipped: skipped})
+	envelope.WriteJSON(w, http.StatusOK, CleanupSessionsResponse{
+		OK: true, Cleaned: out.Cleaned, AlreadyGone: out.AlreadyGone, Skipped: skipped,
+	})
 }
 
 func (c *SessionsController) send(w http.ResponseWriter, r *http.Request) {
@@ -1369,7 +1390,7 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(in.Brief) > maxPromptLen {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "TASK_TOO_LONG", "Task is too long", nil)
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "TASK_TOO_LONG", "Task must be 16 KiB or fewer", nil)
 		return
 	}
 	if utf8.RuneCountInString(strings.TrimSpace(in.Model)) > maxModelLen {
@@ -1642,7 +1663,7 @@ func writeSessionPRError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, sessionsvc.ErrSessionNoWorkspace):
 		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "SESSION_NO_WORKSPACE", "Session has no workspace", nil)
 	case errors.Is(err, sessionsvc.ErrProjectMismatch):
-		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "PR_PROJECT_MISMATCH", "PR does not belong to the session project", nil)
+		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "PR_PROJECT_MISMATCH", "PR repository must match the project origin or its explicit canonicalRepoURL. For a fork, configure the upstream HTTPS repository URL with ao project set-config <project-id> --canonical-repo-url <url> (replaces config; preserve existing fields with --config-json). Git remotes alone do not grant trust.", nil)
 	case errors.Is(err, sessionsvc.ErrSCMUnavailable):
 		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "SCM_UNAVAILABLE", "SCM unavailable", nil)
 	default:
@@ -1651,7 +1672,15 @@ func writeSessionPRError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func discoverPreviewEntry(workspacePath string) (string, bool) {
-	entry, ok := previewutil.DiscoverEntry(workspacePath)
+	// Use DiscoverWebEntrypoint (index.html variants only), not DiscoverEntry
+	// (which falls back to mostRecentPreviewable — the newest .md/.html in the
+	// workspace). Bare `ao preview` (no args) hits this path, and agent
+	// harnesses run that automatically on new sessions via the using-ao skill.
+	// With the .md fallback, every new session in a Markdown-rich repo opened
+	// its browser panel to an arbitrary repo doc (e.g. test/cli/README.md)
+	// instead of staying empty. Mirrors the poller fix from PR #2860.
+	// See issue #2859.
+	entry, ok := previewutil.DiscoverWebEntrypoint(workspacePath)
 	return entry.Path, ok
 }
 
@@ -1806,12 +1835,14 @@ func previewFileURL(r *http.Request, id domain.SessionID, entry string) (string,
 }
 
 func sessionView(s domain.Session) SessionView {
+	terminalGeneration := s.Metadata.RuntimeLaunchID
 	view := SessionView{
-		Session:         s,
-		Branch:          s.Metadata.Branch,
-		PreviewURL:      s.Metadata.PreviewURL,
-		PreviewRevision: s.Metadata.PreviewRevision,
-		Model:           s.Metadata.Model,
+		Session:            s,
+		Branch:             s.Metadata.Branch,
+		TerminalGeneration: terminalGeneration,
+		PreviewURL:         s.Metadata.PreviewURL,
+		PreviewRevision:    s.Metadata.PreviewRevision,
+		Model:              s.Metadata.Model,
 		LastUserMessageAt: func() *time.Time {
 			if s.Metadata.LatestUserPromptAt.IsZero() {
 				return nil

@@ -19,8 +19,9 @@ import (
 )
 
 type fakeReviewService struct {
-	// triggeredHarness records the override the controller forwarded.
+	// triggeredHarness/config record the override the controller forwarded.
 	triggeredHarness  domain.ReviewerHarness
+	triggeredConfig   domain.AgentConfig
 	triggerErr        error
 	cancelErr         error
 	trigger           reviewcore.TriggerResult
@@ -48,8 +49,10 @@ func (f *fakeReviewService) Trigger(
 	_ context.Context,
 	_ domain.SessionID,
 	harness domain.ReviewerHarness,
+	config domain.AgentConfig,
 ) (reviewcore.TriggerResult, error) {
 	f.triggeredHarness = harness
+	f.triggeredConfig = config
 	if f.triggerErr != nil {
 		return reviewcore.TriggerResult{}, f.triggerErr
 	}
@@ -114,7 +117,7 @@ func (f *fakeReviewService) RestoreReviewer(context.Context, domain.SessionID) e
 	return nil
 }
 
-func (f *fakeReviewService) SwitchReviewer(_ context.Context, _ domain.SessionID, harness domain.ReviewerHarness) (reviewcore.SessionReviews, error) {
+func (f *fakeReviewService) SwitchReviewer(_ context.Context, _ domain.SessionID, harness domain.ReviewerHarness, _ domain.AgentConfig) (reviewcore.SessionReviews, error) {
 	f.switchedHarness = harness
 	f.list.ReviewerHarness = harness
 	if f.list.Runs == nil {

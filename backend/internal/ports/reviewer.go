@@ -99,6 +99,8 @@ type ReviewInvocation struct {
 	ReviewQueue []ReviewTask
 	// ReviewIndex is this invocation's zero-based position in ReviewQueue.
 	ReviewIndex int
+	// Config carries the reviewer's resolved agent configuration override.
+	Config domain.AgentConfig
 	// WorkspacePath is the worker's checkout the reviewer reads.
 	WorkspacePath string
 	// DataDir is AO's owned state root. Reviewer prelaunch hooks may use it for

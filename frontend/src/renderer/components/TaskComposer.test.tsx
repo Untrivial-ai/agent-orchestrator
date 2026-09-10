@@ -8,15 +8,20 @@ const h = vi.hoisted(() => ({
 	get: vi.fn(),
 	post: vi.fn(),
 	capture: vi.fn(),
+	ensureReadiness: vi.fn(),
+	ensureTargetedReadiness: vi.fn(),
 	agentValues: [] as string[],
 }));
 
-vi.mock("../hooks/useAgentsQuery", () => ({
-	agentsQueryKey: ["agents"],
-	agentsQueryOptions: { queryKey: ["agents"], queryFn: async () => ({}) },
-	refreshAgents: vi.fn(),
-	refreshAgentsIfStale: vi.fn(async () => undefined),
-}));
+vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../hooks/useAgentReadinessQuery")>();
+	return {
+		...actual,
+		ensureAgentReadiness: h.ensureTargetedReadiness,
+		useAgentReadinessQuery: () => ({ data: undefined, isFetching: false }),
+		useEnsureAgentReadiness: h.ensureReadiness,
+	};
+});
 
 vi.mock("./CreateProjectAgentSheet", () => ({
 	RequiredAgentField: ({
@@ -57,9 +62,13 @@ vi.mock("../lib/api-client", () => ({
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: h.capture }));
 
 import { TaskComposer } from "./TaskComposer";
+import { agentReadiness } from "../test/agent-readiness-fixtures";
+import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
 
-function Wrap({ children }: { children: ReactNode }) {
-	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function Wrap({ children, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }) }: {
+	children: ReactNode;
+	queryClient?: QueryClient;
+}) {
 	return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
@@ -86,11 +95,79 @@ afterEach(() => {
 	h.get.mockReset();
 	h.post.mockReset();
 	h.capture.mockReset();
+	h.ensureReadiness.mockReset();
+	h.ensureTargetedReadiness.mockReset();
 	vi.unstubAllGlobals();
 	h.agentValues.length = 0;
 });
 
 describe("TaskComposer", () => {
+	it("ensures display readiness for every harness when the composer opens", async () => {
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		await waitFor(() => expect(h.ensureReadiness).toHaveBeenCalledWith());
+	});
+
+	it("ensures the selected harness when agent selection changes", async () => {
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Agent"));
+		await waitFor(() =>
+			expect(h.ensureReadiness).toHaveBeenCalledWith({
+				agentIds: ["codex"],
+				enabled: true,
+				purpose: "launch",
+			}),
+		);
+	});
+
+	it("waits for and caches targeted readiness after a binary launch failure", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return { data: { agent: "codex", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({
+			error: { code: "AGENT_BINARY_NOT_FOUND", message: "Codex is not installed" },
+		});
+		let finishReadiness!: (value: { agents: ReturnType<typeof agentReadiness>[] }) => void;
+		h.ensureTargetedReadiness.mockReturnValueOnce(
+			new Promise((resolve) => {
+				finishReadiness = resolve;
+			}),
+		);
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const stale = agentReadiness("codex", "Codex", { freshness: "stale" });
+		const completed = agentReadiness("codex", "Codex", { installation: "not_installed" });
+		queryClient.setQueryData(agentReadinessQueryKey, { agents: [stale] });
+
+		render(
+			<Wrap queryClient={queryClient}>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "codex"));
+		fireEvent.click(screen.getByRole("button", { name: "Start task" }));
+
+		await waitFor(() =>
+			expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["codex"], "launch"),
+		);
+		expect(screen.queryByText("Codex is not installed")).not.toBeInTheDocument();
+
+		await act(async () => finishReadiness({ agents: [completed] }));
+		expect(await screen.findByText("Codex is not installed")).toBeInTheDocument();
+		expect(queryClient.getQueryData(agentReadinessQueryKey)).toEqual({ agents: [completed] });
+	});
+
 	it("starts a promptless worker when the task is empty", async () => {
 		const onCreated = vi.fn();
 		h.post.mockResolvedValueOnce({ data: { workerId: "sess-empty" } });
@@ -232,7 +309,7 @@ describe("TaskComposer", () => {
 
 		const agent = await screen.findByTestId("agent-field");
 		await waitFor(() => expect(agent).toHaveAttribute("data-value", "codex"));
-		const model = await screen.findByRole("textbox", { name: "Model" });
+		const model = await screen.findByRole("button", { name: "Model" });
 		const prompt = task();
 		expect(agent).toBeEnabled();
 		expect(model).toBeEnabled();
@@ -259,6 +336,7 @@ describe("TaskComposer", () => {
 				agent: "codex",
 				selectionMode: "mode",
 				models: [{ id: "plan", label: "Plan", isDefault: true }],
+				customModelEntry: "none",
 				allowCustom: false,
 			},
 			controls: async () => [await screen.findByRole("button", { name: "Model" })],
@@ -269,25 +347,30 @@ describe("TaskComposer", () => {
 				agent: "codex",
 				selectionMode: "catalog",
 				models: [{ id: "gpt-5", label: "GPT-5", isDefault: true }],
+				customModelEntry: "none",
 				allowCustom: false,
 			},
 			controls: async () => [await screen.findByRole("button", { name: "Model" })],
 		},
 		{
-			name: "custom input and browse",
+			name: "search and direct model ID",
 			catalog: {
 				agent: "codex",
 				selectionMode: "catalog",
 				models: [{ id: "gpt-5", label: "GPT-5", isDefault: true }],
+				customModelEntry: "direct",
 				allowCustom: true,
 			},
 			controls: async () => {
-				await userEvent.click(await screen.findByRole("button", { name: "Model" }));
-				await userEvent.click(await screen.findByRole("menuitem", { name: "Custom model…" }));
-				return [
-					screen.getByRole("textbox", { name: "Model" }),
-					screen.getByRole("button", { name: "Model options" }),
-				];
+				const model = await screen.findByRole("button", { name: "Model" });
+				await userEvent.click(model);
+				await userEvent.type(screen.getByRole("searchbox", { name: "Search model" }), "private/model-id");
+				await userEvent.click(
+					screen.getByRole("menuitem", { name: "Use “private/model-id” as a custom model" }),
+				);
+				expect(model).toHaveTextContent("private/model-id");
+				expect(screen.queryByRole("textbox", { name: "Model" })).not.toBeInTheDocument();
+				return [model];
 			},
 		},
 	])("locks the $name selector while creating and restores it after failure", async ({ catalog, controls }) => {
@@ -556,7 +639,7 @@ describe("TaskComposer", () => {
 			</QueryClientProvider>,
 		);
 
-		expect(await screen.findByDisplayValue("gpt-5.6-sol")).toBeInTheDocument();
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.6 Sol");
 		expect(h.agentValues).not.toContain("");
 	});
 
@@ -601,7 +684,7 @@ describe("TaskComposer", () => {
 			</Wrap>,
 		);
 
-		expect(await screen.findByDisplayValue("gpt-5-codex")).toBeInTheDocument();
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-5 Codex");
 	});
 
 	it("clears a stale model while the newly selected agent catalog resolves", async () => {
@@ -638,10 +721,10 @@ describe("TaskComposer", () => {
 			</Wrap>,
 		);
 
-		expect(await screen.findByDisplayValue("gpt-5.6-sol")).toBeInTheDocument();
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.6 Sol");
 		fireEvent.click(screen.getByTestId("agent-field"));
 
-		expect(screen.queryByDisplayValue("gpt-5.6-sol")).not.toBeInTheDocument();
+		expect(screen.getByLabelText("Model")).not.toHaveTextContent("GPT-5.6 Sol");
 		expect(screen.getByRole("status", { name: "Loading models…" })).toBeInTheDocument();
 
 		await act(async () => {
@@ -654,7 +737,7 @@ describe("TaskComposer", () => {
 				},
 			});
 		});
-		expect(await screen.findByDisplayValue("opus[1m]")).toBeInTheDocument();
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("opus[1m]");
 	});
 
 	it("shows the same no-override label on the trigger and in the menu", async () => {
@@ -683,6 +766,34 @@ describe("TaskComposer", () => {
 
 		await userEvent.click(picker);
 		expect(await screen.findByRole("menuitem", { name: "Use codex's default" })).toBeInTheDocument();
+	});
+
+	it("does not render free text when models must be configured in the agent", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agentId: "opencode",
+						selectionMode: "catalog",
+						models: [],
+						customModelEntry: "configured",
+						allowCustom: false,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { agent: "opencode", config: {} } } };
+		});
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		const picker = await screen.findByRole("button", { name: "Model" });
+		expect(screen.queryByRole("textbox", { name: "Model" })).not.toBeInTheDocument();
+		await userEvent.click(picker);
+		expect(screen.getByText("Configure the model in opencode, then refresh.")).toBeInTheDocument();
 	});
 
 	it("uses the project worker model as the new task model default", async () => {
@@ -715,8 +826,10 @@ describe("TaskComposer", () => {
 			</Wrap>,
 		);
 
-		const model = await screen.findByDisplayValue("gpt-5");
-		fireEvent.change(model, { target: { value: "gpt-5.1" } });
+		const model = await screen.findByRole("button", { name: "Model" });
+		await userEvent.click(model);
+		await userEvent.type(screen.getByRole("searchbox", { name: "Search model" }), "gpt-5.1");
+		await userEvent.click(screen.getByRole("menuitem", { name: "Use “gpt-5.1” as a custom model" }));
 		fireEvent.change(task(), { target: { value: "Use the selected model" } });
 		fireEvent.click(screen.getByText("Start task"));
 

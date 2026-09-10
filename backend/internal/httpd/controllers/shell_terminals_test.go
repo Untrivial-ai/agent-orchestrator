@@ -69,12 +69,15 @@ func TestShellTerminalsAPI_OpenReturnsHandleForMuxAttach(t *testing.T) {
 	svc := &fakeShellTerminalService{opened: sampleShellTerminal()}
 	srv := newShellTerminalTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/shell-terminals", `{"projectId":"portfolio"}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/shell-terminals", `{"projectId":"portfolio","shell":"git-bash"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("status = %d, want 201; body=%s", status, body)
 	}
 	if svc.gotOpenInput.ProjectID != "portfolio" {
 		t.Errorf("project id = %q, want portfolio", svc.gotOpenInput.ProjectID)
+	}
+	if svc.gotOpenInput.Shell != "git-bash" {
+		t.Errorf("shell = %q, want git-bash", svc.gotOpenInput.Shell)
 	}
 	var resp struct {
 		ShellTerminal struct {

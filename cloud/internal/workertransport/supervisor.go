@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -36,6 +36,10 @@ type Supervisor struct {
 	Started         chan<- error
 	PollInterval    time.Duration
 	Logger          *slog.Logger
+	// Streams, when non-nil, holds a persistent duplex terminal stream per
+	// open terminal for low-latency input/output. The polled transport stays
+	// authoritative whenever a stream is absent or unhealthy.
+	Streams StreamDialer
 
 	mu        sync.Mutex
 	terminals map[string]*terminalProcess
@@ -45,6 +49,7 @@ type terminalProcess struct {
 	cancel  context.CancelFunc
 	pty     *os.File
 	cleanup func()
+	stream  atomic.Pointer[terminalStream]
 }
 
 func (s *Supervisor) Run(ctx context.Context) error {
@@ -264,14 +269,18 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 		s.mu.Unlock()
 		return err
 	}
-	s.terminals[input.TerminalID] = &terminalProcess{
+	terminal := &terminalProcess{
 		cancel:  cancel,
 		pty:     terminalPTY,
 		cleanup: cleanup,
 	}
+	s.terminals[input.TerminalID] = terminal
 	s.mu.Unlock()
 
-	go s.copyTerminalOutput(processCtx, input.TerminalID, terminalPTY)
+	go s.copyTerminalOutput(processCtx, input.TerminalID, terminal)
+	if s.Streams != nil {
+		go s.runTerminalStream(processCtx, input.TerminalID, terminal)
+	}
 	go func() {
 		_ = command.Wait()
 		s.mu.Lock()
@@ -331,14 +340,16 @@ func terminalEnvironment(extra map[string]string) []string {
 func (s *Supervisor) copyTerminalOutput(
 	ctx context.Context,
 	terminalID string,
-	reader io.Reader,
+	terminal *terminalProcess,
 ) {
 	buffer := make([]byte, 16<<10)
 	for {
-		count, err := reader.Read(buffer)
+		count, err := terminal.pty.Read(buffer)
 		if count > 0 {
 			data := append([]byte(nil), buffer[:count]...)
-			if outputErr := s.Control.PublishTerminalOutput(ctx, terminalID, data); outputErr != nil &&
+			if stream := terminal.stream.Load(); stream != nil && stream.sendOutput(data) {
+				// Persisted (and acked) by the control plane over the stream.
+			} else if outputErr := s.Control.PublishTerminalOutput(ctx, terminalID, data); outputErr != nil &&
 				ctx.Err() == nil {
 				s.Logger.Warn("publish terminal output", "error", outputErr, "terminal_id", terminalID)
 			}

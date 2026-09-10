@@ -120,13 +120,42 @@ func TestProjectConfigWithDefaults(t *testing.T) {
 	}
 
 	got = (ProjectConfig{TrackerIntake: TrackerIntakeConfig{Enabled: true, Assignee: "alice"}}).WithDefaults()
-	if got.TrackerIntake.Provider != TrackerProviderGitHub {
-		t.Fatalf("TrackerIntake.Provider = %q, want %q", got.TrackerIntake.Provider, TrackerProviderGitHub)
+	if got.TrackerIntake.Provider != "" {
+		t.Fatalf("TrackerIntake.Provider = %q, want empty (inferred at use time)", got.TrackerIntake.Provider)
 	}
 
 	got = (ProjectConfig{}).WithDefaults()
 	if got.TrackerIntake.Provider != "" {
 		t.Fatalf("disabled TrackerIntake.Provider = %q, want empty", got.TrackerIntake.Provider)
+	}
+}
+
+func TestInferTrackerProvider(t *testing.T) {
+	tests := []struct {
+		name    string
+		repoURL string
+		want    TrackerProvider
+	}{
+		{"empty", "", TrackerProviderGitHub},
+		{"https github", "https://github.com/acme/demo.git", TrackerProviderGitHub},
+		{"ssh github", "git@github.com:acme/demo.git", TrackerProviderGitHub},
+		{"ghe host", "https://ghe.corp.ghe.io/acme/demo.git", TrackerProviderGitHub},
+		{"github with port", "https://github.com:443/org/repo.git", TrackerProviderGitHub},
+		{"ssh github with port", "ssh://git@github.com:2222/org/repo.git", TrackerProviderGitHub},
+		{"https gitlab.com", "https://gitlab.com/group/repo.git", TrackerProviderGitLab},
+		{"ssh gitlab.com", "git@gitlab.com:group/repo.git", TrackerProviderGitLab},
+		{"self-managed gitlab", "https://gitlab.internal/group/repo.git", TrackerProviderGitLab},
+		{"ssh self-managed", "git@gitlab.internal:group/repo.git", TrackerProviderGitLab},
+		{"self-managed with port", "https://gitlab.local:8443/group/repo.git", TrackerProviderGitLab},
+		{"non-gitlab custom host", "https://dev.company.com/group/repo.git", TrackerProviderGitLab},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := InferTrackerProvider(tt.repoURL)
+			if got != tt.want {
+				t.Errorf("InferTrackerProvider(%q) = %q, want %q", tt.repoURL, got, tt.want)
+			}
+		})
 	}
 }
 

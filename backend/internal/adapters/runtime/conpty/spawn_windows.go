@@ -65,6 +65,9 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 
 	// Build: <exe> pty-host <sessionID> <cwd> <shellCmd> <shellArgs...>
 	args := append([]string{"pty-host", sessionID, cwd}, argv...)
+	if err := validateWindowsCommandLine(append([]string{exe}, args...)); err != nil {
+		return "", 0, fmt.Errorf("conpty spawn: %w", err)
+	}
 
 	// Merge and normalize the environment for an interactive true-color PTY.
 	merged := interactiveTerminalEnv(os.Environ(), env, envAssignments)
@@ -136,8 +139,8 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	select {
 	case r := <-readyC:
 		if r.err != nil {
-			_ = cmd.Process.Kill()
-			return "", 0, r.err
+			pid, err := cleanupStartedHostFailure(cmd.Process.Pid, r.err, cmd.Process.Kill)
+			return "", pid, err
 		}
 		// Unref: detach stdout so the child is not blocked, then release reference
 		// so our process can exit while the child keeps running.
@@ -145,10 +148,10 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 		cmd.Process.Release() // nolint: errcheck - best-effort detach
 		return r.addr, cmd.Process.Pid, nil
 	case <-timer.C:
-		_ = cmd.Process.Kill()
-		return "", 0, fmt.Errorf("conpty spawn: pty-host startup timeout (%s)", spawnReadyTimeout)
+		pid, err := cleanupStartedHostFailure(cmd.Process.Pid, fmt.Errorf("conpty spawn: pty-host startup timeout (%s)", spawnReadyTimeout), cmd.Process.Kill)
+		return "", pid, err
 	case <-ctx.Done():
-		_ = cmd.Process.Kill()
-		return "", 0, ctx.Err()
+		pid, err := cleanupStartedHostFailure(cmd.Process.Pid, ctx.Err(), cmd.Process.Kill)
+		return "", pid, err
 	}
 }

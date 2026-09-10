@@ -1,164 +1,26 @@
-// Renderer-side Sentry sink. Fed from the existing telemetry seams
-// (captureRendererException, reportApiError) so there is one capture path, not
-// two. Everything here is a no-op until BOTH conditions hold:
-//   1. telemetry consent is granted (the caller already gates on this), and
-//   2. a DSN is configured via VITE_AO_SENTRY_DSN.
-//
-// Ship-time steps (no code change): `npm i @sentry/electron`, then set
-// VITE_AO_SENTRY_DSN (renderer) / AO_SENTRY_DSN (main). Until then this file
-// compiles and runs with no dependency on the SDK — the import is lazy and only
-// happens once a DSN is present.
-
+// Renderer Sentry intake is deliberately transport-free. Trusted preload adds
+// the latest main-owned generation before forwarding to Electron main.
 import { classifyError, type ClassifyInput, type Triage } from "../../shared/observability";
-import { DEFAULT_SENTRY_DSN } from "../../shared/sentry-config";
+import { aoBridge } from "./bridge";
 
-type SentryLike = {
-	init: (opts: Record<string, unknown>) => void;
-	captureException: (err: unknown, hint?: Record<string, unknown>) => void;
-	captureMessage: (msg: string, hint?: Record<string, unknown>) => void;
-	addBreadcrumb: (crumb: Record<string, unknown>) => void;
-};
-
-let sentry: SentryLike | null = null;
-let initStarted = false;
-
-function dsn(): string {
-	try {
-		const configured = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_AO_SENTRY_DSN?.trim();
-		return configured || DEFAULT_SENTRY_DSN;
-	} catch {
-		return DEFAULT_SENTRY_DSN;
-	}
-}
-
-// Strip embedded local URLs/paths from any free text before it leaves the
-// machine. Mirrors the redaction the PostHog path already applies; tags/contexts
-// we attach are safe enums/ids, so this guards the message + stack strings.
-const LOCAL_URL = /(?:\bfile:\/\/\/\S+|\bapp:\/\/renderer\/\S+|\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\S*)/gi;
-const HOME_PATH = /\/(?:Users|home)\/[^\s"']+/g;
-// Windows: C:\Users\alice\... and UNC \\host\Users\...
-const WIN_PATH = /[A-Za-z]:\\[^\s"']+|\\\\[^\s"']+/g;
-function scrub(value: unknown): unknown {
-	if (typeof value === "string")
-		return value.replace(LOCAL_URL, "[redacted-url]").replace(HOME_PATH, "[redacted-path]").replace(WIN_PATH, "[redacted-path]");
-	return value;
-}
-
-// Renderer operations are "METHOD /api/v1/<domain>/…" templates (already
-// id-normalized by normalizeApiOperation). Pull the coarse domain out of them.
+export type ObservabilityContext = { release?: string; channel?: string; platform?: string; distinctId?: string };
+export type CaptureMeta = ClassifyInput & { operation?: string; surface?: string; domain?: string; requestId?: string };
+let context: ObservabilityContext = {};
+export async function initSentry(next: ObservabilityContext): Promise<void> { context = next; }
 function domainOf(operation?: string): string | undefined {
 	if (!operation) return undefined;
-	const path = operation.split(" ").pop() ?? operation;
-	const parts = path.split("/").filter(Boolean);
-	const i = parts.indexOf("v1");
-	return i >= 0 ? parts[i + 1] : parts[0];
+	const parts = (operation.split(" ").pop() ?? operation).split("/").filter(Boolean);
+	const index = parts.indexOf("v1"); return index >= 0 ? parts[index + 1] : parts[0];
 }
-
-export type ObservabilityContext = {
-	release?: string;
-	channel?: string;
-	platform?: string;
-	distinctId?: string;
-};
-
-let ctx: ObservabilityContext = {};
-
-/** Initialize once, after telemetry consent. No DSN → stays a no-op forever. */
-export async function initSentry(context: ObservabilityContext): Promise<void> {
-	ctx = context;
-	if (initStarted || sentry) return;
-	const d = dsn();
-	if (!d) return; // not configured yet — nothing to do
-	initStarted = true;
-	try {
-		// Runtime-computed specifier + @vite-ignore so the bundler does not try to
-		// resolve @sentry/electron at build time — this file compiles and runs with
-		// no such dependency present. SHIP STEP: `npm i @sentry/electron` and set the
-		// DSN; then this import resolves (or convert it to a static import).
-		const spec = ["@sentry", "electron", "renderer"].join("/");
-		const mod = (await import(/* @vite-ignore */ spec)) as unknown as SentryLike;
-		mod.init({
-			dsn: d,
-			release: context.release,
-			environment: context.channel ?? "unknown",
-			autoSessionTracking: false,
-			// Deny-by-default. Sentry's defaults capture far more than PostHog's
-			// allowlist ever would: fetch/XHR/console/DOM breadcrumbs (which carry
-			// local URLs and Tailscale hosts), global handlers that would
-			// double-report the exceptions we already feed in explicitly, and
-			// performance/replay. Turning the default integrations OFF is the plan's
-			// requirement — scrubbing alone is not enough. We add nothing back; every
-			// event reaches Sentry only through our own captureException/captureMessage
-			// seams, which attach safe enum/id tags.
-			defaultIntegrations: false,
-			// No PII, no server_name, no request bodies.
-			sendDefaultPii: false,
-			// Errors only. No tracing/replay spend.
-			sampleRate: 1,
-			tracesSampleRate: 0,
-			// Belt-and-braces free-text scrub on the message + stack strings.
-			beforeSend: (event: Record<string, unknown>) => scrubEvent(event),
-			beforeBreadcrumb: (crumb: Record<string, unknown> | null) => (crumb ? scrubEvent(crumb) : crumb),
-		});
-		sentry = mod;
-	} catch {
-		// SDK not installed yet, or init failed — remain a silent no-op.
-		sentry = null;
-	}
+function tagsFor(meta: CaptureMeta, triage: Triage): Record<string, string> {
+	return Object.fromEntries(Object.entries({ platform: context.platform ?? "desktop", surface: meta.surface, domain: meta.domain, operation: meta.operation, category: meta.category, code: meta.code, http_status: meta.httpStatus?.toString(), apierr_kind: meta.kind, severity: triage.severity, owner: triage.owner }).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
-
-function scrubEvent(event: Record<string, unknown>): Record<string, unknown> {
-	if (typeof event.message === "string") event.message = scrub(event.message) as string;
-	const exception = event.exception as { values?: Array<{ value?: unknown }> } | undefined;
-	for (const v of exception?.values ?? []) if (typeof v.value === "string") v.value = scrub(v.value);
-	return event;
-}
-
-function tagsFor(meta: CaptureMeta, triage: Triage) {
-	return {
-		platform: ctx.platform ?? "desktop",
-		surface: meta.surface,
-		domain: meta.domain,
-		operation: meta.operation,
-		category: meta.category,
-		code: meta.code,
-		http_status: meta.httpStatus,
-		apierr_kind: meta.kind,
-		// Correlates with the daemon's own request_id tag on the matching capture.
-		request_id: meta.requestId,
-		severity: triage.severity,
-		owner: triage.owner,
-	};
-}
-
-export type CaptureMeta = ClassifyInput & {
-	operation?: string;
-	surface?: string;
-	domain?: string;
-	requestId?: string;
-};
-
-/** Capture an exception (from a boundary or unhandled handler). */
 export function captureExceptionToSentry(error: unknown, meta: CaptureMeta = {}): void {
-	if (!sentry) return;
 	const triage = classifyError(meta);
-	const payload = { level: triage.level, tags: tagsFor(meta, triage) };
-	if (triage.report) sentry.captureException(error, payload);
-	else sentry.addBreadcrumb({ category: "handled", level: triage.level, message: String((error as Error)?.message ?? error), data: payload.tags });
+	void aoBridge.telemetry.capture({ kind: triage.report ? "exception" : "breadcrumb", message: String((error as Error)?.message ?? error), level: triage.level, tags: tagsFor(meta, triage) });
 }
-
-/** Capture a classified API error (from reportApiError). */
-export function captureApiErrorToSentry(
-	operation: string,
-	category: string,
-	status?: number,
-	code?: string,
-	requestId?: string,
-): void {
-	if (!sentry) return;
+export function captureApiErrorToSentry(operation: string, category: string, status?: number, code?: string, requestId?: string): void {
 	const meta: CaptureMeta = { operation, category, httpStatus: status, code, requestId, domain: domainOf(operation) };
 	const triage = classifyError(meta);
-	const tags = tagsFor(meta, triage);
-	if (triage.report) sentry.captureMessage(`${operation} failed: ${category}${status ? ` (${status})` : ""}`, { level: triage.level, tags });
-	else sentry.addBreadcrumb({ category: "api", level: triage.level, message: `${operation} ${category}`, data: tags });
+	void aoBridge.telemetry.capture({ kind: triage.report ? "message" : "breadcrumb", message: `${operation} ${category}`, level: triage.level, tags: tagsFor(meta, triage) });
 }

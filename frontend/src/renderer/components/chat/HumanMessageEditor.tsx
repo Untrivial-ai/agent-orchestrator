@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { ConversationContentSummary } from "../../types/conversation";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { ConversationContentItems } from "./ConversationContentItems";
 
 export interface HumanMessageEditorProps {
@@ -61,7 +62,7 @@ export function HumanMessageEditor({
 	}
 
 	return (
-		<div className="cursor-chat-composer relative flex w-full max-w-3xl flex-col gap-1.5 border px-4 py-3 transition-[background,border-color,box-shadow]">
+		<div className="cursor-chat-composer relative flex w-full max-w-3xl flex-col gap-1.5 border px-4 py-3">
 		<textarea
 			ref={textarea}
 			value={draft}
@@ -95,35 +96,47 @@ export function HumanMessageEditor({
 			) : busyMessage ? (
 				<span className="mr-auto text-[11px] text-muted-foreground">{busyMessage}</span>
 			) : null}
-			<Button
-				type="button"
-				size="icon-sm"
-				variant="ghost"
-				onClick={onCancel}
-				disabled={pending}
-				aria-label={t("chat.edit.cancel")}
-				title={t("chat.edit.cancel")}
-				className="size-7"
-			>
-				<X aria-hidden="true" className="size-3.5" />
-			</Button>
-			<Button
-				type="button"
-				variant="ghost"
-				size="icon-sm"
-				onClick={submit}
-				disabled={sendDisabled}
-				aria-label={t("chat.edit.send")}
-				title={busyMessage ?? t("chat.edit.sendShortcut")}
-				className={cn(
-					"size-7 rounded-full border-transparent",
-					sendDisabled
-						? "bg-primary text-primary-foreground"
-						: "bg-foreground text-background hover:bg-foreground/90 hover:text-background dark:hover:bg-foreground/90 dark:hover:text-background",
-				)}
-			>
-				{pending ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin" /> : <ArrowUp aria-hidden="true" className="size-3.5" />}
-			</Button>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<span className="inline-flex">
+						<Button
+							type="button"
+							size="icon-sm"
+							variant="ghost"
+							onClick={onCancel}
+							disabled={pending}
+							aria-label={t("chat.edit.cancel")}
+							className="size-7"
+						>
+							<X aria-hidden="true" className="size-3.5" />
+						</Button>
+					</span>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">{t("chat.edit.cancel")}</TooltipContent>
+			</Tooltip>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<span className="inline-flex">
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-sm"
+							onClick={submit}
+							disabled={sendDisabled}
+							aria-label={t("chat.edit.send")}
+							className={cn(
+								"size-7 rounded-full border-transparent",
+								sendDisabled
+									? "bg-primary text-primary-foreground"
+									: "bg-foreground text-background hover:bg-foreground/90 hover:text-background dark:hover:bg-foreground/90 dark:hover:text-background",
+							)}
+						>
+							{pending ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin" /> : <ArrowUp aria-hidden="true" className="size-3.5" />}
+						</Button>
+					</span>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">{busyMessage ?? t("chat.edit.sendShortcut")}</TooltipContent>
+			</Tooltip>
 		</div>
 	</div>
 	);

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionFileExplorer } from "./SessionFileExplorer";
+import { TooltipProvider } from "./ui/tooltip";
 import { useUiStore } from "../stores/ui-store";
 
 const { getMock, postMock } = vi.hoisted(() => ({ getMock: vi.fn(), postMock: vi.fn() }));
@@ -45,7 +46,14 @@ vi.mock("./FileContentPane", () => ({
 
 function renderWithQuery(children: ReactNode) {
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
+	return {
+		client,
+		...render(
+			<QueryClientProvider client={client}>
+				<TooltipProvider>{children}</TooltipProvider>
+			</QueryClientProvider>,
+		),
+	};
 }
 
 describe("SessionFileExplorer", () => {
@@ -79,14 +87,36 @@ describe("SessionFileExplorer", () => {
 		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
 	});
 
-	it("opens docked files in the coordinated center workspace and keeps the tree visible", async () => {
+	it("previews docked files before explicitly opening them in the center workspace", async () => {
 		const onOpenFile = vi.fn();
 		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-explorer-center" />);
 
 		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
+		expect(onOpenFile).not.toHaveBeenCalled();
+
+		await userEvent.click(screen.getByRole("button", { name: "Open in center: src/App.tsx" }));
 		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx");
-		expect(screen.getByTestId("tree-changed-only")).toBeVisible();
+	});
+
+	it("reveals an externally requested file in the docked preview", () => {
+		const { client, rerender } = renderWithQuery(
+			<SessionFileExplorer sessionId="sess-explorer-reveal" revealRequest={null} />,
+		);
+
 		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
+		rerender(
+			<QueryClientProvider client={client}>
+				<TooltipProvider>
+					<SessionFileExplorer
+						revealRequest={{ path: "docs/notes.txt", key: 1 }}
+						sessionId="sess-explorer-reveal"
+					/>
+				</TooltipProvider>
+			</QueryClientProvider>,
+		);
+
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("docs/notes.txt");
 	});
 
 	it("keeps the tree and content side by side when maximized", async () => {

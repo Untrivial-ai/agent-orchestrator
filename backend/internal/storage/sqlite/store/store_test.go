@@ -76,8 +76,8 @@ func TestSessionPersistsReviewerHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := s.SetSessionReviewerHarness(ctx, rec.ID, domain.ReviewerCodex, time.Now().UTC()); err != nil || !ok {
-		t.Fatalf("set reviewer harness = %v, %v", ok, err)
+	if ok, err := s.SetSessionReviewerConfig(ctx, rec.ID, domain.ReviewerCodex, domain.AgentConfig{}, time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("set reviewer config = %v, %v", ok, err)
 	}
 	got, ok, err := s.GetSession(ctx, rec.ID)
 	if err != nil || !ok {
@@ -270,6 +270,62 @@ func TestSessionPersistsBrowserCapabilityVerifier(t *testing.T) {
 	}
 	if updated.Metadata.BrowserCapabilityVerifier != "rotated-verifier" {
 		t.Fatalf("updated verifier = %q", updated.Metadata.BrowserCapabilityVerifier)
+	}
+}
+
+func TestBrowserCapabilityRotationIsNarrowAndControllerOwnerFenced(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec := sampleRecord("mer")
+	rec.Mode = domain.SessionModeChat
+	rec.Metadata.ProviderConversationID = "thread-1"
+	rec.Metadata.ControllerGeneration = "generation-1"
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	expected := created.ControllerOwner()
+
+	concurrent := created
+	concurrent.DisplayName = "newer display name"
+	concurrent.Activity = domain.Activity{State: domain.ActivityActive, LastActivityAt: created.UpdatedAt.Add(2 * time.Second)}
+	concurrent.UpdatedAt = created.UpdatedAt.Add(2 * time.Second)
+	if err := s.UpdateSession(ctx, concurrent); err != nil {
+		t.Fatalf("UpdateSession concurrent facts: %v", err)
+	}
+	applied, err := s.UpdateBrowserCapabilityVerifier(
+		ctx, created.ID, expected, "verifier-2", created.UpdatedAt.Add(time.Second),
+	)
+	if err != nil || !applied {
+		t.Fatalf("UpdateBrowserCapabilityVerifier: applied=%v err=%v", applied, err)
+	}
+	updated, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetSession: ok=%v err=%v", ok, err)
+	}
+	if updated.Metadata.BrowserCapabilityVerifier != "verifier-2" ||
+		updated.DisplayName != concurrent.DisplayName || updated.Activity != concurrent.Activity ||
+		!updated.UpdatedAt.Equal(concurrent.UpdatedAt) {
+		t.Fatalf("narrow verifier update changed unrelated facts: got=%+v", updated)
+	}
+
+	if err := s.ClaimChatControllerGeneration(
+		ctx, created.ID, "generation-2", concurrent.UpdatedAt.Add(time.Second)); err != nil {
+		t.Fatalf("ClaimChatControllerGeneration: %v", err)
+	}
+	applied, err = s.UpdateBrowserCapabilityVerifier(
+		ctx, created.ID, expected, "stale-verifier", concurrent.UpdatedAt.Add(2*time.Second),
+	)
+	if err != nil || applied {
+		t.Fatalf("stale owner verifier update: applied=%v err=%v", applied, err)
+	}
+	updated, _, err = s.GetSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSession after stale update: %v", err)
+	}
+	if updated.Metadata.BrowserCapabilityVerifier != "verifier-2" {
+		t.Fatalf("stale owner replaced verifier with %q", updated.Metadata.BrowserCapabilityVerifier)
 	}
 }
 
@@ -794,6 +850,32 @@ func TestPRCRUD(t *testing.T) {
 	}
 	if list, _ := s.ListPRsBySession(ctx, r.ID); len(list) != 1 {
 		t.Fatalf("list prs = %d, want 1", len(list))
+	}
+}
+
+func TestWriteSCMObservationPersistsAuthorAvatarURL(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	pr := domain.PullRequest{
+		URL:             "https://github.com/o/r/pull/1",
+		SessionID:       r.ID,
+		Number:          1,
+		Author:          "octocat",
+		AuthorAvatarURL: "https://avatars.githubusercontent.com/u/583231?v=4",
+		UpdatedAt:       time.Now().UTC().Truncate(time.Second),
+	}
+
+	if err := s.WriteSCMObservation(ctx, pr, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetPR(ctx, pr.URL)
+	if err != nil || !ok {
+		t.Fatalf("get pr: ok=%v err=%v", ok, err)
+	}
+	if got.Author != pr.Author || got.AuthorAvatarURL != pr.AuthorAvatarURL {
+		t.Fatalf("author = %q avatar = %q", got.Author, got.AuthorAvatarURL)
 	}
 }
 
@@ -1571,5 +1653,56 @@ func TestUpsertSessionWorktreeEmptyStateDefaultsToActive(t *testing.T) {
 	}
 	if got.State != "active" {
 		t.Fatalf("State = %q, want %q", got.State, "active")
+	}
+}
+
+func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "permissions")
+	cfg := domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits}}}
+	if err := s.UpsertProject(ctx, domain.ProjectRecord{ID: "permissions", Path: "/tmp/permissions", Config: cfg}); err != nil {
+		t.Fatal(err)
+	}
+	var rows []domain.SessionRecord
+	for _, tc := range []struct {
+		kind  domain.SessionKind
+		saved domain.PermissionMode
+		want  domain.PermissionMode
+	}{{domain.KindWorker, "", domain.PermissionModeAcceptEdits}, {domain.KindOrchestrator, "", domain.PermissionModeDefault}, {domain.KindWorker, domain.PermissionModeAuto, domain.PermissionModeAuto}} {
+		rec := sampleRecord("permissions")
+		rec.Kind = tc.kind
+		rec.Metadata.Permissions = tc.saved
+		row, err := s.CreateSession(ctx, rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row.Mode = domain.NormalizeSessionMode(row.Mode)
+		row.Metadata.Permissions = tc.want
+		rows = append(rows, row)
+	}
+	if _, ok, err := s.SetProjectPermissions(ctx, "permissions", domain.PermissionModeBypassPermissions); err != nil || !ok {
+		t.Fatalf("remember: %v %v", ok, err)
+	}
+	for _, want := range rows {
+		got, ok, err := s.GetSession(ctx, want.ID)
+		if err != nil || !ok {
+			t.Fatalf("load: %v %v", ok, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("session mutated beyond permission pin: got %#v want %#v", got, want)
+		}
+	}
+	if _, ok, err := s.SetProjectPermissions(ctx, "permissions", domain.PermissionModeDefault); err != nil || !ok {
+		t.Fatalf("second remember: %v %v", ok, err)
+	}
+	for _, want := range rows {
+		got, _, err := s.GetSession(ctx, want.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Metadata.Permissions != want.Metadata.Permissions {
+			t.Fatalf("repinned existing session: %q", got.Metadata.Permissions)
+		}
 	}
 }

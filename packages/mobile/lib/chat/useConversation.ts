@@ -25,6 +25,7 @@ import type { ChatConfigOption, ChatImage, ChatModel, ChatResource, ChatSkill, C
 import { cachedConversationState, createMobileConversationPageCache, discardHistoricalPages } from "./snapshot";
 import { conversationActionError, conversationErrorCode } from "./conversationErrors";
 import { subscribeConversationEvents } from "./conversationEvents";
+import { conversationPollIntervalFor } from "./conversationPoll";
 import { createAsyncValueCache } from "./asyncValueCache";
 import { createRequestGate } from "./requestGate";
 import { loadTurnOptionCatalog } from "./turnOptionsCatalog";
@@ -216,6 +217,18 @@ export function useMobileConversation(
 			if (event.payload?.conversationId) scheduleRefresh();
 		});
 	}, [cfg, sessionId, scheduleRefresh, unavailable]);
+
+	// Poll the conversation on paths where the event stream cannot deliver.
+	// Over a Cloudflare quick tunnel the subscription above never fires — the
+	// body is forwarded in ~128 KB chunks and a chat event is a few hundred
+	// bytes — so without this the screen shows the agent working indefinitely
+	// while the reply has already landed.
+	useEffect(() => {
+		const every = conversationPollIntervalFor(cfg);
+		if (every === null || unavailable) return;
+		const timer = setInterval(() => scheduleRefresh(), every);
+		return () => clearInterval(timer);
+	}, [cfg, unavailable, scheduleRefresh]);
 
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {

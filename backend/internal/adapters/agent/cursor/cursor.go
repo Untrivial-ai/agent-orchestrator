@@ -22,6 +22,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/termtheme"
 	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
@@ -63,6 +64,7 @@ func (p *Plugin) AugmentRuntimeEnv(env map[string]string, dataDir string) {
 		return
 	}
 	env[cursorDataDirEnv] = cursorDataDir(dataDir)
+	termtheme.Apply(env, dataDir)
 }
 
 // Manifest returns the adapter's static self-description.

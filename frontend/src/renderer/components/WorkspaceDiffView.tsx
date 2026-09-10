@@ -64,6 +64,7 @@ export function ReviewDiffBody({
 	annotation,
 	detail,
 	detailLoadedAt,
+	emptyFallback,
 	filePath,
 	onActiveSelectionChange,
 	sessionId,
@@ -73,6 +74,7 @@ export function ReviewDiffBody({
 	annotation: FileAnnotationModel;
 	detail: WorkspaceFileDetail;
 	detailLoadedAt: number;
+	emptyFallback?: ReactNode;
 	filePath: string;
 	onActiveSelectionChange: (active: boolean) => void;
 	sessionId: string;
@@ -101,7 +103,7 @@ export function ReviewDiffBody({
 		return <PanelMessage compact>{t("files.loadingDiff")}</PanelMessage>;
 	}
 	if (rows.length === 0) {
-		return <PanelMessage compact>{emptyDiffMessage(detail.compareMode, t)}</PanelMessage>;
+		return emptyFallback ?? <PanelMessage compact>{emptyDiffMessage(detail.compareMode, t)}</PanelMessage>;
 	}
 	return (
 		<DiffView
@@ -342,7 +344,7 @@ function DiffView({
 				</div>
 			) : null}
 			<div
-				className="diff-code session-files-diff-scrollbar overflow-x-auto overflow-y-visible bg-terminal font-mono text-xs leading-row text-terminal-foreground"
+				className="diff-code session-files-diff-scrollbar select-text overflow-x-auto overflow-y-visible bg-terminal font-mono text-xs leading-row text-terminal-foreground"
 				onContextMenu={onContextMenu}
 				ref={containerRef}
 			>

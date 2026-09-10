@@ -87,6 +87,38 @@ describe("FileContentPane", () => {
 		expect(await screen.findByText("hello")).toBeInTheDocument();
 	});
 
+	it("falls back to current content when a changed extensionless file has no renderable diff", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				path: "build",
+				status: "modified",
+				additions: 0,
+				deletions: 0,
+				size: 24,
+				binary: false,
+				deleted: false,
+				content: "#!/usr/bin/env bash\necho ok\n",
+				contentTruncated: false,
+				diff: "",
+				diffTruncated: false,
+			},
+		});
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="build" sessionId="sess-1" split={false} wrap />);
+
+		expect(await screen.findByText(/echo ok/)).toBeInTheDocument();
+	});
+
+	it("shows a retryable error instead of a blank pane when a successful response has no body", async () => {
+		getMock.mockResolvedValue({ data: undefined });
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="README.md" sessionId="sess-1" split={false} wrap />);
+
+		expect(await screen.findByText("Unable to load workspace file")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+	});
+
 	it("shows a retry action on load failure and refetches on click", async () => {
 		getMock.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce({
 			data: {

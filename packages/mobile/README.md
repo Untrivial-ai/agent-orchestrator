@@ -300,6 +300,71 @@ directly; the `AppState` wiring around it has never been exercised on a device. 
 that any foreground resets the timer, so testing it needs one uninterrupted background
 stretch.
 
+## Store updates
+
+OTA covers JS only. A native change mints a new fingerprint runtime, so a build
+in the field stops being offered updates the moment a newer binary ships — silently.
+This is the other half: when a newer **native binary** is live on a store, the app
+says so once per launch and takes the user there. **Settings → About → App Store /
+Play Store** checks on demand.
+
+- **Android** uses [Play In-App Updates](https://developer.android.com/guide/playcore/in-app-updates)
+  via `expo-in-app-updates`. Play compares the installed `versionCode` itself, so the
+  app never reads or configures a version. Only works for builds installed from Play;
+  sideloaded and dev builds fail the check silently.
+- **iOS** queries the iTunes Search API by bundle id in plain JS. The response carries
+  the App Store id, so nothing has to be configured. It is inert until the app is
+  actually on the App Store.
+- `expo-in-app-updates` is therefore **excluded from Apple autolinking**
+  (`package.json` → `expo.autolinking.apple.exclude`) — it is Android-only code here.
+  Keep it that way: linking the unused pod puts the package into the iOS fingerprint,
+  which would change the iOS runtime version on every dependency bump and force a
+  native release for changes that are pure JS. `lib/inAppUpdates.ts` binds the native
+  module with `requireOptionalNativeModule`, which answers `null` on iOS instead of
+  throwing the way a plain import would.
+- **Two tiers.** The nudge is a dismissible sheet, shown at most once a day and three
+  times per store version (a swipe counts as a dismissal). The insistent tier is Play's
+  own fullscreen updater — note it is still cancellable: `startUpdateFlowForResult`
+  resolves as soon as the dialog opens, and cancelling leaves the app running. It is
+  entered only when Play asks for it — publish the release with `inAppUpdatePriority`
+  4 or 5 in `Edits.tracks.releases` through the Play Developer API. Priority can only
+  be set while rolling a release out and **can never be changed afterwards**. Raise it
+  only once the new build is *live* on the store, not merely approved. iOS has no
+  equivalent channel and Apple discourages blocking, so iOS is nudge-only.
+- **Version floor.** Two EAS environment variables let a release be declared
+  without shipping app code: `EXPO_PUBLIC_AO_MIN_APP_VERSION` (below it, the
+  update stops being optional) and `EXPO_PUBLIC_AO_LATEST_APP_VERSION` (below it,
+  the usual once-a-day nudge). Both unset means the floor is inert, which is how
+  it ships. Move one and publish:
+
+  ```bash
+  eas env:create --environment production --name EXPO_PUBLIC_AO_MIN_APP_VERSION --value 1.3.0 --visibility plaintext
+  eas update --channel production --environment production -m "raise the floor to 1.3.0" --rollout-percentage 10
+  ```
+
+  Four things to know before you do:
+  - **`min` can only escalate an update the store already confirmed exists.** It
+    can raise a confirmed update from dismissible to blocking; it can never invent
+    one. So a mistyped floor cannot strand anyone, and iOS stays nudge-only until
+    the App Store listing exists — then starts blocking on its own, no code change.
+  - **Visibility must be `plaintext`.** Secret variables are not readable outside
+    EAS servers, so they do not resolve during `eas update` and the floor silently
+    falls back to inert.
+  - **One publish per runtime you want to reach.** Values are inlined into the JS
+    bundle. A `version` stamp changes the fingerprint, so after one, `main` only
+    reaches the new runtime — publish from the older release's tag to reach that
+    cohort. The EAS values are read at publish time, so no code edit on that tag.
+  - **It only distinguishes versions you actually stamp.** `eas.json`
+    `autoIncrement` moves the build number, not `version`.
+- **Flexible updates are never started, deliberately.** `expo-in-app-updates` calls
+  `completeUpdate()` as soon as a flexible download finishes, which restarts the app
+  unannounced; Google's own contract is that a flexible update restarts only when the
+  user chooses to. A surprise restart is wrong for a remote control over long-running
+  agents, so the dismissible sheet is the soft tier and opting in goes straight to the
+  immediate flow.
+- Everything fails open: an unreachable store, an unpublished bundle id or a non-Play
+  install all read as "no update" rather than an error.
+
 ## Troubleshooting
 
 | Symptom                                           | Fix                                                                                                                                                          |

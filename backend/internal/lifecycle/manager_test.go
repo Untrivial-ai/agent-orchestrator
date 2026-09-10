@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -187,6 +190,21 @@ type fakeAgentSwitchLifecycleStore struct {
 	hasActiveSwitch      bool
 	native               map[domain.AgentNativeSessionID]domain.AgentNativeSession
 	acknowledgementCalls []targetAcknowledgementCall
+	ackForceNoChange     bool
+	ackErr               error
+	getSwitchErr         error
+}
+
+func (f *fakeAgentSwitchLifecycleStore) GetAgentSwitch(_ context.Context, id domain.AgentSwitchID) (domain.AgentSwitch, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getSwitchErr != nil {
+		return domain.AgentSwitch{}, false, f.getSwitchErr
+	}
+	if !f.hasActiveSwitch || f.activeSwitch.ID != id {
+		return domain.AgentSwitch{}, false, nil
+	}
+	return f.activeSwitch, true, nil
 }
 
 func newFakeAgentSwitchLifecycleStore() *fakeAgentSwitchLifecycleStore {
@@ -268,6 +286,12 @@ func (f *fakeAgentSwitchLifecycleStore) AcknowledgeAgentSwitchTarget(_ context.C
 	f.acknowledgementCalls = append(f.acknowledgementCalls, targetAcknowledgementCall{
 		switchID: switchID, sessionID: sessionID, generation: generation, at: at,
 	})
+	if f.ackErr != nil {
+		return false, f.ackErr
+	}
+	if f.ackForceNoChange {
+		return false, nil
+	}
 	if !f.hasActiveSwitch || f.activeSwitch.ID != switchID || f.activeSwitch.SessionID != sessionID ||
 		f.activeSwitch.State != domain.AgentSwitchDelivering || f.activeSwitch.TargetGenerationID != generation ||
 		f.activeSwitch.TargetAcknowledgedAt != nil {
@@ -387,10 +411,10 @@ func (f *fakeMessenger) Send(_ context.Context, id domain.SessionID, msg string)
 	return nil
 }
 
-func newManager() (*Manager, *fakeStore, *fakeMessenger) {
+func newManager(opts ...Option) (*Manager, *fakeStore, *fakeMessenger) {
 	st := newFakeStore()
 	msg := &fakeMessenger{}
-	return New(st, msg), st, msg
+	return New(st, msg, opts...), st, msg
 }
 
 func working(id domain.SessionID) domain.SessionRecord {
@@ -1175,6 +1199,84 @@ func TestActivity_TargetPromptSubmitAcknowledgesDeliveringAgentSwitch(t *testing
 	acknowledged := store.active().TargetAcknowledgedAt
 	if acknowledged == nil || !acknowledged.Equal(now) {
 		t.Fatalf("target acknowledgement timestamp = %v, want %v", acknowledged, now)
+	}
+}
+
+func TestAcknowledgeAgentSwitchTargetReadsBackChangedFalseOutcomes(t *testing.T) {
+	now := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
+	base := domain.AgentSwitch{
+		ID: "switch-ack-readback", SessionID: "session-ack-readback",
+		FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchDelivering, SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
+	}
+	signal := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "target-generation"}
+
+	t.Run("duplicate acknowledgement is suppressed", func(t *testing.T) {
+		store := &fakeAgentSwitchLifecycleStore{fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base}
+		acknowledgedAt := now.Add(-time.Second)
+		store.activeSwitch.TargetAcknowledgedAt = &acknowledgedAt
+		manager := New(store, nil)
+		if err := manager.acknowledgeAgentSwitchTarget(context.Background(), base.SessionID, signal, now); err != nil {
+			t.Fatalf("duplicate acknowledgement: %v", err)
+		}
+	})
+
+	t.Run("impossible unchanged current predicate is surfaced", func(t *testing.T) {
+		store := &fakeAgentSwitchLifecycleStore{fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base, ackForceNoChange: true}
+		manager := New(store, nil)
+		if err := manager.acknowledgeAgentSwitchTarget(context.Background(), base.SessionID, signal, now); err == nil {
+			t.Fatal("unchanged exact acknowledgement predicate returned nil")
+		}
+	})
+}
+
+func TestAcknowledgeAgentSwitchTargetOwnsPostAdmissionErrors(t *testing.T) {
+	now := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
+	base := domain.AgentSwitch{
+		ID: "switch-ack-owner", SessionID: "session-ack-owner",
+		FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchDelivering, SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
+	}
+	signal := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "target-generation"}
+
+	tests := []struct {
+		name  string
+		store *fakeAgentSwitchLifecycleStore
+	}{
+		{
+			name: "acknowledgement failure",
+			store: &fakeAgentSwitchLifecycleStore{
+				fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base,
+				ackErr: errors.New("ack write failed"),
+			},
+		},
+		{
+			name: "read-back failure",
+			store: &fakeAgentSwitchLifecycleStore{
+				fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base,
+				ackForceNoChange: true, getSwitchErr: errors.New("read-back failed"),
+			},
+		},
+		{
+			name: "unchanged exact predicate",
+			store: &fakeAgentSwitchLifecycleStore{
+				fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base,
+				ackForceNoChange: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := New(tt.store, nil)
+			err := manager.acknowledgeAgentSwitchTarget(context.Background(), base.SessionID, signal, now)
+			if err == nil {
+				t.Fatal("acknowledgement error = nil")
+			}
+			if got := ownership.OwnerOf(err); got != ownership.OwnerAgentSwitchSaga {
+				t.Fatalf("acknowledgement owner = %q, want %q (error: %v)", got, ownership.OwnerAgentSwitchSaga, err)
+			}
+		})
 	}
 }
 
@@ -2164,6 +2266,257 @@ func TestPRObservation_MergeConflictNudgesAgent(t *testing.T) {
 	}
 }
 
+// TestPRObservation_MergeConflictReArmsAfterConflictClears is the regression
+// test for #4528: AO notified on the first conflict but never again, because
+// the "merge-conflict:<url>" = "conflicting" signature sendOnce persists was
+// never cleared. A PR rebased clean and then made conflicting again by a
+// base-branch advance was silently swallowed as a duplicate.
+func TestPRObservation_MergeConflictReArmsAfterConflictClears(t *testing.T) {
+	// Every state that definitively rules a conflict out must re-arm; `blocked`
+	// is deliberately excluded because the observer synthesizes it from
+	// draft/CI/review facts even while provider mergeability is unknown.
+	for _, clear := range []domain.Mergeability{domain.MergeMergeable, domain.MergeUnstable} {
+		t.Run(string(clear), func(t *testing.T) {
+			m, st, msg := newManager()
+			st.sessions["mer-1"] = working("mer-1")
+			apply := func(state domain.Mergeability) {
+				t.Helper()
+				if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: state}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			apply(clear)
+			apply(domain.MergeConflicting)
+			if len(msg.msgs) != 1 {
+				t.Fatalf("first conflict should nudge once, got %v", msg.msgs)
+			}
+			apply(clear)
+			apply(domain.MergeConflicting)
+			if len(msg.msgs) != 2 {
+				t.Fatalf("conflict returning after %s should nudge again, got %d nudges: %v", clear, len(msg.msgs), msg.msgs)
+			}
+		})
+	}
+}
+
+// TestPRObservation_ConsecutiveMergeConflictsStayDeduplicated pins the other
+// half of #4528: the re-arm must not weaken the dedup that stops an unchanged
+// conflict from re-nudging on every poll.
+func TestPRObservation_ConsecutiveMergeConflictsStayDeduplicated(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	for range 3 {
+		if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeConflicting}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("identical consecutive conflicts should nudge once, got %d: %v", len(msg.msgs), msg.msgs)
+	}
+}
+
+// TestPRObservation_UnknownMergeabilityDoesNotReArm keeps the re-arm off the
+// transient GitHub reports while it recomputes mergeability after a push or a
+// retarget. Treating unknown as "conflict resolved" would re-nudge on every
+// unknown → conflicting flap of a conflict that never went away.
+func TestPRObservation_UnknownMergeabilityDoesNotReArm(t *testing.T) {
+	for _, transient := range []domain.Mergeability{domain.MergeUnknown, domain.MergeBlocked, ""} {
+		t.Run(string(transient), func(t *testing.T) {
+			m, st, msg := newManager()
+			st.sessions["mer-1"] = working("mer-1")
+			for _, state := range []domain.Mergeability{domain.MergeConflicting, transient, domain.MergeConflicting} {
+				if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: state}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(msg.msgs) != 1 {
+				t.Fatalf("%q must not re-arm the conflict nudge, got %d nudges: %v", transient, len(msg.msgs), msg.msgs)
+			}
+		})
+	}
+}
+
+// TestPRObservation_MergeConflictDedupSurvivesRestart covers both persistence
+// directions of #4528 across a daemon restart, simulated by a fresh Manager
+// over the same store: an unchanged conflict must stay quiet, and a conflict
+// that cleared before the restart must be free to nudge again.
+func TestPRObservation_MergeConflictDedupSurvivesRestart(t *testing.T) {
+	conflicting := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeConflicting}
+
+	t.Run("unchanged conflict stays deduplicated", func(t *testing.T) {
+		st := newFakeStore()
+		st.sessions["mer-1"] = working("mer-1")
+		first := New(st, &fakeMessenger{})
+		if err := first.ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+			t.Fatal(err)
+		}
+
+		restarted := &fakeMessenger{}
+		if err := New(st, restarted).ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+			t.Fatal(err)
+		}
+		if len(restarted.msgs) != 0 {
+			t.Fatalf("restart must not replay an already-sent conflict nudge, got %v", restarted.msgs)
+		}
+	})
+
+	t.Run("cleared conflict re-arms across restart", func(t *testing.T) {
+		st := newFakeStore()
+		st.sessions["mer-1"] = working("mer-1")
+		first := New(st, &fakeMessenger{})
+		if err := first.ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+			t.Fatal(err)
+		}
+		if err := first.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeMergeable}); err != nil {
+			t.Fatal(err)
+		}
+
+		restarted := &fakeMessenger{}
+		if err := New(st, restarted).ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+			t.Fatal(err)
+		}
+		if len(restarted.msgs) != 1 {
+			t.Fatalf("a conflict returning after a restart should nudge, got %v", restarted.msgs)
+		}
+	})
+}
+
+// TestPRObservation_ReArmLeavesOtherDedupEntriesIntact guards the blast radius
+// of the re-arm: it must delete only this PR's merge-conflict key, so a
+// resolved conflict cannot replay the CI-failure nudge the same PR row holds.
+func TestPRObservation_ReArmLeavesOtherDedupEntriesIntact(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	o := ports.PRObservation{
+		Fetched:      true,
+		URL:          "pr1",
+		CI:           domain.CIFailing,
+		Checks:       []ports.PRCheckObservation{{Name: "build", CommitHash: "c1", Status: domain.PRCheckFailed, LogTail: "boom"}},
+		Mergeability: domain.MergeConflicting,
+	}
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 2 {
+		t.Fatalf("want a CI and a merge-conflict nudge, got %d: %v", len(msg.msgs), msg.msgs)
+	}
+
+	o.Mergeability = domain.MergeMergeable
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 2 {
+		t.Fatalf("re-arming the conflict must not replay the unchanged CI nudge, got %d: %v", len(msg.msgs), msg.msgs)
+	}
+}
+
+// TestPRObservation_ReArmSkipsStoreWriteWhenNothingArmed keeps a steadily
+// mergeable PR off the write path: the re-arm persists only when it actually
+// cleared an entry, so routine polls do not rewrite an unchanged payload.
+func TestPRObservation_ReArmSkipsStoreWriteWhenNothingArmed(t *testing.T) {
+	m, st, _ := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	for range 2 {
+		if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeMergeable}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st.signatureWrites != 0 {
+		t.Fatalf("mergeable polls with nothing armed wrote the signature payload %d times, want 0", st.signatureWrites)
+	}
+}
+
+// TestPRObservation_ReArmRetriesAfterFailedPersist covers the failure ->
+// successful observation -> restart -> conflict path. The re-arm's in-memory
+// delete stands even when the durable write fails, so a naive implementation
+// would see nothing armed on the next mergeable observation, take the early
+// return, and never retry — leaving the stale "conflicting" signature on disk
+// to suppress the nudge after a restart, recreating #4528.
+func TestPRObservation_ReArmRetriesAfterFailedPersist(t *testing.T) {
+	conflicting := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeConflicting}
+	mergeable := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeMergeable}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = working("mer-1")
+	m := New(st, &fakeMessenger{})
+	if err := m.ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+		t.Fatal(err)
+	}
+
+	st.signatureWriteErr = errors.New("db locked")
+	if err := m.ApplyPRObservation(ctx, "mer-1", mergeable); err == nil {
+		t.Fatal("a failed re-arm persist should surface to the observer")
+	}
+
+	// Persistence recovers. The next non-conflicting observation must retry the
+	// durable write rather than short-circuit on the now-empty in-memory maps.
+	st.signatureWriteErr = nil
+	if err := m.ApplyPRObservation(ctx, "mer-1", mergeable); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := &fakeMessenger{}
+	if err := New(st, restarted).ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+		t.Fatal(err)
+	}
+	if len(restarted.msgs) != 1 {
+		t.Fatalf("a re-arm that retried its persist must survive a restart, got %v", restarted.msgs)
+	}
+}
+
+// TestPRObservation_ReArmStillNudgesInProcessAfterFailedPersist pins the other
+// half of the retry contract: the failed persist must not roll the in-memory
+// re-arm back, or a conflict returning before the write succeeds would be
+// deduplicated away inside the running daemon.
+func TestPRObservation_ReArmStillNudgesInProcessAfterFailedPersist(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	conflicting := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeConflicting}
+	if err := m.ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+		t.Fatal(err)
+	}
+
+	st.signatureWriteErr = errors.New("db locked")
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeMergeable}); err == nil {
+		t.Fatal("a failed re-arm persist should surface to the observer")
+	}
+	st.signatureWriteErr = nil
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 2 {
+		t.Fatalf("a conflict returning after a failed re-arm persist should still nudge, got %d: %v", len(msg.msgs), msg.msgs)
+	}
+}
+
+// TestPRObservation_ReArmStoreFailureSurfacesWithoutLosingNudges checks the
+// deferred-error contract: a failed re-arm persist is reported, but only after
+// the independent CI nudge queued in the same observation has been sent.
+func TestPRObservation_ReArmStoreFailureSurfacesWithoutLosingNudges(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeConflicting}); err != nil {
+		t.Fatal(err)
+	}
+
+	st.signatureWriteErr = errors.New("db locked")
+	err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{
+		Fetched:      true,
+		URL:          "pr1",
+		CI:           domain.CIFailing,
+		Checks:       []ports.PRCheckObservation{{Name: "build", CommitHash: "c1", Status: domain.PRCheckFailed, LogTail: "boom"}},
+		Mergeability: domain.MergeMergeable,
+	})
+	if err == nil {
+		t.Fatal("a failed re-arm persist should surface to the observer")
+	}
+	if len(msg.msgs) != 2 {
+		t.Fatalf("the CI nudge must still be sent before the deferred re-arm error, got %d: %v", len(msg.msgs), msg.msgs)
+	}
+}
+
 func TestPRObservation_ExitedAgentIsNotNudged(t *testing.T) {
 	m, st, msg := newManager()
 	rec := working("mer-1")
@@ -2175,6 +2528,204 @@ func TestPRObservation_ExitedAgentIsNotNudged(t *testing.T) {
 	}
 	if len(msg.msgs) != 0 {
 		t.Fatalf("exited agent should not receive reaction nudges, got %v", msg.msgs)
+	}
+}
+
+// TestPRObservation_ReArmClearsConflictWhileSessionExited is the regression
+// test for the delivery-gate finding: a definitively-cleared observation must
+// re-arm the merge-conflict dedup even when it arrives while the session is
+// exited. Exited sessions are still polled, so the sequence
+// conflicting -> exit -> mergeable -> restore -> conflicting must nudge on the
+// final conflict; a re-arm placed behind the dead-session return would skip the
+// clear and let the stale "conflicting" signature swallow the recurrence.
+func TestPRObservation_ReArmClearsConflictWhileSessionExited(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	conflicting := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeConflicting}
+	mergeable := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeMergeable}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("first conflict should nudge, got %v", msg.msgs)
+	}
+
+	// The agent exits, then the PR is observed mergeable while exited. No nudge
+	// is delivered (nowhere to write), but the re-arm bookkeeping must still run.
+	exited := working("mer-1")
+	exited.Activity.State = domain.ActivityExited
+	st.sessions["mer-1"] = exited
+	if err := m.ApplyPRObservation(ctx, "mer-1", mergeable); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("mergeable-while-exited must deliver nothing, got %v", msg.msgs)
+	}
+
+	// The agent is restored and the base advances into a fresh conflict. The
+	// re-arm during the exited window must let this recurrence nudge again.
+	st.sessions["mer-1"] = working("mer-1")
+	if err := m.ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 2 {
+		t.Fatalf("a conflict returning after a clear-while-exited must nudge again, got %d: %v", len(msg.msgs), msg.msgs)
+	}
+}
+
+// TestPRObservation_ReArmClearsConflictSurvivesTerminatedRestore covers the
+// terminated variant of the same hazard: a terminated session is excluded from
+// polling, so the clear typically arrives on the first observation after
+// restore. The re-arm still runs ahead of the dead-session return, so even a
+// clear observed in the terminated window (before restore is reflected) drops
+// the stale signature and a later conflict nudges again.
+func TestPRObservation_ReArmClearsConflictSurvivesTerminatedRestore(t *testing.T) {
+	conflicting := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeConflicting}
+	mergeable := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeMergeable}
+
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	if err := m.ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+		t.Fatal(err)
+	}
+
+	// Session terminates; a mergeable observation lands before restore. It must
+	// re-arm despite the terminated gate returning before any delivery.
+	terminated := working("mer-1")
+	terminated.IsTerminated = true
+	st.sessions["mer-1"] = terminated
+	if err := m.ApplyPRObservation(ctx, "mer-1", mergeable); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("mergeable-while-terminated must deliver nothing, got %v", msg.msgs)
+	}
+
+	// Restored, then a fresh conflict: the re-arm during the terminated window
+	// must let it nudge again rather than dedup against the stale signature.
+	st.sessions["mer-1"] = working("mer-1")
+	if err := m.ApplyPRObservation(ctx, "mer-1", conflicting); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 2 {
+		t.Fatalf("a conflict after a clear-while-terminated must nudge again, got %d: %v", len(msg.msgs), msg.msgs)
+	}
+}
+
+// TestPRObservation_MergeConflictReachesNeedsInputSession is the regression
+// test for #2173: a session parked awaiting the human (waiting_input) must
+// still receive a merge-conflict nudge, because the human sitting at that
+// prompt may be exactly who needs to act (rebase it themselves, or redirect
+// the agent) — unlike CI-failure/review-feedback nudges, which only the agent
+// can act on and which correctly wait for it to resume (see the sibling test
+// below). Two states are still refused: a session blocked on a live permission
+// dialog, and a waiting_input session on a harness that cannot prove that
+// prompt is a genuine idle composer rather than a masked permission decision
+// (codex maps permission-request to waiting_input) — the harness-aware gate the
+// urgent route consults, so an unsolicited paste never answers a hidden dialog.
+func TestPRObservation_MergeConflictReachesNeedsInputSession(t *testing.T) {
+	const safeHarness = domain.AgentHarness("claude-code")
+	const ambiguousHarness = domain.AgentHarness("codex")
+	urgentGate := func(h domain.AgentHarness) bool { return h == safeHarness }
+	cases := []struct {
+		name      string
+		state     domain.ActivityState
+		harness   domain.AgentHarness
+		wantNudge bool
+	}{
+		{"waiting_input on a blocked-signalling harness reaches the agent", domain.ActivityWaitingInput, safeHarness, true},
+		{"waiting_input on an ambiguous harness stays suppressed", domain.ActivityWaitingInput, ambiguousHarness, false},
+		{"blocked stays suppressed", domain.ActivityBlocked, safeHarness, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, msg := newManager(WithUrgentNudgeGate(urgentGate))
+			rec := working("mer-1")
+			rec.Activity.State = tc.state
+			rec.Harness = tc.harness
+			st.sessions["mer-1"] = rec
+
+			o := ports.PRObservation{Fetched: true, URL: "pr1", Mergeability: domain.MergeConflicting}
+			if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+				t.Fatal(err)
+			}
+			gotNudge := len(msg.msgs) == 1
+			if gotNudge != tc.wantNudge {
+				t.Fatalf("nudge sent = %v (msgs=%v), want %v", gotNudge, msg.msgs, tc.wantNudge)
+			}
+			if gotNudge && !strings.Contains(msg.msgs[0], "merge conflicts") {
+				t.Fatalf("want merge-conflict nudge, got %q", msg.msgs[0])
+			}
+		})
+	}
+}
+
+// TestPRObservation_NeedsInputSessionStillWithholdsOtherNudges is the
+// regression guard: the needs-input gate must keep suppressing CI-failure and
+// review-feedback nudges exactly as before. Only the merge-conflict nudge
+// gets the carve-out in TestPRObservation_MergeConflictReachesNeedsInputSession.
+func TestPRObservation_NeedsInputSessionStillWithholdsOtherNudges(t *testing.T) {
+	for _, state := range []domain.ActivityState{domain.ActivityWaitingInput, domain.ActivityBlocked} {
+		t.Run(string(state), func(t *testing.T) {
+			m, st, msg := newManager()
+			rec := working("mer-1")
+			rec.Activity.State = state
+			st.sessions["mer-1"] = rec
+			st.comments["pr1"] = []domain.PullRequestComment{{ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: true}}
+
+			o := ports.PRObservation{
+				Fetched: true,
+				URL:     "pr1",
+				CI:      domain.CIFailing,
+				Checks:  []ports.PRCheckObservation{{Name: "build", CommitHash: "c1", Status: domain.PRCheckFailed, LogTail: "boom"}},
+				Review:  domain.ReviewChangesRequest,
+			}
+			if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+				t.Fatal(err)
+			}
+			if len(msg.msgs) != 0 {
+				t.Fatalf("needs-input session should not receive CI/review nudges, got %v", msg.msgs)
+			}
+		})
+	}
+}
+
+// TestPRObservation_DeadSessionGetsNoNudgesOfAnyKind sanity-checks that the
+// merge-conflict carve-out did not overreach: a genuinely dead session
+// (terminated, or its pane already exited to a shell) still gets nothing at
+// all, conflict included, since there is nowhere to deliver it.
+func TestPRObservation_DeadSessionGetsNoNudgesOfAnyKind(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*domain.SessionRecord)
+	}{
+		{"terminated", func(r *domain.SessionRecord) { r.IsTerminated = true }},
+		{"exited", func(r *domain.SessionRecord) { r.Activity.State = domain.ActivityExited }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, msg := newManager()
+			rec := working("mer-1")
+			tc.mut(&rec)
+			st.sessions["mer-1"] = rec
+			st.comments["pr1"] = []domain.PullRequestComment{{ID: "1", Author: "alice", Body: "fix this", AutoInjectReview: true}}
+
+			o := ports.PRObservation{
+				Fetched:      true,
+				URL:          "pr1",
+				CI:           domain.CIFailing,
+				Checks:       []ports.PRCheckObservation{{Name: "build", CommitHash: "c1", Status: domain.PRCheckFailed, LogTail: "boom"}},
+				Review:       domain.ReviewChangesRequest,
+				Mergeability: domain.MergeConflicting,
+			}
+			if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+				t.Fatal(err)
+			}
+			if len(msg.msgs) != 0 {
+				t.Fatalf("%s session should receive no nudges at all, including for a conflict, got %v", tc.name, msg.msgs)
+			}
+		})
 	}
 }
 
@@ -2648,7 +3199,7 @@ func TestLifecycleNudgeUsesLateBoundSessionInputLease(t *testing.T) {
 	m.SetSessionInputLease(fixedLifecycleInputLease(false))
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", Activity: domain.Activity{State: domain.ActivityIdle}}
 
-	outcome, err := m.sendOnce(ctx, "mer-1", "", "tracker-comment:1", "1", "review this", 0)
+	outcome, err := m.sendOnce(ctx, "mer-1", "", "tracker-comment:1", "1", "review this", 0, false)
 	if err != nil {
 		t.Fatalf("sendOnce: %v", err)
 	}
@@ -2682,7 +3233,7 @@ func TestLifecycleNudgeStartupGateUsesAdapterCapability(t *testing.T) {
 				Activity: domain.Activity{State: domain.ActivityIdle},
 			}
 
-			outcome, err := m.sendOnce(ctx, "mer-1", "", "tracker-comment:1", "1", "review this", 0)
+			outcome, err := m.sendOnce(ctx, "mer-1", "", "tracker-comment:1", "1", "review this", 0, false)
 			if err != nil {
 				t.Fatalf("sendOnce: %v", err)
 			}
@@ -3647,7 +4198,13 @@ func TestRuntimeObservation_WorkloadDeathAloneDoesNotReap(t *testing.T) {
 func TestMarkSpawnedPersistsChatControllerFacts(t *testing.T) {
 	ctx := context.Background()
 	st := newFakeStore()
-	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{
+			RuntimeHandleID: "stale-tui-runtime",
+			RuntimeLaunchID: "stale-tui-generation",
+		},
+	}
 	m := New(st, nil)
 
 	if err := m.MarkSpawned(ctx, "mer-1", domain.SessionMetadata{
@@ -3669,6 +4226,9 @@ func TestMarkSpawnedPersistsChatControllerFacts(t *testing.T) {
 	if got.Metadata.ControllerGeneration != "gen-1" {
 		t.Fatalf("controller generation = %q", got.Metadata.ControllerGeneration)
 	}
+	if got.Metadata.RuntimeHandleID != "" || got.Metadata.RuntimeLaunchID != "" {
+		t.Fatalf("Chat spawn retained terminal ownership metadata: %+v", got.Metadata)
+	}
 
 	// A relaunch rotates the generation: the new value must replace the old, or
 	// events from the superseded controller could not be told apart.
@@ -3682,6 +4242,44 @@ func TestMarkSpawnedPersistsChatControllerFacts(t *testing.T) {
 	got, _, _ = st.GetSession(ctx, "mer-1")
 	if got.Metadata.ControllerGeneration != "gen-2" {
 		t.Fatalf("generation = %q after relaunch, want it rotated to gen-2", got.Metadata.ControllerGeneration)
+	}
+}
+
+// Model is the same allowlist omission as the chat resume handle above, one
+// field over: it is declared on SessionMetadata, has its own sessions.model
+// column, and is read back by the API — but mergeMetadata never copied it, so
+// every `ao spawn --model X` persisted an empty model and the session reported
+// no model at all.
+func TestMarkSpawnedPersistsResolvedModel(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	m := New(st, nil)
+
+	if err := m.MarkSpawned(ctx, "mer-1", domain.SessionMetadata{
+		WorkspacePath: "/ws",
+		Model:         "sonnet",
+	}); err != nil {
+		t.Fatalf("MarkSpawned: %v", err)
+	}
+
+	got, _, err := st.GetSession(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Metadata.Model != "sonnet" {
+		t.Fatalf("model = %q, want %q; a spawn's resolved model must survive the merge",
+			got.Metadata.Model, "sonnet")
+	}
+
+	// Merged rather than assigned: a relaunch that resolves no explicit model
+	// must leave the recorded one alone instead of blanking it.
+	if err := m.MarkSpawned(ctx, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws"}); err != nil {
+		t.Fatalf("second MarkSpawned: %v", err)
+	}
+	got, _, _ = st.GetSession(ctx, "mer-1")
+	if got.Metadata.Model != "sonnet" {
+		t.Fatalf("model = %q after a relaunch that resolved none, want it preserved", got.Metadata.Model)
 	}
 }
 
@@ -3794,5 +4392,90 @@ func TestActivitySignalRejectsStaleChatControllerGenerationAcrossHandoff(t *test
 	}
 	if got := st.sessions["mer-1"].Activity.State; got != domain.ActivityIdle {
 		t.Fatalf("old Chat controller changed TUI activity to %q", got)
+	}
+}
+
+func TestActivitySignalFencesChatByControllerGenerationDespiteStaleRuntimeMetadata(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{
+			RuntimeHandleID:      "stale-tui-runtime",
+			RuntimeLaunchID:      "stale-tui-generation",
+			ControllerGeneration: "chat-generation",
+		},
+		Activity: domain.Activity{State: domain.ActivityIdle},
+	}
+	m := New(st, nil)
+
+	for _, signal := range []ports.ActivitySignal{
+		{Valid: true, State: domain.ActivityActive, LaunchID: "stale-tui-generation"},
+		{Valid: true, State: domain.ActivityActive, ControllerGeneration: "foreign-generation"},
+	} {
+		if err := m.ApplyActivitySignal(ctx, "mer-1", signal); err != nil {
+			t.Fatalf("reject non-owner signal: %v", err)
+		}
+		if got := st.sessions["mer-1"].Activity.State; got != domain.ActivityIdle {
+			t.Fatalf("non-owner signal changed activity to %q", got)
+		}
+	}
+
+	for _, state := range []domain.ActivityState{domain.ActivityActive, domain.ActivityIdle} {
+		if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+			Valid: true, State: state, ControllerGeneration: "chat-generation",
+		}); err != nil {
+			t.Fatalf("apply current Chat signal %q: %v", state, err)
+		}
+		if got := st.sessions["mer-1"].Activity.State; got != state {
+			t.Fatalf("current Chat signal left activity at %q, want %q", got, state)
+		}
+	}
+}
+
+// TestEmitTelemetryStampsRequestID covers the shared lifecycle emit path: an
+// HTTP-driven activity signal must tag its events with the request id so the
+// lifecycle rows join to the request, while reaper/poller ticks (a plain
+// background context) must keep an empty request id.
+func TestEmitTelemetryStampsRequestID(t *testing.T) {
+	cases := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{
+			name: "request scoped",
+			ctx:  context.WithValue(context.Background(), middleware.RequestIDKey, "req-1"),
+			want: "req-1",
+		},
+		{name: "background context", ctx: context.Background(), want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			sink := &telemetrySink{}
+			m := New(st, nil, WithTelemetry(sink))
+			now := time.Unix(100, 0).UTC()
+			m.clock = func() time.Time { return now }
+			st.sessions["mer-1"] = domain.SessionRecord{
+				ID:        "mer-1",
+				ProjectID: "mer",
+				Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)},
+			}
+
+			signal := ports.ActivitySignal{Valid: true, State: domain.ActivityWaitingInput, Timestamp: now}
+			if err := m.ApplyActivitySignal(tc.ctx, "mer-1", signal); err != nil {
+				t.Fatal(err)
+			}
+			if len(sink.events) == 0 {
+				t.Fatal("no telemetry events emitted")
+			}
+			for _, ev := range sink.events {
+				if ev.RequestID != tc.want {
+					t.Fatalf("%s RequestID = %q, want %q", ev.Name, ev.RequestID, tc.want)
+				}
+			}
+		})
 	}
 }

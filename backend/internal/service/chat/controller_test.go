@@ -58,6 +58,20 @@ func openStore(t *testing.T) *sqlite.Store {
 	return st
 }
 
+func fullSnapshotReader(st *sqlite.Store) chatsvc.SnapshotReader {
+	return chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+		rows, err := st.LoadConversationSnapshot(ctx, conversationID)
+		if err != nil {
+			return chatsvc.ConversationRows{}, err
+		}
+		return chatsvc.ConversationRows{
+			Conversation: rows.Conversation, Turns: rows.Turns,
+			Messages: rows.Messages, Activities: rows.Activities,
+			BranchPoints: rows.BranchPoints, BranchedFromEarlierMessage: rows.BranchedFromEarlierMessage,
+		}, nil
+	})
+}
+
 /* ---- a fake conversation the controller can drive ---------------------- */
 
 type fakeConversation struct {
@@ -171,6 +185,22 @@ type stuckConversation struct {
 }
 
 func (s *stuckConversation) Close() error { return s.closeErr }
+
+type terminatingConversation struct {
+	*fakeConversation
+	terminated atomic.Bool
+}
+
+func (c *terminatingConversation) Terminate() error {
+	c.terminated.Store(true)
+	return c.Close()
+}
+
+func (c *terminatingConversation) PreservesProviderOnClose() bool { return true }
+
+type liveReconnectedConversation struct{ *nativeHistoryConversation }
+
+func (c *liveReconnectedConversation) ReconnectedLive() bool { return true }
 
 func (f *deferredConversation) StartDeferredTurn(providerTurnID string) error {
 	return f.start(providerTurnID)
@@ -336,7 +366,14 @@ func (d fakeDriver) Probe(context.Context) (ports.ChatCapabilities, error) {
 	}
 	return productionCaps(), nil
 }
-func (d fakeDriver) Start(_ context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+func (d fakeDriver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+	if cfg.PrepareEnv != nil && !conversationReconnectedLive(d.conv) {
+		env, err := cfg.PrepareEnv(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Env = env
+	}
 	if d.startCfg != nil {
 		*d.startCfg = cfg
 	}
@@ -345,7 +382,14 @@ func (d fakeDriver) Start(_ context.Context, cfg ports.ChatStartConfig) (ports.C
 	}
 	return d.conv, nil
 }
-func (d fakeDriver) Resume(_ context.Context, cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+func (d fakeDriver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+	if cfg.PrepareEnv != nil && !conversationReconnectedLive(d.conv) {
+		env, err := cfg.PrepareEnv(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Env = env
+	}
 	if d.resumeCfg != nil {
 		*d.resumeCfg = cfg
 	}
@@ -353,6 +397,11 @@ func (d fakeDriver) Resume(_ context.Context, cfg ports.ChatResumeConfig) (ports
 		return d.resume(cfg)
 	}
 	return d.conv, nil
+}
+
+func conversationReconnectedLive(conversation ports.ChatConversation) bool {
+	reconnected, ok := conversation.(ports.ChatLiveReconnector)
+	return ok && reconnected.ReconnectedLive()
 }
 
 type fakeRegistry struct{ driver ports.ChatDriver }
@@ -492,7 +541,9 @@ func TestResumeUsesPersistedBypassPermissionForCapabilityAdmission(t *testing.T)
 		t.Fatalf("CreateConversation: %v", err)
 	}
 	if err := st.SetConversationSettings(ctx, conversation.ID, domain.ConversationSettings{
-		ApprovalMode: domain.PermissionModeBypassPermissions,
+		Model:           "gpt-5.6-luna",
+		ReasoningEffort: "high",
+		ApprovalMode:    domain.PermissionModeBypassPermissions,
 	}, now); err != nil {
 		t.Fatalf("SetConversationSettings: %v", err)
 	}
@@ -524,6 +575,19 @@ func TestResumeUsesPersistedBypassPermissionForCapabilityAdmission(t *testing.T)
 	}
 	if resumed.Permissions != ports.PermissionModeBypassPermissions {
 		t.Fatalf("resume permissions = %q, want persisted bypass", resumed.Permissions)
+	}
+	if resumed.Model != "gpt-5.6-luna" {
+		t.Fatalf("resume model = %q, want persisted model", resumed.Model)
+	}
+	if resumed.Effort != "high" {
+		t.Fatalf("resume effort = %q, want persisted effort", resumed.Effort)
+	}
+	controller, err := svc.Controller(testSession)
+	if err != nil {
+		t.Fatalf("Controller: %v", err)
+	}
+	if settings := controller.Settings(); settings.Model != "gpt-5.6-luna" || settings.ReasoningEffort != "high" {
+		t.Fatalf("controller settings = %+v, want persisted model and effort", settings)
 	}
 }
 
@@ -2042,11 +2106,12 @@ func TestFreshProjectControllerStartFailureKeepsPreviousHistoryHidden(t *testing
 /* ---- harness ----------------------------------------------------------- */
 
 type harness struct {
-	svc      *chatsvc.Service
-	st       *sqlite.Store
-	conv     *fakeConversation
-	ctrl     *chatsvc.Controller
-	activity *recordingActivity
+	svc       *chatsvc.Service
+	st        *sqlite.Store
+	conv      *fakeConversation
+	ctrl      *chatsvc.Controller
+	activity  *recordingActivity
+	hostStops atomic.Int32
 
 	clockMu sync.Mutex
 	clock   time.Time
@@ -2083,6 +2148,20 @@ func newHarnessWithConversationAndStore(
 	conv ports.ChatConversation,
 	wrapStore func(*sqlite.Store) chatsvc.Store,
 ) *harness {
+	return newHarnessWithConversationAndStoreForHarness(t, conv, wrapStore, domain.HarnessCodex)
+}
+
+func newHarnessForHarness(t *testing.T, agentHarness domain.AgentHarness) *harness {
+	t.Helper()
+	return newHarnessWithConversationAndStoreForHarness(t, nil, func(st *sqlite.Store) chatsvc.Store { return st }, agentHarness)
+}
+
+func newHarnessWithConversationAndStoreForHarness(
+	t *testing.T,
+	conv ports.ChatConversation,
+	wrapStore func(*sqlite.Store) chatsvc.Store,
+	agentHarness domain.AgentHarness,
+) *harness {
 	t.Helper()
 	st := openStore(t)
 	base := newFakeConversation()
@@ -2111,6 +2190,10 @@ func newHarnessWithConversationAndStore(
 	svc := chatsvc.New(chatsvc.Options{
 		Store:    chatStore,
 		Sessions: st,
+		StopProviderHost: func(context.Context, domain.SessionID) error {
+			h.hostStops.Add(1)
+			return nil
+		},
 		Drivers:  fakeRegistry{driver: fakeDriver{conv: conv}},
 		Activity: h.activity,
 		Log:      slog.New(slog.DiscardHandler),
@@ -2126,7 +2209,7 @@ func newHarnessWithConversationAndStore(
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID:     testSession,
 		ProjectID:     testProject,
-		Harness:       domain.HarnessCodex,
+		Harness:       agentHarness,
 		WorkspacePath: t.TempDir(),
 	})
 	if err != nil {
@@ -2651,6 +2734,49 @@ func TestControllerReadyRunsBeforeStreamProjection(t *testing.T) {
 		}
 	}
 	t.Fatalf("stream closure was not projected after controller-ready: %+v", activity.snapshot())
+}
+
+func TestSwitchControllerReadyLeavesSourceGenerationForAtomicActivation(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	record, found, err := st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("get source Chat session: found=%v err=%v", found, err)
+	}
+	record.Harness = domain.HarnessClaudeCode
+	record.Metadata.ProviderConversationID = "source-provider"
+	record.Metadata.ControllerGeneration = "source-generation"
+	if err := st.UpdateSession(ctx, record); err != nil {
+		t.Fatalf("seed source Chat owner: %v", err)
+	}
+
+	conv := newFakeConversation()
+	readyErr := errors.New("stop after source-generation assertion")
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers:  fakeRegistry{driver: fakeDriver{conv: conv}},
+		Activity: &recordingActivity{}, Log: slog.New(slog.DiscardHandler),
+		NewID: func() string { return "switch-controller-ready" },
+	})
+
+	_, err = svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderScopeID: "switch-1:provider",
+		ControllerGeneration: "target-generation",
+		ControllerReady: func(chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			current, found, readErr := st.GetSession(ctx, testSession)
+			if readErr != nil || !found {
+				t.Fatalf("get owner in ControllerReady: found=%v err=%v", found, readErr)
+			}
+			if current.Metadata.ControllerGeneration != "source-generation" {
+				t.Fatalf("ControllerReady preclaimed generation %q, want source-generation", current.Metadata.ControllerGeneration)
+			}
+			return chatsvc.ControllerCommit{}, readyErr
+		},
+	})
+	if !errors.Is(err, readyErr) {
+		t.Fatalf("Start error = %v, want ControllerReady assertion failure", err)
+	}
 }
 
 func TestControllerReadyDurableSettingsRefreshBeforeFirstDispatch(t *testing.T) {
@@ -3550,6 +3676,154 @@ func TestServiceStopRetainsControllerUntilItsEventStreamActuallyEnds(t *testing.
 	t.Fatal("controller registry did not release the stopped stream")
 }
 
+func TestServiceStopTerminatesPersistentConversation(t *testing.T) {
+	provider := &terminatingConversation{fakeConversation: newFakeConversation()}
+	h := newHarnessWithConversation(t, provider)
+	if err := h.svc.Stop(context.Background(), testSession); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !provider.terminated.Load() {
+		t.Fatal("explicit session stop detached persistent conversation instead of terminating it")
+	}
+}
+
+func TestServiceStopAllOnlyDetachesPersistentConversation(t *testing.T) {
+	provider := &terminatingConversation{fakeConversation: newFakeConversation()}
+	h := newHarnessWithConversation(t, provider)
+	turn, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Text: "keep working"})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	provider.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID,
+		ProviderConversationID: provider.ProviderConversationID(),
+	})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		for _, candidate := range s.Turns {
+			if candidate.ID == turn.ID {
+				return candidate.State == domain.TurnStateRunning
+			}
+		}
+		return false
+	})
+	h.svc.StopAll(context.Background())
+	if provider.terminated.Load() {
+		t.Fatal("daemon-wide shutdown terminated persistent conversation")
+	}
+	rec, found, err := h.st.GetSession(context.Background(), testSession)
+	if err != nil || !found {
+		t.Fatalf("GetSession: found=%v err=%v", found, err)
+	}
+	if rec.Activity.State == domain.ActivityExited {
+		t.Fatal("daemon detach projected a false provider exit")
+	}
+	snapshot, err := h.st.LoadConversationSnapshot(context.Background(), h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range snapshot.Turns {
+		if candidate.ID == turn.ID && candidate.State != domain.TurnStateRunning {
+			t.Fatalf("in-flight turn settled on daemon detach: %s", candidate.State)
+		}
+	}
+}
+
+func TestServiceLiveReconnectSkipsSettledHistoryBarrier(t *testing.T) {
+	st := openStore(t)
+	native := &nativeHistoryConversation{fakeConversation: newFakeConversation(), err: ports.ErrChatHistoryUnsettled}
+	provider := &liveReconnectedConversation{nativeHistoryConversation: native}
+	var prepareCalls atomic.Int32
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Reader: fullSnapshotReader(st), Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{
+			conv:  provider,
+			probe: func() error { return ports.ErrChatDriverUnavailable },
+		}},
+		Log: slog.New(slog.DiscardHandler), NewID: func() string { return "live-reconnect-id" },
+	})
+	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
+		PrepareControllerEnv: func(context.Context, domain.SessionControllerOwner) (map[string]string, error) {
+			prepareCalls.Add(1)
+			return map[string]string{"AO_BROWSER_CAPABILITY": "rotated"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.StopAll(context.Background())
+	if reads := native.historyReads(); reads != 0 {
+		t.Fatalf("native history reads = %d, live reconnect must not wait for active turn to settle", reads)
+	}
+	if got := prepareCalls.Load(); got != 0 {
+		t.Fatalf("live reconnect rotated launch-only credentials %d times, want 0", got)
+	}
+}
+
+func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
+	st := openStore(t)
+	reader := fullSnapshotReader(st)
+	var ids atomic.Int32
+	newID := func() string { return fmt.Sprintf("reconnect-%d", ids.Add(1)) }
+	firstProvider := &terminatingConversation{fakeConversation: newFakeConversation()}
+	first := chatsvc.New(chatsvc.Options{
+		Store: st, Reader: reader, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: firstProvider}},
+		Log:     slog.New(slog.DiscardHandler), NewID: newID,
+	})
+	firstController, err := first.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	turn, err := firstController.Send(context.Background(), ports.ChatUserMessage{Text: "keep working"})
+	if err != nil {
+		t.Fatalf("first Send: %v", err)
+	}
+	firstProvider.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID,
+		ProviderConversationID: firstProvider.ProviderConversationID(),
+	})
+	h := &harness{st: st, ctrl: firstController}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		for _, candidate := range s.Turns {
+			if candidate.ID == turn.ID {
+				return candidate.State == domain.TurnStateRunning
+			}
+		}
+		return false
+	})
+	first.StopAll(context.Background())
+
+	secondProvider := &liveReconnectedConversation{nativeHistoryConversation: &nativeHistoryConversation{
+		fakeConversation: newFakeConversation(),
+	}}
+	second := chatsvc.New(chatsvc.Options{
+		Store: st, Reader: reader, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: secondProvider}},
+		Log:     slog.New(slog.DiscardHandler), NewID: newID,
+	})
+	t.Cleanup(func() { second.StopAll(context.Background()) })
+	secondController, err := second.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: firstProvider.ProviderConversationID(),
+	})
+	if err != nil {
+		t.Fatalf("reconnect Start: %v", err)
+	}
+	queued, err := secondController.Send(context.Background(), ports.ChatUserMessage{Text: "after restart"})
+	if err != nil {
+		t.Fatalf("reconnect Send: %v", err)
+	}
+	if queued.State != domain.TurnStateQueued {
+		t.Fatalf("reconnect Send state = %s, want queued behind surviving turn", queued.State)
+	}
+	if got := secondProvider.sentTexts(); len(got) != 0 {
+		t.Fatalf("reconnected provider received concurrent turns: %v", got)
+	}
+}
+
 func TestStartWaitsForStoppedControllerCleanupBeforeRelaunch(t *testing.T) {
 	st := openStore(t)
 	first := newFakeConversation()
@@ -3616,6 +3890,79 @@ func TestStartWaitsForStoppedControllerCleanupBeforeRelaunch(t *testing.T) {
 	}
 	if replacement == firstController {
 		t.Fatal("relaunch returned the stopped controller")
+	}
+}
+
+func TestConcurrentReconcileAndResumeShareOneCredentialedControllerLaunch(t *testing.T) {
+	st := openStore(t)
+	conversation := newFakeConversation()
+	providerStarted := make(chan struct{})
+	releaseProvider := make(chan struct{})
+	var providerOnce sync.Once
+	var providerStarts atomic.Int32
+	var launchedEnv map[string]string
+	driver := fakeDriver{conv: conversation}
+	driver.start = func(cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+		providerStarts.Add(1)
+		launchedEnv = maps.Clone(cfg.Env)
+		providerOnce.Do(func() { close(providerStarted) })
+		<-releaseProvider
+		return conversation, nil
+	}
+
+	var prepared atomic.Int32
+	var ids atomic.Int32
+	prepare := func(context.Context, domain.SessionControllerOwner) (map[string]string, error) {
+		call := prepared.Add(1)
+		return map[string]string{"AO_BROWSER_CAPABILITY": fmt.Sprintf("token-%d", call)}, nil
+	}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st, Drivers: fakeRegistry{driver: driver},
+		Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("gate-id-%d", ids.Add(1)) },
+	})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+	cfg := chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), Env: map[string]string{"AO_BROWSER_CAPABILITY": "stale"},
+		PrepareControllerEnv: prepare,
+	}
+	type startResult struct {
+		controller *chatsvc.Controller
+		err        error
+	}
+	results := make(chan startResult, 2)
+	go func() {
+		controller, err := svc.Start(context.Background(), cfg)
+		results <- startResult{controller, err}
+	}()
+	<-providerStarted
+	secondEntered := make(chan struct{})
+	go func() {
+		close(secondEntered)
+		controller, err := svc.Start(context.Background(), cfg)
+		results <- startResult{controller, err}
+	}()
+	<-secondEntered
+	select {
+	case result := <-results:
+		t.Fatalf("a concurrent Start escaped the controller gate: controller=%p err=%v", result.controller, result.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	if got := prepared.Load(); got != 1 {
+		t.Fatalf("credential preparations while first launch is blocked = %d, want 1", got)
+	}
+	close(releaseProvider)
+	first := <-results
+	second := <-results
+	if first.err != nil || second.err != nil || first.controller != second.controller {
+		t.Fatalf("concurrent Starts = (%p, %v), (%p, %v), want the same live controller",
+			first.controller, first.err, second.controller, second.err)
+	}
+	if got := providerStarts.Load(); got != 1 {
+		t.Fatalf("provider starts = %d, want 1", got)
+	}
+	if got := launchedEnv["AO_BROWSER_CAPABILITY"]; got != "token-1" {
+		t.Fatalf("provider capability = %q, want token-1", got)
 	}
 }
 
@@ -4444,7 +4791,7 @@ func TestUsageProjectionWithoutContextWindow(t *testing.T) {
 // Rate limits are current state too, and an unreported window must survive a round
 // trip through the database as unreported rather than as a reassuring zero.
 func TestRateLimitProjectionKeepsOnlyTheLatest(t *testing.T) {
-	h := newHarness(t)
+	h := newHarnessForHarness(t, domain.HarnessClaudeCode)
 
 	h.conv.emit(
 		ports.ChatEvent{Kind: ports.ChatEventRateLimits, RateLimits: &ports.ChatRateLimits{
@@ -4474,6 +4821,62 @@ func TestRateLimitProjectionKeepsOnlyTheLatest(t *testing.T) {
 	}
 	if got := limits.WorstUsedPercent(); got != 71 {
 		t.Errorf("worst window = %v, want 71", got)
+	}
+}
+
+func TestCodexRateLimitsUpdateActiveAccountCapacityWithoutConversationPersistence(t *testing.T) {
+	st := openStore(t)
+	conv := newFakeConversation()
+	updates := make(chan ports.CodexCapacityObservation, 1)
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "bound-capacity" },
+		OnCodexCapacityChanged: func(sessionID domain.SessionID, generation string, observation ports.CodexCapacityObservation) {
+			if sessionID != testSession || generation != "managed-generation" {
+				t.Errorf("capacity attribution = %s/%s", sessionID, generation)
+			}
+			updates <- observation
+		},
+	})
+	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ControllerGeneration: "managed-generation",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+	observation := ports.CodexCapacityObservation{Partial: true, Overall: &domain.CodexCapacityBucket{
+		LimitID: "codex", Reached: domain.CodexCapacityNotReached,
+		Primary: &domain.CodexCapacityWindow{UsedPercent: 81},
+	}}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventRateLimits, ProviderEventID: "capacity-1", RateLimits: &ports.ChatRateLimits{
+		PrimaryUsedPercent: 81, PlanLabel: "pro", CodexCapacity: &observation,
+	}})
+	select {
+	case got := <-updates:
+		if got.Overall == nil || got.Overall.Primary == nil || got.Overall.Primary.UsedPercent != 81 {
+			t.Fatalf("capacity callback = %#v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for bound profile capacity update")
+	}
+	snapshot, err := st.LoadConversationSnapshot(context.Background(), ctrl.ConversationID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Conversation.RateLimits != nil {
+		t.Fatalf("bound Codex rate limits persisted: %#v", snapshot.Conversation.RateLimits)
+	}
+	events, err := st.ProviderEventsSince(context.Background(), ctrl.ConversationID(), 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archived map[string]any
+	if len(events) != 1 || json.Unmarshal([]byte(events[0].PayloadJson), &archived) != nil || archived["rateLimits"] != nil || strings.Contains(events[0].PayloadJson, "usedPercent") {
+		t.Fatalf("bound Codex capacity leaked into provider archive: %#v", events)
 	}
 }
 

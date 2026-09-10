@@ -4,8 +4,10 @@
 package ptyregistry
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,6 +26,17 @@ type Entry struct {
 // defaultPidAlive is provided in build-tagged files (pidalive_unix.go /
 // pidalive_windows.go).
 var pidAlive = defaultPidAlive
+
+// rewriteRegistry is the prune-write seam. Tests replace it to prove a write
+// or permission failure cannot be reported as a complete empty scan.
+var rewriteRegistry = writeRaw
+
+// ErrRegistryMalformed indicates that the durable ConPTY registry cannot be parsed safely.
+var ErrRegistryMalformed = errors.New("conpty pty registry malformed")
+
+// UnresolvedPipePath marks a durable launch reservation or a child that
+// started without reporting a READY address. It is deliberately not dialable.
+const UnresolvedPipePath = "ao-conpty://startup-unresolved"
 
 // overrideDir, when set, is the directory the registry file lives in for
 // this daemon instance, taking precedence over the ~/.ao default. Set once by
@@ -72,42 +85,66 @@ func registryFile() (string, error) {
 	return filepath.Join(home, ".ao", "windows-pty-hosts.json"), nil
 }
 
-// readRaw reads and defensively parses the registry. Missing file or malformed
-// JSON both return an empty slice (mirrors readRaw in the TS source).
-func readRaw() []Entry {
+// readRaw reads and strictly parses the registry. A missing file is a complete
+// empty snapshot; read and parse failures are incomplete evidence and must
+// never be collapsed into absence.
+func readRaw(ctx context.Context) ([]Entry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	path, err := registryFile()
 	if err != nil {
-		return nil
+		return nil, false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
 	}
 	data, err := os.ReadFile(path)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, false, ctxErr
+	}
 	if err != nil {
-		// Missing file is fine.
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, true, nil
+		}
+		return nil, false, err
 	}
 	var parsed []json.RawMessage
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return nil
+		return nil, false, fmt.Errorf("%w: %w", ErrRegistryMalformed, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
 	}
 	out := make([]Entry, 0, len(parsed))
 	for _, raw := range parsed {
+		if err := ctx.Err(); err != nil {
+			return out, false, err
+		}
 		var e Entry
 		if err := json.Unmarshal(raw, &e); err != nil {
-			continue
+			return out, false, fmt.Errorf("%w: %w", ErrRegistryMalformed, err)
 		}
-		// Drop entries missing required fields (mirrors TS filter).
-		if e.SessionID == "" || e.PtyHostPID == 0 || e.PipePath == "" {
-			continue
+		if e.SessionID == "" || e.PtyHostPID < 0 || e.PipePath == "" || (e.PtyHostPID == 0 && e.PipePath != UnresolvedPipePath) {
+			return out, false, fmt.Errorf("%w: entry has invalid sessionId, ptyHostPid, or pipePath", ErrRegistryMalformed)
 		}
 		out = append(out, e)
 	}
-	return out
+	return out, true, nil
 }
 
 // writeRaw atomically writes entries to the registry file. When entries is
 // empty it deletes the file instead (mirrors writeRaw in the TS source).
-func writeRaw(entries []Entry) error {
+
+func writeRaw(ctx context.Context, entries []Entry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	path, err := registryFile()
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -123,9 +160,15 @@ func writeRaw(entries []Entry) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -139,39 +182,78 @@ func writeRaw(entries []Entry) error {
 		// Best-effort cleanup of temp file on failure.
 		_ = os.Remove(tmpName)
 	}()
+	if err := ctx.Err(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 
 	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Register adds or replaces the entry for entry.SessionID. registeredAt must
 // be set by the caller (e.g. time.Now().UTC().Format(time.RFC3339)).
-func Register(entry Entry) error {
+func Register(ctx context.Context, entry Entry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	all, complete, err := scanLocked(ctx)
+	if err != nil || !complete {
+		return errors.Join(err, errors.New("conpty pty registry scan incomplete"))
+	}
 	next := make([]Entry, 0)
-	for _, e := range readRaw() {
+	for _, e := range all {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if e.SessionID != entry.SessionID {
 			next = append(next, e)
 		}
 	}
 	next = append(next, entry)
-	return writeRaw(next)
+	return writeRaw(ctx, next)
 }
 
 // Unregister removes the entry for sessionID. No-op if absent.
-func Unregister(sessionID string) error {
+func Unregister(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
-	all := readRaw()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	all, complete, err := scanLocked(ctx)
+	if err != nil || !complete {
+		return errors.Join(err, errors.New("conpty pty registry scan incomplete"))
+	}
 	next := make([]Entry, 0, len(all))
 	for _, e := range all {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if e.SessionID != sessionID {
 			next = append(next, e)
 		}
@@ -179,32 +261,75 @@ func Unregister(sessionID string) error {
 	if len(next) == len(all) {
 		return nil // absent, no-op
 	}
-	return writeRaw(next)
+	return writeRaw(ctx, next)
 }
 
-// List returns all entries whose PtyHostPID is still alive, auto-pruning dead
-// ones. The file is rewritten if any entries were pruned.
-func List() ([]Entry, error) {
+// Scan returns the live registry entries and whether the scan is complete.
+// Dead entries are pruned only after a complete read and parse. Any read,
+// parse, or prune-write failure returns incomplete evidence.
+func Scan(ctx context.Context) (entries []Entry, complete bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
-	all := readRaw()
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	return scanLocked(ctx)
+}
+
+func scanLocked(ctx context.Context) (entries []Entry, complete bool, err error) {
+	all, complete, err := readRaw(ctx)
+	if err != nil || !complete {
+		return all, false, err
+	}
 	live := make([]Entry, 0, len(all))
 	for _, e := range all {
-		if pidAlive(e.PtyHostPID) {
+		if err := ctx.Err(); err != nil {
+			return live, false, err
+		}
+		if e.PtyHostPID == 0 && e.PipePath == UnresolvedPipePath {
+			// A prelaunch reservation has no PID to probe. Retain it until an
+			// exact owner replaces or explicitly unregisters the reservation.
 			live = append(live, e)
+		} else if pidAlive(e.PtyHostPID) {
+			live = append(live, e)
+		}
+		if err := ctx.Err(); err != nil {
+			return live, false, err
 		}
 	}
 	if len(live) != len(all) {
-		if err := writeRaw(live); err != nil {
-			return live, err
+		if err := ctx.Err(); err != nil {
+			return live, false, err
+		}
+		if err := rewriteRegistry(ctx, live); err != nil {
+			return live, false, err
+		}
+		if err := ctx.Err(); err != nil {
+			return live, false, err
 		}
 	}
-	return live, nil
+	return live, true, nil
+}
+
+// List preserves the ordinary registry consumer API while surfacing every
+// incomplete scan as an error.
+func List(ctx context.Context) ([]Entry, error) {
+	entries, _, err := Scan(ctx)
+	return entries, err
 }
 
 // Clear deletes the registry file. Best-effort; used by tests and recovery.
-func Clear() error {
+func Clear(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
-	return writeRaw(nil)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeRaw(ctx, nil)
 }

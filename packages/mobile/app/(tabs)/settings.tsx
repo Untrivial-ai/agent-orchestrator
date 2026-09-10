@@ -17,11 +17,15 @@ import { preferenceLabel } from "../../lib/themePreference";
 import { getPushStatus, openNotificationSettings, registerForPush, unregisterFromPush } from "../../lib/push";
 import { describePushToggle, describeRegisterFailure, type PushStatus } from "../../lib/pushStatus";
 import { openGitHub } from "../../lib/openGitHub";
+import { checkStore, openOrStartUpdate } from "../../lib/inAppUpdates";
 import { useApp } from "../../lib/store";
 import { checkAndDownload, describeUpdateRow, type UpdateOutcome } from "../../lib/updates";
+import { describeStoreRow, floorSignal, storeRowResult, tierOf, type StoreCheck, type StoreRowResult } from "../../lib/storeUpdate";
+import { VERSION_FLOOR } from "../../lib/versionFloor";
 import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
 import { Dot, ScreenHeader, SettingsGroup, SettingsRow, SettingsToggle } from "../../lib/ui";
 import { useTheme, useThemedStyles, useThemeState } from "../../lib/ThemeProvider";
+import { activeProjectLabel } from "../../lib/projectFilter";
 
 const ISSUES_URL = "https://github.com/AgentWrapper/agent-orchestrator/issues/new";
 
@@ -30,7 +34,7 @@ export default function SettingsScreen() {
 	const styles = useThemedStyles(makeStyles);
 	const insets = useSafeAreaInsets();
 	const router = useRouter();
-	const { reloadConfig, projects, connection, activeProjectId, setActiveProject } = useApp();
+	const { reloadConfig, projects, projectsKnown, connection, activeProjectId, setActiveProject } = useApp();
 	const scrollRef = useTabScrollToTop<ScrollView>();
 
 	const [cfg, setCfg] = useState<ServerConfig>(DEFAULT_CONFIG);
@@ -58,7 +62,6 @@ export default function SettingsScreen() {
 	}
 
 	const paired = isConfigured(cfg);
-	const activeProject = projects.find((p) => p.id === activeProjectId);
 
 	return (
 		<View style={styles.screen}>
@@ -75,7 +78,7 @@ export default function SettingsScreen() {
 					<SettingsRow
 						icon="folder"
 						label="Active project"
-						value={activeProject?.name ?? "All projects"}
+						value={activeProjectLabel(activeProjectId, projects, projectsKnown)}
 						onPress={() =>
 							router.push(
 								projectSheetRoute({
@@ -307,6 +310,7 @@ function AboutSection({ onForget }: { onForget: () => Promise<void> }) {
 		<SettingsGroup title="About">
 			<SettingsRow icon="info" label="Version" value={formatVersionLine(build)} />
 			<UpdateRow />
+			<StoreUpdateRow />
 			<SettingsRow icon="mail" label="Report a problem" onPress={report} />
 			<SettingsRow
 				icon="power"
@@ -358,6 +362,53 @@ function UpdateRow() {
 		<SettingsRow
 			icon="download-cloud"
 			label="App updates"
+			value={row.value}
+			valueColor={row.tone === "good" ? t.green : row.tone === "bad" ? t.red : undefined}
+			loading={row.busy}
+			onPress={row.action ? onPress : undefined}
+		/>
+	);
+}
+
+// Whether a newer **native binary** is on the store. The row above covers the JS
+// half (OTA), which by design can never carry a native change. Named after the
+// store rather than "App version" so it is not confused with the Version row.
+function StoreUpdateRow() {
+	const t = useTheme();
+	const [checking, setChecking] = useState(false);
+	const [last, setLast] = useState<StoreRowResult | null>(null);
+	const [check, setCheck] = useState<StoreCheck | null>(null);
+
+	// `__DEV__`, not `Updates.isEnabled`: this row reports the store, not OTA.
+	const row = describeStoreRow({ enabled: !__DEV__, checking, last });
+
+	async function onPress() {
+		if (row.action === "open") {
+			await openOrStartUpdate(check);
+			return;
+		}
+		setChecking(true);
+		try {
+			const result = await checkStore();
+			setCheck(result);
+			// The same floor pass the launch nudge makes, so the two surfaces cannot
+			// disagree during the window where the floor is the only signal. An
+			// unreachable store still surfaces as an error here, where at launch it
+			// stays silent: the user asked for this one.
+			const floor = floorSignal(Application.nativeApplicationVersion, VERSION_FLOOR);
+			const outcome = storeRowResult(result, tierOf(result, Platform.OS, floor));
+			setLast(outcome);
+			if (outcome.kind === "error") haptics.error();
+			else haptics.success();
+		} finally {
+			setChecking(false);
+		}
+	}
+
+	return (
+		<SettingsRow
+			icon="package"
+			label={Platform.OS === "ios" ? "App Store" : "Play Store"}
 			value={row.value}
 			valueColor={row.tone === "good" ? t.green : row.tone === "bad" ? t.red : undefined}
 			loading={row.busy}

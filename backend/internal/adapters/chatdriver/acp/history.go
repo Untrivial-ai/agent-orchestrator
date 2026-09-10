@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
@@ -14,6 +15,59 @@ import (
 )
 
 const aoInternalReplayMetaKey = "ao.internalReplay"
+
+// refreshableConversation is returned only when the agent advertised
+// session/load. Calling session/load again on the already resumed ACP connection
+// asks the provider to replay its durable transcript again; it does not start a
+// new provider conversation or merely reread historyEvents.
+type refreshableConversation struct {
+	*conversation
+	loadMu      sync.Mutex
+	loadRequest acpsdk.LoadSessionRequest
+}
+
+var _ ports.ChatHistoryRefresher = (*refreshableConversation)(nil)
+
+func newRefreshableConversation(
+	conversation *conversation,
+	request acpsdk.LoadSessionRequest,
+) *refreshableConversation {
+	return &refreshableConversation{conversation: conversation, loadRequest: request}
+}
+
+func (c *refreshableConversation) loadHistory(ctx context.Context) (acpsdk.LoadSessionResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return acpsdk.LoadSessionResponse{}, err
+	}
+	c.loadMu.Lock()
+	defer c.loadMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return acpsdk.LoadSessionResponse{}, err
+	}
+
+	c.beginHistoryReplay(string(c.loadRequest.SessionId))
+	response, err := c.conn.LoadSession(ctx, c.loadRequest)
+	if err != nil {
+		c.abortHistoryReplay()
+		return acpsdk.LoadSessionResponse{}, err
+	}
+	c.finishHistoryReplay()
+	return response, nil
+}
+
+// RefreshHistory implements ports.ChatHistoryRefresher with a new ACP
+// session/load request. Replaying identical provider data is safe because the
+// capture regenerates the same stable ProviderEventID values, and the Chat
+// projector deduplicates those identities when importing a settled snapshot.
+func (c *refreshableConversation) RefreshHistory(ctx context.Context) ([]ports.ChatEvent, error) {
+	if _, err := c.loadHistory(ctx); err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, fmt.Errorf("refresh ACP session history: %w: %w", contextErr, err)
+		}
+		return nil, normalizeACPError("refresh ACP session history", err)
+	}
+	return c.ReadHistory(ctx)
+}
 
 // historyCapture receives the session/update replay produced by ACP session/load.
 // ACP deliberately replays a flat stream rather than provider turns, so user

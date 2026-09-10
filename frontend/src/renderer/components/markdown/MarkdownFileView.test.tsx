@@ -1,11 +1,23 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../../lib/bridge";
+import { renderMermaidDiagram } from "../../lib/mermaid-diagram";
 import { MarkdownFileView } from "./MarkdownFileView";
 
 vi.mock("../../lib/api-client", () => ({
 	getApiBaseUrl: () => "http://127.0.0.1:4567",
 }));
+
+// Same boundary as chat: mermaid needs layout APIs jsdom lacks, so stub the
+// engine and assert the preview routes the fence to the diagram.
+vi.mock("../../lib/mermaid-diagram", () => ({
+	isRenderableDiagram: (code: string) => code.trim().length > 0 && code.length <= 20_000,
+	renderMermaidDiagram: vi.fn(async () => '<svg xmlns="http://www.w3.org/2000/svg"><g>diagram</g></svg>'),
+}));
+
+beforeEach(() => {
+	vi.mocked(renderMermaidDiagram).mockClear();
+});
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -64,6 +76,16 @@ describe("MarkdownFileView", () => {
 		fireEvent.click(screen.getByRole("link", { name: "AO docs" }));
 
 		expect(openExternal).toHaveBeenCalledWith("https://example.com/docs");
+	});
+
+	it("renders a mermaid fence as a diagram rather than source text", async () => {
+		render(view("```mermaid\nflowchart TD\n    A --> B\n```"));
+
+		expect(await screen.findByTestId("mermaid-diagram")).toBeInTheDocument();
+		expect(vi.mocked(renderMermaidDiagram)).toHaveBeenCalledWith(
+			"flowchart TD\n    A --> B",
+			expect.stringMatching(/light|dark/),
+		);
 	});
 
 	it("warns when the daemon returned only a prefix of the file", () => {

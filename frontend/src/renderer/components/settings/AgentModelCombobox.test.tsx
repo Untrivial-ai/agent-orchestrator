@@ -66,23 +66,100 @@ describe("AgentModelCombobox", () => {
 		renderCombobox(models);
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
 
-		// Agent default, 50 catalog models, and the custom-model action.
-		expect(screen.getAllByRole("menuitem")).toHaveLength(52);
+		// Agent default and 50 catalog models. The custom-model action appears
+		// only after the user types a value that does not match the catalog.
+		expect(screen.getAllByRole("menuitem")).toHaveLength(51);
 		expect(screen.getByText("Showing 50 of 1,397 matching models — type to narrow")).toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: /Model 1000/ })).not.toBeInTheDocument();
 	});
 
 	it("keeps compact catalogs free of search and result-count chrome", async () => {
-		renderCombobox([
-			{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol", provider: "OpenAI", isDefault: true },
-			{ id: "gpt-5.6-terra", label: "GPT-5.6 Terra", provider: "OpenAI" },
-			{ id: "gpt-5.6-luna", label: "GPT-5.6 Luna", provider: "OpenAI" },
-		]);
+		renderCombobox(
+			Array.from({ length: 9 }, (_, index) => ({
+				id: `gpt-${index}`,
+				label: index === 8 ? "GPT Luna" : `GPT ${index}`,
+				provider: "OpenAI",
+			})),
+			{ allowCustom: false, customModelEntry: "none" },
+		);
 
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
 
 		expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
 		expect(screen.queryByText(/matching models/)).not.toBeInTheDocument();
+	});
+
+	it("uses the search field to enter a direct model ID for a compact catalog", async () => {
+		const { onCustom } = renderCombobox([
+			{ id: "gpt-5.6-sol", label: "Sol" },
+			{ id: "gpt-5.6-luna", label: "Luna" },
+		]);
+
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		const search = screen.getByRole("searchbox", { name: "Search worker model" });
+		expect(screen.queryByRole("menuitem", { name: "Enter model ID…" })).not.toBeInTheDocument();
+		await userEvent.type(search, "private/model-id");
+		await userEvent.click(screen.getByRole("menuitem", { name: "Use “private/model-id” as a custom model" }));
+
+		expect(onCustom).toHaveBeenCalledWith("private/model-id");
+	});
+
+	it("adds simple model search at ten models", async () => {
+		renderCombobox(
+			Array.from({ length: 10 }, (_, index) => ({
+				id: index === 8 ? "gpt-luna" : index === 9 ? "claude-fable" : `model-${index}`,
+				label: index === 8 ? "Luna" : index === 9 ? "Fable" : `Model ${index}`,
+				provider: "OpenAI",
+			})),
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		const search = screen.getByRole("searchbox", { name: "Search worker model" });
+		expect(search).toHaveAttribute("placeholder", "Search models…");
+		await userEvent.type(search, "fab");
+		expect(screen.getByRole("menuitem", { name: "Fable" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "Luna" })).not.toBeInTheDocument();
+	});
+
+	it("does not offer typed custom models when direct entry is disabled", async () => {
+		renderCombobox(
+			Array.from({ length: 10 }, (_, index) => ({ id: `model-${index}`, label: `Model ${index}` })),
+			{ allowCustom: false },
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		await userEvent.type(screen.getByRole("searchbox", { name: "Search worker model" }), "wrong-model");
+
+		expect(screen.getByText("No matching models.")).toBeInTheDocument();
+		expect(screen.queryByText(/Use .* as a custom model/)).not.toBeInTheDocument();
+	});
+
+	it("explains how configured models become available and refreshes the catalog", async () => {
+		const onRefresh = vi.fn();
+		renderCombobox([{ id: "configured/model", label: "Configured model" }], {
+			allowCustom: false,
+			customModelEntry: "configured",
+			agentLabel: "OpenCode",
+			onRefresh,
+		});
+
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		expect(screen.getByText("Can’t find your model?")).toBeInTheDocument();
+		expect(screen.getByText("Configure the model in OpenCode, then refresh.")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+		expect(onRefresh).toHaveBeenCalledOnce();
+	});
+
+	it("does not expose free text for fixed model catalogs", async () => {
+		renderCombobox([{ id: "account/model", label: "Account model" }], {
+			allowCustom: false,
+			customModelEntry: "none",
+			onRefresh: vi.fn(),
+		});
+
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		expect(screen.getByText("This model isn’t available for this account or agent version.")).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "Enter model ID…" })).not.toBeInTheDocument();
 	});
 
 	it("groups a recent explicit choice immediately after current and default models", async () => {
@@ -125,7 +202,9 @@ describe("AgentModelCombobox", () => {
 		}));
 		const { onChange } = renderCombobox(models);
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
-		await userEvent.type(screen.getByRole("searchbox", { name: "Search worker model" }), "provider-1/model-99");
+		const search = screen.getByRole("searchbox", { name: "Search worker model" });
+		expect(search).toHaveAttribute("placeholder", "Search models or providers…");
+		await userEvent.type(search, "provider-1/model-99");
 
 		expect(screen.getByText("provider-1", { selector: "div" })).toBeInTheDocument();
 		expect(screen.getByText("Showing 1 of 1 matching models")).toBeInTheDocument();
@@ -135,7 +214,7 @@ describe("AgentModelCombobox", () => {
 
 	it("offers the typed value as a custom model when no catalog model matches", async () => {
 		const { onCustom } = renderCombobox(
-			Array.from({ length: 9 }, (_, index) => ({
+			Array.from({ length: 10 }, (_, index) => ({
 				id: `openai/gpt-${index}`,
 				label: `GPT ${index}`,
 				provider: "OpenAI",

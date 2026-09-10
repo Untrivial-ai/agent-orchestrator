@@ -12,6 +12,7 @@ type Listener = (state: BrowserNavState) => void;
 type TabsListener = (state: import("../../main/browser-view-host").BrowserTabsState) => void;
 type DevToolsListener = (state: import("../../main/browser-view-host").BrowserDevToolsState) => void;
 type ActivityListener = (state: import("../../main/browser-view-host").BrowserAgentActivityState) => void;
+type ProfileListener = (state: import("../../shared/browser-profiles").BrowserProfileViewState) => void;
 
 function createSlot(rect: Partial<DOMRect> = {}) {
 	const slot = document.createElement("div");
@@ -36,6 +37,7 @@ function setupBridge() {
 	const tabsListeners = new Set<TabsListener>();
 	const devtoolsListeners = new Set<DevToolsListener>();
 	const activityListeners = new Set<ActivityListener>();
+	const profileListeners = new Set<ProfileListener>();
 	const bridge = {
 		nativeCompositionEnabled: false,
 		stateFor(viewId: string): BrowserNavState {
@@ -87,6 +89,10 @@ function setupBridge() {
 				{ id: "t2", url: "", title: "", active: true },
 			],
 		})),
+		notifyPanelUsed: vi.fn(),
+		notifyPanelBlur: vi.fn(),
+		onFocusLocation: vi.fn(() => () => undefined),
+		onReopenClosedTab: vi.fn(() => () => undefined),
 		devtools: vi.fn(
 			async ({ viewId, operation, placement }: {
 				viewId: string;
@@ -99,12 +105,24 @@ function setupBridge() {
 				placement: placement ?? "undocked",
 			}),
 		),
+		getProfile: vi.fn(async (viewId: string) => ({ viewId, profileId: null, temporary: true })),
+		showProfileMenu: vi.fn(),
+		selectProfile: vi.fn(),
+		historySuggestions: vi.fn(async () => []),
+		captureScreenshot: vi.fn(async () => undefined),
+		downloads: {
+			list: vi.fn(async () => ({ downloads: [] })),
+			action: vi.fn(async () => ({ downloads: [] })),
+			clear: vi.fn(async () => ({ downloads: [] })),
+			onChanged: vi.fn(() => () => { /* no-op test subscription */ }),
+		},
 		destroy: vi.fn(),
 		setAnnotationMode: vi.fn(async () => undefined),
 		onNavState: vi.fn((listener: Listener) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		}),
+		onPageFocus: vi.fn(() => () => undefined),
 		onTabsState: vi.fn((listener: TabsListener) => {
 			tabsListeners.add(listener);
 			return () => tabsListeners.delete(listener);
@@ -117,6 +135,11 @@ function setupBridge() {
 			activityListeners.add(listener);
 			return () => activityListeners.delete(listener);
 		}),
+		onProfileState: vi.fn((listener: ProfileListener) => {
+			profileListeners.add(listener);
+			return () => profileListeners.delete(listener);
+		}),
+		onProfileManage: vi.fn(() => () => undefined),
 		onAnnotationSubmit: vi.fn(() => () => undefined),
 		onAnnotationCancel: vi.fn(() => () => undefined),
 		emit(state: BrowserNavState) {
@@ -130,6 +153,9 @@ function setupBridge() {
 		},
 		emitActivity(state: Parameters<ActivityListener>[0]) {
 			activityListeners.forEach((listener) => listener(state));
+		},
+		emitProfile(state: Parameters<ProfileListener>[0]) {
+			profileListeners.forEach((listener) => listener(state));
 		},
 	};
 	window.ao = { ...window.ao!, browser: bridge };
@@ -251,6 +277,53 @@ describe("useBrowserView", () => {
 		await act(() => result.current.reopenClosedTab("t2"));
 		expect(bridge.openTab).toHaveBeenCalledWith({ viewId: "42:sess-1", url: "http://localhost:4173/" });
 		expect(result.current.closedTabs).toEqual([]);
+	});
+
+	it("remembers a tab closed by a main-process keyboard shortcut", async () => {
+		const bridge = setupBridge();
+		const { result } = renderHook(() => useBrowserView({ sessionId: "sess-1", active: true, poppedOut: false }));
+		await waitFor(() => expect(result.current.tabs.map((tab) => tab.id)).toEqual(["t1"]));
+
+		act(() =>
+			bridge.emitTabs({
+				viewId: "42:sess-1",
+				activeTabId: "t1",
+				tabs: [{ id: "t1", url: "http://localhost:3000/", title: "First", active: true }],
+				change: {
+					kind: "closed",
+					tabId: "t2",
+					tab: { id: "t2", url: "http://localhost:4173/", title: "Keyboard closed", active: false },
+				},
+			}),
+		);
+
+		expect(result.current.closedTabs).toEqual([
+			{ id: "t2", url: "http://localhost:4173/", title: "Keyboard closed", favicon: undefined },
+		]);
+		await act(() => result.current.reopenClosedTab("t2"));
+		expect(bridge.openTab).toHaveBeenCalledWith({ viewId: "42:sess-1", url: "http://localhost:4173/" });
+	});
+
+	it("can reopen a tab immediately after receiving its keyboard-close event", async () => {
+		const bridge = setupBridge();
+		const { result } = renderHook(() => useBrowserView({ sessionId: "sess-1", active: true, poppedOut: false }));
+		await waitFor(() => expect(result.current.tabs.map((tab) => tab.id)).toEqual(["t1"]));
+
+		await act(async () => {
+			bridge.emitTabs({
+				viewId: "42:sess-1",
+				activeTabId: "t1",
+				tabs: [{ id: "t1", url: "http://localhost:3000/", title: "First", active: true }],
+				change: {
+					kind: "closed",
+					tabId: "t2",
+					tab: { id: "t2", url: "http://localhost:4173/", title: "Keyboard closed", active: false },
+				},
+			});
+			await result.current.reopenClosedTab("t2");
+		});
+
+		expect(bridge.openTab).toHaveBeenCalledWith({ viewId: "42:sess-1", url: "http://localhost:4173/" });
 	});
 
 	it("reopens a closed tab beyond the former tab cap", async () => {

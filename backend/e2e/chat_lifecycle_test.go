@@ -61,44 +61,35 @@ func TestChatSurvivesADaemonRestartWithNativeContext(t *testing.T) {
 	}
 }
 
-// A crash mid-turn must not leave the turn looking like it is still working. A
-// controller that stopped running a turn is not evidence the work finished, and a
-// turn stuck at "running" forever is a session the user cannot reason about.
-func TestChatRestartMidTurnSettlesTheTurnHonestly(t *testing.T) {
+// The detached Codex host is outside the daemon's process group. Even SIGKILL of
+// the daemon must leave the provider turn running for the replacement to adopt.
+func TestChatRestartMidTurnKeepsCodexRunning(t *testing.T) {
 	requireE2E(t)
 	dataDir := t.TempDir()
 	d := startDaemon(t, dataDir)
 	project := seedProject(t, d, "midturn")
 	session := chatSession(t, d, project, "Reply with exactly: READY")
 
-	send(t, d, session, "Sleep for 120 seconds using a shell command, then reply with exactly: NEVER", "long")
+	send(t, d, session, "Run the shell command `sleep 20`, then reply with exactly: SURVIVED-SIGKILL", "long")
 	d.awaitConversation(session, 90*time.Second, "the long turn to start running", func(s snapshot) bool {
 		return s.Turns[len(s.Turns)-1].State == "running"
 	})
+	hostBefore := persistentHostPID(t, dataDir, session)
 
-	// SIGKILL: no shutdown hook runs, so whatever the next boot concludes it has to
-	// conclude from disk alone.
 	d.kill()
+	if !processAlive(hostBefore) {
+		t.Fatalf("detached host %d died with the killed daemon", hostBefore)
+	}
 	restarted := startDaemon(t, dataDir)
-
-	snap := restarted.awaitConversation(session, 90*time.Second, "the orphaned turn to settle",
+	restarted.awaitLiveController(session, 90*time.Second)
+	snap := restarted.awaitConversation(session, 3*time.Minute, "the surviving turn to finish",
 		func(s snapshot) bool { return terminal(s.Turns[len(s.Turns)-1].State) })
 
 	last := snap.Turns[len(snap.Turns)-1]
-	if last.State == "completed" {
-		t.Fatalf("a turn interrupted by a daemon crash was recorded as completed:\n%s", describe(snap))
-	}
-	if last.ErrorMessage == "" {
-		t.Errorf("orphaned turn %s carries no explanation of why it ended", short(last.ID))
-	}
-
-	// And the session is still usable afterwards, rather than wedged.
-	restarted.awaitLiveController(session, 90*time.Second)
-	send(t, restarted, session, "Reply with exactly: ALIVE", "post-crash")
-	revived := restarted.awaitConversation(session, 3*time.Minute, "a turn after the crash",
-		func(s snapshot) bool { return contains(s.assistantText(), "ALIVE") })
-	if !contains(revived.assistantText(), "ALIVE") {
-		t.Errorf("the session never recovered after a mid-turn crash:\n%s", describe(revived))
+	hostAfter := persistentHostPID(t, dataDir, session)
+	t.Logf("abrupt daemon simulation: host_pid=%d->%d turn_state=%s", hostBefore, hostAfter, last.State)
+	if hostAfter != hostBefore || last.State != "completed" || !contains(snap.assistantText(), "SURVIVED-SIGKILL") {
+		t.Fatalf("real Codex turn did not survive abrupt daemon replacement:\n%s", describe(snap))
 	}
 }
 
@@ -112,7 +103,7 @@ func TestChatQueuedMessageIsAccountedForAcrossARestart(t *testing.T) {
 	project := seedProject(t, d, "queuecrash")
 	session := chatSession(t, d, project, "Reply with exactly: READY")
 
-	send(t, d, session, "Sleep for 120 seconds using a shell command, then reply with exactly: NEVER", "qc-slow")
+	send(t, d, session, "Run the shell command `sleep 20`, then reply with exactly: FIRST-SURVIVED", "qc-slow")
 	d.awaitConversation(session, 90*time.Second, "the slow turn to start running", func(s snapshot) bool {
 		return s.Turns[len(s.Turns)-1].State == "running"
 	})
@@ -125,9 +116,9 @@ func TestChatQueuedMessageIsAccountedForAcrossARestart(t *testing.T) {
 	restarted := startDaemon(t, dataDir)
 	restarted.awaitLiveController(session, 90*time.Second)
 
-	snap := restarted.awaitConversation(session, 2*time.Minute, "the queued message to be accounted for",
+	snap := restarted.awaitConversation(session, 3*time.Minute, "the queued message to be delivered",
 		func(s snapshot) bool {
-			return terminal(s.userTurnStates()["Reply with exactly: QUEUED-ACROSS-RESTART"]) ||
+			return terminal(s.userTurnStates()["Reply with exactly: QUEUED-ACROSS-RESTART"]) &&
 				contains(s.assistantText(), "QUEUED-ACROSS-RESTART")
 		})
 
@@ -137,8 +128,8 @@ func TestChatQueuedMessageIsAccountedForAcrossARestart(t *testing.T) {
 	if state == "" {
 		t.Fatalf("the queued message disappeared across the restart:\n%s", describe(snap))
 	}
-	if state == "queued" {
-		t.Errorf("the message is still queued behind a controller that died; nothing will ever send it")
+	if state != "completed" || !contains(snap.assistantText(), "QUEUED-ACROSS-RESTART") {
+		t.Errorf("queued message was not completed after the surviving turn: state=%q\n%s", state, describe(snap))
 	}
 	t.Logf("queued-across-restart resolved as %q", state)
 }

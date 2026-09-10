@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -339,4 +340,63 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		DeliveredAt:      deliveredAt,
 		AutoInjectReview: r.AutoInjectReview,
 	}
+}
+
+// ListCurrentHeadReviewRunsForSession returns AO's review passes against the
+// current head commit of each PR the session owns. Passes recorded for an
+// earlier head are filtered out in SQL, so callers cannot let a stale run
+// decide a derived column.
+func (s *Store) ListCurrentHeadReviewRunsForSession(ctx context.Context, id domain.SessionID) ([]domain.CurrentHeadReviewRun, error) {
+	rows, err := s.qr.ListCurrentHeadReviewRunsBySession(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("list current-head review runs for %s: %w", id, err)
+	}
+	out := make([]domain.CurrentHeadReviewRun, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, domain.CurrentHeadReviewRun{
+			SessionID: id,
+			Harness:   r.Harness,
+			PRURL:     r.PRURL,
+			Status:    r.Status,
+			Verdict:   r.Verdict,
+			ID:        r.ID,
+			CreatedAt: r.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+// ListCurrentHeadReviewRunsForSessions batches
+// ListCurrentHeadReviewRunsForSession for session-list reads, returning every
+// requested session id with an empty slice when the current head has no runs.
+func (s *Store) ListCurrentHeadReviewRunsForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.CurrentHeadReviewRun, error) {
+	out := make(map[domain.SessionID][]domain.CurrentHeadReviewRun, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("marshal session ids: %w", err)
+	}
+	rows, err := s.qr.ListCurrentHeadReviewRunsBySessions(ctx, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("list current-head review runs for sessions: %w", err)
+	}
+	for _, r := range rows {
+		out[r.SessionID] = append(out[r.SessionID], domain.CurrentHeadReviewRun{
+			SessionID: r.SessionID,
+			Harness:   r.Harness,
+			PRURL:     r.PRURL,
+			Status:    r.Status,
+			Verdict:   r.Verdict,
+			ID:        r.ID,
+			CreatedAt: r.CreatedAt,
+		})
+	}
+	for _, id := range ids {
+		if out[id] == nil {
+			out[id] = []domain.CurrentHeadReviewRun{}
+		}
+	}
+	return out, nil
 }

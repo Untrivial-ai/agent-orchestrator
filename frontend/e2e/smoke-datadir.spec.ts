@@ -26,7 +26,7 @@ test("renderer: reflects daemon data-dir readiness @P0 @DATADIR", async ({ page 
 		daemonPort: 8080,
 		workers: [{ id: "datadir", title: "Persisted worker", status: "working" }],
 	});
-	await page.goto("/");
+	await page.goto("/#/projects/fake-proj");
 
 	// A ready daemon on a port ⇒ its data dir + config skeleton initialized.
 	await expect(page.getByTestId("daemon-status")).toHaveAttribute("data-state", "ready");
@@ -39,7 +39,7 @@ test("renderer: surfaces a not-ready data dir without crashing @P0 @DATADIR", as
 	// If the data dir is not ready the daemon never advertises a port; the
 	// renderer must degrade to a non-ready status, not crash.
 	await installFakeBridge(page, { daemonState: "starting" });
-	await page.goto("/");
+	await page.goto("/#/projects/ao-demo");
 	await expect(page.getByTestId("daemon-status")).not.toHaveAttribute("data-state", "ready");
 	await expect(page.getByTestId("board")).toBeVisible();
 });

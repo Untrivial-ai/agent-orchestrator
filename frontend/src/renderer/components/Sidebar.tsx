@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import {
 	DndContext,
@@ -21,7 +22,6 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-	AlertTriangle,
 	ChevronRight,
 	Download,
 	Folder,
@@ -29,6 +29,8 @@ import {
 	LogIn,
 	LogOut,
 	MoreVertical,
+	PanelLeft,
+	Pencil,
 	Pin,
 	PinOff,
 	Plus,
@@ -38,6 +40,7 @@ import {
 	Smartphone,
 	Trash2,
 	User,
+	X,
 } from "lucide-react";
 import {
 	useCallback,
@@ -49,13 +52,14 @@ import {
 	useRef,
 	useState,
 	type CSSProperties,
-	type KeyboardEvent,
 	type MouseEvent,
+	type PointerEvent as ReactPointerEvent,
 	type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { UpdateStatus } from "../../main/update-settings";
+import { parseNightlyVersion } from "../lib/build-channel";
 import {
 	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
@@ -72,13 +76,17 @@ import { cloudSessionsQueryKey, workspaceQueryKey } from "../hooks/useWorkspaceQ
 import { usePinSession, useUnpinSession } from "../hooks/usePinSession";
 import { spawnCloudOrchestrator } from "../lib/cloud-orchestrator";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
-import { renameSession } from "../lib/rename-session";
 import { formatTimeCompact, formatTimeTerse } from "../lib/format-time";
 import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useResizable } from "../hooks/useResizable";
 import { useCloudGate } from "../hooks/useCloudGate";
+import { useCloudLocalAuth } from "../hooks/useCloudLocalAuth";
+import { useLocalSignInDialogStore } from "../stores/local-signin-dialog-store";
 import { useShellMaybe } from "../lib/shell-context";
-import { useUpdateStatus } from "../hooks/useUpdateStatus";
+import { useSidebarUpdateDismissal } from "../hooks/useSidebarUpdateDismissal";
+import { useRequestUpdateInstall } from "../hooks/useRequestUpdateInstall";
+import { useUpdateStatus, requestUpdateDownload } from "../hooks/useUpdateStatus";
+import { MAX_SESSION_DISPLAY_NAME_LEN, useSessionRename } from "../hooks/useSessionRename";
 import { effectiveShortcutBindings, shortcutBindingKeys } from "../../shared/shortcuts";
 import {
 	ContextMenu,
@@ -153,7 +161,6 @@ const PROJECT_DRAG_OVERLAY_STYLE: CSSProperties = { willChange: "transform" };
 
 // Mirrors the daemon's display-name cap (maxDisplayNameLen) and the spawn
 // `--name` flag, so inline edits never round-trip a value the API would reject.
-const MAX_DISPLAY_NAME_LEN = 20;
 
 // Reorder drags start from the row's primary click surface. The 4px activation
 // distance keeps a plain navigation/disclosure click from starting a drag;
@@ -324,8 +331,6 @@ function readExpandedProjectIds(): ReadonlySet<string> {
 type SidebarProps = {
 	/** Hide the sidebar's right edge stroke on the welcome board inset chrome. */
 	hideEdgeBorder?: boolean;
-	/** Preserve navigation as an icon rail when workspace pressure collapses the expanded sidebar. */
-	autoCompact?: boolean;
 	underTopbar?: boolean;
 	/** Chrome height to clear when underTopbar is set. Defaults to --size-toolbar. */
 	topbarOffset?: "toolbar" | "titlebar" | "trafficLights" | "session";
@@ -352,6 +357,7 @@ function useSelection() {
 	});
 	const goHome = useCallback(() => void navigate({ to: "/" }), [navigate]);
 	const goGlobalSettings = useCallback(() => openGlobalSettings(), [openGlobalSettings]);
+	const goConnectMobile = useCallback(() => openGlobalSettings("mobile"), [openGlobalSettings]);
 	const goSettings = useCallback((projectId: string) => openProjectSettings(projectId), [openProjectSettings]);
 	const goProject = useCallback(
 		(projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } }),
@@ -373,11 +379,11 @@ function useSelection() {
 		// Settings is a modal — open it in place so the current page (session
 		// terminal, board, etc.) stays underneath.
 		goGlobalSettings,
-		goConnectMobile: () => openGlobalSettings("mobile"),
+		goConnectMobile,
 		goSettings,
 		goProject,
 		goSession,
-	}), [goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
+	}), [goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
 }
 
 // Colour tracks the session's board section, preserving SCM state while the
@@ -402,7 +408,6 @@ function SessionStatusDot({ session }: { session: WorkspaceSession }) {
 // _shell owns the persistent open state. Collapsed sidebars move fully off-canvas.
 export function Sidebar({
 	hideEdgeBorder = false,
-	autoCompact = false,
 	underTopbar = true,
 	topbarOffset = "toolbar",
 	workspaceError,
@@ -414,11 +419,14 @@ export function Sidebar({
 }: SidebarProps) {
 	const { t } = useTranslation();
 	const selection = useSelection();
-	const { state, setOpen } = useSidebar();
+	const { state, setOpen, toggleSidebar } = useSidebar();
 	const isCollapsed = state === "collapsed";
 	const [expandedChromeVisible, setExpandedChromeVisible] = useState(!isCollapsed);
 	// One IPC subscription for both footer variants of the restart-to-update prompt.
 	const updateStatus = useUpdateStatus();
+	const availableUpdateVersion = updateStatus.state === "available" ? updateStatus.version : undefined;
+	const updateDismissal = useSidebarUpdateDismissal(availableUpdateVersion);
+	const requestUpdateInstall = useRequestUpdateInstall();
 	// Daemon status for the smoke suite's sr-only mirror in the footer. Null when
 	// rendered outside the shell (unit tests) — the mirror simply doesn't render.
 	const daemonStatus = useShellMaybe()?.daemonStatus ?? null;
@@ -441,7 +449,7 @@ export function Sidebar({
 	const [dismissedInitialActiveProjectIds, setDismissedInitialActiveProjectIds] = useState<ReadonlySet<string>>(
 		() => new Set(),
 	);
-	const toggleProjectDisclosure = (id: string) => {
+	const toggleProjectDisclosure = useCallback((id: string) => {
 		const routeFallbackActive =
 			initialActiveSessionProjectId === id && !dismissedInitialActiveProjectIds.has(id);
 		const currentlyExpanded = expandedIds.has(id) || routeFallbackActive;
@@ -459,7 +467,7 @@ export function Sidebar({
 			currentlyExpanded ? next.add(id) : next.delete(id);
 			return next;
 		});
-	};
+	}, [dismissedInitialActiveProjectIds, expandedIds, initialActiveSessionProjectId]);
 	// Section disclosure: Pinned header collapses its body. Projects stays open.
 	const [pinnedOpen, setPinnedOpen] = useState(true);
 	// Fetch the running app version to derive the build channel. Channel is
@@ -497,21 +505,25 @@ export function Sidebar({
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
 	);
+	const openExistingProject = useCallback(
+		(path: string) => {
+			const workspace = workspaces.find((candidate) => candidate.path === path);
+			if (workspace) selection.goProject(workspace.id);
+		},
+		[selection, workspaces],
+	);
 	const projectIds = useMemo(() => orderedWorkspaces.map((workspace) => workspace.id), [orderedWorkspaces]);
 	const reorderSensors = useReorderSensors();
 	const projectDragClickGuard = usePostDragClickGuard();
-	const [projectDragState, setProjectDragState] = useState<{
-		activeId: string | null;
-		overId: string | null;
-		placement: ProjectDropPlacement | null;
-	}>({ activeId: null, overId: null, placement: null });
+	const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
 	const projectDragBoundsRef = useRef<DragBounds | null>(null);
 	const projectDropTargetRef = useRef<{ overId: string; placement: ProjectDropPlacement } | null>(null);
-	useGrabbingCursor(projectDragState.activeId !== null);
+	const projectDropNodesRef = useRef(new Map<string, HTMLElement>());
+	useGrabbingCursor(draggingProjectId !== null);
 
 	const activeDragWorkspace = useMemo(
-		() => orderedWorkspaces.find((workspace) => workspace.id === projectDragState.activeId) ?? null,
-		[orderedWorkspaces, projectDragState.activeId],
+		() => orderedWorkspaces.find((workspace) => workspace.id === draggingProjectId) ?? null,
+		[draggingProjectId, orderedWorkspaces],
 	);
 	const activeDragSessions = useMemo(
 		() => activeDragWorkspace
@@ -541,6 +553,16 @@ export function Sidebar({
 	const commitProjectOrder = useCallback((next: string[] | null) => {
 		if (next) setProjectOrder(next);
 	}, []);
+	const setProjectDropIndicator = useCallback((next: { overId: string; placement: ProjectDropPlacement } | null) => {
+		const previous = projectDropTargetRef.current;
+		if (previous && (previous.overId !== next?.overId || previous.placement !== next?.placement)) {
+			projectDropNodesRef.current.get(previous.overId)?.removeAttribute("data-drop-indicator");
+		}
+		if (next && (previous?.overId !== next.overId || previous.placement !== next.placement)) {
+			projectDropNodesRef.current.get(next.overId)?.setAttribute("data-drop-indicator", next.placement);
+		}
+		projectDropTargetRef.current = next;
+	}, []);
 
 	const onProjectDragEnd = useCallback(
 		({ active, over }: DragEndEvent) => {
@@ -550,21 +572,22 @@ export function Sidebar({
 				const targetId = String(over.id);
 				const placement = projectDropTargetRef.current?.overId === targetId
 					? projectDropTargetRef.current.placement
-					: projectDragState.placement ??
-					(projectIds.indexOf(projectId) < projectIds.indexOf(targetId) ? "after" : "before");
+					: projectIds.indexOf(projectId) < projectIds.indexOf(targetId) ? "after" : "before";
 				commitProjectOrder(reorderAtProjectBoundary(projectIds, projectId, targetId, placement));
 			}
 			projectDragBoundsRef.current = null;
-			projectDropTargetRef.current = null;
-			setProjectDragState({ activeId: null, overId: null, placement: null });
+			setProjectDropIndicator(null);
+			projectDropNodesRef.current.clear();
+			setDraggingProjectId(null);
 		},
-		[commitProjectOrder, projectDragClickGuard, projectDragState.placement, projectIds],
+		[commitProjectOrder, projectDragClickGuard, projectIds, setProjectDropIndicator],
 	);
 	const onProjectDragStart = useCallback(({ active }: DragStartEvent) => {
 		const projectId = String(active.id);
 		projectDragBoundsRef.current = null;
 		projectDropTargetRef.current = null;
 		const blocks = Array.from(document.querySelectorAll<HTMLElement>("[data-project-drop-target]"));
+		projectDropNodesRef.current = new Map(blocks.map((block) => [block.dataset.projectId ?? "", block]));
 		const activeRow = blocks.find((block) => block.dataset.projectId === projectId)
 			?.querySelector<HTMLElement>("[data-project-drag-row]");
 		if (activeRow && blocks.length > 0) {
@@ -574,18 +597,13 @@ export function Sidebar({
 				maxY: blocks[blocks.length - 1].getBoundingClientRect().bottom - activeTop,
 			};
 		}
-		setProjectDragState({ activeId: projectId, overId: projectId, placement: null });
+		setDraggingProjectId(projectId);
 	}, []);
 	const updateProjectDropTarget = useCallback(({ active, activatorEvent, delta, over }: DragMoveEvent | DragOverEvent) => {
 		const activeId = String(active.id);
 		const overId = over ? String(over.id) : null;
 		if (!over || activeId === overId) {
-			projectDropTargetRef.current = null;
-			setProjectDragState((previous) =>
-				previous.overId === overId && previous.placement === null
-					? previous
-					: { ...previous, overId, placement: null },
-			);
+			setProjectDropIndicator(null);
 			return;
 		}
 		const pointerY = activatorEvent && "clientY" in activatorEvent && typeof activatorEvent.clientY === "number"
@@ -597,20 +615,15 @@ export function Sidebar({
 		const placement: ProjectDropPlacement = boundaryReference === null
 			? projectIds.indexOf(activeId) < projectIds.indexOf(overId!) ? "after" : "before"
 			: boundaryReference <= over.rect.top + over.rect.height / 2 ? "before" : "after";
-		projectDropTargetRef.current = { overId: overId!, placement };
 		const changesOrder = reorderAtProjectBoundary(projectIds, activeId, overId!, placement) !== null;
-		const visiblePlacement = changesOrder ? placement : null;
-		setProjectDragState((previous) =>
-			previous.overId === overId && previous.placement === visiblePlacement
-				? previous
-				: { ...previous, overId, placement: visiblePlacement },
-		);
-	}, [projectIds]);
+		setProjectDropIndicator(changesOrder ? { overId: overId!, placement } : null);
+	}, [projectIds, setProjectDropIndicator]);
 	const onProjectDragCancel = useCallback(() => {
 		projectDragBoundsRef.current = null;
-		projectDropTargetRef.current = null;
-		setProjectDragState({ activeId: null, overId: null, placement: null });
-	}, []);
+		setProjectDropIndicator(null);
+		projectDropNodesRef.current.clear();
+		setDraggingProjectId(null);
+	}, [setProjectDropIndicator]);
 
 	const pinnedSessions = useMemo(
 		() => workspaces
@@ -627,7 +640,7 @@ export function Sidebar({
 	return (
 		// Pinned sidebars start below shell chrome.
 		<SidebarRoot
-			collapsible={autoCompact ? "icon" : "offcanvas"}
+			collapsible="offcanvas"
 			data-expanded-chrome={expandedChromeVisible ? "visible" : "hidden"}
 			data-topbar-offset={underTopbar ? topbarOffset : undefined}
 			className={cn(
@@ -643,48 +656,28 @@ export function Sidebar({
             36px board button wrapping the 22px accent mark. */}
 				<div
 					className={cn(
-						"flex shrink-0 items-center gap-1.5 px-0.5 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pb-2",
+						"group/brand flex shrink-0 items-center gap-1.5 rounded-md px-0.5 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pb-2",
 						commandPaletteEnabled ? "pb-2" : "pb-3",
 					)}
 				>
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<button
-								aria-label={t("shell.orchestratorBoard")}
-								className={cn(
-									"grid h-5.5 w-5.5 shrink-0 place-items-center",
-									"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg",
-									selection.isHome
-										? "group-data-[collapsible=icon]:bg-interactive-active"
-										: "group-data-[collapsible=icon]:hover:bg-interactive-hover",
-								)}
-								onClick={selection.goHome}
-								type="button"
-							>
-								<img src={aoLogo} alt="" aria-hidden="true" className="h-5.5 w-5.5 -translate-y-[3px] rounded-md object-cover" />
-							</button>
-						</TooltipTrigger>
-						<TooltipContent side="right" hidden={state !== "collapsed"}>
-							{t("shell.orchestratorBoard")}
-						</TooltipContent>
-					</Tooltip>
+					<span
+						className={cn(
+							"grid h-5.5 w-5.5 shrink-0 place-items-center",
+							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg",
+						)}
+					>
+						<img src={aoLogo} alt="" aria-hidden="true" className="h-5.5 w-5.5 -translate-y-[3px] rounded-md object-cover" />
+					</span>
 					{isWindows ? (
 						<span
-							aria-label={t("shell.orchestratorBoard")}
 							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
-							onClick={selection.goHome}
-							onKeyDown={(event: KeyboardEvent<HTMLSpanElement>) => {
-								if (event.key !== "Enter" && event.key !== " ") return;
-								event.preventDefault();
-								selection.goHome();
-							}}
-							role="button"
-							tabIndex={0}
 						>
 							Agent Orchestrator
 						</span>
 					) : (
-						<span className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden">
+						<span
+							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
+						>
 							Agent Orchestrator
 						</span>
 					)}
@@ -694,6 +687,21 @@ export function Sidebar({
 						</span>
 					)}
 				</div>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							aria-label={isCollapsed ? t("shell.expandSidebar") : t("shell.collapseSidebar")}
+							className="hidden size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground group-data-[collapsible=icon]:grid [&_svg]:size-icon-base"
+							onClick={toggleSidebar}
+							type="button"
+						>
+							<PanelLeft aria-hidden="true" />
+						</button>
+					</TooltipTrigger>
+					<TooltipContent side="right">
+						{isCollapsed ? t("shell.expandSidebar") : t("shell.collapseSidebar")}
+					</TooltipContent>
+				</Tooltip>
 			</SidebarHeader>
 
 			{/* Keep Search + section chrome fixed; only the project tree scrolls. */}
@@ -746,6 +754,9 @@ export function Sidebar({
 								onCloneProject={onCloneProject}
 								onCreateProject={onCreateProject}
 								onInitializeProject={onInitializeProject}
+								onOpenExistingProject={openExistingProject}
+								existingProjectPaths={workspaces.map((workspace) => workspace.path)}
+								existingProjectNames={workspaces.map((workspace) => workspace.name)}
 							/>
 						}
 					/>
@@ -780,11 +791,10 @@ export function Sidebar({
 											expanded={expandedIds.has(workspace.id) || (initialActiveSessionProjectId === workspace.id && !dismissedInitialActiveProjectIds.has(workspace.id))}
 											suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
 											selection={selection}
-											draggingProjectId={projectDragState.activeId}
-											dropIndicator={projectDragState.overId === workspace.id ? projectDragState.placement ?? undefined : undefined}
+											draggingProjectId={draggingProjectId}
 											consumeDragClick={projectDragClickGuard.consumeClick}
 											onSessionOrderChange={recordSessionOrder}
-											onToggle={() => toggleProjectDisclosure(workspace.id)}
+											onToggle={toggleProjectDisclosure}
 											onRemoveProject={onRemoveProject}
 										/>
 									))}
@@ -816,7 +826,7 @@ export function Sidebar({
 			    spacing stays inside the footer so there is no empty strip beneath
 			    the final action. */}
 			<SidebarFooter
-				className="relative mt-auto gap-0 overflow-hidden border-t border-border-strong px-2 !py-2 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:min-h-20 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:!pb-0 group-data-[collapsible=icon]:!pt-1.5"
+				className="relative mt-auto gap-0 overflow-hidden border-t border-border-strong px-2 !py-2 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:min-h-20 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:overflow-visible group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:!pb-2 group-data-[collapsible=icon]:!pt-1.5"
 			>
 				{/* Always-present daemon status mirror for the smoke suite: no visible
 				    daemon-state copy is guaranteed to be mounted elsewhere. */}
@@ -827,9 +837,16 @@ export function Sidebar({
 				)}
 				<div
 					aria-hidden={isCollapsed || undefined}
-					className="sidebar-expanded-chrome relative flex w-full min-w-46.5 flex-col gap-0.5 transition-[opacity,transform] duration-150 ease-out group-data-[collapsible=icon]:pointer-events-none group-data-[collapsible=icon]:-translate-x-2 group-data-[collapsible=icon]:opacity-0"
+					hidden={isCollapsed}
+					className="sidebar-expanded-chrome relative flex w-full min-w-46.5 flex-col gap-0.5"
 				>
-					<UpdateStatusRow status={updateStatus} tabIndex={isCollapsed ? -1 : 0} />
+					<UpdateStatusRow
+						availableDismissed={updateDismissal.dismissed}
+						onDismissAvailable={updateDismissal.dismiss}
+						onRequestInstall={requestUpdateInstall}
+						status={updateStatus}
+						tabIndex={isCollapsed ? -1 : 0}
+					/>
 					<CloudSignInRow tabIndex={isCollapsed ? -1 : 0} />
 					<CloudAccountRow tabIndex={isCollapsed ? -1 : 0} />
 					<button
@@ -861,9 +878,14 @@ export function Sidebar({
 				</div>
 				<div
 					aria-hidden={!isCollapsed || undefined}
-					className="pointer-events-none absolute inset-x-1.5 bottom-0 top-auto flex min-h-row-md flex-col items-center justify-end gap-1 opacity-0 transition-opacity duration-150 ease-out group-data-[collapsible=icon]:pointer-events-auto group-data-[collapsible=icon]:opacity-100"
+					className="pointer-events-none absolute inset-x-1.5 bottom-0 top-auto flex min-h-row-md flex-col items-center justify-end gap-1 opacity-0 transition-opacity duration-150 ease-out group-data-[collapsible=icon]:pointer-events-auto group-data-[collapsible=icon]:!bottom-2 group-data-[collapsible=icon]:opacity-100"
 				>
-					<UpdateStatusRail status={updateStatus} tabIndex={isCollapsed ? 0 : -1} />
+					<UpdateStatusRail
+						availableDismissed={updateDismissal.dismissed}
+						onRequestInstall={requestUpdateInstall}
+						status={updateStatus}
+						tabIndex={isCollapsed ? 0 : -1}
+					/>
 					<CloudSignInRailButton tabIndex={isCollapsed ? 0 : -1} />
 					<CloudAccountRailButton tabIndex={isCollapsed ? 0 : -1} />
 					<Tooltip>
@@ -921,10 +943,9 @@ type ProjectItemProps = {
 	expanded: boolean;
 	selection: Selection;
 	draggingProjectId?: string | null;
-	dropIndicator?: "before" | "after";
 	consumeDragClick: (id: string) => boolean;
 	onSessionOrderChange: (projectId: string, order: string[]) => void;
-	onToggle: () => void;
+	onToggle: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
 	suppressInitialExpandAnimation: boolean;
 };
@@ -939,12 +960,39 @@ type ProjectItemDndProps = Pick<ProjectDraggable, "listeners" | "setActivatorNod
 // project/session subtree. The content only rerenders when its visible props
 // change (drag start/end or a different drop boundary), not for every transform.
 const ProjectItem = memo(function ProjectItem(props: ProjectItemProps) {
-	const { listeners, setActivatorNodeRef, setNodeRef: setDraggableNodeRef } = useDraggable({
+	const draggable = useDraggable({
 		id: props.workspace.id,
 	});
-	const { setNodeRef: setDroppableNodeRef } = useDroppable({
+	const droppable = useDroppable({
 		id: props.workspace.id,
 	});
+	// dnd-kit refreshes the objects returned by these hooks as the pointer moves.
+	// Keep that high-frequency churn in this thin wrapper: the project content
+	// contains the expanded session tree and must not receive new props merely
+	// because the cursor crossed another project.
+	const draggableRef = useRef(draggable);
+	const droppableRef = useRef(droppable);
+	draggableRef.current = draggable;
+	droppableRef.current = droppable;
+	const listeners = useMemo<ProjectDraggable["listeners"]>(
+		() => ({
+			onPointerDown: (event: ReactPointerEvent<HTMLElement>) =>
+				draggableRef.current.listeners?.onPointerDown?.(event),
+		}),
+		[],
+	);
+	const setActivatorNodeRef = useCallback(
+		(node: HTMLElement | null) => draggableRef.current.setActivatorNodeRef(node),
+		[],
+	);
+	const setDraggableNodeRef = useCallback(
+		(node: HTMLElement | null) => draggableRef.current.setNodeRef(node),
+		[],
+	);
+	const setDroppableNodeRef = useCallback(
+		(node: HTMLElement | null) => droppableRef.current.setNodeRef(node),
+		[],
+	);
 	return (
 		<ProjectItemContent
 			{...props}
@@ -961,7 +1009,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	expanded,
 	selection,
 	draggingProjectId,
-	dropIndicator,
 	consumeDragClick,
 	onSessionOrderChange,
 	onToggle,
@@ -988,7 +1035,6 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const [isSpawning, setIsSpawning] = useState(false);
 	const [projectPressed, setProjectPressed] = useState(false);
-	const [rowHovered, setRowHovered] = useState(false);
 	// Skip enter animation on first mount — sessions arrive async and we don't
 	// want them to slide in on every sidebar load. Only animate on subsequent
 	// expand/collapse toggles.
@@ -999,6 +1045,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		return () => cancelAnimationFrame(id);
 	}, []);
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
+	const isProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const projectIsDragging = draggingProjectId === workspace.id;
 	// Keep completed PR sessions reachable while their runtime still exists.
@@ -1015,6 +1062,11 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	);
 	const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
 	const sessionLayoutDependency = useMemo(() => sessionIds.join("\u0000"), [sessionIds]);
+	// Project and session reordering use nested DnD contexts. While a project is
+	// being dragged, leave the session lists as plain rows: otherwise every
+	// expanded project's DnD context measures its sortable descendants on drop.
+	// With a dense sidebar that turns one project drop into a full-tree layout.
+	const projectDragInProgress = draggingProjectId !== null && draggingProjectId !== undefined;
 	const sessionSensors = useReorderSensors();
 	const sessionDragClickGuard = usePostDragClickGuard();
 	const [sessionDragging, setSessionDragging] = useState(false);
@@ -1062,7 +1114,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const orchestrator = newestActiveOrchestrator(workspace.sessions);
 	const toggleDisclosure = () => {
 		hasInteractedWithDisclosure.current = true;
-		onToggle();
+		onToggle(workspace.id);
 	};
 
 	// Mirrors ShellTopbar's launcher: attach to the running orchestrator, or
@@ -1070,7 +1122,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// Expand a collapsed project so opening the orchestrator also reveals its
 	// session list — otherwise the tree stays shut while you're inside it.
 	const openOrchestrator = async () => {
-		if (isProjectRestarting) return;
+		if (isProjectRestarting || isProvisioning) return;
 		if (!expanded) toggleDisclosure();
 		if (orchestrator) {
 			selection.goSession(workspace.id, orchestrator.id);
@@ -1167,24 +1219,23 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					data-dragging={projectIsDragging ? "true" : undefined}
 					data-project-drop-target=""
 					data-project-id={workspace.id}
+					data-drop-indicator={undefined}
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
 					layout={draggingProjectId ? false : "position"}
-					onMouseEnter={() => setRowHovered(true)}
-					onMouseLeave={() => setRowHovered(false)}
 					ref={setDroppableNodeRef}
 					transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
 				>
-					{dropIndicator ? (
-						<div
-							aria-hidden="true"
-							className={cn(
-								"pointer-events-none absolute inset-x-0 z-[70] h-px bg-foreground",
-								dropIndicator === "before" ? "top-0" : "bottom-0",
-							)}
-							data-project-drop-indicator={dropIndicator}
-						/>
-					) : null}
+					<div
+						aria-hidden="true"
+						className="pointer-events-none absolute inset-x-0 top-0 z-[70] h-px bg-foreground opacity-0 group-data-[drop-indicator=before]/menu-item:opacity-100"
+						data-project-drop-indicator="before"
+					/>
+					<div
+						aria-hidden="true"
+						className="pointer-events-none absolute inset-x-0 bottom-0 z-[70] h-px bg-foreground opacity-0 group-data-[drop-indicator=after]/menu-item:opacity-100"
+						data-project-drop-indicator="after"
+					/>
 					{/* The whole visual row scales when its navigation surface is pressed.
 		    Action-button presses stop before reaching this boundary. */}
 					<div
@@ -1234,20 +1285,23 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										className="relative inline-flex size-icon-md shrink-0 translate-y-px items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
 										data-project-folder-visual=""
 									>
-										{rowHovered && !draggingProjectId ? (
-											<motion.span
-												animate={{ rotate: expanded ? 90 : 0 }}
-												initial={false}
-												transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.14, ease: [0.25, 0.46, 0.45, 0.94] }}
-												className="inline-flex size-icon-md items-center justify-center"
-											>
-												<ChevronRight strokeWidth={1.75} />
-											</motion.span>
-										) : expanded ? (
-											<FolderOpen strokeWidth={1.75} />
-										) : (
-											<Folder strokeWidth={1.75} />
-										)}
+										<span
+											className={cn(
+												"inline-flex size-icon-md items-center justify-center transition-opacity duration-150 group-hover/menu-item:opacity-0",
+												draggingProjectId && "group-hover/menu-item:opacity-100",
+											)}
+										>
+											{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
+										</span>
+										<span
+											className={cn(
+												"absolute inline-flex size-icon-md items-center justify-center opacity-0 transition-[opacity,transform] duration-150 group-hover/menu-item:opacity-100",
+												expanded && "rotate-90",
+												draggingProjectId && "group-hover/menu-item:opacity-0",
+											)}
+										>
+											<ChevronRight strokeWidth={1.75} />
+										</span>
 									</span>
 									{/* Collapsed icon rail: folder icon */}
 									<span
@@ -1300,24 +1354,26 @@ const ProjectItemContent = memo(function ProjectItemContent({
 							>
 								<Tooltip>
 									<TooltipTrigger asChild>
-										<button
-											aria-current={orchestratorActive ? "page" : undefined}
-											aria-label={
-												orchestrator
-													? t("shell.openProjectOrchestrator", {
-															name: workspace.name,
-														})
-													: t("shell.spawnProjectOrchestrator", {
-															name: workspace.name,
-														})
-											}
+										<span className="inline-flex">
+											<button
+												aria-current={orchestratorActive ? "page" : undefined}
+												aria-label={
+													orchestrator
+														? t("shell.openProjectOrchestrator", {
+																name: workspace.name,
+															})
+														: t("shell.spawnProjectOrchestrator", {
+																name: workspace.name,
+															})
+												}
 											className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
-											disabled={isSpawning || isProjectRestarting}
-											onClick={() => void openOrchestrator()}
-											type="button"
-										>
-											<OrchestratorIcon aria-hidden="true" strokeWidth={orchestratorActive ? 2.5 : 2} />
-										</button>
+											disabled={isSpawning || isProjectRestarting || isProvisioning}
+												onClick={() => void openOrchestrator()}
+												type="button"
+											>
+												<OrchestratorIcon aria-hidden="true" strokeWidth={orchestratorActive ? 2.5 : 2} />
+											</button>
+										</span>
 									</TooltipTrigger>
 									<TooltipContent>
 										{isProjectRestarting
@@ -1330,19 +1386,28 @@ const ProjectItemContent = memo(function ProjectItemContent({
 									</TooltipContent>
 								</Tooltip>
 								<DropdownMenu>
-									<DropdownMenuTrigger asChild>
-										<button
-											aria-label={t("shell.projectActions", {
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<DropdownMenuTrigger asChild>
+												<button
+													aria-label={t("shell.projectActions", {
+														name: workspace.name,
+													})}
+													className={HOVER_ACTION_CLASS}
+													type="button"
+												>
+													<MoreVertical aria-hidden="true" />
+												</button>
+											</DropdownMenuTrigger>
+										</TooltipTrigger>
+										<TooltipContent>
+											{t("shell.projectActions", {
 												name: workspace.name,
 											})}
-											className={HOVER_ACTION_CLASS}
-											type="button"
-										>
-											<MoreVertical aria-hidden="true" />
-										</button>
-									</DropdownMenuTrigger>
+										</TooltipContent>
+									</Tooltip>
 									<DropdownMenuContent side="right" align="start" className="min-w-44">
-										<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+										<DropdownMenuItem disabled={isProjectRestarting || isProvisioning} onSelect={() => requestNewTask(workspace.id)}>
 											<Plus aria-hidden="true" />
 											{t("shell.newSession")}
 										</DropdownMenuItem>
@@ -1400,35 +1465,52 @@ const ProjectItemContent = memo(function ProjectItemContent({
 						exit={{ y: -12, opacity: 0 }}
 						transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.14, ease: [0.25, 0.46, 0.45, 0.94] }}
 					>
-											<DndContext
-										collisionDetection={closestCenter}
-										modifiers={[restrictToListBounds]}
-										id={sessionDndId(workspace.id)}
-										onDragStart={() => setSessionDragging(true)}
-									onDragCancel={onSessionDragCancel}
-										onDragEnd={onSessionDragEnd}
-										sensors={sessionSensors}
-									>
-										<SortableContext items={sessionIds} strategy={verticalListSortingStrategy}>
-											<SidebarMenuSub
-												className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 py-1"
-												data-testid={`session-list-${workspace.id}`}
-											>
-												{sessions.map((session) => (
-													<SortableSessionRow
-														key={session.id}
-														session={session}
-														active={selection.activeSessionId === session.id}
-														consumeDragClick={sessionDragClickGuard.consumeClick}
-														layoutDependency={sessionLayoutDependency}
-														listIsDragging={sessionDragging}
-														dropTransitionDisabled={dropTransitionDisabledId === session.id}
-														onOpen={openSession}
-													/>
-												))}
-											</SidebarMenuSub>
-										</SortableContext>
-									</DndContext>
+											{projectDragInProgress ? (
+												<SidebarMenuSub
+													className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 py-1"
+													data-testid={`session-list-${workspace.id}`}
+												>
+													{sessions.map((session) => (
+														<SessionRow
+															key={session.id}
+															session={session}
+															active={selection.activeSessionId === session.id}
+															disableLayout
+															onOpen={() => openSession(session.id)}
+														/>
+													))}
+												</SidebarMenuSub>
+											) : (
+												<DndContext
+													collisionDetection={closestCenter}
+													modifiers={[restrictToListBounds]}
+													id={sessionDndId(workspace.id)}
+													onDragStart={() => setSessionDragging(true)}
+													onDragCancel={onSessionDragCancel}
+													onDragEnd={onSessionDragEnd}
+													sensors={sessionSensors}
+												>
+													<SortableContext items={sessionIds} strategy={verticalListSortingStrategy}>
+														<SidebarMenuSub
+															className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 py-1"
+															data-testid={`session-list-${workspace.id}`}
+														>
+															{sessions.map((session) => (
+																<SortableSessionRow
+																	key={session.id}
+																	session={session}
+																	active={selection.activeSessionId === session.id}
+																	consumeDragClick={sessionDragClickGuard.consumeClick}
+																	layoutDependency={sessionLayoutDependency}
+																	listIsDragging={sessionDragging}
+																	dropTransitionDisabled={dropTransitionDisabledId === session.id}
+																	onOpen={openSession}
+																/>
+															))}
+														</SidebarMenuSub>
+													</SortableContext>
+												</DndContext>
+											)}
 								</motion.div>
 							</motion.div>
 						)}
@@ -1450,7 +1532,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 				</motion.li>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
-				<ContextMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+				<ContextMenuItem disabled={isProjectRestarting || isProvisioning} onSelect={() => requestNewTask(workspace.id)}>
 					<Plus aria-hidden="true" />
 					{t("shell.newSession")}
 				</ContextMenuItem>
@@ -1500,9 +1582,9 @@ const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expande
 						const switchLabel = switchPresentation ? t(switchPresentation.compactLabelKey, switchPresentation.values) : undefined;
 						const active = selection.activeSessionId === session.id;
 						return (
-							<div className="pl-4.5" key={session.id}>
+							<div className="pl-0.5" data-project-drag-preview-session="" key={session.id}>
 								<div className={cn("flex h-8 w-full items-center rounded-lg", active && "bg-interactive-active text-foreground")}>
-									<div className="flex h-8 min-w-0 flex-1 items-center gap-1.5 px-2.5 text-sm">
+									<div className="flex h-8 min-w-0 flex-1 items-center gap-1.5 py-0 pl-1.5 pr-2.5 text-sm">
 										<SessionStatusDot session={session} />
 										<span className="flex min-w-0 flex-1 items-center gap-1.5">
 											<span className={cn("min-w-0 flex-1 truncate", active ? "text-foreground" : "text-muted-foreground")}>
@@ -1593,6 +1675,7 @@ function SessionRow({
 	indented = true,
 	layoutDependency,
 	listIsDragging = false,
+	disableLayout = false,
 	onOpen,
 	reorder,
 }: {
@@ -1601,6 +1684,8 @@ function SessionRow({
 	indented?: boolean;
 	layoutDependency?: string;
 	listIsDragging?: boolean;
+	/** Project drags pause nested session projection work. */
+	disableLayout?: boolean;
 	onOpen: () => void;
 	/** Present only for rows inside a reorderable project list. */
 	reorder?: SessionReorder;
@@ -1614,40 +1699,20 @@ function SessionRow({
 		: undefined;
 	const switchStatusId = useId();
 	const describedBy = switchLabel ? switchStatusId : undefined;
-	const [isEditing, setIsEditing] = useState(false);
-	const [draft, setDraft] = useState(session.title);
+	const queryClient = useQueryClient();
+	const refreshWorkspaces = useCallback(
+		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
+		[queryClient],
+	);
+	const rename = useSessionRename(session, refreshWorkspaces);
 	const [sessionPressed, setSessionPressed] = useState(false);
 	const lastTouchAtRef = useRef(0);
 	const suppressTouchOpenRef = useRef(false);
-	// Escape must not be swallowed by the blur-to-save path: the keydown handler
-	// blurs the input, so it flags a cancel here for onBlur to honour.
-	const cancelledRef = useRef(false);
+	const beginRename = useCallback(() => {
+		rename.begin();
+	}, [rename.begin]);
 
-	const queryClient = useQueryClient();
-
-	const startEditing = useCallback(() => {
-		setDraft(session.title);
-		setIsEditing(true);
-	}, [session.title]);
-
-	const commit = async () => {
-		if (cancelledRef.current) {
-			cancelledRef.current = false;
-			setIsEditing(false);
-			return;
-		}
-		setIsEditing(false);
-		const name = draft.trim();
-		if (!name || name === session.title) return;
-		try {
-			await renameSession(session.id, name);
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-		} catch (err) {
-			console.error("Failed to rename session:", err);
-		}
-	};
-
-	if (isEditing) {
+	if (rename.isEditing) {
 		return (
 			<SidebarMenuSubItem className={cn(indented && "pl-0.5")}>
 				<div
@@ -1666,9 +1731,9 @@ function SessionRow({
 							session.lastUserMessageAt && "pr-[36px]",
 						)}
 						data-session-inline-editor=""
-						maxLength={MAX_DISPLAY_NAME_LEN}
-						onBlur={() => void commit()}
-						onChange={(e) => setDraft(e.target.value)}
+						maxLength={MAX_SESSION_DISPLAY_NAME_LEN}
+						onBlur={() => void rename.commit()}
+						onChange={(e) => rename.setDraft(e.target.value)}
 						onFocus={(e) => e.currentTarget.select()}
 						onKeyDown={(e) => {
 							if (e.key === "Enter") {
@@ -1676,11 +1741,10 @@ function SessionRow({
 								e.currentTarget.blur();
 							} else if (e.key === "Escape") {
 								e.preventDefault();
-								cancelledRef.current = true;
-								e.currentTarget.blur();
+								rename.cancel();
 							}
 						}}
-						value={draft}
+						value={rename.draft}
 					/>
 					<SessionMessageAge session={session} />
 				</div>
@@ -1689,15 +1753,17 @@ function SessionRow({
 	}
 
 	return (
-		<SidebarMenuSubItem
-			className={cn(indented && "pl-0.5", reorder?.isDragging && "z-chrome cursor-grabbing opacity-60")}
-			data-dragging={reorder?.isDragging ? "true" : undefined}
-			ref={reorder?.setNodeRef}
-			style={reorder ? sortableRowStyle(reorder) : undefined}
-		>
+		<ContextMenu>
+			<ContextMenuTrigger asChild>
+				<SidebarMenuSubItem
+					className={cn(indented && "pl-0.5", reorder?.isDragging && "z-chrome cursor-grabbing opacity-60")}
+					data-dragging={reorder?.isDragging ? "true" : undefined}
+					ref={reorder?.setNodeRef}
+					style={reorder ? sortableRowStyle(reorder) : undefined}
+				>
 			<motion.div
-				layout={listIsDragging ? false : "position"}
-				layoutDependency={layoutDependency}
+				layout={disableLayout || listIsDragging ? false : "position"}
+				layoutDependency={disableLayout ? undefined : layoutDependency}
 				transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
 			>
 				<div
@@ -1732,12 +1798,7 @@ function SessionRow({
 							)}
 							{...(reorder?.listeners ?? {})}
 							onClick={(event) => {
-								if (
-									event.detail > 1 &&
-									(event.target as HTMLElement).closest("[data-session-name]")
-								) {
-									return;
-								}
+								if (event.detail > 1) return;
 								if (suppressTouchOpenRef.current) {
 									suppressTouchOpenRef.current = false;
 									return;
@@ -1747,7 +1808,12 @@ function SessionRow({
 							onKeyDown={(event) => {
 								if (event.key !== "F2") return;
 								event.preventDefault();
-								startEditing();
+								beginRename();
+							}}
+							onDoubleClick={(event) => {
+								event.preventDefault();
+								event.stopPropagation();
+								beginRename();
 							}}
 							ref={reorder?.setActivatorNodeRef}
 							type="button"
@@ -1760,17 +1826,12 @@ function SessionRow({
 										active ? "text-foreground" : "text-muted-foreground group-hover/session-row:text-foreground",
 									)}
 									data-session-name=""
-									onDoubleClick={(event) => {
-										event.preventDefault();
-										event.stopPropagation();
-										startEditing();
-									}}
 									onPointerUp={(event) => {
 										if (event.pointerType !== "touch") return;
 										const now = Date.now();
 										if (now - lastTouchAtRef.current <= 500) {
 											suppressTouchOpenRef.current = true;
-											startEditing();
+										beginRename();
 										}
 										lastTouchAtRef.current = now;
 									}}
@@ -1793,7 +1854,15 @@ function SessionRow({
 					/>
 				</div>
 			</motion.div>
-		</SidebarMenuSubItem>
+				</SidebarMenuSubItem>
+			</ContextMenuTrigger>
+			<ContextMenuContent className="min-w-44">
+				<ContextMenuItem aria-label={t("shell.renameSession", { title: session.title })} onSelect={beginRename}>
+					<Pencil aria-hidden="true" />
+					{t("shell.rename")}
+				</ContextMenuItem>
+			</ContextMenuContent>
+		</ContextMenu>
 	);
 }
 
@@ -1875,6 +1944,10 @@ function CloudSignInRow({ tabIndex }: { tabIndex: number }) {
 	const { t } = useTranslation();
 	const { cloudEnabled } = useCloudGate();
 	const { configured, status, signIn } = useCloudSession();
+	// Dev + loopback CP: open the local email/password dialog instead of WorkOS.
+	const { available: localAuthAvailable } = useCloudLocalAuth();
+	const openLocalSignIn = useLocalSignInDialogStore((s) => s.openDialog);
+	const onSignIn = () => (localAuthAvailable ? openLocalSignIn() : signIn());
 	if (!configured || !cloudEnabled || status !== "unauthenticated") return null;
 
 	return (
@@ -1884,7 +1957,7 @@ function CloudSignInRow({ tabIndex }: { tabIndex: number }) {
 				NAV_ROW_CLASS,
 				"flex h-9 w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0",
 			)}
-			onClick={() => signIn()}
+			onClick={onSignIn}
 			tabIndex={tabIndex}
 			type="button"
 		>
@@ -1899,6 +1972,10 @@ function CloudSignInRailButton({ tabIndex }: { tabIndex: number }) {
 	const { t } = useTranslation();
 	const { cloudEnabled } = useCloudGate();
 	const { configured, status, signIn } = useCloudSession();
+	// Dev + loopback CP: open the local email/password dialog instead of WorkOS.
+	const { available: localAuthAvailable } = useCloudLocalAuth();
+	const openLocalSignIn = useLocalSignInDialogStore((s) => s.openDialog);
+	const onSignIn = () => (localAuthAvailable ? openLocalSignIn() : signIn());
 	if (!configured || !cloudEnabled || status !== "unauthenticated") return null;
 
 	return (
@@ -1907,7 +1984,7 @@ function CloudSignInRailButton({ tabIndex }: { tabIndex: number }) {
 				<button
 					aria-label={t("shell.signInToAOCloud")}
 					className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
-					onClick={() => signIn()}
+					onClick={onSignIn}
 					tabIndex={tabIndex}
 					type="button"
 				>
@@ -1988,128 +2065,209 @@ function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
 	);
 }
 
+/**
+ * What the sidebar should act on, derived from the live update status.
+ *
+ * `status.state` alone is not enough. It cycles through checking → available →
+ * not-available on every background check while a staged build sits untouched,
+ * which blinked the restart row out of existence every 15 minutes on nightly.
+ * `status.staged` is stamped on every status by the main process for exactly
+ * this reason, so the staged build is read from there rather than from `state`.
+ */
+type SidebarUpdateAction =
+	| { kind: "downloading"; percent?: number; preparing: boolean }
+	| { kind: "download"; version?: string }
+	| { kind: "install"; version?: string; escalated: boolean }
+	| null;
+
+function sidebarUpdateAction(status: UpdateStatus, availableDismissed: boolean): SidebarUpdateAction {
+	// Update failures belong in Settings, where the full message and recovery
+	// action have room. The sidebar stays focused on update progress and actions.
+	if (status.state === "error" && (status.staged === undefined || status.staged.ready === false)) return null;
+	if (status.state === "downloading" || status.state === "preparing" || status.staged?.ready === false) {
+		return { kind: "downloading", percent: status.percent, preparing: status.state === "preparing" || status.staged?.ready === false };
+	}
+	// `staged` is the stamp the main process puts on every status; the
+	// `downloaded` fallback keeps this correct for any status that predates it
+	// or arrives from a source that does not stamp.
+	const staged =
+		status.staged ??
+		(status.state === "downloaded"
+			? {
+					version: status.version,
+					stagedAt: status.stagedAt ?? 0,
+					escalated: status.escalated === true,
+				}
+			: undefined);
+	// Something newer than what is already staged still deserves the download
+	// action; the main process reports a re-discovered staged build as
+	// "downloaded", so an "available" here is genuinely a different version.
+	if (status.state === "available" && !availableDismissed && status.version !== staged?.version) {
+		return { kind: "download", version: status.version };
+	}
+	if (staged) return { kind: "install", version: staged.version, escalated: staged.escalated };
+	return null;
+}
+
+/**
+ * Sidebar label for a build. A raw nightly string truncates to noise and two
+ * consecutive nightlies differ only in trailing digits, so nightlies render as
+ * base version plus build date instead.
+ */
+function updateVersionLabel(
+	version: string | undefined,
+	variant: "available" | "ready",
+	t: TFunction,
+	locale: string,
+): string | null {
+	if (!version) return null;
+	const nightly = parseNightlyVersion(version);
+	if (nightly) {
+		return t("shell.nightlyBuild", {
+			version: nightly.base,
+			date: new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(nightly.builtAt),
+		});
+	}
+	return t(variant === "ready" ? "shell.versionReady" : "shell.versionAvailable", { version });
+}
+
 // UpdateStatusRow makes update activity visible and actionable from the
 // sidebar: an available build downloads on click, progress reports itself, and
 // a staged build becomes the restart action. Idle/checking states stay quiet so
 // routine background checks do not flash in the sidebar.
-function UpdateStatusRow({ status, tabIndex }: { status: UpdateStatus; tabIndex: number }) {
-	const { t } = useTranslation();
-	if (status.state === "available") {
+function UpdateStatusRow({
+	availableDismissed,
+	onDismissAvailable,
+	onRequestInstall,
+	status,
+	tabIndex,
+}: {
+	availableDismissed: boolean;
+	onDismissAvailable: () => void;
+	/** Opens the restart confirmation; installing outright would quit the app. */
+	onRequestInstall: () => void;
+	status: UpdateStatus;
+	tabIndex: number;
+}) {
+	const { t, i18n } = useTranslation();
+	const locale = i18n.resolvedLanguage ?? i18n.language;
+	const action = sidebarUpdateAction(status, availableDismissed);
+	if (action === null) return null;
+
+	if (action.kind === "download") {
+		const versionLabel = updateVersionLabel(action.version, "available", t, locale);
 		// A manual check leaves autoDownload off, so without this the row would
 		// announce an update and offer nothing to act on.
 		return (
-			<button
-				aria-label={
-					status.version
-						? t("shell.downloadUpdateVersion", { version: status.version })
-						: t("shell.downloadUpdate")
-				}
-				className={cn(NAV_ROW_CLASS, "flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
-				onClick={() => void aoBridge.updates.download()}
-				tabIndex={tabIndex}
-				type="button"
-			>
-				<Download aria-hidden="true" className="size-icon-lg shrink-0" />
-				<span className="min-w-0 flex-1 truncate tracking-tight">{t("shell.updateAvailable")}</span>
-				{status.version && <span className="sr-only">{t("shell.versionAvailable", { version: status.version })}</span>}
-				<span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
-			</button>
+			<div className="flex w-full items-center gap-1" data-testid="sidebar-update-available">
+				<button
+					aria-label={
+						action.version
+							? t("shell.downloadUpdateVersion", { version: action.version })
+							: t("shell.downloadUpdate")
+					}
+					className={cn(NAV_ROW_CLASS, "flex min-w-0 flex-1 items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
+					onClick={() => void requestUpdateDownload()}
+					tabIndex={tabIndex}
+					type="button"
+				>
+					<Download aria-hidden="true" className="size-icon-lg shrink-0" />
+					<span className="min-w-0 flex-1">
+						<span className="block truncate tracking-tight">{t("shell.downloadUpdate")}</span>
+						{versionLabel && (
+							<span className="block truncate text-caption font-normal text-passive">{versionLabel}</span>
+						)}
+					</span>
+				</button>
+				{action.version && (
+					<button
+						aria-label={t("shell.dismissUpdateVersion", { version: action.version })}
+						className="grid size-8 shrink-0 place-items-center text-muted-foreground transition-colors hover:text-foreground"
+						onClick={onDismissAvailable}
+						tabIndex={tabIndex}
+						type="button"
+					>
+						<X aria-hidden="true" className="size-icon-base" />
+					</button>
+				)}
+			</div>
 		);
 	}
-	if (status.state === "downloading") {
-		const percent = Math.min(100, Math.max(0, status.percent ?? 0));
+
+	if (action.kind === "downloading") {
 		return (
 			<div
 				aria-live="polite"
-				className={cn(NAV_ROW_CLASS, "relative flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
+				className={cn(NAV_ROW_CLASS, "flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
+				data-testid="sidebar-update-downloading"
 				role="status"
 			>
-				<span className="relative grid size-icon-lg shrink-0 place-items-center" aria-hidden="true">
-					<svg className="absolute inset-0 size-full -rotate-90" viewBox="0 0 24 24" fill="none">
-						<circle cx="12" cy="12" r="9" className="stroke-current/15" strokeWidth="2.5" />
-						<circle
-							cx="12"
-							cy="12"
-							r="9"
-							className="stroke-primary transition-[stroke-dasharray] duration-300"
-							strokeWidth="2.5"
-							strokeLinecap="round"
-							strokeDasharray={`${percent * 0.5655} 56.55`}
-						/>
-					</svg>
-				</span>
+				<Download aria-hidden="true" className="size-icon-lg shrink-0" />
 				<span className="min-w-0 flex-1 truncate tabular-nums">
-					{t("settings.updates.downloading", { percent: status.percent ?? 0 })}
+					{action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent })}
+					{!action.preparing && action.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={action.percent} className="block h-1 w-full mt-1" />}
 				</span>
 			</div>
 		);
 	}
-	// Ranked below a staged build on purpose: an update ready to install is more
-	// actionable than "checks are failing". Only when there is nothing better to
-	// show does the failure take the row — it used to render nothing at all,
-	// which reads as "up to date" rather than "checks are not getting through".
-	if (status.state !== "downloaded") {
-		if (status.checksFailing !== true) return null;
-		return (
-			<button
-				aria-label={t("shell.retryUpdateCheck")}
-				className="flex w-full items-center gap-2.5 rounded-lg border border-warning/35 bg-warning/12 p-2.5 text-left text-control font-medium text-warning transition-colors hover:bg-warning/18 [&_svg]:text-warning"
-				onClick={() => void aoBridge.updates.check()}
-				tabIndex={tabIndex}
-				type="button"
-			>
-				<AlertTriangle aria-hidden="true" className="size-icon-lg shrink-0" />
-				<span className="min-w-0 flex-1">
-					<span className="block truncate tracking-tight">{t("shell.updateCheckFailed")}</span>
-					<span className="block truncate text-caption font-normal text-warning">
-						{t("shell.retryUpdateCheck")}
-					</span>
-				</span>
-			</button>
-		);
-	}
-	const escalated = status.escalated === true;
+
+	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
 	return (
 		<button
 			aria-label={
-				status.version
-					? t("shell.restartInstallUpdateVersion", { version: status.version })
+				action.version
+					? t("shell.restartInstallUpdateVersion", { version: action.version })
 					: t("shell.restartInstallUpdate")
 			}
 			className={cn(
-				NAV_ROW_CLASS,
-				"flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0",
-				escalated && "text-working hover:text-working [&_svg]:text-working",
+				"flex w-full items-center gap-2.5 rounded-lg border border-success/35 bg-success/12 p-2.5 text-left text-control font-medium text-success transition-colors hover:bg-success/18 [&_svg]:text-success",
 			)}
-			onClick={() => void aoBridge.updates.install()}
+			data-testid="sidebar-update-ready"
+			onClick={onRequestInstall}
 			tabIndex={tabIndex}
 			type="button"
 		>
 			<RefreshCw aria-hidden="true" className="size-icon-lg shrink-0" />
-			<span className="min-w-0 flex-1 truncate tracking-tight">{t("shell.restartToUpdate")}</span>
-			{status.version && <span className="sr-only">{t("shell.versionReady", { version: status.version })}</span>}
-			<span aria-hidden="true" className={cn("h-2 w-2 shrink-0 rounded-full", escalated ? "bg-working" : "bg-red-500")} />
+			<span className="min-w-0 flex-1">
+				<span className="block truncate tracking-tight">{t("shell.restartToUpdate")}</span>
+				{versionLabel && <span className="block truncate text-caption font-normal">{versionLabel}</span>}
+			</span>
 		</button>
 	);
 }
 
 // Icon-rail variant of UpdateStatusRow. An available build downloads on click
 // and a staged one installs; an in-flight download is informational.
-function UpdateStatusRail({ status, tabIndex }: { status: UpdateStatus; tabIndex: number }) {
-	const { t } = useTranslation();
-	if (status.state === "available") {
-		const label = t("settings.updates.available", { version: status.version ? ` (v${status.version})` : "" });
+function UpdateStatusRail({
+	availableDismissed,
+	onRequestInstall,
+	status,
+	tabIndex,
+}: {
+	availableDismissed: boolean;
+	/** Opens the restart confirmation; installing outright would quit the app. */
+	onRequestInstall: () => void;
+	status: UpdateStatus;
+	tabIndex: number;
+}) {
+	const { t, i18n } = useTranslation();
+	const locale = i18n.resolvedLanguage ?? i18n.language;
+	const action = sidebarUpdateAction(status, availableDismissed);
+	if (action === null) return null;
+
+	if (action.kind === "download") {
+		const label = t("settings.updates.available", { version: action.version ? ` (v${action.version})` : "" });
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<button
 						aria-label={
-							status.version
-								? t("shell.downloadUpdateVersion", { version: status.version })
+							action.version
+								? t("shell.downloadUpdateVersion", { version: action.version })
 								: t("shell.downloadUpdate")
 						}
 						className="grid size-9 place-items-center rounded-lg text-passive transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4"
-						onClick={() => void aoBridge.updates.download()}
+						onClick={() => void requestUpdateDownload()}
 						tabIndex={tabIndex}
 						type="button"
 					>
@@ -2120,8 +2278,9 @@ function UpdateStatusRail({ status, tabIndex }: { status: UpdateStatus; tabIndex
 			</Tooltip>
 		);
 	}
-	if (status.state === "downloading") {
-		const label = t("settings.updates.downloading", { percent: status.percent ?? 0 });
+
+	if (action.kind === "downloading") {
+		const label = action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent });
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
@@ -2138,47 +2297,22 @@ function UpdateStatusRail({ status, tabIndex }: { status: UpdateStatus; tabIndex
 			</Tooltip>
 		);
 	}
-	// Same ranking as the expanded row: a staged build outranks the failure.
-	if (status.state !== "downloaded") {
-		if (status.checksFailing !== true) return null;
-		return (
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<button
-						aria-label={t("shell.retryUpdateCheck")}
-						className="grid size-9 place-items-center rounded-lg bg-warning/12 text-warning transition-colors hover:bg-warning/18 [&_svg]:size-4"
-						onClick={() => void aoBridge.updates.check()}
-						tabIndex={tabIndex}
-						type="button"
-					>
-						<AlertTriangle aria-hidden="true" />
-					</button>
-				</TooltipTrigger>
-				<TooltipContent side="right">
-					{t("shell.updateCheckFailed")} · {t("shell.retryUpdateCheck")}
-				</TooltipContent>
-			</Tooltip>
-		);
-	}
-	const escalated = status.escalated === true;
+
+	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
 				<button
 					aria-label={
-						status.version
-							? t("shell.restartInstallUpdateVersion", {
-									version: status.version,
-								})
+						action.version
+							? t("shell.restartInstallUpdateVersion", { version: action.version })
 							: t("shell.restartInstallUpdate")
 					}
 					className={cn(
 						"grid size-9 place-items-center rounded-lg transition-colors [&_svg]:size-4",
-						escalated
-							? "bg-working/12 text-working hover:bg-working/18"
-							: "text-passive hover:bg-interactive-hover hover:text-foreground",
+						"bg-success/12 text-success hover:bg-success/18",
 					)}
-					onClick={() => void aoBridge.updates.install()}
+					onClick={onRequestInstall}
 					tabIndex={tabIndex}
 					type="button"
 				>
@@ -2187,7 +2321,7 @@ function UpdateStatusRail({ status, tabIndex }: { status: UpdateStatus; tabIndex
 			</TooltipTrigger>
 			<TooltipContent side="right">
 				{t("shell.restartToUpdate")}
-				{status.version ? ` · ${t("shell.versionReady", { version: status.version })}` : ""}
+				{versionLabel ? ` · ${versionLabel}` : ""}
 			</TooltipContent>
 		</Tooltip>
 	);
@@ -2291,8 +2425,8 @@ function SidebarSearchButton({ onOpen }: { onOpen: () => void }) {
 				className={cn(
 					// Filled search trigger (Cursor-style): icon + label.
 					"h-8 gap-2 rounded-lg bg-muted px-2.5 text-sm font-normal text-muted-foreground",
-					"transition-[background-color,color] duration-150 ease-out hover:bg-interactive-hover! hover:text-foreground active:bg-interactive-hover! [&_svg]:size-icon-sm!",
-					"group-data-[collapsible=icon]:size-control-form! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:hover:bg-interactive-hover!",
+					"hover:bg-interactive-hover! hover:text-foreground active:bg-interactive-hover! [&_svg]:size-icon-sm!",
+					"group-data-[collapsible=icon]:size-control-board! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:hover:bg-interactive-hover!",
 				)}
 			>
 				<Search strokeWidth={1.75} aria-hidden="true" />
@@ -2308,11 +2442,19 @@ function SidebarSearchButton({ onOpen }: { onOpen: () => void }) {
 }
 
 function CreateProjectButton({
+	existingProjectPaths,
+	existingProjectNames,
 	hideTrigger = false,
 	onCloneProject,
 	onCreateProject,
 	onInitializeProject,
-}: Pick<SidebarProps, "onCloneProject" | "onCreateProject" | "onInitializeProject"> & { hideTrigger?: boolean }) {
+	onOpenExistingProject,
+}: Pick<SidebarProps, "onCloneProject" | "onCreateProject" | "onInitializeProject"> & {
+	existingProjectPaths: readonly string[];
+	existingProjectNames: readonly string[];
+	hideTrigger?: boolean;
+	onOpenExistingProject: (path: string) => void;
+}) {
 	const { t } = useTranslation();
 	// Single CreateProjectFlow owner for the sidebar: the header "+" stays mounted
 	// (CSS-hidden when collapsed or on the empty start page) so it can own
@@ -2327,23 +2469,28 @@ function CreateProjectButton({
 			onCloneProject={onCloneProject}
 			onCreateProject={onCreateProject}
 			onInitializeProject={onInitializeProject}
+			onOpenExistingProject={onOpenExistingProject}
 			openSignal={createProjectNonce}
+			existingProjectPaths={existingProjectPaths}
+			existingProjectNames={existingProjectNames}
 		>
 			{({ disabled, choosePath, label }) => (
 				<Tooltip>
 					<TooltipTrigger asChild>
-						<button
-							aria-label={t("shell.newProject")}
-							className={cn(
-								"grid size-icon-xl shrink-0 place-items-center rounded-sm text-passive transition-colors hover:bg-interactive-hover hover:text-foreground",
-								hideTrigger && "hidden",
-							)}
-							disabled={disabled}
-							onClick={choosePath}
-							type="button"
-						>
-							<Plus className="size-icon-sm" aria-hidden="true" />
-						</button>
+						<span className="inline-flex">
+							<button
+								aria-label={t("shell.newProject")}
+								className={cn(
+									"grid size-icon-xl shrink-0 place-items-center rounded-sm text-passive transition-colors hover:bg-interactive-hover hover:text-foreground",
+									hideTrigger && "hidden",
+								)}
+								disabled={disabled}
+								onClick={choosePath}
+								type="button"
+							>
+								<Plus className="size-icon-sm" aria-hidden="true" />
+							</button>
+						</span>
 					</TooltipTrigger>
 					<TooltipContent>{label}</TooltipContent>
 				</Tooltip>

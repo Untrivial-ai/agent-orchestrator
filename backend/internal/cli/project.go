@@ -96,27 +96,34 @@ type trackerIntakeConfig struct {
 
 // reviewerConfig mirrors domain.ReviewerConfig.
 type reviewerConfig struct {
-	Harness string `json:"harness"`
+	Harness     string       `json:"harness"`
+	AgentConfig *agentConfig `json:"agentConfig,omitempty"`
+}
+
+type containerReapConfig struct {
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // projectConfig mirrors the daemon's typed domain.ProjectConfig for the CLI
 // client. The CLI sets common fields via flags and the whole object via
 // --config-json.
 type projectConfig struct {
-	DefaultBranch     string              `json:"defaultBranch,omitempty"`
-	SessionPrefix     string              `json:"sessionPrefix,omitempty"`
-	Env               map[string]string   `json:"env,omitempty"`
-	Symlinks          []string            `json:"symlinks,omitempty"`
-	PostCreate        []string            `json:"postCreate,omitempty"`
-	AgentRules        string              `json:"agentRules,omitempty"`
-	AgentRulesFile    string              `json:"agentRulesFile,omitempty"`
-	OrchestratorRules string              `json:"orchestratorRules,omitempty"`
-	AgentConfig       agentConfig         `json:"agentConfig,omitempty"`
-	Worker            roleOverride        `json:"worker,omitempty"`
-	Orchestrator      roleOverride        `json:"orchestrator,omitempty"`
-	TrackerIntake     trackerIntakeConfig `json:"trackerIntake,omitempty"`
-	AutoReview        bool                `json:"autoReview,omitempty"`
-	Reviewers         []reviewerConfig    `json:"reviewers,omitempty"`
+	ContainerReap     *containerReapConfig `json:"containerReap,omitempty"`
+	CanonicalRepoURL  string               `json:"canonicalRepoURL,omitempty"`
+	DefaultBranch     string               `json:"defaultBranch,omitempty"`
+	SessionPrefix     string               `json:"sessionPrefix,omitempty"`
+	Env               map[string]string    `json:"env,omitempty"`
+	Symlinks          []string             `json:"symlinks,omitempty"`
+	PostCreate        []string             `json:"postCreate,omitempty"`
+	AgentRules        string               `json:"agentRules,omitempty"`
+	AgentRulesFile    string               `json:"agentRulesFile,omitempty"`
+	OrchestratorRules string               `json:"orchestratorRules,omitempty"`
+	AgentConfig       agentConfig          `json:"agentConfig,omitempty"`
+	Worker            roleOverride         `json:"worker,omitempty"`
+	Orchestrator      roleOverride         `json:"orchestrator,omitempty"`
+	TrackerIntake     trackerIntakeConfig  `json:"trackerIntake,omitempty"`
+	AutoReview        bool                 `json:"autoReview,omitempty"`
+	Reviewers         []reviewerConfig     `json:"reviewers,omitempty"`
 }
 
 // setConfigRequest mirrors the daemon's SetConfigInput body for
@@ -126,6 +133,7 @@ type setConfigRequest struct {
 }
 
 type projectSetConfigOptions struct {
+	canonicalRepoURL  string
 	defaultBranch     string
 	sessionPrefix     string
 	model             string
@@ -319,6 +327,7 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVar(&opts.defaultBranch, "default-branch", "", "Base branch for new worktrees; auto infers each repository's Git default")
+	f.StringVar(&opts.canonicalRepoURL, "canonical-repo-url", "", "Explicit upstream HTTPS repository URL for PR claims (same provider, host, and port as origin)")
 	f.StringVar(&opts.sessionPrefix, "session-prefix", "", "Displayed session-id prefix")
 	f.StringVar(&opts.model, "model", "", "Agent model override (e.g. claude-opus-4-5)")
 	f.StringVar(&opts.permission, "permission", "", "Permission mode: default, accept-edits, auto, bypass-permissions")
@@ -330,9 +339,9 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 	f.StringArrayVar(&opts.env, "env", nil, "Env var KEY=VALUE forwarded into sessions (repeatable)")
 	f.StringArrayVar(&opts.symlink, "symlink", nil, "Repo-relative path to symlink into workspaces (repeatable)")
 	f.StringArrayVar(&opts.postCreate, "post-create", nil, "Command to run after workspace creation (repeatable)")
-	f.BoolVar(&opts.trackerIntake, "tracker-intake", false, "Enable GitHub issue intake for matching issues")
-	f.StringVar(&opts.trackerRepo, "tracker-repo", "", "GitHub repo for issue intake (owner/repo; default: derive from git origin)")
-	f.StringVar(&opts.trackerAssignee, "tracker-assignee", "", "GitHub issue assignee required for intake eligibility")
+	f.BoolVar(&opts.trackerIntake, "tracker-intake", false, "Enable issue intake for matching issues (GitHub or GitLab; provider inferred from git origin)")
+	f.StringVar(&opts.trackerRepo, "tracker-repo", "", "Provider-native repo for issue intake (owner/repo or group/subgroup/repo; default: derive from git origin)")
+	f.StringVar(&opts.trackerAssignee, "tracker-assignee", "", "Issue assignee required for intake eligibility")
 	f.StringArrayVar(&opts.reviewers, "reviewer", nil, "Reviewer harness that reviews worker PRs (repeatable; e.g. claude-code)")
 	f.StringVar(&opts.configJSON, "config-json", "", "Full config as a JSON object (overrides field flags)")
 	f.BoolVar(&opts.clear, "clear", false, "Clear all config")
@@ -361,6 +370,7 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 		return projectConfig{}, err
 	}
 	cfg := projectConfig{
+		CanonicalRepoURL:  opts.canonicalRepoURL,
 		DefaultBranch:     opts.defaultBranch,
 		SessionPrefix:     opts.sessionPrefix,
 		Env:               env,
@@ -374,7 +384,6 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 		Orchestrator:      roleOverride{Agent: opts.orchestratorAgent},
 		TrackerIntake: trackerIntakeConfig{
 			Enabled:  opts.trackerIntake,
-			Provider: trackerProviderForFlags(opts),
 			Repo:     opts.trackerRepo,
 			Assignee: opts.trackerAssignee,
 		},
@@ -384,13 +393,6 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 		return projectConfig{}, usageError{errors.New("usage: provide at least one config flag, --config-json, or --clear")}
 	}
 	return cfg, nil
-}
-
-func trackerProviderForFlags(opts projectSetConfigOptions) string {
-	if opts.trackerIntake || opts.trackerRepo != "" || opts.trackerAssignee != "" {
-		return "github"
-	}
-	return ""
 }
 
 // reviewersForFlags turns repeated --reviewer harness values into the config

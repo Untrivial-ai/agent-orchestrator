@@ -18,27 +18,6 @@ import (
 const steerPath = "/api/v1/sessions/{sessionId}/conversation/steer"
 const queuedTurnSteerPath = "/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/steer"
 
-// SteerConversationRequest is guidance for a turn that is already running.
-type SteerConversationRequest struct {
-	// Text is the correction to hand the agent mid-turn.
-	Text string `json:"text"`
-	// ClientMessageID makes a retry idempotent: the same handle updates the recorded
-	// guidance instead of adding a second copy of it, and the provider echoes it back
-	// on the item it replays so a client can recognize its own steer.
-	ClientMessageID string `json:"clientMessageId,omitempty"`
-}
-
-// SteerConversationResponse reports the turn the guidance joined.
-type SteerConversationResponse struct {
-	// ProviderTurnID is the turn that absorbed it. Against Codex this is the turn
-	// that was already running — steering does not open a new one — so a client
-	// matches it against the turn it is already rendering.
-	ProviderTurnID string `json:"providerTurnId"`
-	// ActivityID is the timeline row recording the guidance, so an optimistic bubble
-	// can be reconciled with the durable one rather than shown twice.
-	ActivityID string `json:"activityId,omitempty"`
-}
-
 // PromoteQueuedTurnResponse reports where one durable queued turn landed.
 type PromoteQueuedTurnResponse struct {
 	SourceTurnID   string `json:"sourceTurnId"`
@@ -66,10 +45,19 @@ func (c *ConversationsController) steer(w http.ResponseWriter, r *http.Request) 
 	if !decodeConversationBody(w, r, &req) {
 		return
 	}
+	content, attachmentErr := conversationContent(SendConversationMessageRequest{
+		Attachments: req.Attachments,
+	})
+	if attachmentErr != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			attachmentErr.code, attachmentErr.message, nil)
+		return
+	}
 
 	result, err := c.Svc.Steer(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")),
 		ports.ChatUserMessage{
 			Text:            req.Text,
+			Content:         content,
 			ClientMessageID: req.ClientMessageID,
 			Origin:          domain.MessageOriginHuman,
 		})

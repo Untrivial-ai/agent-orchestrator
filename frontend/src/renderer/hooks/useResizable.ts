@@ -18,6 +18,8 @@ interface UseResizableOptions {
 	edge: "left" | "right";
 	/** Called once when a collapsed rail drag should reopen the owner. */
 	onExpand?: () => void;
+	/** Optional one-time floor when restoring a saved width for a new panel profile. */
+	restoreMin?: number;
 	/** Pointer movement needed before a collapsed rail drag expands. */
 	expandDragThreshold?: number;
 }
@@ -36,6 +38,7 @@ export function useResizable({
 	max,
 	edge,
 	onExpand,
+	restoreMin,
 	expandDragThreshold = 8,
 }: UseResizableOptions) {
 	const widthRef = useRef(defaultWidth);
@@ -81,12 +84,13 @@ export function useResizable({
 	// at the default width on reload and then jump/animate to the stored width.
 	useLayoutEffect(() => {
 		const saved = Number(window.localStorage.getItem(storageKey));
-		apply(Number.isFinite(saved) && saved > 0 ? saved : defaultWidth);
+		const restored = Number.isFinite(saved) && saved > 0 ? saved : defaultWidth;
+		apply(restoreMin === undefined ? restored : Math.max(restoreMin, restored));
 		return () => {
 			if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
 			document.documentElement.style.removeProperty(cssVar);
 		};
-	}, [apply, cssVar, defaultWidth, storageKey]);
+	}, [apply, cssVar, defaultWidth, restoreMin, storageKey]);
 
 	const onPointerDown = useCallback(
 		(event: React.PointerEvent<HTMLElement>) => {

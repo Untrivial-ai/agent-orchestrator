@@ -106,7 +106,7 @@ func DeriveStatus(
 	noSignalGrace time.Duration,
 ) SessionStatus {
 	if session.IsTerminated {
-		if anyMerged(prs) {
+		if len(openPRs(prs)) == 0 && anyMerged(prs) {
 			return StatusMerged
 		}
 		return StatusTerminated
@@ -125,11 +125,17 @@ func DeriveStatus(
 		return scmStatus
 	}
 
-	if session.SignalExpected && !session.HasSignal &&
-		now.Sub(session.LastActivityAt) > noSignalGrace {
+	if silentPastGrace(session, now, noSignalGrace) {
 		return StatusNoSignal
 	}
 	return StatusIdle
+}
+
+// silentPastGrace reports whether a session that should be reporting hook
+// activity has never reported and has been quiet longer than the grace period.
+func silentPastGrace(session SessionFacts, now time.Time, noSignalGrace time.Duration) bool {
+	return session.SignalExpected && !session.HasSignal &&
+		now.Sub(session.LastActivityAt) > noSignalGrace
 }
 
 // DeriveSCMStatus derives stack-aware pull-request status independently of activity.

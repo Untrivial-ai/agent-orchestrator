@@ -97,12 +97,23 @@ builds and releases still do not initialize or package the private repository.
 
 ## Environment modes
 
-1. **Local:** `npm run cloud:local` uses email/password local auth, local
-   PostgreSQL, the local control-plane container, and the private web app at
-   `http://127.0.0.1:3000`. WorkOS is used only for an optional hosted-account
-   session when managing GitHub; the app itself remains on local auth and never
-   loads GitHub App credentials. Docker workers are intended but are not
-   implemented yet.
+1. **Local:** `npm run cloud:local` builds and starts the Docker-backed control
+   plane, PostgreSQL, and worker image with email/password local auth on
+   `http://127.0.0.1:8081`, then leaves the stack running for the desktop app.
+   WorkOS is used only for an optional hosted-account session when managing
+   GitHub; the app itself remains on local auth and never loads GitHub App
+   credentials. Docker workers are shipped and working: the control plane uses
+   the `docker` sandbox provider (`AO_CLOUD_SANDBOX_PROVIDER=docker`) to
+   provision each session as a labeled sibling container with a persistent
+   per-session workspace volume, and the Docker socket is mounted only into the
+   control-plane container. Point the desktop app at it with
+   `AO_CLOUD_OFFERING=on AO_CLOUD_CONTROL_PLANE_URL=http://127.0.0.1:8081 npm run dev`
+   from `frontend/`, then register a local email/password account in-app. Stop
+   the stack with `npm run cloud:local:down` (data retained) or
+   `npm run cloud:local:reset` (also deletes the local database directory);
+   `npm run cloud:local:smoke` runs the isolated lifecycle smoke test. The
+   optional private Next.js Cloud UI at `http://127.0.0.1:3000` requires the
+   `private/ao-cloud` submodule and is not needed for desktop-app testing.
 2. **Staging:** `npm run cloud:staging` runs the desktop locally against
    `https://staging-api.aoagents.dev`, the hosted staging database, and the
    shared WorkOS environment. `npm run cloud:web:staging` runs the private web
@@ -121,8 +132,11 @@ environment-scoped broker grant before execution can be enabled.
 
 ## Private implementation still required
 
-1. **Execution plane:** queues, leases, reconciliation, provisioning, sandbox
-   images, workers, heartbeats, terminal transport, and workspace RPC.
+1. **Hosted execution plane:** queues, leases, reconciliation, provisioning,
+   sandbox images, workers, heartbeats, terminal transport, and workspace RPC.
+   These already ship for local development through the `docker` sandbox
+   provider (exercised end to end by `npm run cloud:local:smoke`); the remaining
+   work is the hosted (NodeOps) execution plane.
 2. **Cloud app completion:** files, terminal, review, and a production web
    deployment. Worker/orchestrator execution controls remain hidden until the
    execution plane exists.

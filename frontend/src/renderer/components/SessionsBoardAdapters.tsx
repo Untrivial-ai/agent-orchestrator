@@ -3,10 +3,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
+	scmUserAvatarUrl,
 	SessionCardView,
+	SessionUsageMetricView,
 	type BoardPullRequestLabels,
+	type BoardPullRequestProgress,
 	type BoardSessionPresentation,
-	type BoardSplitLaneLabels,
+	type BoardColumnLabels,
 	type BoardUsagePresentation,
 	type ProductUITranslator,
 } from "@aoagents/product-ui";
@@ -45,6 +48,9 @@ export function toBoardSessionPresentation(
 		activity: session.activity,
 		branch: session.branch,
 		id: session.id,
+		isTerminated: session.isTerminated,
+		kanbanColumn: session.kanbanColumn,
+		displayStatus: session.displayStatus,
 		provider: session.provider,
 		status: session.status,
 		statusPresentation:
@@ -53,43 +59,19 @@ export function toBoardSessionPresentation(
 						className: switchVisual.className,
 						indicatorClassName: `${switchVisual.indicatorClassName}${switchVisual.breathe ? " animate-status-pulse" : ""}`,
 						label: t(switchPresentation.compactLabelKey, switchPresentation.values),
+						tone: switchVisual.tone,
 					}
 				: undefined,
 		title: session.title,
 		trackerIssueId: canonicalTrackerIssueId(session.issueId),
+		updatedAt: session.updatedAt,
 		lastUserMessageAt: session.lastUserMessageAt,
 	};
 }
 
-export function sessionsBoardLabels(t: TFunction): BoardSplitLaneLabels {
+export function sessionsBoardLabels(t: TFunction): BoardColumnLabels {
 	return {
 		columnAria: (label) => t("shell.sessionsAria", { label }),
-		countSessions: (count, label) => t("shell.countSessionsAria", { count, label }),
-		idleWorkingAria: t("shell.idleWorkingSessions"),
-		laneSummary: (primary, secondary) => t("shell.laneSummaryAria", { primary, secondary }),
-		readyMergedAria: t("shell.readyMergedSessions"),
-		tones: {
-			idle: {
-				label: t("status.idle"),
-				countLabel: t("shell.countLabel.idle"),
-				regionLabel: t("shell.idleSessions"),
-			},
-			working: {
-				label: t("status.working"),
-				countLabel: t("shell.countLabel.working"),
-				regionLabel: t("shell.workingSessions"),
-			},
-			ready: {
-				label: t("zone.merge"),
-				countLabel: t("shell.countLabel.readyToMerge"),
-				regionLabel: t("shell.readyToMergeSessions"),
-			},
-			merged: {
-				label: t("status.merged"),
-				countLabel: t("shell.countLabel.merged"),
-				regionLabel: t("shell.mergedSessions"),
-			},
-		},
 	};
 }
 
@@ -179,43 +161,51 @@ function DesktopSessionCard({
 	const translate: ProductUITranslator = (key, values) => t(key as MessageKey, values);
 
 	const terminationOverlay = showTerminate ? (
-		<SessionTerminationPopover
-			onConfirm={() => {
-				setConfirmOpen(false);
-				onTerminate();
-			}}
-			onOpenChange={setConfirmOpen}
-			open={confirmOpen}
-			session={session}
-			trigger={
-				<button
-					aria-label={
-						termination.isPending
-							? t("shell.killingNamedAria", { title: session.title })
-							: t("shell.terminateNamed", { title: session.title })
-					}
-					className={cn(
-						"absolute right-2 top-1.5 z-10 inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-[color,background-color,opacity] hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
-						keepTerminateVisible || termination.isPending
-							? "opacity-100"
-							: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
-					)}
-					onClick={(event) => {
-						event.stopPropagation();
-						clearTerminateSessionState(queryClient, session.id);
-					}}
-					disabled={termination.isPending}
-					title={termination.isPending ? t("shell.killingSession") : t("shell.terminateSession")}
-					type="button"
-				>
-					{termination.isPending ? (
-						<LoaderCircle className="size-icon-sm animate-spin" aria-hidden="true" />
-					) : (
-						<Trash2 className="size-icon-sm" aria-hidden="true" />
-					)}
-				</button>
-			}
-		/>
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<span className="inline-flex">
+					<SessionTerminationPopover
+						onConfirm={() => {
+							setConfirmOpen(false);
+							onTerminate();
+						}}
+						onOpenChange={setConfirmOpen}
+						open={confirmOpen}
+						session={session}
+						trigger={
+							<button
+								aria-label={
+									termination.isPending
+										? t("shell.killingNamedAria", { title: session.title })
+										: t("shell.terminateNamed", { title: session.title })
+								}
+								className={cn(
+									"inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-[color,background-color,opacity] hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+									keepTerminateVisible || termination.isPending
+										? "opacity-100"
+										: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+								)}
+								onClick={(event) => {
+									event.stopPropagation();
+									clearTerminateSessionState(queryClient, session.id);
+								}}
+								disabled={termination.isPending}
+								type="button"
+							>
+								{termination.isPending ? (
+									<LoaderCircle className="size-icon-sm animate-spin" aria-hidden="true" />
+								) : (
+									<Trash2 className="size-icon-sm" aria-hidden="true" />
+								)}
+							</button>
+						}
+					/>
+				</span>
+			</TooltipTrigger>
+			<TooltipContent side="bottom">
+				{termination.isPending ? t("shell.killingSession") : t("shell.terminateSession")}
+			</TooltipContent>
+		</Tooltip>
 	) : undefined;
 
 	return (
@@ -231,18 +221,36 @@ function DesktopSessionCard({
 				formatTime: formatTimeCompact,
 				intakeIssue: (id) => t("shell.intakeIssue", { id }),
 				pr: pullRequestLabels(t),
-				lastUserMessageAt: (time) => t("shell.lastMessageAt", { time }),
+				updatedAt: (timestamp: string) =>
+					t("shell.lastMessageAt", { time: formatTimeCompact(timestamp) }),
 			}}
 			onOpen={onOpen}
 			overlay={terminationOverlay}
 			prs={summaries.map((pr) => ({
+				commentCount: pr.review.unresolvedBy.reduce((count, reviewer) => count + reviewer.count, 0),
 				number: pr.number,
+				reviewers: Array.from(
+					new Map(
+						pr.review.unresolvedBy.map((reviewer) => [reviewer.reviewerId, reviewer]),
+					).values(),
+				).map((reviewer) => ({
+					avatarUrl: scmUserAvatarUrl(pr.provider, prBrowserUrl(pr), reviewer.reviewerId),
+					id: reviewer.reviewerId,
+				})),
 				state: pr.state,
 				url: prBrowserUrl(pr),
 			}))}
-			renderAvatar={(provider) => <AgentAvatar className="mt-0.5" provider={provider} />}
+			renderAvatar={(provider) => <AgentAvatar provider={provider} />}
 			session={toBoardSessionPresentation(session, t)}
 			translate={translate}
+			renderUsage={(usage) => (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<SessionUsageMetricView usage={usage} />
+					</TooltipTrigger>
+					<TooltipContent side="top">{usage.accessibleLabel}</TooltipContent>
+				</Tooltip>
+			)}
 			usage={usagePresentation}
 		/>
 	);
@@ -250,6 +258,7 @@ function DesktopSessionCard({
 
 function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 	return {
+		progress: (progress) => pullRequestProgressLabel(progress, t),
 		short: t("pr.short"),
 		states: {
 			closed: t("pr.state.closed"),
@@ -260,10 +269,22 @@ function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 	};
 }
 
-// toUsagePresentation builds the card's single usage line: cost, tokens, or
-// both. The card carries no cost breakdown — a board is for scanning, and the
-// per-component figures belong on the session's own surface — so the visible
-// text is bare while the accessible label still names what the count is.
+function pullRequestProgressLabel(
+	{ closed, draft, merged, open, total }: BoardPullRequestProgress,
+	t: TFunction,
+): string {
+	return [
+		t("pr.progress.merged", { count: total, merged }),
+		open > 0 ? t("pr.progress.open", { count: open }) : undefined,
+		draft > 0 ? t("pr.progress.draft", { count: draft }) : undefined,
+		closed > 0 ? t("pr.progress.closed", { count: closed }) : undefined,
+	]
+		.filter((part): part is string => part !== undefined)
+		.join(" · ");
+}
+
+// Keep the board metric scannable by showing cost only. The full cost/token
+// summary remains available from the hover tooltip and to screen readers.
 function toUsagePresentation(
 	usage: SessionUsageSummary | undefined,
 	t: TFunction,
@@ -272,17 +293,29 @@ function toUsagePresentation(
 	if (!usage) {
 		return undefined;
 	}
-	const cost = formatEstimatedCost(usage.estimatedCost) ?? t("usage.unavailable");
-	if (processedTokens === null || processedTokens <= 0) {
+	const cost = formatEstimatedCost(usage.estimatedCost);
+	if (!cost) {
+		if (processedTokens === null || processedTokens <= 0) {
+			return undefined;
+		}
+		const compactTokens = formatTokenCount(processedTokens).replace(/ tok$/, "");
+		const accessibleTokens = t("shell.usageTokens", {
+			count: processedTokens.toLocaleString("en-US"),
+		});
+		return {
+			accessibleLabel: accessibleTokens,
+			compactLabel: compactTokens,
+		};
+	}
+	if (processedTokens === null) {
 		return { accessibleLabel: cost, compactLabel: cost };
 	}
-	const compactTokens = formatTokenCount(processedTokens).replace(/ tok$/, "");
 	const accessibleTokens = t("shell.usageTokens", {
 		count: processedTokens.toLocaleString("en-US"),
 	});
 	return {
 		accessibleLabel: `${cost} · ${accessibleTokens}`,
-		compactLabel: `${cost} · ${compactTokens}`,
+		compactLabel: cost,
 	};
 }
 
@@ -301,15 +334,17 @@ function ArchiveRestoreButton({
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
-				<button
-					aria-label={label}
-					className="grid size-control-board-sm shrink-0 place-items-center rounded-md text-passive transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:cursor-not-allowed disabled:opacity-35"
-					disabled={isDisabled}
-					onClick={onClick}
-					type="button"
-				>
-					<RotateCcw className={cn("size-icon-md", isRestoring && "animate-spin")} aria-hidden="true" />
-				</button>
+				<span className="inline-flex">
+					<button
+						aria-label={label}
+						className="grid size-control-board-sm shrink-0 place-items-center rounded-md text-passive transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:cursor-not-allowed disabled:opacity-35"
+						disabled={isDisabled}
+						onClick={onClick}
+						type="button"
+					>
+						<RotateCcw className={cn("size-icon-md", isRestoring && "animate-spin")} aria-hidden="true" />
+					</button>
+				</span>
 			</TooltipTrigger>
 			<TooltipContent side="top">
 				{isRestoring ? t("shell.restoringSession") : t("shell.restoreSession")}
@@ -351,18 +386,22 @@ function CopyActionButton({ label, value }: { label: string; value: string }) {
 		}, 1_500);
 	};
 	return (
-		<button
-			aria-label={buttonLabel}
-			className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-passive transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-			onClick={(event) => void copyValue(event)}
-			title={buttonLabel}
-			type="button"
-		>
-			{copied ? (
-				<Check className="size-icon-2xs text-success" aria-hidden="true" />
-			) : (
-				<Copy className="size-icon-2xs" aria-hidden="true" />
-			)}
-		</button>
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<button
+					aria-label={buttonLabel}
+					className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-passive transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+					onClick={(event) => void copyValue(event)}
+					type="button"
+				>
+					{copied ? (
+						<Check className="size-icon-2xs text-success" aria-hidden="true" />
+					) : (
+						<Copy className="size-icon-2xs" aria-hidden="true" />
+					)}
+				</button>
+			</TooltipTrigger>
+			<TooltipContent side="bottom">{buttonLabel}</TooltipContent>
+		</Tooltip>
 	);
 }

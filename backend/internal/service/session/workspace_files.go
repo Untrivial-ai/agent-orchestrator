@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
@@ -1918,7 +1920,15 @@ func confinedWorkspaceFile(root, rel string) (string, os.FileInfo, error) {
 }
 
 func cleanWorkspaceRelativePath(raw string) (string, error) {
-	trimmed := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	// Backslash is a path separator only on Windows. Everywhere else it is a
+	// legal filename character, so folding it here makes a file named `a\b.txt`
+	// unopenable — and worse, silently resolves it to `a/b.txt`, a different
+	// file that may well exist.
+	normalized := raw
+	if runtime.GOOS == "windows" {
+		normalized = strings.ReplaceAll(raw, "\\", "/")
+	}
+	trimmed := strings.TrimSpace(normalized)
 	if trimmed == "" || path.IsAbs(trimmed) || filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
 		return "", apierr.Invalid("INVALID_WORKSPACE_PATH", "workspace path must be relative", nil)
 	}
@@ -2014,9 +2024,58 @@ func gitWorkspaceOutput(ctx context.Context, root string, args ...string) (strin
 			}
 			detail += stdout
 		}
+		// A git command against a worktree whose owning repository has been
+		// deleted from disk fails with an opaque exit-128 the caller can't act
+		// on. Detect that single condition so the session read surface maps to
+		// a clean 404 (PROJECT_FOLDER_MISSING) instead of a raw 500.
+		if workspaceRepoUnavailable(root) {
+			return "", fmt.Errorf("git -C %s %s: %w", root, strings.Join(args, " "), ports.ErrWorkspaceRepoUnavailable)
+		}
 		return "", fmt.Errorf("git -C %s %s: %w: %s", root, strings.Join(args, " "), err, detail)
 	}
 	return string(out), nil
+}
+
+// workspaceRepoUnavailable reports whether a worktree root can no longer reach
+// its owning repository on disk. A git worktree keeps a `.git` file at its
+// root whose `gitdir:` line points at the owning repository's common git
+// directory; when that repository has been deleted the pointed-to path no
+// longer exists and git fails with "not a git repository". A plain checkout
+// instead keeps its metadata in a `.git` directory at the root, whose absence
+// is the equivalent signal. Only the genuinely-gone-repository case returns
+// true; any other (available) repository reports false so the original git
+// error keeps its existing semantics.
+func workspaceRepoUnavailable(root string) bool {
+	gitPath := filepath.Join(root, ".git")
+	if data, err := os.ReadFile(gitPath); err == nil {
+		gitdir, ok := parseGitDirFile(string(data))
+		if !ok {
+			return false
+		}
+		if !filepath.IsAbs(gitdir) {
+			gitdir = filepath.Join(root, gitdir)
+		}
+		info, err := os.Stat(gitdir)
+		return err != nil || !info.IsDir()
+	}
+	info, err := os.Stat(gitPath)
+	return err != nil || !info.IsDir()
+}
+
+// parseGitDirFile extracts the path from a git worktree `.git` file's
+// "gitdir: <path>" line.
+func parseGitDirFile(content string) (string, bool) {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		const prefix = "gitdir:"
+		if strings.HasPrefix(line, prefix) {
+			gitdir := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if gitdir != "" {
+				return gitdir, true
+			}
+		}
+	}
+	return "", false
 }
 
 func splitNUL(out string) []string {

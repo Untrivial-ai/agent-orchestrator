@@ -86,6 +86,90 @@ type Runtime interface {
 	IsAlive(ctx context.Context, handle RuntimeHandle) (bool, error)
 }
 
+// FencedLiveness is exact ownership evidence for one AO runtime generation.
+// Unknown is deliberately distinct from dead: callers must retain ownership
+// gates when an adapter cannot prove an exact match or exact absence.
+type FencedLiveness string
+
+// FencedAlive and the related constants enumerate exact-generation liveness
+// conclusions.
+const (
+	FencedAlive   FencedLiveness = "alive"
+	FencedDead    FencedLiveness = "dead"
+	FencedUnknown FencedLiveness = "unknown"
+)
+
+// FencedProbeReason explains the evidence behind a fenced liveness result.
+type FencedProbeReason string
+
+// FencedReasonExactMatch and the related constants explain the evidence behind
+// a fenced liveness conclusion.
+const (
+	FencedReasonExactMatch         FencedProbeReason = "exact_match"
+	FencedReasonExactAbsent        FencedProbeReason = "exact_absent"
+	FencedReasonIdentityMissing    FencedProbeReason = "identity_missing"
+	FencedReasonRegistryUnreadable FencedProbeReason = "registry_unreadable"
+	FencedReasonRegistryMalformed  FencedProbeReason = "registry_malformed"
+	FencedReasonProbeFailed        FencedProbeReason = "probe_failed"
+	FencedReasonGenerationMismatch FencedProbeReason = "generation_mismatch"
+)
+
+// FencedRuntimeRef identifies the exact AO-owned runtime generation whose
+// ownership must be proven. NativeIdentity is populated when the caller has a
+// provider-native identity that the adapter can inspect.
+type FencedRuntimeRef struct {
+	Handle         RuntimeHandle
+	SessionID      domain.SessionID
+	Generation     string
+	NativeIdentity string
+}
+
+// FencedProbeResult pairs an exact-generation liveness conclusion with its
+// evidence category.
+type FencedProbeResult struct {
+	Liveness FencedLiveness
+	Reason   FencedProbeReason
+}
+
+// FencedRuntimeProber determines liveness for an exact AO-owned runtime
+// generation without treating uncertainty as death.
+type FencedRuntimeProber interface {
+	ProbeFencedRuntime(context.Context, FencedRuntimeRef) FencedProbeResult
+}
+
+// RuntimeEffectOutcome describes whether a failed runtime operation may have
+// applied an external side effect.
+type RuntimeEffectOutcome string
+
+// RuntimeEffectNone and the related constants classify whether a failed
+// runtime operation may have applied an external side effect.
+const (
+	RuntimeEffectNone     RuntimeEffectOutcome = "none"
+	RuntimeEffectPossible RuntimeEffectOutcome = "possible"
+	RuntimeEffectApplied  RuntimeEffectOutcome = "applied"
+)
+
+// RuntimeCleanupOutcome describes cleanup performed after a failed runtime
+// operation that may have applied an external side effect.
+type RuntimeCleanupOutcome string
+
+// RuntimeCleanupNotAttempted and the related constants classify cleanup after
+// a failed runtime operation.
+const (
+	RuntimeCleanupNotAttempted RuntimeCleanupOutcome = "not_attempted"
+	RuntimeCleanupSucceeded    RuntimeCleanupOutcome = "succeeded"
+	RuntimeCleanupFailed       RuntimeCleanupOutcome = "failed"
+)
+
+// RuntimeEffectError preserves ownership evidence from a failed operation.
+// Callers must not replace PossibleHandle with a different persisted handle.
+type RuntimeEffectError interface {
+	error
+	PossibleHandle() RuntimeHandle
+	EffectOutcome() RuntimeEffectOutcome
+	CleanupOutcome() RuntimeCleanupOutcome
+}
+
 // StyledTerminalOutputReader is an optional runtime capability for safety
 // checks that must distinguish dim placeholder text from a human-authored
 // draft. Implementations return a bounded excerpt of the rendered current
@@ -103,6 +187,12 @@ type StyledTerminalOutputReader interface {
 // inconclusive probe and must fail closed.
 var ErrStyledTerminalOutputUnavailable = errors.New("runtime: styled terminal output unavailable for handle")
 
+// ErrRuntimeProcessExited is returned by an attached runtime stream when the
+// hosted command has definitively exited while its detached terminal host
+// remains available for scrollback. Terminal transport treats this as a clean
+// exit instead of attempting to reattach to the dead command.
+var ErrRuntimeProcessExited = errors.New("runtime: process exited")
+
 // RuntimeRestarter is an optional runtime capability for replacing the process
 // inside an existing terminal session. Implementations should preserve the
 // handle when possible so attached clients do not need a new terminal identity.
@@ -119,6 +209,11 @@ type RuntimeConfig struct {
 	WorkspacePath string
 	Argv          []string
 	Env           map[string]string
+	// ExitOnCommandCompletion is reserved for short-lived, backend-owned
+	// command terminals. Interactive agent and shell runtimes deliberately keep
+	// their terminal alive after the launched command exits so scrollback and
+	// manual recovery remain available.
+	ExitOnCommandCompletion bool
 }
 
 // RuntimeHandle identifies a live runtime instance. Its ID is opaque outside
@@ -183,6 +278,32 @@ type Attacher interface {
 }
 
 // The Agent port and its supporting types live in agent.go.
+
+// WorkspaceReclaim distinguishes a teardown that actually released disk from
+// one that found nothing to release. Destroy returning a nil error proves only
+// that the workspace is absent afterwards, not that this call is what removed
+// it: a directory that was already gone leaves nothing for the adapter to fail
+// on. Callers that report teardown counts need the two kept apart.
+type WorkspaceReclaim string
+
+// Workspace reclaim outcomes.
+const (
+	// WorkspaceReclaimRemoved means the workspace was present and this call
+	// released it.
+	WorkspaceReclaimRemoved WorkspaceReclaim = "removed"
+	// WorkspaceReclaimAlreadyAbsent means there was nothing on disk to release.
+	// Any stale registration is still reconciled, so the post-state matches
+	// WorkspaceReclaimRemoved; only the accounting differs.
+	WorkspaceReclaimAlreadyAbsent WorkspaceReclaim = "already_absent"
+)
+
+// WorkspaceReclaimer is the optional half of Workspace that reports which of
+// the two reclaim outcomes a teardown reached. Implementing it is optional:
+// callers fall back to Destroy and treat a nil error as
+// WorkspaceReclaimRemoved, which is the pre-existing behaviour.
+type WorkspaceReclaimer interface {
+	DestroyReclaim(ctx context.Context, info WorkspaceInfo) (WorkspaceReclaim, error)
+}
 
 // Workspace is the isolated checkout an agent works in (a git worktree or clone).
 type Workspace interface {
@@ -300,6 +421,13 @@ var (
 	// it holds uncommitted changes or untracked files. Teardown is never
 	// forced; callers treat the workspace as intentionally preserved.
 	ErrWorkspaceDirty = errors.New("workspace: uncommitted changes present")
+	// ErrWorkspaceRepoUnavailable reports that the project's source repository
+	// is no longer reachable on disk, so git cannot be asked to remove the
+	// session's worktree. Teardown treats this like ErrWorkspaceDirty: the
+	// directory is left alone and the session still terminates, because a
+	// session the user deleted must leave the sidebar whether or not its
+	// worktree could be reclaimed.
+	ErrWorkspaceRepoUnavailable = errors.New("workspace: project repository is unavailable")
 	// ErrWorkspaceStale reports an AO-managed workspace path no longer points
 	// at a registered git worktree. Replacement paths may skip preservation for
 	// this state after path-safety checks, while real preserve failures remain
@@ -322,6 +450,9 @@ var (
 	// ErrRuntimePrerequisite reports a missing host prerequisite for the selected
 	// runtime before a session can be created.
 	ErrRuntimePrerequisite = errors.New("runtime: prerequisite missing")
+	// ErrRuntimeCommandLineTooLong reports that the fully escaped command line
+	// exceeds the host operating system's process-creation limit.
+	ErrRuntimeCommandLineTooLong = errors.New("runtime: command line too long")
 	// ErrRuntimeWorkspaceCwdMismatch reports that a runtime session's working
 	// directory never settled on the wanted workspace path after Create's
 	// retried verification (see the tmux adapter's verifyPaneWorkingDirectory).
@@ -393,6 +524,14 @@ type WorkspaceProjectConfig struct {
 	BaseBranch string
 	BaseRef    string
 	Repos      []WorkspaceProjectRepoConfig
+	Assets     []WorkspaceProjectAssetConfig
+}
+
+// WorkspaceProjectAssetConfig describes a non-repository child directory that
+// is copied from the canonical workspace into each session workspace.
+type WorkspaceProjectAssetConfig struct {
+	RelativePath string
+	SourcePath   string
 }
 
 // WorkspaceProjectRepoConfig describes one registered child repo in a

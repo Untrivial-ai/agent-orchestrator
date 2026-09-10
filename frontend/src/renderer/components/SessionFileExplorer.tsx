@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, Columns2, Maximize2, Minimize2, Rows3, Search } from "lucide-react";
+import {
+	ChevronLeft,
+	Columns2,
+	Maximize2,
+	Minimize2,
+	PanelTopOpen,
+	Rows3,
+	Search,
+} from "lucide-react";
 import { cn } from "../lib/utils";
 import { sessionWorkspaceFilesQueryOptions } from "../hooks/useSessionWorkspaceFiles";
 import { buildChangedOnlyTree, type TreeNode } from "../hooks/useSessionWorkspaceTree";
@@ -10,6 +18,7 @@ import { useUiStore } from "../stores/ui-store";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./ui/resizable";
 import { FileTree } from "./FileTree";
 import { FileContentPane } from "./FileContentPane";
@@ -17,17 +26,17 @@ import { FileContentPane } from "./FileContentPane";
 type SessionFileExplorerProps = {
 	sessionId: string;
 	isMaximized?: boolean;
-	activePath?: string | null;
 	onOpenFile?: (path: string) => void;
 	onToggleMaximized?: (next: boolean) => void;
+	revealRequest?: { path: string; key: number } | null;
 };
 
 export function SessionFileExplorer({
 	sessionId,
 	isMaximized = false,
-	activePath,
 	onOpenFile,
 	onToggleMaximized,
+	revealRequest,
 }: SessionFileExplorerProps) {
 	const { t } = useTranslation();
 	const [filter, setFilter] = useState("");
@@ -52,6 +61,10 @@ export function SessionFileExplorer({
 		setSelectedPath(null);
 		setFilter("");
 	}, [sessionId]);
+
+	useEffect(() => {
+		if (revealRequest) setSelectedPath(revealRequest.path);
+	}, [revealRequest]);
 
 	// Routes vertical wheel scroll landing on the diff's own horizontal
 	// scrollbar back up to the shared scroll root, so scrolling down over a
@@ -80,13 +93,9 @@ export function SessionFileExplorer({
 	}, []);
 
 	const handleSelectPath = (node: TreeNode) => {
-		if (!isMaximized && onOpenFile) {
-			onOpenFile(node.path);
-			return;
-		}
 		setSelectedPath(node.path);
 	};
-	const treeSelectedPath = !isMaximized && onOpenFile ? (activePath ?? null) : selectedPath;
+	const treeSelectedPath = selectedPath;
 
 	return (
 		<section
@@ -110,40 +119,49 @@ export function SessionFileExplorer({
 						aria-label={t("files.explorer.changedOnly")}
 						checked={changedOnly}
 						onCheckedChange={(next) => setFilesChangedOnly(sessionId, next)}
-						size="sm"
 					/>
 					{t("files.explorer.changedOnly")}
 				</label>
-				<Button
-					aria-label={split ? t("files.unifiedDiff") : t("files.splitDiff")}
-					aria-pressed={split}
-					className="shrink-0"
-					onClick={() => setSplit((current) => !current)}
-					size="icon-sm"
-					type="button"
-					variant="ghost"
-				>
-					{split ? (
-						<Columns2 className="size-icon-sm" aria-hidden="true" />
-					) : (
-						<Rows3 className="size-icon-sm" aria-hidden="true" />
-					)}
-				</Button>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={split ? t("files.unifiedDiff") : t("files.splitDiff")}
+							aria-pressed={split}
+							className="shrink-0"
+							onClick={() => setSplit((current) => !current)}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							{split ? (
+								<Columns2 className="size-icon-sm" aria-hidden="true" />
+							) : (
+								<Rows3 className="size-icon-sm" aria-hidden="true" />
+							)}
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{split ? t("files.unifiedDiff") : t("files.splitDiff")}</TooltipContent>
+				</Tooltip>
 				{onToggleMaximized ? (
-					<Button
-						aria-label={isMaximized ? t("files.minimize") : t("files.maximize")}
-						className="shrink-0"
-						onClick={() => onToggleMaximized(!isMaximized)}
-						size="icon-sm"
-						type="button"
-						variant="ghost"
-					>
-						{isMaximized ? (
-							<Minimize2 className="size-icon-sm" aria-hidden="true" />
-						) : (
-							<Maximize2 className="size-icon-sm" aria-hidden="true" />
-						)}
-					</Button>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								aria-label={isMaximized ? t("files.minimize") : t("files.maximize")}
+								className="shrink-0"
+								onClick={() => onToggleMaximized(!isMaximized)}
+								size="icon-sm"
+								type="button"
+								variant="ghost"
+							>
+								{isMaximized ? (
+									<Minimize2 className="size-icon-sm" aria-hidden="true" />
+								) : (
+									<Maximize2 className="size-icon-sm" aria-hidden="true" />
+								)}
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">{isMaximized ? t("files.minimize") : t("files.maximize")}</TooltipContent>
+					</Tooltip>
 				) : null}
 			</header>
 			{isMaximized ? (
@@ -167,15 +185,6 @@ export function SessionFileExplorer({
 						</ContentScrollArea>
 					</ResizablePanel>
 				</ResizablePanelGroup>
-			) : onOpenFile ? (
-				<FileTree
-					changedOnly={changedOnly}
-					changedOnlyData={changedOnlyData}
-					filterText={filter}
-					onSelectPath={handleSelectPath}
-					selectedPath={treeSelectedPath}
-					sessionId={sessionId}
-				/>
 			) : (
 				// Docked in the 316px inspector rail there isn't room for the tree
 				// and the content side by side (see git history for the version that
@@ -206,7 +215,27 @@ export function SessionFileExplorer({
 								>
 									<ChevronLeft className="size-icon-sm" aria-hidden="true" />
 								</Button>
-								<span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{selectedPath}</span>
+								<span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+									{selectedPath}
+								</span>
+								{onOpenFile ? (
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Button
+												aria-label={t("files.openInCenter", { path: selectedPath })}
+												onClick={() => onOpenFile(selectedPath)}
+												size="icon-sm"
+												type="button"
+												variant="ghost"
+											>
+												<PanelTopOpen className="size-icon-sm" aria-hidden="true" />
+											</Button>
+										</TooltipTrigger>
+										<TooltipContent side="bottom">
+											{t("files.openInCenter", { path: selectedPath })}
+										</TooltipContent>
+									</Tooltip>
+								) : null}
 							</div>
 							<ContentScrollArea>
 								<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} split={split} wrap={true} />

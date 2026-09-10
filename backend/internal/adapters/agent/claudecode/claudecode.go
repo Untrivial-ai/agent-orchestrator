@@ -566,8 +566,15 @@ func claudeConfigPath() (string, error) {
 var claudeTrustMu sync.Mutex
 
 func ensureWorkspaceTrusted(configPath, workspacePath string) error {
+	return ensureWorkspaceTrustedForOS(configPath, workspacePath, runtime.GOOS)
+}
+
+func ensureWorkspaceTrustedForOS(configPath, workspacePath, goos string) error {
 	claudeTrustMu.Lock()
 	defer claudeTrustMu.Unlock()
+	if goos == "windows" {
+		workspacePath = strings.ReplaceAll(workspacePath, `\`, "/")
+	}
 
 	root := map[string]any{}
 	data, err := os.ReadFile(configPath)

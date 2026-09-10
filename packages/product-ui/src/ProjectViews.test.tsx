@@ -116,7 +116,7 @@ describe("project presentation", () => {
 					loading: false,
 					loadingMessage: "Loading",
 					onRetry,
-					refreshing: false,
+					retrying: false,
 					retryLabel: "Retry",
 				}}
 				canSubmit={false}

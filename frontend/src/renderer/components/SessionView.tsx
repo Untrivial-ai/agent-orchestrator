@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { PanelRight, Plus } from "lucide-react";
+import { LoaderCircle, PanelRight, Plus } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import {
 	useCallback,
@@ -25,20 +25,27 @@ import {
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
-import { SessionFileTabs } from "./SessionFileTabs";
+import { SessionFileTab } from "./SessionFileTabs";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
-import { SessionBranchBadge } from "./SessionBranchBadge";
+import { SessionActionsMenu } from "./SessionActionsMenu";
 import { SessionInspector } from "./SessionInspector";
 import {
-	SessionInterfaceActionGroup,
 	SessionInterfaceSwitchButton,
 	SessionInterfaceSwitchDialog,
+	SessionInterfaceSwitchMenuItem,
 	SessionInterfaceTransitionNotice,
 } from "./SessionInterfaceSwitch";
 import { ShellTopbar } from "./ShellTopbar";
+import { SwitchAgentDialog } from "./SwitchAgentDialog";
 import { SessionTopbarHost } from "./SessionTopbarPortal";
+import { TerminalSwitchAgentButton } from "./TerminalSwitchAgentButton";
 import { TopbarButton } from "./TopbarButton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { Button } from "./ui/button";
 import { useBrowserView } from "../hooks/useBrowserView";
+import { useCodexAccountActions } from "../hooks/useCodexAccountActions";
+import { useCodexAccountsQuery } from "../hooks/useCodexAccountsQuery";
+import { codexSwitchDisplay } from "../hooks/codex-accounts-state";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useResizable } from "../hooks/useResizable";
 import {
@@ -52,15 +59,17 @@ import {
 	interfaceTransitionIsActive,
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
-import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
+import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
+import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
+import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { sessionWorkspaceFilesQueryOptions } from "../hooks/useSessionWorkspaceFiles";
 import { matchWorkspaceFilePath } from "../lib/workspace-file-path";
 import { SHELL_PANEL_SPRING } from "../lib/motion-spring";
 import {
 	activateSessionFile,
-	closeAllSessionFiles,
 	closeSessionFile,
 	EMPTY_SESSION_FILE_TABS,
 	openSessionFile,
@@ -88,12 +97,9 @@ const CHAT_READABLE_MIN_PX = 560;
 // canvas workflow. This is still wide enough for the timeline and composer, and
 // is separate from the roomier utility-view floor above.
 const BROWSER_CHAT_MIN_PX = 440;
-// Browser is a co-working surface, so reclaim navigation space before chat
-// reaches its survival floor. Utility inspector views keep the compact 560px
-// target; Browser protects a comfortable conversation column instead.
-const BROWSER_CHAT_COMFORT_PX = 720;
 const WORKSPACE_ABSOLUTE_MIN_PX = 300;
 const INSPECTOR_SEPARATOR_RESERVE_PX = 8;
+const EMPTY_AUXILIARY_TAB_ORDER: string[] = [];
 // The inspector tab labels respond to the tablist's remaining width. The
 // 239px tablist breakpoint plus the 76px pinned-action reserve and 10px leading
 // inset gives a 325px inspector breakpoint for the animation lock.
@@ -190,15 +196,6 @@ function sizingGeometryEqual(a: InspectorSizing, b: InspectorSizing): boolean {
 	);
 }
 
-function workspaceDemandPx(sizing: InspectorSizing): number {
-	const chatTarget = sizing.mode === "browser" ? BROWSER_CHAT_COMFORT_PX : CHAT_READABLE_MIN_PX;
-	return (
-		chatTarget +
-		Number.parseFloat(initialInspectorSize(sizing)) +
-		INSPECTOR_SEPARATOR_RESERVE_PX
-	);
-}
-
 type BrowserPopOutPhase = "docked" | "opening" | "open" | "closing";
 type BrowserPopOutRect = { top: number; left: number; width: number; height: number };
 type BrowserPopOutState = {
@@ -248,6 +245,7 @@ function SessionInspectorRail({
 	isOpen,
 	onExpand,
 	onCloseAnimationComplete,
+	restoreMinWidth,
 	sizing,
 	settledClosed,
 	splitRef,
@@ -256,6 +254,7 @@ function SessionInspectorRail({
 	isOpen: boolean;
 	onExpand: () => void;
 	onCloseAnimationComplete?: () => void;
+	restoreMinWidth?: number;
 	sizing: InspectorSizing;
 	settledClosed: boolean;
 	splitRef: RefObject<HTMLDivElement | null>;
@@ -280,6 +279,7 @@ function SessionInspectorRail({
 		max: maxWidth,
 		edge: "left",
 		onExpand,
+		restoreMin: restoreMinWidth,
 	});
 
 	useLayoutEffect(() => {
@@ -372,8 +372,12 @@ function SessionInspectorRail({
 // profile before the conversation can become unusably narrow.
 export function SessionView({ sessionId }: SessionViewProps) {
 	const { t } = useTranslation();
-	const workspaceQuery = useWorkspaceQuery();
-	const workspaces = workspaceQuery.data ?? [];
+	const queryClient = useQueryClient();
+	const refreshWorkspaces = useCallback(
+		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
+		[queryClient],
+	);
+	const workspaceQuery = useWorkspaceSession(sessionId);
 	const theme = useResolvedTheme();
 	const prefersReducedMotion = useReducedMotion();
 	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? true);
@@ -383,10 +387,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const setInspectorViewForSession = useUiStore((state) => state.setInspectorView);
 	const setFilesChangedOnly = useUiStore((state) => state.setFilesChangedOnly);
 	const initializeInspectorSession = useUiStore((state) => state.initializeInspectorSession);
-	const queryClient = useQueryClient();
 	const setBrowserContentRevealed = useUiStore((state) => state.setBrowserContentRevealed);
 	const setBrowserUnseen = useUiStore((state) => state.setBrowserUnseen);
-	const setSidebarWorkspaceDemand = useUiStore((state) => state.setSidebarWorkspaceDemand);
 	const { daemonStatus } = useShell();
 	const previewBaselineRef = useRef<{ sessionId: string; key: string } | null>(null);
 	const sessionSplitRef = useRef<HTMLDivElement | null>(null);
@@ -401,10 +403,52 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		phase: "docked",
 	});
 	const [filesPoppedOut, setFilesPoppedOut] = useState(false);
+	const [filePreviewRequestsBySession, setFilePreviewRequestsBySession] = useState<
+		Record<string, { path: string; key: number }>
+	>({});
 	const [fileTabsBySession, setFileTabsBySession] = useState<Record<string, SessionFileTabState>>({});
 	const fileTabs = fileTabsBySession[sessionId] ?? EMPTY_SESSION_FILE_TABS;
+	const [auxiliaryTabOrderBySession, setAuxiliaryTabOrderBySession] = useState<Record<string, string[]>>({});
+	const auxiliaryTabOrder = auxiliaryTabOrderBySession[sessionId] ?? EMPTY_AUXILIARY_TAB_ORDER;
+	const setAuxiliaryTabOrder = useCallback(
+		(nextOrder: string[]) => {
+			setAuxiliaryTabOrderBySession((current) => {
+				const currentOrder = current[sessionId] ?? [];
+				const visibleKeys = new Set(nextOrder);
+				let nextIndex = 0;
+				const mergedOrder = currentOrder.map((key) =>
+					visibleKeys.has(key) ? nextOrder[nextIndex++]! : key,
+				);
+				while (nextIndex < nextOrder.length) mergedOrder.push(nextOrder[nextIndex++]!);
+				return { ...current, [sessionId]: mergedOrder };
+			});
+		},
+		[sessionId],
+	);
+	const removeAuxiliaryTab = useCallback(
+		(key: string) => {
+			setAuxiliaryTabOrderBySession((current) => {
+				const currentOrder = current[sessionId];
+				if (!currentOrder?.includes(key)) return current;
+				const nextOrder = currentOrder.filter((candidate) => candidate !== key);
+				if (nextOrder.length === 0) {
+					const { [sessionId]: _removed, ...rest } = current;
+					return rest;
+				}
+				return { ...current, [sessionId]: nextOrder };
+			});
+		},
+		[sessionId],
+	);
 	const browserPopOutPhase = browserPopOutState.sessionId === sessionId ? browserPopOutState.phase : "docked";
 	const browserPoppedOut = browserPopOutPhase !== "docked";
+	const [handoffDialogOpen, setHandoffDialogOpen] = useState(false);
+	const handoffDialogContainerRef = useRef<HTMLDivElement | null>(null);
+	const [handoffDialogContainer, setHandoffDialogContainer] = useState<HTMLDivElement | null>(null);
+	const bindHandoffDialogContainer = useCallback((node: HTMLDivElement | null) => {
+		handoffDialogContainerRef.current = node;
+		setHandoffDialogContainer(node);
+	}, []);
 	const [interfaceSwitchDialogScope, setInterfaceSwitchDialogScope] =
 		useState<InterfaceSwitchDialogScope>();
 	const [chatConversationWork, setChatConversationWork] = useState<
@@ -462,7 +506,25 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	useEffect(() => stopTerminalLiveResize, [stopTerminalLiveResize]);
 
-	const session = workspaces.flatMap((workspace) => workspace.sessions).find((s) => s.id === sessionId);
+	const session = workspaceQuery.data;
+	const routeVisibilityOperation =
+		session?.activeAgentSwitch &&
+		session.activeAgentSwitch.state !== "completed" &&
+		session.activeAgentSwitch.state !== "failed"
+			? "active"
+			: "history";
+	useAgentSwitchRouteVisibility(`session/${sessionId}`, routeVisibilityOperation);
+	const codexAccounts = useCodexAccountsQuery(session?.provider === "codex");
+	const codexAccountActions = useCodexAccountActions(queryClient);
+	const codexAccountSwitch = codexAccounts.data?.currentSwitch;
+	const codexAccountSwitchPresentation = codexAccountSwitch ? codexSwitchDisplay(codexAccountSwitch) : null;
+	const codexAccountSwitchBlocksSession = Boolean(
+		session?.provider === "codex" &&
+			codexAccountSwitch &&
+			!["completed", "failed"].includes(codexAccountSwitch.phase) &&
+			(codexAccountSwitch.sessions.length === 0 ||
+				codexAccountSwitch.sessions.some((entry) => entry.sessionId === session.id)),
+	);
 	const interfaceSwitch = useSessionInterfaceTransition(session?.id);
 	const reviewerQuery = useQuery({
 		queryKey: ["session-reviews", sessionId],
@@ -491,6 +553,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		() => allShellTerminals.filter((shell) => shell.sessionId === sessionId),
 		[allShellTerminals, sessionId],
 	);
+	const resolvedAuxiliaryTabOrder = useMemo(() => {
+		const available = [
+			...(reviewerTerminal ? [`reviewer:${reviewerTerminal.handleId}`] : []),
+			...shellTerminals.map((shell) => shell.handleId),
+			...fileTabs.openPaths.map((path) => `file:${path}`),
+		];
+		const availableKeys = new Set(available);
+		const resolved = auxiliaryTabOrder.filter((key) => availableKeys.has(key));
+		for (const key of available) {
+			if (!resolved.includes(key)) resolved.push(key);
+		}
+		return resolved;
+	}, [auxiliaryTabOrder, fileTabs.openPaths, reviewerTerminal, shellTerminals]);
 	const openShellTerminal = useOpenShellTerminal();
 	const closeShellTerminal = useCloseShellTerminal();
 	const renameShellTerminal = useRenameShellTerminal();
@@ -507,22 +582,99 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// session's worktree (the project id is only the fallback when the session's
 	// workspace can no longer be resolved).
 	const addShellTerminal = useCallback(() => {
-		openShellTerminal.mutate(
+		const shell = openShellTerminal.open(
 			{ projectId: session?.workspaceId, sessionId },
 			{
-				onSuccess: (shell) => {
-					setActiveShellTerminal(shell.handleId);
+				onSuccess: (openedShell) => {
+					setActiveShellTerminal(openedShell.handleId);
+					setFileTabsBySession((current) => ({
+						...current,
+						[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+					}));
 					setTerminalTarget({
-						generation: shell.createdAt,
+						generation: openedShell.createdAt,
 						kind: "shell",
-						handleId: shell.handleId,
+						handleId: openedShell.handleId,
 						sessionId,
-						title: shell.title,
+						title: openedShell.title,
 					});
 				},
 			},
 		);
+		if (!shell) return;
+		setFileTabsBySession((current) => ({
+			...current,
+			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+		}));
+		setActiveShellTerminal(shell.handleId);
+		setTerminalTarget({
+			generation: shell.createdAt,
+			kind: "shell",
+			handleId: shell.handleId,
+			sessionId,
+			title: shell.title,
+		});
 	}, [openShellTerminal, sessionId, session?.workspaceId, setActiveShellTerminal]);
+
+	const activateAuxiliaryTab = useCallback(
+		(key?: string) => {
+			if (key?.startsWith("file:")) {
+				const path = key.slice("file:".length);
+				setActiveShellTerminal(null);
+				setTerminalTarget({ kind: "worker" });
+				setFileTabsBySession((current) => ({
+					...current,
+					[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, path),
+				}));
+				return;
+			}
+			if (reviewerTerminal && key === `reviewer:${reviewerTerminal.handleId}`) {
+				setActiveShellTerminal(null);
+				setTerminalTarget({
+					kind: "reviewer",
+					handleId: reviewerTerminal.handleId,
+					harness: reviewerTerminal.harness,
+					sessionId,
+				});
+				setFileTabsBySession((current) => ({
+					...current,
+					[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+				}));
+				return;
+			}
+			const shell = shellTerminals.find((candidate) => candidate.handleId === key);
+			if (shell) {
+				setActiveShellTerminal(shell.handleId);
+				setTerminalTarget({
+					generation: shell.createdAt,
+					kind: "shell",
+					handleId: shell.handleId,
+					sessionId,
+					title: shell.title,
+				});
+				setFileTabsBySession((current) => ({
+					...current,
+					[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+				}));
+				return;
+			}
+			setActiveShellTerminal(null);
+			setTerminalTarget({ kind: "worker" });
+			setFileTabsBySession((current) => ({
+				...current,
+				[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+			}));
+		},
+		[reviewerTerminal, sessionId, shellTerminals, setActiveShellTerminal],
+	);
+	const adjacentAuxiliaryTab = useCallback(
+		(closingKey: string) => {
+			const closingIndex = resolvedAuxiliaryTabOrder.indexOf(closingKey);
+			if (closingIndex < 0) return undefined;
+			return resolvedAuxiliaryTabOrder[closingIndex - 1] ?? resolvedAuxiliaryTabOrder[closingIndex + 1];
+		},
+		[resolvedAuxiliaryTabOrder],
+	);
 
 	const selectShellTerminal = useCallback(
 		(handleId: string) => {
@@ -547,35 +699,25 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const closeShellTerminalByHandle = useCallback(
 		(handleId: string) => {
 			if (terminalTarget.kind === "shell" && terminalTarget.handleId === handleId) {
-				const closingIndex = shellTerminals.findIndex((shell) => shell.handleId === handleId);
-				// Match browser-tab ergonomics: closing the selected auxiliary terminal
-				// reveals its nearest predecessor, then the next tab when the first one
-				// closes. The permanent agent terminal is only the final fallback.
-				const nextShell = shellTerminals[closingIndex - 1] ?? shellTerminals[closingIndex + 1];
-				if (nextShell) {
-					setActiveShellTerminal(nextShell.handleId);
-					setTerminalTarget({
-						generation: nextShell.createdAt,
-						kind: "shell",
-						handleId: nextShell.handleId,
-						sessionId,
-						title: nextShell.title,
-					});
-				} else {
-					setActiveShellTerminal(null);
-					setTerminalTarget({ kind: "worker" });
-				}
+				// Match the visible mixed strip, not the shell-only creation order.
+				activateAuxiliaryTab(adjacentAuxiliaryTab(handleId));
 			} else if (activeShellTerminalHandleId === handleId) {
 				setActiveShellTerminal(null);
 			}
-			closeShellTerminal.mutate(handleId);
+			closeShellTerminal.mutate(handleId, {
+				onSuccess: () => removeAuxiliaryTab(handleId),
+				onError: (error) => {
+					if (apiErrorCode(error) === "SHELL_TERMINAL_NOT_FOUND") removeAuxiliaryTab(handleId);
+				},
+			});
 		},
 		[
 			activeShellTerminalHandleId,
+			activateAuxiliaryTab,
+			adjacentAuxiliaryTab,
 			closeShellTerminal,
+			removeAuxiliaryTab,
 			setActiveShellTerminal,
-			sessionId,
-			shellTerminals,
 			terminalTarget,
 		],
 	);
@@ -615,11 +757,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			...current,
 			[sessionId]: closeSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, path),
 		}));
-	}, [sessionId]);
-	const closeAllCenterFiles = useCallback(() => {
-		setFileTabsBySession((current) => ({ ...current, [sessionId]: closeAllSessionFiles() }));
-	}, [sessionId]);
-
+		if (fileTabs.activePath === path) {
+			activateAuxiliaryTab(adjacentAuxiliaryTab(`file:${path}`));
+		}
+		removeAuxiliaryTab(`file:${path}`);
+	}, [activateAuxiliaryTab, adjacentAuxiliaryTab, fileTabs.activePath, removeAuxiliaryTab, sessionId]);
 	// The shell layout owns opening (it is mounted on every route, so the button
 	// and ⌘T / Ctrl+T work everywhere); this view only follows the result. When a new
 	// shell becomes active while a session is on screen, switch the pane to it —
@@ -668,8 +810,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// Orchestrators get the full workspace width; only workers need the inspector rail.
 	const hasInspector = Boolean(session && !isOrchestrator);
 	const sizing = useMemo(() => inspectorSizing(inspectorView), [inspectorView]);
-	const adaptiveWorkspaceActive =
-		hasInspector && isInspectorOpen && !browserPoppedOut && !filesPoppedOut;
+	const browserEntryWidthFloorRef = useRef<number | null>(null);
 
 	// Arm the shared width transition before the selected inspector surface
 	// changes its CSS variable. Browser becomes a co-work canvas; utility views
@@ -694,13 +835,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[],
 	);
 
-	const publishWorkspaceDemand = useCallback(
-		(nextSizing: InspectorSizing, active = adaptiveWorkspaceActive) => {
-			setSidebarWorkspaceDemand(active ? workspaceDemandPx(nextSizing) : null);
-		},
-		[adaptiveWorkspaceActive, setSidebarWorkspaceDemand],
-	);
-
 	const prepareWorkspaceProfile = useCallback(
 		(nextSizing: InspectorSizing) => {
 			armWorkspaceTransition();
@@ -718,33 +852,27 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const transitionInspectorView = useCallback(
 		(next: InspectorView) => {
 			if (next === inspectorView) return;
+			if (next === "browser") {
+				const currentWidth = Number.parseFloat(
+					document.documentElement.style.getPropertyValue(inspectorWidthVar),
+				);
+				browserEntryWidthFloorRef.current = Number.isFinite(currentWidth) ? currentWidth : null;
+			} else {
+				browserEntryWidthFloorRef.current = null;
+			}
 			const nextSizing = inspectorSizing(next);
 			if (!sizingGeometryEqual(sizing, nextSizing)) prepareWorkspaceProfile(nextSizing);
-			publishWorkspaceDemand(nextSizing);
 			setInspectorViewForSession(sessionId, next);
 		},
 		[
 			inspectorView,
 			prepareWorkspaceProfile,
-			publishWorkspaceDemand,
 			sessionId,
 			setInspectorViewForSession,
 			sizing,
 		],
 	);
 
-	// Publish a declarative width demand; the persistent shell is the sole owner
-	// of measuring the outer row and deciding whether navigation should compact.
-	useLayoutEffect(() => {
-		publishWorkspaceDemand(sizing);
-	}, [publishWorkspaceDemand, sizing]);
-
-	useLayoutEffect(
-		() => () => {
-			setSidebarWorkspaceDemand(null);
-		},
-		[setSidebarWorkspaceDemand],
-	);
 	const activeInterfaceTransition = interfaceTransitionIsActive(interfaceSwitch.transition);
 	const chatControllerTransitioning = Boolean(
 		interfaceSwitch.transition?.targetMode === "chat" &&
@@ -808,7 +936,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				}
 			} catch {
 				// The mutation owns the typed error. A policy dialog that was already
-				// open stays open; a direct switch must not open one on failure.
+				// open stays open; a direct switch shows its error in the session notice.
 			}
 		},
 		[interfaceSwitch],
@@ -847,59 +975,45 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const showInterfaceSwitchAction = Boolean(
 		!interfaceSwitchUnsupported && (interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError),
 	);
-	const interfaceSwitchAction = session && showInterfaceSwitchAction ? (
-		<SessionInterfaceSwitchButton
-			target={interfaceTarget}
-			supported={Boolean(interfaceSwitch.status?.supported) && !activeInterfaceTransition}
-			disabledReason={
-				interfaceSwitch.isLoading
-					? "Checking whether this agent can switch interfaces…"
-					: interfaceSwitch.status?.reason || interfaceSwitch.statusError
-			}
-			pending={interfaceSwitch.starting || activeInterfaceTransition}
-			transition={interfaceSwitch.transition}
-			cancelling={interfaceSwitch.cancelling}
-			cancelError={interfaceSwitch.cancelError}
-			onClick={requestInterfaceSwitch}
-			onCancel={() => {
-				void interfaceSwitch.cancel().catch(() => {});
-			}}
-		/>
-	) : null;
 	const newTerminalError = openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined;
-	const sessionLocalActions = session ? (
-		<SessionInterfaceActionGroup>
-			{!isOrchestrator ? (
-				<TopbarButton
-					aria-label={t("shortcut.new-shell-terminal")}
-					disabled={openShellTerminal.isPending}
-					onClick={addShellTerminal}
-					title={newTerminalError ?? t("terminal.newWithShortcut", { shortcut: newTerminalShortcutLabel })}
-					type="button"
-					variant="icon"
-				>
-					<Plus aria-hidden="true" className="size-icon-md" />
-				</TopbarButton>
-			) : null}
-			{interfaceSwitchAction}
-		</SessionInterfaceActionGroup>
-	) : null;
-	const sessionHeaderActions = (
-		<>
-			<SessionBranchBadge branch={session?.branch} />
-			<ShellTopbar embedded sessionAction={sessionLocalActions} />
-		</>
-	);
+	const newShellTerminalAction =
+		session && !isOrchestrator ? (
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<TopbarButton
+						aria-label={t("shortcut.new-shell-terminal")}
+						onClick={addShellTerminal}
+						type="button"
+						variant="icon"
+					>
+						<Plus aria-hidden="true" className="size-icon-md" />
+					</TopbarButton>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">
+					{newTerminalError ?? t("terminal.newWithShortcut", { shortcut: newTerminalShortcutLabel })}
+				</TooltipContent>
+			</Tooltip>
+		) : null;
 	const fileAnnotation = useFileAnnotation(sessionId);
-	const centerFileTabs = (
-		<SessionFileTabs
-			state={fileTabs}
-			onAddFeedback={(path) => fileAnnotation.begin({ path, side: "file" })}
-			onActivateFile={activateCenterFile}
-			onCloseFile={closeCenterFile}
-			onCloseAll={closeAllCenterFiles}
-		/>
+	const centerFileTabs = useMemo(
+		() =>
+			fileTabs.openPaths.map((path) => ({
+				key: `file:${path}`,
+				content: (
+					<SessionFileTab
+						active={fileTabs.activePath === path}
+						onActivate={() => activateCenterFile(path)}
+						onAddFeedback={() => fileAnnotation.begin({ path, side: "file" })}
+						onClose={() => closeCenterFile(path)}
+						path={path}
+					/>
+				),
+				onSelect: () => activateCenterFile(path),
+				onClose: () => closeCenterFile(path),
+			})),
+		[activateCenterFile, closeCenterFile, fileAnnotation, fileTabs.activePath, fileTabs.openPaths],
 	);
+	const activeWorkspaceTabKey = fileTabs.activePath ? `file:${fileTabs.activePath}` : undefined;
 	const previewUrl = session?.previewUrl?.trim() || undefined;
 	const previewRevision = session?.previewRevision;
 	const browserSlotVisible = Boolean(
@@ -963,6 +1077,90 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		session !== undefined &&
 		renderedSessionMode === "chat" &&
 		(chatTargetKind === "worker" || chatTargetKind === "reviewer" || chatTargetKind === "shell");
+	const {
+		agentSwitch: handoffAgentSwitch,
+		switchControlPresentation: handoffControlPresentation,
+		switchError: handoffSwitchError,
+	} = useSessionHandoffMenu(session);
+	const handleHandoffDialogOpenChange = useCallback(
+		(nextOpen: boolean) => {
+			setHandoffDialogOpen(nextOpen);
+			if (!nextOpen && handoffSwitchError && session) {
+				clearSwitchAgentState(queryClient, session.id);
+			}
+		},
+		[handoffSwitchError, queryClient, session],
+	);
+	useEffect(() => {
+		if (handoffSwitchError) setHandoffDialogOpen(true);
+	}, [handoffSwitchError]);
+	const interfaceSwitchInlineStatus =
+		session && showInterfaceSwitchAction && activeInterfaceTransition ? (
+			<SessionInterfaceSwitchButton
+				target={interfaceTarget}
+				supported={Boolean(interfaceSwitch.status?.supported) && !activeInterfaceTransition}
+				disabledReason={
+					interfaceSwitch.isLoading
+						? "Checking whether this agent can switch interfaces…"
+						: interfaceSwitch.status?.reason || interfaceSwitch.statusError
+				}
+				pending={interfaceSwitch.starting || activeInterfaceTransition}
+				transition={interfaceSwitch.transition}
+				cancelling={interfaceSwitch.cancelling}
+				cancelError={interfaceSwitch.cancelError}
+				onClick={requestInterfaceSwitch}
+				onCancel={() => {
+					void interfaceSwitch.cancel().catch(() => {});
+				}}
+			/>
+		) : null;
+	const interfaceSwitchMenuItem =
+		session && showInterfaceSwitchAction && !activeInterfaceTransition ? (
+			<SessionInterfaceSwitchMenuItem
+				target={interfaceTarget}
+				supported={Boolean(interfaceSwitch.status?.supported)}
+				disabledReason={
+					interfaceSwitch.isLoading
+						? "Checking whether this agent can switch interfaces…"
+						: interfaceSwitch.status?.reason || interfaceSwitch.statusError
+				}
+				pending={interfaceSwitch.starting}
+				onClick={requestInterfaceSwitch}
+			/>
+		) : null;
+	const handoffMenuItem = session ? (
+		<TerminalSwitchAgentButton
+			key={session.id}
+			variant="menu-item"
+			agentSwitch={handoffAgentSwitch}
+			onOpenChange={handleHandoffDialogOpenChange}
+			open={handoffDialogOpen}
+			presentation={handoffControlPresentation}
+			session={session}
+			switchError={handoffSwitchError}
+		/>
+	) : null;
+	const sessionTabActions = (
+		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
+			{interfaceSwitchMenuItem}
+			{handoffMenuItem}
+		</SessionActionsMenu>
+	);
+	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
+	// wider action slot while switching.
+	const sessionTabActionWide = false;
+	const sessionHeaderActions = (
+		<div
+			className="session-topbar-session-chrome flex shrink-0 items-center"
+			data-compact-session-chrome="false"
+		>
+			<ShellTopbar embedded />
+		</div>
+	);
+
+	useEffect(() => {
+		setHandoffDialogOpen(false);
+	}, [sessionId]);
 
 	// The pane shows one terminal at a time, so selecting a shell or the reviewer
 	// takes the agent's terminal off screen while the route still points here.
@@ -987,12 +1185,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		);
 	}, [queryClient, sessionId, t]);
 
-	const openResolvedWorkspaceFile = useCallback(
+	const revealResolvedWorkspaceFile = useCallback(
 		async (rawPath: string) => {
 			const data = await fetchWorkspaceFiles();
-			openCenterFile(matchWorkspaceFilePath(rawPath, data.files ?? []));
+			const path = matchWorkspaceFilePath(rawPath, data.files ?? []);
+			setFilePreviewRequestsBySession((current) => ({
+				...current,
+				[sessionId]: { path, key: (current[sessionId]?.key ?? 0) + 1 },
+			}));
 		},
-		[fetchWorkspaceFiles, openCenterFile],
+		[fetchWorkspaceFiles, sessionId],
 	);
 
 	const handleOpenFiles = useCallback(() => {
@@ -1003,17 +1205,17 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const handleOpenReviewFile = useCallback(
 		(target: { line?: number; path: string }) => {
 			prepareFilesInspector();
-			void openResolvedWorkspaceFile(target.path);
+			void revealResolvedWorkspaceFile(target.path);
 		},
-		[openResolvedWorkspaceFile, prepareFilesInspector],
+		[prepareFilesInspector, revealResolvedWorkspaceFile],
 	);
 
 	const handleOpenFile = useCallback(
 		(path: string) => {
 			prepareFilesInspector();
-			void openResolvedWorkspaceFile(path);
+			void revealResolvedWorkspaceFile(path);
 		},
-		[openResolvedWorkspaceFile, prepareFilesInspector],
+		[prepareFilesInspector, revealResolvedWorkspaceFile],
 	);
 
 	const handleToggleFilesPopOut = useCallback(
@@ -1190,18 +1392,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	}, [browserPoppedOut, hasInspector, inspectorView, isInspectorOpen, sessionId, setBrowserUnseen]);
 
 	const handleToggleInspector = useCallback(() => {
-		const nextOpen = !isInspectorOpen;
-		publishWorkspaceDemand(sizing, nextOpen && !browserPoppedOut && !filesPoppedOut);
 		toggleInspector(sessionId);
-	}, [
-		browserPoppedOut,
-		filesPoppedOut,
-		isInspectorOpen,
-		publishWorkspaceDemand,
-		sessionId,
-		sizing,
-		toggleInspector,
-	]);
+	}, [sessionId, toggleInspector]);
 
 	useEffect(() => {
 		if (!hasInspector) return;
@@ -1264,6 +1456,37 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	return (
 		<div className="relative flex h-full min-h-0 flex-col bg-background text-foreground" data-testid="session-detail">
+			{codexAccountSwitchBlocksSession ? (
+				<div
+					className="absolute inset-0 z-50 grid place-items-center bg-background/80 p-6 backdrop-blur-sm"
+					data-testid="codex-account-switch-blocker"
+				>
+					<div className="flex max-w-sm flex-col items-center gap-3 rounded-xl border border-border bg-card px-6 py-5 text-center shadow-lg">
+						<div aria-live="assertive" className="flex flex-col items-center gap-3" role="status">
+							{codexAccountSwitchPresentation?.busy ? <LoaderCircle className="size-5 animate-spin text-passive" aria-label={t(codexAccountSwitchPresentation.key)} /> : null}
+							<p className="text-sm font-medium">
+								{codexAccountSwitchPresentation?.canRecover
+									? t(codexAccountSwitchPresentation.key)
+									: t("settings.codexAccounts.switchingSessions")}
+							</p>
+							{codexAccountSwitchPresentation && !codexAccountSwitchPresentation.canRecover ? <p className="text-xs text-passive">{t(codexAccountSwitchPresentation.key)}</p> : null}
+						</div>
+						{codexAccountSwitchPresentation?.canRecover && codexAccountSwitch ? (
+							<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								disabled={codexAccountActions.recoverPending}
+								onClick={() => void codexAccountActions.recoverSwitch(codexAccountSwitch.id)}
+							>
+								{codexAccountActions.recoverPending ? <LoaderCircle className="animate-spin" aria-label={t("settings.codexAccounts.recovering")} /> : null}
+								{t("settings.codexAccounts.retryRecovery")}
+							</Button>
+						) : null}
+						{codexAccountActions.error ? <p className="text-xs text-error" role="alert">{codexAccountActions.error}</p> : null}
+					</div>
+				</div>
+			) : null}
 			<div
 				className="session-split relative flex min-h-0 flex-1 overflow-hidden"
 				data-testid="panel-group"
@@ -1291,7 +1514,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							className="relative z-chrome flex h-inspector-tabs w-full shrink-0 overflow-hidden"
 							data-testid="session-topbar-host"
 						/>
-						<div className="relative min-h-0 flex-1">
+						<div className="relative min-h-0 flex-1" ref={bindHandoffDialogContainer}>
+							{session && handoffDialogContainer ? (
+								<SwitchAgentDialog
+									agentSwitch={handoffAgentSwitch}
+									container={handoffDialogContainer}
+									onOpenChange={handleHandoffDialogOpenChange}
+									open={handoffDialogOpen}
+									session={session}
+								/>
+							) : null}
 							{/* The committed mode owns the agent surface. Auxiliary shell and
 							    reviewer targets remain terminal surfaces in either mode. */}
 							<div
@@ -1304,6 +1536,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									session={session}
 									reviewerTerminal={reviewerTerminal}
 									onOpenReviewerTerminal={selectReviewerTerminal}
+									onSessionRenamed={refreshWorkspaces}
 									reviewerTarget={
 										routedTerminalTarget.kind === "reviewer" ? routedTerminalTarget : undefined
 									}
@@ -1318,8 +1551,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									daemonReady={daemonStatus.state === "ready"}
 									theme={theme}
 									headerActions={sessionHeaderActions}
+									sessionTabAction={sessionTabActions}
+									sessionTabActionWide={sessionTabActionWide}
+									tabStripAction={newShellTerminalAction}
+									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
+									workspaceActiveTabKey={activeWorkspaceTabKey}
 									workspaceFileActive={Boolean(fileTabs.activePath)}
+									auxiliaryTabOrder={resolvedAuxiliaryTabOrder}
+									onAuxiliaryTabOrderChange={setAuxiliaryTabOrder}
 									controllerTransitioning={chatControllerTransitioning}
 									newWorkDisabled={chatNewWorkDisabled}
 									onConversationWorkChange={handleConversationWorkChange}
@@ -1348,8 +1588,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									terminalTarget={routedTerminalTarget}
 									theme={theme}
 									topbarActions={sessionHeaderActions}
+									sessionTabAction={sessionTabActions}
+									sessionTabActionWide={sessionTabActionWide}
+									tabStripAction={newShellTerminalAction}
+									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
+									workspaceActiveTabKey={activeWorkspaceTabKey}
 									workspaceFileActive={Boolean(fileTabs.activePath)}
+									auxiliaryTabOrder={resolvedAuxiliaryTabOrder}
+									onAuxiliaryTabOrderChange={setAuxiliaryTabOrder}
 								/>
 							)}
 							</div>
@@ -1358,7 +1605,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									<SessionFileWorkspace annotation={fileAnnotation} path={fileTabs.activePath} sessionId={sessionId} />
 								</div>
 							) : null}
-							{interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition) ? (
+							{interfaceSwitch.startError && !interfaceSwitchDialogOpen ? (
+								<div role="alert" className="absolute left-1/2 top-3 z-20 flex w-[min(34rem,calc(100%-1.5rem))] -translate-x-1/2 items-start gap-3 rounded-lg border border-destructive/40 bg-popover px-3 py-2.5 text-xs shadow-md">
+									<div className="min-w-0 flex-1">
+										<p className="font-medium">{t("session.interfaceSwitchFailed")}</p>
+										<p className="mt-1 break-words text-muted-foreground">{interfaceSwitch.startError}</p>
+									</div>
+									<button type="button" aria-label={t("session.dismissInterfaceSwitchError")} className="shrink-0 rounded px-1 text-muted-foreground hover:text-foreground" onClick={interfaceSwitch.resetStartError}>{t("session.dismissInterfaceSwitchNotice")}</button>
+								</div>
+							) : null}
+							{!interfaceSwitch.startError && interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition) ? (
 								<SessionInterfaceTransitionNotice
 									transition={interfaceSwitch.transition}
 									dismissing={interfaceSwitch.acknowledgingNotice}
@@ -1383,6 +1639,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						isOpen={isInspectorOpen}
 						onCloseAnimationComplete={handleInspectorCloseAnimationComplete}
 						onExpand={() => setInspectorOpenForSession(sessionId, true)}
+						restoreMinWidth={
+							sizing.mode === "browser" ? (browserEntryWidthFloorRef.current ?? undefined) : undefined
+						}
 						sizing={sizing}
 						settledClosed={!isInspectorOpen && inspectorSettledClosed}
 						splitRef={sessionSplitRef}
@@ -1393,9 +1652,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							filesView={
 								session ? (
 									<SessionFileExplorer
-										activePath={fileTabs.activePath}
 										onOpenFile={openCenterFile}
 										onToggleMaximized={handleToggleFilesPopOut}
+										revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
 										sessionId={session.id}
 									/>
 								) : null
@@ -1415,16 +1674,22 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			</div>
 			{hasInspector ? (
 				<div className="session-pinned-actions" data-testid="session-pinned-actions" style={noDragStyle}>
-					<TopbarButton
-						aria-label={isInspectorOpen ? t("shell.closeInspector") : t("shell.openInspector")}
-						aria-pressed={isInspectorOpen}
-						onClick={handleToggleInspector}
-						style={noDragStyle}
-						title={isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
-						variant="icon"
-					>
-						<PanelRight className="size-icon-md" aria-hidden="true" />
-					</TopbarButton>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<TopbarButton
+								aria-label={isInspectorOpen ? t("shell.closeInspector") : t("shell.openInspector")}
+								aria-pressed={isInspectorOpen}
+								onClick={handleToggleInspector}
+								style={noDragStyle}
+								variant="icon"
+							>
+								<PanelRight className="size-icon-md" aria-hidden="true" />
+							</TopbarButton>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">
+							{isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
+						</TooltipContent>
+					</Tooltip>
 					{/* Keep the global notification action trailing at the window edge. */}
 					<NotificationCenter style={noDragStyle} />
 				</div>

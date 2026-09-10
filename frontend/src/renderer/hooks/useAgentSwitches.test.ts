@@ -20,7 +20,7 @@ function switchRecord(overrides: Partial<AgentSwitch> = {}): AgentSwitch {
 describe("agentSwitchesRefetchInterval", () => {
 	it.each([
 		["polls an ordinary active switch", {}, 1_000],
-		["does not poll a target recovery with no asynchronous worker", { errorCode: "target_start_unconfirmed" }, false],
+		["polls target-start recovery until ownership is resolved", { errorCode: "target_start_unconfirmed" }, 1_000],
 		["polls while source shutdown recovery may be running", { errorCode: "source_stop_unconfirmed", state: "stopping_source" }, 1_000],
 		["polls while source restoration may be running", { errorCode: "source_restore_unconfirmed", state: "source_stopped" }, 1_000],
 		["does not poll terminal history", { state: "completed" }, false],

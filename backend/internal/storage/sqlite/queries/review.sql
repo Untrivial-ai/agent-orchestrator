@@ -75,3 +75,54 @@ FROM review_run WHERE session_id = ? AND status = 'running' AND verdict = '' ORD
 -- name: ListReviewRunsByBatch :many
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id, auto_inject_review, trigger_source
 FROM review_run WHERE session_id = ? AND batch_id = ? ORDER BY created_at ASC, id ASC;
+
+-- name: ListCurrentHeadReviewRunsBySession :many
+-- AO review passes recorded against each PR's CURRENT head commit. Passes for
+-- an earlier head are excluded here so a stale run can never decide the
+-- session's Kanban column. The latest same-head pass per (pr, harness) wins,
+-- so a superseded retry cannot outvote the rerun that replaced it.
+SELECT review_run.id, review_run.harness, review_run.pr_url, review_run.status, review_run.verdict, review_run.created_at
+FROM review_run
+JOIN pr ON pr.url = review_run.pr_url
+WHERE review_run.session_id = ?
+  AND pr.head_sha != ''
+  AND review_run.target_sha = pr.head_sha
+  AND NOT EXISTS (
+      SELECT 1
+      FROM review_run newer
+      WHERE newer.session_id = review_run.session_id
+        AND newer.pr_url = review_run.pr_url
+        AND newer.target_sha = review_run.target_sha
+        AND newer.harness = review_run.harness
+        AND (
+            newer.created_at > review_run.created_at
+            OR (newer.created_at = review_run.created_at AND newer.id > review_run.id)
+        )
+  );
+
+-- name: ListCurrentHeadReviewRunsBySessions :many
+-- Batch form of ListCurrentHeadReviewRunsBySession for session-list reads.
+-- The latest same-head pass per (session, pr, harness) wins, so the board does
+-- not read a superseded retry beside the run that replaced it.
+WITH wanted_session AS (
+    SELECT CAST(j.value AS TEXT) AS session_id
+    FROM json_each(?) AS j
+)
+SELECT review_run.session_id, review_run.id, review_run.harness, review_run.pr_url, review_run.status, review_run.verdict, review_run.created_at
+FROM review_run
+JOIN pr ON pr.url = review_run.pr_url
+JOIN wanted_session ON wanted_session.session_id = review_run.session_id
+WHERE pr.head_sha != ''
+  AND review_run.target_sha = pr.head_sha
+  AND NOT EXISTS (
+      SELECT 1
+      FROM review_run newer
+      WHERE newer.session_id = review_run.session_id
+        AND newer.pr_url = review_run.pr_url
+        AND newer.target_sha = review_run.target_sha
+        AND newer.harness = review_run.harness
+        AND (
+            newer.created_at > review_run.created_at
+            OR (newer.created_at = review_run.created_at AND newer.id > review_run.id)
+        )
+  );

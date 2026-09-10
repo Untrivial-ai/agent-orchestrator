@@ -1,33 +1,73 @@
-import { ChevronRight, Pencil, type LucideIcon } from "lucide-react";
+import { Pencil, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 
-function SettingsRowLabel({ icon: Icon, label }: { icon?: LucideIcon; label: string }) {
+function SettingsRowLabel({
+	icon: Icon,
+	label,
+	description,
+}: {
+	icon?: LucideIcon;
+	label: string;
+	description?: string;
+}) {
+	if (description === undefined) {
+		return (
+			<div className="flex shrink-0 items-center gap-(--size-settings-row-icon-gap)">
+				{Icon ? <Icon className="size-icon-lg shrink-0 text-settings-muted" aria-hidden="true" /> : null}
+				<span className="whitespace-nowrap text-sm leading-5 text-settings-label">{label}</span>
+			</div>
+		);
+	}
 	return (
-		<div className="flex shrink-0 items-center gap-(--size-settings-row-icon-gap)">
-			{Icon ? <Icon className="size-icon-lg shrink-0 text-settings-muted" aria-hidden="true" /> : null}
-			<span className="whitespace-nowrap text-sm leading-5 text-settings-label">{label}</span>
+		<div className="flex min-w-0 shrink items-start gap-(--size-settings-row-icon-gap)">
+			{Icon ? <Icon className="mt-0.5 size-icon-lg shrink-0 text-settings-muted" aria-hidden="true" /> : null}
+			<span className="min-w-0">
+				<span className="block text-sm leading-5 text-settings-label">{label}</span>
+				<span className="mt-0.5 block text-pretty text-xs leading-4 text-settings-muted">{description}</span>
+			</span>
 		</div>
 	);
 }
 
-/** Settings row bar: tokenized height, radius, padding, and icon gap. */
+/**
+ * Settings row bar: tokenized height, radius, padding, and icon gap.
+ *
+ * `description` adds a sub-label under the row label for controls whose effect
+ * is not obvious from the name alone — "Automatic Updates" was read as "install
+ * automatically" when it only governs downloading.
+ */
 export function SettingsRow({
 	icon,
 	label,
+	description,
 	children,
 	className,
 }: {
 	icon?: LucideIcon;
 	label: string;
+	description?: string;
 	children: ReactNode;
 	className?: string;
 }) {
 	return (
-		<div className={cn("settings-row-bar", className)}>
-			<SettingsRowLabel icon={icon} label={label} />
-			<div className="flex min-w-0 flex-1 items-center justify-end">{children}</div>
+		<div
+			className={cn(
+				"settings-row-bar",
+				description !== undefined && "h-auto min-h-(--size-settings-row) items-start py-3",
+				className,
+			)}
+		>
+			<SettingsRowLabel icon={icon} label={label} description={description} />
+			<div
+				className={cn(
+					"flex min-w-0 flex-1 items-center justify-end",
+					description !== undefined && "self-center",
+				)}
+			>
+				{children}
+			</div>
 		</div>
 	);
 }
@@ -38,6 +78,8 @@ export function SettingsInlineInput({
 	label,
 	value,
 	onChange,
+	onCommit,
+	onCancel,
 	placeholder,
 	className,
 }: {
@@ -45,6 +87,8 @@ export function SettingsInlineInput({
 	label: string;
 	value: string;
 	onChange: (value: string) => void;
+	onCommit?: (value: string) => void;
+	onCancel?: () => void;
 	placeholder?: string;
 	className?: string;
 }) {
@@ -60,7 +104,10 @@ export function SettingsInlineInput({
 		input.select();
 	}, [editing]);
 
-	const finishEditing = () => setEditing(false);
+	const finishEditing = () => {
+		setEditing(false);
+		onCommit?.(value);
+	};
 
 	const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
 		if (event.key === "Enter") {
@@ -71,7 +118,8 @@ export function SettingsInlineInput({
 		if (event.key === "Escape") {
 			event.preventDefault();
 			event.stopPropagation();
-			finishEditing();
+			setEditing(false);
+			onCancel?.();
 		}
 	};
 
@@ -112,6 +160,8 @@ export function SettingsInputRow({
 	id,
 	value,
 	onChange,
+	onCommit,
+	onCancel,
 	placeholder,
 }: {
 	icon?: LucideIcon;
@@ -119,32 +169,21 @@ export function SettingsInputRow({
 	id: string;
 	value: string;
 	onChange: (value: string) => void;
+	onCommit?: (value: string) => void;
+	onCancel?: () => void;
 	placeholder?: string;
 }) {
 	return (
 		<SettingsRow icon={icon} label={label}>
-			<SettingsInlineInput id={id} label={label} value={value} onChange={onChange} placeholder={placeholder} />
+			<SettingsInlineInput
+				id={id}
+				label={label}
+				value={value}
+				onChange={onChange}
+				onCommit={onCommit}
+				onCancel={onCancel}
+				placeholder={placeholder}
+			/>
 		</SettingsRow>
-	);
-}
-
-export function SettingsLinkRow({
-	icon,
-	label,
-	onClick,
-}: {
-	icon?: LucideIcon;
-	label: string;
-	onClick: () => void;
-}) {
-	return (
-		<button
-			type="button"
-			onClick={onClick}
-			className="settings-row-bar settings-link-row w-full text-left transition-colors hover:bg-settings-menu-selected focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
-		>
-			<SettingsRowLabel icon={icon} label={label} />
-			<ChevronRight className="size-icon-base shrink-0 text-settings-muted" aria-hidden="true" />
-		</button>
 	);
 }

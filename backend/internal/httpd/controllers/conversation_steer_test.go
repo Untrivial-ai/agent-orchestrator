@@ -54,12 +54,36 @@ func (f *fakeConversationService) PromoteQueuedTurn(
 	return chatsvc.PromoteQueuedTurnResult{}, nil
 }
 
+func (f *fakeConversationService) CancelQueuedTurn(context.Context, domain.SessionID, string) error {
+	return nil
+}
+
+func (f *fakeConversationService) EditQueuedTurn(context.Context, domain.SessionID, string, chatsvc.QueuedMessageEdit) error {
+	return nil
+}
+
+func (f *fakeConversationService) ReorderQueuedTurns(context.Context, domain.SessionID, []string) error {
+	return nil
+}
+
 func (f *fakeChatService) PromoteQueuedTurn(
 	context.Context,
 	domain.SessionID,
 	string,
 ) (chatsvc.PromoteQueuedTurnResult, error) {
 	return chatsvc.PromoteQueuedTurnResult{}, nil
+}
+
+func (f *fakeChatService) CancelQueuedTurn(context.Context, domain.SessionID, string) error {
+	return nil
+}
+
+func (f *fakeChatService) EditQueuedTurn(context.Context, domain.SessionID, string, chatsvc.QueuedMessageEdit) error {
+	return nil
+}
+
+func (f *fakeChatService) ReorderQueuedTurns(context.Context, domain.SessionID, []string) error {
+	return nil
 }
 
 type promoteQueuedStub struct {
@@ -157,6 +181,7 @@ func TestSteerRouteAcceptsGuidanceAndNamesTheTurn(t *testing.T) {
 	}
 	status, body, _ := postSteer(t, svc, map[string]any{
 		"text": "actually, just summarize", "clientMessageId": "steer-1",
+		"attachments": []map[string]string{{"mimeType": "image/png", "data": "aW1hZ2U="}},
 	})
 
 	if status != http.StatusAccepted {
@@ -178,10 +203,36 @@ func TestSteerRouteAcceptsGuidanceAndNamesTheTurn(t *testing.T) {
 	if svc.seen[0].ClientMessageID != "steer-1" {
 		t.Errorf("clientMessageId = %q", svc.seen[0].ClientMessageID)
 	}
+	if len(svc.seen[0].Content) != 1 || svc.seen[0].Content[0] != (ports.ChatContent{
+		Type: "image", Data: "aW1hZ2U=", MIMEType: "image/png",
+	}) {
+		t.Errorf("content = %#v, want native image", svc.seen[0].Content)
+	}
 	// A steer typed by a person is the person's, and the timeline attributes it that
 	// way rather than as something the daemon said.
 	if svc.seen[0].Origin != domain.MessageOriginHuman {
 		t.Errorf("origin = %q, want human", svc.seen[0].Origin)
+	}
+}
+
+func TestSteerRouteRejectsInvalidAttachmentBeforeCallingService(t *testing.T) {
+	svc := &steerStub{fakeConversationService: &fakeConversationService{}}
+	status, _, failure := postSteer(t, svc, map[string]any{
+		"text": "inspect this",
+		"attachments": []map[string]string{{
+			"mimeType": "image/svg+xml",
+			"data":     "PHN2Zy8+",
+		}},
+	})
+
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+	if failure.Kind != "validation" || failure.Code != "UNSUPPORTED_ATTACHMENT_TYPE" {
+		t.Errorf("error = %#v, want validation/UNSUPPORTED_ATTACHMENT_TYPE", failure)
+	}
+	if len(svc.seen) != 0 {
+		t.Fatalf("service saw %d steers, want 0", len(svc.seen))
 	}
 }
 

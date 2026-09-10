@@ -1,4 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { render as rtlRender, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import {
@@ -9,6 +11,15 @@ import {
 	chatFixtureThreadError,
 } from "../../lib/chat-fixture";
 import type { ConversationSnapshot } from "../../types/conversation";
+import { TooltipProvider } from "../ui/tooltip";
+
+function render(ui: ReactElement) {
+	const result = rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+	return {
+		...result,
+		rerender: (nextUi: ReactElement) => result.rerender(<TooltipProvider>{nextUi}</TooltipProvider>),
+	};
+}
 
 // The surface-level wiring: which snapshot fields produce which chrome, and — the part
 // that is easy to get wrong — which combinations stay quiet.
@@ -200,5 +211,21 @@ describe("model reroute", () => {
 		);
 		expect(screen.getByText(/gpt-5\.6-terra/)).toBeInTheDocument();
 		expect(screen.queryByLabelText(/Substituted for/)).not.toBeInTheDocument();
+	});
+});
+
+
+describe("empty project session permissions", () => {
+	it.each(["orchestrator", "worker"] as const)("exposes permissions and project remembering for an empty %s", async (role) => {
+		const user = userEvent.setup();
+		const remember = vi.fn();
+		render(<ChatWorkspace sessionRole={role} snapshot={{ ...chatFixture, items: [], turns: [],
+			controller: { state: "ready" }, settings: { approvalMode: "auto" } }}
+			onChooseSettings={vi.fn()} onRememberPermissions={remember} />);
+		const picker = screen.getByRole("button", { name: "Approval policy for the next turn" });
+		expect(picker).toBeEnabled();
+		await user.click(picker);
+		await user.click(screen.getByRole("menuitem", { name: "Remember for this project" }));
+		expect(remember).toHaveBeenCalledWith("auto");
 	});
 });

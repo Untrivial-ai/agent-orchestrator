@@ -137,6 +137,7 @@ export function highlightSync(code: string, language: GrammarName): Root | undef
 export async function highlight(code: string, language: GrammarName): Promise<Root | undefined> {
 	const ready = highlightSync(code, language);
 	if (ready) return ready;
+	if (code.length > SYNC_LIMIT) return highlightInWorker(code, language);
 	if (!(await loadEngine())) return undefined;
 	return tokenize(code, language, cacheKey(code, language));
 }
@@ -172,6 +173,11 @@ function tokenize(code: string, language: GrammarName, key: string): Root | unde
 }
 
 function store(key: string, tree: Root, chars: number): void {
+	const existing = cache.get(key);
+	if (existing) {
+		cachedChars -= existing.chars;
+		cache.delete(key);
+	}
 	// One pathological block must not be able to evict everything else.
 	if (chars > MAX_CHARS) return;
 	while (cache.size >= MAX_ENTRIES || cachedChars + chars > MAX_CHARS) {
@@ -199,4 +205,68 @@ function cacheKey(code: string, language: GrammarName): string {
 		hash = Math.imul(hash, 0x01000193);
 	}
 	return `${language}:${code.length}:${(hash >>> 0).toString(36)}`;
+}
+
+// Keep large tokenization off the renderer thread. If a worker is unavailable,
+// saturated or stuck, leave the already-readable plain code in place.
+const MAX_PENDING = 32;
+const WORKER_TIMEOUT_MS = 10_000;
+let worker: Worker | undefined;
+let workerUnavailable = false;
+let nextRequestId = 0;
+let pendingChars = 0;
+const pending = new Map<number, {
+	key: string;
+	chars: number;
+	promise: Promise<Root | undefined>;
+	resolve: (tree: Root | undefined) => void;
+	timer: ReturnType<typeof setTimeout>;
+}>();
+
+function stopWorker(): void {
+	workerUnavailable = true;
+	worker?.terminate();
+	worker = undefined;
+	for (const request of pending.values()) {
+		clearTimeout(request.timer);
+		request.resolve(undefined);
+	}
+	pending.clear();
+	pendingChars = 0;
+}
+
+function highlightInWorker(code: string, language: GrammarName): Promise<Root | undefined> {
+	const key = cacheKey(code, language);
+	for (const request of pending.values()) {
+		if (request.key === key) return request.promise;
+	}
+	if (workerUnavailable || typeof Worker === "undefined" || pending.size >= MAX_PENDING || pendingChars + code.length > MAX_CHARS) {
+		return Promise.resolve(undefined);
+	}
+	try {
+		if (!worker) {
+			worker = new Worker(new URL("./code-highlight.worker.ts", import.meta.url), { type: "module" });
+			worker.onerror = stopWorker;
+			worker.onmessageerror = stopWorker;
+			worker.onmessage = (event: MessageEvent<{ id: number; tree?: Root }>) => {
+				const request = pending.get(event.data.id);
+				if (!request) return;
+				clearTimeout(request.timer);
+				pending.delete(event.data.id);
+				pendingChars -= request.chars;
+				if (event.data.tree) store(request.key, event.data.tree, request.chars);
+				request.resolve(event.data.tree);
+			};
+		}
+		const id = ++nextRequestId;
+		let resolve!: (tree: Root | undefined) => void;
+		const promise = new Promise<Root | undefined>((done) => { resolve = done; });
+		pending.set(id, { key, chars: code.length, promise, resolve, timer: setTimeout(stopWorker, WORKER_TIMEOUT_MS) });
+		pendingChars += code.length;
+		worker.postMessage({ id, code, language });
+		return promise;
+	} catch {
+		stopWorker();
+		return Promise.resolve(undefined);
+	}
 }

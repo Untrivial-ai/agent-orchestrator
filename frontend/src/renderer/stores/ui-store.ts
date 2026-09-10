@@ -18,14 +18,23 @@ import {
 export type { Theme, ThemePreference, ThemeStyle } from "../lib/theme";
 export { readStoredThemePreference, readStoredThemeStyle, resolveTheme } from "../lib/theme";
 
-export type GlobalSettingsSection = "general" | "cloud" | "mobile" | "shortcuts" | "updates" | "help";
+export type GlobalSettingsSection =
+	| "general"
+	| "harness"
+	| "agents"
+	| "cloud"
+	| "mobile"
+	| "shortcuts"
+	| "browserProfiles"
+	| "updates"
+	| "help";
 
 export type SettingsModal =
 	| { scope: "global"; section?: GlobalSettingsSection }
 	| {
 			scope: "project";
 			projectId: string;
-	  };
+	};
 
 /** Worker detail view toggles — Changes (Git rail) is the default. */
 export type WorkbenchTab = "changes" | "files" | "terminal";
@@ -44,20 +53,22 @@ export type InspectorSessionState = {
 	initialized?: boolean;
 };
 
+export type GlobalToast = {
+	title: string;
+	body?: string;
+	tone?: "info" | "error";
+	placement?: "bottom-right" | "top-center";
+	nonce: number;
+};
+
 // Selection (which project/session is open) now lives in the URL — the router
 // is the single source of truth, read via route params. This store holds only
 // ephemeral UI: theme, sidebar collapse, command palette, per-session inspector
 // state, and the active workbench tab within a session.
 export type UiState = {
 	workbenchTab: WorkbenchTab;
-	/** The user's durable sidebar preference. Workspace pressure never mutates it. */
+	/** The user's durable sidebar preference. */
 	isSidebarOpen: boolean;
-	/** A live workspace may temporarily reclaim the sidebar's width. */
-	isSidebarAutoCollapsed: boolean;
-	/** The user explicitly reopened the sidebar while auto-collapse is active. */
-	sidebarAutoCollapseOverride: boolean;
-	/** Active workspace width needed beside a fully expanded sidebar; owned by the shell. */
-	sidebarWorkspaceDemandPx: number | null;
 	inspectorSessions: Record<string, InspectorSessionState>;
 	isCommandPaletteOpen: boolean;
 	settingsModal: SettingsModal | null;
@@ -69,8 +80,15 @@ export type UiState = {
 	/** When true, developer-only release controls are available. Default off. */
 	developerMode: boolean;
 	restartingProjectIds: ReadonlySet<string>;
+	// Projects whose initial orchestrator spawn (after import/clone) is still
+	// running in the background. The board renders a progress banner and gates
+	// session actions until the spawn settles, instead of blocking navigation.
+	provisioningProjectIds: ReadonlySet<string>;
 	orchestratorReplacementErrors: Record<string, OrchestratorReplacementFailure>;
 	orchestratorStartupErrors: Record<string, string>;
+	globalToasts: GlobalToast[];
+	globalToast: GlobalToast | null;
+	globalToastSequence: number;
 	// Transient "open the New Task dialog for this project" signal. The nonce
 	// bumps on every request so a repeat press (even for the same project) still
 	// re-fires; the always-mounted GlobalNewTaskDialog consumes it. Selection
@@ -105,15 +123,16 @@ export type UiState = {
 	setThemePreference: (theme: ThemePreference) => void;
 	setThemeStyle: (style: ThemeStyle) => void;
 	setDeveloperMode: (enabled: boolean) => void;
+	/** True while the restart-to-update confirmation is open. */
+	updateInstallPromptOpen: boolean;
+	openUpdateInstallPrompt: () => void;
+	closeUpdateInstallPrompt: () => void;
 	openGlobalSettings: (section?: GlobalSettingsSection) => void;
 	openProjectSettings: (projectId: string) => void;
 	closeSettings: () => void;
 	/** Refresh resolvedTheme from OS without writing light/dark to storage. */
 	syncSystemTheme: () => void;
 	toggleSidebar: () => void;
-	setSidebarAutoCollapsed: (collapsed: boolean) => void;
-	clearSidebarAutoCollapse: () => void;
-	setSidebarWorkspaceDemand: (demandPx: number | null) => void;
 	setInspectorOpen: (sessionId: string, isOpen: boolean) => void;
 	toggleInspector: (sessionId: string) => void;
 	setInspectorView: (sessionId: string, view: InspectorView) => void;
@@ -130,8 +149,12 @@ export type UiState = {
 	setFilesChangedOnly: (sessionId: string, changedOnly: boolean) => void;
 	setCommandPaletteOpen: (open: boolean) => void;
 	setProjectRestarting: (projectId: string, restarting: boolean) => void;
+	setProjectProvisioning: (projectId: string, provisioning: boolean) => void;
 	setOrchestratorReplacementError: (projectId: string, failure: OrchestratorReplacementFailure | null) => void;
 	setOrchestratorStartupError: (projectId: string, message: string | null) => void;
+	showGlobalToast: (title: string, body?: string, style?: GlobalToast["tone"] | GlobalToast["placement"]) => void;
+	dismissGlobalToast: (nonce: number) => void;
+	clearGlobalToast: () => void;
 	requestNewTask: (projectId: string) => void;
 	requestCreateProject: () => void;
 	requestCreateProjectFromPath: (path: string) => void;
@@ -166,21 +189,11 @@ function inspectorState(sessions: Record<string, InspectorSessionState>, session
 	return sessions[sessionId] ?? { isOpen: true, view: "summary" };
 }
 
-/** Effective visibility keeps temporary workspace pressure out of the persisted preference. */
-export function sidebarIsVisible(
-	state: Pick<UiState, "isSidebarOpen" | "isSidebarAutoCollapsed" | "sidebarAutoCollapseOverride">,
-): boolean {
-	return state.isSidebarOpen && (!state.isSidebarAutoCollapsed || state.sidebarAutoCollapseOverride);
+export function sidebarIsVisible(state: Pick<UiState, "isSidebarOpen">): boolean {
+	return state.isSidebarOpen;
 }
 
-/** Auto pressure keeps navigation available as an icon rail; only the user's durable close hides it. */
-export function sidebarIsCompact(
-	state: Pick<UiState, "isSidebarOpen" | "isSidebarAutoCollapsed" | "sidebarAutoCollapseOverride">,
-): boolean {
-	return state.isSidebarOpen && state.isSidebarAutoCollapsed && !state.sidebarAutoCollapseOverride;
-}
-
-/** Expanded and compact rails both occupy shell layout; a durable user close does not. */
+/** The expanded sidebar occupies shell layout; a user close does not. */
 export function sidebarOccupiesLayout(state: Pick<UiState, "isSidebarOpen">): boolean {
 	return state.isSidebarOpen;
 }
@@ -191,9 +204,6 @@ const initialThemeStyle = readStoredThemeStyle();
 export const useUiStore = create<UiState>((set, get) => ({
 	workbenchTab: "changes",
 	isSidebarOpen: initialSidebarOpen(),
-	isSidebarAutoCollapsed: false,
-	sidebarAutoCollapseOverride: false,
-	sidebarWorkspaceDemandPx: null,
 	inspectorSessions: {},
 	isCommandPaletteOpen: false,
 	settingsModal: null,
@@ -202,8 +212,12 @@ export const useUiStore = create<UiState>((set, get) => ({
 	themeStyle: initialThemeStyle,
 	developerMode: initialDeveloperMode(),
 	restartingProjectIds: new Set<string>(),
+	provisioningProjectIds: new Set<string>(),
 	orchestratorReplacementErrors: {},
 	orchestratorStartupErrors: {},
+	globalToasts: [],
+	globalToast: null,
+	globalToastSequence: 0,
 	newTaskRequest: null,
 	createProjectNonce: 0,
 	folderDropRequest: null,
@@ -232,6 +246,9 @@ export const useUiStore = create<UiState>((set, get) => ({
 		getLocalStorage()?.setItem(developerModeStorageKey, String(developerMode));
 		set({ developerMode });
 	},
+	updateInstallPromptOpen: false,
+	openUpdateInstallPrompt: () => set({ updateInstallPromptOpen: true }),
+	closeUpdateInstallPrompt: () => set({ updateInstallPromptOpen: false }),
 	openGlobalSettings: (section) => set({ settingsModal: { scope: "global", section } }),
 	openProjectSettings: (projectId) => set({ settingsModal: { scope: "project", projectId } }),
 	closeSettings: () => set({ settingsModal: null }),
@@ -247,32 +264,10 @@ export const useUiStore = create<UiState>((set, get) => ({
 	},
 	toggleSidebar: () =>
 		set((state) => {
-			const wasVisible = sidebarIsVisible(state);
-			const isSidebarOpen = !wasVisible;
+			const isSidebarOpen = !state.isSidebarOpen;
 			getLocalStorage()?.setItem(sidebarStorageKey, String(isSidebarOpen));
-			return {
-				isSidebarOpen,
-				// Reopening under active workspace pressure is an explicit override.
-				// Closing clears it so the next open follows the current layout policy.
-				sidebarAutoCollapseOverride: isSidebarOpen && state.isSidebarAutoCollapsed,
-			};
+			return { isSidebarOpen };
 		}),
-	setSidebarAutoCollapsed: (isSidebarAutoCollapsed) =>
-		set((state) => {
-			if (state.isSidebarAutoCollapsed === isSidebarAutoCollapsed) return state;
-			// Pressure can cross its threshold while the rail is still moving. Never
-			// discard an explicit expansion here; the shell clears it only when the
-			// workspace that created the pressure actually closes.
-			return { isSidebarAutoCollapsed };
-		}),
-	clearSidebarAutoCollapse: () =>
-		set({ isSidebarAutoCollapsed: false, sidebarAutoCollapseOverride: false }),
-	setSidebarWorkspaceDemand: (sidebarWorkspaceDemandPx) =>
-		set((state) =>
-			state.sidebarWorkspaceDemandPx === sidebarWorkspaceDemandPx
-				? state
-				: { sidebarWorkspaceDemandPx },
-		),
 	setInspectorOpen: (sessionId, isOpen) =>
 		set((state) => {
 			const current = inspectorState(state.inspectorSessions, sessionId);
@@ -372,6 +367,16 @@ export const useUiStore = create<UiState>((set, get) => ({
 			}
 			return { restartingProjectIds };
 		}),
+	setProjectProvisioning: (projectId, provisioning) =>
+		set((state) => {
+			const provisioningProjectIds = new Set(state.provisioningProjectIds);
+			if (provisioning) {
+				provisioningProjectIds.add(projectId);
+			} else {
+				provisioningProjectIds.delete(projectId);
+			}
+			return { provisioningProjectIds };
+		}),
 	setOrchestratorReplacementError: (projectId, failure) =>
 		set((state) => {
 			const orchestratorReplacementErrors = { ...state.orchestratorReplacementErrors };
@@ -392,8 +397,34 @@ export const useUiStore = create<UiState>((set, get) => ({
 			}
 			return { orchestratorStartupErrors };
 		}),
-	requestNewTask: (projectId) =>
-		set((state) => ({ newTaskRequest: { projectId, nonce: (state.newTaskRequest?.nonce ?? 0) + 1 } })),
+	showGlobalToast: (title, body, style) =>
+		set((state) => {
+			const nonce = state.globalToastSequence + 1;
+			const tone = style === "error" || style === "info" ? style : "info";
+			const placement = style === "top-center" || style === "bottom-right" ? style : "bottom-right";
+			const toast = { title, body, tone, placement, nonce };
+			return { globalToast: toast, globalToasts: [...state.globalToasts, toast], globalToastSequence: nonce };
+		}),
+	dismissGlobalToast: (nonce) =>
+		set((state) => ({
+			globalToasts: state.globalToasts.filter((toast) => toast.nonce !== nonce),
+			globalToast: state.globalToast?.nonce === nonce ? null : state.globalToast,
+		})),
+	clearGlobalToast: () => set({ globalToast: null, globalToasts: [], globalToastSequence: 0 }),
+	requestNewTask: (projectId) => {
+		// Central gate: every New Task entry point (buttons, sidebar menus,
+		// shortcuts) funnels through here, so a project whose orchestrator is
+		// still provisioning cannot start tasks before it exists.
+		if (get().provisioningProjectIds.has(projectId)) {
+			get().showGlobalToast(
+				"Project is still being set up",
+				"The orchestrator is starting. Try again in a moment.",
+				"info",
+			);
+			return;
+		}
+		set((state) => ({ newTaskRequest: { projectId, nonce: (state.newTaskRequest?.nonce ?? 0) + 1 } }));
+	},
 	requestCreateProject: () => set((state) => ({ createProjectNonce: state.createProjectNonce + 1 })),
 	requestCreateProjectFromPath: (path) =>
 		set((state) => ({ folderDropRequest: { path, nonce: (state.folderDropRequest?.nonce ?? 0) + 1 } })),

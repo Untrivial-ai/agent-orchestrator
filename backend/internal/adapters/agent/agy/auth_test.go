@@ -1,4 +1,20 @@
 package agy
 
-// Antigravity auth is stored in the OS keyring and intentionally has no
-// filesystem-only probe. AuthStatus behavior is covered by the adapter tests.
+import (
+	"context"
+	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+)
+
+func TestAuthStatusAuthorizedWhenAgyIsInstalled(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "agy"}
+
+	status, err := plugin.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusAuthorized)
+	}
+}

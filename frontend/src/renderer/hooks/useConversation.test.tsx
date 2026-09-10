@@ -4,22 +4,26 @@ import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
-const { getMock, postMock, apiErrorCodeMock, apiErrorMessageMock } = vi.hoisted(() => ({
+const { getMock, patchMock, postMock, apiErrorCodeMock, apiErrorMessageMock } = vi.hoisted(() => ({
 	getMock: vi.fn(),
+	patchMock: vi.fn(),
 	postMock: vi.fn(),
 	apiErrorCodeMock: vi.fn(),
 	apiErrorMessageMock: vi.fn(),
 }));
 
 vi.mock("../lib/api-client", () => ({
-	apiClient: { GET: getMock, POST: postMock, PATCH: vi.fn() },
+	apiClient: { GET: getMock, POST: postMock, PATCH: patchMock },
 	apiErrorCode: apiErrorCodeMock,
 	apiErrorMessage: apiErrorMessageMock,
 }));
 
 import {
+	clearConversationProviderCatalogs,
+	conversationConfigOptionsQueryKey,
 	useConversation,
 	useConversationCommands,
+	useConversationConfigOptions,
 } from "./useConversation";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
@@ -85,6 +89,7 @@ const WIRE = {
 
 beforeEach(() => {
 	getMock.mockReset();
+	patchMock.mockReset();
 	postMock.mockReset();
 	apiErrorCodeMock.mockReset().mockReturnValue(undefined);
 	apiErrorMessageMock.mockReset().mockReturnValue("failed");
@@ -256,7 +261,40 @@ describe("accepted conversation sends", () => {
 			wrapper: HookWrapper,
 		});
 		expect(secondMount.result.current.pendingAcceptedTurnId).toBe("turn-refresh-failed");
-		expect(secondMount.result.current.busy).toBe(true);
+		expect(secondMount.result.current.busy).toBe(false);
+	});
+
+	it("releases the dispatch sentinel immediately when the daemon queues mid-turn", async () => {
+		postMock
+			.mockResolvedValueOnce({
+				data: { duplicate: false, turnId: "turn-queued-1", state: "queued" as const },
+				error: undefined,
+			})
+			.mockResolvedValueOnce({
+				data: { duplicate: false, turnId: "turn-queued-2", state: "queued" as const },
+				error: undefined,
+			});
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationCommands("ao-queue-chain"), {
+			wrapper: HookWrapper,
+		});
+
+		await act(async () => {
+			await result.current.send("first queued");
+		});
+		await waitFor(() => expect(result.current.busy).toBe(false));
+		expect(result.current.pendingAcceptedTurnId).toBeUndefined();
+
+		await act(async () => {
+			await result.current.send("second queued");
+		});
+
+		expect(postMock).toHaveBeenCalledTimes(2);
 	});
 
 	it("admits only one same-session send before React can publish busy state", async () => {
@@ -479,11 +517,11 @@ describe("session-scoped conversation commands", () => {
 			expect(result.current.pendingAcceptedTurnId).toBeUndefined();
 
 			rerender({ sessionId: "ao-turn-a" });
-			expect(result.current.busy).toBe(true);
+			expect(result.current.busy).toBe(false);
 			expect(result.current.pendingAcceptedTurnId).toBe(acceptedTurnId);
 
 			act(() => result.current.acknowledgeAcceptedTurn("turn-from-another-session"));
-			expect(result.current.busy).toBe(true);
+			expect(result.current.busy).toBe(false);
 			expect(result.current.pendingAcceptedTurnId).toBe(acceptedTurnId);
 
 			act(() => result.current.acknowledgeAcceptedTurn(acceptedTurnId));
@@ -532,6 +570,47 @@ describe("session-scoped conversation commands", () => {
 			});
 		},
 	);
+});
+
+describe("provider catalog controller epochs", () => {
+	it("discards a config mutation response from before switch admission", async () => {
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const queryKey = conversationConfigOptionsQueryKey("ao-1");
+		queryClient.setQueryData(queryKey, [{ id: "model", currentValue: "source" }]);
+		let resolvePatch!: (value: {
+			data: { options: Array<{ id: string; currentValue: string }> };
+			error: undefined;
+		}) => void;
+		patchMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolvePatch = resolve;
+			}),
+		);
+		const Wrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationConfigOptions("ao-1", false), {
+			wrapper: Wrapper,
+		});
+
+		let mutation!: Promise<unknown>;
+		act(() => {
+			mutation = result.current.setOption("model", { value: "source-next" });
+		});
+		await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+		act(() => clearConversationProviderCatalogs(queryClient, "ao-1"));
+		expect(queryClient.getQueryData(queryKey)).toBeUndefined();
+
+		resolvePatch({
+			data: { options: [{ id: "model", currentValue: "source-next" }] },
+			error: undefined,
+		});
+		await act(async () => mutation);
+
+		expect(queryClient.getQueryData(queryKey)).toBeUndefined();
+	});
 });
 
 describe("useConversation snapshot mapping", () => {
@@ -704,6 +783,66 @@ describe("conversation branching commands", () => {
 });
 
 describe("steering refusals", () => {
+	it("posts native image attachments with steer guidance", async () => {
+		postMock.mockResolvedValue({
+			data: { providerTurnId: "provider-1", activityId: "activity-1" },
+			error: undefined,
+		});
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await act(async () => {
+			await result.current.steer("inspect this", [
+				{ mimeType: "image/png", data: "aW1hZ2U=" },
+			]);
+		});
+
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/steer",
+			{
+				params: { path: { sessionId: "ao-1" } },
+				body: {
+					text: "inspect this",
+					attachments: [{ mimeType: "image/png", data: "aW1hZ2U=" }],
+					clientMessageId: expect.any(String),
+				},
+			},
+		);
+	});
+
+	it("clears steer pending before a slow conversation refresh finishes", async () => {
+		const refresh = deferred<void>();
+		const steerResponse = deferred<{
+			data: { sourceTurnId: string; providerTurnId: string; activityId: string };
+			error: undefined;
+		}>();
+		postMock.mockImplementationOnce(() => steerResponse.promise);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		vi.spyOn(queryClient, "invalidateQueries").mockImplementation(() => refresh.promise);
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper: HookWrapper });
+
+		let steerDone!: Promise<unknown>;
+		act(() => {
+			steerDone = result.current.steer("go left");
+		});
+		await waitFor(() => expect(result.current.steerPending).toBe(true));
+
+		steerResponse.resolve({
+			data: { sourceTurnId: "turn-1", providerTurnId: "provider-1", activityId: "activity-1" },
+			error: undefined,
+		});
+		await act(async () => {
+			await steerDone;
+		});
+
+		await waitFor(() => expect(result.current.steerPending).toBe(false));
+		refresh.resolve();
+	});
+
 	it("promotes the selected durable queued turn through the turn-scoped route", async () => {
 		postMock.mockResolvedValue({
 			data: { sourceTurnId: "queued-2", providerTurnId: "provider-1", activityId: "activity-1" },

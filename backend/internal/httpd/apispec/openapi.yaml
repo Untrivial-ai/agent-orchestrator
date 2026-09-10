@@ -33,6 +33,127 @@ paths:
       summary: Return cached supported and locally installed agent adapters
       tags:
       - agents
+  /api/v1/agents/{agent}/auth:
+    post:
+      operationId: startAgentAuth
+      parameters:
+      - description: Agent adapter identifier.
+        in: path
+        name: agent
+        required: true
+        schema:
+          description: Agent adapter identifier.
+          type: string
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartAgentAuthResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Open the fixed native authentication flow for one agent
+      tags:
+      - agents
+  /api/v1/agents/{agent}/install:
+    get:
+      operationId: getAgentInstallStatus
+      parameters:
+      - description: Agent adapter identifier.
+        in: path
+        name: agent
+        required: true
+        schema:
+          description: Agent adapter identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstallJob'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get the current or last install job for one agent harness
+      tags:
+      - agents
+    post:
+      operationId: startAgentInstall
+      parameters:
+      - description: Agent adapter identifier.
+        in: path
+        name: agent
+        required: true
+        schema:
+          description: Agent adapter identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartAgentInstallRequest'
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstallJob'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Start an asynchronous install for one fixed agent harness
+      tags:
+      - agents
   /api/v1/agents/{agent}/models:
     get:
       operationId: getAgentModels
@@ -182,7 +303,630 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Run a fresh local readiness probe for one agent adapter
+      summary: Ensure launch-fresh readiness for one agent adapter
+      tags:
+      - agents
+  /api/v1/agents/{agent}/verify:
+    post:
+      operationId: verifyAgentInstall
+      parameters:
+      - description: Agent adapter identifier.
+        in: path
+        name: agent
+        required: true
+        schema:
+          description: Agent adapter identifier.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstallJob'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Verify an installed harness without reinstalling or probing authentication
+      tags:
+      - agents
+  /api/v1/agents/auth-plans:
+    get:
+      operationId: listAgentAuthPlans
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAgentAuthPlansResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Return display-safe native authentication plans for supported agents
+      tags:
+      - agents
+  /api/v1/agents/codex/account-switches:
+    post:
+      operationId: startCodexAccountSwitch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartCodexAccountSwitchRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountSwitchResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Start a global AO Codex account switch
+      tags:
+      - agents
+  /api/v1/agents/codex/account-switches/{switchId}/recover:
+    post:
+      operationId: recoverCodexAccountSwitch
+      parameters:
+      - description: Durable Codex account switch identifier.
+        in: path
+        name: switchId
+        required: true
+        schema:
+          description: Durable Codex account switch identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountSwitchResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Retry incomplete restarts for one Codex account switch
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts:
+    get:
+      operationId: getCodexAccounts
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountsResponse'
+          description: OK
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Return cached AO Codex accounts and active-account state
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/{accountId}:
+    delete:
+      operationId: deleteCodexAccount
+      parameters:
+      - description: AO Codex account identifier.
+        in: path
+        name: accountId
+        required: true
+        schema:
+          description: AO Codex account identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Delete one inactive signed-out Codex account
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/{accountId}/login-terminal:
+    post:
+      operationId: openCodexAccountReauthenticationTerminal
+      parameters:
+      - description: AO Codex account identifier.
+        in: path
+        name: accountId
+        required: true
+        schema:
+          description: AO Codex account identifier.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenCodexAccountLoginTerminalResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Open native Codex sign-in for one retained account
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/{accountId}/logout:
+    post:
+      operationId: logoutCodexAccount
+      parameters:
+      - description: AO Codex account identifier.
+        in: path
+        name: accountId
+        required: true
+        schema:
+          description: AO Codex account identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Log out one retained Codex account
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/{accountId}/reset-credit/consume:
+    post:
+      operationId: consumeCodexAccountResetCredit
+      parameters:
+      - description: AO Codex account identifier.
+        in: path
+        name: accountId
+        required: true
+        schema:
+          description: AO Codex account identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsumeCodexAccountResetCreditRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Consume one provider-reported Codex usage-limit reset credit
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/ensure:
+    post:
+      operationId: ensureCodexAccounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnsureCodexAccountsRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Discover Codex accounts and ensure authentication, capacity, and optional
+        usage
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/events:
+    get:
+      operationId: streamCodexAccounts
+      responses:
+        "200":
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/CodexAccountsResponse'
+          description: OK
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Stream cached and live Codex account state
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/login-operations/{operationId}/cancel:
+    post:
+      operationId: cancelCodexAccountLogin
+      parameters:
+      - description: In-memory Codex account login operation identifier.
+        in: path
+        name: operationId
+        required: true
+        schema:
+          description: In-memory Codex account login operation identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountLoginResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Cancel one native Codex account login operation
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/login-operations/{operationId}/verify:
+    post:
+      operationId: verifyCodexAccountLogin
+      parameters:
+      - description: In-memory Codex account login operation identifier.
+        in: path
+        name: operationId
+        required: true
+        schema:
+          description: In-memory Codex account login operation identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodexAccountLoginResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Verify one native Codex account login operation
+      tags:
+      - agents
+  /api/v1/agents/codex/accounts/login-terminal:
+    post:
+      operationId: openCodexAccountLoginTerminal
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenCodexAccountLoginTerminalResponse'
+          description: Accepted
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Open an inline native login terminal for a new AO Codex account
+      tags:
+      - agents
+  /api/v1/agents/install-jobs:
+    get:
+      operationId: listAgentInstallJobs
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentInstallJobsResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Return the latest durable install job for every agent harness
+      tags:
+      - agents
+  /api/v1/agents/installers:
+    get:
+      operationId: listAgentInstallers
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentInstallerCatalogResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Resolve the safe installation plan for every supported agent harness
+      tags:
+      - agents
+  /api/v1/agents/readiness:
+    get:
+      operationId: getAgentReadiness
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentReadinessResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Return cached normalized agent readiness without running native checks
+      tags:
+      - agents
+  /api/v1/agents/readiness/ensure:
+    post:
+      operationId: ensureAgentReadiness
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnsureAgentReadinessRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentReadinessResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Ensure normalized readiness for selected agent adapters
       tags:
       - agents
   /api/v1/agents/refresh:
@@ -410,6 +1154,25 @@ paths:
       summary: Run the developer project-registry import through the daemon store
       tags:
       - dev
+  /api/v1/endpoints:
+    get:
+      operationId: getEndpoints
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndpointsResponse'
+          description: OK
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List the ways this daemon can currently be reached
+      tags:
+      - identity
   /api/v1/events:
     get:
       operationId: streamEvents
@@ -453,6 +1216,25 @@ paths:
       summary: Stream CDC events with durable replay
       tags:
       - events
+  /api/v1/identity:
+    get:
+      operationId: getIdentity
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityResponse'
+          description: OK
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Identify the daemon so a client can confirm which machine answered
+      tags:
+      - identity
   /api/v1/import:
     get:
       operationId: getImportStatus
@@ -500,6 +1282,68 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Run the legacy AO project import through the daemon store
+      tags:
+      - import
+  /api/v1/imports/prepare-git:
+    post:
+      operationId: prepareImportGit
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitPreparationInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitPreparationResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Run approved Git preparation actions for project import onboarding
+      tags:
+      - import
+  /api/v1/imports/validate:
+    post:
+      operationId: validateImport
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportValidationInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportValidationResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Validate a selected folder for project import onboarding
       tags:
       - import
   /api/v1/mobile/devices:
@@ -675,6 +1519,31 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Internal Server Error
       summary: Rotate the Connect Mobile password, dropping any connected phone
+      tags:
+      - mobile
+  /api/v1/mobile/remote-access:
+    post:
+      operationId: startMobileRemoteAccess
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileStatusResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Look for a connector again and start it, without rotating the password
       tags:
       - mobile
   /api/v1/mobile/secure-pairing:
@@ -1283,6 +2152,51 @@ paths:
       summary: Replace a project's per-project config
       tags:
       - projects
+  /api/v1/projects/{id}/permissions:
+    patch:
+      operationId: setProjectPermissions
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetProjectPermissionsInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Remember project permissions for future sessions
+      tags:
+      - projects
   /api/v1/projects/clone:
     post:
       operationId: cloneProject
@@ -1318,6 +2232,70 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Internal Server Error
       summary: Clone and register a project from a git repository URL
+      tags:
+      - projects
+  /api/v1/projects/clone/cleanup:
+    post:
+      operationId: cleanupPreparedClone
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectClonePreparationCleanupInput'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Remove an abandoned clone created for project preparation
+      tags:
+      - projects
+  /api/v1/projects/clone/prepare:
+    post:
+      operationId: prepareCloneProject
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloneProjectInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClonePreparationResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Clone a project without registering it so Git setup can be completed
       tags:
       - projects
   /api/v1/projects/initialize:
@@ -2772,6 +3750,59 @@ paths:
       summary: List the models the provider offers for a chat session
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/queue/reorder:
+    post:
+      operationId: reorderQueuedSessionConversationTurns
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderQueuedConversationTurnsRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Rewrite the durable queue order for undispatched turns
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/settings:
     patch:
       operationId: setSessionConversationTurnSettings
@@ -2988,6 +4019,55 @@ paths:
       summary: Name the provider's conversation thread
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/turns/{turnId}/cancel:
+    post:
+      operationId: cancelQueuedSessionConversationTurn
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: AO conversation turn identifier, from the snapshot's turns array.
+        in: path
+        name: turnId
+        required: true
+        schema:
+          description: AO conversation turn identifier, from the snapshot's turns
+            array.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Remove one queued message without stopping the running turn
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/turns/{turnId}/edit:
     post:
       operationId: editSessionConversationMessage
@@ -3051,6 +4131,67 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Branch before and replace an earlier human prompt
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/turns/{turnId}/queue/edit:
+    post:
+      operationId: editQueuedSessionConversationTurn
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: AO conversation turn identifier, from the snapshot's turns array.
+        in: path
+        name: turnId
+        required: true
+        schema:
+          description: AO conversation turn identifier, from the snapshot's turns
+            array.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditQueuedConversationMessageRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Rewrite one queued message before it dispatches
       tags:
       - conversations
   /api/v1/sessions/{sessionId}/conversation/turns/{turnId}/retry:
@@ -3224,6 +4365,51 @@ paths:
       summary: Promote a queued message into the in-flight turn
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/exit-agent:
+    post:
+      operationId: exitAgent
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExitAgentResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Exit the agent while preserving its AO session
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/interface-transition:
     delete:
       operationId: cancelSessionInterfaceTransition
@@ -5311,18 +6497,82 @@ paths:
       summary: Rename a standalone shell terminal tab
       tags:
       - shellTerminals
+  /api/v1/system/github-auth:
+    get:
+      operationId: getGitHubAuthRequirement
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemRequirement'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Check advisory GitHub CLI authentication without blocking startup
+      tags:
+      - system
+  /api/v1/system/github-auth/terminal:
+    post:
+      operationId: openGitHubAuthTerminal
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShellTerminalEnvelope'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Open a trusted terminal running the GitHub CLI login flow
+      tags:
+      - system
   /api/v1/system/install/{target}:
     get:
       operationId: getSystemInstallStatus
       parameters:
       - description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-          or copilot.'
+          copilot, or cloudflared.'
         in: path
         name: target
         required: true
         schema:
           description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-            or copilot.'
+            copilot, or cloudflared.'
+          enum:
+          - tmux
+          - gh
+          - claude
+          - codex
+          - opencode
+          - copilot
+          - cloudflared
           type: string
       responses:
         "200":
@@ -5356,13 +6606,21 @@ paths:
       operationId: startSystemInstall
       parameters:
       - description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-          or copilot.'
+          copilot, or cloudflared.'
         in: path
         name: target
         required: true
         schema:
           description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-            or copilot.'
+            copilot, or cloudflared.'
+          enum:
+          - tmux
+          - gh
+          - claude
+          - codex
+          - opencode
+          - copilot
+          - cloudflared
           type: string
       responses:
         "202":
@@ -5502,6 +6760,11 @@ components:
           type: string
         message:
           type: string
+        reporting_owner:
+          enum:
+          - http
+          - agent_switch_saga
+          type: string
         requestId:
           type: string
       required:
@@ -5533,6 +6796,8 @@ components:
       properties:
         asWorkspace:
           type: boolean
+        clonePreparationId:
+          type: string
         config:
           $ref: '#/components/schemas/ProjectConfig'
         name:
@@ -5547,6 +6812,71 @@ components:
           - string
       required:
       - path
+      type: object
+    AgentAuthPlan:
+      properties:
+        action:
+          type: string
+        agentId:
+          type: string
+        available:
+          type: boolean
+        displayCommand:
+          type: string
+        documentationUrl:
+          type: string
+        guidance:
+          type: string
+        launchMode:
+          enum:
+          - terminal
+          - documentation
+          type: string
+        reason:
+          type: string
+      required:
+      - agentId
+      - action
+      - launchMode
+      - available
+      - documentationUrl
+      type: object
+    AgentAuthenticationObservation:
+      properties:
+        attemptedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        checkedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        freshness:
+          enum:
+          - fresh
+          - stale
+          - checking
+          type: string
+        reason:
+          type: string
+        reasonCode:
+          type: string
+        state:
+          enum:
+          - authorized
+          - unauthorized
+          - unknown
+          - not_applicable
+          type: string
+      required:
+      - state
+      - freshness
+      - checkedAt
+      - attemptedAt
+      - reasonCode
+      - reason
       type: object
     AgentConfig:
       properties:
@@ -5585,6 +6915,119 @@ components:
       - id
       - label
       type: object
+    AgentInstallJobsResponse:
+      properties:
+        jobs:
+          items:
+            $ref: '#/components/schemas/InstallJob'
+          type: array
+      required:
+      - jobs
+      type: object
+    AgentInstallMethod:
+      properties:
+        available:
+          type: boolean
+        command:
+          type: string
+        expectedDestination:
+          type: string
+        id:
+          type: string
+        label:
+          type: string
+        reason:
+          type: string
+        recommended:
+          type: boolean
+        reinstallAvailable:
+          type: boolean
+        reinstallCommand:
+          type: string
+        reinstallReason:
+          type: string
+      required:
+      - id
+      - label
+      - available
+      - recommended
+      - reinstallAvailable
+      type: object
+    AgentInstallPlan:
+      properties:
+        agentId:
+          type: string
+        automatic:
+          type: boolean
+        available:
+          type: boolean
+        command:
+          type: string
+        documentationUrl:
+          type: string
+        expectedDestination:
+          type: string
+        method:
+          type: string
+        methods:
+          items:
+            $ref: '#/components/schemas/AgentInstallMethod'
+          type: array
+        reason:
+          type: string
+      required:
+      - agentId
+      - available
+      - automatic
+      - method
+      - documentationUrl
+      - methods
+      type: object
+    AgentInstallationObservation:
+      properties:
+        attemptedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        checkedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        freshness:
+          enum:
+          - fresh
+          - stale
+          - checking
+          type: string
+        reason:
+          type: string
+        reasonCode:
+          type: string
+        state:
+          enum:
+          - installed
+          - not_installed
+          - unknown
+          type: string
+      required:
+      - state
+      - freshness
+      - checkedAt
+      - attemptedAt
+      - reasonCode
+      - reason
+      type: object
+    AgentInstallerCatalogResponse:
+      properties:
+        agents:
+          items:
+            $ref: '#/components/schemas/AgentInstallPlan'
+          type: array
+      required:
+      - agents
+      type: object
     AgentModelInfo:
       properties:
         id:
@@ -5606,6 +7049,12 @@ components:
         allowCustom:
           type: boolean
         binaryVersion:
+          type: string
+        customModelEntry:
+          enum:
+          - none
+          - direct
+          - configured
           type: string
         fetchedAt:
           format: date-time
@@ -5635,10 +7084,51 @@ components:
       - agentId
       - selectionMode
       - models
+      - customModelEntry
       - allowCustom
       - source
       - fetchedAt
       - stale
+      type: object
+    AgentReadinessResponse:
+      properties:
+        agents:
+          items:
+            $ref: '#/components/schemas/AgentReadinessSnapshot'
+          type: array
+      required:
+      - agents
+      type: object
+    AgentReadinessSnapshot:
+      properties:
+        authentication:
+          $ref: '#/components/schemas/AgentAuthenticationObservation'
+        effectiveReadiness:
+          enum:
+          - ready
+          - not_ready
+          - unknown
+          type: string
+        id:
+          type: string
+        installation:
+          $ref: '#/components/schemas/AgentInstallationObservation'
+        label:
+          type: string
+        lastUsedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        usageCount:
+          type: integer
+      required:
+      - id
+      - label
+      - installation
+      - authentication
+      - effectiveReadiness
+      - usageCount
       type: object
     AgentSwitch:
       properties:
@@ -5841,6 +7331,10 @@ components:
       type: object
     CleanupSessionsResponse:
       properties:
+        alreadyGone:
+          items:
+            type: string
+          type: array
         cleaned:
           items:
             type: string
@@ -5854,6 +7348,7 @@ components:
       required:
       - ok
       - cleaned
+      - alreadyGone
       - skipped
       type: object
     CleanupSkippedSession:
@@ -5865,6 +7360,19 @@ components:
       required:
       - sessionId
       - reason
+      type: object
+    ClonePreparationResult:
+      properties:
+        path:
+          type: string
+        preparationId:
+          type: string
+        remoteUrl:
+          type: string
+      required:
+      - path
+      - remoteUrl
+      - preparationId
       type: object
     CloneProjectInput:
       properties:
@@ -5887,6 +7395,502 @@ components:
       required:
       - remoteUrl
       - destinationParent
+      type: object
+    CodexAccountCapabilitiesResponse:
+      properties:
+        globalSwitch:
+          $ref: '#/components/schemas/CodexCapabilityObservationResponse'
+        nativeLogin:
+          $ref: '#/components/schemas/CodexCapabilityObservationResponse'
+        resetCreditConsume:
+          $ref: '#/components/schemas/CodexCapabilityObservationResponse'
+      required:
+      - nativeLogin
+      - resetCreditConsume
+      - globalSwitch
+      type: object
+    CodexAccountCapacityResponse:
+      properties:
+        additionalBuckets:
+          items:
+            $ref: '#/components/schemas/CodexCapacityBucketResponse'
+          type: array
+        attemptedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        checkedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        freshness:
+          enum:
+          - fresh
+          - stale
+          - checking
+          type: string
+        observedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        overall:
+          $ref: '#/components/schemas/CodexCapacityBucketResponse'
+        plan:
+          type:
+          - "null"
+          - string
+        reason:
+          type: string
+        reasonCode:
+          type: string
+        remainingPercent:
+          maximum: 100
+          minimum: 0
+          type:
+          - "null"
+          - number
+        resetCredits:
+          $ref: '#/components/schemas/CodexResetCreditsSummaryResponse'
+        resetsAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        state:
+          enum:
+          - available
+          - near_limit
+          - exhausted
+          - unknown
+          - unsupported
+          type: string
+        usedPercent:
+          maximum: 100
+          minimum: 0
+          type:
+          - "null"
+          - number
+      required:
+      - state
+      - freshness
+      - reasonCode
+      - reason
+      - additionalBuckets
+      type: object
+    CodexAccountLoginResponse:
+      properties:
+        account:
+          $ref: '#/components/schemas/CodexAccountResponse'
+        accountId:
+          type: string
+        expiresAt:
+          format: date-time
+          type: string
+        operationId:
+          type: string
+        reason:
+          type: string
+        reasonCode:
+          type: string
+        status:
+          enum:
+          - pending
+          - verifying
+          - unauthorized
+          - unverified
+          - completed
+          - cancelled
+          - failed
+          - expired
+          type: string
+      required:
+      - operationId
+      - status
+      - reasonCode
+      - reason
+      - expiresAt
+      type: object
+    CodexAccountLoginTerminalResponse:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        handleId:
+          type: string
+        title:
+          type: string
+      required:
+      - handleId
+      - title
+      - createdAt
+      type: object
+    CodexAccountResponse:
+      properties:
+        accountEmail:
+          type:
+          - "null"
+          - string
+        active:
+          type: boolean
+        authMethod:
+          enum:
+          - chatgpt
+          - api_key
+          - other
+          - unknown
+          type: string
+        authentication:
+          $ref: '#/components/schemas/CodexAuthenticationResponse'
+        capacity:
+          $ref: '#/components/schemas/CodexAccountCapacityResponse'
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        label:
+          type: string
+        reason:
+          type: string
+        reasonCode:
+          type: string
+        status:
+          enum:
+          - valid
+          - signed_out
+          - broken
+          type: string
+        usageSummary:
+          $ref: '#/components/schemas/CodexAccountUsageSummaryResponse'
+      required:
+      - id
+      - label
+      - status
+      - reasonCode
+      - reason
+      - active
+      - authentication
+      - authMethod
+      - capacity
+      - createdAt
+      type: object
+    CodexAccountSwitchResponse:
+      properties:
+        canRecover:
+          type: boolean
+        completedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        createdAt:
+          format: date-time
+          type: string
+        credentialsCommittedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        failureCode:
+          type: string
+        id:
+          type: string
+        phase:
+          enum:
+          - requested
+          - stopping_sessions
+          - sessions_stopped
+          - checkpointing_source
+          - activating_target
+          - verifying_target
+          - restarting_sessions
+          - rollback_required
+          - recovery_required
+          - completed
+          - failed
+          type: string
+        sessions:
+          items:
+            $ref: '#/components/schemas/CodexAccountSwitchSessionResponse'
+          type: array
+        sourceAccountId:
+          type: string
+        targetAccountId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - sourceAccountId
+      - targetAccountId
+      - phase
+      - sessions
+      - canRecover
+      - createdAt
+      - updatedAt
+      type: object
+    CodexAccountSwitchSessionResponse:
+      properties:
+        errorCode:
+          type: string
+        interfaceMode:
+          enum:
+          - tui
+          - chat
+          type: string
+        restartState:
+          type: string
+        restartedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        sessionId:
+          type: string
+        stopState:
+          type: string
+        stoppedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        wasRunning:
+          type: boolean
+      required:
+      - sessionId
+      - interfaceMode
+      - wasRunning
+      - stopState
+      - restartState
+      type: object
+    CodexAccountUsageSummaryResponse:
+      properties:
+        currentStreakDays:
+          type:
+          - "null"
+          - integer
+        latestDayStartDate:
+          type:
+          - "null"
+          - string
+        latestDayTokens:
+          type:
+          - "null"
+          - integer
+        lifetimeTokens:
+          type:
+          - "null"
+          - integer
+        longestRunningTurnSeconds:
+          type:
+          - "null"
+          - integer
+        longestStreakDays:
+          type:
+          - "null"
+          - integer
+        observedAt:
+          format: date-time
+          type: string
+        peakDailyTokens:
+          type:
+          - "null"
+          - integer
+      required:
+      - observedAt
+      type: object
+    CodexAccountsResponse:
+      properties:
+        accountRevision:
+          format: int64
+          type: integer
+        accounts:
+          items:
+            $ref: '#/components/schemas/CodexAccountResponse'
+          type: array
+        activeAccountId:
+          type: string
+        activeLogin:
+          $ref: '#/components/schemas/CodexActiveLoginResponse'
+        capabilities:
+          $ref: '#/components/schemas/CodexAccountCapabilitiesResponse'
+        currentSwitch:
+          $ref: '#/components/schemas/CodexAccountSwitchResponse'
+        unmanagedGlobalAccount:
+          $ref: '#/components/schemas/CodexUnmanagedGlobalAccountResponse'
+      required:
+      - accountRevision
+      - accounts
+      - capabilities
+      type: object
+    CodexActiveLoginResponse:
+      properties:
+        accountId:
+          type: string
+        expiresAt:
+          format: date-time
+          type: string
+        operationId:
+          type: string
+        reason:
+          type: string
+        reasonCode:
+          type: string
+        shellTerminal:
+          $ref: '#/components/schemas/CodexAccountLoginTerminalResponse'
+        status:
+          enum:
+          - pending
+          - verifying
+          - unauthorized
+          - unverified
+          - completed
+          - cancelled
+          - failed
+          - expired
+          type: string
+      required:
+      - operationId
+      - status
+      - reasonCode
+      - reason
+      - expiresAt
+      - shellTerminal
+      type: object
+    CodexAuthenticationResponse:
+      properties:
+        attemptedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        checkedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        freshness:
+          enum:
+          - fresh
+          - stale
+          - checking
+          type: string
+        reason:
+          type: string
+        reasonCode:
+          type: string
+        state:
+          enum:
+          - authorized
+          - unauthorized
+          - unknown
+          - not_applicable
+          type: string
+      required:
+      - state
+      - freshness
+      - checkedAt
+      - attemptedAt
+      - reasonCode
+      - reason
+      type: object
+    CodexCapabilityObservationResponse:
+      properties:
+        reason:
+          type: string
+        reasonCode:
+          type: string
+        state:
+          enum:
+          - supported
+          - unsupported
+          - unknown
+          type: string
+      required:
+      - state
+      - reasonCode
+      - reason
+      type: object
+    CodexCapacityBucketResponse:
+      properties:
+        displayName:
+          type:
+          - "null"
+          - string
+        primary:
+          $ref: '#/components/schemas/CodexCapacityWindowResponse'
+        reached:
+          enum:
+          - not_reached
+          - reached
+          - unknown
+          type: string
+        secondary:
+          $ref: '#/components/schemas/CodexCapacityWindowResponse'
+      required:
+      - reached
+      type: object
+    CodexCapacityWindowResponse:
+      properties:
+        resetsAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        usedPercent:
+          format: double
+          maximum: 100
+          minimum: 0
+          type: number
+        windowDurationMinutes:
+          type:
+          - "null"
+          - integer
+      required:
+      - usedPercent
+      type: object
+    CodexResetCreditsSummaryResponse:
+      properties:
+        availableCount:
+          format: int64
+          minimum: 0
+          type: integer
+        nearestExpiresAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+      required:
+      - availableCount
+      type: object
+    CodexUnmanagedGlobalAccountResponse:
+      properties:
+        accountEmail:
+          type:
+          - "null"
+          - string
+        authMethod:
+          enum:
+          - chatgpt
+          - api_key
+          - other
+          - unknown
+          type: string
+        label:
+          type: string
+        reason:
+          type: string
+        reasonCode:
+          type: string
+      required:
+      - label
+      - authMethod
+      - reasonCode
+      - reason
       type: object
     CompactConversationResponse:
       properties:
@@ -5926,6 +7930,15 @@ components:
       - totalTokens
       - incomplete
       - estimatedCost
+      type: object
+    ConsumeCodexAccountResetCreditRequest:
+      properties:
+        idempotencyKey:
+          maxLength: 200
+          minLength: 1
+          type: string
+      required:
+      - idempotencyKey
       type: object
     ContainerReapConfig:
       properties:
@@ -6006,10 +8019,36 @@ components:
           type: boolean
         branch:
           type: string
+        chatProviderPreserved:
+          type: boolean
         createdAt:
           format: date-time
           type: string
         displayName:
+          type: string
+        displayStatus:
+          enum:
+          - Working
+          - Blocked
+          - Exited
+          - No signal
+          - Awaiting PR
+          - Fixing CI failures
+          - Addressing comments
+          - Needs review
+          - Review scheduled
+          - Reviewing
+          - Review pending
+          - Draft
+          - CI failing
+          - Commented
+          - Changes requested
+          - Needs human review
+          - Mergeable
+          - Approved
+          - Merged
+          - Closed without merge
+          - Terminated
           type: string
         harness:
           type: string
@@ -6020,6 +8059,14 @@ components:
         isTerminated:
           type: boolean
         issueId:
+          type: string
+        kanbanColumn:
+          enum:
+          - building
+          - validating
+          - needs_review
+          - ready
+          - archive
           type: string
         kind:
           type: string
@@ -6051,6 +8098,8 @@ components:
           items:
             $ref: '#/components/schemas/SessionPRFacts'
           type: array
+        reviewerConfig:
+          $ref: '#/components/schemas/AgentConfig'
         reviewerHarness:
           enum:
           - claude-code
@@ -6107,6 +8156,8 @@ components:
           - terminated
           - no_signal
           type: string
+        terminalGeneration:
+          type: string
         terminalHandleId:
           type: string
         terminateOnPrMerge:
@@ -6128,7 +8179,10 @@ components:
       - createdAt
       - updatedAt
       - isPinned
+      - chatProviderPreserved
       - status
+      - kanbanColumn
+      - displayStatus
       - prs
       type: object
     ControllersSetSecurePairingRequest:
@@ -6267,6 +8321,13 @@ components:
         groupName:
           type: string
         name:
+          type: string
+        permissionMode:
+          enum:
+          - default
+          - accept-edits
+          - auto
+          - bypass-permissions
           type: string
         value:
           type: string
@@ -6728,6 +8789,7 @@ components:
           - recovered
           - interrupted
           - failed
+          - cancelled
           type: string
       required:
       - id
@@ -6850,7 +8912,7 @@ components:
             $ref: '#/components/schemas/AttachmentInput'
           type: array
         brief:
-          maxLength: 4096
+          maxLength: 16384
           type: string
         mode:
           enum:
@@ -6962,6 +9024,8 @@ components:
       type: object
     DomainReviewerConfig:
       properties:
+        agentConfig:
+          $ref: '#/components/schemas/AgentConfig'
         harness:
           type: string
       required:
@@ -6998,6 +9062,59 @@ components:
       required:
       - sourceBranchId
       - activeBranchId
+      type: object
+    EditQueuedConversationMessageRequest:
+      properties:
+        attachments:
+          items:
+            $ref: '#/components/schemas/ConversationImageContentRequest'
+          type: array
+        expectedRevision:
+          type:
+          - "null"
+          - integer
+        retainedContent:
+          items:
+            type: integer
+          type:
+          - "null"
+          - array
+        text:
+          type: string
+      required:
+      - text
+      type: object
+    EndpointsResponse:
+      properties:
+        endpoints:
+          items:
+            $ref: '#/components/schemas/MobileEndpoint'
+          type: array
+      required:
+      - endpoints
+      type: object
+    EnsureAgentReadinessRequest:
+      properties:
+        agentIds:
+          items:
+            type: string
+          type: array
+        purpose:
+          enum:
+          - display
+          - launch
+          type: string
+      required:
+      - purpose
+      type: object
+    EnsureCodexAccountsRequest:
+      properties:
+        accountIds:
+          items:
+            type: string
+          type: array
+        includeUsage:
+          type: boolean
       type: object
     EstimatedCostResponse:
       properties:
@@ -7045,6 +9162,129 @@ components:
       - coverage
       - providerAttribution
       type: object
+    ExitAgentResponse:
+      properties:
+        ok:
+          type: boolean
+        session:
+          $ref: '#/components/schemas/ControllersSessionView'
+        sessionId:
+          type: string
+      required:
+      - ok
+      - sessionId
+      - session
+      type: object
+    GitHubRepositoryPreparation:
+      properties:
+        name:
+          type: string
+        owner:
+          type: string
+        private:
+          type:
+          - "null"
+          - boolean
+      type: object
+    GitPreparationEvent:
+      properties:
+        action:
+          enum:
+          - git_init
+          - git_commit
+          - create_remote_repository
+          - set_remote
+          type: string
+        error:
+          type: string
+        message:
+          type: string
+        repoPath:
+          type: string
+        state:
+          enum:
+          - pending
+          - running
+          - success
+          - error
+          type: string
+      required:
+      - action
+      - repoPath
+      - state
+      type: object
+    GitPreparationInput:
+      properties:
+        approvedActions:
+          items:
+            type: string
+          type: array
+        githubRepository:
+          $ref: '#/components/schemas/GitHubRepositoryPreparation'
+        importKind:
+          enum:
+          - project
+          - workspace
+          minLength: 1
+          type: string
+        initialCommitMessage:
+          type: string
+        path:
+          minLength: 1
+          type: string
+        remoteUrl:
+          type: string
+        repositories:
+          items:
+            $ref: '#/components/schemas/GitRepositoryPreparationInput'
+          type: array
+        stepwise:
+          type: boolean
+      required:
+      - importKind
+      - path
+      type: object
+    GitPreparationResult:
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/GitPreparationEvent'
+          type: array
+        validation:
+          $ref: '#/components/schemas/ImportValidationResult'
+      required:
+      - events
+      - validation
+      type: object
+    GitRepositoryPreparationInput:
+      properties:
+        approvedActions:
+          items:
+            type: string
+          type: array
+        githubRepository:
+          $ref: '#/components/schemas/GitHubRepositoryPreparation'
+        initialCommitMessage:
+          type: string
+        remoteUrl:
+          type: string
+        repoPath:
+          minLength: 1
+          type: string
+      required:
+      - repoPath
+      - approvedActions
+      type: object
+    IdentityResponse:
+      properties:
+        apiVersion:
+          type: integer
+        hostId:
+          type: string
+      required:
+      - hostId
+      - apiVersion
+      type: object
     ImportReport:
       properties:
         dryRun:
@@ -7079,6 +9319,53 @@ components:
       - available
       - legacyRoot
       type: object
+    ImportValidationInput:
+      properties:
+        importKind:
+          enum:
+          - project
+          - workspace
+          minLength: 1
+          type: string
+        path:
+          minLength: 1
+          type: string
+      required:
+      - importKind
+      - path
+      type: object
+    ImportValidationResult:
+      properties:
+        blockingErrors:
+          items:
+            type: string
+          type: array
+        childRepos:
+          items:
+            $ref: '#/components/schemas/RepoGitStatus'
+          type: array
+        importKind:
+          type: string
+        isValid:
+          type: boolean
+        nextStep:
+          enum:
+          - error
+          - choose_import_kind
+          - prepare_git
+          - continue
+          type: string
+        root:
+          $ref: '#/components/schemas/RepoGitStatus'
+        warning:
+          type: string
+      required:
+      - importKind
+      - isValid
+      - blockingErrors
+      - root
+      - nextStep
+      type: object
     InitializeRepositoryInput:
       properties:
         path:
@@ -7103,12 +9390,19 @@ components:
           description: 'Set on failure or when the target is unsupported on this machine:
             the exec error, the Unsupported reason, or a timeout message.'
           type: string
+        expectedDestination:
+          description: Expected or adapter-resolved executable destination.
+          type: string
         finishedAt:
           description: Absent until the job finishes.
           format: date-time
           type:
           - "null"
           - string
+        method:
+          description: Server-owned installation method selected for this harness
+            job.
+          type: string
         output:
           description: Combined stdout+stderr from the install command, tail-capped
             to the last ~4000 bytes.
@@ -7123,20 +9417,53 @@ components:
           enum:
           - idle
           - running
+          - installing
+          - verifying
           - succeeded
           - failed
           - unsupported
+          - interrupted
           type: string
         target:
-          description: Install target this job ran (or is running) for.
+          description: Fixed install target this job ran (or is running) for.
           enum:
           - tmux
           - gh
           - claude
+          - claude-code
           - codex
+          - cursor
           - opencode
+          - aider
           - copilot
+          - grok
+          - kimi
+          - pi
+          - amp
+          - auggie
+          - droid
+          - crush
+          - cline
+          - goose
+          - qwen
+          - continue
+          - devin
+          - kiro
+          - kilocode
+          - vibe
+          - muse
+          - agy
+          - autohand
+          - kimchi
+          - prime-agent
+          - omp
+          - cloudflared
           type: string
+        updatedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
       required:
       - target
       - status
@@ -7171,6 +9498,15 @@ components:
       required:
       - ok
       - sessionId
+      type: object
+    ListAgentAuthPlansResponse:
+      properties:
+        plans:
+          items:
+            $ref: '#/components/schemas/AgentAuthPlan'
+          type: array
+      required:
+      - plans
       type: object
     ListAgentSwitchesResponse:
       properties:
@@ -7456,11 +9792,33 @@ components:
       required:
       - devices
       type: object
+    MobileEndpoint:
+      properties:
+        host:
+          type: string
+        kind:
+          type: string
+        port:
+          type: integer
+        secure:
+          type: boolean
+      required:
+      - kind
+      - host
+      - port
+      - secure
+      type: object
     MobileStatusResponse:
       properties:
         enabled:
           type: boolean
+        endpoints:
+          items:
+            $ref: '#/components/schemas/MobileEndpoint'
+          type: array
         host:
+          type: string
+        hostId:
           type: string
         password:
           type: string
@@ -7470,16 +9828,43 @@ components:
           $ref: '#/components/schemas/ControllersSecurePairingStatus'
         tailscaleHost:
           type: string
+        tunnel:
+          $ref: '#/components/schemas/MobileTunnelStatus'
         warning:
           type: string
       required:
       - enabled
+      - endpoints
+      - hostId
+      - tunnel
       - host
       - tailscaleHost
       - port
       - password
       - warning
       - securePairing
+      type: object
+    MobileTunnelStatus:
+      properties:
+        hostname:
+          type: string
+        lastError:
+          type: string
+        location:
+          type: string
+        ready:
+          type: boolean
+        running:
+          type: boolean
+        supported:
+          type: boolean
+      required:
+      - supported
+      - running
+      - ready
+      - hostname
+      - location
+      - lastError
       type: object
     MuteDeviceRequest:
       properties:
@@ -7561,6 +9946,16 @@ components:
       - kind
       - sessionId
       type: object
+    OpenCodexAccountLoginTerminalResponse:
+      properties:
+        operation:
+          $ref: '#/components/schemas/CodexAccountLoginResponse'
+        shellTerminal:
+          $ref: '#/components/schemas/CodexAccountLoginTerminalResponse'
+      required:
+      - operation
+      - shellTerminal
+      type: object
     OpenShellTerminalRequest:
       properties:
         projectId:
@@ -7570,6 +9965,10 @@ components:
         sessionId:
           description: Agent session the shell is scoped to, so it appears only in
             that session's tab strip. Omitted makes it a standalone shell.
+          type: string
+        shell:
+          description: 'Windows shell selector: auto, git-bash, pwsh, powershell,
+            cmd, or a custom executable path. Ignored on macOS and Linux.'
           type: string
       type: object
     OrchestratorResponse:
@@ -7671,6 +10070,8 @@ components:
           $ref: '#/components/schemas/ProjectConfig'
         defaultBranch:
           type: string
+        folderMissing:
+          type: boolean
         id:
           type: string
         kind:
@@ -7696,6 +10097,19 @@ components:
       - path
       - repo
       - defaultBranch
+      - folderMissing
+      type: object
+    ProjectClonePreparationCleanupInput:
+      properties:
+        path:
+          minLength: 1
+          type: string
+        preparationId:
+          minLength: 1
+          type: string
+      required:
+      - path
+      - preparationId
       type: object
     ProjectConfig:
       properties:
@@ -7707,6 +10121,8 @@ components:
           type: string
         autoReview:
           type: boolean
+        canonicalRepoURL:
+          type: string
         containerReap:
           $ref: '#/components/schemas/ContainerReapConfig'
         defaultBranch:
@@ -7765,6 +10181,8 @@ components:
       type: object
     ProjectSummary:
       properties:
+        folderMissing:
+          type: boolean
         id:
           type: string
         kind:
@@ -7789,6 +10207,7 @@ components:
       - path
       - kind
       - sessionPrefix
+      - folderMissing
       type: object
     PromoteQueuedTurnResponse:
       properties:
@@ -7888,6 +10307,47 @@ components:
       - ok
       - sessionId
       - displayName
+      type: object
+    ReorderQueuedConversationTurnsRequest:
+      properties:
+        turnIds:
+          items:
+            type: string
+          type: array
+      required:
+      - turnIds
+      type: object
+    RepoGitStatus:
+      properties:
+        blockingErrors:
+          items:
+            type: string
+          type: array
+        hasCommit:
+          type: boolean
+        hasOrigin:
+          type: boolean
+        isEmptyFolder:
+          type: boolean
+        isRepo:
+          type: boolean
+        needsGitInit:
+          type: boolean
+        repoPath:
+          type: string
+        requiredActions:
+          items:
+            type: string
+          type: array
+      required:
+      - repoPath
+      - isRepo
+      - hasCommit
+      - hasOrigin
+      - isEmptyFolder
+      - needsGitInit
+      - requiredActions
+      - blockingErrors
       type: object
     ResolveCommentsResponse:
       properties:
@@ -8439,6 +10899,8 @@ components:
           type: integer
         author:
           type: string
+        authorAvatarUrl:
+          type: string
         changedFiles:
           type: integer
         ci:
@@ -8659,6 +11121,20 @@ components:
       required:
       - config
       type: object
+    SetProjectPermissionsInput:
+      properties:
+        permissions:
+          enum:
+          - default
+          - accept-edits
+          - auto
+          - bypass-permissions
+          type: string
+        sourceHarness:
+          type: string
+      required:
+      - permissions
+      type: object
     SetReviewActivityRequest:
       properties:
         agentSessionId:
@@ -8769,6 +11245,8 @@ components:
       type: object
     SetSessionReviewerRequest:
       properties:
+        agentConfig:
+          $ref: '#/components/schemas/AgentConfig'
         harness:
           enum:
           - claude-code
@@ -8936,7 +11414,7 @@ components:
         projectId:
           type: string
         prompt:
-          maxLength: 4096
+          maxLength: 16384
           type: string
         trackerProvider:
           enum:
@@ -8980,6 +11458,53 @@ components:
       - sessionId
       - paths
       type: object
+    StartAgentAuthResponse:
+      properties:
+        action:
+          type: string
+        agentId:
+          type: string
+        guidance:
+          type: string
+        terminal:
+          $ref: '#/components/schemas/ShellTerminalResponse'
+        terminalInput:
+          type: string
+      required:
+      - agentId
+      - action
+      - terminal
+      type: object
+    StartAgentInstallRequest:
+      properties:
+        method:
+          description: Server-issued installation method id. Omit to use the recommended
+            viable method.
+          type: string
+        operation:
+          description: Requested operation. Defaults to install for older clients.
+          enum:
+          - install
+          - reinstall
+          type: string
+      type: object
+    StartCodexAccountSwitchRequest:
+      properties:
+        expectedAccountRevision:
+          format: int64
+          minimum: 0
+          type: integer
+        idempotencyKey:
+          minLength: 1
+          type: string
+        targetAccountId:
+          minLength: 1
+          type: string
+      required:
+      - targetAccountId
+      - expectedAccountRevision
+      - idempotencyKey
+      type: object
     StartPreviewServerRequest:
       properties:
         configuration:
@@ -9018,6 +11543,10 @@ components:
       type: object
     SteerConversationRequest:
       properties:
+        attachments:
+          items:
+            $ref: '#/components/schemas/ConversationImageContentRequest'
+          type: array
         clientMessageId:
           type: string
         text:
@@ -9116,6 +11645,7 @@ components:
           - tmux
           - harness
           - gh
+          - github-auth
           type: string
         label:
           description: Human-readable requirement name.
@@ -9164,6 +11694,8 @@ components:
       type: object
     TriggerReviewRequest:
       properties:
+        agentConfig:
+          $ref: '#/components/schemas/AgentConfig'
         harness:
           enum:
           - claude-code

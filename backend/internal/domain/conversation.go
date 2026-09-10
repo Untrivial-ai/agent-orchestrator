@@ -56,12 +56,15 @@ const (
 	TurnStateRecovered   TurnState = "recovered"
 	TurnStateInterrupted TurnState = "interrupted"
 	TurnStateFailed      TurnState = "failed"
+	// TurnStateCancelled marks a queued turn the user withdrew from the dock
+	// before dispatch. Stop and handoff still settle the queue as interrupted.
+	TurnStateCancelled TurnState = "cancelled"
 )
 
 // Terminal reports whether no further work is expected on the turn.
 func (s TurnState) Terminal() bool {
 	switch s {
-	case TurnStateCompleted, TurnStateRecovered, TurnStateInterrupted, TurnStateFailed:
+	case TurnStateCompleted, TurnStateRecovered, TurnStateInterrupted, TurnStateFailed, TurnStateCancelled:
 		return true
 	default:
 		return false

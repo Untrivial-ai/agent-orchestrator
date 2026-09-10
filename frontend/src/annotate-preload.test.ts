@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BrowserAnnotationPageSubmitPayload } from "./shared/browser-annotations";
+import type { BrowserAnnotationDraft, BrowserAnnotationPageSubmitPayload } from "./shared/browser-annotations";
 
 const electronMocks = vi.hoisted(() => {
 	const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -55,10 +55,10 @@ type Bounds = {
 	height: number;
 };
 
-function setAnnotationMode(enabled: boolean): void {
+function setAnnotationMode(enabled: boolean, draft?: BrowserAnnotationDraft): void {
 	const listener = electronMocks.listeners.get("browser:annotation:setMode");
 	if (!listener) throw new Error("annotation mode listener was not registered");
-	listener({}, { enabled });
+	listener({}, { enabled, ...(draft ? { draft } : {}) });
 }
 
 function elementWithBounds(id: string, bounds: Bounds): HTMLButtonElement {
@@ -389,6 +389,66 @@ describe("annotate preload", () => {
 
 		expect(electronMocks.send).toHaveBeenCalledWith("browser:annotation:cancel", { reason: "escape" });
 		expect(document.querySelector("[data-ao-annotation-root]")).toBeNull();
+	});
+
+	it("restores a replacement draft even when annotation mode is already enabled", async () => {
+		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
+		dispatchPageEvent(first, "click");
+		const draft: BrowserAnnotationDraft = {
+			instruction: "Restored while already enabled",
+			selection: {
+				kind: "element",
+				context: {
+					url: window.location.href,
+					tag: "button",
+					classes: [],
+					selector: "button#first",
+					size: { width: 120, height: 40 },
+					computedStyle: {},
+				},
+			},
+		};
+
+		setAnnotationMode(true, draft);
+
+		expect(overlayRoot().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(draft.instruction);
+		const payload = await submitPrompt(draft.instruction);
+		expect(payload.selection).toEqual(draft.selection);
+	});
+
+	it("uses the composer-only fallback unless every multi-selection selector resolves uniquely", async () => {
+		elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
+		const draft: BrowserAnnotationDraft = {
+			instruction: "Keep every original target",
+			selection: {
+				kind: "elements",
+				contexts: [
+					{
+						url: window.location.href,
+						tag: "button",
+						classes: [],
+						selector: "button#first",
+						size: { width: 120, height: 40 },
+						computedStyle: {},
+					},
+					{
+						url: window.location.href,
+						tag: "button",
+						classes: [],
+						selector: "button#missing",
+						size: { width: 80, height: 30 },
+						computedStyle: {},
+					},
+				],
+			},
+		};
+
+		setAnnotationMode(true, draft);
+
+		expect(selectionBoxes()).toHaveLength(0);
+		expect(overlayRoot().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(draft.instruction);
+		const payload = await submitPrompt(draft.instruction);
+		expect(payload.selection).toEqual(draft.selection);
 	});
 
 	it("reflows and repositions an open prompt when the browser viewport narrows", () => {

@@ -22,9 +22,18 @@ import type {
 	OpenSessionTargetResult,
 } from "./shared/editor-handoff";
 import type { TelemetryBootstrap } from "./shared/telemetry";
+import {
+	TELEMETRY_CLEAR_RENDERER_QUEUES_CHANNEL,
+	TELEMETRY_POLICY_CHANGED_CHANNEL,
+	TELEMETRY_RENDERER_QUEUES_CLEARED_CHANNEL,
+	type RendererTelemetryCaptureInput,
+	type RendererTelemetryQueuePurgeRequest,
+	type TelemetryPolicyView,
+} from "./shared/telemetry-policy";
 import type { MigrationState } from "./main/app-state";
-import type { UpdateSettings, UpdateStatus } from "./main/update-settings";
+import type { UpdateSettings, UpdateStatus, UpdateInstallResult } from "./main/update-settings";
 import type { CloudAccount } from "./shared/cloud-account";
+import type { LocalLoginInput, LocalRegisterInput } from "./main/cloud-auth-local";
 import type {
 	CloudCpProxyRequestInit,
 	CloudCpProxyResponse,
@@ -34,11 +43,33 @@ import type { UpdateOutcome } from "./shared/update-telemetry";
 import type { UiSettings } from "./main/ui-settings";
 import type { UpdateCheckOptions } from "./main/auto-updater";
 import type { FeatureBuild } from "./main/feature-builds";
+import {
+	AGENT_SWITCH_VISIBILITY_IPC_CHANNEL,
+	type AgentSwitchVisibilitySignalBody,
+} from "./shared/agent-switch-observability";
 import type {
 	BrowserAnnotationCancelPayload,
 	BrowserAnnotationModeInput,
 	BrowserAnnotationSubmitPayload,
 } from "./shared/browser-annotations";
+import type {
+	BrowserProfile,
+	BrowserProfileListState,
+	BrowserProfileMenuInput,
+	BrowserProfileSelectInput,
+	BrowserProfileViewState,
+} from "./shared/browser-profiles";
+import type {
+	BrowserHistorySuggestion,
+	BrowserImportDiscovery,
+	BrowserImportProgress,
+	BrowserImportRequest,
+	BrowserImportResult,
+} from "./shared/browser-profile-import";
+import type {
+	BrowserDownloadActionInput,
+	BrowserDownloadsState,
+} from "./shared/browser-downloads";
 
 if (typeof document !== "undefined") {
 	const markNativeBrowserComposition = () => {
@@ -75,6 +106,8 @@ export type ImportRepoScan = {
 	branch: string;
 	remote: string;
 	hasRemote: boolean;
+	isRepo: boolean;
+	hasCommit: boolean;
 	status?: "ok" | "error";
 	reason?: string;
 	needsGitInit?: boolean;
@@ -105,15 +138,47 @@ ipcRenderer.on("app:openFolderPath", (_event, path: string) => {
 	}
 });
 
+let currentTelemetryPolicy: TelemetryPolicyView | null = null;
+const telemetryPolicyListeners = new Set<(view: TelemetryPolicyView) => void>();
+const rendererQueuePurgeListeners = new Set<() => void | Promise<void>>();
+ipcRenderer.on(TELEMETRY_POLICY_CHANGED_CHANNEL, (_event, view: TelemetryPolicyView) => {
+	currentTelemetryPolicy = view;
+	for (const listener of telemetryPolicyListeners) listener(view);
+});
+ipcRenderer.on(TELEMETRY_CLEAR_RENDERER_QUEUES_CHANNEL, (_event, request: unknown) => {
+	if (!isRendererQueuePurgeRequest(request)) return;
+	void Promise.allSettled([...rendererQueuePurgeListeners].map((listener) => Promise.resolve().then(listener)))
+		.then((results) => {
+			ipcRenderer.send(TELEMETRY_RENDERER_QUEUES_CLEARED_CHANNEL, {
+				requestId: request.requestId,
+				ok: results.length > 0 && results.every((result) => result.status === "fulfilled"),
+			});
+		});
+});
+
+function isRendererQueuePurgeRequest(value: unknown): value is RendererTelemetryQueuePurgeRequest {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const request = value as Record<string, unknown>;
+	return Object.keys(request).length === 1 && typeof request.requestId === "string" && request.requestId.length <= 64;
+}
+
 const api = {
 	app: {
 		getVersion: () => ipcRenderer.invoke("app:getVersion") as Promise<string>,
-		chooseDirectory: (title?: string) => ipcRenderer.invoke("app:chooseDirectory", title) as Promise<string | null>,
+		chooseDirectory: (input?: string | { title?: string; defaultPath?: string }) => ipcRenderer.invoke("app:chooseDirectory", input) as Promise<string | null>,
+		checkGitRepository: (remoteUrl: string) => ipcRenderer.invoke("app:checkGitRepository", remoteUrl) as Promise<boolean>,
 		openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url) as Promise<void>,
 		scanImportFolder: (input: { path: string; mode: ImportFolderMode }) =>
 			ipcRenderer.invoke("app:scanImportFolder", input) as Promise<ImportFolderScan>,
 		checkAncestorRepo: (path: string) =>
 			ipcRenderer.invoke("app:checkAncestorRepo", path) as Promise<string | undefined>,
+		getRepositoryBranch: (path: string) =>
+			ipcRenderer.invoke("app:getRepositoryBranch", path) as Promise<string | undefined>,
+		getGitHubLogin: (repoPath?: string) => ipcRenderer.invoke("app:getGitHubLogin", repoPath) as Promise<string>,
+		getCachedGitHubOwners: () => ipcRenderer.invoke("app:getCachedGitHubOwners") as Promise<Array<{ login: string; avatarUrl: string }>>,
+		refreshGitHubOwners: () => ipcRenderer.invoke("app:refreshGitHubOwners") as Promise<Array<{ login: string; avatarUrl: string }>>,
+		checkGitHubRepositoryAvailability: (input: { owner: string; name: string }) =>
+			ipcRenderer.invoke("app:checkGitHubRepositoryAvailability", input) as Promise<{ available: boolean; message?: string }>,
 		// Resolves a dropped File's real filesystem path. Synchronous passthrough
 		// (not ipcRenderer.invoke — a File can't cross that boundary) so it must be
 		// called directly on the File from a drop event, in the same tick, per
@@ -245,6 +310,8 @@ const api = {
 		// WebContentsView previews (which follow prefers-color-scheme) stay in sync
 		// with the shell. "system" lets both follow the OS.
 		set: (preference: "light" | "dark" | "system") => ipcRenderer.invoke("theme:set", preference) as Promise<void>,
+		persistTerminal: (scheme: "light" | "dark") =>
+			ipcRenderer.invoke("theme:persist-terminal", scheme) as Promise<void>,
 	},
 	menu: {
 		action: (action: string) => ipcRenderer.invoke("menu:action", action) as Promise<void>,
@@ -274,7 +341,29 @@ const api = {
 			ipcRenderer.invoke("editorHandoff:open", input) as Promise<OpenSessionTargetResult>,
 	},
 	telemetry: {
-		getBootstrap: () => ipcRenderer.invoke("telemetry:getBootstrap") as Promise<TelemetryBootstrap | null>,
+		getBootstrap: async () => {
+			const bootstrap = await ipcRenderer.invoke("telemetry:getBootstrap") as TelemetryBootstrap | null;
+			if (bootstrap && currentTelemetryPolicy) currentTelemetryPolicy = { ...currentTelemetryPolicy, eventsEnabled: bootstrap.eventsEnabled, consentGeneration: bootstrap.consentGeneration };
+			return bootstrap;
+		},
+		getPolicy: async () => {
+			const view = await ipcRenderer.invoke("telemetry:getPolicy") as TelemetryPolicyView;
+			currentTelemetryPolicy = view;
+			for (const listener of telemetryPolicyListeners) listener(view);
+			return view;
+		},
+		setEventsEnabled: (eventsEnabled: boolean) => ipcRenderer.invoke("telemetry:setEventsEnabled", { eventsEnabled, expectedGeneration: currentTelemetryPolicy?.consentGeneration ?? "" }) as Promise<TelemetryPolicyView>,
+		onPolicy: (listener: (view: TelemetryPolicyView) => void) => { telemetryPolicyListeners.add(listener); if (currentTelemetryPolicy) listener(currentTelemetryPolicy); return () => telemetryPolicyListeners.delete(listener); },
+		onClearQueues: (listener: () => void | Promise<void>) => { rendererQueuePurgeListeners.add(listener); return () => rendererQueuePurgeListeners.delete(listener); },
+		capture: (input: RendererTelemetryCaptureInput) => {
+			if (!currentTelemetryPolicy) return Promise.resolve(false);
+			return ipcRenderer.invoke("telemetry:capture", { ...input, consentGeneration: currentTelemetryPolicy.consentGeneration }) as Promise<boolean>;
+		},
+		signalAgentSwitchVisibility: (signal: AgentSwitchVisibilitySignalBody) => {
+			if (!currentTelemetryPolicy) return false;
+			ipcRenderer.send(AGENT_SWITCH_VISIBILITY_IPC_CHANNEL, { consentGeneration: currentTelemetryPolicy.consentGeneration, signal });
+			return true;
+		},
 	},
 	browser: {
 		nativeCompositionEnabled: true,
@@ -283,11 +372,27 @@ const api = {
 		setOverlayOpen: (open: boolean) => ipcRenderer.send("browser:overlay", open),
 		navigate: (input: BrowserNavigateInput) =>
 			ipcRenderer.invoke("browser:navigate", input) as Promise<BrowserNavState>,
+		historySuggestions: (input: { viewId: string; query: string }) =>
+			ipcRenderer.invoke("browser:history:suggest", input) as Promise<BrowserHistorySuggestion[]>,
 		clear: (viewId: string) => ipcRenderer.invoke("browser:clear", viewId) as Promise<BrowserNavState>,
 		goBack: (viewId: string) => ipcRenderer.invoke("browser:goBack", viewId) as Promise<BrowserNavState>,
 		goForward: (viewId: string) => ipcRenderer.invoke("browser:goForward", viewId) as Promise<BrowserNavState>,
 		reload: (viewId: string) => ipcRenderer.invoke("browser:reload", viewId) as Promise<BrowserNavState>,
 		stop: (viewId: string) => ipcRenderer.invoke("browser:stop", viewId) as Promise<BrowserNavState>,
+		captureScreenshot: (viewId: string) => ipcRenderer.invoke("browser:captureScreenshot", viewId) as Promise<void>,
+		downloads: {
+			list: () => ipcRenderer.invoke("browser:downloads:list") as Promise<BrowserDownloadsState>,
+			action: (input: BrowserDownloadActionInput) =>
+				ipcRenderer.invoke("browser:downloads:action", input) as Promise<BrowserDownloadsState>,
+			clear: () => ipcRenderer.invoke("browser:downloads:clear") as Promise<BrowserDownloadsState>,
+			onChanged: (listener: (state: BrowserDownloadsState) => void) => {
+				const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserDownloadsState) => listener(state);
+				ipcRenderer.on("browser:downloadsChanged", wrapped);
+				return () => {
+					ipcRenderer.off("browser:downloadsChanged", wrapped);
+				};
+			},
+		},
 		getTabs: (viewId: string) => ipcRenderer.invoke("browser:getTabs", viewId) as Promise<BrowserTabsState>,
 		selectTab: (input: { viewId: string; tabId: string }) =>
 			ipcRenderer.invoke("browser:selectTab", input) as Promise<BrowserTabsState>,
@@ -295,6 +400,28 @@ const api = {
 			ipcRenderer.invoke("browser:closeTab", input) as Promise<BrowserTabsState>,
 		openTab: (input: { viewId: string; url?: string }) =>
 			ipcRenderer.invoke("browser:openTab", input) as Promise<BrowserTabsState>,
+		getProfile: (viewId: string) =>
+			ipcRenderer.invoke("browser:profile:get", viewId) as Promise<BrowserProfileViewState>,
+		showProfileMenu: (input: BrowserProfileMenuInput) =>
+			ipcRenderer.invoke("browser:profile:menu", input) as Promise<void>,
+		selectProfile: (input: BrowserProfileSelectInput) =>
+			ipcRenderer.invoke("browser:profile:select", input) as Promise<void>,
+		notifyPanelUsed: (viewId: string) => ipcRenderer.send("browser:panelUsed", viewId),
+		notifyPanelBlur: (viewId: string) => ipcRenderer.send("browser:panelBlur", viewId),
+		onFocusLocation: (listener: (viewId: string) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, viewId: string) => listener(viewId);
+			ipcRenderer.on("browser:focusLocation", wrapped);
+			return () => {
+				ipcRenderer.off("browser:focusLocation", wrapped);
+			};
+		},
+		onReopenClosedTab: (listener: (viewId: string) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, viewId: string) => listener(viewId);
+			ipcRenderer.on("browser:reopenClosedTab", wrapped);
+			return () => {
+				ipcRenderer.off("browser:reopenClosedTab", wrapped);
+			};
+		},
 		devtools: (input: BrowserDevToolsInput) =>
 			ipcRenderer.invoke("browser:devtools", input) as Promise<BrowserDevToolsState>,
 		destroy: (viewId: string) => ipcRenderer.send("browser:destroy", viewId),
@@ -305,6 +432,13 @@ const api = {
 			ipcRenderer.on("browser:navState", wrapped);
 			return () => {
 				ipcRenderer.off("browser:navState", wrapped);
+			};
+		},
+		onPageFocus: (listener: (viewId: string) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, viewId: string) => listener(viewId);
+			ipcRenderer.on("browser:pageFocus", wrapped);
+			return () => {
+				ipcRenderer.off("browser:pageFocus", wrapped);
 			};
 		},
 		onTabsState: (listener: (state: BrowserTabsState) => void) => {
@@ -328,6 +462,22 @@ const api = {
 				ipcRenderer.off("browser:devtoolsState", wrapped);
 			};
 		},
+		onProfileState: (listener: (state: BrowserProfileViewState) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserProfileViewState) => listener(state);
+			ipcRenderer.on("browser:profileState", wrapped);
+			return () => {
+				ipcRenderer.off("browser:profileState", wrapped);
+			};
+		},
+		onProfileManage: (listener: (viewId: string) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, payload: { viewId?: unknown }) => {
+				if (typeof payload?.viewId === "string") listener(payload.viewId);
+			};
+			ipcRenderer.on("browser:profileManage", wrapped);
+			return () => {
+				ipcRenderer.off("browser:profileManage", wrapped);
+			};
+		},
 		onAnnotationSubmit: (listener: (payload: BrowserAnnotationSubmitPayload) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, payload: BrowserAnnotationSubmitPayload) => listener(payload);
 			ipcRenderer.on("browser:annotation:submitted", wrapped);
@@ -340,6 +490,25 @@ const api = {
 			ipcRenderer.on("browser:annotation:canceled", wrapped);
 			return () => {
 				ipcRenderer.off("browser:annotation:canceled", wrapped);
+			};
+		},
+	},
+	browserProfiles: {
+		list: () => ipcRenderer.invoke("browserProfiles:list") as Promise<BrowserProfileListState>,
+		create: (name: string) => ipcRenderer.invoke("browserProfiles:create", { name }) as Promise<BrowserProfile>,
+		rename: (input: { id: string; name: string }) =>
+			ipcRenderer.invoke("browserProfiles:rename", input) as Promise<BrowserProfile>,
+		clear: (id: string) => ipcRenderer.invoke("browserProfiles:clear", { id }) as Promise<void>,
+		delete: (id: string) => ipcRenderer.invoke("browserProfiles:delete", { id }) as Promise<void>,
+		discoverImportSources: () =>
+			ipcRenderer.invoke("browserProfiles:import:discover") as Promise<BrowserImportDiscovery>,
+		import: (input: BrowserImportRequest) =>
+			ipcRenderer.invoke("browserProfiles:import:start", input) as Promise<BrowserImportResult>,
+		onImportProgress: (listener: (progress: BrowserImportProgress) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, progress: BrowserImportProgress) => listener(progress);
+			ipcRenderer.on("browserProfiles:import:progress", wrapped);
+			return () => {
+				ipcRenderer.off("browserProfiles:import:progress", wrapped);
 			};
 		},
 	},
@@ -391,7 +560,7 @@ const api = {
 		check: (options?: UpdateCheckOptions) => ipcRenderer.invoke("updates:check", options) as Promise<void>,
 		returnHome: (requestId?: string) => ipcRenderer.invoke("updates:returnHome", requestId) as Promise<void>,
 		download: (requestId?: string) => ipcRenderer.invoke("updates:download", requestId) as Promise<void>,
-		install: () => ipcRenderer.invoke("updates:install") as Promise<void>,
+		install: (confirmedVersion?: string) => ipcRenderer.invoke("updates:install", confirmedVersion) as Promise<UpdateInstallResult>,
 		onStatus: (listener: (status: UpdateStatus) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
 			ipcRenderer.on("updates:status", wrapped);
@@ -417,6 +586,15 @@ const api = {
 		getSession: () => ipcRenderer.invoke("cloud:getSession") as Promise<CloudAccount | null>,
 		signIn: () => ipcRenderer.invoke("cloud:signIn") as Promise<void>,
 		signOut: () => ipcRenderer.invoke("cloud:signOut") as Promise<void>,
+		// Dev-only local (email/password) sign-in against a loopback Docker CP.
+		// Whether the surface is offered is decided in main (unpackaged/dev +
+		// loopback); the renderer only mirrors it for UI visibility.
+		localAuthAvailable: (cpUrl: string) =>
+			ipcRenderer.invoke("cloud:localAuthAvailable", cpUrl) as Promise<boolean>,
+		localRegister: (input: LocalRegisterInput) =>
+			ipcRenderer.invoke("cloud:localRegister", input) as Promise<CloudAccount>,
+		localLogin: (input: LocalLoginInput) =>
+			ipcRenderer.invoke("cloud:localLogin", input) as Promise<CloudAccount>,
 		onSessionChanged: (listener: (account: CloudAccount | null) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, account: CloudAccount | null) => listener(account);
 			ipcRenderer.on("cloud:sessionChanged", wrapped);

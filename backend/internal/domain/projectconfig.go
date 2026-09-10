@@ -18,6 +18,9 @@ import (
 // yet exist (tracker/SCM per-project config) are intentionally absent and land in
 // focused follow-up PRs alongside the code that reads them.
 type ProjectConfig struct {
+	// CanonicalRepoURL explicitly trusts one upstream repository for PR claims.
+	// Numeric PR references use this repository when set; checkout/push stays on origin.
+	CanonicalRepoURL string `json:"canonicalRepoURL,omitempty"`
 	// DefaultBranch is the base branch new session worktrees are created from.
 	// Empty and DefaultBranchAuto both mean infer each repository's Git default.
 	DefaultBranch string `json:"defaultBranch,omitempty"`
@@ -84,7 +87,8 @@ type ContainerReapConfig struct {
 // the reviewer vocabulary (ReviewerHarness), which is distinct from the worker
 // AgentHarness set.
 type ReviewerConfig struct {
-	Harness ReviewerHarness `json:"harness"`
+	Harness     ReviewerHarness `json:"harness"`
+	AgentConfig AgentConfig     `json:"agentConfig,omitempty"`
 }
 
 // FallbackReviewerHarness is the reviewer used when a project configures none
@@ -169,6 +173,11 @@ func (c ProjectConfig) IsZero() bool {
 // Validate rejects values outside the typed vocabulary so a bad config is
 // refused when it is set (CLI/API) rather than surfacing at spawn.
 func (c ProjectConfig) Validate() error {
+	if c.CanonicalRepoURL != "" {
+		if err := c.ValidateCanonicalRepository(c.CanonicalRepoURL); err != nil {
+			return err
+		}
+	}
 	if err := c.AgentConfig.Validate(); err != nil {
 		return err
 	}
@@ -194,6 +203,9 @@ func (c ProjectConfig) Validate() error {
 	for i, rv := range c.Reviewers {
 		if !rv.Harness.IsKnown() {
 			return fmt.Errorf("reviewers[%d].harness: unknown harness %q", i, rv.Harness)
+		}
+		if err := rv.AgentConfig.Validate(); err != nil {
+			return fmt.Errorf("reviewers[%d].%w", i, err)
 		}
 	}
 	if err := c.TrackerIntake.Validate(); err != nil {

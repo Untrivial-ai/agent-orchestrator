@@ -2,6 +2,7 @@ package sessionmanager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,7 +11,21 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 )
+
+type recordingBrowserAuthority struct {
+	authority *browsersvc.Authority
+	tokens    []string
+}
+
+func (r *recordingBrowserAuthority) Issue(id domain.SessionID) (string, string, error) {
+	token, verifier, err := r.authority.Issue(id)
+	if err == nil {
+		r.tokens = append(r.tokens, token)
+	}
+	return token, verifier, err
+}
 
 // newChatManager mirrors newManager() with a chat launcher injected, so both
 // branches can be exercised against the same fakes.
@@ -50,6 +65,7 @@ type recordingLauncher struct {
 	startErr         error
 	turnErr          error
 	live             bool
+	beforeStart      func(ChatStart)
 	afterReady       func()
 	providerBoundary *domain.ConversationBranch
 
@@ -59,12 +75,14 @@ type recordingLauncher struct {
 	turns                []string
 	// relayed is what arrived through Manager.Send rather than as an initial
 	// prompt, kept separate so a test can tell the two apart.
-	relayed  []string
-	relayIDs []string
-	stopped  []domain.SessionID
-	armed    []domain.SessionID
-	prepared []domain.SessionID
-	aborted  []domain.SessionID
+	relayed       []string
+	relayIDs      []string
+	stopped       []domain.SessionID
+	armed         []domain.SessionID
+	armPolicy     []domain.SessionInterfaceTransitionPolicy
+	prepared      []domain.SessionID
+	preparePolicy []domain.SessionInterfaceTransitionPolicy
+	aborted       []domain.SessionID
 }
 
 type historicalChatRestoreStore struct {
@@ -109,8 +127,28 @@ func (l *recordingLauncher) PreflightChat(
 	return l.preflightErr
 }
 
-func (l *recordingLauncher) StartChat(_ context.Context, cfg ChatStart) (ChatStarted, error) {
+func prepareTestChatStart(ctx context.Context, cfg ChatStart) (ChatStart, error) {
+	if cfg.PrepareControllerEnv == nil {
+		return cfg, nil
+	}
+	env, err := cfg.PrepareControllerEnv(ctx, cfg.ExpectedControllerOwner)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Env = env
+	return cfg, nil
+}
+
+func (l *recordingLauncher) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
+	var err error
+	cfg, err = prepareTestChatStart(ctx, cfg)
+	if err != nil {
+		return ChatStarted{}, err
+	}
 	l.started = append(l.started, cfg)
+	if l.beforeStart != nil {
+		l.beforeStart(cfg)
+	}
 	if l.startErr != nil {
 		return ChatStarted{}, l.startErr
 	}
@@ -160,13 +198,15 @@ func (l *recordingLauncher) HasLiveChatController(domain.SessionID) bool {
 	return l.live
 }
 
-func (l *recordingLauncher) ArmChatHandoff(_ context.Context, id domain.SessionID, _ domain.SessionInterfaceTransitionPolicy) error {
+func (l *recordingLauncher) ArmChatHandoff(_ context.Context, id domain.SessionID, policy domain.SessionInterfaceTransitionPolicy) error {
 	l.armed = append(l.armed, id)
+	l.armPolicy = append(l.armPolicy, policy)
 	return nil
 }
 
-func (l *recordingLauncher) PrepareChatHandoff(_ context.Context, id domain.SessionID, _ domain.SessionInterfaceTransitionPolicy) error {
+func (l *recordingLauncher) PrepareChatHandoff(_ context.Context, id domain.SessionID, policy domain.SessionInterfaceTransitionPolicy) error {
 	l.prepared = append(l.prepared, id)
+	l.preparePolicy = append(l.preparePolicy, policy)
 	return nil
 }
 
@@ -181,7 +221,12 @@ type generationClaimFailureLauncher struct {
 	err        error
 }
 
-func (l *generationClaimFailureLauncher) StartChat(_ context.Context, cfg ChatStart) (ChatStarted, error) {
+func (l *generationClaimFailureLauncher) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
+	var prepareErr error
+	cfg, prepareErr = prepareTestChatStart(ctx, cfg)
+	if prepareErr != nil {
+		return ChatStarted{}, prepareErr
+	}
 	l.started = append(l.started, cfg)
 	rec := l.store.sessions[cfg.SessionID]
 	rec.Metadata.ControllerGeneration = l.generation
@@ -546,6 +591,48 @@ func TestResumeExitedChatSessionDoesNotRequireTerminalRuntimeHandle(t *testing.T
 	}
 }
 
+func TestResumeChatRotatesBrowserCapabilityBeforeControllerStart(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, store, _ := newChatManager(launcher)
+	seedChatResumeSession(store, domain.ActivityExited)
+	rec := store.sessions["mer-1"]
+	authority := browsersvc.NewAuthority()
+	oldToken, oldVerifier, err := authority.Issue(rec.ID)
+	if err != nil {
+		t.Fatalf("issue old capability: %v", err)
+	}
+	rec.Metadata.BrowserCapabilityVerifier = oldVerifier
+	store.sessions[rec.ID] = rec
+	issuer := &recordingBrowserAuthority{authority: authority}
+	mgr.browserCapabilities = issuer
+	launcher.beforeStart = func(cfg ChatStart) {
+		stored := store.sessions[cfg.SessionID]
+		if !authority.Valid(cfg.SessionID, cfg.Env[EnvBrowserCapability], stored.Metadata.BrowserCapabilityVerifier) {
+			t.Fatal("fresh capability was not authorized when the resumed controller started")
+		}
+	}
+
+	result, err := mgr.ResumeAgentWithMode(context.Background(), rec.ID)
+	if err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	newToken := launcher.started[0].Env[EnvBrowserCapability]
+	newVerifier := result.Session.Metadata.BrowserCapabilityVerifier
+	if authority.Valid(rec.ID, oldToken, newVerifier) {
+		t.Fatal("old browser capability remained authorized after Chat resume")
+	}
+	if !authority.Valid(rec.ID, newToken, newVerifier) {
+		t.Fatal("new browser capability was not authorized after Chat resume")
+	}
+	encoded, err := json.Marshal(result.Session)
+	if err != nil {
+		t.Fatalf("marshal resumed session: %v", err)
+	}
+	if strings.Contains(string(encoded), oldToken) || strings.Contains(string(encoded), newToken) {
+		t.Fatalf("session API JSON leaked a browser bearer: %s", encoded)
+	}
+}
+
 func TestResumeChatKeepsExitReportedBeforeStartReturns(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, _ := newChatManager(launcher)
@@ -893,6 +980,91 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 
 	if len(launcher.turns) != 1 || launcher.turns[0] == "" {
 		t.Fatalf("initial prompt was not delivered as a turn: %v", launcher.turns)
+	}
+}
+
+func TestChatSpawnPersistsBrowserCapabilityBeforeControllerStart(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, store, runtime := newChatManager(launcher)
+	mgr.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{{
+		token: "chat-token", verifier: "chat-verifier",
+	}}}
+	project := store.projects[string(chatTestProject)]
+	project.Config.Env = map[string]string{
+		EnvBrowserCapability:        "project-token",
+		EnvBrowserRuntimeToken:      "runtime-secret",
+		EnvBrowserRuntimeTokenStdin: "1",
+	}
+	store.projects[string(chatTestProject)] = project
+	launcher.beforeStart = func(cfg ChatStart) {
+		stored := store.sessions[cfg.SessionID]
+		if got := stored.Metadata.BrowserCapabilityVerifier; got != "chat-verifier" {
+			t.Fatalf("verifier at controller start = %q, want chat-verifier", got)
+		}
+	}
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID:     chatTestProject,
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessCodex,
+		RequestedMode: domain.SessionModeChat,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if runtime.created != 0 {
+		t.Fatalf("Chat spawn created %d terminal runtimes", runtime.created)
+	}
+	start := launcher.started[0]
+	if got := start.Env[EnvBrowserCapability]; got != "chat-token" {
+		t.Fatalf("controller capability = %q, want issued token", got)
+	}
+	if start.Env[EnvBrowserRuntimeToken] != "" || start.Env[EnvBrowserRuntimeTokenStdin] != "" {
+		t.Fatalf("browser runtime secrets reached Chat controller: token=%q stdin=%q",
+			start.Env[EnvBrowserRuntimeToken], start.Env[EnvBrowserRuntimeTokenStdin])
+	}
+	if got := rec.Metadata.BrowserCapabilityVerifier; got != "chat-verifier" {
+		t.Fatalf("committed verifier = %q, want chat-verifier", got)
+	}
+}
+
+func TestChatSpawnCapabilityFailurePreventsControllerStart(t *testing.T) {
+	tests := []struct {
+		name       string
+		issue      browserCapabilityIssue
+		persistErr error
+	}{
+		{name: "issuer error", issue: browserCapabilityIssue{err: errors.New("entropy unavailable")}},
+		{name: "empty token", issue: browserCapabilityIssue{verifier: "verifier"}},
+		{name: "empty verifier", issue: browserCapabilityIssue{token: "token"}},
+		{name: "verifier persistence", issue: browserCapabilityIssue{token: "token", verifier: "verifier"}, persistErr: errors.New("database unavailable")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			launcher := &recordingLauncher{}
+			mgr, store, runtime := newChatManager(launcher)
+			mgr.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{tt.issue}}
+			store.updateSessionErr = tt.persistErr
+
+			_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+				ProjectID:     chatTestProject,
+				Kind:          domain.KindWorker,
+				Harness:       domain.HarnessCodex,
+				RequestedMode: domain.SessionModeChat,
+			})
+			if !errors.Is(err, ErrSpawnBrowser) {
+				t.Fatalf("Spawn error = %v, want ErrSpawnBrowser", err)
+			}
+			if len(launcher.started) != 0 || runtime.created != 0 {
+				t.Fatalf("failed capability started controller/runtime: chat=%d runtime=%d",
+					len(launcher.started), runtime.created)
+			}
+			for _, session := range store.sessions {
+				if !session.IsTerminated {
+					t.Fatalf("capability failure left session %s live", session.ID)
+				}
+			}
+		})
 	}
 }
 

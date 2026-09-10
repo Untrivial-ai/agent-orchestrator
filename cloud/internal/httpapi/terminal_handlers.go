@@ -64,8 +64,13 @@ func (s *Server) createTerminalTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	// routingKey is the terminal's stable affinity shard. An affinity-aware
+	// entry can use it to co-locate this client's socket with the worker's
+	// terminal stream on one replica, making the same-replica fast path the
+	// norm. Inert until such routing is deployed; safe for clients to ignore.
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"ticket": token, "expiresIn": int(terminalTicketTTL.Seconds()), "scopes": scopes,
+		"ticket": token, "expiresIn": int(terminalTicketTTL.Seconds()),
+		"scopes": scopes, "routingKey": routingKeyString(sessionID),
 	})
 }
 
@@ -243,7 +248,17 @@ func (s *Server) readTerminalInput(
 		if len(data) == 0 {
 			continue
 		}
-		if err := retryTerminalRequest(ctx, func() error {
+		// Same-replica fast path: when this control-plane task also holds the
+		// worker's terminal stream, hand the keystroke to it in memory and skip
+		// the durable queue's insert + NOTIFY + claim round trip (~15-20ms of
+		// intra-region Postgres latency off the hot path). Falls back to the
+		// durable path when the worker stream lives on another replica, is
+		// absent, or its buffer is full — so delivery is never dropped silently.
+		if s.terminalStreamEnabled && s.terminalStreams.pushInput(terminal.ID, data) {
+			// Delivered in memory. The open terminal WebSocket already refreshes
+			// the interaction lease on its own timer, so no durable row is
+			// needed to keep the session from idle-pausing.
+		} else if err := retryTerminalRequest(ctx, func() error {
 			return s.store.QueueTerminalInput(ctx, terminal, message.InputID, data)
 		}); err != nil {
 			return err
@@ -297,6 +312,15 @@ func (s *Server) writeTerminalOutput(
 	defer ticker.Stop()
 	startupDeadline := time.NewTimer(terminalReadyTimeout)
 	defer startupDeadline.Stop()
+	// With the stream enabled, a Postgres NOTIFY wakes this loop the moment a
+	// new output row commits; the ticker stays as the cross-replica and
+	// missed-notification fallback.
+	var wake chan struct{}
+	if s.terminalStreamEnabled {
+		var cancelWake func()
+		wake, cancelWake = s.terminalStreams.subscribeOutput(terminal.ID)
+		defer cancelWake()
+	}
 	replayComplete := false
 	startingSent := false
 	ready := false
@@ -368,6 +392,7 @@ func (s *Server) writeTerminalOutput(
 			if !ready {
 				return errTerminalProcessUnavailable
 			}
+		case <-wake:
 		case <-ticker.C:
 		}
 	}

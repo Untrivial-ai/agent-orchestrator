@@ -121,7 +121,7 @@ func TestReviewFunnelReachesTheWireWithItsProperties(t *testing.T) {
 		WithClock(func() time.Time { return created.Add(90 * time.Second) }),
 	)
 	svc.engineTrigger = func(
-		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.ReviewTriggerSource,
+		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
 	) (reviewcore.TriggerResult, error) {
 		return reviewcore.TriggerResult{
 			Run:         domain.ReviewRun{Harness: "claude-code"},

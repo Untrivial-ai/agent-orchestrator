@@ -36,6 +36,10 @@ export AO_CLOUD_DOCKER_GID
 AO_CLOUD_DOCKER_GID="$(ao_docker_socket_gid)"
 export AO_CLOUD_DOCKER_WORKER_IMAGE="${project_name}-worker:smoke"
 export AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION="true"
+# Opt-in low-latency terminal streams (issue #4763). Compose forwards this to
+# the control plane, which forwards it to worker containers. Unset keeps the
+# fully polled transport under test.
+export AO_CLOUD_TERMINAL_STREAM="${AO_CLOUD_TERMINAL_STREAM:-}"
 export COMPOSE_PROJECT_NAME="$project_name"
 
 compose() {
@@ -536,6 +540,30 @@ if [[ "$message_forwarded" != "t" ]]; then
 	exit 1
 fi
 docker exec "$first_worker" ao kill "$child_session" >/dev/null
+
+if [[ "${AO_CLOUD_TERMINAL_STREAM:-}" == "1" ]]; then
+	# The delivery above must have ridden the stream push, not the transport
+	# poll: the pushed request is completed by the control plane, and the
+	# stream never leaves failed input rows behind.
+	stream_pushed="$(
+		compose exec -e "PGOPTIONS=-c ao.org_id=${org}" -T postgres \
+			psql -U ao_cloud_owner -d ao_cloud -Atc \
+			"SELECT NOT EXISTS (
+				SELECT 1 FROM ao_worker_requests
+				WHERE session_id = '${child_session}'
+				  AND kind = 'terminal.input' AND status = 'failed'
+			)"
+	)"
+	if [[ "$stream_pushed" != "t" ]]; then
+		echo "Terminal stream left failed input requests behind." >&2
+		exit 1
+	fi
+	if compose logs control-plane 2>/dev/null | grep -q "claim terminal input for push"; then
+		echo "Control plane logged terminal stream push failures." >&2
+		exit 1
+	fi
+	echo "terminal stream assertions passed"
+fi
 docker exec "$first_worker" bash -c \
 	'printf "%s\n" persistent-workspace > /workspace/repository/.ao-cloud-smoke'
 

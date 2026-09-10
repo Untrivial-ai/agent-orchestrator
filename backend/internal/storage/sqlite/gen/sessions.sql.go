@@ -114,9 +114,9 @@ SELECT id, project_id, num, issue_id, kind, harness,
     created_at, updated_at, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
-    reviewer_harness, is_pinned, pinned_at,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE id = ?
 `
 
@@ -149,6 +149,7 @@ type GetSessionRow struct {
 	DiffBaseSha               string
 	DiffBaseRef               string
 	ReviewerHarness           domain.ReviewerHarness
+	ReviewerAgentConfig       string
 	IsPinned                  bool
 	PinnedAt                  sql.NullTime
 	SessionMode               domain.SessionMode
@@ -163,6 +164,7 @@ type GetSessionRow struct {
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
 	Model                     string
+	SessionPermissions        string
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -197,6 +199,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.DiffBaseSha,
 		&i.DiffBaseRef,
 		&i.ReviewerHarness,
+		&i.ReviewerAgentConfig,
 		&i.IsPinned,
 		&i.PinnedAt,
 		&i.SessionMode,
@@ -211,25 +214,26 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.AutoInjectCI,
 		&i.AutoReviewEnabled,
 		&i.Model,
+		&i.SessionPermissions,
 	)
 	return i, err
 }
 
 const insertSession = `-- name: InsertSession :exec
 INSERT INTO sessions (
-    id, project_id, num, issue_id, kind, harness, reviewer_harness, auto_review_enabled, display_name,
+    id, project_id, num, issue_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
     runtime_launch_id, agent_session_id, agent_session_id_launch_id, prompt,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
-    session_mode, provider_conversation_id, controller_generation, model,
+    session_mode, provider_conversation_id, controller_generation, model, session_permissions,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -241,6 +245,7 @@ type InsertSessionParams struct {
 	Kind                      domain.SessionKind
 	Harness                   domain.AgentHarness
 	ReviewerHarness           domain.ReviewerHarness
+	ReviewerAgentConfig       string
 	AutoReviewEnabled         bool
 	DisplayName               string
 	ActivityState             domain.ActivityState
@@ -270,6 +275,7 @@ type InsertSessionParams struct {
 	ProviderConversationID    string
 	ControllerGeneration      string
 	Model                     string
+	SessionPermissions        string
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
 	IsPinned                  bool
@@ -287,6 +293,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.Kind,
 		arg.Harness,
 		arg.ReviewerHarness,
+		arg.ReviewerAgentConfig,
 		arg.AutoReviewEnabled,
 		arg.DisplayName,
 		arg.ActivityState,
@@ -316,6 +323,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.ProviderConversationID,
 		arg.ControllerGeneration,
 		arg.Model,
+		arg.SessionPermissions,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.IsPinned,
@@ -333,9 +341,9 @@ SELECT id, project_id, num, issue_id, kind, harness,
     created_at, updated_at, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
-    reviewer_harness, is_pinned, pinned_at,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions ORDER BY project_id, num
 `
 
@@ -368,6 +376,7 @@ type ListAllSessionsRow struct {
 	DiffBaseSha               string
 	DiffBaseRef               string
 	ReviewerHarness           domain.ReviewerHarness
+	ReviewerAgentConfig       string
 	IsPinned                  bool
 	PinnedAt                  sql.NullTime
 	SessionMode               domain.SessionMode
@@ -382,6 +391,7 @@ type ListAllSessionsRow struct {
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
 	Model                     string
+	SessionPermissions        string
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -422,6 +432,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.DiffBaseSha,
 			&i.DiffBaseRef,
 			&i.ReviewerHarness,
+			&i.ReviewerAgentConfig,
 			&i.IsPinned,
 			&i.PinnedAt,
 			&i.SessionMode,
@@ -436,6 +447,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.AutoInjectCI,
 			&i.AutoReviewEnabled,
 			&i.Model,
+			&i.SessionPermissions,
 		); err != nil {
 			return nil, err
 		}
@@ -457,9 +469,9 @@ SELECT id, project_id, num, issue_id, kind, harness,
     created_at, updated_at, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
-    reviewer_harness, is_pinned, pinned_at,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE project_id = ? ORDER BY num
 `
 
@@ -492,6 +504,7 @@ type ListSessionsByProjectRow struct {
 	DiffBaseSha               string
 	DiffBaseRef               string
 	ReviewerHarness           domain.ReviewerHarness
+	ReviewerAgentConfig       string
 	IsPinned                  bool
 	PinnedAt                  sql.NullTime
 	SessionMode               domain.SessionMode
@@ -506,6 +519,7 @@ type ListSessionsByProjectRow struct {
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
 	Model                     string
+	SessionPermissions        string
 }
 
 func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.ProjectID) ([]ListSessionsByProjectRow, error) {
@@ -546,6 +560,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.DiffBaseSha,
 			&i.DiffBaseRef,
 			&i.ReviewerHarness,
+			&i.ReviewerAgentConfig,
 			&i.IsPinned,
 			&i.PinnedAt,
 			&i.SessionMode,
@@ -560,6 +575,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.AutoInjectCI,
 			&i.AutoReviewEnabled,
 			&i.Model,
+			&i.SessionPermissions,
 		); err != nil {
 			return nil, err
 		}
@@ -780,18 +796,24 @@ func (q *Queries) SetSessionPreviewURL(ctx context.Context, arg SetSessionPrevie
 	return result.RowsAffected()
 }
 
-const setSessionReviewerHarness = `-- name: SetSessionReviewerHarness :execrows
-UPDATE sessions SET reviewer_harness = ?, updated_at = ? WHERE id = ?
+const setSessionReviewerConfig = `-- name: SetSessionReviewerConfig :execrows
+UPDATE sessions SET reviewer_harness = ?, reviewer_agent_config = ?, updated_at = ? WHERE id = ?
 `
 
-type SetSessionReviewerHarnessParams struct {
-	ReviewerHarness domain.ReviewerHarness
-	UpdatedAt       time.Time
-	ID              domain.SessionID
+type SetSessionReviewerConfigParams struct {
+	ReviewerHarness     domain.ReviewerHarness
+	ReviewerAgentConfig string
+	UpdatedAt           time.Time
+	ID                  domain.SessionID
 }
 
-func (q *Queries) SetSessionReviewerHarness(ctx context.Context, arg SetSessionReviewerHarnessParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setSessionReviewerHarness, arg.ReviewerHarness, arg.UpdatedAt, arg.ID)
+func (q *Queries) SetSessionReviewerConfig(ctx context.Context, arg SetSessionReviewerConfigParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionReviewerConfig,
+		arg.ReviewerHarness,
+		arg.ReviewerAgentConfig,
+		arg.UpdatedAt,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -816,9 +838,61 @@ func (q *Queries) SetSessionTerminateOnPRMerge(ctx context.Context, arg SetSessi
 	return result.RowsAffected()
 }
 
+const updateBrowserCapabilityVerifier = `-- name: UpdateBrowserCapabilityVerifier :execrows
+UPDATE sessions SET
+    browser_capability_verifier = ?1,
+    updated_at = MAX(updated_at, ?2)
+WHERE id = ?3
+  AND harness = ?4
+  AND session_mode = ?5
+  AND is_terminated = ?6
+  AND runtime_launch_id = ?7
+  AND agent_session_id = ?8
+  AND agent_session_id_launch_id = ?9
+  AND provider_conversation_id = ?10
+  AND controller_generation = ?11
+`
+
+type UpdateBrowserCapabilityVerifierParams struct {
+	BrowserCapabilityVerifier      string
+	UpdatedAt                      interface{}
+	ID                             domain.SessionID
+	ExpectedHarness                domain.AgentHarness
+	ExpectedSessionMode            domain.SessionMode
+	ExpectedIsTerminated           bool
+	ExpectedRuntimeLaunchID        string
+	ExpectedAgentSessionID         string
+	ExpectedAgentSessionIDLaunchID string
+	ExpectedProviderConversationID string
+	ExpectedControllerGeneration   string
+}
+
+// Rotate only the browser credential for the exact controller owner observed by
+// the launcher. This must not replay a stale SessionRecord over newer lifecycle,
+// activity, termination, or provider ownership facts.
+func (q *Queries) UpdateBrowserCapabilityVerifier(ctx context.Context, arg UpdateBrowserCapabilityVerifierParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateBrowserCapabilityVerifier,
+		arg.BrowserCapabilityVerifier,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ExpectedHarness,
+		arg.ExpectedSessionMode,
+		arg.ExpectedIsTerminated,
+		arg.ExpectedRuntimeLaunchID,
+		arg.ExpectedAgentSessionID,
+		arg.ExpectedAgentSessionIDLaunchID,
+		arg.ExpectedProviderConversationID,
+		arg.ExpectedControllerGeneration,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateSession = `-- name: UpdateSession :exec
 UPDATE sessions SET
-    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, auto_review_enabled = ?, display_name = ?,
+    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?, display_name = ?,
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
     branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
     runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
@@ -835,6 +909,7 @@ type UpdateSessionParams struct {
 	Kind                      domain.SessionKind
 	Harness                   domain.AgentHarness
 	ReviewerHarness           domain.ReviewerHarness
+	ReviewerAgentConfig       string
 	AutoReviewEnabled         bool
 	DisplayName               string
 	ActivityState             domain.ActivityState
@@ -877,6 +952,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.Kind,
 		arg.Harness,
 		arg.ReviewerHarness,
+		arg.ReviewerAgentConfig,
 		arg.AutoReviewEnabled,
 		arg.DisplayName,
 		arg.ActivityState,

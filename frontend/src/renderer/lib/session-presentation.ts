@@ -2,9 +2,11 @@ import {
 	attentionZone,
 	attentionZoneOrder,
 	boardAttentionZoneOrder,
+	boardKanbanColumnOrder,
 	getAgentActivityView as getPortableAgentActivityView,
 	getAttentionZoneView as getPortableAttentionZoneView,
 	getAttentionZoneViewForZone as getPortableAttentionZoneViewForZone,
+	getKanbanColumnView as getPortableKanbanColumnView,
 	getSessionStatusView as getPortableSessionStatusView,
 	getSessionTimelinePillView as getPortableSessionTimelinePillView,
 	isAgentActivityWorking,
@@ -12,6 +14,8 @@ import {
 	type AgentActivityView,
 	type AttentionZone,
 	type AttentionZoneView,
+	type KanbanColumn,
+	type KanbanColumnView,
 	type ProductUITranslator,
 	type SessionStatusView,
 	type SessionTimelinePillStatus,
@@ -84,6 +88,13 @@ export function getSessionStatusDotView(
 	};
 }
 
+export function getKanbanColumnView(
+	column: KanbanColumn,
+	t: TFunction = appI18n.t,
+): KanbanColumnView {
+	return getPortableKanbanColumnView(column, translator(t));
+}
+
 export function getSessionTimelinePillView(
 	status: SessionTimelinePillStatus,
 	t: TFunction = appI18n.t,
@@ -114,6 +125,7 @@ export {
 	attentionZone,
 	attentionZoneOrder,
 	boardAttentionZoneOrder,
+	boardKanbanColumnOrder,
 	isAgentActivityWorking,
 	isSessionIdle,
 };
@@ -121,6 +133,7 @@ export type {
 	AgentActivityView,
 	AttentionZone,
 	AttentionZoneView,
+	KanbanColumnView,
 	SessionStatusView,
 	SessionTimelinePillStatus,
 	SessionTimelinePillView,

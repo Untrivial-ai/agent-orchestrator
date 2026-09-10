@@ -28,8 +28,9 @@ type AgentConfig struct {
 	// Mode selects an agent-owned operating mode when the adapter exposes modes
 	// instead of raw model ids (currently Amp: low|medium|high|ultra).
 	Mode string `json:"mode,omitempty"`
-	// Permissions sets the agent's starting permission mode. Empty is treated
-	// like the adapter's default mode.
+	// Permissions sets the agent's starting permission mode. Empty inherits the
+	// project/role preference; new sessions fall back to Auto when none is saved.
+	// Other adapter callers retain their existing baseline for an empty value.
 	Permissions PermissionMode `json:"permissions,omitempty"`
 }
 

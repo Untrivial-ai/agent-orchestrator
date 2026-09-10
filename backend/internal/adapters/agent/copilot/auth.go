@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -53,10 +54,9 @@ func copilotLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, e
 	if home == "" {
 		return ports.AgentAuthStatusUnknown, false, nil
 	}
-	configStatus, configOK, err := copilotConfigAuthStatus(filepath.Join(copilotHomeDir(home), "config.json"))
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
+	// Copilot credentials can come from several independent sources. A corrupt
+	// config file must not prevent the documented GitHub CLI token fallback.
+	configStatus, configOK, _ := copilotConfigAuthStatus(filepath.Join(copilotHomeDir(home), "config.json"))
 	if configOK {
 		return configStatus, true, nil
 	}
@@ -109,11 +109,17 @@ func copilotConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 }
 
 func copilotGHAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
-	status, err := authprobe.CLIStatus(ctx, "gh", [][]string{{"auth", "status"}})
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	out, err := authprobe.CmdRunner(probeCtx, "gh", "auth", "token")
+	if probeCtx.Err() != nil {
+		if probeCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return ports.AgentAuthStatusUnknown, false, nil
+		}
+		return ports.AgentAuthStatusUnknown, false, probeCtx.Err()
 	}
-	if status == ports.AgentAuthStatusAuthorized {
+	if err == nil && copilotUsableToken(string(out)) {
 		return ports.AgentAuthStatusAuthorized, true, nil
 	}
 	// GitHub CLI state is only one Copilot credential source. A negative result

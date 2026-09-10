@@ -50,10 +50,22 @@ export type LaunchIntent = { clean: boolean; label: string; confirm: boolean };
  * for the project is sent a retire notice ("AO is replacing this project
  * orchestrator. Stop coordinating new work now") and replaced. That is worth a
  * confirmation, which it never had.
+ *
+ * The card does not currently expose the running case: a healthy orchestrator
+ * offers Open and nothing else, because a restart button is only meaningful
+ * once there is something to restart. The branch stays because it is the
+ * correct answer to "what would launching do right now", and because the
+ * destructive path must keep its confirmation if the card ever offers it again
+ * (a long-press, say) — not because the screen calls it today.
  */
 export function launchIntent(state: OrchestratorState): LaunchIntent {
 	if (state === "running") return { clean: true, label: "Restart orchestrator", confirm: true };
-	// Nothing live to retire, so the cheap ensure is also the correct call.
+	// Nothing live to retire, so the cheap ensure is also the correct call. The
+	// two remaining states are not the same action to a reader, though: an
+	// orchestrator that exited is being *restarted*, one that never existed is
+	// being *started*. Saying "Start" over a session that has clearly already
+	// run reads as though the app lost track of it.
+	if (state === "stopped") return { clean: false, label: "Restart orchestrator", confirm: false };
 	return { clean: false, label: "Start orchestrator", confirm: false };
 }
 

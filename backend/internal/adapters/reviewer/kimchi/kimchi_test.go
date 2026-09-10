@@ -50,6 +50,7 @@ func TestReviewCommandAppliesBestEffortPolicyOffBypass(t *testing.T) {
 		ReviewerID:    "review-w1",
 		WorkspacePath: "/ws/w1",
 		Prompt:        "review it",
+		Config:        ports.AgentConfig{Model: "sonnet-5"},
 		SystemPrompt:  "you are a reviewer",
 	}); err != nil {
 		t.Fatalf("ReviewCommand: %v", err)
@@ -59,6 +60,9 @@ func TestReviewCommandAppliesBestEffortPolicyOffBypass(t *testing.T) {
 	// allow/deny rules, and an empty mode would defer to Kimchi's default.
 	if agent.got.Permissions != ports.PermissionModeAuto {
 		t.Fatalf("reviewer must launch in auto permission mode; got %q", agent.got.Permissions)
+	}
+	if agent.got.Config.Model != "sonnet-5" {
+		t.Fatalf("launch config model = %q, want sonnet-5", agent.got.Config.Model)
 	}
 	if !contains(agent.got.AllowedTools, "read") || !contains(agent.got.AllowedTools, "bash(ao review submit:*)") {
 		t.Fatalf("allowlist missing read-only review tools: %#v", agent.got.AllowedTools)

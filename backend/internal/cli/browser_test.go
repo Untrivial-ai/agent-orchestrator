@@ -119,6 +119,46 @@ func TestBrowserUntrustedTextCannotBeSpoofedByPageContent(t *testing.T) {
 	}
 }
 
+func TestBrowserActOutputKeepsTrustBoundaryLineDelimited(t *testing.T) {
+	tests := []struct {
+		name   string
+		result map[string]any
+	}{
+		{
+			name: "matched",
+			result: map[string]any{
+				"outcome": "matched", "resolvedRef": "e3",
+				"candidate": map[string]any{"role": "button", "name": "Submit"},
+			},
+		},
+		{
+			name: "ambiguous",
+			result: map[string]any{
+				"outcome":    "ambiguous",
+				"candidates": []any{map[string]any{"role": "button", "name": "Submit", "ref": "e3"}},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetOut(&output)
+			if err := writeBrowserResult(cmd, "act", test.result); err != nil {
+				t.Fatal(err)
+			}
+			text := output.String()
+			wantBlock := "\n" + browserUntrustedBegin + "\nSubmit\n" + browserUntrustedEnd + "\n"
+			if !strings.Contains(text, wantBlock) {
+				t.Fatalf("trust boundary is not line-delimited: %q", text)
+			}
+			if strings.Contains(text, `\n`) {
+				t.Fatalf("trust boundary contains escaped newlines: %q", text)
+			}
+		})
+	}
+}
+
 func TestBrowserClickAndWaitArguments(t *testing.T) {
 	setBrowserIdentity(t)
 	cfg := setConfigEnv(t)
@@ -138,6 +178,24 @@ func TestBrowserClickAndWaitArguments(t *testing.T) {
 	}
 	if capture.body.Action != "wait" || capture.body.Args["text"] != "Ready" || capture.body.Args["timeoutMs"] != float64(2500) {
 		t.Fatalf("wait = %#v", capture.body)
+	}
+}
+
+func TestBrowserActForwardsExplicitEmptyValue(t *testing.T) {
+	setBrowserIdentity(t)
+	cfg := setConfigEnv(t)
+	capture := &browserRequestCapture{}
+	srv := browserCLIServer(t, capture)
+	writeRunFileFor(t, cfg, srv)
+	deps := Deps{ProcessAlive: func(int) bool { return true }}
+
+	_, errOut, err := executeCLI(t, deps, "browser", "act", "the search field", "--action", "fill", "--value", "")
+	if err != nil {
+		t.Fatalf("act err=%v stderr=%s", err, errOut)
+	}
+	value, ok := capture.body.Args["value"]
+	if !ok || value != "" {
+		t.Fatalf("act value = %#v, present=%v; want explicit empty string", value, ok)
 	}
 }
 
@@ -365,6 +423,105 @@ func TestBrowserScreenshotWritesWithoutOverwrite(t *testing.T) {
 	}
 	if _, _, err := executeCLI(t, deps, "browser", "screenshot", target); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("overwrite error = %v", err)
+	}
+}
+
+func TestBrowserScreenshotWritesRelativePath(t *testing.T) {
+	setBrowserIdentity(t)
+	cfg := setConfigEnv(t)
+	capture := &browserRequestCapture{}
+	srv := browserCLIServer(t, capture)
+	writeRunFileFor(t, cfg, srv)
+	deps := Deps{ProcessAlive: func(int) bool { return true }}
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	out, errOut, err := executeCLI(t, deps, "browser", "screenshot", "relative.png")
+	if err != nil {
+		t.Fatalf("relative screenshot err=%v stderr=%s", err, errOut)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "relative.png"))
+	if err != nil || string(data) != "png" {
+		t.Fatalf("relative screenshot data=%q err=%v", data, err)
+	}
+	if !strings.Contains(out, filepath.Join(dir, "relative.png")) {
+		t.Fatalf("relative screenshot output = %q", out)
+	}
+}
+
+func TestBrowserScreenshotJSONWritesCompactMetadata(t *testing.T) {
+	setBrowserIdentity(t)
+	cfg := setConfigEnv(t)
+	capture := &browserRequestCapture{}
+	srv := browserCLIServer(t, capture)
+	writeRunFileFor(t, cfg, srv)
+	deps := Deps{ProcessAlive: func(int) bool { return true }}
+	target := filepath.Join(t.TempDir(), "shot.png")
+
+	out, errOut, err := executeCLI(t, deps, "browser", "screenshot", target, "--json")
+	if err != nil {
+		t.Fatalf("JSON screenshot err=%v stderr=%s", err, errOut)
+	}
+	var metadata browserScreenshotFileResult
+	if err := json.Unmarshal([]byte(out), &metadata); err != nil {
+		t.Fatalf("decode JSON screenshot output: %v; output=%q", err, out)
+	}
+	if metadata.Path != target || metadata.Size != 3 || metadata.Width != 10 || metadata.Height != 20 {
+		t.Fatalf("JSON screenshot metadata = %#v", metadata)
+	}
+	if strings.Contains(out, "cG5n") || len(out) > 256 {
+		t.Fatalf("JSON screenshot output was not compact: %q", out)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "png" {
+		t.Fatalf("JSON screenshot data=%q err=%v", data, err)
+	}
+	if _, _, err := executeCLI(t, deps, "browser", "screenshot", target, "--json"); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("JSON overwrite error = %v", err)
+	}
+}
+
+func TestBrowserScreenshotBase64RequiresExplicitJSONMode(t *testing.T) {
+	setBrowserIdentity(t)
+	cfg := setConfigEnv(t)
+	capture := &browserRequestCapture{}
+	srv := browserCLIServer(t, capture)
+	writeRunFileFor(t, cfg, srv)
+	deps := Deps{ProcessAlive: func(int) bool { return true }}
+	t.Chdir(t.TempDir())
+
+	out, errOut, err := executeCLI(t, deps, "browser", "screenshot", "--base64", "--json")
+	if err != nil {
+		t.Fatalf("base64 screenshot err=%v stderr=%s", err, errOut)
+	}
+	var response browserCommandResponseDTO
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("decode base64 screenshot output: %v; output=%q", err, out)
+	}
+	if response.Result["data"] != "cG5n" {
+		t.Fatalf("base64 screenshot result = %#v", response.Result)
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("base64 screenshot wrote files: entries=%v err=%v", entries, err)
+	}
+	if _, _, err := executeCLI(t, deps, "browser", "screenshot", "--base64"); ExitCode(err) != 2 {
+		t.Fatalf("base64 without JSON error = %v code=%d", err, ExitCode(err))
+	}
+	if _, _, err := executeCLI(t, deps, "browser", "screenshot", "shot.png", "--base64", "--json"); ExitCode(err) != 2 {
+		t.Fatalf("base64 with path error = %v code=%d", err, ExitCode(err))
+	}
+}
+
+func TestBrowserScreenshotHelpExplainsJSONAndBase64Modes(t *testing.T) {
+	out, errOut, err := executeCLI(t, Deps{}, "browser", "screenshot", "--help")
+	if err != nil {
+		t.Fatalf("screenshot help err=%v stderr=%s", err, errOut)
+	}
+	for _, want := range []string{"compact metadata", "--base64", "cannot be used with a path"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("screenshot help missing %q: %s", want, out)
+		}
 	}
 }
 

@@ -145,6 +145,7 @@ type PullRequestSummary struct {
 	Provider         string                         `json:"provider"`
 	Repo             string                         `json:"repository"`
 	Author           string                         `json:"author"`
+	AuthorAvatarURL  string                         `json:"authorAvatarUrl,omitempty"`
 	SourceBranch     string                         `json:"sourceBranch"`
 	TargetBranch     string                         `json:"targetBranch"`
 	HeadSHA          string                         `json:"headSha"`

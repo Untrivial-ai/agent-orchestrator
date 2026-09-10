@@ -1,8 +1,15 @@
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import type { ReactElement } from "react";
+import { describe, expect, it, vi } from "vitest";
 import { ActivityRow, SteerMessage } from "./ChatTimelineItems";
 import type { ConversationActivity } from "../../types/conversation";
+import { aoBridge } from "../../lib/bridge";
+import { TooltipProvider } from "../ui/tooltip";
+
+function render(ui: ReactElement) {
+	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+}
 
 // One test file per new provider signal the daemon started serving. What each covers
 // is the claim the row makes, not its markup: an MCP call must not read as a command
@@ -91,10 +98,9 @@ describe("MCP tool call", () => {
 
 	it("names the server and the tool, not a shell command", () => {
 		render(<ActivityRow activity={call} />);
-		expect(screen.getByText("github")).toBeInTheDocument();
 		expect(screen.getByText("search_issues")).toBeInTheDocument();
 		// The distinction the kind exists to draw: nothing ran in the worktree.
-		expect(screen.getByText("MCP tool")).toBeInTheDocument();
+		expect(screen.getByText("MCP · github")).toBeInTheDocument();
 	});
 
 	it("shows the arguments and the answer when opened", async () => {
@@ -279,6 +285,7 @@ describe("steer message", () => {
 	it("shows the user's own words and says they landed mid-turn", () => {
 		render(
 			<SteerMessage
+				sessionId="ao-1"
 				activity={activity({
 					activityKind: "system",
 					summary: "Skip the integration tests",
@@ -319,7 +326,12 @@ describe("provider error", () => {
 			/>,
 		);
 		expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
-		expect(screen.queryByText(/You have no credits remaining/i)).not.toBeInTheDocument();
+		expect(screen.getByText(/You have no credits remaining/i)).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", {
+				name: "https://platform.openai.com/settings/organization/billing",
+			}),
+		).toHaveAttribute("href", "https://platform.openai.com/settings/organization/billing");
 		// The raw envelope must not paint as the row label — that is what overflowed the column.
 		expect(screen.queryByText(/codexErrorInfo/i)).not.toBeInTheDocument();
 		expect(screen.queryByText(/provider error:/i)).not.toBeInTheDocument();
@@ -341,8 +353,82 @@ describe("provider error", () => {
 			/>,
 		);
 		expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
-		expect(screen.queryByText(/You have no credits remaining/i)).not.toBeInTheDocument();
+		expect(screen.getByText(/You have no credits remaining/i)).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", {
+				name: "https://platform.openai.com/settings/organization/billing",
+			}),
+		).toHaveAttribute("href", "https://platform.openai.com/settings/organization/billing");
 		expect(screen.queryByText(/codexErrorInfo/i)).not.toBeInTheDocument();
+	});
+
+	it("renders an arbitrary provider web URL literally and opens it externally", async () => {
+		const user = userEvent.setup();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: "Custom provider request failed",
+					detail: {
+						message: "Custom provider request failed",
+						error: "Review the provider account at http://billing.example.test/renew.",
+					},
+				})}
+			/>,
+		);
+
+		const link = screen.getByRole("link", { name: "http://billing.example.test/renew" });
+		expect(link).toHaveAttribute("href", "http://billing.example.test/renew");
+		await user.click(link);
+		expect(openExternal).toHaveBeenCalledWith("http://billing.example.test/renew");
+		openExternal.mockRestore();
+	});
+
+	it("renders a separate provider action URL literally", () => {
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: "Request failed",
+					detail: {
+						message: "Request failed",
+						error: "You have no credits remaining.",
+						actionUrl: "https://platform.openai.com/settings/organization/billing",
+					},
+				})}
+			/>,
+		);
+
+		expect(screen.getByText(/You have no credits remaining/i)).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", {
+				name: "https://platform.openai.com/settings/organization/billing",
+			}),
+		).toHaveAttribute("href", "https://platform.openai.com/settings/organization/billing");
+	});
+
+	it("leaves non-web provider destinations as inert text", () => {
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: "Request failed",
+					detail: {
+						message: "Request failed",
+						error: "Run javascript:alert('owned') to continue.",
+						actionUrl: "file:///tmp/provider-help.html",
+					},
+				})}
+			/>,
+		);
+
+		expect(screen.getByText(/javascript:alert/)).toBeInTheDocument();
+		expect(screen.getByText("file:///tmp/provider-help.html")).toBeInTheDocument();
+		expect(screen.queryByRole("link")).not.toBeInTheDocument();
 	});
 
 	it("keeps plain-language errors readable without a JSON dump", () => {

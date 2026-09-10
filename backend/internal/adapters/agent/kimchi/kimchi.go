@@ -1,7 +1,7 @@
 // Package kimchi implements the Kimchi agent adapter: launching headless Kimchi
 // sessions and resuming sessions when a native session id is known.
 //
-// Kimchi (@kimchi-dev/cli, binary "kimchi") is a coding-agent CLI built on
+// Kimchi (binary "kimchi") is a coding-agent CLI built on
 // @earendil-works/pi-coding-agent. AO drives it non-interactively with
 // `--print` ("process prompt and exit"). The initial prompt is delivered
 // in-command as a trailing positional argument.

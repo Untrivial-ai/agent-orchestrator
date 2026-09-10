@@ -246,6 +246,14 @@ describe("NotificationRuntime", () => {
 });
 
 describe("NotificationCenter", () => {
+	it("subscribes to workspace metadata only while the panel is open", async () => {
+		renderNotificationCenter();
+
+		expect(workspaceQueryMock).not.toHaveBeenCalled();
+		await clickOpen();
+		expect(workspaceQueryMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("uses the compact topbar bell and unread badge sizing", () => {
 		renderNotificationCenter();
 		const trigger = screen.getByRole("button", { name: /unread notifications/ });

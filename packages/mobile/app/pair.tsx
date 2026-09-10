@@ -4,9 +4,9 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ApiError, pingServer } from "../lib/api";
+import { pingServer } from "../lib/api";
 import { pickNormalLens } from "../lib/cameraLens";
-import { loadConfig, saveConfig, type ServerConfig } from "../lib/config";
+import { saveConfig } from "../lib/config";
 import {
 	classifyConnectionFailure,
 	describeConnectionFailure,
@@ -16,7 +16,11 @@ import {
 import type { Theme } from "../lib/theme";
 import { haptics } from "../lib/haptics";
 import { clearOnboardingSkipped } from "../lib/onboardingStore";
-import { applyPairingPayload, parsePairingPayload } from "../lib/pairing";
+import { pairFromCode } from "../lib/pairFlow";
+import { isLegacyPairingCode, parsePairingCode } from "../lib/pairingCode";
+import { saveHost, setActiveHost } from "../lib/hosts";
+import { probeEndpoint } from "../lib/connectRuntime";
+import { raceEndpoints } from "../lib/race";
 import { connectSheetRoute } from "../lib/sheetResult";
 import { useApp } from "../lib/store";
 import { Button, NumberedStep } from "../lib/ui";
@@ -50,7 +54,7 @@ export default function PairScreen() {
 	);
 	const scanned = useRef(false);
 	const rejected = useRef<string | null>(null);
-	const pending = useRef<ServerConfig | null>(null);
+	const pendingCode = useRef<string | null>(null);
 
 	const camera = useRef<CameraView>(null);
 	const [lens, setLens] = useState<string | undefined>(undefined);
@@ -75,50 +79,64 @@ export default function PairScreen() {
 
 	async function onScan({ data }: { data: string }) {
 		if (scanned.current || busy || !focused.current) return;
-		const parsed = parsePairingPayload(data);
-		if (!parsed) {
+		// Cheap reject first: the camera sees every barcode in frame, and only a
+		// code we can actually parse should stop the scanner.
+		if (!parsePairingCode(data)) {
 			if (rejected.current !== data) {
 				rejected.current = data;
-				setFailure(describeConnectionFailure("not-ao-qr", { host: "", port: "", platform: Platform.OS }));
+				// A v1 code is a recognisable thing, not noise: say what to do
+				// about it rather than claiming it is not a pairing code.
+				const reason = isLegacyPairingCode(data) ? "outdated-desktop" : "not-ao-qr";
+				setFailure(describeConnectionFailure(reason, { host: "", port: "", platform: Platform.OS }));
 			}
 			return;
 		}
 		rejected.current = null;
 		scanned.current = true;
-		const cfg = await loadConfig();
-		await verify(applyPairingPayload(cfg, parsed));
+		await pair(data);
 	}
 
-	async function verify(target: ServerConfig) {
-		pending.current = target;
+	// Races the code's endpoints, verifies the winner, then stores the machine.
+	// The scanned code is kept so "Try again" can re-run the whole thing rather
+	// than making the user re-scan.
+	async function pair(code: string) {
+		pendingCode.current = code;
 		setBusy(true);
 		setFailure(null);
-		try {
-			await pingServer(target);
-			await saveConfig(target);
-			mobileTelemetry()?.capture(MOBILE_EVENTS.paired, { method: "qr", from_onboarding: fromOnboarding });
-			if (fromOnboarding) mobileTelemetry()?.capture(MOBILE_EVENTS.onboardingCompleted);
-			haptics.success();
-			await finish();
-		} catch (e) {
+
+		const result = await pairFromCode(code, {
+			race: (endpoints, expectedHostId) => raceEndpoints(endpoints, expectedHostId, probeEndpoint),
+			verify: async (config) => void (await pingServer(config)),
+			saveHost,
+			setActiveHost,
+		});
+
+		if (!result.ok) {
 			haptics.warning();
-			const status = e instanceof ApiError ? e.status : undefined;
 			setFailure(
-				describeConnectionFailure(classifyConnectionFailure(status), {
-					host: target.host,
-					port: target.httpPort,
-					platform: Platform.OS,
-				}),
+				describeConnectionFailure(
+					result.reason === "not-ao-qr" ? "not-ao-qr" : classifyConnectionFailure(undefined),
+					{ host: "", port: "", platform: Platform.OS },
+				),
 			);
 			setBusy(false);
+			return;
 		}
+
+		// The rest of the app still runs off ServerConfig, so the winning
+		// endpoint is written there as well as into the host list.
+		await saveConfig(result.config);
+		mobileTelemetry()?.capture(MOBILE_EVENTS.paired, { method: "qr", from_onboarding: fromOnboarding });
+		if (fromOnboarding) mobileTelemetry()?.capture(MOBILE_EVENTS.onboardingCompleted);
+		haptics.success();
+		await finish();
 	}
 
 	function retry() {
 		setFailure(null);
 		rejected.current = null;
-		if (pending.current) {
-			void verify(pending.current);
+		if (pendingCode.current) {
+			void pair(pendingCode.current);
 			return;
 		}
 		scanned.current = false;
