@@ -34,6 +34,7 @@ var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentBinaryResolver = (*Plugin)(nil)
+var _ ports.AgentExitDetector = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -51,6 +52,12 @@ func (p *Plugin) Manifest() adapters.Manifest {
 // GetConfigSpec reports the per-project agent config keys OMP understands.
 func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 	return agentbase.ModelConfigSpec(ctx, "Model override passed to `omp --model`.")
+}
+
+// ExitDetectionMode opts OMP into AO's process supervisor. OMP's JS
+// extension teardown never runs when SIGINT kills the TUI first.
+func (p *Plugin) ExitDetectionMode() ports.AgentExitDetectionMode {
+	return ports.AgentExitDetectionSupervisor
 }
 
 // GetLaunchCommand builds the argv to start a fresh interactive OMP session:
