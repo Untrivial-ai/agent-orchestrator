@@ -55,8 +55,8 @@ type sentTicket struct {
 	id     string
 	token  string
 	sentAt time.Time
-	// A receipt ID seen with different tokens must never identify a token to
-	// prune, even after the conflicting record expires or is dropped at the cap.
+	// pruneAmbiguous prevents pruning from an ID shared by different tokens.
+	// The conflict is remembered only while a marked record remains in pending.
 	pruneAmbiguous bool
 }
 
@@ -181,8 +181,9 @@ func (d *Dispatcher) trackAccepted(tickets []sentTicket) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.pending = append(d.pending, tickets...)
-	// Mark conflicting IDs before the cap can discard either record. Keep this
-	// decision on the surviving records so expiry cannot make an ID trustworthy.
+	// Mark conflicting IDs before the cap can discard either record. An ID stays
+	// ambiguous while a marked record remains in pending; after all are removed,
+	// a new ticket reusing the ID is trusted again.
 	tokenOf := make(map[string]string, len(d.pending))
 	for _, t := range d.pending {
 		token, exists := tokenOf[t.id]
