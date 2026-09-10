@@ -76,6 +76,7 @@ type CodexAccountSwitchConfig struct {
 	TargetAccountID         string
 	ExpectedAccountRevision int64
 	IdempotencyKey          string
+	RestartRunningSessions  bool
 }
 
 // CodexAccountSwitchStore persists global switch facts and CAS transitions.

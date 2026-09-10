@@ -51,6 +51,7 @@ it("keeps account mutations fenced while recovery is required", () => {
 		id: "switch-1",
 		sourceAccountId: "account-a",
 		targetAccountId: "account-b",
+		restartRunningSessions: true,
 		phase: "recovery_required",
 		canRecover: true,
 		sessions: [],
@@ -66,6 +67,7 @@ it("keeps account mutations fenced while recovery is required", () => {
 it("shows active rollback as progress and exposes interrupted rollback recovery", () => {
 	const active = codexSwitchDisplay({
 		id: "switch-1", sourceAccountId: "account-a", targetAccountId: "account-b",
+		restartRunningSessions: true,
 		phase: "rollback_required", failureCode: "activation_unconfirmed", canRecover: false,
 		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
 	} satisfies CodexAccountSwitch);
@@ -76,12 +78,24 @@ it("shows active rollback as progress and exposes interrupted rollback recovery"
 
 	const interrupted = codexSwitchDisplay({
 		id: "switch-1", sourceAccountId: "account-a", targetAccountId: "account-b",
+		restartRunningSessions: true,
 		phase: "rollback_required", failureCode: "activation_unconfirmed", canRecover: true,
 		sessions: [], createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
 	} satisfies CodexAccountSwitch);
 	expect(interrupted.busy).toBe(false);
 	expect(interrupted.mutationBlocked).toBe(true);
 	expect(interrupted.canRecover).toBe(true);
+});
+
+it("never describes leave-running credential progress as stopping or restarting sessions", () => {
+	for (const phase of ["requested", "checkpointing_source", "activating_target", "verifying_target", "completed"] as const) {
+		const display = codexSwitchDisplay({
+			id: "switch-credential-only", sourceAccountId: "account-a", targetAccountId: "account-b",
+			restartRunningSessions: false, phase, canRecover: false, sessions: [],
+			createdAt: "2026-09-02T00:00:00Z", updatedAt: "2026-09-02T00:01:00Z",
+		} satisfies CodexAccountSwitch);
+		expect(display.key).not.toMatch(/stopping_sessions|restarting_sessions/);
+	}
 });
 
 it("maps every account reason to complete native locale copy with a safe unknown fallback", () => {
@@ -92,6 +106,13 @@ it("maps every account reason to complete native locale copy with a safe unknown
 		...switchKeys,
 		"settings.codexAccounts.switch.restored",
 		"settings.codexAccounts.retryRecovery",
+		"settings.codexAccounts.switchAndRestart",
+		"settings.codexAccounts.restartRunningSessions",
+		"settings.codexAccounts.restartRunningSessionsInfo",
+		"settings.codexAccounts.restartRunningSessionsTooltip",
+		"settings.codexAccounts.restartRunningSessionsOn",
+		"settings.codexAccounts.restartRunningSessionsOff",
+		"settings.codexAccounts.externalSessionsWarning",
 	];
 	for (const locale of locales) {
 		const catalog = catalogFor(locale);

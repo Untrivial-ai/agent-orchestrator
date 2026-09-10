@@ -89,7 +89,10 @@ func (c *CodexAccountsController) startSwitch(w http.ResponseWriter, r *http.Req
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "IDEMPOTENCY_KEY_REQUIRED", "Idempotency key is required", nil)
 		return
 	}
-	result, err := c.Svc.StartCodexAccountSwitch(r.Context(), ports.CodexAccountSwitchConfig{TargetAccountID: request.TargetAccountID, ExpectedAccountRevision: request.ExpectedAccountRevision, IdempotencyKey: request.IdempotencyKey})
+	result, err := c.Svc.StartCodexAccountSwitch(r.Context(), ports.CodexAccountSwitchConfig{
+		TargetAccountID: request.TargetAccountID, ExpectedAccountRevision: request.ExpectedAccountRevision,
+		IdempotencyKey: request.IdempotencyKey, RestartRunningSessions: request.RestartRunningSessions,
+	})
 	if err != nil {
 		writeCodexAccountSwitchError(w, r, err)
 		return

@@ -27,6 +27,56 @@ type rollbackTrackingCredentials struct {
 	verified     []string
 }
 
+type blockingActivationCredentials struct {
+	bootstrapOrderingCredentials
+	muCurrent          sync.Mutex
+	current            domain.CodexActiveAccount
+	activationEntered  chan struct{}
+	activationReleased chan struct{}
+}
+
+func (c *blockingActivationCredentials) CurrentCodexActiveAccount() domain.CodexActiveAccount {
+	c.muCurrent.Lock()
+	defer c.muCurrent.Unlock()
+	return c.current
+}
+
+func (c *blockingActivationCredentials) CheckpointAndActivateCodexAccount(ctx context.Context, _ string, target string, expected int64) (domain.CodexActiveAccount, error) {
+	close(c.activationEntered)
+	select {
+	case <-c.activationReleased:
+	case <-ctx.Done():
+		return domain.CodexActiveAccount{}, ctx.Err()
+	}
+	c.muCurrent.Lock()
+	c.current = domain.CodexActiveAccount{AccountID: target, Revision: expected + 1}
+	active := c.current
+	c.muCurrent.Unlock()
+	return active, nil
+}
+
+type trackingCodexReviewerLifecycle struct {
+	fakeReviewerTerminator
+	snapshotCalls int
+	suspendCalls  int
+	restoreExact  int
+}
+
+func (r *trackingCodexReviewerLifecycle) SnapshotCodexReviewer(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
+	r.snapshotCalls++
+	return ports.CodexReviewerControllerSnapshot{Running: true}, nil
+}
+
+func (r *trackingCodexReviewerLifecycle) SuspendCodexReviewerExact(context.Context, domain.SessionID, string, string) (bool, error) {
+	r.suspendCalls++
+	return true, nil
+}
+
+func (r *trackingCodexReviewerLifecycle) RestoreCodexReviewerExact(context.Context, domain.SessionID, string) error {
+	r.restoreExact++
+	return nil
+}
+
 func (*rollbackTrackingCredentials) CheckpointAndActivateCodexAccount(context.Context, string, string, int64) (domain.CodexActiveAccount, error) {
 	return domain.CodexActiveAccount{}, errors.New("injected activation failure")
 }
@@ -183,22 +233,31 @@ type bootstrapOrderingStore struct {
 }
 
 type collectingCodexSwitchStore struct {
-	sessions []domain.CodexAccountSwitchSession
+	sessions     []domain.CodexAccountSwitchSession
+	switchRecord domain.CodexAccountSwitch
+	active       bool
 }
 
 func (s *collectingCodexSwitchStore) CreateCodexAccountSwitch(_ context.Context, rec domain.CodexAccountSwitch) (domain.CodexAccountSwitch, bool, error) {
+	s.switchRecord = rec
+	s.active = !rec.Phase.Terminal()
 	return rec, true, nil
 }
-func (s *collectingCodexSwitchStore) GetCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, bool, error) {
-	return domain.CodexAccountSwitch{}, false, nil
+func (s *collectingCodexSwitchStore) GetCodexAccountSwitch(_ context.Context, id string) (domain.CodexAccountSwitch, bool, error) {
+	return s.switchRecord, s.switchRecord.ID == id && id != "", nil
 }
-func (s *collectingCodexSwitchStore) GetCodexAccountSwitchByIdempotency(context.Context, string) (domain.CodexAccountSwitch, bool, error) {
-	return domain.CodexAccountSwitch{}, false, nil
+func (s *collectingCodexSwitchStore) GetCodexAccountSwitchByIdempotency(_ context.Context, key string) (domain.CodexAccountSwitch, bool, error) {
+	return s.switchRecord, s.switchRecord.IdempotencyKey == key && key != "", nil
 }
 func (s *collectingCodexSwitchStore) GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error) {
-	return domain.CodexAccountSwitch{}, false, nil
+	return s.switchRecord, s.active, nil
 }
-func (s *collectingCodexSwitchStore) UpdateCodexAccountSwitch(context.Context, domain.CodexAccountSwitch, domain.CodexAccountSwitchPhase) (bool, error) {
+func (s *collectingCodexSwitchStore) UpdateCodexAccountSwitch(_ context.Context, rec domain.CodexAccountSwitch, expected domain.CodexAccountSwitchPhase) (bool, error) {
+	if s.switchRecord.ID != "" && s.switchRecord.Phase != expected {
+		return false, nil
+	}
+	s.switchRecord = rec
+	s.active = !rec.Phase.Terminal()
 	return true, nil
 }
 func (s *collectingCodexSwitchStore) InsertCodexAccountSwitchSession(_ context.Context, _ string, rec domain.CodexAccountSwitchSession) error {
@@ -260,7 +319,10 @@ func (s *ambiguousCodexSwitchStore) CreateCodexAccountSwitch(_ context.Context, 
 func (s *ambiguousCodexSwitchStore) GetCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, bool, error) {
 	return s.switchRecord, true, nil
 }
-func (*ambiguousCodexSwitchStore) GetCodexAccountSwitchByIdempotency(context.Context, string) (domain.CodexAccountSwitch, bool, error) {
+func (s *ambiguousCodexSwitchStore) GetCodexAccountSwitchByIdempotency(_ context.Context, key string) (domain.CodexAccountSwitch, bool, error) {
+	if s.switchRecord.IdempotencyKey == key && key != "" {
+		return s.switchRecord, true, nil
+	}
 	return domain.CodexAccountSwitch{}, false, nil
 }
 func (s *ambiguousCodexSwitchStore) GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error) {
@@ -280,18 +342,42 @@ func (s *ambiguousCodexSwitchStore) UpdateCodexAccountSwitchSession(_ context.Co
 
 func TestCodexAccountSwitchFingerprintIsVersionedAndStable(t *testing.T) {
 	t.Parallel()
-	first := codexAccountSwitchFingerprint("account-b", 7)
-	if !strings.HasPrefix(first, "v1:") || len(first) != len("v1:")+64 {
+	first := codexAccountSwitchFingerprint("account-b", 7, false)
+	if !strings.HasPrefix(first, "v2:") || len(first) != len("v2:")+64 {
 		t.Fatalf("fingerprint = %q", first)
 	}
-	if got := codexAccountSwitchFingerprint("account-b", 7); got != first {
+	if got := codexAccountSwitchFingerprint("account-b", 7, false); got != first {
 		t.Fatalf("stable fingerprint = %q, want %q", got, first)
 	}
-	if got := codexAccountSwitchFingerprint("account-c", 7); got == first {
+	if got := codexAccountSwitchFingerprint("account-c", 7, false); got == first {
 		t.Fatal("target account must participate in fingerprint")
 	}
-	if got := codexAccountSwitchFingerprint("account-b", 8); got == first {
+	if got := codexAccountSwitchFingerprint("account-b", 8, false); got == first {
 		t.Fatal("account revision must participate in fingerprint")
+	}
+	if got := codexAccountSwitchFingerprint("account-b", 7, true); got == first {
+		t.Fatal("restart policy must participate in fingerprint")
+	}
+}
+
+func TestCodexAccountSwitchIdempotencyConflictsWhenRestartPolicyChanges(t *testing.T) {
+	store := &ambiguousCodexSwitchStore{
+		fakeStore: newFakeStore(),
+		switchRecord: domain.CodexAccountSwitch{
+			ID: "switch-1", IdempotencyKey: "same-request",
+			RequestFingerprint:     codexAccountSwitchFingerprint("target", 1, false),
+			RestartRunningSessions: false,
+		},
+	}
+	manager := New(Deps{Store: store, Runtime: &fakeRuntime{}})
+	manager.SetAgentReadiness(&bootstrapOrderingCredentials{})
+
+	_, err := manager.StartCodexAccountSwitch(context.Background(), ports.CodexAccountSwitchConfig{
+		TargetAccountID: "target", ExpectedAccountRevision: 1, IdempotencyKey: "same-request",
+		RestartRunningSessions: true,
+	})
+	if !errors.Is(err, ErrCodexAccountSwitchIdempotencyConflict) {
+		t.Fatalf("restart-policy idempotency error = %v", err)
 	}
 }
 
@@ -316,6 +402,147 @@ func TestCodexAccountSwitchReconcilesBeforeHoldingMutationToken(t *testing.T) {
 	credentials.mu.Unlock()
 	if len(calls) < 4 || !slices.Equal(calls[:4], []string{"store", "reconcile", "begin", "verify"}) {
 		t.Fatalf("admission order = %v", calls)
+	}
+}
+
+func TestCodexAccountSwitchLeavesRunningControllersUntouchedByDefault(t *testing.T) {
+	base := newFakeStore()
+	base.sessions["tui-session"] = domain.SessionRecord{
+		ID: "tui-session", Harness: domain.HarnessCodex, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{RuntimeHandleID: "tui-handle", RuntimeLaunchID: "tui-generation"},
+	}
+	base.sessions["chat-session"] = domain.SessionRecord{
+		ID: "chat-session", Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{ControllerGeneration: "chat-generation"},
+	}
+	journal := &collectingCodexSwitchStore{}
+	store := &bootstrapOrderingStore{fakeStore: base, collectingCodexSwitchStore: journal}
+	credentials := &blockingActivationCredentials{
+		current:            domain.CodexActiveAccount{AccountID: "source", Revision: 1},
+		activationEntered:  make(chan struct{}),
+		activationReleased: make(chan struct{}),
+	}
+	runtime := &fakeRuntime{aliveByHandle: map[string]bool{"tui-handle": true}}
+	chat := &recordingLauncher{live: true}
+	reviewer := &trackingCodexReviewerLifecycle{}
+	input := &transitionInputGate{acquired: make(chan string, 1), released: make(chan string, 1)}
+	manager := New(Deps{Store: store, Runtime: runtime, Chat: chat})
+	manager.SetAgentReadiness(credentials)
+	manager.SetReviewerTerminator(reviewer)
+	manager.SetTerminalInputGate(input)
+
+	sw, err := manager.StartCodexAccountSwitch(context.Background(), ports.CodexAccountSwitchConfig{
+		TargetAccountID: "target", ExpectedAccountRevision: 1, IdempotencyKey: "leave-running",
+	})
+	if err != nil {
+		t.Fatalf("start switch: %v", err)
+	}
+	if sw.RestartRunningSessions {
+		t.Fatal("omitted restart policy did not default to false")
+	}
+	<-credentials.activationEntered
+	if len(manager.agentOperations) != 0 {
+		t.Fatalf("leave-running switch acquired per-session operations: %#v", manager.agentOperations)
+	}
+	select {
+	case terminalID := <-input.acquired:
+		t.Fatalf("leave-running switch froze terminal input for %q", terminalID)
+	default:
+	}
+	if reviewer.snapshotCalls != 0 || runtime.outputCalls != 0 || len(chat.armed) != 0 || len(chat.prepared) != 0 {
+		t.Fatalf("leave-running switch inspected controllers: reviewer snapshots=%d runtime probes=%d chat arms=%d prepares=%d",
+			reviewer.snapshotCalls, runtime.outputCalls, len(chat.armed), len(chat.prepared))
+	}
+
+	admissionDone := make(chan error, 1)
+	go func() {
+		release, acquireErr := manager.acquireCodexControllerAdmission(context.Background(), domain.HarnessCodex)
+		if release != nil {
+			release()
+		}
+		admissionDone <- acquireErr
+	}()
+	select {
+	case err := <-admissionDone:
+		t.Fatalf("new Codex launch was admitted before credential activation completed: %v", err)
+	default:
+	}
+
+	close(credentials.activationReleased)
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.WaitAgentSwitchWorkers(waitCtx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-admissionDone:
+		if err != nil {
+			t.Fatalf("new Codex launch was not admitted after credential activation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("new Codex launch remained fenced after switch completion")
+	}
+
+	if len(journal.sessions) != 0 || runtime.created != 0 || runtime.destroyed != 0 || len(runtime.interrupts) != 0 ||
+		len(chat.stopped) != 0 || len(chat.started) != 0 || reviewer.suspendCalls != 0 || reviewer.restoreExact != 0 {
+		t.Fatalf("leave-running switch touched controllers: sessions=%d runtime create/destroy/interrupt=%d/%d/%d chat stop/start=%d/%d reviewer suspend/restore=%d/%d",
+			len(journal.sessions), runtime.created, runtime.destroyed, len(runtime.interrupts), len(chat.stopped), len(chat.started), reviewer.suspendCalls, reviewer.restoreExact)
+	}
+	if got := base.sessions["tui-session"].Metadata; got.RuntimeHandleID != "tui-handle" || got.RuntimeLaunchID != "tui-generation" {
+		t.Fatalf("TUI controller identity changed: %#v", got)
+	}
+	if got := base.sessions["chat-session"].Metadata; got.ControllerGeneration != "chat-generation" {
+		t.Fatalf("Chat controller identity changed: %#v", got)
+	}
+	if journal.switchRecord.Phase != domain.CodexAccountSwitchCompleted {
+		t.Fatalf("leave-running switch phase = %q, want completed", journal.switchRecord.Phase)
+	}
+}
+
+func TestCodexAccountSwitchRecoveryLeavesControllersUntouched(t *testing.T) {
+	base := newFakeStore()
+	base.sessions["running-codex"] = domain.SessionRecord{
+		ID: "running-codex", Harness: domain.HarnessCodex, Mode: domain.SessionModeTUI,
+		Metadata: domain.SessionMetadata{RuntimeHandleID: "source-handle", RuntimeLaunchID: "source-generation"},
+	}
+	journal := &collectingCodexSwitchStore{
+		switchRecord: domain.CodexAccountSwitch{
+			ID: "switch-recovery", SourceAccountID: "source", TargetAccountID: "target",
+			IdempotencyKey: "recover-leave-running", RequestFingerprint: codexAccountSwitchFingerprint("target", 1, false),
+			ExpectedAccountRevision: 1, RestartRunningSessions: false,
+			Phase: domain.CodexAccountSwitchRecoveryRequired,
+		},
+		active: true,
+	}
+	store := &bootstrapOrderingStore{fakeStore: base, collectingCodexSwitchStore: journal}
+	credentials := &blockingActivationCredentials{current: domain.CodexActiveAccount{AccountID: "target", Revision: 2}}
+	runtime := &fakeRuntime{aliveByHandle: map[string]bool{"source-handle": true}}
+	chat := &recordingLauncher{live: true}
+	reviewer := &trackingCodexReviewerLifecycle{}
+	manager := New(Deps{Store: store, Runtime: runtime, Chat: chat})
+	manager.SetAgentReadiness(credentials)
+	manager.SetReviewerTerminator(reviewer)
+
+	if err := manager.ReconcileCodexAccountSwitches(context.Background()); err != nil {
+		t.Fatalf("reconcile switch: %v", err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.WaitAgentSwitchWorkers(waitCtx); err != nil {
+		t.Fatal(err)
+	}
+	if journal.switchRecord.Phase != domain.CodexAccountSwitchCompleted {
+		t.Fatalf("recovered switch phase = %q, want completed", journal.switchRecord.Phase)
+	}
+	if reviewer.snapshotCalls != 0 || reviewer.suspendCalls != 0 || reviewer.restoreExact != 0 ||
+		runtime.created != 0 || runtime.destroyed != 0 || runtime.outputCalls != 0 || len(runtime.interrupts) != 0 ||
+		len(chat.armed) != 0 || len(chat.prepared) != 0 || len(chat.stopped) != 0 || len(chat.started) != 0 {
+		t.Fatalf("credential-only recovery touched controllers: reviewer=%d/%d/%d runtime=%d/%d/%d/%d chat=%d/%d/%d/%d",
+			reviewer.snapshotCalls, reviewer.suspendCalls, reviewer.restoreExact,
+			runtime.created, runtime.destroyed, runtime.outputCalls, len(runtime.interrupts),
+			len(chat.armed), len(chat.prepared), len(chat.stopped), len(chat.started))
 	}
 }
 
