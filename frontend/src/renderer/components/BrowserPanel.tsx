@@ -28,6 +28,7 @@ import {
 	useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { AnimatePresence, motion } from "motion/react";
 import {
 	ArrowLeft,
 	ArrowRight,
@@ -744,16 +745,18 @@ export function BrowserPanelView({
 							ref={tabScrollRef}
 							role="tablist"
 						>
-							{tabs.map((tab) => (
-								<SortableBrowserTopTab
-									key={tab.id}
-									onClose={handleCloseTab}
-									onSelect={handleSelectTab}
-									onlyTab={tabs.length === 1}
-									selected={tab.id === activeTabId}
-									tab={tab}
-								/>
-							))}
+							<AnimatePresence initial={false}>
+								{tabs.map((tab) => (
+									<SortableBrowserTopTab
+										key={tab.id}
+										onClose={handleCloseTab}
+										onSelect={handleSelectTab}
+										onlyTab={tabs.length === 1}
+										selected={tab.id === activeTabId}
+										tab={tab}
+									/>
+								))}
+							</AnimatePresence>
 						</div>
 						{showTabsLeftFade ? (
 							<div aria-hidden="true" className="browser-panel__tab-fade browser-panel__tab-fade--left" />
@@ -1293,7 +1296,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 	const label = browserTabLabel(tab.title, tab.url);
 	const closeLabel = t("browser.closeTab", { title: label.title });
 	return (
-		<div
+		<motion.div
 			className={cn(
 				"browser-panel__tab",
 				selected && "browser-panel__tab--active",
@@ -1301,7 +1304,10 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 			)}
 			data-browser-tab-id={tab.id}
 			ref={setNodeRef}
+			initial={{ width: 0, minWidth: 0, flexBasis: 0, opacity: 0 }}
+			animate={{ width: 200, minWidth: 150, flexBasis: 200, opacity: 1 }}
 			style={{ transform: CSS.Transform.toString(transform), transition }}
+			transition={{ type: "spring", stiffness: 420, damping: 32, mass: 0.7 }}
 		>
 			<button
 				{...attributes}
@@ -1331,7 +1337,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 			>
 				<X aria-hidden="true" className="size-icon-base" />
 			</button>
-		</div>
+		</motion.div>
 	);
 });
 
