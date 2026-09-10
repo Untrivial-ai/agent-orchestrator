@@ -1,0 +1,18 @@
+name = "ao-landing-domain-redirect"
+main = "domain-redirect-worker.mjs"
+# Public target-account identifier; credentials come from Wrangler authentication.
+account_id = "ed364bdf90d5a988f50a0650eddc2742"
+compatibility_date = "2026-09-08"
+workers_dev = false
+
+[[routes]]
+pattern = "aoagents.dev/*"
+zone_name = "aoagents.dev"
+
+[[routes]]
+pattern = "www.aoagents.dev"
+custom_domain = true
+
+[[routes]]
+pattern = "www.useao.dev/*"
+zone_name = "useao.dev"

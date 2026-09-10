@@ -1,6 +1,13 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+/** A refreshed target must be shown and explicitly confirmed before installation. */
+export type UpdateInstallResult = void | {
+	state: "confirmation-required";
+	version: string;
+	releaseNotes?: string;
+};
+
 export type UpdateChannel = "latest" | "nightly";
 
 /** A pinned PR feature build. `channel` stays as the home channel; this is a separate overlay. */
@@ -20,14 +27,17 @@ export interface UpdateSettings {
 // Live state of an automatic or manual update check/download, streamed to the
 // renderer so Settings and the sidebar can reflect progress.
 export type UpdateState =
-	"idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error" | "unsupported";
+	"idle" | "checking" | "available" | "not-available" | "downloading" | "preparing" | "downloaded" | "error" | "unsupported";
 
 export interface UpdateStatus {
 	state: UpdateState;
 	version?: string;
+	/** Absent while a requested download is waiting for its first progress event. */
 	percent?: number;
+	transferred?: number;
+	total?: number;
 	message?: string;
-	/** Epoch ms when the updater most recently finished checking the feed. */
+	/** Epoch ms when the updater most recently successfully checked the feed. */
 	checkedAt?: number;
 	/** Present for statuses owned by a renderer-requested updater operation. */
 	requestId?: string;
@@ -52,7 +62,8 @@ export interface UpdateStatus {
 	 * existence every time a background check ran. Consumers that care about
 	 * "there is something to install" should read this instead of `state`.
 	 */
-	staged?: { version?: string; stagedAt: number; escalated: boolean };
+	/** ready=false means native preparation is outstanding, including restored provenance. */
+	staged?: { version?: string; stagedAt: number; escalated: boolean; ready?: boolean };
 	// Present when automatic update checks have failed several times in a row
 	// with Chromium network-stack errors (net::ERR_*) — the app's network stack
 	// is wedged and restarting the app usually fixes it (#3526).
@@ -63,6 +74,7 @@ export interface UpdateStatus {
 	// checks are not getting through, so the UI can offer a retry instead of
 	// rendering nothing at all.
 	checksFailing?: boolean;
+	checkError?: string;
 	// Present only when state === "error" and the failure is a Chromium
 	// network-stack error (net::ERR_*). The renderer localizes restart guidance
 	// from this flag instead of receiving pre-built English prose (#3526).

@@ -2234,6 +2234,70 @@ paths:
       summary: Clone and register a project from a git repository URL
       tags:
       - projects
+  /api/v1/projects/clone/cleanup:
+    post:
+      operationId: cleanupPreparedClone
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectClonePreparationCleanupInput'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Remove an abandoned clone created for project preparation
+      tags:
+      - projects
+  /api/v1/projects/clone/prepare:
+    post:
+      operationId: prepareCloneProject
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloneProjectInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClonePreparationResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Clone a project without registering it so Git setup can be completed
+      tags:
+      - projects
   /api/v1/projects/initialize:
     post:
       operationId: initializeProjectRepository
@@ -6732,6 +6796,8 @@ components:
       properties:
         asWorkspace:
           type: boolean
+        clonePreparationId:
+          type: string
         config:
           $ref: '#/components/schemas/ProjectConfig'
         name:
@@ -7294,6 +7360,19 @@ components:
       required:
       - sessionId
       - reason
+      type: object
+    ClonePreparationResult:
+      properties:
+        path:
+          type: string
+        preparationId:
+          type: string
+        remoteUrl:
+          type: string
+      required:
+      - path
+      - remoteUrl
+      - preparationId
       type: object
     CloneProjectInput:
       properties:
@@ -7940,6 +8019,8 @@ components:
           type: boolean
         branch:
           type: string
+        chatProviderPreserved:
+          type: boolean
         createdAt:
           format: date-time
           type: string
@@ -8098,6 +8179,7 @@ components:
       - createdAt
       - updatedAt
       - isPinned
+      - chatProviderPreserved
       - status
       - kanbanColumn
       - displayStatus
@@ -8830,7 +8912,7 @@ components:
             $ref: '#/components/schemas/AttachmentInput'
           type: array
         brief:
-          maxLength: 4096
+          maxLength: 16384
           type: string
         mode:
           enum:
@@ -8983,6 +9065,20 @@ components:
       type: object
     EditQueuedConversationMessageRequest:
       properties:
+        attachments:
+          items:
+            $ref: '#/components/schemas/ConversationImageContentRequest'
+          type: array
+        expectedRevision:
+          type:
+          - "null"
+          - integer
+        retainedContent:
+          items:
+            type: integer
+          type:
+          - "null"
+          - array
         text:
           type: string
       required:
@@ -9079,12 +9175,24 @@ components:
       - sessionId
       - session
       type: object
+    GitHubRepositoryPreparation:
+      properties:
+        name:
+          type: string
+        owner:
+          type: string
+        private:
+          type:
+          - "null"
+          - boolean
+      type: object
     GitPreparationEvent:
       properties:
         action:
           enum:
           - git_init
           - git_commit
+          - create_remote_repository
           - set_remote
           type: string
         error:
@@ -9111,6 +9219,8 @@ components:
           items:
             type: string
           type: array
+        githubRepository:
+          $ref: '#/components/schemas/GitHubRepositoryPreparation'
         importKind:
           enum:
           - project
@@ -9128,6 +9238,8 @@ components:
           items:
             $ref: '#/components/schemas/GitRepositoryPreparationInput'
           type: array
+        stepwise:
+          type: boolean
       required:
       - importKind
       - path
@@ -9150,6 +9262,8 @@ components:
           items:
             type: string
           type: array
+        githubRepository:
+          $ref: '#/components/schemas/GitHubRepositoryPreparation'
         initialCommitMessage:
           type: string
         remoteUrl:
@@ -9985,6 +10099,18 @@ components:
       - defaultBranch
       - folderMissing
       type: object
+    ProjectClonePreparationCleanupInput:
+      properties:
+        path:
+          minLength: 1
+          type: string
+        preparationId:
+          minLength: 1
+          type: string
+      required:
+      - path
+      - preparationId
+      type: object
     ProjectConfig:
       properties:
         agentConfig:
@@ -10762,6 +10888,10 @@ components:
           items:
             $ref: '#/components/schemas/SessionPRUnresolvedReviewer'
           type: array
+        unresolvedThreadCount:
+          type:
+          - "null"
+          - integer
       required:
       - decision
       - hasUnresolvedHumanComments
@@ -10772,6 +10902,8 @@ components:
         additions:
           type: integer
         author:
+          type: string
+        authorAvatarUrl:
           type: string
         changedFiles:
           type: integer
@@ -11286,7 +11418,7 @@ components:
         projectId:
           type: string
         prompt:
-          maxLength: 4096
+          maxLength: 16384
           type: string
         trackerProvider:
           enum:

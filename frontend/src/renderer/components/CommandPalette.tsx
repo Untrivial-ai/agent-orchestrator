@@ -186,6 +186,15 @@ export function CommandPalette() {
 			if (!useUiStore.getState().isCommandPaletteOpen) resetTransient();
 		}, 150);
 	}, [resetTransient, setOpen]);
+	const openExistingProject = useCallback(
+		(path: string) => {
+			const workspace = workspaces.find((candidate) => candidate.path === path);
+			if (!workspace) return;
+			closePalette();
+			void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
+		},
+		[closePalette, navigate, workspaces],
+	);
 
 	const resetAfterClose = useCallback(() => {
 		if (closeResetTimerRef.current !== null) {
@@ -640,6 +649,9 @@ export function CommandPalette() {
 				onCloneProject={cloneProject}
 				onCreateProject={createProject}
 				onInitializeProject={initializeProjectRepository}
+				onOpenExistingProject={openExistingProject}
+				existingProjectPaths={workspaces.map((workspace) => workspace.path)}
+				existingProjectNames={workspaces.map((workspace) => workspace.name)}
 			>
 				{({ choosePath }) => <BindChoosePath choosePath={choosePath} choosePathRef={choosePathRef} />}
 			</CreateProjectFlow>

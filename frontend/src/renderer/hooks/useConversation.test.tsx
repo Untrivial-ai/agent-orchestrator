@@ -4,22 +4,26 @@ import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
-const { getMock, postMock, apiErrorCodeMock, apiErrorMessageMock } = vi.hoisted(() => ({
+const { getMock, patchMock, postMock, apiErrorCodeMock, apiErrorMessageMock } = vi.hoisted(() => ({
 	getMock: vi.fn(),
+	patchMock: vi.fn(),
 	postMock: vi.fn(),
 	apiErrorCodeMock: vi.fn(),
 	apiErrorMessageMock: vi.fn(),
 }));
 
 vi.mock("../lib/api-client", () => ({
-	apiClient: { GET: getMock, POST: postMock, PATCH: vi.fn() },
+	apiClient: { GET: getMock, POST: postMock, PATCH: patchMock },
 	apiErrorCode: apiErrorCodeMock,
 	apiErrorMessage: apiErrorMessageMock,
 }));
 
 import {
+	clearConversationProviderCatalogs,
+	conversationConfigOptionsQueryKey,
 	useConversation,
 	useConversationCommands,
+	useConversationConfigOptions,
 } from "./useConversation";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
@@ -85,6 +89,7 @@ const WIRE = {
 
 beforeEach(() => {
 	getMock.mockReset();
+	patchMock.mockReset();
 	postMock.mockReset();
 	apiErrorCodeMock.mockReset().mockReturnValue(undefined);
 	apiErrorMessageMock.mockReset().mockReturnValue("failed");
@@ -565,6 +570,47 @@ describe("session-scoped conversation commands", () => {
 			});
 		},
 	);
+});
+
+describe("provider catalog controller epochs", () => {
+	it("discards a config mutation response from before switch admission", async () => {
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const queryKey = conversationConfigOptionsQueryKey("ao-1");
+		queryClient.setQueryData(queryKey, [{ id: "model", currentValue: "source" }]);
+		let resolvePatch!: (value: {
+			data: { options: Array<{ id: string; currentValue: string }> };
+			error: undefined;
+		}) => void;
+		patchMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolvePatch = resolve;
+			}),
+		);
+		const Wrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationConfigOptions("ao-1", false), {
+			wrapper: Wrapper,
+		});
+
+		let mutation!: Promise<unknown>;
+		act(() => {
+			mutation = result.current.setOption("model", { value: "source-next" });
+		});
+		await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+		act(() => clearConversationProviderCatalogs(queryClient, "ao-1"));
+		expect(queryClient.getQueryData(queryKey)).toBeUndefined();
+
+		resolvePatch({
+			data: { options: [{ id: "model", currentValue: "source-next" }] },
+			error: undefined,
+		});
+		await act(async () => mutation);
+
+		expect(queryClient.getQueryData(queryKey)).toBeUndefined();
+	});
 });
 
 describe("useConversation snapshot mapping", () => {

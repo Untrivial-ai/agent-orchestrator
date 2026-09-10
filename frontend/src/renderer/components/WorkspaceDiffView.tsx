@@ -344,7 +344,7 @@ function DiffView({
 				</div>
 			) : null}
 			<div
-				className="diff-code session-files-diff-scrollbar overflow-x-auto overflow-y-visible bg-terminal font-mono text-xs leading-row text-terminal-foreground"
+				className="diff-code session-files-diff-scrollbar select-text overflow-x-auto overflow-y-visible bg-terminal font-mono text-xs leading-row text-terminal-foreground"
 				onContextMenu={onContextMenu}
 				ref={containerRef}
 			>

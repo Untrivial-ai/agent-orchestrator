@@ -115,7 +115,7 @@ export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean 
 				titleHidden={titleHidden}
 				grouped
 			>
-			<p className="px-3 text-xs leading-relaxed text-muted-foreground">
+			<p className="text-xs leading-relaxed text-muted-foreground">
 				{t("settings.browserProfiles.description")}
 			</p>
 			<SettingsRow label={t("settings.browserImport.rowLabel")}>

@@ -7,7 +7,9 @@
  * re-sorting. Those belong to the daemon.
  */
 
+import { stagedAttachmentParts, attachmentName, attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
 	AlertTriangle,
 	Brain,
@@ -51,6 +53,7 @@ const activityIcon: Record<ActivityKind, typeof SquareTerminal> = {
 import { cn } from "../../lib/utils";
 import { caretNotation, stripAnsi } from "../../lib/ansi";
 import { getApiBaseUrl } from "../../lib/api-client";
+import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
 import { ActivityTitle, ChatMarkdown } from "./ChatMarkdown";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
@@ -100,15 +103,6 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
 
 const ORIGIN_REPORT_COLLAPSE_AT = 600;
 const ORIGIN_REPORT_PREVIEW_LENGTH = 240;
-
-// These are AO-owned prompt suffixes, not general markdown. Chat and spawn used
-// slightly different wording, and older conversations used "Attached images";
-// accepting every shipped form lets the transcript improve without rewriting
-// its durable history.
-const ATTACHMENT_REFERENCE_BLOCK =
-	/(?:^|\n\n)(?:Attached files \(read these files in the workspace(?: for context)?\)|Attached images \(read these files in the workspace for visual context\)):\n((?:- [^\n]+(?:\n|$))+)$/;
-const STAGED_ATTACHMENT_PATH = /^\.ao\/attachments\/(?:attachment|image)-[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const IMAGE_ATTACHMENT_PATH = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 
 /** Smooth baseline, with adaptive catch-up when provider chunks outrun playback. */
 const STREAM_BASE_CHARACTERS_PER_SECOND = 58;
@@ -274,24 +268,6 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 	return visibleText;
 }
 
-function stagedAttachmentParts(text: string): { body: string; attachments: string[] } {
-	const match = ATTACHMENT_REFERENCE_BLOCK.exec(text);
-	if (!match?.[1]) return { body: text, attachments: [] };
-
-	const attachments = match[1]
-		.trimEnd()
-		.split("\n")
-		.map((line) => line.slice(2));
-	// Only reinterpret paths AO itself stages. A user can write an identically
-	// worded example about docs/screenshot.png; that prose must remain untouched.
-	if (attachments.length === 0 || attachments.some((path) => !STAGED_ATTACHMENT_PATH.test(path))) {
-		return { body: text, attachments: [] };
-	}
-	// The match begins at the generated separator, so slicing at its index
-	// removes only AO-owned text and preserves the authored body byte-for-byte.
-	return { body: text.slice(0, match.index), attachments };
-}
-
 /** A status message followed by a full-width rule, with no text inside the rule. */
 function TwoRowTimelineMarker({
 	message,
@@ -400,18 +376,6 @@ export function TurnOutcome({
 function formatTokens(tokens: number): string {
 	if (tokens < 1000) return `${tokens}`;
 	return `${(tokens / 1000).toFixed(1)}k`;
-}
-
-function attachmentName(path: string): string {
-	return path.slice(path.lastIndexOf("/") + 1);
-}
-
-function attachmentURL(apiBaseUrl: string, sessionId: string, path: string): string {
-	const route = `/api/v1/sessions/${encodeURIComponent(sessionId)}/preview/files/${path
-		.split("/")
-		.map(encodeURIComponent)
-		.join("/")}`;
-	return apiBaseUrl ? new URL(route, apiBaseUrl).toString() : route;
 }
 
 function StagedAttachmentItems({
@@ -784,13 +748,63 @@ function DeliveryNote({ state }: { state: DeliveryState }) {
  * would hide work the agent really did.
  */
 export function ActivityRow({ activity }: { activity: ConversationActivity }) {
-	if (activity.activityKind === "mcp_tool") return <McpToolRow activity={activity} />;
-	if (activity.activityKind === "auto_review") return <AutoReviewRow activity={activity} />;
-	if (activity.activityKind === "reasoning") return <ReasoningBlock activity={activity} />;
-	if (activity.activityKind === "error") return <ErrorActivityRow activity={activity} />;
-	if (activity.detail?.event === "model.rerouted") return <RerouteRow activity={activity} />;
-	if (activity.detail?.event === "auth.reauth_required") return <ReauthRow activity={activity} />;
-	return <GenericActivityRow activity={activity} />;
+	const toolActivity =
+		activity.activityKind === "command" ||
+		activity.activityKind === "file_change" ||
+		activity.activityKind === "mcp_tool" ||
+		activity.activityKind === "auto_review";
+
+	let content: ReactNode;
+	if (activity.activityKind === "mcp_tool") content = <McpToolRow activity={activity} />;
+	else if (activity.activityKind === "auto_review") content = <AutoReviewRow activity={activity} />;
+	else if (activity.activityKind === "reasoning") content = <ReasoningBlock activity={activity} />;
+	else if (activity.activityKind === "error") content = <ErrorActivityRow activity={activity} />;
+	else if (activity.detail?.event === "model.rerouted") content = <RerouteRow activity={activity} />;
+	else if (activity.detail?.event === "auth.reauth_required") content = <ReauthRow activity={activity} />;
+	else content = <GenericActivityRow activity={activity} />;
+
+	if (!toolActivity) return content;
+	return (
+		<ActivityTransition value={`${activity.revision}:${activity.summary}:${activity.status}`}>
+			{content}
+		</ActivityTransition>
+	);
+}
+
+export function ActivityTransition({
+	value,
+	children,
+	inline = false,
+}: {
+	value: string;
+	children: ReactNode;
+	inline?: boolean;
+}) {
+	const reducedMotion = useReducedMotion();
+	const previousValue = useRef(value);
+	const [settling, setSettling] = useState(false);
+
+	useEffect(() => {
+		if (previousValue.current === value) return;
+		previousValue.current = value;
+		setSettling(true);
+	}, [value]);
+
+	const MotionElement = inline ? motion.span : motion.div;
+	return (
+		<MotionElement
+			initial={reducedMotion ? false : { opacity: 0 }}
+			animate={
+				reducedMotion || !settling
+					? { opacity: 1 }
+					: { opacity: 0.72 }
+			}
+			transition={{ duration: reducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
+			onAnimationComplete={() => setSettling(false)}
+		>
+			{children}
+		</MotionElement>
+	);
 }
 
 /**
@@ -805,17 +819,19 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 	// choice sticks: auto-collapsing a log someone is reading is worse than leaving
 	// a finished row open.
 	const [override, setOverride] = useState<boolean | null>(null);
+	const reducedMotion = useReducedMotion();
 	const Icon = activityIcon[activity.activityKind] ?? SquareTerminal;
 	const detail = activity.detail;
 	const files = fileChangeFiles(activity);
+	const isFileChange = activity.activityKind === "file_change";
 	// A single edit with no patch has nothing to expand into — the header already
 	// named the file. Multi-file edits expand to a list; a lone patch expands to
 	// the diff itself.
 	const hasFileBody =
-		files.length > 1 || (files.length === 1 && Boolean(files[0]?.patch));
+		files.length > 1 || (files.length === 1 && Boolean(fileChangePatch(files[0])));
 	const hasBody = Boolean(
 		detail?.command ||
-			detail?.output || detail?.reason || detail?.text || detail?.terminalInput || hasFileBody,
+		(!isFileChange && (detail?.output || detail?.reason || detail?.text || detail?.terminalInput)) || hasFileBody,
 	);
 	const { label, path } = splitSummary(activity);
 	// Commands and file edits share the explore-style summary line: muted label,
@@ -845,8 +861,9 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 				className={cn(
 					compactSummary
 						? ACTIVITY_SUMMARY_BUTTON_CLASS
-						: "flex min-h-[35px] w-full min-w-0 items-center gap-[9px] px-[11px] py-2 text-left text-[11px] transition-colors",
-					hasBody && !compactSummary && "hover:bg-interactive-hover",
+						: "flex min-h-[35px] w-full min-w-0 select-none items-center gap-[9px] px-[11px] py-2 text-left text-[11px]",
+					"activity-row-toggle",
+					hasBody && !compactSummary && "hover:text-foreground",
 					!hasBody && "cursor-default",
 				)}
 			>
@@ -866,12 +883,22 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 							{fileChangeVerb(singleEdit.status ?? "modified")}
 						</span>
 						<FileLocationLabel path={singleEdit.path} oldPath={singleEdit.oldPath} />
+						{singleEdit.additions > 0 ? (
+							<span className="shrink-0 font-mono text-[10px] tabular-nums text-success">
+								+{singleEdit.additions}
+						</span>
+						) : null}
+						{singleEdit.deletions > 0 ? (
+							<span className="shrink-0 font-mono text-[10px] tabular-nums text-destructive">
+								&minus;{singleEdit.deletions}
+							</span>
+						) : null}
 					</span>
 				) : (
 					<strong
 						className={cn(
 							compactSummary
-								? "shrink-0 text-[11.5px] font-normal text-muted-foreground"
+								? "activity-row-label shrink-0 text-[11.5px] font-normal text-muted-foreground group-hover/activity:text-foreground"
 								: "min-w-0 truncate font-medium",
 							!compactSummary &&
 								(activity.status === "failed" ? "text-destructive" : "text-foreground"),
@@ -883,7 +910,7 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 				)}
 				{path && !singleEdit ? (
 					<span
-						className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted-foreground"
+						className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted-foreground group-hover/activity:text-foreground"
 						title={path}
 					>
 						{path}
@@ -895,6 +922,7 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 					activity={activity}
 					open={open}
 					hasBody={hasBody}
+					inlineFileStats={Boolean(singleEdit)}
 					showDisclosure={!compactSummary}
 				/>
 				{compactSummary && hasBody ? (
@@ -908,42 +936,52 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 				) : null}
 			</button>
 
-			{open && hasBody ? (
-				compactSummary &&
-				activity.activityKind === "command" &&
-				(detail?.command || detail?.output || detail?.terminalInput) ? (
-					<CommandExploreBody activity={activity} />
-				) : (
-					<div className="flex flex-col gap-1.5 px-1 pb-1 pt-0.5">
+			<AnimatePresence initial={false}>
+				{open && hasBody ? (
+					<motion.div
+						initial={{ height: 0, opacity: 0 }}
+						animate={{ height: "auto", opacity: 1 }}
+						exit={{ height: 0, opacity: 0 }}
+						transition={{ duration: reducedMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
+						className="overflow-hidden rounded-lg"
+					>
+						{compactSummary &&
+						activity.activityKind === "command" &&
+						(detail?.command || detail?.output || detail?.terminalInput) ? (
+							<CommandExploreBody activity={activity} />
+						) : (
+							<div className="flex flex-col gap-1.5 px-1 pb-1 pt-0.5">
 						{/* One file: open straight onto its patch. Listing the same
 						    basename again under "Edited name" is noise. */}
-						{files.length === 1 && files[0]?.patch ? (
-							<Patch patch={files[0].patch} truncated={files[0].patchTruncated} />
+						{files.length === 1 && fileChangePatch(files[0]) ? (
+							<Patch patch={fileChangePatch(files[0])!} truncated={files[0].patchTruncated} />
 						) : null}
 						{files.length > 1 ? <FileChangeList files={files} /> : null}
-						{detail?.command ? (
+						{!isFileChange && detail?.command ? (
 							// Said explicitly rather than implied by the label: "Ran command"
 							// alone never tells the reader what ran, and the collapsed row
 							// deliberately keeps only the category.
-							<pre className="scrollbar-none overflow-x-auto rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-foreground">
+							<pre className="scrollbar-none overflow-x-auto border border-border bg-background px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-foreground">
 								{detail.command}
 							</pre>
 						) : null}
-						{detail?.reason || detail?.text ? (
+						{!isFileChange && (detail?.reason || detail?.text) ? (
 							<p className="whitespace-pre-wrap px-1 text-[11px] leading-relaxed text-muted-foreground">
 								{detail.reason ?? detail.text}
 							</p>
 						) : null}
-						{detail?.terminalInput ? (
+						{!isFileChange && detail?.terminalInput ? (
 							<TerminalInput
 								text={detail.terminalInput}
 								truncated={detail.terminalInputTruncated}
 							/>
 						) : null}
-						{detail?.output ? <CommandOutput activity={activity} /> : null}
-					</div>
-				)
-			) : null}
+						{!isFileChange && detail?.output ? <CommandOutput activity={activity} /> : null}
+							</div>
+						)}
+					</motion.div>
+				) : null}
+			</AnimatePresence>
 		</div>
 	);
 }
@@ -961,7 +999,7 @@ function CommandExploreBody({ activity }: { activity: ConversationActivity }) {
 	const showPrompt = Boolean(reason && reason !== command);
 
 	return (
-		<div className="cursor-chat-explore-box mt-1 flex min-w-0 flex-col overflow-hidden rounded-[10px] border">
+		<div className="cursor-chat-explore-box mt-1 flex min-w-0 flex-col overflow-hidden rounded-lg border">
 			{showPrompt ? (
 				<div className="flex min-w-0 items-start gap-2 border-b border-border/60 px-3 py-2">
 					<span
@@ -1028,7 +1066,7 @@ function TerminalInput({ text, truncated }: { text: string; truncated?: boolean 
 				<Keyboard aria-hidden="true" className="size-3" />
 				Agent typed
 			</span>
-			<pre className="scrollbar-none overflow-x-auto rounded-md border border-dashed border-border-strong bg-background px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-accent">
+			<pre className="scrollbar-none overflow-x-auto border border-dashed border-border-strong bg-background px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-accent">
 				{shown}
 			</pre>
 			{truncated ? (
@@ -1093,7 +1131,7 @@ function CommandOutput({
 					"scrollbar-none max-h-64 overflow-auto font-mono leading-relaxed text-muted-foreground",
 					embedded
 						? "cursor-chat-explore-output px-3 py-2 text-[11px]"
-						: "rounded-md border border-border bg-background px-2.5 py-2 text-[10.5px]",
+						: "border border-border bg-background px-2.5 py-2 text-[10.5px]",
 				)}
 			>
 				{output}
@@ -1136,7 +1174,8 @@ function splitSummary(activity: ConversationActivity): { label: string; path?: s
 		const category = commandCategory(rawCommand);
 		if (category === "read" || category === "search") {
 			const count = exploredFileCount(rawCommand);
-			return { label: count ? `Explored ${count} ${count === 1 ? "file" : "files"}` : "Explored files" };
+			if (category === "search") return { label: "Search" };
+			return { label: count && count > 1 ? "Read files" : "Read file" };
 		}
 		return { label: category === "vcs" ? "Checked repository" : "Ran command" };
 	}
@@ -1154,11 +1193,13 @@ function ActivityState({
 	activity,
 	open,
 	hasBody,
+	inlineFileStats = false,
 	showDisclosure = true,
 }: {
 	activity: ConversationActivity;
 	open: boolean;
 	hasBody: boolean;
+	inlineFileStats?: boolean;
 	showDisclosure?: boolean;
 }) {
 	const { status, detail } = activity;
@@ -1172,7 +1213,7 @@ function ActivityState({
 			/>
 		);
 	}
-	if (files.length) {
+	if (files.length && !inlineFileStats) {
 		const additions = files.reduce((sum, file) => sum + file.additions, 0);
 		const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
 		return (
@@ -1309,16 +1350,26 @@ function FileChangeRow({ file }: { file: FileChangeFile }) {
  * grammar renders as plain text. That is the right outcome: there is no diff to
  * colour, only a new file to read.
  */
+function fileChangePatch(file: FileChangeFile | undefined): string | undefined {
+	if (!file) return undefined;
+	if (file.patch) return file.patch;
+	if (file.oldText === undefined && file.newText === undefined) return undefined;
+	const oldLines = file.oldText?.split("\n") ?? [];
+	const newLines = file.newText?.split("\n") ?? [];
+	const header = `--- ${file.path}\n+++ ${file.path}`;
+	return [
+		header,
+		...oldLines.map((line) => `-${line}`),
+		...newLines.map((line) => `+${line}`),
+	].join("\n");
+}
+
 function Patch({ patch, truncated }: { patch: string; truncated?: boolean }) {
 	return (
 		// `chat-code` is what the token colours are scoped to, so a patch without it
 		// tokenizes correctly and renders in one flat colour.
-		<div className="chat-code mb-1 mt-0.5 overflow-hidden rounded-md border border-border bg-background">
-			<pre className="scrollbar-none max-h-72 overflow-auto px-2.5 py-2">
-				<code className="font-mono text-[10.5px] leading-[1.55] text-foreground">
-					<HighlightedCode code={patch} language="diff" />
-				</code>
-			</pre>
+			<div className="mb-1 mt-0.5 overflow-hidden bg-background">
+			<ToolDiffCode text={patch} />
 			{truncated ? (
 				<p className="border-t border-border px-2.5 py-1.5 text-[10px] leading-relaxed text-warning">
 					This patch is longer than AO stores, so it stops early. The whole change is in the
@@ -1393,59 +1444,46 @@ function ReasoningBlock({ activity }: { activity: ConversationActivity }) {
  */
 function McpToolRow({ activity }: { activity: ConversationActivity }) {
 	const [open, setOpen] = useState(false);
+	const reducedMotion = useReducedMotion();
 	const detail = activity.detail;
 	const tool = detail?.toolName ?? activity.summary;
 	const server = detail?.server ?? detail?.namespace;
+	const sourceLabel = server ? `MCP · ${server}` : detail?.progress ? lastLine(detail.progress) : undefined;
 	const failed = activity.status === "failed" || detail?.success === false || Boolean(detail?.error);
 	const hasBody = Boolean(
-		detail?.arguments !== undefined ||
+			detail?.arguments !== undefined ||
 			detail?.result !== undefined ||
+			detail?.content !== undefined ||
 			detail?.error ||
 			detail?.progress,
 	);
 
 	return (
-		<div className="group/activity border-t border-border first:border-t-0">
+		<div className="min-w-0 max-w-full">
 			<button
 				type="button"
 				onClick={() => setOpen((prev) => !prev)}
 				disabled={!hasBody}
 				aria-expanded={hasBody ? open : undefined}
 				className={cn(
-					"flex min-h-[35px] w-full items-center gap-[9px] px-[11px] py-2 text-left text-[11px] transition-colors",
-					hasBody && "hover:bg-interactive-hover",
+					ACTIVITY_SUMMARY_BUTTON_CLASS,
+					"activity-row-toggle",
 					!hasBody && "cursor-default",
 				)}
 			>
-				<Plug
-					aria-hidden="true"
-					className={cn(
-						"w-[15px] shrink-0 text-center",
-						failed ? "text-destructive" : "text-accent-dim",
-					)}
-					size={13}
-				/>
-				{/* The server is named first and in its own colour: which server answered is
-				    the part a shell command row could never have said. */}
-				{server ? (
-					<span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">
-						{server}
-						<span aria-hidden="true" className="px-0.5 text-muted-foreground/40">
-							/
-						</span>
-					</span>
-				) : null}
 				<strong
 					className={cn(
-						"shrink-0 text-[10.5px] font-medium",
-						failed ? "text-destructive" : "text-foreground",
+						"activity-row-label shrink-0 text-[11.5px] font-normal",
+						failed ? "text-destructive" : "text-muted-foreground",
 					)}
 				>
-					{tool}
+					<span>{tool}</span>
 				</strong>
-				<span className="min-w-0 flex-1 truncate text-[10.5px] text-muted-foreground/70">
-					{detail?.progress ? lastLine(detail.progress) : "MCP tool"}
-				</span>
+				{sourceLabel ? (
+					<span className="min-w-0 flex-1 truncate text-[10.5px] text-muted-foreground group-hover/activity:text-foreground">
+						{sourceLabel}
+					</span>
+				) : null}
 				{activity.status === "running" ? (
 					<Loader2
 						aria-label="running"
@@ -1460,18 +1498,23 @@ function McpToolRow({ activity }: { activity: ConversationActivity }) {
 				) : hasBody ? (
 					<ChevronRight
 						aria-hidden="true"
-						className={cn(
-							"size-3 shrink-0 text-muted-foreground/50 transition-all",
-							open ? "rotate-90 opacity-100" : "opacity-0 group-hover/activity:opacity-100",
-						)}
+						className={cn("size-3 shrink-0 text-muted-foreground/40 transition-transform", open && "rotate-90")}
 					/>
 				) : null}
 			</button>
 
-			{open && hasBody ? (
-				<div className="flex flex-col gap-2 px-[11px] pb-2.5">
+			<AnimatePresence initial={false}>
+				{open && hasBody ? (
+					<motion.div
+						initial={{ height: 0, opacity: 0 }}
+						animate={{ height: "auto", opacity: 1 }}
+						exit={{ height: 0, opacity: 0 }}
+						transition={{ duration: reducedMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
+						className="overflow-hidden rounded-lg"
+					>
+						<div className="flex flex-col gap-2 pb-2.5">
 					{detail?.error ? (
-						<p className="rounded border border-destructive/30 bg-background px-2.5 py-1.5 text-[10.5px] leading-relaxed text-destructive">
+						<p className="border border-destructive/30 bg-background px-2.5 py-1.5 text-[10.5px] leading-relaxed text-destructive">
 							{detail.error}
 						</p>
 					) : null}
@@ -1481,20 +1524,106 @@ function McpToolRow({ activity }: { activity: ConversationActivity }) {
 					{detail?.result !== undefined ? (
 						<JsonPayload label="Result" value={detail.result} />
 					) : null}
+					{detail?.content !== undefined ? <ToolContent value={detail.content} /> : null}
 					{detail?.progress ? (
 						<div className="flex flex-col gap-1">
 							<span className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70">
 								Progress
 							</span>
-							<pre className="scrollbar-none max-h-40 overflow-auto rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+							<pre className="scrollbar-none max-h-40 overflow-auto border border-border bg-background px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
 								{detail.progress}
 							</pre>
 						</div>
 					) : null}
-				</div>
-			) : null}
+						</div>
+					</motion.div>
+				) : null}
+			</AnimatePresence>
 		</div>
 	);
+}
+
+function ToolContent({ value }: { value: unknown }) {
+	const text = normalizeToolCode(toolContentText(value));
+	if (text) {
+		if (looksLikeUnifiedDiff(text)) return <ToolDiffCode text={text} />;
+		return (
+			<pre className="chat-code max-h-64 overflow-auto whitespace-pre rounded-lg border border-border bg-background px-2.5 py-1.5">
+				<code className="block whitespace-pre font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+					{ text }
+				</code>
+			</pre>
+		);
+	}
+	const truncated = truncationNote(value);
+	return (
+		<pre className="chat-code max-h-56 overflow-auto rounded-lg border border-border bg-background px-2.5 py-1.5">
+			<code className="font-mono text-[10.5px] leading-[1.55] text-foreground">
+				{truncated ?? formatJson(value)}
+			</code>
+		</pre>
+	);
+}
+
+function normalizeToolCode(text: string): string {
+	const fenced = text.match(/^\s*```[^\n]*\n([\s\S]*?)\n```\s*$/);
+	return (fenced?.[1] ?? text).replace(/\r\n?/g, "\n");
+}
+
+function looksLikeUnifiedDiff(text: string): boolean {
+	const lines = text.split("\n");
+	return (
+		lines.some((line) => line.startsWith("@@")) ||
+		(lines.some((line) => line.startsWith("---")) && lines.some((line) => line.startsWith("+++"))) ||
+		(lines.some((line) => line.startsWith("-")) && lines.some((line) => line.startsWith("+")))
+	);
+}
+
+function ToolDiffCode({ text }: { text: string }) {
+	return (
+		<div className="chat-code max-h-64 overflow-auto rounded-lg border border-border bg-background px-0 py-1 font-mono text-[10.5px] leading-[1.55]">
+			{ text.split("\n").map((line, index) => {
+				const kind = line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "context";
+				const marker = kind === "add" ? "+" : kind === "del" ? "-" : " ";
+				const content = kind === "context" ? line : line.slice(1);
+				return (
+					<div
+						key={`${index}-${line}`}
+						data-tool-diff-row=""
+						className={cn(
+							"flex min-w-max whitespace-pre px-2.5",
+							kind === "add" && "bg-success/10",
+							kind === "del" && "bg-error/10",
+						)}
+					>
+						<span
+							aria-hidden="true"
+							className={cn(
+								"w-4 shrink-0 select-none text-center",
+								kind === "add" && "text-success",
+								kind === "del" && "text-error",
+							)}
+						>
+							{marker}
+						</span>
+						<span className="whitespace-pre text-foreground/90">{content}</span>
+					</div>
+				);
+			})}
+		</div>
+	);
+}
+
+function toolContentText(value: unknown): string {
+	if (typeof value === "string") return value;
+	if (Array.isArray(value)) return value.map(toolContentText).filter(Boolean).join("\n");
+	if (!value || typeof value !== "object") return "";
+	const record = value as Record<string, unknown>;
+	for (const key of ["text", "content", "output", "data"]) {
+		const text = toolContentText(record[key]);
+		if (text) return text;
+	}
+	return "";
 }
 
 /**
@@ -1514,11 +1643,11 @@ function JsonPayload({ label, value }: { label: string; value: unknown }) {
 				{label}
 			</span>
 			{capped ? (
-				<p className="rounded-md border border-border bg-background px-2.5 py-1.5 text-[10.5px] leading-relaxed text-muted-foreground">
+				<p className="border border-border bg-background px-2.5 py-1.5 text-[10.5px] leading-relaxed text-muted-foreground">
 					{capped}
 				</p>
 			) : (
-				<pre className="chat-code max-h-56 overflow-auto rounded-md border border-border bg-background px-2.5 py-1.5">
+				<pre className="chat-code max-h-56 overflow-auto rounded-lg border border-border bg-background px-2.5 py-1.5">
 					<code className="font-mono text-[10.5px] leading-[1.55] text-foreground">
 						<HighlightedCode code={text} language="json" />
 					</code>
@@ -1596,8 +1725,8 @@ function AutoReviewRow({ activity }: { activity: ConversationActivity }) {
 				disabled={!hasBody}
 				aria-expanded={hasBody ? open : undefined}
 				className={cn(
-					"flex min-h-[35px] w-full items-center gap-[9px] px-[11px] py-2 text-left text-[11px] transition-colors",
-					hasBody && "hover:bg-interactive-hover",
+					"activity-row-toggle flex min-h-[35px] w-full select-none items-center gap-[9px] px-[11px] py-2 text-left text-[11px]",
+					hasBody && "hover:text-foreground",
 					!hasBody && "cursor-default",
 				)}
 			>
@@ -1753,12 +1882,75 @@ function RerouteRow({ activity }: { activity: ConversationActivity }) {
  * reconnect row as `role="alert"` would interrupt a screen reader once per attempt.
  */
 function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
-	const { headline } = providerErrorCopy(activity);
+	const { headline, detail } = providerErrorCopy(activity);
+	const actionUrl = String(activity.detail?.actionUrl ?? "").trim();
+	const standaloneActionUrl = actionUrl && !detail?.includes(actionUrl) ? actionUrl : undefined;
 	return (
 		<div className="flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-[11.5px] leading-snug text-muted-foreground">
-			<span className="wrap-anywhere min-w-0">{headline}</span>
+			<span className="wrap-anywhere min-w-0">
+				<span>{headline}</span>
+				{detail ? (
+					<>
+						{" — "}
+						<span className="text-muted-foreground/80">
+							{linkifiedProviderErrorText(detail)}
+						</span>
+					</>
+				) : null}
+				{standaloneActionUrl ? (
+					<>
+						{detail ? " " : " — "}
+						{isWebLink(standaloneActionUrl) ? (
+							<ProviderErrorLink href={standaloneActionUrl} />
+						) : (
+							<span className="text-muted-foreground/80">{standaloneActionUrl}</span>
+						)}
+					</>
+				) : null}
+			</span>
 		</div>
 	);
+}
+
+const providerErrorWebUrlPattern = /\bhttps?:\/\/[^\s<>"'`]+/giu;
+const trailingProviderUrlPunctuation = /[),.;!?}\]]+$/u;
+
+function ProviderErrorLink({ href }: { href: string }) {
+	return (
+		<a
+			href={href}
+			target="_blank"
+			rel="noreferrer noopener"
+			onClick={(event) => {
+				event.preventDefault();
+				void openLinkInSystemBrowser(href);
+			}}
+			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
+		>
+			{href}
+		</a>
+	);
+}
+
+/** Render provider prose verbatim, activating only literal HTTP(S) URLs. */
+function linkifiedProviderErrorText(text: string): ReactNode[] {
+	const parts: ReactNode[] = [];
+	let cursor = 0;
+	for (const match of text.matchAll(providerErrorWebUrlPattern)) {
+		const start = match.index;
+		const rawUrl = match[0];
+		const href = rawUrl.replace(trailingProviderUrlPunctuation, "");
+		if (start > cursor) parts.push(text.slice(cursor, start));
+		if (href && isWebLink(href)) {
+			parts.push(<ProviderErrorLink key={`${start}-${href}`} href={href} />);
+			if (href.length < rawUrl.length) parts.push(rawUrl.slice(href.length));
+		} else {
+			parts.push(rawUrl);
+		}
+		cursor = start + rawUrl.length;
+	}
+	if (cursor < text.length) parts.push(text.slice(cursor));
+	return parts;
 }
 
 /**

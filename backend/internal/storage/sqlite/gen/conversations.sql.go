@@ -582,6 +582,17 @@ func (q *Queries) FinalizeConversationPlanActivity(ctx context.Context, arg Fina
 	return err
 }
 
+const hasConversationTurns = `-- name: HasConversationTurns :one
+SELECT EXISTS (SELECT 1 FROM conversation_turns WHERE conversation_id = ?)
+`
+
+func (q *Queries) HasConversationTurns(ctx context.Context, conversationID string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasConversationTurns, conversationID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasPendingConversationInteractions = `-- name: HasPendingConversationInteractions :one
 SELECT EXISTS (
     SELECT 1
@@ -1067,6 +1078,33 @@ func (q *Queries) ReleaseQueuedConversationTurnPromotion(ctx context.Context, ar
 	return result.RowsAffected()
 }
 
+const releaseUntouchedConversationProvider = `-- name: ReleaseUntouchedConversationProvider :execrows
+UPDATE conversation_branches
+SET provider_conversation_id = '', provider_scope_id = ?1
+WHERE conversation_branches.session_id = ?2 AND parent_branch_id IS NULL
+  AND conversation_branches.id = (
+      SELECT c.active_branch_id FROM conversations AS c
+      WHERE c.session_id = ?2 AND c.current_session_id = ?2
+        AND c.latest_sequence = 0
+        AND NOT EXISTS (
+            SELECT 1 FROM conversation_turns WHERE conversation_id = c.id
+        )
+  )
+`
+
+type ReleaseUntouchedConversationProviderParams struct {
+	ProviderScopeID string
+	SessionID       sql.NullString
+}
+
+func (q *Queries) ReleaseUntouchedConversationProvider(ctx context.Context, arg ReleaseUntouchedConversationProviderParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, releaseUntouchedConversationProvider, arg.ProviderScopeID, arg.SessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const reserveQueuedConversationTurnForPromotion = `-- name: ReserveQueuedConversationTurnForPromotion :execrows
 UPDATE conversation_turns
 SET promotion_started_at = ?1
@@ -1525,7 +1563,7 @@ func (q *Queries) SelectConversationBranches(ctx context.Context, conversationID
 }
 
 const selectConversationByID = `-- name: SelectConversationByID :one
-SELECT id, scope, project_id, session_id, current_session_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id FROM conversations WHERE id = ? LIMIT 1
+SELECT id, scope, project_id, session_id, current_session_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id, opencode_mode FROM conversations WHERE id = ? LIMIT 1
 `
 
 func (q *Queries) SelectConversationByID(ctx context.Context, id string) (Conversation, error) {
@@ -1564,12 +1602,13 @@ func (q *Queries) SelectConversationByID(ctx context.Context, id string) (Conver
 		&i.UsageCost,
 		&i.UsageCurrency,
 		&i.ActiveBranchID,
+		&i.OpencodeMode,
 	)
 	return i, err
 }
 
 const selectConversationBySession = `-- name: SelectConversationBySession :one
-SELECT id, scope, project_id, session_id, current_session_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id FROM conversations WHERE current_session_id = ? LIMIT 1
+SELECT id, scope, project_id, session_id, current_session_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id, opencode_mode FROM conversations WHERE current_session_id = ? LIMIT 1
 `
 
 func (q *Queries) SelectConversationBySession(ctx context.Context, currentSessionID *domain.SessionID) (Conversation, error) {
@@ -1608,6 +1647,7 @@ func (q *Queries) SelectConversationBySession(ctx context.Context, currentSessio
 		&i.UsageCost,
 		&i.UsageCurrency,
 		&i.ActiveBranchID,
+		&i.OpencodeMode,
 	)
 	return i, err
 }
@@ -2551,7 +2591,7 @@ func (q *Queries) SelectNextQueuedConversationTurn(ctx context.Context, conversa
 }
 
 const selectProjectConversation = `-- name: SelectProjectConversation :one
-SELECT id, scope, project_id, session_id, current_session_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id FROM conversations WHERE project_id = ? AND scope = 'project' LIMIT 1
+SELECT id, scope, project_id, session_id, current_session_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id, opencode_mode FROM conversations WHERE project_id = ? AND scope = 'project' LIMIT 1
 `
 
 func (q *Queries) SelectProjectConversation(ctx context.Context, projectID domain.ProjectID) (Conversation, error) {
@@ -2590,6 +2630,48 @@ func (q *Queries) SelectProjectConversation(ctx context.Context, projectID domai
 		&i.UsageCost,
 		&i.UsageCurrency,
 		&i.ActiveBranchID,
+		&i.OpencodeMode,
+	)
+	return i, err
+}
+
+const selectQueuedConversationMessage = `-- name: SelectQueuedConversationMessage :one
+SELECT conversation_messages.id, conversation_messages.conversation_id, conversation_messages.turn_id, conversation_messages.sequence, conversation_messages.revision, conversation_messages.role, conversation_messages.origin, conversation_messages.text, conversation_messages.streaming, conversation_messages.provider_item_id, conversation_messages.client_message_id, conversation_messages.created_at, conversation_messages.updated_at, conversation_messages.delivery_content_json, conversation_messages.branch_id
+FROM conversation_messages
+JOIN conversation_turns ON conversation_turns.id = conversation_messages.turn_id
+WHERE conversation_messages.conversation_id = ?
+  AND conversation_messages.turn_id = ?
+  AND conversation_messages.role = 'user'
+  AND conversation_messages.origin = 'human'
+  AND conversation_turns.state = 'queued'
+  AND conversation_turns.promotion_started_at IS NULL
+`
+
+type SelectQueuedConversationMessageParams struct {
+	ConversationID string
+	TurnID         sql.NullString
+}
+
+// Read only an undispatched human prompt for editing.
+func (q *Queries) SelectQueuedConversationMessage(ctx context.Context, arg SelectQueuedConversationMessageParams) (ConversationMessage, error) {
+	row := q.db.QueryRowContext(ctx, selectQueuedConversationMessage, arg.ConversationID, arg.TurnID)
+	var i ConversationMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.TurnID,
+		&i.Sequence,
+		&i.Revision,
+		&i.Role,
+		&i.Origin,
+		&i.Text,
+		&i.Streaming,
+		&i.ProviderItemID,
+		&i.ClientMessageID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveryContentJson,
+		&i.BranchID,
 	)
 	return i, err
 }
@@ -3156,7 +3238,7 @@ func (q *Queries) UpdateConversationTurnPlan(ctx context.Context, arg UpdateConv
 
 const updateConversationTurnSettings = `-- name: UpdateConversationTurnSettings :exec
 UPDATE conversations
-SET model = ?, reasoning_effort = ?, approval_mode = ?, updated_at = ?
+SET model = ?, reasoning_effort = ?, approval_mode = ?, opencode_mode = ?, updated_at = ?
 WHERE id = ?
 `
 
@@ -3164,6 +3246,7 @@ type UpdateConversationTurnSettingsParams struct {
 	Model           sql.NullString
 	ReasoningEffort sql.NullString
 	ApprovalMode    sql.NullString
+	OpencodeMode    string
 	UpdatedAt       time.Time
 	ID              string
 }
@@ -3177,6 +3260,7 @@ func (q *Queries) UpdateConversationTurnSettings(ctx context.Context, arg Update
 		arg.Model,
 		arg.ReasoningEffort,
 		arg.ApprovalMode,
+		arg.OpencodeMode,
 		arg.UpdatedAt,
 		arg.ID,
 	)
@@ -3237,11 +3321,12 @@ const updateQueuedConversationMessageText = `-- name: UpdateQueuedConversationMe
 UPDATE conversation_messages
 SET text = ?,
     revision = revision + 1,
-    delivery_content_json = '',
+    delivery_content_json = ?,
     updated_at = ?
 WHERE conversation_messages.conversation_id = ?
   AND conversation_messages.turn_id = ?
   AND conversation_messages.role = 'user'
+  AND conversation_messages.revision = ?
   AND EXISTS (
       SELECT 1
       FROM conversation_turns
@@ -3253,19 +3338,23 @@ WHERE conversation_messages.conversation_id = ?
 `
 
 type UpdateQueuedConversationMessageTextParams struct {
-	Text           string
-	UpdatedAt      time.Time
-	ConversationID string
-	TurnID         sql.NullString
+	Text                string
+	DeliveryContentJson string
+	UpdatedAt           time.Time
+	ConversationID      string
+	TurnID              sql.NullString
+	Revision            int64
 }
 
-// Rewrite the durable human prompt for a turn that has not yet dispatched.
+// Rewrite text and content together, only if the edited revision is current.
 func (q *Queries) UpdateQueuedConversationMessageText(ctx context.Context, arg UpdateQueuedConversationMessageTextParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateQueuedConversationMessageText,
 		arg.Text,
+		arg.DeliveryContentJson,
 		arg.UpdatedAt,
 		arg.ConversationID,
 		arg.TurnID,
+		arg.Revision,
 	)
 	if err != nil {
 		return 0, err

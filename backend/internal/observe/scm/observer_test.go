@@ -3256,3 +3256,76 @@ func TestPoll_NotFoundObservationLogsDebugAndPinsRepo(t *testing.T) {
 		t.Fatalf("not-found placeholder was persisted: %#v", store.writes)
 	}
 }
+
+func TestPoll_FailedFirstReviewFetchDoesNotManufactureCompleteness(t *testing.T) {
+	store := testStoreWithSession()
+	local := knownPR(1)
+	// The PR has never had a successful review fetch. A metadata change in the
+	// same poll must not turn that into a complete-looking review observation:
+	// the summary gate treats (zero timestamp, non-partial) as unknown, and a
+	// manufactured timestamp would publish a known-looking zero count.
+	local.ReviewObservedAt = time.Time{}
+	store.prs["p-1"] = []domain.PullRequest{local}
+	obsValue := testObs(1)
+	obsValue.PR.Title = "PR (updated)"
+	provider := &fakeProvider{
+		repoGuards:   map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "repo"}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): obsValue},
+		reviewErr:    errors.New("review window unavailable"),
+	}
+	obs := newTestObserver(store, provider, nil, time.Unix(300, 0).UTC())
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("metadata change should still be persisted")
+	}
+	written := store.writes[0].pr
+	if written.Title != "PR (updated)" {
+		t.Fatalf("metadata change not persisted: %+v", written)
+	}
+	if !written.ReviewObservedAt.IsZero() {
+		t.Fatalf("failed first review fetch manufactured a review observation at %v; only a successful fetch may establish one", written.ReviewObservedAt)
+	}
+	if written.ReviewPartial {
+		t.Fatalf("never-fetched review storage must stay non-partial (the zero timestamp carries the unknown): %+v", written)
+	}
+}
+
+func TestPoll_CompletenessUpgradePersistsWithUnchangedReviewContent(t *testing.T) {
+	store := testStoreWithSession()
+	local := knownPR(1)
+	// Simulate a row upgraded by the conservative review_partial default: the
+	// stored flag says partial even though the review hash was computed from a
+	// full observation. A later full fetch with identical content must still
+	// persist the completeness repair — the content-hash match must not skip it.
+	local.ReviewPartial = true
+	store.prs["p-1"] = []domain.PullRequest{local}
+	obsValue := testObs(1)
+	review := ports.SCMReviewObservation{Decision: string(domain.ReviewNone)}
+	provider := &fakeProvider{
+		repoGuards:   map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "repo"}},
+		observations: map[string]ports.SCMObservation{prKey(testRepo, 1): obsValue},
+		reviews:      map[string]ports.SCMReviewObservation{prKey(testRepo, 1): review},
+	}
+	obs := newTestObserver(store, provider, nil, time.Unix(300, 0).UTC())
+	// Force a review retry without touching any content: the retry cache slot
+	// is what a failed-fetch recovery or a post-upgrade poll would hit.
+	obs.cacheSetBool(obs.Cache.ReviewRefreshFailed, &obs.Cache.reviewFailedOrder, prKey(testRepo, 1), true)
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) != 1 {
+		t.Fatalf("completeness repair was skipped on unchanged content: writes=%d", len(store.writes))
+	}
+	written := store.writes[0].pr
+	if written.ReviewPartial {
+		t.Fatalf("full fetch did not clear the partial flag: %+v", written)
+	}
+	if written.ReviewObservedAt.IsZero() {
+		t.Fatalf("successful review fetch left no review observation: %+v", written)
+	}
+	if store.writes[0].reviewMode != ports.ReviewWriteReplace {
+		t.Fatalf("review mode = %v, want replace", store.writes[0].reviewMode)
+	}
+}

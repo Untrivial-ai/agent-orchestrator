@@ -1,6 +1,6 @@
 import { renderHook } from "@testing-library/react";
 import { act } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
 	MAX_ATTACHMENTS,
@@ -73,5 +73,31 @@ describe("useFileAttachments", () => {
 			MAX_ATTACHMENTS_BYTES,
 		);
 		expect(result.current.error).toMatch(/total under/i);
+	});
+
+	it("discards a pending file read when its draft is cleared", async () => {
+		const readers: FileReader[] = [];
+		const read = vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (this: FileReader) {
+			readers.push(this);
+		});
+		try {
+			const { result } = renderHook(() => useFileAttachments());
+			let pending!: Promise<void>;
+			act(() => {
+				pending = result.current.addFiles([file("discarded.png", 8, "image/png")]);
+			});
+			expect(result.current.hasPendingReads()).toBe(true);
+			act(() => result.current.clear());
+			expect(result.current.hasPendingReads()).toBe(false);
+			await act(async () => {
+				Object.defineProperty(readers[0], "result", { value: "data:image/png;base64,AQ==" });
+				readers[0].dispatchEvent(new ProgressEvent("load"));
+				await pending;
+			});
+			expect(result.current.attachments).toEqual([]);
+			expect(await result.current.toSettledPayload()).toEqual([]);
+		} finally {
+			read.mockRestore();
+		}
 	});
 });

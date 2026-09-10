@@ -86,19 +86,13 @@ function TestProjectSettings({
 	section?: ProjectSettingsSection;
 }) {
 	const [saveState, setSaveState] = useState<ProjectSettingsSaveState>({
-		isPending: false,
-		showSaving: false,
-		validationError: null,
-		mutationError: null,
-		saved: false,
-		replacementError: null,
+		phase: "idle",
 	});
 	return (
 		<>
 			<ProjectSettingsForm projectId={projectId} section={section} onSaveState={setSaveState} />
-			{saveState.validationError && <span>{saveState.validationError}</span>}
-			{saveState.mutationError && <span>{saveState.mutationError}</span>}
-			{saveState.saved && <span>{"Saved"}</span>}
+			{saveState.error && <span>{saveState.error}</span>}
+			{saveState.phase === "saved" && <span>{"Saved"}</span>}
 			{saveState.replacementError && <span>{`Orchestrator restart failed: ${saveState.replacementError}`}</span>}
 		</>
 	);

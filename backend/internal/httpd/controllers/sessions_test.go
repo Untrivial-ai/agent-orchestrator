@@ -2600,6 +2600,53 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_DelegateTaskAcceptsLongBrief(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	brief := strings.Repeat("a", 4097)
+	payload, err := json.Marshal(map[string]string{
+		"projectId": "ao",
+		"brief":     brief,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/orchestrators/delegate", string(payload))
+	if status != http.StatusAccepted {
+		t.Fatalf("delegate long brief = %d, want 202; body=%s", status, body)
+	}
+	if svc.delegationInput.Brief != brief {
+		t.Fatalf("delegation brief length = %d, want %d", len(svc.delegationInput.Brief), len(brief))
+	}
+}
+
+func TestSessionsAPI_DelegateTaskRejectsBriefPastLaunchSafeLimit(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	brief := strings.Repeat("a", (16<<10)+1)
+	payload, err := json.Marshal(map[string]string{
+		"projectId": "ao",
+		"brief":     brief,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/orchestrators/delegate", string(payload))
+	assertErrorCode(t, body, status, http.StatusBadRequest, "TASK_TOO_LONG")
+	var got struct {
+		Message string `json:"message"`
+	}
+	mustJSON(t, body, &got)
+	if got.Message != "Task must be 16 KiB or fewer" {
+		t.Fatalf("error message = %q, want actionable size limit", got.Message)
+	}
+	if svc.delegationInput.ProjectID != "" {
+		t.Fatalf("delegate service called with oversized brief: %#v", svc.delegationInput)
+	}
+}
+
 func TestSessionsAPI_DelegatesOMPChat(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)

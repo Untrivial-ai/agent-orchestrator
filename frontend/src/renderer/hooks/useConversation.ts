@@ -41,6 +41,7 @@ import type {
 	ChatSkill,
 	PlanStep,
 	PlanStepStatus,
+	QueuedMessageEditOptions,
 	SessionMode,
 	ThreadStatus,
 	TurnSettings,
@@ -159,6 +160,40 @@ function releaseConversationDispatch(
 			return next;
 		},
 	);
+}
+
+export function conversationSkillsQueryKey(sessionId: string) {
+	return ["conversation-skills", sessionId] as const;
+}
+
+const conversationProviderCatalogEpochs = new WeakMap<QueryClient, Map<string, number>>();
+
+function conversationProviderCatalogEpoch(queryClient: QueryClient, sessionId: string): number {
+	return conversationProviderCatalogEpochs.get(queryClient)?.get(sessionId) ?? 0;
+}
+
+function advanceConversationProviderCatalogEpoch(queryClient: QueryClient, sessionId: string) {
+	let epochs = conversationProviderCatalogEpochs.get(queryClient);
+	if (!epochs) {
+		epochs = new Map();
+		conversationProviderCatalogEpochs.set(queryClient, epochs);
+	}
+	epochs.set(sessionId, conversationProviderCatalogEpoch(queryClient, sessionId) + 1);
+}
+
+/** Drop provider-owned catalogs so a handoff cannot keep showing the outgoing controller's options. */
+export function clearConversationProviderCatalogs(queryClient: QueryClient, sessionId: string) {
+	advanceConversationProviderCatalogEpoch(queryClient, sessionId);
+	queryClient.removeQueries({ queryKey: conversationModelsQueryKey(sessionId) });
+	queryClient.removeQueries({ queryKey: conversationConfigOptionsQueryKey(sessionId) });
+	queryClient.removeQueries({ queryKey: conversationSkillsQueryKey(sessionId) });
+}
+
+/** Refetch provider-owned catalogs after the target controller owns the session again. */
+export function invalidateConversationProviderCatalogs(queryClient: QueryClient, sessionId: string) {
+	void queryClient.invalidateQueries({ queryKey: conversationModelsQueryKey(sessionId) });
+	void queryClient.invalidateQueries({ queryKey: conversationConfigOptionsQueryKey(sessionId) });
+	void queryClient.invalidateQueries({ queryKey: conversationSkillsQueryKey(sessionId) });
 }
 
 const CONVERSATION_PAGE_SIZE = 200;
@@ -576,14 +611,14 @@ export function useConversationCommands(sessionId: string | undefined) {
 	});
 
 	const editQueuedTurn = useMutation({
-		mutationFn: async ({ turnId, text }: { turnId: string; text: string }) => {
+		mutationFn: async ({ turnId, text, ...options }: { turnId: string; text: string } & QueuedMessageEditOptions) => {
 			const { error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/queue/edit",
 				{
 					params: {
 						path: { sessionId: sessionId as string, turnId },
 					},
-					body: { text },
+					body: { text, ...options },
 				},
 			);
 			if (error) throw new Error(apiErrorMessage(error, "Could not save queued message edit"));
@@ -875,9 +910,9 @@ export function useConversationCommands(sessionId: string | undefined) {
 			}),
 		promoteQueuedTurn: (turnId: string) => promoteQueuedTurn.mutateAsync(turnId),
 		cancelQueuedTurn: (turnId: string) => cancelQueuedTurn.mutateAsync(turnId),
-		editQueuedTurn: (turnId: string, text: string) => {
+		editQueuedTurn: (turnId: string, text: string, options?: QueuedMessageEditOptions) => {
 			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
-			return editQueuedTurn.mutateAsync({ turnId, text });
+			return editQueuedTurn.mutateAsync({ turnId, text, ...options });
 		},
 		reorderQueuedTurns: (turnIds: string[]) => {
 			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
@@ -1029,7 +1064,14 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 		// so no poll can start or land inside that window.
 		onMutate: () => setWriting(true),
 		onSettled: () => setWriting(false),
-		mutationFn: async ({ optionId, value }: { optionId: string; value: ChatConfigOptionValue }) => {
+		mutationFn: async ({
+			optionId,
+			value,
+		}: {
+			optionId: string;
+			value: ChatConfigOptionValue;
+		}) => {
+			const controllerEpoch = conversationProviderCatalogEpoch(queryClient, sessionId as string);
 			// A read already in flight when the user picked would otherwise land
 			// after this mutation's setQueryData and put the pre-change catalog
 			// back, reverting the picker to the old value until the next poll.
@@ -1047,16 +1089,24 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 				},
 			);
 			if (error) throw error;
-			return (data?.options ?? []) as ChatConfigOption[];
+			return {
+				controllerEpoch,
+				options: (data?.options ?? []) as ChatConfigOption[],
+			};
 		},
-		onSuccess: (options) => queryClient.setQueryData(queryKey, options),
+		onSuccess: ({ controllerEpoch, options }) => {
+			if (controllerEpoch !== conversationProviderCatalogEpoch(queryClient, sessionId as string)) {
+				return;
+			}
+			queryClient.setQueryData(queryKey, options);
+		},
 	});
 
 	return {
 		options: query.data ?? [],
 		loaded: query.isSuccess,
-		setOption: (optionId: string, value: ChatConfigOptionValue) =>
-			mutation.mutateAsync({ optionId, value }),
+		setOption: async (optionId: string, value: ChatConfigOptionValue) =>
+			(await mutation.mutateAsync({ optionId, value })).options,
 		pending: mutation.isPending,
 		error: mutation.error || query.error ? apiErrorMessage(mutation.error ?? query.error) : undefined,
 	};
@@ -1075,7 +1125,7 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
  */
 export function useConversationSkills(sessionId: string | undefined, enabled: boolean) {
 	const query = useQuery({
-		queryKey: ["conversation-skills", sessionId ?? ""],
+		queryKey: conversationSkillsQueryKey(sessionId ?? ""),
 		enabled: Boolean(sessionId) && enabled,
 		// ACP agents publish this catalog asynchronously and may replace it later.
 		// Polling also keeps Codex project skills current without introducing a

@@ -707,6 +707,8 @@ describe("useTerminalSession", () => {
 			act(() => muxes[0].emitData("handle-1", replay));
 			act(() => void vi.advanceTimersByTime(60));
 
+			act(() => muxes[0].emitData("handle-1", "\x1b[6n\x1b[?996n"));
+
 			// Exit lands while the next replay batch is waiting for its event-loop
 			// turn. The unwritten remainder must be submitted before the marker and
 			// before teardown invalidates this attachment's generation.

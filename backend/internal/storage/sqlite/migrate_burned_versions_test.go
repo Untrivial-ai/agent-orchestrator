@@ -132,6 +132,11 @@ var shippedMigrations = map[int64]string{
 	125: "0125_agent_switch_failure_observability.sql",
 	126: "0126_canonical_repository_identity.sql",
 	127: "0127_session_permissions.sql",
+	128: "0128_pr_author_avatar_url.sql",
+	129: "0129_change_log_retention_index.sql",
+	130: "0130_pr_review_partial.sql",
+	131: "0131_repair_intermediate_pr_review_certainty.sql",
+	132: "0132_conversation_opencode_mode.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

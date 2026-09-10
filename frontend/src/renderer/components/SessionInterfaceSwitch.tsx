@@ -78,39 +78,47 @@ export function SessionInterfaceSwitchButton({
 }) {
 	if (transition && interfaceTransitionIsActive(transition)) {
 		const cancellable = interfaceTransitionIsCancellable(transition) && Boolean(onCancel);
+		const statusLabel =
+			cancelError ||
+			`${phaseCopy[transition.phase]} Switching to ${targetTitleLabel(transition.targetMode)}.`;
+		const cancelLabel = `Cancel switch to ${targetTitleLabel(transition.targetMode)}`;
 		return (
 			<div
 				role="status"
 				aria-live="polite"
-				className={cn(
-					"flex h-7 items-center gap-1 rounded-md bg-muted/55 pl-2 text-xs text-muted-foreground",
-					cancellable ? "pr-0.5" : "pr-2",
-					className,
-				)}
-				title={cancelError || `${phaseCopy[transition.phase]} Switching to ${targetTitleLabel(transition.targetMode)}.`}
+				aria-label={statusLabel}
+				className={cn("relative inline-flex size-7 shrink-0 items-center justify-center text-muted-foreground", className)}
+				title={statusLabel}
 			>
-				<Loader2 aria-hidden="true" className="size-3.5 shrink-0 animate-spin" />
-				<span className="whitespace-nowrap">
-					{phaseCopy[transition.phase]} <span className="text-foreground">{targetTitleLabel(transition.targetMode)}</span>
-				</span>
+				{/* TerminalTabFrame is a Tailwind `group`; tab hover swaps spinner → cancel. */}
+				<Loader2
+					aria-hidden="true"
+					className={cn(
+						"size-3.5 animate-spin",
+						cancellable && "pointer-events-none group-hover:opacity-0",
+					)}
+				/>
 				{cancellable ? (
-					<Button
+					<button
 						type="button"
-						size="sm"
-						variant="ghost"
-						className="ml-1 h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+						aria-label={cancelLabel}
+						title={cancelling ? "Cancelling…" : cancelLabel}
 						disabled={cancelling}
-						onClick={onCancel}
-						aria-label={`Cancel switch to ${targetTitleLabel(transition.targetMode)}`}
+						onClick={(event) => {
+							event.stopPropagation();
+							onCancel?.();
+						}}
+						className={cn(
+							"absolute inset-0 inline-flex items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50 group-hover:opacity-100",
+							cancelling && "opacity-100",
+						)}
 					>
-						{cancelling ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : <X aria-hidden="true" className="size-3" />}
-						{cancelling ? "Cancelling" : "Cancel"}
-					</Button>
-				) : null}
-				{cancelError ? (
-					<span role="alert" className="ml-1 whitespace-nowrap pr-1.5 text-[11px] text-destructive">
-						Cancel failed
-					</span>
+						{cancelling ? (
+							<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+						) : (
+							<X aria-hidden="true" className="size-3.5" />
+						)}
+					</button>
 				) : null}
 			</div>
 		);

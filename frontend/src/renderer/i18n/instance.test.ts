@@ -110,6 +110,17 @@ describe("app i18next instance", () => {
 		expect(chinese.t("proof.item", { count: 2, defaultValue: "proof.item" })).toBe("2 项");
 	});
 
+	it.each([
+		["es", ["1 abierta", "1 borrador", "1 cerrada"], ["2 abiertas", "2 borradores", "2 cerradas"]],
+		["fr", ["1 ouverte", "1 brouillon", "1 fermée"], ["2 ouvertes", "2 brouillons", "2 fermées"]],
+		["pt-BR", ["1 aberta", "1 rascunho", "1 fechada"], ["2 abertas", "2 rascunhos", "2 fechadas"]],
+	] as const)("renders singular and plural PR progress suffixes in %s", (locale, singular, plural) => {
+		const instance = createAppI18n(locale);
+		const keys = ["pr.progress.open", "pr.progress.draft", "pr.progress.closed"] as const;
+		expect(keys.map((key) => instance.t(key, { count: 1 }))).toEqual(singular);
+		expect(keys.map((key) => instance.t(key, { count: 2 }))).toEqual(plural);
+	});
+
 	it("provides Chinese copy for the remaining audited shell surfaces", () => {
 		const chinese = createAppI18n("zh-CN");
 		expect(chinese.t("terminal.loadingOutput")).toBe("正在加载最新输出…");

@@ -265,7 +265,7 @@ type SpawnSessionRequest struct {
 	// switch through the durable interface-transition endpoint. An unsupported
 	// explicit request fails rather than quietly producing the other kind of session.
 	Mode   domain.SessionMode `json:"mode,omitempty" enum:"chat,tui"`
-	Prompt string             `json:"prompt,omitempty" maxLength:"4096"`
+	Prompt string             `json:"prompt,omitempty" maxLength:"16384"`
 	// Model is an optional agent model override scoped to this single spawn. Empty
 	// keeps the resolved project/role default. The daemon validates that the
 	// selected harness can honor the model before launching.
@@ -748,7 +748,7 @@ type SendSessionMessageResponse struct {
 // An omitted agent tells the orchestrator to use the project's worker default.
 type DelegateTaskRequest struct {
 	ProjectID domain.ProjectID    `json:"projectId"`
-	Brief     string              `json:"brief" maxLength:"4096"`
+	Brief     string              `json:"brief" maxLength:"16384"`
 	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,fake"`
 	Model     string              `json:"model,omitempty" maxLength:"256"`
 	// ApprovalMode is an optional per-session override. The UI uses the explicit
@@ -796,6 +796,7 @@ type SessionPRSummary struct {
 	Provider         string                       `json:"provider" enum:"github,gitlab"`
 	Repo             string                       `json:"repo"`
 	Author           string                       `json:"author"`
+	AuthorAvatarURL  string                       `json:"authorAvatarUrl,omitempty"`
 	SourceBranch     string                       `json:"sourceBranch"`
 	TargetBranch     string                       `json:"targetBranch"`
 	HeadSHA          string                       `json:"headSha"`
@@ -832,6 +833,7 @@ type SessionPRFailingCheck struct {
 type SessionPRReviewSummary struct {
 	Decision                   domain.ReviewDecision         `json:"decision" enum:"none,approved,changes_requested,review_required"`
 	HasUnresolvedHumanComments bool                          `json:"hasUnresolvedHumanComments"`
+	UnresolvedThreadCount      *int                          `json:"unresolvedThreadCount,omitempty"`
 	UnresolvedBy               []SessionPRUnresolvedReviewer `json:"unresolvedBy"`
 	ResolvedBy                 []SessionPRUnresolvedReviewer `json:"resolvedBy,omitempty"`
 	Reviews                    []SessionPRReviewEntry        `json:"reviews,omitempty"`
@@ -899,6 +901,7 @@ func NewSessionPRSummary(in sessionsvc.PRSummary) SessionPRSummary {
 		Provider:         in.Provider,
 		Repo:             in.Repo,
 		Author:           in.Author,
+		AuthorAvatarURL:  in.AuthorAvatarURL,
 		SourceBranch:     in.SourceBranch,
 		TargetBranch:     in.TargetBranch,
 		HeadSHA:          in.HeadSHA,
@@ -947,7 +950,14 @@ func newSessionPRReviewSummary(in sessionsvc.PRReviewSummary) SessionPRReviewSum
 			AutoInjectReview: review.AutoInjectReview,
 		})
 	}
-	return SessionPRReviewSummary{Decision: in.Decision, HasUnresolvedHumanComments: in.HasUnresolvedHumanComments, UnresolvedBy: reviewers, ResolvedBy: resolvedReviewers, Reviews: entries}
+	return SessionPRReviewSummary{
+		Decision:                   in.Decision,
+		HasUnresolvedHumanComments: in.HasUnresolvedHumanComments,
+		UnresolvedThreadCount:      in.UnresolvedThreadCount,
+		UnresolvedBy:               reviewers,
+		ResolvedBy:                 resolvedReviewers,
+		Reviews:                    entries,
+	}
 }
 
 func newSessionPRCommentReviewers(in []sessionsvc.PRUnresolvedReviewer) []SessionPRUnresolvedReviewer {
@@ -1729,6 +1739,17 @@ type SendConversationMessageRequest struct {
 type ConversationImageContentRequest struct {
 	MIMEType string `json:"mimeType"`
 	Data     string `json:"data"`
+}
+
+// EditQueuedConversationMessageRequest changes an undispatched prompt. Omitted
+// retainedContent preserves the stored blocks; an empty list removes attachments.
+type EditQueuedConversationMessageRequest struct {
+	Text        string                            `json:"text"`
+	Attachments []ConversationImageContentRequest `json:"attachments,omitempty"`
+	// Indices in the message's public content summary, in their original order.
+	RetainedContent *[]int `json:"retainedContent,omitempty"`
+	// Reject a stale editor before interpreting attachment indices.
+	ExpectedRevision *int64 `json:"expectedRevision,omitempty"`
 }
 
 // ConversationResourceContentRequest is a resource link, or embedded text when

@@ -148,6 +148,9 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if err := ctx.postJSON(cmd.Context(), "sessions", req, &res); err != nil {
 				return err
 			}
+			if strings.TrimSpace(res.Session.ID) == "" {
+				return fmt.Errorf("daemon returned empty session id for spawn")
+			}
 			claimed := ""
 			if opts.claimPR != "" {
 				var claim claimPRResponse

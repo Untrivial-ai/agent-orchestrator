@@ -14,6 +14,7 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -114,6 +115,35 @@ func TestExtensionMethodReaderRoutesOnlyConfiguredLegacyMethodsThroughSDK(t *tes
 	}
 	if response := readWireResponse(t, reader); response.ID != 1 || response.Outcome != "answered" {
 		t.Fatalf("ask wire response = %#v", response)
+	}
+
+	if _, err := agentToClientW.Write([]byte(`{"jsonrpc":"2.0","id":3,"method":"cursor/ask_question","params":{}}` + "\n")); err != nil {
+		t.Fatalf("write replayed ask request: %v", err)
+	}
+	replayedInput := nextEvent(t, conv.Events())
+	if replayedInput.Kind != ports.ChatEventInputRequested {
+		t.Fatalf("replayed ask event = %#v", replayedInput)
+	}
+	command, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "method": persistenthost.ACPInteractionCommandMethod,
+		"params": persistentInteractionCommand{
+			EventID: "acp-host:input", RequestID: replayedInput.RequestID,
+			Kind: persistentInteractionInput, ProviderPending: true,
+			Input: &ports.ChatInputResponse{
+				Action: ports.ChatInputActionAccept, Content: map[string]any{"mode": "plan"},
+			},
+		},
+	})
+	if _, err := agentToClientW.Write(append(command, '\n')); err != nil {
+		t.Fatalf("write accepted input command: %v", err)
+	}
+	replayedResolved := nextEvent(t, conv.Events())
+	if replayedResolved.Kind != ports.ChatEventInputResolved ||
+		replayedResolved.ProviderEventID != "acp-host:input" {
+		t.Fatalf("replayed input resolution = %#v", replayedResolved)
+	}
+	if response := readWireResponse(t, reader); response.ID != 3 || response.Outcome != "answered" {
+		t.Fatalf("replayed ask wire response = %#v", response)
 	}
 
 	if _, err := agentToClientW.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"cursor/create_plan","params":{}}` + "\n")); err != nil {

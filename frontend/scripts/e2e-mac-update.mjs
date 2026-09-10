@@ -164,8 +164,12 @@ export function assertSentinelCapable(appPath) {
 	if (!readFileSync(asar).includes(SENTINEL_ENV)) {
 		throw new UsageError(
 			`baseline at ${appPath} has no ${SENTINEL_ENV} listener, so it can never signal that an update staged. ` +
-				`That listener landed with the macOS release hardening work (#3288 workstream 0); pick a baseline ` +
-				`released after it. Running anyway would just wait out the download timeout and report a false failure.`,
+				`Running anyway would just wait out the download timeout and report a false failure. Two different ` +
+				`causes look identical here, so check both: the baseline may predate the listener (#3288 workstream 0), ` +
+				`or the listener may have been removed from src/main/auto-updater.ts, in which case EVERY baseline ` +
+				`built after that point fails this check and picking a newer one makes it worse. That second case is ` +
+				`real: #3012 deleted it on 2026-07-31 and run 30758412650 failed here on a 2026-08-01 baseline while ` +
+				`a 2026-07-30 baseline passed. Confirm the listener still exists in the app before changing baselines.`,
 		);
 	}
 }

@@ -1,4 +1,5 @@
 import type {
+	Clipboard,
 	IpcMain,
 	IpcMainEvent,
 	IpcMainInvokeEvent,
@@ -45,6 +46,8 @@ import {
 	type BrowserSitePermissionDecision,
 	type BrowserSitePermissionDecisionValue,
 } from "../shared/browser-site-settings";
+import type { BrowserDownloadManager } from "./browser-download-manager";
+import type { BrowserDownloadActionInput } from "../shared/browser-downloads";
 import { matchInstruction } from "./browser-act-matcher";
 
 function isValidAnnotationContext(value: unknown): value is BrowserAnnotationContext {
@@ -249,7 +252,8 @@ type BrowserWebContents = Pick<
 	openDevTools?: (options?: Pick<OpenDevToolsOptions, "mode" | "activate">) => void;
 	closeDevTools?: () => void;
 	close?: () => void;
-	session?: Pick<Session, "setPermissionCheckHandler" | "setPermissionRequestHandler" | "webRequest"> & Partial<Pick<Session, "cookies" | "clearStorageData">>;
+	session?: Pick<Session, "on" | "removeListener" | "setPermissionCheckHandler" | "setPermissionRequestHandler" | "webRequest"> &
+		Partial<Pick<Session, "cookies" | "clearStorageData">>;
 };
 
 type BrowserElectronSession = NonNullable<BrowserWebContents["session"]>;
@@ -324,7 +328,9 @@ export type BrowserViewHostOptions = {
 	browserProfileStore?: BrowserProfileStore;
 	browserHistoryStore?: BrowserHistoryStore;
 	browserSiteSettingsStore?: BrowserSiteSettingsStore;
+	browserDownloadManager?: BrowserDownloadManager;
 	clearBrowserProfileData?: (partition: string) => Promise<void>;
+	clipboard?: Pick<Clipboard, "writeImage">;
 };
 
 export type BrowserViewHost = {
@@ -699,6 +705,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			view.webContents.session, session.profileId ?? session.profilePartition,
 			options.browserSiteSettingsStore, promptBrowserPermission,
 		);
+		options.browserDownloadManager?.attach(view.webContents.session);
 		let scrollbarStyleKey: string | undefined;
 		let scrollbarStyleUpdate = Promise.resolve();
 		const applyScrollbarStyle = (): void => {
@@ -2024,6 +2031,42 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	handle("browser:stop", (event, viewId: string) =>
 		isRendererOwned(event, viewId) ? invokeNav(viewId, (contents) => contents.stop(), true) : emptyNavState(viewId),
 	);
+	handle("browser:captureScreenshot", async (event, viewId: string) => {
+		const session = typeof viewId === "string" ? entries.get(viewId) : undefined;
+		if (!session || !isRendererOwned(event, viewId)) {
+			throw browserError("BROWSER_TARGET_UNAVAILABLE", "Browser tab is unavailable");
+		}
+		if (!options.clipboard) {
+			throw browserError("SCREENSHOT_UNAVAILABLE", "Screenshot clipboard access is unavailable");
+		}
+		assertProfileStable(session);
+		const entry = activeEntry(session);
+		await entry.ready;
+		if (isBlankBrowserEntry(entry)) {
+			throw browserError("SCREENSHOT_UNAVAILABLE", "Open a page before taking a screenshot");
+		}
+		const image = await entry.view.webContents.capturePage();
+		if (image.isEmpty()) {
+			throw browserError("SCREENSHOT_UNAVAILABLE", "The browser page could not be captured");
+		}
+		options.clipboard.writeImage(image);
+	});
+	handle("browser:downloads:list", (event) => {
+		if (event.sender.id !== shellWebContents.id) return { downloads: [] };
+		return options.browserDownloadManager?.list() ?? { downloads: [] };
+	});
+	handle("browser:downloads:action", (event, input: BrowserDownloadActionInput) => {
+		if (event.sender.id !== shellWebContents.id || !options.browserDownloadManager) {
+			throw browserError("BROWSER_TARGET_UNAVAILABLE", "Browser downloads are unavailable");
+		}
+		return options.browserDownloadManager.action(input);
+	});
+	handle("browser:downloads:clear", (event) => {
+		if (event.sender.id !== shellWebContents.id || !options.browserDownloadManager) {
+			throw browserError("BROWSER_TARGET_UNAVAILABLE", "Browser downloads are unavailable");
+		}
+		return options.browserDownloadManager.clear();
+	});
 	handle("browser:getTabs", (event, viewId: string) => {
 		const session = entries.get(viewId);
 		return session && isRendererOwned(event, viewId) ? listTabs(session) : emptyTabsState(viewId);
@@ -2382,6 +2425,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			disposePromise = (async () => {
 				ipcDisposers.splice(0).forEach((dispose) => dispose());
 				for (const requestId of [...pendingPermissionPrompts.keys()]) settlePermissionPrompt(requestId, "dismiss");
+				options.browserDownloadManager?.dispose();
 				for (const viewId of [...entries.keys()]) {
 					destroy(viewId);
 				}
