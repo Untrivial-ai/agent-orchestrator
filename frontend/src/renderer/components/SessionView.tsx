@@ -245,6 +245,7 @@ function SessionInspectorRail({
 	isOpen,
 	onExpand,
 	onCloseAnimationComplete,
+	onOpenAnimationComplete,
 	restoreMinWidth,
 	sizing,
 	settledClosed,
@@ -254,6 +255,7 @@ function SessionInspectorRail({
 	isOpen: boolean;
 	onExpand: () => void;
 	onCloseAnimationComplete?: () => void;
+	onOpenAnimationComplete?: () => void;
 	restoreMinWidth?: number;
 	sizing: InspectorSizing;
 	settledClosed: boolean;
@@ -304,8 +306,9 @@ function SessionInspectorRail({
 	const hidden = !isOpen && settledClosed;
 
 	const handleAnimationComplete = useCallback(() => {
-		if (!isOpen) onCloseAnimationComplete?.();
-	}, [isOpen, onCloseAnimationComplete]);
+		if (isOpen) onOpenAnimationComplete?.();
+		else onCloseAnimationComplete?.();
+	}, [isOpen, onCloseAnimationComplete, onOpenAnimationComplete]);
 
 	return (
 		<>
@@ -332,10 +335,7 @@ function SessionInspectorRail({
 				initial={false}
 				animate={{ x: isOpen ? "0%" : "100%" }}
 				onAnimationComplete={handleAnimationComplete}
-				style={{
-					width: `var(${inspectorWidthVar}, ${sizing.defaultWidth}px)`,
-					minWidth: sizing.mode === "browser" ? `var(${inspectorWidthVar}, ${sizing.defaultWidth}px)` : undefined,
-				}}
+				style={{ width: `var(${inspectorWidthVar}, ${sizing.defaultWidth}px)` }}
 				transition={transition}
 			>
 				<ResizeHandle
@@ -399,6 +399,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const workspaceResizeTimerRef = useRef<number | null>(null);
 	const browserPopOutHandoffFrameRef = useRef<number | null>(null);
 	const [inspectorSettledClosed, setInspectorSettledClosed] = useState(!isInspectorOpen);
+	const [inspectorSettledOpen, setInspectorSettledOpen] = useState(isInspectorOpen);
 	const inspectorPanelVisible = isInspectorOpen || !inspectorSettledClosed;
 	const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>({ kind: "worker" });
 	const [browserPopOutState, setBrowserPopOutState] = useState<BrowserPopOutState>({
@@ -1022,7 +1023,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const browserSlotVisible = Boolean(
 		session &&
 			hasInspector &&
-			(browserPoppedOut || (inspectorView === "browser" && (isInspectorOpen || !inspectorSettledClosed))),
+			(browserPoppedOut || (isInspectorOpen && inspectorSettledOpen && inspectorView === "browser")),
 	);
 	const terminated = session ? !sessionIsActive(session) : false;
 	const browserView = useBrowserView({
@@ -1415,20 +1416,26 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const handleInspectorCloseAnimationComplete = useCallback(() => {
 		setInspectorSettledClosed(true);
 	}, []);
+	const handleInspectorOpenAnimationComplete = useCallback(() => {
+		setInspectorSettledOpen(true);
+	}, []);
 	useLayoutEffect(() => {
 		if (!hasInspector) {
 			setInspectorSettledClosed(true);
+			setInspectorSettledOpen(false);
 			stopTerminalLiveResize();
 			return;
 		}
 		if (!inspectorMotionReadyRef.current) {
 			setInspectorSettledClosed(!isInspectorOpen);
+			setInspectorSettledOpen(isInspectorOpen);
 		}
 	}, [hasInspector, isInspectorOpen, stopTerminalLiveResize]);
 	useEffect(() => {
 		if (!hasInspector || !inspectorMotionReadyRef.current) return;
 		if (isInspectorOpen) {
 			setInspectorSettledClosed(false);
+			setInspectorSettledOpen(false);
 			const groupWidth = sessionSplitRef.current?.clientWidth || window.innerWidth;
 			const availableWidth = Math.max(0, groupWidth - INSPECTOR_SEPARATOR_RESERVE_PX);
 			const targetInspectorWidth = Number.parseFloat(initialInspectorSize(sizing, availableWidth));
@@ -1438,6 +1445,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			);
 			return;
 		}
+		setInspectorSettledOpen(false);
 		const groupWidth = sessionSplitRef.current?.clientWidth || window.innerWidth;
 		startTerminalLiveResize("expanded", topbarSecondaryLabelMode(groupWidth));
 	}, [hasInspector, isInspectorOpen, sizing, startTerminalLiveResize]);
@@ -1643,6 +1651,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					<SessionInspectorRail
 						isOpen={isInspectorOpen}
 						onCloseAnimationComplete={handleInspectorCloseAnimationComplete}
+						onOpenAnimationComplete={handleInspectorOpenAnimationComplete}
 						onExpand={() => setInspectorOpenForSession(sessionId, true)}
 						restoreMinWidth={
 							sizing.mode === "browser" ? (browserEntryWidthFloorRef.current ?? undefined) : undefined
