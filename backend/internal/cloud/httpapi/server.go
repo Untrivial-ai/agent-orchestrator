@@ -1946,8 +1946,8 @@ func (s *Server) setDesiredState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "INVALID_DESIRED_STATE", "state must be running, paused, or deleted.")
 		return
 	}
-	if input.State == "deleted" && session.Kind != "worker" {
-		writeError(w, r, http.StatusConflict, "PROJECT_DELETE_REQUIRED", "Remove the project to delete its orchestrator.")
+	if input.State == "deleted" && !canDeleteSessionSandbox(session.Kind) {
+		writeError(w, r, http.StatusConflict, "SESSION_DELETE_UNSUPPORTED", "This session kind cannot delete a sandbox.")
 		return
 	}
 	sessionID := session.ID
@@ -1988,8 +1988,8 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if session.Kind != "worker" {
-		writeError(w, r, http.StatusConflict, "PROJECT_DELETE_REQUIRED", "Remove the project to delete its orchestrator.")
+	if !canDeleteSessionSandbox(session.Kind) {
+		writeError(w, r, http.StatusConflict, "SESSION_DELETE_UNSUPPORTED", "This session kind cannot delete a sandbox.")
 		return
 	}
 	if err := s.deleteSessionSandbox(r.Context(), account.ID, session.ID); err != nil {
@@ -2005,6 +2005,10 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func canDeleteSessionSandbox(kind string) bool {
+	return kind == "worker" || kind == "orchestrator"
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {

@@ -39,6 +39,17 @@ func TestProjectShareRoles(t *testing.T) {
 	}
 }
 
+func TestSessionKindsThatCanDeleteSandboxes(t *testing.T) {
+	for _, kind := range []string{"worker", "orchestrator"} {
+		if !canDeleteSessionSandbox(kind) {
+			t.Fatalf("%q sessions must delete their own sandboxes when terminated", kind)
+		}
+	}
+	if canDeleteSessionSandbox("unknown") {
+		t.Fatal("unknown session kinds must not delete a sandbox")
+	}
+}
+
 func TestSharedProjectAccessPreservesSessionScope(t *testing.T) {
 	projectID := clouddomain.ProjectID("project-one")
 	orgID := clouddomain.OrgID("org-one")

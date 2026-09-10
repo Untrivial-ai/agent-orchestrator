@@ -190,7 +190,12 @@ func TestLocalAuthRoutesUsePostgresStore(t *testing.T) {
 }
 
 func TestAuthenticatedProjectAndIdempotentSessionFlow(t *testing.T) {
-	server, _ := integrationAPI(t)
+	server, store := integrationAPI(t)
+	ctx := context.Background()
+	account, err := store.EnsureAccount(ctx, tokenID("user-one"), "User One")
+	if err != nil {
+		t.Fatalf("ensure user-one account: %v", err)
+	}
 	connection := requestJSON(
 		t,
 		server,
@@ -353,8 +358,15 @@ func TestAuthenticatedProjectAndIdempotentSessionFlow(t *testing.T) {
 		nil,
 	)
 	defer deleteOrchestrator.Body.Close()
-	if deleteOrchestrator.StatusCode != http.StatusConflict {
-		t.Fatalf("delete orchestrator status = %d, want 409", deleteOrchestrator.StatusCode)
+	if deleteOrchestrator.StatusCode != http.StatusAccepted {
+		t.Fatalf("delete orchestrator status = %d, want 202", deleteOrchestrator.StatusCode)
+	}
+	orchestratorSandbox, err := store.GetSandbox(ctx, account.ID, clouddomain.SessionID(orchestratorBody.Session.ID))
+	if err != nil {
+		t.Fatalf("get deleted orchestrator sandbox: %v", err)
+	}
+	if orchestratorSandbox.DesiredState != "deleted" {
+		t.Fatalf("orchestrator sandbox desired state = %q, want deleted", orchestratorSandbox.DesiredState)
 	}
 	deleteWorker := requestJSON(
 		t,
