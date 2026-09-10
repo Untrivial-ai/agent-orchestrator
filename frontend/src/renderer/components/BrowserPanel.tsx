@@ -28,7 +28,7 @@ import {
 	useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import {
 	ArrowLeft,
 	ArrowRight,
@@ -755,19 +755,17 @@ export function BrowserPanelView({
 							ref={tabScrollRef}
 							role="tablist"
 						>
-							<AnimatePresence initial={false}>
-								{tabs.map((tab) => (
-									<SortableBrowserTopTab
-										key={tab.id}
-										onClose={handleCloseTab}
-										onSelect={handleSelectTab}
-										onlyTab={tabs.length === 1}
-										animateIn={newlyAddedTabIds.has(tab.id)}
-										selected={tab.id === activeTabId}
-										tab={tab}
-									/>
-								))}
-							</AnimatePresence>
+							{tabs.map((tab) => (
+								<SortableBrowserTopTab
+									key={tab.id}
+									onClose={handleCloseTab}
+									onSelect={handleSelectTab}
+									onlyTab={tabs.length === 1}
+									animateIn={newlyAddedTabIds.has(tab.id)}
+									selected={tab.id === activeTabId}
+									tab={tab}
+								/>
+							))}
 						</div>
 						{showTabsLeftFade ? (
 							<div aria-hidden="true" className="browser-panel__tab-fade browser-panel__tab-fade--left" />
