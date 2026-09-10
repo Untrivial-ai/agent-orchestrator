@@ -404,6 +404,50 @@ func TestReviewRestoreCommandFallsBackWhenPersistedConversationIsMissing(t *test
 	}
 }
 
+// TestReviewRestoreCommandProbesFallbackWhenNoNativeSessionIDWasEverCaptured
+// covers a daemon restart before the hook ever recorded a native id (e.g. the
+// reviewer crashed mid-first-pass): with no persisted id, the caller still
+// derives the same deterministic fallback id agentrestore.Command would use,
+// so it must be probed too — resuming a transcript that may never have been
+// created would misreport NativeResumed as true.
+func TestReviewRestoreCommandProbesFallbackWhenNoNativeSessionIDWasEverCaptured(t *testing.T) {
+	fallbackID := workeragent.SessionUUID("review-w1")
+	agent := &captureHistoryAgent{existing: map[string]bool{fallbackID: true}}
+	r := &Reviewer{agent: agent}
+
+	got, ok, err := r.ReviewRestoreCommand(context.Background(), ports.ReviewInvocation{
+		ReviewerID: "review-w1",
+	})
+	if err != nil || !ok {
+		t.Fatalf("ReviewRestoreCommand = (ok=%v, err=%v), want fallback restore", ok, err)
+	}
+	if strings.Join(got.Argv, " ") != "claude --resume "+fallbackID {
+		t.Fatalf("argv = %#v, want fallback session %q", got.Argv, fallbackID)
+	}
+	if strings.Join(agent.probed, ",") != fallbackID {
+		t.Fatalf("probed ids = %#v, want only the fallback id probed", agent.probed)
+	}
+}
+
+// TestReviewRestoreCommandFallsBackToFreshWhenNoNativeSessionIDWasEverCaptured
+// is the negative case: no persisted id and no transcript at the deterministic
+// fallback id either (the process never got far enough to write one). Restore
+// must not claim a native resume for a conversation that was never created.
+func TestReviewRestoreCommandFallsBackToFreshWhenNoNativeSessionIDWasEverCaptured(t *testing.T) {
+	agent := &captureHistoryAgent{existing: map[string]bool{}}
+	r := &Reviewer{agent: agent}
+
+	got, ok, err := r.ReviewRestoreCommand(context.Background(), ports.ReviewInvocation{
+		ReviewerID: "review-w1",
+	})
+	if err != nil {
+		t.Fatalf("ReviewRestoreCommand: %v", err)
+	}
+	if ok || len(got.Argv) != 0 {
+		t.Fatalf("ReviewRestoreCommand = (%#v, %v), want fresh-launch fallback", got, ok)
+	}
+}
+
 func TestReviewCancelSendsDoubleEscapeInput(t *testing.T) {
 	spec, err := (&Reviewer{}).ReviewCancel(context.Background())
 	if err != nil {

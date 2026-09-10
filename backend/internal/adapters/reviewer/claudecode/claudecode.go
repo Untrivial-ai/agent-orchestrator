@@ -162,14 +162,27 @@ func (r *Reviewer) ReviewRestoreCommand(ctx context.Context, inv ports.ReviewInv
 // starting a doomed `claude --resume` command.
 func (r *Reviewer) restoreSessionID(ctx context.Context, inv ports.ReviewInvocation) (string, bool, error) {
 	persistedID := strings.TrimSpace(inv.AgentSessionID)
-	if persistedID == "" {
-		return "", true, nil
-	}
 	probe, ok := r.agent.(ports.AgentInterfaceHandoffHistoryProbe)
 	if !ok {
 		return persistedID, true, nil
 	}
 	session := ports.SessionRef{ID: inv.ReviewerID, WorkspacePath: inv.WorkspacePath}
+	if persistedID == "" {
+		// No native id was ever captured — e.g. the daemon restarted before the
+		// hook fired on a first-ever pass. agentrestore.Command's caller falls
+		// back to deriving the same deterministic id from inv.ReviewerID
+		// unconditionally, so probe that id here too rather than reporting a
+		// resume for a transcript that may never have been created.
+		fallbackID := workeragent.SessionUUID(inv.ReviewerID)
+		exists, err := probe.NativeConversationExists(ctx, session, fallbackID, nil)
+		if err != nil {
+			return "", false, err
+		}
+		if exists {
+			return fallbackID, true, nil
+		}
+		return "", false, nil
+	}
 	exists, err := probe.NativeConversationExists(ctx, session, persistedID, nil)
 	if err != nil {
 		return "", false, err
