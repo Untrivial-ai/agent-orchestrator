@@ -106,8 +106,9 @@ func advisoryFor(i ports.CodexInstallation, latest string) CodexUpdateAdvisory {
 }
 
 func (s *Service) withCodexSessions(ctx context.Context, a CodexUpdateAdvisory) (CodexUpdateAdvisory, error) {
-	if s.sessions == nil {
+	if s.sessions == nil || s.codexReviewers == nil || s.codexOperationGate == nil {
 		a.CanUpdate = false
+		a.Warning = strings.TrimSpace(a.Warning + " AO cannot verify Codex worker and reviewer processes; refresh before updating.")
 		return a, nil
 	}
 	sessions, err := s.sessions.ListAllSessions(ctx)
@@ -115,7 +116,11 @@ func (s *Service) withCodexSessions(ctx context.Context, a CodexUpdateAdvisory) 
 		return a, err
 	}
 	for _, session := range sessions {
-		if session.Harness == domain.HarnessCodex && !session.IsTerminated {
+		reviewer, err := s.codexReviewers.SnapshotCodexReviewer(ctx, session.ID)
+		if err != nil {
+			return a, fmt.Errorf("verify Codex reviewer for session %s: %w", session.ID, err)
+		}
+		if (session.Harness == domain.HarnessCodex && !session.IsTerminated) || reviewer.Running {
 			a.RunningSessions++
 		}
 	}
@@ -136,7 +141,7 @@ func (s *Service) StartCodexUpdate(ctx context.Context, token string) (Job, erro
 		return Job{}, fmt.Errorf("%w: refresh Codex update information or update the selected installation manually", ErrInstallMethod)
 	}
 	if a.RunningSessions > 0 {
-		return Job{}, fmt.Errorf("%w: stop AO Codex sessions explicitly before updating the shared installation; restarting AO does not replace surviving provider processes", ErrHarnessActive)
+		return Job{}, fmt.Errorf("%w: stop AO Codex workers and reviewers explicitly before updating the shared installation; restarting AO does not replace surviving provider processes", ErrHarnessActive)
 	}
 	s.mu.Lock()
 	if job := s.jobs[TargetCodex]; job != nil && activeStatus(job.Status) {
@@ -211,14 +216,27 @@ func (s *Service) runCodexUpdate(job *Job, before CodexUpdateAdvisory) {
 		return
 	}
 	defer s.releaseInstaller()
-	if !s.codexGate.TryLock() {
-		s.finishAgentJob(job, StatusFailed, "", "A Codex session is starting; wait, then refresh and try again.", "")
+	if s.codexOperationGate == nil {
+		s.finishAgentJob(job, StatusFailed, "", "Codex launch admission is unavailable; refresh before updating.", "")
 		return
 	}
-	defer s.codexGate.Unlock()
+	if err := s.transitionAgentJob(job, StatusQueued, "Waiting for Codex launches and account operations to finish.", "", ""); err != nil {
+		s.finishAgentJob(job, StatusFailed, "", err.Error(), "")
+		return
+	}
+	lease, err := s.codexOperationGate.AcquireExclusive(ctx)
+	if err != nil {
+		status := StatusFailed
+		if s.backgroundContext.Err() != nil {
+			status = StatusInterrupted
+		}
+		s.finishAgentJob(job, status, "", "Could not pause Codex launches for the update: "+err.Error()+". Wait, then refresh and try again.", "")
+		return
+	}
+	defer lease.Release()
 	a, err := s.withCodexSessions(ctx, CodexUpdateAdvisory{})
-	if err != nil || s.sessions == nil || a.RunningSessions > 0 {
-		s.finishAgentJob(job, StatusFailed, "", "Stop AO Codex sessions explicitly before updating; AO could not establish a safe stopped state.", "")
+	if err != nil || s.sessions == nil || s.codexReviewers == nil || a.RunningSessions > 0 {
+		s.finishAgentJob(job, StatusFailed, "", "Stop AO Codex workers and reviewers explicitly before updating; AO could not establish a safe stopped state.", "")
 		return
 	}
 	installation, err := s.codexMaintenance.Resolve(ctx)
@@ -246,6 +264,10 @@ func (s *Service) runCodexUpdate(job *Job, before CodexUpdateAdvisory) {
 	if ctx.Err() != nil {
 		runErr = fmt.Errorf("update of Codex interrupted or timed out: %w", ctx.Err())
 	}
+	// Replacement has finished, including failure/timeout cleanup. Admit fresh
+	// provider processes now: readiness verification itself uses shared account
+	// clients. The idempotent deferred release still covers every earlier exit.
+	lease.Release()
 	// Even unsuccessful installers may have replaced files. Refresh independently
 	// of the expired command context and preserve stale catalogs on probe errors.
 	commandError := ""

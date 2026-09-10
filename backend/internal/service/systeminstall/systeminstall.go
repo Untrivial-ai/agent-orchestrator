@@ -270,13 +270,21 @@ type SessionLister interface {
 	ListAllSessions(ctx context.Context) ([]domain.SessionRecord, error)
 }
 
+// CodexReviewerInspector proves reviewer liveness independently of the worker's
+// harness or current reviewer preference, including surviving reviewer panes.
+type CodexReviewerInspector interface {
+	SnapshotCodexReviewer(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error)
+}
+
 // Deps are the durable and adapter-backed dependencies used for harness jobs.
 type Deps struct {
-	JobStore         ports.AgentInstallJobStore
-	Verifier         HarnessVerifier
-	Sessions         SessionLister
-	CodexMaintenance ports.CodexMaintenance
-	RefreshCodex     func(context.Context) error
+	JobStore           ports.AgentInstallJobStore
+	Verifier           HarnessVerifier
+	Sessions           SessionLister
+	CodexMaintenance   ports.CodexMaintenance
+	RefreshCodex       func(context.Context) error
+	CodexOperationGate ports.CodexOperationGate
+	CodexReviewers     CodexReviewerInspector
 }
 
 // Service runs real install commands for the fixed Target allowlist.
@@ -288,7 +296,9 @@ type Service struct {
 	stopping          bool
 	workers           sync.WaitGroup
 	droidGate         sync.RWMutex
-	codexGate         sync.RWMutex
+
+	codexOperationGate ports.CodexOperationGate
+	codexReviewers     CodexReviewerInspector
 	// All daemon installers share a conservative lock. This includes separate
 	// harnesses that mutate the same npm prefix or Homebrew installation.
 	installerGate    chan struct{}
@@ -380,6 +390,8 @@ func NewWithDeps(executables ports.ExecutableFinder, commands ports.CommandRunne
 		installerGate:       make(chan struct{}, 1),
 		codexMaintenance:    deps.CodexMaintenance,
 		refreshCodex:        deps.RefreshCodex,
+		codexOperationGate:  deps.CodexOperationGate,
+		codexReviewers:      deps.CodexReviewers,
 	}
 }
 
@@ -642,15 +654,10 @@ func (s *Service) StartAgentOperation(ctx context.Context, target Target, method
 	return initial, nil
 }
 
-// TryBeginHarnessUse prevents Codex and Droid launches from racing replacement
-// of their shared installations. The returned release must be called after launch.
+// TryBeginHarnessUse prevents Droid launches from racing replacement of its
+// shared installation. Codex uses the operation gate shared with reviewers and
+// account clients. The returned release must be called after launch.
 func (s *Service) TryBeginHarnessUse(harness domain.AgentHarness) (func(), bool) {
-	if harness == domain.HarnessCodex {
-		if !s.codexGate.TryRLock() {
-			return nil, false
-		}
-		return s.codexGate.RUnlock, true
-	}
 	if harness != domain.HarnessDroid {
 		return func() {}, true
 	}

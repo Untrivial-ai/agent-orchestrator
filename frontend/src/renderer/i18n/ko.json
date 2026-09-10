@@ -1865,7 +1865,7 @@
 	"settings.codexUpdate.available": "사용 가능: {{version}} ({{source}})",
 	"settings.codexUpdate.stale": "마지막 확인 실패",
 	"settings.codexUpdate.shared": "업데이트는 AO 외부 사용을 포함한 공유 Codex 설치를 변경합니다. 계정의 모델 접근 권한은 변경하지 않으며 롤백을 보장하지 않습니다.",
-	"settings.codexUpdate.sessions": "업데이트 전에 AO Codex 세션({{count}}개)을 명시적으로 중지하세요. AO를 다시 시작해도 이전 공급자 프로세스가 계속 실행될 수 있습니다.",
+	"settings.codexUpdate.sessions": "업데이트 전에 해당 AO 세션({{count}}개)의 Codex 에이전트 또는 리뷰어를 명시적으로 중지하세요. AO를 다시 시작해도 이전 공급자 프로세스가 계속 실행될 수 있습니다.",
 	"settings.codexUpdate.update": "지금 업데이트",
 	"settings.codexUpdate.checking": "확인 중…",
 	"settings.codexUpdate.check": "Codex 업데이트 확인",

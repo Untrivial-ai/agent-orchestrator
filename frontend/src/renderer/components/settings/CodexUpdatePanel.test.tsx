@@ -39,6 +39,7 @@ describe("Codex update", () => {
 	it("blocks running provider processes without offering termination", async () => {
 		setup({ ...advisory, runningSessions: 2 });
 		expect(await screen.findByRole("button", { name: "Update now" })).toBeDisabled();
+		expect(screen.getByText(/Stop Codex workers or reviewers/)).toBeInTheDocument();
 		expect(screen.getByText(/Restarting AO can leave old provider processes running/)).toBeInTheDocument();
 	});
 	it("shows failed verification even when the installed CLI remains usable", async () => {

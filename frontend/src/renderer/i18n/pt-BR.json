@@ -1893,7 +1893,7 @@
 	"settings.codexUpdate.available": "Disponível: {{version}} ({{source}})",
 	"settings.codexUpdate.stale": "Falha na última verificação",
 	"settings.codexUpdate.shared": "A atualização altera sua instalação compartilhada do Codex, incluindo o uso fora do AO. Ela não altera o acesso da sua conta aos modelos nem garante a reversão.",
-	"settings.codexUpdate.sessions": "Encerre explicitamente suas sessões do Codex no AO ({{count}}) antes de atualizar. Reiniciar o AO pode deixar processos antigos do provedor em execução.",
+	"settings.codexUpdate.sessions": "Encerre explicitamente os agentes ou revisores do Codex nestas sessões do AO ({{count}}) antes de atualizar. Reiniciar o AO pode deixar processos antigos do provedor em execução.",
 	"settings.codexUpdate.update": "Atualizar agora",
 	"settings.codexUpdate.checking": "Verificando…",
 	"settings.codexUpdate.check": "Buscar atualizações do Codex",

@@ -529,12 +529,15 @@ func Run() error {
 
 	hostCommands := systemexec.New(cfg.DataDir)
 	systemChecks := systemcheck.NewWithCommandRunner(agentSvc, hostCommands, hostCommands)
+	codexReviewers, _ := reviewSvc.(systeminstall.CodexReviewerInspector)
 	systemInstall := systeminstall.NewWithDeps(hostCommands, hostCommands, systeminstall.Deps{
-		JobStore:         store,
-		Verifier:         systeminstall.NewVerifier(agents, hostCommands),
-		Sessions:         store,
-		CodexMaintenance: codexmaintenance.New(codexagent.New().ResolveBinary, hostCommands, hostCommands),
-		RefreshCodex:     agentSvc.RefreshCodexInstallation,
+		JobStore:           store,
+		Verifier:           systeminstall.NewVerifier(agents, hostCommands),
+		Sessions:           store,
+		CodexMaintenance:   codexmaintenance.New(codexagent.New().ResolveBinary, hostCommands, hostCommands),
+		RefreshCodex:       agentSvc.RefreshCodexInstallation,
+		CodexOperationGate: codexOperationGate,
+		CodexReviewers:     codexReviewers,
 	})
 	if err := systemInstall.Recover(ctx); err != nil {
 		stop()

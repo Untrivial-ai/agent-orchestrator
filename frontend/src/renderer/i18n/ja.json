@@ -1865,7 +1865,7 @@
 	"settings.codexUpdate.available": "利用可能：{{version}}（{{source}}）",
 	"settings.codexUpdate.stale": "前回の確認に失敗しました",
 	"settings.codexUpdate.shared": "更新は AO 外での使用を含む共有の Codex インストールを変更します。アカウントのモデルアクセス権は変わらず、ロールバックも保証されません。",
-	"settings.codexUpdate.sessions": "更新前に AO Codex セッション（{{count}} 件）を明示的に停止してください。AO を再起動しても古いプロバイダープロセスが残る場合があります。",
+	"settings.codexUpdate.sessions": "更新前に、これらの AO セッション（{{count}} 件）の Codex エージェントまたはレビュアーを明示的に停止してください。AO を再起動しても古いプロバイダープロセスが残る場合があります。",
 	"settings.codexUpdate.update": "今すぐ更新",
 	"settings.codexUpdate.checking": "確認中…",
 	"settings.codexUpdate.check": "Codex の更新を確認",

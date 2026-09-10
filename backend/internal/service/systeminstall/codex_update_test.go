@@ -3,6 +3,7 @@ package systeminstall
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/codexops"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -40,12 +42,22 @@ func (f updateRunner) RunInstall(c context.Context, p ports.InstallCommand, o, e
 	return f(c, p, o, e)
 }
 
+type codexReviewerProbe func(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error)
+
+func (f codexReviewerProbe) SnapshotCodexReviewer(ctx context.Context, id domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
+	return f(ctx, id)
+}
+
 func updateFixture(t *testing.T) (*Service, *maintenanceFake) {
 	t.Helper()
 	f := &maintenanceFake{installation: ports.CodexInstallation{Path: "/selected/codex", RealPath: "/npm/codex.js", Version: "1.0.0", Source: "npm", Scope: "npm:/selected", Fingerprint: "old", VersionSource: "npm", Command: ports.InstallCommand{Argv: []string{"/owner/npm", "install", "-g", "--prefix", "/selected", "@openai/codex@latest"}}}, latest: "1.1.0"}
 	s := newTestService("linux", "npm")
 	s.codexMaintenance = f
 	s.sessions = sessionListerStub{}
+	s.codexOperationGate = codexops.NewGate()
+	s.codexReviewers = codexReviewerProbe(func(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
+		return ports.CodexReviewerControllerSnapshot{}, nil
+	})
 	s.installerGate = make(chan struct{}, 1)
 	s.jobStore = newInstallJobStoreFake()
 	s.refreshCodex = func(context.Context) error { return nil }
@@ -198,15 +210,149 @@ func TestCodexUpdateDoesNotTerminateOrRaceSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.sessions = sessionListerStub{}
-	release, ok := s.TryBeginHarnessUse(domain.HarnessCodex)
-	if !ok {
-		t.Fatal("launch gate unavailable")
+	release, err := s.codexOperationGate.AcquireShared(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer release()
+	s.installTimeout = 30 * time.Millisecond
 	startUpdate(t, s)
 	waitForStatus(t, s, TargetCodex, StatusFailed)
 	release()
 	if len(s.jobs) != 1 {
 		t.Fatal("unexpected jobs")
+	}
+}
+
+func TestCodexUpdateBlocksLiveReviewersOnOtherHarnesses(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		preference domain.ReviewerHarness
+		terminated bool
+	}{
+		{"selected Codex reviewer", domain.ReviewerCodex, false},
+		{"project default reviewer", "", false},
+		{"surviving reviewer after worker stop", domain.ReviewerClaudeCode, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := updateFixture(t)
+			s.sessions = sessionListerStub{sessions: []domain.SessionRecord{{ID: "claude-worker", Harness: domain.HarnessClaudeCode, ReviewerHarness: tc.preference, IsTerminated: tc.terminated}}}
+			var running atomic.Bool
+			running.Store(true)
+			s.codexReviewers = codexReviewerProbe(func(_ context.Context, id domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
+				if id != "claude-worker" {
+					return ports.CodexReviewerControllerSnapshot{}, errors.New("wrong reviewer worker")
+				}
+				return ports.CodexReviewerControllerSnapshot{Running: running.Load()}, nil
+			})
+			a, err := s.CodexUpdate(context.Background(), false)
+			if err != nil || a.RunningSessions != 1 {
+				t.Fatalf("advisory = %+v, %v", a, err)
+			}
+			if _, err := s.StartCodexUpdate(context.Background(), a.Token); !errors.Is(err, ErrHarnessActive) {
+				t.Fatalf("live reviewer admitted update: %v", err)
+			}
+			// Only an external explicit stop changes the liveness proof. A stored
+			// Codex preference alone must not keep the update blocked afterward.
+			running.Store(false)
+			startUpdate(t, s)
+			waitForStatus(t, s, TargetCodex, StatusSucceeded)
+		})
+	}
+}
+
+func TestCodexUpdateRechecksReviewerAfterLaunchRegistration(t *testing.T) {
+	s, _ := updateFixture(t)
+	s.sessions = sessionListerStub{sessions: []domain.SessionRecord{{ID: "claude-worker", Harness: domain.HarnessClaudeCode, ReviewerHarness: domain.ReviewerCodex}}}
+	var running, installed atomic.Bool
+	s.codexReviewers = codexReviewerProbe(func(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
+		return ports.CodexReviewerControllerSnapshot{Running: running.Load()}, nil
+	})
+	s.installCommands = updateRunner(func(context.Context, ports.InstallCommand, io.Writer, io.Writer) error {
+		installed.Store(true)
+		return nil
+	})
+	release, err := s.codexOperationGate.AcquireShared(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	startUpdate(t, s)
+	// The reviewer launch registered after the advisory but before relinquishing
+	// shared admission. The updater must drain admission before its final probe.
+	running.Store(true)
+	release()
+	waitForStatus(t, s, TargetCodex, StatusFailed)
+	job, _ := s.Status(context.Background(), TargetCodex)
+	if installed.Load() || !strings.Contains(job.Error, "reviewers") {
+		t.Fatalf("job = %+v, installer ran = %t", job, installed.Load())
+	}
+}
+
+func TestCodexUpdateHoldsSharedLaunchInterlockUntilInstallerReturns(t *testing.T) {
+	for _, fails := range []bool{false, true} {
+		t.Run(fmt.Sprint(fails), func(t *testing.T) {
+			s, _ := updateFixture(t)
+			installer := s.installCommands
+			var blocked, refreshed atomic.Bool
+			s.installCommands = updateRunner(func(ctx context.Context, cmd ports.InstallCommand, out, stderr io.Writer) error {
+				release, err := s.codexOperationGate.AcquireShared(ctx)
+				if err == nil {
+					release()
+					return errors.New("reviewer launch admitted during replacement")
+				}
+				blocked.Store(true)
+				if fails {
+					return errors.New("installer failed")
+				}
+				return installer.RunInstall(ctx, cmd, out, stderr)
+			})
+			s.refreshCodex = func(ctx context.Context) error {
+				// Fresh account/readiness clients need shared admission themselves.
+				release, err := s.codexOperationGate.AcquireShared(ctx)
+				if err != nil {
+					return err
+				}
+				defer release()
+				refreshed.Store(true)
+				return nil
+			}
+			startUpdate(t, s)
+			status := StatusSucceeded
+			if fails {
+				status = StatusFailed
+			}
+			waitForStatus(t, s, TargetCodex, status)
+			if !blocked.Load() || !refreshed.Load() {
+				t.Fatalf("launch blocked = %t, fresh verification admitted = %t", blocked.Load(), refreshed.Load())
+			}
+		})
+	}
+}
+
+func TestCodexUpdateRejectsUnknownReviewerLiveness(t *testing.T) {
+	s, _ := updateFixture(t)
+	s.sessions = sessionListerStub{sessions: []domain.SessionRecord{{ID: "claude-worker", Harness: domain.HarnessClaudeCode}}}
+	s.codexReviewers = codexReviewerProbe(func(context.Context, domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
+		return ports.CodexReviewerControllerSnapshot{}, errors.New("reviewer probe unavailable")
+	})
+	if _, err := s.StartCodexUpdate(context.Background(), "old"); err == nil || !strings.Contains(err.Error(), "reviewer probe unavailable") {
+		t.Fatalf("unknown reviewer liveness admitted update: %v", err)
+	}
+}
+
+func TestCodexUpdateShutdownWhileWaitingForReviewerLaunch(t *testing.T) {
+	s, _ := updateFixture(t)
+	release, err := s.codexOperationGate.AcquireShared(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	startUpdate(t, s)
+	s.stop()
+	waitForStatus(t, s, TargetCodex, StatusInterrupted)
+	if s.codexOperationGate.ExclusivePendingOrHeld() {
+		t.Fatal("shutdown left reviewer launch admission closed")
 	}
 }
 
