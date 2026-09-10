@@ -4355,7 +4355,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-actions button:not(:disabled):active,
 .browser-panel__toolbar button:not(:disabled):active {
-	transform: scale(0.96);
+	transform: scale(0.98);
 	transform-origin: center;
 }
 
@@ -4499,7 +4499,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-close:not(:disabled):active {
-	transform: scale(0.96);
+	transform: scale(0.98);
 	transform-origin: center;
 }
 
@@ -4549,7 +4549,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-new:active {
-	transform: scale(0.96);
+	transform: scale(0.98);
 	transform-origin: center;
 }
 
