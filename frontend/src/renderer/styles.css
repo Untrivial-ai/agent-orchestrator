@@ -4335,9 +4335,17 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-actions button,
-.browser-panel__toolbar button {
+.browser-panel__toolbar button,
+.browser-panel__tab-new,
+.browser-panel__tab-close {
 	color: var(--fg-muted);
 	transform-origin: center;
+	transition:
+		transform var(--duration-fast) ease-out,
+		filter var(--duration-fast) ease-out,
+		background-color var(--duration-fast) ease,
+		color var(--duration-fast) ease,
+		border-color var(--duration-fast) ease;
 }
 
 .browser-panel__tab-actions button:not(:disabled):hover,
