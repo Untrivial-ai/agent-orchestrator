@@ -161,6 +161,7 @@ type Server struct {
 	webhookMaxBody          int64
 	terminalStreamEnabled   bool
 	terminalStreams         *terminalStreams
+	workWaiters             *workWaiters
 	// workerBinariesBySHA serves the content-addressed worker/helper binaries
 	// so a worker with a stale baked copy can heal itself to this exact build.
 	workerBinariesBySHA map[string][]byte
@@ -263,6 +264,7 @@ func New(options Options) *Server {
 		webhookMaxBody:            webhookMaxBody,
 		terminalStreamEnabled:     options.TerminalStreamEnabled,
 		terminalStreams:           newTerminalStreams(),
+		workWaiters:               newWorkWaiters(),
 	}
 	server.workerBinariesBySHA = indexWorkerBinaries(options.WorkerBinary, options.WorkerHelperBinary)
 	if server.credentialValidator == nil {
@@ -355,6 +357,10 @@ func New(options Options) *Server {
 			router.Delete("/worker/children/{sessionId}", server.deleteWorkerChild)
 			router.Post("/worker/parent/messages", server.reportToParent)
 			router.Post("/worker/transport/claim", server.workerClaimTransport)
+			// The worker blocks here (long-poll) instead of busy-polling the
+			// claim routes; the control plane wakes it the instant a turn or
+			// transport request is enqueued for its session.
+			router.Get("/worker/work/wait", server.workerWaitForWork)
 			router.Post("/worker/transport/{requestId}/complete", server.workerCompleteTransport)
 			router.Post("/worker/transport/{requestId}/fail", server.workerFailTransport)
 			router.Post("/worker/terminals/{terminalId}/output", server.workerTerminalOutput)

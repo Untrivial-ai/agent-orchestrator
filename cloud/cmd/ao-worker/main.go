@@ -625,6 +625,15 @@ func (c *client) ClaimTransport(ctx context.Context) (*worker.TransportRequest, 
 	return response.Request, nil
 }
 
+// WaitForWork long-polls the control plane until a turn or transport request is
+// enqueued for this session (or a short server-side timeout), replacing the old
+// ~100ms busy-poll of the claim routes. It returns no work; the caller re-runs
+// the claim RPCs. An older control plane without the endpoint returns an error,
+// which the transport supervisor treats as a bounded back-off.
+func (c *client) WaitForWork(ctx context.Context) error {
+	return c.doMethod(ctx, http.MethodGet, "/worker/work/wait", nil, nil)
+}
+
 func (c *client) CompleteTransport(
 	ctx context.Context,
 	requestID string,

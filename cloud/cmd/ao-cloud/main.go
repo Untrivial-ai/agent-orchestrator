@@ -404,10 +404,16 @@ func run(logger *slog.Logger) error {
 		apiOptions.CredentialValidator = developmentCredentialValidator{}
 	}
 	api := httpapi.New(apiOptions)
-	if cfg.TerminalStreamEnabled {
+	// The work-wait long-poll and terminal streaming both ride a Postgres NOTIFY
+	// listener. Run it wherever workers connect so WaitForWork can be woken on
+	// enqueue; register the terminal channels only when that feature is on.
+	if reconciler != nil {
 		notifyListener := postgres.NewListener(cfg.DatabaseURL, logger)
-		notifyListener.Handle("ao_terminal_output", api.HandleTerminalOutputNotify)
-		notifyListener.Handle("ao_terminal_input", api.HandleTerminalInputNotify)
+		notifyListener.Handle("ao_worker_work", api.HandleWorkerWorkNotify)
+		if cfg.TerminalStreamEnabled {
+			notifyListener.Handle("ao_terminal_output", api.HandleTerminalOutputNotify)
+			notifyListener.Handle("ao_terminal_input", api.HandleTerminalInputNotify)
+		}
 		go func() { _ = notifyListener.Run(ctx) }()
 	}
 	server := &http.Server{

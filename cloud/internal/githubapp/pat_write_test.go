@@ -68,10 +68,10 @@ func TestPATWriteServiceRaisePullRequestUsesPAT(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id": 1, "number": 7, "html_url": "https://github.com/octo/widgets/pull/7",
 				"state": "open", "title": "Add logging",
-				"user":       map[string]any{"login": "octocat"},
-				"additions":  8, "deletions": 0, "changed_files": 1,
-				"head":       map[string]any{"sha": "abc123", "ref": "feature"},
-				"base":       map[string]any{"ref": "main"},
+				"user":      map[string]any{"login": "octocat"},
+				"additions": 8, "deletions": 0, "changed_files": 1,
+				"head": map[string]any{"sha": "abc123", "ref": "feature"},
+				"base": map[string]any{"ref": "main"},
 			})
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)

@@ -304,6 +304,12 @@ func appendUserMessage(
 		); err != nil {
 			return domain.ClientEvent{}, err
 		}
+		// Wake a worker blocked in WaitForWork so it claims this terminal.input
+		// request without busy-polling. Delivered on commit; the durable queue
+		// stays authoritative.
+		if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_worker_work', $1)`, sessionID); err != nil {
+			return domain.ClientEvent{}, err
+		}
 		return event, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -321,6 +327,12 @@ func appendUserMessage(
 		nonNilStrings(deniedCommands),
 	); err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
+	}
+	// Wake a worker blocked in WaitForWork so it claims this queued turn without
+	// busy-polling. Delivered on commit; the durable ao_turns row stays the
+	// source of truth if the notification is ever lost.
+	if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_worker_work', $1)`, sessionID); err != nil {
+		return domain.ClientEvent{}, err
 	}
 	return event, nil
 }

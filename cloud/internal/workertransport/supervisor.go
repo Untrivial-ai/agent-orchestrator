@@ -19,6 +19,10 @@ import (
 type Control interface {
 	ClaimTransport(context.Context) (*worker.TransportRequest, error)
 	ClaimTurn(context.Context) (*worker.Turn, error)
+	// WaitForWork blocks until the control plane signals a new turn/transport
+	// enqueue for this session (or a short server-side timeout), replacing the
+	// old busy-poll. It returns no work; the caller re-runs the claim RPCs.
+	WaitForWork(context.Context) error
 	CompleteTurn(context.Context, string, int, bool) error
 	FailTurn(context.Context, string, int, string) error
 	CompleteTransport(context.Context, string, int, any) error
@@ -26,6 +30,11 @@ type Control interface {
 	PublishTerminalOutput(context.Context, string, []byte) error
 	PublishTerminalExit(context.Context, string, int) error
 }
+
+// workWaitFallback bounds the loop's back-off when WaitForWork is unavailable
+// (an older control plane without the endpoint) or errors transiently, so the
+// worker degrades to a slow poll rather than a tight spin.
+const workWaitFallback = 2 * time.Second
 
 type Supervisor struct {
 	Control         Control
@@ -92,9 +101,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if s.Workspace == "" {
 		return errors.New("worker transport workspace is required")
 	}
-	if s.PollInterval <= 0 {
-		s.PollInterval = 100 * time.Millisecond
-	}
 	if s.Shell == "" {
 		s.Shell = "/bin/sh"
 	}
@@ -123,8 +129,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.Started <- nil
 	}
 
-	ticker := time.NewTicker(s.PollInterval)
-	defer ticker.Stop()
 	for {
 		request, err := s.Control.ClaimTransport(ctx)
 		if err != nil {
@@ -152,10 +156,22 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		} else if handled {
 			continue
 		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
+		// No work right now. Block until the control plane wakes us on a new
+		// turn/transport enqueue (NOTIFY), or a short server-side timeout,
+		// instead of busy-polling the claim routes. The claims above remain the
+		// source of truth; WaitForWork is only an accelerant.
+		if err := s.Control.WaitForWork(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			s.Logger.Warn("wait for worker work", "error", err)
+			// An older control plane without the wait endpoint, or a transient
+			// error: back off briefly so the loop never spins.
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(workWaitFallback):
+			}
 		}
 	}
 }

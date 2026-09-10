@@ -117,7 +117,15 @@ func createWorkerRequest(
 			response, error_code, error_message, attempt_count, expires_at`,
 		orgID, sessionID, epoch, kind, payload, intervalString(ttl),
 	), &request)
-	return request, normalizeConstraintError(err)
+	if err != nil {
+		return request, normalizeConstraintError(err)
+	}
+	// Wake a worker blocked in WaitForWork so it claims this request without
+	// busy-polling. Delivered on commit; the durable queue stays authoritative.
+	if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_worker_work', $1)`, sessionID); err != nil {
+		return request, err
+	}
+	return request, nil
 }
 
 func (s *Store) GetWorkspaceRequest(
@@ -894,6 +902,11 @@ func (s *Store) CloseTerminal(ctx context.Context, terminal domain.TerminalSessi
 			)`,
 			terminal.OrgID, terminal.SessionID, terminal.WorkerEpoch, payload,
 		)
+		if err != nil {
+			return err
+		}
+		// Wake a worker blocked in WaitForWork so it claims this terminal.close.
+		_, err = tx.Exec(ctx, `SELECT pg_notify('ao_worker_work', $1)`, terminal.SessionID)
 		return err
 	})
 }
