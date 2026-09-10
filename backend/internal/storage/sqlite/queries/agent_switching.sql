@@ -50,9 +50,9 @@ INSERT INTO agent_switches (
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
@@ -65,9 +65,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE id = ?;
 
@@ -78,9 +78,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ? AND idempotency_key = ?;
 
@@ -91,9 +91,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ?
   AND state NOT IN ('completed', 'failed');
@@ -107,8 +107,8 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
        agent_handoff_path, agent_handoff_hash,
        source_generation_id, target_generation_id,
        target_runtime_handle_id, target_acknowledged_at,
-       error_code, failure_point, requested_at, updated_at,
-       final_handoff_path, final_handoff_hash
+       error_code, requested_at, updated_at,
+       final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE state NOT IN ('completed', 'failed');
 
@@ -119,9 +119,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ?
 ORDER BY requested_at DESC, id DESC;

@@ -28,6 +28,7 @@ import {
 	type ProductUITranslator,
 } from "./session-presentation";
 import type { KanbanColumn, SessionActivity, SessionStatus } from "./session-models";
+import { UserAvatar } from "./UserAvatar";
 import { cn } from "./utils";
 
 export type BoardSessionPresentation = {
@@ -52,6 +53,13 @@ export type BoardSessionPresentation = {
 	 * send one falls back to the translated {@link status} label.
 	 */
 	displayStatus?: string;
+	/**
+	 * Daemon-confirmed termination fact. `status` can already read "merged"
+	 * while the session is still live (the SCM merged before the session
+	 * exited), so the finished-card PR progress footer requires this in
+	 * addition to `status` before it renders.
+	 */
+	isTerminated?: boolean;
 	provider: string;
 	status: SessionStatus;
 	statusPresentation?: BoardSessionStatusPresentation;
@@ -70,17 +78,32 @@ export type BoardSessionStatusPresentation = {
 
 export type BoardPullRequestState = "closed" | "open" | "draft" | "merged";
 
-export type BoardReviewerAvatar = {
-	login: string;
-	url?: string;
+// Display statuses that mean work is still turning, and so earn the spinning
+// loader beside the card's status label: the review the PR is waiting on, or an
+// AO-driven loop working the PR. Settled phrases ("Mergeable", "Approved",
+// "Merged") are deliberately absent — see #4725 and #5081.
+const IN_PROGRESS_DISPLAY_STATUSES = new Set<string>([
+	"Review pending",
+	"Fixing CI failures",
+	"Addressing comments",
+	"Reviewing",
+]);
+
+export type BoardReviewerPresentation = {
+	id: string;
+	avatarUrl?: string;
 };
 
 export type BoardPullRequestPresentation = {
 	commentCount?: number;
 	number: number;
-	reviewerAvatars?: BoardReviewerAvatar[];
+	reviewers?: BoardReviewerPresentation[];
 	state: BoardPullRequestState;
 	url: string;
+};
+
+export type BoardPullRequestProgress = Record<BoardPullRequestState, number> & {
+	total: number;
 };
 
 export type BoardUsagePresentation = {
@@ -89,6 +112,7 @@ export type BoardUsagePresentation = {
 };
 
 export type BoardPullRequestLabels = {
+	progress?: (progress: BoardPullRequestProgress) => string;
 	short: string;
 	states: Record<BoardPullRequestState, string>;
 };
@@ -241,14 +265,30 @@ export function SessionCardView({
 	const renderedStatusLabel =
 		statusPresentation?.label ??
 		(session.displayStatus ? getDisplayStatusLabel(session.displayStatus, translate) : badge.label);
+	// Additive summary footer, not a replacement for renderedStatusLabel: it
+	// only appears once the daemon confirms the session is actually finished
+	// ("terminated", or "merged" with isTerminated true -- a live session can
+	// already read "merged" before it exits and gain more PRs).
+	const isFinishedForPullRequestProgress =
+		session.status === "terminated" ||
+		(session.status === "merged" && session.isTerminated === true);
+	const pullRequestProgressLabel =
+		prs.length > 0 && isFinishedForPullRequestProgress
+			? labels.pr.progress?.(countBoardPullRequests(prs))
+			: undefined;
 	const showStatusLoader =
 		!needsAttention &&
 		session.displayStatus !== "Needs human review" &&
 		(session.status === "working" ||
-			session.status === "review_pending" ||
-			session.displayStatus === "Fixing CI failures" ||
-			session.displayStatus === "Addressing comments" ||
-			session.displayStatus === "Reviewing");
+			// The label reads `displayStatus`, so the loader must too. `status`
+			// aggregates the session's WORST open PR while `displayStatus` describes
+			// its BEST one, so keying the loader off `status` spun a settled
+			// "Mergeable" card forever whenever a sibling PR was still review-pending
+			// (#5081). Fall back to `status` only for a daemon too old to send
+			// `displayStatus`.
+			(session.displayStatus
+				? IN_PROGRESS_DISPLAY_STATUSES.has(session.displayStatus)
+				: session.status === "review_pending"));
 
 	return (
 		<div
@@ -334,9 +374,7 @@ export function SessionCardView({
 						data-testid="session-status"
 					>
 						{showStatusLoader ? <LoaderCircleIcon aria-hidden="true" className="mr-1 size-icon-2xs animate-spin" /> : null}
-						<span className="min-w-0 truncate">
-							{renderedStatusLabel}
-						</span>
+						<span className="min-w-0 truncate">{renderedStatusLabel}</span>
 					</span>
 				</div>
 				<div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap text-2xs text-muted-foreground">
@@ -346,6 +384,15 @@ export function SessionCardView({
 						{labels.formatTime(session.updatedAt)}
 					</span>
 				</div>
+				{pullRequestProgressLabel ? (
+					<div
+						className="col-span-2 min-w-0 truncate text-2xs text-muted-foreground"
+						data-testid="session-pr-progress"
+						title={pullRequestProgressLabel}
+					>
+						{pullRequestProgressLabel}
+					</div>
+				) : null}
 			</div>
 			{error ? (
 				<div className="border-t border-border px-3.5 py-1.5 text-2xs text-destructive" role="alert">
@@ -428,13 +475,14 @@ function BoardPullRequestGroup({
 			<span className="sr-only">{statusLabel}</span>
 			{hasComments ? (
 				<div className="-ml-0.5 flex shrink-0 items-center pl-1">
-					{(pr.reviewerAvatars ?? [])
+					{(pr.reviewers ?? [])
 						.slice(0, 3)
-						.map((avatar, index) => (
-							<ReviewerAvatar
-								avatar={avatar}
-								className={index > 0 ? "-ml-1.5" : undefined}
-								key={`${avatar.login}-${index}`}
+						.map((reviewer, index) => (
+							<UserAvatar
+								className={cn("size-5 rounded-full border-2 border-surface object-cover ring-1 ring-border", index > 0 && "-ml-1.5")}
+								imageUrl={reviewer.avatarUrl}
+								key={`${reviewer.id}-${index}`}
+								name={reviewer.id}
 							/>
 						))}
 				</div>
@@ -458,34 +506,6 @@ function BoardPullRequestGroup({
 	);
 }
 
-function reviewerInitials(login: string): string {
-	return login
-		.replace(/^@/, "")
-		.trim()
-		.split(/[-_\s]+/)
-		.filter(Boolean)
-		.slice(0, 2)
-		.map((part) => part[0]?.toUpperCase() ?? "")
-		.join("") || "?";
-}
-
-function ReviewerAvatar({ avatar, className }: { avatar: BoardReviewerAvatar; className?: string }) {
-	const [failed, setFailed] = useState(false);
-	const commonClassName = cn("size-5 rounded-full border-2 border-surface ring-1 ring-border", className);
-	if (avatar.url && !failed) {
-		return (
-			<img
-				alt=""
-				className={cn(commonClassName, "object-cover")}
-				onError={() => setFailed(true)}
-				referrerPolicy="no-referrer"
-				src={avatar.url}
-			/>
-		);
-	}
-	return <span aria-hidden="true" className={cn(commonClassName, "inline-flex items-center justify-center bg-muted text-[9px] font-semibold text-muted-foreground")}>{reviewerInitials(avatar.login)}</span>;
-}
-
 function PullRequestLifecycleIcon({ state }: { state: BoardPullRequestState }) {
 	const className = cn("size-icon-sm shrink-0", lifecycleClassName(state));
 	return <GitPullRequestIcon aria-hidden="true" className={className} />;
@@ -501,6 +521,18 @@ export function groupBoardPullRequests(
 		else groups.set(pr.state, { state: pr.state, prs: [pr] });
 	}
 	return Array.from(groups.values());
+}
+
+function countBoardPullRequests(prs: BoardPullRequestPresentation[]): BoardPullRequestProgress {
+	const progress: BoardPullRequestProgress = {
+		closed: 0,
+		draft: 0,
+		merged: 0,
+		open: 0,
+		total: prs.length,
+	};
+	for (const pr of prs) progress[pr.state] += 1;
+	return progress;
 }
 
 function lifecycleClassName(state: BoardPullRequestState): string {

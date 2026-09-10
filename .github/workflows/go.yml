@@ -80,6 +80,9 @@ jobs:
       - name: Test workspace teardown and session kill
         run: go test -race -v -run 'Destroy|Discard|Sweep|Kill' ./internal/adapters/workspace/... ./internal/session_manager/
 
+      - name: Test Windows Chat environment precedence
+        run: go test -race ./internal/adapters/chatdriver/processenv/ ./internal/agentlaunch/
+
   lint:
     runs-on: ubuntu-latest
     steps:

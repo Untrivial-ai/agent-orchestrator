@@ -8,11 +8,13 @@ import { classifyConnectionFailure, describeConnectionFailure } from "../../lib/
 import { tunnelMayHaveRotated } from "../../lib/staleTunnel";
 import { haptics } from "../../lib/haptics";
 import { groupSessions, type BoardSection, type BoardZone } from "../../lib/agentsView";
+import { ALL_PROJECTS, filteredEmptyCopy } from "../../lib/projectFilter";
 import { ProjectSwitcher } from "../../lib/ProjectSwitcher";
 import { SessionCard } from "../../lib/SessionCard";
 import { useApp, useVisibleSessions } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
+import { MINUTE_MS, useNow } from "../../lib/useNow";
 import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
 import { Button, EmptyState, HeaderIconButton, ScreenHeader, SectionHeader } from "../../lib/ui";
 
@@ -26,15 +28,42 @@ export default function FleetScreen() {
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
 	const insets = useSafeAreaInsets();
-	const { configured, loading, error, errorStatus, connection, config, refresh, activeProjectId, notificationsUnread, activeEndpoints } =
-		useApp();
+	const {
+		configured,
+		loading,
+		error,
+		errorStatus,
+		connection,
+		config,
+		refresh,
+		activeProjectId,
+		setActiveProject,
+		projects,
+		projectsKnown,
+		sessions: allSessions,
+		notificationsUnread,
+		activeEndpoints,
+	} = useApp();
 	const sessions = useVisibleSessions();
+	// Rendered by ListEmptyComponent when every session the daemon returned is
+	// hidden by the filter: the empty state then says so instead of "No active
+	// agents", which had the reporter clearing app storage. Settings can clear
+	// a filter too, but nothing there said the board had one, and the switcher
+	// above hides below two projects. Null whenever the ordinary empty state is
+	// the right one; the helper owns that decision.
+	const filteredEmpty = useMemo(
+		() => filteredEmptyCopy(activeProjectId, projects, projectsKnown, allSessions),
+		[activeProjectId, projects, projectsKnown, allSessions],
+	);
 	const [refreshing, setRefreshing] = useState(false);
 	// Collapsed by default, like desktop's archive strip: it is history, and on a
 	// long-running project it is most of the sessions.
 	const [archiveOpen, setArchiveOpen] = useState(false);
 
 	const listRef = useTabScrollToTop<SectionList<DashboardSession, ListSection>>();
+
+	// Relative timestamps go stale on their own; the board owns the clock.
+	const now = useNow(MINUTE_MS);
 
 	const { sections, archived } = useMemo(() => groupSessions(t, sessions), [t, sessions]);
 
@@ -166,7 +195,7 @@ export default function FleetScreen() {
 							<SectionHeader label={section.label} color={section.color} count={section.data.length} />
 						)
 					}
-					renderItem={({ item }) => <SessionCard session={item} showProject={activeProjectId === "all"} />}
+					renderItem={({ item }) => <SessionCard session={item} showProject={activeProjectId === ALL_PROJECTS} now={now} />}
 					ListEmptyComponent={
 						error ? (
 							<EmptyState
@@ -174,12 +203,23 @@ export default function FleetScreen() {
 								title={failure.title}
 								message={failure.message}
 								action={
-									<View style={styles.errorActions}>
+									<View style={styles.emptyActions}>
 										<Button title="Retry" icon="refresh-cw" variant="ghost" onPress={onRefresh} />
 										{/* Re-scanning is the only fix for a rotated password, and the
 										    fastest one for a moved/renamed host — so it belongs beside
 										    Retry rather than three taps away in Settings. */}
 										<Button title="Scan" icon="maximize" onPress={() => router.push("/pair")} />
+									</View>
+								}
+							/>
+						) : filteredEmpty ? (
+							<EmptyState
+								icon="filter"
+								{...filteredEmpty}
+								action={
+									<View style={styles.emptyActions}>
+										<Button title="Show all projects" icon="layers" variant="ghost" onPress={() => setActiveProject(ALL_PROJECTS)} />
+										<Button title="New agent" icon="plus" onPress={() => router.push("/spawn")} />
 									</View>
 								}
 							/>
@@ -263,7 +303,7 @@ const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
 		center: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 60 },
-		errorActions: { flexDirection: "row", gap: 10, alignItems: "center" },
+		emptyActions: { flexDirection: "row", gap: 10, alignItems: "center" },
 		stats: {
 			flexDirection: "row",
 			gap: 10,

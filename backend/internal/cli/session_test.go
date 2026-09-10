@@ -407,6 +407,49 @@ func TestSessionCleanup_YesSkipsPrompt(t *testing.T) {
 	}
 }
 
+// TestSessionCleanup_ReportsAlreadyGoneWorkspacesSeparately: a workspace whose
+// directory was already missing tears down without error but reclaims nothing.
+// Folding it into the cleaned count is what lets a batch run report hundreds of
+// sessions cleaned while disk usage does not move, so the summary has to keep
+// the two apart.
+func TestSessionCleanup_ReportsAlreadyGoneWorkspacesSeparately(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
+			_, _ = io.WriteString(w, `{"sessions":[`+
+				sessionJSON("demo-old", "demo", "worker", "terminated", true)+`,`+
+				sessionJSON("demo-orch", "demo", "orchestrator", "terminated", true)+`]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/cleanup":
+			_, _ = io.WriteString(w, `{"ok":true,"cleaned":["demo-old"],"alreadyGone":["demo-orch"],"skipped":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "cleanup", "--project", "demo", "--yes")
+	if err != nil {
+		t.Fatalf("session cleanup failed: %v\nstderr=%s", err, errOut)
+	}
+	for _, want := range []string{
+		"Cleaned: demo-old",
+		"Already gone: demo-orch (workspace was missing; nothing reclaimed)",
+		"Cleanup complete. 1 session cleaned, 1 already gone.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("cleanup output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Cleaned: demo-orch") {
+		t.Fatalf("a workspace that was already gone must not be reported as cleaned:\n%s", out)
+	}
+}
+
 // TestSessionCleanup_DryRunListsWithoutPromptingOrDeleting: --dry-run must
 // preview the candidate sessions and stop there — no confirmation prompt and,
 // critically, no POST to the cleanup endpoint, so nothing is removed.

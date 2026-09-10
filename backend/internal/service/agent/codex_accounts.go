@@ -78,9 +78,18 @@ type CodexAccountStateStore interface {
 	SetCodexActiveAccount(context.Context, string, int64, time.Time) (domain.CodexActiveAccount, error)
 }
 
-type accountAuthCall struct{ done chan struct{} }
+type accountAuthCall struct {
+	done chan struct{}
+	// refresh records whether this in-flight read asks Codex to refresh the
+	// token, so a joining launch request never accepts a display-only answer.
+	refresh bool
+}
 type accountAuthState struct {
-	invalidated              bool
+	invalidated bool
+	// launchVerified reports whether the stored observation came from a
+	// refresh-capable read, which is the only observation that establishes
+	// launch readiness.
+	launchVerified           bool
 	reauthenticationRequired bool
 	failures                 int
 	nextRetryAt              time.Time
@@ -296,7 +305,7 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	capabilities := m.detectCapabilities(ctx)
 	for _, record := range records {
 		if record.Snapshot.Status == domain.CodexAccountStatusValid && capabilities.AccountRead.State == domain.CodexCapabilitySupported {
-			if _, err := m.ensureAuthentication(ctx, record, domain.AgentReadinessPurposeDisplay, false); err != nil {
+			if _, err := m.ensureAuthentication(ctx, record, domain.AgentReadinessPurposeDisplay); err != nil {
 				return CodexAccounts{}, err
 			}
 		}
@@ -322,37 +331,77 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	return result, err
 }
 
-func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record codexAccountRecord, purpose domain.AgentReadinessPurpose, refreshToken bool) (domain.AgentAuthenticationObservation, error) {
-	m.mu.Lock()
-	state := m.auth[record.Snapshot.ID]
-	if state == nil {
-		state = &accountAuthState{invalidated: true}
-		m.auth[record.Snapshot.ID] = state
+// launchVerifiedRead reports whether this account must be observed with a
+// refresh-capable Codex account/read. A non-refresh read only proves that local
+// account material exists; it can answer with a cached account while the
+// refresh-capable read the launch path uses returns requiresOpenaiAuth. The
+// active account is the one every spawn launches with, so its displayed state is
+// always established the same way launch establishes it, and any account already
+// carrying a launch-verified failure stays on the strict question until a
+// refresh-capable read clears it. Inactive accounts are not refreshed merely to
+// render the list.
+//
+// Callers must hold m.mu.
+func (m *codexAccountManager) launchVerifiedRead(id string, purpose domain.AgentReadinessPurpose, state *accountAuthState, current domain.AgentAuthenticationObservation) bool {
+	if purpose == domain.AgentReadinessPurposeLaunch || id == m.active.AccountID {
+		return true
 	}
-	current, _ := m.catalog.record(record.Snapshot.ID)
-	if state.reauthenticationRequired {
-		out := current.Snapshot.Authentication
+	return state.launchVerified && current.State == domain.AgentAuthenticationUnauthorized
+}
+
+func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record codexAccountRecord, purpose domain.AgentReadinessPurpose) (domain.AgentAuthenticationObservation, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return domain.AgentAuthenticationObservation{}, err
+		}
+		m.mu.Lock()
+		state := m.auth[record.Snapshot.ID]
+		if state == nil {
+			state = &accountAuthState{invalidated: true}
+			m.auth[record.Snapshot.ID] = state
+		}
+		current, _ := m.catalog.record(record.Snapshot.ID)
+		if state.reauthenticationRequired {
+			out := current.Snapshot.Authentication
+			m.mu.Unlock()
+			return out, nil
+		}
+		refreshToken := m.launchVerifiedRead(record.Snapshot.ID, purpose, state, current.Snapshot.Authentication)
+		ttl := codexAccountDisplayTTL
+		if purpose == domain.AgentReadinessPurposeLaunch {
+			ttl = codexAccountLaunchTTL
+		}
+		fresh := current.Snapshot.Authentication.CheckedAt != nil && m.now().Sub(*current.Snapshot.Authentication.CheckedAt) < ttl
+		if !state.invalidated && fresh && (!refreshToken || state.launchVerified) {
+			out := current.Snapshot.Authentication
+			m.mu.Unlock()
+			return out, nil
+		}
+		if purpose == domain.AgentReadinessPurposeDisplay && !state.nextRetryAt.IsZero() && m.now().Before(state.nextRetryAt) {
+			out := current.Snapshot.Authentication
+			m.mu.Unlock()
+			return out, nil
+		}
+		if state.call != nil {
+			call := state.call
+			m.mu.Unlock()
+			select {
+			case <-call.done:
+				if refreshToken && !call.refresh {
+					// A display read in flight cannot answer the launch-readiness question.
+					continue
+				}
+				latest, _ := m.catalog.record(record.Snapshot.ID)
+				return latest.Snapshot.Authentication, nil
+			case <-ctx.Done():
+				return domain.AgentAuthenticationObservation{}, ctx.Err()
+			}
+		}
+		call := &accountAuthCall{done: make(chan struct{}), refresh: refreshToken}
+		state.call = call
+		m.catalog.updateSnapshot(record.Snapshot.ID, func(s *domain.CodexAccountSnapshot) { s.Authentication.Freshness = domain.AgentReadinessChecking })
 		m.mu.Unlock()
-		return out, nil
-	}
-	ttl := codexAccountDisplayTTL
-	if purpose == domain.AgentReadinessPurposeLaunch {
-		ttl = codexAccountLaunchTTL
-	}
-	fresh := current.Snapshot.Authentication.CheckedAt != nil && m.now().Sub(*current.Snapshot.Authentication.CheckedAt) < ttl
-	if !state.invalidated && fresh {
-		out := current.Snapshot.Authentication
-		m.mu.Unlock()
-		return out, nil
-	}
-	if purpose == domain.AgentReadinessPurposeDisplay && !state.nextRetryAt.IsZero() && m.now().Before(state.nextRetryAt) {
-		out := current.Snapshot.Authentication
-		m.mu.Unlock()
-		return out, nil
-	}
-	if state.call != nil {
-		call := state.call
-		m.mu.Unlock()
+		go m.runAuthentication(record, refreshToken, call)
 		select {
 		case <-call.done:
 			latest, _ := m.catalog.record(record.Snapshot.ID)
@@ -360,18 +409,6 @@ func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record c
 		case <-ctx.Done():
 			return domain.AgentAuthenticationObservation{}, ctx.Err()
 		}
-	}
-	call := &accountAuthCall{done: make(chan struct{})}
-	state.call = call
-	m.catalog.updateSnapshot(record.Snapshot.ID, func(s *domain.CodexAccountSnapshot) { s.Authentication.Freshness = domain.AgentReadinessChecking })
-	m.mu.Unlock()
-	go m.runAuthentication(record, refreshToken, call)
-	select {
-	case <-call.done:
-		latest, _ := m.catalog.record(record.Snapshot.ID)
-		return latest.Snapshot.Authentication, nil
-	case <-ctx.Done():
-		return domain.AgentAuthenticationObservation{}, ctx.Err()
 	}
 }
 
@@ -420,6 +457,48 @@ func (m *codexAccountManager) runAuthentication(record codexAccountRecord, refre
 	m.finishAuthentication(record.Snapshot.ID, result, observation.Method, observation.Email, observation.Authentication == domain.AgentAuthenticationUnknown, call)
 }
 
+// clearsLaunchFailure reports whether writing observation would clear a
+// launch-verified failure. Only another refresh-capable read may do that, so the
+// Settings ensure/focus path cannot restore a reassuring authorized state that
+// the next spawn would reject. Callers must hold m.mu.
+func clearsLaunchFailure(state *accountAuthState, current, observation domain.AgentAuthenticationObservation) bool {
+	return state.launchVerified &&
+		current.State == domain.AgentAuthenticationUnauthorized &&
+		observation.State != domain.AgentAuthenticationUnauthorized
+}
+
+// applyDiscoveryAuthentication records an observation from a non-refresh read.
+// Discovery proves that account material is present, never that the account can
+// launch, so it neither claims launch verification nor clears one.
+//
+// credentialChanged reports whether discovery found account material that
+// differs from the saved copy the stored observation was made against. A
+// launch-verified observation answers a strictly stronger question than
+// discovery, so while the material is the same it stands untouched -- including
+// its checkedAt, because reconciliation runs on every ensure and must not
+// restart the freshness window that keeps Settings from re-reading the account
+// on every focus. Replaced material is different evidence: a launch failure
+// recorded against the old credentials no longer describes the account, so it is
+// marked for re-verification instead of being left to expire.
+func (m *codexAccountManager) applyDiscoveryAuthentication(id string, observation domain.AgentAuthenticationObservation, credentialChanged bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.auth[id]
+	if state == nil {
+		state = &accountAuthState{invalidated: true}
+		m.auth[id] = state
+	}
+	if state.launchVerified {
+		current, _ := m.catalog.record(id)
+		if credentialChanged && current.Snapshot.Authentication.State == domain.AgentAuthenticationUnauthorized {
+			state.launchVerified = false
+			state.invalidated = true
+		}
+		return
+	}
+	m.catalog.updateSnapshot(id, func(snapshot *domain.CodexAccountSnapshot) { snapshot.Authentication = observation })
+}
+
 func accountAuthenticationObservation(at time.Time, state domain.AgentAuthenticationState) domain.AgentAuthenticationObservation {
 	switch state {
 	case domain.AgentAuthenticationAuthorized:
@@ -443,14 +522,29 @@ func (m *codexAccountManager) finishAuthentication(id string, observation domain
 		if state.failures <= len(defaultReadinessRetryDelays) {
 			state.nextRetryAt = m.now().Add(defaultReadinessRetryDelays[state.failures-1])
 		}
+	} else if current, _ := m.catalog.record(id); !call.refresh && clearsLaunchFailure(state, current.Snapshot.Authentication, observation) {
+		// Keep the launch-verified failure visible and stay eligible for the next
+		// refresh-capable read rather than publishing the weaker result.
+		state.invalidated = true
+		state.failures = 0
+		state.nextRetryAt = time.Time{}
+		m.catalog.updateSnapshot(id, func(s *domain.CodexAccountSnapshot) { s.Authentication.Freshness = domain.AgentReadinessFresh })
 	} else {
+		// An unauthorized read reports no account, so it carries no identity. The
+		// saved slot still belongs to the same account, and discarding its label
+		// would both hide who must sign in again and break global reconciliation's
+		// identity match.
+		identified := observation.State == domain.AgentAuthenticationAuthorized || observation.State == domain.AgentAuthenticationNotApplicable
 		m.catalog.updateSnapshot(id, func(s *domain.CodexAccountSnapshot) {
 			s.Authentication = observation
-			s.AuthMethod = method
-			s.AccountEmail = email
-			s.Label = accountLabel(id, method, email)
+			if identified {
+				s.AuthMethod = method
+				s.AccountEmail = email
+				s.Label = accountLabel(id, method, email)
+			}
 		})
 		state.invalidated = false
+		state.launchVerified = call.refresh
 		state.failures = 0
 		state.nextRetryAt = time.Time{}
 	}
@@ -484,6 +578,7 @@ func (m *codexAccountManager) requireReauthentication(id string) {
 	}
 	state.reauthenticationRequired = true
 	state.invalidated = false
+	state.launchVerified = true
 	state.failures = 0
 	state.nextRetryAt = time.Time{}
 	delete(m.usage, id)
@@ -506,6 +601,7 @@ func (m *codexAccountManager) clearReauthenticationRequired(id string) {
 	}
 	state.reauthenticationRequired = false
 	state.invalidated = false
+	state.launchVerified = false
 	state.failures = 0
 	state.nextRetryAt = time.Time{}
 	m.mu.Unlock()

@@ -774,6 +774,26 @@ describe("CenterPane toolbar session label", () => {
 		expect(onCloseShellTerminal).not.toHaveBeenCalled();
 	});
 
+	it("closes the selected workspace file from the application shortcut", () => {
+		const onClose = vi.fn();
+		renderCenterPane({
+			session: worker,
+			workspaceActiveTabKey: "file:README.md",
+			workspaceTabs: [
+				{
+					key: "file:README.md",
+					content: <button role="tab">README.md</button>,
+					onSelect: vi.fn(),
+					onClose,
+				},
+			],
+		});
+
+		expect(shortcutMocks.closeableStates.at(-1)).toBe(true);
+		act(() => shortcutMocks.closeListener?.());
+		expect(onClose).toHaveBeenCalledOnce();
+	});
+
 	it("cycles from the session terminal to its next shell tab", () => {
 		const [shell] = makeShells(1);
 		const onSelectShellTerminal = vi.fn();

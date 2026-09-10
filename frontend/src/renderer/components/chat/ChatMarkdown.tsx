@@ -53,6 +53,21 @@ import { MermaidBlock } from "./MermaidBlock";
 import { CopyButton } from "./CopyButton";
 import "./code-theme.css";
 
+// Activity titles live inside disclosure buttons: keep inline formatting, but
+// unwrap block elements and links so provider text cannot nest interactive UI.
+const TITLE_ELEMENTS = ["code", "em", "strong", "del"];
+const TITLE_COMPONENTS: Components = {
+	code: ({ children }) => <code className="font-mono text-[0.95em]">{children}</code>,
+};
+
+export const ActivityTitle = memo(function ActivityTitle({ text }: { text: string }) {
+	return (
+		<Markdown allowedElements={TITLE_ELEMENTS} unwrapDisallowed components={TITLE_COMPONENTS}>
+			{text}
+		</Markdown>
+	);
+});
+
 /** GitHub-flavoured markdown: tables, strikethrough, task lists, autolinks. */
 const PLUGINS = [remarkGfm];
 

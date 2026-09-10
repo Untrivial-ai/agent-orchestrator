@@ -292,6 +292,20 @@ describe("AssistantMessage streaming", () => {
 });
 
 describe("ActivityRow", () => {
+	it("renders inline code in provider activity titles without literal backticks", () => {
+		const path = "/Users/sachin/.ao/worktrees/murdock/docs/system-design.html";
+		const { container } = render(
+			<ActivityRow activity={{
+				kind: "activity", id: "edit-title", sequence: 1, revision: 0,
+				createdAt: "2026-08-23T00:00:00Z", activityKind: "file_change",
+				status: "completed", summary: `Edit \`${path}\``,
+			}} />,
+		);
+		expect(screen.getByRole("button")).toHaveTextContent(`Edit ${path}`);
+		expect(container.querySelector("code")).toHaveTextContent(path);
+		expect(screen.getByRole("button").textContent).not.toContain("`");
+	});
+
 	it("does not present a recovered historical activity as failed", () => {
 		render(
 			<ActivityRow

@@ -83,6 +83,9 @@ describe("ACP session config options", () => {
 		expect(screen.getByText("Effort")).toBeInTheDocument();
 		expect(screen.getByRole("switch", { name: "Plan Mode" })).toBeInTheDocument();
 		expect(screen.getByRole("switch", { name: "Fast mode" })).toBeInTheDocument();
+		await user.click(screen.getByRole("menuitem", { name: /Model/ }));
+		expect(screen.getByRole("menuitemradio", { name: "Opus 5", checked: true })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Sonnet 5", checked: false })).toBeInTheDocument();
 		expect(screen.queryByText("Agent")).not.toBeInTheDocument();
 		expect(screen.queryByText("More")).not.toBeInTheDocument();
 	});
@@ -224,8 +227,8 @@ describe("ACP session config options", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: "Permission mode" }));
-		expect(screen.getByRole("menuitem", { name: "Manual" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Bypass Permissions" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Manual" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Bypass Permissions" })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: "Plan Mode" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: "Agent Mode" })).not.toBeInTheDocument();
 	});
@@ -243,7 +246,7 @@ describe("ACP session config options", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: "Model" }));
-		await user.click(screen.getByRole("menuitem", { name: "Sonnet 5" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Sonnet 5" }));
 		expect(onChange).toHaveBeenCalledWith("model", { value: "sonnet" });
 	});
 
@@ -263,15 +266,15 @@ describe("ACP session config options", () => {
 			"Full access",
 		);
 		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
-		expect(screen.getByRole("menuitem", { name: "Ask for approval" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Approve for me" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Bypass permissions" })).toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: "Default approvals" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: "Accept edits" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: "Auto-approve" })).not.toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Full access" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Ask for approval" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Approve for me" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Bypass permissions" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Default approvals" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Accept edits" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Auto-approve" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Full access" })).toBeInTheDocument();
 
-		await user.click(screen.getByRole("menuitem", { name: "Approve for me" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Approve for me" }));
 		expect(onChange).toHaveBeenCalledWith({ approvalMode: "auto" });
 	});
 
@@ -339,6 +342,83 @@ describe("ACP session config options", () => {
 	});
 });
 
+describe("remember project permissions", () => {
+	it("keeps choosing a session policy separate from remembering the confirmed policy", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		const remember = vi.fn();
+		const { rerender } = render(<TurnSettingsBar models={[]} harness="codex"
+			settings={{ approvalMode: "auto" }} onChange={onChange} onRememberPermissions={remember} />);
+		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Full access" }));
+		expect(onChange).toHaveBeenCalledWith({ approvalMode: "default" });
+		expect(remember).not.toHaveBeenCalled();
+		rerender(<TurnSettingsBar models={[]} harness="codex"
+			settings={{ approvalMode: "default" }} onChange={onChange} onRememberPermissions={remember} />);
+		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
+		await user.click(screen.getByRole("menuitem", { name: "Remember for this project" }));
+		expect(remember).toHaveBeenCalledWith("default");
+	});
+
+	it("remembers a provider choice only through its daemon-supplied permission mapping", async () => {
+		const user = userEvent.setup();
+		const remember = vi.fn();
+		render(<TurnSettingsBar models={[]} settings={{ approvalMode: "auto" }}
+			configOptions={[{ ...OPTIONS[2], choices: [
+				{ value: "bypass", name: "Bypass Permissions", permissionMode: "bypass-permissions" },
+			] }]} onChangeConfigOption={vi.fn()} onRememberPermissions={remember} />);
+		await user.click(screen.getByRole("button", { name: "Permission mode" }));
+		await user.click(screen.getByRole("menuitem", { name: "Remember for this project" }));
+		expect(remember).toHaveBeenCalledWith("bypass-permissions");
+	});
+
+	it("does not substitute a stale AO mode for an unmapped provider choice", async () => {
+		const user = userEvent.setup();
+		render(<TurnSettingsBar models={[]} settings={{ approvalMode: "auto" }}
+			configOptions={[OPTIONS[2]]} onChangeConfigOption={vi.fn()} onRememberPermissions={vi.fn()} />);
+		await user.click(screen.getByRole("button", { name: "Permission mode" }));
+		expect(screen.queryByRole("menuitem", { name: "Remember for this project" })).not.toBeInTheDocument();
+	});
+
+	it("disables overlapping writes and shows save results", () => {
+		const props = { models: [], settings: {}, onChange: vi.fn(), onRememberPermissions: vi.fn() };
+		const { rerender } = render(<TurnSettingsBar {...props} rememberPermissionsPending />);
+		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toBeDisabled();
+		expect(screen.getByRole("status")).toHaveTextContent("Saving project default");
+		rerender(<TurnSettingsBar {...props} rememberPermissionsError="Could not save project default" />);
+		expect(screen.getByRole("alert")).toHaveTextContent("Could not save project default");
+		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toBeEnabled();
+		rerender(<TurnSettingsBar {...props} rememberedPermissionMode="default" />);
+		expect(screen.getByRole("status")).toHaveTextContent("saved for new sessions in this project");
+	});
+
+	it("shows success only for the exact saved native permission mode", () => {
+		const props = { models: [], onChange: vi.fn(), onRememberPermissions: vi.fn() };
+		const { rerender } = render(<TurnSettingsBar {...props} settings={{ approvalMode: "auto" }} rememberedPermissionMode="auto" />);
+		expect(screen.getByRole("status")).toHaveTextContent("saved for new sessions");
+		rerender(<TurnSettingsBar {...props} settings={{ approvalMode: "default" }} rememberedPermissionMode="auto" />);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("matches saved success against the provider mode instead of stale native settings", () => {
+		const props = { models: [], settings: { approvalMode: "auto" as const }, onChangeConfigOption: vi.fn(), onRememberPermissions: vi.fn() };
+		const option: ChatConfigOption = { ...OPTIONS[2], currentValue: "auto", choices: [
+			{ value: "auto", name: "Auto", permissionMode: "auto" },
+			{ value: "manual", name: "Manual", permissionMode: "default" },
+			{ value: "unknown", name: "Unknown" },
+		] };
+		const { rerender } = render(<TurnSettingsBar {...props} configOptions={[option]} rememberedPermissionMode="auto" />);
+		expect(screen.getByRole("status")).toHaveTextContent("saved for new sessions");
+		rerender(<TurnSettingsBar {...props} configOptions={[option]} rememberedPermissionMode="auto" configPending />);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		for (const currentValue of ["manual", "unknown"]) {
+			rerender(<TurnSettingsBar {...props} configOptions={[{ ...option, currentValue }]} rememberedPermissionMode="auto" />);
+			expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		}
+	});
+
+});
+
 describe("native model selection", () => {
 	it("keeps an explicit model visible when the catalog does not contain it", () => {
 		render(
@@ -386,8 +466,8 @@ describe("Cursor Ask and Agent chat modes", () => {
 
 		const trigger = screen.getByRole("button", { name: "Model mode for the next turn" });
 		await user.click(trigger);
-		expect(screen.getByRole("menuitem", { name: "Ask" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Agent" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Ask" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Agent" })).toBeInTheDocument();
 		expect(screen.queryByRole("switch", { name: "Plan Mode" })).not.toBeInTheDocument();
 	});
 
@@ -437,11 +517,11 @@ describe("Cursor Ask and Agent chat modes", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
-		await user.click(screen.getByRole("menuitem", { name: "Agent" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Agent" }));
 		expect(onChange).toHaveBeenCalledWith("mode", { value: "AGENT" });
 
 		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
-		await user.click(screen.getByRole("menuitem", { name: "Ask" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Ask" }));
 		expect(onChange).toHaveBeenLastCalledWith("mode", { value: "ASK" });
 	});
 
@@ -478,12 +558,12 @@ describe("Cursor Ask and Agent chat modes", () => {
 
 		const approvals = screen.getByRole("button", { name: "Approval policy for the next turn" });
 		await user.click(approvals);
-		expect(screen.queryByRole("menuitem", { name: "Ask" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: "Agent" })).not.toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Default approvals" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Accept edits" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Auto-approve" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Bypass permissions" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Ask" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Agent" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Default approvals" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Accept edits" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Auto-approve" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Bypass permissions" })).toBeInTheDocument();
 	});
 
 	it("does not read a lone approval-flavoured Ask as an execution mode", async () => {
@@ -515,8 +595,8 @@ describe("Cursor Ask and Agent chat modes", () => {
 		const trigger = screen.getByRole("button", { name: "Permission mode" });
 		expect(trigger).toHaveTextContent("Ask for approval");
 		await user.click(trigger);
-		expect(screen.getByRole("menuitem", { name: "Ask for approval" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Approve for me" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Ask for approval" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Approve for me" })).toBeInTheDocument();
 	});
 
 	it("keeps the Plan/Agent switch and its Manual wire value unchanged", async () => {
@@ -556,7 +636,7 @@ describe("Cursor Ask and Agent chat modes", () => {
 		const trigger = screen.getByRole("button", { name: "Model mode for the next turn" });
 		expect(trigger).toHaveTextContent("Ask");
 		await user.click(trigger);
-		expect(screen.queryByRole("menuitem", { name: "Code reviewer" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Code reviewer" })).not.toBeInTheDocument();
 	});
 });
 
@@ -604,9 +684,9 @@ describe("Cursor's live Agent/Plan/Ask mode catalog", () => {
 		expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("grok-4.6");
 
 		await user.click(modeTrigger);
-		expect(screen.getByRole("menuitem", { name: "Agent" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Plan" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Ask" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Agent" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Plan" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Ask" })).toBeInTheDocument();
 	});
 
 	it("sends Cursor's own mode ids, including the bracketed model ids untouched", async () => {
@@ -623,15 +703,15 @@ describe("Cursor's live Agent/Plan/Ask mode catalog", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
-		await user.click(screen.getByRole("menuitem", { name: "Ask" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Ask" }));
 		expect(onChange).toHaveBeenCalledWith("mode", { value: "ask" });
 
 		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
-		await user.click(screen.getByRole("menuitem", { name: "Agent" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Agent" }));
 		expect(onChange).toHaveBeenLastCalledWith("mode", { value: "agent" });
 
 		await user.click(screen.getByRole("button", { name: "Model" }));
-		await user.click(screen.getByRole("menuitem", { name: "grok-4.6" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "grok-4.6" }));
 		expect(onChange).toHaveBeenLastCalledWith("model", {
 			value: "grok-4.6[effort=high,fast=true]",
 		});
@@ -731,7 +811,7 @@ describe("Cursor's live Agent/Plan/Ask mode catalog", () => {
 		const extra = screen.getByRole("button", { name: "Verbosity" });
 		expect(extra).toHaveTextContent("High");
 		await user.click(extra);
-		expect(screen.getByRole("menuitem", { name: "Low" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
 	});
 
 	it("disables the standalone mode trigger and a lone extra while a change is in flight", () => {

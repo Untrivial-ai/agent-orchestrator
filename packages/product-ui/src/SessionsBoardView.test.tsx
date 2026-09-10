@@ -8,6 +8,8 @@ import {
 	SessionsBoardGridView,
 	archiveToggleHeightClassName,
 	archiveToggleOffsetClassName,
+	type BoardPullRequestLabels,
+	type BoardPullRequestPresentation,
 	type BoardSessionPresentation,
 	type BoardColumnLabels,
 } from "./SessionsBoardView";
@@ -59,6 +61,18 @@ const baseSession: BoardSessionPresentation = {
 	status: "idle",
 	title: "portable task",
 	updatedAt: "2026-08-09T10:00:00Z",
+};
+
+const progressLabels: BoardPullRequestLabels = {
+	progress: ({ closed, draft, merged, open, total }) => {
+		const parts = [`${merged} of ${total} ${total === 1 ? "PR" : "PRs"} merged`];
+		if (open > 0) parts.push(`${open} open`);
+		if (draft > 0) parts.push(`${draft} draft`);
+		if (closed > 0) parts.push(`${closed} closed`);
+		return parts.join(" · ");
+	},
+	short: "PR",
+	states: { closed: "closed", draft: "draft", merged: "merged", open: "open" },
 };
 
 describe("SessionsBoardView", () => {
@@ -327,10 +341,10 @@ describe("SessionsBoardView", () => {
 					{
 						commentCount: 1,
 						number: 10,
-						reviewerAvatars: [
+						reviewers: [
 							{
-								login: "ada-lovelace",
-								url: "https://avatars.githubusercontent.com/u/1?v=4",
+								id: "ada-lovelace",
+								avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4",
 							},
 						],
 						state: "open",
@@ -339,7 +353,7 @@ describe("SessionsBoardView", () => {
 					{
 						commentCount: 1,
 						number: 11,
-						reviewerAvatars: [{ login: "grace-hopper" }],
+						reviewers: [{ id: "grace-hopper" }],
 						state: "open",
 						url: "https://example.com/pull/11",
 					},
@@ -382,6 +396,133 @@ describe("SessionsBoardView", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "portable task" }));
 		expect(onOpen).toHaveBeenCalledOnce();
+	});
+
+	it("uses the shared loading and error fallback for reviewer avatars", () => {
+		const avatarUrl = "https://avatars.githubusercontent.com/ada?size=64";
+		render(
+			<SessionCardView
+				externalLink={ExternalLink}
+				labels={{
+					formatTime: () => "5m ago",
+					intakeIssue: (id) => `Issue ${id}`,
+					pr: {
+						short: "PR",
+						states: { closed: "closed", draft: "draft", merged: "merged", open: "open" },
+					},
+					updatedAt: (timestamp) => `Updated ${timestamp}`,
+				}}
+				prs={[{
+					commentCount: 1,
+					number: 10,
+					reviewers: [{ id: "ada-lovelace", avatarUrl }],
+					state: "open",
+					url: "https://example.com/pull/10",
+				}]}
+				renderAvatar={(provider) => <span role="img" aria-label={provider}>C</span>}
+				session={baseSession}
+			/>,
+		);
+
+		const prLink = screen.getByRole("link", { name: "PR #10 open" });
+		const image = prLink.querySelector("img");
+		expect(prLink).toHaveTextContent("AL");
+		expect(image).toHaveAttribute("src", avatarUrl);
+		if (image) fireEvent.load(image);
+		expect(prLink).not.toHaveTextContent("AL");
+		if (image) fireEvent.error(image);
+		expect(prLink).toHaveTextContent("AL");
+		expect(prLink.querySelector("img")).not.toBeInTheDocument();
+	});
+
+	it("shows exact PR completion on completed and terminated cards without changing their status", () => {
+		const card = (
+			status: BoardSessionPresentation["status"],
+			prs: BoardPullRequestPresentation[],
+		) => (
+			<SessionCardView
+				externalLink={ExternalLink}
+				labels={{
+					formatTime: () => "5m ago",
+					intakeIssue: (id) => `Issue ${id}`,
+					pr: progressLabels,
+					updatedAt: (timestamp) => `Updated ${timestamp}`,
+				}}
+				prs={prs}
+				renderAvatar={(provider) => <span role="img" aria-label={provider}>C</span>}
+				session={{ ...baseSession, status }}
+			/>
+		);
+		const mixed: BoardPullRequestPresentation[] = [
+			{ number: 10, state: "merged", url: "https://example.com/pull/10" },
+			{ number: 11, state: "open", url: "https://example.com/pull/11" },
+		];
+		const { rerender } = render(card("terminated", mixed));
+
+		expect(screen.getByText("Terminated")).toBeInTheDocument();
+		const mixedProgress = screen.getByTestId("session-pr-progress");
+		expect(mixedProgress).toHaveTextContent(
+			"1 of 2 PRs merged · 1 open",
+		);
+		expect(mixedProgress).toHaveAttribute("title", "1 of 2 PRs merged · 1 open");
+		expect(mixedProgress).toHaveClass("col-span-2", "truncate");
+
+		rerender(
+			<SessionCardView
+				externalLink={ExternalLink}
+				labels={{
+					formatTime: () => "5m ago",
+					intakeIssue: (id) => `Issue ${id}`,
+					pr: progressLabels,
+					updatedAt: (timestamp) => `Updated ${timestamp}`,
+				}}
+				prs={[
+					{ number: 10, state: "merged", url: "https://example.com/pull/10" },
+					{ number: 11, state: "merged", url: "https://example.com/pull/11" },
+				]}
+				renderAvatar={(provider) => <span role="img" aria-label={provider}>C</span>}
+				session={{ ...baseSession, status: "merged", isTerminated: true }}
+			/>,
+		);
+		expect(screen.getByText("Merged")).toBeInTheDocument();
+		expect(screen.getByTestId("session-pr-progress")).toHaveTextContent("2 of 2 PRs merged");
+
+		rerender(
+			card("terminated", [
+				{ number: 10, state: "closed", url: "https://example.com/pull/10" },
+				{ number: 11, state: "draft", url: "https://example.com/pull/11" },
+			]),
+		);
+		expect(screen.getByTestId("session-pr-progress")).toHaveTextContent(
+			"0 of 2 PRs merged · 1 draft · 1 closed",
+		);
+
+		rerender(card("pr_open", mixed));
+		expect(screen.queryByTestId("session-pr-progress")).not.toBeInTheDocument();
+
+		rerender(card("terminated", []));
+		expect(screen.queryByTestId("session-pr-progress")).not.toBeInTheDocument();
+	});
+
+	it("hides PR progress for a live merged session that has not actually terminated", () => {
+		render(
+			<SessionCardView
+				externalLink={ExternalLink}
+				labels={{
+					formatTime: () => "5m ago",
+					intakeIssue: (id) => `Issue ${id}`,
+					pr: progressLabels,
+					updatedAt: (timestamp) => `Updated ${timestamp}`,
+				}}
+				prs={[
+					{ number: 10, state: "merged", url: "https://example.com/pull/10" },
+					{ number: 11, state: "open", url: "https://example.com/pull/11" },
+				]}
+				renderAvatar={(provider) => <span role="img" aria-label={provider}>C</span>}
+				session={{ ...baseSession, status: "merged", isTerminated: false }}
+			/>,
+		);
+		expect(screen.queryByTestId("session-pr-progress")).not.toBeInTheDocument();
 	});
 
 	it("truncates the status before card metrics can collide", () => {

@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 const LAST_UPDATED = "19 August 2026";
 
 const description =
-  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and aoagents.dev: local-first operation, optional analytics, waitlists, and testimonial submissions.";
+  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and useao.dev: local-first operation, optional analytics, waitlists, and testimonial submissions.";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
@@ -186,7 +186,7 @@ export default function PrivacyPage() {
                 your computer.
               </Bullet>
               <Bullet>
-                <Strong>aoagents.dev</Strong> — this website and the
+                <Strong>useao.dev</Strong> — this website and the
                 documentation hosted on it.
               </Bullet>
             </Bullets>
@@ -372,7 +372,7 @@ export default function PrivacyPage() {
 
           <Section id="website" title="This website">
             <p>
-              aoagents.dev is a static site and runs no advertising. It uses
+              useao.dev is a static site and runs no advertising. It uses
               PostHog analytics cookies to understand site usage and improve the
               experience, but analytics collection is disabled by default until
               you select <Strong>Accept</Strong>. Selecting opt-out keeps

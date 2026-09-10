@@ -27,6 +27,7 @@ import {
 	useStageAttachments,
 	useWorkspaceFilePaths,
 } from "../../hooks/useConversation";
+import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import {
@@ -70,6 +71,7 @@ export function SessionChatSurface({
 	onOpenFile,
 	headerActions,
 	sessionTabAction,
+	sessionTabActionWide = false,
 	tabStripAction,
 	handoffDialogOpen = false,
 	workspaceTabs,
@@ -106,6 +108,7 @@ export function SessionChatSurface({
 	onOpenFile?: (path: string) => void;
 	headerActions?: ReactNode;
 	sessionTabAction?: ReactNode;
+	sessionTabActionWide?: boolean;
 	tabStripAction?: ReactNode;
 	handoffDialogOpen?: boolean;
 	workspaceTabs?: Array<{ key: string; content: ReactNode; onSelect: () => void }>;
@@ -137,6 +140,7 @@ export function SessionChatSurface({
 	// boundary that decides whether switching to Terminal needs user consent.
 	const snapshot = queriedSnapshot?.sessionId === session.id ? queriedSnapshot : undefined;
 	const commands = useConversationCommands(session.id);
+	const projectPermissions = useRememberProjectPermissions(session.workspaceId, snapshot?.harness);
 	const { acknowledgeAcceptedTurn, pendingAcceptedTurnId } = commands;
 	const conversationWorkKnown = Boolean(snapshot);
 	const acceptedLocalTurnObserved = Boolean(
@@ -156,9 +160,14 @@ export function SessionChatSurface({
 		if (!conversationWorkKnown) return;
 		onConversationWorkChange?.({ controllerBusy, hasRunningTurn, queuedTurnCount });
 	}, [controllerBusy, conversationWorkKnown, hasRunningTurn, onConversationWorkChange, queuedTurnCount]);
+	const targetChatControllerReady =
+		snapshot?.controller?.state === "ready" || snapshot?.controller?.state === "busy";
+	// Mode commits before the target controller starts. A cached ready snapshot
+	// can also outlive the source, so wait for the handoff's final snapshot refresh.
+	const controllerCatalogsEnabled = targetChatControllerReady && !controllerTransitioning && !newWorkDisabled;
 	const configOptions = useConversationConfigOptions(
 		session.id,
-		Boolean(snapshot && can(snapshot, "config_options")),
+		Boolean(controllerCatalogsEnabled && snapshot && can(snapshot, "config_options")),
 	);
 	// A provider config catalog may cover only model, only mode, or both.
 	// Suppress native controls only for dimensions the provider catalog replaces;
@@ -174,9 +183,9 @@ export function SessionChatSurface({
 	// from the live controller, so there is nothing to fetch before then.
 	const { models } = useConversationModels(
 		session.id,
-		Boolean(snapshot) && !hasProviderModel,
+		controllerCatalogsEnabled && !hasProviderModel,
 	);
-	const { skills } = useConversationSkills(session.id, Boolean(snapshot));
+	const { skills } = useConversationSkills(session.id, controllerCatalogsEnabled);
 	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
 	const stageAttachments = useStageAttachments(session.id);
 	const openLinkInBrowser = useSessionBrowserLink(session);
@@ -222,8 +231,6 @@ export function SessionChatSurface({
 			: undefined;
 	const agentSwitch = durableAgentSwitch ?? admissionAgentSwitch ?? observedTerminalSwitch;
 	useAgentSwitchRouteVisibility(`session/${session.id}`, agentSwitch && agentSwitch.state !== "completed" && agentSwitch.state !== "failed" ? "active" : "history", undefined, false);
-	const targetChatControllerReady =
-		snapshot?.controller?.state === "ready" || snapshot?.controller?.state === "busy";
 	const switchPresentation = agentSwitch
 		? deriveAgentSwitchPresentation({
 				agentSwitch,
@@ -341,6 +348,7 @@ export function SessionChatSurface({
 				theme={theme}
 				headerActions={headerActions}
 				sessionTabAction={sessionTabAction}
+				sessionTabActionWide={sessionTabActionWide}
 				tabStripAction={tabStripAction}
 				workspaceTabs={workspaceTabs}
 				workspaceTabActions={workspaceTabActions}
@@ -367,9 +375,14 @@ export function SessionChatSurface({
 				shellError={shellError}
 				models={models}
 				onChooseSettings={hasProviderMode ? undefined : commands.chooseSettings}
+				onRememberPermissions={can(renderSnapshot, "config_options") && !configOptions.loaded
+					? undefined : projectPermissions.remember}
+				rememberPermissionsPending={projectPermissions.pending}
+				rememberPermissionsError={projectPermissions.error}
+				rememberedPermissionMode={projectPermissions.savedMode}
 				configOptions={configOptions.options}
 				onChooseConfigOption={configOptions.setOption}
-				configOptionPending={configOptions.pending}
+				configOptionPending={configOptions.pending || commands.choosingSettings}
 				configOptionError={configOptions.error}
 				onCompact={commands.compact}
 				compacting={commands.compacting}

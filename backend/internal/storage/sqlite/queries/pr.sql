@@ -2,13 +2,13 @@
 INSERT INTO pr (
     url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, state_changed_at,
     provider, host, repo, provider_id, source_branch, target_branch, head_sha, title,
-    additions, deletions, changed_files, author, base_sha, merge_commit_sha,
+    additions, deletions, changed_files, author, author_avatar_url, base_sha, merge_commit_sha,
     is_draft, is_merged, is_closed,
     provider_state, provider_mergeable, provider_merge_state_status, html_url,
     created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider,
     metadata_hash, ci_hash, review_hash, observed_at, ci_observed_at, review_observed_at, auto_inject_ci
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     COALESCE((SELECT auto_inject_ci FROM sessions WHERE id = ?), TRUE))
 ON CONFLICT (url) DO UPDATE SET
     number = excluded.number,
@@ -39,6 +39,7 @@ ON CONFLICT (url) DO UPDATE SET
     deletions = excluded.deletions,
     changed_files = excluded.changed_files,
     author = excluded.author,
+    author_avatar_url = excluded.author_avatar_url,
     base_sha = excluded.base_sha,
     merge_commit_sha = excluded.merge_commit_sha,
     is_draft = excluded.is_draft,

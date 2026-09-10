@@ -1,13 +1,18 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSummary } from "../types/workspace";
 
 const routeMocks = vi.hoisted(() => ({
+	createProjectFlowProps: null as null | {
+		existingProjectPaths?: readonly string[];
+		onOpenExistingProject?: (path: string) => void | Promise<void>;
+	},
 	navigate: vi.fn(),
 	workspaces: [] as WorkspaceSummary[],
 	requirements: [] as Array<{ id: string; label: string; satisfied: boolean; required: boolean; detail: string }>,
 	authRequirement: undefined as { id: string; label: string; satisfied: boolean; required: boolean; detail: string } | undefined,
 	startGitHubAuth: vi.fn(),
+	markAutoLoginOffered: vi.fn(),
 	closeTerminal: vi.fn(),
 }));
 
@@ -23,6 +28,7 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 vi.mock("../hooks/useSystemRequirementsGate", () => ({
 	useSystemRequirementsGate: () => ({ blocked: false, requirements: routeMocks.requirements, query: { refetch: vi.fn() } }),
 	useGitHubAuthRequirement: () => ({ data: routeMocks.authRequirement, isFetching: false, refetch: vi.fn() }),
+	useGitHubAuthAutoLoginOffered: () => ({ offered: false, markOffered: routeMocks.markAutoLoginOffered }),
 	useGitHubAuthTerminal: () => ({ data: null, clear: vi.fn() }),
 	useStartGitHubAuthTerminal: () => ({ mutate: routeMocks.startGitHubAuth, isPending: false, isError: false }),
 }));
@@ -43,7 +49,10 @@ vi.mock("../lib/shell-context", () => ({
 }));
 
 vi.mock("../components/CreateProjectFlow", () => ({
-	CreateProjectFlow: () => null,
+	CreateProjectFlow: (props: NonNullable<typeof routeMocks.createProjectFlowProps>) => {
+		routeMocks.createProjectFlowProps = props;
+		return null;
+	},
 }));
 
 vi.mock("../components/BoardEmptyStates", () => ({
@@ -55,9 +64,11 @@ import { HomePage } from "../components/HomePage";
 beforeEach(() => {
 	routeMocks.navigate.mockReset();
 	routeMocks.workspaces = [];
+	routeMocks.createProjectFlowProps = null;
 	routeMocks.requirements = [];
 	routeMocks.authRequirement = undefined;
 	routeMocks.startGitHubAuth.mockReset();
+	routeMocks.markAutoLoginOffered.mockReset();
 	routeMocks.closeTerminal.mockReset();
 });
 
@@ -100,6 +111,11 @@ describe("shell index route", () => {
 
 		expect(screen.getByText("Connect GitHub for pull requests")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /Scratch/ }).compareDocumentPosition(
+				screen.getByText("Connect GitHub for pull requests"),
+			) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("opens a project from the recent-project list", async () => {
@@ -111,6 +127,21 @@ describe("shell index route", () => {
 		render(<HomePage />);
 
 		fireEvent.click(screen.getByRole("button", { name: /Project One/ }));
+		expect(routeMocks.navigate).toHaveBeenCalledWith({
+			to: "/projects/$projectId",
+			params: { projectId: "proj-1" },
+		});
+	});
+
+	it("opens an already registered path from the import flow", async () => {
+		routeMocks.workspaces = [
+			{ id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one", sessions: [] },
+		];
+
+		render(<HomePage />);
+
+		expect(routeMocks.createProjectFlowProps?.existingProjectPaths).toEqual(["/repo/project-one"]);
+		await act(async () => routeMocks.createProjectFlowProps?.onOpenExistingProject?.("/repo/project-one"));
 		expect(routeMocks.navigate).toHaveBeenCalledWith({
 			to: "/projects/$projectId",
 			params: { projectId: "proj-1" },

@@ -853,6 +853,32 @@ func TestPRCRUD(t *testing.T) {
 	}
 }
 
+func TestWriteSCMObservationPersistsAuthorAvatarURL(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	pr := domain.PullRequest{
+		URL:             "https://github.com/o/r/pull/1",
+		SessionID:       r.ID,
+		Number:          1,
+		Author:          "octocat",
+		AuthorAvatarURL: "https://avatars.githubusercontent.com/u/583231?v=4",
+		UpdatedAt:       time.Now().UTC().Truncate(time.Second),
+	}
+
+	if err := s.WriteSCMObservation(ctx, pr, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetPR(ctx, pr.URL)
+	if err != nil || !ok {
+		t.Fatalf("get pr: ok=%v err=%v", ok, err)
+	}
+	if got.Author != pr.Author || got.AuthorAvatarURL != pr.AuthorAvatarURL {
+		t.Fatalf("author = %q avatar = %q", got.Author, got.AuthorAvatarURL)
+	}
+}
+
 func TestPRAutoInjectCITracksSessionPolicyChanges(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -1627,5 +1653,56 @@ func TestUpsertSessionWorktreeEmptyStateDefaultsToActive(t *testing.T) {
 	}
 	if got.State != "active" {
 		t.Fatalf("State = %q, want %q", got.State, "active")
+	}
+}
+
+func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "permissions")
+	cfg := domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits}}}
+	if err := s.UpsertProject(ctx, domain.ProjectRecord{ID: "permissions", Path: "/tmp/permissions", Config: cfg}); err != nil {
+		t.Fatal(err)
+	}
+	var rows []domain.SessionRecord
+	for _, tc := range []struct {
+		kind  domain.SessionKind
+		saved domain.PermissionMode
+		want  domain.PermissionMode
+	}{{domain.KindWorker, "", domain.PermissionModeAcceptEdits}, {domain.KindOrchestrator, "", domain.PermissionModeDefault}, {domain.KindWorker, domain.PermissionModeAuto, domain.PermissionModeAuto}} {
+		rec := sampleRecord("permissions")
+		rec.Kind = tc.kind
+		rec.Metadata.Permissions = tc.saved
+		row, err := s.CreateSession(ctx, rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row.Mode = domain.NormalizeSessionMode(row.Mode)
+		row.Metadata.Permissions = tc.want
+		rows = append(rows, row)
+	}
+	if _, ok, err := s.SetProjectPermissions(ctx, "permissions", domain.PermissionModeBypassPermissions); err != nil || !ok {
+		t.Fatalf("remember: %v %v", ok, err)
+	}
+	for _, want := range rows {
+		got, ok, err := s.GetSession(ctx, want.ID)
+		if err != nil || !ok {
+			t.Fatalf("load: %v %v", ok, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("session mutated beyond permission pin: got %#v want %#v", got, want)
+		}
+	}
+	if _, ok, err := s.SetProjectPermissions(ctx, "permissions", domain.PermissionModeDefault); err != nil || !ok {
+		t.Fatalf("second remember: %v %v", ok, err)
+	}
+	for _, want := range rows {
+		got, _, err := s.GetSession(ctx, want.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Metadata.Permissions != want.Metadata.Permissions {
+			t.Fatalf("repinned existing session: %q", got.Metadata.Permissions)
+		}
 	}
 }

@@ -582,6 +582,17 @@ func (q *Queries) FinalizeConversationPlanActivity(ctx context.Context, arg Fina
 	return err
 }
 
+const hasConversationTurns = `-- name: HasConversationTurns :one
+SELECT EXISTS (SELECT 1 FROM conversation_turns WHERE conversation_id = ?)
+`
+
+func (q *Queries) HasConversationTurns(ctx context.Context, conversationID string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasConversationTurns, conversationID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasPendingConversationInteractions = `-- name: HasPendingConversationInteractions :one
 SELECT EXISTS (
     SELECT 1
@@ -1061,6 +1072,33 @@ type ReleaseQueuedConversationTurnPromotionParams struct {
 // owned; requested_at is deliberately untouched.
 func (q *Queries) ReleaseQueuedConversationTurnPromotion(ctx context.Context, arg ReleaseQueuedConversationTurnPromotionParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, releaseQueuedConversationTurnPromotion, arg.ID, arg.ConversationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const releaseUntouchedConversationProvider = `-- name: ReleaseUntouchedConversationProvider :execrows
+UPDATE conversation_branches
+SET provider_conversation_id = '', provider_scope_id = ?1
+WHERE conversation_branches.session_id = ?2 AND parent_branch_id IS NULL
+  AND conversation_branches.id = (
+      SELECT c.active_branch_id FROM conversations AS c
+      WHERE c.session_id = ?2 AND c.current_session_id = ?2
+        AND c.latest_sequence = 0
+        AND NOT EXISTS (
+            SELECT 1 FROM conversation_turns WHERE conversation_id = c.id
+        )
+  )
+`
+
+type ReleaseUntouchedConversationProviderParams struct {
+	ProviderScopeID string
+	SessionID       sql.NullString
+}
+
+func (q *Queries) ReleaseUntouchedConversationProvider(ctx context.Context, arg ReleaseUntouchedConversationProviderParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, releaseUntouchedConversationProvider, arg.ProviderScopeID, arg.SessionID)
 	if err != nil {
 		return 0, err
 	}
@@ -2594,6 +2632,47 @@ func (q *Queries) SelectProjectConversation(ctx context.Context, projectID domai
 	return i, err
 }
 
+const selectQueuedConversationMessage = `-- name: SelectQueuedConversationMessage :one
+SELECT conversation_messages.id, conversation_messages.conversation_id, conversation_messages.turn_id, conversation_messages.sequence, conversation_messages.revision, conversation_messages.role, conversation_messages.origin, conversation_messages.text, conversation_messages.streaming, conversation_messages.provider_item_id, conversation_messages.client_message_id, conversation_messages.created_at, conversation_messages.updated_at, conversation_messages.delivery_content_json, conversation_messages.branch_id
+FROM conversation_messages
+JOIN conversation_turns ON conversation_turns.id = conversation_messages.turn_id
+WHERE conversation_messages.conversation_id = ?
+  AND conversation_messages.turn_id = ?
+  AND conversation_messages.role = 'user'
+  AND conversation_messages.origin = 'human'
+  AND conversation_turns.state = 'queued'
+  AND conversation_turns.promotion_started_at IS NULL
+`
+
+type SelectQueuedConversationMessageParams struct {
+	ConversationID string
+	TurnID         sql.NullString
+}
+
+// Read only an undispatched human prompt for editing.
+func (q *Queries) SelectQueuedConversationMessage(ctx context.Context, arg SelectQueuedConversationMessageParams) (ConversationMessage, error) {
+	row := q.db.QueryRowContext(ctx, selectQueuedConversationMessage, arg.ConversationID, arg.TurnID)
+	var i ConversationMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.TurnID,
+		&i.Sequence,
+		&i.Revision,
+		&i.Role,
+		&i.Origin,
+		&i.Text,
+		&i.Streaming,
+		&i.ProviderItemID,
+		&i.ClientMessageID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveryContentJson,
+		&i.BranchID,
+	)
+	return i, err
+}
+
 const selectQueuedConversationTurnOrder = `-- name: SelectQueuedConversationTurnOrder :many
 SELECT id, requested_at
 FROM conversation_turns
@@ -3237,11 +3316,12 @@ const updateQueuedConversationMessageText = `-- name: UpdateQueuedConversationMe
 UPDATE conversation_messages
 SET text = ?,
     revision = revision + 1,
-    delivery_content_json = '',
+    delivery_content_json = ?,
     updated_at = ?
 WHERE conversation_messages.conversation_id = ?
   AND conversation_messages.turn_id = ?
   AND conversation_messages.role = 'user'
+  AND conversation_messages.revision = ?
   AND EXISTS (
       SELECT 1
       FROM conversation_turns
@@ -3253,19 +3333,23 @@ WHERE conversation_messages.conversation_id = ?
 `
 
 type UpdateQueuedConversationMessageTextParams struct {
-	Text           string
-	UpdatedAt      time.Time
-	ConversationID string
-	TurnID         sql.NullString
+	Text                string
+	DeliveryContentJson string
+	UpdatedAt           time.Time
+	ConversationID      string
+	TurnID              sql.NullString
+	Revision            int64
 }
 
-// Rewrite the durable human prompt for a turn that has not yet dispatched.
+// Rewrite text and content together, only if the edited revision is current.
 func (q *Queries) UpdateQueuedConversationMessageText(ctx context.Context, arg UpdateQueuedConversationMessageTextParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateQueuedConversationMessageText,
 		arg.Text,
+		arg.DeliveryContentJson,
 		arg.UpdatedAt,
 		arg.ConversationID,
 		arg.TurnID,
+		arg.Revision,
 	)
 	if err != nil {
 		return 0, err

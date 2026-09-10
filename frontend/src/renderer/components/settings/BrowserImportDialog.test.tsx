@@ -124,6 +124,33 @@ describe("BrowserImportDialog", () => {
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
+	it("explains how to recover when a source browser database cannot be opened", async () => {
+		const braveSource = { ...source, name: "Brave" };
+		const bridge: AoBridge["browserProfiles"] = {
+			list: vi.fn(async () => ({ profiles: [] })),
+			create: vi.fn(),
+			rename: vi.fn(),
+			clear: vi.fn(),
+			delete: vi.fn(),
+			discoverImportSources: vi.fn(async () => ({ sources: [braveSource] })),
+			import: vi.fn(async () => {
+				throw new Error("Error invoking remote method 'browserProfiles:import:start': Error: unable to open database file");
+			}),
+			onImportProgress: vi.fn(() => () => undefined),
+		};
+		aoBridge.browserProfiles = bridge;
+
+		render(<BrowserImportDialog onImported={() => undefined} onOpenChange={() => undefined} open />);
+		await screen.findByText("Brave");
+		await userEvent.click(screen.getByRole("button", { name: "Start import" }));
+
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("AO couldn't access Brave's profile database");
+		expect(alert).toHaveTextContent("Fully close Brave, including background processes, then try again");
+		expect(alert).toHaveTextContent("Encrypted cookies are handled separately");
+		expect(alert).not.toHaveTextContent("Error invoking remote method");
+	});
+
 	it("keeps discovery failures visible and disables import", async () => {
 		const bridge: AoBridge["browserProfiles"] = {
 			list: vi.fn(async () => ({ profiles: [] })),

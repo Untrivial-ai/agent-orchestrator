@@ -4,10 +4,11 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentSwitchesQueryKey } from "../../hooks/useAgentSwitches";
-import type { ConversationSnapshot } from "../../types/conversation";
+import type { ChatConfigOption, ConversationSnapshot } from "../../types/conversation";
 import type { AgentSwitchSummary, WorkspaceSession } from "../../types/workspace";
 import { useUiStore } from "../../stores/ui-store";
 import { workspaceQueryKey } from "../../hooks/useWorkspaceQuery";
+import { useConversationConfigOptions, useConversationModels, useConversationSkills } from "../../hooks/useConversation";
 
 const LINK = "http://localhost:5173";
 
@@ -59,6 +60,10 @@ const {
 	},
 }));
 
+const configState = vi.hoisted(() => ({
+	options: [] as ChatConfigOption[], loaded: false, error: undefined as string | undefined,
+}));
+
 const visibilityMocks = vi.hoisted(() => ({
 	presentation: vi.fn(),
 	route: vi.fn(),
@@ -77,9 +82,9 @@ vi.mock("../../hooks/useConversation", () => ({
 			: undefined,
 	}),
 	useConversationCommands: () => conversationCommandState,
-	useConversationConfigOptions: () => ({ options: [] }),
-	useConversationModels: () => ({ models: [] }),
-	useConversationSkills: () => ({ skills: [] }),
+	useConversationConfigOptions: vi.fn(() => configState),
+	useConversationModels: vi.fn(() => ({ models: [] })),
+	useConversationSkills: vi.fn(() => ({ skills: [] })),
 	useStageAttachments: () => undefined,
 	useWorkspaceFilePaths: () => ({ paths: [], truncated: false }),
 }));
@@ -98,6 +103,7 @@ vi.mock("./ChatWorkspace", async () => {
 			sessionTabAction,
 			newWorkDisabled,
 			onLinkOpen,
+			onRememberPermissions,
 			snapshot,
 			shellTarget,
 		}: {
@@ -106,6 +112,7 @@ vi.mock("./ChatWorkspace", async () => {
 			sessionTabAction?: ReactNode;
 			newWorkDisabled?: boolean;
 			onLinkOpen?: (url: string) => void;
+			onRememberPermissions?: unknown;
 			snapshot: { sessionId?: string };
 			shellTarget?: { handleId: string };
 		}) => {
@@ -122,6 +129,7 @@ vi.mock("./ChatWorkspace", async () => {
 					/>
 					{snapshot.sessionId ? <div>Mounted {mountedSessionId}</div> : null}
 					{snapshot.sessionId ? <div>Rendered {snapshot.sessionId}</div> : null}
+					<div data-testid="remember-available">{String(Boolean(onRememberPermissions))}</div>
 					{headerActions}
 					{sessionTabAction}
 					<button type="button" onClick={() => onLinkOpen?.(LINK)}>
@@ -154,6 +162,9 @@ function Wrapper({ client, children }: { client: QueryClient; children: ReactNod
 }
 
 beforeEach(() => {
+	configState.options = [];
+	configState.loaded = false;
+	configState.error = undefined;
 	getMock.mockReset().mockImplementation(async () => ({
 		data: { switches: agentSwitchState.data },
 		error: undefined,
@@ -716,5 +727,51 @@ describe("SessionChatSurface link routing", () => {
 		expect(screen.getByText("Mounted proj-orchestrator-2")).toBeInTheDocument();
 		expect(screen.getByText("Rendered proj-orchestrator-2")).toBeInTheDocument();
 		expect(screen.queryByText("Mounted proj-orchestrator-1")).not.toBeInTheDocument();
+	});
+});
+
+
+describe("controller catalogs during an interface handoff", () => {
+	it.each(["stopped", "connecting", "ready"] as const)("waits through handoff with a %s snapshot, then loads catalogs", (state) => {
+		conversationState.snapshot = { capabilities: ["config_options"], controller: { state } };
+		const client = new QueryClient();
+		const { rerender } = render(<Wrapper client={client}><SessionChatSurface session={session} controllerTransitioning /></Wrapper>);
+		for (const hook of [useConversationConfigOptions, useConversationModels, useConversationSkills]) {
+			expect(hook).toHaveBeenLastCalledWith(session.id, false);
+		}
+
+		conversationState.snapshot = { capabilities: ["config_options"], controller: { state: "ready" } };
+		rerender(<Wrapper client={client}><SessionChatSurface session={session} /></Wrapper>);
+		for (const hook of [useConversationConfigOptions, useConversationModels, useConversationSkills]) {
+			expect(hook).toHaveBeenLastCalledWith(session.id, true);
+		}
+	});
+
+	it("does not poll an unavailable controller after a failed handoff", () => {
+		conversationState.snapshot = { capabilities: ["config_options"], controller: { state: "stopped" } };
+		render(<Wrapper client={new QueryClient()}><SessionChatSurface session={session} /></Wrapper>);
+		for (const hook of [useConversationConfigOptions, useConversationModels, useConversationSkills]) {
+			expect(hook).toHaveBeenLastCalledWith(session.id, false);
+		}
+	});
+});
+
+describe("project remembering waits for provider permissions", () => {
+	it.each([undefined, "Catalog unavailable"])("withholds Remember when provider catalog is not known (%s)", (error) => {
+		conversationState.snapshot = { capabilities: ["config_options"] };
+		configState.error = error;
+		render(<Wrapper client={new QueryClient()}><SessionChatSurface session={session} /></Wrapper>);
+		expect(screen.getByTestId("remember-available")).toHaveTextContent("false");
+	});
+
+	it("allows remembering after a model-only catalog successfully loads", () => {
+		conversationState.snapshot = { capabilities: ["config_options"] };
+		const client = new QueryClient();
+		const { rerender } = render(<Wrapper client={client}><SessionChatSurface session={session} /></Wrapper>);
+		expect(screen.getByTestId("remember-available")).toHaveTextContent("false");
+		configState.loaded = true;
+		configState.options = [{ id: "model", name: "Model", category: "model", type: "select", choices: [] }];
+		rerender(<Wrapper client={client}><SessionChatSurface session={session} /></Wrapper>);
+		expect(screen.getByTestId("remember-available")).toHaveTextContent("true");
 	});
 });

@@ -485,17 +485,29 @@ func TestDoctorChecksAOBinaryIdentity(t *testing.T) {
 	}
 	selfExe := func() (string, error) { return self, nil }
 
+	daemon := filepath.Join(dir, "ao-bundled")
+	if err := os.WriteFile(daemon, []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // test fixture must be executable-shaped
+		t.Fatal(err)
+	}
+
 	cases := []struct {
 		name       string
 		executable func() (string, error)
+		daemonExe  string
 		paths      map[string]string
 		wantLevel  doctorLevel
 		wantIn     string
 	}{
-		{"ao in PATH is this binary", selfExe, map[string]string{"ao": self}, doctorPass, "this binary"},
-		{"ao in PATH is a different binary", selfExe, map[string]string{"ao": other}, doctorWarn, "not this binary"},
-		{"ao missing from PATH", selfExe, map[string]string{}, doctorWarn, "not found in PATH"},
-		{"running executable unresolvable", func() (string, error) { return "", errors.New("no exe") }, map[string]string{"ao": self}, doctorWarn, "could not resolve"},
+		{"ao in PATH is this binary", selfExe, "", map[string]string{"ao": self}, doctorPass, "this binary"},
+		{"ao in PATH is a different binary", selfExe, "", map[string]string{"ao": other}, doctorWarn, "not this binary"},
+		{"ao missing from PATH", selfExe, "", map[string]string{}, doctorWarn, "not found in PATH"},
+		{"running executable unresolvable", func() (string, error) { return "", errors.New("no exe") }, "", map[string]string{"ao": self}, doctorWarn, "could not resolve"},
+		// The running daemon is the authority: doctor may itself BE the
+		// shadowing copy, so comparing against its own executable would call
+		// the shadow a match. Both paths must be named in the warning.
+		{"ao in PATH shadows the running daemon", selfExe, daemon, map[string]string{"ao": self}, doctorWarn, "shadows the running daemon's binary " + daemon},
+		{"ao in PATH is the running daemon's binary", selfExe, daemon, map[string]string{"ao": daemon}, doctorPass, "the running daemon's binary"},
+		{"daemon binary resolves even when doctor's own does not", func() (string, error) { return "", errors.New("no exe") }, daemon, map[string]string{"ao": daemon}, doctorPass, "the running daemon's binary"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -511,7 +523,7 @@ func TestDoctorChecksAOBinaryIdentity(t *testing.T) {
 				ProcessAlive: func(int) bool { return false },
 			}
 			c := &commandContext{deps: deps.withDefaults()}
-			check := c.checkAOBinary()
+			check := c.checkAOBinary(tc.daemonExe)
 			if check.Level != tc.wantLevel || !strings.Contains(check.Message, tc.wantIn) {
 				t.Fatalf("ao-binary check = %+v, want level %s with %q", check, tc.wantLevel, tc.wantIn)
 			}

@@ -44,7 +44,7 @@ func (s *Service) structuredCodexAuthentication(ctx context.Context, agentID str
 	if !ok {
 		return failedAuthentication(s.codexAccounts.now(), domain.AgentReadinessReasonAuthCheckInconclusive, "The active Codex account is unavailable."), true
 	}
-	result, err := s.codexAccounts.ensureAuthentication(ctx, record, purpose, purpose == domain.AgentReadinessPurposeLaunch)
+	result, err := s.codexAccounts.ensureAuthentication(ctx, record, purpose)
 	if err != nil {
 		return failedAuthentication(s.codexAccounts.now(), domain.AgentReadinessReasonAuthCheckFailed, "Authentication check failed."), true
 	}
@@ -323,7 +323,7 @@ func (s *Service) WarmCodexAccounts() {
 		if capabilities.AccountRead.State == domain.CodexCapabilitySupported {
 			for _, record := range records {
 				if record.Snapshot.Status == domain.CodexAccountStatusValid {
-					_, _ = s.codexAccounts.ensureAuthentication(s.codexAccounts.ctx, record, domain.AgentReadinessPurposeDisplay, false)
+					_, _ = s.codexAccounts.ensureAuthentication(s.codexAccounts.ctx, record, domain.AgentReadinessPurposeDisplay)
 				}
 			}
 		}

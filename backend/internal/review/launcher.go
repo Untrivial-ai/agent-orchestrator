@@ -539,15 +539,21 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 	if strings.TrimSpace(l.runFile) != "" {
 		env[EnvRunFile] = l.runFile
 	}
-	path, err := sessionmanager.HookPATH(l.executable, os.Getenv, env)
+	// pinnedDir is whichever directory ends up at the head of PATH here, so the
+	// launch-binary prepend below can put it back rather than letting a foreign
+	// `ao` beside the agent binary win a bare `ao` inside the reviewer pane.
+	pinnedDir := ""
+	path, err := sessionmanager.HookPATH(l.executable, os.Getenv, env, l.dataDir)
 	if err == nil {
 		env["PATH"] = path
+		pinnedDir = sessionmanager.PinnedHookDir(l.executable, l.dataDir)
 	} else if shimDir, shimErr := l.ensureAOShimDir(); shimErr == nil {
 		env["PATH"] = prependPathDir(shimDir, env["PATH"])
+		pinnedDir = shimDir
 	} else {
 		env[EnvAOCommandWarning] = fmt.Sprintf("PATH pin failed: %v; AO shim fallback failed: %v", err, shimErr)
 	}
-	sessionmanager.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, exec.LookPath)
+	sessionmanager.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, exec.LookPath, pinnedDir)
 	return env
 }
 

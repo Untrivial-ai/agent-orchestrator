@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../../lib/bridge";
 import { renderMermaidDiagram } from "../../lib/mermaid-diagram";
-import { ChatLinkProvider, ChatMarkdown } from "./ChatMarkdown";
+import { ActivityTitle, ChatLinkProvider, ChatMarkdown } from "./ChatMarkdown";
 
 // Mermaid needs real SVG layout APIs jsdom lacks; pin the routing boundary and
 // let MermaidBlock.test.tsx own the block's states.
@@ -334,5 +334,22 @@ describe("ChatMarkdown code highlighting", () => {
 
 		await user.click(wrap);
 		expect(wrapper).toHaveAttribute("data-wrap", "false");
+	});
+});
+
+
+describe("ActivityTitle", () => {
+	it("keeps code delimiters inside multi-backtick code spans", () => {
+		const { container } = render(<ActivityTitle text={"Edit ``file`name.ts``"} />);
+		expect(container.querySelector("code")).toHaveTextContent("file`name.ts");
+	});
+
+	it("keeps disclosure titles inline and non-interactive", () => {
+		const { container } = render(
+			<button><ActivityTitle text={'# **Edit** [file](https://example.com) `path.ts` ![image](https://example.com/image.png) <input autofocus />'} /></button>,
+		);
+		expect(screen.getByRole("button")).toHaveTextContent("Edit file path.ts");
+		expect(container.querySelector("strong")).toHaveTextContent("Edit");
+		expect(container.querySelector("a, img, input, p, h1, pre")).toBeNull();
 	});
 });

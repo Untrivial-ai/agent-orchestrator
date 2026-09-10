@@ -265,7 +265,7 @@ type SpawnSessionRequest struct {
 	// switch through the durable interface-transition endpoint. An unsupported
 	// explicit request fails rather than quietly producing the other kind of session.
 	Mode   domain.SessionMode `json:"mode,omitempty" enum:"chat,tui"`
-	Prompt string             `json:"prompt,omitempty" maxLength:"4096"`
+	Prompt string             `json:"prompt,omitempty" maxLength:"16384"`
 	// Model is an optional agent model override scoped to this single spawn. Empty
 	// keeps the resolved project/role default. The daemon validates that the
 	// selected harness can honor the model before launching.
@@ -719,9 +719,13 @@ type CleanupSkippedSession struct {
 
 // CleanupSessionsResponse is the body of POST /api/v1/sessions/cleanup.
 type CleanupSessionsResponse struct {
-	OK      bool                    `json:"ok"`
-	Cleaned []domain.SessionID      `json:"cleaned"`
-	Skipped []CleanupSkippedSession `json:"skipped"`
+	OK bool `json:"ok"`
+	// Cleaned lists sessions whose workspace was present and has been released.
+	Cleaned []domain.SessionID `json:"cleaned"`
+	// AlreadyGone lists sessions whose workspace directory was already missing,
+	// so teardown completed without reclaiming anything.
+	AlreadyGone []domain.SessionID      `json:"alreadyGone"`
+	Skipped     []CleanupSkippedSession `json:"skipped"`
 }
 
 // SendSessionMessageRequest is the body of POST /api/v1/sessions/{sessionId}/send.
@@ -744,7 +748,7 @@ type SendSessionMessageResponse struct {
 // An omitted agent tells the orchestrator to use the project's worker default.
 type DelegateTaskRequest struct {
 	ProjectID domain.ProjectID    `json:"projectId"`
-	Brief     string              `json:"brief" maxLength:"4096"`
+	Brief     string              `json:"brief" maxLength:"16384"`
 	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,fake"`
 	Model     string              `json:"model,omitempty" maxLength:"256"`
 	// ApprovalMode is an optional per-session override. The UI uses the explicit
@@ -792,6 +796,7 @@ type SessionPRSummary struct {
 	Provider         string                       `json:"provider" enum:"github,gitlab"`
 	Repo             string                       `json:"repo"`
 	Author           string                       `json:"author"`
+	AuthorAvatarURL  string                       `json:"authorAvatarUrl,omitempty"`
 	SourceBranch     string                       `json:"sourceBranch"`
 	TargetBranch     string                       `json:"targetBranch"`
 	HeadSHA          string                       `json:"headSha"`
@@ -895,6 +900,7 @@ func NewSessionPRSummary(in sessionsvc.PRSummary) SessionPRSummary {
 		Provider:         in.Provider,
 		Repo:             in.Repo,
 		Author:           in.Author,
+		AuthorAvatarURL:  in.AuthorAvatarURL,
 		SourceBranch:     in.SourceBranch,
 		TargetBranch:     in.TargetBranch,
 		HeadSHA:          in.HeadSHA,
@@ -1727,6 +1733,17 @@ type ConversationImageContentRequest struct {
 	Data     string `json:"data"`
 }
 
+// EditQueuedConversationMessageRequest changes an undispatched prompt. Omitted
+// retainedContent preserves the stored blocks; an empty list removes attachments.
+type EditQueuedConversationMessageRequest struct {
+	Text        string                            `json:"text"`
+	Attachments []ConversationImageContentRequest `json:"attachments,omitempty"`
+	// Indices in the message's public content summary, in their original order.
+	RetainedContent *[]int `json:"retainedContent,omitempty"`
+	// Reject a stale editor before interpreting attachment indices.
+	ExpectedRevision *int64 `json:"expectedRevision,omitempty"`
+}
+
 // ConversationResourceContentRequest is a resource link, or embedded text when
 // Text is present and the provider negotiated embedded context.
 type ConversationResourceContentRequest struct {
@@ -1841,11 +1858,12 @@ type ConversationConfigOptionResponse struct {
 
 // ConversationConfigChoiceResponse is one value in a provider select.
 type ConversationConfigChoiceResponse struct {
-	Value       string `json:"value"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Group       string `json:"group,omitempty"`
-	GroupName   string `json:"groupName,omitempty"`
+	PermissionMode domain.PermissionMode `json:"permissionMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
+	Value          string                `json:"value"`
+	Name           string                `json:"name"`
+	Description    string                `json:"description,omitempty"`
+	Group          string                `json:"group,omitempty"`
+	GroupName      string                `json:"groupName,omitempty"`
 }
 
 // SetConversationConfigOptionRequest selects one provider-advertised value.
