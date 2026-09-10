@@ -4484,7 +4484,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-close:not(:disabled):active {
-	transform: translateY(1px) scale(0.96);
+	transform: scale(0.96);
+	transform-origin: center;
 }
 
 .browser-panel__tab-close:disabled {
@@ -4505,7 +4506,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	height: 30px;
 	place-items: center;
 	flex: none;
-	margin: 0 0 1px 4px;
+	margin-left: 4px;
 	border: 0;
 	border-radius: 7px;
 	color: var(--fg-muted);
@@ -4532,7 +4533,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-new:active {
-	transform: translateY(1px) scale(0.96);
+	transform: scale(0.96);
+	transform-origin: center;
 }
 
 .browser-panel__url-wrap {
