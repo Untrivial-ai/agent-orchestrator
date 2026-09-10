@@ -227,6 +227,24 @@ actions.
 Do not port old in-process TypeScript CLI behavior that mixed command handling
 with storage and runtime implementation details.
 
+### Claiming workspace PRs
+
+Workspace projects can claim a PR/MR on their root origin or any registered
+child repository origin. Use the child's full PR/MR URL: numbers still resolve
+against the root's canonical repository or origin, and a root without a remote
+cannot resolve numbers. Check registered children with `ao project get <id> --json`.
+Unregistered repositories are rejected even if a checkout has an additional Git
+remote for them. `canonicalRepoURL` requires a valid root origin; it is not a
+workspace child allowlist. Scratch projects cannot claim PRs.
+
+For automatic attribution, workspace sessions recorded on a bare branch such as
+`ao/ws-1` or `ao/ws-1-2` can use hyphen siblings (`ao/ws-1-fix` or
+`ao/ws-1-2-fix`) in registered repositories. Keep the entire recorded branch,
+including collision suffixes. Exact and stacked branches and `/root` slash
+siblings remain supported. Matching prefers the most specific owner and leaves
+ambiguous ownership for explicit claiming. Custom branches and single-repository
+projects do not gain hyphen-sibling ownership.
+
 ### Claiming upstream PRs from a fork
 
 The registered origin remains the checkout and push repository. An optional
