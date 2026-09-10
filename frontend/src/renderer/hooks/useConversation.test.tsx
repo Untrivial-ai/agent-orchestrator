@@ -90,6 +90,21 @@ beforeEach(() => {
 	apiErrorMessageMock.mockReset().mockReturnValue("failed");
 });
 
+it("does not retain cached Chat content after an authoritative mode change", async () => {
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	const Wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+	getMock.mockResolvedValue({ data: WIRE });
+	const { result, unmount } = renderHook(() => useConversation("ao-1"), { wrapper: Wrapper });
+	await waitFor(() => expect(result.current.snapshot).toBeDefined());
+	apiErrorCodeMock.mockReturnValue("SESSION_MODE_MISMATCH");
+	getMock.mockResolvedValue({ error: { code: "SESSION_MODE_MISMATCH" } });
+	await act(() => client.invalidateQueries({ queryKey: ["conversation", "ao-1"] }));
+	await waitFor(() => expect(result.current.unavailable?.code).toBe("SESSION_MODE_MISMATCH"));
+	expect(result.current.snapshot).toBeUndefined();
+	unmount();
+	client.clear();
+});
+
 describe("accepted conversation sends", () => {
 	it("keeps each accepted turn attached to the session that initiated it", async () => {
 		const firstResponse = deferred<{

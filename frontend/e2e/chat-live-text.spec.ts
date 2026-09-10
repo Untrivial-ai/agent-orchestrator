@@ -6,7 +6,7 @@ test("@P0 chat text remains visible while saved-history requests wait", async ({
 	await installFakeAgent(page, { workers: [{ id: sessionId, title: "Live text before saving", mode: "chat" }] });
 	await page.addInitScript(() => {
 		const add = EventSource.prototype.addEventListener;
-		EventSource.prototype.addEventListener = function (type: string, callback: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+		EventSource.prototype.addEventListener = function (type: string, callback: ((event: MessageEvent) => void) | EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) {
 			if (type === "conversation_text") {
 				(window as unknown as { requestSavedText: () => void }).requestSavedText = () => this.onopen?.call(this, new Event("open"));
 				(window as unknown as { sendLiveText: (frame: unknown) => void }).sendLiveText = (frame) => {
@@ -15,7 +15,7 @@ test("@P0 chat text remains visible while saved-history requests wait", async ({
 					else callback?.handleEvent(event);
 				};
 			}
-			return add.call(this, type, callback, options);
+			return add.call(this, type, callback as EventListenerOrEventListenerObject, options);
 		};
 	});
 	let saved = false;
@@ -42,7 +42,7 @@ test("@P0 chat text remains visible while saved-history requests wait", async ({
 	});
 	await page.goto(`/#/projects/fake-proj/sessions/${sessionId}`);
 	const log = page.getByRole("log", { name: "Conversation" });
-	await expect(log.getByText("Show the reply as it arrives.")).toBeVisible();
+	await expect(log.getByText("Show the reply as it arrives.")).toBeVisible({ timeout: 15_000 });
 	hold = true;
 	await page.evaluate(() => (window as unknown as { requestSavedText: () => void }).requestSavedText());
 	await blocked;

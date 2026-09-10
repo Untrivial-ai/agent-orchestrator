@@ -31,10 +31,21 @@ export function mergeConversationLiveFrame(previous: LiveFrame | undefined, fram
 	return { ...frame, afterSequence, events };
 }
 
+export function conversationLiveNeedsSnapshot(snapshot: ConversationSnapshot | undefined, live: LiveFrame | undefined): boolean {
+	if (!snapshot || !live) return false;
+	if (snapshot.liveGeneration !== live.generation || snapshot.conversationId !== live.conversationId ||
+		(snapshot.activeBranchId ?? "") !== live.branchId ||
+		(snapshot.liveSequence ?? 0) < Math.max(live.afterSequence, live.resetSequence)) return true;
+	const affectedItems = new Set(live.events.map((event) => event.providerItemId));
+	const affectedTurns = new Set(live.events.filter((event) => event.kind === "turn.completed").map((event) => event.providerTurnId));
+	return snapshot.items.some((item) => item.kind === "message" && item.providerItemId &&
+		(affectedItems.has(item.providerItemId) || affectedTurns.has(snapshot.turns.find((turn) => turn.id === item.turnId)?.providerTurnId)) &&
+		item.liveGeneration !== undefined &&
+		(item.liveGeneration !== live.generation || (item.liveSequence ?? 0) < live.afterSequence));
+}
+
 export function applyConversationLive(snapshot: ConversationSnapshot | undefined, live: LiveFrame | undefined): ConversationSnapshot | undefined {
-	if (!snapshot || !live || snapshot.liveGeneration !== live.generation ||
-		snapshot.conversationId !== live.conversationId || (snapshot.activeBranchId ?? "") !== live.branchId ||
-		(snapshot.liveSequence ?? 0) < live.afterSequence) return snapshot;
+	if (!snapshot || !live || conversationLiveNeedsSnapshot(snapshot, live)) return snapshot;
 	const messages = new Map<string, ConversationMessage>();
 	for (const item of snapshot.items) {
 		if (item.kind === "message" && item.providerItemId) messages.set(item.providerItemId, item);
@@ -145,9 +156,7 @@ export function useConversationLive(sessionId: string | undefined, snapshot: Con
 		};
 	}, [sessionId, queryClient]);
 
-	const needsSnapshot = live && snapshot && (snapshot.liveGeneration !== live.generation ||
-		(snapshot.activeBranchId ?? "") !== live.branchId ||
-		(snapshot.liveSequence ?? 0) < Math.max(live.afterSequence, live.resetSequence));
+	const needsSnapshot = conversationLiveNeedsSnapshot(snapshot, live);
 	useEffect(() => {
 		if (!needsSnapshot || !sessionId) return;
 		void queryClient.cancelQueries({ queryKey: ["conversation", sessionId] }).then(() =>

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
 import type { ConversationSnapshot } from "../types/conversation";
-import { applyConversationLive, mergeConversationLiveFrame, useConversationLive } from "./useConversationLive";
+import { applyConversationLive, conversationLiveNeedsSnapshot, mergeConversationLiveFrame, useConversationLive } from "./useConversationLive";
 
 vi.mock("../lib/api-client", () => ({
 	getApiBaseUrl: () => "http://127.0.0.1:3001",
@@ -44,6 +44,12 @@ describe("live text reconciliation", () => {
 		expect(applyConversationLive(older, frame())?.items[0]).toMatchObject({ text: "Existing live text" });
 		const newer = { ...snapshot, items: [{ ...snapshot.items[0], liveGeneration: "generation", liveSequence: 2, text: "Existing live text" }] } as ConversationSnapshot;
 		expect(applyConversationLive(newer, frame())).toBe(newer);
+	});
+	it("refetches an older page when its prefix has left the live journal", () => {
+		const older = { ...snapshot, liveSequence: 10, items: [{ ...snapshot.items[0], liveGeneration: "generation", liveSequence: 1, text: "a" }] } as ConversationSnapshot;
+		const live = { ...frame(["f"]), afterSequence: 5, sequence: 6, events: [{ ...frame(["f"]).events[0], sequence: 6 }] };
+		expect(conversationLiveNeedsSnapshot(older, live)).toBe(true);
+		expect(applyConversationLive(older, live)).toBe(older);
 	});
 	it("replaces provisional IDs with the durable row and ignores replayed frames", () => {
 		const live = frame(["hello"]);
