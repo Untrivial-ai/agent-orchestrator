@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -54,6 +55,12 @@ func authPreflightError(status ports.AgentAuthStatus, err error) error {
 func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 	return acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
+		// A live rejection is the ground truth that outranks any cached
+		// verdict, so drop the cache the moment one arrives. This is also the
+		// only auth correction that works for credential sources AO cannot
+		// read at all — the Bedrock and Vertex chains — because it needs no
+		// credential, no network call, and no provider knowledge.
+		OnAuthRejected: claudecode.InvalidateAuthCache,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming:    true,
 			ports.ChatCapabilityTools:        true,

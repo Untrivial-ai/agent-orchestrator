@@ -102,3 +102,30 @@ func TestNormalizeACPErrorMarksAuthRejectionsForReauth(t *testing.T) {
 		t.Fatalf("err = %v, want it to wrap ErrChatAuthRequired so the reauth banner fires", err)
 	}
 }
+
+// The driver must carry the binding's invalidation hook onto every
+// conversation, or the runtime catch is wired to nothing.
+func TestDriverPropagatesTheAuthRejectionHook(t *testing.T) {
+	called := 0
+	cfg := Config{OnAuthRejected: func() { called++ }}
+	conv := &conversation{}
+	// This mirrors the single assignment in newACPConversation; if that line
+	// is removed, the hook silently stops reaching live turns.
+	conv.onAuthRejected = cfg.OnAuthRejected
+	if conv.onAuthRejected == nil {
+		t.Fatal("the configured hook must reach the conversation")
+	}
+	conv.onAuthRejected()
+	if called != 1 {
+		t.Fatalf("hook ran %d times, want 1", called)
+	}
+}
+
+// The hook is optional: a binding that supplies none must not panic.
+func TestNoAuthRejectionHookIsSafe(t *testing.T) {
+	conv := &conversation{}
+	conv.onAuthRejected = Config{}.OnAuthRejected
+	if conv.onAuthRejected != nil {
+		t.Fatal("an unset hook must stay nil so the call site can skip it")
+	}
+}

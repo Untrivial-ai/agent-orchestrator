@@ -22,6 +22,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
 )
 
 type doctorLevel string
@@ -427,11 +428,11 @@ func (c *commandContext) checkHarness(ctx context.Context, harness harnessProbe)
 // checkClaudeAuth reports what credential Claude Code will actually use, and
 // is explicit that AO has not validated it.
 //
-// It is modelled on the github-token check, with one deliberate difference:
-// github-token reaches GitHub, so it can say "valid". This check only reads
-// the CLI's own view, so its best outcome is "configured" — a credential is
-// present and AO cannot tell whether it works. Reporting that as PASS/valid is
-// exactly the failure this check exists to expose.
+// It is modelled on the github-token check: read the local state, then ask the
+// provider whether the credential actually works, and report the difference
+// between those two answers. A credential that is merely present is reported
+// as unvalidated, never as valid — reporting presence as validity is the exact
+// failure this check exists to expose.
 //
 // The high-value field is apiKeySource. It is populated only when an
 // environment variable or key helper overrides a subscription login, which is
@@ -475,22 +476,73 @@ func (c *commandContext) checkClaudeAuth(ctx context.Context) doctorCheck {
 	if len(details) > 0 {
 		suffix = " (" + strings.Join(details, ", ") + ")"
 	}
+	// An env var shadowing a subscription login is the single most common
+	// cause of "everything looks fine and every turn 401s". It is an
+	// annotation rather than a verdict: the provider's answer below is
+	// strictly better information, and a shadowing key that actually works is
+	// not a problem to report as one.
+	shadow := ""
 	if report.APIKeySource != "" {
-		// Not a failure — the key may well be valid — but it is the single
-		// most common cause of "everything looks fine and every turn 401s",
-		// so it must be visible rather than folded into a PASS.
+		shadow = fmt.Sprintf("; note that %s overrides any claude.ai login", report.APIKeySource)
+	}
+	// Ask the provider. This is the only step that can distinguish a working
+	// credential from a revoked one, and the reason the check can say more
+	// than `claude auth status` already does.
+	result := doctorCredentialValidator().ValidateLocal(
+		reqCtx, report.APIProvider, agentcreds.ResolveOptions{AllowKeychain: true})
+	switch result.State {
+	case agentcreds.StateValid:
+		models := ""
+		if count := len(result.Models); count > 0 {
+			models = fmt.Sprintf(", %d Claude models available", count)
+		}
 		return doctorCheck{
-			Level: doctorWarn, Section: doctorSectionAgents, Name: name,
-			Message: fmt.Sprintf(
-				"credentials come from %s, which overrides any claude.ai login%s; AO has not validated them — if turns fail with 401, unset %s",
-				report.APIKeySource, suffix, report.APIKeySource,
-			),
+			Level: doctorPass, Section: doctorSectionAgents, Name: name,
+			Message: fmt.Sprintf("%s accepted the credential from %s%s%s%s",
+				providerLabel(result.Provider), credentialLabel(result.Source), suffix, models, shadow),
+		}
+	case agentcreds.StateInvalid:
+		return doctorCheck{
+			Level: doctorFail, Section: doctorSectionAgents, Name: name,
+			Message: fmt.Sprintf("%s REJECTED the credential from %s%s — %s%s",
+				providerLabel(result.Provider), credentialLabel(result.Source), suffix, result.Detail, shadow),
 		}
 	}
+
+	// Unknown. The local state is all that can be reported, and it must not be
+	// dressed up as a working credential.
 	return doctorCheck{
-		Level: doctorPass, Section: doctorSectionAgents, Name: name,
-		Message: fmt.Sprintf("claude reports credentials configured%s; not validated against the provider", suffix),
+		Level: doctorWarn, Section: doctorSectionAgents, Name: name,
+		Message: fmt.Sprintf("claude reports credentials configured%s, but AO could not validate them: %s%s",
+			suffix, result.Detail, shadow),
 	}
+}
+
+// doctorCredentialValidator builds the validator used by the auth check. It is
+// a variable so tests can point it at a local server: doctor's own tests must
+// never reach a real provider, nor read the developer's real credentials.
+var doctorCredentialValidator = func() *agentcreds.Validator { return agentcreds.New() }
+
+func providerLabel(provider agentcreds.Provider) string {
+	switch provider {
+	case agentcreds.ProviderBedrock:
+		return "AWS Bedrock"
+	case agentcreds.ProviderVertex:
+		return "Vertex AI"
+	case agentcreds.ProviderFoundry:
+		return "Azure AI Foundry"
+	case agentcreds.ProviderGateway:
+		return "the configured gateway"
+	default:
+		return "Anthropic"
+	}
+}
+
+func credentialLabel(source string) string {
+	if strings.TrimSpace(source) == "" {
+		return "the resolved credential"
+	}
+	return source
 }
 
 // checkCodexLaunchFlags smoke-tests AO's codex launch surface against the

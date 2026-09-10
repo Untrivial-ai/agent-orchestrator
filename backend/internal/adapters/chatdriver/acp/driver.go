@@ -82,6 +82,12 @@ type Config struct {
 	// ValidateTurnSettings rejects provider settings that cannot be applied to a
 	// live process. The initial permission mode is the launch-time value.
 	ValidateTurnSettings TurnSettingsValidator
+	// OnAuthRejected is called when the provider rejects the credential during
+	// a live turn. It is how a cached "this credential works" verdict is
+	// corrected the moment the provider says otherwise, and it is the only
+	// correction that covers every credential source — including the Bedrock
+	// and Vertex chains AO cannot inspect at all. Optional.
+	OnAuthRejected func()
 }
 
 // TurnSettingsValidator validates live turn settings against launch-time state.
@@ -425,6 +431,7 @@ func (d *Driver) initialize(
 	conv := newConversation(
 		proc, d.log, cfg.ProviderScopeID, d.cfg.ClientExtension, d.cfg.ClientExtensionAliases,
 	)
+	conv.onAuthRejected = d.cfg.OnAuthRejected
 	if proc.reconnected {
 		state := proc.acpState
 		if state == nil || len(state.InitializeResult) == 0 || len(state.SessionResult) == 0 || state.SessionID == "" {

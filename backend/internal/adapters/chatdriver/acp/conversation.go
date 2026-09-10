@@ -124,6 +124,9 @@ type conversation struct {
 	detaching          bool
 	terminalEventID    string
 	ignorePromptResult bool
+	// onAuthRejected corrects cached auth state when the provider rejects the
+	// credential mid-turn. Nil when the binding does not supply one.
+	onAuthRejected func()
 
 	eventMu      sync.RWMutex
 	events       chan ports.ChatEvent
@@ -566,6 +569,11 @@ func (c *conversation) finishPrompt(
 		} else {
 			state = domain.TurnStateFailed
 			if isACPAuthRequired(err) {
+				// The provider has just contradicted whatever the readiness
+				// cache holds. Correct it before anything reads it again.
+				if c.onAuthRejected != nil {
+					c.onAuthRejected()
+				}
 				c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{
 					ReauthRequired: true, ReauthReason: "Provider authentication expired",
 				}})

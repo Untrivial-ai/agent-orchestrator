@@ -11,6 +11,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
 )
 
 // The auth ladder.
@@ -20,20 +21,23 @@ import (
 // that never blocks a launch.
 //
 //	rung 0  binary        ResolveBinary        → unavailable (install, not login)
+//	rung 1  provider gate apiProvider          → stop unless we can validate it
+//	rung 2  network probe GET model list       → authorized or unauthorized
 //	rung 3  cli probe     claude auth status   → unauthorized, or configured
 //	rung 4  local         ~/.claude.json + env → configured, or unauthorized
 //
-// Rung 2 — the provider round-trip that is the only check able to prove a
-// credential works — is deliberately absent here; it arrives with the
-// first-party validator. Until it exists, no rung may return authorized.
-//
-// That restriction is the point. Presence of a credential was previously
+// Rung 2 is the only rung that can prove a credential works, and so the only
+// one permitted to return Authorized. Everything below it reports what is
+// configured, which is a different question: presence of a credential was once
 // reported as proof of authentication, so a revoked ANTHROPIC_API_KEY in a
 // shell profile rendered as "ready" while every turn returned 401. Validity is
-// a server-side fact: a credential can be revoked, downgraded, or rate-limited
-// with no change on disk, and only a network call can observe that. Local
-// evidence therefore yields ports.AgentAuthStatusConfigured, which renders
-// neutral, and never ports.AgentAuthStatusAuthorized.
+// a server-side fact — a credential can be revoked, downgraded, or rate-limited
+// with no change on disk — so local evidence yields
+// ports.AgentAuthStatusConfigured, which renders neutral, and never Authorized.
+//
+// The ladder is strictly additive at every step. A rung that cannot answer
+// hands down rather than guessing, and the whole thing terminates in a verdict
+// that never blocks a launch.
 const claudeAuthProbeTimeout = 3 * time.Second
 
 // claudeCredentialEnv is the environment-variable ladder, in the precedence
@@ -69,15 +73,27 @@ func (p *Plugin) AuthVerdict(ctx context.Context) (ports.AuthVerdict, error) {
 		return unknownVerdict(ports.AuthSourceBinary), err
 	}
 
-	// Rung 3 — the CLI probe. It cannot prove success (it reports what is
-	// configured, not what the provider accepts), but it is the only local
-	// check that can observe a definite "signed out", and it carries
-	// diagnostics no other rung has: apiKeySource identifies an env var
-	// overriding a subscription, apiProvider says whether first-party
-	// validation even applies, and authMethod separates a claude.ai login
-	// from a setup-token.
-	report, ok := p.claudeCLIAuthReport(ctx, binary)
-	if ok {
+	// Rung 3 runs first among the evidence rungs, even though rung 2 outranks
+	// it, because its output is what rung 2 needs: apiProvider decides whether
+	// a first-party probe is even the right thing to send. Inferring the
+	// provider from environment variables instead would risk pointing a
+	// Bedrock credential at api.anthropic.com.
+	//
+	// It also carries diagnostics no other rung has — apiKeySource names an
+	// env var shadowing a subscription, authMethod separates a claude.ai login
+	// from a setup-token — so it runs for those even when rung 2 answers.
+	report, cliOK := p.claudeCLIAuthReport(ctx, binary)
+
+	// Rungs 1 and 2 — the provider gate and the network probe. This is the
+	// only rung that can prove a credential works, so it is the only one
+	// allowed to return Authorized.
+	if verdict, ok := p.probeVerdict(ctx, report, cliOK); ok {
+		return verdict, nil
+	}
+
+	// Rung 3's own verdict. It cannot prove success, but it is the only local
+	// check that can observe a definite "signed out".
+	if cliOK {
 		verdict := report.verdict()
 		if verdict.State != ports.AgentAuthStatusUnknown {
 			return verdict, nil
@@ -88,6 +104,93 @@ func (p *Plugin) AuthVerdict(ctx context.Context) (ports.AuthVerdict, error) {
 	// because it never blocks anything.
 	return claudeLocalAuthVerdict(ctx)
 }
+
+// probeVerdict runs the provider gate and the network probe.
+//
+// ok=false means the ladder must fall through: the provider is not one this
+// build validates, no credential could be resolved, or the probe could not
+// reach a conclusion. Only a definite provider answer stops the ladder here,
+// which is what keeps the whole check additive — it can convert an Unknown
+// into a real verdict, and can never manufacture a worse one.
+func (p *Plugin) probeVerdict(ctx context.Context, report claudeAuthReport, cliOK bool) (ports.AuthVerdict, bool) {
+	reported := ""
+	if cliOK {
+		reported = report.APIProvider
+	}
+	opts := agentcreds.ResolveOptions{
+		// Q1 assumption: the Cloud design's keychain prohibition governs
+		// shipping local credentials into Cloud sandboxes, not the local
+		// daemon reading the local keychain to validate a local login. Every
+		// keychain call sits behind this flag, so reversing that reading costs
+		// only source 5.
+		AllowKeychain: true,
+	}
+	provider, ok := agentcreds.ResolveProvider(reported, opts)
+	if !ok {
+		return ports.AuthVerdict{}, false
+	}
+	cred, found := agentcreds.ResolveLocal(ctx, provider, opts)
+
+	// The cache is read before anything is sent, and is keyed on the
+	// credential's fingerprint: a verdict about a credential the agent no
+	// longer uses is not evidence about anything.
+	if found {
+		if cached, hit := p.authCache().Get(claudeAgentID, cred.Fingerprint()); hit {
+			return verdictFromResult(cached), true
+		}
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, agentcreds.DefaultTimeout)
+	defer cancel()
+	result := claudeValidator().ValidateLocal(probeCtx, reported, opts)
+	if result.State == agentcreds.StateUnknown {
+		return ports.AuthVerdict{}, false
+	}
+	p.authCache().Put(claudeAgentID, result)
+	return verdictFromResult(result), true
+}
+
+// verdictFromResult projects a provider verdict onto AO's vocabulary. Only
+// this function may produce a verified verdict.
+func verdictFromResult(result agentcreds.Result) ports.AuthVerdict {
+	verdict := ports.AuthVerdict{
+		Source:      ports.AuthSourceProbe,
+		Verified:    true,
+		Credential:  result.Source,
+		Fingerprint: result.Fingerprint,
+		CheckedAt:   result.CheckedAt,
+	}
+	switch result.State {
+	case agentcreds.StateValid:
+		verdict.State = ports.AgentAuthStatusAuthorized
+	case agentcreds.StateInvalid:
+		verdict.State = ports.AgentAuthStatusUnauthorized
+	default:
+		verdict.State = ports.AgentAuthStatusUnknown
+		verdict.Verified = false
+	}
+	return verdict
+}
+
+// claudeAgentID keys this adapter's cache entry.
+const claudeAgentID = "claude-code"
+
+// claudeValidator builds the credential validator. It is a variable so tests
+// can point the probe at a local server: a unit test must never be able to
+// reach api.anthropic.com, both because that makes it flaky and because a test
+// machine's real credentials are not the test's business.
+var claudeValidator = func() *agentcreds.Validator { return agentcreds.New() }
+
+// authCache returns the process-wide verdict cache. It is package-level
+// because the verdict is about the machine's credentials, not about any one
+// plugin instance, and the readiness coordinator builds fresh adapters.
+func (p *Plugin) authCache() *agentcreds.Cache { return claudeAuthCache }
+
+var claudeAuthCache = agentcreds.NewCache(agentcreds.DefaultCacheTTL)
+
+// InvalidateAuthCache drops the cached verdict. The runtime 401 handler calls
+// it: the provider has just contradicted whatever was stored.
+func InvalidateAuthCache() { claudeAuthCache.Invalidate(claudeAgentID) }
 
 // claudeAuthReport is the parsed shape of `claude auth status --json`. Only
 // LoggedIn drives the verdict; the rest is diagnostics.

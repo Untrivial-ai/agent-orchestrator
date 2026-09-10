@@ -2,11 +2,14 @@ package claudecode
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
 )
 
 // The regression this whole ladder exists for: a revoked key in the
@@ -232,5 +235,174 @@ func clearClaudeCredentialEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range claudeCredentialEnv {
 		t.Setenv(name, "")
+	}
+}
+
+// Rung 2 is the only rung permitted to return Authorized, and the only one
+// that may mark a verdict verified.
+func TestOnlyTheProbeCanAuthorize(t *testing.T) {
+	tests := []struct {
+		name  string
+		state agentcreds.State
+		want  ports.AgentAuthStatus
+	}{
+		{"provider accepted", agentcreds.StateValid, ports.AgentAuthStatusAuthorized},
+		{"provider rejected", agentcreds.StateInvalid, ports.AgentAuthStatusUnauthorized},
+		{"could not tell", agentcreds.StateUnknown, ports.AgentAuthStatusUnknown},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict := verdictFromResult(agentcreds.Result{
+				State: tc.state, Source: "ANTHROPIC_API_KEY", Fingerprint: "abc123def456",
+			})
+			if verdict.State != tc.want {
+				t.Fatalf("state = %q, want %q", verdict.State, tc.want)
+			}
+			wantVerified := tc.state != agentcreds.StateUnknown
+			if verdict.Verified != wantVerified {
+				t.Fatalf("verified = %v, want %v", verdict.Verified, wantVerified)
+			}
+			if verdict.Verified && verdict.Source != ports.AuthSourceProbe {
+				t.Fatalf("source = %q, want %q", verdict.Source, ports.AuthSourceProbe)
+			}
+		})
+	}
+}
+
+// An unknown probe result must never be marked verified, or a "we couldn't
+// tell" would be presented with the authority of a real answer.
+func TestUnknownProbeResultIsNeverVerified(t *testing.T) {
+	verdict := verdictFromResult(agentcreds.Result{State: agentcreds.StateUnknown})
+	if verdict.Verified {
+		t.Fatal("an unknown result must not claim to be verified")
+	}
+}
+
+// The runtime 401 handler drops the cached verdict; the provider has just
+// contradicted it.
+func TestInvalidateAuthCacheClearsTheStoredVerdict(t *testing.T) {
+	result := agentcreds.Result{State: agentcreds.StateValid, Fingerprint: agentcreds.Fingerprint("k")}
+	claudeAuthCache.Put(claudeAgentID, result)
+	if _, ok := claudeAuthCache.Get(claudeAgentID, agentcreds.Fingerprint("k")); !ok {
+		t.Fatal("expected the verdict to be cached")
+	}
+	InvalidateAuthCache()
+	if _, ok := claudeAuthCache.Get(claudeAgentID, agentcreds.Fingerprint("k")); ok {
+		t.Fatal("a runtime rejection must clear the cached verdict")
+	}
+}
+
+// withStubValidator points the probe at a local server for the duration of a
+// test, so no unit test can reach a real provider.
+func withStubValidator(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	previous := claudeValidator
+	claudeValidator = func() *agentcreds.Validator {
+		return agentcreds.New(agentcreds.WithHTTPClient(server.Client()))
+	}
+	t.Cleanup(func() { claudeValidator = previous })
+	return server
+}
+
+// Rungs 1 and 2 end to end: the provider accepts, so the ladder returns the
+// one state no local rung is allowed to produce.
+func TestProbeAuthorizesOnlyOnAProviderAcceptance(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-works")
+	InvalidateAuthCache()
+	server := withStubValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-4-5-20251101"}]}`))
+	})
+	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
+
+	verdict, ok := (&Plugin{}).probeVerdict(context.Background(), claudeAuthReport{APIProvider: "gateway"}, true)
+	if !ok {
+		t.Fatal("a definite provider answer must stop the ladder")
+	}
+	if verdict.State != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("state = %q, want authorized", verdict.State)
+	}
+	if !verdict.Verified || verdict.Source != ports.AuthSourceProbe {
+		t.Fatalf("a provider acceptance must be a verified probe verdict: %+v", verdict)
+	}
+}
+
+// A revoked key is what this whole change exists for: presence resolves it,
+// and the provider is what turns it into a rejection.
+func TestProbeRejectsARevokedCredential(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-revoked")
+	InvalidateAuthCache()
+	server := withStubValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"API key is invalid."}}`))
+	})
+	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
+
+	verdict, ok := (&Plugin{}).probeVerdict(context.Background(), claudeAuthReport{APIProvider: "gateway"}, true)
+	if !ok || verdict.State != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("verdict = %+v, want a verified rejection", verdict)
+	}
+	if verdict.Credential != "ANTHROPIC_API_KEY" {
+		t.Fatalf("credential = %q, want the env var that supplied it", verdict.Credential)
+	}
+}
+
+// Rung 1 is a gate, not a guess: an apiProvider this build cannot validate
+// must stop the probe rather than pick a host.
+func TestProbeGateStopsBeforeSendingAnythingForAnUnknownProvider(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-key")
+	InvalidateAuthCache()
+	withStubValidator(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("an unrecognized provider must not produce any request")
+	})
+
+	if _, ok := (&Plugin{}).probeVerdict(
+		context.Background(), claudeAuthReport{APIProvider: "some-future-provider"}, true,
+	); ok {
+		t.Fatal("an unrecognized provider must hand down the ladder, not answer it")
+	}
+}
+
+// I1 at the probe rung: an inconclusive probe hands down so the lower rungs
+// can still speak, and never becomes a rejection of its own.
+func TestInconclusiveProbeHandsDownTheLadder(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-key")
+	InvalidateAuthCache()
+	server := withStubValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
+
+	if _, ok := (&Plugin{}).probeVerdict(
+		context.Background(), claudeAuthReport{APIProvider: "gateway"}, true,
+	); ok {
+		t.Fatal("a provider outage must not stop the ladder with a verdict")
+	}
+}
+
+// The cache is consulted before anything is sent, and answers from the stored
+// verdict when the credential has not changed.
+func TestProbeAnswersFromCacheWithoutReprobing(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-cached")
+	InvalidateAuthCache()
+	t.Cleanup(InvalidateAuthCache)
+
+	claudeAuthCache.Put(claudeAgentID, agentcreds.Result{
+		State: agentcreds.StateValid, Source: "ANTHROPIC_API_KEY",
+		Fingerprint: agentcreds.Fingerprint("sk-ant-cached"),
+	})
+	withStubValidator(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("a cache hit must not reach the provider")
+	})
+
+	verdict, ok := (&Plugin{}).probeVerdict(context.Background(), claudeAuthReport{APIProvider: "firstParty"}, true)
+	if !ok || verdict.State != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("verdict = %+v, want the cached acceptance", verdict)
 	}
 }

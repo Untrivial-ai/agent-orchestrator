@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,16 +8,20 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
 )
 
 const (
 	defaultAnthropicAPIURL = "https://api.anthropic.com"
 	defaultOpenAIAPIURL    = "https://api.openai.com/v1"
 	defaultCursorAPIURL    = "https://api.cursor.com"
+	anthropicAPIVersion    = "2023-06-01"
 )
 
 type agentCredentialValidator struct {
 	client           *http.Client
+	creds            *agentcreds.Validator
 	anthropicBaseURL string
 	openAIBaseURL    string
 	cursorBaseURL    string
@@ -30,6 +33,7 @@ func newAgentCredentialValidator(client *http.Client) *agentCredentialValidator 
 	}
 	return &agentCredentialValidator{
 		client:           client,
+		creds:            agentcreds.New(agentcreds.WithHTTPClient(client)),
 		anthropicBaseURL: defaultAnthropicAPIURL,
 		openAIBaseURL:    defaultOpenAIAPIURL,
 		cursorBaseURL:    defaultCursorAPIURL,
@@ -73,54 +77,48 @@ func (v *agentCredentialValidator) Validate(
 	}
 }
 
+// validateClaude delegates to the shared agentcreds package, which owns the
+// header-per-credential-kind rule and the three-state classification for every
+// Anthropic surface — first-party, gateway, Bedrock, Vertex, and Foundry.
+//
+// Cloud and the desktop daemon resolve credentials in opposite directions:
+// Cloud is handed a secret and must never let it touch a manifest, a log, or
+// an argv, while the daemon has to discover which of several local sources
+// wins. Only the probe is common, so only the probe is shared. Resolution
+// stays on each side of that line where it belongs.
 func (v *agentCredentialValidator) validateClaude(
 	ctx context.Context,
 	credentialType string,
 	secret []byte,
 ) error {
-	// #nosec G101 -- this checks a public credential-format prefix.
-	if credentialType == "oauth_token" &&
-		(!strings.HasPrefix(string(secret), "sk-ant-oat01-") || len(secret) < 80) {
-		return errInvalidAgentCredential
-	}
-	request, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		strings.TrimRight(v.anthropicBaseURL, "/")+"/v1/messages",
-		bytes.NewReader([]byte(`{}`)),
-	)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("anthropic-version", "2023-06-01")
-	request.Header.Set("User-Agent", "claude-code/2.1.220")
+	var kind agentcreds.Kind
 	switch credentialType {
 	case "api_key":
-		request.Header.Set("x-api-key", string(secret))
+		kind = agentcreds.KindAPIKey
 	case "oauth_token":
-		request.Header.Set("Authorization", "Bearer "+string(secret))
-		request.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
-		request.Header.Set("x-app", "cli")
+		// Covers both `claude setup-token` output and Pro/Max login tokens:
+		// they are the same sk-ant-oat01- credential class.
+		kind = agentcreds.KindOAuthToken
 	default:
 		return errInvalidAgentCredential
 	}
-	response, err := v.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("validate Claude credential: %w", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-	switch response.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	result := v.creds.Validate(ctx, agentcreds.Credential{
+		Kind: kind, Secret: string(secret), Provider: agentcreds.ProviderFirstParty,
+		BaseURL: v.anthropicBaseURL,
+	})
+	switch result.State {
+	case agentcreds.StateInvalid:
 		return errInvalidAgentCredential
-	case http.StatusOK, http.StatusBadRequest, http.StatusTooManyRequests:
+	case agentcreds.StateValid:
 		return nil
 	default:
-		return fmt.Errorf(
-			"validate Claude credential: provider returned HTTP %d",
-			response.StatusCode,
-		)
+		// Unknown is not a rejection. Surface it as a transport-style error so
+		// the caller can retry rather than telling the user their credential
+		// is bad.
+		if result.Err != nil {
+			return fmt.Errorf("validate Claude credential: %w", result.Err)
+		}
+		return fmt.Errorf("validate Claude credential: %s", result.Detail)
 	}
 }
 
@@ -128,6 +126,16 @@ func (v *agentCredentialValidator) validateBearerEndpoint(
 	ctx context.Context,
 	provider, endpoint string,
 	secret []byte,
+) error {
+	return v.validateAuthedEndpoint(ctx, provider, endpoint, map[string]string{
+		"Authorization": "Bearer " + string(secret),
+	})
+}
+
+func (v *agentCredentialValidator) validateAuthedEndpoint(
+	ctx context.Context,
+	provider, endpoint string,
+	headers map[string]string,
 ) error {
 	request, err := http.NewRequestWithContext(
 		ctx,
@@ -138,7 +146,9 @@ func (v *agentCredentialValidator) validateBearerEndpoint(
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+string(secret))
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
 	response, err := v.client.Do(request)
 	if err != nil {
 		return fmt.Errorf("validate %s credential: %w", provider, err)
