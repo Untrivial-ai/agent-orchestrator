@@ -135,6 +135,7 @@ var shippedMigrations = map[int64]string{
 	128: "0128_pr_author_avatar_url.sql",
 	129: "0129_change_log_retention_index.sql",
 	130: "0130_pr_review_partial.sql",
+	131: "0131_repair_intermediate_pr_review_certainty.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
