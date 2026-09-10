@@ -2562,6 +2562,12 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	if (app.isPackaged) {
+		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
+		await checkDesktopVersionFloor().catch((err) =>
+			console.warn("desktop version floor check failed:", err),
+		);
+	}
 	void refreshGitHubOwners();
 	const visibilityKillSwitched = (process.env.AO_TELEMETRY_DISABLED_EVENTS ?? "").split(",").some((name) => name.trim() === "ao.agent_switch.visibility_failure");
 	// The approved release gate is intentionally closed. Tests inject the
