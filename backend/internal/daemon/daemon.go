@@ -25,6 +25,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	chatdriverregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/registry"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/codexmaintenance"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/systemexec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/telemetry/policyauthority"
@@ -450,7 +451,7 @@ func Run() error {
 	codexModelDriver := codexappserver.New(codexagent.New(), log)
 	modelDiscoverer := modelcatalog.Discoverer{
 		CodexModels: func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]ports.ChatModel, error) {
-			return codexModelDriver.DiscoverModels(listCtx, request.WorkingDir, request.Env)
+			return codexModelDriver.DiscoverModelsWithBinary(listCtx, request.Binary, request.WorkingDir, request.Env)
 		},
 		ClineOptions: func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error) {
 			return chatdriveracp.DiscoverConfigOptions(listCtx, chatdriveracp.Launch{
@@ -529,9 +530,11 @@ func Run() error {
 	hostCommands := systemexec.New(cfg.DataDir)
 	systemChecks := systemcheck.NewWithCommandRunner(agentSvc, hostCommands, hostCommands)
 	systemInstall := systeminstall.NewWithDeps(hostCommands, hostCommands, systeminstall.Deps{
-		JobStore: store,
-		Verifier: systeminstall.NewVerifier(agents, hostCommands),
-		Sessions: store,
+		JobStore:         store,
+		Verifier:         systeminstall.NewVerifier(agents, hostCommands),
+		Sessions:         store,
+		CodexMaintenance: codexmaintenance.New(codexagent.New().ResolveBinary, hostCommands, hostCommands),
+		RefreshCodex:     agentSvc.RefreshCodexInstallation,
 	})
 	if err := systemInstall.Recover(ctx); err != nil {
 		stop()

@@ -217,6 +217,26 @@ func (d *Driver) DiscoverModels(ctx context.Context, workdir string, env map[str
 	return listModels(ctx, conv.conn)
 }
 
+// DiscoverModelsWithBinary uses the exact executable selected by the catalog
+// service, preserving the project environment while creating a fresh process.
+func (d *Driver) DiscoverModelsWithBinary(ctx context.Context, binary, workdir string, env map[string]string) ([]ports.ChatModel, error) {
+	clone := *d
+	clone.plugin = discoveryPlugin{codexPlugin: d.plugin, binary: binary}
+	return clone.DiscoverModels(ctx, workdir, env)
+}
+
+type discoveryPlugin struct {
+	codexPlugin
+	binary string
+}
+
+func (p discoveryPlugin) ResolveBinary(context.Context) (string, error) {
+	if p.binary == "" {
+		return "", ports.ErrAgentBinaryNotFound
+	}
+	return p.binary, nil
+}
+
 type codexVersion [3]int
 
 var codexVersionPattern = regexp.MustCompile(`\b(\d+)\.(\d+)\.(\d+)\b`)

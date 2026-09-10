@@ -1429,6 +1429,19 @@ type InstallStatusResponse = systeminstall.Job
 // AgentInstallResponse is shared by the agent harness start and status routes.
 type AgentInstallResponse = systeminstall.Job
 
+// CodexUpdateAdvisory describes the effective user-owned installation only.
+type CodexUpdateAdvisory = systeminstall.CodexUpdateAdvisory
+
+// StartCodexUpdateRequest binds an explicit update to displayed ownership.
+type StartCodexUpdateRequest struct {
+	Token string `json:"token"`
+}
+
+// CodexUpdateQuery requests an explicit version/ownership recheck.
+type CodexUpdateQuery struct {
+	Refresh bool `query:"refresh,omitempty"`
+}
+
 // StartAgentInstallRequest selects one method returned by the installer
 // catalog. The daemon still owns the argv behind the method id.
 type StartAgentInstallRequest struct {

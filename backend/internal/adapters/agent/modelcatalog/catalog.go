@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/codexmaintenance"
 	"io"
 	"os"
 	"os/exec"
@@ -486,6 +487,9 @@ func BinaryVersion(ctx context.Context, binary string) string {
 // discovery must be represented here or an edit would never take effect.
 func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string, env map[string]string) string {
 	binaryVersion := BinaryVersion(ctx, binary)
+	if agentID == "codex" {
+		binaryVersion += codexmaintenance.ExecutableFingerprint(binary)
+	}
 	config := discoveryConfigInputs(agentID, workingDir, env)
 	if config == "" {
 		// Keep the executable-only fingerprint byte-identical to what earlier

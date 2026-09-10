@@ -70,6 +70,7 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/agents/{agent}/auth",
 	"/api/v1/agents/{agent}/install",
 	"/api/v1/agents/codex/accounts",
+	"/api/v1/agents/codex/update",
 	"/api/v1/agents/codex/accounts/{accountId}",
 	"/api/v1/agents/codex/accounts/ensure",
 	"/api/v1/agents/codex/accounts/{accountId}/login-terminal",

@@ -212,6 +212,7 @@ type Status string
 // The full set of Job lifecycle states.
 const (
 	StatusIdle        Status = "idle"
+	StatusQueued      Status = "queued"
 	StatusRunning     Status = "running"
 	StatusInstalling  Status = "installing"
 	StatusVerifying   Status = "verifying"
@@ -241,7 +242,7 @@ const defaultPersistenceTimeout = 2 * time.Second
 // Job is the tracked state of one install run for a Target.
 type Job struct {
 	Target              Target `json:"target" enum:"tmux,gh,claude,claude-code,codex,cursor,opencode,aider,copilot,grok,kimi,pi,amp,auggie,droid,crush,cline,goose,qwen,continue,devin,kiro,kilocode,vibe,muse,agy,autohand,kimchi,prime-agent,omp,cloudflared" description:"Fixed install target this job ran (or is running) for."`
-	Status              Status `json:"status" enum:"idle,running,installing,verifying,succeeded,failed,unsupported,interrupted" description:"Current lifecycle state of the job."`
+	Status              Status `json:"status" enum:"idle,queued,running,installing,verifying,succeeded,failed,unsupported,interrupted" description:"Current lifecycle state of the job."`
 	Method              string `json:"method,omitempty" description:"Server-owned installation method selected for this harness job."`
 	Command             string `json:"command,omitempty" description:"Human-readable install command, e.g. \"brew install tmux\", for display even before/without output."`
 	ExpectedDestination string `json:"expectedDestination,omitempty" description:"Expected or adapter-resolved executable destination."`
@@ -271,9 +272,11 @@ type SessionLister interface {
 
 // Deps are the durable and adapter-backed dependencies used for harness jobs.
 type Deps struct {
-	JobStore ports.AgentInstallJobStore
-	Verifier HarnessVerifier
-	Sessions SessionLister
+	JobStore         ports.AgentInstallJobStore
+	Verifier         HarnessVerifier
+	Sessions         SessionLister
+	CodexMaintenance ports.CodexMaintenance
+	RefreshCodex     func(context.Context) error
 }
 
 // Service runs real install commands for the fixed Target allowlist.
@@ -285,6 +288,16 @@ type Service struct {
 	stopping          bool
 	workers           sync.WaitGroup
 	droidGate         sync.RWMutex
+	codexGate         sync.RWMutex
+	// All daemon installers share a conservative lock. This includes separate
+	// harnesses that mutate the same npm prefix or Homebrew installation.
+	installerGate    chan struct{}
+	codexMaintenance ports.CodexMaintenance
+	refreshCodex     func(context.Context) error
+	advisoryMu       sync.Mutex
+	advisory         CodexUpdateAdvisory
+	advisoryUntil    time.Time
+	advisoryCall     chan struct{}
 
 	executables         ports.ExecutableFinder
 	commands            ports.CommandRunner
@@ -364,6 +377,9 @@ func NewWithDeps(executables ports.ExecutableFinder, commands ports.CommandRunne
 		persistenceTimeout:  defaultPersistenceTimeout,
 		stop:                stop,
 		backgroundContext:   backgroundContext,
+		installerGate:       make(chan struct{}, 1),
+		codexMaintenance:    deps.CodexMaintenance,
+		refreshCodex:        deps.RefreshCodex,
 	}
 }
 
@@ -626,9 +642,15 @@ func (s *Service) StartAgentOperation(ctx context.Context, target Target, method
 	return initial, nil
 }
 
-// TryBeginHarnessUse prevents a Droid session launch from racing replacement
-// of the Droid executable. The returned release must be called after launch.
+// TryBeginHarnessUse prevents Codex and Droid launches from racing replacement
+// of their shared installations. The returned release must be called after launch.
 func (s *Service) TryBeginHarnessUse(harness domain.AgentHarness) (func(), bool) {
+	if harness == domain.HarnessCodex {
+		if !s.codexGate.TryRLock() {
+			return nil, false
+		}
+		return s.codexGate.RUnlock, true
+	}
 	if harness != domain.HarnessDroid {
 		return func() {}, true
 	}
@@ -770,6 +792,12 @@ func (s *Service) Verify(ctx context.Context, target Target) (Job, error) {
 		job.ExpectedDestination = current.ExpectedDestination
 		job.Output = current.Output
 	}
+	// A standalone installation verification is not an update verification.
+	// Preserve its diagnostics without letting a --version probe upgrade the
+	// meaning of a previous failed update in the renderer.
+	if strings.HasPrefix(job.Method, "update:") {
+		job.Method = "verify:" + strings.TrimPrefix(job.Method, "update:")
+	}
 	s.jobs[target] = job
 	s.mu.Unlock()
 	if err := s.persistJob(ctx, *job); err != nil {
@@ -836,6 +864,11 @@ func (s *Service) Close(ctx context.Context) error {
 func (s *Service) run(parent context.Context, argv []string, job *Job) {
 	ctx, cancel := context.WithTimeout(parent, s.installTimeout)
 	defer cancel()
+	if err := s.acquireInstaller(ctx, job); err != nil {
+		s.finishAgentJob(job, StatusInterrupted, "", err.Error(), "")
+		return
+	}
+	defer s.releaseInstaller()
 
 	out := &capturedOutput{max: maxOutputBytes}
 	var runErr error
@@ -896,6 +929,11 @@ func (s *Service) run(parent context.Context, argv []string, job *Job) {
 func (s *Service) runAgentInstall(parent context.Context, plan Plan, job *Job) {
 	ctx, cancel := context.WithTimeout(parent, s.installTimeout)
 	defer cancel()
+	if err := s.acquireInstaller(ctx, job); err != nil {
+		s.finishAgentJob(job, StatusInterrupted, "", err.Error(), "")
+		return
+	}
+	defer s.releaseInstaller()
 	out := &capturedOutput{max: maxOutputBytes}
 	env := []string{
 		"CI=1", "NONINTERACTIVE=1", "HOMEBREW_NO_AUTO_UPDATE=1",
@@ -996,7 +1034,7 @@ func (s *Service) finishAgentJob(job *Job, status Status, output, errorMessage, 
 		s.mu.Unlock()
 		return
 	}
-	if status == StatusSucceeded && callback != nil {
+	if status == StatusSucceeded && callback != nil && !strings.HasPrefix(job.Method, "update:") {
 		callback(target)
 	}
 }
@@ -1042,7 +1080,7 @@ func jobFromRecord(record ports.AgentInstallJobRecord) Job {
 }
 
 func activeStatus(status Status) bool {
-	return status == StatusRunning || status == StatusInstalling || status == StatusVerifying
+	return status == StatusQueued || status == StatusRunning || status == StatusInstalling || status == StatusVerifying
 }
 
 func combineOutput(existing, next string) string {

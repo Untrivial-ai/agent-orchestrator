@@ -19,6 +19,7 @@ require (
 	github.com/swaggest/openapi-go v0.2.61
 	github.com/unixshells/vt-go v0.2.0
 	github.com/yuin/goldmark v1.8.2
+	golang.org/x/mod v0.35.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
