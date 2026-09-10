@@ -4850,7 +4850,6 @@ components:
           - agy
           - continue
           - goose
-          - vibe
           - devin
           - droid
           - kimi
@@ -7148,7 +7147,6 @@ components:
           - opencode
           - kiro
           - pi
-          - qwen
           - agy
           - devin
           - droid
@@ -7470,7 +7468,6 @@ components:
           - opencode
           - kiro
           - pi
-          - qwen
           - agy
           - devin
           - droid
