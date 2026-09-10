@@ -28,9 +28,13 @@ func TestConnectOrStartConcurrentStaleProbeDoesNotStartRivalHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
+	startLog := filepath.Join(t.TempDir(), "providers.log")
+	cfg := Config{SessionID: sessionID, DataDir: dataDir, Workdir: t.TempDir(),
+		Env:  append(os.Environ(), "AO_START_LOG="+startLog),
+		Argv: []string{"/bin/sh", "-c", `echo $$ >> "$AO_START_LOG"; exec cat`}}
 	stale := Descriptor{
-		Version: ProtocolVersion, SessionID: sessionID, Address: ln.Addr().String(),
-		Token: "stale", PID: 2147483647, StartedAt: time.Now(),
+		Version: ProtocolVersion, SessionID: sessionID, OwnershipFingerprint: cfg.OwnershipFingerprint,
+		Address: ln.Addr().String(), Token: "stale", PID: 2147483647, StartedAt: time.Now(),
 	}
 	if err := writeDescriptor(dataDir, stale); err != nil {
 		t.Fatal(err)
@@ -52,10 +56,6 @@ func TestConnectOrStartConcurrentStaleProbeDoesNotStartRivalHost(t *testing.T) {
 		}
 	}()
 
-	startLog := filepath.Join(t.TempDir(), "providers.log")
-	cfg := Config{SessionID: sessionID, DataDir: dataDir, Workdir: t.TempDir(),
-		Env:  append(os.Environ(), "AO_START_LOG="+startLog),
-		Argv: []string{"/bin/sh", "-c", `echo $$ >> "$AO_START_LOG"; exec cat`}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	results := make(chan *Transport, 2)

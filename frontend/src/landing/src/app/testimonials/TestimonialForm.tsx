@@ -10,7 +10,7 @@ import {
 } from "@/lib/testimonial-submission";
 
 const TWEET_INTENT_URL =
-  "https://twitter.com/intent/tweet?text=I%27ve%20been%20using%20%40aoagents%20to%20run%20coding%20agents%20in%20parallel.%20Here%27s%20what%20I%20think%3A&url=https%3A%2F%2Faoagents.dev";
+  "https://twitter.com/intent/tweet?text=I%27ve%20been%20using%20%40aoagents%20to%20run%20coding%20agents%20in%20parallel.%20Here%27s%20what%20I%20think%3A&url=https%3A%2F%2Fuseao.dev";
 
 export function TestimonialForm() {
   const testimonialId = useId();

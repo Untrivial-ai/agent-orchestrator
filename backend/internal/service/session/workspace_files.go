@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1919,7 +1920,15 @@ func confinedWorkspaceFile(root, rel string) (string, os.FileInfo, error) {
 }
 
 func cleanWorkspaceRelativePath(raw string) (string, error) {
-	trimmed := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	// Backslash is a path separator only on Windows. Everywhere else it is a
+	// legal filename character, so folding it here makes a file named `a\b.txt`
+	// unopenable — and worse, silently resolves it to `a/b.txt`, a different
+	// file that may well exist.
+	normalized := raw
+	if runtime.GOOS == "windows" {
+		normalized = strings.ReplaceAll(raw, "\\", "/")
+	}
+	trimmed := strings.TrimSpace(normalized)
 	if trimmed == "" || path.IsAbs(trimmed) || filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
 		return "", apierr.Invalid("INVALID_WORKSPACE_PATH", "workspace path must be relative", nil)
 	}

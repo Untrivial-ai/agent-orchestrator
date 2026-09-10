@@ -14,6 +14,7 @@ import {
 
 type OrchestratorReplacementDialogProps = {
 	projectId: string | null;
+	pending?: boolean;
 	error?: OrchestratorReplacementFailure;
 	workspaces: WorkspaceSummary[];
 	onOpenChange: (open: boolean) => void;
@@ -23,6 +24,7 @@ type OrchestratorReplacementDialogProps = {
 
 export function OrchestratorReplacementDialog({
 	projectId,
+	pending = false,
 	error,
 	workspaces,
 	onOpenChange,
@@ -44,16 +46,23 @@ export function OrchestratorReplacementDialog({
 	};
 
 	return (
-		<Dialog.Root open={open} onOpenChange={onOpenChange}>
+		<Dialog.Root
+			open={open}
+			onOpenChange={(open) => {
+				if (!pending) onOpenChange(open);
+			}}
+		>
 			<Dialog.Portal>
 				<Dialog.Overlay className="dialog-overlay data-[state=open]:animate-overlay-in" />
 				<Dialog.Content
+					aria-busy={pending}
 					className={`${settingsDialogContentClass} fixed left-1/2 top-1/2 w-dialog-orchestrator -translate-x-1/2 -translate-y-1/2 data-[state=open]:animate-modal-in`}
 				>
 					<Dialog.Close asChild>
 						<button
 							type="button"
 							className="settings-dialog-close-button settings-close-button"
+							disabled={pending}
 							aria-label={t("orchestratorReplacement.close")}
 						>
 							<X className="size-5" aria-hidden="true" />
@@ -74,19 +83,25 @@ export function OrchestratorReplacementDialog({
 					</div>
 					<div className={settingsDialogFooterClass}>
 						{error && isChatPreflightCode(error.code) ? (
-							<Button type="button" variant="footer" onClick={() => projectId && onRetryAsTui(projectId)}>
+							<Button
+								type="button"
+								variant="footer"
+								aria-disabled={pending}
+								onClick={() => !pending && projectId && onRetryAsTui(projectId)}
+							>
 								{t("newTask.createAsTui")}
 							</Button>
 						) : null}
 						{orchestrator ? (
-							<Button type="button" variant="footer" onClick={openCurrent}>
+							<Button type="button" variant="footer" disabled={pending} onClick={openCurrent}>
 								{t("orchestratorReplacement.openCurrent")}
 							</Button>
 						) : null}
 						<Button
 							type="button"
 							variant="footer-primary"
-							onClick={() => projectId && onRetry(projectId)}
+							aria-disabled={pending}
+							onClick={() => !pending && projectId && onRetry(projectId)}
 						>
 							<RotateCw className="size-3.5" aria-hidden="true" />
 							{t("orchestratorReplacement.retry")}

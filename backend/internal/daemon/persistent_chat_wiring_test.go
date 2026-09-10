@@ -14,10 +14,13 @@ func TestPersistentChatHostKeepSetUsesDurableOwnership(t *testing.T) {
 		{ID: "other-provider", Mode: domain.SessionModeChat, Harness: domain.HarnessClaudeCode},
 	}
 	keep := persistentChatHostKeepSet(records)
-	if len(keep) != 1 {
-		t.Fatalf("keep = %v, want only live-chat", keep)
+	if len(keep) != 2 {
+		t.Fatalf("keep = %v, want both live Chat providers", keep)
 	}
 	if _, ok := keep["live-chat"]; !ok {
 		t.Fatalf("keep = %v, missing live-chat", keep)
+	}
+	if _, ok := keep["other-provider"]; !ok {
+		t.Fatalf("keep = %v, missing other-provider", keep)
 	}
 }

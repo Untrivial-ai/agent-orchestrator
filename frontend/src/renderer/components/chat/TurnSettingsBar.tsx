@@ -227,6 +227,8 @@ export function TurnSettingsBar({
 								{approvalOrder.map((mode) => (
 									<OptionMenuItem
 										key={mode}
+										active={mode === (settings.approvalMode ?? "default")}
+										radio
 										onSelect={() => onChange({ ...settings, approvalMode: mode })}
 										className={cn("text-xs")}
 									>
@@ -362,6 +364,7 @@ function ModelEffortPicker({
 									<OptionMenuItem
 									key={model.id}
 									active={model.id === settings.model}
+									radio
 									onSelect={() =>
 										onChange({ ...settings, model: model.id, reasoningEffort: undefined })
 									}
@@ -398,6 +401,7 @@ function ModelEffortPicker({
 								<OptionMenuItem
 									key={effort}
 									active={effort === settings.reasoningEffort}
+									radio
 									onSelect={() => onChange({ ...settings, reasoningEffort: effort })}
 									className={cn("text-xs")}
 								>
@@ -685,8 +689,9 @@ function ConfigOptionChoices({
 			<>
 				{[true, false].map((enabled) => (
 					<OptionMenuItem
-						key={String(enabled)}
-						active={enabled === option.currentBoolean}
+							key={String(enabled)}
+							active={enabled === option.currentBoolean}
+							radio
 						onSelect={() => onChange({ enabled })}
 						className={cn("text-xs")}
 					>
@@ -718,6 +723,7 @@ function ConfigOptionChoices({
 						) : null}
 						<OptionMenuItem
 							active={choice.value === option.currentValue}
+							radio
 							onSelect={() => onChange({ value: choice.value })}
 							className={cn("text-xs")}
 						>

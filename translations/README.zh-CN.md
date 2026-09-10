@@ -17,7 +17,7 @@
 通过了解项目上下文的编排器规划和委派更大的目标。<br />
 在实时看板中跟踪每个 worker、拉取请求、CI 运行和评审。
 
-[**下载 AO**](#安装) &nbsp;&bull;&nbsp; [文档](https://aoagents.dev/docs) &nbsp;&bull;&nbsp; [版本](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [参与贡献](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
+[**下载 AO**](#安装) &nbsp;&bull;&nbsp; [文档](https://useao.dev/docs) &nbsp;&bull;&nbsp; [版本](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [参与贡献](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 [English](../README.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Português (Brasil)](README.pt-BR.md)
 
@@ -161,7 +161,7 @@ AO 与你现有的编程智能体和源代码管理流程配合使用。智能�
   </tr>
 </table>
 
-[浏览智能体设置指南 →](https://aoagents.dev/docs/plugins/agents)
+[浏览智能体设置指南 →](https://useao.dev/docs/plugins/agents)
 
 **根据当下的需要选择交互方式：结构化 Chat 或智能体原生的终端界面。**
 
@@ -178,7 +178,7 @@ AO 与你现有的编程智能体和源代码管理流程配合使用。智能�
 | Linux（Debian/Ubuntu） | [下载](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
 | Linux（Fedora/RHEL）   | [下载](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
-打开 Agent Orchestrator，并选择你希望 AO 管理的仓库。桌面应用会为你运行守护进程，因此无需使用 CLI。有关智能体 CLI 的设置和故障排除，请参阅[安装指南](https://aoagents.dev/docs/installation)。
+打开 Agent Orchestrator，并选择你希望 AO 管理的仓库。桌面应用会为你运行守护进程，因此无需使用 CLI。有关智能体 CLI 的设置和故障排除，请参阅[安装指南](https://useao.dev/docs/installation)。
 
 ## 报告 bug
 
@@ -213,7 +213,7 @@ cd agent-orchestrator
 
 | 文档                                                                | 需要以下内容时从这里开始                                      |
 | ------------------------------------------------------------------- | ------------------------------------------------------------- |
-| [产品文档](https://aoagents.dev/docs)                               | 安装、智能体设置和日常产品使用。                              |
+| [产品文档](https://useao.dev/docs)                                  | 安装、智能体设置和日常产品使用。                              |
 | [docs/architecture.md](../docs/architecture.md)                     | 后端心智模型、生命周期、持久化、CDC、状态推导和守护进程边界。 |
 | [docs/backend-code-structure.md](../docs/backend-code-structure.md) | 包职责以及各项后端关注点应归属的位置。                        |
 | [docs/cli/README.md](../docs/cli/README.md)                         | CLI 行为和守护进程路由映射。                                  |

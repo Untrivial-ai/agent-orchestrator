@@ -56,6 +56,7 @@ export type InspectorSessionState = {
 export type GlobalToast = {
 	title: string;
 	body?: string;
+	tone?: "info" | "error";
 	placement?: "bottom-right" | "top-center";
 	nonce: number;
 };
@@ -79,9 +80,15 @@ export type UiState = {
 	/** When true, developer-only release controls are available. Default off. */
 	developerMode: boolean;
 	restartingProjectIds: ReadonlySet<string>;
+	// Projects whose initial orchestrator spawn (after import/clone) is still
+	// running in the background. The board renders a progress banner and gates
+	// session actions until the spawn settles, instead of blocking navigation.
+	provisioningProjectIds: ReadonlySet<string>;
 	orchestratorReplacementErrors: Record<string, OrchestratorReplacementFailure>;
 	orchestratorStartupErrors: Record<string, string>;
+	globalToasts: GlobalToast[];
 	globalToast: GlobalToast | null;
+	globalToastSequence: number;
 	// Transient "open the New Task dialog for this project" signal. The nonce
 	// bumps on every request so a repeat press (even for the same project) still
 	// re-fires; the always-mounted GlobalNewTaskDialog consumes it. Selection
@@ -142,9 +149,11 @@ export type UiState = {
 	setFilesChangedOnly: (sessionId: string, changedOnly: boolean) => void;
 	setCommandPaletteOpen: (open: boolean) => void;
 	setProjectRestarting: (projectId: string, restarting: boolean) => void;
+	setProjectProvisioning: (projectId: string, provisioning: boolean) => void;
 	setOrchestratorReplacementError: (projectId: string, failure: OrchestratorReplacementFailure | null) => void;
 	setOrchestratorStartupError: (projectId: string, message: string | null) => void;
-	showGlobalToast: (title: string, body?: string, placement?: GlobalToast["placement"]) => void;
+	showGlobalToast: (title: string, body?: string, style?: GlobalToast["tone"] | GlobalToast["placement"]) => void;
+	dismissGlobalToast: (nonce: number) => void;
 	clearGlobalToast: () => void;
 	requestNewTask: (projectId: string) => void;
 	requestCreateProject: () => void;
@@ -203,9 +212,12 @@ export const useUiStore = create<UiState>((set, get) => ({
 	themeStyle: initialThemeStyle,
 	developerMode: initialDeveloperMode(),
 	restartingProjectIds: new Set<string>(),
+	provisioningProjectIds: new Set<string>(),
 	orchestratorReplacementErrors: {},
 	orchestratorStartupErrors: {},
+	globalToasts: [],
 	globalToast: null,
+	globalToastSequence: 0,
 	newTaskRequest: null,
 	createProjectNonce: 0,
 	folderDropRequest: null,
@@ -355,6 +367,16 @@ export const useUiStore = create<UiState>((set, get) => ({
 			}
 			return { restartingProjectIds };
 		}),
+	setProjectProvisioning: (projectId, provisioning) =>
+		set((state) => {
+			const provisioningProjectIds = new Set(state.provisioningProjectIds);
+			if (provisioning) {
+				provisioningProjectIds.add(projectId);
+			} else {
+				provisioningProjectIds.delete(projectId);
+			}
+			return { provisioningProjectIds };
+		}),
 	setOrchestratorReplacementError: (projectId, failure) =>
 		set((state) => {
 			const orchestratorReplacementErrors = { ...state.orchestratorReplacementErrors };
@@ -375,13 +397,34 @@ export const useUiStore = create<UiState>((set, get) => ({
 			}
 			return { orchestratorStartupErrors };
 		}),
-	showGlobalToast: (title, body, placement) =>
+	showGlobalToast: (title, body, style) =>
+		set((state) => {
+			const nonce = state.globalToastSequence + 1;
+			const tone = style === "error" || style === "info" ? style : "info";
+			const placement = style === "top-center" || style === "bottom-right" ? style : "bottom-right";
+			const toast = { title, body, tone, placement, nonce };
+			return { globalToast: toast, globalToasts: [...state.globalToasts, toast], globalToastSequence: nonce };
+		}),
+	dismissGlobalToast: (nonce) =>
 		set((state) => ({
-			globalToast: { title, body, placement, nonce: (state.globalToast?.nonce ?? 0) + 1 },
+			globalToasts: state.globalToasts.filter((toast) => toast.nonce !== nonce),
+			globalToast: state.globalToast?.nonce === nonce ? null : state.globalToast,
 		})),
-	clearGlobalToast: () => set({ globalToast: null }),
-	requestNewTask: (projectId) =>
-		set((state) => ({ newTaskRequest: { projectId, nonce: (state.newTaskRequest?.nonce ?? 0) + 1 } })),
+	clearGlobalToast: () => set({ globalToast: null, globalToasts: [], globalToastSequence: 0 }),
+	requestNewTask: (projectId) => {
+		// Central gate: every New Task entry point (buttons, sidebar menus,
+		// shortcuts) funnels through here, so a project whose orchestrator is
+		// still provisioning cannot start tasks before it exists.
+		if (get().provisioningProjectIds.has(projectId)) {
+			get().showGlobalToast(
+				"Project is still being set up",
+				"The orchestrator is starting. Try again in a moment.",
+				"info",
+			);
+			return;
+		}
+		set((state) => ({ newTaskRequest: { projectId, nonce: (state.newTaskRequest?.nonce ?? 0) + 1 } }));
+	},
 	requestCreateProject: () => set((state) => ({ createProjectNonce: state.createProjectNonce + 1 })),
 	requestCreateProjectFromPath: (path) =>
 		set((state) => ({ folderDropRequest: { path, nonce: (state.folderDropRequest?.nonce ?? 0) + 1 } })),
