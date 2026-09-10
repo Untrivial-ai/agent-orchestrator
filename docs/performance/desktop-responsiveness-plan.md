@@ -247,6 +247,27 @@ at that paint in every run. These are synthetic renderer timings, not packaged
 Electron results, but they prove the acknowledgement no longer waits for daemon
 acceptance or a snapshot refresh.
 
+### Measured CDC first-update latency (leading-edge flush)
+
+The CDC invalidation window was a fixed 150 ms trailing batch measured from the
+first event: every update after a quiet period — the first streamed token of a
+new turn, a status change, a PR fact — waited out the full window before the
+renderer refreshed. The window now flushes on the leading edge when the last
+flush is at least a window old, and still coalesces a burst into one trailing
+flush otherwise. `invalidate()` already deduplicates the resulting refetches per
+key (one in-flight plus one queued), so the leading edge cannot start a refetch
+storm.
+
+The opt-in `events` renderer workload emits a conversation event every 100 ms
+for 2 s and records each cache flush. First refresh dropped from **152 ms** to
+**3.2 ms**; flush count over the burst rose from 10 to 14 (the added leading
+flush plus the same per-window trailing cadence), and each session is still
+deduplicated within its window. Behavioral coverage in
+`event-transport.test.ts` pins the immediate leading flush, the continuous
+per-window cadence, and the within-window dedup. This is synthetic renderer
+evidence; the change affects every CDC-driven surface, so a live streaming
+trace remains the packaged-Electron confirmation.
+
 ### Implemented rail and terminal interaction boundaries
 
 The supplied inspector-toggle trace shows the click callback itself taking about
@@ -351,6 +372,119 @@ switching improvement. Its click tasks repeatedly include Motion frame work
 and two broad layout passes of about **20 ms** over 1,029 elements and **24 ms**
 over 1,254 elements. The next change must target that shared shell/Motion
 layout path, not the fast click handler itself.
+
+### Diagnosed next candidate: contain the center/terminal pane (needs trace)
+
+The two broad layout passes over ~1,029 and ~1,254 elements on each switch are
+a whole-shell relayout: swapping the visible terminal (or the agent/reviewer
+pane) changes a large subtree, and because the center/terminal pane is not a
+layout-containment boundary, the browser recomputes the shell's layout tree
+outward rather than only the pane. This is the same failure the conversation
+timeline already fixed with `contain: layout paint`, which scoped a composer
+update to the timeline instead of the whole shell.
+
+The specific candidate is therefore to make the center-pane box a
+`contain: layout` boundary (`CenterPane` root / the central session column in
+`SessionView`) so a terminal/agent switch cannot invalidate the surrounding
+shell layout. Use `layout` alone, not `paint`, so escaping tooltips/menus are
+not clipped (Radix already portals to `body`, but the tab rename input and
+scroll fades live inside the pane). The pane is already a fixed flex child
+(`flex-1 min-h-0 min-w-0`), so its own size is set by flex, not content, which
+is the precondition for `contain: layout` to be visually inert.
+
+This is a source-level diagnosis, not an applied change: `contain` can only be
+credited after a packaged-Electron switch trace confirms the broad layout pass
+shrinks and a visual pass confirms no clipped/again-escaping surface. It must
+not be shipped on faith, because the whole-shell relayout it targets is only
+reproducible in the packaged app.
+
+### Sidebar reorder churn benchmark and memory audit (2026-09-10)
+
+A reported "slight lag when I start dragging and when I drop" a project row led
+to two checks.
+
+**Reorder churn.** The sidebar neutralizes every expanded project's nested
+session sortables during a project drag by unmounting the `DndContext`/
+`SortableContext` and mounting plain rows (`Sidebar.tsx`, the
+`projectDragInProgress` swap), then remounting on drop. A hypothesis was that
+keeping the tree mounted and toggling dnd-kit's `disabled` would avoid that
+unmount/remount cost. An opt-in `projectDragChurn` renderer workload
+(`harness.tsx`) mounts 8 projects x 12 sortable rows with real dnd-kit and
+measures the start and drop commit for both strategies. Median of three
+toggles: swap **start 1.7 ms / drop 3.9 ms**; keep-mounted-disabled
+**start 4.0 ms / drop 3.8 ms**. Keeping the tree mounted is *slower* on start
+because a disabled `useSortable` still runs its hook, while plain rows do not.
+The current swap is therefore the correct primitive and must not be replaced;
+the residual desktop lag is the raw cost of re-rendering the real (heavy)
+session rows and the `DragOverlay` preview across the whole sidebar, which is
+only reproducible in a packaged-Electron reorder trace. Sidebar leaf rows
+(`SortableSessionRow`, `PinnedSessionRow`), `ProjectItem`, and
+`ProjectDragPreview` are already `memo`-wrapped, and `SessionView` is not
+remounted on a session switch, so the cheap structural wins are already taken.
+
+**Memory audit.** A sweep of the long-lived renderer surfaces (terminal mux,
+xterm, event transport, workspace-file events, diff worker, telemetry, browser
+view, notification runtime) found no leaked listeners, observers, timers, or
+workers: EventSource/WebSocket handlers are torn down with `close()`, observers
+use one `disconnect()` per lifecycle, the diff-parser worker is a deliberate
+app-lifetime singleton with a drained pending-request map, and the only
+never-removed listeners are telemetry's intentional app-lifetime `error`/
+`unhandledrejection` crash handlers. No memory fix was required.
+
+### Traced project-reorder drop cost and fix (2026-09-10)
+
+A supplied packaged-dev reorder trace (`sidebar-reordear.json`) settled the
+question the churn benchmark could not: the drag **start** is cheap
+(`pointerdown`/`pointermove` under 1 ms), and essentially all the lag is at the
+**drop** — three `pointerup` dispatches of **324, 368, and 402 ms**. Inside the
+worst `pointerup`, `UpdateLayoutTree` was only 61 ms; the dominant cost was a
+long run of `(native) measure` calls (each ~7 ms, ~138 ms total) plus a matching
+`run`/commit band — i.e. repeated forced synchronous layout measurement, not
+dnd-kit's reorder and not the swap primitive. (The trace is a dev build, so
+React StrictMode double-invocation and dev-mode overhead inflate the absolute
+numbers roughly 2x; the packaged app is faster, but the shape holds.)
+
+Root cause: every expanded project's session list is a
+`motion.div animate={{ height: "auto" }}`, and `height:"auto"` forces Motion to
+re-measure natural height whenever it re-renders. On drop, `onProjectDragEnd`
+changes `draggingProjectId` (to null) and `projectDropSettling` (to true) in one
+commit, and both were passed as raw props to **every** `ProjectItemContent`, so
+every expanded project re-rendered and re-measured — even though the value they
+actually consume, `projectDragInProgress`, was unchanged (`true` during the
+settle window).
+
+Fix (`Sidebar.tsx`): pass the two *derived booleans* the content actually needs
+— `projectDragActive` (any drag/settle active) and `isDragged` (this project is
+the dragged one) — instead of the raw id and settling flag. At the drop commit
+`projectDragActive` stays `true` and `isDragged` stays `false` for every
+non-dragged project, so their memoized content skips the re-render and its
+`height:"auto"` re-measurement entirely; only the one dragged project re-renders
+(to drop its dragging style). The reorder still moves the memoized rows in the
+DOM via React list reconciliation. Behavior is unchanged (99 Sidebar tests pass,
+typecheck clean); the drop measurement now scales with 1 project instead of
+every expanded project. A fresh packaged trace should confirm the `pointerup`
+span shrinks.
+
+### Measurement-free session-list expand (grid-template-rows)
+
+The trace's dominant drop cost was a long run of forced synchronous `(native)
+measure` calls. The profile carried no call stacks, so Motion's `height:"auto"`
+animation on every expanded project's session list could not be *proven* the
+source, but it is the one construct on that path that forces a layout read on
+each render. The session list now animates `grid-template-rows: 0fr -> 1fr`
+(with an inner `min-height:0; overflow:hidden` clipper) instead of
+`height: 0 -> auto`. Grid-track interpolation needs no measurement: a browser
+probe confirmed Motion 12.43 smoothly interpolates the computed track
+(2.6 -> 9.7 -> 21 -> 37 -> 57 -> 86 -> 122 -> 158 px toward the natural height),
+so the enter/exit animation is preserved without a `getBoundingClientRect`.
+
+This removes the measurement from *every* session-list render, not just the
+drag: the normal disclosure expand/collapse is now measurement-free too. Enter,
+exit, and the inner y/opacity fade are unchanged; 99 Sidebar tests pass and
+typecheck is clean. The animation correctness is verified (probe + tests); the
+drag/expand timing improvement is inferred from the trace and should be
+confirmed with a fresh packaged reorder trace, ideally one recorded with JS
+call stacks so the remaining `measure` attribution is exact.
 
 ### Direct inspector-resize diagnosis (development renderer)
 
