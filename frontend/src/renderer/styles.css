@@ -4517,13 +4517,13 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-new {
 	display: grid;
-	width: 30px;
-	height: 30px;
+	width: var(--size-control-md);
+	height: var(--size-control-md);
 	place-items: center;
 	flex: none;
-	margin-left: 4px;
+	margin-left: 0;
 	border: 0;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	color: var(--fg-muted);
 	background: transparent;
 	transform-origin: center;
