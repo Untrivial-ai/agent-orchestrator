@@ -55,7 +55,7 @@ func TestLiveJournalSkipsNativeDeltaAndClosesSubscribers(t *testing.T) {
 	journal.observe(ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderItemID: "item", ProviderEventID: "old-completion", Text: "do not replace newer text"}, time.Time{})
 	journal.observe(ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderItemID: "item", Text: "final"}, time.Time{})
 	frame := sub.Snapshot(0)
-	if frame.Sequence != 3 || frame.AfterSequence != 0 || len(frame.Events) != 1 || frame.Events[0].Text != "final" {
+	if frame.Sequence != 3 || frame.AfterSequence != 2 || len(frame.Events) != 1 || frame.Events[0].Text != "final" {
 		t.Fatalf("native delta was previewed or source cursor skipped: %+v", frame)
 	}
 	journal.close()
@@ -68,6 +68,19 @@ func TestLiveJournalSkipsNativeDeltaAndClosesSubscribers(t *testing.T) {
 	defer late.Close()
 	if _, open := <-late.Changed(); open {
 		t.Fatal("subscription to ended controller remained open")
+	}
+}
+
+func TestLiveJournalRequiresReplayedPrefixBeforeFreshIdentifiedText(t *testing.T) {
+	journal := &liveJournal{subscribers: make(map[*LiveSubscription]struct{})}
+	sub := journal.subscribe()
+	defer sub.Close()
+	journal.observe(ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "item", Delta: "a"}, time.Time{})
+	journal.observe(ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "item", ProviderEventID: "replayed", Delta: "b"}, time.Time{})
+	journal.observe(ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "item", ProviderEventID: "fresh", ProviderEventFresh: true, Delta: "c"}, time.Time{})
+	frame := sub.Snapshot(0)
+	if frame.AfterSequence != 2 || frame.Sequence != 3 || len(frame.Events) != 1 || frame.Events[0].Delta != "c" {
+		t.Fatalf("fresh preview lacks replay checkpoint barrier: %+v", frame)
 	}
 }
 

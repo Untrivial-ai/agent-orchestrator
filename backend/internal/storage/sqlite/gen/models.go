@@ -403,6 +403,7 @@ type PR struct {
 	AutoInjectCI             bool
 	ProviderID               string
 	AuthorAvatarURL          string
+	ReviewPartial            bool
 }
 
 type PRCheck struct {

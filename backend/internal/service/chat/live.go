@@ -133,11 +133,14 @@ func (j *liveJournal) observe(event ports.ChatEvent, now time.Time) sequencedCha
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.sequence++
-	// Native-ID observations require durable deduplication, including IDs seen
-	// before this process started. Even an old repeated completion could replace
-	// newer text before the store rejects it, so preview anonymous events only.
-	preview := event.Err == nil && event.ProviderEventID == "" && (event.Kind == ports.ChatEventMessageDelta && event.ProviderItemID != "" ||
-		event.Kind == ports.ChatEventMessageCompleted && event.ProviderItemID != "" || event.Kind == ports.ChatEventTurnCompleted)
+	text := event.ProviderItemID != "" && (event.Kind == ports.ChatEventMessageDelta || event.Kind == ports.ChatEventMessageCompleted)
+	fresh := event.ProviderEventID == "" || event.ProviderEventFresh
+	// Replayed identified text needs durable deduplication. Fresh output after
+	// that replay also needs its committed prefix before it can be appended.
+	if text && !fresh {
+		j.floor, j.events, j.bytes = j.sequence, nil, 0
+	}
+	preview := event.Err == nil && fresh && (text || event.Kind == ports.ChatEventTurnCompleted)
 	if preview {
 		live := LiveEvent{
 			Sequence: j.sequence, Kind: event.Kind, ProviderItemID: event.ProviderItemID,
@@ -175,6 +178,16 @@ func (j *liveJournal) reset(sequence int64) {
 	j.notify()
 }
 
+// discard removes previews that the stopped writer will never commit. Intake
+// must already have stopped, so the returned checkpoint covers every preview.
+func (j *liveJournal) discard() int64 {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.floor, j.resetSequence, j.events, j.bytes = j.sequence, j.sequence, nil, 0
+	j.notify()
+	return j.sequence
+}
+
 func liveEventBytes(event LiveEvent) int {
 	return 128 + len(event.Kind) + len(event.ProviderItemID) + len(event.ProviderTurnID) + len(event.Delta) + len(event.Text)
 }
@@ -192,10 +205,23 @@ func (j *liveJournal) close() {
 // receiveLive is the only provider-stream consumer. Publication precedes the
 // bounded persistence queue; sustained storage stalls eventually backpressure
 // intake instead of retaining an unbounded second copy of provider output.
-func (c *Controller) receiveLive(events chan<- sequencedChatEvent) {
+func (c *Controller) receiveLive(ctx context.Context, events chan<- sequencedChatEvent) {
 	defer close(events)
-	for event := range c.conv.Events() {
-		events <- c.live.observe(event, c.now())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, open := <-c.conv.Events():
+			if !open {
+				return
+			}
+			received := c.live.observe(event, c.now())
+			select {
+			case events <- received:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}
 }
 

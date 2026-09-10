@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { components } from "../../api/schema";
 import { getApiBaseUrl, hasTrustedApiBaseUrl, subscribeApiBaseUrl } from "../lib/api-client";
@@ -99,6 +99,7 @@ export function applyConversationLive(snapshot: ConversationSnapshot | undefined
 
 export function useConversationLive(sessionId: string | undefined, snapshot: ConversationSnapshot | undefined) {
 	const queryClient = useQueryClient();
+	const resync = useRef<{ sessionId: string; request: Promise<void> } | undefined>(undefined);
 	const [received, setReceived] = useState<{ sessionId: string; frame: LiveFrame }>();
 	const live = received && received.sessionId === sessionId ? received.frame : undefined;
 	useEffect(() => {
@@ -160,8 +161,22 @@ export function useConversationLive(sessionId: string | undefined, snapshot: Con
 	const needsSnapshot = conversationLiveNeedsSnapshot(snapshot, live);
 	useEffect(() => {
 		if (!needsSnapshot || !sessionId) return;
-		void queryClient.cancelQueries({ queryKey: ["conversation", sessionId] }).then(() =>
-			queryClient.invalidateQueries({ queryKey: ["conversation", sessionId] }));
-	}, [needsSnapshot, sessionId, live?.generation, live?.branchId, queryClient]);
+		let disposed = false;
+		const refresh = async () => {
+			const previous = resync.current?.sessionId === sessionId ? resync.current.request : undefined;
+			if (previous) await previous;
+			if (disposed) return;
+			// Finish an active read instead of restarting it on every replay or
+			// reset. Only the latest target/snapshot change follows that read.
+			const request = (previous ? Promise.resolve() : queryClient.cancelQueries({ queryKey: ["conversation", sessionId] }))
+				.then(() => { if (!disposed) return queryClient.invalidateQueries({ queryKey: ["conversation", sessionId] }, { cancelRefetch: false }); });
+			resync.current = { sessionId, request };
+			try { await request; } finally { if (resync.current?.request === request) resync.current = undefined; }
+		};
+		// Query state surfaces request failures; retries require new progress.
+		void refresh().catch(() => {});
+		return () => { disposed = true; };
+	}, [needsSnapshot, sessionId, live?.generation, live?.branchId, live?.conversationId,
+		live?.afterSequence, live?.resetSequence, snapshot, queryClient]);
 	return applyConversationLive(snapshot, live);
 }

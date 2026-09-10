@@ -108,7 +108,7 @@ class FakeEventSource {
 	emit(value: Frame) { this.listener?.({ data: JSON.stringify(value) } as MessageEvent); }
 }
 
-afterEach(() => { vi.unstubAllGlobals(); FakeEventSource.instances = []; });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); FakeEventSource.instances = []; });
 
 it("renders multiple chunks while a durable refresh is blocked, then reconciles and unsubscribes", async () => {
 	vi.stubGlobal("EventSource", FakeEventSource);
@@ -125,5 +125,68 @@ it("renders multiple chunks while a durable refresh is blocked, then reconciles 
 	expect(result.current?.items[0]).toMatchObject({ text: "Existing live text" });
 	unmount();
 	expect(source.close).toHaveBeenCalledOnce();
+	client.clear();
+});
+
+it.each(["reset", "gap", "checkpoint"] as const)("finishes an active resync and follows %s progress", async (kind) => {
+	vi.useFakeTimers();
+	vi.stubGlobal("EventSource", FakeEventSource);
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	let finishFirst!: () => void;
+	let finishSecond!: () => void;
+	const invalidate = vi.spyOn(client, "invalidateQueries")
+		.mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirst = resolve; }))
+		.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSecond = resolve; }))
+		.mockResolvedValue(undefined);
+	const cancel = vi.spyOn(client, "cancelQueries");
+	const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+	const { result, rerender, unmount } = renderHook(({ saved }) => useConversationLive("session", saved),
+		{ wrapper, initialProps: { saved: snapshot } });
+	const source = FakeEventSource.instances[0];
+	const target = (sequence: number): Frame => ({ ...frame([]), sequence,
+		afterSequence: kind === "gap" ? sequence : 0, resetSequence: kind === "gap" ? 0 : sequence });
+	await act(async () => { source.emit(target(kind === "checkpoint" ? 11 : 10)); });
+	expect(invalidate).toHaveBeenCalledTimes(1);
+	await act(async () => { source.emit(target(11)); });
+	expect(invalidate).toHaveBeenCalledTimes(1);
+	// The older response still needs reconciliation, so the boolean remains true.
+	// Advancing the target must neither cancel that read nor lose its follow-up.
+	rerender({ saved: { ...snapshot, liveSequence: 10 } });
+	await act(async () => { finishFirst(); });
+	expect(invalidate).toHaveBeenCalledTimes(2);
+	expect(cancel).toHaveBeenCalledTimes(1);
+	expect(invalidate).toHaveBeenLastCalledWith({ queryKey: ["conversation", "session"] }, { cancelRefetch: false });
+	// An unchanged response does not start permanent polling while storage is
+	// unavailable. A later checkpoint still releases the live overlay.
+	await act(async () => { finishSecond(); await vi.advanceTimersByTimeAsync(10_000); });
+	expect(invalidate).toHaveBeenCalledTimes(2);
+	rerender({ saved: { ...snapshot, liveSequence: 11 } });
+	act(() => { source.emit({ ...frame(["continued"]), afterSequence: 11, sequence: 12,
+		events: [{ ...frame(["continued"]).events[0], sequence: 12 }] }); });
+	expect(result.current?.items[0]).toMatchObject({ text: "Existing continued" });
+	unmount();
+	client.clear();
+});
+
+it("resyncs a new session independently of a pending old-session request", async () => {
+	vi.stubGlobal("EventSource", FakeEventSource);
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	let rejectFirst!: (error: Error) => void;
+	const invalidate = vi.spyOn(client, "invalidateQueries")
+		.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject; }))
+		.mockResolvedValue(undefined);
+	const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+	const { rerender, unmount } = renderHook(({ sessionId, saved }) => useConversationLive(sessionId, saved),
+		{ wrapper, initialProps: { sessionId: "session", saved: snapshot } });
+	const reset = { ...frame([]), sequence: 1, resetSequence: 1 };
+	await act(async () => { FakeEventSource.instances[0].emit(reset); });
+	expect(invalidate).toHaveBeenCalledTimes(1);
+	rerender({ sessionId: "other", saved: { ...snapshot, sessionId: "other" } });
+	await act(async () => { FakeEventSource.instances[1].emit(reset); });
+	expect(invalidate).toHaveBeenCalledTimes(2);
+	expect(invalidate).toHaveBeenLastCalledWith({ queryKey: ["conversation", "other"] }, { cancelRefetch: false });
+	unmount();
+	await act(async () => { rejectFirst(new Error("old request cancelled")); });
+	expect(invalidate).toHaveBeenCalledTimes(2);
 	client.clear();
 });

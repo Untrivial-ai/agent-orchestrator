@@ -26,7 +26,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary",
-    site: "@aoagents",
+    site: "@ao_build",
     title: `Privacy Policy | ${COMPANY.NAME}`,
     description,
     images: [`${COMPANY.MARKETING_URL}/og-image.png`],
