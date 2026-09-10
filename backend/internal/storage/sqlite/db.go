@@ -47,6 +47,8 @@ const readOnlyPragmas = "?mode=ro" +
 // maxReaders caps the reader pool. WAL allows many concurrent readers.
 const maxReaders = 8
 
+const schemaAppVersionTable = "schema_app_version"
+
 // databaseURI preserves filesystem characters instead of interpreting them as
 // SQLite URI parameters/fragments. Both pools and read-only opens must address
 // the same literal file, including percent signs and Windows drive paths.
@@ -169,6 +171,10 @@ func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
 		_ = writeDB.Close()
 		return nil, fmt.Errorf("open sqlite read-only writer: %w", err)
 	}
+	if err := rejectNewerSchemaVersion(ctx, writeDB); err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("check sqlite read-only schema version: %w", err)
+	}
 
 	readDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -197,6 +203,9 @@ var gooseMu sync.Mutex
 func migrate(db *sql.DB) error {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
+	if err := rejectNewerSchemaVersion(context.Background(), db); err != nil {
+		return fmt.Errorf("check schema version: %w", err)
+	}
 	goose.SetBaseFS(migrationsFS)
 	goose.SetLogger(goose.NopLogger())
 	if err := goose.SetDialect("sqlite3"); err != nil {
@@ -254,7 +263,107 @@ func migrate(db *sql.DB) error {
 	if err := goose.Up(db, "migrations", goose.WithAllowMissing()); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
-	return reconcileSchema(db)
+	if err := reconcileSchema(db); err != nil {
+		return err
+	}
+	if err := stampSchemaVersion(db); err != nil {
+		return fmt.Errorf("stamp schema version: %w", err)
+	}
+	return nil
+}
+
+func latestMigrationVersion() (int64, error) {
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return 0, fmt.Errorf("read embedded migrations: %w", err)
+	}
+	var latest int64
+	var found bool
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		version, err := goose.NumericComponent(entry.Name())
+		if err != nil {
+			return 0, fmt.Errorf("parse migration %q: %w", entry.Name(), err)
+		}
+		if !found || version > latest {
+			latest = version
+			found = true
+		}
+	}
+	if !found {
+		return 0, errors.New("no embedded migrations")
+	}
+	return latest, nil
+}
+
+func readSchemaAppVersion(ctx context.Context, db *sql.DB) (int64, bool, error) {
+	var tableExists int
+	if err := db.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+)`, schemaAppVersionTable).Scan(&tableExists); err != nil {
+		return 0, false, fmt.Errorf("inspect %s: %w", schemaAppVersionTable, err)
+	}
+	if tableExists == 0 {
+		return 0, false, nil
+	}
+
+	var version int64
+	if err := db.QueryRowContext(ctx, `
+SELECT version FROM schema_app_version WHERE id = 1
+`).Scan(&version); err != nil {
+		return 0, true, fmt.Errorf("read %s: %w", schemaAppVersionTable, err)
+	}
+	return version, true, nil
+}
+
+func rejectNewerSchemaVersion(ctx context.Context, db *sql.DB) error {
+	version, present, err := readSchemaAppVersion(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	latest, err := latestMigrationVersion()
+	if err != nil {
+		return err
+	}
+	if version > latest {
+		return fmt.Errorf(
+			"database schema version %d is newer than this binary supports (latest supported migration is %d); upgrade AO before opening this database",
+			version, latest,
+		)
+	}
+	return nil
+}
+
+func stampSchemaVersion(db *sql.DB) error {
+	latest, err := latestMigrationVersion()
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS schema_app_version (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL CHECK (version >= 0),
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`); err != nil {
+		return fmt.Errorf("create %s: %w", schemaAppVersionTable, err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO schema_app_version (id, version)
+VALUES (1, ?)
+ON CONFLICT(id) DO UPDATE SET
+    version = excluded.version,
+    updated_at = CURRENT_TIMESTAMP
+`, latest); err != nil {
+		return fmt.Errorf("write %s: %w", schemaAppVersionTable, err)
+	}
+	return nil
 }
 
 // repairRenumberedAgentInstallJobsMigrationHistory preserves development

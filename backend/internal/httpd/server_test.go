@@ -59,6 +59,31 @@ func TestReadyProbeReportsDependencyFailure(t *testing.T) {
 	}
 }
 
+func TestReadyProbeBoundsDependencyCheck(t *testing.T) {
+	called := make(chan struct{})
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{
+		ReadyCheck: func(ctx context.Context) error {
+			close(called)
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("ready check context has no deadline")
+			}
+			return context.DeadlineExceeded
+		},
+	}, ControlDeps{})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := srv.Client().Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	<-called
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
 func TestHealthProbesIncludeDaemonIdentity(t *testing.T) {
 	router := newTestRouter(config.Config{StartupWorkingDirectory: "/startup"}, discardLogger(), nil)
 	srv := httptest.NewServer(router)
