@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"time"
 )
 
 const maxChangeLogSeq = `-- name: MaxChangeLogSeq :one
@@ -18,6 +19,53 @@ func (q *Queries) MaxChangeLogSeq(ctx context.Context) (int64, error) {
 	var seq int64
 	err := row.Scan(&seq)
 	return seq, err
+}
+
+const pruneChangeLogBefore = `-- name: PruneChangeLogBefore :execrows
+DELETE FROM change_log
+WHERE seq IN (
+    SELECT cl.seq
+    FROM change_log AS cl
+    WHERE cl.created_at < ?
+    ORDER BY cl.created_at ASC, cl.seq ASC
+    LIMIT ?
+)
+`
+
+type PruneChangeLogBeforeParams struct {
+	CreatedAt time.Time
+	Limit     int64
+}
+
+func (q *Queries) PruneChangeLogBefore(ctx context.Context, arg PruneChangeLogBeforeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneChangeLogBefore, arg.CreatedAt, arg.Limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const pruneChangeLogToMaxRows = `-- name: PruneChangeLogToMaxRows :execrows
+DELETE FROM change_log
+WHERE seq IN (
+    SELECT cl.seq
+    FROM change_log AS cl
+    ORDER BY cl.seq ASC
+    LIMIT MIN(?1, MAX(0, (SELECT COUNT(*) FROM change_log) - ?2))
+)
+`
+
+type PruneChangeLogToMaxRowsParams struct {
+	BatchLimit interface{}
+	MaxRows    interface{}
+}
+
+func (q *Queries) PruneChangeLogToMaxRows(ctx context.Context, arg PruneChangeLogToMaxRowsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneChangeLogToMaxRows, arg.BatchLimit, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const readChangeLogAfter = `-- name: ReadChangeLogAfter :many

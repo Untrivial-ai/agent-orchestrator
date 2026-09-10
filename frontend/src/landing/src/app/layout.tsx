@@ -71,7 +71,7 @@ export const metadata: Metadata = {
     title: COMPANY.NAME,
     description: siteDescription,
     images: ["/og-image.png"],
-    creator: "@aoagents",
+    creator: "@ao_build",
   },
   robots: {
     index: true,
@@ -86,6 +86,7 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [
+      { url: "/favicon-192.png", type: "image/png", sizes: "192x192" },
       { url: "/favicon.svg", type: "image/svg+xml" },
     ],
   },

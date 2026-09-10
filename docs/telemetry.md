@@ -62,7 +62,7 @@ organization or account and never includes the repository, path, or URL.
 
 The optional website waitlist is separate from product telemetry. If you submit
 an email address there, it is used to manage that waitlist as described in the
-[privacy policy](https://aoagents.dev/privacy).
+[privacy policy](https://useao.dev/privacy).
 
 ## How AO limits the data
 
@@ -189,6 +189,6 @@ state required for product recovery and payload-free deduplication receipts.
 ## Questions or corrections
 
 For the broader data policy, retention information, and contact options, see
-the [AO privacy policy](https://aoagents.dev/privacy). You can report a problem
+the [AO privacy policy](https://useao.dev/privacy). You can report a problem
 with this documentation in the
 [GitHub repository](https://github.com/Untrivial-ai/agent-orchestrator).

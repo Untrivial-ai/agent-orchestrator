@@ -234,6 +234,7 @@ type Conversation struct {
 	UsageCost                  sql.NullFloat64
 	UsageCurrency              sql.NullString
 	ActiveBranchID             string
+	OpencodeMode               string
 }
 
 type ConversationActivity struct {
@@ -403,6 +404,7 @@ type PR struct {
 	AutoInjectCI             bool
 	ProviderID               string
 	AuthorAvatarURL          string
+	ReviewPartial            bool
 }
 
 type PRCheck struct {

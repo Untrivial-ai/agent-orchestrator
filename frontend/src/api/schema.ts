@@ -2856,6 +2856,7 @@ export interface components {
             autoInjectReview: boolean;
             autoReviewEnabled: boolean;
             branch?: string;
+            chatProviderPreserved: boolean;
             /** Format: date-time */
             createdAt: string;
             displayName?: string;
@@ -3903,6 +3904,7 @@ export interface components {
             resolvedBy?: components["schemas"]["SessionPRUnresolvedReviewer"][];
             reviews?: components["schemas"]["SessionPRReviewEntry"][];
             unresolvedBy: components["schemas"]["SessionPRUnresolvedReviewer"][];
+            unresolvedThreadCount?: null | number;
         };
         SessionPRSummary: {
             additions: number;

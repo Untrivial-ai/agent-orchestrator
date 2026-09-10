@@ -300,16 +300,40 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		p.WorkspaceRepos = workspaceReposFromRecords(row.Path, repos)
 		return p, nil
 	}
-	if !isGitRepo(path) {
+	// The three repository probes are independent git subprocesses; run them
+	// concurrently so registration pays one wave instead of three serial
+	// spawns. Error precedence stays sequential below (not-a-repo wins over
+	// unborn), preserving the existing error contract.
+	var (
+		isRepo    bool
+		hasCommit bool
+		originURL string
+	)
+	var probes sync.WaitGroup
+	probes.Add(3)
+	go func() {
+		defer probes.Done()
+		isRepo = isGitRepo(path)
+	}()
+	go func() {
+		defer probes.Done()
+		hasCommit = repoHasCommit(ctx, path)
+	}()
+	go func() {
+		defer probes.Done()
+		originURL = resolveGitOriginURL(path)
+	}()
+	probes.Wait()
+	if !isRepo {
 		return Project{}, apierr.Invalid("NOT_A_GIT_REPO", "AO needs a Git repository with an initial commit before it can create agent workspaces.", nil)
 	}
-	if !repoHasCommit(ctx, path) {
+	if !hasCommit {
 		return Project{}, apierr.Invalid("PROJECT_UNBORN", "AO needs a Git repository with an initial commit before it can create agent workspaces.", map[string]any{
 			"path":         path,
 			"suggestedFix": "Run `git commit --allow-empty -m \"initial commit\"` in this folder, then try again.",
 		})
 	}
-	row.RepoOriginURL = resolveGitOriginURL(path)
+	row.RepoOriginURL = originURL
 	if err := row.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
@@ -366,19 +390,7 @@ func (m *Service) InitializeRepository(ctx context.Context, in InitializeReposit
 			return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not initialize a Git repository in this folder.", map[string]any{"error": err.Error()})
 		}
 	}
-	managedBranch := domain.DefaultBranchName
-	if target == repositorySetupUnbornRepo {
-		out, err := gitOutput(ctx, path, "symbolic-ref", "--quiet", "--short", "HEAD")
-		if err != nil || strings.TrimSpace(out) == "" {
-			detail := "empty symbolic HEAD"
-			if err != nil {
-				detail = err.Error()
-			}
-			return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not determine the initial branch for this repository.", map[string]any{"error": detail})
-		}
-		managedBranch = strings.TrimSpace(out)
-	}
-	if _, err := gitOutput(ctx, path, "config", "--local", gitdefault.ManagedDefaultConfigKey, managedBranch); err != nil {
+	if err := gitdefault.New("git", nil).RecordInitialBranch(ctx, path); err != nil {
 		return InitializeRepositoryResult{}, apierr.Invalid("GIT_INIT_FAILED", "Could not record the default branch for this repository.", map[string]any{"error": err.Error()})
 	}
 

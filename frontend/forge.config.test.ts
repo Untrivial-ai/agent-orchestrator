@@ -86,6 +86,20 @@ afterEach(() => {
 });
 
 describe("native runtime resources", () => {
+	it("fails packaging when the macOS helper was not copied into Resources", async () => {
+		mkdirSync(join(fixtureDir, "AO.app", "Contents", "Resources"), { recursive: true });
+		const hook = config.hooks?.postPackage;
+		expect(hook).toBeTypeOf("function");
+		if (typeof hook !== "function") return;
+		await expect(hook(config, { platform: "darwin", arch: "arm64", outputPaths: [fixtureDir] })).rejects.toThrow("packaged macOS update helper missing");
+	});
+
+	it("bundles the native update helper only on macOS", () => {
+		expect(extraResourcesForPlatform("darwin")).toContain("update-helper");
+		expect(extraResourcesForPlatform("linux")).not.toContain("update-helper");
+		expect(extraResourcesForPlatform("win32")).not.toContain("update-helper");
+	});
+
 	it.each(["darwin", "linux"] as const)("bundles tmux on %s", (platform) => {
 		expect(extraResourcesForPlatform(platform)).toContain("tmux");
 	});

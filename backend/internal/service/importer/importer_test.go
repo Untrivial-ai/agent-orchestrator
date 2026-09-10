@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/gitdefault"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 )
 
@@ -1152,5 +1153,37 @@ func wantCode(t *testing.T, err error, code string) {
 	}
 	if apiErr.Code != code {
 		t.Fatalf("code = %q, want %q", apiErr.Code, code)
+	}
+}
+
+func TestPrepareGitEmptyCloneRecordsInitialBranchForWorkspaceResolution(t *testing.T) {
+	for _, branch := range []string{"main", "trunk"} {
+		t.Run(branch, func(t *testing.T) {
+			ctx := context.Background()
+			origin := filepath.Join(t.TempDir(), "empty.git")
+			repo := filepath.Join(t.TempDir(), "clone")
+			for _, args := range [][]string{
+				{"init", "--bare", "-b", branch, origin},
+				{"clone", origin, repo},
+				{"-C", repo, "symbolic-ref", "HEAD", "refs/heads/" + branch},
+			} {
+				if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v (%s)", args, err, out)
+				}
+			}
+			svc := New(Deps{Store: newFakeStore()})
+			result, err := svc.PrepareGit(ctx, GitPreparationInput{
+				ImportKind: ImportKindProject, Path: repo,
+				ApprovedActions:  []string{GitPreparationActionCommit},
+				InitialCommitMsg: "Start my project",
+			})
+			if err != nil || result.Validation.NextStep != ImportNextStepContinue {
+				t.Fatalf("PrepareGit: %#v, %v", result, err)
+			}
+			resolved, err := gitdefault.New("", nil).Resolve(ctx, ctx, repo)
+			if err != nil || resolved.Branch != branch || resolved.Source != gitdefault.SourceAOInitialized {
+				t.Fatalf("resolve prepared clone: %#v, %v", resolved, err)
+			}
+		})
 	}
 }
