@@ -8,7 +8,7 @@ export const COMPANY = {
   STATUS_URL: "https://status.aoagents.dev",
   TRUST_URL: "https://useao.dev/privacy/",
   MAIL_TO: "mailto:prateek@untrivial.ai",
-  X_URL: "https://x.com/aoagents",
+  X_URL: "https://x.com/ao_build",
   YOUTUBE_URL: "https://www.youtube.com/@itrytoohard",
   LINKEDIN_URL: "https://www.linkedin.com/company/agent-orchestrator/",
   DISCORD_URL: "https://discord.com/invite/UZv7JjxbwG",
