@@ -296,3 +296,17 @@ NULL configs retain their defaults. No Git discovery runs during migration, and
 no earlier migration is modified. Downgrading preserves config data; older
 versions do not support canonical claims and may drop this field when saving
 project settings.
+
+### Claude command-hook shell contract
+
+Managed Claude callbacks use the protected `AO_CLI` reference, not PATH.
+On POSIX the command uses `sh` parameter expansion. On Windows AO explicitly
+writes `shell: "powershell"` with a PowerShell environment check and invocation,
+so the callback does not depend on Git Bash being installed. This follows
+[Claude's documented command-hook shell selection](https://code.claude.com/docs/en/hooks#command-hook-fields):
+Windows otherwise chooses between Git Bash and PowerShell. The installed-command
+fixture tests shell selection, canonical execution, argument/stdin delivery, and
+missing-reference failure on Windows CI; it does not launch an authenticated
+Claude session. Claude versions predating the documented `shell` field are not
+validated by that fixture. Missing `AO_CLI` still fails closed, including when a
+workspace is opened outside an AO-managed session.

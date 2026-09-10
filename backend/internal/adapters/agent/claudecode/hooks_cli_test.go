@@ -92,3 +92,52 @@ func TestLegacyHooksRemainDetectableAndRemovable(t *testing.T) {
 		t.Fatalf("legacy uninstall: %s", data)
 	}
 }
+
+func TestManagedHookRefreshSelectsShellAndPreservesExtras(t *testing.T) {
+	workspace := t.TempDir()
+	p := &Plugin{}
+	if err := p.GetAgentHooks(t.Context(), ports.WorkspaceHookConfig{WorkspacePath: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(claudeSettingsPath(workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	var hooks map[string][]hooksjson.MatcherGroup
+	if err := json.Unmarshal(settings["hooks"], &hooks); err != nil {
+		t.Fatal(err)
+	}
+	hooks["SessionStart"][0].Hooks[0].Extra = map[string]json.RawMessage{"shell": json.RawMessage(`"wrong"`), "async": json.RawMessage(`true`)}
+	settings["hooks"], err = json.Marshal(hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claudeSettingsPath(workspace), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.GetAgentHooks(t.Context(), ports.WorkspaceHookConfig{WorkspacePath: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(claudeSettingsPath(workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(settings["hooks"], &hooks); err != nil {
+		t.Fatal(err)
+	}
+	extra := hooks["SessionStart"][0].Hooks[0].Extra
+	if string(extra["shell"]) != `"`+claudeHookShell+`"` || string(extra["async"]) != "true" {
+		t.Fatalf("refreshed fields: %s", extra)
+	}
+}

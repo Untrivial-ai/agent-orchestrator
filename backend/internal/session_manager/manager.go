@@ -220,10 +220,9 @@ const (
 	EnvBrowserRuntimeTokenStdin = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
 )
 
-// hookBinaryName is the executable name the workspace hook commands invoke:
-// every agent adapter installs a bare `ao hooks <agent> <event>`. The session
-// PATH pin (hookPATH) only works when the daemon's own executable carries this
-// name, since prepending its directory must change what `ao` resolves to.
+// hookBinaryName is the bare executable name still used by some workspace hooks.
+// Claude uses AO_CLI and Codex an absolute executable; the PATH pin remains a
+// compatibility aid for other adapters and interactive commands.
 const hookBinaryName = "ao"
 
 type lifecycleRecorder interface {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -560,7 +561,10 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 		env["PATH"] = prependPathDir(shimDir, env["PATH"])
 		pinnedDir = shimDir
 	} else {
-		env[EnvAOCommandWarning] = fmt.Sprintf("PATH pin failed: %v; AO shim fallback failed: %v", err, shimErr)
+		env[EnvAOCommandWarning] = strings.TrimSpace(env[EnvAOCommandWarning] + "\n" + fmt.Sprintf("PATH pin failed: %v; AO shim fallback failed: %v", err, shimErr))
+	}
+	if warning := env[EnvAOCommandWarning]; warning != "" {
+		slog.WarnContext(ctx, "reviewer canonical CLI setup degraded", "reviewSessionID", spec.ReviewSessionID, "warning", warning)
 	}
 	sessionmanager.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, exec.LookPath, pinnedDir)
 	return env

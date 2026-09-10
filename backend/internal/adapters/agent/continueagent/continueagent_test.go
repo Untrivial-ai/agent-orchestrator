@@ -427,7 +427,7 @@ func TestGetAgentHooksMigratesLegacyClaudeHooks(t *testing.T) {
 	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	legacy := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user stop hook"},{"type":"command","command":"ao hooks claude-code stop"}]}],"Notification":[{"hooks":[{"type":"command","command":"\"${AO_CLI:?AO_CLI is not set}\" hooks claude-code notification"}]}]}}`
+	legacy := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user stop hook"},{"type":"command","command":"ao hooks claude-code stop"}]}],"Notification":[{"hooks":[{"type":"command","command":"\"${AO_CLI:?AO_CLI is not set}\" hooks claude-code notification"},{"type":"command","command":"if (-not $env:AO_CLI) { throw 'AO_CLI is not set' }; & \"$env:AO_CLI\" hooks claude-code notification"}]}]}}`
 	if err := os.WriteFile(filepath.Join(settingsDir, "settings.local.json"), []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}

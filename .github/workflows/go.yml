@@ -83,6 +83,9 @@ jobs:
       - name: Test Windows Chat environment precedence
         run: go test -race ./internal/adapters/chatdriver/processenv/ ./internal/agentlaunch/
 
+      - name: Test installed Claude Windows hooks
+        run: go test -race -run 'TestWindowsInstalledClaudeHook$' ./internal/adapters/agent/claudecode/
+
       - name: Test Windows mobile tunnel subprocesses
         run: go test -race -run 'Cloudflared|Tunnel|Command' ./internal/mobilebridge/ ./internal/process/
 

@@ -1081,3 +1081,13 @@ func TestLauncherPreflightEnvPrefixWithMissingBinary(t *testing.T) {
 		t.Fatalf("err = %v, want 'not found'", err)
 	}
 }
+
+func TestRuntimeEnvRetainsCanonicalAndPATHWarnings(t *testing.T) {
+	l := &agentLauncher{executable: func() (string, error) { return "", errors.New("executable unavailable") }}
+	env := l.runtimeEnv(t.Context(), launchSpec(), nil, nil)
+	for _, want := range []string{"resolve canonical AO CLI", "PATH pin failed", "AO shim fallback failed"} {
+		if !strings.Contains(env[EnvAOCommandWarning], want) {
+			t.Fatalf("warning %q missing %q", env[EnvAOCommandWarning], want)
+		}
+	}
+}

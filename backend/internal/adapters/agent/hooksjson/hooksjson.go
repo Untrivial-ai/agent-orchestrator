@@ -153,6 +153,8 @@ func setRawField(fields map[string]json.RawMessage, key string, value any) error
 // optional matcher, and the command to run. Adapters define these in code rather
 // than reading an embedded template.
 type HookSpec struct {
+	// Shell optionally selects the harness command shell (Claude on Windows).
+	Shell   string
 	Event   string
 	Matcher *string
 	Command string
@@ -206,6 +208,13 @@ func (m Manager) Install(ctx context.Context, workspacePath string) error {
 		groups = removeManagedPrefixes(groups, m.LegacyCommandPrefixes)
 		for _, spec := range specs {
 			entry := HookEntry{Type: "command", Command: spec.Command, Timeout: m.Timeout}
+			if spec.Shell != "" {
+				shell, err := json.Marshal(spec.Shell)
+				if err != nil {
+					return err
+				}
+				entry.Extra = map[string]json.RawMessage{"shell": shell}
+			}
 			groups = reconcileHook(groups, entry, spec.Matcher)
 		}
 		if err := marshalEvent(rawHooks, event, groups); err != nil {
@@ -438,8 +447,12 @@ func reconcileHook(groups []MatcherGroup, hook HookEntry, matcher *string) []Mat
 		for _, existing := range group.Hooks {
 			if existing.Command == hook.Command {
 				removedManaged = true
-				if hook.Extra == nil {
-					hook.Extra = existing.Extra
+				merged := cloneRawFields(existing.Extra)
+				for key, value := range hook.Extra {
+					merged[key] = value
+				}
+				if len(merged) > 0 {
+					hook.Extra = merged
 				}
 				continue
 			}
