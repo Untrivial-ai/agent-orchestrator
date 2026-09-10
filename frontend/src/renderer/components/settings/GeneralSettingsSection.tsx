@@ -262,11 +262,12 @@ function TelemetryEventsRow() {
 	// cleanup_failed because that copy promises retries which, on a platform
 	// without durable policy replacement, will never happen (#5196).
 	const status = saveError ? "failed"
-		: view?.reason === "durability_unsupported" ? "unsupported"
-		: view?.state === "cleanup_failed" ? "failed"
-		: view?.state === "cleanup_pending" ? "pending"
-		: view?.reason === "environment_veto" ? "veto"
-		: view?.reason === "release_blocked" ? "releaseBlocked"
+		: !view ? null
+		: !view.durabilitySupported ? "unsupported"
+		: view.state === "cleanup_failed" ? "failed"
+		: view.state === "cleanup_pending" ? "pending"
+		: view.reason === "environment_veto" ? "veto"
+		: view.reason === "release_blocked" ? "releaseBlocked"
 		: null;
 	return <div className="flex w-full flex-col">
 		<SettingsRow label={t("settings.telemetryEvents.label")}>

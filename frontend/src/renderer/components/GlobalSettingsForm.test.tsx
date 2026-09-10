@@ -280,6 +280,17 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.queryByText("Telemetry cleanup failed. Reporting remains disabled while cleanup retries.")).not.toBeInTheDocument();
 	});
 
+	it("does not promise retries for the fail-closed view when the controller is unavailable", async () => {
+		// Exactly the shape failClosedTelemetryPolicyView() returns in main.ts:
+		// cleanup_failed + invalid_authority on a view that declares no
+		// durability support. Keying the copy on reason rendered "Reporting
+		// remains disabled while cleanup retries" here, where no retry runs.
+		useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" }, loaded: true });
+		renderForm();
+		expect(await screen.findByText("Enabling is unavailable on this platform because durable consent writes are not supported.")).toBeInTheDocument();
+		expect(screen.queryByText("Telemetry cleanup failed. Reporting remains disabled while cleanup retries.")).not.toBeInTheDocument();
+	});
+
 	it("names the release gate when a saved opt-in cannot be honoured", async () => {
 		// #5196: the state this reaches once the client stops rejecting the
 		// gate-refused acknowledgement.
