@@ -1193,8 +1193,9 @@ describe("startAutoUpdates", () => {
     } finally { restore(); }
   });
 
-  it("does not clear a remembered build on non-darwin platforms", async () => {
+  it("clears a remembered build on non-darwin platforms too", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({
       version: "2.1.0", stagedAt: Date.now(), channel: "latest",
     }));
@@ -1202,11 +1203,14 @@ describe("startAutoUpdates", () => {
       { enabled: true, channel: "latest", nightlyAck: false, feature: null },
     );
     autoUpdater.checkForUpdates.mockImplementation(() => {
-      updaterEvents.get("error")?.(new Error("HttpError: 404 latest-mac.yml"));
+      updaterEvents.get("error")?.(new Error("HttpError: 404 latest.yml"));
       return Promise.resolve();
     });
-    for (let i = 0; i < 4; i += 1) await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
+    await module.startAutoUpdates(stateDir);
     expect(module.getUpdateStatus().staged?.version).toBe("2.1.0");
+    await module.startAutoUpdates(stateDir);
+    expect(module.getUpdateStatus().staged).toBeUndefined();
   });
 
   it("keeps a current-process staged build even when checks fail", async () => {
@@ -3213,6 +3217,35 @@ describe("quitAndInstallUpdate", () => {
       const { module, autoUpdater } = await importAutoUpdater();
       await module.checkForUpdatesNow(stateDir);
       await expect(module.quitAndInstallUpdate()).rejects.toThrow(/not ready/);
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    } finally { restore(); }
+  });
+
+  it.each(["win32", "linux"] as const)("re-downloads a remembered build before install on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({ version: "2.1.0", stagedAt: Date.now(), channel: "latest" }));
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+      await module.startAutoUpdates(stateDir);
+      autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: "2.1.0" } });
+      autoUpdater.downloadUpdate.mockImplementation(async () => {
+        updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+        return [];
+      });
+      await module.quitAndInstallUpdate();
+      expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+    } finally { restore(); }
+  });
+
+  it.each(["win32", "linux"] as const)("throws when a remembered build is no longer available on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({ version: "2.1.0", stagedAt: Date.now(), channel: "latest" }));
+      const { module, autoUpdater } = await importAutoUpdater();
+      await module.startAutoUpdates(stateDir);
+      autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: false, updateInfo: { version: "2.1.0" } });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/no longer available/);
       expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
     } finally { restore(); }
   });
