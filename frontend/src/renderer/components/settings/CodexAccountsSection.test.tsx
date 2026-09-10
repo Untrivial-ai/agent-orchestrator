@@ -5,6 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { writeCodexAccounts } from "../../hooks/codex-accounts-state";
 import type { CodexAccountsResponse } from "../../hooks/useCodexAccountsQuery";
 import { useUiStore } from "../../stores/ui-store";
+import { TooltipProvider } from "../ui/tooltip";
 import { CodexAccountsSection } from "./CodexAccountsSection";
 
 const { deleteMock, getMock, postMock, scrollIntoViewMock, terminalStateCallback, terminalTarget } = vi.hoisted(() => ({
@@ -51,7 +52,7 @@ const pendingLogin = {
 
 function renderSection() {
 	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	return { queryClient, ...render(<QueryClientProvider client={queryClient}><CodexAccountsSection /></QueryClientProvider>) };
+	return { queryClient, ...render(<QueryClientProvider client={queryClient}><TooltipProvider><CodexAccountsSection /></TooltipProvider></QueryClientProvider>) };
 }
 
 beforeEach(() => {
@@ -762,10 +763,60 @@ it("starts a global switch with the displayed account revision", async () => {
 	await userEvent.click(screen.getByRole("button", { name: "Switch account" }));
 	await userEvent.click(await screen.findByRole("menuitem", { name: /other@example.com/ }));
 	const dialog = await screen.findByRole("dialog");
+	const restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO Codex sessions" });
+	expect(restartSwitch).not.toBeChecked();
+	expect(dialog).toHaveTextContent("New Codex sessions will use this account.");
+	expect(dialog).toHaveTextContent("Running AO Codex sessions and reviewers stay running.");
+	expect(dialog).toHaveTextContent("external terminals, IDEs, and ChatGPT are unmanaged");
+	const info = within(dialog).getByRole("button", { name: "About restarting running AO Codex sessions" });
+	act(() => info.focus());
+	expect(await screen.findByRole("tooltip")).toHaveTextContent(/preserving native history and worktrees/);
 	fireEvent.click(within(dialog).getByRole("button", { name: "Switch account" }));
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
-		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "idempotency-1" },
+		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "idempotency-1", restartRunningSessions: false },
 	}));
+	vi.unstubAllGlobals();
+});
+
+it("offers an unpersisted restart option with dynamic labels and a locked busy state", async () => {
+	vi.stubGlobal("crypto", { randomUUID: () => "restart-idempotency" });
+	let finishSwitch: ((value: { data: object }) => void) | undefined;
+	postMock.mockImplementation((path: string) => {
+		if (path === "/api/v1/agents/codex/accounts/ensure") return Promise.resolve({ data: accountResponse });
+		if (path === "/api/v1/agents/codex/account-switches") return new Promise((resolve) => { finishSwitch = resolve; });
+		return Promise.resolve({ data: pendingLogin });
+	});
+	renderSection();
+	await screen.findByText("other@example.com");
+
+	const openSwitchDialog = async () => {
+		await userEvent.click(screen.getByRole("button", { name: "Switch account" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: /other@example.com/ }));
+		return screen.findByRole("dialog");
+	};
+
+	let dialog = await openSwitchDialog();
+	let restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO Codex sessions" });
+	await userEvent.click(restartSwitch);
+	expect(restartSwitch).toBeChecked();
+	expect(within(dialog).getByRole("button", { name: "Switch and restart" })).toBeEnabled();
+	expect(dialog).toHaveTextContent("will stop and resume with the selected account");
+	await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+	dialog = await openSwitchDialog();
+	restartSwitch = within(dialog).getByRole("switch", { name: "Restart running AO Codex sessions" });
+	expect(restartSwitch).not.toBeChecked();
+	await userEvent.click(restartSwitch);
+	await userEvent.click(within(dialog).getByRole("button", { name: "Switch and restart" }));
+	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
+		body: { targetAccountId: inactiveAccount.id, expectedAccountRevision: 3, idempotencyKey: "restart-idempotency", restartRunningSessions: true },
+	}));
+	expect(restartSwitch).toBeDisabled();
+	expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+	expect(within(dialog).getByRole("button", { name: "Switch and restart" })).toBeDisabled();
+
+	finishSwitch?.({ data: {} });
+	await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 	vi.unstubAllGlobals();
 });
 

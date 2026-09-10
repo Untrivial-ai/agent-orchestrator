@@ -171,6 +171,7 @@ type CodexAccountSwitch struct {
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 	CompletedAt             sql.NullTime
+	RestartRunningSessions  bool
 }
 
 type CodexAccountSwitchSession struct {

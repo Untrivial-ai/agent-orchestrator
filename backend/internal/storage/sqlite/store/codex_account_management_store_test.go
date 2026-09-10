@@ -51,7 +51,7 @@ func TestCodexAccountSwitchIdempotencyAndSingleActiveConstraint(t *testing.T) {
 	}
 
 	created, inserted, err := st.CreateCodexAccountSwitch(ctx, first)
-	if err != nil || !inserted || created.ID != first.ID {
+	if err != nil || !inserted || created.ID != first.ID || created.RestartRunningSessions {
 		t.Fatalf("create switch: got=%+v inserted=%v err=%v", created, inserted, err)
 	}
 	replayed, inserted, err := st.CreateCodexAccountSwitch(ctx, first)
@@ -155,7 +155,8 @@ func TestCreateCodexAccountSwitchAtomicallyPersistsCompleteSessionSnapshot(t *te
 	sw := domain.CodexAccountSwitch{
 		ID: "switch-snapshot", SourceAccountID: "account-a", TargetAccountID: "account-b",
 		IdempotencyKey: "request-snapshot", RequestFingerprint: "v1:snapshot", ExpectedAccountRevision: 1,
-		Phase: domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
+		RestartRunningSessions: true,
+		Phase:                  domain.CodexAccountSwitchRequested, CreatedAt: now, UpdatedAt: now,
 		Sessions: []domain.CodexAccountSwitchSession{{
 			SessionID: session.ID, NativeSessionID: "native-worker", InterfaceMode: domain.SessionModeTUI,
 			SourceHandleID: "worker-handle", SourceGeneration: "worker-generation",
@@ -168,6 +169,10 @@ func TestCreateCodexAccountSwitchAtomicallyPersistsCompleteSessionSnapshot(t *te
 	created, inserted, err := st.CreateCodexAccountSwitch(ctx, sw)
 	if err != nil || !inserted || len(created.Sessions) != 1 {
 		t.Fatalf("CreateCodexAccountSwitch = %+v, inserted=%v, err=%v", created, inserted, err)
+	}
+	loaded, ok, err := st.GetCodexAccountSwitch(ctx, sw.ID)
+	if err != nil || !ok || !loaded.RestartRunningSessions {
+		t.Fatalf("persisted restart policy = %+v, ok=%v, err=%v", loaded, ok, err)
 	}
 	got, err := st.ListCodexAccountSwitchSessions(ctx, sw.ID)
 	if err != nil {

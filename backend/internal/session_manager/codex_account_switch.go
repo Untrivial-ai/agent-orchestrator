@@ -40,9 +40,9 @@ const (
 	codexSwitchReviewerRestartIntent = "reviewer_restart_in_progress"
 )
 
-func codexAccountSwitchFingerprint(target string, revision int64) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("v1\x00%s\x00%d", target, revision)))
-	return "v1:" + hex.EncodeToString(sum[:])
+func codexAccountSwitchFingerprint(target string, revision int64, restartRunningSessions bool) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("v2\x00%s\x00%d\x00%t", target, revision, restartRunningSessions)))
+	return "v2:" + hex.EncodeToString(sum[:])
 }
 
 func (m *Manager) codexAccountSwitchDependencies() (ports.CodexAccountCredentialManager, ports.CodexAccountSwitchStore, error) {
@@ -153,7 +153,7 @@ func (m *Manager) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAc
 	if err != nil {
 		return domain.CodexAccountSwitch{}, err
 	}
-	fingerprint := codexAccountSwitchFingerprint(cfg.TargetAccountID, cfg.ExpectedAccountRevision)
+	fingerprint := codexAccountSwitchFingerprint(cfg.TargetAccountID, cfg.ExpectedAccountRevision, cfg.RestartRunningSessions)
 	if existing, ok, readErr := store.GetCodexAccountSwitchByIdempotency(ctx, cfg.IdempotencyKey); readErr != nil {
 		return domain.CodexAccountSwitch{}, readErr
 	} else if ok {
@@ -214,17 +214,22 @@ func (m *Manager) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAc
 	now := m.clock()
 	sw := domain.CodexAccountSwitch{
 		ID: uuid.NewString(), SourceAccountID: current.AccountID, TargetAccountID: cfg.TargetAccountID,
-		Phase:          domain.CodexAccountSwitchRequested,
-		IdempotencyKey: cfg.IdempotencyKey, RequestFingerprint: fingerprint,
+		RestartRunningSessions: cfg.RestartRunningSessions,
+		Phase:                  domain.CodexAccountSwitchRequested,
+		IdempotencyKey:         cfg.IdempotencyKey, RequestFingerprint: fingerprint,
 		ExpectedAccountRevision: cfg.ExpectedAccountRevision, CreatedAt: now, UpdatedAt: now,
 	}
-	preliminary, err := m.buildCodexAccountSwitchSnapshot(ctx)
-	if err != nil {
-		return domain.CodexAccountSwitch{}, err
-	}
-	releaseOperations, err := m.acquireCodexSwitchSessionOperations(ctx, preliminary)
-	if err != nil {
-		return domain.CodexAccountSwitch{}, err
+	preliminary := []domain.CodexAccountSwitchSession(nil)
+	releaseOperations := func() {}
+	if cfg.RestartRunningSessions {
+		preliminary, err = m.buildCodexAccountSwitchSnapshot(ctx)
+		if err != nil {
+			return domain.CodexAccountSwitch{}, err
+		}
+		releaseOperations, err = m.acquireCodexSwitchSessionOperations(ctx, preliminary)
+		if err != nil {
+			return domain.CodexAccountSwitch{}, err
+		}
 	}
 	cleanupAdmission := releaseOperations
 	defer func() {
@@ -232,24 +237,32 @@ func (m *Manager) StartCodexAccountSwitch(ctx context.Context, cfg ports.CodexAc
 			cleanupAdmission()
 		}
 	}()
-	abortChatIntake, err := m.armCodexSwitchChatInterrupt(ctx, preliminary)
-	if err != nil {
-		return domain.CodexAccountSwitch{}, err
+	abortChatIntake := func() {}
+	if cfg.RestartRunningSessions {
+		abortChatIntake, err = m.armCodexSwitchChatInterrupt(ctx, preliminary)
+		if err != nil {
+			return domain.CodexAccountSwitch{}, err
+		}
 	}
 	previousCleanup := cleanupAdmission
 	cleanupAdmission = func() { abortChatIntake(); previousCleanup() }
-	releaseTerminalInput, err := m.freezeCodexSwitchTerminalInput(ctx, preliminary)
-	if err != nil {
-		return domain.CodexAccountSwitch{}, err
+	releaseTerminalInput := func() {}
+	if cfg.RestartRunningSessions {
+		releaseTerminalInput, err = m.freezeCodexSwitchTerminalInput(ctx, preliminary)
+		if err != nil {
+			return domain.CodexAccountSwitch{}, err
+		}
 	}
 	previousCleanup = cleanupAdmission
 	cleanupAdmission = func() { releaseTerminalInput(); previousCleanup() }
-	if err := m.prepareCodexSwitchChatInterrupt(ctx, preliminary); err != nil {
-		return domain.CodexAccountSwitch{}, err
-	}
-	sw.Sessions, err = m.buildCodexAccountSwitchSnapshot(ctx)
-	if err != nil {
-		return domain.CodexAccountSwitch{}, err
+	if cfg.RestartRunningSessions {
+		if err := m.prepareCodexSwitchChatInterrupt(ctx, preliminary); err != nil {
+			return domain.CodexAccountSwitch{}, err
+		}
+		sw.Sessions, err = m.buildCodexAccountSwitchSnapshot(ctx)
+		if err != nil {
+			return domain.CodexAccountSwitch{}, err
+		}
 	}
 	created, inserted, err := store.CreateCodexAccountSwitch(ctx, sw)
 	if err != nil {
@@ -468,11 +481,13 @@ func (m *Manager) runCodexAccountSwitchWithAdmission(ctx context.Context, creden
 			}
 			return
 		}
-		admission = &codexSwitchAdmission{}
-		admission.releaseOperations, err = m.acquireCodexSwitchSessionOperations(ctx, sessions)
-		if err != nil {
-			m.failCodexAccountSwitchAndLog(ctx, store, &sw, "session_operation_in_progress")
-			return
+		admission = &codexSwitchAdmission{releaseOperations: func() {}}
+		if sw.RestartRunningSessions {
+			admission.releaseOperations, err = m.acquireCodexSwitchSessionOperations(ctx, sessions)
+			if err != nil {
+				m.failCodexAccountSwitchAndLog(ctx, store, &sw, "session_operation_in_progress")
+				return
+			}
 		}
 	}
 	releaseOperations := admission.releaseOperations
@@ -484,7 +499,7 @@ func (m *Manager) runCodexAccountSwitchWithAdmission(ctx context.Context, creden
 	if admission.abortChatIntake == nil {
 		admission.abortChatIntake = func() {}
 		admission.releaseInput = func() {}
-		if sw.Phase == domain.CodexAccountSwitchRequested || sw.Phase == domain.CodexAccountSwitchStoppingSessions {
+		if sw.RestartRunningSessions && (sw.Phase == domain.CodexAccountSwitchRequested || sw.Phase == domain.CodexAccountSwitchStoppingSessions) {
 			admission.abortChatIntake, err = m.armCodexSwitchChatInterrupt(ctx, sessions)
 			if err != nil {
 				m.failCodexAccountSwitchAndLog(ctx, store, &sw, "stop_unconfirmed")
@@ -521,7 +536,11 @@ func (m *Manager) dispatchCodexAccountSwitch(ctx context.Context, credentials po
 	for {
 		switch sw.Phase {
 		case domain.CodexAccountSwitchRequested:
-			if m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchStoppingSessions, "") != nil {
+			next := domain.CodexAccountSwitchCheckpointCredential
+			if sw.RestartRunningSessions {
+				next = domain.CodexAccountSwitchStoppingSessions
+			}
+			if m.advanceCodexAccountSwitch(ctx, store, sw, next, "") != nil {
 				return
 			}
 		case domain.CodexAccountSwitchStoppingSessions:
@@ -564,13 +583,21 @@ func (m *Manager) dispatchCodexAccountSwitch(ctx context.Context, credentials po
 				_ = m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRecoveryRequired, "target_verification_unconfirmed")
 				return
 			}
+			if !sw.RestartRunningSessions {
+				completed := m.clock()
+				sw.CompletedAt = &completed
+				_ = m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchCompleted, "")
+				return
+			}
 			if m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRestartingSessions, "") != nil {
 				return
 			}
 		case domain.CodexAccountSwitchRestartingSessions:
-			if err := m.restartCodexSwitchSessions(ctx, store, sw.ID, sessions); err != nil {
-				_ = m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRecoveryRequired, "restart_unconfirmed")
-				return
+			if sw.RestartRunningSessions {
+				if err := m.restartCodexSwitchSessions(ctx, store, sw.ID, sessions); err != nil {
+					_ = m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRecoveryRequired, "restart_unconfirmed")
+					return
+				}
 			}
 			completed := m.clock()
 			sw.CompletedAt = &completed
@@ -585,9 +612,11 @@ func (m *Manager) dispatchCodexAccountSwitch(ctx context.Context, credentials po
 				_ = m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRecoveryRequired, "rollback_unconfirmed")
 				return
 			}
-			if err := m.restartCodexSwitchSessions(ctx, store, sw.ID, sessions); err != nil {
-				_ = m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRecoveryRequired, "restart_unconfirmed")
-				return
+			if sw.RestartRunningSessions {
+				if err := m.restartCodexSwitchSessions(ctx, store, sw.ID, sessions); err != nil {
+					_ = m.advanceCodexAccountSwitch(ctx, store, sw, domain.CodexAccountSwitchRecoveryRequired, "restart_unconfirmed")
+					return
+				}
 			}
 			completed := m.clock()
 			sw.CompletedAt = &completed
@@ -1190,9 +1219,12 @@ func (m *Manager) recoverCodexAccountSwitch(ctx context.Context, credentials por
 	if err != nil {
 		return
 	}
-	releaseOperations, err := m.acquireCodexSwitchSessionOperations(ctx, sessions)
-	if err != nil {
-		return
+	releaseOperations := func() {}
+	if sw.RestartRunningSessions {
+		releaseOperations, err = m.acquireCodexSwitchSessionOperations(ctx, sessions)
+		if err != nil {
+			return
+		}
 	}
 	defer func() {
 		if !retainCodexSwitchSessionOperations(sw.Phase) {
@@ -1230,10 +1262,13 @@ func (m *Manager) ReconcileCodexAccountSwitches(ctx context.Context) error {
 		m.finishCodexAccountSwitchWorker(false)
 		return err
 	}
-	releaseOperations, err := m.acquireCodexSwitchSessionOperations(ctx, sw.Sessions)
-	if err != nil {
-		m.finishCodexAccountSwitchMutation(credentials, false)
-		return err
+	releaseOperations := func() {}
+	if sw.RestartRunningSessions {
+		releaseOperations, err = m.acquireCodexSwitchSessionOperations(ctx, sw.Sessions)
+		if err != nil {
+			m.finishCodexAccountSwitchMutation(credentials, false)
+			return err
+		}
 	}
 	m.agentSwitchWorkers.Add(1)
 	go func() {

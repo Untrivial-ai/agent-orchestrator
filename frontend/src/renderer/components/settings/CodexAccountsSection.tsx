@@ -1,4 +1,4 @@
-import { ArrowRightLeft, LoaderCircle, Plus, UserRound } from "lucide-react";
+import { ArrowRightLeft, Info, LoaderCircle, Plus, UserRound } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -8,6 +8,8 @@ import { useCodexAccountsQuery, useEnsureCodexAccounts, type CodexAccount, type 
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Button } from "../ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu";
+import { Switch } from "../ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { AgentProviderGroup } from "./AgentProviderGroup";
 import { formatAuthMethod, formatPercentage, formatPlanName } from "./CodexAccountDetails";
 import { CodexAccountLoginTerminalPanel } from "./CodexAccountLoginTerminalPanel";
@@ -15,7 +17,7 @@ import { CodexAccountRow } from "./CodexAccountRow";
 import { SettingsSection } from "./SettingsSection";
 
 export type PendingCodexAccountAction =
-	| { kind: "switch"; account: CodexAccount; idempotencyKey: string; submitting: boolean }
+	| { kind: "switch"; account: CodexAccount; idempotencyKey: string; restartRunningSessions: boolean; submitting: boolean }
 	| { kind: "reset"; account: CodexAccount; idempotencyKey: string; submitting: boolean }
 	| { kind: "logout"; account: CodexAccount; submitting: boolean }
 	| { kind: "delete"; account: CodexAccount; submitting: boolean }
@@ -104,7 +106,8 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	}, [actions, expandedAccount]);
 
 	const openPending = (kind: Exclude<PendingCodexAccountAction, null>["kind"], account: CodexAccount) => {
-		if (kind === "switch" || kind === "reset") setPendingAction({ kind, account, idempotencyKey: crypto.randomUUID(), submitting: false });
+		if (kind === "switch") setPendingAction({ kind, account, idempotencyKey: crypto.randomUUID(), restartRunningSessions: false, submitting: false });
+		else if (kind === "reset") setPendingAction({ kind, account, idempotencyKey: crypto.randomUUID(), submitting: false });
 		else setPendingAction({ kind, account, submitting: false });
 	};
 
@@ -114,7 +117,7 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 		setPendingAction({ ...pending, submitting: true });
 		try {
 			switch (pending.kind) {
-				case "switch": await actions.switchAccount(pending.account, data.accountRevision, pending.idempotencyKey); break;
+				case "switch": await actions.switchAccount(pending.account, data.accountRevision, pending.idempotencyKey, pending.restartRunningSessions); break;
 				case "reset": await actions.resetAccount(pending.account, pending.idempotencyKey); setAnnouncement(t("settings.codexAccounts.resetSuccess", { label: pending.account.label })); break;
 				case "logout": await actions.logoutAccount(pending.account); setAnnouncement(t("settings.codexAccounts.logoutSuccess", { label: pending.account.label })); break;
 				case "delete": await actions.deleteAccount(pending.account); if (expandedAccount === pending.account.id) setExpandedAccount(null); setAnnouncement(t("settings.codexAccounts.deleteSuccess", { label: pending.account.label })); break;
@@ -128,7 +131,32 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	const dialog = useMemo(() => {
 		if (!pendingAction) return null;
 		switch (pendingAction.kind) {
-			case "switch": return { title: t("settings.codexAccounts.switchTitle"), description: t("settings.codexAccounts.switchDescription", { label: pendingAction.account.label }), confirmLabel: t("settings.codexAccounts.switchConfirm"), destructive: false };
+			case "switch": return {
+				title: t("settings.codexAccounts.switchTitle"),
+				description: <div className="space-y-4">
+					<p>{t("settings.codexAccounts.switchDescription", { label: pendingAction.account.label })}</p>
+					<div className="rounded-lg border border-border bg-background/40 p-3">
+						<div className="flex items-center justify-between gap-4">
+							<div className="flex min-w-0 items-center gap-1.5">
+								<label htmlFor="restart-codex-sessions" className="font-medium text-foreground">{t("settings.codexAccounts.restartRunningSessions")}</label>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<button type="button" className="inline-flex rounded-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60" aria-label={t("settings.codexAccounts.restartRunningSessionsInfo")}>
+											<Info className="size-3.5" aria-hidden="true" />
+										</button>
+									</TooltipTrigger>
+									<TooltipContent>{t("settings.codexAccounts.restartRunningSessionsTooltip")}</TooltipContent>
+								</Tooltip>
+							</div>
+							<Switch id="restart-codex-sessions" checked={pendingAction.restartRunningSessions} disabled={pendingAction.submitting} onCheckedChange={(checked) => setPendingAction((current) => current?.kind === "switch" ? { ...current, restartRunningSessions: checked } : current)} />
+						</div>
+						<p className="mt-2 text-caption leading-4 text-settings-muted">{t(pendingAction.restartRunningSessions ? "settings.codexAccounts.restartRunningSessionsOn" : "settings.codexAccounts.restartRunningSessionsOff")}</p>
+					</div>
+					<p>{t("settings.codexAccounts.externalSessionsWarning")}</p>
+				</div>,
+				confirmLabel: t(pendingAction.restartRunningSessions ? "settings.codexAccounts.switchAndRestart" : "settings.codexAccounts.switchConfirm"),
+				destructive: false,
+			};
 			case "reset": return { title: t("settings.codexAccounts.resetTitle"), description: t("settings.codexAccounts.resetDescription", { label: pendingAction.account.label }), confirmLabel: t("settings.codexAccounts.useReset"), destructive: false };
 			case "logout": return { title: t("settings.codexAccounts.logoutTitle"), description: t("settings.codexAccounts.logoutDescription", { label: pendingAction.account.label }), confirmLabel: t("settings.codexAccounts.logout"), destructive: false };
 			case "delete": return { title: t("settings.codexAccounts.deleteTitle"), description: t("settings.codexAccounts.deleteDescription", { label: pendingAction.account.label }), confirmLabel: t("settings.codexAccounts.delete"), destructive: true };

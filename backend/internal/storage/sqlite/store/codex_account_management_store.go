@@ -84,7 +84,8 @@ func (s *Store) CreateCodexAccountSwitch(ctx context.Context, rec domain.CodexAc
 		n, insertErr = q.InsertCodexAccountSwitch(ctx, gen.InsertCodexAccountSwitchParams{
 			ID: rec.ID, SourceAccountID: rec.SourceAccountID, TargetAccountID: rec.TargetAccountID,
 			IdempotencyKey: rec.IdempotencyKey, RequestFingerprint: rec.RequestFingerprint,
-			ExpectedAccountRevision: rec.ExpectedAccountRevision, Phase: string(rec.Phase),
+			ExpectedAccountRevision: rec.ExpectedAccountRevision, RestartRunningSessions: rec.RestartRunningSessions,
+			Phase:     string(rec.Phase),
 			CreatedAt: rec.CreatedAt.UTC(), UpdatedAt: rec.UpdatedAt.UTC(),
 		})
 		if insertErr != nil || n == 0 {
@@ -257,6 +258,6 @@ func codexAccountSwitchFromGen(row gen.CodexAccountSwitch) domain.CodexAccountSw
 		CredentialsCommittedAt: nullTimeToPtr(row.CredentialsCommittedAt),
 		CreatedAt:              row.CreatedAt, UpdatedAt: row.UpdatedAt, CompletedAt: nullTimeToPtr(row.CompletedAt),
 		IdempotencyKey: row.IdempotencyKey, RequestFingerprint: row.RequestFingerprint,
-		ExpectedAccountRevision: row.ExpectedAccountRevision,
+		ExpectedAccountRevision: row.ExpectedAccountRevision, RestartRunningSessions: row.RestartRunningSessions,
 	}
 }

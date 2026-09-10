@@ -7612,6 +7612,8 @@ components:
           - completed
           - failed
           type: string
+        restartRunningSessions:
+          type: boolean
         sessions:
           items:
             $ref: '#/components/schemas/CodexAccountSwitchSessionResponse'
@@ -7627,6 +7629,7 @@ components:
       - id
       - sourceAccountId
       - targetAccountId
+      - restartRunningSessions
       - phase
       - sessions
       - canRecover
@@ -11536,6 +11539,8 @@ components:
         idempotencyKey:
           minLength: 1
           type: string
+        restartRunningSessions:
+          type: boolean
         targetAccountId:
           minLength: 1
           type: string

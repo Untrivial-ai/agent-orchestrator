@@ -24,7 +24,7 @@ const (
 	CodexAccountSwitchRollbackRequired CodexAccountSwitchPhase = "rollback_required"
 	// CodexAccountSwitchRecoveryRequired requires exact recorded recovery work.
 	CodexAccountSwitchRecoveryRequired CodexAccountSwitchPhase = "recovery_required"
-	// CodexAccountSwitchCompleted means activation and restarts succeeded.
+	// CodexAccountSwitchCompleted means activation and any requested restarts succeeded.
 	CodexAccountSwitchCompleted CodexAccountSwitchPhase = "completed"
 	// CodexAccountSwitchFailed means the source remained or was restored safely.
 	CodexAccountSwitchFailed CodexAccountSwitchPhase = "failed"
@@ -61,6 +61,7 @@ type CodexAccountSwitch struct {
 	ID                     string                      `json:"id"`
 	SourceAccountID        string                      `json:"sourceAccountId"`
 	TargetAccountID        string                      `json:"targetAccountId"`
+	RestartRunningSessions bool                        `json:"restartRunningSessions"`
 	Phase                  CodexAccountSwitchPhase     `json:"phase"`
 	FailureCode            string                      `json:"failureCode,omitempty"`
 	Sessions               []CodexAccountSwitchSession `json:"sessions"`
