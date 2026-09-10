@@ -48,8 +48,8 @@ type Launcher interface {
 	RestoreTerminal(ctx context.Context, spec LaunchSpec) (LaunchResult, error)
 	// Notify asks an already-running reviewer pane to review a new commit.
 	Notify(ctx context.Context, handleID string, spec LaunchSpec) error
-	// Alive reports whether the reviewer terminal still has a running child.
-	// Retained scrollback hosts are not running reviewers; probe errors remain
+	// Alive reports whether the unsupervised reviewer terminal has a workload.
+	// Retained hosts and bare shells are not workloads; probe errors remain
 	// inconclusive so installation maintenance cannot infer a stopped process.
 	Alive(ctx context.Context, handleID string) (bool, error)
 	// Reusable reports whether the harness accepts another review task in its
@@ -637,10 +637,13 @@ func (l *agentLauncher) Alive(ctx context.Context, handleID string) (bool, error
 		return false, nil
 	}
 	handle := ports.RuntimeHandle{ID: handleID}
-	if inspector, ok := l.runtime.(ports.RuntimeChildInspector); ok {
-		return inspector.IsChildAlive(ctx, handle)
+	if inspector, ok := l.runtime.(ports.SupervisedProcessInspector); ok {
+		// Reviewer Create launches the adapter command directly, without an AO
+		// supervisor generation. Empty ref selects the unsupervised workload
+		// contract, which distinguishes a retained shell from a manual relaunch.
+		return inspector.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{})
 	}
-	// Older/custom runtimes without child evidence conservatively retain a
+	// Older/custom runtimes without workload evidence conservatively retain a
 	// live host. Never infer a stopped reviewer from an unsupported probe.
 	return l.runtime.IsAlive(ctx, handle)
 }

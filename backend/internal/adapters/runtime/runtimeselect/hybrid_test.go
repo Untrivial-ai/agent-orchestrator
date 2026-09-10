@@ -18,6 +18,8 @@ type fakeBackend struct {
 	handles      []ports.RuntimeHandle
 	childAlive   bool
 	childErr     error
+	workloadRef  ports.SupervisedProcessRef
+	workloadErr  error
 }
 
 func (f *fakeBackend) record(call string, handle ports.RuntimeHandle) {
@@ -106,9 +108,33 @@ func (f *fakeBackend) SendMessage(_ context.Context, handle ports.RuntimeHandle,
 	return nil
 }
 
-func (f *fakeBackend) IsSupervisedProcessAlive(_ context.Context, handle ports.RuntimeHandle, _ ports.SupervisedProcessRef) (bool, error) {
+func (f *fakeBackend) IsSupervisedProcessAlive(_ context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
 	f.record("supervised", handle)
-	return true, nil
+	f.workloadRef = ref
+	return f.workloadErr == nil, f.workloadErr
+}
+
+func TestHybridRuntimePreservesWorkloadModeAndErrors(t *testing.T) {
+	for _, prefix := range []string{"", directHandlePrefix} {
+		for _, ref := range []ports.SupervisedProcessRef{{}, {SessionID: "worker", LaunchID: "generation"}} {
+			for _, probeErr := range []error{nil, ports.ErrRuntimeProbeInconclusive} {
+				legacy, direct := &restartableFakeBackend{}, &fakeBackend{}
+				backend := &legacy.fakeBackend
+				if prefix != "" {
+					backend = direct
+				}
+				backend.workloadErr = probeErr
+				rt := newHybridRuntime(legacy, direct, nil, "Linux")
+				alive, err := rt.IsSupervisedProcessAlive(context.Background(), ports.RuntimeHandle{ID: prefix + "worker"}, ref)
+				if alive != (probeErr == nil) || !errors.Is(err, probeErr) || backend.workloadRef != ref {
+					t.Fatalf("workload route %q, ref %+v = %v, %v, ref %+v", prefix, ref, alive, err, backend.workloadRef)
+				}
+				if !reflect.DeepEqual(backend.calls, []string{"supervised"}) || backend.handles[0].ID != "worker" {
+					t.Fatalf("workload route %q = %v, %v", prefix, backend.calls, backend.handles)
+				}
+			}
+		}
+	}
 }
 
 func (f *fakeBackend) IsExactSupervisedProcessAlive(_ context.Context, handle ports.RuntimeHandle, _ ports.SupervisedProcessRef) (bool, error) {

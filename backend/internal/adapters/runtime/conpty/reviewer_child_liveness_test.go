@@ -21,17 +21,17 @@ func TestReviewerChildExitLeavesHostAvailable(t *testing.T) {
 	}
 	h := hosts[handle.ID]
 	t.Cleanup(func() { h.cleanup(t) })
-	if alive, err := rt.IsChildAlive(ctx, handle); err != nil || !alive {
+	if alive, err := rt.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{}); err != nil || !alive {
 		t.Fatalf("reviewer before exit = %v, %v; want live child", alive, err)
 	}
 	h.pty.signalExit(42)
-	if alive, err := rt.IsChildAlive(ctx, handle); err != nil || alive {
+	if alive, err := rt.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{}); err != nil || alive {
 		t.Fatalf("reviewer after exit = %v, %v; want confirmed child exit", alive, err)
 	}
 	if alive, err := rt.IsAlive(ctx, handle); err != nil || !alive {
 		t.Fatalf("host after child probe = %v, %v; want retained host", alive, err)
 	}
-	if alive, err := rt.IsChildAlive(ctx, ports.RuntimeHandle{ID: "absent-reviewer"}); err != nil || alive {
+	if alive, err := rt.IsSupervisedProcessAlive(ctx, ports.RuntimeHandle{ID: "absent-reviewer"}, ports.SupervisedProcessRef{}); err != nil || alive {
 		t.Fatalf("absent reviewer = %v, %v; want confirmed absence", alive, err)
 	}
 }
