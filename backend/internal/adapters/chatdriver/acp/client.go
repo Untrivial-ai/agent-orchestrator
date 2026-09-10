@@ -906,21 +906,12 @@ func (c *conversation) sessionFailureEvent(
 	turnID string,
 	meta map[string]any,
 ) (ports.ChatEvent, bool) {
-	jetbrains := nestedMap(meta, "jetbrains")
-	air := nestedMap(jetbrains, "air")
-	version, versionOK := number(air["version"])
-	failure := nestedMap(air, "sessionFailure")
-	if !versionOK || version < 1 || failure == nil {
+	failure := sessionFailure(meta)
+	if failure == nil {
 		return ports.ChatEvent{}, false
 	}
-
-	id, _ := failure["id"].(string)
 	title, _ := failure["title"].(string)
-	id = strings.TrimSpace(id)
 	title = strings.TrimSpace(title)
-	if id == "" || title == "" {
-		return ports.ChatEvent{}, false
-	}
 
 	detailMap := map[string]any{"event": "provider.failure"}
 	for _, key := range []string{"category", "severity"} {
@@ -951,6 +942,40 @@ func (c *conversation) sessionFailureEvent(
 	c.providerFailure = &event
 	c.mu.Unlock()
 	return event, true
+}
+
+func sessionFailure(meta map[string]any) map[string]any {
+	air := nestedMap(nestedMap(meta, "jetbrains"), "air")
+	version, versionOK := number(air["version"])
+	failure := nestedMap(air, "sessionFailure")
+	id, _ := failure["id"].(string)
+	title, _ := failure["title"].(string)
+	if !versionOK || version < 1 || strings.TrimSpace(id) == "" || strings.TrimSpace(title) == "" {
+		return nil
+	}
+	return failure
+}
+
+// Claude puts negotiated terminal failures on the prompt response, which still
+// has stopReason=end_turn. Use the protocol's severity and actions, never match
+// provider prose or maintain a list of subscription/limit error messages.
+func promptResponseFailure(meta map[string]any) (message string, reauth bool) {
+	failure := sessionFailure(meta)
+	if failure["severity"] != "error" {
+		return "", false
+	}
+	message, _ = failure["title"].(string)
+	if details, ok := failure["details"].(string); ok && strings.TrimSpace(details) != "" && details != message {
+		message += "\n\n" + details
+	}
+	if actions, ok := failure["actions"].([]any); ok {
+		for _, action := range actions {
+			if action == "login" {
+				reauth = true
+			}
+		}
+	}
+	return message, reauth
 }
 
 // completeProviderFailure removes a stale retry warning as soon as the provider

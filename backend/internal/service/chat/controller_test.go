@@ -2272,6 +2272,51 @@ func TestStaleControllerEventsDoNotReachTheTimeline(t *testing.T) {
 
 /* ---- tests ------------------------------------------------------------- */
 
+func TestProviderPromptFailurePersistsOriginalTextOnce(t *testing.T) {
+	h := newHarness(t)
+	turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "hello", ClientMessageID: "failure-prompt", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := "Provider rejected this request\n\nOriginal details with https://example.com/help"
+	failure := ports.ChatEvent{
+		Kind: ports.ChatEventError, ProviderTurnID: turn.ProviderTurnID,
+		ProviderEventID: "host:1:failure", Err: errors.New(message),
+	}
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID},
+		failure,
+		// A daemon restart before the terminal ACK can replay the error.
+		failure,
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+			ProviderEventID: "host:1", TurnState: domain.TurnStateFailed},
+	)
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateFailed
+	})
+	var failures int
+	for _, activity := range snapshot.Activities {
+		if activity.Kind == domain.ActivityKindError {
+			failures++
+			if activity.Summary != message || activity.Status != domain.ActivityStatusFailed {
+				t.Fatalf("failure = %#v", activity)
+			}
+			var detail map[string]string
+			if err := json.Unmarshal(activity.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if detail["error"] != message {
+				t.Fatalf("detail = %#v", detail)
+			}
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("error rows = %d, want one durable row", failures)
+	}
+}
+
 // The whole point: a message goes out, provider events come back, and the durable
 // timeline reflects them in sequence order.
 func TestProjectsAFullTurnIntoDurableRows(t *testing.T) {

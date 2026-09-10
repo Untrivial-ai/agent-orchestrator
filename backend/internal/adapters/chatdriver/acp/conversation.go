@@ -575,6 +575,20 @@ func (c *conversation) finishPrompt(
 		}
 	} else {
 		state = turnState(resp.StopReason)
+		if message, reauth := promptResponseFailure(resp.Meta); message != "" &&
+			state != domain.TurnStateInterrupted && !interruptedLocally {
+			state = domain.TurnStateFailed
+			failureEventID, accountEventID := "", ""
+			if eventID != "" {
+				failureEventID, accountEventID = eventID+":failure", eventID+":account"
+			}
+			if reauth {
+				c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, ProviderEventID: accountEventID, Account: &ports.ChatAccount{
+					ReauthRequired: true, ReauthReason: message,
+				}})
+			}
+			c.emit(ports.ChatEvent{Kind: ports.ChatEventError, ProviderEventID: failureEventID, ProviderTurnID: turnID, Err: errors.New(message)})
+		}
 		if resp.Usage != nil {
 			cached := 0
 			if resp.Usage.CachedReadTokens != nil {

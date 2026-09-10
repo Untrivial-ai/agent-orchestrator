@@ -667,6 +667,7 @@ type fakeAgent struct {
 	elicitation         *acpsdk.UnstableCreateElicitationRequest
 	elicitationResponse acpsdk.UnstableCreateElicitationResponse
 	promptErr           error
+	promptResponse      *acpsdk.PromptResponse
 	promptBlock         bool
 	promptStarted       chan struct{}
 	cancelErr           error
@@ -977,11 +978,15 @@ func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (ac
 	promptNoPermission := a.promptNoPermission
 	elicitation := a.elicitation
 	promptErr := a.promptErr
+	promptResponse := a.promptResponse
 	promptBlock := a.promptBlock
 	promptStarted := a.promptStarted
 	a.mu.Unlock()
 	if promptErr != nil {
 		return acpsdk.PromptResponse{}, promptErr
+	}
+	if promptResponse != nil {
+		return *promptResponse, nil
 	}
 	if promptBlock {
 		if promptStarted != nil {
