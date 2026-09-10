@@ -4288,12 +4288,10 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	gap: 2px;
 	flex-shrink: 0;
 	min-width: 0;
-	/* Matches the 28px (--size-control-md) buttons + 3px top/bottom exactly, so
-	   this is the actual driver of the bar's height — a bigger min-height here
-	   would silently swallow any padding reduction above it (buttons would just
-	   stay centered in the leftover space instead of the bar getting shorter). */
-	min-height: 34px;
-	padding: 3px 4px;
+	/* Keep the toolbar close to the 28px controls, matching the compact sidebar
+	   chrome instead of adding a loose band around every browser action. */
+	min-height: 30px;
+	padding: 1px 4px;
 	background: var(--bg);
 }
 
@@ -4323,11 +4321,11 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-bar {
 	display: flex;
-	height: 40px;
+	height: 32px;
 	min-width: 0;
 	align-items: center;
 	gap: 2px;
-	padding: 0 6px;
+	padding: 0 4px;
 	background: var(--bg);
 }
 
@@ -4382,7 +4380,6 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	min-width: 150px;
 	max-width: 200px;
 	height: 28px;
-	align-items: center;
 	flex: 0 1 200px;
 	border-radius: var(--radius-md);
 	color: var(--fg-muted);
