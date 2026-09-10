@@ -1835,10 +1835,10 @@ func newSwitchAdmissionFixture(t *testing.T, factory *fakeCodexAccountFactory, o
 		t.Fatal(err)
 	}
 	manager.active = state.active
-	manager.bootstrapOnce.Do(func() {
-		manager.bootstrapped = true
-		close(manager.bootstrapDone)
-	})
+	manager.accountStoreReady = true
+	manager.reconciliation = domain.CodexDeviceReconciliation{
+		Status: domain.CodexDeviceReconciliationVerified, ActiveAccountVerified: true,
+	}
 	svc := &Service{codexAccounts: manager, readiness: newReadinessCoordinator(readinessCoordinatorConfig{})}
 	return manager, svc, record
 }
@@ -1872,7 +1872,7 @@ func TestSwitchAdmissionTransientErrorDoesNotRequireReauthentication(t *testing.
 		t.Fatal("transient factory.Open failure incorrectly triggered requireReauthentication")
 	}
 
-	auth, authErr := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeDisplay, false)
+	auth, authErr := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeDisplay)
 	if authErr != nil {
 		t.Fatal(authErr)
 	}
