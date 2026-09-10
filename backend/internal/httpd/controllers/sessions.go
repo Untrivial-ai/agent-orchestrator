@@ -1405,6 +1405,10 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		}
 		in.Mode = mode
 	}
+	if err := (domain.AgentConfig{ClaudeConfigDir: in.ClaudeConfigDir}).Validate(); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_AGENT_CONFIG", err.Error(), nil)
+		return
+	}
 	if !in.ApprovalMode.Valid() {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_APPROVAL_MODE", "approvalMode is invalid", nil)
 		return
@@ -1416,13 +1420,14 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 	}
 
 	out, err := c.Svc.DelegateTask(r.Context(), sessionsvc.DelegateTaskInput{
-		ProjectID:      in.ProjectID,
-		Brief:          domain.SanitizeControlChars(in.Brief),
-		RequestedAgent: in.Agent,
-		Model:          domain.SanitizeControlChars(strings.TrimSpace(in.Model)),
-		ApprovalMode:   in.ApprovalMode,
-		RequestedMode:  in.Mode,
-		Attachments:    attachments,
+		ProjectID:       in.ProjectID,
+		Brief:           domain.SanitizeControlChars(in.Brief),
+		RequestedAgent:  in.Agent,
+		Model:           domain.SanitizeControlChars(strings.TrimSpace(in.Model)),
+		ApprovalMode:    in.ApprovalMode,
+		ClaudeConfigDir: in.ClaudeConfigDir,
+		RequestedMode:   in.Mode,
+		Attachments:     attachments,
 	})
 	if err != nil {
 		envelope.WriteError(w, r, err)

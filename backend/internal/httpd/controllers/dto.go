@@ -747,10 +747,11 @@ type SendSessionMessageResponse struct {
 // DelegateTaskRequest is the body of POST /api/v1/orchestrators/delegate.
 // An omitted agent tells the orchestrator to use the project's worker default.
 type DelegateTaskRequest struct {
-	ProjectID domain.ProjectID    `json:"projectId"`
-	Brief     string              `json:"brief" maxLength:"16384"`
-	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,fake"`
-	Model     string              `json:"model,omitempty" maxLength:"256"`
+	ClaudeConfigDir *string             `json:"claudeConfigDir,omitempty"`
+	ProjectID       domain.ProjectID    `json:"projectId"`
+	Brief           string              `json:"brief" maxLength:"16384"`
+	Agent           domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,fake"`
+	Model           string              `json:"model,omitempty" maxLength:"256"`
 	// ApprovalMode is an optional per-session override. The UI uses the explicit
 	// bypass value only after the user accepts an approval-less Chat fallback.
 	ApprovalMode domain.PermissionMode `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
@@ -2451,3 +2452,9 @@ type MuteDeviceRequest struct {
 type InstallIDParam struct {
 	InstallID string `path:"installId" description:"The device's stable install id."`
 }
+
+// ClaudeProfilesResponse lists existing local Claude configuration directories.
+type ClaudeProfilesResponse = agentsvc.ClaudeProfiles
+
+// ClaudeProfile is one display-safe local Claude configuration directory.
+type ClaudeProfile = agentsvc.ClaudeProfile

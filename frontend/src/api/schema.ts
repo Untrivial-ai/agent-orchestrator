@@ -141,6 +141,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/claude-code/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Discover existing local Claude Code profiles */
+        get: operations["listClaudeProfiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/codex/account-switches": {
         parameters: {
             query?: never;
@@ -2440,7 +2457,15 @@ export interface components {
             /** @enum {string} */
             state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
         };
+        AgentClaudeProfile: {
+            configDir: string;
+            name: string;
+        };
+        AgentClaudeProfiles: {
+            profiles: components["schemas"]["AgentClaudeProfile"][];
+        };
         AgentConfig: {
+            claudeConfigDir?: null | string;
             mode?: string;
             model?: string;
             permissions?: string;
@@ -3162,6 +3187,7 @@ export interface components {
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
             brief: string;
+            claudeConfigDir?: null | string;
             /** @enum {string} */
             mode?: "tui" | "chat";
             model?: string;
@@ -4818,6 +4844,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListAgentAuthPlansResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listClaudeProfiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentClaudeProfiles"];
                 };
             };
             /** @description Internal Server Error */

@@ -62,6 +62,7 @@ type Launcher interface {
 
 // LaunchSpec is the engine's request to (re)launch a reviewer for one pass.
 type LaunchSpec struct {
+	Env                  map[string]string
 	RunID                string
 	BatchID              string
 	ReviewSessionID      string
@@ -170,6 +171,10 @@ func NewLauncher(reviewers ports.ReviewerResolver, rt reviewerRuntime, dataDir s
 // executable. The only difference from Spawn is that Preflight stops before
 // runtime.Create().
 func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHarness, workspacePath string) error {
+	return l.PreflightWithEnv(ctx, harness, workspacePath, nil)
+}
+
+func (l *agentLauncher) PreflightWithEnv(ctx context.Context, harness domain.ReviewerHarness, workspacePath string, env map[string]string) error {
 	reviewer, ok := l.reviewers.Reviewer(harness)
 	if !ok {
 		return fmt.Errorf("no reviewer adapter for harness %q", harness)
@@ -196,12 +201,19 @@ func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHa
 	if _, err := exec.LookPath(bin); err != nil {
 		return fmt.Errorf("reviewer binary %q not found: %w", bin, err)
 	}
-	authStatus, authKnown, err := l.agentAuthStatus(ctx, harness)
-	if err != nil {
-		return err
-	}
-	if authKnown && authStatus == ports.AgentAuthStatusUnauthorized {
-		return fmt.Errorf("agent auth catalog reports reviewer harness %q is unauthorized", harness)
+	// The daemon's default auth observation does not describe an explicitly
+	// selected Claude profile. Keep the reviewer-native preflight below; only
+	// skip this mismatched global observation.
+	authStatus, authKnown := ports.AgentAuthStatusUnknown, false
+	if _, selected := env["CLAUDE_CONFIG_DIR"]; !selected || harness != domain.ReviewerClaudeCode {
+		var err error
+		authStatus, authKnown, err = l.agentAuthStatus(ctx, harness)
+		if err != nil {
+			return err
+		}
+		if authKnown && authStatus == ports.AgentAuthStatusUnauthorized {
+			return fmt.Errorf("agent auth catalog reports reviewer harness %q is unauthorized", harness)
+		}
 	}
 	if pf, ok := reviewer.(preflightReviewer); ok {
 		if err := pf.ReviewPreflight(ctx, workspacePath); err != nil {
@@ -403,6 +415,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 	if !ok {
 		return LaunchResult{}, fmt.Errorf("no reviewer adapter for harness %q", spec.Harness)
 	}
+	inv.Env = spec.Env
 	if pl, ok := reviewer.(preLaunchReviewer); ok {
 		if err := pl.PreLaunch(ctx, inv); err != nil {
 			return LaunchResult{}, fmt.Errorf("reviewer pre-launch: %w", err)
@@ -533,6 +546,9 @@ func outputContainsAny(output string, patterns []string) bool {
 func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []string, base map[string]string) map[string]string {
 	env := make(map[string]string, len(base)+3)
 	for k, v := range base {
+		env[k] = v
+	}
+	for k, v := range spec.Env {
 		env[k] = v
 	}
 	delete(env, sessionmanager.EnvSessionID)

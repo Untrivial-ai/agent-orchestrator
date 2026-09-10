@@ -1,7 +1,7 @@
+import { useClaudeProfiles } from "../hooks/useClaudeProfiles";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	TaskComposerView,
-	type TaskComposerAgentControl,
 	type TaskComposerModelCatalog,
 	type TaskComposerModelControl,
 } from "@aoagents/product-ui";
@@ -39,6 +39,7 @@ type CreateTaskInput = {
 	projectId: string;
 	brief: string;
 	agent?: DelegateAgent;
+	claudeConfigDir?: string;
 	model?: string;
 	mode?: "tui";
 	approvalMode?: "bypass-permissions";
@@ -99,6 +100,12 @@ export function TaskComposer({
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
 	const [agent, setAgent] = useState("");
+	const [claudeConfigDir, setClaudeConfigDir] = useState<string>();
+	const [profileTouched, setProfileTouched] = useState(false);
+	useEffect(() => {
+		setClaudeConfigDir(undefined);
+		setProfileTouched(false);
+	}, [projectId]);
 	const [agentTouched, setAgentTouched] = useState(false);
 	const [modelTouched, setModelTouched] = useState(false);
 	const [isSubmitting, setIsSubmitting] = useState(false);
@@ -159,6 +166,7 @@ export function TaskComposer({
 						projectId: input.projectId,
 						brief: input.brief,
 						agent: input.agent,
+						...(input.claudeConfigDir !== undefined ? { claudeConfigDir: input.claudeConfigDir } : {}),
 						model: input.model,
 						...(input.mode ? { mode: input.mode } : {}),
 						...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
@@ -225,6 +233,14 @@ export function TaskComposer({
 	const globalDefaultAgent = projectQuery.data?.agent ?? "";
 	const defaultWorkerAgent = projectWorkerAgent || globalDefaultAgent;
 	const selectedAgent = agent || defaultWorkerAgent;
+	const profilesQuery = useClaudeProfiles(!isCloudProject);
+	const effectiveClaudeConfigDir = profileTouched
+		? claudeConfigDir
+		: selectedAgent === defaultWorkerAgent
+			? projectQuery.data?.config?.worker?.agentConfig?.claudeConfigDir
+				?? projectQuery.data?.config?.agentConfig?.claudeConfigDir
+				?? projectQuery.data?.config?.env?.CLAUDE_CONFIG_DIR
+			: undefined;
 	useEnsureAgentReadiness();
 	useEnsureAgentReadiness({
 		agentIds: selectedAgent ? [selectedAgent] : [],
@@ -348,6 +364,7 @@ export function TaskComposer({
 				// The visible selection is authoritative: it is either the user's pick
 				// or the resolved default, so spawning names it explicitly.
 				agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
+				...(selectedAgent === "claude-code" && !isCloudProject && effectiveClaudeConfigDir !== undefined ? { claudeConfigDir: effectiveClaudeConfigDir } : {}),
 				model: requestedModel,
 				mode: interfaceMode,
 				approvalMode,
@@ -447,18 +464,22 @@ export function TaskComposer({
 						: submitTask(brief, "tui")),
 				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
-			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
+			renderAgentControl={(control) => (
+				<RequiredAgentField
+					{...control}
+					variant="chip"
+					triggerClassName="composer-toolbar-option w-full justify-between"
+					profiles={isCloudProject ? undefined : profilesQuery.data}
+					profilesError={!isCloudProject && profilesQuery.isError}
+					onRetryProfiles={() => void profilesQuery.refetch()}
+					claudeConfigDir={effectiveClaudeConfigDir}
+					onClaudeConfigDirChange={isCloudProject ? undefined : (path) => {
+						setClaudeConfigDir(path);
+						setProfileTouched(true);
+					}}
+				/>
+			)}
 			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels} />}
-		/>
-	);
-}
-
-function DesktopAgentControl(control: TaskComposerAgentControl) {
-	return (
-		<RequiredAgentField
-			{...control}
-			variant="chip"
-			triggerClassName="composer-toolbar-option w-full justify-between"
 		/>
 	);
 }

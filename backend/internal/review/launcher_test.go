@@ -44,10 +44,15 @@ func TestLauncherSpawnEnvCannotOverrideWorkerContext(t *testing.T) {
 	runFile := filepath.Join(t.TempDir(), "running.json")
 	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir, WithRunFilePath(runFile))
 
-	if _, err := l.Spawn(context.Background(), launchSpec()); err != nil {
+	spec := launchSpec()
+	spec.Env = map[string]string{"CLAUDE_CONFIG_DIR": "/profiles/work"}
+	if _, err := l.Spawn(context.Background(), spec); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
+	if rt.createCfg.Env["CLAUDE_CONFIG_DIR"] != "/profiles/work" {
+		t.Fatal("reviewer launch lost profile selection")
+	}
 	if rt.createCfg.Env["REVIEW_ONLY"] != "1" {
 		t.Fatalf("reviewer env dropped adapter value: %v", rt.createCfg.Env)
 	}
@@ -1065,6 +1070,23 @@ func TestLauncherPreflightSkipsEnvPrefix(t *testing.T) {
 	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{}, "")
 	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err != nil {
 		t.Fatalf("Preflight: %v", err)
+	}
+}
+
+func TestLauncherProfilePreflightStillRunsNativeCheck(t *testing.T) {
+	reviewer := &fakeReviewerForPreflight{
+		Argv: []string{"sh", "-c", "true"},
+		Preflight: func(context.Context, string) error {
+			return errors.New("profile unavailable")
+		},
+	}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{}, t.TempDir())
+	err := l.(*agentLauncher).PreflightWithEnv(
+		context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1",
+		map[string]string{"CLAUDE_CONFIG_DIR": "/profiles/work"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "profile unavailable") {
+		t.Fatalf("PreflightWithEnv error = %v, want native preflight failure", err)
 	}
 }
 

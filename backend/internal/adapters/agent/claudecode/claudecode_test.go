@@ -1305,3 +1305,51 @@ func containsSubsequence(values, needle []string) bool {
 	}
 	return false
 }
+func TestPreLaunchUsesSelectedProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, "daemon"))
+	selected := filepath.Join(home, "selected")
+	if err := os.Mkdir(selected, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := New().PreLaunch(context.Background(), ports.LaunchConfig{
+		WorkspacePath: "/workspace", Env: map[string]string{"CLAUDE_CONFIG_DIR": selected},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(selected, ".claude.json")); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(home, ".claude.json"), filepath.Join(home, "daemon", ".claude.json")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("unselected profile changed: %s (%v)", path, err)
+		}
+	}
+}
+
+func TestProfileLocalAuthDoesNotUseDefaultAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, key := range []string{"CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		t.Setenv(key, "")
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"oauthAccount":{"accountUuid":"default-account"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, found, err := claudeLocalAuthStatusWithEnv(context.Background(), map[string]string{"CLAUDE_CONFIG_DIR": t.TempDir()})
+	if err != nil || found || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("selected profile borrowed default auth: %s, %v, %v", status, found, err)
+	}
+}
+
+func TestClaudeProcessEnvironmentReplacesInheritedProfile(t *testing.T) {
+	got := claudeProcessEnvironment(
+		[]string{"PATH=/bin", "CLAUDE_CONFIG_DIR=/profiles/default"},
+		map[string]string{"CLAUDE_CONFIG_DIR": "/profiles/work"},
+	)
+	want := []string{"CLAUDE_CONFIG_DIR=/profiles/work", "PATH=/bin"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("environment = %#v, want %#v", got, want)
+	}
+}

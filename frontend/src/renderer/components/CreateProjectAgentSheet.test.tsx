@@ -43,6 +43,48 @@ async function chooseOption(trigger: HTMLElement, optionName: string) {
 }
 
 describe("CreateProjectAgentSheet", () => {
+	it("preserves an unavailable saved profile and offers discovery retry", async () => {
+		const retry = vi.fn();
+		const change = vi.fn();
+		render(<RequiredAgentField id="profiles" label="Agent" value="claude-code" placeholder="Select agent"
+			claudeConfigDir="/home/test/.claude-archived" profilesError onRetryProfiles={retry}
+			onChange={change} onClaudeConfigDirChange={vi.fn()} />);
+		expect(screen.getByLabelText("Agent")).toHaveTextContent("Claude Code — /home/test/.claude-archived");
+		await userEvent.click(screen.getByLabelText("Agent"));
+		await userEvent.click(await screen.findByRole("option", { name: /Could not discover Claude profiles/ }));
+		expect(retry).toHaveBeenCalledOnce();
+		expect(change).not.toHaveBeenCalled();
+	});
+
+	it("creates independent worker and orchestrator profiles", async () => {
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		client.setQueryData(["claude-profiles"], [{ name: "personal", configDir: "/home/test/.claude-personal" }, { name: "perforce", configDir: "/home/test/.claude-perforce" }]);
+		const onSubmit = renderSheet(undefined, client);
+		await chooseOption(screen.getByLabelText("Worker agent"), "Claude Code — personal");
+		await chooseOption(screen.getByLabelText("Orchestrator agent"), "Claude Code — perforce");
+		await userEvent.click(screen.getByRole("button", { name: "Create and start" }));
+		await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+			workerAgent: "claude-code", workerClaudeConfigDir: "/home/test/.claude-personal",
+			orchestratorAgent: "claude-code", orchestratorClaudeConfigDir: "/home/test/.claude-perforce",
+		})));
+	});
+
+	it("shows arbitrarily named profiles without borrowing default authentication", async () => {
+		const onChange = vi.fn();
+		const onProfileChange = vi.fn();
+		render(<RequiredAgentField id="profiles" label="Agent" value="" placeholder="Select agent"
+			agents={[agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" })]}
+			profiles={[{ name: "Research Team", configDir: "/home/test/.claude-research" }, { name: "customer2", configDir: "/home/test/.claude_customer2" }]}
+			onChange={onChange} onClaudeConfigDirChange={onProfileChange} />);
+		await userEvent.click(screen.getByLabelText("Agent"));
+		const profile = await screen.findByRole("option", { name: /Claude Code — Research Team/ });
+		expect(profile).not.toHaveAttribute("data-disabled");
+		expect(screen.getByRole("option", { name: /Claude Code — customer2/ })).toBeVisible();
+		await userEvent.click(profile);
+		expect(onChange).toHaveBeenCalledWith("claude-code");
+		expect(onProfileChange).toHaveBeenCalledWith("/home/test/.claude-research");
+	});
+
 	it("shakes the active sheet when creation fails", () => {
 		renderSheet(undefined, undefined, { shake: true });
 

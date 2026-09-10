@@ -38,6 +38,20 @@ type fakeAgentCatalog struct {
 	ensurePurpose   domain.AgentReadinessPurpose
 }
 
+func (f *fakeAgentCatalog) ClaudeProfiles(context.Context) (agentsvc.ClaudeProfiles, error) {
+	return agentsvc.ClaudeProfiles{Profiles: []agentsvc.ClaudeProfile{{Name: "work", ConfigDir: "/profiles/work"}}}, f.err
+}
+
+func TestClaudeProfilesRoute(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Agents: &fakeAgentCatalog{}}, httpd.ControlDeps{}))
+	defer srv.Close()
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/agents/claude-code/profiles", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"configDir":"/profiles/work"`) {
+		t.Fatalf("profiles = %d, %s", status, body)
+	}
+}
+
 func (f *fakeAgentCatalog) CachedReadiness(context.Context) (agentsvc.Readiness, error) {
 	f.readinessCalls++
 	return f.readiness, f.err

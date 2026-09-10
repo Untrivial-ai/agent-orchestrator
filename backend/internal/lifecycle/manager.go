@@ -1481,6 +1481,9 @@ func sameActivity(a, b domain.Activity) bool {
 }
 
 func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
+	if in.ClaudeConfigDir != nil {
+		base.ClaudeConfigDir = in.ClaudeConfigDir
+	}
 	set := func(dst *string, v string) {
 		if v != "" {
 			*dst = v

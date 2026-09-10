@@ -2998,3 +2998,27 @@ func TestSessionsAPI_ClaimPRErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestDelegateClaudeProfileValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		status      int
+	}{
+		{"named", `"/profiles/client-one"`, http.StatusAccepted},
+		{"default", `""`, http.StatusAccepted},
+		{"inherit", `null`, http.StatusAccepted},
+		{"relative", `"../profile"`, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newFakeSessionService()
+			srv := newSessionTestServer(t, svc)
+			body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix","agent":"claude-code","claudeConfigDir":`+tc.value+`}`)
+			if status != tc.status {
+				t.Fatalf("status=%d body=%s", status, body)
+			}
+			if tc.status == http.StatusAccepted && tc.value != "null" && svc.delegationInput.ClaudeConfigDir == nil {
+				t.Fatal("explicit profile lost")
+			}
+		})
+	}
+}

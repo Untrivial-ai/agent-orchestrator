@@ -402,7 +402,14 @@ func (s *Service) projectDiscoveryContext(ctx context.Context, projectID string)
 	if !ok || !project.ArchivedAt.IsZero() {
 		return projectDiscovery{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
-	return projectDiscovery{workingDir: project.Path, env: project.Config.Env}, nil
+	env := make(map[string]string, len(project.Config.Env)+1)
+	for key, value := range project.Config.Env {
+		env[key] = value
+	}
+	if project.Config.AgentConfig.ClaudeConfigDir != nil {
+		env["CLAUDE_CONFIG_DIR"] = *project.Config.AgentConfig.ClaudeConfigDir
+	}
+	return projectDiscovery{workingDir: project.Path, env: env}, nil
 }
 
 type decodedCatalog struct {

@@ -102,6 +102,20 @@ afterEach(() => {
 });
 
 describe("TaskComposer", () => {
+	it.each(["/home/test/.claude-customer", ""])("forwards the worker's selected profile %s with the canonical harness", async (claudeConfigDir) => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) return { data: { agent: "claude-code", selectionMode: "text", models: [], allowCustom: true } };
+			if (path.endsWith("/profiles")) return { data: { profiles: [] } };
+			return { data: { status: "ok", project: { config: { worker: { agent: "claude-code", agentConfig: { claudeConfigDir } } } } } };
+		});
+		h.post.mockResolvedValue({ data: { workerId: "sess-profile" } });
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
+		fireEvent.change(task(), { target: { value: "Use the selected profile" } });
+		fireEvent.click(screen.getByText("Start task"));
+		await waitFor(() => expect(h.post).toHaveBeenCalledWith("/api/v1/orchestrators/delegate", expect.objectContaining({ body: expect.objectContaining({ agent: "claude-code", claudeConfigDir }) })));
+	});
+
 	it("ensures display readiness for every harness when the composer opens", async () => {
 		render(
 			<Wrap>

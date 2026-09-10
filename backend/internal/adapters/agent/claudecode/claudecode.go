@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -196,7 +197,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 //
 // An AO worktree is derived from the repo the user is already running
 // AO in, so it is inherently trusted. PreLaunch records that trust in
-// ~/.claude.json before launch, additively and atomically, so it cannot
+// the selected profile before launch, additively and atomically, so it cannot
 // clobber a concurrently-running Claude instance's config.
 func (p *Plugin) PreLaunch(ctx context.Context, cfg ports.LaunchConfig) error {
 	if err := ctx.Err(); err != nil {
@@ -205,9 +206,18 @@ func (p *Plugin) PreLaunch(ctx context.Context, cfg ports.LaunchConfig) error {
 	if cfg.WorkspacePath == "" {
 		return nil
 	}
-	cfgPath, err := claudeConfigPath()
+	cfgPath, err := claudeConfigPathForEnv(cfg.Env)
 	if err != nil {
 		return err
+	}
+	if selected, set := cfg.Env[claudeConfigDirEnv]; set && strings.TrimSpace(selected) != "" {
+		info, err := os.Stat(filepath.Dir(cfgPath))
+		if err != nil {
+			return fmt.Errorf("claude-code: selected profile unavailable: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("claude-code: selected profile is not a directory")
+		}
 	}
 	return ensureWorkspaceTrusted(cfgPath, cfg.WorkspacePath)
 }
@@ -311,16 +321,9 @@ func (p *Plugin) NativeConversationExists(
 	if !isUUID(id) {
 		return false, nil
 	}
-	configDir := strings.TrimSpace(env["CLAUDE_CONFIG_DIR"])
-	if configDir == "" {
-		configDir = strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
-	}
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return false, fmt.Errorf("claude-code: resolve transcript root: %w", err)
-		}
-		configDir = filepath.Join(home, ".claude")
+	configDir, err := p.NativeSessionConfigDir(ctx, env)
+	if err != nil {
+		return false, err
 	}
 	projectsDir := filepath.Join(configDir, "projects")
 	projects, err := os.ReadDir(projectsDir)
@@ -358,11 +361,16 @@ func isUUID(value string) bool {
 // AuthStatus checks Claude Code's local authentication state without starting a
 // session.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
+	return p.AuthStatusWithEnv(ctx, nil)
+}
+
+// AuthStatusWithEnv checks the profile selected for a child without mutating daemon state.
+func (p *Plugin) AuthStatusWithEnv(ctx context.Context, env map[string]string) (ports.AgentAuthStatus, error) {
 	binary, err := p.claudeBinary(ctx)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	if status, ok, err := claudeLocalAuthStatus(ctx); err != nil {
+	if status, ok, err := claudeLocalAuthStatusWithEnv(ctx, env); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	} else if ok {
 		return status, nil
@@ -370,7 +378,9 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	out, err := aoprocess.CommandContext(probeCtx, binary, "auth", "status").CombinedOutput()
+	cmd := aoprocess.CommandContext(probeCtx, binary, "auth", "status")
+	cmd.Env = claudeProcessEnvironment(cmd.Environ(), env)
+	out, err := cmd.CombinedOutput()
 	if probeCtx.Err() != nil {
 		return ports.AgentAuthStatusUnknown, probeCtx.Err()
 	}
@@ -382,6 +392,27 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	// authoritative failure.
 	_ = err
 	return ports.AgentAuthStatusUnknown, nil
+}
+
+func claudeProcessEnvironment(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	merged := make(map[string]string, len(base)+len(overrides))
+	for _, entry := range base {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			merged[key] = value
+		}
+	}
+	for key, value := range overrides {
+		merged[key] = value
+	}
+	result := make([]string, 0, len(merged))
+	for key, value := range merged {
+		result = append(result, key+"="+value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func claudeAuthStatusFromOutput(out []byte) (ports.AgentAuthStatus, bool) {
@@ -402,16 +433,20 @@ func claudeAuthStatusFromOutput(out []byte) (ports.AgentAuthStatus, bool) {
 	return ports.AgentAuthStatusUnauthorized, true
 }
 
-func claudeLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
+func claudeLocalAuthStatusWithEnv(ctx context.Context, env map[string]string) (ports.AgentAuthStatus, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
 	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
-		if strings.TrimSpace(os.Getenv(name)) != "" {
+		value, set := env[name]
+		if !set {
+			value = os.Getenv(name)
+		}
+		if strings.TrimSpace(value) != "" {
 			return ports.AgentAuthStatusAuthorized, true, nil
 		}
 	}
-	cfgPath, err := claudeConfigPath()
+	cfgPath, err := claudeConfigPathForEnv(env)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
@@ -541,9 +576,19 @@ func (p *Plugin) claudeBinary(ctx context.Context) (string, error) {
 	return binary, nil
 }
 
-// claudeConfigPath returns the path to Claude Code's global config file,
-// ~/.claude.json.
-func claudeConfigPath() (string, error) {
+// claudeConfigPathForEnv returns ~/.claude.json by default or the selected
+// profile's .claude.json when CLAUDE_CONFIG_DIR is set.
+func claudeConfigPathForEnv(env map[string]string) (string, error) {
+	dir, set := env[claudeConfigDirEnv]
+	if !set {
+		dir = os.Getenv(claudeConfigDirEnv)
+	}
+	if dir = strings.TrimSpace(dir); dir != "" {
+		if !filepath.IsAbs(dir) {
+			return "", fmt.Errorf("claude-code: CLAUDE_CONFIG_DIR must be absolute")
+		}
+		return filepath.Join(dir, ".claude.json"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("claude-code: resolve home directory: %w", err)

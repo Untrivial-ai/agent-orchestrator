@@ -2386,3 +2386,51 @@ func TestTriggerProceedsNormallyAfterSuccessfulPreflight(t *testing.T) {
 		t.Fatalf("expected 1 review run, got %d", len(store.runs))
 	}
 }
+
+func TestReviewerProfilePinSurvivesProjectChange(t *testing.T) {
+	personal, work := "/profiles/personal", "/profiles/client-named"
+	store := &fakeStore{}
+	worker := liveWorker()
+	worker.ReviewerConfig = domain.AgentConfig{Model: "keep-model"}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{cfg: domain.ProjectConfig{AgentConfig: domain.AgentConfig{ClaudeConfigDir: &personal}}}, &fakeLauncher{})
+	env, err := eng.claudeProfileEnv(context.Background(), worker, domain.ReviewerClaudeCode, worker.ReviewerConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.pinReviewerProfile(context.Background(), worker, domain.ReviewerClaudeCode, env); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.reviewerConfigUpdates) != 1 {
+		t.Fatal("profile not persisted")
+	}
+	saved := store.reviewerConfigUpdates[0]
+	worker.ReviewerConfig = saved.config
+	if saved.harness != "" || saved.config.Model != "keep-model" {
+		t.Fatalf("unrelated inheritance changed: %+v", saved)
+	}
+	eng.projects = fakeProjects{cfg: domain.ProjectConfig{AgentConfig: domain.AgentConfig{ClaudeConfigDir: &work}}}
+	harness, config, err := eng.reviewerSelection(context.Background(), worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err = eng.claudeProfileEnv(context.Background(), worker, harness, config)
+	if err != nil || env["CLAUDE_CONFIG_DIR"] != personal {
+		t.Fatalf("restored reviewer changed account: env=%v err=%v", env, err)
+	}
+}
+
+func TestSwitchReviewerSameProfileValueKeepsLivePane(t *testing.T) {
+	oldPath, newPath := "/profiles/personal", "/profiles/personal"
+	store := &fakeStore{review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, ReviewerHandleID: "pane", AgentSessionID: "native"}}
+	worker := liveWorker()
+	worker.ReviewerHarness = domain.ReviewerClaudeCode
+	worker.ReviewerConfig = domain.AgentConfig{ClaudeConfigDir: &oldPath}
+	launcher := &fakeLauncher{alive: true, handle: "pane"}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	if _, err := eng.SwitchReviewer(context.Background(), worker.ID, domain.ReviewerClaudeCode, domain.AgentConfig{ClaudeConfigDir: &newPath}); err != nil {
+		t.Fatal(err)
+	}
+	if launcher.destroyed {
+		t.Fatal("equal profile paths destroyed the live reviewer")
+	}
+}

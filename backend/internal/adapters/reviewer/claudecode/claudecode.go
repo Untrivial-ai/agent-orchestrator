@@ -77,6 +77,7 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 	agentSessionID := workeragent.SessionUUID(inv.ReviewerID)
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
 		Config: inv.Config,
+		Env:    inv.Env,
 		// Pin the same deterministic reviewer-native id we persist. Hooks can
 		// later replace it with Claude's reported id, but restore must never start
 		// from an id that the process was not launched with.
@@ -106,7 +107,7 @@ func (r *Reviewer) PreLaunch(ctx context.Context, inv ports.ReviewInvocation) er
 	if hooks, ok := r.agent.(interface {
 		GetAgentHooks(context.Context, ports.WorkspaceHookConfig) error
 	}); ok {
-		if err := hooks.GetAgentHooks(ctx, ports.WorkspaceHookConfig{WorkspacePath: inv.WorkspacePath}); err != nil {
+		if err := hooks.GetAgentHooks(ctx, ports.WorkspaceHookConfig{WorkspacePath: inv.WorkspacePath, Env: inv.Env}); err != nil {
 			return err
 		}
 	}
@@ -117,6 +118,7 @@ func (r *Reviewer) PreLaunch(ctx context.Context, inv ports.ReviewInvocation) er
 		return nil
 	}
 	return pl.PreLaunch(ctx, ports.LaunchConfig{
+		Env:           inv.Env,
 		Config:        inv.Config,
 		SessionID:     workeragent.SessionUUID(inv.ReviewerID),
 		WorkspacePath: inv.WorkspacePath,
@@ -174,7 +176,7 @@ func (r *Reviewer) restoreSessionID(ctx context.Context, inv ports.ReviewInvocat
 		// unconditionally, so probe that id here too rather than reporting a
 		// resume for a transcript that may never have been created.
 		fallbackID := workeragent.SessionUUID(inv.ReviewerID)
-		exists, err := probe.NativeConversationExists(ctx, session, fallbackID, nil)
+		exists, err := probe.NativeConversationExists(ctx, session, fallbackID, inv.Env)
 		if err != nil {
 			return "", false, err
 		}
@@ -183,7 +185,7 @@ func (r *Reviewer) restoreSessionID(ctx context.Context, inv ports.ReviewInvocat
 		}
 		return "", false, nil
 	}
-	exists, err := probe.NativeConversationExists(ctx, session, persistedID, nil)
+	exists, err := probe.NativeConversationExists(ctx, session, persistedID, inv.Env)
 	if err != nil {
 		return "", false, err
 	}
@@ -194,7 +196,7 @@ func (r *Reviewer) restoreSessionID(ctx context.Context, inv ports.ReviewInvocat
 		return "", false, nil
 	}
 	legacyID := workeragent.SessionUUID(persistedID)
-	exists, err = probe.NativeConversationExists(ctx, session, legacyID, nil)
+	exists, err = probe.NativeConversationExists(ctx, session, legacyID, inv.Env)
 	if err != nil {
 		return "", false, err
 	}

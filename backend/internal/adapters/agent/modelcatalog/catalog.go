@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/nativeconfig"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
@@ -366,8 +367,8 @@ func claudeCodeResolvedModel(workingDir string, env map[string]string) string {
 			filepath.Join(dir, ".claude", "settings.json"),
 		)
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".claude", "settings.json"))
+	if dir, err := nativeconfig.Resolve(env, "CLAUDE_CONFIG_DIR", ".claude"); err == nil {
+		candidates = append(candidates, filepath.Join(dir, "settings.json"))
 	}
 	for _, candidate := range candidates {
 		if configured := claudeCodeSettingsModel(candidate); configured != "" {

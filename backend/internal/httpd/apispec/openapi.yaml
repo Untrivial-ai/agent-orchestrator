@@ -376,6 +376,31 @@ paths:
       summary: Return display-safe native authentication plans for supported agents
       tags:
       - agents
+  /api/v1/agents/claude-code/profiles:
+    get:
+      operationId: listClaudeProfiles
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentClaudeProfiles'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Discover existing local Claude Code profiles
+      tags:
+      - agents
   /api/v1/agents/codex/account-switches:
     post:
       operationId: startCodexAccountSwitch
@@ -6878,8 +6903,31 @@ components:
       - reasonCode
       - reason
       type: object
+    AgentClaudeProfile:
+      properties:
+        configDir:
+          type: string
+        name:
+          type: string
+      required:
+      - name
+      - configDir
+      type: object
+    AgentClaudeProfiles:
+      properties:
+        profiles:
+          items:
+            $ref: '#/components/schemas/AgentClaudeProfile'
+          type: array
+      required:
+      - profiles
+      type: object
     AgentConfig:
       properties:
+        claudeConfigDir:
+          type:
+          - "null"
+          - string
         mode:
           type: string
         model:
@@ -8914,6 +8962,10 @@ components:
         brief:
           maxLength: 16384
           type: string
+        claudeConfigDir:
+          type:
+          - "null"
+          - string
         mode:
           enum:
           - tui

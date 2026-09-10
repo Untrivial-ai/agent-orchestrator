@@ -77,7 +77,7 @@ const directModelCatalog = {
 };
 
 async function waitForAgentCatalog() {
-	await waitFor(() => expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0));
+	await waitFor(() => expect(screen.getAllByText("Claude Code — Inherit profile").length).toBeGreaterThan(0));
 }
 
 beforeEach(() => {
@@ -214,9 +214,9 @@ describe("NewTaskDialog", () => {
 
 		await user.click(screen.getByRole("button", { name: "Agent" }));
 		const options = await screen.findAllByRole("menuitem");
-		expect(options.map((option) => option.textContent)).toEqual(["Claude Code", "Cursor", "KiroAuth unknown"]);
-		expect(options[2]).not.toHaveAttribute("aria-disabled", "true");
-		await user.click(options[2]);
+		expect(options.map((option) => option.textContent)).toEqual(["Claude Code — Inherit profile", "Cursor", "Claude Code — DefaultAuth unknown", "KiroAuth unknown"]);
+		expect(options[3]).not.toHaveAttribute("aria-disabled", "true");
+		await user.click(options[3]);
 
 		await user.type(screen.getByLabelText("Task"), "B");
 		await user.click(screen.getByRole("button", { name: "Start task" }));

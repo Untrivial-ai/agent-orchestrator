@@ -33,6 +33,7 @@ type AgentsController struct {
 // Register mounts the agent inventory routes on the supplied router.
 func (c *AgentsController) Register(r chi.Router) {
 	r.Get("/agents", c.list)
+	r.Get("/agents/claude-code/profiles", c.claudeProfiles)
 	r.Post("/agents/refresh", c.refresh)
 	r.Get("/agents/readiness", c.readiness)
 	r.Post("/agents/readiness/ensure", c.ensureReadiness)
@@ -146,6 +147,22 @@ func (c *AgentsController) probe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := c.Catalog.Probe(r.Context(), agentID)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, result)
+}
+
+func (c *AgentsController) claudeProfiles(w http.ResponseWriter, r *http.Request) {
+	catalog, ok := c.Catalog.(interface {
+		ClaudeProfiles(context.Context) (agentsvc.ClaudeProfiles, error)
+	})
+	if !ok {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/agents/claude-code/profiles")
+		return
+	}
+	result, err := catalog.ClaudeProfiles(r.Context())
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return

@@ -34,6 +34,7 @@ import { ProductExternalLink } from "./ProductExternalLink";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
+import { useClaudeProfiles } from "../hooks/useClaudeProfiles";
 import { SettingsRow } from "./settings/SettingsRow";
 import { Switch } from "./ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -146,6 +147,9 @@ function SettingsBody({
 		workerMode: config.worker?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		orchestratorMode: config.orchestrator?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		permissions: config.agentConfig?.permissions ?? "",
+		workerClaudeConfigDir: config.worker?.agentConfig?.claudeConfigDir ?? config.agentConfig?.claudeConfigDir ?? config.env?.CLAUDE_CONFIG_DIR,
+		orchestratorClaudeConfigDir: config.orchestrator?.agentConfig?.claudeConfigDir ?? config.agentConfig?.claudeConfigDir ?? config.env?.CLAUDE_CONFIG_DIR,
+		reviewerClaudeConfigDir: config.reviewers?.[0]?.agentConfig?.claudeConfigDir ?? config.agentConfig?.claudeConfigDir ?? config.env?.CLAUDE_CONFIG_DIR,
 		reviewerHarness: config.reviewers?.[0]?.harness ?? "",
 		reviewerModel: config.reviewers?.[0]?.agentConfig?.model ?? "",
 		reviewerMode: config.reviewers?.[0]?.agentConfig?.mode ?? "",
@@ -167,6 +171,7 @@ function SettingsBody({
 		enabled: form.workerAgent !== "" || form.orchestratorAgent !== "" || form.reviewerHarness !== "",
 	});
 	const agentCatalog = agentsQuery.data;
+	const profilesQuery = useClaudeProfiles();
 
 	const intakeForm: IntakeForm = {
 		enabled: form.intakeEnabled,
@@ -200,7 +205,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerAgent === "claude-code" ? form.workerClaudeConfigDir : undefined),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -209,6 +214,7 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
+								form.orchestratorAgent === "claude-code" ? form.orchestratorClaudeConfigDir : undefined,
 							),
 						},
 						agentConfig: blankToUndefined({
@@ -226,7 +232,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerAgent === "claude-code" ? form.workerClaudeConfigDir : undefined),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -235,6 +241,7 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
+								form.orchestratorAgent === "claude-code" ? form.orchestratorClaudeConfigDir : undefined,
 							),
 						},
 						agentConfig: blankToUndefined({
@@ -245,7 +252,7 @@ function SettingsBody({
 							? [
 									{
 										harness: form.reviewerHarness,
-										agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode),
+										agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode, form.reviewerHarness === "claude-code" ? form.reviewerClaudeConfigDir : undefined),
 									},
 								]
 							: undefined,
@@ -298,6 +305,7 @@ function SettingsBody({
 			setReplacementError(result.replacementError);
 			setValidationError(null);
 			void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+			void queryClient.invalidateQueries({ queryKey: agentModelsQueryKey("claude-code", projectId) });
 			const workspaceRefresh = onSaved();
 
 			if (result.replacementSessionId) {
@@ -432,6 +440,11 @@ function SettingsBody({
 								id="workerAgent"
 								variant="settings-row"
 								value={form.workerAgent}
+								profiles={profilesQuery.data}
+								profilesError={profilesQuery.isError}
+								onRetryProfiles={() => void profilesQuery.refetch()}
+								claudeConfigDir={form.workerClaudeConfigDir}
+								onClaudeConfigDirChange={(path) => setForm((f) => ({ ...f, workerClaudeConfigDir: path }))}
 								placeholder={t("settings.project.selectWorker")}
 								label={t("settings.project.defaultWorker")}
 								agents={agentCatalog?.agents}
@@ -458,6 +471,11 @@ function SettingsBody({
 								id="orchestratorAgent"
 								variant="settings-row"
 								value={form.orchestratorAgent}
+								profiles={profilesQuery.data}
+								profilesError={profilesQuery.isError}
+								onRetryProfiles={() => void profilesQuery.refetch()}
+								claudeConfigDir={form.orchestratorClaudeConfigDir}
+								onClaudeConfigDirChange={(path) => setForm((f) => ({ ...f, orchestratorClaudeConfigDir: path }))}
 								placeholder={t("settings.project.selectOrchestrator")}
 								label={t("settings.project.defaultOrchestrator")}
 								agents={agentCatalog?.agents}
@@ -502,6 +520,7 @@ function SettingsBody({
 						<SettingsRow label={t("settings.project.defaultReviewer")}>
 							<ReviewerSelect
 								value={form.reviewerHarness}
+								claudeConfigDir={form.reviewerClaudeConfigDir}
 								onChange={(v) =>
 									setForm((f) => ({
 										...f,
@@ -513,6 +532,7 @@ function SettingsBody({
 									setForm((f) => ({
 										...f,
 										reviewerModel: agentConfig.model ?? "",
+										reviewerClaudeConfigDir: agentConfig.claudeConfigDir ?? undefined,
 										reviewerMode: agentConfig.mode ?? "",
 									}))
 								}
@@ -811,8 +831,11 @@ function buildRoleAgentConfig(
 	existing: components["schemas"]["AgentConfig"] | undefined,
 	model: string,
 	mode: string,
+	claudeConfigDir?: string,
 ): components["schemas"]["AgentConfig"] | undefined {
 	const next = { ...existing };
+	if (claudeConfigDir !== undefined) next.claudeConfigDir = claudeConfigDir;
+	else delete next.claudeConfigDir;
 	if (model) next.model = model;
 	else delete next.model;
 	if (mode) next.mode = mode;

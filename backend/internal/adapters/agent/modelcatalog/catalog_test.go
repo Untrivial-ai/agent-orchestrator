@@ -627,3 +627,27 @@ func TestCatalogFingerprintDistinguishesConfiguredFromUnconfigured(t *testing.T)
 		t.Fatal("configuring a model must change the fingerprint")
 	}
 }
+func TestClaudeModelUsesSelectedProfile(t *testing.T) {
+	home, profile := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ANTHROPIC_MODEL", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", profile)
+	if err := os.Mkdir(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"model":"default-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile, "settings.json"), []byte(`{"model":"profile-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeCodeResolvedModel("", nil); got != "profile-model" {
+		t.Fatalf("inherited model = %q", got)
+	}
+	if got := claudeCodeResolvedModel("", map[string]string{"CLAUDE_CONFIG_DIR": ""}); got != "default-model" {
+		t.Fatalf("default model = %q", got)
+	}
+	if got := claudeCodeResolvedModel("", map[string]string{"CLAUDE_CONFIG_DIR": t.TempDir()}); got != "" {
+		t.Fatalf("profile borrowed another model: %q", got)
+	}
+}

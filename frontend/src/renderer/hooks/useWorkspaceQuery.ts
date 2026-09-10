@@ -79,6 +79,7 @@ function toWorkspaceSession(
 		reviewerConfig: session.reviewerConfig
 			? {
 				model: session.reviewerConfig.model ?? undefined,
+				claudeConfigDir: session.reviewerConfig.claudeConfigDir ?? undefined,
 				mode: session.reviewerConfig.mode ?? undefined,
 				permissions: session.reviewerConfig.permissions ?? undefined,
 			}
