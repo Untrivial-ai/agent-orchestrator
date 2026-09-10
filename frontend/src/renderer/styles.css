@@ -4291,7 +4291,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	/* Keep the toolbar close to the 28px controls, matching the compact sidebar
 	   chrome instead of adding a loose band around every browser action. */
 	min-height: 0;
-	padding: 0 2px 2px;
+	padding: 0 2px 4px;
 	background: var(--bg);
 }
 
