@@ -78,6 +78,17 @@ export type BoardSessionStatusPresentation = {
 
 export type BoardPullRequestState = "closed" | "open" | "draft" | "merged";
 
+// Display statuses that mean work is still turning, and so earn the spinning
+// loader beside the card's status label: the review the PR is waiting on, or an
+// AO-driven loop working the PR. Settled phrases ("Mergeable", "Approved",
+// "Merged") are deliberately absent — see #4725 and #5081.
+const IN_PROGRESS_DISPLAY_STATUSES = new Set<string>([
+	"Review pending",
+	"Fixing CI failures",
+	"Addressing comments",
+	"Reviewing",
+]);
+
 export type BoardReviewerPresentation = {
 	id: string;
 	avatarUrl?: string;
@@ -249,6 +260,12 @@ export function SessionCardView({
 	const needsAttention = boardSessionNeedsAttention(session);
 	const needsAttentionChip = needsAttention;
 	const column = getKanbanColumnView(toKanbanColumn(session.kanbanColumn, session.status), translate);
+	const statusClassName =
+		session.displayStatus === "Closed without merge"
+			? "text-status-exited"
+			: session.status === "mergeable" || session.displayStatus === "Mergeable"
+				? "text-success"
+				: (session.statusPresentation?.className ?? column.titleClassName);
 	const branch = session.branch ?? "";
 	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
 	const renderedStatusLabel =
@@ -269,10 +286,15 @@ export function SessionCardView({
 		!needsAttention &&
 		session.displayStatus !== "Needs human review" &&
 		(session.status === "working" ||
-			session.status === "review_pending" ||
-			session.displayStatus === "Fixing CI failures" ||
-			session.displayStatus === "Addressing comments" ||
-			session.displayStatus === "Reviewing");
+			// The label reads `displayStatus`, so the loader must too. `status`
+			// aggregates the session's WORST open PR while `displayStatus` describes
+			// its BEST one, so keying the loader off `status` spun a settled
+			// "Mergeable" card forever whenever a sibling PR was still review-pending
+			// (#5081). Fall back to `status` only for a daemon too old to send
+			// `displayStatus`.
+			(session.displayStatus
+				? IN_PROGRESS_DISPLAY_STATUSES.has(session.displayStatus)
+				: session.status === "review_pending"));
 
 	return (
 		<div
@@ -350,9 +372,7 @@ export function SessionCardView({
 							"inline-flex min-w-0 max-w-full items-center text-2xs font-medium",
 							needsAttentionChip
 								? "text-status-needs-you"
-								: session.status === "mergeable" || session.displayStatus === "Mergeable"
-									? "text-success"
-									: (statusPresentation?.className ?? column.titleClassName),
+								: statusClassName,
 						)}
 						data-kanban-column={statusPresentation ? undefined : column.column}
 						data-testid="session-status"

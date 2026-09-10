@@ -405,6 +405,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ImporterGitPreparationInput":           "GitPreparationInput",
 	"ImporterGitPreparationResult":          "GitPreparationResult",
 	"ImporterGitPreparationEvent":           "GitPreparationEvent",
+	"ImporterGitHubRepositoryPreparation":   "GitHubRepositoryPreparation",
 	"ImporterGitRepositoryPreparationInput": "GitRepositoryPreparationInput",
 	// httpd/controllers: dev wire envelopes
 	"ControllersDevImportProjectsRequest":  "DevImportProjectsRequest",

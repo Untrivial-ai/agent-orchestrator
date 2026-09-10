@@ -114,9 +114,6 @@ func (m *Service) prepareClone(ctx context.Context, in CloneInput) (ClonePrepara
 	if err != nil {
 		return ClonePreparationResult{}, err
 	}
-	if err := ensureDirectoryPath(parent); err != nil {
-		return ClonePreparationResult{}, err
-	}
 	if in.Config != nil {
 		if err := in.Config.Validate(); err != nil {
 			return ClonePreparationResult{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
@@ -138,6 +135,9 @@ func (m *Service) prepareClone(ctx context.Context, in CloneInput) (ClonePrepara
 		return ClonePreparationResult{}, apierr.Invalid("CLONE_DESTINATION_UNAVAILABLE", "The clone destination could not be inspected.", map[string]any{"path": target})
 	}
 
+	if err := os.MkdirAll(parent, 0o750); err != nil {
+		return ClonePreparationResult{}, apierr.Invalid("CLONE_DESTINATION_UNAVAILABLE", "AO could not create the destination folder.", nil)
+	}
 	temporaryPath, err := os.MkdirTemp(parent, ".ao-clone-")
 	if err != nil {
 		return ClonePreparationResult{}, apierr.Invalid("CLONE_DESTINATION_UNAVAILABLE", "AO could not prepare the selected clone destination.", nil)

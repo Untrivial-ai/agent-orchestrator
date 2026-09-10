@@ -53,6 +53,7 @@ const activityIcon: Record<ActivityKind, typeof SquareTerminal> = {
 import { cn } from "../../lib/utils";
 import { caretNotation, stripAnsi } from "../../lib/ansi";
 import { getApiBaseUrl } from "../../lib/api-client";
+import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
 import { ActivityTitle, ChatMarkdown } from "./ChatMarkdown";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
@@ -1881,12 +1882,75 @@ function RerouteRow({ activity }: { activity: ConversationActivity }) {
  * reconnect row as `role="alert"` would interrupt a screen reader once per attempt.
  */
 function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
-	const { headline } = providerErrorCopy(activity);
+	const { headline, detail } = providerErrorCopy(activity);
+	const actionUrl = String(activity.detail?.actionUrl ?? "").trim();
+	const standaloneActionUrl = actionUrl && !detail?.includes(actionUrl) ? actionUrl : undefined;
 	return (
 		<div className="flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-[11.5px] leading-snug text-muted-foreground">
-			<span className="wrap-anywhere min-w-0">{headline}</span>
+			<span className="wrap-anywhere min-w-0">
+				<span>{headline}</span>
+				{detail ? (
+					<>
+						{" — "}
+						<span className="text-muted-foreground/80">
+							{linkifiedProviderErrorText(detail)}
+						</span>
+					</>
+				) : null}
+				{standaloneActionUrl ? (
+					<>
+						{detail ? " " : " — "}
+						{isWebLink(standaloneActionUrl) ? (
+							<ProviderErrorLink href={standaloneActionUrl} />
+						) : (
+							<span className="text-muted-foreground/80">{standaloneActionUrl}</span>
+						)}
+					</>
+				) : null}
+			</span>
 		</div>
 	);
+}
+
+const providerErrorWebUrlPattern = /\bhttps?:\/\/[^\s<>"'`]+/giu;
+const trailingProviderUrlPunctuation = /[),.;!?}\]]+$/u;
+
+function ProviderErrorLink({ href }: { href: string }) {
+	return (
+		<a
+			href={href}
+			target="_blank"
+			rel="noreferrer noopener"
+			onClick={(event) => {
+				event.preventDefault();
+				void openLinkInSystemBrowser(href);
+			}}
+			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
+		>
+			{href}
+		</a>
+	);
+}
+
+/** Render provider prose verbatim, activating only literal HTTP(S) URLs. */
+function linkifiedProviderErrorText(text: string): ReactNode[] {
+	const parts: ReactNode[] = [];
+	let cursor = 0;
+	for (const match of text.matchAll(providerErrorWebUrlPattern)) {
+		const start = match.index;
+		const rawUrl = match[0];
+		const href = rawUrl.replace(trailingProviderUrlPunctuation, "");
+		if (start > cursor) parts.push(text.slice(cursor, start));
+		if (href && isWebLink(href)) {
+			parts.push(<ProviderErrorLink key={`${start}-${href}`} href={href} />);
+			if (href.length < rawUrl.length) parts.push(rawUrl.slice(href.length));
+		} else {
+			parts.push(rawUrl);
+		}
+		cursor = start + rawUrl.length;
+	}
+	if (cursor < text.length) parts.push(text.slice(cursor));
+	return parts;
 }
 
 /**

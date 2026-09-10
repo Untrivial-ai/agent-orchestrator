@@ -9,7 +9,11 @@ import { useUiStore } from "../stores/ui-store";
 const bridgeMocks = vi.hoisted(() => ({
 	checkAncestorRepo: vi.fn(),
 	checkGitRepository: vi.fn(),
+	checkGitHubRepositoryAvailability: vi.fn(),
 	chooseDirectory: vi.fn(),
+	getGitHubLogin: vi.fn(),
+	getCachedGitHubOwners: vi.fn(),
+	refreshGitHubOwners: vi.fn(),
 	getRepositoryBranch: vi.fn(),
 	scanImportFolder: vi.fn(),
 }));
@@ -26,8 +30,12 @@ vi.mock("../lib/bridge", () => ({
 		app: {
 			checkAncestorRepo: bridgeMocks.checkAncestorRepo,
 			checkGitRepository: bridgeMocks.checkGitRepository,
-			chooseDirectory: bridgeMocks.chooseDirectory,
-			getRepositoryBranch: bridgeMocks.getRepositoryBranch,
+			checkGitHubRepositoryAvailability: bridgeMocks.checkGitHubRepositoryAvailability,
+		chooseDirectory: bridgeMocks.chooseDirectory,
+		getGitHubLogin: bridgeMocks.getGitHubLogin,
+		getCachedGitHubOwners: bridgeMocks.getCachedGitHubOwners,
+		refreshGitHubOwners: bridgeMocks.refreshGitHubOwners,
+		getRepositoryBranch: bridgeMocks.getRepositoryBranch,
 			scanImportFolder: bridgeMocks.scanImportFolder,
 		},
 	},
@@ -132,7 +140,7 @@ vi.mock("./CloneRepositoryDialog", () => ({
 		value: { remoteUrl: string; destinationParent: string };
 	}) =>
 		open ? (
-			<div data-testid="clone-dialog">
+			<div data-testid="clone-dialog" data-destination={value.destinationParent}>
 				<input
 					aria-label="Clone URL"
 					value={value.remoteUrl}
@@ -235,7 +243,11 @@ function projectValidation(
 beforeEach(() => {
 	bridgeMocks.checkAncestorRepo.mockReset().mockResolvedValue(undefined);
 	bridgeMocks.checkGitRepository.mockReset().mockResolvedValue(true);
+	bridgeMocks.checkGitHubRepositoryAvailability.mockReset().mockResolvedValue({ available: true });
 	bridgeMocks.chooseDirectory.mockReset();
+	bridgeMocks.getGitHubLogin.mockReset().mockResolvedValue("");
+	bridgeMocks.getCachedGitHubOwners.mockReset().mockResolvedValue([{ login: "username", avatarUrl: "https://avatars.example/username" }, { login: "acme", avatarUrl: "https://avatars.example/acme" }]);
+	bridgeMocks.refreshGitHubOwners.mockReset().mockResolvedValue([{ login: "username", avatarUrl: "https://avatars.example/username" }, { login: "acme", avatarUrl: "https://avatars.example/acme" }]);
 	bridgeMocks.getRepositoryBranch.mockReset().mockResolvedValue(undefined);
 	bridgeMocks.scanImportFolder.mockReset().mockImplementation(async ({ path }: { path: string }) => okScan(path));
 	apiMocks.POST.mockReset();
@@ -340,6 +352,17 @@ describe("CreateProjectFlow droppedPath", () => {
 
 		expect(screen.getByTestId("agent-sheet")).toHaveAttribute("data-path", "/dropped/first");
 		expect(screen.queryByRole("button", { name: "Import an existing project" })).not.toBeInTheDocument();
+	});
+
+	it.each([null, "/chosen/projects"])("uses a sensible clone destination with saved folder %s", async (saved) => {
+		window.localStorage.removeItem("ao.clone.lastDestinationParent");
+		if (saved) window.localStorage.setItem("ao.clone.lastDestinationParent", saved);
+		const user = userEvent.setup();
+		const { rerender } = render(<CreateProjectFlow mode="choose" {...noop} openSignal={0} />);
+		rerender(<CreateProjectFlow mode="choose" {...noop} openSignal={1} />);
+		await user.click(await screen.findByRole("button", { name: "Clone from Git" }));
+		expect(await screen.findByTestId("clone-dialog")).toHaveAttribute("data-destination", saved ?? "~/ao/projects");
+		window.localStorage.removeItem("ao.clone.lastDestinationParent");
 	});
 
 	it("ignores a drop while the clone-from-Git dialog is open", async () => {
@@ -576,7 +599,57 @@ describe("CreateProjectFlow project import validation", () => {
 		});
 	});
 
-	it("keeps workspace mode after preparing a child repository", async () => {
+	it("keeps workspace import available when the parent repository has no remote", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
+		bridgeMocks.scanImportFolder.mockResolvedValue({
+			path: "/repo/workspace",
+			repos: [{
+				name: "app",
+				path: "/repo/workspace/app",
+				relativePath: "app",
+				branch: "main",
+				remote: "https://github.com/acme/app.git",
+				hasRemote: true,
+				isRepo: true,
+				hasCommit: true,
+				status: "ok",
+				needsGitInit: false,
+			}],
+		});
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/workspace", {
+					nextStep: "continue",
+					root: { isRepo: true, hasCommit: true, hasOrigin: false, requiredActions: ["create_remote_repository"] },
+					childRepos: [{
+						repoPath: "/repo/workspace/app",
+						isRepo: true,
+						hasCommit: true,
+						hasOrigin: true,
+						isEmptyFolder: false,
+						needsGitInit: false,
+						requiredActions: [],
+						blockingErrors: [],
+					}],
+				}),
+				importKind: "workspace",
+			},
+		});
+
+		renderChooseFlow();
+		await openSource(user, "Import a workspace folder");
+
+		expect(screen.queryByText("This is a single project, not a collection of projects. Import it as a project instead.")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Import as project" })).not.toBeInTheDocument();
+		expect(await screen.findByText("app")).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Continue" }));
+
+		expect(await screen.findByTestId("agent-sheet")).toHaveAttribute("data-kind", "workspace");
+		expect(screen.getByTestId("agent-sheet")).toHaveAttribute("data-path", "/repo/workspace");
+	});
+
+	it("blocks workspace import when a child repository has no remote", async () => {
 		const user = userEvent.setup();
 		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
 		bridgeMocks.scanImportFolder.mockResolvedValue({
@@ -594,19 +667,11 @@ describe("CreateProjectFlow project import validation", () => {
 				needsGitInit: false,
 			}],
 		});
-		const workspaceRoot = {
-			isRepo: false,
-			hasCommit: false,
-			hasOrigin: false,
-			needsGitInit: true,
-			requiredActions: [],
-		};
-		apiMocks.POST
-			.mockResolvedValueOnce({
+		apiMocks.POST.mockResolvedValueOnce({
 				data: {
 					...projectValidation("/repo/workspace", {
 						nextStep: "prepare_git",
-						root: workspaceRoot,
+						root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, requiredActions: [] },
 						childRepos: [{
 							repoPath: "/repo/workspace/app",
 							isRepo: true,
@@ -620,48 +685,73 @@ describe("CreateProjectFlow project import validation", () => {
 					}),
 					importKind: "workspace",
 				},
-			})
-			.mockResolvedValueOnce({
-				data: {
-					events: [{ repoPath: "/repo/workspace/app", action: "set_remote", state: "success" }],
-					validation: {
-						...projectValidation("/repo/workspace", {
-							root: workspaceRoot,
-							childRepos: [{
-								repoPath: "/repo/workspace/app",
-								isRepo: true,
-								hasCommit: true,
-								hasOrigin: true,
-								isEmptyFolder: false,
-								needsGitInit: false,
-								requiredActions: [],
-								blockingErrors: [],
-							}],
-						}),
-						importKind: "workspace",
-					},
-				},
 			});
 
 		renderChooseFlow();
 		await openSource(user, "Import a workspace folder");
-		await user.click(await screen.findByRole("checkbox"));
-		await user.click(screen.getByRole("button", { name: "Continue" }));
+		expect(screen.getByText("Set an origin remote for the child repositories marked below before importing this workspace.")).toBeInTheDocument();
+		expect(screen.getByText("app")).toBeInTheDocument();
+		expect(screen.getByText("Setup required")).toBeInTheDocument();
+		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+		expect(screen.queryByRole("textbox", { name: "Origin remote URL" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+		expect(apiMocks.POST).toHaveBeenCalledTimes(1);
+	});
 
-		expect(await screen.findByTestId("agent-sheet")).toHaveAttribute("data-kind", "workspace");
-		expect(screen.getByTestId("agent-sheet")).toHaveAttribute("data-path", "/repo/workspace");
-		expect(screen.queryByRole("dialog", { name: "Prepare project" })).not.toBeInTheDocument();
-		expect(apiMocks.POST).toHaveBeenNthCalledWith(2, "/api/v1/imports/prepare-git", {
-			body: {
+	it("disables workspace import when no child Git repositories exist", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
+		bridgeMocks.scanImportFolder.mockResolvedValue({ path: "/repo/workspace", repos: [] });
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/workspace", {
+					isValid: false,
+					blockingErrors: ["WORKSPACE_CHILD_REPO_REQUIRED"],
+					nextStep: "error",
+					root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, blockingErrors: ["WORKSPACE_CHILD_REPO_REQUIRED"] },
+				}),
 				importKind: "workspace",
-				path: "/repo/workspace",
-				repositories: [{
-					repoPath: "/repo/workspace/app",
-					approvedActions: ["set_remote"],
-					remoteUrl: "https://github.com/username/app.git",
-				}],
 			},
 		});
+
+		renderChooseFlow();
+		await openSource(user, "Import a workspace folder");
+
+		expect(screen.getByText("Importing a workspace requires at least one direct child Git repository that already has a commit and an origin remote. You can import this folder as a project instead.")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Import as project" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Go Back" })).toBeInTheDocument();
+		expect(useUiStore.getState().globalToast).toBeNull();
+		expect(screen.getByRole("dialog", { name: "Import workspace" })).not.toHaveClass("modal-shake");
+	});
+
+	it("keeps workspace import disabled when only non-Git child folders exist", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
+		bridgeMocks.scanImportFolder.mockResolvedValue({
+			path: "/repo/workspace",
+			repos: [{ name: "empty", path: "/repo/workspace/empty", relativePath: "empty", branch: "", remote: "", hasRemote: false, isRepo: false, hasCommit: false, status: "ok", needsGitInit: true }],
+		});
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/workspace", {
+					isValid: false,
+					blockingErrors: ["WORKSPACE_CHILD_REPO_REQUIRED"],
+					nextStep: "error",
+					root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, blockingErrors: ["WORKSPACE_CHILD_REPO_REQUIRED"] },
+					childRepos: [],
+				}),
+				importKind: "workspace",
+			},
+		});
+
+		renderChooseFlow();
+		await openSource(user, "Import a workspace folder");
+
+		expect(screen.getByText("Importing a workspace requires at least one direct child Git repository that already has a commit and an origin remote. You can import this folder as a project instead.")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Import as project" })).toBeInTheDocument();
+		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
 	});
 
 	it("blocks invalid workspace validation with a toast and modal shake", async () => {
@@ -687,45 +777,6 @@ describe("CreateProjectFlow project import validation", () => {
 		await waitFor(() => expect(screen.getByRole("dialog", { name: "Import workspace" })).toHaveClass("modal-shake"));
 		expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
 		expect(screen.queryByText("Import failed · workspace not registered")).not.toBeInTheDocument();
-	});
-
-	it("toasts and shakes the workspace modal when child Git preparation fails", async () => {
-		const user = userEvent.setup();
-		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
-		bridgeMocks.scanImportFolder.mockResolvedValue({
-			path: "/repo/workspace",
-			repos: [{ name: "app", path: "/repo/workspace/app", relativePath: "app", branch: "main", remote: "", hasRemote: false, isRepo: true, hasCommit: true, status: "ok", needsGitInit: false }],
-		});
-		apiMocks.POST
-			.mockResolvedValueOnce({
-				data: {
-					...projectValidation("/repo/workspace", {
-						nextStep: "prepare_git",
-						root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, requiredActions: [] },
-						childRepos: [{ repoPath: "/repo/workspace/app", isRepo: true, hasCommit: true, hasOrigin: false, isEmptyFolder: false, needsGitInit: false, requiredActions: ["set_remote"], blockingErrors: [] }],
-					}),
-					importKind: "workspace",
-				},
-			})
-			.mockResolvedValueOnce({
-				data: {
-					events: [{ repoPath: "/repo/workspace/app", action: "set_remote", state: "error", error: "rpc INTERNAL_FAILURE request_id=secret" }],
-					validation: {
-						...projectValidation("/repo/workspace", { nextStep: "prepare_git" }),
-						importKind: "workspace",
-					},
-				},
-			});
-
-		renderChooseFlow();
-		await openSource(user, "Import a workspace folder");
-		await user.click(await screen.findByRole("checkbox"));
-		await user.click(screen.getByRole("button", { name: "Continue" }));
-
-		await waitFor(() => expect(screen.getByRole("dialog", { name: "Import workspace" })).toHaveClass("modal-shake"));
-		expect(useUiStore.getState().globalToast?.body).toBe("/repo/workspace/app failed while running Remote setup. Review the step below, then retry or go back.");
-		expect(screen.queryByText(/INTERNAL_FAILURE|request_id/)).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
 	});
 
 	it("uses one shared backdrop while switching between flow modals", async () => {
@@ -777,7 +828,7 @@ describe("CreateProjectFlow project import validation", () => {
 					hasCommit: false,
 					hasOrigin: false,
 					needsGitInit: true,
-					requiredActions: ["git_init", "git_commit", "set_remote"],
+					requiredActions: ["git_init", "git_commit", "create_remote_repository"],
 				},
 				childRepos: [
 					{
@@ -795,7 +846,7 @@ describe("CreateProjectFlow project import validation", () => {
 		});
 		apiMocks.POST.mockResolvedValueOnce({
 			data: projectValidation("/repo/parent", {
-				root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, requiredActions: ["git_init", "git_commit", "set_remote"] },
+				root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, requiredActions: ["git_init", "git_commit", "create_remote_repository"] },
 				childRepos: [{ repoPath: "/repo/parent/web", isRepo: true, hasCommit: true, hasOrigin: true, isEmptyFolder: false, needsGitInit: false, requiredActions: [], blockingErrors: [] }],
 			}),
 		});
@@ -804,7 +855,7 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import an existing project");
 
-		expect(await screen.findByText("This folder contains projects and needs to be imported as a workspace.")).toBeInTheDocument();
+		expect(await screen.findByText("This folder contains child Git repositories. Import it as a workspace instead.")).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Import as workspace" }));
@@ -823,7 +874,7 @@ describe("CreateProjectFlow project import validation", () => {
 				root: {
 					hasCommit: false,
 					hasOrigin: false,
-					requiredActions: ["git_commit", "set_remote"],
+					requiredActions: ["git_commit", "create_remote_repository"],
 				},
 			}),
 		});
@@ -833,19 +884,17 @@ describe("CreateProjectFlow project import validation", () => {
 		await openSource(user, "Import an existing project");
 
 		expect(await screen.findByText("Prepare project")).toBeInTheDocument();
-		expect(screen.getByText("Project setup")).toBeInTheDocument();
-		expect(screen.getByRole("checkbox", { name: "Set up Git for this project" })).toBeChecked();
-		expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+		expect(screen.queryByText("Project setup")).not.toBeInTheDocument();
+		expect(screen.getByText("project")).toBeInTheDocument();
+		expect(screen.getByText("does not have a GitHub remote. AO will create a repository, add it as origin, and push the current branch.")).toBeInTheDocument();
+		expect(screen.queryByRole("checkbox", { name: "Set up Git for this project" })).not.toBeInTheDocument();
 		expect(screen.queryByText("Git initialization")).not.toBeInTheDocument();
 		expect(screen.queryByText("Initial commit")).not.toBeInTheDocument();
 		expect(screen.queryByText("Remote setup")).not.toBeInTheDocument();
 		expect(screen.queryByText("Create the first commit so the project has a usable history.")).not.toBeInTheDocument();
-		expect(screen.getByLabelText("Origin remote URL")).toBeInTheDocument();
-		expect(
-			screen.getByText(
-				"To create sessions and PRs successfully, make sure this repository also exists on GitHub and that you can push the default branch to it.",
-			),
-		).toBeInTheDocument();
+		await waitFor(() => expect(screen.getByLabelText("Owner")).toHaveTextContent("username"));
+		expect(screen.getByLabelText("Repository name")).toHaveValue("project");
+			expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeDisabled();
 		expect(screen.queryByText("Plain folder")).not.toBeInTheDocument();
 		expect(screen.queryByText("No commit yet")).not.toBeInTheDocument();
 		expect(screen.queryByText("No origin remote")).not.toBeInTheDocument();
@@ -889,7 +938,7 @@ describe("CreateProjectFlow project import validation", () => {
 				nextStep: "prepare_git",
 				root: {
 					hasOrigin: false,
-					requiredActions: ["set_remote"],
+					requiredActions: ["create_remote_repository"],
 				},
 			}),
 		});
@@ -898,20 +947,45 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import an existing project");
 
-		expect(await screen.findByLabelText("Origin remote URL")).toHaveValue(
-			"https://github.com/username/project-no-git.git",
-		);
+		await waitFor(() => expect(screen.getByLabelText("Owner")).toHaveTextContent("username"));
+		expect(screen.getByLabelText("Repository name")).toHaveValue("project-no-git");
+			expect(screen.queryByText(/Will create/)).not.toBeInTheDocument();
+		expect(screen.queryByText("Repository name is available.")).not.toBeInTheDocument();
 	});
 
-	it("requires the user to keep all required setup actions approved", async () => {
+	it("shows Other after selecting a custom GitHub owner", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project-no-git");
+		apiMocks.POST.mockResolvedValueOnce({
+			data: projectValidation("/repo/project-no-git", {
+				nextStep: "prepare_git",
+				root: {
+					hasOrigin: false,
+					requiredActions: ["create_remote_repository"],
+				},
+			}),
+		});
+
+		renderChooseFlow();
+		await openSource(user, "Import an existing project");
+
+		await user.click(await screen.findByLabelText("Owner"));
+		await user.click(await screen.findByRole("option", { name: "Use a different owner" }));
+
+		expect(screen.getByText("Other")).toBeInTheDocument();
+		expect(screen.getByRole("textbox", { name: "Owner" })).toHaveValue("username");
+	});
+
+	it("requires an available GitHub repository name", async () => {
 		const user = userEvent.setup();
 		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		bridgeMocks.checkGitHubRepositoryAvailability.mockResolvedValue({ available: false, message: "Repository name is already in use for this owner." });
 		apiMocks.POST.mockResolvedValueOnce({
 			data: projectValidation("/repo/project", {
 				nextStep: "prepare_git",
 				root: {
 					hasOrigin: false,
-					requiredActions: ["set_remote"],
+					requiredActions: ["create_remote_repository"],
 				},
 			}),
 		});
@@ -920,14 +994,39 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import an existing project");
 
-		const remoteAction = screen.getByRole("checkbox");
-		expect(remoteAction).toBeChecked();
-		await user.click(screen.getByLabelText("Origin remote URL"));
-		expect(remoteAction).toBeChecked();
-		await user.click(remoteAction);
+		expect(await screen.findByRole("alert")).toHaveTextContent("Repository name is already in use for this owner.");
+			expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeDisabled();
+	});
 
-		expect(screen.getByText("Approve all required setup actions to continue importing this project.")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+	it("checks repository availability again when the repository name changes", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		bridgeMocks.checkGitHubRepositoryAvailability
+			.mockResolvedValueOnce({ available: false, message: "Repository name is already in use for this owner." })
+			.mockResolvedValueOnce({ available: true });
+		apiMocks.POST.mockResolvedValueOnce({
+			data: projectValidation("/repo/project", {
+				nextStep: "prepare_git",
+				root: {
+					hasOrigin: false,
+					requiredActions: ["create_remote_repository"],
+				},
+			}),
+		});
+
+		renderChooseFlow();
+
+		await openSource(user, "Import an existing project");
+
+		expect(await screen.findByText("Repository name is already in use for this owner.")).toBeInTheDocument();
+		const repoNameInput = screen.getByLabelText("Repository name");
+		await user.clear(repoNameInput);
+		await user.type(repoNameInput, "project-new");
+
+		await waitFor(() => expect(bridgeMocks.checkGitHubRepositoryAvailability).toHaveBeenLastCalledWith({ owner: "username", name: "project-new" }));
+		expect(screen.getByText("project")).toBeInTheDocument();
+		expect(screen.queryByText("Repository name is available.")).not.toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled();
 	});
 
 	it("prepares the project and then opens agent selection", async () => {
@@ -942,7 +1041,7 @@ describe("CreateProjectFlow project import validation", () => {
 						hasCommit: false,
 						hasOrigin: false,
 						needsGitInit: true,
-						requiredActions: ["git_init", "git_commit", "set_remote"],
+						requiredActions: ["git_init", "git_commit", "create_remote_repository"],
 					},
 				}),
 			})
@@ -955,7 +1054,7 @@ describe("CreateProjectFlow project import validation", () => {
 					],
 					validation: projectValidation("/repo/project", {
 						nextStep: "prepare_git",
-						root: { isRepo: true, hasCommit: false, hasOrigin: false, requiredActions: ["git_commit", "set_remote"] },
+						root: { isRepo: true, hasCommit: false, hasOrigin: false, requiredActions: ["git_commit", "create_remote_repository"] },
 					}),
 				},
 			})
@@ -968,16 +1067,16 @@ describe("CreateProjectFlow project import validation", () => {
 					],
 					validation: projectValidation("/repo/project", {
 						nextStep: "prepare_git",
-						root: { isRepo: true, hasCommit: true, hasOrigin: false, requiredActions: ["set_remote"] },
+						root: { isRepo: true, hasCommit: true, hasOrigin: false, requiredActions: ["create_remote_repository"] },
 					}),
 				},
 			})
 			.mockResolvedValueOnce({
 				data: {
 					events: [
-						{ repoPath: "/repo/project", action: "set_remote", state: "pending" },
-						{ repoPath: "/repo/project", action: "set_remote", state: "running" },
-						{ repoPath: "/repo/project", action: "set_remote", state: "success" },
+						{ repoPath: "/repo/project", action: "create_remote_repository", state: "pending" },
+						{ repoPath: "/repo/project", action: "create_remote_repository", state: "running" },
+						{ repoPath: "/repo/project", action: "create_remote_repository", state: "success" },
 					],
 					validation: projectValidation("/repo/project"),
 				},
@@ -986,18 +1085,24 @@ describe("CreateProjectFlow project import validation", () => {
 		renderChooseFlow();
 
 		await openSource(user, "Import an existing project");
-		const remoteInput = await screen.findByLabelText("Origin remote URL");
-		await user.clear(remoteInput);
-		await user.type(remoteInput, "https://github.com/acme/project.git");
-		await user.click(screen.getByRole("button", { name: "Continue" }));
+		const ownerInput = await screen.findByLabelText("Owner");
+		await user.click(ownerInput);
+		await user.click(await screen.findByRole("option", { name: "acme" }));
+		const privateRepository = screen.getByRole("switch", { name: "Private repository" });
+		expect(privateRepository).toBeChecked();
+		await user.click(privateRepository);
+		expect(privateRepository).not.toBeChecked();
+			await waitFor(() => expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled());
+			await user.click(screen.getByRole("button", { name: "Create repository and continue" }));
 
 		await waitFor(() =>
 			expect(apiMocks.POST).toHaveBeenLastCalledWith("/api/v1/imports/prepare-git", {
 				body: {
 					importKind: "project",
 					path: "/repo/project",
-					approvedActions: ["git_init", "git_commit", "set_remote"],
+					approvedActions: ["git_init", "git_commit", "create_remote_repository"],
 					remoteUrl: "https://github.com/acme/project.git",
+					githubRepository: { owner: "acme", name: "project", private: false },
 					stepwise: true,
 				},
 			}),
@@ -1008,26 +1113,25 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(screen.queryByText("Prepare project")).not.toBeInTheDocument();
 	});
 
-	it("blocks an inaccessible project remote before Git preparation", async () => {
+	it("blocks an unavailable GitHub repository before Git preparation", async () => {
 		const user = userEvent.setup();
 		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
-		bridgeMocks.checkGitRepository.mockResolvedValue(false);
+		bridgeMocks.checkGitHubRepositoryAvailability.mockResolvedValue({ available: false, message: "Repository name is already in use for this owner." });
 		apiMocks.POST.mockResolvedValueOnce({
 			data: projectValidation("/repo/project", {
 				nextStep: "prepare_git",
-				root: { hasOrigin: false, requiredActions: ["set_remote"] },
+				root: { hasOrigin: false, requiredActions: ["create_remote_repository"] },
 			}),
 		});
 
 		renderChooseFlow();
 
 		await openSource(user, "Import an existing project");
-		await user.click(screen.getByRole("button", { name: "Continue" }));
 
-		await waitFor(() => expect(bridgeMocks.checkGitRepository).toHaveBeenCalledWith("https://github.com/username/project.git"));
+		await waitFor(() => expect(bridgeMocks.checkGitHubRepositoryAvailability).toHaveBeenCalledWith({ owner: "username", name: "project" }));
 		expect(apiMocks.POST).toHaveBeenCalledTimes(1);
-		expect(useUiStore.getState().globalToast?.body).toBe("This isn't a repository or you don't have access");
-		await waitFor(() => expect(screen.getByRole("dialog", { name: "Prepare project" })).toHaveClass("modal-shake"));
+		expect(screen.getByText("Repository name is already in use for this owner.")).toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeDisabled();
 		expect(screen.queryByTestId("agent-sheet")).not.toBeInTheDocument();
 	});
 
@@ -1053,43 +1157,60 @@ describe("CreateProjectFlow project import validation", () => {
 		await waitFor(() => expect(sheet).toHaveClass("modal-shake"));
 	});
 
-	it.each(["single_repo", "workspace"] as const)("passes the checked-out root branch when importing %s", async (kind) => {
+	it("submits single_repo imports without a blocking branch lookup", async () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn(async () => undefined);
 		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
-		bridgeMocks.getRepositoryBranch.mockResolvedValue("main");
-		if (kind === "workspace") {
-			bridgeMocks.scanImportFolder.mockResolvedValue({
-				path: "/repo/project",
-				repos: [{ ...okScan("/repo/project/app").repos[0], name: "app", relativePath: "app" }],
-			});
-			apiMocks.POST.mockResolvedValueOnce({
-				data: {
-					...projectValidation("/repo/project", {
-						root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true },
-						childRepos: [{
-							repoPath: "/repo/project/app", isRepo: true, hasCommit: true, hasOrigin: true,
-							isEmptyFolder: false, needsGitInit: false, requiredActions: [], blockingErrors: [],
-						}],
-					}),
-					importKind: "workspace",
-				},
-			});
-		} else {
-			apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project") });
-		}
+		apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project") });
 
 		renderChooseFlow({ onCreateProject });
-		await openSource(user, kind === "workspace" ? "Import a workspace folder" : "Import an existing project");
-		if (kind === "workspace") {
-			await user.click(await screen.findByRole("button", { name: "Continue" }));
-		}
+		await openSource(user, "Import an existing project");
 		await user.click(await screen.findByRole("button", { name: "Submit agents" }));
 
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith({
 				path: "/repo/project",
-				asWorkspace: kind === "workspace",
+				asWorkspace: false,
+				workerAgent: "codex",
+				orchestratorAgent: "codex",
+			}),
+		);
+		// The daemon resolves the base branch itself; the import must not
+		// block on a branch lookup before submitting.
+		expect(bridgeMocks.getRepositoryBranch).not.toHaveBeenCalled();
+	});
+
+	it("preserves the checked-out root branch when importing a workspace", async () => {
+		const user = userEvent.setup();
+		const onCreateProject = vi.fn(async () => undefined);
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		bridgeMocks.getRepositoryBranch.mockResolvedValue("main");
+		bridgeMocks.scanImportFolder.mockResolvedValue({
+			path: "/repo/project",
+			repos: [{ ...okScan("/repo/project/app").repos[0], name: "app", relativePath: "app" }],
+		});
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/project", {
+					root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true },
+					childRepos: [{
+						repoPath: "/repo/project/app", isRepo: true, hasCommit: true, hasOrigin: true,
+						isEmptyFolder: false, needsGitInit: false, requiredActions: [], blockingErrors: [],
+					}],
+				}),
+				importKind: "workspace",
+			},
+		});
+
+		renderChooseFlow({ onCreateProject });
+		await openSource(user, "Import a workspace folder");
+		await user.click(await screen.findByRole("button", { name: "Continue" }));
+		await user.click(await screen.findByRole("button", { name: "Submit agents" }));
+
+		await waitFor(() =>
+			expect(onCreateProject).toHaveBeenCalledWith({
+				path: "/repo/project",
+				asWorkspace: true,
 				defaultBranch: "main",
 				workerAgent: "codex",
 				orchestratorAgent: "codex",
@@ -1113,7 +1234,7 @@ describe("CreateProjectFlow project import validation", () => {
 						hasCommit: false,
 						hasOrigin: false,
 						needsGitInit: true,
-						requiredActions: ["git_init", "git_commit", "set_remote"],
+						requiredActions: ["git_init", "git_commit", "create_remote_repository"],
 					},
 				}),
 			})
@@ -1136,10 +1257,11 @@ describe("CreateProjectFlow project import validation", () => {
 		);
 
 		await openSource(user, "Import an existing project");
-		const remoteInput = await screen.findByLabelText("Origin remote URL");
-		await user.clear(remoteInput);
-		await user.type(remoteInput, "https://github.com/acme/project.git");
-		await user.click(screen.getByRole("button", { name: "Continue" }));
+		const ownerInput = await screen.findByLabelText("Owner");
+		await user.click(ownerInput);
+		await user.click(await screen.findByRole("option", { name: "acme" }));
+			await waitFor(() => expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled());
+			await user.click(screen.getByRole("button", { name: "Create repository and continue" }));
 
 		expect(await screen.findByText("Running project setup. AO is preparing this repository now.")).toBeInTheDocument();
 		expect(screen.getAllByText("In progress")).toHaveLength(1);
@@ -1153,7 +1275,7 @@ describe("CreateProjectFlow project import validation", () => {
 				],
 				validation: projectValidation("/repo/project", {
 					nextStep: "prepare_git",
-					root: { isRepo: true, hasCommit: false, hasOrigin: false, requiredActions: ["git_commit", "set_remote"] },
+					root: { isRepo: true, hasCommit: false, hasOrigin: false, requiredActions: ["git_commit", "create_remote_repository"] },
 				}),
 			},
 		});
@@ -1167,7 +1289,7 @@ describe("CreateProjectFlow project import validation", () => {
 				events: [{ repoPath: "/repo/project", action: "git_commit", state: "success" }],
 				validation: projectValidation("/repo/project", {
 					nextStep: "prepare_git",
-					root: { isRepo: true, hasCommit: true, hasOrigin: false, requiredActions: ["set_remote"] },
+					root: { isRepo: true, hasCommit: true, hasOrigin: false, requiredActions: ["create_remote_repository"] },
 				}),
 			},
 		});
@@ -1177,7 +1299,7 @@ describe("CreateProjectFlow project import validation", () => {
 
 		resolveRemote({
 			data: {
-				events: [{ repoPath: "/repo/project", action: "set_remote", state: "success" }],
+				events: [{ repoPath: "/repo/project", action: "create_remote_repository", state: "success" }],
 				validation: projectValidation("/repo/project"),
 			},
 		});
@@ -1196,7 +1318,7 @@ describe("CreateProjectFlow project import validation", () => {
 						isRepo: false,
 						hasCommit: false,
 						hasOrigin: false,
-						requiredActions: ["git_init", "git_commit", "set_remote"],
+						requiredActions: ["git_init", "git_commit", "create_remote_repository"],
 					},
 				}),
 			})
@@ -1205,7 +1327,7 @@ describe("CreateProjectFlow project import validation", () => {
 					events: [{ repoPath: "/repo/project", action: "git_init", state: "success" }],
 					validation: projectValidation("/repo/project", {
 						nextStep: "prepare_git",
-						root: { isRepo: true, hasCommit: false, hasOrigin: false, requiredActions: ["git_commit", "set_remote"] },
+						root: { isRepo: true, hasCommit: false, hasOrigin: false, requiredActions: ["git_commit", "create_remote_repository"] },
 					}),
 				},
 			})
@@ -1219,7 +1341,7 @@ describe("CreateProjectFlow project import validation", () => {
 						nextStep: "prepare_git",
 						root: {
 							hasOrigin: false,
-							requiredActions: ["git_commit", "set_remote"],
+							requiredActions: ["git_commit", "create_remote_repository"],
 						},
 					}),
 				},
@@ -1229,23 +1351,24 @@ describe("CreateProjectFlow project import validation", () => {
 					events: [{ repoPath: "/repo/project", action: "git_commit", state: "success" }],
 					validation: projectValidation("/repo/project", {
 						nextStep: "prepare_git",
-						root: { isRepo: true, hasCommit: true, hasOrigin: false, requiredActions: ["set_remote"] },
+						root: { isRepo: true, hasCommit: true, hasOrigin: false, requiredActions: ["create_remote_repository"] },
 					}),
 				},
 			})
 			.mockResolvedValueOnce({
 				data: {
-					events: [{ repoPath: "/repo/project", action: "set_remote", state: "success" }],
+					events: [{ repoPath: "/repo/project", action: "create_remote_repository", state: "success" }],
 					validation: projectValidation("/repo/project"),
 				},
 			});
 
 		renderChooseFlow();
 		await openSource(user, "Import an existing project");
-		const remoteInput = await screen.findByLabelText("Origin remote URL");
-		await user.clear(remoteInput);
-		await user.type(remoteInput, "https://github.com/acme/project.git");
-		await user.click(screen.getByRole("button", { name: "Continue" }));
+		const ownerInput = await screen.findByLabelText("Owner");
+		await user.click(ownerInput);
+		await user.click(await screen.findByRole("option", { name: "acme" }));
+			await waitFor(() => expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled());
+			await user.click(screen.getByRole("button", { name: "Create repository and continue" }));
 
 		await waitFor(() => expect(useUiStore.getState().globalToast?.body).toMatch(/failed while running Initial commit/i));
 		await waitFor(() => expect(screen.getByRole("dialog", { name: "Prepare project" })).toHaveClass("modal-shake"));
@@ -1258,7 +1381,7 @@ describe("CreateProjectFlow project import validation", () => {
 		expect((await screen.findByTestId("agent-sheet"))).toHaveAttribute("data-path", "/repo/project");
 		expect(apiMocks.POST).toHaveBeenCalledTimes(5);
 		expect(apiMocks.POST.mock.calls[3]?.[1]).toMatchObject({
-			body: { approvedActions: ["git_commit", "set_remote"], stepwise: true },
+			body: { approvedActions: ["git_commit", "create_remote_repository"], stepwise: true },
 		});
 	});
 });

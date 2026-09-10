@@ -16,10 +16,12 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/gitdefault"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
@@ -2184,5 +2186,76 @@ func TestManager_RememberPortablePermissions(t *testing.T) {
 	}
 	if _, err := m.SetPermissions(ctx, "portable", project.SetPermissionsInput{SourceHarness: "unknown", Permissions: domain.PermissionModeAuto}); err == nil {
 		t.Fatal("accepted unknown harness")
+	}
+}
+
+func TestPrepareCloneCreatesDestinationParents(t *testing.T) {
+	m := newManager(t)
+	source := gitRepo(t)
+	parent := filepath.Join(t.TempDir(), "Projects", "new folder")
+	prepared, err := m.PrepareClone(context.Background(), project.CloneInput{
+		RemoteURL: (&url.URL{Scheme: "file", Path: source}).String(), DestinationParent: parent,
+	})
+	if err != nil {
+		t.Fatalf("PrepareClone: %v", err)
+	}
+	if prepared.Path != filepath.Join(parent, filepath.Base(source)) {
+		t.Fatalf("unexpected clone path %q", prepared.Path)
+	}
+	if out, err := exec.Command("git", "-C", prepared.Path, "rev-parse", "--verify", "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("clone missing commit: %v (%s)", err, out)
+	}
+}
+
+func TestEmptyCloneOnboardingCreatesFirstWorkspace(t *testing.T) {
+	for _, branch := range []string{"main", "trunk"} {
+		t.Run(branch, func(t *testing.T) {
+			ctx := context.Background()
+			m := newManager(t)
+			origin := filepath.Join(t.TempDir(), "empty.git")
+			if out, err := exec.Command("git", "init", "--bare", "-b", branch, origin).CombinedOutput(); err != nil {
+				t.Fatalf("init remote: %v (%s)", err, out)
+			}
+			prepared, err := m.PrepareClone(ctx, project.CloneInput{
+				RemoteURL:         (&url.URL{Scheme: "file", Path: origin}).String(),
+				DestinationParent: filepath.Join(t.TempDir(), "Projects"),
+			})
+			if err != nil {
+				t.Fatalf("prepare clone: %v", err)
+			}
+			// Select the advertised unborn branch explicitly for Git versions that
+			// do not negotiate an empty remote's HEAD during clone.
+			if out, err := exec.Command("git", "-C", prepared.Path, "symbolic-ref", "HEAD", "refs/heads/"+branch).CombinedOutput(); err != nil {
+				t.Fatalf("select initial branch: %v (%s)", err, out)
+			}
+			setup, err := importer.New(importer.Deps{}).PrepareGit(ctx, importer.GitPreparationInput{
+				ImportKind: importer.ImportKindProject, Path: prepared.Path,
+				ApprovedActions:  []string{importer.GitPreparationActionCommit},
+				InitialCommitMsg: "Start project",
+			})
+			if err != nil || setup.Validation.NextStep != importer.ImportNextStepContinue {
+				t.Fatalf("prepare git: %#v, %v", setup, err)
+			}
+			registered, err := m.Add(ctx, project.AddInput{Path: prepared.Path, ClonePreparationID: prepared.PreparationID})
+			if err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			if registered.DefaultBranch != branch {
+				t.Fatalf("registered default = %q, want %q", registered.DefaultBranch, branch)
+			}
+			ws, err := gitworktree.New(gitworktree.Options{
+				ManagedRoot: t.TempDir(), RepoResolver: gitworktree.StaticRepoResolver{registered.ID: registered.Path},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := ws.Create(ctx, ports.WorkspaceConfig{ProjectID: registered.ID, SessionID: "first", Branch: "ao/first"})
+			if err != nil {
+				t.Fatalf("first workspace: %v", err)
+			}
+			if out, err := exec.Command("git", "-C", info.Path, "log", "-1", "--format=%s").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "Start project" {
+				t.Fatalf("first workspace commit: %s, %v", out, err)
+			}
+		})
 	}
 }

@@ -526,6 +526,23 @@ describe("Sidebar", () => {
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
+	it("does not spawn from the sidebar while the orchestrator is provisioning", async () => {
+		const user = userEvent.setup();
+		useUiStore.getState().setProjectProvisioning("proj-1", true);
+		try {
+			renderSidebar();
+
+			const spawnButton = screen.getByRole("button", { name: "Spawn Project One orchestrator" });
+			expect(spawnButton).toBeDisabled();
+			await user.click(spawnButton);
+
+			expect(spawnMock).not.toHaveBeenCalled();
+			expect(navigateMock).not.toHaveBeenCalled();
+		} finally {
+			useUiStore.getState().setProjectProvisioning("proj-1", false);
+		}
+	});
+
 	it("shows a ConfirmDialog and calls onRemoveProject when confirmed", async () => {
 		const user = userEvent.setup();
 		const onRemoveProject = renderSidebar();
@@ -945,8 +962,8 @@ describe("Sidebar", () => {
 			await screen.findByRole("textbox", { name: "Repository URL" }),
 			"git@github.com:acme/web-app.git",
 		);
-		await user.click(screen.getByRole("button", { name: "Choose" }));
-		expect(window.ao!.app.chooseDirectory).toHaveBeenCalledWith("Choose where to clone the repository");
+		await user.click(screen.getByRole("button", { name: "Choose where to clone the repository" }));
+		expect(window.ao!.app.chooseDirectory).toHaveBeenCalledWith({ title: "Choose where to clone the repository", defaultPath: "~/ao/projects" });
 		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
 		await user.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -991,7 +1008,7 @@ describe("Sidebar", () => {
 			await screen.findByRole("textbox", { name: "Repository URL" }),
 			"git@github.com:acme/web-app.git",
 		);
-		await user.click(screen.getByRole("button", { name: "Choose" }));
+		await user.click(screen.getByRole("button", { name: "Choose where to clone the repository" }));
 		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
 		await user.click(await screen.findByRole("button", { name: "Continue" }));
 
@@ -1277,10 +1294,11 @@ describe("Sidebar", () => {
 
 		await user.click(screen.getByLabelText("New project"));
 		await user.click(screen.getByRole("button", { name: /^Import a workspace folder$/i }));
-		expect(screen.getByText("Set up at least one child folder as a Git repository before importing this workspace.")).toBeInTheDocument();
+		expect(screen.getByText("Importing a workspace requires at least one direct child Git repository that already has a commit and an origin remote. You can import this folder as a project instead.")).toBeInTheDocument();
 		expect(screen.queryByText("No repositories detected in this folder.")).not.toBeInTheDocument();
 		expect(screen.queryByText("/repo/workspace")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Import as project" })).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Go Back" }));
 		expect(screen.getByRole("dialog", { name: "Add a project" })).toBeInTheDocument();
@@ -1322,33 +1340,18 @@ describe("Sidebar", () => {
 		await screen.findByRole("dialog", { name: "Import workspace" });
 
 		expect(screen.getByText("unborn")).toBeInTheDocument();
+		expect(screen.getByText("Set an origin remote for the child repositories marked below before importing this workspace.")).toBeInTheDocument();
 		expect(screen.queryByRole("dialog", { name: "Prepare project" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
-		await user.click(screen.getByRole("button", { name: "Git setup needed · Set up" }));
-		expect(screen.getByText(/Initial commit/)).toBeInTheDocument();
-		expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+		expect(screen.queryByRole("button", { name: /Set up|Hide setup/i })).not.toBeInTheDocument();
+		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
 	});
 
-	it("renders remote setup controls for workspace repositories that need them", async () => {
+	it("blocks workspace repositories until their remotes are configured", async () => {
 		const user = userEvent.setup();
-		window.localStorage.setItem("ao.import.lastRemoteUrl", "https://github.com/chauhan/old.git");
-		window.localStorage.setItem("ao.import.lastRemoteOwner", "chauhan");
 		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/repo/workspace");
 		window.ao!.app.checkAncestorRepo = vi.fn().mockResolvedValue(undefined);
-		let prepared = false;
 		postMock.mockImplementation(async (path: string, options?: { body?: { importKind?: string; path?: string } }) => {
-			if (path === "/api/v1/imports/prepare-git") {
-				prepared = true;
-				return {
-					data: {
-						events: [
-							{ action: "set_remote", repoPath: "/repo/workspace/temp", state: "success" },
-						],
-						validation: importValidation("/repo/workspace"),
-					},
-					error: undefined,
-				};
-			}
 			if (path === "/api/v1/imports/validate") {
 				return {
 					data: importValidation(options?.body?.path ?? "/repo/workspace", {
@@ -1370,39 +1373,18 @@ describe("Sidebar", () => {
 		await user.click(screen.getByRole("button", { name: /^Import a workspace folder$/i }));
 		expect(screen.getByRole("dialog", { name: "Import workspace" })).toBeInTheDocument();
 		expect(screen.getByText("temp")).toBeInTheDocument();
-		expect(screen.getByRole("textbox", { name: "Origin remote URL" })).toBeInTheDocument();
-		expect(screen.getByText("Remote setup")).toBeInTheDocument();
-		expect(screen.queryByText(/Initial commit/)).not.toBeInTheDocument();
-		expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+		expect(screen.getByText("Set an origin remote for the child repositories marked below before importing this workspace.")).toBeInTheDocument();
+		expect(screen.queryByRole("textbox", { name: "Origin remote URL" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /Set up|Hide setup/i })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
-
-		await user.click(screen.getByRole("checkbox"));
-		expect(prepared).toBe(false);
-		expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
-		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await vi.waitFor(() => expect(prepared).toBe(true));
 	});
 
-	it("allows an all-plain workspace after one child is approved for setup", async () => {
+	it("offers project import when all workspace children are plain folders", async () => {
 		const user = userEvent.setup();
 		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/repo/workspace");
 		window.ao!.app.checkAncestorRepo = vi.fn().mockResolvedValue(undefined);
-		let preparationBody: unknown;
-		postMock.mockImplementation(async (path: string, options?: { body?: unknown }) => {
-			if (path === "/api/v1/imports/prepare-git") {
-				preparationBody = options?.body;
-				return {
-					data: {
-						events: [],
-						validation: importValidation("/repo/workspace", {
-							root: repoStatus("/repo/workspace", { needsGitInit: true, requiredActions: ["git_init", "git_commit", "set_remote"] }),
-						}),
-					},
-					error: undefined,
-				};
-			}
-			return {
+		postMock.mockResolvedValue({
 				data: importValidation("/repo/workspace", {
 					isValid: false,
 					blockingErrors: ["WORKSPACE_CHILD_REPO_REQUIRED"],
@@ -1410,7 +1392,6 @@ describe("Sidebar", () => {
 					nextStep: "error",
 				}),
 				error: undefined,
-			};
 		});
 		window.ao!.app.scanImportFolder = vi.fn().mockResolvedValue({
 			path: "/repo/workspace",
@@ -1424,11 +1405,8 @@ describe("Sidebar", () => {
 		await user.click(screen.getByLabelText("New project"));
 		await user.click(screen.getByRole("button", { name: /^Import a workspace folder$/i }));
 		expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-		await user.click(screen.getAllByRole("button", { name: "Not a Git repo · Set up" })[0]);
-		await user.click(screen.getAllByRole("checkbox")[0]);
-		expect(preparationBody).toBeUndefined();
-		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await vi.waitFor(() => expect(preparationBody).toMatchObject({ repositories: [{ repoPath: "/repo/workspace/app" }] }));
+		expect(screen.getByRole("button", { name: "Import as project" })).toBeInTheDocument();
+		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
 	});
 
 	it("does not rescan folders for non-validation create failures", async () => {
@@ -2176,23 +2154,40 @@ describe("Sidebar", () => {
 		expect(screen.queryByLabelText(/Hide update/)).not.toBeInTheDocument();
 	});
 
-	it("offers a retry when automatic update checks keep failing", async () => {
-		// The state stays truthful (the suppressed automatic failure never
-		// replaced it); the flag is what makes the dead end visible.
+	it("keeps automatic update check failures out of the sidebar", async () => {
 		updateStatusMock.mockResolvedValue({ state: "idle", checksFailing: true });
 		renderSidebar();
 
-		// Both footer variants (expanded row and collapsed rail icon) are mounted.
-		const buttons = await screen.findAllByLabelText("Retry update check");
-		expect(buttons.length).toBeGreaterThan(0);
-		expect(screen.getByText("Update check failed")).toBeInTheDocument();
-		const failedRow = screen.getByTestId("sidebar-update-failed");
-		expect(failedRow).toHaveClass("border", "border-warning/35", "bg-warning/12", "text-warning");
-		expect(within(failedRow).getByText("Retry update check")).toBeVisible();
-		expect(failedRow.querySelector(".rounded-full")).toBeNull();
+		await waitFor(() => expect(updateStatusMock).toHaveBeenCalled());
+		expect(screen.queryByLabelText("Retry update check")).not.toBeInTheDocument();
+		expect(screen.queryByText("Update check failed")).not.toBeInTheDocument();
+		expect(screen.queryByTestId("sidebar-update-failed")).not.toBeInTheDocument();
+	});
 
-		await userEvent.click(buttons[0]);
-		expect(checkUpdateMock).toHaveBeenCalledTimes(1);
+	it("keeps explicit update errors out of the sidebar", async () => {
+		updateStatusMock.mockResolvedValue({
+			state: "error",
+			message: "net::ERR_SSL_PROTOCOL_ERROR",
+			netError: true,
+		});
+		renderSidebar();
+
+		await waitFor(() => expect(updateStatusMock).toHaveBeenCalled());
+		expect(screen.queryByText("net::ERR_SSL_PROTOCOL_ERROR")).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("Retry update check")).not.toBeInTheDocument();
+	});
+
+	it("keeps a ready install action when a later check fails", async () => {
+		updateStatusMock.mockResolvedValue({
+			state: "error",
+			message: "net::ERR_SSL_PROTOCOL_ERROR",
+			staged: { version: "9.9.9", stagedAt: Date.now(), escalated: false },
+		});
+		renderSidebar();
+
+		expect(await screen.findByTestId("sidebar-update-ready")).toBeVisible();
+		expect(screen.getAllByLabelText("Restart to install update v9.9.9")).not.toHaveLength(0);
+		expect(screen.queryByText("net::ERR_SSL_PROTOCOL_ERROR")).not.toBeInTheDocument();
 	});
 
 	it("keeps a staged build's restart action ahead of the failing-checks retry", async () => {
@@ -2242,6 +2237,26 @@ describe("Sidebar", () => {
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
 		expect(within(readyRow).getByText("Nightly 0.12.11 · Sep 2")).toBeVisible();
+	});
+
+	it("shows the device-local calendar day for a UTC-day-boundary nightly", async () => {
+		// 03:00 UTC on Sep 7 is already Sep 7 in Kolkata but still Sep 6 in Los
+		// Angeles. The date-only label must follow the device-local calendar day
+		// of the correct instant, not the stamp digits re-read as local wall
+		// time (issue #5059). The expected label is derived from the absolute
+		// instant, so this holds in every timezone.
+		updateStatusMock.mockResolvedValue({
+			state: "downloaded",
+			version: "0.12.11-nightly.202609070300",
+			stagedAt: Date.now(),
+		});
+		renderSidebar();
+
+		const readyRow = await screen.findByTestId("sidebar-update-ready");
+		const expected = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(
+			new Date(Date.UTC(2026, 8, 7, 3, 0)),
+		);
+		expect(within(readyRow).getByText(`Nightly 0.12.11 · ${expected}`)).toBeVisible();
 	});
 
 	it("stays quiet for a one-off update failure that has not become a streak", async () => {

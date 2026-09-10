@@ -22,7 +22,6 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-	AlertTriangle,
 	ChevronRight,
 	Download,
 	Folder,
@@ -1046,6 +1045,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 		return () => cancelAnimationFrame(id);
 	}, []);
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
+	const isProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const projectIsDragging = draggingProjectId === workspace.id;
 	// Keep completed PR sessions reachable while their runtime still exists.
@@ -1122,7 +1122,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	// Expand a collapsed project so opening the orchestrator also reveals its
 	// session list — otherwise the tree stays shut while you're inside it.
 	const openOrchestrator = async () => {
-		if (isProjectRestarting) return;
+		if (isProjectRestarting || isProvisioning) return;
 		if (!expanded) toggleDisclosure();
 		if (orchestrator) {
 			selection.goSession(workspace.id, orchestrator.id);
@@ -1366,8 +1366,8 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																name: workspace.name,
 															})
 												}
-												className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
-												disabled={isSpawning || isProjectRestarting}
+											className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
+											disabled={isSpawning || isProjectRestarting || isProvisioning}
 												onClick={() => void openOrchestrator()}
 												type="button"
 											>
@@ -1407,7 +1407,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 										</TooltipContent>
 									</Tooltip>
 									<DropdownMenuContent side="right" align="start" className="min-w-44">
-										<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+										<DropdownMenuItem disabled={isProjectRestarting || isProvisioning} onSelect={() => requestNewTask(workspace.id)}>
 											<Plus aria-hidden="true" />
 											{t("shell.newSession")}
 										</DropdownMenuItem>
@@ -1532,7 +1532,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 				</motion.li>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
-				<ContextMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+				<ContextMenuItem disabled={isProjectRestarting || isProvisioning} onSelect={() => requestNewTask(workspace.id)}>
 					<Plus aria-hidden="true" />
 					{t("shell.newSession")}
 				</ContextMenuItem>
@@ -2078,11 +2078,12 @@ type SidebarUpdateAction =
 	| { kind: "downloading"; percent?: number; preparing: boolean }
 	| { kind: "download"; version?: string }
 	| { kind: "install"; version?: string; escalated: boolean }
-	| { kind: "retry" }
 	| null;
 
 function sidebarUpdateAction(status: UpdateStatus, availableDismissed: boolean): SidebarUpdateAction {
-	if (status.state === "error" && status.staged?.ready !== true) return { kind: "retry" };
+	// Update failures belong in Settings, where the full message and recovery
+	// action have room. The sidebar stays focused on update progress and actions.
+	if (status.state === "error" && (status.staged === undefined || status.staged.ready === false)) return null;
 	if (status.state === "downloading" || status.state === "preparing" || status.staged?.ready === false) {
 		return { kind: "downloading", percent: status.percent, preparing: status.state === "preparing" || status.staged?.ready === false };
 	}
@@ -2105,11 +2106,6 @@ function sidebarUpdateAction(status: UpdateStatus, availableDismissed: boolean):
 		return { kind: "download", version: status.version };
 	}
 	if (staged) return { kind: "install", version: staged.version, escalated: staged.escalated };
-	// Ranked below a staged build on purpose: an update ready to install is more
-	// actionable than "checks are failing". Only when there is nothing better to
-	// show does the failure take the row — it used to render nothing at all,
-	// which reads as "up to date" rather than "checks are not getting through".
-	if (status.state === "error" || status.checkError || status.checksFailing === true) return { kind: "retry" };
 	return null;
 }
 
@@ -2215,27 +2211,6 @@ function UpdateStatusRow({
 		);
 	}
 
-	if (action.kind === "retry") {
-		return (
-			<button
-				aria-label={t("shell.retryUpdateCheck")}
-				className="flex w-full items-center gap-2.5 rounded-lg border border-warning/35 bg-warning/12 p-2.5 text-left text-control font-medium text-warning transition-colors hover:bg-warning/18 [&_svg]:text-warning"
-				data-testid="sidebar-update-failed"
-				onClick={() => void aoBridge.updates.check()}
-				tabIndex={tabIndex}
-				type="button"
-			>
-				<AlertTriangle aria-hidden="true" className="size-icon-lg shrink-0" />
-				<span className="min-w-0 flex-1">
-					<span className="block truncate tracking-tight">{status.message ?? status.checkError ?? t("shell.updateCheckFailed")}</span>
-					<span className="block truncate text-caption font-normal text-warning">
-						{t("shell.retryUpdateCheck")}
-					</span>
-				</span>
-			</button>
-		);
-	}
-
 	const versionLabel = updateVersionLabel(action.version, "ready", t, locale);
 	return (
 		<button
@@ -2319,27 +2294,6 @@ function UpdateStatusRail({
 					</span>
 				</TooltipTrigger>
 				<TooltipContent side="right">{label}</TooltipContent>
-			</Tooltip>
-		);
-	}
-
-	if (action.kind === "retry") {
-		return (
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<button
-						aria-label={t("shell.retryUpdateCheck")}
-						className="grid size-9 place-items-center rounded-lg bg-warning/12 text-warning transition-colors hover:bg-warning/18 [&_svg]:size-4"
-						onClick={() => void aoBridge.updates.check()}
-						tabIndex={tabIndex}
-						type="button"
-					>
-						<AlertTriangle aria-hidden="true" />
-					</button>
-				</TooltipTrigger>
-				<TooltipContent side="right">
-					{t("shell.updateCheckFailed")} · {t("shell.retryUpdateCheck")}
-				</TooltipContent>
 			</Tooltip>
 		);
 	}

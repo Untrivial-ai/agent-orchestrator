@@ -8,6 +8,7 @@ package claudecode
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	workeragent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
@@ -82,7 +83,8 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 		// Pin the same deterministic reviewer-native id we persist. Hooks can
 		// later replace it with Claude's reported id, but restore must never start
 		// from an id that the process was not launched with.
-		SessionID:        agentSessionID,
+		SessionID:        inv.ReviewerID,
+		NativeSessionID:  agentSessionID,
 		WorkspacePath:    inv.WorkspacePath,
 		Prompt:           inv.Prompt,
 		SystemPrompt:     inv.SystemPrompt,
@@ -133,6 +135,13 @@ func (r *Reviewer) ReviewMessage(_ context.Context, inv ports.ReviewInvocation) 
 // ReviewRestoreCommand resumes the reviewer Claude Code conversation captured
 // from hooks, reapplying the same read-only tool policy as a fresh review launch.
 func (r *Reviewer) ReviewRestoreCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, bool, error) {
+	if migratedID, ok, err := r.restoreSessionID(ctx, inv); err != nil {
+		return ports.ReviewCommandSpec{}, false, err
+	} else if !ok {
+		return ports.ReviewCommandSpec{}, false, nil
+	} else if migratedID != "" {
+		inv.AgentSessionID = migratedID
+	}
 	cmd, ok, err := agentrestore.Command(ctx, r.agent, inv, agentrestore.Options{
 		Config:          inv.Config,
 		Permissions:     ports.PermissionModeAuto,
@@ -146,6 +155,57 @@ func (r *Reviewer) ReviewRestoreCommand(ctx context.Context, inv ports.ReviewInv
 		cmd.AgentSessionID = workeragent.SessionUUID(inv.ReviewerID)
 	}
 	return cmd, true, nil
+}
+
+// restoreSessionID verifies an explicitly persisted Claude conversation before
+// asking Claude to resume it. Reviewer builds affected by #4658 persisted the
+// single-derived UUID but launched Claude with that UUID derived a second time.
+// Prefer the persisted identity when its transcript exists; otherwise migrate
+// only that exact legacy shape when the double-derived transcript is present.
+// Returning ok=false lets the launcher recreate an idle reviewer instead of
+// starting a doomed `claude --resume` command.
+func (r *Reviewer) restoreSessionID(ctx context.Context, inv ports.ReviewInvocation) (string, bool, error) {
+	persistedID := strings.TrimSpace(inv.AgentSessionID)
+	probe, ok := r.agent.(ports.AgentInterfaceHandoffHistoryProbe)
+	if !ok {
+		return persistedID, true, nil
+	}
+	session := ports.SessionRef{ID: inv.ReviewerID, WorkspacePath: inv.WorkspacePath}
+	if persistedID == "" {
+		// No native id was ever captured — e.g. the daemon restarted before the
+		// hook fired on a first-ever pass. agentrestore.Command's caller falls
+		// back to deriving the same deterministic id from inv.ReviewerID
+		// unconditionally, so probe that id here too rather than reporting a
+		// resume for a transcript that may never have been created.
+		fallbackID := workeragent.SessionUUID(inv.ReviewerID)
+		exists, err := probe.NativeConversationExists(ctx, session, fallbackID, nil)
+		if err != nil {
+			return "", false, err
+		}
+		if exists {
+			return fallbackID, true, nil
+		}
+		return "", false, nil
+	}
+	exists, err := probe.NativeConversationExists(ctx, session, persistedID, nil)
+	if err != nil {
+		return "", false, err
+	}
+	if exists {
+		return persistedID, true, nil
+	}
+	if persistedID != workeragent.SessionUUID(inv.ReviewerID) {
+		return "", false, nil
+	}
+	legacyID := workeragent.SessionUUID(persistedID)
+	exists, err = probe.NativeConversationExists(ctx, session, legacyID, nil)
+	if err != nil {
+		return "", false, err
+	}
+	if exists {
+		return legacyID, true, nil
+	}
+	return "", false, nil
 }
 
 // ReviewCancel stops the active Claude Code reviewer turn while preserving the

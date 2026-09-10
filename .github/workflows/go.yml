@@ -107,6 +107,28 @@ jobs:
           # Blocking on the full ruleset: the tree is clean at zero findings, so
           # any new issue fails CI rather than being grandfathered.
 
+  sqlc-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Regenerate storage queries with pinned sqlc
+        run: npm run sqlc
+
+      - name: Check for generated storage drift
+        run: |
+          git diff --exit-code -- backend/internal/storage/sqlite/gen
+          test -z "$(git ls-files --others --exclude-standard -- backend/internal/storage/sqlite/gen)"
+
   api-drift:
     runs-on: ubuntu-latest
     steps:

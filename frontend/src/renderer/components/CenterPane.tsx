@@ -75,6 +75,8 @@ type CenterPaneProps = {
 	topbarActions?: ReactNode;
 	/** Agent-session actions (interface switch, handoff) on the primary session tab. */
 	sessionTabAction?: ReactNode;
+	/** Widen the primary tab's action slot while an interface switch spinner is showing. */
+	sessionTabActionWide?: boolean;
 	/** Pinned beside the tab strip, before the workspace topbar actions. */
 	tabStripAction?: ReactNode;
 	handoffDialogOpen?: boolean;
@@ -157,6 +159,7 @@ export function CenterPane({
 	onRenameShellTerminal,
 	topbarActions,
 	sessionTabAction,
+	sessionTabActionWide = false,
 	tabStripAction,
 	handoffDialogOpen = false,
 	workspaceTabs,
@@ -634,6 +637,7 @@ export function CenterPane({
 											onRenamed={refreshWorkspaces}
 											session={session}
 											tabAction={sessionTabAction}
+											tabActionWide={sessionTabActionWide}
 										/>
 									) : (
 										<SessionPaneTab isActive={target.kind === "worker"} label={sessionTabLabel} />
@@ -931,6 +935,8 @@ type SessionPaneTabProps = {
 	title?: string;
 	/** Session-scoped controls (interface switch, handoff) beside the tab label. */
 	tabAction?: ReactNode;
+	/** Only while switching: reserve action width so the spinner does not cover the title. */
+	tabActionWide?: boolean;
 };
 
 // Shared tab chrome: the open tab is highlighted with the same rounded
@@ -947,6 +953,7 @@ export function SessionPaneTab({
 	icon,
 	title,
 	tabAction,
+	tabActionWide = false,
 }: SessionPaneTabProps) {
 	const { t } = useTranslation();
 	const { ref, isTruncated } = useTruncatedText<HTMLButtonElement>(label);
@@ -986,6 +993,9 @@ export function SessionPaneTab({
 	const tabFrame = (
 		<TerminalTabFrame
 			action={!rename.isEditing && tabAction ? <span data-testid="session-tab-action">{tabAction}</span> : undefined}
+			// Idle tabs keep the overlay ⋮ slot (title looks like before). Only while
+			// switching do we reserve width so the spinner cannot cover the label.
+			actionLayout={tabActionWide ? "inline" : "overlay"}
 			active={isActive}
 			buttonProps={{
 				"aria-current": isActive,

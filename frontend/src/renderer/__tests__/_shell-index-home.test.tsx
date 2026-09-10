@@ -12,6 +12,7 @@ const routeMocks = vi.hoisted(() => ({
 	requirements: [] as Array<{ id: string; label: string; satisfied: boolean; required: boolean; detail: string }>,
 	authRequirement: undefined as { id: string; label: string; satisfied: boolean; required: boolean; detail: string } | undefined,
 	startGitHubAuth: vi.fn(),
+	markAutoLoginOffered: vi.fn(),
 	closeTerminal: vi.fn(),
 }));
 
@@ -27,6 +28,7 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 vi.mock("../hooks/useSystemRequirementsGate", () => ({
 	useSystemRequirementsGate: () => ({ blocked: false, requirements: routeMocks.requirements, query: { refetch: vi.fn() } }),
 	useGitHubAuthRequirement: () => ({ data: routeMocks.authRequirement, isFetching: false, refetch: vi.fn() }),
+	useGitHubAuthAutoLoginOffered: () => ({ offered: false, markOffered: routeMocks.markAutoLoginOffered }),
 	useGitHubAuthTerminal: () => ({ data: null, clear: vi.fn() }),
 	useStartGitHubAuthTerminal: () => ({ mutate: routeMocks.startGitHubAuth, isPending: false, isError: false }),
 }));
@@ -66,6 +68,7 @@ beforeEach(() => {
 	routeMocks.requirements = [];
 	routeMocks.authRequirement = undefined;
 	routeMocks.startGitHubAuth.mockReset();
+	routeMocks.markAutoLoginOffered.mockReset();
 	routeMocks.closeTerminal.mockReset();
 });
 
@@ -108,6 +111,11 @@ describe("shell index route", () => {
 
 		expect(screen.getByText("Connect GitHub for pull requests")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /Scratch/ }).compareDocumentPosition(
+				screen.getByText("Connect GitHub for pull requests"),
+			) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("opens a project from the recent-project list", async () => {

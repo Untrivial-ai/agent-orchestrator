@@ -116,7 +116,7 @@ func TestReviewStatusShowsFindingsForOrigin(t *testing.T) {
 
 func TestReviewSubmitReadsBodyFile(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"verdict":"changes_requested"}}`)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested"}}`)
 	writeRunFileFor(t, cfg, srv)
 
 	bodyFile := filepath.Join(t.TempDir(), "review.md")
@@ -143,7 +143,7 @@ func TestReviewSubmitReadsBodyFile(t *testing.T) {
 
 func TestReviewSubmitReadsBodyFromStdin(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"verdict":"changes_requested"}}`)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested"}}`)
 	writeRunFileFor(t, cfg, srv)
 
 	deps := aliveDeps()
@@ -164,7 +164,7 @@ func TestReviewSubmitReadsBodyFromStdin(t *testing.T) {
 
 func TestReviewSubmitAcceptsUnderscoreFlags(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"verdict":"changes_requested"}}`)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested"}}`)
 	writeRunFileFor(t, cfg, srv)
 
 	// Reviewer agents often spell --review-id as --review_id; both must work.
@@ -210,7 +210,7 @@ func TestReviewSubmitBatchReadsReviewsFromStdin(t *testing.T) {
 
 func TestReviewSubmitUsesSessionFlag(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"verdict":"approved"}}`)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-7","verdict":"approved"}}`)
 	writeRunFileFor(t, cfg, srv)
 
 	if _, errOut, err := executeCLI(t, aliveDeps(), "review", "submit", "--session", "mer-7", "--run", "run-7", "--verdict", "approved"); err != nil {

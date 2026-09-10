@@ -246,6 +246,39 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		);
 	}, [interfaceSwitch, startInterfaceSwitch, turnActive, turnWaiting]);
 
+	// The poll keeps retrying on its own at up to 8s; this is for the user who can
+	// see the network is back and does not want to wait for the tick. Nothing else
+	// on this screen re-asks the hook, so without it a transition whose poll had
+	// failed could only be checked by leaving and coming back. The ref is the
+	// guard (state updates are async); the state drives the label.
+	const [recheckingTransition, setRecheckingTransition] = useState(false);
+	const recheckingTransitionRef = useRef(false);
+	const retryInterfaceCheck = useCallback(async () => {
+		if (recheckingTransitionRef.current) return;
+		recheckingTransitionRef.current = true;
+		setRecheckingTransition(true);
+		try {
+			await interfaceSwitch.refresh();
+		} finally {
+			recheckingTransitionRef.current = false;
+			setRecheckingTransition(false);
+		}
+	}, [interfaceSwitch]);
+	const interfaceTransitionPhaseText = `Switching to Terminal UI · ${interfacePhaseLabel(interfaceSwitch.transition?.phase)}`;
+	const interfaceTransitionBanner = {
+		text: interfaceSwitch.fetchFailed
+			? `${interfaceTransitionPhaseText}. Could not check on it${interfaceSwitch.error ? `: ${interfaceSwitch.error}` : ""}`
+			: interfaceTransitionPhaseText,
+		// Cancel stays put while a check is failing: the phase the hook holds is
+		// still cancellable and the cancel is its own request, so a user who wants
+		// out should not have to prove the link first. Retry rides alongside it,
+		// which is also how the terminal card lays the two out.
+		action: mobileInterfaceTransitionIsCancellable(interfaceSwitch.transition) ? (interfaceSwitch.cancelling ? "Cancelling…" : "Cancel") : undefined,
+		onPress: interfaceSwitch.cancelling ? undefined : () => void interfaceSwitch.cancel().catch(() => {}),
+		secondary: interfaceSwitch.fetchFailed ? (recheckingTransition ? "Retrying…" : "Retry") : undefined,
+		onSecondary: recheckingTransition ? undefined : () => void retryInterfaceCheck(),
+	};
+
 	if (conversation.loading && !conversation.snapshot) return <Centered icon="message-square" title="Loading conversation…" spinning />;
 	if (conversation.unavailable) return <Unavailable message={conversation.unavailable.message} onShell={() => void openShell()} openingShell={openingShell} />;
 	if (!conversation.snapshot) return <Centered icon="alert-triangle" title="Could not load conversation" message={conversation.error || "The daemon did not return a conversation."} action="Retry" onAction={() => void conversation.refresh()} />;
@@ -281,9 +314,11 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				<InlineBanner
 					tone="warning"
 					icon="repeat"
-					text={`Switching to Terminal UI · ${interfacePhaseLabel(interfaceSwitch.transition?.phase)}`}
-					action={mobileInterfaceTransitionIsCancellable(interfaceSwitch.transition) ? (interfaceSwitch.cancelling ? "Cancelling…" : "Cancel") : undefined}
-					onPress={interfaceSwitch.cancelling ? undefined : () => void interfaceSwitch.cancel().catch(() => {})}
+					text={interfaceTransitionBanner.text}
+					action={interfaceTransitionBanner.action}
+					secondary={interfaceTransitionBanner.secondary}
+					onPress={interfaceTransitionBanner.onPress}
+					onSecondary={interfaceTransitionBanner.onSecondary}
 				/>
 			) : interfaceTransitionNotice ? (
 				<InlineBanner
@@ -411,12 +446,16 @@ function LiveTurnBar({ snapshot, startedAt, stopping, onInterrupt }: { snapshot:
 	return <View style={styles.live}><ActivityIndicator size="small" color={blocked ? t.amber : t.orange} /><Text style={styles.liveText}>{blocked ? "Waiting for your input" : "Agent is working"}{elapsed ? ` · ${elapsed}` : ""}{queued ? ` · ${queued} queued` : ""}</Text><Pressable accessibilityRole="button" accessibilityLabel={stopLabel} accessibilityState={{ busy: stopping }} disabled={stopping} onPress={() => { haptics.tap(); void onInterrupt(); }} style={styles.stopTurn}><Feather name="square" size={11} color={t.textPrimary} /><Text style={styles.stopTurnText}>{stopping ? "Stopping…" : stopLabel}</Text></Pressable></View>;
 }
 
+// A slot renders from its label and is pressable only when it has a handler.
+// Callers withhold the handler to mean "busy" — "Retrying…", "Resuming…" — and
+// without `disabled` the row still highlighted and still fired a tap haptic, so
+// a label that does nothing felt like a button that had been ignored.
 function InlineBanner({ tone, icon, text, action, secondary, onPress, onSecondary }: { tone: "warning" | "danger" | "muted"; icon: keyof typeof Feather.glyphMap; text: string; action?: string; secondary?: string; onPress?(): void; onSecondary?(): void }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const color = tone === "danger" ? t.red : tone === "warning" ? t.amber : t.textTertiary;
 	const fill = tone === "danger" ? t.tintRed : tone === "warning" ? t.tintAmber : t.bgSubtle;
-	return <View style={[styles.banner, { backgroundColor: fill }]}><Feather name={icon} size={13} color={color} /><Text style={styles.bannerText}>{text}</Text>{secondary ? <Pressable hitSlop={7} onPress={() => { haptics.tap(); onSecondary?.(); }}><Text style={styles.bannerSecondary}>{secondary}</Text></Pressable> : null}{action ? <Pressable hitSlop={7} onPress={() => { haptics.tap(); onPress?.(); }}><Text style={[styles.bannerAction, { color }]}>{action}</Text></Pressable> : null}</View>;
+	return <View style={[styles.banner, { backgroundColor: fill }]}><Feather name={icon} size={13} color={color} /><Text style={styles.bannerText}>{text}</Text>{secondary ? <Pressable hitSlop={7} disabled={!onSecondary} onPress={() => { haptics.tap(); onSecondary?.(); }}><Text style={styles.bannerSecondary}>{secondary}</Text></Pressable> : null}{action ? <Pressable hitSlop={7} disabled={!onPress} onPress={() => { haptics.tap(); onPress?.(); }}><Text style={[styles.bannerAction, { color }]}>{action}</Text></Pressable> : null}</View>;
 }
 
 function ConversationMenu({ visible, onClose, snapshot, openingShell, compacting, mcpReloading, compactSupported, mcpReloadSupported, interfaceSupported, interfaceReason, interfaceSwitching, onMap, onOpenShell, onPreview, onPullRequests, onSettings, onSwitchInterface, onCompact, onReload, onRename }: { visible: boolean; onClose(): void; snapshot: NonNullable<ReturnType<typeof useMobileConversation>["snapshot"]>; openingShell: boolean; compacting: boolean; mcpReloading: boolean; compactSupported: boolean; mcpReloadSupported: boolean; interfaceSupported: boolean; interfaceReason?: string; interfaceSwitching: boolean; onMap(): void; onOpenShell(): void; onPreview(): void; onPullRequests(): void; onSettings(): void; onSwitchInterface(): void; onCompact(): void; onReload(): void; onRename(title: string): void }) {

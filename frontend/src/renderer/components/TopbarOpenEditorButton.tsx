@@ -66,14 +66,18 @@ function TargetIcon({ target, className }: { target?: OpenTarget; className?: st
 export function TopbarOpenEditorButton({
 	sessionId,
 	projectId,
+	sessionCreatedAt,
+	sessionTerminated,
 	style,
 }: {
 	sessionId: string;
 	projectId: string;
+	sessionCreatedAt?: string;
+	sessionTerminated?: boolean;
 	style?: React.CSSProperties;
 }) {
 	const { t } = useTranslation();
-	const stateQuery = useEditorHandoffState(sessionId);
+	const stateQuery = useEditorHandoffState(sessionId, { sessionCreatedAt, sessionTerminated });
 	const open = useOpenSessionTarget();
 	const state = stateQuery.data;
 	const [menuOpen, setMenuOpen] = useState(false);
@@ -98,8 +102,10 @@ export function TopbarOpenEditorButton({
 		: !stateQuery.isPending && editors.length === 0
 			? t("editor.noEditorGuidance", { fileManager: fileManagerName, terminal: terminalName })
 			: null;
-	const mainTitle = guidance
-		?? (preferred ? t("editor.openWorkspaceInTitle", { name: preferred.name }) : t("editor.chooseEditorTitle"));
+	const mainTitle = stateQuery.isPending
+		? t("editor.preparingWorkspace")
+		: (guidance
+			?? (preferred ? t("editor.openWorkspaceInTitle", { name: preferred.name }) : t("editor.chooseEditorTitle")));
 
 	return (
 		<>
@@ -117,7 +123,11 @@ export function TopbarOpenEditorButton({
 					<TooltipTrigger asChild>
 						<span className="inline-flex">
 							<TopbarButton
-								aria-label={preferred ? t("editor.openInAria", { name: preferred.name }) : t("editor.chooseEditor")}
+								aria-label={stateQuery.isPending
+									? t("editor.preparingWorkspace")
+									: preferred
+										? t("editor.openInAria", { name: preferred.name })
+										: t("editor.chooseEditor")}
 								className="hover:bg-transparent"
 								disabled={mainDisabled}
 								onClick={() => launch()}

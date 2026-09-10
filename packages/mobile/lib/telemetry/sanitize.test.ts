@@ -29,6 +29,33 @@ describe("sanitizeMobileProperties", () => {
 		).toEqual({ feature: "spawn", outcome: "succeeded" });
 	});
 
+	it("keeps mode on a spawn feature event and accepts the handoff feature", () => {
+		expect(
+			sanitizeMobileProperties(MOBILE_EVENTS.featureUsed, {
+				feature: "spawn",
+				outcome: "succeeded",
+				mode: "tui",
+			}),
+		).toEqual({ feature: "spawn", outcome: "succeeded", mode: "tui" });
+		expect(
+			sanitizeMobileProperties(MOBILE_EVENTS.featureUsed, {
+				feature: "handoff",
+				outcome: "succeeded",
+				mode: "chat",
+			}),
+		).toEqual({ feature: "handoff", outcome: "succeeded", mode: "chat" });
+	});
+
+	it("drops a mode value outside the chat/tui set", () => {
+		expect(
+			sanitizeMobileProperties(MOBILE_EVENTS.featureUsed, {
+				feature: "spawn",
+				outcome: "succeeded",
+				mode: "gui",
+			}),
+		).toEqual({ feature: "spawn", outcome: "succeeded" });
+	});
+
 	it("returns {} for an unknown event rather than passing the payload through", () => {
 		expect(sanitizeMobileProperties("ao.mobile_app.not_a_real_event", { anything: "x" })).toEqual({});
 	});

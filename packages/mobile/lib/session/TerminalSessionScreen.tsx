@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { XtermJsWebView, type XtermWebViewHandle } from "@fressh/react-native-xtermjs-webview";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Alert, Keyboard, LayoutAnimation, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Keyboard, LayoutAnimation, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import { ApiError, getPreview, isTerminalStatus, killSession, sendMessage } from "../api";
@@ -28,6 +28,8 @@ import { useVoiceInput } from "../voice/useVoiceInput";
 import { useTheme, useThemedStyles, useThemeState } from "../ThemeProvider";
 import { closeShellTerminal } from "../chat/api";
 import {
+	interfaceSwitchAlert,
+	type InterfaceSwitchRecheck,
 	mobileInterfaceTransitionIsActive,
 	mobileInterfaceTransitionIsCancellable,
 	useInterfaceTransition,
@@ -625,6 +627,26 @@ export default function TerminalScreen() {
 	// session-id handle, which keeps the fallback backward-compatible.
 	const terminalHandleId = shellOnly ? id : known?.terminalHandleId || id;
 	const interfaceSwitch = useInterfaceTransition(cfg, shellOnly ? "" : sessionId, refresh);
+	// Owned by the screen rather than the hook: the background poll calls the same
+	// `refresh()`, so a hook-wide busy flag would let a poll tick disable the
+	// user's own button and swallow the very tap the recheck exists to serve.
+	// The ref is the guard (state updates are async); the state drives the spinner.
+	const [rechecking, setRechecking] = useState(false);
+	const recheckingRef = useRef(false);
+	// A recheck can be in flight for up to REQUEST_TIMEOUT_MS, long enough for the
+	// user to leave. Alerting from a screen they already navigated away from would
+	// interrupt whatever they went to instead.
+	const mountedRef = useRef(true);
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+		};
+	}, []);
+	// The status the hook holds right now, readable after an await. The tap's
+	// closure is from the render it started in, which is the pre-tap status.
+	const interfaceStatusRef = useRef(interfaceSwitch.status);
+	interfaceStatusRef.current = interfaceSwitch.status;
 	const interfaceTransitionActive = mobileInterfaceTransitionIsActive(interfaceSwitch.transition);
 	const interfaceTransitionNotice =
 		!interfaceTransitionActive &&
@@ -1021,15 +1043,52 @@ export default function TerminalScreen() {
 		[interfaceSwitch],
 	);
 
-	const requestInterfaceSwitch = useCallback(() => {
+	const requestInterfaceSwitch = useCallback(async () => {
+		// A second tap would start a second recheck against a link already slow
+		// enough for the first one to be visible. `starting` and an active
+		// transition are guarded too, so the button blocks exactly what it
+		// announces as busy — otherwise a tap during the start POST fires a
+		// duplicate the daemon answers with 409.
+		if (recheckingRef.current || interfaceSwitch.starting || interfaceTransitionActive) return;
 		haptics.tap();
-		if (!interfaceSwitch.status?.supported) {
-			Alert.alert(
-				"Chat unavailable",
-				interfaceSwitch.status?.reason ||
-					interfaceSwitch.error ||
-					"This agent has not declared a compatible native conversation handoff.",
-			);
+		let status = interfaceSwitch.status;
+		let recheck: InterfaceSwitchRecheck = { outcome: "answered" };
+		if (!status?.supported) {
+			// A tap can land between two polls, or before the first answer: ask
+			// once more before telling the user it is unavailable.
+			recheckingRef.current = true;
+			setRechecking(true);
+			try {
+				const result = await interfaceSwitch.refresh();
+				if (!mountedRef.current) return;
+				if (!result) recheck = { outcome: "not-attempted" };
+				// A superseded answer is not a verdict, same rule as the hook's own
+				// loop: the readiness tick can overtake a slow tap request, and acting
+				// on the tap's payload would alert "Could not reach AO" (or "Not ready
+				// yet" off an older body) while the button had just enabled itself.
+				// The newer request owns the answer; use whatever the hook adopted.
+				else if (result.stale) status = interfaceStatusRef.current;
+				else if (result.ok) status = result.status;
+				else recheck = { outcome: "failed", error: result.error, status: result.status };
+			} finally {
+				recheckingRef.current = false;
+				if (mountedRef.current) setRechecking(false);
+			}
+		}
+		if (!status?.supported) {
+			const { title, message } = interfaceSwitchAlert(status, interfaceSwitch.error, recheck);
+			Alert.alert(title, message);
+			return;
+		}
+		// The guard at the top saw the pre-tap render. The fresh answer can carry
+		// a transition someone else started while the recheck was in flight (the
+		// desktop button, say); starting another gets a 409 and a "Switch failed"
+		// banner for a switch that is in fact proceeding. The card takes over and
+		// explains it — but after a visible spinner, returning in silence reads
+		// as a tap that was dropped, so confirm the outcome the user asked for
+		// actually happened rather than leaving the card to arrive unannounced.
+		if (mobileInterfaceTransitionIsActive(status.transition)) {
+			haptics.success();
 			return;
 		}
 		if (!interfaceBusy) {
@@ -1047,7 +1106,25 @@ export default function TerminalScreen() {
 				{ text: "Stop and switch", style: "destructive", onPress: () => void startInterfaceSwitch("interrupt") },
 			],
 		);
-	}, [interfaceBusy, interfaceSwitch, known?.activity, startInterfaceSwitch]);
+	}, [interfaceBusy, interfaceSwitch, interfaceTransitionActive, known?.activity, startInterfaceSwitch]);
+
+	// The poll keeps retrying on its own at up to 8s; this is for the user who can
+	// see the network is back and does not want to wait for the tick. The header
+	// button is disabled for the whole transition, so this is the only tap that
+	// re-asks while one is live. Same guard as the header recheck: it is the same
+	// request, and two of them against a slow link is what the guard prevents.
+	const retryInterfaceCheck = useCallback(async () => {
+		if (recheckingRef.current) return;
+		haptics.tap();
+		recheckingRef.current = true;
+		setRechecking(true);
+		try {
+			await interfaceSwitch.refresh();
+		} finally {
+			recheckingRef.current = false;
+			if (mountedRef.current) setRechecking(false);
+		}
+	}, [interfaceSwitch]);
 
 	const requestInterfaceFailureRecovery = useCallback(() => {
 		if (!interfaceFailureRecovery) return;
@@ -1069,15 +1146,27 @@ export default function TerminalScreen() {
 					<Pressable
 						hitSlop={10}
 						accessibilityLabel="Open Chat interface"
-						accessibilityState={{ busy: interfaceTransitionActive || interfaceSwitch.starting }}
-						onPress={requestInterfaceSwitch}
+						accessibilityState={{
+							busy: interfaceTransitionActive || interfaceSwitch.starting || rechecking,
+						}}
+						disabled={rechecking || interfaceSwitch.starting || interfaceTransitionActive}
+						onPress={() => void requestInterfaceSwitch()}
 						style={({ pressed }) => [styles.headerBrowserBtn, pressed && { opacity: 0.6 }]}
 					>
-						<Feather
-							name={interfaceTransitionActive ? "repeat" : "message-square"}
-							size={18}
-							color={interfaceSwitch.status?.supported ? t.blue : t.textFaint}
-						/>
+						{/* A spinner rather than a dimmed glyph: the recheck only runs while
+						    the icon is already faint, so fading it further reads as broken.
+						    `starting` shows it too — that POST is disabled-but-silent for up
+						    to REQUEST_TIMEOUT_MS otherwise, the same dead-button shape the
+						    recheck spinner exists to remove. */}
+						{rechecking || interfaceSwitch.starting ? (
+							<ActivityIndicator size="small" color={t.blue} />
+						) : (
+							<Feather
+								name={interfaceTransitionActive ? "repeat" : "message-square"}
+								size={18}
+								color={interfaceSwitch.status?.supported ? t.blue : t.textFaint}
+							/>
+						)}
 					</Pressable>
 					<Pressable
 						hitSlop={12}
@@ -1095,7 +1184,7 @@ export default function TerminalScreen() {
 				</View>
 			),
 		});
-	}, [headerRightReady, navigation, browserOpen, hasPreview, toggleBrowser, styles, t, shellOnly, interfaceTransitionActive, interfaceSwitch.starting, interfaceSwitch.status?.supported, requestInterfaceSwitch]);
+	}, [headerRightReady, navigation, browserOpen, hasPreview, toggleBrowser, styles, t, shellOnly, interfaceTransitionActive, interfaceSwitch.starting, rechecking, interfaceSwitch.status?.supported, requestInterfaceSwitch]);
 
 	const confirmKill = useCallback(() => {
 		const doKill = async () => {
@@ -1339,6 +1428,15 @@ export default function TerminalScreen() {
 								</Pressable>
 							) : null}
 							{interfaceSwitch.error ? <Text style={styles.interfaceError}>{interfaceSwitch.error}</Text> : null}
+							{interfaceSwitch.fetchFailed ? (
+								<Pressable
+									disabled={rechecking}
+									onPress={() => void retryInterfaceCheck()}
+									style={styles.interfaceCancel}
+								>
+									<Text style={styles.interfaceCancelText}>{rechecking ? "Retrying…" : "Retry"}</Text>
+								</Pressable>
+							) : null}
 						</View>
 					</View>
 				) : null}

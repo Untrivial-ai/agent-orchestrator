@@ -49,6 +49,15 @@ describe("writeAppStateMarker", () => {
 		expect(m.installSource).toBe("npm-bootstrap");
 	});
 
+	it("records the current build's restart protocol without preserving a newer build's capability", async () => {
+		const options = { stateDir: dir, appPath: "/Applications/AO.app", version: "1.2.3", now: () => new Date() };
+		await writeAppStateMarker({ ...options, updateRestartProtocol: 1 });
+		expect((await readMarker(dir)).updateRestartProtocol).toBe(1);
+		// An older marker writer reconstructs the object and drops unknown fields.
+		await writeAppStateMarker(options);
+		expect((await readMarker(dir)).updateRestartProtocol).toBeUndefined();
+	});
+
 	it("second write PRESERVES installedAt/installSource and updates appPath/version/lastReconciledAt", async () => {
 		await writeAppStateMarker({
 			stateDir: dir,

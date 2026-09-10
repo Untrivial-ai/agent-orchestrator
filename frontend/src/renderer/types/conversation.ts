@@ -202,6 +202,12 @@ export interface ApprovalDetail {
 	toolKind?: string;
 }
 
+/** Provider-supplied recovery information carried by an error activity. */
+export interface ProviderErrorDetail {
+	/** Optional provider destination; the renderer shows web URLs literally. */
+	actionUrl?: string;
+}
+
 export interface CommandDetail {
 	/**
 	 * Free text payload: a plan body, a reasoning summary, a message.
@@ -505,6 +511,7 @@ export interface ConversationActivity {
 	 */
 	detail?: CommandDetail &
 		ApprovalDetail &
+		ProviderErrorDetail &
 		FileChangeDetail &
 		UsageDetail &
 		CompactionDetail &
