@@ -26,6 +26,7 @@ test.describe("live renderer performance workloads", () => {
 		"streaming",
 		"highlighting",
 		"history",
+		"projectDragChurn",
 	] as const) {
 		test(workload, async ({ page, browser }, testInfo) => {
 			test.setTimeout(120_000);

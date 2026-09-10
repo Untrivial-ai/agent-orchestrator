@@ -27,6 +27,12 @@ import { SettingsDialog } from "../../src/renderer/components/SettingsDialog";
 import type { ChatSkill, ConversationMessage } from "../../src/renderer/types/conversation";
 import type { WorkspaceSummary } from "../../src/renderer/types/workspace";
 import "../../src/renderer/styles.css";
+import { DndContext } from "@dnd-kit/core";
+import {
+	SortableContext,
+	useSortable,
+	verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 
 const root = createRoot(document.getElementById("performance-root")!);
 const client = new QueryClient({
@@ -216,7 +222,136 @@ async function finishComposerCompletion() {
 	};
 }
 
+// Reproduces the sidebar's nested-DnD reorder pattern to measure the cost of
+// the two ways to neutralize session sortables during a project drag:
+//   "swap"     — unmount the DndContext/SortableContext and mount plain rows
+//                (current Sidebar behavior), then remount on drop
+//   "disabled" — keep the DnD tree mounted and toggle dnd-kit's `disabled`
+// The real Sidebar mocks dnd-kit in unit tests, so this is the only place the
+// real mount/unmount cost is exercised.
+type ChurnMode = "swap" | "disabled";
+
+function ChurnSortableRow({ id, disabled }: { id: string; disabled: boolean }) {
+	const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
+		useSortable({ id, disabled });
+	return (
+		<li
+			ref={setNodeRef}
+			{...attributes}
+			{...listeners}
+			className="px-2 py-1 text-sm"
+			style={{
+				transform: transform ? `translateY(${transform.y}px)` : undefined,
+				transition,
+				opacity: isDragging ? 0.5 : 1,
+			}}
+		>
+			{id}
+		</li>
+	);
+}
+
+function ChurnProjectBlock({
+	projectId,
+	rows,
+	dragging,
+	mode,
+}: {
+	projectId: string;
+	rows: string[];
+	dragging: boolean;
+	mode: ChurnMode;
+}) {
+	if (mode === "swap" && dragging) {
+		return (
+			<ul>
+				{rows.map((id) => (
+					<li key={id} className="px-2 py-1 text-sm">
+						{id}
+					</li>
+				))}
+			</ul>
+		);
+	}
+	const disabled = mode === "disabled" && dragging;
+	return (
+		<DndContext id={`dnd-${projectId}`}>
+			<SortableContext items={rows} strategy={verticalListSortingStrategy} disabled={disabled}>
+				<ul>
+					{rows.map((id) => (
+						<ChurnSortableRow key={id} id={id} disabled={disabled} />
+					))}
+				</ul>
+			</SortableContext>
+		</DndContext>
+	);
+}
+
+function ChurnFixture({
+	projects,
+	dragging,
+	mode,
+}: {
+	projects: { id: string; rows: string[] }[];
+	dragging: boolean;
+	mode: ChurnMode;
+}) {
+	return (
+		<DndContext id="dnd-projects">
+			<ul>
+				{projects.map((project) => (
+					<ChurnProjectBlock
+						key={project.id}
+						projectId={project.id}
+						rows={project.rows}
+						dragging={dragging}
+						mode={mode}
+					/>
+				))}
+			</ul>
+		</DndContext>
+	);
+}
+
 export const performanceHarness = {
+	async projectDragChurn() {
+		const projects = Array.from({ length: 8 }, (_, project) => ({
+			id: `project-${project}`,
+			rows: Array.from({ length: 12 }, (_, session) => `project-${project}-session-${session}`),
+		}));
+		const measure = async (mode: ChurnMode) => {
+			render(<ChurnFixture projects={projects} dragging={false} mode={mode} />);
+			await frame();
+			await frame();
+			const startBefore = performance.now();
+			render(<ChurnFixture projects={projects} dragging={true} mode={mode} />);
+			const startMs = performance.now() - startBefore;
+			await frame();
+			const dropBefore = performance.now();
+			render(<ChurnFixture projects={projects} dragging={false} mode={mode} />);
+			const dropMs = performance.now() - dropBefore;
+			await frame();
+			return { startMs, dropMs };
+		};
+		const best = async (mode: ChurnMode) => {
+			// Warm up the module/JIT, then take the median of three toggles so a
+			// single GC pause does not decide the comparison.
+			await measure(mode);
+			const runs = [await measure(mode), await measure(mode), await measure(mode)];
+			return {
+				startMs: runs.map((run) => run.startMs).sort((a, b) => a - b)[1],
+				dropMs: runs.map((run) => run.dropMs).sort((a, b) => a - b)[1],
+			};
+		};
+		const swap = await best("swap");
+		const disabled = await best("disabled");
+		return {
+			projects: projects.length,
+			rowsPerProject: projects[0].rows.length,
+			swap,
+			disabled,
+		};
+	},
 	async prepareInspectorTimeline() {
 		useUiStore.setState({
 			inspectorSessions: {
