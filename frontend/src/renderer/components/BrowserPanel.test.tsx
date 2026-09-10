@@ -439,7 +439,7 @@ describe("BrowserPanel", () => {
 
 		await openBrowserControls();
 		expect(screen.getByRole("menuitem", { name: "Device preset" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: /Browser profile/ })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Profile/ })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: "Open DevTools" })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: /iPhone SE/ })).not.toBeInTheDocument();
 
@@ -517,13 +517,13 @@ describe("BrowserPanel", () => {
 		}));
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 
-		expect(screen.queryByRole("button", { name: /Browser profile:/ })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Profile:/ })).not.toBeInTheDocument();
 		await openBrowserControls();
-		await userEvent.click(screen.getByRole("menuitem", { name: /Browser profile/ }));
+	await userEvent.click(screen.getByRole("menuitem", { name: /Profile/ }));
 
 		expect(await screen.findByRole("menuitem", { name: "Temporary" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: "Work" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Manage browser profiles" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Manage profiles" })).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("menuitem", { name: "Work" }));
 		expect(window.ao!.browser.selectProfile).toHaveBeenCalledWith(
 			expect.objectContaining({

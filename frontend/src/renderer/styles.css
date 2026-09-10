@@ -4291,7 +4291,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	/* Keep the toolbar close to the 28px controls, matching the compact sidebar
 	   chrome instead of adding a loose band around every browser action. */
 	min-height: 0;
-	padding: 0 2px 1px;
+	padding: 0 2px;
 	background: var(--bg);
 }
 
@@ -4559,7 +4559,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	position: relative;
 	min-width: 0;
 	flex: 1;
-	height: 29px;
+	height: var(--size-control-md);
 }
 
 .browser-panel__annotate-btn[aria-pressed="true"] {
@@ -4569,6 +4569,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__url-input {
 	width: 100%;
+	box-sizing: border-box;
 	height: var(--size-control-md);
 	border-color: var(--color-border);
 	border-radius: var(--radius-md);
@@ -4582,7 +4583,9 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__url-input:focus,
 .browser-panel__url-input:focus-visible {
-	box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 60%, transparent);
+	border-color: color-mix(in oklab, var(--ring) 60%, var(--color-border));
+	box-shadow: none;
+	outline: none;
 }
 
 .browser-panel__url-external {
