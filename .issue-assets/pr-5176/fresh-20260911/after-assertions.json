@@ -1,0 +1,50 @@
+{
+  "mode": "AFTER",
+  "commit": "8bc61ec828f174675437d603da815e7bf32dfb94",
+  "capturedAt": "2026-09-10T20:45:48.539Z",
+  "reply": "The reply appears as each chunk arrives, even while saving is paused.",
+  "observations": [
+    {
+      "phase": "saving-held",
+      "delivered": 1,
+      "replyVisible": true,
+      "saved": false
+    },
+    {
+      "phase": "saving-held",
+      "delivered": 2,
+      "replyVisible": true,
+      "saved": false
+    },
+    {
+      "phase": "saving-held",
+      "delivered": 3,
+      "replyVisible": true,
+      "saved": false
+    },
+    {
+      "phase": "saving-held",
+      "delivered": 4,
+      "replyVisible": true,
+      "saved": false
+    },
+    {
+      "phase": "saving-held",
+      "delivered": 5,
+      "replyVisible": true,
+      "saved": false
+    },
+    {
+      "phase": "saving-held",
+      "delivered": 6,
+      "replyVisible": true,
+      "saved": false
+    },
+    {
+      "phase": "saved-and-replayed",
+      "delivered": 6,
+      "replyVisible": true,
+      "saved": true
+    }
+  ]
+}

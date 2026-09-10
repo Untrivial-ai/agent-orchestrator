@@ -1,0 +1,14 @@
+=== RUN   TestLiveTextContinuesWhileProjectionIsBlocked
+=== RUN   TestLiveTextContinuesWhileProjectionIsBlocked/identified=false
+=== RUN   TestLiveTextContinuesWhileProjectionIsBlocked/identified=true
+--- PASS: TestLiveTextContinuesWhileProjectionIsBlocked (14.02s)
+    --- PASS: TestLiveTextContinuesWhileProjectionIsBlocked/identified=false (13.35s)
+    --- PASS: TestLiveTextContinuesWhileProjectionIsBlocked/identified=true (0.66s)
+=== RUN   TestLivePermanentFailureDiscardsQueuedPreviews
+--- PASS: TestLivePermanentFailureDiscardsQueuedPreviews (0.50s)
+PASS
+ok  	github.com/aoagents/agent-orchestrator/backend/internal/service/chat	16.332s
+=== RUN   TestConversationLiveStreamPrecedesPersistenceAndReconcilesSnapshot
+--- PASS: TestConversationLiveStreamPrecedesPersistenceAndReconcilesSnapshot (12.98s)
+PASS
+ok  	github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers	15.533s

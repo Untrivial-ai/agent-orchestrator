@@ -1,0 +1,14 @@
+{
+  "before": {
+    "source": "before/live-display-Live-display--e016a-saved-history-refresh-waits/video.webm",
+    "trimStartSeconds": 4.75,
+    "speedMultiplier": 1,
+    "assertions": "before-assertions.json"
+  },
+  "after": {
+    "source": "after/live-display-Live-display--e016a-saved-history-refresh-waits/video.webm",
+    "trimStartSeconds": 4.25,
+    "speedMultiplier": 1,
+    "assertions": "after-assertions.json"
+  }
+}
