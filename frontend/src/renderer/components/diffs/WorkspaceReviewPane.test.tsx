@@ -188,7 +188,7 @@ describe("WorkspaceReviewPane", () => {
 		expect(onOpenFile).toHaveBeenCalledWith("README.md", { mode: "file", scope: "unstaged" });
 	});
 
-	it("uses one compact menu for unstaged, staged, and untracked sources", async () => {
+	it("uses one compact attached dropdown for unstaged, staged, and untracked sources", async () => {
 		const unstaged = { path: "src/App.tsx", status: "modified" as const, additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" };
 		const staged = { path: "README.md", status: "modified" as const, additions: 1, deletions: 0, size: 20, binary: false, fileFingerprint: "s-1" };
 		const data = workspace([unstaged]);
@@ -197,24 +197,42 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 
 		await userEvent.click(screen.getByRole("button", { name: "Choose change source" }));
-		expect(screen.getByRole("menu")).toHaveClass("w-[var(--radix-dropdown-menu-trigger-width)]", "min-w-0");
-		expect(screen.getByRole("menuitem", { name: /Unstaged/ })).toBeInTheDocument();
+		expect(screen.getByRole("menu")).toHaveClass("w-[var(--radix-dropdown-menu-trigger-width)]", "rounded-t-none", "border-t-0");
+		expect(screen.queryByRole("menuitem", { name: /Unstaged/ })).not.toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: /Staged/ })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: /Untracked/ })).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("menuitem", { name: /Staged/ }));
 		await waitFor(() => expect(postMock).toHaveBeenLastCalledWith("/api/v1/sessions/{sessionId}/workspace/diffs", expect.objectContaining({
 			body: expect.objectContaining({ paths: ["README.md"], scope: "staged" }),
 		})));
-	});
-
-	it("omits empty working-change sources from the menu", async () => {
-		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" }]);
-		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
-
 		await userEvent.click(screen.getByRole("button", { name: "Choose change source" }));
 		expect(screen.getByRole("menuitem", { name: /Unstaged/ })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: /Staged/ })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Untracked/ })).toBeInTheDocument();
+	});
+
+	it("omits empty working-change sources from the menu", async () => {
+		const unstaged = { path: "src/App.tsx", status: "modified" as const, additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" };
+		const staged = { ...unstaged, path: "README.md", fileFingerprint: "s-1" };
+		const data = workspace([unstaged]);
+		data.sections.staged = [staged];
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		await userEvent.click(screen.getByRole("button", { name: "Choose change source" }));
+		expect(screen.queryByRole("menuitem", { name: /Unstaged/ })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Staged/ })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: /Untracked/ })).not.toBeInTheDocument();
+	});
+
+	it("uses a direct button without a caret or menu when only one source is available", async () => {
+		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		const sourceButton = screen.getByRole("button", { name: "Choose change source" });
+		expect(sourceButton).toHaveTextContent("Unstaged1");
+		expect(sourceButton.querySelector("svg")).toBeNull();
+		await userEvent.click(sourceButton);
+		expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 	});
 
 	it("browses GitHub-style commits and reviews the selected commit only", async () => {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { useQueries } from "@tanstack/react-query";
 import { parsePatchFiles, type CodeViewItem, type FileDiffMetadata } from "@pierre/diffs";
 import { CodeView } from "@pierre/diffs/react";
-import { Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, Pencil } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, Pencil } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
 	fetchWorkspaceFileRevision,
@@ -161,7 +161,12 @@ export function WorkspaceReviewPane({
 		&& !data.compareBaseSha
 		&& !data.compareBaseRef
 		&& combinedWorkingCount > 0;
-	const hasWorkingChangeChoices = visibleWorkingScopes.length > 0 || showCombinedWorkingSource;
+	const workingSourceOptions: WorkspaceDiffScope[] = showCombinedWorkingSource ? ["combined"] : [...visibleWorkingScopes];
+	const singleWorkingSource = workingSourceOptions.length === 1 ? workingSourceOptions[0] : undefined;
+	const hasWorkingChangeChoices = workingSourceOptions.length > 0;
+	const alternativeWorkingSources = scope === "committed"
+		? workingSourceOptions
+		: workingSourceOptions.filter((entry) => entry !== scope);
 	useEffect(() => {
 		if (scope === "committed" && selectedCommit) return;
 		if (scope === "combined" && showCombinedWorkingSource) return;
@@ -334,6 +339,9 @@ export function WorkspaceReviewPane({
 	const loading = patchQueries.some((query) => query.isPending);
 	const viewedCount = allFiles.filter((file) => viewed.has(file.path)).length;
 	const fileOpenContext = selectedCommit ? { commitSha: selectedCommit.sha, scope } : { scope };
+	const workingSourceLabel = (entry: WorkspaceDiffScope) => entry === "combined" ? t("files.reviewChanges") : t(`files.section.${entry}`);
+	const workingSourceCount = (entry: WorkspaceDiffScope) => entry === "combined" ? combinedWorkingCount : sectionFiles(data, entry).length;
+	const workingChangeCount = visibleWorkingScopes.reduce((total, entry) => total + data.sections[entry].length, 0);
 	const hasAnyReviewFiles = data.files.some((file) => file.status !== "unmodified")
 		|| workingScopeOrder.some((entry) => data.sections[entry].length > 0)
 		|| data.commits.some((commit) => commit.files.length > 0);
@@ -346,31 +354,44 @@ export function WorkspaceReviewPane({
 			ref={reviewRef}
 		>
 			<div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-surface px-2 py-1.5">
-				{hasWorkingChangeChoices ? <DropdownMenu>
-					<DropdownMenuTrigger asChild>
-						<Button aria-label={t("files.changeSource")} className="max-w-[12rem] gap-1.5" size="sm" type="button" variant={scope !== "committed" ? "secondary" : "outline"}>
-							<span className="truncate">{scope === "combined" ? t("files.reviewChanges") : scope === "committed" ? t("files.workingChanges") : t(`files.section.${scope}`)}</span>
-							<span className="text-caption text-passive">{scope === "committed" ? data.sections.unstaged.length + data.sections.staged.length + data.sections.untracked.length : allFiles.length}</span>
-							<ChevronDown aria-hidden="true" className="size-icon-sm" />
-						</Button>
-					</DropdownMenuTrigger>
-					<DropdownMenuContent align="start" alignOffset={2} className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-0" sideOffset={0}>
-						{visibleWorkingScopes.map((entry) => (
-							<DropdownMenuItem key={entry} onSelect={() => selectScope(entry)}>
-								<Check aria-hidden="true" className={cn("size-icon-sm", scope === entry && !selectedCommit ? "opacity-100" : "opacity-0")} />
-								<span>{t(`files.section.${entry}`)}</span>
-								<span className="ml-auto text-caption text-passive">{data.sections[entry].length}</span>
-							</DropdownMenuItem>
-						))}
-						{showCombinedWorkingSource ? (
-							<DropdownMenuItem onSelect={() => selectScope("combined")}>
-								<Check aria-hidden="true" className="size-icon-sm" />
-								<span>{t("files.reviewChanges")}</span>
-								<span className="ml-auto text-caption text-passive">{data.files.filter((file) => file.status !== "unmodified").length}</span>
-							</DropdownMenuItem>
-						) : null}
-					</DropdownMenuContent>
-				</DropdownMenu> : null}
+				{singleWorkingSource ? (
+					<Button
+						aria-label={t("files.changeSource")}
+						aria-pressed={scope === singleWorkingSource}
+						className="max-w-[12rem] gap-1.5"
+						onClick={() => selectScope(singleWorkingSource)}
+						size="sm"
+						type="button"
+						variant={scope === singleWorkingSource ? "secondary" : "outline"}
+					>
+						<span className="truncate">{workingSourceLabel(singleWorkingSource)}</span>
+						<span className="text-caption text-passive">{workingSourceCount(singleWorkingSource)}</span>
+					</Button>
+				) : hasWorkingChangeChoices ? (
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<Button
+								aria-label={t("files.changeSource")}
+								className="max-w-[12rem] gap-1.5 data-[state=open]:rounded-b-none data-[state=open]:border-border data-[state=open]:border-b-transparent"
+								size="sm"
+								type="button"
+								variant={scope !== "committed" ? "secondary" : "outline"}
+							>
+								<span className="truncate">{scope === "committed" ? t("files.workingChanges") : workingSourceLabel(scope)}</span>
+								<span className="text-caption text-passive">{scope === "committed" ? workingChangeCount : workingSourceCount(scope)}</span>
+								<ChevronDown aria-hidden="true" className="size-icon-sm" />
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-0 rounded-t-none border-t-0" sideOffset={0}>
+							{alternativeWorkingSources.map((entry) => (
+								<DropdownMenuItem className="text-xs font-normal" key={entry} onSelect={() => selectScope(entry)}>
+									<span className="truncate">{workingSourceLabel(entry)}</span>
+									<span className="ml-auto text-caption text-passive">{workingSourceCount(entry)}</span>
+								</DropdownMenuItem>
+							))}
+						</DropdownMenuContent>
+					</DropdownMenu>
+				) : null}
 				<Button aria-expanded={commitBrowserOpen} aria-pressed={scope === "committed"} className="gap-1.5" disabled={data.commits.length === 0} onClick={() => setCommitBrowserOpen((open) => !open)} size="sm" type="button" variant={scope === "committed" ? "secondary" : "ghost"}>
 					<GitCommitHorizontal aria-hidden="true" className="size-icon-sm" />
 					<span>{t("files.commits")}</span>

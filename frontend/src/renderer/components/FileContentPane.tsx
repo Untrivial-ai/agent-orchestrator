@@ -107,6 +107,8 @@ export function FileContentPane({
 
 	const detail = query.data;
 	const renderedAvailable = canRenderMarkdown(path, detail);
+	const hasDisplayModeChoice = detail.status !== "unmodified" || renderedAvailable;
+	const fileName = path.split("/").pop() || path;
 	const editable = detail.editable && Boolean(detail.fileFingerprint);
 	const effectiveMode =
 		(detail.status === "unmodified" && mode === "diff") || (mode === "rendered" && !renderedAvailable)
@@ -175,7 +177,7 @@ export function FileContentPane({
 					{statusLabel[detail.status]}
 				</span>
 			) : null}
-			<div aria-label={t("files.fileDisplayMode")} className="flex items-center" role="tablist">
+			{hasDisplayModeChoice ? <div aria-label={t("files.fileDisplayMode")} className="flex items-center" role="tablist">
 				{detail.status !== "unmodified" ? (
 					<Button aria-selected={effectiveMode === "diff"} className="h-6 rounded px-2 text-2xs" disabled={editing} onClick={() => setMode("diff")} role="tab" size="sm" type="button" variant={effectiveMode === "diff" ? "secondary" : "ghost"}>
 						{t("files.diff")}
@@ -189,7 +191,9 @@ export function FileContentPane({
 						{t("files.rendered")}
 					</Button>
 				) : null}
-			</div>
+			</div> : (
+				<span className="min-w-0 truncate px-2 text-xs text-foreground" title={path}>{fileName}</span>
+			)}
 			{editing ? (
 				<div className="ml-auto flex items-center gap-1">
 					<Button aria-label={t("files.cancelEditing")} disabled={saving} onClick={cancelEditing} size="sm" type="button" variant="ghost"><X aria-hidden="true" />{t("files.cancelEditing")}</Button>

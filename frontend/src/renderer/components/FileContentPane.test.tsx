@@ -99,6 +99,31 @@ describe("FileContentPane", () => {
 		expect(await screen.findByText("hello")).toBeInTheDocument();
 	});
 
+	it("shows the filename instead of a redundant File tab for an untouched non-Markdown file", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				path: "src/config.ts",
+				status: "unmodified",
+				additions: 0,
+				deletions: 0,
+				size: 18,
+				binary: false,
+				deleted: false,
+				content: "export const x = 1;\n",
+				contentTruncated: false,
+				diff: "",
+				diffTruncated: false,
+			},
+		});
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="src/config.ts" sessionId="sess-1" split={false} />);
+
+		expect(await screen.findByText("config.ts")).toHaveAttribute("title", "src/config.ts");
+		expect(screen.queryByRole("tab", { name: "File" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("tablist", { name: "File display mode" })).not.toBeInTheDocument();
+	});
+
 	it("switches a changed file from its diff to the complete file", async () => {
 		getMock.mockResolvedValue({
 			data: {
