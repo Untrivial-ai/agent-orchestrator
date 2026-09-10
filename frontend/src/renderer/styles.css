@@ -4450,6 +4450,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-close {
+	position: relative;
+	top: 1px;
 	display: grid;
 	width: 26px;
 	height: 26px;
