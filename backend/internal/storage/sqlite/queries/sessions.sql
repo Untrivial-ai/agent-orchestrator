@@ -20,16 +20,17 @@ INSERT INTO sessions (
 
 -- name: UpdateSession :exec
 UPDATE sessions SET
-    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?, display_name = ?,
-    activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
-    branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
-    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
-    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, native_transcript_path = ?,
-    preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
-    cleanup_generation = ?, browser_capability_verifier = ?,
-    provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
-    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?, startup_operation = ?
-WHERE id = ?;
+    issue_id = sqlc.arg(issue_id), kind = sqlc.arg(kind), harness = sqlc.arg(harness), reviewer_harness = sqlc.arg(reviewer_harness), reviewer_agent_config = sqlc.arg(reviewer_agent_config), auto_review_enabled = sqlc.arg(auto_review_enabled), display_name = sqlc.arg(display_name),
+    activity_state = sqlc.arg(activity_state), activity_last_at = sqlc.arg(activity_last_at), first_signal_at = sqlc.arg(first_signal_at), is_terminated = sqlc.arg(is_terminated),
+    branch = sqlc.arg(branch), workspace_path = sqlc.arg(workspace_path), workspace_repo_path = sqlc.arg(workspace_repo_path), diff_base_sha = sqlc.arg(diff_base_sha), diff_base_ref = sqlc.arg(diff_base_ref), runtime_handle_id = sqlc.arg(runtime_handle_id),
+    runtime_launch_id = sqlc.arg(runtime_launch_id), agent_session_id = sqlc.arg(agent_session_id), agent_session_id_launch_id = sqlc.arg(agent_session_id_launch_id), prompt = sqlc.arg(prompt),
+    latest_user_prompt = sqlc.arg(latest_user_prompt), latest_user_prompt_at = sqlc.arg(latest_user_prompt_at), latest_assistant_update = sqlc.arg(latest_assistant_update), native_transcript_path = sqlc.arg(native_transcript_path),
+    preview_url = sqlc.arg(preview_url), preview_revision = sqlc.arg(preview_revision), terminate_on_pr_merge = sqlc.arg(terminate_on_pr_merge),
+    cleanup_generation = sqlc.arg(cleanup_generation), browser_capability_verifier = sqlc.arg(browser_capability_verifier),
+    provider_conversation_id = sqlc.arg(provider_conversation_id), controller_generation = sqlc.arg(controller_generation), model = sqlc.arg(model), updated_at = sqlc.arg(updated_at),
+    is_pinned = sqlc.arg(is_pinned), pinned_at = sqlc.arg(pinned_at), auto_inject_review = sqlc.arg(auto_inject_review), auto_inject_ci = sqlc.arg(auto_inject_ci),
+    startup_operation = CASE WHEN CAST(sqlc.arg(commit_startup) AS BOOLEAN) THEN sqlc.arg(startup_operation) ELSE startup_operation END
+WHERE id = sqlc.arg(id);
 
 -- name: UpdateBrowserCapabilityVerifier :execrows
 -- Rotate only the browser credential for the exact controller owner observed by

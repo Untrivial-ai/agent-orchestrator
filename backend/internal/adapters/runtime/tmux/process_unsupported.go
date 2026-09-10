@@ -7,6 +7,8 @@ import (
 	"errors"
 )
 
+func processBootIdentity(string) string { return "" }
+
 func readOwnedProcesses(context.Context) ([]ownedProcess, error) {
 	return nil, errors.New("verified tmux process cleanup is unsupported on this platform")
 }

@@ -1462,7 +1462,7 @@ func TestFetchPullRequestsFetchesRemainingCheckContexts(t *testing.T) {
 	}
 }
 
-func TestFetchPullRequestsFailsWhenCheckContextFallbackFails(t *testing.T) {
+func TestFetchPullRequestsAttachesCheckContextFallbackError(t *testing.T) {
 	fake := newFakeGH(t)
 	fx := basePRFixture()
 	var pr map[string]any
@@ -1485,8 +1485,9 @@ func TestFetchPullRequestsFailsWhenCheckContextFallbackFails(t *testing.T) {
 		http.Error(w, `{"message":"graphql down"}`, http.StatusInternalServerError)
 	})
 	p := newProviderForTest(t, fake)
-	if _, err := p.FetchPullRequests(ctx(), []ports.SCMPRRef{{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello", Repo: "octocat/hello"}, Number: 42}}); err == nil {
-		t.Fatal("FetchPullRequests error = nil, want fallback failure")
+	obs, err := p.FetchPullRequests(ctx(), []ports.SCMPRRef{{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello", Repo: "octocat/hello"}, Number: 42}})
+	if err != nil || len(obs) != 1 || obs[0].Fetched || obs[0].Error == nil {
+		t.Fatalf("FetchPullRequests = %#v, %v; want an unfetched PR with its fallback error", obs, err)
 	}
 }
 

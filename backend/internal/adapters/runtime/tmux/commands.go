@@ -94,13 +94,13 @@ func exactSessionTarget(id string) string {
 	return "=" + id
 }
 
-// listPanePIDsArgs builds args for `tmux list-panes -s -t =<id> -F #{pane_pid}`.
+// listPaneStatesArgs discovers pane leaders and whether tmux retained an exited pane.
 // -s lists every pane in the whole session (not just the active window); the
 // exact-match target `=` avoids prefix collisions (see killSessionArgs). Each
 // #{pane_pid} is the pane's session-leader pid, used to reap the pane's
 // descendants when the session is destroyed.
-func listPanePIDsArgs(id string) []string {
-	return []string{"list-panes", "-s", "-t", exactSessionTarget(id), "-F", "#{pane_pid}"}
+func listPaneStatesArgs(id string) []string {
+	return []string{"list-panes", "-s", "-t", exactSessionTarget(id), "-F", "#{pane_pid} #{pane_dead}"}
 }
 
 // sendKeysLiteralArgs builds args for `tmux send-keys -t <id> -l <chunk>`.

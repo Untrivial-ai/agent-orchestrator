@@ -353,6 +353,14 @@ func ciSummaryFromGraphQL(pr map[string]any) domain.CIState {
 			pending = true
 		case domain.PRCheckPassed:
 			passing = true
+		case domain.PRCheckSkipped:
+			// Conditional skips satisfy checks, but the shared status mapper
+			// also labels STALE runs skipped. Those do not establish success.
+			if strings.EqualFold(strings.TrimSpace(str(n["conclusion"])), "SKIPPED") {
+				passing = true
+			} else {
+				unknown = true
+			}
 		case domain.PRCheckUnknown:
 			unknown = true
 		}

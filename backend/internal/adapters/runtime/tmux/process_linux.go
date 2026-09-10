@@ -13,6 +13,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func processBootIdentity(start string) string {
+	boot, _, _ := strings.Cut(start, ":")
+	return boot
+}
+
 func readOwnedProcesses(ctx context.Context) ([]ownedProcess, error) {
 	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {

@@ -164,10 +164,18 @@ func TestObserveBillingDoesNotFetchMissingLog(t *testing.T) {
 	}
 }
 
-func TestFetchPullRequestsRejectsIncompleteCheckPages(t *testing.T) {
-	for _, reason := range []string{"repeated cursor", "too many pages", "changed head"} {
+func TestFetchPullRequestsIsolatesIncompleteCheckPages(t *testing.T) {
+	for _, reason := range []string{"repeated cursor", "too many pages", "changed head", "missing initial cursor", "missing next cursor"} {
 		t.Run(reason, func(t *testing.T) {
 			fake := newFakeGH(t)
+			refs := make([]ports.SCMPRRef, 3)
+			for i := range refs {
+				refs[i] = ports.SCMPRRef{
+					Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello"},
+					Number: 41 + i,
+					URL:    fmt.Sprintf("https://github.com/octocat/hello/pull/%d", 41+i),
+				}
+			}
 			fake.on(http.MethodPost, "/graphql", func(w http.ResponseWriter, r *http.Request) {
 				call := fake.callsTo(http.MethodPost, "/graphql")
 				pr := checkFixture(billingBlockedCheck())
@@ -175,8 +183,11 @@ func TestFetchPullRequestsRejectsIncompleteCheckPages(t *testing.T) {
 				if reason == "too many pages" {
 					cursor = fmt.Sprintf("next-%d", call)
 				}
+				if (reason == "missing initial cursor" && call == 1) || (reason == "missing next cursor" && call > 1) {
+					cursor = ""
+				}
 				statusContexts(pr)["pageInfo"] = map[string]any{"hasNextPage": true, "endCursor": cursor}
-				alias := "pr0"
+				alias := "pr1"
 				if call > 1 {
 					alias = "repo"
 					if reason == "changed head" {
@@ -184,11 +195,31 @@ func TestFetchPullRequestsRejectsIncompleteCheckPages(t *testing.T) {
 						nodes(commits["nodes"])[0]["commit"].(map[string]any)["oid"] = "new-head"
 					}
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{alias: map[string]any{"pullRequest": pr}}})
+				data := map[string]any{alias: map[string]any{"pullRequest": pr}}
+				if call == 1 {
+					for _, i := range []int{0, 2} {
+						complete := checkFixture(map[string]any{"__typename": "CheckRun", "name": "build", "conclusion": "SUCCESS"})
+						complete["number"], complete["url"] = float64(refs[i].Number), refs[i].URL
+						statusRollup(complete)["state"] = "SUCCESS"
+						data[fmt.Sprintf("pr%d", i)] = map[string]any{"pullRequest": complete}
+					}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 			})
-			obs, err := newProviderForTest(t, fake).FetchPullRequests(ctx(), []ports.SCMPRRef{{Number: 42}})
-			if err == nil || len(obs) != 0 {
-				t.Fatalf("incomplete fetch produced observations: %#v, %v", obs, err)
+			obs, err := newProviderForTest(t, fake).FetchPullRequests(ctx(), refs)
+			if err != nil || len(obs) != len(refs) {
+				t.Fatalf("incomplete PR discarded its batch: %#v, %v", obs, err)
+			}
+			if obs[1].Fetched || obs[1].Error == nil || len(obs[1].CI.Checks) != 0 {
+				t.Fatalf("incomplete fetch produced a usable observation: %#v", obs[1])
+			}
+			if obs[1].PR.Number != refs[1].Number || obs[1].PR.URL != refs[1].URL || obs[1].Provider != "github" || obs[1].Host != "github.com" || obs[1].Repo != "octocat/hello" {
+				t.Fatalf("incomplete PR lost error routing identity: %#v", obs[1])
+			}
+			for _, i := range []int{0, 2} {
+				if !obs[i].Fetched || obs[i].Error != nil || obs[i].PR.Number != refs[i].Number || obs[i].CI.Summary != string(domain.CIPassing) {
+					t.Fatalf("complete sibling was not preserved: %#v", obs[i])
+				}
 			}
 			if calls := fake.callsTo(http.MethodPost, "/graphql"); calls > githubCheckRunsMaxPages {
 				t.Fatalf("unbounded pagination: %d calls", calls)

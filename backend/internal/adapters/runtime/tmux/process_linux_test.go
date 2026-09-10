@@ -18,6 +18,19 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func TestCleanupDoesNotRetainSessionsFromPreviousBoot(t *testing.T) {
+	old := processIdentity{PID: 4242, Start: "previous-boot:10", Session: "4242"}
+	replacement := ownedProcess{processIdentity: processIdentity{PID: 4243, Start: "current-boot:20", Session: "4242"}}
+	for _, pending := range []*pendingTeardown{
+		{Processes: []processIdentity{old}}, // previous record without Boot
+		{Boot: "previous-boot", UnconfirmedSessions: []string{"4242"}},
+	} {
+		if unconfirmedSessionMember([]ownedProcess{replacement}, pending) {
+			t.Fatal("processes from a previous boot cannot own current sessions")
+		}
+	}
+}
+
 func TestLinuxProcessIdentityParsesParenthesesAndZombie(t *testing.T) {
 	stat := "4242 (worker (copy)) Z 1 4242 4242 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 12345 0"
 	p, err := parseLinuxProcess(4242, stat, "boot-id")

@@ -20,15 +20,19 @@ func testOwnedProcess(pid, parent int, session string) ownedProcess {
 }
 
 func TestDestroyRejectsUnknownInventory(t *testing.T) {
-	for _, problem := range []string{"pane query", "invalid pid", "process query", "missing process"} {
+	for _, problem := range []string{"pane query", "invalid pid", "missing dead state", "invalid dead state", "process query", "missing process"} {
 		t.Run(problem, func(t *testing.T) {
 			r, fr := newTestRuntime(t, 0)
-			fr.outputs = [][]byte{[]byte("4242\n")}
+			fr.outputs = [][]byte{[]byte("4242 0\n")}
 			switch problem {
 			case "pane query":
 				fr.err = errors.New("inventory unavailable")
 			case "invalid pid":
-				fr.outputs = [][]byte{[]byte("1\n")}
+				fr.outputs = [][]byte{[]byte("1 0\n")}
+			case "missing dead state":
+				fr.outputs = [][]byte{[]byte("4242\n")}
+			case "invalid dead state":
+				fr.outputs = [][]byte{[]byte("4242 unknown\n")}
 			case "process query":
 				r.processes = func(context.Context) ([]ownedProcess, error) { return nil, errors.New("process inventory unavailable") }
 			}
@@ -42,9 +46,122 @@ func TestDestroyRejectsUnknownInventory(t *testing.T) {
 	}
 }
 
+func TestDestroyRetainsUnanchoredSessionAcrossOtherProcessExit(t *testing.T) {
+	r, fr := newTestRuntime(t, 0)
+	fr.outputs = [][]byte{[]byte("4242 0\n"), nil}
+	pane := testOwnedProcess(4242, 1, "4242")
+	detached := testOwnedProcess(4243, 4242, "4243")
+	orphan := testOwnedProcess(4244, 1, "4243")
+	table := []ownedProcess{pane, detached}
+	r.processes = func(context.Context) ([]ownedProcess, error) { return table, nil }
+	var signalled []int
+	r.signalProcess = func(_ context.Context, p ownedProcess, _ bool) error {
+		signalled = append(signalled, p.PID)
+		switch p.PID {
+		case pane.PID:
+			// The detached process forks and exits before the next scan,
+			// while the pane remains a live ownership anchor elsewhere.
+			table = []ownedProcess{pane, orphan}
+		case detached.PID:
+			return nil // already exited; signal implementations check birth
+		default:
+			t.Fatalf("unproven process signalled: %+v", p)
+		}
+		return nil
+	}
+	r.reapGrace = time.Millisecond
+	// On escalation the pane exits; the vanished detached-session evidence
+	// must not have been dropped while the pane was still alive.
+	signal := r.signalProcess
+	r.signalProcess = func(ctx context.Context, p ownedProcess, force bool) error {
+		if force && p.PID == pane.PID {
+			table = []ownedProcess{orphan}
+			return nil
+		}
+		return signal(ctx, p, force)
+	}
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err == nil || !strings.Contains(err.Error(), "cleanup unconfirmed") {
+		t.Fatalf("Destroy = %v, want retained uncertainty", err)
+	}
+	pending, err := r.loadTeardown("sess-1")
+	if err != nil || pending == nil || !containsIdentity(pending.Processes, detached.processIdentity) {
+		t.Fatalf("lost detached-session evidence: %+v, %v", pending, err)
+	}
+	if len(signalled) == 0 {
+		t.Fatal("fixture never entered shutdown")
+	}
+
+	r2, fr2 := newTestRuntime(t, 0)
+	r2.cleanupDir = r.cleanupDir
+	fr2.err = &exec.ExitError{}
+	fr2.outputs = [][]byte{[]byte("can't find session: sess-1"), []byte("can't find session: sess-1")}
+	r2.processes = func(context.Context) ([]ownedProcess, error) { return table, nil }
+	r2.signalProcess = func(context.Context, ownedProcess, bool) error {
+		t.Fatal("retry signalled unproven process")
+		return nil
+	}
+	if err := r2.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err == nil {
+		t.Fatal("daemon restart lost uncertainty")
+	}
+	table = nil
+	fr2.outputs = [][]byte{[]byte("can't find session: sess-1"), []byte("can't find session: sess-1")}
+	if err := r2.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("retry after orphan exit: %v", err)
+	}
+}
+
+func TestDestroyRetainedDeadPane(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		processes []ownedProcess
+		uncertain bool
+	}{
+		{name: "reaped leader"},
+		{name: "recycled pid in another session", processes: []ownedProcess{testOwnedProcess(4242, 1, "9000")}},
+		{name: "unowned orphan", processes: []ownedProcess{testOwnedProcess(4243, 1, "4242")}, uncertain: true},
+		{name: "recycled pid and session", processes: []ownedProcess{testOwnedProcess(4242, 1, "4242")}, uncertain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fr := newTestRuntime(t, 0)
+			fr.outputs = [][]byte{[]byte("4242 1\n"), nil}
+			r.processes = func(context.Context) ([]ownedProcess, error) { return tc.processes, nil }
+			r.signalProcess = func(context.Context, ownedProcess, bool) error {
+				t.Fatal("dead pane conferred signal authority")
+				return nil
+			}
+			err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+			if (err != nil) != tc.uncertain {
+				t.Fatalf("Destroy = %v, uncertainty=%v", err, tc.uncertain)
+			}
+			if countCalls(fr, "kill-session") != 1 {
+				t.Fatal("retained pane was not removed")
+			}
+			pending, loadErr := r.loadTeardown("sess-1")
+			if loadErr != nil || (pending != nil) != tc.uncertain {
+				t.Fatalf("pending = %+v, %v", pending, loadErr)
+			}
+			if tc.uncertain {
+				if err := r.requireCompletedTeardown("sess-1"); err == nil {
+					t.Fatal("uncertain dead pane cleanup allows runtime reuse")
+				}
+			}
+		})
+	}
+}
+
+func TestRetainIdentitiesPreservesPreviousSession(t *testing.T) {
+	original := testOwnedProcess(100, 1, "100")
+	escaped := original
+	escaped.Session = "200"
+	known := retainIdentities([]processIdentity{original.processIdentity}, []ownedProcess{escaped})
+	if len(known) != 2 || known[0] != original.processIdentity || known[1] != escaped.processIdentity {
+		t.Fatalf("session change lost ownership history: %+v", known)
+	}
+}
+
 func TestDestroyVerifiesExitAfterForcedSignal(t *testing.T) {
 	r, fr := newTestRuntime(t, 0)
-	fr.outputs = [][]byte{[]byte("4242\n"), nil}
+	fr.outputs = [][]byte{[]byte("4242 0\n"), nil}
 	r.reapGrace = time.Millisecond
 	forced, probesAfterKill := false, 0
 	ctx, cancel := context.WithCancel(context.Background())
@@ -68,7 +185,7 @@ func TestDestroyVerifiesExitAfterForcedSignal(t *testing.T) {
 
 func TestDestroyRetainsOwnershipAcrossDaemonRestart(t *testing.T) {
 	r, fr := newTestRuntime(t, 0)
-	fr.outputs = [][]byte{[]byte("4242\n"), nil}
+	fr.outputs = [][]byte{[]byte("4242 0\n"), nil}
 	pane := testOwnedProcess(4242, 1, "pane")
 	child := testOwnedProcess(4243, 4242, "pane")
 	other := testOwnedProcess(5000, 1, "unrelated")
@@ -116,7 +233,7 @@ func TestDestroyRefusesReplacementPane(t *testing.T) {
 	if err := r.saveTeardown(context.Background(), &pendingTeardown{Version: 1, ID: "sess-1", Panes: []processIdentity{old.processIdentity}, Processes: []processIdentity{old.processIdentity}}); err != nil {
 		t.Fatal(err)
 	}
-	fr.outputs = [][]byte{[]byte("4242\n")}
+	fr.outputs = [][]byte{[]byte("4242 0\n")}
 	old.Start = "boot:200"
 	r.processes = func(context.Context) ([]ownedProcess, error) { return []ownedProcess{old}, nil }
 	err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
@@ -127,7 +244,7 @@ func TestDestroyRefusesReplacementPane(t *testing.T) {
 
 func TestDestroyRetainsEvidenceOnProbeFailure(t *testing.T) {
 	r, fr := newTestRuntime(t, 0)
-	fr.outputs = [][]byte{[]byte("4242\n"), nil}
+	fr.outputs = [][]byte{[]byte("4242 0\n"), nil}
 	calls := 0
 	r.processes = func(context.Context) ([]ownedProcess, error) {
 		calls++
@@ -190,7 +307,7 @@ func TestOwnedDescendantsIncludesEscapedGroupAndRejectsReusedIdentity(t *testing
 
 func TestDestroyTreatsZombiesAsExited(t *testing.T) {
 	r, fr := newTestRuntime(t, 0)
-	fr.outputs = [][]byte{[]byte("4242\n"), nil}
+	fr.outputs = [][]byte{[]byte("4242 0\n"), nil}
 	p := testOwnedProcess(4242, 1, "pane")
 	p.Stopped = true
 	r.processes = func(context.Context) ([]ownedProcess, error) { return []ownedProcess{p}, nil }
@@ -236,7 +353,7 @@ func TestRuntimeReplacementWaitsForVerifiedTeardown(t *testing.T) {
 	for _, restart := range []bool{false, true} {
 		t.Run(map[bool]string{false: "create", true: "restart"}[restart], func(t *testing.T) {
 			r, fr := newTestRuntime(t, 0)
-			fr.outputs = [][]byte{[]byte("4242\n"), nil}
+			fr.outputs = [][]byte{[]byte("4242 0\n"), nil}
 			discovered, release := make(chan struct{}), make(chan struct{})
 			var exitProbed, earlyLaunch atomic.Bool
 			calls := 0
@@ -295,7 +412,7 @@ func TestRuntimeMutationWaitHonorsCancellation(t *testing.T) {
 	for _, operation := range []string{"create", "restart", "destroy"} {
 		t.Run(operation, func(t *testing.T) {
 			r, fr := newTestRuntime(t, 0)
-			fr.outputs = [][]byte{[]byte("4242\n"), nil}
+			fr.outputs = [][]byte{[]byte("4242 0\n"), nil}
 			discovered, release := make(chan struct{}), make(chan struct{})
 			calls := 0
 			r.processes = func(context.Context) ([]ownedProcess, error) {

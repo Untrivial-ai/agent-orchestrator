@@ -900,16 +900,17 @@ func (q *Queries) UpdateBrowserCapabilityVerifier(ctx context.Context, arg Updat
 
 const updateSession = `-- name: UpdateSession :exec
 UPDATE sessions SET
-    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?, display_name = ?,
-    activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
-    branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
-    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, prompt = ?,
-    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, native_transcript_path = ?,
-    preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
-    cleanup_generation = ?, browser_capability_verifier = ?,
-    provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
-    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?, startup_operation = ?
-WHERE id = ?
+    issue_id = ?1, kind = ?2, harness = ?3, reviewer_harness = ?4, reviewer_agent_config = ?5, auto_review_enabled = ?6, display_name = ?7,
+    activity_state = ?8, activity_last_at = ?9, first_signal_at = ?10, is_terminated = ?11,
+    branch = ?12, workspace_path = ?13, workspace_repo_path = ?14, diff_base_sha = ?15, diff_base_ref = ?16, runtime_handle_id = ?17,
+    runtime_launch_id = ?18, agent_session_id = ?19, agent_session_id_launch_id = ?20, prompt = ?21,
+    latest_user_prompt = ?22, latest_user_prompt_at = ?23, latest_assistant_update = ?24, native_transcript_path = ?25,
+    preview_url = ?26, preview_revision = ?27, terminate_on_pr_merge = ?28,
+    cleanup_generation = ?29, browser_capability_verifier = ?30,
+    provider_conversation_id = ?31, controller_generation = ?32, model = ?33, updated_at = ?34,
+    is_pinned = ?35, pinned_at = ?36, auto_inject_review = ?37, auto_inject_ci = ?38,
+    startup_operation = CASE WHEN CAST(?39 AS BOOLEAN) THEN ?40 ELSE startup_operation END
+WHERE id = ?41
 `
 
 type UpdateSessionParams struct {
@@ -951,6 +952,7 @@ type UpdateSessionParams struct {
 	PinnedAt                  sql.NullTime
 	AutoInjectReview          bool
 	AutoInjectCI              bool
+	CommitStartup             bool
 	StartupOperation          string
 	ID                        domain.SessionID
 }
@@ -995,6 +997,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.PinnedAt,
 		arg.AutoInjectReview,
 		arg.AutoInjectCI,
+		arg.CommitStartup,
 		arg.StartupOperation,
 		arg.ID,
 	)

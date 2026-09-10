@@ -437,3 +437,46 @@ The merged fresh-install container and native macOS/Windows checks were not
 repeated locally and require verification in the new remote jobs. The reporter's
 Raspberry Pi workload and native macOS tmux descendant teardown remain separate
 runtime validation gaps.
+
+## Additional review corrections
+
+The next local review reproduced five gaps and added permanent regression
+coverage for each:
+
+- Teardown retains historical process identities and session membership when
+  processes disappear between scans. If a shutdown-time child remains in a
+  recorded session after every known identity exits, cleanup reports
+  unconfirmed ownership and preserves its record. A fresh daemon retains the
+  same replacement fence. It can finish cleanup after the unresolved workload
+  exits. Numeric session membership alone never grants signal authority.
+- Pane discovery includes tmux's dead-pane state. A retained pane whose shell
+  exited can be removed without treating its stale PID as a new owner. Any
+  unresolved session membership is persisted even when no live pane identity
+  remains. Linux boot identities prevent old records blocking reused session
+  numbers after a reboot.
+- Ordinary session updates preserve the current startup journal in SQL. Only
+  explicit terminal or atomic Chat launch publication writes the journal with
+  new ownership; progress and clearing use the existing operation compare-and-set.
+  A stale runtime observation can no longer resurrect completion or overwrite
+  newer cleanup progress, including when its old snapshot has no journal.
+- Actual skipped check conclusions count as successful completion. Stale runs
+  remain unknown, as do blocked or unknown siblings; real failures retain their
+  precedence.
+- Single-PR follow-up pages request 100 contexts while the initial batch remains
+  at 20 per PR. The ten-request budget supports 920 contexts. Exceeding that
+  budget or receiving invalid pagination leaves that PR unfetched and preserves
+  complete sibling observations. Parent-context cancellation still aborts the
+  request.
+
+Fresh independent reviews of runtime, startup and SCM corrections found no
+additional actionable defect. Real Linux process tests cover both retained
+dead panes and a child forked during shutdown, including persistence across a
+new runtime instance and a successful retry after the child exits. The same
+tests fail against the pre-correction code. Startup tests use real SQLite and
+controlled write ordering; check tests exercise complete large responses,
+mixed conclusions, partial batches and cancellation.
+
+The cleanup correction deliberately leaves uncertain process ownership pending
+for inspection. It does not prove ownership of a child that enters a previously
+unobserved OS session between snapshots. Native macOS teardown and the reporter's
+Raspberry Pi workload remain unverified by these local corrections.

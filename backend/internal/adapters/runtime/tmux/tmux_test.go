@@ -251,8 +251,8 @@ func TestCommandBuilders(t *testing.T) {
 		t.Fatalf("panePIDArgs = %#v, want %#v", got, want)
 	}
 	// list-panes reaps whole-session (-s) with exact-match target and prints pane pids.
-	if got, want := listPanePIDsArgs("sess-1"), []string{"list-panes", "-s", "-t", "=sess-1", "-F", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("listPanePIDsArgs = %#v, want %#v", got, want)
+	if got, want := listPaneStatesArgs("sess-1"), []string{"list-panes", "-s", "-t", "=sess-1", "-F", "#{pane_pid} #{pane_dead}"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("listPaneStatesArgs = %#v, want %#v", got, want)
 	}
 	if got, want := sendKeysLiteralArgs("sess-1", "hello"), []string{"send-keys", "-t", "sess-1", "-l", "hello"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sendKeysLiteralArgs = %#v, want %#v", got, want)
@@ -1028,7 +1028,7 @@ func TestDestroyArgs(t *testing.T) {
 	}
 	// list-panes discovers pane sessions; kill-session (exact-match target
 	// =<id>) tears the session down.
-	if got, want := fr.calls[0].args, listPanePIDsArgs("sess-1"); !reflect.DeepEqual(got, want) {
+	if got, want := fr.calls[0].args, listPaneStatesArgs("sess-1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("list-panes args = %#v, want %#v", got, want)
 	}
 	if got, want := fr.calls[1].args, killSessionArgs("sess-1"); !reflect.DeepEqual(got, want) {
@@ -1222,7 +1222,7 @@ func (r *partialCreateFailureRunner) Run(_ context.Context, _ []string, _ string
 			return nil, errors.New("set status response lost")
 		}
 	case "list-panes":
-		return []byte("4242\n"), nil
+		return []byte("4242 0\n"), nil
 	case "kill-session":
 		return nil, errors.New("cleanup failed")
 	}

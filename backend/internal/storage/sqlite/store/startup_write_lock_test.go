@@ -16,6 +16,7 @@ func TestStartupWritesRespectCleanupDeadlineWhileWriterIsBusy(t *testing.T) {
 			return err
 		},
 		"lifecycle update": func(ctx context.Context, s *Store) error { return s.UpdateSession(ctx, domain.SessionRecord{}) },
+		"launch commit":    func(ctx context.Context, s *Store) error { return s.CommitSessionSpawn(ctx, domain.SessionRecord{}) },
 		"startup journal": func(ctx context.Context, s *Store) error {
 			_, err := s.UpdateSessionStartup(ctx, domain.SessionRecord{}, "operation", domain.SessionControllerOwner{})
 			return err

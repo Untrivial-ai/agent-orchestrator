@@ -35,14 +35,25 @@ func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (do
 	return rec, nil
 }
 
-// UpdateSession writes the full mutable state of an existing session. The
-// id/project/num/created_at are immutable and not touched here.
+// UpdateSession writes mutable session facts while preserving the startup
+// journal. Only a launch commit or the startup operation's CAS may change that
+// journal; an observation can carry a snapshot taken before either write.
 func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) error {
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return err
 	}
 	defer s.writeMu.Unlock()
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
+}
+
+// CommitSessionSpawn publishes the launch facts and its startup journal in one
+// write. Lifecycle uses this explicit boundary after a successful runtime start.
+func (s *Store) CommitSessionSpawn(ctx context.Context, rec domain.SessionRecord) error {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.qw.UpdateSession(ctx, recordToSpawnUpdate(rec))
 }
 
 // UpdateBrowserCapabilityVerifier rotates only the verifier when the caller's
@@ -593,6 +604,12 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		StartupOperation:          marshalSessionStartup(rec.Metadata.Startup),
 		UpdatedAt:                 rec.UpdatedAt,
 	}
+}
+
+func recordToSpawnUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
+	params := recordToUpdate(rec)
+	params.CommitStartup = true
+	return params
 }
 
 func marshalAgentConfig(cfg domain.AgentConfig) (string, error) {

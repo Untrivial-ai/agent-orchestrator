@@ -233,7 +233,7 @@ func (l durableStartupLifecycle) MarkSpawned(ctx context.Context, id domain.Sess
 		return ErrNotFound
 	}
 	rec.Metadata = metadata
-	return l.store.UpdateSession(ctx, rec)
+	return l.store.CommitSessionSpawn(ctx, rec)
 }
 func (l durableStartupLifecycle) MarkTerminated(ctx context.Context, id domain.SessionID) error {
 	rec, ok, err := l.store.GetSession(ctx, id)
@@ -313,7 +313,7 @@ func TestStartupSQLiteCASRejectsFinishedOrReplacedOperation(t *testing.T) {
 	replacement.Metadata.Startup = nil
 	replacement.Metadata.RuntimeHandleID = "new-runtime"
 	replacement.Metadata.RuntimeLaunchID = "new-launch"
-	if err := s.UpdateSession(context.Background(), replacement); err != nil {
+	if err := s.CommitSessionSpawn(context.Background(), replacement); err != nil {
 		t.Fatal(err)
 	}
 	applied, err := s.UpdateSessionStartup(context.Background(), rec, a.fact.ID, rec.ControllerOwner())

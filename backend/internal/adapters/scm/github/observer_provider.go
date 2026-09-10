@@ -227,6 +227,8 @@ func stableCheckFingerprint(parts []string) string {
 // observer marks that ref refresh-incomplete and can log the permanent miss
 // distinctly from a transient provider failure. The observer owns chunking;
 // this method rejects larger batches so tests catch accidental over-batching.
+// A check-pagination failure likewise stays attached to its PR, preserving
+// complete observations for the other refs in the batch.
 func (p *Provider) FetchPullRequests(ctx context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -241,22 +243,25 @@ func (p *Provider) FetchPullRequests(ctx context.Context, refs []ports.SCMPRRef)
 	}
 	out := make([]ports.SCMObservation, len(refs))
 	for i, ref := range refs {
+		out[i] = ports.SCMObservation{
+			Provider: ref.Repo.Provider,
+			Host:     ref.Repo.Host,
+			Repo:     repoFullName(ref.Repo),
+			PR:       ports.SCMPRObservation{Number: ref.Number, URL: ref.URL},
+		}
 		repoData, _ := data[aliases[i]].(map[string]any)
 		pr, _ := repoData["pullRequest"].(map[string]any)
 		if pr == nil {
-			out[i] = ports.SCMObservation{
-				Fetched:  false,
-				Provider: ref.Repo.Provider,
-				Host:     ref.Repo.Host,
-				Repo:     repoFullName(ref.Repo),
-				PR:       ports.SCMPRObservation{Number: ref.Number, URL: ref.URL},
-				Error:    fmt.Errorf("%w: pull request %s#%d not in batch response", ErrNotFound, repoFullName(ref.Repo), ref.Number),
-			}
+			out[i].Error = fmt.Errorf("%w: pull request %s#%d not in batch response", ErrNotFound, repoFullName(ref.Repo), ref.Number)
 			continue
 		}
 		if scmContextsPaginated(pr) {
 			if err := p.fetchRemainingCheckContexts(ctx, ref, pr); err != nil {
-				return nil, err
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				out[i].Error = err
+				continue
 			}
 		}
 		out[i] = scmObservationFromGraphQL(ref, pr)
@@ -443,6 +448,8 @@ func (p *Provider) fetchRemainingCheckContexts(ctx context.Context, ref ports.SC
 }
 
 func buildCheckContextsQuery(ref ports.SCMPRRef, cursor string) string {
+	// Follow-up requests contain one PR, so use the full connection page size.
+	// The initial multi-PR query keeps its smaller page to bound batch cost.
 	return fmt.Sprintf(`query{
 repo: repository(owner:%s,name:%s){ pullRequest(number:%d){
   commits(last:1){ nodes{ commit{ oid statusCheckRollup{ contexts(first:%d, after:%s){ nodes{
@@ -451,7 +458,7 @@ repo: repository(owner:%s,name:%s){ pullRequest(number:%d){
     ... on StatusContext { context state targetUrl }
   } pageInfo{ hasNextPage endCursor } } } } } }
 } }
-}`, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, scmBatchCheckContextLimit, graphQLString(cursor))
+}`, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, graphQLCheckContextLimit, graphQLString(cursor))
 }
 
 func statusContexts(pr map[string]any) map[string]any {

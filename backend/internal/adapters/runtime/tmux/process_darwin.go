@@ -11,6 +11,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Darwin birth timestamps identify a process, not a kernel boot.
+func processBootIdentity(string) string { return "" }
+
 func readOwnedProcesses(ctx context.Context) ([]ownedProcess, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

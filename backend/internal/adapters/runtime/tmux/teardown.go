@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,12 +32,21 @@ type ownedProcess struct {
 	Stopped bool // exited or zombie; a stopped job is still a live workload
 }
 
+type paneState struct {
+	PID  int
+	Dead bool
+}
+
 type pendingTeardown struct {
 	Version   int               `json:"version"`
 	ID        string            `json:"id"`
 	Socket    string            `json:"socket"`
+	Boot      string            `json:"boot,omitempty"`
 	Panes     []processIdentity `json:"panes"`
 	Processes []processIdentity `json:"processes"`
+	// Session labels from retained dead panes cannot grant signal authority.
+	// Persist them so unresolved cleanup also fences Create and Restart.
+	UnconfirmedSessions []string `json:"unconfirmed_sessions,omitempty"`
 }
 
 func cleanupDirectory(runFile string) string {
@@ -122,7 +130,7 @@ func (r *Runtime) destroyLocked(ctx context.Context, id string) error {
 		// Do not rediscover a similarly named pane on another socket after restart.
 		r.rememberSessionSocket(id, pending.Socket)
 	}
-	panes, err := r.paneSessionIDs(ctx, id)
+	panes, err := r.paneStates(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -147,8 +155,17 @@ func (r *Runtime) destroyLocked(ctx context.Context, id string) error {
 				return err
 			}
 			pending = &pendingTeardown{Version: 1, ID: id, Socket: socket, Panes: roots, Processes: roots}
+			if len(table) > 0 {
+				pending.Boot = processBootIdentity(table[0].Start)
+			}
 		}
-		pending.Processes = identities(ownedDescendants(table, pending.Processes))
+		for _, pane := range panes {
+			session := strconv.Itoa(pane.PID)
+			if pane.Dead && !slices.Contains(pending.UnconfirmedSessions, session) {
+				pending.UnconfirmedSessions = append(pending.UnconfirmedSessions, session)
+			}
+		}
+		pending.Processes = retainIdentities(pending.Processes, ownedDescendants(table, pending.Processes))
 		if err := r.saveTeardown(ctx, pending); err != nil {
 			return fmt.Errorf("tmux runtime: retain cleanup %s: %w", id, err)
 		}
@@ -181,8 +198,8 @@ func (r *Runtime) destroyLocked(ctx context.Context, id string) error {
 	return nil
 }
 
-func (r *Runtime) paneSessionIDs(ctx context.Context, id string) ([]int, error) {
-	out, err := r.runForSession(ctx, id, listPanePIDsArgs(id)...)
+func (r *Runtime) paneStates(ctx context.Context, id string) ([]paneState, error) {
+	out, err := r.runForSession(ctx, id, listPaneStatesArgs(id)...)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && killSessionMissingOutput(string(out)) {
@@ -190,30 +207,42 @@ func (r *Runtime) paneSessionIDs(ctx context.Context, id string) ([]int, error) 
 		}
 		return nil, fmt.Errorf("tmux runtime: discover panes %s: %w", id, err)
 	}
-	var ids []int
-	for _, line := range strings.Fields(string(out)) {
-		pid, err := strconv.Atoi(line)
+	var panes []paneState
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || (fields[1] != "0" && fields[1] != "1") {
+			return nil, fmt.Errorf("tmux runtime: discover panes %s: invalid pane state %q", id, line)
+		}
+		pid, err := strconv.Atoi(fields[0])
 		if err != nil || pid <= 1 {
 			return nil, fmt.Errorf("tmux runtime: discover panes %s: invalid pid %q", id, line)
 		}
-		ids = append(ids, pid)
+		panes = append(panes, paneState{PID: pid, Dead: fields[1] == "1"})
 	}
-	return ids, nil
+	return panes, nil
 }
 
-func paneIdentities(table []ownedProcess, pids []int) ([]processIdentity, error) {
+func paneIdentities(table []ownedProcess, panes []paneState) ([]processIdentity, error) {
 	var roots []processIdentity
-	for _, pid := range pids {
+	for _, pane := range panes {
+		// A retained dead pane's numeric PID can already belong to another
+		// process. It must never establish new signalling authority.
+		if pane.Dead {
+			continue
+		}
 		found := false
 		for _, p := range table {
-			if p.PID == pid && p.Start != "" && p.Session != "" {
+			if p.PID == pane.PID && p.Start != "" && p.Session != "" {
 				roots = append(roots, p.processIdentity)
 				found = true
 				break
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("pane pid %d absent from process inventory", pid)
+			return nil, fmt.Errorf("pane pid %d absent from process inventory", pane.PID)
 		}
 	}
 	return roots, nil
@@ -261,13 +290,35 @@ func ownedDescendants(table []ownedProcess, known []processIdentity) []ownedProc
 	return owned
 }
 
-func identities(processes []ownedProcess) []processIdentity {
-	out := make([]processIdentity, 0, len(processes))
+// Keep vanished identities as evidence of sessions whose membership still
+// needs to be checked. They do not grant authority to signal a new process.
+func retainIdentities(known []processIdentity, processes []ownedProcess) []processIdentity {
+	next := append([]processIdentity(nil), known...)
 	for _, p := range processes {
-		out = append(out, p.processIdentity)
+		if !slices.Contains(next, p.processIdentity) {
+			next = append(next, p.processIdentity)
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
-	return out
+	return next
+}
+
+func unconfirmedSessionMember(table []ownedProcess, pending *pendingTeardown) bool {
+	for _, p := range table {
+		if p.Stopped {
+			continue
+		}
+		boot := processBootIdentity(p.Start)
+		if slices.Contains(pending.UnconfirmedSessions, p.Session) && (pending.Boot == "" || boot == "" || pending.Boot == boot) {
+			return true
+		}
+		for _, k := range pending.Processes {
+			previousBoot := processBootIdentity(k.Start)
+			if p.Session == k.Session && (previousBoot == "" || boot == "" || previousBoot == boot) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *Runtime) reapOwnedProcesses(ctx context.Context, pending *pendingTeardown) error {
@@ -292,11 +343,17 @@ func (r *Runtime) reapOwnedProcesses(ctx context.Context, pending *pendingTeardo
 			}
 		}
 		if len(live) == 0 {
+			// An unobserved child may outlive the last sampled parent. The
+			// session label is enough to withhold success, but not enough to
+			// signal it after identities may have been recycled during downtime.
+			if unconfirmedSessionMember(table, pending) {
+				return fmt.Errorf("tmux runtime: cleanup unconfirmed for %s: session members remain without a live ownership anchor", pending.ID)
+			}
 			return nil
 		}
 		// A process may fork during shutdown. Persist each newly proven child
 		// before signalling it so cancellation or a crash cannot lose ownership.
-		next := identities(owned)
+		next := retainIdentities(pending.Processes, owned)
 		if !slices.Equal(pending.Processes, next) {
 			pending.Processes = next
 			if err := r.saveTeardown(ctx, pending); err != nil {
@@ -344,8 +401,13 @@ func (r *Runtime) loadTeardown(id string) (*pendingTeardown, error) {
 	if err := json.Unmarshal(data, &pending); err != nil {
 		return nil, err
 	}
-	if pending.Version != 1 || pending.ID != id || len(pending.Panes) == 0 {
+	if pending.Version != 1 || pending.ID != id || (len(pending.Panes) == 0 && len(pending.UnconfirmedSessions) == 0) {
 		return nil, errors.New("invalid process cleanup record")
+	}
+	for _, session := range pending.UnconfirmedSessions {
+		if pid, err := strconv.Atoi(session); err != nil || pid <= 1 {
+			return nil, errors.New("invalid unconfirmed process session")
+		}
 	}
 	for _, p := range append(append([]processIdentity(nil), pending.Panes...), pending.Processes...) {
 		if p.PID <= 1 || p.Start == "" || p.Session == "" {

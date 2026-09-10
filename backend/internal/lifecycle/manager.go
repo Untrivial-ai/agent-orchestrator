@@ -47,6 +47,13 @@ type sessionStore interface {
 	UpdatePRLastNudgeSignature(ctx context.Context, prURL, payload string) error
 }
 
+// sessionSpawnStore explicitly publishes launch ownership and the startup
+// journal together. Ordinary session updates must preserve that journal.
+// The capability is optional for focused reducer fakes; SQLite implements it.
+type sessionSpawnStore interface {
+	CommitSessionSpawn(context.Context, domain.SessionRecord) error
+}
+
 // controllerEpochStore is the atomic persistence primitive used by
 // CommitControllerEpoch. It stays optional on the broad lifecycle store so
 // focused reducer fakes do not need controller-transition methods; production
@@ -1180,7 +1187,13 @@ func (m *Manager) markSpawned(
 		}
 		rec.UpdatedAt = now
 		if boundary == nil {
-			if err := m.store.UpdateSession(ctx, rec); err != nil {
+			var err error
+			if writer, ok := m.store.(sessionSpawnStore); ok {
+				err = writer.CommitSessionSpawn(ctx, rec)
+			} else {
+				err = m.store.UpdateSession(ctx, rec)
+			}
+			if err != nil {
 				return nil, err
 			}
 		} else if prepare == nil {
