@@ -282,7 +282,7 @@ export function AgentModelCombobox({
 						{normalizedSearch !== "" && rankedModels.length === 0 && !allowDirectCustom && (
 							<p className="px-2 py-1.5 text-xs text-settings-muted">{t("settings.models.noMatches")}</p>
 						)}
-						{normalizedSearch === "" && entryMode !== "direct" && (
+						{normalizedSearch === "" && (
 							<>
 								<DropdownMenuSeparator />
 								<div className="space-y-1 px-2 py-1.5 text-xs text-settings-muted">
@@ -292,7 +292,9 @@ export function AgentModelCombobox({
 											? t("settings.models.configureThenRefresh", {
 													agent: agentLabel || t("settings.models.selectedAgent"),
 												})
-											: t("settings.models.unavailable")}
+											: entryMode === "direct"
+												? t("settings.models.notListedYetRefresh")
+												: t("settings.models.unavailable")}
 									</p>
 									{onRefresh && (
 										<button

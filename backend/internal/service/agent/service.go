@@ -143,8 +143,13 @@ func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatal
 }
 
 // WarmModelCatalogs starts a non-blocking, sequential refresh of the Claude
-// Code and Muse scopes that already have durable cache records. Unseen scopes
-// remain lazy and are discovered only when their picker is first opened.
+// Code, Muse, and OpenCode scopes that already have durable cache records.
+// OpenCode is included alongside the command-backed CLIs whose catalogs can
+// drift without a fingerprint change (e.g. a local model provider added to
+// opencode's config): its "direct" custom-model-entry mode hides the picker's
+// manual refresh action, so a startup revalidation is its only way to notice
+// new models without waiting out modelCatalogTrustWindow. Unseen scopes remain
+// lazy and are discovered only when their picker is first opened.
 func (s *Service) WarmModelCatalogs(ctx context.Context) {
 	if s.cache == nil || s.discoverer == nil {
 		return
@@ -153,7 +158,7 @@ func (s *Service) WarmModelCatalogs(ctx context.Context) {
 }
 
 func (s *Service) warmModelCatalogs(ctx context.Context) {
-	for _, agentID := range []string{"claude-code", "muse"} {
+	for _, agentID := range []string{"claude-code", "muse", "opencode"} {
 		records, err := s.cache.ListAgentModelCatalogsByAgent(ctx, agentID)
 		if err != nil {
 			continue

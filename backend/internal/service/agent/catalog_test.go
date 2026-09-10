@@ -1319,11 +1319,12 @@ func cachedModelRecord(t *testing.T, agentID, projectID string, validatedAt time
 	return ports.CachedAgentModelCatalog{AgentID: agentID, ProjectID: projectID, CatalogJSON: string(data), FetchedAt: validatedAt}
 }
 
-func TestWarmModelCatalogsRevalidatesOnlyCachedClaudeAndMuseScopesSequentially(t *testing.T) {
+func TestWarmModelCatalogsRevalidatesOnlyCachedClaudeMuseAndOpenCodeScopesSequentially(t *testing.T) {
 	old := time.Now().Add(-time.Hour)
 	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
 		"claude-code\x00project-a": cachedModelRecord(t, "claude-code", "project-a", old, false),
 		"muse\x00project-b":        cachedModelRecord(t, "muse", "project-b", old, false),
+		"opencode\x00project-d":    cachedModelRecord(t, "opencode", "project-d", old, false),
 		"codex\x00project-c":       cachedModelRecord(t, "codex", "project-c", old, false),
 	}}
 	discoverer := &fakeModelDiscoverer{delay: 10 * time.Millisecond, catalog: ports.AgentModelCatalog{
@@ -1332,12 +1333,13 @@ func TestWarmModelCatalogsRevalidatesOnlyCachedClaudeAndMuseScopesSequentially(t
 	svc := newService([]agentregistry.HarnessAgent{
 		harnessAgent("claude-code", "Claude Code", nil),
 		harnessAgent("muse", "Muse", nil),
+		harnessAgent("opencode", "OpenCode", nil),
 		harnessAgent("codex", "Codex", nil),
 	}, cache, nil, discoverer)
 
 	svc.warmModelCatalogs(context.Background())
-	if got := discoverer.discoverCalls.Load(); got != 2 {
-		t.Fatalf("discovery calls = %d, want cached Claude and Muse scopes only", got)
+	if got := discoverer.discoverCalls.Load(); got != 3 {
+		t.Fatalf("discovery calls = %d, want cached Claude, Muse, and OpenCode scopes only", got)
 	}
 	if discoverer.overlap.Load() {
 		t.Fatal("startup model discoveries overlapped")

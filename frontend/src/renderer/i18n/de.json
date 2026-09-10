@@ -943,6 +943,7 @@
 	"settings.models.custom": "Modell-ID eingeben…",
 	"settings.models.cantFind": "Modell nicht gefunden?",
 	"settings.models.configureThenRefresh": "Konfigurieren Sie das Modell in {{agent}} und aktualisieren Sie anschließend.",
+	"settings.models.notListedYetRefresh": "Noch nicht aufgeführt? Die Liste ist zwischengespeichert – aktualisieren, um ein neues Modell zu erhalten.",
 	"settings.models.default": "Standard",
 	"settings.models.currentDefaults": "Aktuell & Standardwerte",
 	"settings.models.recent": "Zuletzt verwendet",

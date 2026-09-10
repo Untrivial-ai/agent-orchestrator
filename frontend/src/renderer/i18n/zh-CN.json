@@ -925,6 +925,7 @@
 	"settings.models.custom": "输入模型 ID…",
 	"settings.models.cantFind": "找不到你的模型？",
 	"settings.models.configureThenRefresh": "在 {{agent}} 中配置模型，然后刷新。",
+	"settings.models.notListedYetRefresh": "还没看到？列表已缓存——刷新以获取新模型。",
 	"settings.models.default": "默认",
 	"settings.models.currentDefaults": "当前和默认",
 	"settings.models.recent": "最近使用",
