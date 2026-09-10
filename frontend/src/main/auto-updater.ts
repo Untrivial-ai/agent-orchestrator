@@ -1091,7 +1091,32 @@ function automaticChecksAreFailing(): boolean {
 function publishFailingChecks(): void {
   if (!automaticChecksAreFailing() || failingChecksPublished) return;
   failingChecksPublished = true;
+  clearUnrecoverableRememberedBuild();
   broadcast(lastStatus);
+}
+
+// On macOS, a build remembered from staged-update.json but never re-established
+// in the current process leaves the sidebar showing "Restart to update" for a
+// build that cannot be installed: the native updater has no handoff for it. If
+// automatic checks keep failing (network down, rate limited, feed 404), the
+// self-healing re-download never happens and the button is a permanent no-op.
+// Clear the stale metadata so the UI stops advertising an uninstallable build.
+function clearUnrecoverableRememberedBuild(): void {
+  if (process.platform !== "darwin") return;
+  if (stagedInCurrentProcess) return;
+  if (!hasStagedBuild()) return;
+  console.warn(
+    "clearing remembered staged build %s: automatic checks have failed %d times without re-establishing native readiness",
+    stagedVersion,
+    consecutiveAutomaticCheckFailures,
+  );
+  forgetPersistedStagedBuild(escalationStateDir);
+  stagedVersion = undefined;
+  stagedAtMs = undefined;
+  stagedChannel = undefined;
+  stagedEscalated = false;
+  stagedRequestId = undefined;
+  stopEscalationTimer();
 }
 
 // errorMessage extracts the user-facing message for an update error status,

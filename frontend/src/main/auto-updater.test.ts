@@ -1166,6 +1166,67 @@ describe("startAutoUpdates", () => {
     expect(module.getUpdateStatus().checksFailing).toBeUndefined();
   });
 
+  it("clears a remembered macOS build once automatic checks exhaust the threshold", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({
+        version: "2.1.0", stagedAt: Date.now(), channel: "latest",
+      }));
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater(
+        { enabled: true, channel: "latest", nightlyAck: false, feature: null },
+      );
+      autoUpdater.checkForUpdates.mockImplementation(() => {
+        updaterEvents.get("error")?.(new Error("HttpError: 404 latest-mac.yml"));
+        return Promise.resolve();
+      });
+      await module.startAutoUpdates(stateDir);
+      expect(module.getUpdateStatus().staged?.version).toBe("2.1.0");
+      await module.startAutoUpdates(stateDir);
+      expect(module.getUpdateStatus().staged?.version).toBe("2.1.0");
+      await module.startAutoUpdates(stateDir);
+      expect(module.getUpdateStatus().staged).toBeUndefined();
+      // The file deletion is async (fire-and-forget queue); give it a tick.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(existsSync(nodePath.join(stateDir, "staged-update.json"))).toBe(false);
+    } finally { restore(); }
+  });
+
+  it("does not clear a remembered build on non-darwin platforms", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({
+      version: "2.1.0", stagedAt: Date.now(), channel: "latest",
+    }));
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater(
+      { enabled: true, channel: "latest", nightlyAck: false, feature: null },
+    );
+    autoUpdater.checkForUpdates.mockImplementation(() => {
+      updaterEvents.get("error")?.(new Error("HttpError: 404 latest-mac.yml"));
+      return Promise.resolve();
+    });
+    for (let i = 0; i < 4; i += 1) await module.startAutoUpdates(stateDir);
+    expect(module.getUpdateStatus().staged?.version).toBe("2.1.0");
+  });
+
+  it("keeps a current-process staged build even when checks fail", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater(
+        { enabled: true, channel: "latest", nightlyAck: false, feature: null },
+      );
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      autoUpdater.checkForUpdates.mockImplementation(() => {
+        updaterEvents.get("error")?.(new Error("HttpError: 404 latest-mac.yml"));
+        return Promise.resolve();
+      });
+      for (let i = 0; i < 4; i += 1) await module.startAutoUpdates(stateDir);
+      expect(module.getUpdateStatus().staged?.version).toBe("2.1.0");
+    } finally { restore(); }
+  });
+
   it("does not overwrite a newer staged escalation when an automatic check fails", async () => {
     vi.useFakeTimers();
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
