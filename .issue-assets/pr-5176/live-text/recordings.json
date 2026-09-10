@@ -1,0 +1,14 @@
+{
+  "before": {
+    "source": "before/live-display-Live-display--e016a-saved-history-refresh-waits/video.webm",
+    "startSeconds": 7.5,
+    "maxDurationSeconds": 7.5,
+    "commit": "8343bcc089982e202f0fbc37ff43aa09de3110d4"
+  },
+  "after": {
+    "source": "after/live-display-Live-display--e016a-saved-history-refresh-waits/video.webm",
+    "startSeconds": 4.5,
+    "maxDurationSeconds": 7.5,
+    "commit": "8bc61ec828f174675437d603da815e7bf32dfb94"
+  }
+}
