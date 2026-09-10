@@ -41,10 +41,6 @@ describe("DaemonTelemetryPolicyClient", () => {
 	});
 
 	it("returns a disabled acknowledgement when enablement is refused by the release gate", async () => {
-		// The daemon answers 200 with eventsEnabled:false because the production
-		// gate is closed. That is not a protocol violation, and throwing here left
-		// the policy stuck in cleanup_pending so main.ts re-POSTed every second
-		// (#5196). The controller decides what a downgrade means, not the client.
 		const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
 			status: "applied", consentGeneration: "generation-on", eventsEnabled: false, gateDrained: true, purgeConfirmed: true,
 		}), { status: 200 }));
@@ -56,8 +52,6 @@ describe("DaemonTelemetryPolicyClient", () => {
 	});
 
 	it("still rejects an enabled acknowledgement when disable was requested", async () => {
-		// The unsafe direction must keep failing closed: we asked for off and the
-		// daemon claims the gate is open.
 		const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
 			status: "applied", consentGeneration: "generation-off", eventsEnabled: true, gateDrained: true, purgeConfirmed: true,
 		}), { status: 200 }));

@@ -271,9 +271,6 @@ describe("GlobalSettingsForm", () => {
 	});
 
 	it("names the platform restriction instead of claiming cleanup keeps retrying", async () => {
-		// #5196: Windows has no durable policy replacement, so this is terminal.
-		// "Reporting remains disabled while cleanup retries" was both wrong and
-		// unactionable.
 		useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: false, state: "cleanup_failed", environmentVeto: false, durabilitySupported: false, reason: "durability_unsupported" }, loaded: true });
 		renderForm();
 		expect(await screen.findByText("Enabling is unavailable on this platform because durable consent writes are not supported.")).toBeInTheDocument();
@@ -281,10 +278,7 @@ describe("GlobalSettingsForm", () => {
 	});
 
 	it("does not promise retries for the fail-closed view when the controller is unavailable", async () => {
-		// Exactly the shape failClosedTelemetryPolicyView() returns in main.ts:
-		// cleanup_failed + invalid_authority on a view that declares no
-		// durability support. Keying the copy on reason rendered "Reporting
-		// remains disabled while cleanup retries" here, where no retry runs.
+		// The shape failClosedTelemetryPolicyView() returns in main.ts.
 		useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" }, loaded: true });
 		renderForm();
 		expect(await screen.findByText("Enabling is unavailable on this platform because durable consent writes are not supported.")).toBeInTheDocument();
@@ -292,8 +286,6 @@ describe("GlobalSettingsForm", () => {
 	});
 
 	it("names the release gate when a saved opt-in cannot be honoured", async () => {
-		// #5196: the state this reaches once the client stops rejecting the
-		// gate-refused acknowledgement.
 		useTelemetryPolicyStore.setState({ view: { eventsEnabled: true, consentGeneration: "generation-on", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, state: "applied", environmentVeto: false, durabilitySupported: true, reason: "release_blocked" }, loaded: true });
 		renderForm();
 		expect(await screen.findByText("Error reporting is disabled by this release's safety gate.")).toBeInTheDocument();

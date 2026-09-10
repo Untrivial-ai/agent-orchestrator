@@ -86,25 +86,9 @@ export function telemetryPolicySnapshot(record: TelemetryPolicyDiskRecord, ackno
 }
 
 /**
- * Whether an unsettled policy view can still be advanced by retrying.
- *
- * Keyed on `durabilitySupported`, not on `reason`. Durability is a permanent
- * property of the platform — Windows has no durable policy replacement, so
- * `retryPendingReplacement` always throws and every retry is a guaranteed
- * failure, which the 1s timer in `main.ts` would repeat for the life of the
- * process (#5196). `reason` cannot carry that fact reliably: the controller's
- * catch relabels it (`desktop-telemetry-controller.ts`), and
- * `failClosedTelemetryPolicyView` reports `invalid_authority` on a view that
- * already declares no durability support. `durabilitySupported` is set by
- * `toView` on every path and survives those rewrites.
- *
- * Everything else is treated as transient — the daemon may not be listening
- * yet, or a purge may succeed on a later attempt. That is not always true: an
- * authority rejected as unsafe at load time can never become writable, because
- * `load()` short-circuits on `loaded`. Retrying it is a local no-op that still
- * broadcasts policy IPC once a second. Fixing that needs the authority to
- * surface its writability on the view; it is a pre-existing loop this predicate
- * deliberately does not claim to solve.
+ * Whether an unsettled policy can still be advanced by retrying. Keyed on
+ * durabilitySupported rather than reason: reason is rewritten by the
+ * controller's catch and by failClosedTelemetryPolicyView (main.ts).
  */
 export function telemetryPolicyRetryable(view: TelemetryPolicyView): boolean {
 	return view.state !== "applied" && view.durabilitySupported;

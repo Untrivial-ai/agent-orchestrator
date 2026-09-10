@@ -201,13 +201,8 @@ describe("DesktopTelemetryController", () => {
 	});
 
 	it("settles a saved opt-in in one request when the release gate refuses enablement", async () => {
-		// #5196: with reporting enabled on disk and the production gate closed,
-		// the daemon returns 200/eventsEnabled:false. That must settle as applied
-		// + release_blocked, not cleanup_pending, or main.ts's 1s timer retries
-		// forever.
 		const authority = new AuthorityFake(true, "generation-on");
-		// The real client, not a fake: the defect lived in its acknowledgement
-		// validation, so a hand-rolled stub here would pass no matter what.
+		// The real client: the defect lived in its acknowledgement validation.
 		const fetcher = vi.fn().mockImplementation(async (_url: string, init: RequestInit) => new Response(JSON.stringify({
 			status: "applied",
 			consentGeneration: JSON.parse(String(init.body)).consentGeneration,
@@ -225,19 +220,13 @@ describe("DesktopTelemetryController", () => {
 		expect(controller.snapshot()).toMatchObject({ state: "applied", reason: "release_blocked", eventsEnabled: true, acknowledged: true });
 		expect(applyPolicy).toHaveBeenCalledTimes(1);
 
-		// The timer's guard: an applied view is never retried. Drive the retry
-		// entry point 60 times anyway and prove it issues no further requests.
 		for (let i = 0; i < 60; i += 1) await controller.retryPendingCleanup();
 		expect(applyPolicy).toHaveBeenCalledTimes(1);
 	});
 
 	it("stays terminal on a platform without durable policy replacement", async () => {
-		// Windows. load() returns before touching disk, so the snapshot is
-		// unacknowledged and initialize() never contacts the daemon at all. It
-		// lands on cleanup_failed/durability_unsupported — but retryPendingCleanup's
-		// catch used to relabel that reason cleanup_failed on the first tick
-		// (retryPendingReplacement throws on win32), so the view started looking
-		// transient again and the 1s timer never stopped (#5196).
+		// win32: load() returns before touching disk, so initialize() never calls
+		// the daemon and the reason must survive the retry (#5196).
 		const authority = new TelemetryPolicyAuthority({
 			dataDir: path.join(os.tmpdir(), "ao-controller-win32-unused"),
 			packagedDefault: false,
@@ -260,7 +249,6 @@ describe("DesktopTelemetryController", () => {
 	});
 
 	it("keeps refusing an acknowledgement whose generation does not match", async () => {
-		// The generation guard must survive the #5196 relaxation.
 		const authority = new AuthorityFake(true, "generation-on");
 		const daemon = {
 			prepareDisable: vi.fn(),

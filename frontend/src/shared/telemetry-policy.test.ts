@@ -50,16 +50,10 @@ describe("telemetryPolicyRetryable", () => {
 	});
 
 	it("never retries a platform without durable policy replacement", () => {
-		// Windows: retryPendingReplacement always throws, so every retry is a
-		// guaranteed failure that the 1s timer would repeat forever (#5196).
 		expect(telemetryPolicyRetryable({ ...base, state: "cleanup_failed", durabilitySupported: false, reason: "durability_unsupported" })).toBe(false);
 	});
 
 	it("keys on durabilitySupported rather than the reason label", () => {
-		// The controller's catch rewrites reason, and
-		// failClosedTelemetryPolicyView (main.ts) reports invalid_authority on a
-		// view that already declares no durability support. Either would slip
-		// past a reason-only check and resume the 1s timer.
 		expect(telemetryPolicyRetryable({ ...base, state: "cleanup_failed", durabilitySupported: false, reason: "cleanup_failed" })).toBe(false);
 		expect(telemetryPolicyRetryable({ ...base, state: "cleanup_failed", durabilitySupported: false, reason: "invalid_authority" })).toBe(false);
 	});

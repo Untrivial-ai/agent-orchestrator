@@ -257,10 +257,8 @@ function TelemetryEventsRow() {
 	const setEnabled = useTelemetryPolicyStore((state) => state.setEnabled);
 	const checked = view?.eventsEnabled ?? false;
 	const blockedEnable = !checked && (view?.environmentVeto || !view?.durabilitySupported);
-	// saveError first: a toggle the user just attempted is the most immediate
-	// thing to report. Then the permanent platform restriction — it outranks
-	// cleanup_failed because that copy promises retries which, on a platform
-	// without durable policy replacement, will never happen (#5196).
+	// A platform restriction outranks cleanup_failed, whose copy promises retries
+	// that will never run there (#5196).
 	const status = saveError ? "failed"
 		: !view ? null
 		: !view.durabilitySupported ? "unsupported"
