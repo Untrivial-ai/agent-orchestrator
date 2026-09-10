@@ -43,6 +43,8 @@ type fakeShellRuntime struct {
 	aliveByHandle map[string]bool
 	aliveErr      error
 	handlePrefix  string
+	childExited   bool
+	childProbeErr error
 }
 
 type sentInput struct {
@@ -110,6 +112,16 @@ func (f *fakeShellRuntime) IsAlive(_ context.Context, handle ports.RuntimeHandle
 		return false, f.aliveErr
 	}
 	return f.aliveByHandle[handle.ID], nil
+}
+
+func (f *fakeShellRuntime) IsChildAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	if f.childProbeErr != nil {
+		return false, f.childProbeErr
+	}
+	if f.childExited {
+		return false, nil
+	}
+	return f.IsAlive(ctx, handle)
 }
 
 // fakeShellTerminalStore is an in-memory Store keyed by handle id.
@@ -1716,14 +1728,58 @@ func TestCommandTerminalLifetimeAcrossRestarts(t *testing.T) {
 	}
 }
 
-func TestDesktopRelaunchPrunesExitedShellWithoutDestroy(t *testing.T) {
+func TestDesktopRelaunchPrunesExitedShellAndHost(t *testing.T) {
 	rt := newFakeShellRuntime()
+	rt.aliveByHandle["shell-exited"] = true
+	rt.childExited = true
 	st := &fakeShellTerminalStore{records: []ShellTerminalRecord{{HandleID: "shell-exited", AppRunID: "previous"}}}
 	svc := newTestService(rt, st, &fakeProjectRootLocator{})
 	if n, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil || n != 1 {
 		t.Fatalf("reap = %d, %v", n, err)
 	}
-	if len(st.records) != 0 || len(rt.destroyed) != 0 {
+	if len(st.records) != 0 || !reflect.DeepEqual(rt.destroyed, []string{"shell-exited"}) || rt.aliveByHandle["shell-exited"] {
 		t.Fatalf("rows = %+v, destroyed = %v", st.records, rt.destroyed)
+	}
+}
+
+func TestShellReconciliationPreservesUncertainChildOrHost(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		childProbeErr error
+		destroyErr    error
+		hostProbeErr  error
+	}{
+		{name: "unknown child", childProbeErr: ports.ErrRuntimeProbeInconclusive},
+		{name: "child probe unavailable", childProbeErr: ports.ErrRuntimeUnavailable},
+		{name: "child probe error", childProbeErr: errors.New("status failed")},
+		{name: "host survives teardown", destroyErr: errors.New("kill failed")},
+		{name: "host teardown unknown", destroyErr: errors.New("kill failed"), hostProbeErr: ports.ErrRuntimeProbeInconclusive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := newFakeShellRuntime()
+			rt.childExited, rt.childProbeErr = true, tc.childProbeErr
+			rt.destroyErr, rt.aliveErr = tc.destroyErr, tc.hostProbeErr
+			handleID := "ptyhost-v1:shell-exited"
+			rt.aliveByHandle[handleID] = true
+			st := &fakeShellTerminalStore{records: []ShellTerminalRecord{{HandleID: handleID, AppRunID: "previous"}}}
+			svc := newTestService(rt, st, &fakeProjectRootLocator{})
+			if count, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil || count != 0 {
+				t.Fatalf("reap = %d, %v; want preserved runtime", count, err)
+			}
+			listed, err := svc.ListShellTerminalsForCurrentAppRun(context.Background())
+			if err != nil || len(listed) != 1 || len(st.records) != 1 {
+				t.Fatalf("list = %v, %v; rows = %v", listed, err, st.records)
+			}
+			if tc.childProbeErr != nil && len(rt.destroyed) != 0 {
+				t.Fatalf("inconclusive child probe destroyed runtime: %v", rt.destroyed)
+			}
+			// A later conclusive retry must finish cleanup without losing the
+			// handle needed to stop the host retained by the failed attempt.
+			rt.childProbeErr, rt.destroyErr, rt.aliveErr = nil, nil, nil
+			listed, err = svc.ListShellTerminalsForCurrentAppRun(context.Background())
+			if err != nil || len(listed) != 0 || len(st.records) != 0 || rt.aliveByHandle[handleID] {
+				t.Fatalf("retry list = %v, %v; rows = %v", listed, err, st.records)
+			}
+		})
 	}
 }
