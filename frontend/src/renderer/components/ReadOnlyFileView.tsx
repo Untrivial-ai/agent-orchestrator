@@ -47,7 +47,7 @@ function HighlightedContent({ content, path }: { content: string; path: string }
 	const extension = path.split("/").pop()?.split(".").pop();
 	const language = canonicalLanguage(extension);
 	return (
-		<div className="chat-code min-h-0 flex-1 overflow-auto p-3">
+		<div className="chat-code min-h-0 flex-1 select-text overflow-auto p-3">
 			<pre className="whitespace-pre font-mono text-xs leading-5 text-foreground">
 				<code>
 					<HighlightedCode code={content} language={language} />

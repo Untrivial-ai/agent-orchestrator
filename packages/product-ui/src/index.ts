@@ -1,5 +1,6 @@
 export * from "./AgentAvatar";
 export * from "./GithubAvatar";
+export * from "./UserAvatar";
 export * from "./agent-capabilities";
 export * from "./agents";
 export * from "./external-link";
@@ -10,6 +11,7 @@ export * from "./project-models";
 export * from "./ProjectViews";
 export * from "./pull-request-models";
 export * from "./scm-models";
+export * from "./scm-avatar";
 export * from "./session-models";
 export * from "./session-presentation";
 export * from "./SessionInspectorView";

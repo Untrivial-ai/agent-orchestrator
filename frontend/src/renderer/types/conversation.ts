@@ -142,6 +142,12 @@ export interface ConversationContentSummary {
 	name?: string;
 }
 
+export interface QueuedMessageEditOptions {
+	attachments?: { mimeType: string; data: string }[];
+	retainedContent?: number[];
+	expectedRevision?: number;
+}
+
 export interface ConversationMessage {
 	kind: "message";
 	id: string;
@@ -194,6 +200,12 @@ export interface ApprovalDetail {
 	subjectKind?: ActivityKind;
 	/** ACP's tool category, retained for diagnostics and forward compatibility. */
 	toolKind?: string;
+}
+
+/** Provider-supplied recovery information carried by an error activity. */
+export interface ProviderErrorDetail {
+	/** Optional provider destination; the renderer shows web URLs literally. */
+	actionUrl?: string;
 }
 
 export interface CommandDetail {
@@ -292,6 +304,9 @@ export interface FileChangeFile {
 	additions: number;
 	deletions: number;
 	patch?: string;
+	/** Native provider before/after text, used to render a fallback diff. */
+	oldText?: string;
+	newText?: string;
 	/** The patch was cut at the daemon's cap, so it is not the whole change. */
 	patchTruncated?: boolean;
 }
@@ -324,6 +339,8 @@ export interface McpToolDetail {
 	namespace?: string;
 	arguments?: unknown;
 	result?: unknown;
+	/** Structured provider content, including native ACP read output. */
+	content?: unknown;
 	error?: string;
 	success?: boolean;
 	/** Progress notes streamed while a long call runs. */
@@ -494,6 +511,7 @@ export interface ConversationActivity {
 	 */
 	detail?: CommandDetail &
 		ApprovalDetail &
+		ProviderErrorDetail &
 		FileChangeDetail &
 		UsageDetail &
 		CompactionDetail &

@@ -6,6 +6,7 @@ import { BrowserPanel, BrowserPanelView, BrowserTopTabDragOverlay, useBrowserAnn
 import { reorderBrowserTabs } from "../lib/browser-tab-order";
 import { useBrowserView, type BrowserNavState } from "../hooks/useBrowserView";
 import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
+import { useUiStore } from "../stores/ui-store";
 import type { WorkspaceSession } from "../types/workspace";
 import { TooltipProvider } from "./ui/tooltip";
 import type {
@@ -182,6 +183,7 @@ describe("BrowserPanel", () => {
 	}
 
 	beforeEach(() => {
+		useUiStore.setState({ globalToast: null, settingsModal: null });
 		hookState.navigate.mockReset();
 		hookState.goBack.mockReset();
 		hookState.goForward.mockReset();
@@ -226,6 +228,8 @@ describe("BrowserPanel", () => {
 			};
 		});
 		window.ao!.browser.historySuggestions = vi.fn(async () => []);
+		window.ao!.browser.captureScreenshot = vi.fn(async () => undefined);
+		window.ao!.browser.downloads.list = vi.fn(async () => ({ downloads: [] }));
 		window.ao!.browser.selectProfile = vi.fn(async () => undefined);
 		window.ao!.browserProfiles.list = vi.fn(async () => ({ profiles: [] }));
 		window.ao!.browser.notifyPanelUsed = vi.fn();
@@ -448,6 +452,62 @@ describe("BrowserPanel", () => {
 		await userEvent.click(screen.getByRole("menuitem", { name: "Device preset" }));
 		expect(screen.getByRole("menuitem", { name: /iPhone SE/ })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: /iPhone SE/ }).parentElement).toHaveClass("board-scrollbar");
+	});
+
+	it("captures the active page from the controls menu and confirms the clipboard copy", async () => {
+		hookState.navState = { ...hookState.navState, url: "https://example.test/" };
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		await openBrowserControls();
+		await userEvent.click(screen.getByRole("menuitem", { name: "Take a screenshot" }));
+
+		expect(window.ao!.browser.captureScreenshot).toHaveBeenCalledWith("42:sess-1");
+		await waitFor(() =>
+			expect(useUiStore.getState().globalToast?.title).toBe("Screenshot copied to clipboard"),
+		);
+		expect(useUiStore.getState().globalToast?.placement).toBe("top-center");
+	});
+
+	it("disables screenshots until the active tab has a page", async () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		await openBrowserControls();
+		expect(screen.getByRole("menuitem", { name: "Take a screenshot" })).toHaveAttribute("data-disabled");
+	});
+
+	it("opens download history from the browser controls menu", async () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		await openBrowserControls();
+		await userEvent.click(screen.getByRole("menuitem", { name: "Downloads" }));
+		expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "browserProfiles" });
+	});
+
+	it("does not show the Downloads tooltip when its menu returns focus", async () => {
+		window.ao!.browser.downloads.list = vi.fn(async () => ({
+			downloads: [{
+				id: "download-1",
+				fileName: "report.pdf",
+				receivedBytes: 100,
+				totalBytes: 100,
+				status: "completed" as const,
+				startedAt: 1,
+				updatedAt: 2,
+			}],
+		}));
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		// A newly observed download opens the menu automatically. Close that first,
+		// then exercise the user's explicit open/close flow.
+		expect(await screen.findByText("report.pdf")).toBeInTheDocument();
+		await userEvent.keyboard("{Escape}");
+		await waitFor(() => expect(screen.queryByText("report.pdf")).not.toBeInTheDocument());
+		const trigger = screen.getByRole("button", { name: "Downloads" });
+		await userEvent.click(trigger);
+		expect(screen.getByText("report.pdf")).toBeInTheDocument();
+		await userEvent.keyboard("{Escape}");
+		await waitFor(() => expect(screen.queryByText("report.pdf")).not.toBeInTheDocument());
+		expect(trigger).toHaveFocus();
+		expect(screen.queryByRole("tooltip", { name: "Downloads" })).not.toBeInTheDocument();
 	});
 
 	it("keeps browser profiles inside the AO controls menu", async () => {

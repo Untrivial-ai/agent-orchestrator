@@ -22,14 +22,56 @@ describe("isCommandPaletteEnabled", () => {
 });
 
 describe("parseNightlyVersion", () => {
-	it("splits a nightly stamp into base version and build date", () => {
+	it("splits a nightly stamp into base version and UTC build instant", () => {
 		const parsed = parseNightlyVersion("0.12.11-nightly.202609021713");
 		expect(parsed?.base).toBe("0.12.11");
-		expect(parsed?.builtAt.getFullYear()).toBe(2026);
-		expect(parsed?.builtAt.getMonth()).toBe(8);
-		expect(parsed?.builtAt.getDate()).toBe(2);
-		expect(parsed?.builtAt.getHours()).toBe(17);
-		expect(parsed?.builtAt.getMinutes()).toBe(13);
+		// The stamp encodes the build time in UTC. Assert the absolute instant,
+		// not local getters: the value must not depend on the timezone of the
+		// machine running the tests.
+		expect(parsed?.builtAt.toISOString()).toBe("2026-09-02T17:13:00.000Z");
+		expect(parsed?.builtAt.getTime()).toBe(Date.UTC(2026, 8, 2, 17, 13));
+	});
+
+	it("renders the same instant in positive and negative offsets", () => {
+		const parsed = parseNightlyVersion("0.12.11-nightly.202609071035");
+		if (!parsed) throw new Error("expected a valid nightly stamp to parse");
+		const time = new Intl.DateTimeFormat("en-US", {
+			timeZone: "Asia/Kolkata",
+			month: "short",
+			day: "numeric",
+			hour: "numeric",
+			minute: "2-digit",
+			hour12: true,
+		}).format(parsed.builtAt);
+		expect(time).toBe("Sep 7, 4:05 PM");
+		const pacificTime = new Intl.DateTimeFormat("en-US", {
+			timeZone: "America/Los_Angeles",
+			month: "short",
+			day: "numeric",
+			hour: "numeric",
+			minute: "2-digit",
+			hour12: true,
+		}).format(parsed.builtAt);
+		expect(pacificTime).toBe("Sep 7, 3:35 AM");
+	});
+
+	it("lands on the correct local calendar day across the UTC day boundary", () => {
+		// 03:00 UTC is already the next calendar day in Kolkata but still the
+		// previous evening in Los Angeles; date-only surfaces must show Sep 6
+		// to a user in Los Angeles.
+		const parsed = parseNightlyVersion("0.12.11-nightly.202609070300");
+		if (!parsed) throw new Error("expected a valid nightly stamp to parse");
+		expect(parsed.builtAt.toISOString()).toBe("2026-09-07T03:00:00.000Z");
+		expect(
+			new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Kolkata", month: "short", day: "numeric" }).format(
+				parsed.builtAt,
+			),
+		).toBe("Sep 7");
+		expect(
+			new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric" }).format(
+				parsed.builtAt,
+			),
+		).toBe("Sep 6");
 	});
 
 	it("tolerates a trailing commit stamp", () => {

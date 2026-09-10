@@ -128,7 +128,7 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 		return ClaimPRResult{}, err
 	}
 	now := s.clock().UTC()
-	pr, checks, reviews, threads, comments := claimRowsFromSCM(id, obs, now, rec)
+	pr, checks, reviews, threads, comments := claimRowsFromSCM(id, obs, reviewMode, now, rec)
 	outcome, err := s.prClaimer.ClaimPR(ctx, pr, checks, reviews, threads, comments, reviewMode, opts.AllowTakeover)
 	if err != nil {
 		return ClaimPRResult{}, err
@@ -213,10 +213,20 @@ func providerKey(host string) string {
 	return domain.RepositoryProvider(host)
 }
 
-func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now time.Time, sessionRecord domain.SessionRecord) (domain.PullRequest, []domain.PullRequestCheck, []domain.PullRequestReview, []domain.PullRequestReviewThread, []domain.PullRequestComment) {
+func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, reviewMode ports.ReviewWriteMode, now time.Time, sessionRecord domain.SessionRecord) (domain.PullRequest, []domain.PullRequestCheck, []domain.PullRequestReview, []domain.PullRequestReviewThread, []domain.PullRequestComment) {
 	observedAt := obs.ObservedAt
 	if observedAt.IsZero() {
 		observedAt = now
+	}
+	// Review completeness follows the claim's own review fetch: a preserved
+	// (failed) review fetch passes a zero ReviewObservedAt so the upsert keeps
+	// the stored pair instead of publishing claim-time certainty it does not
+	// have. enrichClaimReviews fills obs.Review.Partial only on success.
+	reviewObservedAt := time.Time{}
+	reviewPartial := false
+	if reviewMode != ports.ReviewWritePreserve {
+		reviewObservedAt = observedAt
+		reviewPartial = obs.Review.Partial
 	}
 	pr := domain.PullRequest{
 		URL:                      firstNonEmpty(obs.PR.URL, obs.PR.HTMLURL),
@@ -240,6 +250,7 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now 
 		Deletions:                obs.PR.Deletions,
 		ChangedFiles:             obs.PR.ChangedFiles,
 		Author:                   obs.PR.Author,
+		AuthorAvatarURL:          obs.PR.AuthorAvatarURL,
 		BaseSHA:                  obs.PR.BaseSHA,
 		MergeCommitSHA:           obs.PR.MergeCommitSHA,
 		ProviderState:            obs.PR.ProviderState,
@@ -252,7 +263,8 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now 
 		ClosedAtProvider:         obs.PR.ClosedAtProvider,
 		ObservedAt:               observedAt,
 		CIObservedAt:             observedAt,
-		ReviewObservedAt:         observedAt,
+		ReviewObservedAt:         reviewObservedAt,
+		ReviewPartial:            reviewPartial,
 	}
 	checks := make([]domain.PullRequestCheck, 0, len(obs.CI.Checks))
 	for _, ch := range obs.CI.Checks {

@@ -130,6 +130,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 	let insertedStyleNumber = 0;
 	insertCSS.mockImplementation(async () => `ao-browser-scrollbars-${++insertedStyleNumber}`);
 	const removeInsertedCSS = vi.fn(async (_key: string) => undefined);
+	const writeImage = vi.fn();
 	const debuggerSendCommand = vi.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
 		if (method === "Page.navigate" && typeof params?.url === "string") currentURL = params.url;
 		return {};
@@ -260,6 +261,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		annotatePreloadPath: "/preload.js",
 		rendererOrigin: "http://localhost:5173",
 		agentBrowserRuntime: runtime,
+		clipboard: { writeImage },
 	});
 	const rendererFrame = { processId: 5, routingId: 7 };
 	const invoke = (channel: string, ...args: unknown[]) =>
@@ -332,6 +334,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		closeDevTools,
 		insertCSS,
 		removeInsertedCSS,
+		writeImage,
 		setBrowserZoomFactor: (zoomFactor: number) => {
 			browserZoomFactor = zoomFactor;
 		},
@@ -342,6 +345,32 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		debuggerSendCommand,
 	};
 }
+
+describe("browser screenshots", () => {
+	it("copies the active page capture to the system clipboard", async () => {
+		const { invoke, webContents, writeImage } = setupHost();
+		const state = await invoke("browser:ensure", "sess-1");
+
+		await expect(invoke("browser:captureScreenshot", state.viewId)).rejects.toThrow(
+			"Open a page before taking a screenshot",
+		);
+		await invoke("browser:navigate", { viewId: state.viewId, url: "https://example.test/" });
+		await invoke("browser:captureScreenshot", state.viewId);
+
+		expect(webContents.capturePage).toHaveBeenCalledOnce();
+		expect(writeImage).toHaveBeenCalledWith(expect.objectContaining({ isEmpty: expect.any(Function) }));
+	});
+
+	it("rejects screenshot requests from a renderer that does not own the browser panel", async () => {
+		const { invoke, invokeFromTab, writeImage } = setupHost();
+		const state = await invoke("browser:ensure", "sess-1");
+
+		await expect(invokeFromTab("browser:captureScreenshot", 99, state.viewId)).rejects.toThrow(
+			"Browser tab is unavailable",
+		);
+		expect(writeImage).not.toHaveBeenCalled();
+	});
+});
 
 describe("browser shortcut matching", () => {
 	it("matches contextual browser shortcuts with platform-native primary modifiers", () => {

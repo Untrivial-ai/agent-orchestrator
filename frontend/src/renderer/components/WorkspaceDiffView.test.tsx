@@ -93,7 +93,7 @@ describe("ReviewDiffBody", () => {
 	});
 
 	it("renders a real diff without git-header noise and with markers in the gutter", async () => {
-		render(
+		const { container } = render(
 			<ReviewDiffBody
 				annotation={noopAnnotation()}
 				detail={baseDetail()}
@@ -110,6 +110,7 @@ describe("ReviewDiffBody", () => {
 		expect(screen.getByText(diffLine("const value = 0;"))).toBeInTheDocument();
 		expect(screen.getByText("@@ -1,1 +1,1 @@")).toBeInTheDocument();
 		expect(screen.queryByText("diff --git a/src/App.tsx b/src/App.tsx")).not.toBeInTheDocument();
+		expect(container.querySelector(".diff-code")).toHaveClass("select-text");
 	});
 
 	it("highlights only the changed tokens within a replaced line", async () => {

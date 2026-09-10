@@ -450,6 +450,9 @@ var (
 	// ErrRuntimePrerequisite reports a missing host prerequisite for the selected
 	// runtime before a session can be created.
 	ErrRuntimePrerequisite = errors.New("runtime: prerequisite missing")
+	// ErrRuntimeCommandLineTooLong reports that the fully escaped command line
+	// exceeds the host operating system's process-creation limit.
+	ErrRuntimeCommandLineTooLong = errors.New("runtime: command line too long")
 	// ErrRuntimeWorkspaceCwdMismatch reports that a runtime session's working
 	// directory never settled on the wanted workspace path after Create's
 	// retried verification (see the tmux adapter's verifyPaneWorkingDirectory).
@@ -521,6 +524,14 @@ type WorkspaceProjectConfig struct {
 	BaseBranch string
 	BaseRef    string
 	Repos      []WorkspaceProjectRepoConfig
+	Assets     []WorkspaceProjectAssetConfig
+}
+
+// WorkspaceProjectAssetConfig describes a non-repository child directory that
+// is copied from the canonical workspace into each session workspace.
+type WorkspaceProjectAssetConfig struct {
+	RelativePath string
+	SourcePath   string
 }
 
 // WorkspaceProjectRepoConfig describes one registered child repo in a

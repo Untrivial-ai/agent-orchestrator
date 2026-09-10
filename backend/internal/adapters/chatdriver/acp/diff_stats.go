@@ -6,10 +6,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// lineDelta reports how many lines were added and removed between two texts.
-// ACP tool diffs send old/new snapshots (sometimes a hunk, sometimes a wider
-// view of the same edit), not a unified patch — counting each side's length
-// would make a one-line edit in an N-line file show as +N −N.
 func lineDelta(oldText, newText string) (additions, deletions int) {
 	if oldText == newText {
 		return 0, 0
@@ -31,15 +27,12 @@ func splitLines(value string) []string {
 		return nil
 	}
 	lines := strings.Split(value, "\n")
-	// A trailing newline marks "file ends with newline", not an extra blank line.
 	if strings.HasSuffix(value, "\n") {
 		lines = lines[:len(lines)-1]
 	}
 	return lines
 }
 
-// longestCommonSubsequenceLen is a rolling-row LCS length over line tokens.
-// Space is O(min(len(a), len(b))); callers already hold both texts.
 func longestCommonSubsequenceLen(a, b []string) int {
 	if len(a) < len(b) {
 		a, b = b, a
@@ -73,18 +66,9 @@ func diffFileFromSnapshot(path string, oldText *string, newText string) ports.Ch
 		}
 	}
 	additions, deletions := lineDelta(old, newText)
-	return ports.ChatDiffFile{
-		Path:      path,
-		Status:    status,
-		Additions: additions,
-		Deletions: deletions,
-	}
+	return ports.ChatDiffFile{Path: path, Status: status, Additions: additions, Deletions: deletions}
 }
 
-// turnDiffAccumulator stores each tool call's latest file contribution for the
-// active turn. ACP re-sends a tool call with expanded old/new context as the
-// edit settles; those updates must replace that tool's contribution, not be
-// combined with an earlier narrower snapshot (first-old + latest-new).
 type turnDiffAccumulator struct {
 	toolOrder []string
 	byTool    map[string][]ports.ChatDiffFile
@@ -104,35 +88,33 @@ func (a *turnDiffAccumulator) aggregate() []ports.ChatDiffFile {
 	if len(a.byTool) == 0 {
 		return nil
 	}
-	type agg struct {
+	type aggregate struct {
 		path                 string
 		status               string
 		additions, deletions int
 	}
-	byPath := make(map[string]*agg)
+	byPath := make(map[string]*aggregate)
 	var pathOrder []string
 	for _, toolID := range a.toolOrder {
 		for _, file := range a.byTool[toolID] {
-			cur := byPath[file.Path]
-			if cur == nil {
-				cur = &agg{path: file.Path}
-				byPath[file.Path] = cur
+			current := byPath[file.Path]
+			if current == nil {
+				current = &aggregate{path: file.Path}
+				byPath[file.Path] = current
 				pathOrder = append(pathOrder, file.Path)
 			}
-			cur.additions += file.Additions
-			cur.deletions += file.Deletions
-			cur.status = file.Status
+			current.additions += file.Additions
+			current.deletions += file.Deletions
+			current.status = file.Status
 		}
 	}
-	out := make([]ports.ChatDiffFile, 0, len(pathOrder))
+	files := make([]ports.ChatDiffFile, 0, len(pathOrder))
 	for _, path := range pathOrder {
-		cur := byPath[path]
-		out = append(out, ports.ChatDiffFile{
-			Path:      cur.path,
-			Status:    cur.status,
-			Additions: cur.additions,
-			Deletions: cur.deletions,
+		current := byPath[path]
+		files = append(files, ports.ChatDiffFile{
+			Path: path, Status: current.status,
+			Additions: current.additions, Deletions: current.deletions,
 		})
 	}
-	return out
+	return files
 }

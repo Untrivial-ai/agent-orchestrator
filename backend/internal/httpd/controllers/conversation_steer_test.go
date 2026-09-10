@@ -58,7 +58,7 @@ func (f *fakeConversationService) CancelQueuedTurn(context.Context, domain.Sessi
 	return nil
 }
 
-func (f *fakeConversationService) EditQueuedTurn(context.Context, domain.SessionID, string, string) error {
+func (f *fakeConversationService) EditQueuedTurn(context.Context, domain.SessionID, string, chatsvc.QueuedMessageEdit) error {
 	return nil
 }
 
@@ -78,7 +78,7 @@ func (f *fakeChatService) CancelQueuedTurn(context.Context, domain.SessionID, st
 	return nil
 }
 
-func (f *fakeChatService) EditQueuedTurn(context.Context, domain.SessionID, string, string) error {
+func (f *fakeChatService) EditQueuedTurn(context.Context, domain.SessionID, string, chatsvc.QueuedMessageEdit) error {
 	return nil
 }
 

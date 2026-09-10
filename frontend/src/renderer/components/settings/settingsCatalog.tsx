@@ -2,6 +2,7 @@ import { BadgeCheck, Bot, CircleHelp, Cloud, Globe2, Keyboard, RefreshCw, Settin
 import { lazy, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import type { GlobalSettingsSection } from "../../stores/ui-store";
+import { BrowserDownloadsSection } from "./BrowserDownloadsSection";
 import { BrowserProfilesSection } from "./BrowserProfilesSection";
 import { CloudCredentialsSection } from "./CloudCredentialsSection";
 import { CodexAccountsSection } from "./CodexAccountsSection";
@@ -57,7 +58,14 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		id: "browserProfiles",
 		icon: Globe2,
 		label: (t) => t("settings.browserProfiles"),
-		render: (_t, titleHidden) => <BrowserProfilesSection titleHidden={titleHidden} />,
+		render: (_t, titleHidden) => (
+			<>
+				<BrowserProfilesSection titleHidden={titleHidden} />
+				<div className="border-t border-border/60 pt-5">
+					<BrowserDownloadsSection />
+				</div>
+			</>
+		),
 	},
 	{
 		id: "cloud",
