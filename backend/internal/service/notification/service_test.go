@@ -29,6 +29,15 @@ type fakeStore struct {
 	err           error
 }
 
+type capturePublisher struct {
+	events []domain.NotificationEvent
+}
+
+func (p *capturePublisher) Publish(_ context.Context, event domain.NotificationEvent) error {
+	p.events = append(p.events, event)
+	return nil
+}
+
 func (f *fakeStore) CreateNotification(context.Context, domain.NotificationRecord) (domain.NotificationRecord, bool, error) {
 	return domain.NotificationRecord{}, false, nil
 }
@@ -193,6 +202,23 @@ func TestClearAllReturnsClearedCount(t *testing.T) {
 	}
 	if got != 15 || !st.clearedAll {
 		t.Fatalf("cleared count = %d clearedAll=%v, want 15 true", got, st.clearedAll)
+	}
+}
+
+func TestClearAllPublishesOrderedClearEvent(t *testing.T) {
+	st := &fakeStore{clearAllCount: 15}
+	publisher := &capturePublisher{}
+	mgr := New(Deps{Store: st, Publisher: publisher})
+
+	got, err := mgr.ClearAll(context.Background())
+	if err != nil {
+		t.Fatalf("ClearAll: %v", err)
+	}
+	if got != 15 || !st.clearedAll {
+		t.Fatalf("cleared count = %d clearedAll=%v, want 15 true", got, st.clearedAll)
+	}
+	if len(publisher.events) != 1 || publisher.events[0].Kind != domain.NotificationCleared {
+		t.Fatalf("published events = %+v, want one clear event", publisher.events)
 	}
 }
 

@@ -37,7 +37,6 @@ vi.mock("./bridge", () => ({
 
 import {
 	applyResolvedNotification,
-	clearAllCachedNotifications,
 	createNotificationsTransport,
 	fetchNotificationsPage,
 	getCachedNotifications,
@@ -412,24 +411,64 @@ describe("createNotificationsTransport", () => {
 		});
 	});
 
-	it("ignores queued created events from the stream that was open before clear-all", () => {
+	it("clears every cache on the ordered clear event and accepts later notifications", () => {
 		const qc = queryClient();
 		createNotificationsTransport(qc).connect();
-		const staleSource = EventSourceStub.instances[0];
+		const source = EventSourceStub.instances[0];
+		qc.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [notification({ id: "before-clear" })], unreadCount: 1, unresolvedCount: 1 }],
+		});
 
-		clearAllCachedNotifications(qc);
-		const freshSource = EventSourceStub.instances[1];
-		staleSource.dispatch("notification_created", notification({ id: "stale" }));
+		source.dispatch("notification_cleared", {});
 
 		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([]);
 		expect(showNotificationMock).not.toHaveBeenCalled();
+		expect(EventSourceStub.instances).toHaveLength(1);
 
-		freshSource.dispatch("notification_created", notification({ id: "fresh" }));
+		source.dispatch("notification_created", notification({ id: "after-clear" }));
 
 		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([
-			expect.objectContaining({ id: "fresh" }),
+			expect.objectContaining({ id: "after-clear" }),
 		]);
 		expect(showNotificationMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("replays a live notification after a reconnect snapshot resolves", async () => {
+		const qc = queryClient();
+		let releaseSnapshot!: () => void;
+		const snapshot = new Promise<void>((resolve) => {
+			releaseSnapshot = resolve;
+		});
+		vi.spyOn(qc, "invalidateQueries").mockImplementation((filters) => {
+			return snapshot.then(() => {
+				const key = filters?.queryKey?.[2];
+				if (key === "unread") {
+					qc.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, {
+						pageParams: [""],
+						pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+					});
+				}
+				if (key === "all") {
+					qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
+						pageParams: [""],
+						pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+					});
+				}
+			});
+		});
+
+		createNotificationsTransport(qc).connect();
+		const source = EventSourceStub.instances[0];
+		source.onopen?.();
+		source.dispatch("notification_created", notification({ id: "during-snapshot" }));
+		releaseSnapshot();
+
+		await vi.waitFor(() => {
+			expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([
+				expect.objectContaining({ id: "during-snapshot" }),
+			]);
+		});
 	});
 
 	it("patches resolvedAt on live unread/all caches when AO closes the issue", () => {

@@ -15,9 +15,6 @@ export const NOTIFICATION_PAGE_SIZE = 100;
 
 const EVENTSOURCE_CLOSED = 2;
 
-const notificationClearGenerations = new WeakMap<QueryClient, number>();
-const notificationTransportResets = new WeakMap<QueryClient, Set<() => void>>();
-
 /**
  * Only these two kinds describe something still waiting on the user.
  * `pr_merged` / `pr_closed_unmerged` report something that already happened.
@@ -27,6 +24,11 @@ const notificationTransportResets = new WeakMap<QueryClient, Set<() => void>>();
 const UNRESOLVABLE_TYPES = new Set(["needs_input", "ready_to_merge"]);
 
 type NotificationsQueryKey = typeof unreadNotificationsQueryKey | typeof recentNotificationsQueryKey;
+
+type LiveNotificationEvent =
+	| { kind: "created"; notification: NotificationDTO }
+	| { kind: "resolved"; notification: NotificationDTO }
+	| { kind: "cleared" };
 
 export function notificationsQueryKey(status: NotificationListStatus): NotificationsQueryKey {
 	return status === "unread" ? unreadNotificationsQueryKey : recentNotificationsQueryKey;
@@ -234,29 +236,16 @@ export function markAllCachedNotificationsRead(
 }
 
 export function clearAllCachedNotifications(queryClient: QueryClient): void {
-	const nextGeneration = (notificationClearGenerations.get(queryClient) ?? 0) + 1;
-	notificationClearGenerations.set(queryClient, nextGeneration);
-	for (const reset of [...(notificationTransportResets.get(queryClient) ?? [])]) reset();
-
+	// The clear event can arrive on a different client while one of its history
+	// queries is still in flight. Abort that response without restoring its old
+	// data, then replace both caches with the ordered post-clear state.
+	void queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false });
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 		queryClient.setQueryData<NotificationsCache>(queryKey, {
 			pageParams: [""],
 			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
 		});
 	}
-}
-
-function registerNotificationTransportReset(queryClient: QueryClient, reset: () => void): () => void {
-	let resets = notificationTransportResets.get(queryClient);
-	if (!resets) {
-		resets = new Set();
-		notificationTransportResets.set(queryClient, resets);
-	}
-	resets.add(reset);
-	return () => {
-		resets?.delete(reset);
-		if (resets?.size === 0) notificationTransportResets.delete(queryClient);
-	};
 }
 
 export function getCachedNotifications(cache: NotificationsCache | undefined): NotificationDTO[] {
@@ -325,10 +314,49 @@ export function createNotificationsTransport(
 			let retryTimer: ReturnType<typeof setTimeout> | undefined;
 			let source: EventSource | undefined;
 			let sourceBaseUrl: string | undefined;
+			const pendingSnapshots = new Set<LiveNotificationEvent[]>();
+
+			const applyLiveNotificationEvent = (event: LiveNotificationEvent, showToast: boolean) => {
+				if (event.kind === "cleared") {
+					clearAllCachedNotifications(queryClient);
+					return;
+				}
+				if (event.kind === "resolved") {
+					applyResolvedNotification(queryClient, event.notification);
+					return;
+				}
+				const inserted = mergeUnreadNotification(queryClient, event.notification);
+				mergeRecentNotification(queryClient, event.notification);
+				if (showToast && inserted && !suppressToastForWatchedSession(event.notification, getVisibleAgentSessionId())) {
+					void aoBridge.notifications.show({
+						id: event.notification.id,
+						title: event.notification.title,
+						body: event.notification.body || undefined,
+						type: event.notification.type,
+					});
+				}
+			};
+
+			const receiveLiveNotificationEvent = (event: LiveNotificationEvent) => {
+				for (const snapshot of pendingSnapshots) snapshot.push(event);
+				applyLiveNotificationEvent(event, true);
+			};
 
 			const invalidateNotifications = () => {
-				void queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey });
-				void queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey });
+				// A reconnect snapshot can resolve after a live event that arrived on
+				// the new stream. Replay those events after React Query applies the
+				// snapshot so it cannot erase newer data.
+				const snapshotEvents: LiveNotificationEvent[] = [];
+				pendingSnapshots.add(snapshotEvents);
+				const finish = () => {
+					pendingSnapshots.delete(snapshotEvents);
+					for (const event of snapshotEvents) applyLiveNotificationEvent(event, false);
+				};
+				void Promise.all([
+					queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey }),
+					queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey }),
+				])
+					.then(finish, finish);
 			};
 
 			// Consecutive scheduled rebuilds since the stream last opened; paces
@@ -354,7 +382,6 @@ export function createNotificationsTransport(
 				source?.close();
 				source = undefined;
 				sourceBaseUrl = baseUrl;
-				const clearGeneration = notificationClearGenerations.get(queryClient) ?? 0;
 				try {
 					source = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/notifications/stream`);
 					source.onopen = () => {
@@ -365,39 +392,25 @@ export function createNotificationsTransport(
 						if (source?.readyState === EVENTSOURCE_CLOSED) scheduleRetry();
 					};
 					source.addEventListener("notification_created", (event) => {
-						if (clearGeneration !== (notificationClearGenerations.get(queryClient) ?? 0)) return;
 						const notification = parseNotificationEvent(event);
 						if (!notification) return;
-						const inserted = mergeUnreadNotification(queryClient, notification);
-						mergeRecentNotification(queryClient, notification);
-						if (inserted && !suppressToastForWatchedSession(notification, getVisibleAgentSessionId())) {
-							void aoBridge.notifications.show({
-								id: notification.id,
-								title: notification.title,
-								body: notification.body || undefined,
-								type: notification.type,
-							});
-						}
+						receiveLiveNotificationEvent({ kind: "created", notification });
 					});
 					// AO closed the underlying issue (the session got its input, the
 					// PR stopped waiting on a merge). Patch the row live so an open
 					// panel reflects that without waiting for a refetch.
 					source.addEventListener("notification_resolved", (event) => {
-						if (clearGeneration !== (notificationClearGenerations.get(queryClient) ?? 0)) return;
 						const notification = parseNotificationEvent(event);
 						if (!notification) return;
-						applyResolvedNotification(queryClient, notification);
+						receiveLiveNotificationEvent({ kind: "resolved", notification });
+					});
+					source.addEventListener("notification_cleared", () => {
+						receiveLiveNotificationEvent({ kind: "cleared" });
 					});
 				} catch {
 					source = undefined;
 				}
 			};
-			const removeTransportReset = registerNotificationTransportReset(queryClient, () => {
-				source?.close();
-				source = undefined;
-				connectSource();
-			});
-
 			const removeDaemonListener = aoBridge.daemon.onStatus(() => {
 				connectSource();
 				invalidateNotifications();
@@ -410,7 +423,6 @@ export function createNotificationsTransport(
 
 			return () => {
 				if (retryTimer) clearTimeout(retryTimer);
-				removeTransportReset();
 				removeDaemonListener();
 				removeBaseUrlListener();
 				source?.close();

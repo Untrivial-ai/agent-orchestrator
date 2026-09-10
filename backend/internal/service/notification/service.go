@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -19,22 +20,29 @@ const (
 	MaxListLimit = 100
 )
 
-// Manager reads stored notifications for REST controllers.
+// Manager serves stored notifications and clear-all to REST controllers.
 type Manager struct {
-	store   Store
-	barrier sync.Locker
+	store     Store
+	publisher Publisher
+	barrier   sync.Locker
+}
+
+// Publisher sends notification changes to live dashboard subscribers.
+type Publisher interface {
+	Publish(ctx context.Context, event domain.NotificationEvent) error
 }
 
 // Deps configures a Manager.
 type Deps struct {
-	Store Store
+	Store     Store
+	Publisher Publisher
 	// Barrier serializes clear-all with notification persistence and publication.
 	Barrier sync.Locker
 }
 
-// New constructs a read-only notification Manager.
+// New constructs a notification Manager.
 func New(d Deps) *Manager {
-	m := &Manager{store: d.Store, barrier: d.Barrier}
+	m := &Manager{store: d.Store, publisher: d.Publisher, barrier: d.Barrier}
 	if m.barrier == nil {
 		m.barrier = &sync.Mutex{}
 	}
@@ -128,7 +136,17 @@ func (m *Manager) ClearAll(ctx context.Context) (int64, error) {
 	}
 	m.barrier.Lock()
 	defer m.barrier.Unlock()
-	return m.store.ClearAllNotifications(ctx)
+	cleared, err := m.store.ClearAllNotifications(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if m.publisher == nil {
+		return cleared, nil
+	}
+	if err := m.publisher.Publish(ctx, domain.NotificationEvent{Kind: domain.NotificationCleared}); err != nil {
+		return 0, fmt.Errorf("notification: publish clear-all: %w", err)
+	}
+	return cleared, nil
 }
 
 func normalizeLimit(limit int) int {

@@ -170,13 +170,20 @@ func (c *NotificationsController) stream(w http.ResponseWriter, r *http.Request)
 }
 
 func writeNotificationSSE(w http.ResponseWriter, flusher http.Flusher, event domain.NotificationEvent) error {
-	data, err := json.Marshal(notificationResponseFromRecord(event.Record))
-	if err != nil {
-		return err
-	}
 	name := "notification_created"
-	if event.Kind == domain.NotificationResolved {
-		name = "notification_resolved"
+	var data []byte
+	if event.Kind == domain.NotificationCleared {
+		name = "notification_cleared"
+		data = []byte(`{}`)
+	} else {
+		if event.Kind == domain.NotificationResolved {
+			name = "notification_resolved"
+		}
+		var err error
+		data, err = json.Marshal(notificationResponseFromRecord(event.Record))
+		if err != nil {
+			return err
+		}
 	}
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data); err != nil {
 		return err

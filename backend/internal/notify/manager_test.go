@@ -141,6 +141,28 @@ func TestHubProjectFilter(t *testing.T) {
 	}
 }
 
+func TestHubGlobalClearReachesEveryProjectSubscriber(t *testing.T) {
+	hub := NewHub()
+	projectCh, unsubscribeProject := hub.Subscribe("mer")
+	defer unsubscribeProject()
+	allCh, unsubscribeAll := hub.Subscribe("")
+	defer unsubscribeAll()
+
+	if err := hub.Publish(context.Background(), domain.NotificationEvent{Kind: domain.NotificationCleared}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	for name, ch := range map[string]<-chan domain.NotificationEvent{"project": projectCh, "all": allCh} {
+		select {
+		case got := <-ch:
+			if got.Kind != domain.NotificationCleared {
+				t.Fatalf("%s subscriber received %+v", name, got)
+			}
+		default:
+			t.Fatalf("%s subscriber did not receive global clear", name)
+		}
+	}
+}
+
 // Resolution is how a notification leaves the unresolved list: AO observed the
 // underlying issue going away. There is no user-facing resolve action.
 func TestManagerResolveClosesSessionNotificationsAndPublishes(t *testing.T) {

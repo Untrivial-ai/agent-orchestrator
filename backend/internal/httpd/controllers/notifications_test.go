@@ -299,6 +299,14 @@ func TestNotificationsAPI_StreamCreatedNotifications(t *testing.T) {
 	if eventLine, dataLine := readSSE(); eventLine != "event: notification_resolved" || !strings.Contains(dataLine, `"resolvedAt"`) {
 		t.Fatalf("eventLine=%q dataLine=%q", eventLine, dataLine)
 	}
+
+	if _, err := reader.ReadString('\n'); err != nil { // blank separator line
+		t.Fatal(err)
+	}
+	stream.ch <- domain.NotificationEvent{Kind: domain.NotificationCleared}
+	if eventLine, dataLine := readSSE(); eventLine != "event: notification_cleared" || strings.TrimSpace(dataLine) != "data: {}" {
+		t.Fatalf("eventLine=%q dataLine=%q", eventLine, dataLine)
+	}
 }
 
 func TestNotificationsAPI_StreamWithoutPublisherIs501(t *testing.T) {

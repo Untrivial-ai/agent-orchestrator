@@ -327,7 +327,7 @@ func Run() error {
 	lifecycleMessenger := newModeAwareMessenger()
 	notificationHub := notify.NewHub()
 	notificationBarrier := &sync.Mutex{}
-	notifier := notificationsvc.New(notificationsvc.Deps{Store: store, Barrier: notificationBarrier})
+	notifier := notificationsvc.New(notificationsvc.Deps{Store: store, Publisher: notificationHub, Barrier: notificationBarrier})
 	notificationWriter := notify.New(notify.Deps{Store: store, Publisher: notificationHub, Barrier: notificationBarrier})
 	// Resolution transitions that happened while the daemon was down never
 	// reached lifecycle, so re-check open notifications against the durable

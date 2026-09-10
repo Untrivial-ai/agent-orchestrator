@@ -105,7 +105,7 @@ func TestClearAllSerializesDelayedPublishBeforeReconnect(t *testing.T) {
 		Clock:     func() time.Time { return time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC) },
 		NewID:     func() string { return "ntf_race" },
 	})
-	reader := New(Deps{Store: store, Barrier: barrier})
+	reader := New(Deps{Store: store, Publisher: hub, Barrier: barrier})
 
 	notifyDone := make(chan error, 1)
 	go func() {
@@ -170,6 +170,14 @@ func TestClearAllSerializesDelayedPublishBeforeReconnect(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("delayed notification was not published to the old source")
+	}
+	select {
+	case event := <-oldSource:
+		if event.Kind != domain.NotificationCleared {
+			t.Fatalf("clear event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("clear event was not published to the old source")
 	}
 	newSource, unsubscribeNew := hub.Subscribe("project-1")
 	defer unsubscribeNew()
