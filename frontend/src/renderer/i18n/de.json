@@ -513,6 +513,7 @@
 	"mobile.devices.confirmRemove": "Entfernen bestätigen",
 	"mobile.devices.empty": "Noch keine Geräte gekoppelt.",
 	"mobile.devices.loading": "Geräte werden geladen…",
+	"mobile.devices.enableOnPhone": "Um Benachrichtigungen zu aktivieren, öffne die Einstellungen in der AO-App auf deinem Smartphone und aktiviere „Agent notifications“.",
 	"mobile.devices.notificationsFor": "Benachrichtigungen für {{name}}",
 	"mobile.devices.registryUnavailable": "Geräteregister nicht verfügbar — AO konnte Ihre gespeicherten Geräte nicht lesen.",
 	"mobile.devices.removeAria": "{{name}} entfernen",

@@ -513,6 +513,7 @@
 	"mobile.devices.confirmRemove": "제거 확인",
 	"mobile.devices.empty": "아직 페어링된 기기가 없습니다.",
 	"mobile.devices.loading": "기기를 불러오는 중…",
+	"mobile.devices.enableOnPhone": "알림을 활성화하려면 휴대폰의 AO 앱에서 설정을 열고 «Agent notifications»를 켜세요.",
 	"mobile.devices.notificationsFor": "{{name}}의 알림",
 	"mobile.devices.registryUnavailable": "기기 레지스트리를 사용할 수 없습니다 — AO가 저장된 기기를 읽지 못했습니다.",
 	"mobile.devices.removeAria": "{{name}} 제거",

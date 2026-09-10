@@ -515,6 +515,7 @@
 	"mobile.devices.confirmRemove": "Confirmer la suppression",
 	"mobile.devices.empty": "Aucun appareil associé pour le moment.",
 	"mobile.devices.loading": "Chargement des appareils…",
+	"mobile.devices.enableOnPhone": "Pour activer les notifications, ouvre les paramètres de l’application AO sur ton téléphone et active « Agent notifications ».",
 	"mobile.devices.notificationsFor": "Notifications pour {{name}}",
 	"mobile.devices.registryUnavailable": "Registre des appareils indisponible — AO n'a pas pu lire vos appareils enregistrés.",
 	"mobile.devices.removeAria": "Supprimer {{name}}",

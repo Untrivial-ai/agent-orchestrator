@@ -513,6 +513,7 @@
 	"mobile.devices.confirmRemove": "削除を確定",
 	"mobile.devices.empty": "まだペアリングされたデバイスはありません。",
 	"mobile.devices.loading": "デバイスを読み込み中…",
+	"mobile.devices.enableOnPhone": "通知を有効にするには、スマートフォンのAOアプリで設定を開き、「Agent notifications」をオンにしてください。",
 	"mobile.devices.notificationsFor": "{{name}} の通知",
 	"mobile.devices.registryUnavailable": "デバイスレジストリを利用できません — AO は保存済みのデバイスを読み込めませんでした。",
 	"mobile.devices.removeAria": "{{name}} を削除",
