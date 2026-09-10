@@ -12,13 +12,13 @@ INSERT INTO sessions (
     session_mode, provider_conversation_id, controller_generation,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
-    termination_reason
+    termination_reason, additional_system_prompt
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?
 );
 
 -- name: UpdateSession :exec
@@ -33,7 +33,7 @@ UPDATE sessions SET
     provider_conversation_id = ?, controller_generation = ?,
     provider_id = ?, provider_model_id = ?, provider_display_name = ?, provider_model_name = ?, updated_at = ?,
     is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?,
-    termination_reason = ?
+    termination_reason = ?, additional_system_prompt = ?
 WHERE id = ?;
 
 -- name: RecordSessionLatestUserPrompt :execrows
@@ -86,7 +86,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
     latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
-    termination_reason
+    termination_reason, additional_system_prompt
 FROM sessions WHERE id = ?;
 
 -- name: ListSessionsByProject :many
@@ -100,7 +100,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
     latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
-    termination_reason
+    termination_reason, additional_system_prompt
 FROM sessions WHERE project_id = ? ORDER BY num;
 
 -- name: ListAllSessions :many
@@ -114,7 +114,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
     latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
-    termination_reason
+    termination_reason, additional_system_prompt
 FROM sessions ORDER BY project_id, num;
 
 

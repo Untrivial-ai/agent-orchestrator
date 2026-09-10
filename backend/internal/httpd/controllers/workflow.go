@@ -56,6 +56,12 @@ type WorkflowService interface {
 	ListRunsByTask(ctx context.Context, taskID domain.DevelopmentTaskID) ([]domain.TaskRun, error)
 	StartRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
 	CancelRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
+	// AgentRole (Phase 2.4)
+	CreateAgentRole(ctx context.Context, in workflow.CreateAgentRoleInput) (domain.AgentRole, error)
+	GetAgentRole(ctx context.Context, id domain.AgentRoleID) (domain.AgentRole, error)
+	ListAgentRoles(ctx context.Context) ([]domain.AgentRole, error)
+	UpdateAgentRole(ctx context.Context, id domain.AgentRoleID, in workflow.UpdateAgentRoleInput) (domain.AgentRole, error)
+	SetAgentRoleEnabled(ctx context.Context, id domain.AgentRoleID, enabled bool) error
 }
 
 // Compile-time check: *workflow.Service must satisfy WorkflowService.
@@ -116,6 +122,13 @@ func (c *WorkflowController) Register(r chi.Router) {
 	r.Post("/workflow/runs/{id}/start", c.startRun)
 	r.Post("/workflow/runs/{id}/cancel", c.cancelRun)
 
+	// AgentRole (Phase 2.4)
+	r.Post("/workflow/roles", c.createAgentRole)
+	r.Get("/workflow/roles", c.listAgentRoles)
+	r.Get("/workflow/roles/{id}", c.getAgentRole)
+	r.Patch("/workflow/roles/{id}", c.updateAgentRole)
+	r.Patch("/workflow/roles/{id}/enabled", c.setAgentRoleEnabled)
+
 	// Project child route
 	r.Get("/projects/{id}/plans", c.listPlansByProject)
 }
@@ -174,12 +187,34 @@ type AssignTaskRequest struct {
 }
 
 // CreateRunRequest is the body of POST /workflow/runs.
+// Phase 2.4: Run-level Provider/AgentRole override removed.
+// AgentRoleID and Provider/Model come from the Task.
 type CreateRunRequest struct {
-	TaskID          string `json:"taskId" description:"Parent task identifier."`
-	AgentRoleID     string `json:"agentRoleId,omitempty" description:"Agent role for this run."`
-	ProviderID      string `json:"providerId,omitempty" description:"Provider override."`
-	ProviderModelID string `json:"providerModelId,omitempty" description:"Provider model override."`
-	ExecutorType    string `json:"executorType,omitempty" description:"Executor type (e.g. claude-code)."`
+	TaskID string `json:"taskId" description:"Parent task identifier."`
+}
+
+// CreateAgentRoleRequest is the body of POST /workflow/roles.
+type CreateAgentRoleRequest struct {
+	Name                   string `json:"name"`
+	DisplayName            string `json:"displayName,omitempty"`
+	Description            string `json:"description,omitempty"`
+	SystemPrompt           string `json:"systemPrompt,omitempty"`
+	DefaultProviderID      string `json:"defaultProviderId,omitempty"`
+	DefaultProviderModelID string `json:"defaultProviderModelId,omitempty"`
+}
+
+// UpdateAgentRoleRequest is the body of PATCH /workflow/roles/{id}.
+type UpdateAgentRoleRequest struct {
+	DisplayName            *string `json:"displayName,omitempty"`
+	Description            *string `json:"description,omitempty"`
+	SystemPrompt           *string `json:"systemPrompt,omitempty"`
+	DefaultProviderID      *string `json:"defaultProviderId,omitempty"`
+	DefaultProviderModelID *string `json:"defaultProviderModelId,omitempty"`
+}
+
+// SetAgentRoleEnabledRequest is the body of PATCH /workflow/roles/{id}/enabled.
+type SetAgentRoleEnabledRequest struct {
+	Enabled bool `json:"enabled"`
 }
 
 // ---------------------------------------------------------------------------
@@ -931,11 +966,7 @@ func (c *WorkflowController) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run, err := c.Svc.CreateRun(r.Context(), workflow.CreateRunInput{
-		TaskID:          domain.DevelopmentTaskID(in.TaskID),
-		AgentRoleID:     domain.AgentRoleID(in.AgentRoleID),
-		ProviderID:      domain.ProviderID(in.ProviderID),
-		ProviderModelID: domain.ProviderModelID(in.ProviderModelID),
-		ExecutorType:    in.ExecutorType,
+		TaskID: domain.DevelopmentTaskID(in.TaskID),
 	})
 	if err != nil {
 		writeWorkflowError(w, r, err)
@@ -998,4 +1029,145 @@ func (c *WorkflowController) cancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, RunResponse{Run: runToView(run)})
+}
+
+// ---------------------------------------------------------------------------
+// AgentRole handlers (Phase 2.4)
+// ---------------------------------------------------------------------------
+
+func (c *WorkflowController) createAgentRole(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/workflow/roles")
+		return
+	}
+	var in CreateAgentRoleRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	role, err := c.Svc.CreateAgentRole(r.Context(), workflow.CreateAgentRoleInput{
+		Name:                   in.Name,
+		DisplayName:            in.DisplayName,
+		Description:            in.Description,
+		SystemPrompt:           in.SystemPrompt,
+		DefaultProviderID:      domain.ProviderID(in.DefaultProviderID),
+		DefaultProviderModelID: domain.ProviderModelID(in.DefaultProviderModelID),
+	})
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusCreated, agentRoleToView(role))
+}
+
+func (c *WorkflowController) listAgentRoles(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/workflow/roles")
+		return
+	}
+	roles, err := c.Svc.ListAgentRoles(r.Context())
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	out := make([]AgentRoleView, len(roles))
+	for i, role := range roles {
+		out[i] = agentRoleToView(role)
+	}
+	envelope.WriteJSON(w, http.StatusOK, ListAgentRolesResponse{Roles: out})
+}
+
+func (c *WorkflowController) getAgentRole(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/workflow/roles/{id}")
+		return
+	}
+	role, err := c.Svc.GetAgentRole(r.Context(), domain.AgentRoleID(chi.URLParam(r, "id")))
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, agentRoleToView(role))
+}
+
+func (c *WorkflowController) updateAgentRole(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "PATCH", "/api/v1/workflow/roles/{id}")
+		return
+	}
+	var in UpdateAgentRoleRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	input := workflow.UpdateAgentRoleInput{
+		DisplayName:  in.DisplayName,
+		Description:  in.Description,
+		SystemPrompt: in.SystemPrompt,
+	}
+	if in.DefaultProviderID != nil {
+		pid := domain.ProviderID(*in.DefaultProviderID)
+		input.DefaultProviderID = &pid
+	}
+	if in.DefaultProviderModelID != nil {
+		mid := domain.ProviderModelID(*in.DefaultProviderModelID)
+		input.DefaultProviderModelID = &mid
+	}
+	role, err := c.Svc.UpdateAgentRole(r.Context(), domain.AgentRoleID(chi.URLParam(r, "id")), input)
+	if err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, agentRoleToView(role))
+}
+
+func (c *WorkflowController) setAgentRoleEnabled(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "PATCH", "/api/v1/workflow/roles/{id}/enabled")
+		return
+	}
+	var in SetAgentRoleEnabledRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	if err := c.Svc.SetAgentRoleEnabled(r.Context(), domain.AgentRoleID(chi.URLParam(r, "id")), in.Enabled); err != nil {
+		writeWorkflowError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// AgentRoleView is the wire representation of an AgentRole.
+type AgentRoleView struct {
+	ID                     string `json:"id"`
+	Name                   string `json:"name"`
+	DisplayName            string `json:"displayName"`
+	Description            string `json:"description"`
+	SystemPrompt           string `json:"systemPrompt,omitempty"`
+	DefaultProviderID      string `json:"defaultProviderId,omitempty"`
+	DefaultProviderModelID string `json:"defaultProviderModelId,omitempty"`
+	Enabled                bool   `json:"enabled"`
+	CreatedAt              string `json:"createdAt"`
+	UpdatedAt              string `json:"updatedAt"`
+}
+
+func agentRoleToView(r domain.AgentRole) AgentRoleView {
+	return AgentRoleView{
+		ID:                     r.ID,
+		Name:                   r.Name,
+		DisplayName:            r.DisplayName,
+		Description:            r.Description,
+		SystemPrompt:           r.SystemPrompt,
+		DefaultProviderID:      string(r.DefaultProviderID),
+		DefaultProviderModelID: string(r.DefaultProviderModelID),
+		Enabled:                r.Enabled,
+		CreatedAt:              r.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:              r.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+// ListAgentRolesResponse is the wire shape for GET /api/v1/workflow/roles.
+type ListAgentRolesResponse struct {
+	Roles []AgentRoleView `json:"roles"`
 }

@@ -938,6 +938,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		Prompt:                    prompt,
 		LatestUserPrompt:          prompt,
 		BrowserCapabilityVerifier: browserCapabilityVerifier,
+		AdditionalSystemPrompt:    cfg.SystemPrompt,
 	}
 	if projectKind == domain.ProjectKindSingleRepo {
 		metadata.DiffBaseSHA, metadata.DiffBaseRef = resolveSpawnDiffBase(ctx, ws.Path, ws.BaseRef)
@@ -1741,6 +1742,11 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.ProjectID)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: system prompt: %w", operation, rec.ID, err)
+	}
+	// Phase 2.4: replay persisted AgentRole.SystemPrompt snapshot on Restore.
+	// Do NOT re-query the AgentRole — the snapshot is the historical truth.
+	if rec.Metadata.AdditionalSystemPrompt != "" {
+		systemPrompt += "\n\n" + rec.Metadata.AdditionalSystemPrompt
 	}
 	systemPrompt, err = m.systemPromptForNativeRestore(ctx, rec, systemPrompt)
 	if err != nil {
@@ -3309,6 +3315,10 @@ func (m *Manager) buildSpawnTexts(ctx context.Context, cfg ports.SpawnConfig) (p
 	systemPrompt, err = m.buildSystemPrompt(ctx, cfg.Kind, cfg.ProjectID)
 	if err != nil {
 		return "", "", err
+	}
+	// Phase 2.4: inject AgentRole.SystemPrompt if provided by workflow layer.
+	if cfg.SystemPrompt != "" {
+		systemPrompt += "\n\n" + cfg.SystemPrompt
 	}
 	return prompt, systemPrompt, nil
 }

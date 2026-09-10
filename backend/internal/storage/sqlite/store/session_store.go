@@ -408,6 +408,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			ProviderConversationID:    row.ProviderConversationID,
 			ControllerGeneration:      row.ControllerGeneration,
 			TerminationReason:         row.TerminationReason,
+			AdditionalSystemPrompt:    row.AdditionalSystemPrompt,
 		},
 		CleanupGeneration: row.CleanupGeneration,
 		CreatedAt:         row.CreatedAt,
@@ -473,6 +474,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProviderDisplayName:       rec.Metadata.ProviderDisplayName,
 		ProviderModelName:         rec.Metadata.ProviderModelName,
 		TerminationReason:         rec.Metadata.TerminationReason,
+		AdditionalSystemPrompt:    rec.Metadata.AdditionalSystemPrompt,
 		CreatedAt:                 rec.CreatedAt,
 		UpdatedAt:                 rec.UpdatedAt,
 	}
@@ -521,6 +523,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		ProviderDisplayName:       rec.Metadata.ProviderDisplayName,
 		ProviderModelName:         rec.Metadata.ProviderModelName,
 		TerminationReason:         rec.Metadata.TerminationReason,
+		AdditionalSystemPrompt:    rec.Metadata.AdditionalSystemPrompt,
 		UpdatedAt:                 rec.UpdatedAt,
 	}
 }

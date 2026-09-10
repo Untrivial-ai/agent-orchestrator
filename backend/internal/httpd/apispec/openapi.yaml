@@ -5647,6 +5647,177 @@ paths:
       summary: Start a confirmed plan (requires at least one stage)
       tags:
       - workflow
+  /api/v1/workflow/roles:
+    get:
+      operationId: listAgentRoles
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersListAgentRolesResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List all agent roles
+      tags:
+      - workflow
+    post:
+      operationId: createAgentRole
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersCreateAgentRoleRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersAgentRoleView'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Create a new agent role
+      tags:
+      - workflow
+  /api/v1/workflow/roles/{id}:
+    get:
+      operationId: getAgentRole
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersAgentRoleView'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Get an agent role by ID
+      tags:
+      - workflow
+    patch:
+      operationId: updateAgentRole
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersUpdateAgentRoleRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersAgentRoleView'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Update an agent role (PATCH merge semantics)
+      tags:
+      - workflow
+  /api/v1/workflow/roles/{id}/enabled:
+    patch:
+      operationId: setAgentRoleEnabled
+      parameters:
+      - description: Resource identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Resource identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersSetAgentRoleEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Enable or disable an agent role
+      tags:
+      - workflow
   /api/v1/workflow/runs:
     post:
       operationId: createRun
@@ -7004,25 +7175,70 @@ components:
         disabled:
           type: boolean
       type: object
+    ControllersAgentRoleView:
+      properties:
+        createdAt:
+          type: string
+        defaultProviderId:
+          type: string
+        defaultProviderModelId:
+          type: string
+        description:
+          type: string
+        displayName:
+          type: string
+        enabled:
+          type: boolean
+        id:
+          type: string
+        name:
+          type: string
+        systemPrompt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+      - id
+      - name
+      - displayName
+      - description
+      - enabled
+      - createdAt
+      - updatedAt
+      type: object
+    ControllersCreateAgentRoleRequest:
+      properties:
+        defaultProviderId:
+          type: string
+        defaultProviderModelId:
+          type: string
+        description:
+          type: string
+        displayName:
+          type: string
+        name:
+          type: string
+        systemPrompt:
+          type: string
+      required:
+      - name
+      type: object
     ControllersCreateRunRequest:
       properties:
-        agentRoleId:
-          description: Agent role for this run.
-          type: string
-        executorType:
-          description: Executor type (e.g. claude-code).
-          type: string
-        providerId:
-          description: Provider override.
-          type: string
-        providerModelId:
-          description: Provider model override.
-          type: string
         taskId:
           description: Parent task identifier.
           type: string
       required:
       - taskId
+      type: object
+    ControllersListAgentRolesResponse:
+      properties:
+        roles:
+          items:
+            $ref: '#/components/schemas/ControllersAgentRoleView'
+          type: array
+      required:
+      - roles
       type: object
     ControllersListRunsResponse:
       properties:
@@ -7369,6 +7585,13 @@ components:
       - status
       - prs
       type: object
+    ControllersSetAgentRoleEnabledRequest:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
+      type: object
     ControllersSetSecurePairingRequest:
       properties:
         enabled:
@@ -7389,6 +7612,29 @@ components:
           type: string
       required:
       - providerModelId
+      type: object
+    ControllersUpdateAgentRoleRequest:
+      properties:
+        defaultProviderId:
+          type:
+          - "null"
+          - string
+        defaultProviderModelId:
+          type:
+          - "null"
+          - string
+        description:
+          type:
+          - "null"
+          - string
+        displayName:
+          type:
+          - "null"
+          - string
+        systemPrompt:
+          type:
+          - "null"
+          - string
       type: object
     ConversationAccountPayload:
       properties:

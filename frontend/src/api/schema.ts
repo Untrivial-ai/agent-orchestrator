@@ -1896,6 +1896,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workflow/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List all agent roles */
+        get: operations["listAgentRoles"];
+        put?: never;
+        /** Create a new agent role */
+        post: operations["createAgentRole"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workflow/roles/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get an agent role by ID */
+        get: operations["getAgentRole"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update an agent role (PATCH merge semantics) */
+        patch: operations["updateAgentRole"];
+        trace?: never;
+    };
+    "/api/v1/workflow/roles/{id}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Enable or disable an agent role */
+        patch: operations["setAgentRoleEnabled"];
+        trace?: never;
+    };
     "/api/v1/workflow/runs": {
         parameters: {
             query?: never;
@@ -2484,17 +2537,32 @@ export interface components {
         ContainerReapConfig: {
             disabled?: boolean;
         };
+        ControllersAgentRoleView: {
+            createdAt: string;
+            defaultProviderId?: string;
+            defaultProviderModelId?: string;
+            description: string;
+            displayName: string;
+            enabled: boolean;
+            id: string;
+            name: string;
+            systemPrompt?: string;
+            updatedAt: string;
+        };
+        ControllersCreateAgentRoleRequest: {
+            defaultProviderId?: string;
+            defaultProviderModelId?: string;
+            description?: string;
+            displayName?: string;
+            name: string;
+            systemPrompt?: string;
+        };
         ControllersCreateRunRequest: {
-            /** @description Agent role for this run. */
-            agentRoleId?: string;
-            /** @description Executor type (e.g. claude-code). */
-            executorType?: string;
-            /** @description Provider override. */
-            providerId?: string;
-            /** @description Provider model override. */
-            providerModelId?: string;
             /** @description Parent task identifier. */
             taskId: string;
+        };
+        ControllersListAgentRolesResponse: {
+            roles: components["schemas"]["ControllersAgentRoleView"][];
         };
         ControllersListRunsResponse: {
             runs: components["schemas"]["ControllersRunView"][];
@@ -2619,6 +2687,9 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
+        ControllersSetAgentRoleEnabledRequest: {
+            enabled: boolean;
+        };
         ControllersSetSecurePairingRequest: {
             enabled: boolean;
         };
@@ -2627,6 +2698,13 @@ export interface components {
         };
         ControllersTestProviderRequest: {
             providerModelId: string;
+        };
+        ControllersUpdateAgentRoleRequest: {
+            defaultProviderId?: null | string;
+            defaultProviderModelId?: null | string;
+            description?: null | string;
+            displayName?: null | string;
+            systemPrompt?: null | string;
         };
         ConversationAccountPayload: {
             authMode?: string;
@@ -11045,6 +11123,226 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listAgentRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersListAgentRolesResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    createAgentRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersCreateAgentRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersAgentRoleView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getAgentRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersAgentRoleView"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateAgentRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersUpdateAgentRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersAgentRoleView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    setAgentRoleEnabled: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersSetAgentRoleEnabledRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

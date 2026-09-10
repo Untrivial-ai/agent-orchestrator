@@ -118,7 +118,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
     latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
-    termination_reason
+    termination_reason, additional_system_prompt
 FROM sessions WHERE id = ?
 `
 
@@ -168,6 +168,7 @@ type GetSessionRow struct {
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
 	TerminationReason         string
+	AdditionalSystemPrompt    string
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -219,6 +220,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.AutoInjectCI,
 		&i.AutoReviewEnabled,
 		&i.TerminationReason,
+		&i.AdditionalSystemPrompt,
 	)
 	return i, err
 }
@@ -234,13 +236,13 @@ INSERT INTO sessions (
     session_mode, provider_conversation_id, controller_generation,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
-    termination_reason
+    termination_reason, additional_system_prompt
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -290,6 +292,7 @@ type InsertSessionParams struct {
 	AutoInjectReview          bool
 	AutoInjectCI              bool
 	TerminationReason         string
+	AdditionalSystemPrompt    string
 }
 
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
@@ -339,6 +342,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.AutoInjectReview,
 		arg.AutoInjectCI,
 		arg.TerminationReason,
+		arg.AdditionalSystemPrompt,
 	)
 	return err
 }
@@ -354,7 +358,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
     latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
-    termination_reason
+    termination_reason, additional_system_prompt
 FROM sessions ORDER BY project_id, num
 `
 
@@ -404,6 +408,7 @@ type ListAllSessionsRow struct {
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
 	TerminationReason         string
+	AdditionalSystemPrompt    string
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -461,6 +466,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.AutoInjectCI,
 			&i.AutoReviewEnabled,
 			&i.TerminationReason,
+			&i.AdditionalSystemPrompt,
 		); err != nil {
 			return nil, err
 		}
@@ -486,7 +492,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     provider_id, provider_model_id, provider_display_name, provider_model_name,
     latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled,
-    termination_reason
+    termination_reason, additional_system_prompt
 FROM sessions WHERE project_id = ? ORDER BY num
 `
 
@@ -536,6 +542,7 @@ type ListSessionsByProjectRow struct {
 	AutoInjectCI              bool
 	AutoReviewEnabled         bool
 	TerminationReason         string
+	AdditionalSystemPrompt    string
 }
 
 func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.ProjectID) ([]ListSessionsByProjectRow, error) {
@@ -593,6 +600,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.AutoInjectCI,
 			&i.AutoReviewEnabled,
 			&i.TerminationReason,
+			&i.AdditionalSystemPrompt,
 		); err != nil {
 			return nil, err
 		}
@@ -833,7 +841,7 @@ UPDATE sessions SET
     provider_conversation_id = ?, controller_generation = ?,
     provider_id = ?, provider_model_id = ?, provider_display_name = ?, provider_model_name = ?, updated_at = ?,
     is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?,
-    termination_reason = ?
+    termination_reason = ?, additional_system_prompt = ?
 WHERE id = ?
 `
 
@@ -878,6 +886,7 @@ type UpdateSessionParams struct {
 	AutoInjectReview          bool
 	AutoInjectCI              bool
 	TerminationReason         string
+	AdditionalSystemPrompt    string
 	ID                        domain.SessionID
 }
 
@@ -923,6 +932,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.AutoInjectReview,
 		arg.AutoInjectCI,
 		arg.TerminationReason,
+		arg.AdditionalSystemPrompt,
 		arg.ID,
 	)
 	return err

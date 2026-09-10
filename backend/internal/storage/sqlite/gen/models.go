@@ -546,6 +546,7 @@ type Session struct {
 	ProviderDisplayName       string
 	ProviderModelName         string
 	TerminationReason         string
+	AdditionalSystemPrompt    string
 }
 
 type SessionCleanupFact struct {

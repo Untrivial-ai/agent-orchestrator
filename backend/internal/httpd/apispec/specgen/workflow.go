@@ -382,5 +382,59 @@ func workflowOperations() []operation {
 				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},
+
+		// ---- AgentRole (Phase 2.4) ----
+		{
+			method: http.MethodPost, path: "/api/v1/workflow/roles", id: "createAgentRole", tag: "workflow",
+			summary: "Create a new agent role",
+			reqBody: controllers.CreateAgentRoleRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.AgentRoleView{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/workflow/roles", id: "listAgentRoles", tag: "workflow",
+			summary: "List all agent roles",
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListAgentRolesResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/workflow/roles/{id}", id: "getAgentRole", tag: "workflow",
+			summary:    "Get an agent role by ID",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.AgentRoleView{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/workflow/roles/{id}", id: "updateAgentRole", tag: "workflow",
+			summary:    "Update an agent role (PATCH merge semantics)",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			reqBody:    controllers.UpdateAgentRoleRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.AgentRoleView{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/workflow/roles/{id}/enabled", id: "setAgentRoleEnabled", tag: "workflow",
+			summary:    "Enable or disable an agent role",
+			pathParams: []any{controllers.WorkflowIDParam{}},
+			reqBody:    controllers.SetAgentRoleEnabledRequest{},
+			resps: []respUnit{
+				{http.StatusOK, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
 	}
 }

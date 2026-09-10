@@ -12,11 +12,7 @@ import (
 
 // CreateRunInput describes a new task run.
 type CreateRunInput struct {
-	TaskID           domain.DevelopmentTaskID
-	AgentRoleID      domain.AgentRoleID
-	ProviderID       domain.ProviderID
-	ProviderModelID  domain.ProviderModelID
-	ExecutorType     string
+	TaskID domain.DevelopmentTaskID
 }
 
 // CreateRun creates a new task run in PENDING status.
@@ -50,15 +46,12 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) (domain.Task
 
 	now := s.now()
 	run := domain.TaskRun{
-		ID:                domain.TaskRunID(s.newID()),
-		TaskID:            in.TaskID,
-		Attempt:           len(runs) + 1,
-		AgentRoleID:       in.AgentRoleID,
-		ProviderID:        in.ProviderID,
-		ProviderModelID:   in.ProviderModelID,
-		ExecutorType:      in.ExecutorType,
-		Status:            domain.RunStatusPending,
-		CreatedAt:         now,
+		ID:            domain.TaskRunID(s.newID()),
+		TaskID:        in.TaskID,
+		Attempt:       len(runs) + 1,
+		AgentRoleID:   task.AgentRoleID,
+		Status:        domain.RunStatusPending,
+		CreatedAt:     now,
 	}
 
 	if err := s.store.CreateTaskRun(ctx, run); err != nil {
@@ -68,9 +61,9 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) (domain.Task
 }
 
 // StartRun spawns a session and transitions the run to RUNNING.
-// Sequence: Spawn → Bind session → snapshot → Task→RUNNING → Run→RUNNING.
+// Sequence: Resolve Role → Resolve Provider → Spawn → Bind → snapshot → Task→RUNNING → Run→RUNNING.
 // If Spawn fails, the run stays PENDING and task stays READY (no state change).
-// Provider resolution uses only Run/Task explicit values (no AgentRole fallback).
+// Phase 2.4: Three-level resolution with fail-first semantics (no silent fallback).
 func (s *Service) StartRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error) {
 	if s.runtime == nil {
 		return domain.TaskRun{}, fmt.Errorf("workflow: no session runtime configured")
@@ -114,14 +107,22 @@ func (s *Service) StartRun(ctx context.Context, id domain.TaskRunID) (domain.Tas
 		return domain.TaskRun{}, ErrNotFound
 	}
 
-	// Provider resolution: Run explicit → Task explicit. No AgentRole fallback.
-	providerID := run.ProviderID
-	modelID := run.ProviderModelID
-	if providerID == "" {
-		providerID = task.ProviderID
+	// STEP 1: Resolve Role (independent of Provider)
+	role, err := s.resolveRole(ctx, task)
+	if err != nil {
+		return domain.TaskRun{}, err
 	}
-	if modelID == "" {
-		modelID = task.ProviderModelID
+
+	// STEP 2: Resolve Provider (Task explicit > AgentRole default > System default)
+	providerID, modelID, err := s.resolveProvider(ctx, task, role)
+	if err != nil {
+		return domain.TaskRun{}, err
+	}
+
+	// STEP 3: SystemPrompt (always if role != nil, regardless of Provider source)
+	systemPrompt := ""
+	if role != nil && role.SystemPrompt != "" {
+		systemPrompt = role.SystemPrompt
 	}
 
 	prompt := task.Description
@@ -134,6 +135,7 @@ func (s *Service) StartRun(ctx context.Context, id domain.TaskRunID) (domain.Tas
 		Kind:            domain.SessionKind("worker"),
 		Harness:         domain.AgentHarness("claude-code"),
 		Prompt:          prompt,
+		SystemPrompt:    systemPrompt,
 		ProviderID:      providerID,
 		ProviderModelID: modelID,
 		DisplayName:     task.Title,
