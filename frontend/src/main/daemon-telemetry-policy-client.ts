@@ -18,9 +18,21 @@ export class DaemonTelemetryPolicyClient {
 		});
 	}
 
+	// A request to ENABLE may legitimately come back disabled: the release gate
+	// (domain.AgentSwitchFailureProductionEnabled) is closed, so the daemon's
+	// authorization — and therefore the eventsEnabled it echoes — is false no
+	// matter what we ask for. Rejecting that here preempted
+	// DesktopTelemetryController, which already decides whether a downgraded
+	// acknowledgement is acceptable (see acknowledges() and enable()), and left
+	// the policy in cleanup_pending so the 1s timer in main.ts re-POSTed
+	// forever (#5196).
+	//
+	// The asymmetry is deliberate and fails closed: a downgrade (asked on, got
+	// off) is the gate working as designed; an upgrade (asked off, got on) is a
+	// real violation and still throws, as does a missing drain/purge proof.
 	async applyPolicy(consentGeneration: string, eventsEnabled: boolean): Promise<DaemonTelemetryPolicyAcknowledgement> {
 		const acknowledgement = await this.request("/internal/agent-switch-observability/apply-policy", { consentGeneration, eventsEnabled }, consentGeneration);
-		if (acknowledgement.eventsEnabled !== eventsEnabled) throw new Error("daemon telemetry acknowledgement policy mismatch");
+		if (!eventsEnabled && acknowledgement.eventsEnabled) throw new Error("daemon telemetry acknowledgement policy mismatch");
 		if (!eventsEnabled && (!acknowledgement.gateDrained || !acknowledgement.purgeConfirmed)) throw new Error("daemon telemetry acknowledgement lacks cleanup proof");
 		return acknowledgement;
 	}
