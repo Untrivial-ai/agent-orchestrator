@@ -1,0 +1,11 @@
+=== RUN   TestIssue5176Evidence
+EVIDENCE {"chunks":110,"delayMs":25,"replyBytes":1320,"stage":"ready"}
+EVIDENCE {"stage":"running"}
+EVIDENCE {"deltaBytes":0,"elapsedMs":34.332,"method":"turn.started","stage":"commit","transactions":1}
+EVIDENCE {"deltaBytes":1320,"elapsedMs":63.483,"method":"message.delta","stage":"commit","transactions":2}
+EVIDENCE {"deltaBytes":1320,"elapsedMs":95.085,"method":"message.completed","stage":"commit","transactions":3}
+EVIDENCE {"deltaBytes":1320,"elapsedMs":122.47,"method":"turn.completed","stage":"commit","transactions":4}
+    evidence_repro_test.go:187: chunks=110 injected_delay=25ms reply_chars=1320 projection_calls=4 archive_rows=4 session_updated_rows=9 sqlite_row_changes=33 turn_elapsed=122.526625ms
+EVIDENCE {"archiveRows":4,"cdcRows":9,"elapsedMs":122.526,"replyBytes":1320,"replySHA256":"20cb68666417cec0ffe6419320815d4f04ea74330d5a266aaabd769d1ef4ec2a","rowChanges":33,"stage":"result","textVerified":true,"transactions":4,"turnState":"completed"}
+--- PASS: TestIssue5176Evidence (3.26s)
+PASS
