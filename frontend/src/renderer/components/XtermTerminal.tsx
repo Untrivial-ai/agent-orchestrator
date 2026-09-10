@@ -189,7 +189,15 @@ function terminalFontSizeDelta(event: KeyboardEvent): -1 | 0 | 1 {
 }
 
 function normalizedTerminalShortcut(event: KeyboardEvent): string | null {
-	if (event.metaKey || event.shiftKey) return null;
+	if (event.shiftKey) return null;
+
+	// macOS Command+Backspace → delete to start of line (Ctrl-U / 0x15), matching
+	// iTerm2 Natural Text Editing. Do not treat the Windows key as Command.
+	if (event.metaKey && !event.ctrlKey && !event.altKey && isMacPlatform()) {
+		return event.key === "Backspace" ? "\x15" : null;
+	}
+
+	if (event.metaKey) return null;
 
 	if (event.altKey && !event.ctrlKey) {
 		switch (event.key) {
