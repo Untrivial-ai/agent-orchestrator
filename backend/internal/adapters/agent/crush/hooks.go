@@ -21,6 +21,8 @@ const (
 	crushSystemPromptName   = "ao-system-prompt.md"
 	crushSystemPromptPath   = crushConfigDirName + "/" + crushSystemPromptName
 	crushSystemPromptMarker = "agent-orchestrator: managed crush system prompt"
+	crushHookCommand        = "ao hooks crush pre-tool-use"
+	crushHookTimeout        = 30
 
 	// crushModelSeparator splits AO's "<provider>/<model-id>" convention.
 	// Crush's config schema (models.large / models.small) requires both a
@@ -35,10 +37,10 @@ const (
 	crushModelType = "large"
 )
 
-// GetAgentHooks installs AO's standing instructions as a Crush context file.
+// GetAgentHooks installs AO's session-ID callback and standing instructions.
 // Crush has no launch-time system-prompt flag, but it reads context_paths from
 // project config. AO therefore owns one prompt file under .crush/ and merges
-// only that path into the hidden project-local .crush.json.
+// only that path and its exact PreToolUse command into .crush.json.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -56,7 +58,7 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 	if strings.TrimSpace(prompt) == "" {
 		return nil
 	}
-
+	configPath := crushConfigFile(cfg.WorkspacePath)
 	promptPath := crushSystemPromptFile(cfg.WorkspacePath)
 	if _, err := os.Stat(promptPath); err == nil {
 		managed, err := isAOManagedCrushSystemPrompt(promptPath)
@@ -77,11 +79,14 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 	if err := hookutil.AtomicWriteFile(promptPath, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("crush.GetAgentHooks: write system prompt: %w", err)
 	}
-	if err := mergeCrushContextPath(crushConfigFile(cfg.WorkspacePath), crushSystemPromptPath); err != nil {
-		return fmt.Errorf("crush.GetAgentHooks: merge config: %w", err)
+	if err := mergeCrushContextPath(configPath, crushSystemPromptPath); err != nil {
+		return fmt.Errorf("crush.GetAgentHooks: merge context: %w", err)
 	}
 	if err := hookutil.EnsureWorkspaceGitignore(filepath.Dir(promptPath), crushSystemPromptName); err != nil {
 		return fmt.Errorf("crush.GetAgentHooks: gitignore: %w", err)
+	}
+	if err := mergeCrushPreToolHook(configPath); err != nil {
+		return fmt.Errorf("crush.GetAgentHooks: merge hook: %w", err)
 	}
 	return nil
 }
@@ -108,6 +113,9 @@ func (p *Plugin) UninstallHooks(ctx context.Context, workspacePath string) error
 	}
 	if err := removeCrushContextPath(crushConfigFile(workspacePath), crushSystemPromptPath); err != nil {
 		return fmt.Errorf("crush.UninstallHooks: merge config: %w", err)
+	}
+	if err := removeCrushPreToolHook(crushConfigFile(workspacePath)); err != nil {
+		return fmt.Errorf("crush.UninstallHooks: remove hook: %w", err)
 	}
 	return nil
 }
@@ -145,9 +153,7 @@ func applyCrushModelOverride(workspacePath, modelOverride string) error {
 	return mergeCrushModel(crushConfigFile(workspacePath), existingProvider, model)
 }
 
-// AreHooksInstalled reports whether AO's Crush system-prompt context file is
-// present. Crush activity is terminal-derived, so this reports only the prompt
-// injection hook surface AO manages for Crush.
+// AreHooksInstalled reports whether AO's exact Crush callback is configured.
 func (p *Plugin) AreHooksInstalled(ctx context.Context, workspacePath string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -155,11 +161,73 @@ func (p *Plugin) AreHooksInstalled(ctx context.Context, workspacePath string) (b
 	if strings.TrimSpace(workspacePath) == "" {
 		return false, errors.New("crush.AreHooksInstalled: workspacePath is required")
 	}
-	managed, err := isAOManagedCrushSystemPrompt(crushSystemPromptFile(workspacePath))
+	managed, err := hasCrushPreToolHook(crushConfigFile(workspacePath))
 	if err != nil {
 		return false, fmt.Errorf("crush.AreHooksInstalled: %w", err)
 	}
 	return managed, nil
+}
+
+func mergeCrushPreToolHook(configPath string) error {
+	cfg, err := readCrushConfig(configPath)
+	if err != nil {
+		return err
+	}
+	hooks := crushConfigObject(cfg, "hooks")
+	entries := crushObjectSlice(hooks["PreToolUse"])
+	for _, entry := range entries {
+		if entry["command"] == crushHookCommand {
+			return nil
+		}
+	}
+	entries = append(entries, map[string]any{"command": crushHookCommand, "timeout": crushHookTimeout})
+	hooks["PreToolUse"] = entries
+	cfg["hooks"] = hooks
+	return writeCrushConfig(configPath, cfg)
+}
+
+func removeCrushPreToolHook(configPath string) error {
+	cfg, err := readCrushConfig(configPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	hooks, ok := cfg["hooks"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	entries := crushObjectSlice(hooks["PreToolUse"])
+	next := entries[:0]
+	for _, entry := range entries {
+		if entry["command"] != crushHookCommand {
+			next = append(next, entry)
+		}
+	}
+	hooks["PreToolUse"] = next
+	cfg["hooks"] = hooks
+	return writeCrushConfig(configPath, cfg)
+}
+
+func hasCrushPreToolHook(configPath string) (bool, error) {
+	cfg, err := readCrushConfig(configPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	hooks, ok := cfg["hooks"].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+	for _, entry := range crushObjectSlice(hooks["PreToolUse"]) {
+		if entry["command"] == crushHookCommand {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func crushSystemPromptFile(workspacePath string) string {
@@ -319,6 +387,23 @@ func crushStringSlice(v any) []string {
 	for _, item := range raw {
 		if s, ok := item.(string); ok {
 			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func crushObjectSlice(v any) []map[string]any {
+	raw, ok := v.([]any)
+	if !ok {
+		if typed, ok := v.([]map[string]any); ok {
+			return slices.Clone(typed)
+		}
+		return nil
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, value := range raw {
+		if entry, ok := value.(map[string]any); ok {
+			out = append(out, entry)
 		}
 	}
 	return out

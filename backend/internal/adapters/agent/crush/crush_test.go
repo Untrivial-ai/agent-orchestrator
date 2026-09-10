@@ -174,6 +174,13 @@ func TestGetRestoreCommand(t *testing.T) {
 			wantContains:   []string{"--cwd", "/tmp/workspace", "--yolo", "--session", "crush-session-456"},
 		},
 		{
+			name:          "fallback to most recent workspace session",
+			workspacePath: "/tmp/workspace",
+			permission:    ports.PermissionModeDefault,
+			wantOk:        true,
+			wantContains:  []string{"--cwd", "/tmp/workspace", "--continue"},
+		},
+		{
 			name:           "no session id",
 			agentSessionID: "",
 			wantOk:         false,
@@ -292,7 +299,7 @@ func TestGetAgentHooksMergesExistingCrushConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte(`{"options":{"context_paths":["CRUSH.md"],"debug":true},"providers":{"local":{"base_url":"http://localhost"}}}`), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"options":{"context_paths":["CRUSH.md"],"debug":true},"providers":{"local":{"base_url":"http://localhost"}},"hooks":{"PreToolUse":[{"matcher":"^bash$","command":"user-hook"}]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -319,6 +326,13 @@ func TestGetAgentHooksMergesExistingCrushConfig(t *testing.T) {
 	}
 	if countJSONStrings(paths, crushSystemPromptPath) != 1 {
 		t.Fatalf("context_paths duplicated AO path: %#v", paths)
+	}
+	hooks := cfg["hooks"].(map[string]any)["PreToolUse"].([]any)
+	if countJSONObjectsWithCommand(hooks, crushHookCommand) != 1 {
+		t.Fatalf("PreToolUse hooks = %#v, want one AO hook", hooks)
+	}
+	if countJSONObjectsWithCommand(hooks, "user-hook") != 1 {
+		t.Fatalf("PreToolUse hooks dropped user hook: %#v", hooks)
 	}
 }
 
@@ -558,7 +572,7 @@ func TestUninstallHooksRemovesManagedCrushContext(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte(`{"options":{"context_paths":["CRUSH.md"]}}`), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"options":{"context_paths":["CRUSH.md"]},"hooks":{"PreToolUse":[{"command":"user-hook"}]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := (&Plugin{}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
@@ -579,6 +593,13 @@ func TestUninstallHooksRemovesManagedCrushContext(t *testing.T) {
 	paths := cfg["options"].(map[string]any)["context_paths"].([]any)
 	if !jsonArrayContainsString(paths, "CRUSH.md") || jsonArrayContainsString(paths, crushSystemPromptPath) {
 		t.Fatalf("context_paths = %#v", paths)
+	}
+	hooks := cfg["hooks"].(map[string]any)["PreToolUse"].([]any)
+	if countJSONObjectsWithCommand(hooks, crushHookCommand) != 0 {
+		t.Fatalf("PreToolUse hooks still contain AO hook: %#v", hooks)
+	}
+	if countJSONObjectsWithCommand(hooks, "user-hook") != 1 {
+		t.Fatalf("PreToolUse hooks dropped user hook: %#v", hooks)
 	}
 }
 
@@ -681,6 +702,16 @@ func countJSONStrings(items []any, want string) int {
 	count := 0
 	for _, item := range items {
 		if item == want {
+			count++
+		}
+	}
+	return count
+}
+
+func countJSONObjectsWithCommand(items []any, command string) int {
+	count := 0
+	for _, item := range items {
+		if object, ok := item.(map[string]any); ok && object["command"] == command {
 			count++
 		}
 	}
