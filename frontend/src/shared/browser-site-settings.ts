@@ -16,6 +16,22 @@ export type BrowserSitePermissionInput = BrowserSiteTarget & {
 	setting: BrowserSitePermissionSetting;
 };
 
+export type BrowserSitePermissionRequest = {
+	requestId: string;
+	viewId: string;
+	tabId: string;
+	origin: string;
+	permissions: BrowserSitePermission[];
+};
+
+export type BrowserSitePermissionDecisionValue = "dismiss" | "block" | "allow-once" | "allow-always";
+
+export type BrowserSitePermissionDecision = {
+	requestId: string;
+	viewId: string;
+	decision: BrowserSitePermissionDecisionValue;
+};
+
 export function browserSiteOrigin(value: unknown): string | null {
 	if (typeof value !== "string" || value.length > 4096) return null;
 	try {

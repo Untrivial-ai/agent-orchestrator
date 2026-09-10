@@ -36,7 +36,15 @@ import type { BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
 import type { BrowserSiteSettingsStore } from "./browser-site-settings-store";
 import { clearBrowserSiteData, installBrowserSitePermissions, type BrowserPermissionPrompt } from "./browser-site-permissions";
-import { browserSiteOrigin, type BrowserSiteTarget, type BrowserSiteSettings, type BrowserSitePermissionInput } from "../shared/browser-site-settings";
+import {
+	browserSiteOrigin,
+	type BrowserSiteTarget,
+	type BrowserSiteSettings,
+	type BrowserSitePermissionInput,
+	type BrowserSitePermissionRequest,
+	type BrowserSitePermissionDecision,
+	type BrowserSitePermissionDecisionValue,
+} from "../shared/browser-site-settings";
 import { matchInstruction } from "./browser-act-matcher";
 
 function isValidAnnotationContext(value: unknown): value is BrowserAnnotationContext {
@@ -316,7 +324,6 @@ export type BrowserViewHostOptions = {
 	browserProfileStore?: BrowserProfileStore;
 	browserHistoryStore?: BrowserHistoryStore;
 	browserSiteSettingsStore?: BrowserSiteSettingsStore;
-	promptBrowserPermission?: BrowserPermissionPrompt;
 	clearBrowserProfileData?: (partition: string) => Promise<void>;
 };
 
@@ -558,6 +565,12 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	const viewIdsBySessionId = new Map<string, string>();
 	const rendererOwnersByViewId = new Map<string, Set<number>>();
 	const tabsByWebContentsId = new Map<number, BrowserEntry>();
+	const pendingPermissionPrompts = new Map<string, {
+		viewId: string;
+		resolve: (decision: BrowserSitePermissionDecisionValue) => void;
+		timer: ReturnType<typeof setTimeout>;
+	}>();
+	const permissionPromptByViewId = new Map<string, string>();
 	const ipcDisposers: Array<() => void> = [];
 	let disposePromise: Promise<void> | null = null;
 	// viewId of the panel that most recently held focus; cleared when it is hidden or destroyed.
@@ -568,6 +581,39 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	const forgetIfFocused = (viewId: string): void => {
 		if (lastFocusedViewId === viewId) lastFocusedViewId = null;
 		if (lastUsedViewId === viewId) lastUsedViewId = null;
+	};
+	const settlePermissionPrompt = (requestId: string, decision: BrowserSitePermissionDecisionValue): void => {
+		const pending = pendingPermissionPrompts.get(requestId);
+		if (!pending) return;
+		clearTimeout(pending.timer);
+		pendingPermissionPrompts.delete(requestId);
+		if (permissionPromptByViewId.get(pending.viewId) === requestId) permissionPromptByViewId.delete(pending.viewId);
+		pending.resolve(decision);
+	};
+	const cancelPermissionPromptForView = (viewId: string): void => {
+		const requestId = permissionPromptByViewId.get(viewId);
+		if (requestId) settlePermissionPrompt(requestId, "dismiss");
+	};
+	const promptBrowserPermission: BrowserPermissionPrompt = (contents, origin, permissions) => {
+		const entry = tabsByWebContentsId.get(contents.id);
+		const viewId = entry ? viewIdsBySessionId.get(entry.sessionId) : undefined;
+		const session = viewId ? entries.get(viewId) : undefined;
+		if (!entry || !viewId || !session || !session.visible || session.activeTabId !== entry.tabId || shellWebContents.isDestroyed?.()) {
+			return Promise.resolve("dismiss");
+		}
+		cancelPermissionPromptForView(viewId);
+		const requestId = randomUUID();
+		const request: BrowserSitePermissionRequest = { requestId, viewId, tabId: entry.tabId, origin, permissions };
+		return new Promise<BrowserSitePermissionDecisionValue>((resolve) => {
+			const timer = setTimeout(() => settlePermissionPrompt(requestId, "dismiss"), 30_000);
+			pendingPermissionPrompts.set(requestId, { viewId, resolve, timer });
+			permissionPromptByViewId.set(viewId, requestId);
+			try {
+				shellWebContents.send("browser:site:permissionRequest", request);
+			} catch {
+				settlePermissionPrompt(requestId, "dismiss");
+			}
+		});
 	};
 	const setAgentBrowserActivity = (
 		session: BrowserSessionEntry,
@@ -651,7 +697,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		view.setBorderRadius?.(BROWSER_VIEW_BORDER_RADIUS);
 		if (view.webContents.session) installBrowserSitePermissions(
 			view.webContents.session, session.profileId ?? session.profilePartition,
-			options.browserSiteSettingsStore, options.promptBrowserPermission,
+			options.browserSiteSettingsStore, promptBrowserPermission,
 		);
 		let scrollbarStyleKey: string | undefined;
 		let scrollbarStyleUpdate = Promise.resolve();
@@ -1530,6 +1576,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	const destroy = (viewId: string): void => {
 		const session = entries.get(viewId);
 		if (!session) return;
+		cancelPermissionPromptForView(viewId);
 		session.signals.entries.length = 0;
 		if (!session.profileId) void options.browserSiteSettingsStore?.reset(session.profilePartition).catch(() => undefined);
 		unregisterBrowserSignalWatcher(session);
@@ -1892,6 +1939,14 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		options.ipcMain.on(channel, fn);
 		ipcDisposers.push(() => options.ipcMain.off(channel, fn));
 	};
+	on("browser:site:permissionDecision", (event, input: BrowserSitePermissionDecision) => {
+		if (!input || typeof input.requestId !== "string" || typeof input.viewId !== "string" ||
+			!(["dismiss", "block", "allow-once", "allow-always"] as const).includes(input.decision) ||
+			!isRendererOwned(event, input.viewId)) return;
+		const pending = pendingPermissionPrompts.get(input.requestId);
+		if (!pending || pending.viewId !== input.viewId) return;
+		settlePermissionPrompt(input.requestId, input.decision);
+	});
 
 	handle("browser:ensure", async (event, sessionId: string) => {
 		const session = await ensureSessionReady(sessionId, event.sender.id, () => event.sender.isDestroyed?.() ?? false);
@@ -2326,6 +2381,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			if (disposePromise) return disposePromise;
 			disposePromise = (async () => {
 				ipcDisposers.splice(0).forEach((dispose) => dispose());
+				for (const requestId of [...pendingPermissionPrompts.keys()]) settlePermissionPrompt(requestId, "dismiss");
 				for (const viewId of [...entries.keys()]) {
 					destroy(viewId);
 				}

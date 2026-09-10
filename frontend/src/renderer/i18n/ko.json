@@ -1,6 +1,7 @@
 {
 	"browser.sitePermissionRequest": "{{origin}}에서 {{permissions}} 사용을 요청합니다.",
 	"browser.siteAllowOnce": "한 번 허용",
+	"browser.siteAlwaysAllow": "항상 허용",
 	"browser.siteSettings": "사이트 설정",
 	"browser.siteClose": "사이트 설정 닫기",
 	"browser.siteLoading": "권한 불러오는 중…",

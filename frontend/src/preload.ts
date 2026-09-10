@@ -66,7 +66,13 @@ import type {
 	BrowserImportRequest,
 	BrowserImportResult,
 } from "./shared/browser-profile-import";
-import type { BrowserSiteTarget, BrowserSiteSettings, BrowserSitePermissionInput } from "./shared/browser-site-settings";
+import type {
+	BrowserSiteTarget,
+	BrowserSiteSettings,
+	BrowserSitePermissionInput,
+	BrowserSitePermissionRequest,
+	BrowserSitePermissionDecision,
+} from "./shared/browser-site-settings";
 
 if (typeof document !== "undefined") {
 	const markNativeBrowserComposition = () => {
@@ -367,6 +373,12 @@ const api = {
 		setSitePermission: (input: BrowserSitePermissionInput) => ipcRenderer.invoke("browser:site:setPermission", input) as Promise<BrowserSiteSettings>,
 		resetSitePermissions: (input: BrowserSiteTarget) => ipcRenderer.invoke("browser:site:reset", input) as Promise<BrowserSiteSettings>,
 		clearSiteData: (input: BrowserSiteTarget) => ipcRenderer.invoke("browser:site:clearData", input) as Promise<void>,
+		respondToPermissionRequest: (input: BrowserSitePermissionDecision) => ipcRenderer.send("browser:site:permissionDecision", input),
+		onPermissionRequest: (listener: (request: BrowserSitePermissionRequest) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, request: BrowserSitePermissionRequest) => listener(request);
+			ipcRenderer.on("browser:site:permissionRequest", wrapped);
+			return () => { ipcRenderer.off("browser:site:permissionRequest", wrapped); };
+		},
 		clear: (viewId: string) => ipcRenderer.invoke("browser:clear", viewId) as Promise<BrowserNavState>,
 		goBack: (viewId: string) => ipcRenderer.invoke("browser:goBack", viewId) as Promise<BrowserNavState>,
 		goForward: (viewId: string) => ipcRenderer.invoke("browser:goForward", viewId) as Promise<BrowserNavState>,

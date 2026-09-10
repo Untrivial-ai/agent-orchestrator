@@ -1,6 +1,7 @@
 {
 	"browser.sitePermissionRequest": "{{origin}} 想要使用：{{permissions}}。",
 	"browser.siteAllowOnce": "允许一次",
+	"browser.siteAlwaysAllow": "始终允许",
 	"browser.siteSettings": "网站设置",
 	"browser.siteClose": "关闭网站设置",
 	"browser.siteLoading": "正在加载权限…",

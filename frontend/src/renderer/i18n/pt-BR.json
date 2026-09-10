@@ -1,6 +1,7 @@
 {
 	"browser.sitePermissionRequest": "{{origin}} quer usar: {{permissions}}.",
 	"browser.siteAllowOnce": "Permitir uma vez",
+	"browser.siteAlwaysAllow": "Sempre permitir",
 	"browser.siteSettings": "Configurações do site",
 	"browser.siteClose": "Fechar configurações do site",
 	"browser.siteLoading": "Carregando permissões…",

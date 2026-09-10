@@ -65,7 +65,7 @@ import {
 import { Input } from "./ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { BrowserTabsRail, type BrowserTabsRailHandle } from "./BrowserTabsRail";
-import { BrowserSiteInfo } from "./BrowserSiteInfo";
+import { BrowserPermissionPrompt, BrowserSiteInfo } from "./BrowserSiteInfo";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { appI18n, type MessageKey } from "../i18n";
@@ -848,6 +848,7 @@ export function BrowserPanelView({
 				) : null}
 				<div className="browser-panel__url-wrap relative min-w-0 flex-1">
 					<BrowserSiteInfo key={`${activeTabId}:${profileState.profileId}:${navState.url}`} url={navState.url} native={hasNativeBrowser} viewId={viewId} tabId={activeTabId} />
+					<BrowserPermissionPrompt viewId={viewId} tabId={activeTabId} />
 					<Input
 						aria-label={t("browser.url")}
 						role="combobox"

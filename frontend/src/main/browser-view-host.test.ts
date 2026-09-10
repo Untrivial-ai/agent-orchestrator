@@ -569,6 +569,7 @@ function setupTabHost(
 		const webContents = {
 			id: nextID++,
 			mainFrame: {},
+			isDestroyed: () => false,
 			canGoBack: () => false,
 			canGoForward: () => false,
 			clearHistory: () => undefined,
@@ -1772,6 +1773,44 @@ describe("agent browser runtime", () => {
 		const callback = vi.fn();
 		setPermissionRequestHandler.mock.calls[0][0]({}, "camera", callback);
 		expect(callback).toHaveBeenCalledWith(false);
+	});
+
+	it("routes a visible tab's permission prompt through its owning renderer", async () => {
+		const store = new BrowserSiteSettingsStore("unused-temporary-settings");
+		const { constructorOptions, emit, invoke, sent, views } = setupTabHost(undefined, false, undefined, undefined, store);
+		const nav = await invoke("browser:ensure", "permission-worker") as BrowserNavState;
+		await invoke("browser:navigate", { viewId: nav.viewId, url: "https://example.com" });
+		await store.set(constructorOptions[0]!.webPreferences.partition!, "https://example.com", "microphone", "ask");
+		emit("browser:setBounds", {
+			viewId: nav.viewId,
+			rect: { x: 0, y: 40, width: 640, height: 420 },
+			visible: true,
+		});
+
+		const callback = vi.fn();
+		const requestHandler = views[0]!.webContents.session.setPermissionRequestHandler.mock.calls[0]![0] as
+			(contents: unknown, permission: string, callback: (allowed: boolean) => void, details: unknown) => void;
+		requestHandler(views[0]!.webContents, "media", callback, {
+			requestingUrl: "https://example.com/test",
+			mediaTypes: ["audio"],
+		});
+
+		const request = sent.find(({ channel }) => channel === "browser:site:permissionRequest")?.payload as
+			{ requestId: string; viewId: string; tabId: string; origin: string; permissions: string[] };
+		expect(request).toMatchObject({
+			viewId: nav.viewId,
+			tabId: "t1",
+			origin: "https://example.com",
+			permissions: ["microphone"],
+		});
+		expect(callback).not.toHaveBeenCalled();
+
+		emit("browser:site:permissionDecision", {
+			requestId: request.requestId,
+			viewId: nav.viewId,
+			decision: "allow-once",
+		});
+		await vi.waitFor(() => expect(callback).toHaveBeenCalledWith(true));
 	});
 
 	it("rounds every native browser tab view to match the renderer shell", async () => {

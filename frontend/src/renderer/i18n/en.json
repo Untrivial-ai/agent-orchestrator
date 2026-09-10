@@ -1,6 +1,7 @@
 {
 	"browser.sitePermissionRequest": "{{origin}} wants to use: {{permissions}}.",
 	"browser.siteAllowOnce": "Allow once",
+	"browser.siteAlwaysAllow": "Always allow",
 	"browser.siteSettings": "Site settings",
 	"browser.siteClose": "Close site settings",
 	"browser.siteLoading": "Loading permissions…",

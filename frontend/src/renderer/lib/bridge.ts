@@ -111,6 +111,8 @@ export const aoBridge: AoBridge =
 			setSitePermission: async () => { throw new Error("Site settings unavailable"); },
 			resetSitePermissions: async () => { throw new Error("Site settings unavailable"); },
 			clearSiteData: async () => { throw new Error("Site settings unavailable"); },
+			respondToPermissionRequest: () => undefined,
+			onPermissionRequest: () => () => undefined,
 			clear: async (viewId: string) => ({
 				viewId,
 				url: "",

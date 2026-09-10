@@ -1,6 +1,7 @@
 {
 	"browser.sitePermissionRequest": "{{origin}} が次の機能の使用を求めています：{{permissions}}。",
 	"browser.siteAllowOnce": "今回のみ許可",
+	"browser.siteAlwaysAllow": "常に許可",
 	"browser.siteSettings": "サイトの設定",
 	"browser.siteClose": "サイトの設定を閉じる",
 	"browser.siteLoading": "権限を読み込み中…",

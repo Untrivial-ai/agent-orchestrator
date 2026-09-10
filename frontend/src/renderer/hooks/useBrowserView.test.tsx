@@ -113,6 +113,8 @@ function setupBridge() {
 		setSitePermission: vi.fn(async () => { throw new Error("Not used"); }),
 		resetSitePermissions: vi.fn(async () => { throw new Error("Not used"); }),
 		clearSiteData: vi.fn(async () => undefined),
+		respondToPermissionRequest: vi.fn(),
+		onPermissionRequest: vi.fn(() => () => undefined),
 		destroy: vi.fn(),
 		setAnnotationMode: vi.fn(async () => undefined),
 		onNavState: vi.fn((listener: Listener) => {

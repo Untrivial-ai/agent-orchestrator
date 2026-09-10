@@ -122,7 +122,6 @@ import {
 import { createBrowserProfileStore } from "./main/browser-profile-store";
 import { BrowserHistoryStore } from "./main/browser-history-store";
 import { BrowserSiteSettingsStore } from "./main/browser-site-settings-store";
-import { catalogFor } from "./renderer/i18n/messages";
 import { BrowserProfileImportService } from "./main/browser-profile-import";
 import {
 	registerBrowserProfileIpc,
@@ -679,23 +678,6 @@ async function createWindowInternal(): Promise<void> {
 		browserProfileStore,
 		browserHistoryStore,
 		browserSiteSettingsStore,
-		promptBrowserPermission: async (origin, permissions) => {
-			const catalog = catalogFor((await readUiSettings(browserProfileStateDir())).locale);
-			const labels = { camera: "browser.siteCamera", microphone: "browser.siteMicrophone", location: "browser.siteLocation", notifications: "browser.siteNotifications" } as const;
-			const message = catalog["browser.sitePermissionRequest"]
-				.replace("{{origin}}", origin)
-				.replace("{{permissions}}", permissions.map((permission) => catalog[labels[permission]]).join(", "));
-			const result = await dialog.showMessageBox({
-				type: "question",
-				title: catalog["browser.sitePermissions"],
-				message,
-				buttons: [catalog["browser.siteBlock"], catalog["browser.siteAllowOnce"]],
-				defaultId: 0,
-				cancelId: 0,
-				noLink: true,
-			});
-			return result.response === 1;
-		},
 		clearBrowserProfileData: clearElectronBrowserProfileData,
 	});
 	browserProfileImporter = profileImporter;

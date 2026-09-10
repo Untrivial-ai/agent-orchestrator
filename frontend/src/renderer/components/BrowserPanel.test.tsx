@@ -13,6 +13,7 @@ import type {
 	BrowserAnnotationContext,
 	BrowserAnnotationSubmitPayload,
 } from "../../shared/browser-annotations";
+import type { BrowserSitePermissionRequest, BrowserSiteSettings } from "../../shared/browser-site-settings";
 
 function render(ui: ReactElement) {
 	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
@@ -170,6 +171,7 @@ describe("BrowserPanel", () => {
 	const annotationCancelListeners = new Set<(payload: BrowserAnnotationCancelPayload) => void>();
 	let focusLocationListener: ((viewId: string) => void) | undefined;
 	let reopenClosedTabListener: ((viewId: string) => void) | undefined;
+	let permissionRequestListener: ((request: BrowserSitePermissionRequest) => void) | undefined;
 	const pageFocusListeners = new Set<(viewId: string) => void>();
 
 	async function openBrowserControls() {
@@ -226,6 +228,20 @@ describe("BrowserPanel", () => {
 			};
 		});
 		window.ao!.browser.historySuggestions = vi.fn(async () => []);
+		window.ao!.browser.respondToPermissionRequest = vi.fn();
+		window.ao!.browser.onPermissionRequest = vi.fn((listener: (request: BrowserSitePermissionRequest) => void) => {
+			permissionRequestListener = listener;
+			return () => {
+				if (permissionRequestListener === listener) permissionRequestListener = undefined;
+			};
+		});
+		window.ao!.browser.getSiteSettings = vi.fn(async ({ viewId }: { viewId: string }): Promise<BrowserSiteSettings> => ({
+			viewId,
+			tabId: "t1",
+			profileId: null,
+			origin: "https://example.com",
+			permissions: { camera: "block", microphone: "block", location: "block", notifications: "block" },
+		}));
 		window.ao!.browser.selectProfile = vi.fn(async () => undefined);
 		window.ao!.browserProfiles.list = vi.fn(async () => ({ profiles: [] }));
 		window.ao!.browser.notifyPanelUsed = vi.fn();
@@ -366,6 +382,71 @@ describe("BrowserPanel", () => {
 		expect(hookState.navigate).not.toHaveBeenCalled();
 		await userEvent.keyboard("{Escape}");
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+	});
+
+	it("prefetches site settings and keeps permission rows stable while they load", async () => {
+		hookState.navState.url = "https://example.com/page";
+		let resolveSettings!: (value: BrowserSiteSettings) => void;
+		window.ao!.browser.getSiteSettings = vi.fn(() => new Promise<BrowserSiteSettings>((resolve) => { resolveSettings = resolve; }));
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		await waitFor(() => expect(window.ao!.browser.getSiteSettings).toHaveBeenCalledWith({ viewId: "42:sess-1" }));
+
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		const info = screen.getByRole("dialog", { name: "View site information" });
+		const permissions = within(info).getByRole("region", { name: "Site permissions" });
+		expect(permissions).toHaveAttribute("aria-busy", "true");
+		for (const label of ["Camera", "Microphone", "Location", "Notifications"]) {
+			expect(within(permissions).getByText(label)).toBeInTheDocument();
+		}
+
+		resolveSettings({
+			viewId: "42:sess-1",
+			tabId: "t1",
+			profileId: null,
+			origin: "https://example.com",
+			permissions: { camera: "block", microphone: "block", location: "block", notifications: "block" },
+		});
+		await waitFor(() => expect(within(permissions).getAllByRole("combobox")).toHaveLength(4));
+		expect(permissions).toHaveAttribute("aria-busy", "false");
+	});
+
+	it("shows an AO permission prompt for the active browser tab and returns the decision", async () => {
+		hookState.navState.url = "https://example.com/page";
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		act(() => permissionRequestListener?.({
+			requestId: "permission-1",
+			viewId: "42:sess-1",
+			tabId: "t1",
+			origin: "https://example.com",
+			permissions: ["microphone"],
+		}));
+		const prompt = screen.getByRole("alertdialog", { name: "Site permissions" });
+		expect(prompt.matches(OPEN_BROWSER_OVERLAY_SELECTOR)).toBe(true);
+		expect(prompt).toHaveTextContent("example.com wants to use: Microphone.");
+		expect(within(prompt).getByRole("button", { name: "Block" })).toBeInTheDocument();
+		expect(within(prompt).getByRole("button", { name: "Always allow" })).toBeInTheDocument();
+		await userEvent.click(within(prompt).getByRole("button", { name: "Allow once" }));
+		expect(window.ao!.browser.respondToPermissionRequest).toHaveBeenCalledWith({
+			requestId: "permission-1",
+			viewId: "42:sess-1",
+			decision: "allow-once",
+		});
+		expect(screen.queryByRole("alertdialog", { name: "Site permissions" })).not.toBeInTheDocument();
+
+		act(() => permissionRequestListener?.({
+			requestId: "permission-2",
+			viewId: "42:sess-1",
+			tabId: "t1",
+			origin: "https://example.com",
+			permissions: ["camera"],
+		}));
+		await userEvent.click(within(screen.getByRole("alertdialog", { name: "Site permissions" }))
+			.getByRole("button", { name: "Always allow" }));
+		expect(window.ao!.browser.respondToPermissionRequest).toHaveBeenLastCalledWith({
+			requestId: "permission-2",
+			viewId: "42:sess-1",
+			decision: "allow-always",
+		});
 	});
 
 	it("updates site permissions and requires confirmation before clearing site data", async () => {
