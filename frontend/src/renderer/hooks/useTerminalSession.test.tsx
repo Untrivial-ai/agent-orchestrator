@@ -366,13 +366,17 @@ describe("useTerminalSession", () => {
 		expect(muxes[0].resizes.slice(initialResizes)).toEqual([["handle-1", 120, 40]]);
 	});
 
-	it("does not forward input until the server opens the current attachment", () => {
+	it("queues input typed before the current attachment opens and flushes it on open", () => {
 		const { terminal, muxes } = setup();
 		terminal.typeKeys("too early");
 		expect(muxes[0].inputs).toEqual([]);
 		act(() => muxes[0].emitOpened("handle-1"));
+		expect(muxes[0].inputs).toEqual([["handle-1", "too early"]]);
 		terminal.typeKeys("ready\r");
-		expect(muxes[0].inputs).toEqual([["handle-1", "ready\r"]]);
+		expect(muxes[0].inputs).toEqual([
+			["handle-1", "too early"],
+			["handle-1", "ready\r"],
+		]);
 	});
 
 	it("forwards each distinct settled grid once", () => {
@@ -945,6 +949,20 @@ describe("useTerminalSession", () => {
 		expect(muxes[1].opens).toEqual([["handle-1", 80, 24]]);
 		act(() => muxes[1].emitOpened("handle-1"));
 		expect(view.result.current.state).toBe("attached");
+	});
+
+	it("queues keystrokes typed during a socket drop and delivers them once reattached", () => {
+		const { terminal, muxes } = setup();
+		act(() => muxes[0].emitOpened("handle-1"));
+		act(() => muxes[0].emitConnection("closed"));
+		// Dropped mid-reattach: nothing to forward to yet, but the keystroke
+		// must not be silently discarded (that read as "I can't even type").
+		terminal.typeKeys("still typing");
+		expect(muxes[0].inputs).toEqual([]);
+		act(() => void vi.advanceTimersByTime(500));
+		expect(muxes).toHaveLength(2);
+		act(() => muxes[1].emitOpened("handle-1"));
+		expect(muxes[1].inputs).toEqual([["handle-1", "still typing"]]);
 	});
 
 	it("ignores stale frames after a reconnect starts", () => {
