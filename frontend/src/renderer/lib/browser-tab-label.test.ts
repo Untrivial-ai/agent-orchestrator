@@ -31,6 +31,12 @@ describe("browserTabLabel", () => {
 			expect(result.title).toBe("New tab");
 			expect(result.subtitle).toBe("Blank page");
 		});
+
+		it("ignores about:blank when reported as the tab title", () => {
+			const result = browserTabLabel("about:blank", "about:blank");
+			expect(result.title).toBe("New tab");
+			expect(result.subtitle).toBe("Blank page");
+		});
 	});
 
 	// ─── standard HTTP(S) URLs ───────────────────────────────────────────────
