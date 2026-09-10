@@ -577,23 +577,6 @@ describe("SessionInspector PR section", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("does not offer Merge until AO approves the current head", () => {
-    renderWithQuery(
-      <SessionInspector session={session([pr(7, "open")])} />,
-      undefined,
-      (client) => {
-        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
-          prSummary(7, "open", {
-            review: { decision: "approved", hasUnresolvedHumanComments: false, unresolvedBy: [] },
-            aoReview: { state: "needs_review", verdict: "", targetSha: "sha-7" },
-          }),
-        ]);
-      },
-    );
-
-    expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
-  });
-
   it.each(["unknown", "blocked", "unstable"] as const)(
     "does not offer Merge when provider mergeability is %s",
     (mergeability) => {
@@ -1848,6 +1831,7 @@ describe("SessionInspector summary reviews", () => {
         "/api/v1/sessions/{sessionId}/reviews/trigger",
         {
           params: { path: { sessionId: "sess-1" } },
+          body: { requestedBy: "orchestrator" },
         },
       ),
     );
@@ -2950,7 +2934,7 @@ describe("SessionInspector summary reviews", () => {
       "/api/v1/sessions/{sessionId}/reviews/trigger",
       {
         params: { path: { sessionId: "sess-1" } },
-        body: { harness: "opencode" },
+        body: { harness: "opencode", requestedBy: "orchestrator" },
       },
     );
   });

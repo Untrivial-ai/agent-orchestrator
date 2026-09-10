@@ -65,11 +65,13 @@ surface (`npm run sqlc`, `npm run api`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
   `/prs/{id}/resolve-comments`.
 - First-class AO review requests share one daemon/service operation across the
-  CLI and desktop. Requests persist the originating worker, configured or
-  overridden reviewer/model, PR, and immutable head SHA; active/duplicate
-  requests are reused, stale-head results are rejected, findings are exposed on
-  the session PR summary, and merge readiness requires an approved AO result
-  for the current head.
+  CLI and desktop. Runs expose whether a worker, orchestrator, or daemon
+  automation requested them and retain the originating worker session id when
+  applicable, plus the configured or overridden reviewer/model, PR, and
+  immutable head SHA. Active/duplicate requests are reused, stale-head results
+  are rejected, and findings are exposed on the session PR summary. AO review
+  state remains separate from merge readiness, which follows provider PR,
+  check, and review facts.
 - Interactive reviewer panes for Aider, Agy, Amp, Auggie, Autohand,
   Claude Code, Cline, Codex, Continue, GitHub Copilot, Crush, Cursor, Devin,
   Droid, Goose, Grok, Kilo Code, Kimchi, Kiro, Kimi, OpenCode, Pi, Qwen, and Vibe. Pi uses an AO-data-owned extension with built-in/project

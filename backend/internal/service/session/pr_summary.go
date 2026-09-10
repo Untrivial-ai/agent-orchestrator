@@ -148,6 +148,10 @@ func summarizeAOReview(pr domain.PullRequest, runs []domain.ReviewRun) PRAORevie
 	out.TargetSHA = latest.TargetSHA
 	out.Harness = string(latest.Harness)
 	out.Model = latest.Model
+	out.RequestedBy = latest.RequestedBy
+	if out.RequestedBy == "" {
+		out.RequestedBy = domain.ReviewRequesterFor(latest.TriggerSource, latest.RequestedBySessionID)
+	}
 	out.RequestedBySessionID = string(latest.RequestedBySessionID)
 	out.Body = latest.Body
 	out.CreatedAt = latest.CreatedAt

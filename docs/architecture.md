@@ -587,8 +587,7 @@ flowchart TD
     PRState -->|draft| Draft[draft]
     PRState -->|changes requested| Changes[changes_requested]
     PRState -->|not mergeable| Conflict[merge_conflict]
-    PRState -->|mergeable + AO approved<br/>for current head| Mergeable[mergeable]
-    PRState -->|mergeable + AO review pending| ReviewPending
+    PRState -->|mergeable| Mergeable[mergeable]
     PRState -->|approved| Approved[approved]
     PRState -->|review pending| ReviewPending[review_pending]
     PRState -->|open| PROpen[pr_open]

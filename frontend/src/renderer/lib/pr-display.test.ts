@@ -238,15 +238,6 @@ describe("prCardPresentation", () => {
 		expect(presentation.supporting.map((status) => status.label)).toEqual(["Checks passing"]);
 	});
 
-	it("requires AO approval for the current head before showing mergeable", () => {
-		const presentation = prCardPresentation(summary({
-			aoReview: { state: "needs_review", verdict: "", targetSha: "abc123" },
-		}));
-
-		expect(presentation.primary).toMatchObject({ key: "review", label: "Review required" });
-		expect(presentation.readiness?.label).toBe("Not mergeable yet");
-	});
-
 	it("shows checking merge readiness while provider state is pending", () => {
 		const presentation = prCardPresentation(
 			summary({

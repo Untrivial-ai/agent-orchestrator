@@ -55,6 +55,25 @@ func (v AOReviewVerdict) Valid() bool {
 	return v == AOReviewVerdictApproved || v == AOReviewVerdictChangesRequested
 }
 
+// AOReviewRequester identifies the actor that initiated an AO review pass.
+// It is separate from the trigger source: both workers and orchestrators are
+// manual requesters, while automatic passes originate in the daemon.
+type AOReviewRequester string
+
+const (
+	// AOReviewRequesterWorker marks a request issued from the target worker.
+	AOReviewRequesterWorker AOReviewRequester = "worker"
+	// AOReviewRequesterOrchestrator marks a manual supervisor request.
+	AOReviewRequesterOrchestrator AOReviewRequester = "orchestrator"
+	// AOReviewRequesterAutomatic marks a daemon policy request.
+	AOReviewRequesterAutomatic AOReviewRequester = "automatic"
+)
+
+// Valid reports whether the requester is one of AO's persisted actor classes.
+func (r AOReviewRequester) Valid() bool {
+	return r == AOReviewRequesterWorker || r == AOReviewRequesterOrchestrator || r == AOReviewRequesterAutomatic
+}
+
 // AOReviewState is the current AO review state for one pull request head.
 type AOReviewState string
 
@@ -124,15 +143,16 @@ type PullRequestReviewSummary struct {
 // PullRequestAOReviewSummary is AO's current review result for this exact PR
 // head. Unlike provider review state, it is keyed to the immutable target SHA.
 type PullRequestAOReviewSummary struct {
-	State                AOReviewState   `json:"state"`
-	Verdict              AOReviewVerdict `json:"verdict"`
-	RunID                string          `json:"runId,omitempty"`
-	TargetSHA            string          `json:"targetSha,omitempty"`
-	Harness              string          `json:"harness,omitempty"`
-	Model                string          `json:"model,omitempty"`
-	RequestedBySessionID string          `json:"requestedBySessionId,omitempty"`
-	Body                 string          `json:"body,omitempty"`
-	CreatedAt            time.Time       `json:"createdAt,omitempty"`
+	State                AOReviewState     `json:"state"`
+	Verdict              AOReviewVerdict   `json:"verdict"`
+	RunID                string            `json:"runId,omitempty"`
+	TargetSHA            string            `json:"targetSha,omitempty"`
+	Harness              string            `json:"harness,omitempty"`
+	Model                string            `json:"model,omitempty"`
+	RequestedBy          AOReviewRequester `json:"requestedBy,omitempty"`
+	RequestedBySessionID string            `json:"requestedBySessionId,omitempty"`
+	Body                 string            `json:"body,omitempty"`
+	CreatedAt            time.Time         `json:"createdAt,omitempty"`
 }
 
 // PullRequestConflictFile is one file involved in a merge conflict.

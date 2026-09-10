@@ -370,6 +370,7 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		BatchID:              r.BatchID,
 		Harness:              r.Harness,
 		Model:                r.Model,
+		RequestedBy:          domain.ReviewRequesterFor(r.TriggerSource, domain.SessionID(r.RequestedBySessionID)),
 		RequestedBySessionID: domain.SessionID(r.RequestedBySessionID),
 		TriggerSource:        r.TriggerSource,
 		PRURL:                r.PRURL,

@@ -46,6 +46,9 @@ type ReviewRun struct {
 	// Model is the immutable per-request model selection. Empty delegates to the
 	// configured reviewer model or the harness's native default.
 	Model string `json:"model,omitempty"`
+	// RequestedBy classifies the actor that initiated the pass. It is derived
+	// from the durable trigger source and requester session id when rows are read.
+	RequestedBy ReviewRequester `json:"requestedBy,omitempty" enum:"worker,orchestrator,automatic"`
 	// RequestedBySessionID identifies a worker-originated request. It is empty
 	// for UI/orchestrator manual triggers and daemon automatic review.
 	RequestedBySessionID SessionID `json:"requestedBySessionId,omitempty"`
@@ -82,6 +85,30 @@ const (
 	// ReviewTriggerAuto marks a daemon-initiated review pass.
 	ReviewTriggerAuto ReviewTriggerSource = "auto"
 )
+
+// ReviewRequester identifies who initiated a review pass.
+type ReviewRequester = contract.AOReviewRequester
+
+const (
+	// ReviewRequesterWorker marks a request issued from the target worker.
+	ReviewRequesterWorker = contract.AOReviewRequesterWorker
+	// ReviewRequesterOrchestrator marks a manual supervisor request.
+	ReviewRequesterOrchestrator = contract.AOReviewRequesterOrchestrator
+	// ReviewRequesterAutomatic marks a daemon policy request.
+	ReviewRequesterAutomatic = contract.AOReviewRequesterAutomatic
+)
+
+// ReviewRequesterFor derives the requester from the immutable facts already
+// persisted for every review run.
+func ReviewRequesterFor(source ReviewTriggerSource, requestedBySessionID SessionID) ReviewRequester {
+	if source == ReviewTriggerAuto {
+		return ReviewRequesterAutomatic
+	}
+	if requestedBySessionID != "" {
+		return ReviewRequesterWorker
+	}
+	return ReviewRequesterOrchestrator
+}
 
 // ReviewRunStatus is the lifecycle state of a single review pass.
 type ReviewRunStatus = contract.AOReviewRunStatus

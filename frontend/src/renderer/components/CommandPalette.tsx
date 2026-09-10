@@ -390,6 +390,7 @@ export function CommandPalette() {
 				case "trigger-review": {
 					const { error: triggerError } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/trigger", {
 						params: { path: { sessionId: action.sessionId } },
+						body: { requestedBy: "orchestrator" },
 					});
 					if (triggerError) throw new Error(apiErrorMessage(triggerError, "Unable to start review"));
 					await queryClient.invalidateQueries({ queryKey: ["session-reviews", action.sessionId] });

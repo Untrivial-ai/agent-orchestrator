@@ -86,7 +86,6 @@ type PRFacts struct {
 	Closed         bool
 	CI             CIState
 	Review         ReviewDecision
-	AOReview       AOReviewVerdict
 	Mergeability   Mergeability
 	ReviewComments bool
 	SourceBranch   string
@@ -251,10 +250,8 @@ func prPipelineStatus(pr PRFacts) SessionStatus {
 		return StatusCIFailed
 	case pr.Draft:
 		return StatusDraft
-	case pr.AOReview == AOReviewVerdictChangesRequested || pr.Review == ReviewChangesRequest || pr.ReviewComments:
+	case pr.Review == ReviewChangesRequest || pr.ReviewComments:
 		return StatusChangesRequested
-	case pr.Mergeability == MergeMergeable && pr.AOReview != AOReviewVerdictApproved:
-		return StatusReviewPending
 	case pr.Mergeability == MergeMergeable:
 		return StatusMergeable
 	case pr.Review == ReviewRequired:

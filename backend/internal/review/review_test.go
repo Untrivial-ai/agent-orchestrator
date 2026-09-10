@@ -440,7 +440,7 @@ func TestRequestUsesConfiguredReviewerModelAndRecordsOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
-	if !res.Created || res.Run.Harness != domain.ReviewerCodex || res.Run.Model != "gpt-5.6" || res.Run.RequestedBySessionID != "mer-1" {
+	if !res.Created || res.Run.Harness != domain.ReviewerCodex || res.Run.Model != "gpt-5.6" || res.Run.RequestedBy != domain.ReviewRequesterWorker || res.Run.RequestedBySessionID != "mer-1" {
 		t.Fatalf("run = %+v", res.Run)
 	}
 	if launcher.gotSpec.Harness != domain.ReviewerCodex || launcher.gotSpec.AgentConfig.Model != "gpt-5.6" {
@@ -448,6 +448,26 @@ func TestRequestUsesConfiguredReviewerModelAndRecordsOrigin(t *testing.T) {
 	}
 	if store.review == nil || store.review.Model != "gpt-5.6" {
 		t.Fatalf("review = %+v", store.review)
+	}
+}
+
+func TestRequestRecordsOrchestratorRequester(t *testing.T) {
+	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{handle: "review-mer-1"})
+
+	res, err := eng.Request(context.Background(), "mer-1", Request{Requester: domain.ReviewRequesterOrchestrator})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if res.Run.RequestedBy != domain.ReviewRequesterOrchestrator || res.Run.RequestedBySessionID != "" {
+		t.Fatalf("run = %+v", res.Run)
+	}
+}
+
+func TestRequestRejectsMismatchedRequesterClass(t *testing.T) {
+	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{})
+	_, err := eng.Request(context.Background(), "mer-1", Request{Requester: domain.ReviewRequesterOrchestrator, RequestedBy: "mer-1"})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
 	}
 }
 

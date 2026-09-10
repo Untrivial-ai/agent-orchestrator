@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	moderncsqlite "modernc.org/sqlite"
@@ -195,15 +194,7 @@ func (s *Store) ReconcileResolvedNotifications(ctx context.Context, at time.Time
 				break
 			}
 		}
-		readiness := domain.MergeReadinessOf(pr, unresolved)
-		runs, err := s.ListReviewRunsBySession(ctx, pr.SessionID)
-		if err != nil {
-			return nil, fmt.Errorf("reconcile read AO reviews %s: %w", row.PRURL, err)
-		}
-		if reviewRunsApproveHead(runs, pr.URL, pr.HeadSHA) {
-			readiness.AOReview = domain.VerdictApproved
-		}
-		if !readiness.ReadyToMerge() {
+		if !domain.MergeReadinessOf(pr, unresolved).ReadyToMerge() {
 			stalePRs = append(stalePRs, row.PRURL)
 		}
 	}
@@ -227,20 +218,6 @@ func (s *Store) ReconcileResolvedNotifications(ctx context.Context, at time.Time
 		resolved = append(resolved, notificationsFromGen(rows)...)
 	}
 	return resolved, nil
-}
-
-func reviewRunsApproveHead(runs []domain.ReviewRun, prURL, headSHA string) bool {
-	var latest *domain.ReviewRun
-	for i := range runs {
-		run := &runs[i]
-		if run.PRURL != prURL || !strings.EqualFold(run.TargetSHA, headSHA) {
-			continue
-		}
-		if latest == nil || run.CreatedAt.After(latest.CreatedAt) {
-			latest = run
-		}
-	}
-	return latest != nil && (latest.Status == domain.ReviewRunComplete || latest.Status == domain.ReviewRunDelivered) && latest.Verdict == domain.VerdictApproved
 }
 
 // MarkNotificationsRead acknowledges exactly the notifications the panel

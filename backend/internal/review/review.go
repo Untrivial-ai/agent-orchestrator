@@ -157,11 +157,13 @@ type TriggerResult struct {
 
 // Request identifies one manual review request. Empty harness/config values use
 // the worker/project reviewer configuration. RequestedBy is populated by the
-// worker-facing CLI and empty for UI/orchestrator actions.
+// worker-facing CLI and empty for UI/orchestrator actions. Requester makes the
+// actor class explicit while the session id preserves the originating worker.
 type Request struct {
 	Harness     domain.ReviewerHarness
 	AgentConfig domain.AgentConfig
 	RequestedBy domain.SessionID
+	Requester   domain.ReviewRequester
 }
 
 // SessionReviews is a worker's review state: the live reviewer handle plus its
@@ -226,6 +228,29 @@ func (e *Engine) requestWithSource(ctx stdctx.Context, workerID domain.SessionID
 	}
 	if source != domain.ReviewTriggerManual && source != domain.ReviewTriggerAuto {
 		return TriggerResult{}, fmt.Errorf("%w: unknown review trigger source %q", ErrInvalid, source)
+	}
+	requester := request.Requester
+	if source == domain.ReviewTriggerAuto {
+		if requester != "" || request.RequestedBy != "" {
+			return TriggerResult{}, fmt.Errorf("%w: automatic review triggers cannot name a manual requester", ErrInvalid)
+		}
+		requester = domain.ReviewRequesterAutomatic
+	} else {
+		if requester == "" {
+			requester = domain.ReviewRequesterFor(source, request.RequestedBy)
+		}
+		switch requester {
+		case domain.ReviewRequesterWorker:
+			if request.RequestedBy == "" {
+				return TriggerResult{}, fmt.Errorf("%w: worker review requests require requestedBySessionId", ErrInvalid)
+			}
+		case domain.ReviewRequesterOrchestrator:
+			if request.RequestedBy != "" {
+				return TriggerResult{}, fmt.Errorf("%w: orchestrator review requests cannot name requestedBySessionId", ErrInvalid)
+			}
+		default:
+			return TriggerResult{}, fmt.Errorf("%w: unknown review requester %q", ErrInvalid, requester)
+		}
 	}
 
 	// Serialise concurrent triggers for this worker so the idempotency check
@@ -387,6 +412,7 @@ func (e *Engine) requestWithSource(ctx stdctx.Context, workerID domain.SessionID
 			BatchID:              batchID,
 			Harness:              harness,
 			Model:                strings.TrimSpace(config.Model),
+			RequestedBy:          requester,
 			RequestedBySessionID: request.RequestedBy,
 			TriggerSource:        source,
 			PRURL:                reviewState.PRURL,

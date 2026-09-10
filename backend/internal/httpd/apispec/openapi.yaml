@@ -10468,6 +10468,12 @@ components:
           type: string
         prUrl:
           type: string
+        requestedBy:
+          enum:
+          - worker
+          - orchestrator
+          - automatic
+          type: string
         requestedBySessionId:
           type: string
         reviewId:
@@ -10701,6 +10707,12 @@ components:
         harness:
           type: string
         model:
+          type: string
+        requestedBy:
+          enum:
+          - worker
+          - orchestrator
+          - automatic
           type: string
         requestedBySessionId:
           type: string
@@ -11753,6 +11765,13 @@ components:
           - auggie
           - cline
           - autohand
+          type: string
+        requestedBy:
+          description: Actor requesting this manual review. Worker requests must also
+            identify their originating session.
+          enum:
+          - worker
+          - orchestrator
           type: string
         requestedBySessionId:
           description: Originating worker session. Set by the worker CLI; omitted

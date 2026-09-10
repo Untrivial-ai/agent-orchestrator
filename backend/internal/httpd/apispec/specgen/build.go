@@ -392,8 +392,9 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersSubmitReviewItem":      "SubmitReviewItem",
 	"ControllersSubmitReviewInput":     "SubmitReviewInput",
 	// domain review entities
-	"DomainReviewRun":     "ReviewRun",
-	"ReviewPRReviewState": "PRReviewState",
+	"ContractAOReviewRequester": "AOReviewRequester",
+	"DomainReviewRun":           "ReviewRun",
+	"ReviewPRReviewState":       "PRReviewState",
 	// httpd/controllers: import wire envelopes
 	"ControllersImportStatusResponse": "ImportStatusResponse",
 	"ControllersImportRunResponse":    "ImportRunResponse",

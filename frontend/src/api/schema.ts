@@ -3754,6 +3754,8 @@ export interface components {
             id: string;
             model?: string;
             prUrl: string;
+            /** @enum {string} */
+            requestedBy?: "worker" | "orchestrator" | "automatic";
             requestedBySessionId?: string;
             reviewId: string;
             sessionId: string;
@@ -3839,6 +3841,8 @@ export interface components {
             createdAt?: null | string;
             harness?: string;
             model?: string;
+            /** @enum {string} */
+            requestedBy?: "worker" | "orchestrator" | "automatic";
             requestedBySessionId?: string;
             runId?: string;
             /** @enum {string} */
@@ -4247,6 +4251,11 @@ export interface components {
             agentConfig?: components["schemas"]["AgentConfig"];
             /** @enum {string} */
             harness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "kiro" | "pi" | "qwen" | "agy" | "continue" | "goose" | "vibe" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
+            /**
+             * @description Actor requesting this manual review. Worker requests must also identify their originating session.
+             * @enum {string}
+             */
+            requestedBy?: "worker" | "orchestrator";
             /** @description Originating worker session. Set by the worker CLI; omitted by UI/orchestrator actions. */
             requestedBySessionId?: string;
         };

@@ -296,7 +296,7 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get run: ok=%v err=%v", ok, err)
 	}
-	if gotRun.ID != "run-1" || gotRun.SessionID != rec.ID || gotRun.BatchID != "batch-1" || gotRun.TargetSHA != "sha1" || gotRun.Model != "model-a" || gotRun.RequestedBySessionID != rec.ID {
+	if gotRun.ID != "run-1" || gotRun.SessionID != rec.ID || gotRun.BatchID != "batch-1" || gotRun.TargetSHA != "sha1" || gotRun.Model != "model-a" || gotRun.RequestedBy != domain.ReviewRequesterWorker || gotRun.RequestedBySessionID != rec.ID {
 		t.Fatalf("get run = %+v", gotRun)
 	}
 

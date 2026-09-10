@@ -91,8 +91,7 @@ func TestDeriveSCMStatusPipelineAndWorstWins(t *testing.T) {
 		{"review pending", []contract.PRFacts{{Review: contract.ReviewRequired}}, contract.StatusReviewPending},
 		{"review pending with provider merge blocker", []contract.PRFacts{{Review: contract.ReviewRequired, Mergeability: contract.MergeBlocked}}, contract.StatusReviewPending},
 		{"approved", []contract.PRFacts{{Review: contract.ReviewApproved}}, contract.StatusApproved},
-		{"mergeable", []contract.PRFacts{{Mergeability: contract.MergeMergeable, AOReview: contract.AOReviewVerdictApproved}}, contract.StatusMergeable},
-		{"mergeable awaits AO review", []contract.PRFacts{{Mergeability: contract.MergeMergeable}}, contract.StatusReviewPending},
+		{"mergeable", []contract.PRFacts{{Mergeability: contract.MergeMergeable}}, contract.StatusMergeable},
 		{"merge blocked", []contract.PRFacts{{Mergeability: contract.MergeBlocked}}, contract.StatusPROpen},
 		{"merge blocked with approved review", []contract.PRFacts{{Mergeability: contract.MergeBlocked, Review: contract.ReviewApproved}}, contract.StatusPROpen},
 		{"changes requested", []contract.PRFacts{{Review: contract.ReviewChangesRequest}}, contract.StatusChangesRequested},
@@ -102,7 +101,7 @@ func TestDeriveSCMStatusPipelineAndWorstWins(t *testing.T) {
 		{
 			"worst wins",
 			[]contract.PRFacts{
-				{URL: "a", SourceBranch: "a", TargetBranch: "main", Mergeability: contract.MergeMergeable, AOReview: contract.AOReviewVerdictApproved},
+				{URL: "a", SourceBranch: "a", TargetBranch: "main", Mergeability: contract.MergeMergeable},
 				{URL: "b", SourceBranch: "b", TargetBranch: "main", CI: contract.CIFailing},
 			},
 			contract.StatusCIFailed,
@@ -124,7 +123,6 @@ func TestStackRules(t *testing.T) {
 		SourceBranch: "feature",
 		TargetBranch: "main",
 		Mergeability: contract.MergeMergeable,
-		AOReview:     contract.AOReviewVerdictApproved,
 	}
 	child := contract.PRFacts{
 		URL:          "child",

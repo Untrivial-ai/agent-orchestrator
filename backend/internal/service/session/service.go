@@ -994,7 +994,6 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) (domain.Session, error) {
 	runs = canonicalizeCurrentHeadReviewRuns(prs, runs)
 	prs = deduplicatePRFacts(prs)
-	applyAOReviewFacts(prs, runs)
 	// Both derivations read the clock once, from the same instant: they share
 	// the no-signal rule, and two reads could put them either side of its grace
 	// period and have the card contradict its own status.
@@ -1259,24 +1258,6 @@ func (s *Service) currentHeadReviewRuns(ctx context.Context, rec domain.SessionR
 		return nil, fmt.Errorf("review runs %s: %w", rec.ID, err)
 	}
 	return runs, nil
-}
-
-func applyAOReviewFacts(prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) {
-	for i := range prs {
-		var latest *domain.CurrentHeadReviewRun
-		for j := range runs {
-			run := &runs[j]
-			if run.PRURL != prs[i].URL {
-				continue
-			}
-			if latest == nil || run.CreatedAt.After(latest.CreatedAt) {
-				latest = run
-			}
-		}
-		if latest != nil && (latest.Status == domain.ReviewRunComplete || latest.Status == domain.ReviewRunDelivered) {
-			prs[i].AOReview = latest.Verdict
-		}
-	}
 }
 
 // now tolerates a zero-value Service (tests construct the struct literally

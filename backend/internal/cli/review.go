@@ -23,6 +23,7 @@ type reviewRun struct {
 	BatchID              string     `json:"batchId"`
 	Harness              string     `json:"harness"`
 	Model                string     `json:"model,omitempty"`
+	RequestedBy          string     `json:"requestedBy,omitempty"`
 	RequestedBySessionID string     `json:"requestedBySessionId,omitempty"`
 	PRURL                string     `json:"prUrl"`
 	TargetSHA            string     `json:"targetSha"`
@@ -63,6 +64,7 @@ type triggerReviewResponse struct {
 type requestReviewRequest struct {
 	Harness              string                   `json:"harness,omitempty"`
 	AgentConfig          requestReviewAgentConfig `json:"agentConfig,omitempty"`
+	RequestedBy          string                   `json:"requestedBy,omitempty"`
 	RequestedBySessionID string                   `json:"requestedBySessionId,omitempty"`
 }
 
@@ -169,16 +171,18 @@ func (c *commandContext) requestReview(cmd *cobra.Command, args []string, opts r
 		return usageError{errors.New("worker session id is required (pass --session or set AO_SESSION_ID)")}
 	}
 	requestedBy := ""
+	requester := "orchestrator"
 	if origin != "" {
 		if origin != session {
 			return usageError{errors.New("a worker may only request review for its own AO_SESSION_ID")}
 		}
 		requestedBy = origin
+		requester = "worker"
 	}
 	path := "sessions/" + url.PathEscape(session) + "/reviews/trigger"
 	var res triggerReviewResponse
 	if err := c.postJSON(cmd.Context(), path, requestReviewRequest{
-		Harness: strings.TrimSpace(opts.reviewer), AgentConfig: requestReviewAgentConfig{Model: strings.TrimSpace(opts.model)}, RequestedBySessionID: requestedBy,
+		Harness: strings.TrimSpace(opts.reviewer), AgentConfig: requestReviewAgentConfig{Model: strings.TrimSpace(opts.model)}, RequestedBy: requester, RequestedBySessionID: requestedBy,
 	}, &res); err != nil {
 		return err
 	}
@@ -404,7 +408,7 @@ func (c *commandContext) restartReview(cmd *cobra.Command, args []string, opts r
 	// Decode the response so we can tell whether a new pass was started or an
 	// existing run for the same commit was reused, and report it accurately.
 	var res triggerReviewResponse
-	if err := c.postJSON(cmd.Context(), path, struct{}{}, &res); err != nil {
+	if err := c.postJSON(cmd.Context(), path, requestReviewRequest{RequestedBy: "orchestrator"}, &res); err != nil {
 		return err
 	}
 	msg := "reused the existing review for %s\n"

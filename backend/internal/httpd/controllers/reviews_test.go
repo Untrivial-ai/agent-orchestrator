@@ -23,6 +23,7 @@ type fakeReviewService struct {
 	triggeredHarness   domain.ReviewerHarness
 	triggeredConfig    domain.AgentConfig
 	triggeredRequester domain.SessionID
+	triggeredBy        domain.ReviewRequester
 	triggerErr         error
 	submitErr          error
 	cancelErr          error
@@ -66,6 +67,7 @@ func (f *fakeReviewService) Trigger(
 
 func (f *fakeReviewService) Request(ctx context.Context, workerID domain.SessionID, request reviewcore.Request) (reviewcore.TriggerResult, error) {
 	f.triggeredRequester = request.RequestedBy
+	f.triggeredBy = request.Requester
 	return f.Trigger(ctx, workerID, request.Harness, request.AgentConfig)
 }
 
@@ -252,13 +254,13 @@ func TestReviewsTriggerForwardsRequestOriginAndOverrides(t *testing.T) {
 	svc := &fakeReviewService{}
 	srv := newReviewTestServer(t, svc)
 
-	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/trigger", `{"harness":"codex","agentConfig":{"model":"gpt-5.6"},"requestedBySessionId":"mer-1"}`)
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/trigger", `{"harness":"codex","agentConfig":{"model":"gpt-5.6"},"requestedBy":"worker","requestedBySessionId":"mer-1"}`)
 	assertJSON(t, headers)
 	if status != http.StatusCreated {
 		t.Fatalf("status = %d body=%s", status, body)
 	}
-	if svc.triggeredHarness != domain.ReviewerCodex || svc.triggeredConfig.Model != "gpt-5.6" || svc.triggeredRequester != "mer-1" {
-		t.Fatalf("forwarded harness/model/requester = %q/%q/%q", svc.triggeredHarness, svc.triggeredConfig.Model, svc.triggeredRequester)
+	if svc.triggeredHarness != domain.ReviewerCodex || svc.triggeredConfig.Model != "gpt-5.6" || svc.triggeredBy != domain.ReviewRequesterWorker || svc.triggeredRequester != "mer-1" {
+		t.Fatalf("forwarded harness/model/requester = %q/%q/%q/%q", svc.triggeredHarness, svc.triggeredConfig.Model, svc.triggeredBy, svc.triggeredRequester)
 	}
 }
 

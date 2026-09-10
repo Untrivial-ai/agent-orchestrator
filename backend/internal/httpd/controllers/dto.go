@@ -842,15 +842,16 @@ type SessionPRReviewSummary struct {
 
 // SessionPRAOReviewSummary is AO's exact-head review state for a session PR.
 type SessionPRAOReviewSummary struct {
-	State                contract.AOReviewState   `json:"state" enum:"needs_review,running,up_to_date,changes_requested,ineligible"`
-	Verdict              contract.AOReviewVerdict `json:"verdict" enum:",approved,changes_requested"`
-	RunID                string                   `json:"runId,omitempty"`
-	TargetSHA            string                   `json:"targetSha,omitempty"`
-	Harness              string                   `json:"harness,omitempty"`
-	Model                string                   `json:"model,omitempty"`
-	RequestedBySessionID string                   `json:"requestedBySessionId,omitempty"`
-	Body                 string                   `json:"body,omitempty"`
-	CreatedAt            *time.Time               `json:"createdAt,omitempty"`
+	State                contract.AOReviewState     `json:"state" enum:"needs_review,running,up_to_date,changes_requested,ineligible"`
+	Verdict              contract.AOReviewVerdict   `json:"verdict" enum:",approved,changes_requested"`
+	RunID                string                     `json:"runId,omitempty"`
+	TargetSHA            string                     `json:"targetSha,omitempty"`
+	Harness              string                     `json:"harness,omitempty"`
+	Model                string                     `json:"model,omitempty"`
+	RequestedBy          contract.AOReviewRequester `json:"requestedBy,omitempty" enum:"worker,orchestrator,automatic"`
+	RequestedBySessionID string                     `json:"requestedBySessionId,omitempty"`
+	Body                 string                     `json:"body,omitempty"`
+	CreatedAt            *time.Time                 `json:"createdAt,omitempty"`
 }
 
 // SessionPRReviewEntry is one submitted provider review summary: a reviewer's
@@ -938,7 +939,7 @@ func NewSessionPRSummary(in sessionsvc.PRSummary) SessionPRSummary {
 func newSessionPRAOReviewSummary(in sessionsvc.PRAOReviewSummary) *SessionPRAOReviewSummary {
 	return &SessionPRAOReviewSummary{
 		State: in.State, Verdict: in.Verdict, RunID: in.RunID, TargetSHA: in.TargetSHA,
-		Harness: in.Harness, Model: in.Model, RequestedBySessionID: in.RequestedBySessionID,
+		Harness: in.Harness, Model: in.Model, RequestedBy: in.RequestedBy, RequestedBySessionID: in.RequestedBySessionID,
 		Body: in.Body, CreatedAt: optionalTime(in.CreatedAt),
 	}
 }
@@ -2414,6 +2415,7 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 type TriggerReviewRequest struct {
 	Harness              domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
 	AgentConfig          domain.AgentConfig     `json:"agentConfig,omitempty"`
+	RequestedBy          domain.ReviewRequester `json:"requestedBy,omitempty" enum:"worker,orchestrator" description:"Actor requesting this manual review. Worker requests must also identify their originating session."`
 	RequestedBySessionID domain.SessionID       `json:"requestedBySessionId,omitempty" description:"Originating worker session. Set by the worker CLI; omitted by UI/orchestrator actions."`
 }
 

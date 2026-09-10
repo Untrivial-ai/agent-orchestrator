@@ -185,7 +185,8 @@ second opinion; adapters that cannot apply a model override reject it rather
 than silently using another model. The request uses the same daemon operation as `ao review
 trigger` (also `execute` and `restart`). Reviewers report through `ao review
 submit`, and operators can use `ao review ls` or `ao review cancel` (also
-`stop`).
+`stop`). Review runs expose `requestedBy` (`worker`, `orchestrator`, or
+`automatic`); worker-originated runs also expose `requestedBySessionId`.
 
 ## Configuration
 

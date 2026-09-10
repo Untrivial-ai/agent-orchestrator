@@ -54,7 +54,7 @@ func TestReviewRequestDefaultsToOriginAndForwardsOverrides(t *testing.T) {
 	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if req.Harness != "codex" || req.AgentConfig.Model != "gpt-5.6" || req.RequestedBySessionID != "mer-7" {
+	if req.Harness != "codex" || req.AgentConfig.Model != "gpt-5.6" || req.RequestedBy != "worker" || req.RequestedBySessionID != "mer-7" {
 		t.Fatalf("request = %+v", req)
 	}
 	if !strings.Contains(out, "started AO review for PR #42 at abc123 (running)") {
@@ -329,6 +329,10 @@ func TestReviewRestartPostsTriggerCreated(t *testing.T) {
 	}
 	if capture.method != http.MethodPost || capture.path != "/api/v1/sessions/mer-1/reviews/trigger" {
 		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	var req requestReviewRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil || req.RequestedBy != "orchestrator" {
+		t.Fatalf("request body = %q, decoded = %+v, err = %v", capture.body, req, err)
 	}
 	if !strings.Contains(out, "started a new review for mer-1") {
 		t.Fatalf("stdout = %q, want the created message", out)

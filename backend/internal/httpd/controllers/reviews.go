@@ -174,7 +174,7 @@ func (c *ReviewsController) trigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := c.Svc.Request(r.Context(), sessionID(r), reviewcore.Request{
-		Harness: in.Harness, AgentConfig: in.AgentConfig, RequestedBy: in.RequestedBySessionID,
+		Harness: in.Harness, AgentConfig: in.AgentConfig, RequestedBy: in.RequestedBySessionID, Requester: in.RequestedBy,
 	})
 	if err != nil {
 		writeReviewError(w, r, err)

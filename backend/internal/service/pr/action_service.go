@@ -19,7 +19,6 @@ var (
 
 type actionStore interface {
 	GetPR(ctx context.Context, url string) (domain.PullRequest, bool, error)
-	ListReviewRunsBySession(ctx context.Context, id domain.SessionID) ([]domain.ReviewRun, error)
 }
 
 type actionReader interface {
@@ -92,11 +91,7 @@ func (s *ActionService) Merge(ctx context.Context, request MergeRequest) (MergeR
 	if !strings.EqualFold(fresh.PR.HeadSHA, expectedHead) {
 		return MergeResult{}, ErrPRHeadChanged
 	}
-	runs, err := s.store.ListReviewRunsBySession(ctx, tracked.SessionID)
-	if err != nil {
-		return MergeResult{}, fmt.Errorf("load AO review readiness: %w", err)
-	}
-	if !readyToMerge(fresh, review, currentHeadAOApproved(tracked.URL, expectedHead, runs)) {
+	if !readyToMerge(fresh, review) {
 		return MergeResult{}, ErrPRPreconditions
 	}
 
@@ -137,13 +132,9 @@ func (s *ActionService) fetchMergeReadiness(ctx context.Context, ref ports.SCMPR
 	return observations[0], review, nil
 }
 
-func readyToMerge(o ports.SCMObservation, review ports.SCMReviewObservation, aoApproved bool) bool {
+func readyToMerge(o ports.SCMObservation, review ports.SCMReviewObservation) bool {
 	if o.PR.HeadSHA == "" || o.CI.HeadSHA != o.PR.HeadSHA || review.Partial {
 		return false
-	}
-	aoReview := domain.VerdictNone
-	if aoApproved {
-		aoReview = domain.VerdictApproved
 	}
 	return domain.MergeReadiness{
 		Draft:              o.PR.Draft,
@@ -151,24 +142,9 @@ func readyToMerge(o ports.SCMObservation, review ports.SCMReviewObservation, aoA
 		Closed:             o.PR.Closed,
 		CI:                 domain.CIState(o.CI.Summary),
 		Review:             domain.ReviewDecision(review.Decision),
-		AOReview:           aoReview,
 		Mergeability:       domain.Mergeability(o.Mergeability.State),
 		UnresolvedComments: hasUnresolvedHumanComments(review.Threads),
 	}.ReadyToMerge()
-}
-
-func currentHeadAOApproved(prURL, headSHA string, runs []domain.ReviewRun) bool {
-	var latest *domain.ReviewRun
-	for i := range runs {
-		run := &runs[i]
-		if run.PRURL != prURL || !strings.EqualFold(run.TargetSHA, headSHA) {
-			continue
-		}
-		if latest == nil || run.CreatedAt.After(latest.CreatedAt) {
-			latest = run
-		}
-	}
-	return latest != nil && (latest.Status == domain.ReviewRunComplete || latest.Status == domain.ReviewRunDelivered) && latest.Verdict == domain.VerdictApproved
 }
 
 func hasUnresolvedHumanComments(threads []ports.SCMReviewThreadObservation) bool {

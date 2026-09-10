@@ -4170,7 +4170,7 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || len(pr.Review.UnresolvedBy) != 1 {
 		t.Fatalf("review = %+v", pr.Review)
 	}
-	if pr.AOReview.State != "changes_requested" || pr.AOReview.RunID != "ao-run" || pr.AOReview.TargetSHA != "abc123" || pr.AOReview.Body != "guard the transaction" || pr.AOReview.RequestedBySessionID != "mer-1" || pr.AOReview.Model != "gpt-5.6" {
+	if pr.AOReview.State != "changes_requested" || pr.AOReview.RunID != "ao-run" || pr.AOReview.TargetSHA != "abc123" || pr.AOReview.Body != "guard the transaction" || pr.AOReview.RequestedBy != domain.ReviewRequesterWorker || pr.AOReview.RequestedBySessionID != "mer-1" || pr.AOReview.Model != "gpt-5.6" {
 		t.Fatalf("AO review = %+v", pr.AOReview)
 	}
 	if reviewer := pr.Review.UnresolvedBy[0]; reviewer.ReviewerID != "reviewer-a" || reviewer.Count != 2 || len(reviewer.Links) != 2 {
