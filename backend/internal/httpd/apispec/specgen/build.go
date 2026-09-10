@@ -320,6 +320,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersSpawnOrchestratorResponse":                "SpawnOrchestratorResponse",
 	"ControllersOrchestratorResponse":                     "OrchestratorResponse",
 	"AgentInventory":                                      "ListAgentsResponse",
+	"ClaudeProfiles":                                      "ClaudeProfilesResponse",
+	"ClaudeProfile":                                       "ClaudeProfile",
 	"AgentInfo":                                           "AgentInfo",
 	"AgentProbeResult":                                    "ProbeAgentResponse",
 	"AgentReadiness":                                      "AgentReadinessResponse",
@@ -1100,6 +1102,15 @@ func agentOperations() []operation {
 			resps: []respUnit{
 				{http.StatusCreated, controllers.StartAgentAuthResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/agents/claude-code/profiles", id: "listClaudeProfiles", tag: "agents",
+			summary: "Discover existing local Claude Code profiles",
+			resps: []respUnit{
+				{http.StatusOK, controllers.ClaudeProfilesResponse{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},

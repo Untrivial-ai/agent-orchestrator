@@ -162,6 +162,9 @@ const agentCatalogResponse = {
 function mockProject(project: Record<string, unknown>) {
 	getMock.mockImplementation(async (path: string) => {
 		if (path === "/api/v1/agents/readiness") return agentCatalogResponse;
+        if (path === "/api/v1/agents/claude-code/profiles") return { data: { profiles: [
+            { name: "Default", configDir: "" }, { name: "work", configDir: "/profiles/work" },
+        ] } };
 		if (path === "/api/v1/agents/{agent}/models") {
 			return {
 				data: {
@@ -204,6 +207,27 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
+    it.each([
+        ["Claude Code — work", "/profiles/work"],
+        ["Claude Code — Default", ""],
+        ["Use environment default", undefined],
+    ])("saves %s while preserving other project environment settings", async (label, expected) => {
+        mockProject({ id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one", config: {
+            worker: { agent: "claude-code" }, orchestrator: { agent: "claude-code" },
+            env: { FOO: "bar", CLAUDE_CONFIG_DIR: "/profiles/old" },
+        } });
+        renderSettings("proj-1", undefined, "agents");
+        const trigger = await screen.findByRole("button", { name: "Claude Code profile" });
+        expect(trigger).toHaveTextContent("Saved profile (/profiles/old)");
+        await chooseOption(trigger, label);
+        submitSettings();
+        await waitFor(() => expect(putMock).toHaveBeenCalled());
+        const saved = putMock.mock.calls[0][1].body.config.env;
+        expect(saved.FOO).toBe("bar");
+        expect(saved.CLAUDE_CONFIG_DIR).toBe(expected);
+        expect(Object.hasOwn(saved, "CLAUDE_CONFIG_DIR")).toBe(expected !== undefined);
+    });
+
 	it("ensures agent readiness in the background without manual refresh buttons", async () => {
 		mockProject({
 			id: "proj-1",

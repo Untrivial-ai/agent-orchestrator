@@ -418,10 +418,22 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	if handleID == "" {
 		// Each pass gets a fresh reviewer process on the same stable terminal
 		// handle when there is no resumable live agent session to notify.
-		if err := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath); err != nil {
+		profileEnv, err := e.claudeProfileEnv(ctx, worker, harness)
+		if err != nil {
+			return TriggerResult{}, failRuns(0, err)
+		}
+		preflight := func() error { return e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath) }
+		if scoped, ok := e.launcher.(interface {
+			PreflightWithEnv(stdctx.Context, domain.ReviewerHarness, string, map[string]string) error
+		}); ok {
+			preflight = func() error { return scoped.PreflightWithEnv(ctx, harness, worker.Metadata.WorkspacePath, profileEnv) }
+		}
+		if err := preflight(); err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("reviewer preflight: %w", err))
 		}
-		launch, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID))
+		spec := reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID)
+		spec.Env = profileEnv
+		launch, err := e.launcher.Spawn(ctx, spec)
 		if err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("launch reviewer: %w", err))
 		}
@@ -825,7 +837,12 @@ func (e *Engine) restoreReviewerLocked(
 			return RestoreReviewerResult{}, err
 		}
 	}
+	profileEnv, err := e.claudeProfileEnv(ctx, worker, harness)
+	if err != nil {
+		return RestoreReviewerResult{}, err
+	}
 	launch, err := e.launcher.RestoreTerminal(ctx, LaunchSpec{
+		Env:                  profileEnv,
 		ReviewSessionID:      reviewRow.ID,
 		WorkerID:             worker.ID,
 		ProjectID:            worker.ProjectID,
@@ -1327,4 +1344,20 @@ func (e *Engine) upsertReview(ctx stdctx.Context, worker domain.SessionRecord, h
 		return domain.Review{}, err
 	}
 	return review, nil
+}
+
+// claudeProfileEnv forwards only the Claude profile selection, preserving the
+// reviewer's existing environment restrictions for every other key.
+func (e *Engine) claudeProfileEnv(ctx stdctx.Context, worker domain.SessionRecord, harness domain.ReviewerHarness) (map[string]string, error) {
+	if harness != domain.ReviewerClaudeCode || e.projects == nil {
+		return nil, nil
+	}
+	project, ok, err := e.projects.GetProject(ctx, string(worker.ProjectID))
+	if err != nil || !ok {
+		return nil, err
+	}
+	if dir, selected := project.Config.Env["CLAUDE_CONFIG_DIR"]; selected {
+		return map[string]string{"CLAUDE_CONFIG_DIR": dir}, nil
+	}
+	return nil, nil
 }

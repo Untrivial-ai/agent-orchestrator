@@ -34,6 +34,7 @@ import { ProductExternalLink } from "./ProductExternalLink";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
+import { ClaudeProfileSelect } from "./settings/ClaudeProfileSelect";
 import { SettingsRow } from "./settings/SettingsRow";
 import { Switch } from "./ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -146,6 +147,7 @@ function SettingsBody({
 		workerMode: config.worker?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		orchestratorMode: config.orchestrator?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		permissions: config.agentConfig?.permissions ?? "",
+		claudeConfigDir: config.env?.CLAUDE_CONFIG_DIR ?? "__inherit__",
 		reviewerHarness: config.reviewers?.[0]?.harness ?? "",
 		reviewerModel: config.reviewers?.[0]?.agentConfig?.model ?? "",
 		reviewerMode: config.reviewers?.[0]?.agentConfig?.mode ?? "",
@@ -166,7 +168,21 @@ function SettingsBody({
 		agentIds: [form.workerAgent, form.orchestratorAgent, form.reviewerHarness],
 		enabled: form.workerAgent !== "" || form.orchestratorAgent !== "" || form.reviewerHarness !== "",
 	});
-	const agentCatalog = agentsQuery.data;
+	// Global authentication describes the daemon default, not an explicit project profile.
+	const agentCatalog = agentsQuery.data && form.claudeConfigDir !== "__inherit__"
+		? {
+			...agentsQuery.data,
+			agents: agentsQuery.data.agents.map((agent) => agent.id === "claude-code" ? {
+				...agent,
+				authentication: {
+					attemptedAt: null, checkedAt: null,
+					state: "unknown" as const, freshness: "stale" as const,
+					reasonCode: "not_checked", reason: "Project profile authentication is checked at launch.",
+				},
+				effectiveReadiness: "unknown" as const,
+			} : agent),
+		}
+		: agentsQuery.data;
 
 	const intakeForm: IntakeForm = {
 		enabled: form.intakeEnabled,
@@ -252,6 +268,12 @@ function SettingsBody({
 						trackerIntake: buildIntake(intakeForm),
 						autoReview: form.autoReview,
 					};
+			if (form.claudeConfigDir !== (config.env?.CLAUDE_CONFIG_DIR ?? "__inherit__")) {
+				const env = { ...config.env };
+				if (form.claudeConfigDir !== "__inherit__") env.CLAUDE_CONFIG_DIR = form.claudeConfigDir;
+				else delete env.CLAUDE_CONFIG_DIR;
+				next.env = Object.keys(env).length ? env : undefined;
+			}
 			const { error } = await apiClient.PUT("/api/v1/projects/{id}", {
 				params: { path: { id: projectId } },
 				body: { displayName, config: next },
@@ -298,6 +320,9 @@ function SettingsBody({
 			setReplacementError(result.replacementError);
 			setValidationError(null);
 			void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+			if (form.claudeConfigDir !== (config.env?.CLAUDE_CONFIG_DIR ?? "__inherit__")) {
+				void queryClient.invalidateQueries({ queryKey: agentModelsQueryKey("claude-code", projectId) });
+			}
 			const workspaceRefresh = onSaved();
 
 			if (result.replacementSessionId) {
@@ -497,6 +522,17 @@ function SettingsBody({
 							missingRequiredAgent ? t("settings.project.agentsRequired") : null
 						}
 					/>
+				<ProjectSettingsSection title={t("settings.project.claudeProfile")} grouped>
+					<SettingsRow label={t("settings.project.profile")}>
+						<ClaudeProfileSelect
+							value={form.claudeConfigDir}
+							onChange={(claudeConfigDir) => setForm((f) => ({ ...f, claudeConfigDir }))}
+						/>
+					</SettingsRow>
+					<p className="px-4 py-2 text-sm text-settings-muted">
+						{t("settings.project.claudeProfileDescription")}
+					</p>
+				</ProjectSettingsSection>
 				{!isScratchProject && (
 					<ProjectSettingsSection title={t("settings.project.reviewer")} grouped>
 						<SettingsRow label={t("settings.project.defaultReviewer")}>

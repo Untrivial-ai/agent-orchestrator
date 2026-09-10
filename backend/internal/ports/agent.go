@@ -417,6 +417,8 @@ const (
 
 // LaunchConfig carries inputs needed to build a new agent launch command.
 type LaunchConfig struct {
+	// Env is the resolved child environment, including provider profile selection.
+	Env         map[string]string
 	Config      AgentConfig
 	DataDir     string
 	IssueID     string

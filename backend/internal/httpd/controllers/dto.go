@@ -2451,3 +2451,9 @@ type MuteDeviceRequest struct {
 type InstallIDParam struct {
 	InstallID string `path:"installId" description:"The device's stable install id."`
 }
+
+// ClaudeProfilesResponse lists existing local Claude configuration directories.
+type ClaudeProfilesResponse = agentsvc.ClaudeProfiles
+
+// ClaudeProfile is one display-safe local Claude configuration directory.
+type ClaudeProfile = agentsvc.ClaudeProfile

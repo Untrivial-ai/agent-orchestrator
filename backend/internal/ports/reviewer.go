@@ -79,6 +79,8 @@ type ReviewerPromptReadinessProvider interface {
 // the reviewer needs are passed explicitly here (and embedded in the prompt /
 // message), never through environment variables.
 type ReviewInvocation struct {
+	// Env carries the selected provider profile for reviewer prelaunch.
+	Env map[string]string
 	// ReviewerID is a stable id for the reviewer's runtime instance (pane,
 	// native session id), derived from the worker session.
 	ReviewerID string

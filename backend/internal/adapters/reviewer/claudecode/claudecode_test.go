@@ -93,6 +93,7 @@ func TestPreLaunchInstallsSelectedReviewerHooksAndTrustsWorkspace(t *testing.T) 
 	r := &Reviewer{agent: agent}
 
 	if err := r.PreLaunch(context.Background(), ports.ReviewInvocation{
+		Env:           map[string]string{"CLAUDE_CONFIG_DIR": "/profiles/work"},
 		ReviewerID:    "review-w1",
 		WorkspacePath: "/ws/w1",
 	}); err != nil {
@@ -103,6 +104,9 @@ func TestPreLaunchInstallsSelectedReviewerHooksAndTrustsWorkspace(t *testing.T) 
 	}
 	if len(agent.prelaunch) != 1 || agent.prelaunch[0].WorkspacePath != "/ws/w1" || agent.prelaunch[0].SessionID == "" {
 		t.Fatalf("prelaunch = %#v, want trusted workspace with pinned session id", agent.prelaunch)
+	}
+	if agent.prelaunch[0].Env["CLAUDE_CONFIG_DIR"] != "/profiles/work" {
+		t.Fatal("selected profile was not passed to prelaunch")
 	}
 }
 
