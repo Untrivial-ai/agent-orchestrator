@@ -28,7 +28,6 @@ import {
 	useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { motion } from "motion/react";
 import {
 	ArrowLeft,
 	ArrowRight,
@@ -406,17 +405,6 @@ export function BrowserPanelView({
 		showRightFade: showTabsRightFade,
 	} = useTabScrollEdges([tabs.length]);
 	const previousTabCountRef = useRef(tabs.length);
-	const knownTabIdsRef = useRef(new Set<string>());
-	const tabIdsInitializedRef = useRef(false);
-	const newlyAddedTabIds = tabIdsInitializedRef.current
-		? new Set(tabs.filter((tab) => !knownTabIdsRef.current.has(tab.id)).map((tab) => tab.id))
-		: new Set<string>();
-
-	useLayoutEffect(() => {
-		knownTabIdsRef.current = new Set(tabs.map((tab) => tab.id));
-		tabIdsInitializedRef.current = true;
-	}, [tabs]);
-
 	// Vertical wheel scrolls the horizontal tab strip when it overflows — same
 	// affordance as the session terminal tabs (CenterPane.tsx).
 	useEffect(() => {
@@ -761,7 +749,6 @@ export function BrowserPanelView({
 									onClose={handleCloseTab}
 									onSelect={handleSelectTab}
 									onlyTab={tabs.length === 1}
-									animateIn={newlyAddedTabIds.has(tab.id)}
 									selected={tab.id === activeTabId}
 									tab={tab}
 								/>
@@ -1293,21 +1280,19 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 	onlyTab,
 	onSelect,
 	onClose,
-	animateIn,
 }: {
 	tab: BrowserViewModel["tabs"][number];
 	selected: boolean;
 	onlyTab: boolean;
 	onSelect: (tabId: string) => void;
 	onClose: (tabId: string) => void;
-	animateIn: boolean;
 }) {
 	const { t } = useTranslation();
 	const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: tab.id });
 	const label = browserTabLabel(tab.title, tab.url);
 	const closeLabel = t("browser.closeTab", { title: label.title });
 	return (
-		<motion.div
+		<div
 			className={cn(
 				"browser-panel__tab",
 				selected && "browser-panel__tab--active",
@@ -1315,10 +1300,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 			)}
 			data-browser-tab-id={tab.id}
 			ref={setNodeRef}
-			initial={animateIn ? { width: 0, minWidth: 0, flexBasis: 0, opacity: 0 } : false}
-			animate={{ width: 200, minWidth: 150, flexBasis: 200, opacity: 1 }}
 			style={{ transform: CSS.Transform.toString(transform), transition }}
-			transition={{ type: "spring", stiffness: 420, damping: 32, mass: 0.7 }}
 		>
 			<button
 				{...attributes}
@@ -1348,7 +1330,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 			>
 				<X aria-hidden="true" className="size-icon-base" />
 			</button>
-		</motion.div>
+		</div>
 	);
 });
 
