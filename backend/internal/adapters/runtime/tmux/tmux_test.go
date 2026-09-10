@@ -1341,6 +1341,29 @@ func TestIsAliveReportsOtherExitFailuresAsProbeErrors(t *testing.T) {
 	}
 }
 
+func TestIsChildAliveServerAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		wantErr      bool
+	}{
+		{name: "absent server", output: "no server running on /tmp/tmux-1000/default"},
+		{name: "missing socket is inconclusive", output: "error connecting to /tmp/tmux-1000/default (No such file or directory)", wantErr: true},
+		{name: "connection refused", output: "error connecting to /tmp/tmux-1000/default (Connection refused)", wantErr: true},
+		{name: "protocol failure", output: "protocol version mismatch", wantErr: true},
+		{name: "unexpected exit", output: "server exited unexpectedly", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fr := newTestRuntime(0)
+			fr.outputs = [][]byte{[]byte(tc.output)}
+			fr.err = &exec.ExitError{}
+			alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+			if alive || (err != nil) != tc.wantErr {
+				t.Fatalf("IsChildAlive = %v, %v; want false, error=%v", alive, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestIsChildAliveUsesPaneStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -2,6 +2,7 @@ package shellterm
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"runtime"
@@ -23,8 +24,11 @@ func TestTmuxUserShellExitReconciliation(t *testing.T) {
 	for _, tc := range []struct {
 		name, socket string
 		retainPane   bool
+		noAnchor     bool
 	}{
 		{name: "legacy default socket"},
+		{name: "legacy last shell", noAnchor: true},
+		{name: "private last shell", socket: "ao-fixture", noAnchor: true},
 		{name: "private socket retained pane", socket: "ao-fixture", retainPane: true},
 	} {
 		for _, reconcile := range []string{"list", "desktop relaunch"} {
@@ -64,9 +68,10 @@ func TestTmuxUserShellExitReconciliation(t *testing.T) {
 					// This socket exists only inside this subtest's temporary root.
 					_ = exec.CommandContext(cleanupCtx, binary, "-L", socket, "kill-server").Run()
 				})
-				// Keep the fixture server reachable after a non-retained pane
-				// exits, so its absence is conclusive rather than a probe outage.
-				tmuxCommand("new-session", "-d", "-s", "anchor", "/bin/sh")
+				// Cover both a surviving server and exit of its only shell.
+				if !tc.noAnchor {
+					tmuxCommand("new-session", "-d", "-s", "anchor", "/bin/sh")
+				}
 				rt := tmux.New(tmux.Options{Binary: binary, LegacyBinary: binary, SocketName: tc.socket, Shell: "/bin/sh", Timeout: time.Second})
 				st := &fakeShellTerminalStore{}
 				workspace := t.TempDir()
@@ -107,7 +112,12 @@ func TestTmuxUserShellExitReconciliation(t *testing.T) {
 					}
 					time.Sleep(20 * time.Millisecond)
 				}
-				if alive, err := rt.IsAlive(ctx, handle); err != nil || alive != tc.retainPane {
+				alive, err := rt.IsAlive(ctx, handle)
+				if tc.noAnchor {
+					if alive || !errors.Is(err, ports.ErrRuntimeUnavailable) {
+						t.Fatalf("last shell host = %v, %v; want confirmed server absence", alive, err)
+					}
+				} else if err != nil || alive != tc.retainPane {
 					t.Fatalf("host after child exit = %v, %v; want retained=%v", alive, err, tc.retainPane)
 				}
 				if reconcile == "desktop relaunch" {
@@ -122,7 +132,12 @@ func TestTmuxUserShellExitReconciliation(t *testing.T) {
 				}
 				// Destroy clears the runtime's socket cache. Inspect this exact
 				// fixture server instead of probing an uncached legacy fallback.
-				if sessions := tmuxCommand("list-sessions", "-F", "#{session_name}"); sessions != "anchor\n" {
+				if tc.noAnchor {
+					out, err := exec.CommandContext(ctx, binary, "-L", socket, "list-sessions").CombinedOutput()
+					if err == nil {
+						t.Fatalf("server survived last shell exit: %s", out)
+					}
+				} else if sessions := tmuxCommand("list-sessions", "-F", "#{session_name}"); sessions != "anchor\n" {
 					t.Fatalf("fixture sessions after reconciliation = %q, want only anchor", sessions)
 				}
 			})
