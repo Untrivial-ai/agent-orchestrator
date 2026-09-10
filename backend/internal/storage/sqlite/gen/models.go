@@ -413,9 +413,9 @@ type PR struct {
 	StateChangedAt           sql.NullTime
 	AutoInjectCI             bool
 	ProviderID               string
-	AttachmentSource         string
 	AuthorAvatarURL          string
 	ReviewPartial            bool
+	AttachmentSource         string
 }
 
 type PRCheck struct {
