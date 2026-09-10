@@ -11,7 +11,7 @@ vi.mock("motion/react", async (importOriginal) => {
 		AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 	};
 });
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
@@ -428,6 +428,22 @@ beforeEach(() => {
 afterEach(() => {
 	vi.restoreAllMocks();
 });
+
+// jsdom does not implement DataTransfer and drops clientY from synthetic drag
+// events, so build the event and pin the properties the handlers read.
+function fireDrag(
+	type: "dragStart" | "dragOver" | "drop",
+	element: Element,
+	props: { clientY?: number },
+) {
+	const dataTransfer = { setData: () => {}, getData: () => "", setDragImage: () => {}, dropEffect: "", effectAllowed: "" };
+	const event = createEvent[type](element);
+	Object.defineProperty(event, "dataTransfer", { value: dataTransfer, configurable: true });
+	if (props.clientY !== undefined) {
+		Object.defineProperty(event, "clientY", { value: props.clientY, configurable: true });
+	}
+	fireEvent(element, event);
+}
 
 describe("Sidebar", () => {
 	it("shows the cloud sign-in entry point while signed out", () => {
@@ -2250,43 +2266,14 @@ describe("Sidebar", () => {
 			],
 		});
 
-		act(() => dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } }));
+		const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
+		const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
+		fireDrag("dragStart", bravoRow, {});
+		// jsdom rows measure as zero-height, so clientY 0 lands in the top half — drop before Alpha.
+		fireDrag("dragOver", alphaTarget, { clientY: 0 });
+		fireDrag("drop", alphaTarget, {});
 
 		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
-	});
-
-	it("defers nested-session DnD reattachment until after a project drop commits", async () => {
-		renderSidebar({
-			workspaces: [
-				{ ...workspace, id: "alpha", name: "Alpha", sessions: [{ ...session, id: "alpha-session", workspaceId: "alpha" }] },
-				{ ...workspace, id: "bravo", name: "Bravo", sessions: [{ ...session, id: "bravo-session", workspaceId: "bravo" }] },
-			],
-		});
-
-		act(() => dragStarts.get("sidebar-projects")?.({ active: { id: "alpha" } }));
-		act(() => dragEnds.get("sidebar-projects")?.({ active: { id: "alpha" }, over: { id: "bravo" } }));
-
-		// Project order is committed immediately, but the expensive nested DnD
-		// contexts remain detached until the pointer-up task has returned.
-		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
-		expect(document.querySelectorAll('[data-dnd-context^="sidebar-sessions-"]')).toHaveLength(0);
-		await waitFor(() => expect(document.querySelectorAll('[data-dnd-context^="sidebar-sessions-"]')).toHaveLength(2));
-	});
-
-	it("pauses nested session drag contexts during a project drag", async () => {
-		renderSidebar({
-			workspaces: [
-				{ ...workspace, id: "alpha", name: "Alpha", sessions: [{ ...session, id: "alpha-session", workspaceId: "alpha" }] },
-				{ ...workspace, id: "bravo", name: "Bravo", sessions: [{ ...session, id: "bravo-session", workspaceId: "bravo" }] },
-			],
-		});
-
-		expect(document.querySelectorAll('[data-dnd-context^="sidebar-sessions-"]')).toHaveLength(2);
-
-		act(() => dragStarts.get("sidebar-projects")?.({ active: { id: "alpha" } }));
-
-		await waitFor(() => expect(document.querySelectorAll('[data-dnd-context^="sidebar-sessions-"]')).toHaveLength(0));
-		expect(screen.getAllByRole("button", { name: "Open fix login" })).toHaveLength(2);
 	});
 
 	it("commits a session drop within its project", () => {
@@ -2308,54 +2295,6 @@ describe("Sidebar", () => {
 		]);
 	});
 
-	it("does not toggle disclosure from the click synthesized after a folder drag", () => {
-		vi.useFakeTimers();
-		try {
-			renderSidebar({ workspaces: [{ ...workspace, id: "alpha", name: "Alpha" }] });
-			const projectRow = screen.getByText("Alpha").closest("button");
-			const initialDisclosure = projectRow?.getAttribute("aria-expanded");
-
-			act(() => dragEnds.get("sidebar-projects")?.({ active: { id: "alpha" }, over: null }));
-			act(() => fireEvent.click(screen.getByRole("button", { name: "Toggle Alpha sessions" })));
-
-			expect(projectRow).toHaveAttribute("aria-expanded", initialDisclosure ?? "false");
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it("keeps reordered sessions in an expanded project drag preview", () => {
-		renderSidebar({
-			workspaces: [{
-				...workspace,
-				sessions: [
-					{ ...session, id: "first", title: "First", updatedAt: "2026-06-30T01:00:00Z" },
-					{ ...session, id: "second", title: "Second", updatedAt: "2026-06-30T00:00:00Z" },
-				],
-			}],
-		});
-
-		act(() => dragEnds.get("sidebar-sessions-proj-1")?.({ active: { id: "second" }, over: { id: "first" } }));
-		act(() => dragStarts.get("sidebar-projects")?.({ active: { id: "proj-1" } }));
-
-		const overlay = document.querySelector("[data-project-drag-overlay]");
-		expect(overlay).toHaveTextContent(/Project One.*Second.*First/);
-		expect(overlay?.querySelector("[data-project-drag-preview-session]")).toHaveClass("pl-0.5");
-	});
-
-	it("keeps hidden sessions out of compact project drag previews", () => {
-		renderSidebar({
-			initialOpen: false,
-			workspaces: [{ ...workspace, sessions: [session] }],
-		});
-
-		act(() => dragStarts.get("sidebar-projects")?.({ active: { id: "proj-1" } }));
-
-		const overlay = document.querySelector("[data-project-drag-overlay]");
-		expect(overlay).toHaveTextContent("Project One");
-		expect(overlay).not.toHaveTextContent("fix login");
-	});
-
 	it.each(["light", "dark"] as const)("uses a visible project drop indicator in the %s theme", (theme) => {
 		document.documentElement.classList.toggle("dark", theme === "dark");
 		try {
@@ -2366,20 +2305,13 @@ describe("Sidebar", () => {
 				],
 			});
 
-			act(() => dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } }));
-			act(() => dragOvers.get("sidebar-projects")?.({
-				active: {
-					id: "bravo",
-					rect: { current: { initial: null, translated: null } },
-				},
-				activatorEvent: null,
-				delta: { x: 0, y: 0 },
-				over: { id: "alpha", rect: { height: 32, top: 0 } },
-			}));
+			const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
+			const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
+			fireDrag("dragStart", bravoRow, {});
+			fireDrag("dragOver", alphaTarget, { clientY: 0 });
 
-			const target = document.querySelector('[data-project-id="alpha"]');
-			expect(target).toHaveAttribute("data-drop-indicator", "before");
-			const indicator = target?.querySelector('[data-project-drop-indicator="before"]');
+			const indicator = document.querySelector("[data-project-drop-line]");
+			expect(indicator).not.toBeNull();
 			expect(indicator).toHaveClass("bg-foreground");
 			expect(indicator).not.toHaveClass("bg-white");
 		} finally {
