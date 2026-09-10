@@ -22,7 +22,7 @@ func (m *Manager) acquireCodexControllerAdmission(ctx context.Context, harness d
 	// shared side while reconciliation is actively mutating state, but a prior
 	// inconclusive device read is not itself a launch failure. Native Codex
 	// readiness remains the authority in that degraded case.
-	return m.codexOperationGate.AcquireShared(ctx)
+	return m.codexOperationGate.AcquireSharedWait(ctx)
 }
 
 func defaultCodexOperationGate(gate ports.CodexOperationGate) ports.CodexOperationGate {

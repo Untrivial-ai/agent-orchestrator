@@ -89,10 +89,10 @@ func (s *Service) EnsureCodexAccounts(ctx context.Context, ids []string, include
 	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
 		return CodexAccounts{}, err
 	}
-	// Settings refreshes must prompt device discovery, but a temporary native
-	// failure must not turn this local account read into a 503. The daemon-owned
-	// reconciliation coordinator applies singleflight and cooldown semantics.
-	go func() { _ = s.codexAccounts.reconcileGlobal(s.codexAccounts.ctx) }()
+	// Settings refreshes prompt device discovery only when the cached result is
+	// absent or stale. A temporary native failure must not turn this local
+	// account read into a 503.
+	s.codexAccounts.requestGlobalReconciliationIfNeeded()
 	installation, err := s.readiness.EnsureInstallation(ctx, []string{string(domain.HarnessCodex)}, domain.AgentReadinessPurposeDisplay)
 	if err != nil {
 		return CodexAccounts{}, err
@@ -459,9 +459,24 @@ func (s *Service) VerifyCodexAccountForSwitch(ctx context.Context, accountID str
 	reconciliation := s.codexAccounts.reconciliation
 	s.codexAccounts.mu.Unlock()
 	if reconciliation.Status != domain.CodexDeviceReconciliationVerified || !reconciliation.ActiveAccountVerified {
-		return apierr.New(apierr.KindUnavailable, "CODEX_DEVICE_ACCOUNT_UNVERIFIED", "The device Codex account could not be verified", map[string]any{
-			"reasonCode": reconciliation.ReasonCode, "retryable": reconciliation.Retryable,
-		})
+		// A direct caller may arrive before startup reconciliation has run. Do
+		// that work here unless the switch coordinator already owns the global
+		// gate; re-entering reconciliation from inside that lease would contend
+		// with the caller itself.
+		gate := s.codexAccounts.operationGate
+		if gate == nil || !gate.ExclusivePendingOrHeld() {
+			if err := s.EnsureCodexDeviceAccountReconciled(ctx); err != nil {
+				return err
+			}
+		}
+		s.codexAccounts.mu.Lock()
+		reconciliation = s.codexAccounts.reconciliation
+		s.codexAccounts.mu.Unlock()
+		if reconciliation.Status != domain.CodexDeviceReconciliationVerified || !reconciliation.ActiveAccountVerified {
+			return apierr.New(apierr.KindUnavailable, "CODEX_DEVICE_ACCOUNT_UNVERIFIED", "The device Codex account could not be verified", map[string]any{
+				"reasonCode": reconciliation.ReasonCode, "retryable": reconciliation.Retryable,
+			})
+		}
 	}
 	if s.CodexAccountLoginInProgress() {
 		return apierr.Conflict("CODEX_ACCOUNT_LOGIN_IN_PROGRESS", "Finish or close the Codex account login before switching accounts", nil)

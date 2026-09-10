@@ -197,6 +197,10 @@ func (m *codexAccountManager) reconcileGlobalWithPolicy(ctx context.Context, for
 		m.reconciliation.Retryable = false
 		m.reconciliation.AttemptedAt = timePointer(now)
 		m.reconciliation.NextRetryAt = nil
+		// An unmanaged account is a conclusion from one completed observation,
+		// not durable truth. Clear it while a fresh observation is pending so a
+		// transient failure cannot keep showing a stale device-account warning.
+		m.unmanaged = nil
 		started = true
 		go m.runGlobalReconciliation(call)
 	}
@@ -210,6 +214,33 @@ func (m *codexAccountManager) reconcileGlobalWithPolicy(ctx context.Context, for
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// requestGlobalReconciliationIfNeeded schedules background device discovery
+// only when no fresh result or existing attempt can answer the request.
+func (m *codexAccountManager) requestGlobalReconciliationIfNeeded() {
+	m.mu.Lock()
+	if m.reconcile != nil || m.reconcileRequested || m.reconcileScheduled {
+		m.mu.Unlock()
+		return
+	}
+	now := m.now()
+	needed := m.reconciliation.Status == domain.CodexDeviceReconciliationNotChecked ||
+		(m.reconciliation.Status == domain.CodexDeviceReconciliationVerified &&
+			(m.reconciliation.VerifiedAt == nil || now.Sub(*m.reconciliation.VerifiedAt) >= codexAccountDisplayTTL))
+	if !needed {
+		m.mu.Unlock()
+		return
+	}
+	m.reconcileRequested = true
+	m.mu.Unlock()
+
+	go func() {
+		_ = m.reconcileGlobal(m.ctx)
+		m.mu.Lock()
+		m.reconcileRequested = false
+		m.mu.Unlock()
+	}()
 }
 
 func (m *codexAccountManager) runGlobalReconciliation(call *accountReconcileCall) {

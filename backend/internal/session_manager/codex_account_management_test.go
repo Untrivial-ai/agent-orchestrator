@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/codexops"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -51,12 +50,33 @@ func (c *bootstrapOrderingCredentials) record(call string) {
 	c.calls = append(c.calls, call)
 }
 
-func TestCodexControllerAdmissionWaitsOnlyForActiveDeviceGate(t *testing.T) {
-	gate := codexops.NewGate()
-	bootstrapLease, err := gate.AcquireExclusive(context.Background())
-	if err != nil {
-		t.Fatalf("acquire bootstrap lease: %v", err)
+type waitingControllerGate struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (*waitingControllerGate) AcquireShared(context.Context) (func(), error) {
+	return nil, errors.New("fail-fast shared admission must not be used")
+}
+
+func (g *waitingControllerGate) AcquireSharedWait(ctx context.Context) (func(), error) {
+	close(g.entered)
+	select {
+	case <-g.release:
+		return func() {}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
+}
+
+func (*waitingControllerGate) AcquireExclusive(context.Context) (ports.CodexOperationLease, error) {
+	return nil, errors.New("unexpected exclusive admission")
+}
+
+func (*waitingControllerGate) ExclusivePendingOrHeld() bool { return true }
+
+func TestCodexControllerAdmissionWaitsOnlyForActiveDeviceGate(t *testing.T) {
+	gate := &waitingControllerGate{entered: make(chan struct{}), release: make(chan struct{})}
 	manager := New(Deps{CodexOperationGate: gate})
 
 	type admissionResult struct {
@@ -68,6 +88,7 @@ func TestCodexControllerAdmissionWaitsOnlyForActiveDeviceGate(t *testing.T) {
 		release, acquireErr := manager.acquireCodexControllerAdmission(context.Background(), domain.HarnessCodex)
 		done <- admissionResult{release: release, err: acquireErr}
 	}()
+	<-gate.entered
 
 	select {
 	case result := <-done:
@@ -78,7 +99,7 @@ func TestCodexControllerAdmissionWaitsOnlyForActiveDeviceGate(t *testing.T) {
 	default:
 	}
 
-	bootstrapLease.Release()
+	close(gate.release)
 	select {
 	case result := <-done:
 		if result.err != nil {

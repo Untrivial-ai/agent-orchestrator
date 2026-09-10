@@ -77,3 +77,56 @@ func TestRetainedExclusiveLeaseBlocksUntilExplicitRelease(t *testing.T) {
 	}
 	releaseShared()
 }
+
+func TestSharedWaitResumesAfterExclusiveRelease(t *testing.T) {
+	gate := NewGate()
+	lease, err := gate.AcquireExclusive(context.Background())
+	if err != nil {
+		t.Fatalf("AcquireExclusive: %v", err)
+	}
+
+	type result struct {
+		release func()
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		release, acquireErr := gate.AcquireSharedWait(context.Background())
+		done <- result{release: release, err: acquireErr}
+	}()
+
+	select {
+	case got := <-done:
+		if got.release != nil {
+			got.release()
+		}
+		t.Fatalf("AcquireSharedWait completed while exclusive lease was held: %v", got.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	lease.Release()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("AcquireSharedWait: %v", got.err)
+		}
+		got.release()
+	case <-time.After(time.Second):
+		t.Fatal("AcquireSharedWait did not resume after exclusive release")
+	}
+}
+
+func TestSharedWaitHonorsContextCancellation(t *testing.T) {
+	gate := NewGate()
+	lease, err := gate.AcquireExclusive(context.Background())
+	if err != nil {
+		t.Fatalf("AcquireExclusive: %v", err)
+	}
+	defer lease.Release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := gate.AcquireSharedWait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("AcquireSharedWait error = %v, want context canceled", err)
+	}
+}

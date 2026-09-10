@@ -149,6 +149,7 @@ type codexAccountManager struct {
 	unmanaged             *domain.CodexUnmanagedGlobalAccount
 	login                 *accountLoginOperation
 	reconcile             *accountReconcileCall
+	reconcileRequested    bool
 	reconciliation        domain.CodexDeviceReconciliation
 	reconcileFailures     int
 	reconcileScheduled    bool
@@ -289,9 +290,13 @@ func (m *codexAccountManager) accountContext(record codexAccountRecord) ports.Co
 	home := record.Home
 	m.mu.Lock()
 	active := m.active.AccountID
-	verified := m.reconciliation.ActiveAccountVerified
+	unmanaged := m.unmanaged != nil
 	m.mu.Unlock()
-	if record.Snapshot.ID == active && verified {
+	// The durable active slot owns the live device credential even while a
+	// repeatable reconciliation check is in flight or temporarily unavailable.
+	// Only a positively identified unmanaged device account makes that mapping
+	// unsafe and sends reads back to the saved account home.
+	if record.Snapshot.ID == active && !unmanaged {
 		return ports.CodexAccountContext{Home: m.globalHome, Managed: false}
 	}
 	return ports.CodexAccountContext{Home: home, Managed: true}

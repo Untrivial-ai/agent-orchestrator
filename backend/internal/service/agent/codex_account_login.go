@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,7 +207,11 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 		if active.AccountID == targetAccountID {
 			expectedGlobal, verifyErr := m.verifyActiveAccountCredentialLocked(ctx, target)
 			if verifyErr != nil {
-				return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "The device Codex account changed. Try again.", nil), nil
+				reason := "The device Codex account could not be confirmed. Try again."
+				if errors.Is(verifyErr, ports.ErrCodexGlobalAccountChanged) {
+					reason = "The device Codex account changed. Try again."
+				}
+				return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, reason, nil), nil
 			}
 			if descriptorErr := m.catalog.updateVerifiedDescriptor(targetAccountID, observation); descriptorErr != nil {
 				return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "The verified Codex account could not be saved.", nil), nil
@@ -291,8 +296,16 @@ func (m *codexAccountManager) verifyActiveAccountCredentialLocked(ctx context.Co
 	observation, readErr := client.Read(verifyCtx, false)
 	_ = client.Close()
 	latestCredential, latest, latestErr := readCodexFileState(globalPath, false)
-	if readErr != nil || latestErr != nil || !sameCodexFileState(admitted, latest) || !bytes.Equal(credential, latestCredential) ||
-		!m.observationAndCredentialIdentifyRecord(record, observation, latestCredential) {
+	if latestErr != nil {
+		return nil, latestErr
+	}
+	if !sameCodexFileState(admitted, latest) || !bytes.Equal(credential, latestCredential) {
+		return nil, ports.ErrCodexGlobalAccountChanged
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+	if !m.observationAndCredentialIdentifyRecord(record, observation, latestCredential) {
 		return nil, ports.ErrCodexGlobalAccountChanged
 	}
 	return latestCredential, nil

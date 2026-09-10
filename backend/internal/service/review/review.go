@@ -436,7 +436,7 @@ func (s *Service) triggerWithSource(
 	var release func()
 	if usesCodex && s.codexOperationGate != nil {
 		var err error
-		release, err = s.codexOperationGate.AcquireShared(ctx)
+		release, err = s.codexOperationGate.AcquireSharedWait(ctx)
 		if err != nil {
 			return reviewcore.TriggerResult{}, err
 		}
@@ -567,7 +567,7 @@ func (s *Service) acquireReviewerCodexAdmission(ctx context.Context, workerID do
 	if s.codexOperationGate == nil || !s.codexReviewUsesCodex(ctx, workerID, harness) {
 		return func() {}, nil
 	}
-	return s.codexOperationGate.AcquireShared(ctx)
+	return s.codexOperationGate.AcquireSharedWait(ctx)
 }
 
 // ActivitySignal is reviewer-owned hook metadata. It deliberately does not

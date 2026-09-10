@@ -42,6 +42,7 @@ type CodexOperationLease interface {
 // controller registration and ordinary clients of the active Codex home.
 type CodexOperationGate interface {
 	AcquireShared(context.Context) (release func(), err error)
+	AcquireSharedWait(context.Context) (release func(), err error)
 	AcquireExclusive(context.Context) (CodexOperationLease, error)
 	ExclusivePendingOrHeld() bool
 }

@@ -368,6 +368,7 @@ func TestCodexDeviceReconciliationFailureKeepsSavedAccountsReadable(t *testing.T
 	manager.factory = &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
 		return nil, errors.New("temporary device read failure")
 	}}
+	manager.unmanaged = &domain.CodexUnmanagedGlobalAccount{Label: "stale device account", ReasonCode: "global_account_unverified"}
 	manager.after = func(time.Duration) <-chan time.Time { return make(chan time.Time) }
 	service := &Service{codexAccounts: manager}
 	if err := service.WaitCodexAccountStoreReady(context.Background()); err != nil {

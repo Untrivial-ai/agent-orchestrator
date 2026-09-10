@@ -142,6 +142,9 @@ func (noopCodexLease) Release() {}
 func (*blockingExclusiveCodexGate) AcquireShared(context.Context) (func(), error) {
 	return func() {}, nil
 }
+func (*blockingExclusiveCodexGate) AcquireSharedWait(context.Context) (func(), error) {
+	return func() {}, nil
+}
 func (g *blockingExclusiveCodexGate) AcquireExclusive(ctx context.Context) (ports.CodexOperationLease, error) {
 	close(g.entered)
 	select {
@@ -246,6 +249,29 @@ func TestCachedCodexAccountsPerformsNoFilesystemOrNativeWork(t *testing.T) {
 	}
 	if factory.opens != 0 || factory.capabilityChecks != 0 {
 		t.Fatalf("native work: opens=%d capability=%d", factory.opens, factory.capabilityChecks)
+	}
+}
+
+func TestActiveAccountUsesGlobalHomeDuringTemporaryReconciliationFailure(t *testing.T) {
+	manager := newTestCodexAccountManager(t, nil, nil)
+	manager.catalog.newID = func() string { return testAccountID }
+	record := commitTestAccount(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodAPIKey,
+	})
+	manager.mu.Lock()
+	manager.active = domain.CodexActiveAccount{AccountID: record.Snapshot.ID, Revision: 2}
+	manager.reconciliation = domain.CodexDeviceReconciliation{
+		Status:                domain.CodexDeviceReconciliationTemporarilyUnavailable,
+		ActiveAccountVerified: false,
+		ReasonCode:            "account_read_inconclusive",
+		Retryable:             true,
+	}
+	manager.mu.Unlock()
+
+	context := manager.accountContext(record)
+	if context.Home != manager.globalHome || context.Managed {
+		t.Fatalf("active account context = %#v, want live global home", context)
 	}
 }
 
@@ -498,6 +524,60 @@ func TestActiveReauthenticationRevalidatesAndReplacesTheDeviceCredential(t *test
 	}
 	if state.active.AccountID != testAccountID || state.active.Revision != 2 {
 		t.Fatalf("durable active account = %#v", state.active)
+	}
+}
+
+func TestActiveReauthenticationReportsInconclusiveDeviceVerification(t *testing.T) {
+	email := "person@example.com"
+	observation := ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT, Email: &email,
+	}
+	factory := &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(account ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			if !account.Managed {
+				return nil, errors.New("temporary device verification failure")
+			}
+			return &fakeCodexAccountClient{read: observation}, nil
+		},
+	}
+	state := &fakeCodexAccountStateStore{
+		active: domain.CodexActiveAccount{AccountID: testAccountID, Revision: 1}, found: true,
+	}
+	manager := newTestCodexAccountManager(t, factory, state)
+	manager.catalog.newID = func() string { return testAccountID }
+	record := commitTestAccount(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", observation)
+	oldCredential, err := readOpaqueCredential(filepath.Join(record.Home, codexCredentialFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGlobalCredentialAtomic(manager.globalCredentialPath(), oldCredential); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	manager.active = state.active
+	manager.markDeviceReconciledLocked(true, time.Now().UTC())
+	manager.mu.Unlock()
+	manager.newID = func() string { return "1c5de3ab-82d0-4a68-a06b-8495cdeab909" }
+	manager.executable = func() (string, error) { return "/ao", nil }
+	manager.terminal = &fakeCodexLoginTerminal{
+		writeCredential: true,
+		result:          shellterm.ShellTerminal{HandleID: "shellterm-login-reauth", Title: "Sign in to Codex account"},
+	}
+
+	started, err := manager.openLoginTerminal(context.Background(), record.Snapshot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := manager.verifyLogin(context.Background(), started.Operation.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != domain.CodexAccountLoginFailed {
+		t.Fatalf("completed reauthentication = %#v", completed)
+	}
+	if completed.Reason != "The device Codex account could not be confirmed. Try again." {
+		t.Fatalf("failure reason = %q", completed.Reason)
 	}
 }
 
@@ -1245,7 +1325,115 @@ func newAPIKeySwitchFixture(t *testing.T) apiKeySwitchFixture {
 	}
 	manager.active = state.active
 	manager.accountStoreReady = true
+	manager.mu.Lock()
+	manager.markDeviceReconciledLocked(true, time.Now().UTC())
+	manager.mu.Unlock()
 	return apiKeySwitchFixture{manager: manager, service: &Service{codexAccounts: manager, readiness: newReadinessCoordinator(readinessCoordinatorConfig{})}, state: state, source: source, target: target}
+}
+
+func TestVerifySwitchTargetReconcilesAnUncheckedDeviceAccount(t *testing.T) {
+	fixture := newAPIKeySwitchFixture(t)
+	fixture.manager.mu.Lock()
+	fixture.manager.reconciliation = domain.CodexDeviceReconciliation{Status: domain.CodexDeviceReconciliationNotChecked, ReasonCode: "not_checked"}
+	fixture.manager.mu.Unlock()
+	fixture.manager.factory = &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			return &fakeCodexAccountClient{read: ports.CodexAccountObservation{
+				Authentication: domain.AgentAuthenticationAuthorized,
+				Method:         domain.CodexAuthMethodAPIKey,
+			}}, nil
+		},
+	}
+
+	if err := fixture.service.VerifyCodexAccountForSwitch(context.Background(), fixture.target.Snapshot.ID); err != nil {
+		t.Fatalf("VerifyCodexAccountForSwitch: %v", err)
+	}
+	fixture.manager.mu.Lock()
+	reconciliation := fixture.manager.reconciliation
+	fixture.manager.mu.Unlock()
+	if reconciliation.Status != domain.CodexDeviceReconciliationVerified || !reconciliation.ActiveAccountVerified {
+		t.Fatalf("reconciliation = %#v", reconciliation)
+	}
+}
+
+func TestRecentVerifiedReconciliationDoesNotScheduleAnotherRead(t *testing.T) {
+	fixture := newAPIKeySwitchFixture(t)
+	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return nil, errors.New("fresh device reconciliation unexpectedly opened Codex")
+	}}
+	fixture.manager.factory = factory
+	fixture.manager.requestGlobalReconciliationIfNeeded()
+
+	fixture.manager.mu.Lock()
+	requested := fixture.manager.reconcileRequested
+	fixture.manager.mu.Unlock()
+	factory.mu.Lock()
+	opens := factory.opens
+	factory.mu.Unlock()
+	if requested || opens != 0 {
+		t.Fatalf("fresh reconciliation scheduled work: requested=%v opens=%d", requested, opens)
+	}
+}
+
+func TestRepeatedReconciliationRequestsJoinOneBackgroundRead(t *testing.T) {
+	fixture := newAPIKeySwitchFixture(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	factory := &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(account ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			return &fakeCodexAccountClient{readFn: func(ctx context.Context, _ bool) (ports.CodexAccountObservation, error) {
+				if !account.Managed {
+					once.Do(func() { close(started) })
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return ports.CodexAccountObservation{}, ctx.Err()
+					}
+				}
+				return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodAPIKey}, nil
+			}}, nil
+		},
+	}
+	fixture.manager.factory = factory
+	fixture.manager.mu.Lock()
+	fixture.manager.reconciliation = domain.CodexDeviceReconciliation{Status: domain.CodexDeviceReconciliationNotChecked, ReasonCode: "not_checked"}
+	fixture.manager.mu.Unlock()
+
+	for range 10 {
+		fixture.manager.requestGlobalReconciliationIfNeeded()
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background reconciliation did not start")
+	}
+	for range 10 {
+		fixture.manager.requestGlobalReconciliationIfNeeded()
+	}
+	factory.mu.Lock()
+	opensWhileBlocked := factory.opens
+	factory.mu.Unlock()
+	if opensWhileBlocked != 1 {
+		t.Fatalf("concurrent reconciliation opens = %d, want 1", opensWhileBlocked)
+	}
+	close(release)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		fixture.manager.mu.Lock()
+		finished := fixture.manager.reconciliation.Status == domain.CodexDeviceReconciliationVerified && !fixture.manager.reconcileRequested
+		fixture.manager.mu.Unlock()
+		if finished {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background reconciliation did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func TestVerifySwitchTargetRejectsExternalAPIKeyReplacement(t *testing.T) {
