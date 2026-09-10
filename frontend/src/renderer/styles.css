@@ -4283,7 +4283,6 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 .browser-panel__toolbar {
 	container-name: browser-toolbar;
 	container-type: inline-size;
-	position: relative;
 	display: flex;
 	align-items: center;
 	gap: 2px;
@@ -4291,19 +4290,9 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	min-width: 0;
 	/* Keep the toolbar close to the 28px controls, matching the compact sidebar
 	   chrome instead of adding a loose band around every browser action. */
-	min-height: 30px;
-	padding: 1px 4px;
+	min-height: 0;
+	padding: 3px 4px;
 	background: var(--bg);
-}
-
-/* The controls menu belongs to the shared inspector topbar when the browser
-   is docked. It stays in the toolbar DOM so its native-view overlay handling
-   and menu positioning remain unchanged. */
-.session-inspector__body--browser .browser-panel__controls-trigger {
-	position: absolute;
-	top: calc(-1 * var(--size-inspector-tabs));
-	right: 4px;
-	z-index: var(--z-index-chrome);
 }
 
 /* Keep the URL field useful in the narrow inspector. The selected profile name

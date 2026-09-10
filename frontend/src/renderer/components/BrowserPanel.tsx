@@ -1035,7 +1035,6 @@ export function BrowserPanelView({
 							<DropdownMenuTrigger asChild>
 								<Button
 									aria-label={t("browser.controls")}
-									className="browser-panel__controls-trigger"
 									onPointerEnter={() => {
 										controlsHoverRef.current = true;
 									}}
