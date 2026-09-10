@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -675,8 +676,12 @@ func (r *Runtime) IsSupervisedProcessAlive(ctx context.Context, handle ports.Run
 	if err != nil {
 		return false, err
 	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 1 {
+		return false, fmt.Errorf("tmux runtime: extra workload panes require explicit cleanup: %w", ports.ErrRuntimeProbeInconclusive)
+	}
 	panes := make(map[int]bool)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) != 2 || (fields[1] != "0" && fields[1] != "1") {
 			return false, fmt.Errorf("tmux runtime: incomplete workload pane status %q: %w", line, ports.ErrRuntimeProbeInconclusive)
@@ -734,16 +739,19 @@ func (r *Runtime) IsSupervisedProcessAlive(ctx context.Context, handle ports.Run
 		fields := strings.Fields(processes[pid].command)
 		switch strings.TrimPrefix(filepath.Base(fields[0]), "-") {
 		case "sh", "bash", "dash", "zsh", "ksh", "mksh", "fish", "csh", "tcsh", "nu":
-			for _, arg := range fields[1:] {
-				switch arg {
-				case "-i", "-l", "-il", "-li", "--login":
-				default:
-					return true, nil
-				}
+			if len(fields) != 2 || fields[1] != "-i" {
+				return true, nil // only the launch wrapper's retained-shell shape proves completion
 			}
 		default:
 			return true, nil // retain custom shells/commands rather than assume exit
 		}
+	}
+	confirmed, err := r.runForSession(ctx, handle.ID, "list-panes", "-s", "-t", exactSessionTarget(handle.ID), "-F", "#{pane_pid}\t#{pane_dead}")
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(confirmed, out) {
+		return false, fmt.Errorf("tmux runtime: workload pane changed during process inspection: %w", ports.ErrRuntimeProbeInconclusive)
 	}
 	return false, nil
 }

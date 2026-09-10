@@ -3,23 +3,26 @@ package runtimeselect
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/testutil/reviewerupdate"
 )
 
 type fakeBackend struct {
-	createHandle ports.RuntimeHandle
-	createErr    error
-	calls        []string
-	handles      []ports.RuntimeHandle
-	childAlive   bool
-	childErr     error
-	workloadRef  ports.SupervisedProcessRef
-	workloadErr  error
+	createHandle  ports.RuntimeHandle
+	createErr     error
+	calls         []string
+	handles       []ports.RuntimeHandle
+	childAlive    bool
+	childErr      error
+	workloadRef   ports.SupervisedProcessRef
+	workloadErr   error
+	workloadAlive *bool
 }
 
 func (f *fakeBackend) record(call string, handle ports.RuntimeHandle) {
@@ -111,7 +114,11 @@ func (f *fakeBackend) SendMessage(_ context.Context, handle ports.RuntimeHandle,
 func (f *fakeBackend) IsSupervisedProcessAlive(_ context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
 	f.record("supervised", handle)
 	f.workloadRef = ref
-	return f.workloadErr == nil, f.workloadErr
+	alive := f.workloadErr == nil
+	if f.workloadAlive != nil {
+		alive = *f.workloadAlive
+	}
+	return alive, f.workloadErr
 }
 
 func TestHybridRuntimePreservesWorkloadModeAndErrors(t *testing.T) {
@@ -309,5 +316,39 @@ func TestHybridRuntimeRestartCanFallBackToTmux(t *testing.T) {
 	}
 	if !reflect.DeepEqual(legacy.calls, []string{"create:session-1"}) {
 		t.Fatalf("legacy calls = %v", legacy.calls)
+	}
+}
+
+func TestReviewerWorkloadUpdateRoutesSnapshot(t *testing.T) {
+	for _, mode := range []string{"fresh", "resume", "restore"} {
+		for _, fallback := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/fallback=%t", mode, fallback), func(t *testing.T) {
+				alive := true
+				direct := &fakeBackend{workloadAlive: &alive, childAlive: true}
+				legacy := &restartableFakeBackend{}
+				selected, other := direct, &legacy.fakeBackend
+				prefix := directHandlePrefix
+				if fallback {
+					direct.createErr = errors.New("fixture native host unavailable")
+					legacy.workloadAlive = &alive
+					legacy.childAlive = true
+					selected, other = &legacy.fakeBackend, direct
+					prefix = ""
+				}
+				rt := newHybridRuntime(legacy, direct, nil, "Linux")
+				f := reviewerupdate.New(context.Background(), t, rt, mode)
+				f.Blocked(context.Background(), t, nil)
+				alive = false
+				f.Ready(context.Background(), t)
+				if f.Result.HandleID != prefix+"review-worker" || selected.workloadRef != (ports.SupervisedProcessRef{}) {
+					t.Fatalf("router lost unsupervised identity: %+v %+v", f.Result, selected.workloadRef)
+				}
+				for _, call := range other.calls {
+					if call == "supervised" || call == "child" {
+						t.Fatal("snapshot probed wrong backend")
+					}
+				}
+			})
+		}
 	}
 }

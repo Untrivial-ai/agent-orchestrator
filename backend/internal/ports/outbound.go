@@ -243,7 +243,7 @@ type SupervisedProcessRef struct {
 // definitive only when err is nil; inspection errors must never be interpreted
 // as exit.
 // A completely empty ref explicitly selects unsupervised workload inspection:
-// retained hosts/bare shells are idle, but any root command or descendant is a
+// confirmed retained hosts/shells are idle, but any root command or descendant is a
 // workload regardless of its generation. Missing evidence remains an error.
 // Callers with a supervised launch identity must retain that nonempty ref;
 // empty ref is not a fallback for a failed or mismatched generation probe.
