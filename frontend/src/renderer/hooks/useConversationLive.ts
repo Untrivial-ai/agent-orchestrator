@@ -169,7 +169,7 @@ export function useConversationLive(sessionId: string | undefined, snapshot: Con
 			// Finish an active read instead of restarting it on every replay or
 			// reset. Only the latest target/snapshot change follows that read.
 			const request = (previous ? Promise.resolve() : queryClient.cancelQueries({ queryKey: ["conversation", sessionId] }))
-				.then(() => { if (!disposed) return queryClient.invalidateQueries({ queryKey: ["conversation", sessionId] }, { cancelRefetch: false }); });
+				.then(() => disposed ? undefined : queryClient.invalidateQueries({ queryKey: ["conversation", sessionId] }, { cancelRefetch: false }));
 			resync.current = { sessionId, request };
 			try { await request; } finally { if (resync.current?.request === request) resync.current = undefined; }
 		};
