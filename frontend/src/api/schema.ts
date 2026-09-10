@@ -2465,6 +2465,7 @@ export interface components {
             profiles: components["schemas"]["AgentClaudeProfile"][];
         };
         AgentConfig: {
+            claudeConfigDir?: null | string;
             mode?: string;
             model?: string;
             permissions?: string;
@@ -3186,6 +3187,7 @@ export interface components {
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
             brief: string;
+            claudeConfigDir?: null | string;
             /** @enum {string} */
             mode?: "tui" | "chat";
             model?: string;

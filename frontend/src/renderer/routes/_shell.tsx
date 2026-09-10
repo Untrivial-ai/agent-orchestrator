@@ -82,6 +82,8 @@ function findRegisteredWorkspaceByPath(workspaces: WorkspaceSummary[], path: str
 
 type CreateProjectConfigInput = {
 	workerAgent: string;
+	workerClaudeConfigDir?: string;
+	orchestratorClaudeConfigDir?: string;
 	orchestratorAgent: string;
 	trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
 	defaultBranch?: string;
@@ -90,8 +92,16 @@ type CreateProjectConfigInput = {
 export function createProjectConfig(input: CreateProjectConfigInput): components["schemas"]["ProjectConfig"] {
 	return {
 		...(input.defaultBranch ? { defaultBranch: input.defaultBranch } : {}),
-		worker: { agent: input.workerAgent as components["schemas"]["RoleOverride"]["agent"] },
-		orchestrator: { agent: input.orchestratorAgent as components["schemas"]["RoleOverride"]["agent"] },
+		worker: {
+			agent: input.workerAgent as components["schemas"]["RoleOverride"]["agent"],
+			...(input.workerClaudeConfigDir !== undefined
+				? { agentConfig: { claudeConfigDir: input.workerClaudeConfigDir } } : {}),
+		},
+		orchestrator: {
+			agent: input.orchestratorAgent as components["schemas"]["RoleOverride"]["agent"],
+			...(input.orchestratorClaudeConfigDir !== undefined
+				? { agentConfig: { claudeConfigDir: input.orchestratorClaudeConfigDir } } : {}),
+		},
 		...(input.trackerIntake ? { trackerIntake: input.trackerIntake } : {}),
 	};
 }

@@ -1,3 +1,5 @@
+import { useClaudeProfiles } from "../hooks/useClaudeProfiles";
+import { expandClaudeProfiles, profileSelectionKey } from "../lib/claude-profile-options";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check } from "lucide-react";
@@ -51,6 +53,7 @@ export function ReviewerSelect({
 	onConfigChange,
 	model = "",
 	mode = "",
+	claudeConfigDir,
 	projectId,
 	triggerClassName,
 	ariaLabel = "Default reviewer agent",
@@ -68,6 +71,7 @@ export function ReviewerSelect({
 	onConfigChange?: (harness: string, config: ReviewerAgentConfig) => void;
 	model?: string;
 	mode?: string;
+	claudeConfigDir?: string;
 	projectId?: string;
 	triggerClassName?: string;
 	ariaLabel?: string;
@@ -83,6 +87,7 @@ export function ReviewerSelect({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const [menuOpen, setMenuOpen] = useState(false);
+	const profilesQuery = useClaudeProfiles();
 	// Until the daemon's catalog arrives these entries carry the whole menu, so
 	// label them the way the catalog would rather than printing bare ids: without
 	// this the same row reads "claude-code" now and "Claude Code" a moment later.
@@ -91,13 +96,14 @@ export function ReviewerSelect({
 	);
 	const filteredSupported = (agents ?? fallbackAgents).filter((a) => KNOWN_REVIEWER_HARNESS_IDS.has(a.id));
 	const supportedAgents = filteredSupported.length > 0 ? filteredSupported : fallbackAgents;
+	const expanded = expandClaudeProfiles(supportedAgents, profilesQuery.data ?? [], claudeConfigDir);
 	const options = buildRankedAgentOptions({
-		agents: supportedAgents,
+		agents: expanded,
 		priorityRank: REVIEWER_AGENT_PRIORITY_RANK,
 		fallbackAgents,
 	});
 	const selectableOptions = options.filter((agent) => {
-		if (agent.id === excludedHarness) return false;
+		if (expanded.find((entry) => entry.id === agent.id)?.harness === excludedHarness) return false;
 		if (showDefaultOption && defaultHarness && agent.id === defaultHarness) return false;
 		return true;
 	});
@@ -110,7 +116,7 @@ export function ReviewerSelect({
 		const harnesses = new Set<string>();
 		if (defaultHarness) harnesses.add(defaultHarness);
 		for (const agent of selectableOptions) {
-			harnesses.add(agent.id);
+			harnesses.add(expanded.find((entry) => entry.id === agent.id)?.harness ?? agent.id);
 		}
 		for (const harness of harnesses) {
 			if (!harness) continue;
@@ -118,7 +124,7 @@ export function ReviewerSelect({
 		}
 	}, [defaultHarness, menuOpen, menuProjectID, queryClient, selectableOptions]);
 	const selectedModelLabel = modelOrModeLabel(triggerCatalog.data, model, mode, t("settings.models.agentDefault"));
-	const triggerLabel = [value ? agentLabel(value) : (defaultTriggerLabel ?? defaultOptionLabel ?? defaultHarness), selectedModelLabel]
+	const triggerLabel = [value ? (expanded.find((entry) => entry.id === profileSelectionKey(value, claudeConfigDir))?.label ?? agentLabel(value)) : (defaultTriggerLabel ?? defaultOptionLabel ?? defaultHarness), selectedModelLabel]
 		.filter(Boolean)
 		.join(" · ");
 
@@ -139,10 +145,14 @@ export function ReviewerSelect({
 				</span>
 			</OptionMenuTrigger>
 			<OptionMenuContent align={contentAlign === "end" ? "end" : "start"} className="reviews-agent-menu-surface w-[18rem]">
+				{profilesQuery.isError ? <OptionMenuItem onSelect={() => void profilesQuery.refetch()}>
+					<span role="status" className="whitespace-normal text-warning">{t("settings.project.claudeProfilesLoadFailed")} {t("createProject.retry")}</span>
+				</OptionMenuItem> : null}
 				{showDefaultOption && defaultOptionLabel ? (
 					<ReviewerHarnessOption
 						agent={{ id: "__default__", label: defaultOptionLabel, disabled: false, status: "", statusTone: "success" }}
 						currentHarness={value}
+						currentClaudeConfigDir={claudeConfigDir}
 						currentModel={model}
 						currentMode={mode}
 						onSelect={(nextHarness, nextConfig) => {
@@ -161,6 +171,7 @@ export function ReviewerSelect({
 						key={agent.id}
 						agent={agent}
 						currentHarness={value}
+						currentClaudeConfigDir={claudeConfigDir}
 						currentModel={model}
 						currentMode={mode}
 						onSelect={(nextHarness, nextConfig) => {
@@ -169,8 +180,9 @@ export function ReviewerSelect({
 							onConfigChange?.(nextHarness, nextConfig);
 						}}
 						projectId={menuProjectID}
-						resolvedHarness={agent.id}
-						persistHarness={agent.id}
+						resolvedHarness={expanded.find((entry) => entry.id === agent.id)?.harness ?? agent.id}
+						persistHarness={expanded.find((entry) => entry.id === agent.id)?.harness ?? agent.id}
+						claudeConfigDir={expanded.find((entry) => entry.id === agent.id)?.claudeConfigDir}
 						closeMenu={() => setMenuOpen(false)}
 					/>
 				))}
@@ -182,6 +194,8 @@ export function ReviewerSelect({
 function ReviewerHarnessOption({
 	agent,
 	currentHarness,
+	currentClaudeConfigDir,
+	claudeConfigDir,
 	currentModel,
 	currentMode,
 	onSelect,
@@ -192,6 +206,8 @@ function ReviewerHarnessOption({
 }: {
 	agent: Pick<RankedAgentOption, "id" | "label" | "status" | "statusTone" | "disabled">;
 	currentHarness: string;
+	currentClaudeConfigDir?: string;
+	claudeConfigDir?: string;
 	currentModel: string;
 	currentMode: string;
 	onSelect: (harness: string, config: ReviewerAgentConfig) => void;
@@ -210,9 +226,10 @@ function ReviewerHarnessOption({
 	const effectiveCurrentHarness =
 		currentHarness || (persistHarness === "" ? (resolvedHarness ?? "") : "");
 	const effectivePersistHarness = persistHarness || resolvedHarness || "";
-	const isCurrentHarness = effectiveCurrentHarness !== "" && effectiveCurrentHarness === effectivePersistHarness;
+	const isCurrentHarness = effectiveCurrentHarness !== "" && effectiveCurrentHarness === effectivePersistHarness && currentClaudeConfigDir === claudeConfigDir;
 	const isCurrentDefaultSelection = isCurrentHarness && currentModel === "" && currentMode === "";
-	const selectDefault = () => onSelect(persistHarness, {});
+	const profileConfig = claudeConfigDir !== undefined ? { claudeConfigDir } : {};
+	const selectDefault = () => onSelect(persistHarness, profileConfig);
 
 	if (!resolvedHarness) {
 		return (
@@ -293,7 +310,7 @@ function ReviewerHarnessOption({
 					return (
 						<OptionMenuItem
 							key={`${option.kind}:${option.value}`}
-							onSelect={() => onSelect(persistHarness, option.kind === "mode" ? { mode: option.value } : { model: option.value })}
+							onSelect={() => onSelect(persistHarness, { ...profileConfig, ...(option.kind === "mode" ? { mode: option.value } : { model: option.value }) })}
 							active={selected}
 						>
 							<span className="flex min-w-0 items-center justify-between gap-3">

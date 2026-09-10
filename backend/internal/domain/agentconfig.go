@@ -1,6 +1,10 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
 
 // PermissionMode controls how much review an agent requires before acting. It
 // lives in domain (not ports) so the typed AgentConfig can carry it; ports
@@ -23,6 +27,8 @@ const (
 // former free-form map so the fields are validated and the API/UI render a
 // real form rather than arbitrary JSON. An empty value (IsZero) means unset.
 type AgentConfig struct {
+	// ClaudeConfigDir selects a Claude account directory. Nil inherits; empty selects the default.
+	ClaudeConfigDir *string `json:"claudeConfigDir,omitempty"`
 	// Model overrides the agent's default model (e.g. claude-opus-4-5).
 	Model string `json:"model,omitempty"`
 	// Mode selects an agent-owned operating mode when the adapter exposes modes
@@ -56,6 +62,9 @@ func (m PermissionMode) Valid() bool {
 // Validate rejects values outside the typed vocabulary so a bad config is
 // refused when it is set (CLI/API) rather than silently dropped at spawn.
 func (c AgentConfig) Validate() error {
+	if c.ClaudeConfigDir != nil && *c.ClaudeConfigDir != "" && (!filepath.IsAbs(*c.ClaudeConfigDir) || strings.ContainsAny(*c.ClaudeConfigDir, "\x00\r\n")) {
+		return fmt.Errorf("claudeConfigDir must be an absolute directory path or empty")
+	}
 	switch c.Mode {
 	case "", "low", "medium", "high", "ultra":
 	default:
@@ -65,4 +74,18 @@ func (c AgentConfig) Validate() error {
 		return nil
 	}
 	return fmt.Errorf("invalid permissions %q: want one of default, accept-edits, auto, bypass-permissions", c.Permissions)
+}
+
+// Equal compares configuration values, including the optional profile selection.
+func (c AgentConfig) Equal(other AgentConfig) bool {
+	if c.ClaudeConfigDir == nil || other.ClaudeConfigDir == nil {
+		if c.ClaudeConfigDir != other.ClaudeConfigDir {
+			return false
+		}
+	} else if *c.ClaudeConfigDir != *other.ClaudeConfigDir {
+		return false
+	}
+	c.ClaudeConfigDir = nil
+	other.ClaudeConfigDir = nil
+	return c == other
 }

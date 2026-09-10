@@ -76,6 +76,7 @@ export type WorkspaceSession = {
 	reviewerHarness?: ReviewerHarnessId;
 	/** Per-session reviewer override, including hidden fields preserved across saves. */
 	reviewerConfig?: {
+		claudeConfigDir?: string;
 		model?: string;
 		mode?: string;
 		permissions?: string;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -61,24 +62,52 @@ func discoverClaudeProfiles(ctx context.Context, home, configured string) (Claud
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	add("Default", filepath.Join(home, ".claude"), true)
-	if len(result.Profiles) > 0 {
-		result.Profiles[0].ConfigDir = ""
-	}
-	if configured = strings.TrimSpace(configured); configured != "" {
-		add("Environment ("+filepath.Base(configured)+")", configured, true)
-	}
 	entries, err := os.ReadDir(home)
 	if err != nil {
 		return result, err
+	}
+	// Real named directories take precedence over aliases, including ~/.claude
+	// pointing at a named profile. A real standard-home directory in turn wins
+	// over named symlink aliases pointing back to it.
+	addNamed := func(entry os.DirEntry) {
+		if entry.Name() == ".claude" || !strings.HasPrefix(entry.Name(), ".claude") {
+			return
+		}
+		name := strings.TrimLeft(strings.TrimPrefix(entry.Name(), ".claude"), "-_. ")
+		if name == "" {
+			name = entry.Name()
+		}
+		add(name, filepath.Join(home, entry.Name()), false)
 	}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		if strings.HasPrefix(entry.Name(), ".claude-") {
-			add(strings.TrimPrefix(entry.Name(), ".claude-"), filepath.Join(home, entry.Name()), false)
+		if entry.Type()&os.ModeSymlink == 0 {
+			addNamed(entry)
 		}
 	}
+	beforeDefault := len(result.Profiles)
+	add("Default", filepath.Join(home, ".claude"), true)
+	if len(result.Profiles) > beforeDefault {
+		result.Profiles[beforeDefault].ConfigDir = ""
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			addNamed(entry)
+		}
+	}
+	if configured = strings.TrimSpace(configured); configured != "" {
+		add("Environment ("+filepath.Base(configured)+")", configured, true)
+	}
+	sort.SliceStable(result.Profiles, func(i, j int) bool {
+		if result.Profiles[i].ConfigDir == "" || result.Profiles[j].ConfigDir == "" {
+			return result.Profiles[i].ConfigDir == ""
+		}
+		return result.Profiles[i].Name < result.Profiles[j].Name
+	})
 	return result, nil
 }

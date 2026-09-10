@@ -859,6 +859,9 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// override) and validate the model before any durable state is created. A
 	// model the harness cannot honor should not leave a seed row behind.
 	agentConfig := applySpawnAgentConfig(effectiveAgentConfig(cfg.Kind, project.Config), cfg.AgentConfig)
+	if err := agentConfig.Validate(); err != nil {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: invalid agent config: %w", err)
+	}
 	if err := validateSpawnModel(cfg.Harness, agentConfig.Model); err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s", ErrUnsupportedModel, err.Error())
 	}
@@ -991,7 +994,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w: no agent adapter for harness %q", id, ErrUnknownHarness, cfg.Harness)
 	}
 	var env map[string]string
-	rec, env, err = m.prepareWorkerLaunchEnv(ctx, rec, project.Config.Env)
+	rec, env, err = m.prepareWorkerLaunchEnv(ctx, rec, sessionProfileEnv(rec, project.Config))
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnBrowser, err)
@@ -1065,6 +1068,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 
 	metadata := domain.SessionMetadata{
 		Permissions:               rec.Metadata.Permissions,
+		ClaudeConfigDir:           rec.Metadata.ClaudeConfigDir,
 		Branch:                    ws.Branch,
 		WorkspacePath:             ws.Path,
 		WorkspaceRepoPath:         ws.RepoPath,
@@ -1421,6 +1425,9 @@ func roleConfigName(kind domain.SessionKind) string {
 func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) ports.AgentConfig {
 	merged := cfg.AgentConfig
 	override := roleOverride(kind, cfg).AgentConfig
+	if override.ClaudeConfigDir != nil {
+		merged.ClaudeConfigDir = override.ClaudeConfigDir
+	}
 	if override.Model != "" {
 		merged.Model = override.Model
 	}
@@ -1434,6 +1441,9 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 }
 
 func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
+	if override.ClaudeConfigDir != nil {
+		base.ClaudeConfigDir = override.ClaudeConfigDir
+	}
 	if override.Model != "" {
 		base.Model = override.Model
 	}
@@ -2257,7 +2267,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		agentConfig.Permissions = rec.Metadata.Permissions
 	}
 	var env map[string]string
-	rec, env, err = m.prepareWorkerLaunchEnv(ctx, rec, project.Config.Env)
+	rec, env, err = m.prepareWorkerLaunchEnv(ctx, rec, sessionProfileEnv(rec, project.Config))
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: browser capability: %w", operation, rec.ID, err)
 	}
@@ -2328,6 +2338,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	}
 	metadata := domain.SessionMetadata{
 		Permissions:               rec.Metadata.Permissions,
+		ClaudeConfigDir:           rec.Metadata.ClaudeConfigDir,
 		Branch:                    ws.Branch,
 		WorkspacePath:             ws.Path,
 		WorkspaceRepoPath:         ws.RepoPath,
@@ -3808,7 +3819,7 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		// Resolved before this point and persisted here. There is no UPDATE
 		// statement that can change it afterwards.
 		Mode:              domain.NormalizeSessionMode(cfg.RequestedMode),
-		Metadata:          domain.SessionMetadata{Permissions: applySpawnAgentConfig(effectiveAgentConfig(cfg.Kind, projectConfig), cfg.AgentConfig).Permissions},
+		Metadata:          domain.SessionMetadata{Permissions: applySpawnAgentConfig(effectiveAgentConfig(cfg.Kind, projectConfig), cfg.AgentConfig).Permissions, ClaudeConfigDir: resolvedClaudeProfile(applySpawnAgentConfig(effectiveAgentConfig(cfg.Kind, projectConfig), cfg.AgentConfig), projectConfig.Env)},
 		AutoReviewEnabled: projectConfig.AutoReview,
 		AutoInjectReview:  true,
 		AutoInjectCI:      true,
@@ -4562,7 +4573,7 @@ func (m *Manager) cleanupAgentWorkspace(ctx context.Context, rec domain.SessionR
 	}
 	env := spawnEnv(rec.ID, rec.ProjectID, rec.IssueID, m.dataDir, nil)
 	if project, err := m.loadProject(ctx, rec.ProjectID); err == nil {
-		env = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+		env = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, sessionProfileEnv(rec, project.Config))
 	} else {
 		m.logger.Warn("workspace cleanup: project env unavailable; agent cleanup using AO env only",
 			"sessionID", rec.ID, "projectID", rec.ProjectID, "error", err)

@@ -116,7 +116,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions, claude_config_dir
 FROM sessions WHERE id = ?
 `
 
@@ -165,6 +165,7 @@ type GetSessionRow struct {
 	AutoReviewEnabled         bool
 	Model                     string
 	SessionPermissions        string
+	ClaudeConfigDir           sql.NullString
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -215,6 +216,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.AutoReviewEnabled,
 		&i.Model,
 		&i.SessionPermissions,
+		&i.ClaudeConfigDir,
 	)
 	return i, err
 }
@@ -227,13 +229,13 @@ INSERT INTO sessions (
     runtime_launch_id, agent_session_id, agent_session_id_launch_id, prompt,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
-    session_mode, provider_conversation_id, controller_generation, model, session_permissions,
+    session_mode, provider_conversation_id, controller_generation, model, session_permissions, claude_config_dir,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -276,6 +278,7 @@ type InsertSessionParams struct {
 	ControllerGeneration      string
 	Model                     string
 	SessionPermissions        string
+	ClaudeConfigDir           sql.NullString
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
 	IsPinned                  bool
@@ -324,6 +327,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.ControllerGeneration,
 		arg.Model,
 		arg.SessionPermissions,
+		arg.ClaudeConfigDir,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.IsPinned,
@@ -343,7 +347,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions, claude_config_dir
 FROM sessions ORDER BY project_id, num
 `
 
@@ -392,6 +396,7 @@ type ListAllSessionsRow struct {
 	AutoReviewEnabled         bool
 	Model                     string
 	SessionPermissions        string
+	ClaudeConfigDir           sql.NullString
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -448,6 +453,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.AutoReviewEnabled,
 			&i.Model,
 			&i.SessionPermissions,
+			&i.ClaudeConfigDir,
 		); err != nil {
 			return nil, err
 		}
@@ -471,7 +477,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions, claude_config_dir
 FROM sessions WHERE project_id = ? ORDER BY num
 `
 
@@ -520,6 +526,7 @@ type ListSessionsByProjectRow struct {
 	AutoReviewEnabled         bool
 	Model                     string
 	SessionPermissions        string
+	ClaudeConfigDir           sql.NullString
 }
 
 func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.ProjectID) ([]ListSessionsByProjectRow, error) {
@@ -576,6 +583,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID domain.Pr
 			&i.AutoReviewEnabled,
 			&i.Model,
 			&i.SessionPermissions,
+			&i.ClaudeConfigDir,
 		); err != nil {
 			return nil, err
 		}
@@ -899,7 +907,7 @@ UPDATE sessions SET
     latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, native_transcript_path = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
-    provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
+    provider_conversation_id = ?, controller_generation = ?, model = ?, claude_config_dir = ?, updated_at = ?,
     is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
 WHERE id = ?
 `
@@ -938,6 +946,7 @@ type UpdateSessionParams struct {
 	ProviderConversationID    string
 	ControllerGeneration      string
 	Model                     string
+	ClaudeConfigDir           sql.NullString
 	UpdatedAt                 time.Time
 	IsPinned                  bool
 	PinnedAt                  sql.NullTime
@@ -981,6 +990,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.ProviderConversationID,
 		arg.ControllerGeneration,
 		arg.Model,
+		arg.ClaudeConfigDir,
 		arg.UpdatedAt,
 		arg.IsPinned,
 		arg.PinnedAt,

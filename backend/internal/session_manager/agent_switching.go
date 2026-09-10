@@ -298,7 +298,7 @@ func (m *Manager) admitAgentSwitch(ctx context.Context, id domain.SessionID, cfg
 		// the target generation is always a real AO_RUNTIME_LAUNCH_ID.
 		sourceGeneration = domain.AgentGenerationID("legacy-" + uuid.NewString())
 	}
-	sourceEnv := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	sourceEnv := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, sessionProfileEnv(rec, project.Config))
 	m.augmentAgentRuntimeEnv(sourceAgent, sourceEnv)
 	sourceRecord := rec
 	if mode == domain.SessionModeChat {
@@ -1333,9 +1333,9 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	profileChecker, profileAware := agent.(interface {
 		AuthStatusWithEnv(context.Context, map[string]string) (ports.AgentAuthStatus, error)
 	})
-	_, profileSelected := project.Config.Env["CLAUDE_CONFIG_DIR"]
+	_, profileSelected := sessionProfileEnv(rec, project.Config)["CLAUDE_CONFIG_DIR"]
 	if profileAware && profileSelected {
-		status, authErr := profileChecker.AuthStatusWithEnv(ctx, project.Config.Env)
+		status, authErr := profileChecker.AuthStatusWithEnv(ctx, sessionProfileEnv(rec, project.Config))
 		if authErr == nil && status == ports.AgentAuthStatusUnauthorized {
 			return preparedTargetActivation{}, ErrTargetAgentUnauthorized
 		}
@@ -1371,7 +1371,7 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	if model := strings.TrimSpace(modelOverride); model != "" {
 		config.Model = model
 	}
-	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, sessionProfileEnv(rec, project.Config))
 	pinRuntimePermissionEnv(env, config.Permissions)
 	m.augmentAgentRuntimeEnv(agent, env)
 	configDir, err := nativeConfigDir(ctx, agent, env)
@@ -3377,7 +3377,7 @@ func (m *Manager) cleanupRecoveredTargetWorkspace(ctx context.Context, rec domai
 	if err != nil {
 		return fmt.Errorf("agent switch recovery: load project for target workspace cleanup: %w", err)
 	}
-	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, sessionProfileEnv(rec, project.Config))
 	m.augmentAgentRuntimeEnv(agent, env)
 	if err := m.cleanupPreparedAgentWorkspaceStrict(ctx, agent, rec.ID, rec.Metadata.WorkspacePath, env); err != nil {
 		return fmt.Errorf("agent switch recovery: clean target workspace state: %w", err)

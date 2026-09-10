@@ -1,3 +1,5 @@
+import { useClaudeProfiles, type ClaudeProfile } from "../hooks/useClaudeProfiles";
+import { expandClaudeProfiles, profileSelectionKey } from "../lib/claude-profile-options";
 import {
 	canSubmitProjectSetup,
 	ProjectSetupFormView,
@@ -36,6 +38,8 @@ type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
 export type CreateProjectAgentSelection = {
 	workerAgent: string;
 	orchestratorAgent: string;
+	workerClaudeConfigDir?: string;
+	orchestratorClaudeConfigDir?: string;
 	trackerIntake?: TrackerIntakeConfig;
 };
 
@@ -145,6 +149,9 @@ export function CreateProjectAgentSheet({
 		: null;
 	const displayError = agentsError;
 	const [workerAgent, setWorkerAgent] = useState("");
+	const [workerClaudeConfigDir, setWorkerClaudeConfigDir] = useState<string>();
+	const [orchestratorClaudeConfigDir, setOrchestratorClaudeConfigDir] = useState<string>();
+	const profilesQuery = useClaudeProfiles();
 	const [orchestratorAgent, setOrchestratorAgent] = useState("");
 	const [workerAgentTouched, setWorkerAgentTouched] = useState(false);
 	const [orchestratorAgentTouched, setOrchestratorAgentTouched] = useState(false);
@@ -173,6 +180,8 @@ export function CreateProjectAgentSheet({
 	useEffect(() => {
 		if (open && !wasOpen.current) {
 			setWorkerAgent("");
+			setWorkerClaudeConfigDir(undefined);
+			setOrchestratorClaudeConfigDir(undefined);
 			setOrchestratorAgent("");
 			setWorkerAgentTouched(false);
 			setOrchestratorAgentTouched(false);
@@ -241,6 +250,11 @@ export function CreateProjectAgentSheet({
 									label={t("createProject.workerAgent")}
 									placeholder={t("createProject.selectWorker")}
 									value={workerAgent}
+									profiles={profilesQuery.data}
+									profilesError={profilesQuery.isError}
+									onRetryProfiles={() => void profilesQuery.refetch()}
+									claudeConfigDir={workerClaudeConfigDir}
+									onClaudeConfigDirChange={setWorkerClaudeConfigDir}
 									agents={agentOptions}
 									disabled={isLoadingAgents}
 									labelClassName="agents-sheet-label"
@@ -258,6 +272,11 @@ export function CreateProjectAgentSheet({
 									label={t("createProject.orchestratorAgent")}
 									placeholder={t("createProject.selectOrchestrator")}
 									value={orchestratorAgent}
+									profiles={profilesQuery.data}
+									profilesError={profilesQuery.isError}
+									onRetryProfiles={() => void profilesQuery.refetch()}
+									claudeConfigDir={orchestratorClaudeConfigDir}
+									onClaudeConfigDirChange={setOrchestratorClaudeConfigDir}
 									agents={agentOptions}
 									disabled={isLoadingAgents}
 									labelClassName="agents-sheet-label"
@@ -308,7 +327,7 @@ export function CreateProjectAgentSheet({
 						isBusy={isBusy}
 						onCancel={() => onOpenChange(false)}
 						onSubmit={() =>
-							void onSubmit({ workerAgent, orchestratorAgent, trackerIntake: buildIntake(intake) })
+							void onSubmit({ workerAgent, orchestratorAgent, ...(workerClaudeConfigDir !== undefined ? { workerClaudeConfigDir } : {}), ...(orchestratorClaudeConfigDir !== undefined ? { orchestratorClaudeConfigDir } : {}), trackerIntake: buildIntake(intake) })
 						}
 						setupNotice={
 							repositorySetupNeeded
@@ -370,15 +389,25 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	id,
 	invalid = false,
 	label,
-	onChange,
+	onChange: onHarnessChange,
+	profiles,
+	profilesError = false,
+	onRetryProfiles,
+	claudeConfigDir,
+	onClaudeConfigDirChange,
 	placeholder,
 	triggerClassName,
 	labelClassName,
 	contentClassName,
-	value,
+	value: harnessValue,
 	variant = "stacked",
 }: {
 	agents?: AgentInfo[];
+	profiles?: ClaudeProfile[];
+	profilesError?: boolean;
+	onRetryProfiles?: () => void;
+	claudeConfigDir?: string;
+	onClaudeConfigDirChange?: (value: string | undefined) => void;
 	disabled?: boolean;
 	/** Caption beside the label, e.g. naming where a preselected default came from. */
 	hint?: string;
@@ -394,11 +423,25 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	value: string;
 	variant?: "stacked" | "settings-row" | "chip";
 }) {
+	const { t } = useTranslation();
 	const fallbackAgents: AgentInfo[] = AGENT_OPTIONS.map((agent) => unknownAgentReadiness(agent, agent));
+	const expanded = onClaudeConfigDirChange ? expandClaudeProfiles(agents ?? fallbackAgents, profiles ?? [], claudeConfigDir) : undefined;
+	const value = onClaudeConfigDirChange ? profileSelectionKey(harnessValue, claudeConfigDir) : harnessValue;
+	const onChange = (key: string) => {
+		if (key === "__retry_profiles__") { onRetryProfiles?.(); return; }
+		const selection = expanded?.find((agent) => agent.id === key);
+		onHarnessChange(selection?.harness ?? key);
+		onClaudeConfigDirChange?.(selection?.claudeConfigDir);
+	};
 	const options = buildRankedAgentOptions({
-		agents,
+		agents: expanded ?? agents,
 		priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
 		fallbackAgents,
+	});
+	if (profilesError) options.push({
+		...unknownAgentReadiness("__retry_profiles__", t("settings.project.claudeProfilesLoadFailed")),
+		disabled: !onRetryProfiles, rank: 4, priorityRank: Number.MAX_SAFE_INTEGER,
+		status: t("createProject.retry"), statusTone: "warning",
 	});
 
 	if (variant === "settings-row") {
@@ -422,7 +465,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					menuItemClassName="settings-agent-menu-item"
 					renderTrigger={(selected, triggerPlaceholder) => (
 						<>
-							{selected ? <AgentAvatar provider={selected.value} className="size-icon-lg" /> : null}
+							{selected ? <AgentAvatar provider={expanded?.find((agent) => agent.id === selected.value)?.harness ?? selected.value} className="size-icon-lg" /> : null}
 							<span className="min-w-0 truncate">{selected?.label ?? triggerPlaceholder}</span>
 						</>
 					)}
@@ -431,7 +474,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 						if (!agent) return option.label;
 						return (
 							<AgentSelectMenuItem
-								agentId={agent.id}
+								agentId={expanded?.find((entry) => entry.id === agent.id)?.harness ?? agent.id}
 								label={agent.label}
 								selected={selected}
 								status={agent.status}
@@ -477,7 +520,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 				renderTrigger={() => (
 					<span className="flex min-w-0 items-center gap-2">
 						{selectedOption ? (
-							<AgentAvatar provider={selectedOption.id} className="size-icon-base" decorative />
+							<AgentAvatar provider={expanded?.find((agent) => agent.id === selectedOption.id)?.harness ?? selectedOption.id} className="size-icon-base" decorative />
 						) : null}
 						<span className="min-w-0 truncate text-control text-foreground" title={selectedOption?.label ?? placeholder}>
 							{selectedOption?.label ?? placeholder}
@@ -489,7 +532,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					if (!agent) return option.label;
 					return (
 						<AgentSelectMenuItem
-							agentId={agent.id}
+							agentId={expanded?.find((entry) => entry.id === agent.id)?.harness ?? agent.id}
 							label={agent.label}
 							selected={selected}
 							status={agent.status}
@@ -523,7 +566,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					<SelectValue placeholder={placeholder}>
 						{selectedOption ? (
 							<span className="flex min-w-0 items-center gap-3">
-								<AgentAvatar provider={selectedOption.id} className="size-icon-lg" decorative />
+								<AgentAvatar provider={expanded?.find((agent) => agent.id === selectedOption.id)?.harness ?? selectedOption.id} className="size-icon-lg" decorative />
 								<span className="min-w-0 truncate">{selectedOption.label}</span>
 							</span>
 						) : null}
@@ -544,7 +587,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 							className="[&>span:last-child]:w-full"
 						>
 							<AgentSelectMenuItem
-								agentId={agent.id}
+								agentId={expanded?.find((entry) => entry.id === agent.id)?.harness ?? agent.id}
 								label={agent.label}
 								selected={value === agent.id}
 								status={agent.status}

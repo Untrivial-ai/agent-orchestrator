@@ -6924,6 +6924,10 @@ components:
       type: object
     AgentConfig:
       properties:
+        claudeConfigDir:
+          type:
+          - "null"
+          - string
         mode:
           type: string
         model:
@@ -8958,6 +8962,10 @@ components:
         brief:
           maxLength: 16384
           type: string
+        claudeConfigDir:
+          type:
+          - "null"
+          - string
         mode:
           enum:
           - tui

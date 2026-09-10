@@ -207,26 +207,28 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
-    it.each([
-        ["Claude Code — work", "/profiles/work"],
-        ["Claude Code — Default", ""],
-        ["Use environment default", undefined],
-    ])("saves %s while preserving other project environment settings", async (label, expected) => {
-        mockProject({ id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one", config: {
-            worker: { agent: "claude-code" }, orchestrator: { agent: "claude-code" },
-            env: { FOO: "bar", CLAUDE_CONFIG_DIR: "/profiles/old" },
-        } });
-        renderSettings("proj-1", undefined, "agents");
-        const trigger = await screen.findByRole("button", { name: "Claude Code profile" });
-        expect(trigger).toHaveTextContent("Saved profile (/profiles/old)");
-        await chooseOption(trigger, label);
-        submitSettings();
-        await waitFor(() => expect(putMock).toHaveBeenCalled());
-        const saved = putMock.mock.calls[0][1].body.config.env;
-        expect(saved.FOO).toBe("bar");
-        expect(saved.CLAUDE_CONFIG_DIR).toBe(expected);
-        expect(Object.hasOwn(saved, "CLAUDE_CONFIG_DIR")).toBe(expected !== undefined);
-    });
+	it.each([
+		["Claude Code — work", "/profiles/work"],
+		["Claude Code — Default", ""],
+		["Claude Code — Inherit profile", undefined],
+	])("saves worker %s independently while preserving legacy environment", async (label, expected) => {
+		mockProject({ id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one", config: {
+			worker: { agent: "claude-code" }, orchestrator: { agent: "claude-code" },
+			env: { FOO: "bar", CLAUDE_CONFIG_DIR: "/profiles/old" },
+		} });
+		renderSettings("proj-1", undefined, "agents");
+		const trigger = await screen.findByRole("button", { name: "Default worker agent" });
+		expect(trigger).toHaveTextContent("Claude Code — /profiles/old");
+		await userEvent.click(trigger);
+		await userEvent.click(await screen.findByRole("menuitem", { name: new RegExp(`^${label}(?: ?Auth unknown)?$`) }));
+		submitSettings();
+		await waitFor(() => expect(putMock).toHaveBeenCalled());
+		const saved = putMock.mock.calls[0][1].body.config;
+		expect(saved.worker.agent).toBe("claude-code");
+		expect(saved.worker.agentConfig?.claudeConfigDir).toBe(expected);
+		expect(saved.orchestrator.agentConfig.claudeConfigDir).toBe("/profiles/old");
+		expect(saved.env).toEqual({ FOO: "bar", CLAUDE_CONFIG_DIR: "/profiles/old" });
+	});
 
 	it("ensures agent readiness in the background without manual refresh buttons", async () => {
 		mockProject({
@@ -464,7 +466,7 @@ describe("ProjectSettingsForm", () => {
 		// then its label ("codex" -> "Codex"). Both prove the configured value;
 		// exactly which one is on screen depends on unrelated query timing.
 		expect(workerAgent).toHaveTextContent(/^codex$/i);
-		expect(orchestratorAgent).toHaveTextContent(/^claude[- ]code$/i);
+		expect(orchestratorAgent).toHaveTextContent(/^claude[- ]code — Inherit profile$/i);
 		expect(permissionMode).toHaveTextContent("Auto");
 
 		await chooseOption(workerAgent, "OpenCode");
@@ -1151,7 +1153,7 @@ describe("ProjectSettingsForm", () => {
 			.filter((label) => label !== "Project default" && label !== "Enter model ID…");
 
 		expect(reviewerLabels).toEqual([
-			"Claude Code",
+			"Claude Code — Inherit profile",
 			"Codex",
 			"Cursor",
 			"OpenCode",
@@ -1159,6 +1161,8 @@ describe("ProjectSettingsForm", () => {
 			"Goose",
 			"Kilo Code",
 			"Pi",
+			"Claude Code — DefaultAuth unknown",
+			"Claude Code — workAuth unknown",
 			"KiroAuth unknown",
 		]);
 	});
@@ -1277,7 +1281,7 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(workerAgent);
 		const options = await screen.findAllByRole("menuitem");
 		expect(options.map((option) => option.textContent)).toEqual([
-			"Claude Code",
+			"Claude Code — Inherit profile",
 			"Codex",
 			"Cursor",
 			"OpenCode",
@@ -1285,6 +1289,8 @@ describe("ProjectSettingsForm", () => {
 			"Goose",
 			"Kilo Code",
 			"Pi",
+			"Claude Code — DefaultAuth unknown",
+			"Claude Code — workAuth unknown",
 			"KiroAuth unknown",
 		]);
 		expect(options[8]).not.toHaveAttribute("aria-disabled", "true");

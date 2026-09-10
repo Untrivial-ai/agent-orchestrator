@@ -24,13 +24,14 @@ const (
 // may be empty to open an idle worker that the user can instruct later. Empty
 // RequestedAgent means the spawn uses the project's worker-agent default.
 type DelegateTaskInput struct {
-	ProjectID      domain.ProjectID
-	Brief          string
-	RequestedAgent domain.AgentHarness
-	Model          string
-	ApprovalMode   domain.PermissionMode
-	RequestedMode  domain.SessionMode
-	Attachments    []ports.SpawnAttachment
+	ClaudeConfigDir *string
+	ProjectID       domain.ProjectID
+	Brief           string
+	RequestedAgent  domain.AgentHarness
+	Model           string
+	ApprovalMode    domain.PermissionMode
+	RequestedMode   domain.SessionMode
+	Attachments     []ports.SpawnAttachment
 }
 
 // DelegateTaskOutcome identifies the spawned worker. OrchestratorID remains
@@ -67,8 +68,9 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		Prompt:      prompt,
 		DisplayName: delegatedTaskDisplayName(in.Brief),
 		AgentConfig: ports.AgentConfig{
-			Model:       strings.TrimSpace(in.Model),
-			Permissions: in.ApprovalMode,
+			Model:           strings.TrimSpace(in.Model),
+			ClaudeConfigDir: in.ClaudeConfigDir,
+			Permissions:     in.ApprovalMode,
 		},
 		RequestedMode: in.RequestedMode,
 		Attachments:   in.Attachments,

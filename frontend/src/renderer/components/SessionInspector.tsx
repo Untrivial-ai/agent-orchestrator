@@ -1501,6 +1501,7 @@ function ReviewsSection({
 		session.reviewerHarness ?? "",
 	);
 	const [reviewerModel, setReviewerModel] = useState(session.reviewerConfig?.model ?? "");
+	const [reviewerClaudeConfigDir, setReviewerClaudeConfigDir] = useState(session.reviewerConfig?.claudeConfigDir);
 	const [reviewerMode, setReviewerMode] = useState(session.reviewerConfig?.mode ?? "");
 	useEnsureAgentReadiness({
 		agentIds: reviewerOverride ? [reviewerOverride] : [],
@@ -1510,17 +1511,18 @@ function ReviewsSection({
 		setReviewerOverride(session.reviewerHarness ?? "");
 		setReviewerModel(session.reviewerConfig?.model ?? "");
 		setReviewerMode(session.reviewerConfig?.mode ?? "");
-	}, [session.id, session.reviewerConfig?.mode, session.reviewerConfig?.model, session.reviewerHarness]);
+		setReviewerClaudeConfigDir(session.reviewerConfig?.claudeConfigDir);
+	}, [session.id, session.reviewerConfig?.claudeConfigDir, session.reviewerConfig?.mode, session.reviewerConfig?.model, session.reviewerHarness]);
 	const saveReviewer = useMutation({
-		mutationFn: async ({ harness, model, mode }: { harness: ReviewerHarness | ""; model: string; mode: string }) => {
-			const clearingToProjectDefault = harness === "" && model === "" && mode === "";
+		mutationFn: async ({ harness, model, mode, claudeConfigDir }: { harness: ReviewerHarness | ""; model: string; mode: string; claudeConfigDir?: string }) => {
+			const clearingToProjectDefault = harness === "" && model === "" && mode === "" && claudeConfigDir === undefined;
 			const currentEffectiveReviewerHarness = (session.reviewerHarness ?? "") || currentDefaultReviewerHarness;
 			const nextEffectiveReviewerHarness = harness || currentDefaultReviewerHarness;
 			const existingReviewerConfig =
 				!clearingToProjectDefault && currentEffectiveReviewerHarness === nextEffectiveReviewerHarness
 					? session.reviewerConfig
 					: undefined;
-			const nextReviewerConfig = buildReviewerAgentConfig(existingReviewerConfig, model, mode);
+			const nextReviewerConfig = buildReviewerAgentConfig(existingReviewerConfig, model, mode, claudeConfigDir);
 			const { data, error } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/switch", {
 				params: { path: { sessionId: session.id } },
 				body: {
@@ -1555,9 +1557,7 @@ function ReviewsSection({
 		mutationFn: async () => {
 			// No override sends no body at all, leaving the default path on the wire
 			// exactly as it was.
-			const reviewerConfig = reviewerModel || reviewerMode
-				? { ...(reviewerModel ? { model: reviewerModel } : {}), ...(reviewerMode ? { mode: reviewerMode } : {}) }
-				: undefined;
+			const reviewerConfig = buildReviewerAgentConfig(undefined, reviewerModel, reviewerMode, reviewerClaudeConfigDir);
 			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/trigger", {
 				params: { path: { sessionId: session.id } },
 				...(reviewerOverride || reviewerConfig ? { body: { ...(reviewerOverride ? { harness: reviewerOverride } : {}), ...(reviewerConfig ? { agentConfig: reviewerConfig } : {}) } } : {}),
@@ -1652,11 +1652,13 @@ function ReviewsSection({
 				reviewerOverride={reviewerOverride}
 				reviewerModel={reviewerModel}
 				reviewerMode={reviewerMode}
+				reviewerClaudeConfigDir={reviewerClaudeConfigDir}
 				onReviewerOverrideChange={(next, config) => {
 					setReviewerOverride(next);
 					setReviewerModel(config.model ?? "");
 					setReviewerMode(config.mode ?? "");
-					saveReviewer.mutate({ harness: next, model: config.model ?? "", mode: config.mode ?? "" });
+					setReviewerClaudeConfigDir(config.claudeConfigDir);
+					saveReviewer.mutate({ harness: next, model: config.model ?? "", mode: config.mode ?? "", claudeConfigDir: config.claudeConfigDir });
 				}}
 				onReviewerHarnessPreviewChange={(next) => {
 					setReviewerOverride(next);
@@ -2042,8 +2044,11 @@ function buildReviewerAgentConfig(
 	existing: WorkspaceSession["reviewerConfig"] | undefined,
 	model: string,
 	mode: string,
-): { model?: string; mode?: string; permissions?: string } | undefined {
+	claudeConfigDir?: string,
+): { model?: string; mode?: string; permissions?: string; claudeConfigDir?: string } | undefined {
 	const next = { ...existing };
+	if (claudeConfigDir !== undefined) next.claudeConfigDir = claudeConfigDir;
+	else delete next.claudeConfigDir;
 	if (model) next.model = model;
 	else delete next.model;
 	if (mode) next.mode = mode;
@@ -2123,6 +2128,7 @@ function ReviewPanel({
 	reviewerOverride,
 	reviewerModel,
 	reviewerMode,
+	reviewerClaudeConfigDir,
 	onReviewerOverrideChange,
 	onReviewerHarnessPreviewChange,
 	onTrigger,
@@ -2146,7 +2152,8 @@ function ReviewPanel({
 	reviewerOverride: ReviewerHarness | "";
 	reviewerModel: string;
 	reviewerMode: string;
-	onReviewerOverrideChange: (next: ReviewerHarness | "", config: { model?: string; mode?: string }) => void;
+	reviewerClaudeConfigDir?: string;
+	onReviewerOverrideChange: (next: ReviewerHarness | "", config: { model?: string; mode?: string; claudeConfigDir?: string }) => void;
 	onReviewerHarnessPreviewChange: (next: ReviewerHarness | "") => void;
 	onTrigger: () => void;
 	onCancel: () => void;
@@ -2265,9 +2272,10 @@ function ReviewPanel({
 							defaultOptionLabel={agentLabel(resolvedDefaultHarness)}
 							disabled={reviewRunning || autoReviewEnabled || isKilling || isSwitchingReviewer || isTriggering || isCancelling}
 							onChange={(next) => onReviewerHarnessPreviewChange(next as ReviewerHarness | "")}
-							onConfigChange={(harness, config) => onReviewerOverrideChange(harness as ReviewerHarness | "", config)}
+							onConfigChange={(harness, config) => onReviewerOverrideChange(harness as ReviewerHarness | "", { ...config, claudeConfigDir: config.claudeConfigDir ?? undefined })}
 							model={reviewerModel}
 							mode={reviewerMode}
+							claudeConfigDir={reviewerClaudeConfigDir}
 							projectId={session.workspaceId}
 							triggerClassName="review-run-agent-select ml-auto h-control-md w-auto min-w-0 max-w-[11rem] shrink-0 justify-end px-2 text-right text-xs"
 							value={reviewerOverride}

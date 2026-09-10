@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { createProjectConfig } from "../routes/_shell";
 
 describe("createProjectConfig", () => {
+	it("persists independently selected profile paths under role configs", () => {
+		expect(createProjectConfig({ workerAgent: "claude-code", workerClaudeConfigDir: "/home/test/.claude-team", orchestratorAgent: "claude-code", orchestratorClaudeConfigDir: "" })).toEqual({
+			worker: { agent: "claude-code", agentConfig: { claudeConfigDir: "/home/test/.claude-team" } },
+			orchestrator: { agent: "claude-code", agentConfig: { claudeConfigDir: "" } },
+		});
+	});
+
 	it("persists selected worker and orchestrator agents without tracker intake by default", () => {
 		expect(
 			createProjectConfig({

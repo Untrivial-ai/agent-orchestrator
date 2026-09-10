@@ -549,6 +549,7 @@ type Session struct {
 	LatestUserPromptAt        sql.NullTime
 	ReviewerAgentConfig       string
 	SessionPermissions        string
+	ClaudeConfigDir           sql.NullString
 }
 
 type SessionCleanupFact struct {

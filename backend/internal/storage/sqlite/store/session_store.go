@@ -467,6 +467,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			ProviderConversationID:    row.ProviderConversationID,
 			ControllerGeneration:      row.ControllerGeneration,
 			Model:                     row.Model,
+			ClaudeConfigDir:           claudeProfileFromSQL(row.ClaudeConfigDir),
 			Permissions:               domain.PermissionMode(row.SessionPermissions),
 		},
 		CleanupGeneration: row.CleanupGeneration,
@@ -531,6 +532,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,
 		ControllerGeneration:      rec.Metadata.ControllerGeneration,
 		Model:                     rec.Metadata.Model,
+		ClaudeConfigDir:           claudeProfileToSQL(rec.Metadata.ClaudeConfigDir),
 		SessionPermissions:        string(rec.Metadata.Permissions),
 		CreatedAt:                 rec.CreatedAt,
 		UpdatedAt:                 rec.UpdatedAt,
@@ -580,6 +582,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		ProviderConversationID:    rec.Metadata.ProviderConversationID,
 		ControllerGeneration:      rec.Metadata.ControllerGeneration,
 		Model:                     rec.Metadata.Model,
+		ClaudeConfigDir:           claudeProfileToSQL(rec.Metadata.ClaudeConfigDir),
 		UpdatedAt:                 rec.UpdatedAt,
 	}
 }
@@ -663,4 +666,17 @@ func normalActivity(a domain.Activity, fallback time.Time) domain.Activity {
 	// rather than trusting each caller's clock.
 	a.LastActivityAt = a.LastActivityAt.UTC()
 	return a
+}
+
+func claudeProfileFromSQL(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+func claudeProfileToSQL(value *string) sql.NullString {
+	if value == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *value, Valid: true}
 }

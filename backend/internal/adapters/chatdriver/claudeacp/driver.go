@@ -59,15 +59,9 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 			if err := validateClaudeACPExecutable(claudeBinary, runtime.GOOS); err != nil {
 				return fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 			}
-			status, err := plugin.AuthStatus(ctx)
-			if err == nil && status == ports.AgentAuthStatusUnauthorized {
-				return ports.ErrChatAuthRequired
-			}
-			if err != nil && log != nil {
-				// Unknown is not unauthorized. Match AO's runtime probe rule: an
-				// inconclusive local probe is not proof the session cannot run.
-				log.Debug("Claude auth probe inconclusive; continuing", "error", err)
-			}
+			// Capabilities are cached per harness. Account authentication belongs to
+			// the launch environment, which can select a different profile each time.
+
 			return nil
 		},
 		Launch: func(ctx context.Context, cfg acpdriver.LaunchConfig) (acpdriver.Launch, error) {
@@ -81,6 +75,21 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 			}
 			if err := validateClaudeACPExecutable(claudeBinary, runtime.GOOS); err != nil {
 				return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
+			}
+
+			var status ports.AgentAuthStatus
+			if scoped, ok := plugin.(interface {
+				AuthStatusWithEnv(context.Context, map[string]string) (ports.AgentAuthStatus, error)
+			}); ok {
+				status, err = scoped.AuthStatusWithEnv(ctx, cfg.Env)
+			} else {
+				status, err = plugin.AuthStatus(ctx)
+			}
+			if err == nil && status == ports.AgentAuthStatusUnauthorized {
+				return acpdriver.Launch{}, ports.ErrChatAuthRequired
+			}
+			if err != nil && log != nil {
+				log.Debug("Claude auth probe inconclusive; continuing", "error", err)
 			}
 			env := make(map[string]string, len(cfg.Env)+1)
 			for key, value := range cfg.Env {

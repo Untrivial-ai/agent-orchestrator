@@ -12,6 +12,7 @@ import (
 	stdctx "context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -264,7 +265,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		harness = override
 		if override == resolvedHarness {
 			config = mergeReviewerAgentConfig(resolvedConfig, overrideConfig)
-			hasConfigOverride = config != resolvedConfig
+			hasConfigOverride = !config.Equal(resolvedConfig)
 		} else if !overrideConfig.IsZero() {
 			config = mergeReviewerAgentConfig(domain.AgentConfig{}, overrideConfig)
 		} else {
@@ -272,7 +273,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		}
 	} else if !overrideConfig.IsZero() {
 		config = mergeReviewerAgentConfig(config, overrideConfig)
-		hasConfigOverride = config != resolvedConfig
+		hasConfigOverride = !config.Equal(resolvedConfig)
 	}
 	reviewRows, err := e.store.ListReviewsBySession(ctx, workerID)
 	if err != nil {
@@ -418,7 +419,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	if handleID == "" {
 		// Each pass gets a fresh reviewer process on the same stable terminal
 		// handle when there is no resumable live agent session to notify.
-		profileEnv, err := e.claudeProfileEnv(ctx, worker, harness)
+		profileEnv, err := e.claudeProfileEnv(ctx, worker, harness, config)
 		if err != nil {
 			return TriggerResult{}, failRuns(0, err)
 		}
@@ -436,6 +437,11 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		launch, err := e.launcher.Spawn(ctx, spec)
 		if err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("launch reviewer: %w", err))
+		}
+
+		if err := e.pinReviewerProfile(ctx, worker, harness, profileEnv); err != nil {
+			_ = e.launcher.Destroy(ctx, launch.HandleID)
+			return TriggerResult{}, failRuns(0, err)
 		}
 		handleID = launch.HandleID
 		if launch.AgentSessionID != "" {
@@ -558,7 +564,7 @@ func (e *Engine) SwitchReviewer(
 	if err := e.destroyOtherReviewerHandles(ctx, workerID, selected, reviewRows); err != nil {
 		return SessionReviews{}, err
 	}
-	if previousSelected == selected && previousConfig != selectedConfig {
+	if previousSelected == selected && !previousConfig.Equal(selectedConfig) {
 		if err := e.resetReviewerRuntimeLocked(ctx, workerID, selected); err != nil {
 			return SessionReviews{}, err
 		}
@@ -837,7 +843,7 @@ func (e *Engine) restoreReviewerLocked(
 			return RestoreReviewerResult{}, err
 		}
 	}
-	profileEnv, err := e.claudeProfileEnv(ctx, worker, harness)
+	profileEnv, err := e.claudeProfileEnv(ctx, worker, harness, config)
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
@@ -855,6 +861,11 @@ func (e *Engine) restoreReviewerLocked(
 	})
 	if err != nil {
 		return RestoreReviewerResult{}, fmt.Errorf("restore reviewer: %w", err)
+	}
+
+	if err := e.pinReviewerProfile(ctx, worker, harness, profileEnv); err != nil {
+		_ = e.launcher.Destroy(ctx, launch.HandleID)
+		return RestoreReviewerResult{}, err
 	}
 	if launch.AgentSessionID != "" {
 		agentSessionID = launch.AgentSessionID
@@ -1287,6 +1298,9 @@ func (e *Engine) reviewerSelection(
 }
 
 func mergeReviewerAgentConfig(base, override domain.AgentConfig) domain.AgentConfig {
+	if override.ClaudeConfigDir != nil {
+		base.ClaudeConfigDir = override.ClaudeConfigDir
+	}
 	if override.Model != "" {
 		base.Model = override.Model
 	}
@@ -1348,16 +1362,49 @@ func (e *Engine) upsertReview(ctx stdctx.Context, worker domain.SessionRecord, h
 
 // claudeProfileEnv forwards only the Claude profile selection, preserving the
 // reviewer's existing environment restrictions for every other key.
-func (e *Engine) claudeProfileEnv(ctx stdctx.Context, worker domain.SessionRecord, harness domain.ReviewerHarness) (map[string]string, error) {
-	if harness != domain.ReviewerClaudeCode || e.projects == nil {
+func (e *Engine) claudeProfileEnv(ctx stdctx.Context, worker domain.SessionRecord, harness domain.ReviewerHarness, config domain.AgentConfig) (map[string]string, error) {
+	if harness != domain.ReviewerClaudeCode {
 		return nil, nil
+	}
+	if config.ClaudeConfigDir != nil {
+		return map[string]string{"CLAUDE_CONFIG_DIR": *config.ClaudeConfigDir}, nil
+	}
+	if e.projects == nil {
+		return map[string]string{"CLAUDE_CONFIG_DIR": os.Getenv("CLAUDE_CONFIG_DIR")}, nil
 	}
 	project, ok, err := e.projects.GetProject(ctx, string(worker.ProjectID))
 	if err != nil || !ok {
 		return nil, err
 	}
+	if project.Config.AgentConfig.ClaudeConfigDir != nil {
+		return map[string]string{"CLAUDE_CONFIG_DIR": *project.Config.AgentConfig.ClaudeConfigDir}, nil
+	}
 	if dir, selected := project.Config.Env["CLAUDE_CONFIG_DIR"]; selected {
 		return map[string]string{"CLAUDE_CONFIG_DIR": dir}, nil
 	}
-	return nil, nil
+	return map[string]string{"CLAUDE_CONFIG_DIR": os.Getenv("CLAUDE_CONFIG_DIR")}, nil
+}
+
+// Pin the account actually launched while preserving model and harness inheritance.
+func (e *Engine) pinReviewerProfile(ctx stdctx.Context, worker domain.SessionRecord, harness domain.ReviewerHarness, env map[string]string) error {
+	if harness != domain.ReviewerClaudeCode {
+		return nil
+	}
+	dir, ok := env["CLAUDE_CONFIG_DIR"]
+	if !ok {
+		return nil
+	}
+	config := worker.ReviewerConfig
+	if config.ClaudeConfigDir != nil && *config.ClaudeConfigDir == dir {
+		return nil
+	}
+	config.ClaudeConfigDir = &dir
+	found, err := e.store.SetSessionReviewerConfig(ctx, worker.ID, worker.ReviewerHarness, config, e.clock())
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("%w: worker session %q", ErrNotFound, worker.ID)
+	}
+	return nil
 }
