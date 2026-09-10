@@ -56,6 +56,7 @@ const EDITOR_CANDIDATES: EditorCandidate[] = [
 	{ id: "rider", name: "Rider", commands: ["rider"], macApps: ["Rider"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "Rider", "bin"], [LOCAL_APPDATA_PROGRAMS, "JetBrains", "Rider", "bin"]] },
 	{ id: "android-studio", name: "Android Studio", commands: ["studio"], macApps: ["Android Studio"], winInstallDirs: [[PROGRAM_FILES, "Android", "Android Studio", "bin"]] },
 	{ id: "fleet", name: "Fleet", commands: ["fleet"], macApps: ["Fleet"], winInstallDirs: [[PROGRAM_FILES, "JetBrains", "Fleet", "bin"]] },
+	{ id: "antigravity", name: "Antigravity IDE", commands: ["antigravity-ide", "antigravity"], macApps: ["Antigravity IDE", "Antigravity"], winInstallDirs: [[LOCAL_APPDATA_PROGRAMS, "Antigravity IDE", "bin"], [PROGRAM_FILES, "Antigravity IDE", "bin"]] },
 ];
 
 const WIN_INSTALL_ROOTS: Record<string, (env: NodeJS.ProcessEnv) => string | undefined> = {

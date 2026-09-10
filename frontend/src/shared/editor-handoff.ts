@@ -19,6 +19,7 @@ export const EDITOR_IDS = [
 	"rider",
 	"android-studio",
 	"fleet",
+	"antigravity",
 ] as const;
 
 export type EditorId = (typeof EDITOR_IDS)[number];
