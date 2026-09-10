@@ -26,7 +26,7 @@ Non-trivial work? Comment on the issue or ping Discord first. Get a thumbs-up, t
 
 1. **Join Discord** — say hi and get guidance
 2. **Read the contract** — [AGENTS.md](AGENTS.md) (layout, commands, hard rules, PR hygiene)
-3. **Pick something focused** — [open issues](https://github.com/AgentWrapper/agent-orchestrator/issues); prefer `good-first-issue` / `help wanted`
+3. **Pick something focused** — [open issues](https://github.com/Untrivial-ai/agent-orchestrator/issues); prefer `good-first-issue` / `help wanted`
 4. **Claim it** — comment `I'd like to work on this` and wait for assignment
 5. **Open a clear PR** — narrow change, link the issue, user-visible impact, tests
 6. **Iterate** — address review; maintainers merge
@@ -62,6 +62,14 @@ Review the draft and attachments before submitting. A clear observation is usefu
 
 New PRs are prefilled from [`.github/pull_request_template.md`](.github/pull_request_template.md).
 Also follow **PR hygiene** in [AGENTS.md](AGENTS.md): branch from `main`, one issue per PR, conventional commits, explain intentional omissions, and keep CI green for the area you touched.
+
+Fork contributors should keep their fork as `origin` and add this repository as
+`upstream`. Create contribution branches from `upstream/main`, push those
+branches to `origin`, and open pull requests into
+`Untrivial-ai/agent-orchestrator:main`. Your fork's `main` may contain personal
+changes, but do not base a contribution on it unless every commit belongs in
+the pull request. See the [development guide](docs/development.md#getting-the-code)
+for the complete command sequence.
 
 ## Code of Conduct
 
