@@ -1039,6 +1039,8 @@
 	"settings.theme.dark": "Escuro",
 	"settings.theme.light": "Claro",
 	"settings.theme.system": "Sistema",
+	"settings.theme.automatic": "Automático (Omarchy)",
+	"settings.theme.automaticDescription": "Automático segue o Omarchy com a aparência Sistema; caso contrário, usa o Orchestrate.",
 	"settings.title": "Configurações",
 	"update.restart.title": "Reiniciar para atualizar",
 	"update.restart.whatsNew": "O que mudou",

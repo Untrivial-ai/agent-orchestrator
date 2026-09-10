@@ -1004,6 +1004,8 @@
 	"settings.theme.dark": "深色",
 	"settings.theme.light": "浅色",
 	"settings.theme.system": "跟随系统",
+	"settings.theme.automatic": "自动 (Omarchy)",
+	"settings.theme.automaticDescription": "选择系统外观时，自动跟随 Omarchy；否则使用 Orchestrate。",
 	"settings.title": "设置",
 	"update.restart.title": "重启以更新",
 	"update.restart.whatsNew": "更新内容",

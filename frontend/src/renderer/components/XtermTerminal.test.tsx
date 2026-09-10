@@ -453,6 +453,35 @@ describe("XtermTerminal", () => {
 		}
 	});
 
+	it("refreshes inherited terminal colors and explicit Dark without recreating the terminal", () => {
+		const style = document.createElement("style");
+		style.textContent = ":root { --color-bg-terminal-opaque: #101317; --color-text-terminal: #d7d7d2; }";
+		document.head.appendChild(style);
+		localStorage.setItem("ao.theme", "system");
+		localStorage.setItem("ao.theme-style", "automatic");
+		useUiStore.setState({ themeStyle: "automatic", themePreference: "system" });
+		const palette = { background: "#1d150f", foreground: "#e3ddd0", accent: "#d4b24a", cursor: "#f2ede2", selection: "#4d3e23", ansi: Array(16).fill("#f25107") };
+		try {
+			useUiStore.getState().updateOmarchy(palette);
+			render(<XtermTerminal theme="dark" />);
+			const terminal = state.lastTerminal!;
+			expect(terminal.options.theme).toMatchObject({ background: palette.background, red: "#f25107" });
+			act(() => useUiStore.getState().updateOmarchy({ ...palette, ansi: Array(16).fill("#123456") }));
+			expect(terminal.options.theme).toMatchObject({ red: "#123456" });
+			act(() => useUiStore.getState().setThemePreference("dark"));
+			expect(terminal.options.theme).toMatchObject({ background: "#101317" });
+			expect(state.lastTerminal).toBe(terminal);
+		} finally {
+			style.remove();
+			localStorage.removeItem("ao.theme");
+			localStorage.removeItem("ao.theme-style");
+			act(() => {
+				useUiStore.getState().updateOmarchy(null);
+				useUiStore.setState({ themeStyle: "orchestrate", themePreference: "system" });
+			});
+		}
+	});
+
 	it("uses the terminal foreground for the light-mode block cursor", () => {
 		const style = document.createElement("style");
 		style.textContent = `

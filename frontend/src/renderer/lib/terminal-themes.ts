@@ -19,11 +19,13 @@ export function buildTerminalThemes(): { dark: ITheme; light: ITheme } {
 	// Collapse ANSI black into the plate. Agent TUIs (Cursor's prompt bar) fill
 	// rows with "black"; leaving the slot as a true dark color paints a black
 	// stripe on the light canvas. Same approach as packages/mobile/lib/theme.ts.
-	const ansiBlack = terminalBg;
+	const omarchy = typeof document !== "undefined" && document.documentElement.dataset.styleTheme === "automatic";
+	const ansiBlack = omarchy ? cssVar("--color-term-black") : terminalBg;
 	const dark: ITheme = {
 		background: terminalBg,
-		foreground: terminalForeground,
-		cursor: terminalCursor,
+		foreground: omarchy ? cssVar("--color-text-terminal") : terminalForeground,
+		selectionForeground: omarchy ? cssVar("--color-term-selection-foreground") : undefined,
+		cursor: omarchy ? cssVar("--color-term-cursor") : terminalCursor,
 		cursorAccent: terminalBg,
 		selectionBackground: cssVar("--color-term-selection-dark"),
 		selectionInactiveBackground: cssVar("--color-term-selection-inactive"),
@@ -47,12 +49,13 @@ export function buildTerminalThemes(): { dark: ITheme; light: ITheme } {
 
 	const light: ITheme = {
 		background: terminalBg,
-		foreground: terminalForeground,
+		foreground: omarchy ? cssVar("--color-text-terminal") : terminalForeground,
+		selectionForeground: omarchy ? cssVar("--color-term-selection-foreground") : undefined,
 		// xterm block cursor fills with `cursor` and paints cell text in
 		// `cursorAccent`. --color-working is fine on dark plates but reads as a
 		// low-contrast wash on the light terminal bg (#f5f5f4), especially while
 		// blinking. Use the terminal foreground so the block stays visible.
-		cursor: terminalForeground,
+		cursor: omarchy ? cssVar("--color-term-cursor") : terminalForeground,
 		cursorAccent: terminalBg,
 		selectionBackground: cssVar("--color-term-selection-light"),
 		selectionInactiveBackground: cssVar("--color-term-selection-inactive-light"),

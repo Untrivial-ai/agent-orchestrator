@@ -129,6 +129,7 @@ export function SettingsOptionMenu<T extends string>({
 								onSelect={() => onChange(option.value)}
 								className={cn(
 									SETTINGS_MENU_ITEM,
+									"text-settings-title",
 									option.value === value && "border-settings-menu bg-settings-menu-selected text-settings-title",
 									menuItemClassName,
 								)}

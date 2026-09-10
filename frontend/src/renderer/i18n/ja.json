@@ -1020,6 +1020,8 @@
 	"settings.theme.dark": "ダーク",
 	"settings.theme.light": "ライト",
 	"settings.theme.system": "システム",
+	"settings.theme.automatic": "自動 (Omarchy)",
+	"settings.theme.automaticDescription": "外観が「システム」の場合、自動は Omarchy に従います。それ以外は Orchestrate を使用します。",
 	"settings.title": "設定",
 	"update.restart.title": "再起動して更新",
 	"update.restart.whatsNew": "変更内容",

@@ -318,6 +318,8 @@ function configureScrollbarReservation(term: Terminal): void {
 export function XtermTerminal(props: XtermTerminalProps) {
 	const { t } = useTranslation();
 	const themeStyle = useUiStore((state) => state.themeStyle);
+	const omarchyRevision = useUiStore((state) => state.omarchyRevision);
+	const themePreference = useUiStore((state) => state.themePreference);
 	const macPlatform = isMacPlatform();
 	const shellRef = useRef<HTMLDivElement | null>(null);
 	const hostRef = useRef<HTMLDivElement | null>(null);
@@ -431,7 +433,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		const { dark, light } = buildTerminalThemes();
 		term.options.theme = props.theme === "dark" ? dark : light;
 		colorSchemeReporterRef.current?.(props.theme, themeStyle);
-	}, [props.theme, themeStyle]);
+	}, [props.theme, themeStyle, themePreference, omarchyRevision]);
 
 	useEffect(() => {
 		if (!termRef.current || !props.supportsCursorColorScheme) return;

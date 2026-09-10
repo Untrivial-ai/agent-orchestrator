@@ -1020,6 +1020,8 @@
 	"settings.theme.dark": "다크",
 	"settings.theme.light": "라이트",
 	"settings.theme.system": "시스템",
+	"settings.theme.automatic": "자동 (Omarchy)",
+	"settings.theme.automaticDescription": "시스템 모양에서는 Omarchy를 자동으로 따르며, 그 외에는 Orchestrate를 사용합니다.",
 	"settings.title": "설정",
 	"update.restart.title": "다시 시작하여 업데이트",
 	"update.restart.whatsNew": "변경 사항",

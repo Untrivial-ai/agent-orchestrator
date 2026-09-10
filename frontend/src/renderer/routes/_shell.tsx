@@ -1,3 +1,4 @@
+import { isOmarchyActive } from "../lib/theme";
 import { createFileRoute, Outlet, useMatchRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { isCancelledError, useQueryClient } from "@tanstack/react-query";
 import { memo, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -176,6 +177,7 @@ function ShellLayout() {
 	const themePreference = useUiStore((state) => state.themePreference);
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
 	const themeStyle = useUiStore((state) => state.themeStyle);
+	const omarchyRevision = useUiStore((state) => state.omarchyRevision);
 	const isSidebarOpen = useUiStore(sidebarIsVisible);
 	const toggleSidebar = useUiStore((state) => state.toggleSidebar);
 	const sidebarHasLayout = useUiStore(sidebarOccupiesLayout);
@@ -743,11 +745,31 @@ function ShellLayout() {
 
 	// Keep Electron's nativeTheme in step with the shell so the embedded preview
 	// WebContentsView (which follows prefers-color-scheme) flips at the same time.
-	// Send the preference, not the resolved theme, so "system" keeps both surfaces
-	// following the OS instead of freezing matchMedia to a forced value.
+	// Omarchy supplies its palette brightness; otherwise System follows the OS.
 	useEffect(() => {
-		void aoBridge.theme?.set(themePreference);
-	}, [themePreference]);
+		void aoBridge.theme?.set(isOmarchyActive() ? resolvedTheme : themePreference);
+	}, [themePreference, resolvedTheme, themeStyle, omarchyRevision]);
+
+	useEffect(() => {
+		let stopped = false;
+		let timer: ReturnType<typeof setTimeout>;
+		let previous: string | undefined;
+		const refresh = async () => {
+			const palette = await aoBridge.theme?.getOmarchy?.().catch(() => null) ?? null;
+			if (stopped) return;
+			const next = JSON.stringify(palette);
+			if (next !== previous) {
+				previous = next;
+				useUiStore.getState().updateOmarchy(palette);
+			}
+			timer = setTimeout(refresh, 2000);
+		};
+		void refresh();
+		return () => {
+			stopped = true;
+			clearTimeout(timer);
+		};
+	}, []);
 
 	// Cursor Agent reads TERM_THEME at spawn from this file. Persist the same
 	// resolved light/dark scheme the terminal uses, not nativeTheme alone.
