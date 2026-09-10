@@ -4562,7 +4562,10 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	z-index: 3;
 	width: 23px;
 	height: 23px;
+	border-radius: var(--radius-sm);
 	color: var(--fg-muted);
+	background: var(--surface);
+	box-shadow: 0 1px 4px color-mix(in srgb, black 18%, transparent);
 	opacity: 0;
 	pointer-events: none;
 }
