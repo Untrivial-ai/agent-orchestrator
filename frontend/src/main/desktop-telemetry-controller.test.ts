@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { TelemetryPolicySnapshot } from "../shared/telemetry-policy";
+import { DaemonTelemetryPolicyClient } from "./daemon-telemetry-policy-client";
 import { DesktopTelemetryController } from "./desktop-telemetry-controller";
 import { nodeTelemetryPolicyFileSystem, TelemetryPolicyAuthority } from "./telemetry-policy-file";
 
@@ -198,6 +199,55 @@ describe("DesktopTelemetryController", () => {
 		expect(daemonEnabled).toBe(false);
 		expect(controller.snapshot()).toMatchObject({ eventsEnabled: false, consentGeneration: "generation-2", acknowledged: true, state: "applied" });
 	});
+
+	it("settles a saved opt-in in one request when the release gate refuses enablement", async () => {
+		// #5196: with reporting enabled on disk and the production gate closed,
+		// the daemon returns 200/eventsEnabled:false. That must settle as applied
+		// + release_blocked, not cleanup_pending, or main.ts's 1s timer retries
+		// forever.
+		const authority = new AuthorityFake(true, "generation-on");
+		// The real client, not a fake: the defect lived in its acknowledgement
+		// validation, so a hand-rolled stub here would pass no matter what.
+		const fetcher = vi.fn().mockImplementation(async (_url: string, init: RequestInit) => new Response(JSON.stringify({
+			status: "applied",
+			consentGeneration: JSON.parse(String(init.body)).consentGeneration,
+			eventsEnabled: false, gateDrained: true, purgeConfirmed: true,
+		}), { status: 200 }));
+		const daemon = new DaemonTelemetryPolicyClient(() => "http://127.0.0.1:3001", fetcher);
+		const applyPolicy = fetcher;
+		const controller = new DesktopTelemetryController({
+			authority, daemon,
+			transportFactory: async () => ({ closeAndDrain: async () => {}, capture: () => {}, clearCache: async () => {} }),
+			environmentAllowsEvents: true, productionEnabled: false,
+		});
+
+		await controller.initialize();
+		expect(controller.snapshot()).toMatchObject({ state: "applied", reason: "release_blocked", eventsEnabled: true, acknowledged: true });
+		expect(applyPolicy).toHaveBeenCalledTimes(1);
+
+		// The timer's guard: an applied view is never retried. Drive the retry
+		// entry point 60 times anyway and prove it issues no further requests.
+		for (let i = 0; i < 60; i += 1) await controller.retryPendingCleanup();
+		expect(applyPolicy).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps refusing an acknowledgement whose generation does not match", async () => {
+		// The generation guard must survive the #5196 relaxation.
+		const authority = new AuthorityFake(true, "generation-on");
+		const daemon = {
+			prepareDisable: vi.fn(),
+			applyPolicy: vi.fn().mockResolvedValue({ status: "applied", consentGeneration: "some-other-generation", eventsEnabled: false, gateDrained: true, purgeConfirmed: true }),
+		};
+		const controller = new DesktopTelemetryController({
+			authority, daemon,
+			transportFactory: async () => ({ closeAndDrain: async () => {}, capture: () => {}, clearCache: async () => {} }),
+			environmentAllowsEvents: true, productionEnabled: false,
+		});
+
+		await controller.initialize();
+		expect(controller.snapshot()).toMatchObject({ state: "cleanup_pending", reason: "daemon_cleanup_pending", acknowledged: false });
+	});
+
 });
 
 class AuthorityFake {
