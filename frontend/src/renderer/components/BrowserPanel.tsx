@@ -9,7 +9,6 @@ import {
 	type FocusEvent,
 	type FormEvent,
 } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
 	DndContext,
@@ -40,9 +39,9 @@ import {
 	ExternalLink,
 	Globe2,
 	RotateCcw,
-	Maximize2,
-	Minimize2,
 	Monitor,
+	PanelRightClose,
+	PanelRightOpen,
 	MoreVertical,
 	MousePointer2,
 	Plus,
@@ -406,15 +405,6 @@ export function BrowserPanelView({
 		showRightFade: showTabsRightFade,
 	} = useTabScrollEdges([tabs.length]);
 	const previousTabCountRef = useRef(tabs.length);
-	const [browserChromeTarget, setBrowserChromeTarget] = useState<HTMLElement | null>(null);
-
-	useEffect(() => {
-		if (poppedOut) {
-			setBrowserChromeTarget(null);
-			return;
-		}
-		setBrowserChromeTarget(document.querySelector<HTMLElement>("[data-browser-chrome-target='true']"));
-	}, [poppedOut]);
 
 	// Vertical wheel scrolls the horizontal tab strip when it overflows — same
 	// affordance as the session terminal tabs (CenterPane.tsx).
@@ -794,7 +784,7 @@ export function BrowserPanelView({
 							type="button"
 							variant="ghost"
 						>
-							{poppedOut ? <Minimize2 aria-hidden="true" className="size-icon-base" /> : <Maximize2 aria-hidden="true" className="size-icon-base" />}
+							{poppedOut ? <PanelRightClose aria-hidden="true" className="size-icon-base" /> : <PanelRightOpen aria-hidden="true" className="size-icon-base" />}
 						</Button>
 					</TooltipTrigger>
 					<TooltipContent data-browser-native-overlay="true" side="bottom">
@@ -828,7 +818,7 @@ export function BrowserPanelView({
 			ref={panelRef}
 			role="tabpanel"
 		>
-			{browserChromeTarget ? createPortal(browserTabBar, browserChromeTarget) : browserTabBar}
+			{browserTabBar}
 			<form
 				className="browser-panel__toolbar flex shrink-0 min-w-0 items-center gap-1 bg-background"
 				data-testid="browser-toolbar"

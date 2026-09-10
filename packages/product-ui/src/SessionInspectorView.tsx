@@ -110,10 +110,7 @@ export function SessionInspectorShellView({
 			<div className="session-inspector__topbar flex h-inspector-tabs shrink-0 items-center border-b border-border pl-1">
 				{isVisible ? (
 					<div
-						className={cn(
-							"session-inspector__tablist flex min-w-0 flex-1 items-center justify-start gap-1",
-							activeView === "browser" && "session-inspector__tablist--browser",
-						)}
+						className="session-inspector__tablist flex min-w-0 flex-1 items-center justify-start gap-1"
 						role="tablist"
 					>
 						{tabs.map((tab, index) => (
@@ -160,9 +157,6 @@ export function SessionInspectorShellView({
 							</button>
 						))}
 					</div>
-				) : null}
-				{activeView === "browser" && !browserPoppedOut ? (
-					<div className="session-inspector__browser-chrome" data-browser-chrome-target="true" />
 				) : null}
 				{isVisible ? headerActions : null}
 			</div>

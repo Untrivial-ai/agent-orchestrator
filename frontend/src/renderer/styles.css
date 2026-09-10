@@ -3393,28 +3393,6 @@ html.sidebar-reordering * {
 	text-overflow: ellipsis;
 }
 
-/* Browser tabs share the inspector topbar with the view buttons. The tablist
-   keeps only the icon-sized controls; the browser strip owns the remaining
-   width and can place its controls beside the shell actions. */
-.session-inspector__tablist--browser {
-	flex: 0 0 auto !important;
-}
-
-.session-inspector__browser-chrome {
-	display: flex;
-	min-width: 0;
-	height: 100%;
-	flex: 1 1 auto;
-}
-
-.session-inspector__browser-chrome .browser-panel__tab-bar {
-	height: 100%;
-	min-width: 0;
-	flex: 1 1 auto;
-	padding: 0 calc(var(--size-control-md) + var(--space-1)) 0 4px;
-	background: transparent;
-}
-
 .session-inspector__body {
 	flex: 1;
 	min-height: 0;
