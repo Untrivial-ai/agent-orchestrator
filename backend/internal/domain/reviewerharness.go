@@ -76,3 +76,61 @@ func (h ReviewerHarness) IsKnown() bool {
 	}
 	return false
 }
+
+// Label returns the human-readable display name for this reviewer harness.
+func (h ReviewerHarness) Label() string {
+	switch h {
+	case ReviewerClaudeCode:
+		return "Claude Code"
+	case ReviewerCodex:
+		return "Codex"
+	case ReviewerCopilot:
+		return "GitHub Copilot"
+	case ReviewerCursor:
+		return "Cursor"
+	case ReviewerKiloCode:
+		return "Kilo Code"
+	case ReviewerKimchi:
+		return "Kimchi"
+	case ReviewerOpenCode:
+		return "OpenCode"
+	case ReviewerKiro:
+		return "Kiro"
+	case ReviewerPi:
+		return "Pi"
+	case ReviewerQwen:
+		return "Qwen"
+	case ReviewerAgy:
+		return "AGY"
+	case ReviewerContinue:
+		return "Continue"
+	case ReviewerGoose:
+		return "Goose"
+	case ReviewerVibe:
+		return "Vibe"
+	case ReviewerDevin:
+		return "Devin"
+	case ReviewerDroid:
+		return "Droid"
+	case ReviewerKimi:
+		return "Kimi"
+	case ReviewerMuse:
+		return "Muse"
+	case ReviewerAmp:
+		return "Amp"
+	case ReviewerAider:
+		return "Aider"
+	case ReviewerGrok:
+		return "Grok"
+	case ReviewerCrush:
+		return "Crush"
+	case ReviewerAuggie:
+		return "Auggie"
+	case ReviewerCline:
+		return "Cline"
+	case ReviewerAutohand:
+		return "Autohand"
+	default:
+		return string(h)
+	}
+}

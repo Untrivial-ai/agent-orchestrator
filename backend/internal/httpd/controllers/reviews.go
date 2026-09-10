@@ -95,6 +95,7 @@ type ReviewsController struct {
 
 // Register mounts the review routes on the supplied router.
 func (c *ReviewsController) Register(r chi.Router) {
+	r.Get("/reviewers", c.listReviewers)
 	r.Post("/reviews/{reviewSessionID}/activity", c.activity)
 	r.Get("/sessions/{sessionId}/reviews", c.list)
 	r.Post("/sessions/{sessionId}/reviews/trigger", c.trigger)
@@ -105,6 +106,23 @@ func (c *ReviewsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/reviews/restore", c.restore)
 	r.Post("/sessions/{sessionId}/reviews/switch", c.switchReviewer)
 	r.Post("/sessions/{sessionId}/reviews/submit", c.submit)
+}
+
+func (c *ReviewsController) listReviewers(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, http.MethodGet, "/api/v1/reviewers")
+		return
+	}
+	items := make([]ReviewerHarnessInfo, 0, len(domain.AllReviewerHarnesses))
+	for _, h := range domain.AllReviewerHarnesses {
+		items = append(items, ReviewerHarnessInfo{
+			ID:    h,
+			Label: h.Label(),
+		})
+	}
+	envelope.WriteJSON(w, http.StatusOK, ListReviewersResponse{
+		Reviewers: items,
+	})
 }
 
 func (c *ReviewsController) activity(w http.ResponseWriter, r *http.Request) {

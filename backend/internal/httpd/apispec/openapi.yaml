@@ -2530,6 +2530,25 @@ paths:
       summary: Unpair this phone from the daemon, removing it from the roster
       tags:
       - push
+  /api/v1/reviewers:
+    get:
+      operationId: listReviewers
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListReviewersResponse'
+          description: OK
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List supported code-reviewer harnesses
+      tags:
+      - reviews
   /api/v1/reviews/{reviewSessionID}/activity:
     post:
       operationId: setReviewActivity
@@ -9577,6 +9596,15 @@ components:
       required:
       - projects
       type: object
+    ListReviewersResponse:
+      properties:
+        reviewers:
+          items:
+            $ref: '#/components/schemas/ReviewerHarnessInfo'
+          type: array
+      required:
+      - reviewers
+      type: object
     ListReviewsResponse:
       properties:
         reviewerHandleId:
@@ -10524,6 +10552,42 @@ components:
       - review
       - reviews
       - reviewerHandleId
+      type: object
+    ReviewerHarnessInfo:
+      properties:
+        id:
+          enum:
+          - claude-code
+          - codex
+          - copilot
+          - cursor
+          - kilocode
+          - opencode
+          - kiro
+          - pi
+          - qwen
+          - agy
+          - continue
+          - goose
+          - vibe
+          - devin
+          - droid
+          - kimi
+          - kimchi
+          - muse
+          - amp
+          - aider
+          - grok
+          - crush
+          - auggie
+          - cline
+          - autohand
+          type: string
+        label:
+          type: string
+      required:
+      - id
+      - label
       type: object
     RoleOverride:
       properties:

@@ -382,6 +382,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersResolveCommentsRequest":  "ResolveCommentsRequest",
 	"ControllersResolveCommentsResponse": "ResolveCommentsResponse",
 	// httpd/controllers — review wire envelopes
+	"ControllersListReviewersResponse": "ListReviewersResponse",
+	"ControllersReviewerHarnessInfo":   "ReviewerHarnessInfo",
 	"ControllersListReviewsResponse":   "ListReviewsResponse",
 	"ControllersReviewRunResponse":     "ReviewRunResponse",
 	"ControllersTriggerReviewResponse": "TriggerReviewResponse",
@@ -1559,6 +1561,14 @@ func pushOperations() []operation {
 
 func reviewOperations() []operation {
 	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/reviewers", id: "listReviewers", tag: "reviews",
+			summary: "List supported code-reviewer harnesses",
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListReviewersResponse{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
 		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/reviews", id: "listReviews", tag: "reviews",
 			summary:    "List a worker's code-review runs",

@@ -1082,6 +1082,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reviewers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List supported code-reviewer harnesses */
+        get: operations["listReviewers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/reviews/{reviewSessionID}/activity": {
         parameters: {
             query?: never;
@@ -3405,6 +3422,9 @@ export interface components {
         ListProjectsResponse: {
             projects: components["schemas"]["ProjectSummary"][];
         };
+        ListReviewersResponse: {
+            reviewers: components["schemas"]["ReviewerHarnessInfo"][];
+        };
         ListReviewsResponse: {
             reviewerHandleId: string;
             reviewerHarness?: string;
@@ -3773,6 +3793,11 @@ export interface components {
             review: components["schemas"]["ReviewRun"];
             reviewerHandleId: string;
             reviews: components["schemas"]["ReviewRun"][];
+        };
+        ReviewerHarnessInfo: {
+            /** @enum {string} */
+            id: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "kiro" | "pi" | "qwen" | "agy" | "continue" | "goose" | "vibe" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
+            label: string;
         };
         RoleOverride: {
             agent?: string;
@@ -7718,6 +7743,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listReviewers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListReviewersResponse"];
                 };
             };
             /** @description Not Implemented */
