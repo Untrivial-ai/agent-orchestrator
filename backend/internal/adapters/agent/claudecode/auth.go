@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -370,4 +371,47 @@ func ParseAuthReport(out []byte) (AuthReport, bool) {
 		AuthMethod:       strings.TrimSpace(report.AuthMethod),
 		SubscriptionType: strings.TrimSpace(report.SubscriptionType),
 	}, true
+}
+
+// ProviderModels returns the Claude model IDs the configured provider actually
+// serves, in that provider's own ID format.
+//
+// It reuses the credential probe rather than adding a second network call: the
+// response that proves a credential works is the same response that lists what
+// that credential may use. Those two facts are inseparable — an account's model
+// list is scoped to its entitlement — so discovering them together is both
+// cheaper and more correct than asking twice.
+//
+// An error means the provider could not be asked. Callers must fall back to
+// their static list rather than presenting an empty picker.
+func ProviderModels(ctx context.Context, env map[string]string) ([]string, error) {
+	opts := agentcreds.ResolveOptions{AllowKeychain: true}
+	if len(env) > 0 {
+		// Prefer the session's own environment so a project-scoped provider or
+		// key is reflected, falling back to the daemon's for anything unset.
+		opts.Env = func(name string) string {
+			if value, ok := env[name]; ok {
+				return value
+			}
+			return os.Getenv(name)
+		}
+	}
+
+	// The reported provider is unavailable here without running the CLI, so
+	// resolution falls back to the environment gate. That is safe: it either
+	// identifies a provider or declines, and never guesses a host.
+	probeCtx, cancel := context.WithTimeout(ctx, agentcreds.DefaultTimeout)
+	defer cancel()
+	result := claudeValidator().ValidateLocal(probeCtx, "", opts)
+	if result.State != agentcreds.StateValid {
+		return nil, fmt.Errorf("claude-code: model discovery: %s", result.Detail)
+	}
+	if len(result.Models) == 0 {
+		return nil, errors.New("claude-code: provider reported no Claude models")
+	}
+
+	// The probe already proved this credential works, so record the verdict
+	// instead of discarding it — discovery and validation refresh each other.
+	claudeAuthCache.Put(claudeAgentID, result)
+	return result.Models, nil
 }

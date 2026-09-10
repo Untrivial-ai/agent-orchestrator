@@ -135,6 +135,7 @@ func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 type Discoverer struct {
 	CodexModels  CodexModelListFunc
 	ClineOptions ClineConfigOptionListFunc
+	ClaudeModels ClaudeModelListFunc
 }
 
 // CodexModelListFunc obtains Codex's account-scoped app-server catalog without
@@ -145,10 +146,16 @@ type CodexModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) 
 // the ACP configuration catalog advertised by session/new.
 type ClineConfigOptionListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error)
 
+// ClaudeModelListFunc obtains the Claude model IDs the configured provider
+// actually serves, in that provider's own ID format. It returns an error
+// whenever the provider could not be asked; discovery then falls back to the
+// static alias list rather than emptying the picker.
+type ClaudeModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]string, error)
+
 // Discover uses the agent-owned model surface configured for this adapter.
 func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
 	if request.AgentID == "claude-code" {
-		return discoverClaudeCatalog(request), nil
+		return discoverClaudeCatalog(ctx, request, d.ClaudeModels), nil
 	}
 	if request.AgentID == "muse" {
 		return Base(request.AgentID), nil
@@ -180,16 +187,121 @@ func claudeCodeModels() []ports.AgentModelInfo {
 	}
 }
 
-// discoverClaudeCatalog returns the static Claude Code catalog, marking the row
-// matching the project/user configured model as default. The list is static, so
-// discovery never fails and never launches the Agent SDK or an interactive
-// Claude client.
-func discoverClaudeCatalog(request ports.AgentModelDiscoveryRequest) ports.AgentModelCatalog {
+// discoverClaudeCatalog builds the Claude Code catalog, preferring the model
+// list the provider itself reports and falling back to the static aliases.
+//
+// The fallback is not a formality. The static list is the set of aliases the
+// first-party API accepts — sonnet, opus, haiku — and those are wrong on every
+// other provider: Bedrock spells the same model anthropic.claude-…-v1:0 with a
+// region prefix, Vertex claude-opus-4-5@20251101. No string rule maps between
+// the three, so the only way to offer correct IDs is to ask the provider that
+// will serve them, which is exactly what the credential probe already does.
+//
+// Discovery must never fail: an unreachable provider, a chain-sourced
+// credential, or an account with no entitlement all fall back to the static
+// list, which is what shipped before. A model picker that empties itself
+// because the network blipped is worse than one showing slightly stale
+// aliases.
+func discoverClaudeCatalog(
+	ctx context.Context,
+	request ports.AgentModelDiscoveryRequest,
+	list ClaudeModelListFunc,
+) ports.AgentModelCatalog {
 	base := Base(request.AgentID)
-	base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
 	base.Source = "catalog"
 	base.FetchedAt = time.Now().UTC()
+
+	if list != nil {
+		if models, err := list(ctx, request); err == nil && len(models) > 0 {
+			normalized := normalizeClaudeProviderModels(models)
+			if len(normalized) > 0 {
+				base.Models = applyClaudeConfiguredDefault(
+					normalize(normalized), request.WorkingDir, request.Env)
+				base.Source = "provider"
+				return base
+			}
+		}
+	}
+
+	base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), request.WorkingDir, request.Env)
 	return base
+}
+
+// normalizeClaudeProviderModels turns provider model IDs into picker rows.
+func normalizeClaudeProviderModels(ids []string) []ports.AgentModelInfo {
+	models := make([]ports.AgentModelInfo, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		models = append(models, ports.AgentModelInfo{ID: id, Label: claudeModelLabel(id)})
+	}
+	return models
+}
+
+// claudeModelLabel turns a provider model ID into something readable without
+// pretending to understand it. Every provider spells these differently, so the
+// rule is deliberately shallow: strip the vendor and version decoration each
+// one adds, title-case the family, and fall back to the raw ID whenever the
+// shape is unfamiliar. Showing an unmodified ID is always acceptable; showing
+// a wrong friendly name is not.
+func claudeModelLabel(id string) string {
+	trimmed := id
+	// Bedrock: [region.]anthropic.claude-opus-4-5-v1:0
+	if index := strings.Index(trimmed, "anthropic."); index >= 0 {
+		trimmed = trimmed[index+len("anthropic."):]
+	}
+	if index := strings.Index(trimmed, ":"); index >= 0 {
+		trimmed = trimmed[:index]
+	}
+	trimmed = strings.TrimSuffix(trimmed, "-v1")
+	// Vertex: claude-opus-4-5@20251101; first-party: claude-opus-4-5-20251101
+	if index := strings.Index(trimmed, "@"); index >= 0 {
+		trimmed = trimmed[:index]
+	}
+	if !strings.HasPrefix(trimmed, "claude-") {
+		return id
+	}
+	parts := strings.Split(strings.TrimPrefix(trimmed, "claude-"), "-")
+	if len(parts) == 0 || parts[0] == "" {
+		return id
+	}
+	family := parts[0]
+	label := strings.ToUpper(family[:1]) + family[1:]
+	version := make([]string, 0, 2)
+	for _, part := range parts[1:] {
+		// Stop at a date stamp; the family plus version is the useful part.
+		if len(part) >= 8 && isAllDigits(part) {
+			break
+		}
+		if isAllDigits(part) {
+			version = append(version, part)
+			continue
+		}
+		break
+	}
+	if len(version) > 0 {
+		label += " " + strings.Join(version, ".")
+	}
+	return label
+}
+
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func applyClaudeConfiguredDefault(models []ports.AgentModelInfo, workingDir string, env map[string]string) []ports.AgentModelInfo {
@@ -225,7 +337,10 @@ func (Discoverer) Manual(agentID string) ports.AgentModelCatalog { return Manual
 func Discover(ctx context.Context, agentID, binary, workingDir string, env map[string]string) (ports.AgentModelCatalog, error) {
 	base := Base(agentID)
 	if agentID == "claude-code" {
-		return discoverClaudeCatalog(ports.AgentModelDiscoveryRequest{AgentID: agentID, WorkingDir: workingDir, Env: env}), nil
+		// This package-level entry point has no injected provider lister, so it
+		// yields the static aliases. Daemon wiring uses Discoverer, which does.
+		return discoverClaudeCatalog(
+			ctx, ports.AgentModelDiscoveryRequest{AgentID: agentID, WorkingDir: workingDir, Env: env}, nil), nil
 	}
 	if agentID == "muse" {
 		return base, nil
