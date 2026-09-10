@@ -3,7 +3,6 @@ package shellterm
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -1616,41 +1615,68 @@ func TestNextShellTerminalTitleKeepsExistingNumbersStable(t *testing.T) {
 }
 
 func TestDesktopRelaunchPreservesUserShells(t *testing.T) {
-	for _, probeError := range []bool{false, true} {
-		t.Run(fmt.Sprint(probeError), func(t *testing.T) {
+	for _, tc := range []struct {
+		name, nextRun string
+		probeErr      error
+	}{
+		{name: "daemon restart", nextRun: testAppRunID},
+		{name: "desktop relaunch", nextRun: "next-launch"},
+		{name: "unknown runtime", nextRun: "next-launch", probeErr: ports.ErrRuntimeProbeInconclusive},
+		{name: "unavailable runtime", nextRun: "next-launch", probeErr: ports.ErrRuntimeUnavailable},
+		{name: "failed probe", nextRun: "next-launch", probeErr: errors.New("temporarily unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
 			rt := newFakeShellRuntime()
-			st := &fakeShellTerminalStore{records: []ShellTerminalRecord{
-				{HandleID: "shellterm-side", SessionID: "session-1", ProjectID: "project-1", WorkingDir: "/worktree", Title: "Build", AppRunID: "previous"},
-				{HandleID: "shellterm-standalone", WorkingDir: "/project", Title: "Server", AppRunID: "previous"},
+			rt.handlePrefix = "ptyhost-v1:"
+			st := &fakeShellTerminalStore{}
+			projects := &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"project-1": "/project"}}
+			sessions := &fakeSessionWorkspaceLocator{sessions: map[domain.SessionID]fakeSessionWorkspace{
+				"session-1": {workspacePath: "/worktree", projectID: "project-1"},
 			}}
-			want := []ShellTerminal{shellTerminalFromRecord(st.records[0]), shellTerminalFromRecord(st.records[1])}
-			for _, rec := range st.records {
-				rt.aliveByHandle[rec.HandleID] = true
+			svc := newTestServiceWithSessions(rt, st, projects, sessions)
+			side, err := svc.OpenShellTerminal(ctx, OpenShellTerminalInput{SessionID: "session-1"})
+			if err != nil {
+				t.Fatal(err)
 			}
-			if probeError {
-				rt.aliveErr = errors.New("temporarily unavailable")
+			standalone, err := svc.OpenShellTerminal(ctx, OpenShellTerminalInput{ProjectID: "project-1"})
+			if err != nil {
+				t.Fatal(err)
 			}
-			svc := newTestService(rt, st, &fakeProjectRootLocator{})
-			if n, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil || n != 0 {
+			side, err = svc.RenameShellTerminal(ctx, side.HandleID, "Build")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []ShellTerminal{side, standalone}
+
+			// Recreate the service just as boot does. The runtime and durable rows
+			// belong to the shells, not to this service or desktop launch.
+			svc = NewService(rt, st, projects, sessions, "/data/dir", tc.nextRun, testLogger())
+			rt.aliveErr = tc.probeErr // The fake returns false alongside probe errors.
+			if n, err := svc.ReapShellTerminalsFromPreviousAppRuns(ctx); err != nil || n != 0 {
 				t.Fatalf("reap = %d, %v", n, err)
 			}
-			got, err := svc.ListShellTerminalsForCurrentAppRun(context.Background())
+			got, err := svc.ListShellTerminalsForCurrentAppRun(ctx)
 			if err != nil || !reflect.DeepEqual(got, want) {
 				t.Fatalf("restored = %+v, %v; want %+v", got, err, want)
 			}
 			if len(rt.destroyed) != 0 {
 				t.Fatalf("destroyed user shells: %v", rt.destroyed)
 			}
-			if err := svc.CloseShellTerminal(context.Background(), "shellterm-standalone"); err != nil {
+			next, err := svc.OpenShellTerminal(ctx, OpenShellTerminalInput{SessionID: "session-1"})
+			if err != nil || next.Title != "Terminal 3" {
+				t.Fatalf("next terminal = %+v, %v; want Terminal 3", next, err)
+			}
+			if err := svc.CloseShellTerminal(ctx, standalone.HandleID); err != nil {
 				t.Fatal(err)
 			}
-			release, err := svc.BeginSessionTeardown(context.Background(), "session-1")
+			release, err := svc.BeginSessionTeardown(ctx, "session-1")
 			if err != nil {
 				t.Fatal(err)
 			}
 			release()
-			if len(st.records) != 0 {
-				t.Fatalf("cleanup left rows: %+v", st.records)
+			if len(st.records) != 0 || len(rt.aliveByHandle) != 0 {
+				t.Fatalf("cleanup left rows: %+v, runtimes: %v", st.records, rt.aliveByHandle)
 			}
 		})
 	}
