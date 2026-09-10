@@ -63,6 +63,17 @@ type Store interface {
 
 	// Project validation (read-only)
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
+
+	// AgentRole (Phase 2.4)
+	CreateAgentRole(ctx context.Context, r domain.AgentRole) error
+	GetAgentRole(ctx context.Context, id domain.AgentRoleID) (domain.AgentRole, bool, error)
+	ListAgentRoles(ctx context.Context) ([]domain.AgentRole, error)
+	UpdateAgentRole(ctx context.Context, r domain.AgentRole) error
+	SetAgentRoleEnabled(ctx context.Context, id domain.AgentRoleID, enabled bool, updatedAt time.Time) error
+
+	// Provider metadata (read-only, for validation — no secret access)
+	GetProvider(ctx context.Context, id domain.ProviderID) (domain.Provider, bool, error)
+	GetProviderModel(ctx context.Context, id domain.ProviderModelID) (domain.ProviderModel, bool, error)
 }
 
 // Service provides business logic for the development workflow.

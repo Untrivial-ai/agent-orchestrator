@@ -326,9 +326,9 @@ func TestCancelRun_RunningKillFail_SessionAlreadyTerminated_Cancelled(t *testing
 	}
 }
 
-// ---- P0-3: StartRun must NOT resolve AgentRole provider ----
+// ---- P0-3: StartRun resolves provider from system default (no task/role explicit) ----
 
-func TestStartRun_ProviderResolution_NoAgentRoleFallback(t *testing.T) {
+func TestStartRun_ProviderResolution_SystemDefault(t *testing.T) {
 	svc, project := newTestService(t)
 	ctx := context.Background()
 	_, _, task := readyTaskWithPlan(t, svc, project)
@@ -350,20 +350,18 @@ func TestStartRun_ProviderResolution_NoAgentRoleFallback(t *testing.T) {
 	}
 
 	run, _ := svc.CreateRun(ctx, CreateRunInput{
-		TaskID:          task.ID,
-		AgentRoleID:     "some-role",
-		ProviderID:      "openai",
-		ProviderModelID: "gpt-4o",
+		TaskID: task.ID,
 	})
 	_, err := svc.StartRun(ctx, run.ID)
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
-	if spawnCfg.ProviderID != "openai" {
-		t.Errorf("expected provider 'openai', got %q", spawnCfg.ProviderID)
+	// With no task-level and no AgentRole-level provider, both should be empty (system default)
+	if spawnCfg.ProviderID != "" {
+		t.Errorf("expected empty provider (system default), got %q", spawnCfg.ProviderID)
 	}
-	if spawnCfg.ProviderModelID != "gpt-4o" {
-		t.Errorf("expected model 'gpt-4o', got %q", spawnCfg.ProviderModelID)
+	if spawnCfg.ProviderModelID != "" {
+		t.Errorf("expected empty model (system default), got %q", spawnCfg.ProviderModelID)
 	}
 }
 

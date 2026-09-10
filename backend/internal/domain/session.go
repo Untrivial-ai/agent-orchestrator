@@ -154,6 +154,11 @@ type SessionMetadata struct {
 	// lifecycle/manager.go: session-end, process-exited, reaper, explicit.
 	// Used by Phase 2.3 reconcile to map session exit → TaskRun status.
 	TerminationReason string `json:"terminationReason,omitempty"`
+	// AdditionalSystemPrompt is the resolved AgentRole.SystemPrompt snapshot
+	// persisted at spawn time. Restore reads this value instead of re-querying
+	// the AgentRole, so role modifications after spawn do not affect existing
+	// sessions. Phase 2.4.
+	AdditionalSystemPrompt string `json:"additionalSystemPrompt,omitempty"`
 }
 
 // SessionRecord is the persistence shape. It intentionally stores only durable

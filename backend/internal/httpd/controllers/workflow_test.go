@@ -58,6 +58,12 @@ type mockWorkflowService struct {
 	listRunsByTaskFn func(ctx context.Context, taskID domain.DevelopmentTaskID) ([]domain.TaskRun, error)
 	startRunFn      func(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
 	cancelRunFn     func(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error)
+	// AgentRole (Phase 2.4)
+	createAgentRoleFn      func(ctx context.Context, in workflow.CreateAgentRoleInput) (domain.AgentRole, error)
+	getAgentRoleFn         func(ctx context.Context, id domain.AgentRoleID) (domain.AgentRole, error)
+	listAgentRolesFn       func(ctx context.Context) ([]domain.AgentRole, error)
+	updateAgentRoleFn      func(ctx context.Context, id domain.AgentRoleID, in workflow.UpdateAgentRoleInput) (domain.AgentRole, error)
+	setAgentRoleEnabledFn  func(ctx context.Context, id domain.AgentRoleID, enabled bool) error
 }
 
 func (m *mockWorkflowService) CreatePlan(ctx context.Context, in workflow.CreatePlanInput) (domain.DevelopmentPlan, error) {
@@ -161,6 +167,21 @@ func (m *mockWorkflowService) StartRun(ctx context.Context, id domain.TaskRunID)
 }
 func (m *mockWorkflowService) CancelRun(ctx context.Context, id domain.TaskRunID) (domain.TaskRun, error) {
 	return m.cancelRunFn(ctx, id)
+}
+func (m *mockWorkflowService) CreateAgentRole(ctx context.Context, in workflow.CreateAgentRoleInput) (domain.AgentRole, error) {
+	return m.createAgentRoleFn(ctx, in)
+}
+func (m *mockWorkflowService) GetAgentRole(ctx context.Context, id domain.AgentRoleID) (domain.AgentRole, error) {
+	return m.getAgentRoleFn(ctx, id)
+}
+func (m *mockWorkflowService) ListAgentRoles(ctx context.Context) ([]domain.AgentRole, error) {
+	return m.listAgentRolesFn(ctx)
+}
+func (m *mockWorkflowService) UpdateAgentRole(ctx context.Context, id domain.AgentRoleID, in workflow.UpdateAgentRoleInput) (domain.AgentRole, error) {
+	return m.updateAgentRoleFn(ctx, id, in)
+}
+func (m *mockWorkflowService) SetAgentRoleEnabled(ctx context.Context, id domain.AgentRoleID, enabled bool) error {
+	return m.setAgentRoleEnabledFn(ctx, id, enabled)
 }
 
 // ---------------------------------------------------------------------------

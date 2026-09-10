@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -269,6 +270,7 @@ func (s *Service) CancelTask(ctx context.Context, id domain.DevelopmentTaskID) (
 }
 
 // AssignTask updates the agent role and provider assignment for a task.
+// Phase 2.4: validates role existence and provider pair.
 func (s *Service) AssignTask(ctx context.Context, id domain.DevelopmentTaskID, roleID domain.AgentRoleID, providerID domain.ProviderID, modelID domain.ProviderModelID) (domain.DevelopmentTask, error) {
 	task, ok, err := s.store.GetDevelopmentTask(ctx, id)
 	if err != nil {
@@ -276,6 +278,26 @@ func (s *Service) AssignTask(ctx context.Context, id domain.DevelopmentTaskID, r
 	}
 	if !ok {
 		return domain.DevelopmentTask{}, ErrNotFound
+	}
+
+	// Validate role exists (disabled is allowed — deferred to StartRun)
+	if roleID != "" {
+		if _, found, rerr := s.store.GetAgentRole(ctx, roleID); rerr != nil {
+			return domain.DevelopmentTask{}, rerr
+		} else if !found {
+			return domain.DevelopmentTask{}, fmt.Errorf("%w: agent role %q not found", ErrNotFound, roleID)
+		}
+	}
+
+	// Validate provider pair
+	pp := pairOrEmpty(providerID, modelID)
+	if pp.partial {
+		return domain.DevelopmentTask{}, fmt.Errorf("%w: provider partial pair", ErrInvalidInput)
+	}
+	if pp.complete {
+		if err := s.validateProviderPair(ctx, providerID, modelID); err != nil {
+			return domain.DevelopmentTask{}, err
+		}
 	}
 
 	if err := s.store.UpdateDevelopmentTaskAssignment(ctx, id, roleID, providerID, modelID); err != nil {
