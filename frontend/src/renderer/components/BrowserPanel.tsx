@@ -38,10 +38,10 @@ import {
 	Download,
 	ExternalLink,
 	Globe2,
+	Maximize2,
+	Minimize2,
 	RotateCcw,
 	Monitor,
-	PanelRightClose,
-	PanelRightOpen,
 	MoreVertical,
 	MousePointer2,
 	Plus,
@@ -784,7 +784,7 @@ export function BrowserPanelView({
 							type="button"
 							variant="ghost"
 						>
-							{poppedOut ? <PanelRightClose aria-hidden="true" className="size-icon-base" /> : <PanelRightOpen aria-hidden="true" className="size-icon-base" />}
+							{poppedOut ? <Minimize2 aria-hidden="true" className="size-icon-base" /> : <Maximize2 aria-hidden="true" className="size-icon-base" />}
 						</Button>
 					</TooltipTrigger>
 					<TooltipContent data-browser-native-overlay="true" side="bottom">
