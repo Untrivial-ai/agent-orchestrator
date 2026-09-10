@@ -25,13 +25,15 @@ type captureAgent struct {
 
 type captureHistoryAgent struct {
 	captureAgent
-	existing map[string]bool
-	probed   []string
-	err      error
+	existing  map[string]bool
+	probed    []string
+	probeEnvs []map[string]string
+	err       error
 }
 
-func (a *captureHistoryAgent) NativeConversationExists(_ context.Context, _ ports.SessionRef, id string, _ map[string]string) (bool, error) {
+func (a *captureHistoryAgent) NativeConversationExists(_ context.Context, _ ports.SessionRef, id string, env map[string]string) (bool, error) {
 	a.probed = append(a.probed, id)
+	a.probeEnvs = append(a.probeEnvs, env)
 	return a.existing[id], a.err
 }
 
@@ -537,4 +539,35 @@ func flagValue(argv []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+func TestReviewerRestoreProbesOnlySelectedProfile(t *testing.T) {
+	persistedID := workeragent.SessionUUID("review-w1")
+	legacyID := workeragent.SessionUUID(persistedID)
+	for _, tc := range []struct {
+		name, inputID, existingID string
+		probes                    int
+	}{
+		{"persisted", persistedID, persistedID, 1},
+		{"legacy", persistedID, legacyID, 2},
+		{"fallback", "", persistedID, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := &captureHistoryAgent{existing: map[string]bool{tc.existingID: true}}
+			reviewer := &Reviewer{agent: agent}
+			env := map[string]string{"CLAUDE_CONFIG_DIR": "/profiles/customer-name"}
+			_, ok, err := reviewer.ReviewRestoreCommand(context.Background(), ports.ReviewInvocation{ReviewerID: "review-w1", AgentSessionID: tc.inputID, Env: env})
+			if err != nil || !ok {
+				t.Fatalf("restore=%v err=%v", ok, err)
+			}
+			if len(agent.probeEnvs) != tc.probes {
+				t.Fatalf("probe count=%d", len(agent.probeEnvs))
+			}
+			for _, got := range agent.probeEnvs {
+				if got["CLAUDE_CONFIG_DIR"] != env["CLAUDE_CONFIG_DIR"] {
+					t.Fatalf("history probe selected wrong account: %v", got)
+				}
+			}
+		})
+	}
 }
