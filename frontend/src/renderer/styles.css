@@ -2962,7 +2962,7 @@ html.sidebar-reordering * {
 	align-items: center;
 	gap: 13px;
 	padding: 0 16px 0 14px;
-	border-bottom: 1px solid var(--border);
+	border-bottom: 1px solid var(--color-border-strong);
 	background: var(--bg);
 	z-index: 10;
 }
@@ -4332,11 +4332,11 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-bar {
 	display: flex;
-	height: 32px;
+	height: 40px;
 	min-width: 0;
 	align-items: center;
 	gap: 2px;
-	padding: 0 4px;
+	padding: 0 6px;
 	background: var(--bg);
 }
 
