@@ -70,7 +70,14 @@ export class DesktopTelemetryController {
 
 	async retryPendingCleanup(): Promise<TelemetryPolicyView> {
 		return this.serialize(async () => {
-			if (this.view.state === "applied") return this.snapshot();
+			// A settled policy needs no retry, and neither does a platform that
+			// cannot durably replace the policy at all: retryPendingReplacement
+			// always throws there, so retrying is a guaranteed failure that the 1s
+			// timer in main.ts would repeat forever (#5196). Returning here also
+			// preserves the durability_unsupported reason that initialize() set —
+			// the catch below would otherwise relabel it cleanup_failed on the
+			// very first tick.
+			if (this.view.state === "applied" || !this.options.authority.durabilitySupported) return this.snapshot();
 			let desktopCleanupFailed = false;
 			let authorityVerified = false;
 			try {

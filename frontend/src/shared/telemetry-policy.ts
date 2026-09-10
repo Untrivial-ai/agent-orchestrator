@@ -84,3 +84,17 @@ export function telemetryPolicySnapshot(record: TelemetryPolicyDiskRecord, ackno
 		acknowledged,
 	};
 }
+
+/**
+ * Whether an unsettled policy view can still be advanced by retrying.
+ *
+ * `durability_unsupported` is a permanent property of the platform — Windows
+ * has no durable policy replacement, so `retryPendingReplacement` always throws
+ * and every retry is a guaranteed failure. The 1s timer in `main.ts` would
+ * otherwise repeat it for the life of the process (#5196). Every other
+ * unsettled reason is transient: the daemon may not be listening yet, or a
+ * purge may succeed on a later attempt.
+ */
+export function telemetryPolicyRetryable(view: TelemetryPolicyView): boolean {
+	return view.state !== "applied" && view.reason !== "durability_unsupported";
+}

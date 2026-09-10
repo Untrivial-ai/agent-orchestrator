@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { TelemetryPolicySnapshot } from "../shared/telemetry-policy";
+import { telemetryPolicyRetryable, type TelemetryPolicySnapshot } from "../shared/telemetry-policy";
 import { DaemonTelemetryPolicyClient } from "./daemon-telemetry-policy-client";
 import { DesktopTelemetryController } from "./desktop-telemetry-controller";
 import { nodeTelemetryPolicyFileSystem, TelemetryPolicyAuthority } from "./telemetry-policy-file";
@@ -229,6 +229,34 @@ describe("DesktopTelemetryController", () => {
 		// entry point 60 times anyway and prove it issues no further requests.
 		for (let i = 0; i < 60; i += 1) await controller.retryPendingCleanup();
 		expect(applyPolicy).toHaveBeenCalledTimes(1);
+	});
+
+	it("stays terminal on a platform without durable policy replacement", async () => {
+		// Windows. load() returns before touching disk, so the snapshot is
+		// unacknowledged and initialize() never contacts the daemon at all. It
+		// lands on cleanup_failed/durability_unsupported — but retryPendingCleanup's
+		// catch used to relabel that reason cleanup_failed on the first tick
+		// (retryPendingReplacement throws on win32), so the view started looking
+		// transient again and the 1s timer never stopped (#5196).
+		const authority = new TelemetryPolicyAuthority({
+			dataDir: path.join(os.tmpdir(), "ao-controller-win32-unused"),
+			packagedDefault: false,
+			platform: "win32",
+		});
+		const daemon = { prepareDisable: vi.fn(), applyPolicy: vi.fn() };
+		const controller = new DesktopTelemetryController({
+			authority, daemon,
+			transportFactory: async () => null,
+			environmentAllowsEvents: true, productionEnabled: false,
+		});
+
+		await controller.initialize();
+		expect(controller.snapshot()).toMatchObject({ state: "cleanup_failed", reason: "durability_unsupported", durabilitySupported: false });
+
+		await controller.retryPendingCleanup();
+		expect(controller.snapshot()).toMatchObject({ state: "cleanup_failed", reason: "durability_unsupported" });
+		expect(telemetryPolicyRetryable(controller.snapshot())).toBe(false);
+		expect(daemon.applyPolicy).not.toHaveBeenCalled();
 	});
 
 	it("keeps refusing an acknowledgement whose generation does not match", async () => {
