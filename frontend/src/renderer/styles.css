@@ -3393,6 +3393,28 @@ html.sidebar-reordering * {
 	text-overflow: ellipsis;
 }
 
+/* Browser tabs share the inspector topbar with the view buttons. The tablist
+   keeps only the icon-sized controls; the browser strip owns the remaining
+   width and can place its controls beside the shell actions. */
+.session-inspector__tablist--browser {
+	flex: 0 0 auto !important;
+}
+
+.session-inspector__browser-chrome {
+	display: flex;
+	min-width: 0;
+	height: 100%;
+	flex: 1 1 auto;
+}
+
+.session-inspector__browser-chrome .browser-panel__tab-bar {
+	height: 100%;
+	min-width: 0;
+	flex: 1 1 auto;
+	padding: 0 calc(var(--size-control-md) + var(--space-1)) 0 4px;
+	background: transparent;
+}
+
 .session-inspector__body {
 	flex: 1;
 	min-height: 0;
@@ -3400,16 +3422,16 @@ html.sidebar-reordering * {
 	padding: 18px 18px 40px;
 }
 
-/* Browser tab: inset the panel evenly on all sides as a rounded floating
-   surface, dropping its own border. */
+/* Browser tab: the browser chrome is part of the inspector frame, not a
+   floating card inset inside it. */
 .session-inspector__body--browser {
-	padding: 8px;
+	padding: 0;
 	overflow: hidden;
 }
 
 .session-inspector__body--browser .browser-panel {
 	border: 0;
-	border-radius: var(--radius-lg);
+	border-radius: 0;
 }
 
 .session-inspector__body--browser .browser-panel__viewport {
@@ -4283,6 +4305,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 .browser-panel__toolbar {
 	container-name: browser-toolbar;
 	container-type: inline-size;
+	position: relative;
 	display: flex;
 	align-items: center;
 	gap: 2px;
@@ -4293,6 +4316,16 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	min-height: 30px;
 	padding: 1px 4px;
 	background: var(--bg);
+}
+
+/* The controls menu belongs to the shared inspector topbar when the browser
+   is docked. It stays in the toolbar DOM so its native-view overlay handling
+   and menu positioning remain unchanged. */
+.session-inspector__body--browser .browser-panel__controls-trigger {
+	position: absolute;
+	top: calc(-1 * var(--size-inspector-tabs));
+	right: 4px;
+	z-index: var(--z-index-chrome);
 }
 
 /* Keep the URL field useful in the narrow inspector. The selected profile name

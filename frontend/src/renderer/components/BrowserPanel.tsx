@@ -9,6 +9,7 @@ import {
 	type FocusEvent,
 	type FormEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
 	DndContext,
@@ -405,6 +406,15 @@ export function BrowserPanelView({
 		showRightFade: showTabsRightFade,
 	} = useTabScrollEdges([tabs.length]);
 	const previousTabCountRef = useRef(tabs.length);
+	const [browserChromeTarget, setBrowserChromeTarget] = useState<HTMLElement | null>(null);
+
+	useEffect(() => {
+		if (poppedOut) {
+			setBrowserChromeTarget(null);
+			return;
+		}
+		setBrowserChromeTarget(document.querySelector<HTMLElement>("[data-browser-chrome-target='true']"));
+	}, [poppedOut]);
 
 	// Vertical wheel scrolls the horizontal tab strip when it overflows — same
 	// affordance as the session terminal tabs (CenterPane.tsx).
@@ -725,6 +735,75 @@ export function BrowserPanelView({
 							? error
 							: "";
 	const agentStatusLabel = agentActivityLabel(agentBrowserActivity, agentBrowserActive);
+	const browserTabBar = (
+		<div className="browser-panel__tab-bar" data-testid="browser-tab-bar">
+			<DndContext
+				collisionDetection={closestCenter}
+				modifiers={browserTopTabDragModifiers}
+				onDragCancel={() => setDraggedTopTabId(null)}
+				onDragEnd={handleTopTabDragEnd}
+				onDragStart={({ active }) => setDraggedTopTabId(String(active.id))}
+				sensors={tabSensors}
+			>
+				<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
+					<div className="browser-panel__tab-region">
+						<div
+							aria-label={t("browser.tabs")}
+							className="browser-panel__tab-strip"
+							onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
+							ref={tabScrollRef}
+							role="tablist"
+						>
+							{tabs.map((tab) => (
+								<SortableBrowserTopTab
+									key={tab.id}
+									onClose={handleCloseTab}
+									onSelect={handleSelectTab}
+									onlyTab={tabs.length === 1}
+									selected={tab.id === activeTabId}
+									tab={tab}
+								/>
+							))}
+						</div>
+						{showTabsLeftFade ? (
+							<div aria-hidden="true" className="browser-panel__tab-fade browser-panel__tab-fade--left" />
+						) : null}
+						{showTabsRightFade ? <div aria-hidden="true" className="browser-panel__tab-fade" /> : null}
+					</div>
+				</SortableContext>
+				<DragOverlay adjustScale={false} dropAnimation={null} modifiers={browserTopTabDragModifiers}>
+					{draggedTopTab ? <BrowserTopTabDragOverlay onlyTab={tabs.length === 1} tab={draggedTopTab} /> : null}
+				</DragOverlay>
+			</DndContext>
+			<button
+				aria-label={t("browser.openNewTab")}
+				className={cn("browser-panel__tab-new", draggedTopTabId && "browser-panel__tab-new--dragging")}
+				onClick={() => void handleOpenTab()}
+				title={t("browser.openNewTab")}
+				type="button"
+			>
+				<Plus aria-hidden="true" className="size-icon-base" />
+			</button>
+			<div className="browser-panel__tab-actions flex items-center gap-0.5">
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
+							onClick={() => onTogglePopOut(!poppedOut, panelRef.current?.getBoundingClientRect())}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							{poppedOut ? <Minimize2 aria-hidden="true" className="size-icon-base" /> : <Maximize2 aria-hidden="true" className="size-icon-base" />}
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent data-browser-native-overlay="true" side="bottom">
+						{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
+					</TooltipContent>
+				</Tooltip>
+			</div>
+		</div>
+	);
 	return (
 		<div
 			className={cn(
@@ -749,88 +828,7 @@ export function BrowserPanelView({
 			ref={panelRef}
 			role="tabpanel"
 		>
-			<div className="browser-panel__tab-bar" data-testid="browser-tab-bar">
-				<DndContext
-					collisionDetection={closestCenter}
-					modifiers={browserTopTabDragModifiers}
-					onDragCancel={() => setDraggedTopTabId(null)}
-					onDragEnd={handleTopTabDragEnd}
-					onDragStart={({ active }) => setDraggedTopTabId(String(active.id))}
-					sensors={tabSensors}
-				>
-					<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
-						<div className="browser-panel__tab-region">
-							<div
-								aria-label={t("browser.tabs")}
-								className="browser-panel__tab-strip"
-								onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
-								ref={tabScrollRef}
-								role="tablist"
-							>
-								{tabs.map((tab) => (
-									<SortableBrowserTopTab
-										key={tab.id}
-										onClose={handleCloseTab}
-										onSelect={handleSelectTab}
-										onlyTab={tabs.length === 1}
-										selected={tab.id === activeTabId}
-										tab={tab}
-									/>
-								))}
-							</div>
-							{showTabsLeftFade ? (
-								<div aria-hidden="true" className="browser-panel__tab-fade browser-panel__tab-fade--left" />
-							) : null}
-							{showTabsRightFade ? (
-								<div aria-hidden="true" className="browser-panel__tab-fade" />
-							) : null}
-						</div>
-					</SortableContext>
-					<DragOverlay
-						adjustScale={false}
-						dropAnimation={null}
-						modifiers={browserTopTabDragModifiers}
-					>
-						{draggedTopTab ? (
-							<BrowserTopTabDragOverlay onlyTab={tabs.length === 1} tab={draggedTopTab} />
-						) : null}
-					</DragOverlay>
-				</DndContext>
-				<button
-					aria-label={t("browser.openNewTab")}
-					className={cn(
-						"browser-panel__tab-new",
-						draggedTopTabId && "browser-panel__tab-new--dragging",
-					)}
-					onClick={() => void handleOpenTab()}
-					title={t("browser.openNewTab")}
-					type="button"
-				>
-					<Plus aria-hidden="true" className="size-icon-base" />
-				</button>
-				<div className="browser-panel__tab-actions flex items-center gap-0.5">
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<Button
-								aria-label={poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
-								onClick={() => onTogglePopOut(!poppedOut, panelRef.current?.getBoundingClientRect())}
-								size="icon-sm"
-								type="button"
-								variant="ghost"
-							>
-								{poppedOut ? (
-									<Minimize2 aria-hidden="true" className="size-icon-base" />
-								) : (
-									<Maximize2 aria-hidden="true" className="size-icon-base" />
-								)}
-							</Button>
-						</TooltipTrigger>
-						<TooltipContent data-browser-native-overlay="true" side="bottom">
-							{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
-						</TooltipContent>
-					</Tooltip>
-				</div>
-			</div>
+			{browserChromeTarget ? createPortal(browserTabBar, browserChromeTarget) : browserTabBar}
 			<form
 				className="browser-panel__toolbar flex shrink-0 min-w-0 items-center gap-1 bg-background"
 				data-testid="browser-toolbar"
@@ -1047,6 +1045,7 @@ export function BrowserPanelView({
 							<DropdownMenuTrigger asChild>
 								<Button
 									aria-label={t("browser.controls")}
+									className="browser-panel__controls-trigger"
 									onPointerEnter={() => {
 										controlsHoverRef.current = true;
 									}}
