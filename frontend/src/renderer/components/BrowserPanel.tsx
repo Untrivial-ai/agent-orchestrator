@@ -38,7 +38,7 @@ import {
 	Download,
 	ExternalLink,
 	Globe2,
-	Layers3,
+	RotateCcw,
 	Maximize2,
 	Minimize2,
 	Monitor,
@@ -54,6 +54,7 @@ import {
 } from "lucide-react";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { useBrowserView, type BrowserViewModel } from "../hooks/useBrowserView";
+import { useTabScrollEdges } from "../hooks/useTabScrollEdges";
 import { formatBrowserAnnotationMessage, type BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
 import type { BrowserProfile } from "../../shared/browser-profiles";
 import type { WorkspaceSession } from "../types/workspace";
@@ -66,7 +67,6 @@ import {
 } from "./ui/dropdown-menu";
 import { Input } from "./ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-import { BrowserTabsRail, type BrowserTabsRailHandle } from "./BrowserTabsRail";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { appI18n, type MessageKey } from "../i18n";
@@ -148,11 +148,6 @@ type BrowserPanelProps = {
 };
 
 type AnnotationStatus = "idle" | "picking" | "queued" | "sending" | "sent" | "error";
-
-// Docked rail visibility: collapsed (0px, tab access via the toolbar trigger) is
-// the default; pinning restores an always-visible icon rail. Persisted so it's a
-// one-time choice, not a state.
-const RAIL_PINNED_STORAGE_KEY = "ao.browserTabs.railPinned";
 
 export type BrowserAnnotationQueueModel = {
 	status: AnnotationStatus;
@@ -380,7 +375,6 @@ export function BrowserPanelView({
 	const [historySuggestions, setHistorySuggestions] = useState<Array<{ url: string; title?: string }>>([]);
 	const historyListId = useId();
 	const [urlEditing, setUrlEditing] = useState(false);
-	const urlTakeover = urlEditing && !poppedOut;
 	const { beginPicking, cancelPicking, enqueue, error, failPicking, queuedCount, retryQueued, status } =
 		annotationQueue;
 	const hasNativeBrowser = Boolean(window.ao?.browser);
@@ -399,14 +393,58 @@ export function BrowserPanelView({
 		devicePreset === CUSTOM_DEVICE_PRESET_ID
 			? clampDeviceFrameWidth(Number(customDeviceWidth))
 			: DEVICE_PRESETS.find((preset) => preset.id === devicePreset)?.width;
-	const railRef = useRef<BrowserTabsRailHandle>(null);
 	const panelRef = useRef<HTMLDivElement>(null);
 	const urlInputRef = useRef<HTMLInputElement>(null);
 	const controlsHoverRef = useRef(false);
-	const [pinned, setPinned] = useState(() => window.localStorage.getItem(RAIL_PINNED_STORAGE_KEY) === "1");
-	const showTabsTrigger = !poppedOut && (!pinned || tabs.length === 1);
 	const [draggedTopTabId, setDraggedTopTabId] = useState<string | null>(null);
 	const draggedTopTab = tabs.find((tab) => tab.id === draggedTopTabId);
+	const {
+		scrollRef: tabScrollRef,
+		scrollToEnd: scrollTabsToEnd,
+		showLeftFade: showTabsLeftFade,
+		showRightFade: showTabsRightFade,
+	} = useTabScrollEdges([tabs.length]);
+	const previousTabCountRef = useRef(tabs.length);
+
+	// Vertical wheel scrolls the horizontal tab strip when it overflows — same
+	// affordance as the session terminal tabs (CenterPane.tsx).
+	useEffect(() => {
+		const element = tabScrollRef.current;
+		if (!element) return;
+		const handleWheel = (event: WheelEvent) => {
+			if (event.ctrlKey || event.metaKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+			if (event.deltaY === 0 || element.scrollWidth <= element.clientWidth) return;
+			event.preventDefault();
+			element.scrollBy({ left: event.deltaY });
+		};
+		element.addEventListener("wheel", handleWheel, { passive: false });
+		return () => element.removeEventListener("wheel", handleWheel);
+	}, [tabScrollRef]);
+
+	// Opening a tab (or a popup adding one) appends it, so reveal the newest.
+	useEffect(() => {
+		if (tabs.length > previousTabCountRef.current) scrollTabsToEnd();
+		previousTabCountRef.current = tabs.length;
+	}, [tabs.length, scrollTabsToEnd]);
+
+	// Keep the active tab visible when selection changes (click, keyboard, or a
+	// close that shifts activation), unless a drag is positioning it.
+	useEffect(() => {
+		if (draggedTopTabId) return;
+		const region = tabScrollRef.current;
+		if (!region) return;
+		const activeTab = Array.from(region.querySelectorAll<HTMLElement>("[data-browser-tab-id]")).find(
+			(element) => element.dataset.browserTabId === activeTabId,
+		);
+		if (!activeTab) return;
+		const regionRect = region.getBoundingClientRect();
+		const tabRect = activeTab.getBoundingClientRect();
+		let nextScrollLeft = region.scrollLeft;
+		if (tabRect.left < regionRect.left) nextScrollLeft -= regionRect.left - tabRect.left;
+		if (tabRect.right > regionRect.right) nextScrollLeft += tabRect.right - regionRect.right;
+		if (nextScrollLeft === region.scrollLeft) return;
+		region.scrollTo({ behavior: "smooth", left: Math.max(0, nextScrollLeft) });
+	}, [activeTabId, tabs, draggedTopTabId, tabScrollRef]);
 
 	useEffect(() => {
 		if (controlsView !== "profiles" || !window.ao?.browserProfiles) return;
@@ -490,11 +528,6 @@ export function BrowserPanelView({
 		},
 		[reorderTabs, tabs],
 	);
-
-	const handlePinnedChange = useCallback((next: boolean) => {
-		setPinned(next);
-		window.localStorage.setItem(RAIL_PINNED_STORAGE_KEY, next ? "1" : "0");
-	}, []);
 
 	// Docked DevTools belongs to the native page view, which is intentionally
 	// hidden while the active target is blank. Keep close available for any
@@ -625,18 +658,6 @@ export function BrowserPanelView({
 	};
 
 	const beginUrlEditing = () => {
-		const input = urlInputRef.current;
-		const wrapper = input?.parentElement;
-		const toolbar = input?.closest<HTMLElement>(".browser-panel__toolbar");
-		if (!poppedOut && wrapper && toolbar) {
-			const wrapperRect = wrapper.getBoundingClientRect();
-			const toolbarRect = toolbar.getBoundingClientRect();
-			const navigationButtons = toolbar.querySelectorAll<HTMLElement>(".browser-panel__navigation-btn");
-			const lastNavigationButton = navigationButtons.item(navigationButtons.length - 1);
-			const targetLeft = lastNavigationButton?.getBoundingClientRect().right ?? toolbarRect.left + 4;
-			wrapper.style.setProperty("--browser-url-expand-left", `${targetLeft + 2 - wrapperRect.left}px`);
-			wrapper.style.setProperty("--browser-url-expand-right", `${wrapperRect.right - toolbarRect.right + 4}px`);
-		}
 		setUrlEditing(true);
 	};
 
@@ -664,13 +685,9 @@ export function BrowserPanelView({
 		}
 	};
 
-	// The button lives in the toolbar, not inside the rail, so a fast
-	// hover-rail-then-click-here still needs to force the flyout closed first —
-	// same reason rows inside the rail do it (see BrowserTabsRail.tsx). A blank
-	// new tab has nowhere to go on its own, so send focus straight to the URL
-	// bar afterward instead of leaving the user to click into it themselves.
+	// A blank new tab has nowhere to go on its own, so send focus straight to
+	// the URL bar afterward instead of leaving the user to click into it.
 	const handleOpenTab = useCallback(async () => {
-		railRef.current?.closeFlyout(true);
 		await openTab();
 		urlInputRef.current?.focus();
 		urlInputRef.current?.select();
@@ -711,7 +728,7 @@ export function BrowserPanelView({
 	return (
 		<div
 			className={cn(
-				"browser-panel flex h-full min-h-browser-min flex-col overflow-hidden rounded-lg border border-border bg-background",
+				"browser-panel flex h-full min-h-browser-min flex-col overflow-hidden border border-border bg-background",
 				poppedOut && "browser-panel--popped-out",
 				agentStatusLabel && "browser-panel--agent-active",
 			)}
@@ -742,22 +759,31 @@ export function BrowserPanelView({
 					sensors={tabSensors}
 				>
 					<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
-						<div
-							aria-label={t("browser.tabs")}
-							className="browser-panel__tab-strip"
-							onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
-							role="tablist"
-						>
-							{tabs.map((tab) => (
-								<SortableBrowserTopTab
-									key={tab.id}
-									onClose={handleCloseTab}
-									onSelect={handleSelectTab}
-									onlyTab={tabs.length === 1}
-									selected={tab.id === activeTabId}
-									tab={tab}
-								/>
-							))}
+						<div className="browser-panel__tab-region">
+							<div
+								aria-label={t("browser.tabs")}
+								className="browser-panel__tab-strip"
+								onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
+								ref={tabScrollRef}
+								role="tablist"
+							>
+								{tabs.map((tab) => (
+									<SortableBrowserTopTab
+										key={tab.id}
+										onClose={handleCloseTab}
+										onSelect={handleSelectTab}
+										onlyTab={tabs.length === 1}
+										selected={tab.id === activeTabId}
+										tab={tab}
+									/>
+								))}
+							</div>
+							{showTabsLeftFade ? (
+								<div aria-hidden="true" className="browser-panel__tab-fade browser-panel__tab-fade--left" />
+							) : null}
+							{showTabsRightFade ? (
+								<div aria-hidden="true" className="browser-panel__tab-fade" />
+							) : null}
 						</div>
 					</SortableContext>
 					<DragOverlay
@@ -782,12 +808,31 @@ export function BrowserPanelView({
 				>
 					<Plus aria-hidden="true" className="size-icon-base" />
 				</button>
+				<div className="browser-panel__tab-actions flex items-center gap-0.5">
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								aria-label={poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
+								onClick={() => onTogglePopOut(!poppedOut, panelRef.current?.getBoundingClientRect())}
+								size="icon-sm"
+								type="button"
+								variant="ghost"
+							>
+								{poppedOut ? (
+									<Minimize2 aria-hidden="true" className="size-icon-base" />
+								) : (
+									<Maximize2 aria-hidden="true" className="size-icon-base" />
+								)}
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent data-browser-native-overlay="true" side="bottom">
+							{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
+						</TooltipContent>
+					</Tooltip>
+				</div>
 			</div>
 			<form
-				className={cn(
-					"browser-panel__toolbar flex shrink-0 min-w-0 items-center gap-1 border-b border-border bg-surface",
-					urlTakeover && "browser-panel__toolbar--url-takeover",
-				)}
+				className="browser-panel__toolbar flex shrink-0 min-w-0 items-center gap-1 bg-background"
 				data-testid="browser-toolbar"
 				onSubmit={submit}
 			>
@@ -859,8 +904,8 @@ export function BrowserPanelView({
 					<Input
 						aria-label={t("browser.url")}
 						className={cn(
-							"browser-panel__url-input h-browser-url font-mono text-xs",
-							poppedOut ? "pr-9" : !urlEditing && "px-9 text-center",
+							"browser-panel__url-input h-browser-url text-xs",
+							isWebLink(navState.url) && "pr-9",
 						)}
 						list={historySuggestions.length > 0 ? historyListId : undefined}
 						onBlur={endUrlEditing}
@@ -868,7 +913,7 @@ export function BrowserPanelView({
 						onFocus={beginUrlEditing}
 						placeholder={t("browser.urlPlaceholder")}
 						ref={urlInputRef}
-						value={urlEditing || poppedOut ? urlInput : compactBrowserAddress(navState.url)}
+						value={urlEditing || poppedOut ? urlInput : navState.url}
 					/>
 					{isWebLink(navState.url) ? (
 						<Tooltip>
@@ -881,7 +926,7 @@ export function BrowserPanelView({
 									type="button"
 									variant="ghost"
 								>
-									<ExternalLink aria-hidden="true" className="size-icon-sm" />
+									<ExternalLink aria-hidden="true" className="size-icon-base" />
 								</Button>
 							</TooltipTrigger>
 							<TooltipContent data-browser-native-overlay="true" side="bottom">
@@ -921,7 +966,7 @@ export function BrowserPanelView({
 								type="button"
 								variant="ghost"
 							>
-								<MousePointer2 aria-hidden="true" className="h-4 w-4" />
+								<MousePointer2 aria-hidden="true" className="size-icon-base" />
 								{annotationStatusLabel ? (
 									<span
 										aria-hidden="true"
@@ -1024,8 +1069,7 @@ export function BrowserPanelView({
 					    view — Electron always paints native view pixels above the
 					    renderer. Marked as a browser overlay so useBrowserView.ts's
 					    MutationObserver raises the transparent shell above the native view
-					    for as long as this stays mounted+open. See the matching comment on
-					    BrowserTabsRail's flyout for the full mechanism. */}
+					    for as long as this stays mounted+open. */}
 					<DropdownMenuContent
 						align="end"
 						className={controlsView === "root" ? "w-56" : "w-64"}
@@ -1180,98 +1224,31 @@ export function BrowserPanelView({
 									<Download aria-hidden="true" className="size-icon-base shrink-0" />
 									<span className="flex-1">{t("browser.downloads.title")}</span>
 								</DropdownMenuItem>
+								{closedTabs.length > 0 ? (
+									<DropdownMenuItem className="gap-2" onSelect={() => void reopenClosedTab()}>
+										<RotateCcw aria-hidden="true" className="size-icon-base shrink-0" />
+										<span className="flex-1">{t("browser.reopenClosedTab")}</span>
+									</DropdownMenuItem>
+								) : null}
 							</>
 						)}
 					</DropdownMenuContent>
 				</DropdownMenu>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Button
-							aria-label={poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
-							onClick={() => onTogglePopOut(!poppedOut, panelRef.current?.getBoundingClientRect())}
-							size="icon-sm"
-							type="button"
-							variant="ghost"
-						>
-							{poppedOut ? (
-								<Minimize2 aria-hidden="true" className="size-icon-base" />
-							) : (
-								<Maximize2 aria-hidden="true" className="size-icon-base" />
-							)}
-						</Button>
-					</TooltipTrigger>
-					<TooltipContent data-browser-native-overlay="true" side="bottom">{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}</TooltipContent>
-				</Tooltip>
-				{/* Docked mode has no reserved rail column by default (see
-				    BrowserTabsRail.tsx) — this trigger is the only way to reach the tab
-				    list until the user pins the rail, so it remains visible even with a
-				    single tab. It also returns when a pinned rail drops to one tab, keeping
-				    recently closed tabs reachable. Hover/focus
-				    drive the rail's flyout imperatively since the two live in separate
-				    DOM subtrees (toolbar row vs. body row) — see BrowserTabsRail.tsx's
-				    BrowserTabsRailHandle for why the close side stays debounced here. */}
-				{showTabsTrigger ? (
-					<div className="browser-panel__toolbar-tabs-trigger flex w-8 shrink-0 items-center justify-center self-stretch border-l border-border">
-						<Button
-							aria-label={t("browser.tabsTitle", { count: tabs.length })}
-							className="relative"
-							onBlur={() => railRef.current?.closeFlyout()}
-							onFocus={() => railRef.current?.openFlyout(true)}
-							onPointerEnter={() => railRef.current?.openFlyout()}
-							onPointerLeave={() => railRef.current?.closeFlyout()}
-							size="icon-sm"
-							title={t("browser.tabsTitle", { count: tabs.length })}
-							type="button"
-							variant="ghost"
-						>
-							<Layers3 aria-hidden="true" className="size-icon-base" />
-							<span
-								aria-hidden="true"
-								className="pointer-events-none absolute -right-0.5 -top-0.5 grid min-w-4 place-items-center rounded-full bg-foreground px-1 font-mono text-[9px] font-semibold leading-4 text-background shadow-sm"
-							>
-								{tabs.length}
-							</span>
-						</Button>
-					</div>
-				) : null}
-				{/* Fixed at the rail's own width (w-8) and flush against the panel's
-				    right edge (the form has no right padding) so this column lines up
-				    with the docked rail directly below it. Popped-out has no icon rail
-				    to align with, and gets its own "+" row inside BrowserTabsRail. */}
-				{!poppedOut ? (
-					<div className="browser-panel__toolbar-new-tab flex w-8 shrink-0 items-center justify-center self-stretch border-l border-border">
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									aria-label={t("browser.openNewTab")}
-									onClick={() => void handleOpenTab()}
-									size="icon-sm"
-									type="button"
-									variant="ghost"
-								>
-									<Plus aria-hidden="true" className="size-icon-base" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent data-browser-native-overlay="true" side="bottom">{t("browser.openNewTab")}</TooltipContent>
-						</Tooltip>
-					</div>
-				) : null}
 			</form>
 			<div className="browser-panel__body flex min-h-0 flex-1 overflow-hidden">
 				<div
 					className="browser-panel__viewport relative min-h-0 flex-1 overflow-hidden"
 					// The live page paints as a separate native WebContentsView, not inside
-					// this div. Opening any overlay (e.g. the tabs-rail flyout,
-					// BrowserTabsRail.tsx's data-browser-native-overlay) briefly raises the
-					// transparent shell above that native view so the overlay can paint on
-					// top — if this div painted an opaque background here, it would blank
-					// the live page for the duration. `.browser-panel__viewport` in
-					// styles.css carries its own plain-CSS background (a decorative
-					// gradient for the empty/no-bridge placeholder states) that is NOT a
-					// Tailwind utility and so can't be toggled via className — Tailwind
-					// utilities live in a lower-priority cascade layer and can never
-					// override plain author CSS. Gate that CSS rule with this data
-					// attribute instead, so there's exactly one place deciding opacity.
+					// this div. Opening any browser overlay (e.g. the controls menu) briefly
+					// raises the transparent shell above that native view so the overlay can
+					// paint on top — if this div painted an opaque background here, it would
+					// blank the live page for the duration. `.browser-panel__viewport` in
+					// styles.css carries its own plain-CSS background for the empty/no-bridge
+					// placeholder states that is NOT a Tailwind utility and so can't be
+					// toggled via className — Tailwind utilities live in a lower-priority
+					// cascade layer and can never override plain author CSS. Gate that CSS
+					// rule with this data attribute instead, so there's exactly one place
+					// deciding opacity.
 					data-placeholder={!hasNativeBrowser || navState.url === "" ? "true" : undefined}
 					data-testid="browser-viewport"
 				>
@@ -1307,22 +1284,6 @@ export function BrowserPanelView({
 						</p>
 					) : null}
 				</div>
-				{/* Both docked and popped-out keep the rail on the right of the
-				    viewport (out of the way of the toolbar/address bar). */}
-				<BrowserTabsRail
-					activeTabId={activeTabId}
-					closedTabs={closedTabs}
-					onCloseTab={closeTab}
-					onOpenTab={handleOpenTab}
-					onPinnedChange={handlePinnedChange}
-					onReopenClosedTab={reopenClosedTab}
-					onReorderTabs={reorderTabs}
-					onSelectTab={handleSelectTab}
-					pinned={pinned}
-					poppedOut={poppedOut}
-					ref={railRef}
-					tabs={tabs}
-				/>
 			</div>
 		</div>
 	);
@@ -1352,6 +1313,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 				selected && "browser-panel__tab--active",
 				isDragging && "browser-panel__tab--drag-placeholder",
 			)}
+			data-browser-tab-id={tab.id}
 			ref={setNodeRef}
 			style={{ transform: CSS.Transform.toString(transform), transition }}
 		>
@@ -1381,7 +1343,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 				title={onlyTab ? t("browser.onlyTab") : closeLabel}
 				type="button"
 			>
-				<X aria-hidden="true" className="size-icon-sm" />
+				<X aria-hidden="true" className="size-icon-base" />
 			</button>
 		</div>
 	);
@@ -1411,29 +1373,12 @@ export const BrowserTopTabDragOverlay = memo(function BrowserTopTabDragOverlay({
 			</div>
 			{onlyTab ? null : (
 				<span className="browser-panel__tab-close">
-					<X aria-hidden="true" className="size-icon-sm" />
+					<X aria-hidden="true" className="size-icon-base" />
 				</span>
 			)}
 		</div>
 	);
 });
-
-function compactBrowserAddress(url: string): string {
-	if (!url) return "";
-	try {
-		const parsed = new URL(url);
-		if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-			return parsed.host.replace(/^www\./i, "");
-		}
-		if (parsed.protocol === "file:") {
-			const name = parsed.pathname.split("/").filter(Boolean).at(-1);
-			return name ? decodeURIComponent(name) : url;
-		}
-		return parsed.host || url;
-	} catch {
-		return url;
-	}
-}
 
 function agentActivityLabel(activity: BrowserViewModel["agentBrowserActivity"], active: boolean): string {
 	if (!active && !activity?.active) return "";
