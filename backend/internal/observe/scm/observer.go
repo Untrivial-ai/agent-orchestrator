@@ -1717,6 +1717,14 @@ func (o *Observer) prepareForPersistence(obs ports.SCMObservation, local domain.
 		CI:       ciHash != local.CIHash,
 		Review:   reviewHash != local.ReviewHash,
 	}
+	// A successful fetch that changes completeness (partial <-> full) must
+	// persist even when the provider content is unchanged: rows upgraded by the
+	// conservative review_partial default start uncertain, and without this a
+	// content-hash match would skip the write and keep the exact count hidden
+	// forever.
+	if opts.reviewFetched && obs.Review.Partial != local.ReviewPartial {
+		obs.Changed.Review = true
+	}
 	obs.PR.State = firstNonEmpty(obs.PR.State, normalizePRState(obs.PR.Draft, obs.PR.Merged, obs.PR.Closed))
 	obs.ObservedAt = firstTime(obs.ObservedAt, now)
 	return obs
@@ -1749,8 +1757,12 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 	if obs.Changed.CI || ciObservedAt.IsZero() {
 		ciObservedAt = obs.ObservedAt
 	}
+	// Only a successful review-thread fetch establishes a review observation:
+	// a metadata/CI-only pass (or a failed review fetch in preserve mode) must
+	// not manufacture one, or a never-fetched review storage would look
+	// complete to the summary gate and publish a known-looking zero.
 	reviewObservedAt := local.ReviewObservedAt
-	if opts.reviewFetched || reviewObservedAt.IsZero() {
+	if opts.reviewFetched {
 		reviewObservedAt = obs.ObservedAt
 	}
 	// Partial-ness follows the last fetched review observation; when this pass

@@ -596,19 +596,21 @@ func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 
 func genLegacyPRParams(r domain.PullRequest) gen.UpsertLegacyPRParams {
 	return gen.UpsertLegacyPRParams{
-		URL:            r.URL,
-		SessionID:      r.SessionID,
-		Number:         int64(r.Number),
-		PRState:        prState(r),
-		ReviewDecision: reviewOrDefault(r.Review),
-		CIState:        ciOrDefault(r.CI),
-		Mergeability:   mergeabilityOrDefault(r.Mergeability),
-		UpdatedAt:      r.UpdatedAt,
-		StateChangedAt: nullTime(initialPRStateChangedAt(r)),
-		IsDraft:        boolInt(r.Draft),
-		IsMerged:       boolInt(r.Merged),
-		IsClosed:       boolInt(r.Closed),
-		ID:             r.SessionID,
+		URL:              r.URL,
+		SessionID:        r.SessionID,
+		Number:           int64(r.Number),
+		PRState:          prState(r),
+		ReviewDecision:   reviewOrDefault(r.Review),
+		CIState:          ciOrDefault(r.CI),
+		Mergeability:     mergeabilityOrDefault(r.Mergeability),
+		UpdatedAt:        r.UpdatedAt,
+		StateChangedAt:   nullTime(initialPRStateChangedAt(r)),
+		IsDraft:          boolInt(r.Draft),
+		IsMerged:         boolInt(r.Merged),
+		IsClosed:         boolInt(r.Closed),
+		ReviewObservedAt: nullTime(r.ReviewObservedAt),
+		ReviewPartial:    r.ReviewPartial,
+		ID:               r.SessionID,
 	}
 }
 

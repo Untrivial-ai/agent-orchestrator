@@ -10888,6 +10888,10 @@ components:
           items:
             $ref: '#/components/schemas/SessionPRUnresolvedReviewer'
           type: array
+        unresolvedThreadCount:
+          type:
+          - "null"
+          - integer
       required:
       - decision
       - hasUnresolvedHumanComments

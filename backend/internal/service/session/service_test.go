@@ -3711,7 +3711,7 @@ func TestClaimRowsFromSCMSnapshotsSessionReviewPolicy(t *testing.T) {
 	}
 	for _, autoInject := range []bool{false, true} {
 		t.Run(fmt.Sprintf("auto_inject_%t", autoInject), func(t *testing.T) {
-			_, _, reviews, _, comments := claimRowsFromSCM("mer-1", obs, now, domain.SessionRecord{AutoInjectReview: autoInject})
+			_, _, reviews, _, comments := claimRowsFromSCM("mer-1", obs, ports.ReviewWriteReplace, now, domain.SessionRecord{AutoInjectReview: autoInject})
 			if len(reviews) != 1 || reviews[0].AutoInjectReview != autoInject {
 				t.Fatalf("reviews = %+v, want policy %t", reviews, autoInject)
 			}

@@ -975,9 +975,9 @@ func (q *Queries) UpdatePRLastNudgeSignature(ctx context.Context, arg UpdatePRLa
 const upsertLegacyPR = `-- name: UpsertLegacyPR :exec
 INSERT INTO pr (
     url, session_id, number, pr_state, review_decision, ci_state, mergeability, updated_at, state_changed_at,
-    is_draft, is_merged, is_closed, auto_inject_ci
+    is_draft, is_merged, is_closed, review_observed_at, review_partial, auto_inject_ci
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     COALESCE((SELECT auto_inject_ci FROM sessions WHERE id = ?), TRUE))
 ON CONFLICT (url) DO UPDATE SET
     number = excluded.number,
@@ -993,23 +993,32 @@ ON CONFLICT (url) DO UPDATE SET
     updated_at = excluded.updated_at,
     is_draft = excluded.is_draft,
     is_merged = excluded.is_merged,
-    is_closed = excluded.is_closed
+    is_closed = excluded.is_closed,
+    -- Same completeness-pair contract as UpsertPR: a writer without a review
+    -- observation (NULL timestamp) keeps the stored pair.
+    review_observed_at = COALESCE(excluded.review_observed_at, pr.review_observed_at),
+    review_partial = CASE
+        WHEN excluded.review_observed_at IS NULL THEN pr.review_partial
+        ELSE excluded.review_partial
+    END
 `
 
 type UpsertLegacyPRParams struct {
-	URL            string
-	SessionID      domain.SessionID
-	Number         int64
-	PRState        domain.PRState
-	ReviewDecision domain.ReviewDecision
-	CIState        domain.CIState
-	Mergeability   domain.Mergeability
-	UpdatedAt      time.Time
-	StateChangedAt sql.NullTime
-	IsDraft        int64
-	IsMerged       int64
-	IsClosed       int64
-	ID             domain.SessionID
+	URL              string
+	SessionID        domain.SessionID
+	Number           int64
+	PRState          domain.PRState
+	ReviewDecision   domain.ReviewDecision
+	CIState          domain.CIState
+	Mergeability     domain.Mergeability
+	UpdatedAt        time.Time
+	StateChangedAt   sql.NullTime
+	IsDraft          int64
+	IsMerged         int64
+	IsClosed         int64
+	ReviewObservedAt sql.NullTime
+	ReviewPartial    bool
+	ID               domain.SessionID
 }
 
 func (q *Queries) UpsertLegacyPR(ctx context.Context, arg UpsertLegacyPRParams) error {
@@ -1026,6 +1035,8 @@ func (q *Queries) UpsertLegacyPR(ctx context.Context, arg UpsertLegacyPRParams) 
 		arg.IsDraft,
 		arg.IsMerged,
 		arg.IsClosed,
+		arg.ReviewObservedAt,
+		arg.ReviewPartial,
 		arg.ID,
 	)
 	return err
@@ -1091,8 +1102,15 @@ ON CONFLICT (url) DO UPDATE SET
     review_hash = excluded.review_hash,
     observed_at = excluded.observed_at,
     ci_observed_at = excluded.ci_observed_at,
-    review_observed_at = excluded.review_observed_at,
-    review_partial = excluded.review_partial
+    -- The review completeness pair travels together: a writer that did not
+    -- fetch review threads passes a NULL review_observed_at, and must keep the
+    -- stored pair untouched instead of manufacturing a complete-looking
+    -- observation (NULL timestamp, stale certainty kept).
+    review_observed_at = COALESCE(excluded.review_observed_at, pr.review_observed_at),
+    review_partial = CASE
+        WHEN excluded.review_observed_at IS NULL THEN pr.review_partial
+        ELSE excluded.review_partial
+    END
 `
 
 type UpsertPRParams struct {
