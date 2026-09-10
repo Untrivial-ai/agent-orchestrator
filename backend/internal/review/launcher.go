@@ -48,7 +48,9 @@ type Launcher interface {
 	RestoreTerminal(ctx context.Context, spec LaunchSpec) (LaunchResult, error)
 	// Notify asks an already-running reviewer pane to review a new commit.
 	Notify(ctx context.Context, handleID string, spec LaunchSpec) error
-	// Alive reports whether a reviewer pane is still running.
+	// Alive reports whether the reviewer terminal still has a running child.
+	// Retained scrollback hosts are not running reviewers; probe errors remain
+	// inconclusive so installation maintenance cannot infer a stopped process.
 	Alive(ctx context.Context, handleID string) (bool, error)
 	// Reusable reports whether the harness accepts another review task in its
 	// existing TUI. Reviewers with launch-fixed context return false.
@@ -629,7 +631,13 @@ func (l *agentLauncher) Alive(ctx context.Context, handleID string) (bool, error
 	if handleID == "" {
 		return false, nil
 	}
-	return l.runtime.IsAlive(ctx, ports.RuntimeHandle{ID: handleID})
+	handle := ports.RuntimeHandle{ID: handleID}
+	if inspector, ok := l.runtime.(ports.RuntimeChildInspector); ok {
+		return inspector.IsChildAlive(ctx, handle)
+	}
+	// Older/custom runtimes without child evidence conservatively retain a
+	// live host. Never infer a stopped reviewer from an unsupported probe.
+	return l.runtime.IsAlive(ctx, handle)
 }
 
 func (l *agentLauncher) Reusable(harness domain.ReviewerHarness) bool {

@@ -583,6 +583,33 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 	return true, nil
 }
 
+// IsChildAlive also detects exited panes retained by tmux's remain-on-exit.
+func (r *Runtime) IsChildAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	alive, err := r.IsAlive(ctx, handle)
+	if err != nil || !alive {
+		return false, err
+	}
+	out, err := r.runForSession(ctx, handle.ID, paneDeadArgs(handle.ID)...)
+	if err != nil {
+		return false, fmt.Errorf("tmux runtime: probe child status for %s: %w", handle.ID, err)
+	}
+	states := strings.Fields(string(out))
+	if len(states) == 0 {
+		return false, fmt.Errorf("tmux runtime: no pane status for %s: %w", handle.ID, ports.ErrRuntimeProbeInconclusive)
+	}
+	childAlive := false
+	for _, state := range states {
+		switch state {
+		case "0":
+			childAlive = true
+		case "1":
+		default:
+			return false, fmt.Errorf("tmux runtime: invalid pane status %q for %s: %w", state, handle.ID, ports.ErrRuntimeProbeInconclusive)
+		}
+	}
+	return childAlive, nil
+}
+
 // ProbeFencedRuntime returns liveness evidence for the exact fenced runtime identity.
 func (r *Runtime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
 	if ref.Handle.ID == "" || ref.SessionID == "" || strings.TrimSpace(ref.Generation) == "" || ref.Handle.ID != string(ref.SessionID) {

@@ -86,6 +86,13 @@ type Runtime interface {
 	IsAlive(ctx context.Context, handle RuntimeHandle) (bool, error)
 }
 
+// RuntimeChildInspector distinguishes running terminal children from a runtime
+// retained only to serve scrollback. False with no error confirms all children
+// have exited (or the runtime is absent); inconclusive probes must return errors.
+type RuntimeChildInspector interface {
+	IsChildAlive(ctx context.Context, handle RuntimeHandle) (bool, error)
+}
+
 // FencedLiveness is exact ownership evidence for one AO runtime generation.
 // Unknown is deliberately distinct from dead: callers must retain ownership
 // gates when an adapter cannot prove an exact match or exact absence.
