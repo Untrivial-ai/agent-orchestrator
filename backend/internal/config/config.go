@@ -85,6 +85,9 @@ type TelemetryConfig struct {
 	// Sentry a no-op. Kept separate from the PostHog key: the two are different
 	// processors with different projects.
 	SentryDSN string
+	// LocalRetention controls how long local telemetry events are kept before
+	// pruning. Zero means use the default (30 days).
+	LocalRetention time.Duration
 }
 
 // GitLabConfig carries the self-managed GitLab host allowlist and per-host
@@ -204,6 +207,7 @@ func (c Config) Addr() string {
 //	AO_TELEMETRY_REMOTE  remote exporter off|posthog (default off)
 //	AO_TELEMETRY_POSTHOG_KEY   PostHog project key
 //	AO_TELEMETRY_POSTHOG_HOST  PostHog host (default DefaultTelemetryPostHogHost)
+//	AO_TELEMETRY_RETENTION     local event retention (Go duration or days, default 30 days, min 1 day)
 //	AO_GITLAB_ALLOWED_HOSTS    comma-separated self-managed GitLab hosts (each may include :port)
 //	AO_GITLAB_HOST_TOKENS      host=token,host=token per-host token overrides
 //	AO_CLIENT                  client identity for offering gates (trimmed, default empty)
@@ -322,6 +326,20 @@ func Load() (Config, error) {
 	}
 	if raw := os.Getenv("AO_SENTRY_DSN"); raw != "" {
 		cfg.Telemetry.SentryDSN = strings.TrimSpace(raw)
+	}
+	if raw := os.Getenv("AO_TELEMETRY_RETENTION"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			days, derr := strconv.Atoi(raw)
+			if derr != nil {
+				return Config{}, fmt.Errorf("invalid AO_TELEMETRY_RETENTION %q: must be a Go duration (e.g. 720h) or a number of days", raw)
+			}
+			d = time.Duration(days) * 24 * time.Hour
+		}
+		if d < 24*time.Hour {
+			return Config{}, fmt.Errorf("invalid AO_TELEMETRY_RETENTION %q: minimum is 1 day (24h)", raw)
+		}
+		cfg.Telemetry.LocalRetention = d
 	}
 
 	if raw, ok := os.LookupEnv("AO_GITLAB_ALLOWED_HOSTS"); ok && raw != "" {

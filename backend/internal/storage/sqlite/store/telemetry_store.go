@@ -71,3 +71,20 @@ func (s *Store) PruneTelemetryEventsBefore(ctx context.Context, before time.Time
 	}
 	return n, nil
 }
+
+// FreelistCount returns the number of unused pages in the database file.
+func (s *Store) FreelistCount(ctx context.Context) (int64, error) {
+	var n int64
+	if err := s.writeDB.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&n); err != nil {
+		return 0, fmt.Errorf("freelist_count: %w", err)
+	}
+	return n, nil
+}
+
+// IncrementalVacuum reclaims up to pages free pages from the database file.
+func (s *Store) IncrementalVacuum(ctx context.Context, pages int64) error {
+	if _, err := s.writeDB.ExecContext(ctx, fmt.Sprintf("PRAGMA incremental_vacuum(%d)", pages)); err != nil {
+		return fmt.Errorf("incremental_vacuum: %w", err)
+	}
+	return nil
+}
