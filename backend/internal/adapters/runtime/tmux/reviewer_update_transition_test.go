@@ -66,7 +66,7 @@ func TestReviewerWorkloadUpdateTransition(t *testing.T) {
 			runner := &reviewerTransitionRunner{workloadProbeRunner: workloadProbeRunner{panes: "100 0"}}
 			rt.runner = runner
 			ctx := context.Background()
-			f := reviewerupdate.New(ctx, t, rt, mode)
+			f := reviewerupdate.New(ctx, t, rt, mode, "/fixture/codex")
 			if !strings.HasSuffix(runner.launch, `; exec "${SHELL:-/bin/sh}" -i`) || strings.Contains(runner.launch, "AO_SUPERVISED_PROCESS") {
 				t.Fatalf("wrong reviewer launch shape: %s", runner.launch)
 			}
@@ -120,7 +120,7 @@ func TestReviewerWorkloadUpdateRechecksActualRuntime(t *testing.T) {
 	runner := &reviewerTransitionRunner{workloadProbeRunner: workloadProbeRunner{panes: "100 0"}}
 	rt.runner = runner
 	ctx := context.Background()
-	f := reviewerupdate.New(ctx, t, rt, "resume")
+	f := reviewerupdate.New(ctx, t, rt, "resume", "/fixture/codex")
 	runner.processes = "100 1 /bin/sh -i\n"
 	f.RecheckBlocked(ctx, t, func() { runner.processes = "100 1 /bin/sh -i\n101 100 /fixture/codex resume native-history\n" })
 }

@@ -53,7 +53,7 @@ func TestReviewerWorkloadUpdateTransition(t *testing.T) {
 				return spawn(ctx, id, cwd, args, env)
 			}})
 			ctx := context.Background()
-			f := reviewerupdate.New(ctx, t, rt, mode)
+			f := reviewerupdate.New(ctx, t, rt, mode, "/fixture/codex")
 			h := hosts[f.Result.HandleID]
 			t.Cleanup(func() { h.cleanup(t) })
 			want := []string{"/fixture/codex"}

@@ -49,20 +49,21 @@ func (s *reviewerStore) ListAllSessions(ctx context.Context) ([]domain.SessionRe
 	return []domain.SessionRecord{{ID: s.row.SessionID, Harness: domain.HarnessClaudeCode, ReviewerHarness: domain.ReviewerCodex}}, ctx.Err()
 }
 
-type adapter struct{}
+type adapter struct{ binary string }
 
-func (adapter) Reviewer(domain.ReviewerHarness) (ports.Reviewer, bool) { return adapter{}, true }
-func (adapter) ReviewCommand(context.Context, ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
-	return ports.ReviewCommandSpec{Argv: []string{"/fixture/codex"}, AgentSessionID: "native-history"}, nil
+func (a adapter) Reviewer(domain.ReviewerHarness) (ports.Reviewer, bool) { return a, true }
+func (a adapter) ReviewCommand(context.Context, ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
+	return ports.ReviewCommandSpec{Argv: []string{a.binary}, AgentSessionID: "native-history"}, nil
 }
-func (adapter) ReviewRestoreCommand(_ context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, bool, error) {
-	return ports.ReviewCommandSpec{Argv: []string{"/fixture/codex", "resume", inv.AgentSessionID}, AgentSessionID: inv.AgentSessionID, NativeResumed: true}, true, nil
+func (a adapter) ReviewRestoreCommand(_ context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, bool, error) {
+	return ports.ReviewCommandSpec{Argv: []string{a.binary, "resume", inv.AgentSessionID}, AgentSessionID: inv.AgentSessionID, NativeResumed: true}, true, nil
 }
 func (adapter) ReviewMessage(context.Context, ports.ReviewInvocation) (string, error) {
 	return "next review", nil
 }
 
 type installer struct {
+	binary string
 	ports.CommandRunner
 	runs      atomic.Int32
 	refreshed atomic.Bool
@@ -73,7 +74,7 @@ func (i *installer) Resolve(ctx context.Context) (ports.CodexInstallation, error
 	if i.runs.Load() > 0 {
 		version = "1.1.0"
 	}
-	return ports.CodexInstallation{Path: "/fixture/codex", RealPath: "/fixture/codex", Version: version, Source: "npm", Scope: "npm:fixture", Fingerprint: version, VersionSource: "npm", Command: ports.InstallCommand{Argv: []string{"/fixture/npm", "update"}}}, ctx.Err()
+	return ports.CodexInstallation{Path: i.binary, RealPath: i.binary, Version: version, Source: "npm", Scope: "npm:fixture", Fingerprint: version, VersionSource: "npm", Command: ports.InstallCommand{Argv: []string{"/fixture/npm", "update"}}}, ctx.Err()
 }
 func (*installer) Latest(ctx context.Context, _ ports.CodexInstallation) (string, error) {
 	return "1.1.0", ctx.Err()
@@ -84,9 +85,9 @@ func (i *installer) RunInstall(ctx context.Context, _ ports.InstallCommand, _, _
 }
 
 // New launches a fresh, resumed, or restored reviewer through the real launcher.
-func New(ctx context.Context, t *testing.T, rt Runtime, mode string) *Fixture {
+func New(ctx context.Context, t *testing.T, rt Runtime, mode, binary string) *Fixture {
 	t.Helper()
-	l := review.NewLauncher(adapter{}, rt, t.TempDir())
+	l := review.NewLauncher(adapter{binary: binary}, rt, t.TempDir())
 	spec := review.LaunchSpec{WorkerID: "worker", Harness: domain.ReviewerCodex, WorkspacePath: t.TempDir(), BatchID: "batch", RunID: "run"}
 	if mode != "fresh" {
 		spec.AgentSessionID = "native-history"
@@ -107,7 +108,7 @@ func New(ctx context.Context, t *testing.T, rt Runtime, mode string) *Fixture {
 	}
 	store := &reviewerStore{row: domain.Review{SessionID: "worker", Harness: domain.ReviewerCodex, ReviewerHandleID: result.HandleID, AgentSessionID: result.AgentSessionID}}
 	engine := review.New(review.Deps{Store: store, Launcher: l})
-	runner := &installer{}
+	runner := &installer{binary: binary}
 	gate := codexops.NewGate()
 	service := systeminstall.NewWithDeps(nil, runner, systeminstall.Deps{Sessions: store, CodexReviewers: engine, CodexMaintenance: runner, CodexOperationGate: gate, RefreshCodex: func(ctx context.Context) error { runner.refreshed.Store(true); return ctx.Err() }})
 	t.Cleanup(func() {

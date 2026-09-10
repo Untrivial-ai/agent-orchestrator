@@ -336,7 +336,7 @@ func TestReviewerWorkloadUpdateRoutesSnapshot(t *testing.T) {
 					prefix = ""
 				}
 				rt := newHybridRuntime(legacy, direct, nil, "Linux")
-				f := reviewerupdate.New(context.Background(), t, rt, mode)
+				f := reviewerupdate.New(context.Background(), t, rt, mode, "/fixture/codex")
 				f.Blocked(context.Background(), t, nil)
 				alive = false
 				f.Ready(context.Background(), t)

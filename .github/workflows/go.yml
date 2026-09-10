@@ -51,6 +51,18 @@ jobs:
         # protection while leaving enough headroom for migration coverage.
         run: go test -race -timeout=15m ./...
 
+      - name: Isolated reviewer workload integration
+        env:
+          AO_TEST_REQUIRE_TMUX: "1"
+        # Install after the full suite so adding this dependency does not
+        # activate unrelated optional tmux integration tests on lean images.
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends tmux
+          fi
+          go test -race -run '^TestReviewerWorkloadControlledProcessIntegration$' -count=1 -timeout=90s ./internal/adapters/runtime/runtimeselect
+
   # The suite above only ever runs on Linux, so the packages whose behaviour is
   # genuinely platform-specific have never been exercised on Windows: worktree
   # teardown renames and unlinks directories, and Windows is the platform where
