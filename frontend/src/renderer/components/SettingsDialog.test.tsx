@@ -44,10 +44,24 @@ vi.mock("../hooks/useCloudGate", () => ({
 	useCloudGate: () => ({ cloudEnabled: false, localEnabled: true }),
 }));
 
+// The dialog also asks where a project lives, to decide whether a save control
+// makes sense. Mocked for the same reason as the gate above.
+const cloudProjectMock = vi.hoisted(() => ({ isCloudProject: false, isResolving: false }));
+
+vi.mock("../hooks/useCloudProject", () => ({
+	useCloudProject: () => ({
+		project: cloudProjectMock.isCloudProject ? { id: "cloud-1" } : undefined,
+		isResolving: cloudProjectMock.isResolving,
+		isKnownLocal: !cloudProjectMock.isCloudProject && !cloudProjectMock.isResolving,
+	}),
+}));
+
 describe("SettingsDialog", () => {
 	beforeEach(() => {
 		postMock.mockReset().mockResolvedValue({ data: { operationId: "login-1", status: "cancelled" } });
 		useUiStore.setState({ settingsModal: null });
+		cloudProjectMock.isCloudProject = false;
+		cloudProjectMock.isResolving = false;
 	});
 
 	function renderSettingsDialog() {
@@ -102,4 +116,30 @@ describe("SettingsDialog", () => {
 		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
 		expect(postMock).not.toHaveBeenCalled();
 	});
+
+	it("offers the save control for a local project", async () => {
+		useUiStore.getState().openProjectSettings("proj-1");
+		renderSettingsDialog();
+
+		expect(await screen.findByRole("button", { name: "Save changes" })).toBeInTheDocument();
+	});
+
+	it("withholds the save control for a cloud project", async () => {
+		cloudProjectMock.isCloudProject = true;
+		useUiStore.getState().openProjectSettings("cloud-1");
+		renderSettingsDialog();
+
+		expect(await screen.findByRole("button", { name: "Close settings" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+	});
+
+	it("withholds the save control until the project is known to be local", async () => {
+		cloudProjectMock.isResolving = true;
+		useUiStore.getState().openProjectSettings("proj-1");
+		renderSettingsDialog();
+
+		expect(await screen.findByRole("button", { name: "Close settings" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+	});
+
 });

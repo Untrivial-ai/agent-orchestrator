@@ -2,6 +2,7 @@ import { Bot, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } 
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCloudGate } from "../hooks/useCloudGate";
+import { useCloudProject } from "../hooks/useCloudProject";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import {
 	ProjectSettingsForm,
@@ -55,6 +56,13 @@ export function SettingsDialog() {
 	];
 
 	const isProjectSettings = displaySettings?.scope === "project";
+	// Cloud project settings are read-only, so the save control has nothing to
+	// submit. Offering it only for a known-local project also avoids flashing a
+	// control that may turn out to have no form behind it, while a local-only
+	// deployment resolves immediately and is unaffected.
+	const cloud = useCloudProject(
+		displaySettings?.scope === "project" ? displaySettings.projectId : "",
+	);
 	const [activeSection, setActiveSection] = useState<GlobalSettingsSection>("general");
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
@@ -112,7 +120,7 @@ export function SettingsDialog() {
 										/>
 									))}
 						</nav>
-						{isProjectSettings && (
+						{isProjectSettings && cloud.isKnownLocal && (
 							<div className="mt-auto flex flex-col gap-2 border-t border-(--color-border-settings-dialog-header) p-3">
 								<Button
 									type="submit"

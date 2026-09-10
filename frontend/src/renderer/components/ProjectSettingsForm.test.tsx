@@ -69,6 +69,29 @@ vi.mock("../lib/api-client", () => ({
 	},
 }));
 
+const cloudMocks = vi.hoisted(() => ({
+	ready: false,
+	projects: [] as Array<Record<string, unknown>>,
+	listProjects: vi.fn(),
+}));
+
+vi.mock("../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({
+		client: { listProjects: cloudMocks.listProjects },
+		ready: cloudMocks.ready,
+		baseUrl: "https://cp.example.com",
+	}),
+}));
+
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({
+		org: cloudMocks.ready ? { id: "org-1", slug: "acme", displayName: "Acme", role: "admin" } : undefined,
+		isLoading: false,
+		error: undefined,
+		ready: cloudMocks.ready,
+	}),
+}));
+
 import { ProjectSettingsForm, type ProjectSettingsSaveState, type ProjectSettingsSection } from "./ProjectSettingsForm";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import type { WorkspaceSummary } from "../types/workspace";
@@ -195,6 +218,10 @@ beforeEach(() => {
 	setOrchestratorReplacementErrorMock.mockReset();
 	captureOrchestratorReplacementFailureMock.mockReset();
 	ensureAgentReadinessMock.mockReset();
+	cloudMocks.ready = false;
+	cloudMocks.projects = [];
+	cloudMocks.listProjects.mockReset();
+	cloudMocks.listProjects.mockImplementation(async () => ({ items: cloudMocks.projects }));
 	putMock.mockResolvedValue({ data: { project: {} }, error: undefined });
 	postMock.mockResolvedValue({
 		data: { orchestrator: { id: "proj-1-orch-2" } },
@@ -1689,4 +1716,83 @@ describe("ProjectSettingsForm", () => {
 			"proj-1",
 		);
 	});
+
+	describe("cloud projects", () => {
+		const cloudProject = {
+			id: "cloud-1",
+			orgId: "org-1",
+			displayName: "Checkout service",
+			repositoryUrl: "https://github.com/octocat/Hello-World",
+			defaultBranch: "trunk",
+			config: {},
+			createdAt: "2026-09-01T00:00:00Z",
+			updatedAt: "2026-09-01T00:00:00Z",
+		};
+
+		function enableCloud() {
+			cloudMocks.ready = true;
+			cloudMocks.projects = [cloudProject];
+		}
+
+		it("never asks the local daemon for a cloud project", async () => {
+			enableCloud();
+			renderSettings("cloud-1");
+
+			expect(await screen.findByText("Checkout service")).toBeInTheDocument();
+			expect(
+				getMock.mock.calls.some(([path]) => path === "/api/v1/projects/{id}"),
+			).toBe(false);
+			expect(screen.queryByText("Unknown project (PROJECT_NOT_FOUND)")).not.toBeInTheDocument();
+		});
+
+		it("shows identity as read-only values with no editable control", async () => {
+			enableCloud();
+			renderSettings("cloud-1");
+
+			expect(await screen.findByText("Checkout service")).toBeInTheDocument();
+			expect(screen.getByText("cloud-1")).toBeInTheDocument();
+			expect(screen.getByText("Cloud project")).toBeInTheDocument();
+			expect(screen.getByText("https://github.com/octocat/Hello-World")).toBeInTheDocument();
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: /^Edit / })).not.toBeInTheDocument();
+		});
+
+		it("shows the default branch read-only under workflow", async () => {
+			enableCloud();
+			renderSettings("cloud-1", undefined, "workflow");
+
+			expect(await screen.findByText("trunk")).toBeInTheDocument();
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+		});
+
+		it.each(["agents", "intake"] as const)(
+			"reports that the %s section has no cloud equivalent",
+			async (section) => {
+				enableCloud();
+				renderSettings("cloud-1", undefined, section);
+
+				expect(
+					await screen.findByText("Not available for cloud projects yet."),
+				).toBeInTheDocument();
+			},
+		);
+
+		it("still loads a local project from the daemon while the cloud offering is on", async () => {
+			enableCloud();
+			mockProject({
+				id: "proj-1",
+				name: "Local project",
+				kind: "single_repo",
+				path: "/tmp/proj-1",
+				repo: "octocat/local",
+				config: {},
+			});
+			renderSettings("proj-1");
+
+			await waitFor(() =>
+				expect(getMock.mock.calls.some(([path]) => path === "/api/v1/projects/{id}")).toBe(true),
+			);
+		});
+	});
+
 });

@@ -5,6 +5,7 @@ import {
 	ProjectGeneralSettingsView,
 	ProjectSettingsFormView,
 	ProjectSettingsSection,
+	ProjectSettingsValueRow,
 	ProjectWorkflowSettingsView,
 	validateProjectSettings,
 } from "@aoagents/product-ui";
@@ -21,8 +22,10 @@ import {
 	type AgentModelCatalog,
 } from "../hooks/useAgentModelsQuery";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
+import { useCloudProject } from "../hooks/useCloudProject";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import type { CloudCpProject } from "../lib/cloud-cp";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { captureRendererEvent } from "../lib/telemetry";
@@ -72,9 +75,14 @@ export function ProjectSettingsForm({
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const cloud = useCloudProject(projectId);
 
 	const query = useQuery({
 		queryKey: projectQueryKey(projectId),
+		// A cloud project lives in the control plane and was never registered with
+		// the local daemon, so this lookup would 404 and render its raw
+		// PROJECT_NOT_FOUND text. Only ask once the id is known to be local.
+		enabled: cloud.isKnownLocal,
 		queryFn: async () => {
 			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", {
 				params: { path: { id: projectId } },
@@ -85,9 +93,13 @@ export function ProjectSettingsForm({
 		},
 	});
 
+	if (cloud.project) {
+		return <CloudSettingsBody project={cloud.project} section={section} />;
+	}
+
 	return (
 		<>
-			{query.isLoading ? (
+			{cloud.isResolving || query.isLoading ? (
 				<p className="text-sm text-settings-muted">{t("settings.project.loading")}</p>
 			) : query.isError || !query.data ? (
 				<p className="text-sm text-error">
@@ -108,6 +120,58 @@ export function ProjectSettingsForm({
 				/>
 			)}
 		</>
+	);
+}
+
+/**
+ * Read-only settings for a cloud project.
+ *
+ * The cloud contract carries none of the per-project agent, workflow or intake
+ * configuration the local form edits, and its only mutable fields are
+ * displayName and defaultBranch, so nothing here is editable yet. Sections
+ * without a cloud equivalent say so rather than render an empty shell, matching
+ * how scratch projects already report the sections they do not support.
+ */
+function CloudSettingsBody({
+	project,
+	section,
+}: {
+	project: CloudCpProject;
+	section: ProjectSettingsSection;
+}) {
+	const { t } = useTranslation();
+
+	// Not a form: there is nothing to submit. The layout class matches
+	// ProjectSettingsFormView so both bodies stack their sections identically.
+	return (
+		<div className="flex w-full flex-col gap-(--size-settings-section-gap)">
+			{section === "general" && (
+				<ProjectSettingsSection title={t("settings.project.identity")} titleHidden grouped>
+					<ProjectSettingsValueRow label={t("settings.project.name")} value={project.displayName} />
+					<ProjectSettingsValueRow label={t("settings.project.id")} value={project.id} />
+					<ProjectSettingsValueRow label={t("settings.project.kind")} value={t("settings.project.kind.cloud")} />
+					<ProjectSettingsValueRow
+						externalLink={ProductExternalLink}
+						href={repositoryHref(project.repositoryUrl)}
+						label={t("settings.project.repository")}
+						value={project.repositoryUrl}
+					/>
+				</ProjectSettingsSection>
+			)}
+
+			{section === "workflow" && (
+				// The local page groups this under "Worktrees", which a cloud project
+				// does not have: its sessions are checkouts inside a sandbox. The tab
+				// is already titled Workflow, so the group needs no heading of its own.
+				<ProjectSettingsSection title={t("settings.project.workflow")} titleHidden grouped>
+					<ProjectSettingsValueRow label={t("settings.project.defaultBranch")} value={project.defaultBranch} />
+				</ProjectSettingsSection>
+			)}
+
+			{(section === "agents" || section === "intake") && (
+				<p className="px-1 text-xs text-settings-muted">{t("settings.project.cloudSectionUnavailable")}</p>
+			)}
+		</div>
 	);
 }
 
