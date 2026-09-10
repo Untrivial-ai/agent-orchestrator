@@ -14,7 +14,7 @@
 export type SessionMode = "chat" | "tui";
 
 /** One request and the agent work that followed it. */
-export type TurnState = "queued" | "running" | "completed" | "interrupted" | "failed";
+export type TurnState = "queued" | "running" | "completed" | "recovered" | "interrupted" | "failed" | "cancelled";
 
 export type MessageRole = "user" | "assistant";
 
@@ -47,9 +47,17 @@ export type ActivityKind =
 
 /**
  * `cancelled` means the enclosing turn stopped before the provider completed the
- * item. It is intentionally distinct from `failed`: the user stopped the work.
+ * item. `recovered` means replay proved the item is historical but carried no
+ * portable outcome. Both are intentionally distinct from `failed`.
  */
-export type ActivityStatus = "running" | "completed" | "failed" | "cancelled" | "pending" | "resolved";
+export type ActivityStatus =
+	| "running"
+	| "completed"
+	| "recovered"
+	| "failed"
+	| "cancelled"
+	| "pending"
+	| "resolved";
 
 /**
  * Delivery state for a message AO sent. `uncertain` is deliberately not merged
@@ -90,6 +98,10 @@ export interface ConversationTurn {
 	 */
 	rolledBack?: boolean;
 	providerTurnId?: string;
+	/** Failed source whose durable prompt created this retry attempt. */
+	retryOfTurnId?: string;
+	/** A retry attempt exists, even if that child is outside the active branch. */
+	hasRetryAttempt?: boolean;
 	errorMessage?: string;
 	requestedAt: string;
 	startedAt?: string;
@@ -122,6 +134,20 @@ export interface TurnDiff {
 	truncated?: boolean;
 }
 
+/** Lightweight, durable prompt content retained when a human message is edited. */
+export interface ConversationContentSummary {
+	type: string;
+	mimeType?: string;
+	uri?: string;
+	name?: string;
+}
+
+export interface QueuedMessageEditOptions {
+	attachments?: { mimeType: string; data: string }[];
+	retainedContent?: number[];
+	expectedRevision?: number;
+}
+
 export interface ConversationMessage {
 	kind: "message";
 	id: string;
@@ -133,6 +159,10 @@ export interface ConversationMessage {
 	role: MessageRole;
 	origin: MessageOrigin;
 	text: string;
+	/** Server-authoritative prompt blocks, with heavy image/resource payloads removed. */
+	content?: ConversationContentSummary[];
+	/** False when the original prompt content cannot be reproduced safely. */
+	editAvailable?: boolean;
 	/** True while more deltas are expected. */
 	streaming: boolean;
 	delivery?: DeliveryState;
@@ -141,11 +171,41 @@ export interface ConversationMessage {
 	createdAt: string;
 }
 
+export interface ConversationBranchPoint {
+	turnId: string;
+	position: number;
+	total: number;
+	previousBranchId?: string;
+	nextBranchId?: string;
+}
+
 /** One choice the provider says is valid for a pending request. */
 export interface DecisionOption {
 	/** e.g. "accept", "acceptForSession", "acceptWithExecpolicyAmendment". */
 	id: string;
 	label: string;
+	/** Provider-neutral consent meaning; IDs and labels may be opaque or localized. */
+	kind?: "allow_once" | "allow_always" | "reject_once" | "reject_always";
+}
+
+/** Provider context retained before and after a human approval decision. */
+export interface ApprovalDetail {
+	/** The provider request shape, used to choose command or file-change copy. */
+	method?: string;
+	/** The provider decision id AO successfully returned. */
+	decision?: string;
+	/** Present when another connected client resolved the request. */
+	resolvedBy?: string;
+	/** The normalized activity the provider wants permission to perform. */
+	subjectKind?: ActivityKind;
+	/** ACP's tool category, retained for diagnostics and forward compatibility. */
+	toolKind?: string;
+}
+
+/** Provider-supplied recovery information carried by an error activity. */
+export interface ProviderErrorDetail {
+	/** Optional provider destination; the renderer shows web URLs literally. */
+	actionUrl?: string;
 }
 
 export interface CommandDetail {
@@ -165,8 +225,7 @@ export interface CommandDetail {
 	output?: string;
 	/**
 	 * Provider output aggregation was observed to drop leading bytes even on tiny
-	 * commands, so this is display data and the UI says so rather than presenting
-	 * it as the record of what ran.
+	 * commands, so this display data is not an authoritative record of what ran.
 	 *
 	 * Set for BOTH output sources. Measured on codex-cli 0.146.0: a command
 	 * printing tick-1..tick-8 lost tick-1 from the delta stream and from the
@@ -179,8 +238,7 @@ export interface CommandDetail {
 	 * `stream` is accumulated output deltas: it exists while the command is still
 	 * running, and it is the only source for a command that never completes.
 	 * `aggregate` is the provider's own roll-up, which only appears on completion
-	 * and is all a fast command produces. Both are partial, for different reasons,
-	 * which is why the UI names the reason instead of hedging identically.
+	 * and is all a fast command produces.
 	 */
 	outputSource?: "stream" | "aggregate";
 	/** Accumulation stopped at the daemon's cap; the command printed more. */
@@ -246,6 +304,9 @@ export interface FileChangeFile {
 	additions: number;
 	deletions: number;
 	patch?: string;
+	/** Native provider before/after text, used to render a fallback diff. */
+	oldText?: string;
+	newText?: string;
 	/** The patch was cut at the daemon's cap, so it is not the whole change. */
 	patchTruncated?: boolean;
 }
@@ -278,6 +339,8 @@ export interface McpToolDetail {
 	namespace?: string;
 	arguments?: unknown;
 	result?: unknown;
+	/** Structured provider content, including native ACP read output. */
+	content?: unknown;
 	error?: string;
 	success?: boolean;
 	/** Progress notes streamed while a long call runs. */
@@ -319,13 +382,33 @@ export interface AutoReviewDetail {
  * from the presence of text. Read the discriminator, never the kind.
  */
 export interface SystemEventDetail {
-	event?: "compaction" | "model.rerouted" | "auth.reauth_required" | "steer" | "plan" | "context.reset";
+	event?:
+		| "compaction"
+		| "model.rerouted"
+		| "auth.reauth_required"
+		| "provider.failure"
+		| "steer"
+		| "plan"
+		| "context.reset";
 	/** model.rerouted */
 	fromModel?: string;
 	toModel?: string;
+	/** provider.failure: provider-neutral classification from an agent protocol extension. */
+	category?: string;
+	severity?: "warning" | "error" | (string & {});
+	revision?: number;
 	/** steer: the user's own words, delivered into a turn already running. */
 	origin?: string;
 	clientMessageId?: string;
+	/** steer: complete provider-neutral content copied from a promoted queue item. */
+	content?: Array<{
+		type: string;
+		data?: string;
+		mimeType?: string;
+		uri?: string;
+		name?: string;
+		text?: string;
+	}>;
 }
 
 /** A `plan` activity's payload, which is the same plan the turn carries. */
@@ -427,6 +510,8 @@ export interface ConversationActivity {
 	 * something a provider may not report.
 	 */
 	detail?: CommandDetail &
+		ApprovalDetail &
+		ProviderErrorDetail &
 		FileChangeDetail &
 		UsageDetail &
 		CompactionDetail &
@@ -496,6 +581,8 @@ export interface ChatConfigOption {
 
 /** One value offered by a select config option. */
 export interface ChatConfigChoice {
+	/** Exact AO permission equivalent supplied by the daemon, when supported. */
+	permissionMode?: ApprovalMode;
 	value: string;
 	name: string;
 	description?: string;
@@ -505,9 +592,7 @@ export interface ChatConfigChoice {
 }
 
 /** The two value shapes ACP session config supports. */
-export type ChatConfigOptionValue =
-	| { value: string }
-	| { enabled: boolean };
+export type ChatConfigOptionValue = { value: string } | { enabled: boolean };
 
 /**
  * One named skill the provider will let this session invoke.
@@ -636,6 +721,13 @@ export interface ConversationSnapshot {
 	latestSequence: number;
 	oldestSequence: number;
 	hasMoreBefore: boolean;
+	/** The first provider-backed prompt in the active provider scope. */
+	nativeForkAvailableAfterSequence?: number;
+	activeBranchId?: string;
+	branchedFromEarlierMessage?: boolean;
+	branchPoints?: ConversationBranchPoint[];
+	/** How the active historical branch acquired its provider context. */
+	branchMaterialization?: ConversationBranchMaterialization;
 	/** What the next turn will be sent with. Daemon-owned, so it survives a
 	 *  restart and applies to turns AO dispatches on the user's behalf. */
 	settings: TurnSettings;
@@ -677,6 +769,13 @@ export interface ConversationSnapshot {
 	 * Read it through `can()`, which encodes that distinction once.
 	 */
 	capabilities?: string[];
+}
+
+/** The provider-history fidelity of the active branch. */
+export interface ConversationBranchMaterialization {
+	strategy: "native" | "approximate_context" | (string & {});
+	/** True when AO's bounded reconstructed context omitted some text. */
+	replayTruncated: boolean;
 }
 
 /**
@@ -728,21 +827,31 @@ export function activeTurn(snapshot: ConversationSnapshot): ConversationTurn | u
 }
 
 /**
+ * Turn ids whose human prompt must not appear in the timeline.
+ *
+ * Queued turns live in the dock until dispatch. Turns cancelled from the dock
+ * before dispatch must not reappear in the timeline after the snapshot refreshes.
+ */
+export function hiddenTimelineTurnIds(snapshot: ConversationSnapshot): Set<string> {
+	return new Set(
+		snapshot.turns
+			.filter((turn) => turn.state === "queued" || turn.state === "cancelled")
+			.map((turn) => turn.id),
+	);
+}
+
+/**
  * Turn ids for messages recorded but not yet sent.
  *
  * The daemon holds a mid-turn message instead of pushing it at a busy agent, so
  * the timeline has to distinguish "waiting to be sent" from "sent".
  */
 export function queuedTurnIds(snapshot: ConversationSnapshot): Set<string> {
-	return new Set(
-		snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id),
-	);
+	return new Set(snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id));
 }
 
 /** The pending approval a user must answer, if any. */
-export function pendingApproval(
-	snapshot: ConversationSnapshot,
-): ConversationActivity | undefined {
+export function pendingApproval(snapshot: ConversationSnapshot): ConversationActivity | undefined {
 	return snapshot.items.find(
 		(item): item is ConversationActivity =>
 			item.kind === "activity" && item.activityKind === "approval" && item.status === "pending",
@@ -750,9 +859,7 @@ export function pendingApproval(
 }
 
 /** The structured question currently blocking the agent, if any. */
-export function pendingUserInput(
-	snapshot: ConversationSnapshot,
-): ConversationActivity | undefined {
+export function pendingUserInput(snapshot: ConversationSnapshot): ConversationActivity | undefined {
 	return snapshot.items.find(
 		(item): item is ConversationActivity =>
 			item.kind === "activity" && item.activityKind === "user_input" && item.status === "pending",

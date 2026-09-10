@@ -40,6 +40,7 @@ var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 // AO reuses reviewer panes and injects later review tasks into them.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
+		Config:           inv.Config,
 		SessionID:        inv.ReviewerID,
 		WorkspacePath:    inv.WorkspacePath,
 		Prompt:           inv.Prompt,

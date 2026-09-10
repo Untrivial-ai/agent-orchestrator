@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"log/slog"
+	"net/url"
 
 	"net/http"
 
@@ -159,7 +160,7 @@ func TestProjectsAPI_ListAddGet(t *testing.T) {
 
 	mustJSON(t, body, &add)
 
-	if add.Project.ID != "ao" || add.Project.Name != "Agent Orchestrator" || add.Project.DefaultBranch != "main" {
+	if add.Project.ID != "ao" || add.Project.Name != "Agent Orchestrator" || add.Project.DefaultBranch != domain.DefaultBranchAuto {
 
 		t.Fatalf("created project = %#v", add.Project)
 
@@ -283,6 +284,30 @@ func TestProjectsAPI_AddValidationAndConflicts(t *testing.T) {
 
 	assertErrorCode(t, body, status, http.StatusConflict, "ID_ALREADY_REGISTERED")
 
+}
+
+func TestProjectsAPI_Clone(t *testing.T) {
+	srv := newTestServer(t)
+	source := gitRepo(t, "clone-source")
+	remoteURL := (&url.URL{Scheme: "file", Path: source}).String()
+	destinationParent := t.TempDir()
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/projects/clone", `{"remoteUrl":`+quote(remoteURL)+`,"destinationParent":`+quote(destinationParent)+`}`)
+	if status != http.StatusCreated {
+		t.Fatalf("POST clone = %d, want 201; body=%s", status, body)
+	}
+	var cloned struct {
+		Project projectBody `json:"project"`
+	}
+	mustJSON(t, body, &cloned)
+	if cloned.Project.Path != filepath.Join(destinationParent, filepath.Base(source)) || cloned.Project.Repo != remoteURL {
+		t.Fatalf("cloned project = %#v", cloned.Project)
+	}
+
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects/clone", `{}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_GIT_URL")
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects/clone", `{`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
 }
 
 func TestProjectsAPI_InitializeRepository(t *testing.T) {
@@ -647,4 +672,23 @@ func assertErrorCode(t *testing.T, body []byte, status, wantStatus int, wantCode
 
 	}
 
+}
+
+func TestProjectsAPI_SetPermissions(t *testing.T) {
+	srv := newTestServer(t)
+	repo := gitRepo(t, "remember")
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/projects", `{"path":`+quote(repo)+`,"projectId":"remember"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("create %d %s", status, body)
+	}
+	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/remember/permissions", `{"permissions":"auto"}`)
+	if status != http.StatusOK || !strings.Contains(string(body), `"permissions":"auto"`) {
+		t.Fatalf("save %d %s", status, body)
+	}
+	for _, tc := range []struct{ body, code string }{{`{}`, "INVALID_PERMISSIONS"}, {`{"permissions":"yolo"}`, "INVALID_PERMISSIONS"}, {`{"permissions":"auto","extra":true}`, "INVALID_JSON"}, {`{`, "INVALID_JSON"}} {
+		body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/remember/permissions", tc.body)
+		assertErrorCode(t, body, status, http.StatusBadRequest, tc.code)
+	}
+	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/missing/permissions", `{"permissions":"auto"}`)
+	assertErrorCode(t, body, status, http.StatusNotFound, "PROJECT_NOT_FOUND")
 }

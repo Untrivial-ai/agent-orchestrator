@@ -2,10 +2,12 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -19,6 +21,14 @@ const cancelInterruptDelay = 150 * time.Millisecond
 const defaultReviewerInitialDelay = 500 * time.Millisecond
 
 const reviewerTaskMessagePrefix = "Read and follow the AO review task in `"
+
+// EnvRunFile points reviewer-local AO CLI calls at the live daemon run-file.
+const EnvRunFile = "AO_RUN_FILE"
+
+// EnvAOCommandWarning records why AO could not guarantee a reviewer-local `ao`
+// command. Review launch remains best-effort so provider reviews can still be
+// posted and later reconciled, but this makes the degraded path diagnosable.
+const EnvAOCommandWarning = "AO_REVIEW_AO_COMMAND_WARNING"
 
 // Launcher spawns, re-notifies, and probes a reviewer over a worker's worktree.
 // It is the side of the engine that talks to the reviewer registry and runtime;
@@ -52,19 +62,21 @@ type Launcher interface {
 
 // LaunchSpec is the engine's request to (re)launch a reviewer for one pass.
 type LaunchSpec struct {
-	RunID           string
-	BatchID         string
-	ReviewSessionID string
-	WorkerID        domain.SessionID
-	ProjectID       domain.ProjectID
-	Harness         domain.ReviewerHarness
-	WorkspacePath   string
-	AgentSessionID  string
-	PreviousRuns    []domain.ReviewRun
-	PRURL           string
-	TargetSHA       string
-	ReviewQueue     []ports.ReviewTask
-	ReviewIndex     int
+	RunID                string
+	BatchID              string
+	ReviewSessionID      string
+	WorkerID             domain.SessionID
+	ProjectID            domain.ProjectID
+	Harness              domain.ReviewerHarness
+	AgentConfig          domain.AgentConfig
+	WorkspacePath        string
+	AgentSessionID       string
+	RequireNativeHistory bool
+	PreviousRuns         []domain.ReviewRun
+	PRURL                string
+	TargetSHA            string
+	ReviewQueue          []ports.ReviewTask
+	ReviewIndex          int
 }
 
 // LaunchResult is the terminal/runtime state created by a reviewer launch.
@@ -90,10 +102,12 @@ type reviewerRuntime interface {
 // runtime. The reviewer reuses the worker's worktree (a fresh session worktree
 // would branch off the default branch and so would not contain the PR changes).
 type agentLauncher struct {
-	reviewers ports.ReviewerResolver
-	runtime   reviewerRuntime
-	dataDir   string
-	auth      agentAuthResolver
+	reviewers  ports.ReviewerResolver
+	runtime    reviewerRuntime
+	dataDir    string
+	runFile    string
+	auth       agentAuthResolver
+	executable func() (string, error)
 }
 
 type preLaunchReviewer interface {
@@ -120,9 +134,27 @@ func WithAgentAuth(auth agentAuthResolver) LauncherOption {
 	}
 }
 
+// WithExecutable overrides os.Executable for reviewer PATH pinning. Production
+// leaves this unset; tests use it to model the daemon binary that should make a
+// bare `ao review submit` available inside reviewer panes.
+func WithExecutable(executable func() (string, error)) LauncherOption {
+	return func(l *agentLauncher) {
+		l.executable = executable
+	}
+}
+
+// WithRunFilePath pins reviewer-local AO CLI calls to this daemon's run-file.
+// This is intentionally separate from AO_DATA_DIR: the CLI discovers the live
+// daemon from AO_RUN_FILE, not from the durable data directory.
+func WithRunFilePath(path string) LauncherOption {
+	return func(l *agentLauncher) {
+		l.runFile = path
+	}
+}
+
 // NewLauncher builds the production reviewer launcher.
-func NewLauncher(reviewers ports.ReviewerResolver, runtime reviewerRuntime, dataDir string, opts ...LauncherOption) Launcher {
-	l := &agentLauncher{reviewers: reviewers, runtime: runtime, dataDir: dataDir}
+func NewLauncher(reviewers ports.ReviewerResolver, rt reviewerRuntime, dataDir string, opts ...LauncherOption) Launcher {
+	l := &agentLauncher{reviewers: reviewers, runtime: rt, dataDir: dataDir, executable: os.Executable}
 	for _, opt := range opts {
 		opt(l)
 	}
@@ -217,8 +249,10 @@ func (l *agentLauncher) invocation(spec LaunchSpec) ports.ReviewInvocation {
 		TargetSHA:       spec.TargetSHA,
 		ReviewQueue:     spec.ReviewQueue,
 		ReviewIndex:     spec.ReviewIndex,
+		Config:          spec.AgentConfig,
 		WorkspacePath:   spec.WorkspacePath,
 		DataDir:         l.dataDir,
+		RunFilePath:     l.runFile,
 		Prompt:          prompt,
 		SystemPrompt:    systemPrompt,
 	}
@@ -290,8 +324,10 @@ func (l *agentLauncher) prepareIdleInvocation(spec LaunchSpec) (ports.ReviewInvo
 		ReviewerID:       reviewerHandleID(spec.WorkerID),
 		WorkerSessionID:  spec.WorkerID,
 		AgentSessionID:   spec.AgentSessionID,
+		Config:           spec.AgentConfig,
 		WorkspacePath:    spec.WorkspacePath,
 		DataDir:          l.dataDir,
+		RunFilePath:      l.runFile,
 		Prompt:           prompt,
 		SystemPrompt:     "",
 		SystemPromptFile: systemPath,
@@ -380,6 +416,9 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 				cmd = restoreCmd
 			}
 		}
+	}
+	if restoring && spec.RequireNativeHistory && len(cmd.Argv) == 0 {
+		return LaunchResult{}, errors.New("reviewer native history resume is unavailable")
 	}
 	if len(cmd.Argv) == 0 {
 		var err error
@@ -497,12 +536,74 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 	env["AO_REVIEW_HARNESS"] = string(spec.Harness)
 	env[sessionmanager.EnvProjectID] = string(spec.ProjectID)
 	env[sessionmanager.EnvDataDir] = l.dataDir
-	path, err := sessionmanager.HookPATH(os.Executable, os.Getenv, env)
+	if strings.TrimSpace(l.runFile) != "" {
+		env[EnvRunFile] = l.runFile
+	}
+	// pinnedDir is whichever directory ends up at the head of PATH here, so the
+	// launch-binary prepend below can put it back rather than letting a foreign
+	// `ao` beside the agent binary win a bare `ao` inside the reviewer pane.
+	pinnedDir := ""
+	path, err := sessionmanager.HookPATH(l.executable, os.Getenv, env, l.dataDir)
 	if err == nil {
 		env["PATH"] = path
+		pinnedDir = sessionmanager.PinnedHookDir(l.executable, l.dataDir)
+	} else if shimDir, shimErr := l.ensureAOShimDir(); shimErr == nil {
+		env["PATH"] = prependPathDir(shimDir, env["PATH"])
+		pinnedDir = shimDir
+	} else {
+		env[EnvAOCommandWarning] = fmt.Sprintf("PATH pin failed: %v; AO shim fallback failed: %v", err, shimErr)
 	}
-	sessionmanager.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, exec.LookPath)
+	sessionmanager.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, exec.LookPath, pinnedDir)
 	return env
+}
+
+func (l *agentLauncher) ensureAOShimDir() (string, error) {
+	if strings.TrimSpace(l.dataDir) == "" {
+		return "", fmt.Errorf("reviewer AO shim data directory is required")
+	}
+	exe, err := l.executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve AO executable: %w", err)
+	}
+	if !filepath.IsAbs(exe) {
+		exe, err = filepath.Abs(exe)
+		if err != nil {
+			return "", fmt.Errorf("make AO executable absolute: %w", err)
+		}
+	}
+	shimDir := filepath.Join(l.dataDir, "reviewer-runtime", "bin")
+	if err := os.MkdirAll(shimDir, 0o700); err != nil {
+		return "", fmt.Errorf("create reviewer AO shim directory: %w", err)
+	}
+	shimPath := filepath.Join(shimDir, "ao")
+	if runtime.GOOS == "windows" {
+		shimPath += ".cmd"
+	}
+	if err := os.WriteFile(shimPath, []byte(aoShimScript(exe)), 0o600); err != nil {
+		return "", fmt.Errorf("write reviewer AO shim: %w", err)
+	}
+	if err := os.Chmod(shimPath, 0o700); err != nil { // #nosec G302 -- the reviewer shim must be executable by the AO user.
+		return "", fmt.Errorf("mark reviewer AO shim executable: %w", err)
+	}
+	return shimDir, nil
+}
+
+func aoShimScript(executable string) string {
+	if runtime.GOOS == "windows" {
+		return "@echo off\r\n\"" + executable + "\" %*\r\n"
+	}
+	return "#!/bin/sh\nexec " + shellQuote(executable) + ` "$@"` + "\n"
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func prependPathDir(dir, path string) string {
+	if strings.TrimSpace(path) == "" {
+		return dir
+	}
+	return dir + string(os.PathListSeparator) + path
 }
 
 func (l *agentLauncher) Notify(ctx context.Context, handleID string, spec LaunchSpec) error {

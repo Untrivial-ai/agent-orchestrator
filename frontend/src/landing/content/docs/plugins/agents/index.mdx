@@ -1,81 +1,59 @@
 ---
-title: Agents overview
-description: Pick the agent that writes the code. AO supports five today, and they're swappable per-project.
+title: Agent adapters
+description: The terminal harnesses built into AO and the smaller set that also supports structured Chat.
 ---
 
-The agent is the piece that actually writes code. Everything else in AO — worktrees, runtimes, notifiers — is plumbing around it.
+AO compiles agent adapters into the daemon. It uses your locally installed agent CLI and its existing authentication; it does not bundle provider credentials or install adapters from npm.
 
-<Callout type="info">
-	**PR metadata is captured automatically.** Non-Claude-Code agents (Codex, Cursor, Aider, OpenCode) use `~/.ao/bin/gh`
-	and `~/.ao/bin/git` PATH wrappers that intercept commands like `gh pr create` and record the resulting PR number and
-	branch so the dashboard stays in sync. Claude Code uses PostToolUse hooks in `.claude/settings.json` instead — the
-	same metadata is written through Claude Code's native hook system. Both approaches are set up transparently by AO; you
-	don't need to configure anything.
-</Callout>
+## Shipped terminal harnesses
 
-## Supported agents
+The daemon registry currently advertises 27 worker harnesses:
 
-| Agent                                           | Slot name     | Binary     | Session resume               |
-| ----------------------------------------------- | ------------- | ---------- | ---------------------------- |
-| [Claude Code](/docs/plugins/agents/claude-code) | `claude-code` | `claude`   | ✅ `--resume`                |
-| [Codex](/docs/plugins/agents/codex)             | `codex`       | `codex`    | ✅ `codex resume <threadId>` |
-| [Cursor](/docs/plugins/agents/cursor)           | `cursor`      | `agent`    | ❌                           |
-| [Aider](/docs/plugins/agents/aider)             | `aider`       | `aider`    | ❌                           |
-| [OpenCode](/docs/plugins/agents/opencode)       | `opencode`    | `opencode` | ✅ via OpenCode session API  |
+| | | | |
+| --- | --- | --- | --- |
+| `claude-code` | `codex` | `opencode` | `grok` |
+| `cursor` | `qwen` | `copilot` | `kimi` |
+| `muse` | `droid` | `amp` | `agy` |
+| `crush` | `aider` | `goose` | `auggie` |
+| `continue` | `devin` | `cline` | `kiro` |
+| `kilocode` | `vibe` | `pi` | `kimchi` |
+| `prime-agent` | `autohand` | `omp` | |
 
-<PluginGrid>
-	<PluginCard
-		name="Claude Code"
-		logo="claude-code"
-		href="/docs/plugins/agents/claude-code"
-		description="Anthropic's CLI coding agent."
-	/>
-	<PluginCard name="Codex" logo="codex" href="/docs/plugins/agents/codex" description="OpenAI's Codex CLI." />
-	<PluginCard name="Cursor" logo="cursor" href="/docs/plugins/agents/cursor" description="Cursor Agent CLI." />
-	<PluginCard name="Aider" logo="aider" href="/docs/plugins/agents/aider" description="Aider pair-programming CLI." />
-	<PluginCard
-		name="OpenCode"
-		logo="opencode"
-		href="/docs/plugins/agents/opencode"
-		description="OpenCode terminal agent."
-	/>
-</PluginGrid>
-
-## Choosing
-
-- **Want session resume** (pick up where you left off)? Claude Code, Codex, or OpenCode.
-- **One-shot per session** is fine? Any of the five.
-- **Pair-programming style editor**? Aider.
-- **Native IDE-like behavior in the terminal**? Cursor.
-
-## How AO talks to them
-
-Two patterns exist:
-
-- **Agent-native hooks** — Claude Code ships a PostToolUse hook in `.claude/settings.json`. AO's workspace bootstrap installs it; the agent writes activity events directly to AO's JSONL.
-- **PATH wrappers** — Codex, Cursor, Aider, and OpenCode don't have a hook system. AO installs small shell wrappers in `~/.ao/bin/gh` and `~/.ao/bin/git` and prepends them to `PATH`. When the agent runs `gh pr create` or `git commit`, the wrapper records metadata (PR number, branch, etc.) so the dashboard knows what the agent did.
-
-Neither approach requires you to change your agent's config — AO sets it up transparently.
-
-## Mixing agents
-
-Per-project overrides:
-
-```yaml
-agent: claude-code # global default
-projects:
-  api:
-    repo: myorg/api
-    agent: codex
-  web:
-    repo: myorg/web
-    agent: cursor
-```
-
-You can also override at spawn time:
+Run the catalog instead of relying on a static page when scripting:
 
 ```bash
-ao spawn 42 --agent codex
+ao agent ls --refresh
+ao agent ls --refresh --json
 ```
 
-Great for A/B testing which agent does better on a specific kind of issue.
+The readiness probe reports whether a harness is supported, installed, and authenticated. Spawn still performs authoritative validation.
+
+## Chat versus Terminal UI
+
+All advertised harnesses can run through their native terminal interface. Four also have structured Chat drivers:
+
+| Harness | Chat transport |
+| --- | --- |
+| `codex` | Codex native app-server |
+| `claude-code` | `claude-agent-acp` using the user's Claude executable |
+| `opencode` | Native ACP |
+| `droid` | Native ACP |
+
+Every other harness is Terminal UI-only. Choose the initial interface with `ao spawn --mode chat|tui`. Compatible Claude Code and Codex sessions can hand off between Chat and Terminal UI while retaining the AO session and worktree.
+
+## Choosing and configuring a harness
+
+```bash
+ao project set-config my-app --worker-agent codex
+ao spawn --project my-app --name auth-fix --agent claude-code --mode chat
+```
+
+`--agent` and `--harness` are aliases. Project configuration may also specify model, permission mode, environment, prompt rules, and separate worker/orchestrator defaults. Use `ao project set-config --help` for the typed fields.
+
+<Cards>
+	<Card title="Claude Code" description="Terminal UI and structured Chat." href="/docs/plugins/agents/claude-code" />
+	<Card title="Codex" description="Terminal UI and native app-server Chat." href="/docs/plugins/agents/codex" />
+	<Card title="OpenCode" description="Terminal UI and native ACP Chat." href="/docs/plugins/agents/opencode" />
+	<Card title="Cursor" description="Built-in terminal harness." href="/docs/plugins/agents/cursor" />
+	<Card title="Aider" description="Built-in terminal harness." href="/docs/plugins/agents/aider" />
+</Cards>

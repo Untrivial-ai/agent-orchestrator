@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -14,6 +13,7 @@ import (
 	agentpi "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/pi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/reviewgateway"
 )
 
@@ -47,7 +47,7 @@ func New() *Reviewer {
 	return &Reviewer{
 		resolveBinary: agentpi.ResolvePiBinary,
 		runHelp: func(ctx context.Context, binary string) ([]byte, error) {
-			return exec.CommandContext(ctx, binary, "--help").CombinedOutput()
+			return aoprocess.CommandContext(ctx, binary, "--help").CombinedOutput()
 		},
 	}
 }

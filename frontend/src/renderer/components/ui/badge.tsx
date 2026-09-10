@@ -13,7 +13,7 @@ export function Badge({
 		<span
 			data-slot="badge"
 			className={cn(
-				"inline-flex h-5 shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-full border border-transparent px-2 py-0.5 text-xs font-medium transition-[background-color,border-color,color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&>svg]:pointer-events-none [&>svg]:size-3",
+				"inline-flex h-5 shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-full border border-transparent px-2 py-0.5 text-xs font-medium transition-[background-color,border-color,color,box-shadow] focus-visible:outline-none [&>svg]:pointer-events-none [&>svg]:size-3",
 				variant === "neutral" && "bg-secondary text-secondary-foreground",
 				variant === "outline" && "border-border text-foreground hover:bg-muted",
 				variant === "accent" && "bg-primary text-primary-foreground",

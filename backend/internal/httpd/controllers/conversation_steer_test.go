@@ -46,6 +46,63 @@ func (f *fakeChatService) Steer(
 	return chatsvc.SteerResult{}, nil
 }
 
+func (f *fakeConversationService) PromoteQueuedTurn(
+	context.Context,
+	domain.SessionID,
+	string,
+) (chatsvc.PromoteQueuedTurnResult, error) {
+	return chatsvc.PromoteQueuedTurnResult{}, nil
+}
+
+func (f *fakeConversationService) CancelQueuedTurn(context.Context, domain.SessionID, string) error {
+	return nil
+}
+
+func (f *fakeConversationService) EditQueuedTurn(context.Context, domain.SessionID, string, chatsvc.QueuedMessageEdit) error {
+	return nil
+}
+
+func (f *fakeConversationService) ReorderQueuedTurns(context.Context, domain.SessionID, []string) error {
+	return nil
+}
+
+func (f *fakeChatService) PromoteQueuedTurn(
+	context.Context,
+	domain.SessionID,
+	string,
+) (chatsvc.PromoteQueuedTurnResult, error) {
+	return chatsvc.PromoteQueuedTurnResult{}, nil
+}
+
+func (f *fakeChatService) CancelQueuedTurn(context.Context, domain.SessionID, string) error {
+	return nil
+}
+
+func (f *fakeChatService) EditQueuedTurn(context.Context, domain.SessionID, string, chatsvc.QueuedMessageEdit) error {
+	return nil
+}
+
+func (f *fakeChatService) ReorderQueuedTurns(context.Context, domain.SessionID, []string) error {
+	return nil
+}
+
+type promoteQueuedStub struct {
+	*fakeConversationService
+	result  chatsvc.PromoteQueuedTurnResult
+	err     error
+	session domain.SessionID
+	turnID  string
+}
+
+func (s *promoteQueuedStub) PromoteQueuedTurn(
+	_ context.Context,
+	session domain.SessionID,
+	turnID string,
+) (chatsvc.PromoteQueuedTurnResult, error) {
+	s.session, s.turnID = session, turnID
+	return s.result, s.err
+}
+
 // steerStub overrides only the steer answer, so a scenario states the outcome it is
 // about and inherits everything else.
 type steerStub struct {
@@ -124,6 +181,7 @@ func TestSteerRouteAcceptsGuidanceAndNamesTheTurn(t *testing.T) {
 	}
 	status, body, _ := postSteer(t, svc, map[string]any{
 		"text": "actually, just summarize", "clientMessageId": "steer-1",
+		"attachments": []map[string]string{{"mimeType": "image/png", "data": "aW1hZ2U="}},
 	})
 
 	if status != http.StatusAccepted {
@@ -145,10 +203,36 @@ func TestSteerRouteAcceptsGuidanceAndNamesTheTurn(t *testing.T) {
 	if svc.seen[0].ClientMessageID != "steer-1" {
 		t.Errorf("clientMessageId = %q", svc.seen[0].ClientMessageID)
 	}
+	if len(svc.seen[0].Content) != 1 || svc.seen[0].Content[0] != (ports.ChatContent{
+		Type: "image", Data: "aW1hZ2U=", MIMEType: "image/png",
+	}) {
+		t.Errorf("content = %#v, want native image", svc.seen[0].Content)
+	}
 	// A steer typed by a person is the person's, and the timeline attributes it that
 	// way rather than as something the daemon said.
 	if svc.seen[0].Origin != domain.MessageOriginHuman {
 		t.Errorf("origin = %q, want human", svc.seen[0].Origin)
+	}
+}
+
+func TestSteerRouteRejectsInvalidAttachmentBeforeCallingService(t *testing.T) {
+	svc := &steerStub{fakeConversationService: &fakeConversationService{}}
+	status, _, failure := postSteer(t, svc, map[string]any{
+		"text": "inspect this",
+		"attachments": []map[string]string{{
+			"mimeType": "image/svg+xml",
+			"data":     "PHN2Zy8+",
+		}},
+	})
+
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+	if failure.Kind != "validation" || failure.Code != "UNSUPPORTED_ATTACHMENT_TYPE" {
+		t.Errorf("error = %#v, want validation/UNSUPPORTED_ATTACHMENT_TYPE", failure)
+	}
+	if len(svc.seen) != 0 {
+		t.Fatalf("service saw %d steers, want 0", len(svc.seen))
 	}
 }
 
@@ -268,5 +352,43 @@ func TestSteerRouteIsNotImplementedWithoutAChatService(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Errorf("status = %d, want 501", resp.StatusCode)
+	}
+}
+
+// The turn-scoped route identifies durable content; it carries no request body
+// that could replace what AO already queued.
+func TestQueuedTurnSteerRoutePromotesTheSelectedTurn(t *testing.T) {
+	svc := &promoteQueuedStub{
+		fakeConversationService: &fakeConversationService{},
+		result: chatsvc.PromoteQueuedTurnResult{
+			SourceTurnID: "queued-2", ProviderTurnID: "provider-running", ActivityID: "activity-steer",
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Sessions: newFakeSessionService(), Conversations: svc,
+	}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(
+		srv.URL+"/api/v1/sessions/p1-1/conversation/turns/queued-2/steer",
+		"application/json", nil)
+	if err != nil {
+		t.Fatalf("POST queued steer: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 202: %s", resp.StatusCode, body)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if svc.session != "p1-1" || svc.turnID != "queued-2" {
+		t.Fatalf("service target = (%s, %s)", svc.session, svc.turnID)
+	}
+	if body["sourceTurnId"] != "queued-2" || body["providerTurnId"] != "provider-running" || body["activityId"] != "activity-steer" {
+		t.Fatalf("response = %#v", body)
 	}
 }

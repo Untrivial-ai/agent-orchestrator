@@ -1,156 +1,84 @@
 ---
 title: Platforms
-description: Choose the right AO runtime, terminal, and notification setup for macOS, Linux, Windows, and remote hosts.
+description: Install and use AO on macOS, Windows, Linux, and mobile.
 ---
 
-
-AO's core workflow is the same on every platform: create an isolated workspace, run an agent, track the PR, react to CI and review events, and show progress in the dashboard.
-
-The platform differences come from the tools used to run and attach to long-lived sessions.
+AO ships as a desktop application for macOS, Windows, and Linux. The core workflow is the same everywhere: register a repository, create an isolated worktree, run an agent in Chat or Terminal UI, and follow its pull request.
 
 <PlatformSupport
 	macos="full"
 	linux="full"
 	windows="full"
-	note={<>Windows uses the process runtime. tmux and iTerm2 integrations are macOS/Linux-only.</>}
+	note={<>Terminal UI uses tmux on macOS/Linux and a native conpty host on Windows. Chat uses native provider controllers.</>}
 />
 
-## Recommended Setup
+## Desktop Downloads
 
-| Platform               | Runtime             | Notifications                      | Notes                                                                            |
-| ---------------------- | ------------------- | ---------------------------------- | -------------------------------------------------------------------------------- |
-| macOS                  | `tmux`              | `desktop`, Slack, Discord, webhook | Best local experience. iTerm2 attach support is macOS-only.                      |
-| Linux                  | `tmux`              | `desktop`, Slack, Discord, webhook | Best server and workstation setup. Desktop notifications need `notify-send`.     |
-| Windows                | `process`           | Slack, Discord, webhook            | Native tmux and iTerm2 are unavailable; use the browser dashboard terminal.      |
-| Container or remote VM | `process` or `tmux` | Slack, Discord, webhook            | Use persistent storage for AO data and protect the dashboard with your own auth. |
+| Platform | Available packages |
+| --- | --- |
+| macOS Apple silicon | Application zip and disk image |
+| macOS Intel | Application zip and disk image |
+| Windows x64 | Desktop installer |
+| Linux x64 | AppImage, Debian/Ubuntu package, and Fedora/RHEL package |
+
+Use the download selector on [Installation](/docs/installation) for the current release. Installed builds check for updates on launch and periodically while running.
 
 ## macOS
 
-macOS is the default local development target.
-
-Install tmux before using the default runtime:
+Both Chat and Terminal UI are supported. Install tmux if you want to use native terminal sessions:
 
 ```bash
 brew install tmux
 ```
 
-Recommended config:
+If you launch the app with `ao start` from a terminal and tmux is missing, it warns you and names this exact command to run.
 
-```yaml title="agent-orchestrator.yaml"
-defaults:
-  runtime: tmux
-  notifiers:
-    - desktop
-```
-
-What works well on macOS:
-
-| Capability                                | Status    |
-| ----------------------------------------- | --------- |
-| tmux-backed worker sessions               | Supported |
-| Browser dashboard terminal                | Supported |
-| iTerm2 attach/open helpers                | Supported |
-| Desktop notifications                     | Supported |
-| macOS idle sleep prevention while AO runs | Supported |
-
-<Callout type="info" title="Lid-close sleep still wins">
-	AO can prevent idle sleep on macOS while agents run, but it cannot override hardware lid-close sleep. Use normal
-	clamshell mode if you need the machine available while closed.
-</Callout>
+macOS packages include both a `.dmg` and `.zip`. The disk image is convenient for first installation; the zip is also part of the release because the desktop updater uses it for future updates.
 
 ## Linux
 
-Linux is a good fit for local workstations, remote development machines, and always-on hosts.
-
-Install tmux with your distribution package manager:
+Linux supports the desktop app, Chat, tmux-backed Terminal UI, and the in-app browser inspector. Install tmux with your distribution package manager when needed:
 
 ```bash
 sudo apt install tmux
 ```
 
-Recommended config:
+If you launch the app with `ao start` from a terminal and tmux is missing, it warns you and names the exact
+`sudo` command for whichever package manager it finds (`apt-get`, `dnf`, `pacman`, `zypper`, or `apk`). Run it
+yourself: AO never asks for your administrator password.
 
-```yaml title="agent-orchestrator.yaml"
-defaults:
-  runtime: tmux
-  notifiers:
-    - desktop
-```
-
-What to know:
-
-| Capability                  | Status                                                      |
-| --------------------------- | ----------------------------------------------------------- |
-| tmux-backed worker sessions | Supported                                                   |
-| Browser dashboard terminal  | Supported                                                   |
-| iTerm2 attach/open helpers  | Not available                                               |
-| Desktop notifications       | Supported when `notify-send` is installed                   |
-| Remote dashboard access     | Supported through port forwarding, Tailscale, or your proxy |
-
-If you are running AO on a headless Linux host, prefer Slack, Discord, or webhook notifications over desktop notifications.
+Choose the AppImage for a portable launch, or the `.deb`/`.rpm` package that matches your distribution.
 
 ## Windows
 
-<Callout type="info" title="Windows uses the process runtime">
-	The native Windows path uses `runtime: process`. The core spawn and PR workflow is available; tmux-specific workflows
-	and iTerm2 helpers do not apply.
-</Callout>
+Windows supports the desktop workflow, structured Chat, and native Terminal UI through AO's conpty host. It does not require tmux, and iTerm2-specific helpers do not apply.
 
-Recommended config:
+Use PowerShell, Command Prompt, or Git Bash for optional CLI commands. AO suppresses transient console windows for tools launched by the desktop daemon.
 
-```yaml title="agent-orchestrator.yaml"
-defaults:
-  runtime: process
-  notifiers:
-    - slack
-```
+## Mobile Companion
 
-What works:
+AO's Expo mobile app is a second interface to the desktop daemon, not a cloud relay. In desktop settings, choose **Connect Mobile** to enable a separate LAN listener and pair the phone.
 
-| Capability                                                | Status                                                  |
-| --------------------------------------------------------- | ------------------------------------------------------- |
-| `ao start`, `ao stop`, `ao dashboard`                     | Supported                                               |
-| `ao spawn` and `ao spawn --prompt`                        | Supported through the process runtime                   |
-| GitHub, GitLab, and Linear tracker/SCM integrations       | Supported when their CLIs or credentials are configured |
-| Browser dashboard terminal                                | Supported through the direct PTY server                 |
-| Slack, Discord, webhook, Composio, and OpenClaw notifiers | Supported                                               |
+Security properties:
 
-What is limited:
+- The LAN listener is off by default and exists only while Connect Mobile is enabled.
+- It is protected by a rotating connection password.
+- The pairing QR contains the address, not the password.
+- Traffic is plaintext HTTP and intended only for a trusted home network.
+- Daemon control, telemetry, and browser-control routes remain loopback-only.
 
-| Capability                  | Status                 | Use instead                                    |
-| --------------------------- | ---------------------- | ---------------------------------------------- |
-| `runtime: tmux`             | Not available natively | `runtime: process`                             |
-| iTerm2 terminal integration | Not available          | Browser dashboard terminal                     |
-| Desktop notifier            | No-op on Windows       | Slack, Discord, webhook, Composio, or OpenClaw |
-| tmux attach commands        | Not available          | Dashboard terminal and AO session commands     |
+Mobile defaults new workers and orchestrators to Chat when the selected harness supports it. Terminal UI remains available as a compatibility choice.
 
-Use PowerShell or Git Bash for normal CLI commands. If a command behaves differently because of shell quoting, put longer instructions in a file and send them with `ao send --file`.
+## Remote And Server Use
 
-## Containers And Remote Hosts
+The desktop daemon's primary listener is deliberately bound to `127.0.0.1` without authentication. Do not expose it through a public bind or reverse proxy. Connect Mobile is the only built-in off-device listener and is deliberately limited to an explicitly enabled home-network workflow.
 
-AO can run on a remote machine or inside a container, but the dashboard has no built-in authentication. Put it behind your own access layer before exposing it beyond localhost.
+For unattended work, keep the desktop host awake and reachable on its local network. AO does not turn the local desktop product into a hosted multi-user service.
 
-Recommended config for containers:
+## Next
 
-```yaml title="agent-orchestrator.yaml"
-defaults:
-  runtime: process
-  notifiers:
-    - webhook
-```
-
-Operational notes:
-
-- Mount or preserve AO's data directory so session metadata survives restarts.
-- Forward the dashboard port, usually `3000`, only to trusted networks.
-- Prefer network notifiers over desktop notifications.
-- Use `tmux` only if it is installed and you want attachable terminal sessions inside the host.
-
-## Choosing A Runtime
-
-| Runtime   | Best for                                                                  | Tradeoff                                            |
-| --------- | ------------------------------------------------------------------------- | --------------------------------------------------- |
-| `tmux`    | macOS/Linux machines where you want durable, attachable terminal sessions | Requires tmux and does not work natively on Windows |
-| `process` | Windows, containers, and simpler process-managed environments             | Less of the workflow is tmux-attachable             |
-
-Start with the recommended runtime for your OS. Change it only when the default runtime does not match where AO is running.
+<Cards>
+	<Card title="Installation" href="/docs/installation" description="Download AO and connect GitHub and an agent harness." />
+	<Card title="Dashboard" href="/docs/dashboard" description="Learn the desktop and mobile control surfaces." />
+	<Card title="Troubleshooting" href="/docs/troubleshooting" description="Resolve platform-specific startup and terminal issues." />
+</Cards>

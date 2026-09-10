@@ -1,4 +1,6 @@
 import { authHeaders, httpBase, normalizeServerHost, type ServerConfig } from "./config";
+import { cachedInstallId, getInstallId } from "./installId";
+import { captureMobileApiError, httpCategory } from "./sentry";
 import type { AttentionLevel } from "./theme";
 
 // ---- Types (subset of AO's DashboardSession we use on the phone) ------------
@@ -33,6 +35,8 @@ export type DashboardPR = {
 export type DashboardSession = {
 	id: string;
 	projectId: string;
+	/** Opaque daemon runtime handle used only for terminal mux operations. */
+	terminalHandleId?: string;
 	status: string | null;
 	attentionLevel?: AttentionLevel | string | null;
 	activity?: string | null;
@@ -61,11 +65,15 @@ export type DashboardSession = {
 	// finished status: a merged session whose agent is still running belongs on
 	// the board, only a terminated one belongs in the archive.
 	isTerminated?: boolean;
+	isPinned?: boolean;
+	pinnedAt?: string | null;
 };
 
 export type OrchestratorLink = {
 	id: string;
 	projectId: string;
+	/** Opaque daemon runtime handle used only for terminal mux operations. */
+	terminalHandleId?: string;
 	projectName: string;
 	status?: string | null;
 	activity?: string | null;
@@ -86,6 +94,14 @@ export type ProjectInfo = {
 	sessionPrefix?: string;
 };
 
+export type ProjectDetail = ProjectInfo & {
+	agent?: string;
+	config?: {
+		agentConfig?: { model?: string };
+		worker?: { agent?: string; agentConfig?: { model?: string } };
+	};
+};
+
 export type DashboardStats = {
 	totalSessions?: number;
 	workingSessions?: number;
@@ -100,7 +116,11 @@ export type SessionsResponse = {
 	stats: DashboardStats;
 	// Returned here so callers don't fetch /projects a second time — getSessions
 	// already needs it to label orchestrators.
-	projects: ProjectInfo[];
+	//
+	// Null when the /projects request itself failed, which is NOT the same fact
+	// as an empty list: the board judges a saved project filter against this, so
+	// folding a failure into [] told it every project was gone (#5058 review).
+	projects: ProjectInfo[] | null;
 };
 
 // ---- Wire types (this repo's Go daemon, /api/v1/*) --------------------------
@@ -124,6 +144,7 @@ type WirePR = {
 type WireSession = {
 	id: string;
 	projectId: string;
+	terminalHandleId?: string;
 	issueId?: string;
 	kind?: string; // worker | orchestrator
 	harness?: string;
@@ -136,6 +157,8 @@ type WireSession = {
 	createdAt?: string;
 	updatedAt?: string;
 	previewUrl?: string;
+	isPinned?: boolean;
+	pinnedAt?: string | null;
 	prs?: WirePR[];
 };
 
@@ -188,11 +211,18 @@ function activityString(a: unknown): string | null {
 	return null;
 }
 
+function activityLastAt(a: unknown): string | undefined {
+	if (!a || typeof a !== "object" || !("lastActivityAt" in a)) return undefined;
+	const value = (a as { lastActivityAt: unknown }).lastActivityAt;
+	return typeof value === "string" && value ? value : undefined;
+}
+
 function mapSession(s: WireSession): DashboardSession {
 	const prs = (s.prs ?? []).map(mapPR);
 	return {
 		id: s.id,
 		projectId: s.projectId,
+		terminalHandleId: s.terminalHandleId,
 		status: s.status ?? null,
 		activity: activityString(s.activity),
 		harness: s.harness ?? null,
@@ -204,11 +234,13 @@ function mapSession(s: WireSession): DashboardSession {
 		displayName: s.displayName ?? null,
 		summary: null,
 		createdAt: s.createdAt ?? "",
-		lastActivityAt: s.updatedAt ?? s.createdAt ?? "",
+		lastActivityAt: activityLastAt(s.activity) ?? s.updatedAt ?? s.createdAt ?? "",
 		pr: prs[0] ?? null,
 		prs,
 		previewUrl: s.previewUrl ?? null,
 		isTerminated: !!s.isTerminated,
+		isPinned: !!s.isPinned,
+		pinnedAt: s.pinnedAt ?? null,
 	};
 }
 
@@ -216,6 +248,7 @@ function mapOrchestrator(s: WireSession, projectName: string): OrchestratorLink 
 	return {
 		id: s.id,
 		projectId: s.projectId,
+		terminalHandleId: s.terminalHandleId,
 		projectName,
 		status: s.status ?? null,
 		activity: activityString(s.activity),
@@ -262,15 +295,25 @@ async function req(cfg: ServerConfig, path: string, init?: RequestInit, timeoutM
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	let res: Response;
 	try {
+		const installId = cachedInstallId();
 		res = await fetch(url, {
 			...init,
 			signal: controller.signal,
-			headers: { ...authHeaders(cfg), "Content-Type": "application/json", ...(init?.headers ?? {}) },
+			headers: {
+				...authHeaders(cfg),
+				"Content-Type": "application/json",
+				...(installId ? { "X-AO-Install-Id": installId } : {}),
+				...(init?.headers ?? {}),
+			},
 		});
 	} catch (e) {
 		if ((e as { name?: string })?.name === "AbortError") {
+			// Timed out reaching the host (commonly a sleeping Tailscale peer).
+			captureMobileApiError(path, "timeout");
 			throw new Error("Request timed out - is the server reachable?", { cause: e });
 		}
+		// fetch threw without reaching the server: DNS/refused/offline.
+		captureMobileApiError(path, "offline");
 		throw e;
 	} finally {
 		clearTimeout(timer);
@@ -288,6 +331,9 @@ async function req(cfg: ServerConfig, path: string, init?: RequestInit, timeoutM
 		} catch {
 			/* ignore */
 		}
+		// Server answered with an error: classify by status + daemon code, and tag
+		// the requestId so a mobile event pivots to the daemon's own capture.
+		captureMobileApiError(path, httpCategory(res.status), res.status, code, requestId);
 		throw new ApiError(
 			res.status,
 			`${res.status} ${res.statusText}${detail ? ` - ${detail}` : ""}`,
@@ -317,6 +363,12 @@ export async function getProjects(cfg: ServerConfig): Promise<ProjectInfo[]> {
 	}));
 }
 
+export async function getProject(cfg: ServerConfig, id: string): Promise<ProjectDetail> {
+	const res = await req(cfg, `${API}/projects/${encodeURIComponent(id)}`);
+	const data = await res.json();
+	return (data?.project ?? data) as ProjectDetail;
+}
+
 export async function getSessions(cfg: ServerConfig, _projectId?: string): Promise<SessionsResponse> {
 	// The daemon exposes sessions and orchestrators as two lists. Fetch both,
 	// keep worker sessions for the board, and map orchestrators for their screen.
@@ -329,13 +381,17 @@ export async function getSessions(cfg: ServerConfig, _projectId?: string): Promi
 	// code, fail with 429 before the new password was ever checked. Probing first
 	// caps a bad-credential tick at a single failed attempt.
 	const sessRes = await req(cfg, `${API}/sessions`);
+	// A failed /projects is reported as null rather than [] so a caller can tell
+	// "this daemon has no projects" from "we could not ask". It stays caught: an
+	// older daemon, or one blip on that one route, must not knock the board
+	// offline when /sessions answered fine.
 	const [orchRes, projects] = await Promise.all([
 		req(cfg, `${API}/orchestrators`),
-		getProjects(cfg).catch(() => [] as ProjectInfo[]),
+		getProjects(cfg).catch(() => null),
 	]);
 	const sessData = await sessRes.json();
 	const orchData = await orchRes.json();
-	const nameOf = new Map(projects.map((p) => [p.id, p.name]));
+	const nameOf = new Map((projects ?? []).map((p) => [p.id, p.name]));
 
 	const rawSessions: WireSession[] = Array.isArray(sessData?.sessions) ? sessData.sessions : [];
 	const rawOrchestrators: WireSession[] = Array.isArray(orchData?.sessions) ? orchData.sessions : [];
@@ -414,6 +470,20 @@ export type AgentCatalog = {
 	authorized: AgentInfo[];
 };
 
+export type AgentModelInfo = { id: string; label: string; isDefault?: boolean; provider?: string };
+export type AgentModelCatalog = {
+	agentId: string;
+	selectionMode: "catalog" | "text" | "mode";
+	allowCustom: boolean;
+	models: AgentModelInfo[];
+	source: string;
+	stale: boolean;
+	fetchedAt: string;
+	validatedAt?: string;
+	refreshRecommended?: boolean;
+	warning?: string;
+};
+
 export type AOSettings = {
 	defaultSessionMode: SessionMode;
 	chatHarnesses: string[];
@@ -448,13 +518,42 @@ export async function refreshAgents(cfg: ServerConfig): Promise<AgentCatalog> {
 	};
 }
 
+export async function getAgentModels(cfg: ServerConfig, agent: string, projectId?: string): Promise<AgentModelCatalog> {
+	const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+	const res = await req(cfg, `${API}/agents/${encodeURIComponent(agent)}/models${query}`);
+	return await res.json() as AgentModelCatalog;
+}
+
+export async function refreshAgentModels(cfg: ServerConfig, agent: string, projectId?: string): Promise<AgentModelCatalog> {
+	const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+	const res = await req(cfg, `${API}/agents/${encodeURIComponent(agent)}/models/refresh${query}`, { method: "POST" });
+	return await res.json() as AgentModelCatalog;
+}
+
 // ---- Push notifications -----------------------------------------------------
 
 // Register (idempotent upsert) this device's Expo push token with the daemon so
-// its dispatcher can deliver OS push notifications. Keyed daemon-side by token.
+// its dispatcher can deliver OS push notifications. Keyed daemon-side by install ID.
 export async function registerPushDevice(
 	cfg: ServerConfig,
 	device: { token: string; platform?: string; deviceName?: string },
+): Promise<void> {
+	const installId = await getInstallId();
+	await req(cfg, `${API}/push/devices`, {
+		method: "POST",
+		body: JSON.stringify({ ...device, installId }),
+	});
+}
+
+// Announce this device's identity to the daemon with no push token, so the
+// desktop roster shows a paired phone the moment it connects — independent of
+// notification permission. Posts to the same /push/devices route as
+// registerPushDevice, just without a `token` field; the daemon upserts by
+// installId, so a later registerForPush call attaches the token to this same
+// row instead of creating a second one.
+export async function announceDevice(
+	cfg: ServerConfig,
+	device: { installId: string; platform?: string; deviceName?: string },
 ): Promise<void> {
 	await req(cfg, `${API}/push/devices`, {
 		method: "POST",
@@ -466,6 +565,18 @@ export async function registerPushDevice(
 // token's [ ] brackets must be URL-encoded for the path segment.
 export async function unregisterPushDevice(cfg: ServerConfig, token: string): Promise<void> {
 	await req(cfg, `${API}/push/devices/${encodeURIComponent(token)}`, { method: "DELETE" });
+}
+
+// Tell a daemon this phone is no longer paired with it, so it drops the device
+// from its roster entirely. Distinct from unregisterPushDevice, which only
+// detaches the push token and leaves the phone listed as notifications-off —
+// correct when the user switches notifications off, wrong when they disconnect,
+// which would leave the old desktop showing a phone that has moved on.
+//
+// Prefers the install id and falls back to the token so the call still works
+// from a build that predates install ids.
+export async function unpairFromDaemon(cfg: ServerConfig, id: string): Promise<void> {
+	await req(cfg, `${API}/push/pairings/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 // Mark a notification read (best-effort on notification tap) so unread counts
@@ -616,6 +727,31 @@ export async function spawnSession(
 	});
 	const data = await res.json();
 	return mapSession(data?.session ?? data);
+}
+
+export async function getSession(cfg: ServerConfig, id: string): Promise<DashboardSession> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(id)}`);
+	const data = await res.json();
+	return mapSession(data?.session ?? data);
+}
+
+export async function delegateTask(
+	cfg: ServerConfig,
+	opts: { projectId: string; brief: string; agent?: string; model?: string; mode: SessionMode },
+): Promise<DashboardSession> {
+	const res = await req(cfg, `${API}/orchestrators/delegate`, {
+		method: "POST",
+		body: JSON.stringify({
+			projectId: opts.projectId,
+			brief: opts.brief,
+			agent: opts.agent || undefined,
+			model: opts.model || undefined,
+			mode: opts.mode,
+		}),
+	});
+	const data = await res.json();
+	if (!data?.workerId) throw new Error("The daemon did not return the new worker session");
+	return getSession(cfg, data.workerId);
 }
 
 export async function launchOrchestrator(

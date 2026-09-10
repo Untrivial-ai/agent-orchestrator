@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/commanddetail"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -136,8 +137,9 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			return nil
 		}
 		return []ports.ChatEvent{{
-			Kind:           ports.ChatEventTurnStarted,
-			ProviderTurnID: firstNonEmpty(p.Turn.ID, turnIDFallback(n.Params)),
+			Kind:                   ports.ChatEventTurnStarted,
+			ProviderTurnID:         firstNonEmpty(p.Turn.ID, turnIDFallback(n.Params)),
+			ProviderConversationID: p.ThreadID,
 		}}
 
 	case codexproto.MethodTurnCompleted:
@@ -146,9 +148,10 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			return nil
 		}
 		ev := ports.ChatEvent{
-			Kind:           ports.ChatEventTurnCompleted,
-			ProviderTurnID: firstNonEmpty(p.Turn.ID, turnIDFallback(n.Params)),
-			TurnState:      turnStateFrom(string(p.Turn.Status)),
+			Kind:                   ports.ChatEventTurnCompleted,
+			ProviderTurnID:         firstNonEmpty(p.Turn.ID, turnIDFallback(n.Params)),
+			ProviderConversationID: p.ThreadID,
+			TurnState:              turnStateFrom(string(p.Turn.Status)),
 		}
 		if p.Turn.Error != nil && p.Turn.Error.Message != "" {
 			ev.Err = fmt.Errorf("%s", p.Turn.Error.Message)
@@ -585,11 +588,11 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		}}
 
 	case codexproto.MethodAccountRateLimitsUpdated:
-		var p rateLimitsEnvelope
+		var p capacityReadEnvelope
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return nil
 		}
-		limits := rateLimitsFrom(p, now)
+		limits := chatRateLimitsFromCapacity(capacityObservationFromEnvelope(p, now.UTC(), true), now)
 		return []ports.ChatEvent{{Kind: ports.ChatEventRateLimits, RateLimits: &limits}}
 
 	// The generated constant carries the provider's own deprecation note, and reading
@@ -680,72 +683,6 @@ func turnIDFallback(params json.RawMessage) string {
 		return ""
 	}
 	return p.TurnID
-}
-
-// rateLimitWindow is one Codex RateLimitWindow.
-//
-// UsedPercent is a percentage in 0..100, not a token count, and ResetsAt is an
-// absolute unix timestamp in seconds rather than a duration. Both were confirmed
-// against a live account: `{"usedPercent":71,"windowDurationMins":10080,
-// "resetsAt":1786159947}`.
-type rateLimitWindow struct {
-	UsedPercent        *float64 `json:"usedPercent"`
-	WindowDurationMins *int64   `json:"windowDurationMins"`
-	ResetsAt           *int64   `json:"resetsAt"`
-}
-
-// rateLimitsEnvelope is the params shape of account/rateLimits/updated and the
-// result shape of account/rateLimits/read.
-//
-// Local rather than generated because it spans both: the notification and the read
-// result share the `rateLimits` object, and codexproto declares them as two
-// unrelated types.
-type rateLimitsEnvelope struct {
-	RateLimits struct {
-		Primary   *rateLimitWindow `json:"primary"`
-		Secondary *rateLimitWindow `json:"secondary"`
-		PlanType  string           `json:"planType"`
-	} `json:"rateLimits"`
-}
-
-// rateLimitsFrom converts a provider rate-limit snapshot into AO's neutral shape.
-//
-// Two conversions matter. A window the account does not have comes back as null,
-// and is reported as a negative percent because the port's contract is that
-// negative means "not reported" — zero would claim the quota is untouched, which
-// is a different and much more reassuring statement than "no such window".
-// Second, the absolute reset timestamp becomes a remaining duration: a client
-// showing "resets in 4h" does not have to trust that AO's clock and the
-// provider's agree, and a stale snapshot decays into 0 rather than into a time in
-// the past that reads as if it already refilled.
-func rateLimitsFrom(p rateLimitsEnvelope, now time.Time) ports.ChatRateLimits {
-	limits := ports.ChatRateLimits{
-		PrimaryUsedPercent:   -1,
-		SecondaryUsedPercent: -1,
-		PlanLabel:            p.RateLimits.PlanType,
-	}
-	if w := p.RateLimits.Primary; w != nil && w.UsedPercent != nil {
-		limits.PrimaryUsedPercent = *w.UsedPercent
-		limits.PrimaryResetsInSeconds = resetsIn(w.ResetsAt, now)
-	}
-	if w := p.RateLimits.Secondary; w != nil && w.UsedPercent != nil {
-		limits.SecondaryUsedPercent = *w.UsedPercent
-		limits.SecondaryResetsInSeconds = resetsIn(w.ResetsAt, now)
-	}
-	return limits
-}
-
-// resetsIn turns an absolute unix reset instant into seconds from now, floored at
-// zero: a window whose reset has already passed has nothing left to wait for.
-func resetsIn(resetsAt *int64, now time.Time) int64 {
-	if resetsAt == nil || *resetsAt <= 0 {
-		return 0
-	}
-	remaining := *resetsAt - now.Unix()
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
 }
 
 // planFrom converts a provider plan into AO's structured form.
@@ -895,7 +832,7 @@ func autoReviewDetail(
 		detail["targetItemId"] = *targetItemID
 	}
 	if action.Command != nil && *action.Command != "" {
-		detail["command"] = unwrapShell(*action.Command)
+		detail["command"] = commanddetail.UnwrapShell(*action.Command)
 		detail["rawCommand"] = *action.Command
 	}
 	if action.Cwd != nil && *action.Cwd != "" {
@@ -1148,7 +1085,7 @@ func fileChangeVerb(status string) string {
 // commandSummary produces a one-line label. Codex wraps commands in a shell
 // invocation (`/bin/zsh -lc '…'`); the wrapper is noise in a timeline.
 func commandSummary(command string) string {
-	cmd := unwrapShell(strings.TrimSpace(command))
+	cmd := commanddetail.UnwrapShell(strings.TrimSpace(command))
 	if cmd == "" {
 		return "Ran a command"
 	}
@@ -1165,36 +1102,12 @@ func truncateLabel(value string) string {
 	return value[:limit] + "…"
 }
 
-// unwrapShell strips a leading `<shell> -lc '<cmd>'` wrapper when present.
-func unwrapShell(command string) string {
-	for _, flag := range []string{" -lc ", " -c "} {
-		if idx := strings.Index(command, flag); idx > 0 && looksLikeShell(command[:idx]) {
-			inner := strings.TrimSpace(command[idx+len(flag):])
-			return strings.Trim(inner, `"'`)
-		}
-	}
-	return command
-}
-
-func looksLikeShell(prefix string) bool {
-	base := prefix
-	if idx := strings.LastIndex(prefix, "/"); idx >= 0 {
-		base = prefix[idx+1:]
-	}
-	switch base {
-	case "sh", "bash", "zsh", "dash", "fish":
-		return true
-	default:
-		return false
-	}
-}
-
 // activityDetail is the provider-neutral payload AO persists for an activity.
 // Provider DTOs are not passed through: only named fields AO renders.
 func activityDetail(it threadItem) []byte {
 	detail := map[string]any{}
 	if cmd := deref(it.Command); cmd != "" {
-		detail["command"] = unwrapShell(cmd)
+		detail["command"] = commanddetail.UnwrapShell(cmd)
 		detail["rawCommand"] = cmd
 	}
 	if it.Cwd != nil && *it.Cwd != "" {

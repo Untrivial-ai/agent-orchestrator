@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -17,7 +16,6 @@ import (
 )
 
 type sessionSwitchAgentOptions struct {
-	note           string
 	idempotencyKey string
 	json           bool
 }
@@ -34,19 +32,16 @@ type sessionHandoffSubmitOptions struct {
 	json               bool
 }
 
-// Switching can synchronously spend up to six minutes in the daemon while
-// collecting an optional source handoff, waiting for a human permission
-// decision, starting the target, and confirming continuation delivery. Keep
-// this scoped to switch-agent so ordinary CLI requests retain their existing
-// timeout behavior.
-const switchAgentCommandTimeout = 7 * time.Minute
+var (
+	switchAgentOverallWait  = 10 * time.Minute
+	switchAgentPollInterval = 500 * time.Millisecond
+)
 
 // switchAgentRequest mirrors the daemon's request body for
 // POST /api/v1/sessions/{id}/switch-agent. Keeping the wire type here avoids
 // coupling the thin CLI client to the HTTP controller package.
 type switchAgentRequest struct {
 	TargetHarness  string `json:"targetHarness"`
-	Note           string `json:"note,omitempty"`
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 }
 
@@ -101,7 +96,6 @@ func newSessionSwitchAgentCommand(ctx *commandContext) *cobra.Command {
 			return ctx.switchSessionAgent(cmd.Context(), cmd, sessionID, targetHarness, opts)
 		},
 	}
-	cmd.Flags().StringVar(&opts.note, "note", "", "Optional guidance for the handoff")
 	cmd.Flags().StringVar(&opts.idempotencyKey, "idempotency-key", "", "Reuse a prior identical switch request safely")
 	cmd.Flags().BoolVar(&opts.json, "json", false, "Output the agent switch as JSON")
 	return cmd
@@ -170,28 +164,84 @@ func (c *commandContext) switchSessionAgent(
 	sessionID, targetHarness string,
 	opts sessionSwitchAgentOptions,
 ) error {
+	waitCtx, cancel := context.WithTimeout(ctx, switchAgentOverallWait)
+	defer cancel()
+
 	req := switchAgentRequest{
 		TargetHarness:  targetHarness,
-		Note:           strings.TrimSpace(opts.note),
 		IdempotencyKey: strings.TrimSpace(opts.idempotencyKey),
 	}
 	var res agentSwitchResponse
 	path := "sessions/" + url.PathEscape(sessionID) + "/switch-agent"
-	if err := c.doJSONPathWithHeadersAndTimeout(
-		ctx,
-		http.MethodPost,
-		"/api/v1/"+path,
-		req,
-		&res,
-		nil,
-		switchAgentCommandTimeout,
-	); err != nil {
+	if err := c.postJSON(waitCtx, path, req, &res); err != nil {
 		return err
 	}
-	if opts.json {
-		return writeJSON(cmd.OutOrStdout(), res)
+	if agentSwitchTerminal(res.Switch.State) {
+		return writeFinalAgentSwitch(cmd, res, opts.json)
 	}
-	return writeAgentSwitchDetails(cmd, res.Switch)
+
+	historyPath := "sessions/" + url.PathEscape(sessionID) + "/agent-switches"
+	for {
+		timer := time.NewTimer(switchAgentPollInterval)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return switchAgentWaitError(ctx, waitCtx, res.Switch.ID, sessionID)
+		case <-timer.C:
+		}
+
+		var history agentSwitchListResponse
+		if err := c.getJSON(waitCtx, historyPath, &history); err != nil {
+			if waitCtx.Err() != nil {
+				return switchAgentWaitError(ctx, waitCtx, res.Switch.ID, sessionID)
+			}
+			return err
+		}
+		for _, candidate := range history.Switches {
+			if candidate.ID != res.Switch.ID || !agentSwitchTerminal(candidate.State) {
+				continue
+			}
+			res.Switch = candidate
+			return writeFinalAgentSwitch(cmd, res, opts.json)
+		}
+	}
+}
+
+func agentSwitchTerminal(state string) bool {
+	return state == "completed" || state == "failed"
+}
+
+func writeFinalAgentSwitch(cmd *cobra.Command, res agentSwitchResponse, jsonOutput bool) error {
+	var writeErr error
+	if jsonOutput {
+		writeErr = writeJSON(cmd.OutOrStdout(), res)
+	} else {
+		writeErr = writeAgentSwitchDetails(cmd, res.Switch)
+	}
+	if writeErr != nil {
+		return writeErr
+	}
+	if res.Switch.State != "failed" {
+		return nil
+	}
+	if res.Switch.ErrorCode != "" {
+		return fmt.Errorf("agent switch %s failed (%s)", res.Switch.ID, res.Switch.ErrorCode)
+	}
+	return fmt.Errorf("agent switch %s failed", res.Switch.ID)
+}
+
+func switchAgentWaitError(parent, waitCtx context.Context, switchID, sessionID string) error {
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf(
+			"agent switch %s did not finish before the overall timeout; inspect it with `ao session agent-switch ls %s`",
+			switchID,
+			sessionID,
+		)
+	}
+	return waitCtx.Err()
 }
 
 func (c *commandContext) listSessionAgentSwitches(

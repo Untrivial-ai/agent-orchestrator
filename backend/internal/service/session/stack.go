@@ -1,6 +1,9 @@
 package session
 
-import "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+import (
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
+)
 
 // stackInfo is the derived position of one PR within its session's set of PRs.
 // PRs form a stack when one targets the source branch of another: PR B is a
@@ -19,16 +22,13 @@ type stackInfo struct {
 // branch columns alone. A parent counts only while open, matching the rule that
 // a merged or closed parent no longer blocks its children.
 func buildStacks(prs []domain.PRFacts) map[string]stackInfo {
-	openSources := make(map[string]bool, len(prs))
-	for _, p := range prs {
-		if !p.Merged && !p.Closed && p.SourceBranch != "" {
-			openSources[p.SourceBranch] = true
-		}
-	}
+	positions := contract.BuildStacks(toContractPRFacts(prs))
 	out := make(map[string]stackInfo, len(prs))
-	for _, p := range prs {
-		blocked := p.TargetBranch != "" && openSources[p.TargetBranch]
-		out[p.URL] = stackInfo{Blocked: blocked, BottomOfStack: !blocked}
+	for url, position := range positions {
+		out[url] = stackInfo{
+			Blocked:       position.Blocked,
+			BottomOfStack: position.BottomOfStack,
+		}
 	}
 	return out
 }

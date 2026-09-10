@@ -1,221 +1,115 @@
 ---
 title: Installation
-description: Download AO, open it, and connect your tools.
+description: Download the AO desktop app and connect your coding tools.
 ---
-
 
 <InstallDownloads />
 
+The desktop app is the canonical install path. It owns the local daemon, requires no global `ao` command, and checks for updates after launch and while it is running.
+
 ## Prerequisites
 
-After the app is installed, make sure these tools are available before you start an AO project.
+| Tool | When you need it | Why |
+| --- | --- | --- |
+| Git | Always | Creates and manages isolated worktrees and branches. |
+| GitHub CLI `gh` | GitHub projects | Uses your existing authentication for repository and pull-request operations. |
+| An agent harness | Always | The coding agent AO launches, such as Claude Code, Codex, Cursor, Aider, or OpenCode. |
+| tmux | Terminal UI on macOS/Linux | Keeps native TUI sessions attachable. Chat does not require an agent tmux pane. |
 
-| Tool            | Required               | Why AO needs it                                                                      |
-| --------------- | ---------------------- | ------------------------------------------------------------------------------------ |
-| Git             | Yes                    | Creates worktrees, branches, commits, and cleanup operations.                        |
-| GitHub CLI `gh` | For GitHub projects    | Reads issues, PRs, reviews, and CI status as your user.                              |
-| tmux            | Default on macOS/Linux | Keeps long-running agent sessions attachable and recoverable.                        |
-| An agent CLI    | Yes                    | The worker that writes code, such as Claude Code, Codex, Cursor, Aider, or OpenCode. |
-| Node.js 20+     | Legacy/source installs | Needed only if you use the frozen npm CLI package or build AO from source.           |
+AO uses the agent binaries and sign-ins already installed on your machine. It does not bundle Claude Code, Codex, or other provider CLIs.
 
-If you plan to use GitLab or Linear, install and authenticate their CLIs or credentials as described on the related plugin pages. A GitHub-only setup only needs `gh`.
-
-## Authenticate Your Tools
+## Set Up AO
 
 <Steps>
 <Step>
 
-### Authenticate source control
+### Install and open the desktop app
 
-For GitHub projects, AO uses `gh` for issue lookup, PR discovery, reviews, CI checks, and merge readiness.
+Choose the download for your platform above, install it, and open **Agent Orchestrator**. The app starts and supervises the local Go daemon automatically.
+
+</Step>
+<Step>
+
+### Authenticate GitHub
+
+For a GitHub repository, sign in with the GitHub CLI:
 
 ```bash
 gh auth login
 gh auth status
 ```
 
-The authenticated account must be able to read the repository, create branches, push branches, open PRs, and read CI status.
+Use an account that can read the repository and perform the branch and pull-request actions you expect the agent to take.
 
 </Step>
 <Step>
 
-### Install and sign in to one agent
+### Install and sign in to an agent
 
-AO launches an agent CLI inside each worker session. Start with the one you already use, then add more later if you want per-project or per-role choices.
+Install at least one supported agent harness and run it once outside AO to complete its sign-in flow. AO detects available harnesses when you create a session.
 
-<div className="ao-compact-tabs">
-
-<Tabs items={["Claude Code", "Codex", "Cursor", "Aider", "OpenCode"]}>
-	<Tab value="Claude Code">
-
-```bash
-npm install -g @anthropic-ai/claude-code
-claude
-```
-
-    </Tab>
-    <Tab value="Codex">
-
-```bash
-npm install -g @openai/codex
-codex
-```
-
-    </Tab>
-    <Tab value="Cursor">
-
-```bash
-curl https://cursor.com/install -fsS | bash
-agent --help
-```
-
-    </Tab>
-    <Tab value="Aider">
-
-```bash
-pip install aider-install
-aider-install
-aider --help
-```
-
-    </Tab>
-    <Tab value="OpenCode">
-
-```bash
-npm install -g opencode-ai
-opencode --help
-```
-
-    </Tab>
-
-</Tabs>
-
-</div>
+For structured Chat, start with Claude Code, Codex, OpenCode, or Droid. Other supported harnesses run through their native Terminal UI.
 
 </Step>
 <Step>
 
-### Start AO in a repo
+### Add a project
 
-**Desktop app:** open Agent Orchestrator and add the repository you want it to manage. The app starts the daemon, dashboard, and an orchestrator session for the project.
+In the desktop app, choose **Add project** and select an existing local git repository. AO registers the project without moving your original checkout. New worker sessions receive their own isolated worktrees.
+
+</Step>
+</Steps>
+
+## Legacy npm CLI
 
 <details className="ao-legacy-cli-details">
 <summary>
 	<span className="ao-legacy-cli-summary-copy">
-		<span className="ao-legacy-cli-summary-title">Using the legacy CLI?</span>
-		<span className="ao-legacy-cli-summary-note">npm still works but is no longer recommended. Verify the frozen <code>@aoagents/ao</code> package, then run <code>ao start</code> to move onto the desktop build.</span>
+		<span className="ao-legacy-cli-summary-title">Already have the npm CLI?</span>
+		<span className="ao-legacy-cli-summary-note"><code>@aoagents/ao</code> is frozen at <code>0.10.0</code> and is no longer recommended.</span>
 	</span>
 	<span className="ao-legacy-cli-summary-icon" aria-hidden="true" />
 </summary>
 
 <div className="ao-legacy-cli-details__content">
 
-npm still works but is no longer recommended. `0.10.0` is the final version published to npm, and `@aoagents/ao` is frozen and will not receive further updates. These commands remain for existing CLI users; new setups should use the desktop download at the top of this page.
-
-<div className="ao-compact-tabs ao-legacy-install-tabs">
-
-<Tabs items={["npm", "pnpm", "yarn", "from source"]}>
-	<Tab value="npm">
+`0.10.0` is the final npm release. The package remains a legacy bridge for existing users and will not receive new product features. Running `ao start` from that install fetches and opens the desktop build.
 
 ```bash
 npm install -g @aoagents/ao
-```
-
-    </Tab>
-    <Tab value="pnpm">
-
-```bash
-pnpm add -g @aoagents/ao
-```
-
-    </Tab>
-    <Tab value="yarn">
-
-```bash
-yarn global add @aoagents/ao
-```
-
-    </Tab>
-    <Tab value="from source">
-
-```bash
-git clone https://github.com/Untrivial-ai/agent-orchestrator
-cd agent-orchestrator
-pnpm install
-pnpm build
-pnpm --filter @aoagents/ao link --global
-```
-
-    </Tab>
-
-</Tabs>
-
-</div>
-
-```bash
-ao --version
-```
-
-```bash
-cd ~/code/my-repo
 ao start
 ```
 
-If there is no `agent-orchestrator.yaml`, AO creates one. You can also start from a path or clone from a URL:
-
-```bash
-ao start ~/code/my-repo
-ao start https://github.com/org/repo
-```
-
-Run the CLI doctor only if you are using the legacy `ao` command:
-
-```bash
-ao doctor
-ao doctor --fix
-```
+New users should install the desktop app directly instead.
 
 </div>
-
 </details>
 
-</Step>
-</Steps>
+## Where AO Stores Data
 
-## Common Install Issues
+All AO application state lives under `~/.ao` by default, including the daemon database, run file, managed worktrees, Electron browser data, and mobile pairing configuration. Advanced installations can override daemon paths with `AO_DATA_DIR` and `AO_RUN_FILE`.
+
+## Common Installation Problems
 
 <Accordions>
+	<Accordion title="No agent is available">
+		Install a supported agent harness, run it once to authenticate, then restart AO so the desktop-launched daemon receives the updated login-shell environment.
+	</Accordion>
+	<Accordion title="GitHub data is missing">
+		Run `gh auth status`. Confirm the active account can access the repository and its pull requests.
+	</Accordion>
+	<Accordion title="Terminal UI cannot start on macOS or Linux">
+		Install `tmux`, or choose Chat when the selected harness supports it.
+	</Accordion>
 	<Accordion title="The legacy `ao` command is not found">
-		The desktop app does not require a global `ao` command. If you intentionally installed the legacy CLI, check your
-		package manager's global bin path, then reopen your shell and run `ao --version` again.
-	</Accordion>
-	<Accordion title="`gh` is not authenticated">
-		Run `gh auth login`, then `gh auth status`. AO cannot read GitHub issues, PRs, reviews, or CI checks until `gh` is
-		authenticated.
-	</Accordion>
-	<Accordion title="tmux is missing">
-		Install tmux on macOS or Linux. On Windows, use the process runtime instead; the Windows desktop installer does not
-		require tmux.
-	</Accordion>
-	<Accordion title="No agent runtime is detected">
-		Install one supported agent CLI and run it once outside AO so it can complete its own sign-in flow.
-	</Accordion>
-	<Accordion title="Port 3000 is already in use">
-		`ao start` scans for a free port and prints the final dashboard URL. Use the URL in the command output.
-	</Accordion>
-	<Accordion title="The dashboard fails after an update">
-		Run `ao dashboard --rebuild` to clean stale dashboard build artifacts and start again.
+		The desktop app does not require it. Only troubleshoot the package manager's global bin path if you intentionally use the frozen legacy CLI.
 	</Accordion>
 </Accordions>
 
 ## Next
 
 <Cards>
-	<Card title="Quickstart" description="Run one worker session from start to pull request." href="/docs/quickstart" />
-	<Card
-		title="Configuration"
-		description="Understand the generated `agent-orchestrator.yaml`."
-		href="/docs/configuration"
-	/>
-	<Card title="Platforms" description="Choose the right runtime and notifier for your OS." href="/docs/platforms" />
+	<Card title="Quickstart" description="Create a project and run the first worker." href="/docs/quickstart" />
+	<Card title="Platforms" description="Review platform downloads and terminal behavior." href="/docs/platforms" />
+	<Card title="Troubleshooting" description="Diagnose desktop, daemon, and agent problems." href="/docs/troubleshooting" />
 </Cards>

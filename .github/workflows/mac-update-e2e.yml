@@ -164,6 +164,26 @@ jobs:
         if: always()
         run: frontend/scripts/verify-mac-artifact.sh "/Applications/Agent Orchestrator.app"
 
+      - name: Verify the updated app's baked update feed
+        # The update above already proved the REAL published feed resolves (the
+        # app follows GitHub's actual redirect chain to fetch the manifest and
+        # asset). This step closes the remaining gap from #3523: the freshly
+        # installed version N must bake an app-update.yml whose owner/repo is
+        # the repo the release was published from. A stale baked owner (as after
+        # the AgentWrapper -> Untrivial-ai transfer) keeps working only through
+        # GitHub's rename redirect, so nothing else fails until that redirect
+        # dies. This assertion turns the drift into a red run instead.
+        run: |
+          set -euo pipefail
+          yml="/Applications/Agent Orchestrator.app/Contents/Resources/app-update.yml"
+          owner="$(sed -n 's/^owner:[[:space:]]*//p' "$yml")"
+          repo="$(sed -n 's/^repo:[[:space:]]*//p' "$yml")"
+          echo "updated app bakes feed: $owner/$repo (expected $GITHUB_REPOSITORY)"
+          if [ "$owner/$repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::updated app bakes $owner/$repo but releases publish from $GITHUB_REPOSITORY" >&2
+            exit 1
+          fi
+
       - name: Report runner cost
         if: always()
         env:

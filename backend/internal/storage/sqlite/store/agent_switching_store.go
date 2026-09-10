@@ -209,6 +209,19 @@ func (s *Store) GetActiveAgentSwitch(ctx context.Context, sessionID domain.Sessi
 	return agentSwitchFromGen(row), true, nil
 }
 
+// ListActiveAgentSwitches returns every non-terminal switch saga.
+func (s *Store) ListActiveAgentSwitches(ctx context.Context) ([]domain.AgentSwitch, error) {
+	rows, err := s.qr.ListActiveAgentSwitches(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list active agent switches: %w", err)
+	}
+	out := make([]domain.AgentSwitch, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, agentSwitchFromGen(row))
+	}
+	return out, nil
+}
+
 // ListAgentSwitches returns a session's switch history, newest first.
 func (s *Store) ListAgentSwitches(ctx context.Context, sessionID domain.SessionID) ([]domain.AgentSwitch, error) {
 	rows, err := s.qr.ListAgentSwitches(ctx, sessionID)
@@ -227,6 +240,12 @@ func (s *Store) ListAgentSwitches(ctx context.Context, sessionID domain.SessionI
 // This rejects stale source hooks and late target callbacks from abandoned
 // starts without deriving liveness from their arrival.
 func (s *Store) UpdateAgentSwitch(ctx context.Context, rec domain.AgentSwitch, expectedState domain.AgentSwitchState, expectedSourceGenerationID, expectedTargetGenerationID domain.AgentGenerationID) (bool, error) {
+	if rec.State == domain.AgentSwitchFailed || rec.ErrorCode.RetainedRecoveryMarker() {
+		return false, fmt.Errorf("update agent switch %s: reportable transition requires ApplyAgentSwitchMutation", rec.ID)
+	}
+	if rec.ErrorCode == "" {
+		rec.FailurePoint = ""
+	}
 	if err := validateAgentSwitch(rec, false); err != nil {
 		return false, err
 	}
@@ -254,6 +273,7 @@ func (s *Store) UpdateAgentSwitch(ctx context.Context, rec domain.AgentSwitch, e
 		NextTargetGenerationID:    rec.TargetGenerationID,
 		NextTargetRuntimeHandleID: rec.TargetRuntimeHandleID,
 		ErrorCode:                 string(rec.ErrorCode),
+		FailurePoint:              string(rec.FailurePoint),
 		UpdatedAt:                 rec.UpdatedAt,
 		ID:                        rec.ID, SessionID: rec.SessionID, ExpectedState: expectedState,
 		ExpectedSourceGenerationID: expectedSourceGenerationID,
@@ -273,25 +293,7 @@ func (s *Store) UpdateAgentSwitch(ctx context.Context, rec domain.AgentSwitch, e
 // failure updates share the store write lock and opposing SQL predicates, so
 // exactly one outcome wins even when the target hook arrives at the deadline.
 func (s *Store) FailAgentSwitchIfUnacknowledged(ctx context.Context, rec domain.AgentSwitch) (bool, error) {
-	if err := validateAgentSwitch(rec, false); err != nil {
-		return false, err
-	}
-	if rec.State != domain.AgentSwitchFailed || rec.TargetGenerationID == "" || rec.TargetAcknowledgedAt != nil {
-		return false, fmt.Errorf("fail unacknowledged agent switch %s: failed state and unacknowledged target generation are required", rec.ID)
-	}
-
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	n, err := s.qw.FailAgentSwitchIfUnacknowledged(ctx, gen.FailAgentSwitchIfUnacknowledgedParams{
-		ErrorCode: string(rec.ErrorCode), FailedAt: rec.UpdatedAt,
-		ID: rec.ID, SessionID: rec.SessionID,
-		ExpectedSourceGenerationID: rec.SourceGenerationID,
-		ExpectedTargetGenerationID: rec.TargetGenerationID,
-	})
-	if err != nil {
-		return false, fmt.Errorf("fail unacknowledged agent switch %s: %w", rec.ID, err)
-	}
-	return n > 0, nil
+	return false, fmt.Errorf("fail unacknowledged agent switch %s: reportable transition requires FailAgentSwitchIfUnacknowledgedWithFault", rec.ID)
 }
 
 // RecordAgentHandoff records optional semantic enrichment for the source
@@ -407,11 +409,20 @@ func (s *Store) ConfirmAgentSwitchSourceStopped(ctx context.Context, confirmatio
 		return false, fmt.Errorf("confirm source stopped for agent switch %s: stopped timestamp precedes current switch update", confirmation.SwitchID)
 	}
 
-	n, err := q.MarkSessionAgentSwitchSourceStopped(ctx, gen.MarkSessionAgentSwitchSourceStoppedParams{
-		StoppedAt: confirmation.StoppedAt, SessionID: confirmation.SessionID,
-		ExpectedSourceHarness:         confirmation.SourceHarness,
-		ExpectedSourceRuntimeLaunchID: confirmation.ExpectedSourceRuntimeLaunchID,
-	})
+	var n int64
+	if domain.NormalizeSessionMode(confirmation.SourceMode) == domain.SessionModeChat {
+		n, err = q.MarkChatSessionAgentSwitchSourceStopped(ctx, gen.MarkChatSessionAgentSwitchSourceStoppedParams{
+			StoppedAt: confirmation.StoppedAt, SessionID: confirmation.SessionID,
+			ExpectedSourceHarness:              confirmation.SourceHarness,
+			ExpectedSourceControllerGeneration: confirmation.ExpectedSourceControllerGeneration,
+		})
+	} else {
+		n, err = q.MarkSessionAgentSwitchSourceStopped(ctx, gen.MarkSessionAgentSwitchSourceStoppedParams{
+			StoppedAt: confirmation.StoppedAt, SessionID: confirmation.SessionID,
+			ExpectedSourceHarness:         confirmation.SourceHarness,
+			ExpectedSourceRuntimeLaunchID: confirmation.ExpectedSourceRuntimeLaunchID,
+		})
+	}
 	if err != nil {
 		return false, fmt.Errorf("confirm source stopped for agent switch %s: mark session exited: %w", confirmation.SwitchID, err)
 	}
@@ -531,6 +542,11 @@ func (s *Store) ActivateAgentSwitchTarget(ctx context.Context, activation domain
 	if n != 1 {
 		return false, nil
 	}
+	if err := q.ResetConversationAgentOverridesForSession(ctx, gen.ResetConversationAgentOverridesForSessionParams{
+		UpdatedAt: activation.ActivatedAt, CurrentSessionID: &activation.SessionID,
+	}); err != nil {
+		return false, fmt.Errorf("activate agent switch target %s: reset conversation agent overrides: %w", activation.SwitchID, err)
+	}
 	targetRef := activation.TargetNativeSessionRef
 	n, err = q.MarkAgentSwitchTargetReady(ctx, gen.MarkAgentSwitchTargetReadyParams{
 		ActivatedAt: activation.ActivatedAt, ID: activation.SwitchID,
@@ -549,6 +565,127 @@ func (s *Store) ActivateAgentSwitchTarget(ctx context.Context, activation domain
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("activate agent switch target %s: commit: %w", activation.SwitchID, err)
+	}
+	return true, nil
+}
+
+// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session
+// from its source controller generation to the structured target generation.
+func (s *Store) ActivateChatAgentSwitchTarget(ctx context.Context, activation domain.AgentSwitchChatTargetActivation) (bool, error) {
+	if err := validateAgentSwitchChatTargetActivation(activation); err != nil {
+		return false, err
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin activate Chat agent switch target %s: %w", activation.SwitchID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := s.qw.WithTx(tx)
+
+	switchRow, err := q.GetAgentSwitch(ctx, activation.SwitchID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("activate Chat agent switch target %s: read switch: %w", activation.SwitchID, err)
+	}
+	sw := agentSwitchFromGen(switchRow)
+	if sw.SessionID != activation.SessionID || sw.State != domain.AgentSwitchStartingTarget ||
+		sw.FromHarness != activation.SourceHarness || sw.TargetHarness != activation.TargetHarness ||
+		sw.SourceGenerationID != activation.SourceGenerationID || sw.TargetGenerationID != activation.TargetGenerationID ||
+		sw.TargetRuntimeHandleID != "" || sw.TargetNativeSessionRef == nil ||
+		*sw.TargetNativeSessionRef != activation.TargetNativeSessionRef || sw.TargetAcknowledgedAt != nil {
+		return false, nil
+	}
+	if activation.ActivatedAt.Before(sw.UpdatedAt) {
+		return false, fmt.Errorf("activate Chat agent switch target %s: activation timestamp precedes current switch update", activation.SwitchID)
+	}
+
+	nativeRow, err := q.GetAgentNativeSession(ctx, activation.TargetNativeSessionRef)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("activate Chat agent switch target %s: target native session %s does not exist", activation.SwitchID, activation.TargetNativeSessionRef)
+	}
+	if err != nil {
+		return false, fmt.Errorf("activate Chat agent switch target %s: read target native session %s: %w", activation.SwitchID, activation.TargetNativeSessionRef, err)
+	}
+	targetNative := agentNativeSessionFromGen(nativeRow)
+	if targetNative.AOSessionID != activation.SessionID || targetNative.Harness != activation.TargetHarness ||
+		targetNative.LastGenerationID != activation.TargetGenerationID ||
+		targetNative.NativeSessionID != activation.ProviderConversationID {
+		return false, fmt.Errorf("activate Chat agent switch target %s: target native session does not match the claimed controller", activation.SwitchID)
+	}
+
+	n, err := q.ActivateChatSessionAgentSwitchTarget(ctx, gen.ActivateChatSessionAgentSwitchTargetParams{
+		TargetHarness: activation.TargetHarness, ActivatedAt: activation.ActivatedAt,
+		TargetNativeSessionID:      targetNative.NativeSessionID,
+		ProviderConversationID:     activation.ProviderConversationID,
+		TargetControllerGeneration: activation.ControllerGeneration,
+		SessionID:                  activation.SessionID, ExpectedSourceHarness: activation.SourceHarness,
+		ExpectedSourceControllerGeneration: activation.ExpectedSourceControllerGeneration,
+	})
+	if err != nil {
+		return false, fmt.Errorf("activate Chat agent switch target %s: transfer session owner: %w", activation.SwitchID, err)
+	}
+	if n != 1 {
+		return false, nil
+	}
+	conversationRow, err := q.SelectConversationBySession(ctx, &activation.SessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("activate Chat agent switch target %s: conversation does not exist", activation.SwitchID)
+	}
+	if err != nil {
+		return false, fmt.Errorf("activate Chat agent switch target %s: read conversation: %w", activation.SwitchID, err)
+	}
+	providerBoundaryID := string(activation.SwitchID) + ":provider"
+	if err := insertConversationBranchTx(ctx, q, domain.ConversationBranch{
+		ID:                     providerBoundaryID,
+		ConversationID:         conversationRow.ID,
+		SessionID:              activation.SessionID,
+		ProviderConversationID: activation.ProviderConversationID,
+		ParentBranchID:         conversationRow.ActiveBranchID,
+		ForkAfterSequence:      conversationRow.LatestSequence,
+		ProviderScopeID:        providerBoundaryID,
+		CreatedAt:              activation.ActivatedAt,
+	}, activation.ActivatedAt); err != nil {
+		return false, fmt.Errorf("activate Chat agent switch target %s: create provider boundary: %w", activation.SwitchID, err)
+	}
+	conversationRows, err := q.ActivateConversationBranch(ctx, gen.ActivateConversationBranchParams{
+		ActiveBranchID: providerBoundaryID,
+		UpdatedAt:      activation.ActivatedAt,
+		ID:             conversationRow.ID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("activate Chat agent switch target %s: move provider boundary: %w", activation.SwitchID, err)
+	}
+	if conversationRows != 1 {
+		return false, fmt.Errorf("activate Chat agent switch target %s: conversation %s disappeared", activation.SwitchID, conversationRow.ID)
+	}
+	if err := q.ResetConversationAgentOverridesForSession(ctx, gen.ResetConversationAgentOverridesForSessionParams{
+		UpdatedAt: activation.ActivatedAt, CurrentSessionID: &activation.SessionID,
+	}); err != nil {
+		return false, fmt.Errorf("activate Chat agent switch target %s: reset conversation agent overrides: %w", activation.SwitchID, err)
+	}
+	targetRef := activation.TargetNativeSessionRef
+	n, err = q.MarkAgentSwitchTargetReady(ctx, gen.MarkAgentSwitchTargetReadyParams{
+		ActivatedAt: activation.ActivatedAt, ID: activation.SwitchID,
+		SessionID: activation.SessionID, ExpectedSourceHarness: activation.SourceHarness,
+		ExpectedTargetHarness:          activation.TargetHarness,
+		ExpectedSourceGenerationID:     activation.SourceGenerationID,
+		ExpectedTargetGenerationID:     activation.TargetGenerationID,
+		ExpectedTargetNativeSessionRef: &targetRef,
+		ExpectedTargetRuntimeHandleID:  "",
+	})
+	if err != nil {
+		return false, fmt.Errorf("activate Chat agent switch target %s: advance switch: %w", activation.SwitchID, err)
+	}
+	if n != 1 {
+		return false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("activate Chat agent switch target %s: commit: %w", activation.SwitchID, err)
 	}
 	return true, nil
 }
@@ -585,10 +722,16 @@ func validateAgentSwitch(rec domain.AgentSwitch, create bool) error {
 	if !rec.ErrorCode.Valid() {
 		return fmt.Errorf("agent switch %s: invalid error code %q", rec.ID, rec.ErrorCode)
 	}
+	if rec.FailurePoint != "" {
+		if _, ok := domain.AgentSwitchFailureTaxonomy(rec.FailurePoint); !ok {
+			return fmt.Errorf("agent switch %s: invalid failure point %q", rec.ID, rec.FailurePoint)
+		}
+	}
 	recoveryRequired := rec.RequiresRecovery()
-	failureCode := rec.State == domain.AgentSwitchFailed && rec.ErrorCode != "" && rec.ErrorCode != domain.AgentSwitchErrorTargetStartUnconfirmed
+	recoveryMarker := rec.ErrorCode.RetainedRecoveryMarker()
+	failureCode := rec.State == domain.AgentSwitchFailed && rec.ErrorCode != "" && !recoveryMarker
 	if (rec.State == domain.AgentSwitchFailed) != failureCode || (rec.ErrorCode != "" && !failureCode && !recoveryRequired) {
-		return fmt.Errorf("agent switch %s: error code must describe a terminal failure or the exact target-start recovery condition", rec.ID)
+		return fmt.Errorf("agent switch %s: error code must describe a terminal failure or an exact recovery condition", rec.ID)
 	}
 	if rec.SourceGenerationID == "" {
 		return fmt.Errorf("agent switch %s: source generation is required", rec.ID)
@@ -642,6 +785,10 @@ func validateAgentSwitchSourceStopConfirmation(confirmation domain.AgentSwitchSo
 	if !confirmation.SourceHarness.IsKnown() {
 		return fmt.Errorf("confirm agent switch source stopped %s: unknown source harness %q", confirmation.SwitchID, confirmation.SourceHarness)
 	}
+	if domain.NormalizeSessionMode(confirmation.SourceMode) == domain.SessionModeChat &&
+		strings.TrimSpace(confirmation.ExpectedSourceControllerGeneration) == "" {
+		return fmt.Errorf("confirm agent switch source stopped %s: Chat source controller generation is required", confirmation.SwitchID)
+	}
 	return nil
 }
 
@@ -653,6 +800,26 @@ func validateAgentSwitchTargetActivation(activation domain.AgentSwitchTargetActi
 	}
 	if !activation.SourceHarness.IsKnown() || !activation.TargetHarness.IsKnown() || activation.SourceHarness == activation.TargetHarness {
 		return fmt.Errorf("activate agent switch target %s: source and distinct known target harnesses are required", activation.SwitchID)
+	}
+	return nil
+}
+
+func validateAgentSwitchChatTargetActivation(activation domain.AgentSwitchChatTargetActivation) error {
+	if activation.SwitchID == "" || activation.SessionID == "" || activation.SourceGenerationID == "" ||
+		strings.TrimSpace(activation.ExpectedSourceControllerGeneration) == "" ||
+		activation.TargetNativeSessionRef == "" || activation.TargetGenerationID == "" ||
+		strings.TrimSpace(activation.ProviderConversationID) == "" ||
+		strings.TrimSpace(activation.ControllerGeneration) == "" || activation.ActivatedAt.IsZero() {
+		return fmt.Errorf("activate Chat agent switch target %s: switch, session, source/target generations, provider conversation, controller generation, native target, and timestamp are required", activation.SwitchID)
+	}
+	if string(activation.TargetGenerationID) != activation.ControllerGeneration {
+		return fmt.Errorf("activate Chat agent switch target %s: target and controller generations differ", activation.SwitchID)
+	}
+	if string(activation.SourceGenerationID) != activation.ExpectedSourceControllerGeneration {
+		return fmt.Errorf("activate Chat agent switch target %s: source and expected controller generations differ", activation.SwitchID)
+	}
+	if !activation.SourceHarness.IsKnown() || !activation.TargetHarness.IsKnown() || activation.SourceHarness == activation.TargetHarness {
+		return fmt.Errorf("activate Chat agent switch target %s: source and distinct known target harnesses are required", activation.SwitchID)
 	}
 	return nil
 }
@@ -743,6 +910,7 @@ func agentSwitchToInsert(rec domain.AgentSwitch) gen.InsertAgentSwitchParams {
 		TargetRuntimeHandleID:   rec.TargetRuntimeHandleID,
 		TargetAcknowledgedAt:    timePtrToNull(rec.TargetAcknowledgedAt),
 		ErrorCode:               string(rec.ErrorCode),
+		FailurePoint:            string(rec.FailurePoint),
 		RequestedAt:             rec.RequestedAt, UpdatedAt: rec.UpdatedAt,
 	}
 }
@@ -766,6 +934,7 @@ func agentSwitchFromGen(row gen.AgentSwitch) domain.AgentSwitch {
 		TargetRuntimeHandleID:   row.TargetRuntimeHandleID,
 		TargetAcknowledgedAt:    nullTimeToPtr(row.TargetAcknowledgedAt),
 		ErrorCode:               domain.AgentSwitchErrorCode(row.ErrorCode),
+		FailurePoint:            domain.AgentSwitchFailurePoint(row.FailurePoint),
 		RequestedAt:             row.RequestedAt, UpdatedAt: row.UpdatedAt,
 	}
 }

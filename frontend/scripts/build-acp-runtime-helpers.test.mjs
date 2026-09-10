@@ -1,9 +1,24 @@
 // @vitest-environment node
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkDirectory, npmInvocation, pruneNodeDistribution } from "./build-acp-runtime-helpers.mjs";
+import {
+	createWorkDirectory,
+	npmInvocation,
+	patchClaudeRetryDetails,
+	pruneNodeDistribution,
+	runtimeSourceFiles,
+} from "./build-acp-runtime-helpers.mjs";
 
 const temporaryDirectories = [];
 
@@ -20,6 +35,15 @@ describe("createWorkDirectory", () => {
 
 		expect(dirname(workDirectory)).toBe(outputRoot);
 		expect(existsSync(workDirectory)).toBe(true);
+	});
+});
+
+describe("runtimeSourceFiles", () => {
+	it("packages and fingerprints the ACP runtime manifest", () => {
+		expect(runtimeSourceFiles()).toEqual([
+			"package.json",
+			"package-lock.json",
+		]);
 	});
 });
 
@@ -56,6 +80,32 @@ describe("npmInvocation", () => {
 			command: "npm",
 			args: ["ci"],
 		});
+	});
+});
+
+describe("patchClaudeRetryDetails", () => {
+	it("keeps Claude's retry delay in the published session failure", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, `
+                            case "api_retry": {
+                                const title = "retrying";
+                                await publishSessionFailure(message.error_status === null
+                                    ? "transport_lost"
+                                    : providerFailureCategory(message.error), {
+                                    title,
+                                    severity: "warning",
+                                });
+                                break;
+                            }
+                            case "model_refusal_fallback": {
+`);
+
+		expect(patchClaudeRetryDetails(adapterPath)).toBe(true);
+		expect(patchClaudeRetryDetails(adapterPath)).toBe(false);
+		const patched = readFileSync(adapterPath, "utf8");
+		expect(patched).toContain("message.retry_delay_ms / 1000");
+		expect(patched).toContain("Trying again in ${retryDelay}.");
+		expect(patched).toContain("details: retryDetails");
 	});
 });
 

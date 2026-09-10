@@ -1,0 +1,8 @@
+❯ Inspect the activity observer.
+
+* I'll trace the terminal reconciliation path.
+
+Thinking... (esc to cancel)
+Claude Opus 5 (medium) █████ (8,711) $0.05                 ○ Plan ● Act (Tab)
+agent-orchestrator-133 (ao/agent-orchestrator-133/root)
+⏵⏵ Auto-approve all enabled (Shift+Tab)

@@ -28,16 +28,30 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { terminalFontSizeDelta as shortcutFontSizeDelta } from "../../shared/shortcuts";
 import type {
 	AttachableTerminal,
 	TerminalUserInputSource,
 } from "../hooks/useTerminalSession";
 import { aoBridge } from "../lib/bridge";
+import { isDialogOrMenuOpen } from "../lib/dom-selectors";
 import { TERMINAL_FONT_SIZE_DEFAULT } from "../lib/design-tokens";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { isMacPlatform } from "../lib/platform";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
+import {
+	buildCursorColorSchemeNotification,
+	cursorColorSchemeReplyForOutput,
+} from "../lib/cursor-color-scheme";
+import {
+	buildOscColorReports,
+	createCursorPositionReportForwarder,
+	createOscColorReportForwarder,
+	type OscTerminalColors,
+} from "../lib/osc-color-report";
 import { buildTerminalThemes } from "../lib/terminal-themes";
-import { useUiStore, type Theme } from "../stores/ui-store";
+import { useUiStore, type Theme, type ThemeStyle } from "../stores/ui-store";
+import { TerminalSearch } from "./TerminalSearch";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -50,7 +64,12 @@ export type XtermTerminalProps = {
 	ariaLabel?: string;
 	className?: string;
 	fontSize?: number;
+	isFullscreen?: boolean;
 	theme: Theme;
+	/** Resize this terminal without changing application zoom. */
+	onChangeFontSize?: (delta: number) => void;
+	/** Enter or exit fullscreen for the terminal pane that owns this xterm. */
+	onToggleFullscreen?: () => void | Promise<void>;
 	/**
 	 * The pane app scrolls its transcript by keyboard (PageUp/PageDown) rather
 	 * than acting on SGR wheel reports — e.g. opencode, which enables mouse
@@ -66,6 +85,8 @@ export type XtermTerminalProps = {
 	onVisibleSize?: (cols: number, rows: number) => void;
 	/** Hidden retained terminals keep parsing output but expose no UI overlays. */
 	isVisible?: boolean;
+	/** Cursor Agent understands AO's terminal color protocol; generic terminals do not. */
+	supportsCursorColorScheme?: boolean;
 	/** Move keyboard focus into xterm when a controller needs human input. */
 	focusRequested?: boolean;
 	/**
@@ -105,6 +126,11 @@ function loadRenderer(term: Terminal): void {
 
 // xterm palette tracks the app theme (see lib/terminal-themes.ts + tokens.css).
 const SUPPRESS_NATIVE_PASTE_MS = 100;
+/** Long enough to notice, short enough that a second copy reads as a second copy. */
+const COPY_TOAST_MS = 1400;
+const AUTOFOCUS_RETRY_FRAMES = 2;
+const COLOR_SCHEME_UPDATE_MODE = 2031;
+const COLOR_SCHEME_QUERY = 996;
 
 function preparePastedText(text: string): string {
 	return text.replace(/\r?\n/g, "\r");
@@ -136,9 +162,30 @@ function isTerminalPasteShortcut(event: KeyboardEvent): boolean {
 	return isWindowsPlatform() && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey;
 }
 
+function isTerminalSearchShortcut(event: KeyboardEvent): boolean {
+	if (event.altKey || event.shiftKey || event.key.toLowerCase() !== "f") return false;
+	return isMacPlatform()
+		? event.metaKey && !event.ctrlKey
+		: event.ctrlKey && !event.metaKey;
+}
+
 function consumeTerminalShortcut(event: KeyboardEvent): void {
 	event.preventDefault();
 	event.stopPropagation();
+}
+
+function terminalFontSizeDelta(event: KeyboardEvent): -1 | 0 | 1 {
+	return shortcutFontSizeDelta(
+		{
+			key: event.key,
+			code: event.code,
+			ctrl: event.ctrlKey,
+			meta: event.metaKey,
+			shift: event.shiftKey,
+			alt: event.altKey,
+		},
+		isMacPlatform(),
+	);
 }
 
 function normalizedTerminalShortcut(event: KeyboardEvent): string | null {
@@ -182,6 +229,21 @@ function terminalHasFocus(host: HTMLElement): boolean {
 	return !!activeElement && host.contains(activeElement);
 }
 
+function canAutoFocusTerminal(host: HTMLElement): boolean {
+	if (isDialogOrMenuOpen()) return false;
+	const activeElement = document.activeElement;
+	if (!(activeElement instanceof HTMLElement) || activeElement === document.body || !activeElement.isConnected) return true;
+	if (host.contains(activeElement)) return true;
+	// Selecting a session in the sidebar deliberately leaves its navigation
+	// button focused. Terminal tabs are the same intentional handoff within the
+	// pane. Every other focused control remains authoritative.
+	return (
+		activeElement.matches("button[aria-current='page']") ||
+		(activeElement.matches("button[role='tab'][aria-current]") &&
+			activeElement.closest('[data-testid="session-workspace-topbar"]') !== null)
+	);
+}
+
 type XtermInternal = Terminal & {
 	_core?: {
 		element?: HTMLElement;
@@ -209,7 +271,7 @@ type TerminalContextMenuState = {
 	link: string | null;
 };
 
-type TerminalContextMenuAction = "copy" | "paste" | "selectAll" | "clear";
+type TerminalContextMenuAction = "copy" | "paste" | "selectAll";
 
 type TerminalContextMenuActions = Record<TerminalContextMenuAction, () => void>;
 
@@ -231,6 +293,8 @@ function sgrWheelReport(button: number, count: number): string {
 // already scrolls a full screen, so scaling by line count would over-scroll.
 const PAGE_UP = "\x1b[5~";
 const PAGE_DOWN = "\x1b[6~";
+const MAC_TERMINAL_SCROLLBAR_WIDTH = 7;
+const MAC_TERMINAL_SCROLLBAR_IDLE_MS = 700;
 
 function pageKeyReport(lines: number): string {
 	return lines < 0 ? PAGE_UP : PAGE_DOWN;
@@ -246,17 +310,27 @@ function forceSelectionMode(term: Terminal): void {
 	element.classList.remove("enable-mouse-events");
 }
 
-function removeHiddenScrollbarReservation(term: Terminal): void {
+function configureScrollbarReservation(term: Terminal): void {
 	const viewport = (term as XtermInternal)._core?.viewport;
-	if (viewport) viewport.scrollBarWidth = 0;
+	if (viewport) viewport.scrollBarWidth = isMacPlatform() ? MAC_TERMINAL_SCROLLBAR_WIDTH : 0;
 }
 
 export function XtermTerminal(props: XtermTerminalProps) {
 	const { t } = useTranslation();
 	const themeStyle = useUiStore((state) => state.themeStyle);
+	const macPlatform = isMacPlatform();
+	const shellRef = useRef<HTMLDivElement | null>(null);
 	const hostRef = useRef<HTMLDivElement | null>(null);
+	const scrollbarTrackRef = useRef<HTMLDivElement | null>(null);
+	const scrollbarThumbRef = useRef<HTMLDivElement | null>(null);
 	const termRef = useRef<Terminal | null>(null);
+	const notifyCursorSchemeRef = useRef<(scheme: Theme, force?: boolean, retry?: boolean) => void>(() => {});
+	const announcedCursorSchemeRef = useRef<Theme | null>(null);
+	const searchAddonRef = useRef<SearchAddon | null>(null);
 	const fitRef = useRef<(() => void) | null>(null);
+	const colorSchemeReporterRef = useRef<
+		((theme: Theme, themeStyle: ThemeStyle, force?: boolean) => void) | null
+	>(null);
 	const contextMenuActionsRef = useRef<TerminalContextMenuActions | null>(null);
 	const [contextMenu, setContextMenu] = useState<TerminalContextMenuState>({
 		canCopy: false,
@@ -265,6 +339,10 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		y: 0,
 		link: null,
 	});
+	const [copiedToast, setCopiedToast] = useState(false);
+	const [searchOpen, setSearchOpen] = useState(false);
+	const copiedToastTimerRef = useRef<number | undefined>(undefined);
+	const showCopiedToastRef = useRef<() => void>(() => undefined);
 	// The web link currently under the cursor, tracked via the link providers'
 	// hover/leave callbacks so the right-click menu can offer "Open in system
 	// browser" for it.
@@ -285,8 +363,61 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		},
 		[setContextMenuOpen],
 	);
+	const focusTerminal = useCallback(() => {
+		try {
+			termRef.current?.focus();
+		} catch {
+			// A retained terminal can be parked between closing search and this frame.
+		}
+	}, []);
+	const restoreFocusFrameIdsRef = useRef<number[]>([]);
+	const cancelPendingFocusRestore = useCallback(() => {
+		for (const id of restoreFocusFrameIdsRef.current) cancelAnimationFrame(id);
+		restoreFocusFrameIdsRef.current = [];
+	}, []);
+	const restoreTerminalFocus = useCallback(() => {
+		cancelPendingFocusRestore();
+		const frameA = requestAnimationFrame(() => {
+			const frameB = requestAnimationFrame(() => {
+				restoreFocusFrameIdsRef.current = [];
+				// The terminal may have been hidden or reassigned to another
+				// session during these two frames (e.g. navigation away from
+				// this pane); re-check before stealing focus back from
+				// whatever now legitimately owns it.
+				const host = hostRef.current;
+				if (!host || callbacksRef.current.isVisible === false || !canAutoFocusTerminal(host)) return;
+				focusTerminal();
+			});
+			restoreFocusFrameIdsRef.current = [frameB];
+		});
+		restoreFocusFrameIdsRef.current = [frameA];
+	}, [cancelPendingFocusRestore, focusTerminal]);
+	const toggleFullscreenAndRestoreFocus = useCallback(async () => {
+		try {
+			await callbacksRef.current.onToggleFullscreen?.();
+		} finally {
+			restoreTerminalFocus();
+		}
+	}, [restoreTerminalFocus]);
 
 	callbacksRef.current = props;
+	showCopiedToastRef.current = () => {
+		// Hidden retained terminals keep parsing output but expose no UI overlays.
+		if (callbacksRef.current.isVisible === false) return;
+		setCopiedToast(true);
+		if (copiedToastTimerRef.current !== undefined) window.clearTimeout(copiedToastTimerRef.current);
+		copiedToastTimerRef.current = window.setTimeout(() => {
+			setCopiedToast(false);
+			copiedToastTimerRef.current = undefined;
+		}, COPY_TOAST_MS);
+	};
+
+	useEffect(
+		() => () => {
+			if (copiedToastTimerRef.current !== undefined) window.clearTimeout(copiedToastTimerRef.current);
+		},
+		[],
+	);
 
 	useEffect(() => {
 		// buildTerminalThemes() reads live CSS vars from :root. Parent shell effects
@@ -299,7 +430,14 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		if (!term) return;
 		const { dark, light } = buildTerminalThemes();
 		term.options.theme = props.theme === "dark" ? dark : light;
+		colorSchemeReporterRef.current?.(props.theme, themeStyle);
 	}, [props.theme, themeStyle]);
+
+	useEffect(() => {
+		if (!termRef.current || !props.supportsCursorColorScheme) return;
+		announcedCursorSchemeRef.current = null;
+		notifyCursorSchemeRef.current(props.theme, true, true);
+	}, [props.theme, props.supportsCursorColorScheme]);
 
 	useEffect(() => {
 		const term = termRef.current;
@@ -311,15 +449,36 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	}, [props.fontSize]);
 
 	useEffect(() => {
+		const shell = shellRef.current;
 		const host = hostRef.current;
-		if (!host) return undefined;
+		if (!shell || !host) return undefined;
+		let reportedFocused = false;
+		const reportFocused = (focused: boolean) => {
+			const next = focused && Boolean(callbacksRef.current.onChangeFontSize);
+			if (next === reportedFocused) return;
+			reportedFocused = next;
+			aoBridge.terminal.setFocused(next);
+		};
+		const handleFocusIn = () => reportFocused(true);
+		const handleFocusOut = (event: FocusEvent) => {
+			const next = event.relatedTarget;
+			if (next instanceof Node && host.contains(next)) return;
+			reportFocused(false);
+		};
+		host.addEventListener("focusin", handleFocusIn);
+		host.addEventListener("focusout", handleFocusOut);
+		const disposeFontSizeShortcut = aoBridge.terminal.onFontSizeShortcut((delta) => {
+			if (!terminalHasFocus(host)) return;
+			callbacksRef.current.onChangeFontSize?.(delta);
+		});
 		const activateLink = (event: MouseEvent, uri: string) => {
 			// Left-click on a web link opens it inside the AO Browser panel (the
 			// parent decides how). Non-web schemes (mailto:, etc.) still go to the OS
 			// via the main process's window-open handler. Right-click to open a web
-			// link in the system browser instead — see the context menu below.
+			// link in the system browser instead — see the context menu below. Cmd-click
+			// follows the same escape hatch as links in the Chat surface.
 			if (isWebLink(uri)) {
-				if (event.altKey) {
+				if (event.altKey || event.metaKey) {
 					void openLinkInSystemBrowser(uri);
 					return;
 				}
@@ -348,7 +507,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				// but powerline separators and file-type icons are real PUA codepoints
 				// that must come from a system-installed Nerd Font.
 				fontFamily:
-					getComputedStyle(host).getPropertyValue("--font-mono").trim() ||
+					getComputedStyle(shell).getPropertyValue("--font-mono").trim() ||
 					'ui-monospace, Menlo, Monaco, "Courier New", monospace',
 				fontSize: props.fontSize ?? TERMINAL_FONT_SIZE_DEFAULT,
 				lineHeight: 1.35,
@@ -365,8 +524,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				// only matters for normal-buffer panes that print their transcript and
 				// rely on the terminal's scrollback (codex, a plain shell). Keep it > 0
 				// so that history survives to be scrolled locally (see the wheel
-				// handler's normal-buffer branch). The scrollbar itself is hidden in
-				// CSS; its matching FitAddon reservation is removed after open() below.
+				// handler's normal-buffer branch). macOS exposes that history through a
+				// slim draggable scrollbar; other platforms retain the existing hidden
+				// scrollbar behavior for now.
 				scrollback: 5000,
 				theme: props.theme === "dark" ? dark : light,
 			});
@@ -389,7 +549,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// empty open is dropped and clicks silently no-op. Pass the matched URL to
 		// window.open directly so the main process routes it to shell.openExternal.
 		term.loadAddon(new WebLinksAddon(activateLink, { hover: trackHover, leave: clearHover }));
-		term.loadAddon(new SearchAddon());
+		const searchAddon = new SearchAddon();
+		searchAddonRef.current = searchAddon;
+		term.loadAddon(searchAddon);
 
 		term.open(host);
 		// Browser integration tests need to wait on xterm's buffer state, not
@@ -398,38 +560,204 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		if (import.meta.env.DEV) {
 			(host as DevXtermHost).__aoXtermForTest = term;
 		}
-		// xterm reserves a 15px fallback for macOS overlay scrollbars even when CSS
-		// hides the scrollbar entirely. FitAddon subtracts that private value from
-		// every width proposal, leaving a conspicuous empty strip on the right. The
-		// viewport still scrolls normally without the invisible reservation.
-		removeHiddenScrollbarReservation(term);
+		// xterm 5 has no public scrollbar-width option. Keep its private FitAddon
+		// reservation aligned with our CSS: a stable 7px macOS gutter, and no
+		// reservation on platforms where the scrollbar remains hidden.
+		configureScrollbarReservation(term);
 		loadRenderer(term);
 		term.options.macOptionClickForcesSelection = true;
 		forceSelectionMode(term);
 
-		let lastCopiedSelection = "";
-		const copySelection = (options?: { clipboardData?: DataTransfer | null; dedupe?: boolean }) => {
+		// xterm 5's native viewport scrollbar follows macOS's system auto-hide
+		// preference even when its WebKit pseudo-elements are styled. Keep the
+		// native viewport hidden and mirror its normal-buffer geometry into a small
+		// app-owned thumb. Like a native macOS overlay scrollbar, it appears while
+		// scrolling or dragging and fades after the interaction goes idle.
+		const scrollbarTrack = scrollbarTrackRef.current;
+		const scrollbarThumb = scrollbarThumbRef.current;
+		let scrollbarFrame: number | null = null;
+		let scrollbarHideTimer: number | null = null;
+		let scrollbarDrag: { pointerId: number; startLine: number; startY: number } | null = null;
+		const revealScrollbar = () => {
+			if (!scrollbarTrack || scrollbarTrack.dataset.scrollable !== "true") return;
+			scrollbarTrack.dataset.active = "true";
+			if (scrollbarHideTimer !== null) window.clearTimeout(scrollbarHideTimer);
+			scrollbarHideTimer = null;
+			if (scrollbarDrag) return;
+			scrollbarHideTimer = window.setTimeout(() => {
+				scrollbarTrack.dataset.active = "false";
+				scrollbarHideTimer = null;
+			}, MAC_TERMINAL_SCROLLBAR_IDLE_MS);
+		};
+		const updateScrollbar = () => {
+			scrollbarFrame = null;
+			if (!scrollbarTrack || !scrollbarThumb) return;
+			const buffer = term.buffer.active;
+			const maxScrollLine = buffer.type === "normal" ? buffer.baseY : 0;
+			const trackHeight = scrollbarTrack.clientHeight;
+			if (maxScrollLine <= 0 || trackHeight <= 0) {
+				scrollbarTrack.dataset.scrollable = "false";
+				scrollbarTrack.dataset.active = "false";
+				return;
+			}
+			const totalLines = maxScrollLine + term.rows;
+			const thumbHeight = Math.max(24, (trackHeight * term.rows) / totalLines);
+			const travel = Math.max(0, trackHeight - thumbHeight);
+			const thumbTop = travel * (buffer.viewportY / maxScrollLine);
+			scrollbarThumb.style.height = `${thumbHeight}px`;
+			scrollbarThumb.style.transform = `translateY(${thumbTop}px)`;
+			scrollbarTrack.dataset.scrollable = "true";
+		};
+		const scheduleScrollbarUpdate = () => {
+			if (!scrollbarTrack || scrollbarFrame !== null) return;
+			scrollbarFrame = requestAnimationFrame(updateScrollbar);
+		};
+		const scrollPositionChange = scrollbarTrack
+			? term.onScroll(() => {
+				scheduleScrollbarUpdate();
+				revealScrollbar();
+			})
+			: null;
+		const scrollbarResize = scrollbarTrack ? term.onResize(scheduleScrollbarUpdate) : null;
+		const scrollToPointer = (clientY: number) => {
+			if (!scrollbarTrack || !scrollbarThumb) return;
+			const maxScrollLine = term.buffer.active.type === "normal" ? term.buffer.active.baseY : 0;
+			const trackRect = scrollbarTrack.getBoundingClientRect();
+			const travel = trackRect.height - scrollbarThumb.getBoundingClientRect().height;
+			if (maxScrollLine <= 0 || travel <= 0) return;
+			const thumbTop = Math.min(travel, Math.max(0, clientY - trackRect.top - scrollbarThumb.offsetHeight / 2));
+			term.scrollToLine(Math.round((thumbTop / travel) * maxScrollLine));
+		};
+		const scrollbarPointerDown = (event: PointerEvent) => {
+			if (!scrollbarTrack || !scrollbarThumb || scrollbarTrack.dataset.scrollable !== "true") return;
+			event.preventDefault();
+			scrollbarTrack.setPointerCapture(event.pointerId);
+			if (event.target !== scrollbarThumb) scrollToPointer(event.clientY);
+			scrollbarDrag = {
+				pointerId: event.pointerId,
+				startLine: term.buffer.active.viewportY,
+				startY: event.clientY,
+			};
+			revealScrollbar();
+		};
+		const scrollbarPointerMove = (event: PointerEvent) => {
+			if (!scrollbarDrag || scrollbarDrag.pointerId !== event.pointerId || !scrollbarTrack || !scrollbarThumb) return;
+			const maxScrollLine = term.buffer.active.type === "normal" ? term.buffer.active.baseY : 0;
+			const travel = scrollbarTrack.clientHeight - scrollbarThumb.offsetHeight;
+			if (maxScrollLine <= 0 || travel <= 0) return;
+			const lineDelta = ((event.clientY - scrollbarDrag.startY) / travel) * maxScrollLine;
+			term.scrollToLine(Math.round(scrollbarDrag.startLine + lineDelta));
+		};
+		const scrollbarPointerUp = (event: PointerEvent) => {
+			if (!scrollbarDrag || scrollbarDrag.pointerId !== event.pointerId) return;
+			scrollbarDrag = null;
+			if (scrollbarTrack?.hasPointerCapture(event.pointerId)) scrollbarTrack.releasePointerCapture(event.pointerId);
+			revealScrollbar();
+		};
+		scrollbarTrack?.addEventListener("pointerdown", scrollbarPointerDown);
+		scrollbarTrack?.addEventListener("pointermove", scrollbarPointerMove);
+		scrollbarTrack?.addEventListener("pointerup", scrollbarPointerUp);
+		scrollbarTrack?.addEventListener("pointercancel", scrollbarPointerUp);
+		scheduleScrollbarUpdate();
+
+		const copySelection = (options?: { clipboardData?: DataTransfer | null }) => {
 			const selection = term.getSelection();
-			if (!selection || (options?.dedupe && selection === lastCopiedSelection)) return false;
+			if (!selection) return false;
 			options?.clipboardData?.setData("text/plain", selection);
 			void aoBridge.clipboard
 				.writeText(selection)
 				.then(() => {
-					lastCopiedSelection = selection;
+					showCopiedToastRef.current();
 				})
 				.catch((error) => {
 					console.warn("Unable to copy terminal selection", error);
 				});
 			return true;
 		};
-		const clearCopiedSelection = () => {
-			lastCopiedSelection = "";
-		};
-		const userInputListeners = new Set<(data: string, source: TerminalUserInputSource) => void>();
+		const userInputListeners = new Set<(data: string, source: TerminalUserInputSource) => boolean | void>();
 		const emitUserInput = (data: string, source: TerminalUserInputSource) => {
-			if (data.length === 0) return;
-			userInputListeners.forEach((listener) => listener(data, source));
+			if (data.length === 0) return false;
+			let accepted = false;
+			userInputListeners.forEach((listener) => {
+				if (listener(data, source) === true) accepted = true;
+			});
+			return accepted;
 		};
+		// xterm 5 does not implement the modern terminal color-scheme protocol.
+		// OpenTUI clients use it to receive live light/dark changes after startup.
+		let colorSchemeUpdatesEnabled = false;
+		let currentColorScheme = props.theme;
+		let currentThemeStyle = themeStyle;
+		const reportColorScheme = (theme: Theme, nextThemeStyle: ThemeStyle, force = false) => {
+			const changed = theme !== currentColorScheme || nextThemeStyle !== currentThemeStyle;
+			currentColorScheme = theme;
+			currentThemeStyle = nextThemeStyle;
+			if (!force && (!colorSchemeUpdatesEnabled || !changed)) return;
+			emitUserInput(`\x1b[?997;${theme === "dark" ? 1 : 2}n`, "protocol");
+		};
+		const hasCsiMode = (params: (number | number[])[], mode: number) =>
+			params.some((param) => param === mode);
+		colorSchemeReporterRef.current = reportColorScheme;
+		const setColorSchemeUpdates = term.parser.registerCsiHandler(
+			{ prefix: "?", final: "h" },
+			(params) => {
+				if (!hasCsiMode(params, COLOR_SCHEME_UPDATE_MODE)) return false;
+				colorSchemeUpdatesEnabled = true;
+				currentColorScheme = callbacksRef.current.theme;
+				currentThemeStyle = useUiStore.getState().themeStyle;
+				return params.length === 1;
+			},
+		);
+		const resetColorSchemeUpdates = term.parser.registerCsiHandler(
+			{ prefix: "?", final: "l" },
+			(params) => {
+				if (!hasCsiMode(params, COLOR_SCHEME_UPDATE_MODE)) return false;
+				colorSchemeUpdatesEnabled = false;
+				return params.length === 1;
+			},
+		);
+		const queryColorSchemeCapability = term.parser.registerCsiHandler(
+			{ prefix: "?", intermediates: "$", final: "p" },
+			(params) => {
+				if (!hasCsiMode(params, COLOR_SCHEME_UPDATE_MODE)) return false;
+				emitUserInput(`\x1b[?${COLOR_SCHEME_UPDATE_MODE};${colorSchemeUpdatesEnabled ? 1 : 2}$y`, "protocol");
+				return params.length === 1;
+			},
+		);
+		const queryColorScheme = term.parser.registerCsiHandler(
+			{ prefix: "?", final: "n" },
+			(params) => {
+				if (!hasCsiMode(params, COLOR_SCHEME_QUERY)) return false;
+				reportColorScheme(
+					callbacksRef.current.theme,
+					useUiStore.getState().themeStyle,
+					true,
+				);
+				return params.length === 1;
+			},
+		);
+		const terminalColorsForScheme = (scheme: Theme): OscTerminalColors => {
+			const palette = buildTerminalThemes()[scheme];
+			return {
+				foreground: palette.foreground ?? "",
+				background: palette.background ?? "",
+				cursor: palette.cursor ?? palette.foreground ?? "",
+			};
+		};
+		const notifyCursorScheme = (scheme: Theme, force = false, retry = false) => {
+			if (!force && announcedCursorSchemeRef.current === scheme) return;
+			announcedCursorSchemeRef.current = scheme;
+			const bytes =
+				buildOscColorReports(terminalColorsForScheme(scheme)) +
+				buildCursorColorSchemeNotification(scheme);
+			const send = () => emitUserInput(bytes, "protocol");
+			send();
+			if (!retry) return;
+			for (const timer of schemeRetryTimers) window.clearTimeout(timer);
+			schemeRetryTimers = [50, 200].map((delayMs) => window.setTimeout(send, delayMs));
+		};
+		let schemeRetryTimers: number[] = [];
+		notifyCursorSchemeRef.current = notifyCursorScheme;
 		const pasteText = (text: string) => {
 			const prepared = preparePastedText(text);
 			const bracketed = term.modes.bracketedPasteMode && term.options.ignoreBracketedPasteMode !== true;
@@ -465,10 +793,6 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			}
 		};
 		contextMenuActionsRef.current = {
-			clear: () => {
-				term.clear();
-				focusTerminal();
-			},
 			copy: () => {
 				copySelection();
 				focusTerminal();
@@ -493,7 +817,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				link: hoveredLinkRef.current,
 			});
 		};
-		host.addEventListener("contextmenu", openContextMenu);
+		shell.addEventListener("contextmenu", openContextMenu);
 		term.attachCustomKeyEventHandler((event) => {
 			// xterm invokes this same handler on keydown, keyup, AND keypress (see
 			// Terminal.ts _keyDown/_keyUp/_keyPress). Only keydown should trigger our
@@ -502,6 +826,11 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// paste, double word-delete, etc). keyup/keypress fall through to
 			// xterm's own default handling for that event type.
 			if (event.type === "keyup" || event.type === "keypress") return true;
+			if (isTerminalSearchShortcut(event)) {
+				consumeTerminalShortcut(event);
+				setSearchOpen(true);
+				return false;
+			}
 			// Shift+Enter → newline without submitting, matching Claude Code / Codex.
 			// A terminal normally sends the same CR for Enter and Shift+Enter, so the
 			// agent can't distinguish them; emit the meta-return (ESC+CR) that
@@ -519,6 +848,12 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			if (event.key === "Enter" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
 				consumeTerminalShortcut(event);
 				emitUserInput("\x1b\r", "keyboard");
+				return false;
+			}
+			const fontSizeDelta = terminalFontSizeDelta(event);
+			if (fontSizeDelta !== 0 && callbacksRef.current.onChangeFontSize) {
+				consumeTerminalShortcut(event);
+				callbacksRef.current.onChangeFontSize(fontSizeDelta);
 				return false;
 			}
 			if (isTerminalCopyShortcut(event)) {
@@ -549,19 +884,12 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			event.preventDefault();
 		};
 		const copyShortcut = (event: KeyboardEvent) => {
-			if (!isTerminalCopyShortcut(event) || !terminalHasFocus(host) || !copySelection()) return;
+			if (!isTerminalCopyShortcut(event) || !terminalHasFocus(shell) || !copySelection()) return;
 			event.preventDefault();
 			event.stopPropagation();
 		};
-		host.addEventListener("copy", copyInput);
+		shell.addEventListener("copy", copyInput);
 		window.addEventListener("keydown", copyShortcut, true);
-		const selectionChange = term.onSelectionChange(() => {
-			if (!term.hasSelection()) {
-				clearCopiedSelection();
-				return;
-			}
-			window.setTimeout(() => copySelection({ dedupe: true }), 0);
-		});
 
 		const fitTerminal = () => {
 			// Parked terminals keep their last measured box and continue parsing
@@ -576,9 +904,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		};
 		// ResizeObserver fires for every intermediate box during native fullscreen,
 		// sidebar drags and other animated application layout. Fitting on every
-		// callback repeatedly reallocates xterm's WebGL surface. Keep only the
-		// latest proposal and commit once the box has been quiet, with a cap so a
-		// continuously moving window cannot postpone the terminal forever.
+		// callback repeatedly reallocates xterm's WebGL surface, so those changes
+		// normally settle through the debounce below. A short, explicit live-resize
+		// marker lets controlled layout animations keep xterm visually in step.
 		const FIT_QUIET_MS = 120;
 		const FIT_CAP_MS = 500;
 		let fitQuietTimer: ReturnType<typeof setTimeout> | null = null;
@@ -635,7 +963,13 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		if (document.fonts?.ready) {
 			void document.fonts.ready.then(() => scheduleStableFit());
 		}
-		const observer = new ResizeObserver(scheduleVisibleFit);
+		const observer = new ResizeObserver(() => {
+			if (host.closest('[data-terminal-live-resize="true"]')) {
+				fitTerminal();
+				return;
+			}
+			scheduleVisibleFit();
+		});
 		observer.observe(host);
 
 		// Recovery re-fit that does NOT depend on the host box changing size.
@@ -700,6 +1034,23 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// those bytes through the mux writes dirty input into the real Codex PTY and
 		// corrupts the TUI. Keyboard is the only safe generic text path here; paste,
 		// composition, shortcuts, and wheel reports are emitted explicitly below.
+		// Forward validated OSC 4/10/11/12 color replies and cursor-position
+		// reports only. Interactive prompts such as `gh auth login` use DSR to ask
+		// xterm for the cursor position and block until the corresponding CPR reaches
+		// the PTY. Other onData bytes must not reach the PTY or agent TUIs break.
+		// Retained terminals can change providers without remounting. Keep the
+		// listener mounted for every provider so standard color replies continue to
+		// reach the PTY after a provider change.
+		const oscColorForwarder = createOscColorReportForwarder((report) => {
+			emitUserInput(report, "protocol");
+		});
+		const cursorPositionForwarder = createCursorPositionReportForwarder((report) => {
+			emitUserInput(report, "protocol");
+		});
+		const protocolInput = term.onData((data) => {
+			oscColorForwarder.push(data);
+			cursorPositionForwarder.push(data);
+		});
 		const keyInput = term.onKey(({ key }) => emitUserInput(key, "keyboard"));
 
 		// Translate wheel motion into SGR wheel reports for the pane (see
@@ -768,8 +1119,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		const compositionInput = (event: CompositionEvent) => {
 			emitUserInput(event.data, "composition");
 		};
-		host.addEventListener("paste", pasteInput, true);
-		host.addEventListener("compositionend", compositionInput, true);
+		shell.addEventListener("paste", pasteInput, true);
+		shell.addEventListener("compositionend", compositionInput, true);
 
 		// A file dropped on the pane inserts its path, mirroring a native terminal
 		// so an agent (e.g. Claude Code) attaches it. The sandboxed renderer cannot
@@ -781,11 +1132,22 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			event.preventDefault();
 			if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
 		};
+		// A dropped folder is the app-wide "open as project" gesture (see
+		// _shell.tsx's window-level drop handler), not a file to attach. Let it
+		// bubble untouched — swallowing it here (preventDefault/stopPropagation)
+		// would silently absorb the drop into this file-attach flow instead.
+		const isDirectoryDrag = (event: DragEvent) =>
+			event.dataTransfer?.items?.[0]?.webkitGetAsEntry?.()?.isDirectory ?? false;
 		const dropInput = (event: DragEvent) => {
+			if (isDirectoryDrag(event)) return;
 			const files = Array.from(event.dataTransfer?.files ?? []);
 			if (files.length === 0) return;
 			event.preventDefault();
-			event.stopPropagation();
+			// Deliberately no stopPropagation: _shell.tsx's window-level listener
+			// still needs this drop to reset its drag-depth counter (bumped by the
+			// dragenter that already bubbled past this host, unseen by this
+			// handler), or the next folder drag inherits a stale nonzero depth and
+			// never shows the overlay.
 			void (async () => {
 				const paths: string[] = [];
 				for (const file of files) {
@@ -801,8 +1163,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				pasteText(`${paths.map((p) => (/\s/.test(p) ? `'${p}'` : p)).join(" ")} `);
 			})();
 		};
-		host.addEventListener("dragover", dragOverInput);
-		host.addEventListener("drop", dropInput);
+		shell.addEventListener("dragover", dragOverInput);
+		shell.addEventListener("drop", dropInput);
 
 		const showLatestOutput = () => {
 			term.scrollToBottom();
@@ -812,6 +1174,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
 			if (!viewport) return;
 			viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+			scheduleScrollbarUpdate();
 		};
 
 		let cancelActivationPreparation: (() => void) | null = null;
@@ -864,10 +1227,52 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// Forward xterm's write callback: it fires once THIS chunk has been
 			// parsed into the buffer, which is what lets the attachment reveal the
 			// pane at the replay's settled scroll position (issue #3160).
-			write: (data, done) => term.write(data, done),
-			writeln: (line) => term.writeln(line),
+			write: (data, done, source = "live") => {
+				let hasEsc = false;
+				for (let i = 0; i < data.length; i++) {
+					if (data[i] === 0x1b) {
+						hasEsc = true;
+						break;
+					}
+				}
+				if (source === "replay") {
+					// Existing panes replay historical DSRs through xterm. Clear any old
+					// correlation credits so their generated CPRs cannot reach the live PTY.
+					cursorPositionForwarder.dispose();
+				}
+				if (hasEsc || cursorPositionForwarder.hasPartialRequest()) {
+					// A DSR can be split immediately after ESC. Decode an ESC-free chunk
+					// only while a request prefix from the preceding chunk is incomplete.
+					const chunk = new TextDecoder().decode(data);
+					if (source === "live") cursorPositionForwarder.observeOutput(chunk);
+					if (hasEsc) {
+						const reply = callbacksRef.current.supportsCursorColorScheme
+							? cursorColorSchemeReplyForOutput(chunk, callbacksRef.current.theme)
+							: null;
+						if (reply) {
+							announcedCursorSchemeRef.current = null;
+							notifyCursorScheme(callbacksRef.current.theme, true, true);
+						}
+					}
+				}
+				term.write(data, () => {
+					scheduleScrollbarUpdate();
+					done?.();
+				});
+			},
+			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
 			showLatestOutput,
 			prepareForActivation,
+			// Live buffer discriminator for predictive local echo on cloud panes:
+			// predictions run only while the NORMAL buffer is active (alt-screen
+			// TUIs repaint too aggressively to predict into).
+			bufferType: () => term.buffer.active.type,
+			notifyCursorColorScheme: () => {
+				if (callbacksRef.current.supportsCursorColorScheme) {
+					notifyCursorScheme(callbacksRef.current.theme, false, true);
+				}
+			},
+			sendUserInput: (data, source = "shortcut") => emitUserInput(data, source),
 			onUserInput: (listener) => {
 				userInputListeners.add(listener);
 				return { dispose: () => userInputListeners.delete(listener) };
@@ -878,8 +1283,13 @@ export function XtermTerminal(props: XtermTerminalProps) {
 
 		return () => {
 			disposed = true;
+			if (reportedFocused) aoBridge.terminal.setFocused(false);
+			disposeFontSizeShortcut();
+			host.removeEventListener("focusin", handleFocusIn);
+			host.removeEventListener("focusout", handleFocusOut);
 			delete (host as DevXtermHost).__aoXtermForTest;
 			termRef.current = null;
+			if (searchAddonRef.current === searchAddon) searchAddonRef.current = null;
 			fitRef.current = null;
 			cancelAnimationFrame(raf);
 			for (const timer of settleTimers) window.clearTimeout(timer);
@@ -888,42 +1298,102 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			fitSettledListeners.clear();
 			observer.disconnect();
 			stabilizer.dispose();
+			scrollPositionChange?.dispose();
+			scrollbarResize?.dispose();
+			if (scrollbarFrame !== null) cancelAnimationFrame(scrollbarFrame);
+			if (scrollbarHideTimer !== null) window.clearTimeout(scrollbarHideTimer);
+			scrollbarTrack?.removeEventListener("pointerdown", scrollbarPointerDown);
+			scrollbarTrack?.removeEventListener("pointermove", scrollbarPointerMove);
+			scrollbarTrack?.removeEventListener("pointerup", scrollbarPointerUp);
+			scrollbarTrack?.removeEventListener("pointercancel", scrollbarPointerUp);
 			window.removeEventListener("resize", scheduleVisibleFit);
-			host.removeEventListener("copy", copyInput);
+			shell.removeEventListener("copy", copyInput);
 			window.removeEventListener("keydown", copyShortcut, true);
-			selectionChange.dispose();
-			host.removeEventListener("contextmenu", openContextMenu);
-			host.removeEventListener("paste", pasteInput, true);
-			host.removeEventListener("compositionend", compositionInput, true);
-			host.removeEventListener("dragover", dragOverInput);
-			host.removeEventListener("drop", dropInput);
+			shell.removeEventListener("contextmenu", openContextMenu);
+			shell.removeEventListener("paste", pasteInput, true);
+			shell.removeEventListener("compositionend", compositionInput, true);
+			shell.removeEventListener("dragover", dragOverInput);
+			shell.removeEventListener("drop", dropInput);
 			contextMenuActionsRef.current = null;
 			cancelActivationPreparation?.();
 			clearSuppressNativePaste();
+			if (colorSchemeReporterRef.current === reportColorScheme) colorSchemeReporterRef.current = null;
+			setColorSchemeUpdates.dispose();
+			resetColorSchemeUpdates.dispose();
+			queryColorSchemeCapability.dispose();
+			queryColorScheme.dispose();
+			for (const timer of schemeRetryTimers) window.clearTimeout(timer);
+			schemeRetryTimers = [];
+			oscColorForwarder.dispose();
+			cursorPositionForwarder.dispose();
+			protocolInput.dispose();
 			keyInput.dispose();
+			notifyCursorSchemeRef.current = () => {};
+			announcedCursorSchemeRef.current = null;
 			userInputListeners.clear();
-			try {
-				term.dispose();
-			} catch {
-				// Some renderer addons can throw during dispose in certain GPU
-				// environments; the terminal is being torn down regardless.
+			const disposeTerminal = () => {
+				try {
+					term.dispose();
+				} catch {
+					// Some renderer addons can throw during dispose in certain GPU
+					// environments; the terminal is being torn down regardless.
+				}
+			};
+			if (import.meta.env.DEV) {
+				// xterm's Viewport constructor queues an untracked zero-delay
+				// syncScrollArea(). React StrictMode immediately runs this cleanup after
+				// its development probe mount; queue disposal behind that callback so it
+				// cannot read the already-cleared renderer dimensions.
+				window.setTimeout(disposeTerminal, 0);
+			} else {
+				disposeTerminal();
 			}
 		};
 	}, []);
 
 	useEffect(() => {
 		if (!props.focusRequested || props.isVisible === false) return undefined;
-		try {
-			termRef.current?.focus();
-		} catch {
-			// The retained terminal may have been parked during this effect.
-		}
-		return undefined;
-	}, [props.focusRequested, props.isVisible]);
+		let retryFrame: number | null = null;
+		let retriesRemaining = AUTOFOCUS_RETRY_FRAMES;
+		let cancelled = false;
+		const focusIfAllowed = () => {
+			if (cancelled) return;
+			const host = hostRef.current;
+			if (!host || !canAutoFocusTerminal(host)) {
+				if (retriesRemaining === 0) return;
+				retriesRemaining -= 1;
+				retryFrame = requestAnimationFrame(() => {
+					retryFrame = null;
+					focusIfAllowed();
+				});
+				return;
+			}
+			focusTerminal();
+		};
+
+		focusIfAllowed();
+
+		return () => {
+			cancelled = true;
+			if (retryFrame !== null) cancelAnimationFrame(retryFrame);
+		};
+	}, [focusTerminal, props.focusRequested, props.isVisible]);
 
 	useLayoutEffect(() => {
-		if (props.isVisible === false) setContextMenuOpen(false);
-	}, [props.isVisible, setContextMenuOpen]);
+		if (props.isVisible === false) {
+			setSearchOpen(false);
+			searchAddonRef.current?.clearDecorations();
+			setContextMenuOpen(false);
+			setCopiedToast(false);
+			if (copiedToastTimerRef.current !== undefined) {
+				window.clearTimeout(copiedToastTimerRef.current);
+				copiedToastTimerRef.current = undefined;
+			}
+			cancelPendingFocusRestore();
+		}
+	}, [props.isVisible, setContextMenuOpen, cancelPendingFocusRestore]);
+
+	useEffect(() => cancelPendingFocusRestore, [cancelPendingFocusRestore]);
 
 	const wasVisibleRef = useRef(props.isVisible !== false);
 	useEffect(() => {
@@ -937,19 +1407,65 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		if (term) callbacksRef.current.onVisibleSize?.(term.cols, term.rows);
 	}, [props.isVisible]);
 
+	const fullscreenElement = document.fullscreenElement;
+	const contextMenuPortalContainer =
+		props.isFullscreen &&
+		fullscreenElement instanceof HTMLElement &&
+		hostRef.current &&
+		fullscreenElement.contains(hostRef.current)
+			? fullscreenElement
+			: undefined;
+
 	return (
 		<>
 			<div
-				ref={hostRef}
+				ref={shellRef}
 				aria-label={props.ariaLabel}
 				className={props.className}
 				style={{
-					backgroundColor: "var(--color-bg-terminal-opaque)",
 					height: "100%",
 					overflow: "hidden",
+					position: "relative",
 					width: "100%",
 				}}
-			/>
+			>
+				<div
+					ref={hostRef}
+					className={macPlatform ? "terminal-xterm-host terminal-xterm-host--mac" : "terminal-xterm-host"}
+					style={{
+						backgroundColor: "var(--color-bg-terminal-opaque)",
+						height: "100%",
+						overflow: "hidden",
+						width: "100%",
+					}}
+				/>
+				{macPlatform ? (
+					<div
+						aria-hidden="true"
+						className="terminal-scrollbar"
+						data-active="false"
+						data-scrollable="false"
+						ref={scrollbarTrackRef}
+					>
+						<div className="terminal-scrollbar__thumb" ref={scrollbarThumbRef} />
+					</div>
+				) : null}
+				<TerminalSearch
+					onClose={() => setSearchOpen(false)}
+					onReturnFocus={focusTerminal}
+					open={searchOpen && props.isVisible !== false}
+					searchAddon={searchAddonRef.current}
+				/>
+				{copiedToast && props.isVisible !== false ? (
+					<div
+						aria-live="polite"
+						className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-md border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)] px-3 py-1.5 text-xs text-[var(--color-text-import-title)] shadow-[var(--shadow-import-modal)]"
+						role="status"
+					>
+						{t("terminal.copiedToClipboard")}
+					</div>
+				) : null}
+			</div>
 			<DropdownMenu modal={false} open={contextMenu.open} onOpenChange={setContextMenuOpen}>
 				<DropdownMenuTrigger asChild>
 					<button
@@ -973,6 +1489,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					align="start"
 					className="min-w-36"
 					onCloseAutoFocus={(event) => event.preventDefault()}
+					portalContainer={contextMenuPortalContainer}
 					side="right"
 					sideOffset={2}
 				>
@@ -996,7 +1513,24 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					<DropdownMenuItem onSelect={() => runContextMenuAction("paste")}>{t("titlebar.paste")}</DropdownMenuItem>
 					<DropdownMenuItem onSelect={() => runContextMenuAction("selectAll")}>{t("titlebar.selectAll")}</DropdownMenuItem>
 					<DropdownMenuSeparator />
-					<DropdownMenuItem onSelect={() => runContextMenuAction("clear")}>{t("terminal.clear")}</DropdownMenuItem>
+					<DropdownMenuItem
+						onSelect={() => {
+							setContextMenuOpen(false);
+							setSearchOpen(true);
+						}}
+					>
+						{t("terminal.search")}
+					</DropdownMenuItem>
+					{props.onToggleFullscreen ? (
+						<DropdownMenuItem
+							onSelect={() => {
+								setContextMenuOpen(false);
+								void toggleFullscreenAndRestoreFocus();
+							}}
+						>
+							{props.isFullscreen ? t("terminal.exitFullscreen") : t("terminal.fullscreen")}
+						</DropdownMenuItem>
+					) : null}
 				</DropdownMenuContent>
 			</DropdownMenu>
 		</>

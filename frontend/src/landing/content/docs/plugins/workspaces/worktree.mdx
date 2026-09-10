@@ -1,57 +1,33 @@
 ---
-title: worktree
-description: Default workspace. Each session is a git worktree pointing at a fresh branch.
+title: Git worktrees
+description: Isolated branches and files for sessions in Git projects.
 ---
 
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="github" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>workspace</code> · Name: <code>worktree</code>
-	</span>
-</div>
+Each Git-backed session receives an isolated worktree and branch. By default, AO resolves the repository's Git default automatically instead of assuming `main`; multi-repository workspaces resolve their root and children independently. Worktrees share each repository's object database while keeping checked-out files separate.
 
-The default workspace plugin. Each session gets a [git worktree](https://git-scm.com/docs/git-worktree) with its own branch. All worktrees share the underlying `.git` object database, so disk usage stays low even with dozens of parallel agents.
+Automatic resolution uses the selected remote's live symbolic `HEAD`, with its cached `HEAD` as an offline fallback. A fetched request-specific remote branch can still seed an explicitly requested session branch when the remote has no symbolic `HEAD`. AO does not use the branch currently checked out in the source repository.
 
-<PlatformSupport macos="full" linux="full" windows="full" />
+AO records the resolved base ref for every repository in the session. Workspace and review diffs can therefore recompute their merge base after a rebase or after the repository default advances, without treating upstream-only changes as agent edits.
 
-## Use
-
-```yaml title="agent-orchestrator.yaml"
-workspace: worktree
-workspaceConfig:
-  worktreeDir: ~/.worktrees # default
+```bash
+ao project add --path /path/to/repo --worker-agent codex
+ao spawn --project my-repo --name fix-auth
 ```
 
-| Config key    | Default        | What it does                     |
-| ------------- | -------------- | -------------------------------- |
-| `worktreeDir` | `~/.worktrees` | Base directory for all worktrees |
+## Typed project settings
 
-## How it works
+The daemon stores project configuration as validated JSON in SQLite. Relevant fields include:
 
-- On spawn, AO runs `git worktree add <worktreeDir>/{sessionId} -b <branch>` against the project's upstream.
-- The agent works inside that worktree. Commits land on its dedicated branch.
-- On cleanup, AO runs `git worktree remove` and prunes the branch if it was never pushed.
+| Field | Purpose |
+| --- | --- |
+| `defaultBranch` | Base branch for new session worktrees; `auto` resolves each repository's Git default. |
+| `env` | Extra environment variables passed to agent runtimes. |
+| `symlinks` | Repository-relative paths linked into each workspace. |
+| `postCreate` | Commands run after workspace creation. |
+| `agentRules`, `agentRulesFile` | Standing worker instructions. |
 
-## Per-project knobs
+Use `ao project set-config <id> --help` for flags or pass the complete typed object with `--config-json`.
 
-```yaml
-projects:
-  api:
-    repo: myorg/api
-    workspace: worktree
-    symlinks:
-      - .env.local
-      - node_modules
-    postCreate:
-      - pnpm install
-```
+## Cleanup safety
 
-| Knob         | Purpose                                                                                           |
-| ------------ | ------------------------------------------------------------------------------------------------- |
-| `symlinks`   | Files/dirs to symlink from the source repo into each worktree (e.g. `.env.local`, a shared cache) |
-| `postCreate` | Shell commands to run in each new worktree after creation (e.g. `pnpm install`)                   |
-
-## Troubleshooting
-
-- **"fatal: working tree already exists".** A previous session didn't clean up. `ao session cleanup` or manually `git worktree remove --force <path>`.
-- **Branch protection rejects the agent's push.** Expected — the agent pushes its own branch, not to your protected `main`.
+`ao session kill` terminates the runtime, but preserves a worktree when cleanup cannot safely remove it. `ao session cleanup` reclaims eligible terminated workspaces and skips dirty ones; run with `--dry-run` first when you want to inspect the candidates.

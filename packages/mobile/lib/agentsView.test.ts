@@ -12,14 +12,16 @@ import {
 } from "./agentsView";
 import { darkTheme, lightTheme } from "./theme";
 
-const session = (over: Partial<DashboardSession> = {}): DashboardSession =>
+type SortableSession = Partial<DashboardSession> & { isPinned?: boolean; pinnedAt?: string | null };
+
+const session = (over: SortableSession = {}): DashboardSession =>
 	({ id: "proj-1", projectId: "proj", status: null, lastActivityAt: "", ...over }) as DashboardSession;
 
 const pr = (over: Partial<DashboardPR> = {}): DashboardPR => ({ number: 1, url: "", state: "open", ...over });
 
 describe("boardZoneOf", () => {
-	it("uses desktop's four columns in its order", () => {
-		expect(BOARD_ZONES).toEqual(["working", "action", "pending", "merge"]);
+	it("puts user-action sections ahead of passive work", () => {
+		expect(BOARD_ZONES).toEqual(["action", "merge", "working", "pending"]);
 	});
 
 	// Desktop files ci_failed and changes_requested under "Needs you" rather than
@@ -42,12 +44,12 @@ describe("boardZoneOf", () => {
 });
 
 describe("zoneMeta", () => {
-	it("uses desktop's labels", () => {
+	it("uses the mobile priority order and desktop labels", () => {
 		expect(BOARD_ZONES.map((z) => zoneMeta(darkTheme, z).label)).toEqual([
-			"Working",
 			"Needs you",
-			"In review",
 			"Ready to merge",
+			"Working",
+			"In review",
 		]);
 	});
 
@@ -84,7 +86,7 @@ describe("groupSessions", () => {
 			session({ id: "b", status: "needs_input" }),
 			session({ id: "z", isTerminated: true }),
 		]);
-		expect(sections.map((s) => s.zone)).toEqual(["working", "action"]);
+		expect(sections.map((s) => s.zone)).toEqual(["action", "working"]);
 		expect(archived.map((s) => s.id)).toEqual(["z"]);
 	});
 
@@ -95,13 +97,42 @@ describe("groupSessions", () => {
 		expect(sections[0].label).toBe("Working");
 	});
 
-	it("keeps sections in desktop's order regardless of input order", () => {
+	it("keeps sections in action-first order regardless of input order", () => {
 		const { sections } = groupSessions(darkTheme, [
 			session({ id: "m", status: "mergeable" }),
 			session({ id: "w", status: "working" }),
 			session({ id: "p", status: "pr_open" }),
 		]);
-		expect(sections.map((s) => s.zone)).toEqual(["working", "pending", "merge"]);
+		expect(sections.map((s) => s.zone)).toEqual(["merge", "working", "pending"]);
+	});
+
+	it("puts pinned sessions first within their section", () => {
+		const { sections } = groupSessions(darkTheme, [
+			session({ id: "recent", status: "working", lastActivityAt: "2026-08-09T10:00:00Z" }),
+			session({ id: "pinned", status: "working", isPinned: true, lastActivityAt: "2026-01-01T00:00:00Z" }),
+		]);
+		expect(sections[0].data.map((s) => s.id)).toEqual(["pinned", "recent"]);
+	});
+
+	it.each([
+		["Needs you", "needs_input", ["old", "new"]],
+		["Ready to merge", "mergeable", ["old", "new"]],
+		["Working", "working", ["new", "old"]],
+		["In review", "pr_open", ["old", "new"]],
+	] as const)("orders %s sessions by the useful activity direction", (_label, status, expected) => {
+		const { sections } = groupSessions(darkTheme, [
+			session({ id: "new", status, lastActivityAt: "2026-08-09T10:00:00Z" }),
+			session({ id: "old", status, lastActivityAt: "2026-01-01T00:00:00Z" }),
+		]);
+		expect(sections[0].data.map((s) => s.id)).toEqual(expected);
+	});
+
+	it("preserves daemon session-number order when priority and activity tie", () => {
+		const { sections } = groupSessions(darkTheme, [
+			session({ id: "worker-2", status: "working", lastActivityAt: "2026-08-09T10:00:00Z" }),
+			session({ id: "worker-10", status: "working", lastActivityAt: "2026-08-09T10:00:00Z" }),
+		]);
+		expect(sections[0].data.map((s) => s.id)).toEqual(["worker-2", "worker-10"]);
 	});
 
 	it("sorts the archive newest first", () => {
@@ -110,6 +141,14 @@ describe("groupSessions", () => {
 			session({ id: "new", isTerminated: true, lastActivityAt: "2026-07-01T00:00:00Z" }),
 		]);
 		expect(archived.map((s) => s.id)).toEqual(["new", "old"]);
+	});
+
+	it("puts pinned archive sessions before newer unpinned history", () => {
+		const { archived } = groupSessions(darkTheme, [
+			session({ id: "new", isTerminated: true, lastActivityAt: "2026-07-01T00:00:00Z" }),
+			session({ id: "pinned", isTerminated: true, isPinned: true, lastActivityAt: "2026-01-01T00:00:00Z" }),
+		]);
+		expect(archived.map((s) => s.id)).toEqual(["pinned", "new"]);
 	});
 
 	it("returns nothing for an empty board", () => {

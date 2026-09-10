@@ -1,379 +1,212 @@
 ---
 title: CLI reference
-description: Every `ao` command, every flag, drawn from the source.
+description: Commands provided by the current Go CLI.
 ---
 
-
-All commands support `--help`. Use that in place of re-reading this page.
+The `ao` CLI is a thin client for the local AO desktop app and its loopback daemon. Product commands require the desktop app to be running. Run `ao <command> --help` for the exact flags supported by your installed version.
 
 ## Command tree
 
-```
+```text
 ao
-├── start [project]             Start orchestrator + dashboard (auto-creates config on first run)
-├── stop [project]              Stop orchestrator + dashboard
-├── status                      Show all sessions with PR and CI status
-├── spawn [issue]               Spawn a single agent session
-├── batch-spawn <issues...>     Spawn sessions for multiple issues, with duplicate detection
-├── send <session> [message…]   Send a message to a session with busy detection
-├── review-check [project]      Check PRs for review comments and trigger agents
-├── dashboard                   Start the web dashboard on its own
-├── open [target]               Open session(s) in terminal tabs
-├── verify [issue]              Mark an issue as verified (or failed) after staging check
-├── doctor                      Run install, environment, and runtime health checks
-├── update                      Check for updates and upgrade AO
-├── init                        (deprecated — use ao start)
-├── config-help                 Print the config schema and a guide
-├── notify                      test
-├── session                     ls, attach, kill, cleanup, restore, claim-pr, remap
-├── setup                       dashboard, desktop, webhook, slack, discord, composio, openclaw
-└── plugin                      list, search, create, install, update, uninstall
+├── start                         Open the desktop app (download it when needed)
+├── stop                          Stop the local daemon
+├── status                        Show daemon health
+├── doctor                        Check the local AO environment
+├── agent ls                      List built-in agent adapters and readiness
+├── project                       add, ls, get, set-config, rm
+├── spawn                         Create a worker or orchestrator session
+├── session                       ls, get, kill, restore, rename, cleanup, claim-pr,
+│                                 switch-agent, agent-switch
+├── orchestrator ls               List orchestrator sessions
+├── send                           Send a message to a session
+├── pr                             merge, resolve-comments
+├── review                         ls, trigger, cancel, submit
+├── preview                        select/clear a target; start, status, stop a server
+├── browser                        Control the selected session browser
+├── import                         Import projects from legacy AO data
+├── completion                     Generate shell completions
+└── version                        Print build information
 ```
 
-## Core commands
+Internal commands such as `daemon`, `hooks`, `launch`, `agent-process`, and `pty-host` are intentionally omitted.
 
-### `ao start [project]`
+## Desktop and daemon
 
-> Start orchestrator agent and dashboard (auto-creates config on first run, adds projects by path/URL)
+### `ao start`
 
-| Flag                | Default | Purpose                                                                         |
-| ------------------- | ------- | ------------------------------------------------------------------------------- |
-| `--no-dashboard`    | —       | Skip starting the dashboard server                                              |
-| `--no-orchestrator` | —       | Skip starting the orchestrator agent                                            |
-| `--rebuild`         | —       | Clean and rebuild the dashboard before starting                                 |
-| `--dev`             | —       | Use Next.js dev server with hot reload (monorepo only; ignored in npm installs) |
-| `--interactive`     | —       | Prompt to configure config settings                                             |
+Opens the installed Agent Orchestrator desktop app. If no app is installed, the legacy launcher can fetch the latest desktop release first. It does not supervise the daemon itself.
 
-Positional `[project]` — project id, local path, or repo URL. If omitted and no config exists in `cwd`, AO creates `agent-orchestrator.yaml`.
+| Flag | Purpose |
+| --- | --- |
+| `--json` | Print the launch result as JSON. |
 
-If AO is already running, you'll get an interactive prompt to open/restart/spawn-new/quit. Non-TTY callers get info + `process.exit(0)`.
+For a new installation, download the desktop app from the [installation guide](/docs/installation). The frozen npm package is a legacy launcher, not the current distribution channel.
 
-### `ao stop [project]`
+### `ao stop`
 
-> Stop orchestrator agent and dashboard
+Asks the loopback daemon to shut down after checking that the run file identifies AO.
 
-| Flag              | Default | Purpose                                          |
-| ----------------- | ------- | ------------------------------------------------ |
-| `--purge-session` | —       | Delete the mapped OpenCode session when stopping |
-| `--all`           | —       | Stop all running AO instances on this machine    |
+| Flag | Purpose |
+| --- | --- |
+| `--timeout <duration>` | Maximum time to wait for shutdown. |
+| `--json` | Print the result as JSON. |
 
 ### `ao status`
 
-> Show all sessions with branch, activity, PR, and CI status
+Reports daemon state, process identity, run-file location, health, and readiness. This command does not list sessions.
 
-| Flag                   | Default | Purpose               |
-| ---------------------- | ------- | --------------------- |
-| `-p, --project <id>`   | —       | Filter to one project |
-| `--json`               | —       | Output JSON           |
-| `-w, --watch`          | —       | Refresh continuously  |
-| `--interval <seconds>` | `5`     | Refresh interval      |
+| Flag | Purpose |
+| --- | --- |
+| `--json` | Print structured daemon status. |
 
-`--watch` and `--json` are mutually exclusive. Falls back to tmux session discovery if no config is found.
-
-### `ao spawn [issue]`
-
-> Spawn a single agent session
-
-| Flag                 | Default        | Purpose                                                                           |
-| -------------------- | -------------- | --------------------------------------------------------------------------------- |
-| `--open`             | —              | Open the session in a terminal tab                                                |
-| `--agent <name>`     | config default | Override the agent plugin (`claude-code`, `codex`, `cursor`, `aider`, `opencode`) |
-| `--claim-pr <pr>`    | —              | Immediately claim an existing PR for the spawned session                          |
-| `--assign-on-github` | —              | Assign the claimed PR to the authenticated GitHub user                            |
-| `--prompt <text>`    | —              | Use an inline prompt instead of an issue (max 4096 chars, newlines stripped)      |
-
-Positional `[first]` — issue identifier. The project is auto-detected from `cwd`.
-
-<Callout type="warn">
-	The old two-arg form `ao spawn &lt;project&gt; &lt;issue&gt;` is rejected with an error. Use `-p` or run from inside a
-	worktree.
-</Callout>
-
-### `ao batch-spawn <issues...>`
-
-> Spawn sessions for multiple issues with duplicate detection
-
-| Flag     | Default | Purpose                        |
-| -------- | ------- | ------------------------------ |
-| `--open` | —       | Open sessions in terminal tabs |
-
-Skips duplicates within the batch and any issues that already have an active session.
-
-### `ao send <session> [message...]`
-
-> Send a message to a session with busy detection and retry
-
-| Flag                  | Default | Purpose                                                  |
-| --------------------- | ------- | -------------------------------------------------------- |
-| `-f, --file <path>`   | —       | Send contents of a file instead of an inline message     |
-| `--no-wait`           | —       | Don't wait for the session to become idle before sending |
-| `--timeout <seconds>` | `600`   | Max seconds to wait for idle                             |
-
-Positional: `<session>` required, `[message...]` variadic. One of inline message or `--file` is required. Long messages (>200 chars or multiline) go via tmux paste-buffer + temp file.
-
-### `ao review-check [project]`
-
-> Check PRs for review comments and trigger agents to address them
-
-| Flag        | Default | Purpose                                    |
-| ----------- | ------- | ------------------------------------------ |
-| `--dry-run` | —       | Show what would happen; don't nudge agents |
-
-Checks all projects if `[project]` is omitted.
-
-### `ao dashboard`
-
-> Start the web dashboard
-
-| Flag                | Default                 | Purpose                                   |
-| ------------------- | ----------------------- | ----------------------------------------- |
-| `-p, --port <port>` | config `port` or `3000` | Port to listen on                         |
-| `--no-open`         | —                       | Don't open the browser                    |
-| `--rebuild`         | —                       | Clean stale Next.js artifacts and rebuild |
-
-If the build looks stale you'll see a suggestion to run `ao dashboard --rebuild`.
-
-### `ao open [target]`
-
-> Open session(s) in terminal tabs
-
-| Flag               | Default | Purpose                                        |
-| ------------------ | ------- | ---------------------------------------------- |
-| `-w, --new-window` | —       | Open in a new terminal window instead of a tab |
-
-Positional `[target]` — session name, project id, or `"all"`. Defaults to all sessions. Falls back to printing the dashboard URL when the native terminal helper isn't available (anywhere but macOS + iTerm2).
-
-### `ao verify [issue]`
-
-> Mark an issue as verified (or failed) after checking the fix on staging
-
-| Flag                  | Default | Purpose                                          |
-| --------------------- | ------- | ------------------------------------------------ |
-| `-p, --project <id>`  | —       | Required if multiple projects                    |
-| `--fail`              | —       | Mark as failed instead of passing                |
-| `-c, --comment <msg>` | —       | Custom comment to add                            |
-| `-l, --list`          | —       | List all issues with the merged-unverified label |
-
-`[issue]` is required unless `--list` is passed.
+Use `ao session ls` for sessions.
 
 ### `ao doctor`
 
-> Run install, environment, and runtime health checks
+Checks AO configuration, the data directory and database, daemon state, Git, GitHub authentication, and the platform runtime (`tmux` on macOS/Linux; ConPTY is built into Windows).
 
-| Flag            | Default | Purpose                                                   |
-| --------------- | ------- | --------------------------------------------------------- |
-| `--fix`         | —       | Apply safe fixes for launcher and stale-temp issues       |
-| `--test-notify` | —       | Send a test notification through each configured notifier |
+| Flag | Purpose |
+| --- | --- |
+| `--json` | Print checks as JSON. |
 
-Runs `ao-doctor.sh` for shell-level checks, then TypeScript checks (version freshness, plugin resolution, notifier connectivity). OpenClaw is the only notifier probed without side effects.
+## Projects and agents
 
-### `ao update`
+### `ao agent ls`
 
-> Check for updates and upgrade AO to the latest version
+Lists the daemon's built-in agent catalog together with local installation and authentication readiness.
 
-| Flag           | Default | Purpose                                                            |
-| -------------- | ------- | ------------------------------------------------------------------ |
-| `--skip-smoke` | —       | Skip smoke tests after rebuilding (git installs only)              |
-| `--smoke-only` | —       | Run smoke tests without fetching or rebuilding (git installs only) |
-| `--check`      | —       | Print version info as JSON; don't upgrade                          |
+| Flag | Purpose |
+| --- | --- |
+| `--refresh` | Rerun bounded local install/auth probes. |
+| `--json` | Print the raw inventory response. |
 
-Behavior depends on how AO was installed — git, npm-global, pnpm-global, or unknown (manual instructions printed).
+Agent adapters are compiled into AO. There is no plugin marketplace or `ao plugin install` command.
 
-### `ao config-help`
+### `ao project`
 
-> Show config schema and guide for creating `agent-orchestrator.yaml`
+| Command | Purpose |
+| --- | --- |
+| `ao project add` | Register a local Git repository or multi-repository workspace. Scratch is an AO-managed built-in project. |
+| `ao project ls` | List registered projects. |
+| `ao project get <id>` | Show one project and its resolved configuration. |
+| `ao project set-config <id>` | Update typed per-project configuration. |
+| `ao project rm <id>` | Remove a project registration. |
 
-No flags.
+Project configuration is persisted by the daemon in SQLite. `set-config` supports common flags and `--config-json`; it does not edit `agent-orchestrator.yaml`. Use command help for the complete typed fields.
 
-## Notify subcommands
+## Sessions
 
-### `ao notify test`
+### `ao spawn`
 
-> Send a manual demo notification without spawning sessions
+Creates a session in a registered project. The command takes no positional arguments and requires a display name.
 
-| Flag                 | Default | Purpose                                                       |
-| -------------------- | ------- | ------------------------------------------------------------- |
-| `--template <name>`  | `basic` | Demo template to send                                         |
-| `--to <refs>`        | —       | Comma-separated notifier refs to target                       |
-| `--all`              | —       | Send to all configured, default, and routed notifier refs     |
-| `--route <priority>` | —       | Send through `urgent`, `action`, `warning`, or `info` routing |
-| `--actions`          | —       | Include demo actions when supported                           |
-| `--message <text>`   | —       | Override the notification message                             |
-| `--dry-run`          | —       | Resolve targets without sending                               |
-| `--json`             | —       | Print structured JSON output                                  |
-| `--sink [port]`      | —       | Add a local webhook target named `sink`                       |
+```bash
+ao spawn --name fix-login --project my-app --agent codex --prompt "Fix the login regression"
+```
 
-## Session subcommands
+Important flags include:
 
-### `ao session ls`
+| Flag | Purpose |
+| --- | --- |
+| `--name <name>` | Required sidebar name, at most 20 characters. |
+| `--project <id>` | Project to use. Otherwise AO resolves environment and current directory context. |
+| `--agent`, `--harness <name>` | Override the project's agent. The two names are aliases. |
+| `--kind worker\|orchestrator` | Select the session role. |
+| `--mode chat\|tui` | Select structured Chat or the agent's native terminal UI. |
+| `--branch <name>` | Branch for Git projects. Scratch projects do not support it. |
+| `--prompt <text>` | Initial prompt. |
+| `--issue <id>` | Associate a tracker issue. |
+| `--claim-pr <ref>` | Claim an existing pull request after spawning. |
+| `--no-takeover` | Refuse a PR already owned by another active session. |
+| `--skip-agent-check` | Skip only the CLI-side install/auth preflight. |
 
-> List all sessions
+Project resolution order is explicit `--project`, `AO_PROJECT_ID`, the project of `AO_SESSION_ID`, then the closest registered project containing the current directory. Before spawning, AO refreshes the selected agent's advisory readiness unless `--skip-agent-check` is set.
 
-| Flag                 | Default | Purpose                       |
-| -------------------- | ------- | ----------------------------- |
-| `-p, --project <id>` | —       | Filter to one project         |
-| `-a, --all`          | —       | Include orchestrator sessions |
-| `--json`             | —       | Output JSON                   |
+### `ao session`
 
-### `ao session attach <session>`
+| Command | Purpose |
+| --- | --- |
+| `ao session ls` | List active worker sessions. Use `--all` for orchestrators and `--include-terminated` for history. |
+| `ao session get <id>` | Show one session. |
+| `ao session kill <id>` | Terminate a session. Dirty workspaces are preserved. |
+| `ao session restore <id>` | Relaunch a terminated session. |
+| `ao session rename <id> <name>` | Change its display name. |
+| `ao session cleanup` | Reclaim eligible terminated workspaces; supports `--dry-run`. |
+| `ao session claim-pr [<session-id>] <pr-ref>` | Attach an existing PR; omitting the session uses `AO_SESSION_ID`. |
+| `ao session switch-agent <id> <target-harness>` | Switch a compatible session to another harness. |
+| `ao session agent-switch ls <session-id>` | Inspect agent-switch attempts. |
 
-> Attach to a session's tmux window
+Most lookup commands accept `--project` to disambiguate a session ID.
 
-No flags. Attaches via `tmux attach-session`. Only meaningful with `runtime: tmux`.
+### `ao send`
 
-### `ao session kill <session>`
+Sends a message through the daemon to a running session.
 
-> Kill a session and remove its worktree
+```bash
+ao send --session ao-123 --message "Please address the failing test"
+```
 
-| Flag              | Default | Purpose                            |
-| ----------------- | ------- | ---------------------------------- |
-| `--purge-session` | —       | Delete the mapped OpenCode session |
+Both flags are required. When called from a session with `AO_SESSION_ID`, AO prefixes the sender identity.
 
-### `ao session cleanup`
+### `ao orchestrator ls`
 
-> Kill sessions where PR is merged or issue is closed
+Lists orchestrator sessions. Add `--json` for structured output.
 
-| Flag                 | Default | Purpose                       |
-| -------------------- | ------- | ----------------------------- |
-| `-p, --project <id>` | —       | Filter to one project         |
-| `--dry-run`          | —       | Show what would be cleaned up |
+## Pull requests and reviews
 
-### `ao session claim-pr <pr> [session]`
+| Command | Purpose |
+| --- | --- |
+| `ao pr merge <pr-number>` | Request a merge through AO's GitHub action engine. |
+| `ao pr resolve-comments <pr-number> [comment-id...]` | Resolve selected or eligible review comments. |
+| `ao review ls <worker-session-id>` | List review state for a worker. |
+| `ao review trigger [worker-session-id]` | Start or restart a reviewer run. Aliases: `execute`, `restart`. |
+| `ao review cancel [worker-session-id]` | Cancel a reviewer run. Alias: `stop`. |
+| `ao review submit [worker-session-id]` | Submit a reviewer verdict and results. |
 
-> Attach an existing PR to a session
+Use each subcommand's help for required review-run IDs, verdict values, and file/stdin inputs.
 
-| Flag                 | Default | Purpose                                           |
-| -------------------- | ------- | ------------------------------------------------- |
-| `--assign-on-github` | —       | Assign the PR to the authenticated user on GitHub |
+## Preview and browser control
 
-If `[session]` is omitted, falls back to `AO_SESSION_NAME` / `AO_SESSION` env vars.
+### `ao preview [url]`
 
-### `ao session restore <session>`
+Selects what the desktop Browser panel displays for the session identified by `AO_SESSION_ID`. With no argument AO looks for a supported static entry point in the session workspace; with a file or `file:`, `http:`, or `https:` target it opens that target.
 
-> Restore a terminated or crashed session in-place
+| Command | Purpose |
+| --- | --- |
+| `ao preview clear` | Clear the selected preview. |
+| `ao preview start [configuration]` | Start exactly one command from `.ao/launch.json`, wait for readiness, and select it. |
+| `ao preview status` | Show the managed preview process and recent bounded logs. |
+| `ao preview stop` | Stop the managed process tree. |
 
-No flags. Relaunches the agent inside the same worktree and rewires session metadata.
+`.ao/launch.json` is optional project configuration. AO does not infer or scaffold development servers, and static files do not require one.
 
-### `ao session remap <session>`
+### `ao browser`
 
-> Re-discover and persist OpenCode session mapping for an AO session
+Controls the live, session-isolated Electron browser owned by the desktop app. It also resolves its target from `AO_SESSION_ID`; the desktop app must be open.
 
-| Flag          | Default | Purpose                  |
-| ------------- | ------- | ------------------------ |
-| `-f, --force` | —       | Override a stale mapping |
+The command family includes status/open, accessibility snapshots and references, click/drag/fill/type/press/hover, highlight, scroll, select/check state, property reads, tabs and popups, DevTools, frames, dialogs, waits, screenshots, console/page errors, and bounded opt-in network metadata capture.
 
-## Setup subcommands
+References become stale after navigation, DOM replacement, frame changes, or tab changes. Take another snapshot when AO reports `STALE_REFERENCE`. Network capture is off by default, metadata-only, bounded, and automatically expires.
 
-Notifier setup commands that write AO config support `--routing-preset <preset>`.
-Valid presets are `urgent-only`, `urgent-action`, and `all`. In interactive
-mode, AO asks which notification priorities the notifier should receive before
-writing `notificationRouting`.
+## Migration and shell integration
 
-| Command                         | Purpose                                                |
-| ------------------------------- | ------------------------------------------------------ |
-| `ao setup dashboard`            | Configure dashboard notification retention and routing |
-| `ao setup desktop`              | Configure native desktop notifications                 |
-| `ao setup webhook`              | Configure a generic HTTP webhook                       |
-| `ao setup slack`                | Configure a Slack incoming webhook                     |
-| `ao setup discord`              | Configure a Discord incoming webhook                   |
-| `ao setup composio`             | Open the interactive Composio setup hub                |
-| `ao setup composio-slack`       | Configure Slack through Composio                       |
-| `ao setup composio-discord`     | Configure Discord webhook mode through Composio        |
-| `ao setup composio-discord-bot` | Configure Discord bot mode through Composio            |
-| `ao setup composio-mail`        | Configure Gmail through Composio                       |
-| `ao setup openclaw`             | Configure OpenClaw gateway notifications               |
-
-### `ao setup openclaw`
-
-> Connect AO notifications to an OpenClaw gateway
-
-| Flag                            | Default                     | Purpose                                                                            |
-| ------------------------------- | --------------------------- | ---------------------------------------------------------------------------------- |
-| `--url <url>`                   | —                           | OpenClaw webhook URL                                                               |
-| `--token <token>`               | —                           | Remote/manual fallback; local setup should read `hooks.token` from OpenClaw config |
-| `--openclaw-config-path <path>` | `~/.openclaw/openclaw.json` | OpenClaw config path that contains `hooks.token`                                   |
-| `--routing-preset <preset>`     | —                           | `urgent-only` · `urgent-action` · `all`                                            |
-| `--refresh`                     | —                           | Reuse existing values and rewrite AO config                                        |
-| `--no-test`                     | —                           | Skip the setup token probe                                                         |
-| `--force`                       | —                           | Replace a conflicting `notifiers.openclaw` entry                                   |
-| `--status`                      | —                           | Show OpenClaw config, gateway state, and token probe status                        |
-| `--non-interactive`             | —                           | Skip prompts — auto-detect OpenClaw on localhost                                   |
-
-Interactive mode (TTY) uses `@clack/prompts` with review/change steps for the gateway URL, OpenClaw config path, and routing preset. OpenClaw owns the token in `hooks.token`; AO does not generate it or write shell-profile exports.
-
-## Plugin subcommands
-
-### `ao plugin list`
-
-> List bundled marketplace plugins
-
-| Flag            | Default | Purpose                                                                                   |
-| --------------- | ------- | ----------------------------------------------------------------------------------------- |
-| `--installed`   | —       | Only show plugins present in your current config                                          |
-| `--type <slot>` | —       | Filter by slot: `agent`, `runtime`, `tracker`, `scm`, `notifier`, `workspace`, `terminal` |
-| `--refresh`     | —       | Re-fetch the marketplace catalog                                                          |
-
-### `ao plugin search <query>`
-
-> Search the bundled marketplace catalog
-
-No flags.
-
-### `ao plugin create [directory]`
-
-> Scaffold a new AO plugin package
-
-| Flag                    | Default | Purpose                         |
-| ----------------------- | ------- | ------------------------------- |
-| `--name <name>`         | prompt  | Plugin name                     |
-| `--slot <slot>`         | prompt  | Which slot it implements        |
-| `--description <text>`  | prompt  | Manifest description            |
-| `--author <name>`       | prompt  | Package author                  |
-| `--package-name <name>` | derived | npm package name                |
-| `--non-interactive`     | —       | Use all flags without prompting |
-
-### `ao plugin install <reference>`
-
-> Install a plugin into the current config
-
-| Flag                            | Default                     | Purpose                                                           |
-| ------------------------------- | --------------------------- | ----------------------------------------------------------------- |
-| `--url <url>`                   | —                           | Passed to `ao setup openclaw` when installing `notifier-openclaw` |
-| `--token <token>`               | —                           | Remote/manual OpenClaw token fallback                             |
-| `--openclaw-config-path <path>` | `~/.openclaw/openclaw.json` | OpenClaw config path that contains `hooks.token`                  |
-
-`<reference>` is a marketplace id, npm package name, or local path.
-
-### `ao plugin update [reference]`
-
-> Update installer-managed plugins in the current config
-
-| Flag    | Default | Purpose                    |
-| ------- | ------- | -------------------------- |
-| `--all` | —       | Update all managed plugins |
-
-Requires either `[reference]` or `--all`.
-
-### `ao plugin uninstall <reference>`
-
-> Remove a plugin from the current config
-
-No flags.
+| Command | Purpose |
+| --- | --- |
+| `ao import` | Import legacy projects from `~/.agent-orchestrator`; supports `--dry-run`, `--yes`, and `--json`. Unsupported legacy plugin settings are reported as dropped. |
+| `ao completion bash\|zsh\|fish\|powershell` | Generate a shell completion script. |
+| `ao version` / `ao --version` | Print build metadata. |
 
 ## Environment
 
-A few env vars affect every command:
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AO_PORT` | `3001` | Loopback daemon port. |
+| `AO_RUN_FILE` | `~/.ao/running.json` | Daemon identity and port handshake. |
+| `AO_DATA_DIR` | `~/.ao/data` | Daemon data directory. |
+| `AO_REQUEST_TIMEOUT` | `60s` | REST request timeout. |
+| `AO_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown limit. |
+| `AO_SESSION_ID` | unset | Current session context for preview, browser, and in-session calls. |
+| `AO_PROJECT_ID` | unset | Current project context for spawn resolution. |
 
-| Variable                            | Purpose                                                                              |
-| ----------------------------------- | ------------------------------------------------------------------------------------ |
-| `AO_DATA_DIR`                       | Override the `~/.ao` base directory.                                                 |
-| `AO_LOG_LEVEL`                      | `error` · `warn` · `info` · `debug` · `trace`                                        |
-| `AO_CONFIG_PATH`                    | Absolute path to a specific `agent-orchestrator.yaml`. Overrides CWD-based search.   |
-| `AO_SESSION_ID` · `AO_SESSION_NAME` | Auto-set inside spawned sessions; used by `claim-pr` default                         |
-| `AO_PROJECT_ID`                     | Set by AO inside spawned sessions. Used by `ao spawn` to resolve the active project. |
-| `PORT`                              | Next.js dashboard port. Overrides `config.port`.                                     |
-| `TERMINAL_PORT`                     | WebSocket mux server port (default 14800).                                           |
-| `DIRECT_TERMINAL_PORT`              | Direct PTY WebSocket port (default 14801).                                           |
-| `NEXT_PUBLIC_TERMINAL_WS_PATH`      | Override the WebSocket path used by the terminal client (for reverse-proxy setups).  |
-
-Agent-specific env vars are documented on each [agent plugin's page](/docs/plugins/agents).
+All current AO application state stays under `~/.ao` unless `AO_DATA_DIR` or `AO_RUN_FILE` overrides it.

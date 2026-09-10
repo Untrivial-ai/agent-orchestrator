@@ -17,13 +17,14 @@ import (
 
 const adapterID = "prime-agent"
 
-// Plugin launches Prime Agent as a client-owned ephemeral terminal process.
+// Plugin launches Prime Agent as an AO-managed persistent terminal process.
 // Binary resolution is cached because a registered adapter is shared across
 // concurrent session operations.
 type Plugin struct {
 	agentbase.Base
 	binaryMu       sync.Mutex
 	resolvedBinary string
+	runCommand     primeCommandRunner
 }
 
 // New returns a ready-to-register Prime Agent adapter.
@@ -31,9 +32,21 @@ func New() *Plugin {
 	return &Plugin{}
 }
 
+// AugmentRuntimeEnv points Prime Agent at AO's isolated profile so persistent
+// daemon/config state stays under AO_DATA_DIR instead of the user's normal
+// ~/.prime/agent profile.
+func (p *Plugin) AugmentRuntimeEnv(env map[string]string, dataDir string) {
+	dir, err := primeDataDir(dataDir)
+	if err != nil {
+		return
+	}
+	env[primeAgentCodingAgentDirEnv] = dir
+}
+
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
 var _ ports.AgentBinaryResolver = (*Plugin)(nil)
+var _ ports.AgentNativeSessionTerminator = (*Plugin)(nil)
 var _ ports.ActiveTurnSteerer = (*Plugin)(nil)
 var _ ports.SubmitActivitySignaler = (*Plugin)(nil)
 var _ ports.BlockedActivitySignaler = (*Plugin)(nil)
@@ -63,9 +76,9 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 	}}}, nil
 }
 
-// GetLaunchCommand builds a client-owned, non-persistent Prime Agent process:
+// GetLaunchCommand builds a persistent Prime Agent process:
 //
-//	prime-agent --no-session --extension <managed-extension> [--append-system-prompt <text>] [--model <model>] [-- <task>]
+//	prime-agent --session-dir <ao-sessions> --extension <managed-extension> [--append-system-prompt <text>] [--model <model>] [-- <task>]
 //
 // The explicit separator ensures task text beginning with a hyphen cannot be
 // parsed as an option. Prime Agent has no safe CLI permission-mode equivalent,
@@ -74,29 +87,39 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	binary, err := p.primeAgentBinary(ctx)
+	cmd, err := p.baseCommand(ctx, cfg.DataDir, cfg.SystemPrompt, cfg.SystemPromptFile, cfg.Config)
 	if err != nil {
 		return nil, err
-	}
-	extensionPath, err := extensionPath(cfg.DataDir)
-	if err != nil {
-		return nil, err
-	}
-
-	cmd := []string{binary, "--no-session", "--extension", extensionPath}
-	systemPrompt, err := resolveSystemPrompt(ctx, cfg.SystemPrompt, cfg.SystemPromptFile)
-	if err != nil {
-		return nil, err
-	}
-	if systemPrompt != "" {
-		cmd = append(cmd, "--append-system-prompt", systemPrompt)
-	}
-	if model := strings.TrimSpace(cfg.Config.Model); model != "" {
-		cmd = append(cmd, "--model", model)
 	}
 	if cfg.Prompt != "" {
 		cmd = append(cmd, "--", cfg.Prompt)
 	}
+	return cmd, nil
+}
+
+func (p *Plugin) baseCommand(ctx context.Context, dataDir, systemPrompt, systemPromptFile string, cfg ports.AgentConfig) ([]string, error) {
+	binary, err := p.primeAgentBinary(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := sessionDir(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	extensionPath, err := extensionPath(dataDir)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := []string{binary, "--session-dir", sessions, "--extension", extensionPath}
+	resolvedPrompt, err := resolveSystemPrompt(ctx, systemPrompt, systemPromptFile)
+	if err != nil {
+		return nil, err
+	}
+	if resolvedPrompt != "" {
+		cmd = append(cmd, "--append-system-prompt", resolvedPrompt)
+	}
+	agentbase.AppendModelFlag(&cmd, cfg, "--model")
 	return cmd, nil
 }
 
@@ -126,14 +149,21 @@ func resolveSystemPrompt(ctx context.Context, inline, file string) (string, erro
 	return string(data), nil
 }
 
-// GetRestoreCommand intentionally reports native restore as unavailable. AO
-// launches with --no-session so Prime cannot leave a detached resident worker
-// alive after AO terminates the owning terminal session.
-func (p *Plugin) GetRestoreCommand(ctx context.Context, _ ports.RestoreConfig) ([]string, bool, error) {
+// GetRestoreCommand rebuilds the persistent Prime command and resumes the
+// native transcript captured by the managed extension.
+func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) ([]string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	return nil, false, nil
+	agentSessionID := strings.TrimSpace(cfg.Session.Metadata[ports.MetadataKeyAgentSessionID])
+	if agentSessionID == "" {
+		return nil, false, nil
+	}
+	cmd, err := p.baseCommand(ctx, cfg.DataDir, cfg.SystemPrompt, cfg.SystemPromptFile, cfg.Config)
+	if err != nil {
+		return nil, false, err
+	}
+	return append(cmd, "--resume", agentSessionID), true, nil
 }
 
 // SteersActiveTurn reports that Prime queues input submitted during a turn as

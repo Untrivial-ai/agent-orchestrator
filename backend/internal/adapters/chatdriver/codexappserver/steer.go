@@ -79,14 +79,14 @@ func (c *conversation) Steer(
 		return ports.ChatTurnRef{}, ports.ErrChatNoSteerableTurn
 	}
 
-	text := msg.Text
+	input, err := steerInput(msg)
+	if err != nil {
+		return ports.ChatTurnRef{}, err
+	}
 	params := codexproto.TurnSteerParams{
 		ThreadID:       c.threadID,
 		ExpectedTurnID: providerTurnID,
-		Input: []codexproto.UserInput{{
-			Type: codexproto.UserInputTypeText,
-			Text: &text,
-		}},
+		Input:          input,
 	}
 	if msg.ClientMessageID != "" {
 		// The provider echoes this back as the `clientId` on the userMessage item it
@@ -116,6 +116,33 @@ func (c *conversation) Steer(
 	c.mu.Unlock()
 
 	return ports.ChatTurnRef{ProviderTurnID: turn}, nil
+}
+
+// steerInput converts the complete provider-neutral message before the request is
+// sent. Codex turn/steer accepts the same image URL input shape as turn/start;
+// other structured blocks have no honest app-server representation here.
+func steerInput(msg ports.ChatUserMessage) ([]codexproto.UserInput, error) {
+	input := make([]codexproto.UserInput, 0, 1+len(msg.Content))
+	if strings.TrimSpace(msg.Text) != "" {
+		text := msg.Text
+		input = append(input, codexproto.UserInput{Type: codexproto.UserInputTypeText, Text: &text})
+	}
+	for _, item := range msg.Content {
+		switch item.Type {
+		case "image":
+			if item.Data == "" || !strings.HasPrefix(strings.ToLower(item.MIMEType), "image/") {
+				return nil, fmt.Errorf("%w: image requires data and image MIME type", ports.ErrChatSteerContentUnsupported)
+			}
+			url := "data:" + item.MIMEType + ";base64," + item.Data
+			input = append(input, codexproto.UserInput{Type: codexproto.UserInputTypeImage, URL: &url})
+		default:
+			return nil, fmt.Errorf("%w: %s", ports.ErrChatSteerContentUnsupported, item.Type)
+		}
+	}
+	if len(input) == 0 {
+		return nil, errors.New("steer message has no content")
+	}
+	return input, nil
 }
 
 // steerErrorData is the structured half of a steer refusal. app-server answers

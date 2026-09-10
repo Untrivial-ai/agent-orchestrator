@@ -1,10 +1,10 @@
 import { COMPANY } from "@ao/shared/constants";
 import type { Metadata } from "next";
 
-const LAST_UPDATED = "30 July 2026";
+const LAST_UPDATED = "19 August 2026";
 
 const description =
-  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and aoagents.dev: local-first operation, optional analytics, and waitlist email processing.";
+  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and useao.dev: local-first operation, optional analytics, waitlists, and testimonial submissions.";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
@@ -26,7 +26,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary",
-    site: "@aoagents",
+    site: "@ao_build",
     title: `Privacy Policy | ${COMPANY.NAME}`,
     description,
     images: [`${COMPANY.MARKETING_URL}/og-image.png`],
@@ -139,9 +139,10 @@ export default function PrivacyPage() {
               sell or rent data to anyone. The desktop app sends{" "}
               <Strong>anonymous, redacted usage telemetry</Strong> so we can tell
               whether releases are stable — you can turn it off. Website analytics
-              stay off until you accept them. If you voluntarily join the
-              Windows/Linux waitlist, we process the email you submit only for
-              that purpose. The mobile app sends <Strong>no telemetry at all</Strong>{" "}
+              stay off until you accept them. If you voluntarily join a
+              waitlist or send us a testimonial, we process the details you
+              submit only for the purpose described on that form. The mobile
+              app sends <Strong>no telemetry at all</Strong>{" "}
               and talks only to the server you point it at.
             </p>
           </div>
@@ -185,7 +186,7 @@ export default function PrivacyPage() {
                 your computer.
               </Bullet>
               <Bullet>
-                <Strong>aoagents.dev</Strong> — this website and the
+                <Strong>useao.dev</Strong> — this website and the
                 documentation hosted on it.
               </Bullet>
             </Bullets>
@@ -371,7 +372,7 @@ export default function PrivacyPage() {
 
           <Section id="website" title="This website">
             <p>
-              aoagents.dev is a static site and runs no advertising. It uses
+              useao.dev is a static site and runs no advertising. It uses
               PostHog analytics cookies to understand site usage and improve the
               experience, but analytics collection is disabled by default until
               you select <Strong>Accept</Strong>. Selecting opt-out keeps
@@ -380,13 +381,18 @@ export default function PrivacyPage() {
               recording is disabled on the marketing site.
             </p>
             <p>
-              The optional Windows/Linux waitlist is separate from analytics.
-              When you submit it, the email address and requested platform are
-              sent to PostHog solely to manage that waitlist, even if you opted
-              out of site analytics. The form discloses this before submission,
-              and submitting it does not enable analytics for later browsing.
-              Fonts are self-hosted. Other services involved when you browse
-              are:
+              Optional waitlists and testimonial submissions are separate from
+              analytics. When you submit one, the details requested by that form
+              are sent to the relevant submission endpoint and stored solely to
+              manage that request. Waitlist forms may also send their requested
+              details to PostHog even if you opted out of site analytics;
+              submitting a form does not enable analytics for later browsing.
+              Testimonial submissions include the testimonial, your public
+              LinkedIn profile URL, and any optional public X post URL. We use
+              those details to review and, with the permission granted on the
+              form, publish your testimonial with public attribution on the AO
+              website. Fonts are self-hosted. Other services involved when you
+              browse are:
             </p>
             <Bullets>
               <Bullet>
@@ -425,9 +431,9 @@ export default function PrivacyPage() {
                 API keys, tokens, passwords, or any other credential.
               </Bullet>
               <Bullet>
-                Names or account information. The only email address we collect
-                is one you voluntarily submit through the optional
-                Windows/Linux waitlist.
+                Names or account information. The only email address or company
+                role we collect is information you voluntarily submit through an
+                optional waitlist.
               </Bullet>
               <Bullet>Precise location data.</Bullet>
               <Bullet>
@@ -450,7 +456,7 @@ export default function PrivacyPage() {
               <Bullet>
                 <Strong>PostHog</Strong> — product analytics for the desktop
                 app, CLI, and website, plus storage of voluntarily submitted
-                Windows/Linux waitlist emails (
+                waitlist details (
                 <Ext href="https://posthog.com/privacy">privacy policy</Ext>).
               </Bullet>
               <Bullet>
@@ -534,10 +540,16 @@ export default function PrivacyPage() {
                 back to an individual.
               </Bullet>
               <Bullet>
-                <Strong>Waitlist emails.</Strong> Retained in PostHog while
-                needed to notify you about Windows or Linux availability, then
-                deleted. You may request earlier deletion using the private
-                contact address below.
+                <Strong>Waitlist details.</Strong> Retained in PostHog while
+                needed to notify you about the relevant release or AO Cloud
+                access, then deleted. You may request earlier deletion using the
+                private contact address below.
+              </Bullet>
+              <Bullet>
+                <Strong>Testimonial submissions.</Strong> Retained while they
+                are reviewed or displayed on the AO website, including the
+                supplied public LinkedIn and optional X post URLs. You may
+                request deletion using the private contact address below.
               </Bullet>
             </Bullets>
           </Section>

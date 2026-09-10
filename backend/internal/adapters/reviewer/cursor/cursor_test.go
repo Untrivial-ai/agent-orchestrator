@@ -57,6 +57,7 @@ func TestReviewCommandBuildsPersistentInteractiveInvocation(t *testing.T) {
 		DataDir:          dataDir,
 		Prompt:           "complete the AO review task in `/ao/prompts/reviewer/requests/batch-1/run-1/task.md`.",
 		SystemPrompt:     "secret system content must not enter argv",
+		Config:           ports.AgentConfig{Model: "gpt-5"},
 		SystemPromptFile: "/ao/prompts/reviewer/system.md",
 		TaskPromptFile:   "/ao/prompts/reviewer/requests/batch-1/run-1/task.md",
 		TaskPromptRoot:   "/ao/prompts/reviewer",
@@ -76,6 +77,9 @@ func TestReviewCommandBuildsPersistentInteractiveInvocation(t *testing.T) {
 	}
 	if agent.got.Permissions != ports.PermissionModeDefault {
 		t.Fatalf("permissions = %q, want default", agent.got.Permissions)
+	}
+	if agent.got.Config.Model != "gpt-5" {
+		t.Fatalf("launch config model = %q, want gpt-5", agent.got.Config.Model)
 	}
 	if agent.got.WorkspacePath != "/ws/w1" || agent.got.SessionID != "review-w1" {
 		t.Fatalf("launch config = %+v", agent.got)

@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@ao/ui/utils";
-import Link from "next/link";
+import { HashLink } from "../../../HashLink/HashLink";
 import {
   type NavLink,
   PRODUCT_LINKS,
@@ -38,8 +38,8 @@ function NavLinkItem({ link }: { link: NavLink }) {
     );
   }
   return (
-    <Link href={link.href} className={linkClass}>
+    <HashLink href={link.href} className={linkClass}>
       {link.label}
-    </Link>
+    </HashLink>
   );
 }

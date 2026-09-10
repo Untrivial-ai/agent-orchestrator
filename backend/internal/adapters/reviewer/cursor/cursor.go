@@ -55,6 +55,7 @@ func (r *Reviewer) PreLaunch(ctx context.Context, inv ports.ReviewInvocation) er
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	prompt := cursorPrompt(inv)
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
+		Config:        inv.Config,
 		SessionID:     inv.ReviewerID,
 		WorkspacePath: inv.WorkspacePath,
 		Prompt:        prompt,

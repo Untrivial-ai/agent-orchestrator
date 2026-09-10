@@ -52,4 +52,8 @@ var (
 	// guidance. Codex refuses a compaction or a review turn this way: those are
 	// machine-driven turns with no room for a user's correction.
 	ErrChatTurnNotSteerable = errors.New("the running turn cannot be steered")
+	// ErrChatSteerContentUnsupported means the driver cannot deliver every prompt
+	// block supplied for this steer. Drivers must reject before sending rather than
+	// silently dropping attachments.
+	ErrChatSteerContentUnsupported = errors.New("steer content is unsupported")
 )

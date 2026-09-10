@@ -24,6 +24,20 @@ func upTo(t *testing.T, db *sql.DB, version int64) {
 	}
 }
 
+func downTo(t *testing.T, db *sql.DB, version int64) {
+	t.Helper()
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("set dialect: %v", err)
+	}
+	if err := goose.DownTo(db, "migrations", version); err != nil {
+		t.Fatalf("down to %d: %v", version, err)
+	}
+}
+
 // TestMigration0013DedupesExistingDuplicates guards the data-safety concern in
 // #246: a pre-#242 daemon could already hold duplicate (session_id, target_sha)
 // review_run rows, on which CREATE UNIQUE INDEX would fail and wedge startup. The
@@ -215,6 +229,41 @@ ON CONFLICT (session_id, harness) DO UPDATE SET
 	}
 	if reviewSessionTableCount != 0 {
 		t.Fatalf("review_session table count = %d, want 0", reviewSessionTableCount)
+	}
+}
+
+func TestMigration0103RoundTripsWithoutChangeLogCompatViews(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	upTo(t, db, 103)
+
+	var leakedCompatRefs int
+	if err := db.QueryRow(`
+SELECT count(*)
+FROM sqlite_master
+WHERE type = 'trigger' AND sql LIKE '%change_log_old%'`).Scan(&leakedCompatRefs); err != nil {
+		t.Fatalf("query trigger compatibility refs after up: %v", err)
+	}
+	if leakedCompatRefs != 0 {
+		t.Fatalf("triggers still reference change_log_old after up: %d", leakedCompatRefs)
+	}
+
+	downTo(t, db, 102)
+	upTo(t, db, 103)
+
+	var reviewRunTriggerCount int
+	if err := db.QueryRow(`
+SELECT count(*)
+FROM sqlite_master
+WHERE type = 'trigger' AND name IN ('review_run_cdc_insert', 'review_run_cdc_update')`).Scan(&reviewRunTriggerCount); err != nil {
+		t.Fatalf("query review-run triggers after up/down/up: %v", err)
+	}
+	if reviewRunTriggerCount != 2 {
+		t.Fatalf("review-run trigger count after up/down/up = %d, want 2", reviewRunTriggerCount)
 	}
 }
 

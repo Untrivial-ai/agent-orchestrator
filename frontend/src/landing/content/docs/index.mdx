@@ -3,99 +3,63 @@ title: Introduction
 description: Learn what Agent Orchestrator does, when to use it, and where to start.
 ---
 
+Agent Orchestrator (**AO**) is a desktop IDE for supervising AI coding agents. It gives workers isolated workspaces, keeps each conversation or terminal available, and connects Git-project work to pull requests, CI, reviews, and merge conflicts.
 
-Agent Orchestrator (**AO**) runs AI coding agents in isolated git worktrees and tracks each one until it becomes a pull request.
-
-Use it when you have several well-scoped issues and want agents working on them in parallel — each in its own checkout, terminal, and branch, all visible from one dashboard.
+The agents still write the code. AO provides the control layer around them: projects, sessions, workspaces, status, follow-up messages, review runs, notifications, and browser previews in one place.
 
 <Callout type="info" title="Fastest path">
-	If you are new to AO, install it first, then run the quickstart against one small issue. Start with
-	[Installation](/docs/installation), then [Quickstart](/docs/quickstart).
+	Download the desktop app, add a repository, and start one small session. See [Installation](/docs/installation), then [Quickstart](/docs/quickstart).
 </Callout>
 
-## What AO Is For
+## What AO Helps You Do
 
-AO is useful when you want to:
+- Run several coding agents without mixing their files, branches, or pull requests.
+- Choose a native terminal UI or structured Chat for each session.
+- Follow activity, CI, review feedback, and merge readiness from the desktop app.
+- Send follow-up instructions to the right worker.
+- Run reviewer agents and route requested changes back to the worker.
+- Preview a session's local app beside its Chat or terminal.
+- Check and respond from the companion mobile app on your home network.
 
-- Run more than one coding agent at the same time.
-- Keep every agent in its own worktree, branch, and session.
-- Watch agent terminals and PR state from one dashboard.
-- Let AO wake an agent when CI fails or a review requests changes.
-- Use different agent CLIs across projects or roles, such as Claude Code, Codex, Cursor, Aider, and OpenCode.
+AO works best when each worker has a clear, reviewable outcome: a focused bug, feature, refactor, test, documentation update, or review follow-up.
 
-AO works best for issues that have a clear outcome: failing tests, small features, focused refactors, migrations, documentation updates, and review follow-ups.
-
-## What AO Does Not Do
-
-AO does not replace review. It helps agents keep working, but you still decide what gets merged.
-
-| AO handles                         | You still handle                             |
-| ---------------------------------- | -------------------------------------------- |
-| Creating isolated workspaces       | Choosing good issues                         |
-| Launching and monitoring agents    | Reviewing code and behavior                  |
-| Tracking PR, CI, and review status | Deciding when to merge                       |
-| Cleaning up merged sessions        | Setting repo-specific rules and expectations |
-
-## How A Session Moves
+## The Basic Loop
 
 ```text
-issue -> ao spawn -> worktree + agent -> pull request -> CI/review loop -> merge -> cleanup
+add project -> start session -> isolated worktree -> pull request -> CI/review -> merge -> cleanup
 ```
 
-The dashboard shows this lifecycle as session cards. Open a card to see the live terminal, current activity state, issue link, PR link, and worktree path.
+You can create sessions from the desktop app or the optional CLI. AO launches the selected agent interface, observes durable activity and pull-request facts, and derives the status shown in the UI.
 
-## How AO Fits Together
+## Chat And Terminal UI
 
-AO is built from plugins. The default setup works out of the box for common GitHub workflows, and you can swap pieces when your setup is different.
+Every session has one active agent interface at a time:
 
-| Plugin slot | What it controls                  | Examples                                    |
-| ----------- | --------------------------------- | ------------------------------------------- |
-| Agent       | Which coding tool writes changes  | Claude Code, Codex, Cursor, Aider, OpenCode |
-| Runtime     | How the agent process runs        | tmux, child process                         |
-| Workspace   | Where code is checked out         | git worktree, full clone                    |
-| Tracker     | Where issues come from            | GitHub, GitLab, Linear                      |
-| SCM         | How PRs, reviews, and CI are read | GitHub, GitLab                              |
-| Notifier    | Where AO sends updates            | desktop, Slack, Discord, webhook            |
+| Interface | Best for |
+| --- | --- |
+| **Chat** | Structured messages, activities, approvals, plans, usage, and conversation history. |
+| **Terminal UI** | The agent harness's native interactive terminal experience. |
 
-Most users start with the defaults and only edit `agent-orchestrator.yaml` when they need a different agent, runtime, tracker, or notification target.
+Chat is currently available for installed Codex, Claude Code, OpenCode, and Droid harnesses. Compatible Claude Code and Codex sessions can switch between Chat and Terminal UI without changing the AO session or worktree.
 
-## Platform Support
+## Local By Design
 
-<PlatformSupport
-	macos="full"
-	linux="full"
-	windows="full"
-	note={
-		<>
-			Windows uses the process runtime; tmux and iTerm2 integrations are macOS/Linux-only. See{" "}
-			<a href="/docs/platforms">Platforms</a> for the recommended setup.
-		</>
-	}
-/>
+The desktop app runs a Go daemon on `127.0.0.1` and communicates with it over a local API. Durable product state, Electron data, and worktree metadata live under `~/.ao` by default. Your agent CLIs and source-control credentials remain your own; AO does not bundle provider CLIs.
+
+Connect Mobile is a separate, opt-in home-network listener protected by a connection password. It is off until you enable it in the desktop app.
+
+## Supported Agents
+
+AO includes adapters for more than twenty agent harnesses, including Claude Code, Codex, Cursor, Aider, OpenCode, Droid, Kimi Code, GitHub Copilot, and others. Native Chat support is a smaller capability-gated subset; other harnesses use Terminal UI.
+
+GitHub is the currently shipped source-control observation path. Broader tracker and SCM integrations described in older AO documentation are not all available in the current daemon rewrite.
 
 ## Where To Go Next
 
 <Cards>
-	<Card
-		title="Installation"
-		description="Install AO, authenticate your tools, and run the doctor check."
-		href="/docs/installation"
-	/>
-	<Card title="Quickstart" description="Spawn one agent on one issue and watch it open a PR." href="/docs/quickstart" />
-	<Card title="Configuration" description="Understand the `agent-orchestrator.yaml` file." href="/docs/configuration" />
-	<Card
-		title="Guides"
-		description="Run parallel issues, recover from CI failures, and handle review loops."
-		href="/docs/guides"
-	/>
-	<Card
-		title="Plugins"
-		description="See which agents, runtimes, trackers, SCMs, terminals, and notifiers are available."
-		href="/docs/plugins"
-	/>
-	<Card
-		title="Troubleshooting"
-		description="Fix common install, dashboard, runtime, and session problems."
-		href="/docs/troubleshooting"
-	/>
+	<Card title="Installation" description="Download the desktop app and connect your tools." href="/docs/installation" />
+	<Card title="Quickstart" description="Run one worker session from task to pull request." href="/docs/quickstart" />
+	<Card title="Dashboard" description="Learn the desktop board, session view, Chat, terminal, and inspector." href="/docs/dashboard" />
+	<Card title="Architecture" description="Understand the Go daemon, Electron app, storage, and session modes." href="/docs/architecture" />
+	<Card title="Troubleshooting" description="Resolve common desktop, daemon, agent, and session problems." href="/docs/troubleshooting" />
 </Cards>

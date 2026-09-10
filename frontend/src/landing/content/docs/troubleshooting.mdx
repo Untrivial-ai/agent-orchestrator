@@ -1,112 +1,107 @@
 ---
 title: Troubleshooting
-description: Common AO problems and concrete fixes. Most start with `ao doctor`.
+description: Diagnose desktop, daemon, agent, session, GitHub, preview, and mobile problems.
 ---
 
+## Start With The Desktop App
 
-## First step: `ao doctor`
+The desktop app owns the local daemon. First quit and reopen Agent Orchestrator, then confirm the project and selected session still appear. The app discovers or restarts its daemon and reconnects live event and terminal streams.
+
+If you use the optional CLI, `ao status` and `ao doctor` provide additional local diagnostics:
 
 ```bash
+ao status
 ao doctor
-ao doctor --fix           # auto-repair safe things
-ao doctor --test-notify   # send a test through each notifier
+ao doctor --json
 ```
 
-Covers: install health, plugin resolution, notifier connectivity, stale temp files.
+`ao doctor` checks daemon/config state, the data directory and database, Git, and tmux on macOS/Linux. It is not required for a normal desktop-only install.
 
-## Install & environment
-
-<Accordions>
-  <Accordion title="`ao: command not found`">
-    The npm global bin isn't on your PATH. Find it with `npm config get prefix` and add `<prefix>/bin` to your shell's PATH.
-  </Accordion>
-  <Accordion title="`tmux: command not found` (on Windows)">
-    Expected. Use `runtime: process` in your config. See [Platforms](/docs/platforms#windows).
-  </Accordion>
-  <Accordion title="`gh: authentication required`">
-    Run `gh auth login`. AO uses `gh` for every GitHub interaction.
-  </Accordion>
-  <Accordion title="Port 3000 already in use">
-    AO auto-picks the next free port. You'll see the actual URL in the `ao start` output.
-  </Accordion>
-  <Accordion title="Dashboard crashes with 'vendor-chunks not found'">
-    Stale Next.js artifacts. Run `ao dashboard --rebuild`.
-  </Accordion>
-</Accordions>
-
-## Agents & sessions
+## Desktop And Daemon
 
 <Accordions>
-  <Accordion title="`ao spawn` hangs at 'waiting for idle'">
-    The agent never reached idle state. Run `ao status --watch` to see what's happening — if it's legitimately working (e.g. large install step), wait. Otherwise `ao session kill <session>` and spawn again.
-  </Accordion>
-  <Accordion title="Dashboard activity stuck on 'active' or 'idle'">
-    `getActivityState` reads the agent's JSONL / activity log. If that file is missing or stale, you'll see wrong states. `ao doctor` flags this. See the agent's individual plugin page under [Plugins › Agents](/docs/plugins/agents) for recovery.
-  </Accordion>
-  <Accordion title="Agent opened a PR but the dashboard doesn't know">
-    The PATH wrapper didn't record it (possible if the agent called `gh` by absolute path). Use `ao session claim-pr <pr> <sessionId>` to link retroactively.
-  </Accordion>
-  <Accordion title="Session won't restore">
-    `ao session restore <sessionId>` relaunches the agent in the same worktree. If restore keeps failing, check the agent plugin's resume docs — some agents don't support resume at all (Cursor, Aider).
-  </Accordion>
-  <Accordion title="`Session can't be found` with OpenCode">
-    Run `ao session remap <sessionId>` to re-discover the OpenCode mapping. Use `--force` if a stale mapping is stuck.
-  </Accordion>
-</Accordions>
-
-## GitHub / SCM
-
-<Accordions>
-	<Accordion title="GitHub API rate limit">
-		AO paces calls, but heavy projects can still hit limits. The lifecycle manager backs off automatically. If you see
-		sustained rate-limit errors, check that you're logged in as yourself (`gh auth status`) — unauthenticated calls have
-		much lower limits.
+	<Accordion title="The app opens but no projects appear">
+		Confirm you opened the expected AO data home. All state defaults under `~/.ao`; an `AO_DATA_DIR` or `AO_RUN_FILE` override can point a development launch at a different daemon instance.
 	</Accordion>
-	<Accordion title="CI recovery never fires">
-		`reactions.ciFailed.enabled: false` in your config, or the PR is in draft. See [CI recovery › When it doesn't kick
-		in](/docs/guides/ci-recovery#when-it-doesnt-kick-in).
+	<Accordion title="The CLI says the daemon is not running">
+		Open the desktop app first. Product CLI commands are thin clients and need the app-owned daemon. A stale `~/.ao/running.json` is not enough; AO also verifies the recorded process.
 	</Accordion>
-	<Accordion title="Review loop never fires">
-		Review feedback is only replayed on `CHANGES_REQUESTED` — not on plain `COMMENTED` reviews. See [Review
-		loop](/docs/guides/review-loop).
+	<Accordion title="The daemon port is occupied">
+		The primary daemon uses loopback port `3001` by default and fails fast if it cannot bind. Stop the conflicting local process or use a deliberate development `AO_PORT` override. Never change the bind host to expose the daemon.
 	</Accordion>
-	<Accordion title="Webhook delivers but nothing happens">
-		HMAC signature check failing. Verify your `secretEnvVar` is exported and matches the secret you set on GitHub.
+	<Accordion title="The UI looks stale after a daemon restart">
+		Leave the app open briefly so its SSE connection can reconnect and invalidate current queries. If it does not recover, restart the desktop app. The event stream supports replay, but a full app restart is the safest user-level recovery.
 	</Accordion>
 </Accordions>
 
-## Notifications
+## Agents And Sessions
 
 <Accordions>
-	<Accordion title="Desktop notifications silent on macOS">
-		System Settings → Notifications → allow your terminal app.
+	<Accordion title="No agent harness is offered">
+		Install the harness, run it once to authenticate, and restart AO. The desktop daemon inherits a login-shell environment and reuses each provider's installed binary and authentication.
 	</Accordion>
-	<Accordion title="Desktop notifier warning on Windows">
-		Expected. Add Discord, Slack, or a webhook notifier in the same `notifier:` list.
+	<Accordion title="Chat preflight fails">
+		Confirm the selected harness supports native Chat and its binary is authenticated. Chat currently supports Codex, Claude Code, OpenCode, and Droid. Choose Terminal UI when the harness lacks Chat support or preflight cannot connect.
 	</Accordion>
-	<Accordion title="Slack webhook 429s under load">
-		The slack notifier doesn't honor Retry-After. Use the generic [webhook notifier](/docs/plugins/notifiers/webhook)
-		with `retries` tuned up.
+	<Accordion title="A TUI session will not start on macOS or Linux">
+		Run `tmux -V` and install tmux if it is missing. On Windows, AO uses its native conpty host instead.
+	</Accordion>
+	<Accordion title="The session is blocked">
+		Open the session and answer the pending approval or permission prompt. AO deliberately does not inject lifecycle messages while a controller is blocked.
+	</Accordion>
+	<Accordion title="The status appears wrong">
+		Status is derived from activity, termination, controller, and pull-request facts. A failed runtime probe is not treated as death. Reopen the session and inspect its Chat or terminal before killing it.
+	</Accordion>
+	<Accordion title="A session will not restore">
+		Use the desktop restore action or `ao session restore <session-id>`. Restore reuses the same session and worktree when the selected adapter supports recovery. Check that the harness remains installed and authenticated.
 	</Accordion>
 </Accordions>
 
-## Windows-specific
+## GitHub And Pull Requests
 
 <Accordions>
-  <Accordion title="`ao open` prints a URL instead of opening a tab">
-    Expected on Windows. The iTerm2 helper only runs on macOS. Use the dashboard's built-in terminal (the printed URL takes you there).
-  </Accordion>
-  <Accordion title="Child process exits immediately">
-    Shell quoting issue. Pass long prompts via `--prompt` with simple ASCII, or via `ao send --file <path>`.
-  </Accordion>
+	<Accordion title="Repository or pull-request data is missing">
+		Run `gh auth status` and confirm the active account can access the repository. GitHub authentication is lazy so an auth failure does not need to block unrelated local session work.
+	</Accordion>
+	<Accordion title="The agent opened a PR but AO did not link it">
+		Claim it from the session UI or, inside the worker, run `ao session claim-pr <pr-number-or-url>`; AO reads the worker from `AO_SESSION_ID`. From another shell, use `ao session claim-pr <session-id> <pr-number-or-url>`.
+	</Accordion>
+	<Accordion title="CI or review data is delayed">
+		The SCM observer polls GitHub and respects rate limits and ETags. Check `gh auth status`, wait for another observation cycle, and open the pull request directly for full raw logs or comment bodies.
+	</Accordion>
+	<Accordion title="Review findings were not sent to the worker">
+		Open the review run and use its send action. Reviewer execution and delivery are separate operations so you can inspect findings before changing the worker conversation.
+	</Accordion>
 </Accordions>
 
-## Still stuck
+## Browser Preview
 
-- Check the [FAQ](/docs/faq).
-- Open an issue: [`Untrivial-ai/agent-orchestrator`](https://github.com/Untrivial-ai/agent-orchestrator/issues).
-  When opening an issue, include:
+<Accordions>
+	<Accordion title="The Browser tab is blank">
+		Select a target explicitly with `ao preview <url>`, or use `ao preview start` when the worktree contains a valid `.ao/launch.json`. AO does not auto-discover a preview for every new worker.
+	</Accordion>
+	<Accordion title="A configured preview server will not start">
+		Run `ao preview start <configuration>` and inspect the returned error. Verify the command and working directory in the session's `.ao/launch.json`, then run the same command in its worktree shell.
+	</Accordion>
+	<Accordion title="Browser automation targets the wrong page">
+		Select the correct session and browser tab. Browser profiles are isolated per worker, and commands are authorized for the selected session only.
+	</Accordion>
+</Accordions>
 
-- Output of `ao --version`
-- The contents of `~/.agent-orchestrator/{hash}-observability/processes/` (one JSON snapshot per process; each contains traces, health, and metrics)
-- Your `agent-orchestrator.yaml` (redact any secrets)
+## Connect Mobile
+
+<Accordions>
+	<Accordion title="The phone cannot connect">
+		Confirm Connect Mobile is still enabled, both devices are on the same trusted LAN, and the phone used the current connection password. Rotating the password disconnects the previous phone.
+	</Accordion>
+	<Accordion title="The QR code was shared">
+		The QR carries the host and port, not the password. Rotate the connection password in desktop settings if the pairing details or password may have been exposed.
+	</Accordion>
+	<Accordion title="Can I use Connect Mobile on public Wi-Fi?">
+		Do not. Transport is plaintext HTTP by deliberate design. Use it only on a trusted home network, and disable it when finished.
+	</Accordion>
+</Accordions>
+
+## Still Stuck
+
+Open an issue in the [Agent Orchestrator repository](https://github.com/AgentWrapper/agent-orchestrator/issues). Include the desktop version, operating system, agent harness and interface mode, reproduction steps, and sanitized `ao doctor --json` output when the CLI is available. Never attach credentials, provider transcripts, or the entire `~/.ao` directory.

@@ -29,6 +29,12 @@ type State struct {
 	Enabled  bool   `json:"enabled"`
 	Password string `json:"password"`
 	LastPort int    `json:"lastPort"`
+	// SecurePairing is the opt-in TLS-over-Tailscale mode. Persisted so a daemon
+	// restart (backend/internal/daemon/mobile_restore.go, via
+	// BridgeService.RestoreOnBoot) knows to re-apply the `tailscale serve` proxy
+	// — pointed at whatever port the restarted LAN listener actually bound, not
+	// this struct's LastPort, since Start can fall back to an ephemeral port.
+	SecurePairing bool `json:"securePairing"`
 }
 
 // Path returns the Connect Mobile config file location under the data dir

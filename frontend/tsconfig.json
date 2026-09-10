@@ -21,7 +21,8 @@
 		"noFallthroughCasesInSwitch": true,
 		"baseUrl": ".",
 		"paths": {
-			"@/*": ["./src/renderer/*"]
+			"@/*": ["./src/renderer/*"],
+			"@aoagents/product-ui": ["../packages/product-ui/src/index.ts"]
 		}
 	},
 	"include": [

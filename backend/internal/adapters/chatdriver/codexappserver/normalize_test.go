@@ -37,12 +37,14 @@ func normalizeNone(t *testing.T, method, params string) {
 
 func TestNormalizeTurnLifecycle(t *testing.T) {
 	started := normalizeOne(t, "turn/started", `{"threadId":"th1","turn":{"id":"tu1","status":"inProgress","items":[]}}`)
-	if started.Kind != ports.ChatEventTurnStarted || started.ProviderTurnID != "tu1" {
+	if started.Kind != ports.ChatEventTurnStarted || started.ProviderTurnID != "tu1" ||
+		started.ProviderConversationID != "th1" {
 		t.Fatalf("turn/started -> %+v", started)
 	}
 
 	done := normalizeOne(t, "turn/completed", `{"threadId":"th1","turn":{"id":"tu1","status":"completed","items":[]}}`)
-	if done.Kind != ports.ChatEventTurnCompleted || done.TurnState != domain.TurnStateCompleted {
+	if done.Kind != ports.ChatEventTurnCompleted || done.TurnState != domain.TurnStateCompleted ||
+		done.ProviderConversationID != "th1" {
 		t.Fatalf("turn/completed -> %+v", done)
 	}
 }
@@ -356,21 +358,6 @@ func TestNormalizeToleratesMalformedParams(t *testing.T) {
 		"account/rateLimits/updated",
 	} {
 		normalizeNone(t, method, `"not an object"`)
-	}
-}
-
-func TestUnwrapShellLeavesPlainCommands(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{"date -u", "date -u"},
-		{"/bin/sh -c 'ls -la'", "ls -la"},
-		{`/bin/bash -lc "git status"`, "git status"},
-		{"ao spawn --project p --name w", "ao spawn --project p --name w"},
-		// A non-shell binary that happens to take -c must not be unwrapped.
-		{"python -c print(1)", "python -c print(1)"},
-	} {
-		if got := unwrapShell(tc.in); got != tc.want {
-			t.Errorf("unwrapShell(%q) = %q, want %q", tc.in, got, tc.want)
-		}
 	}
 }
 

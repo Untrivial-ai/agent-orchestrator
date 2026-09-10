@@ -1,11 +1,20 @@
 ---
 title: Changelog
-description: Release notes for AO, including new features, improvements, and fixes by version.
+description: Where to find current AO desktop and mobile release notes.
 ---
 
-Release notes for AO, including new features, improvements, and fixes by version.
+AO now ships continuously through GitHub Releases. The release page is the source of truth for desktop versions, supported artifacts, changes, and upgrade notes.
 
-This page is maintained from weekly release notes. Run `ao --version` to check your installed version.
+The desktop app checks for updates automatically. Open **Settings → Updates** to see the installed version or check manually. The optional CLI also reports its own version with `ao version`.
+
+- [Current desktop releases](https://github.com/AgentWrapper/agent-orchestrator/releases)
+- [Current source history](https://github.com/AgentWrapper/agent-orchestrator/commits/main)
+
+macOS releases include both a DMG for first installation and a ZIP used by the updater. Windows and Linux artifacts are listed on each release.
+
+## Historical release
+
+The entry below describes the legacy JavaScript product and is retained only as project history. Its dashboard, package, plugin, and CLI details do not describe the current desktop application.
 
 ## 0.3.0 "The Rebuild"
 
@@ -23,9 +32,3 @@ April 25, 2026
 - Added macOS idle sleep prevention while agents are running, reducing silent CI drops during long sessions.
 - Resolved a critical SSRF vulnerability by overriding Axios to `>=1.15.0` and matched the Gitleaks binary for arm64 runners.
 - Renamed all packages from `@composio` to `@aoagents` for a cleaner ecosystem identity.
-
-## Sources
-
-- [Package changelogs on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/tree/main/packages)
-- [GitHub Releases](https://github.com/Untrivial-ai/agent-orchestrator/releases)
-- [`main` commit history](https://github.com/Untrivial-ai/agent-orchestrator/commits/main)

@@ -163,8 +163,9 @@ func confirm(in io.Reader, out io.Writer, prompt string, defaultYes bool) (bool,
 
 // stdinIsInteractive reports whether in is an interactive terminal. It only
 // treats the real os.Stdin as potentially interactive; a piped reader or test
-// buffer is non-interactive.
-func stdinIsInteractive(in io.Reader) bool {
+// buffer is non-interactive. It is a var so tests can exercise prompt paths
+// without a real terminal, mirroring start.go's appScanLocations.
+var stdinIsInteractive = func(in io.Reader) bool {
 	f, ok := in.(*os.File)
 	if !ok {
 		return false
@@ -173,5 +174,16 @@ func stdinIsInteractive(in io.Reader) bool {
 	if err != nil {
 		return false
 	}
-	return info.Mode()&os.ModeCharDevice != 0
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	// A terminal is a character device, but so is /dev/null, which is what
+	// `docker run` without -i hands a process. Treating that as a terminal makes
+	// a prompt "answer itself" with the default at EOF, so exclude it. Checking
+	// for a real tty needs an ioctl (golang.org/x/term); this covers the only
+	// non-tty character device that shows up as stdin in practice.
+	if devNull, err := os.Stat(os.DevNull); err == nil && os.SameFile(info, devNull) {
+		return false
+	}
+	return true
 }

@@ -1,361 +1,98 @@
 ---
 title: Architecture
-description: How Agent Orchestrator fits together — plugin slots, session lifecycle, event bus, prompt assembly, and activity detection.
+description: How the Go daemon, Electron app, storage, controllers, and adapters fit together.
 ---
 
-Agent Orchestrator (AO) is a Node.js orchestrator that spawns and manages parallel AI coding agents across isolated git worktrees. Every moving part is a plugin; the core provides the state machine, event bus, and prompt assembly that ties them together.
+Agent Orchestrator is a local, single-user system built around a long-running Go daemon. The Electron/React desktop app, optional CLI, and Expo mobile app are thin clients over the daemon's HTTP, SSE, and terminal interfaces.
 
-## The 8 Plugin Slots
+## System Overview
 
-Each abstraction in AO is a named interface defined in `packages/core/src/types.ts`. Seven of the eight slots are pluggable at runtime; the eighth (Lifecycle) is built into core and cannot be replaced.
-
-| Slot      | Default                                         | Purpose                                                          | Interface          |
-| --------- | ----------------------------------------------- | ---------------------------------------------------------------- | ------------------ |
-| Runtime   | [tmux](/docs/plugins/runtimes/tmux)             | Where agent sessions execute (tmux, process, docker, k8s)        | `Runtime`          |
-| Agent     | [claude-code](/docs/plugins/agents/claude-code) | Which AI coding tool is launched                                 | `Agent`            |
-| Workspace | [worktree](/docs/plugins/workspaces/worktree)   | Code isolation — each session gets its own git worktree or clone | `Workspace`        |
-| Tracker   | [github](/docs/plugins/trackers/github)         | Issue tracking (GitHub Issues, Linear, GitLab)                   | `Tracker`          |
-| SCM       | [github](/docs/plugins/scm/github)              | PR lifecycle, CI checks, and code reviews                        | `SCM`              |
-| Notifier  | [desktop](/docs/plugins/notifiers/desktop)      | Push notifications to the human (desktop, Slack, webhook)        | `Notifier`         |
-| Terminal  | [iterm2](/docs/plugins/terminals/iterm2)        | How humans view and interact with running sessions               | `Terminal`         |
-| Lifecycle | core (non-pluggable)                            | State machine, poll loop, and reaction engine                    | `LifecycleManager` |
-
-<Callout type="info">
-	The Lifecycle slot is not pluggable. It is instantiated by core and wired to all other plugins automatically. You
-	configure its behaviour (poll interval, reactions, thresholds) through `agent-orchestrator.yaml` rather than by
-	replacing the implementation.
-</Callout>
-
----
-
-## Session Status Lifecycle
-
-Every session moves through a well-defined set of statuses. The values are defined by the `SESSION_STATUS` constant in `packages/core/src/types.ts`.
-
-```
-spawning
-   │
-   ▼
-working ──────────────────────────────────────────────► stuck
-   │                                                     ▲
-   ▼                                                     │
-pr_open ──────────────────────────────────────────────► stuck
-   │
-   ├──► ci_failed
-   │
-   ├──► review_pending
-   │
-   ├──► changes_requested
-   │
-   └──► approved
-            │
-            ▼
-         mergeable
-            │
-            ▼
-          merged ──► cleanup ──► done
+```text
+Electron + React desktop ─┐
+ao CLI ──────────────────┼─> Go daemon ─> services/managers ─> SQLite
+Expo mobile (opt-in LAN) ┘       │                 │
+                                │                 ├─> agent/runtime/workspace adapters
+                                ├─> SSE events    ├─> native Chat drivers
+                                ├─> terminal mux  └─> GitHub SCM observer
+                                └─> browser bridge to Electron
 ```
 
-Terminal statuses (session is dead and will no longer be polled): `killed`, `terminated`, `done`, `cleanup`, `errored`, `merged`.
-
-| Status              | Description                                                                   |
-| ------------------- | ----------------------------------------------------------------------------- |
-| `spawning`          | Session is being created — worktree, branch, and tmux window are initialising |
-| `working`           | Agent is active; no PR yet                                                    |
-| `pr_open`           | Agent has pushed a PR; CI and reviews are pending                             |
-| `ci_failed`         | One or more CI checks on the PR are failing                                   |
-| `review_pending`    | PR has been submitted for review; waiting for a decision                      |
-| `changes_requested` | Reviewer(s) have requested changes                                            |
-| `approved`          | PR is approved but not yet mergeable (e.g. still behind base)                 |
-| `mergeable`         | PR is approved, CI is green, and it can be merged                             |
-| `merged`            | PR has been merged (terminal)                                                 |
-| `cleanup`           | Post-merge cleanup in progress (terminal)                                     |
-| `done`              | Session completed cleanly (terminal)                                          |
-| `needs_input`       | Agent is waiting for a permission prompt or human input                       |
-| `stuck`             | Agent has been idle beyond the configured `agent-stuck` threshold             |
-| `errored`           | Unexpected error — session is dead (terminal)                                 |
-| `killed`            | Session was explicitly killed or the PR was closed (terminal)                 |
-| `idle`              | Agent process is alive but has not produced activity for an extended period   |
-| `terminated`        | Session was terminated externally (terminal)                                  |
-
-### How transitions are determined
-
-The lifecycle manager calls `determineStatus(session)` on every poll cycle. The logic follows this cascade:
-
-1. **Runtime liveness** — If the runtime reports the session is not alive, return `killed`.
-2. **Agent activity** — `getActivityState()` is called; `waiting_input` maps to `needs_input`, `exited` maps to `killed`, and idle beyond the configured threshold maps to `stuck`.
-3. **PR auto-detection** — If no PR is recorded and the agent has a branch, `scm.detectPR()` is called once per cycle to catch PRs created without a metadata hook.
-4. **PR state** — If a PR exists, the SCM plugin provides CI status, review decision, and merge readiness to determine `ci_failed`, `review_pending`, `changes_requested`, `approved`, `mergeable`, or `merged`.
-5. **Default** — Fall back to `working` (or preserve `stuck`/`needs_input`).
+The desktop app discovers, launches, and supervises the daemon. The renderer uses a generated typed client rather than importing backend logic. The CLI is also a thin HTTP client; it never opens SQLite or launches agent adapters directly.
 
----
-
-## Event Bus
-
-After each status transition, the lifecycle manager constructs a typed `OrchestratorEvent` and fans it out to all configured notifiers and reaction handlers. Events have four priority levels: `urgent`, `action`, `warning`, and `info`.
-
-Priority is inferred by `inferPriority()` in `lifecycle-manager.ts`:
-
-- **urgent** — events containing `stuck`, `needs_input`, or `errored`
-- **action** — events containing `approved`, `ready`, `merged`, or `completed`
-- **warning** — events containing `fail`, `changes_requested`, or `conflicts`
-- **info** — everything else, including all `summary.*` events
+## Sessions And Worktrees
 
-| `event.type`                 | Priority | When emitted                                       |
-| ---------------------------- | -------- | -------------------------------------------------- |
-| `session.spawned`            | info     | Session transitions out of `spawning`              |
-| `session.working`            | info     | Session enters `working`                           |
-| `session.exited`             | info     | Agent process exits                                |
-| `session.killed`             | info     | Session is killed                                  |
-| `session.idle`               | info     | Session enters `idle`                              |
-| `session.stuck`              | urgent   | Session exceeds the `agent-stuck` threshold        |
-| `session.needs_input`        | urgent   | Agent is waiting on a permission prompt            |
-| `session.errored`            | urgent   | Session enters `errored`                           |
-| `pr.created`                 | info     | Session transitions to `pr_open`                   |
-| `pr.updated`                 | info     | PR title or state changes                          |
-| `pr.merged`                  | action   | PR is merged                                       |
-| `pr.closed`                  | info     | PR is closed without merging                       |
-| `ci.passing`                 | action   | CI checks recover from failing to passing          |
-| `ci.failing`                 | warning  | Session enters `ci_failed`                         |
-| `ci.fix_sent`                | info     | CI fix message sent to agent                       |
-| `ci.fix_failed`              | warning  | CI fix attempt failed                              |
-| `review.pending`             | info     | Session enters `review_pending`                    |
-| `review.approved`            | action   | Session enters `approved`                          |
-| `review.changes_requested`   | warning  | Session enters `changes_requested`                 |
-| `review.comments_sent`       | info     | Review comments forwarded to agent                 |
-| `review.comments_unresolved` | warning  | Unresolved review comments still present           |
-| `automated_review.found`     | warning  | Bot/automated review comments detected             |
-| `automated_review.fix_sent`  | info     | Automated review fix sent to agent                 |
-| `merge.ready`                | action   | Session enters `mergeable`                         |
-| `merge.conflicts`            | warning  | PR has merge conflicts                             |
-| `merge.completed`            | action   | Session enters `merged`                            |
-| `reaction.triggered`         | info     | A configured reaction fired                        |
-| `reaction.escalated`         | urgent   | A reaction exceeded its retry/escalation threshold |
-| `summary.all_complete`       | info     | All sessions have reached terminal statuses        |
+Workers in Git projects own isolated worktrees; workspace projects can materialize a root plus child-repository worktrees, while Scratch sessions use an AO-managed directory. A session also commits to exactly one agent interface at a time:
 
-For the webhook wire format, see [Webhook Notifier](/docs/plugins/notifiers/webhook). For configuring which events trigger automated reactions, see [Reactions](/docs/configuration/reactions).
+- **Terminal UI** runs the harness inside a tmux runtime on macOS/Linux or a conpty host on Windows.
+- **Chat** runs a native provider controller without an agent terminal runtime.
 
----
+Chat conversations are durable and include provider identity, turns, messages, activities, approvals, structured input, usage, compaction, and rollback state.
 
-## Poll Loop
+For compatible Claude Code and Codex sessions, an interface transition can move the same provider conversation between TUI and Chat. AO drains or interrupts the old controller before committing the replacement, so both controllers are never live at once. The session and worktree do not change.
 
-The lifecycle manager runs a recurring poll loop. The default interval is **30 seconds** (configurable via `start(intervalMs)`). Each cycle:
+## Durable Facts, Derived Status
 
-1. Lists all active sessions via `sessionManager.list()`.
-2. **Batch-fetches PR enrichment data** — a single GraphQL query retrieves CI status, review decision, and merge readiness for all open PRs at once, replacing N×3 individual REST calls with one request.
-3. Checks each session concurrently — `checkSession(session)` calls `determineStatus()`, detects transitions, fires events, and evaluates reactions.
-4. Prunes stale tracker entries for sessions that no longer exist.
-5. Checks whether all sessions are complete and fires `summary.all_complete` if so (emitted once per batch, not repeatedly).
+AO stores durable facts rather than a display status. Important session facts include:
 
-The dashboard then receives these state changes via SSE at a 5-second cadence. The poll loop and SSE cadence are independent — the dashboard may show state that is up to 5 seconds behind the last poll cycle.
+- Agent activity: active, idle, waiting for input, blocked, or exited.
+- Whether the session has been terminated.
+- The current interface mode, controller handle, and generation.
+- Interface-transition checkpoints and queued messages.
+- Pull request, check, and review-comment facts.
 
----
+The service layer computes labels such as working, needs input, CI failed, or ready to merge when a client reads a session. This prevents stored status from drifting away from source facts.
 
-## Prompt Assembly (3 Layers)
+Failed or unknown runtime probes are observations, not proof of death. Cleanup also refuses to force-delete a dirty registered worktree.
 
-Every agent session is launched with a composed prompt built by `buildPrompt()` in `packages/core/src/prompt-builder.ts`. The three layers are always concatenated in order:
+## Storage And Live Updates
 
-### Layer 1 — Base prompt (fixed)
+Durable state is stored in SQLite under `~/.ao/data` by default. Database triggers append changes to a `change_log`; a CDC poller tails that log and broadcasts invalidations to in-process subscribers and `GET /api/v1/events`.
 
-`BASE_AGENT_PROMPT` provides identity, session lifecycle rules, git workflow guidance, and PR best practices. It is identical across all sessions. For projects without a remote repository, a trimmed variant (`BASE_AGENT_PROMPT_NO_REPO`) is used instead — it omits PR and CI instructions that do not apply.
+The event stream supports replay with `Last-Event-ID`. Clients use it to invalidate targeted queries rather than transferring every full session or Chat payload on each update.
 
-### Layer 2 — Config context (per-project)
+All application state remains under `~/.ao`, including the run file, managed worktrees, Electron data, and mobile configuration. `AO_DATA_DIR` and `AO_RUN_FILE` provide advanced overrides for daemon storage and discovery.
 
-Built from the project configuration. Includes:
+## Services And Adapters
 
-- Project name and ID
-- Repository (`owner/repo`)
-- Default branch
-- Tracker plugin name
-- Issue ID and issue body (when spawning from a tracker issue)
-- Reaction hints — lists which events will auto-send instructions back to the agent
+HTTP controllers validate requests and call domain services. Services own read/write policy; session and lifecycle managers coordinate multi-step work. External systems sit behind Go port interfaces and leaf adapters.
 
-### Layer 3 — User rules (per-project)
+Current adapters include more than twenty agent harnesses, tmux/conpty runtime support, git-worktree isolation, native Chat drivers, and GitHub SCM observation. AO reuses installed provider binaries and their existing authentication.
 
-Loaded from `agentRules` (inline string in `agent-orchestrator.yaml`) and/or `agentRulesFile` (path to a file, relative to the project root). Both are concatenated when present. If neither is provided, this layer is omitted.
+GitHub PR observation is shipped. The broader tracker lane is still incomplete, so historical claims that every tracker plugin participates in lifecycle automation should not be treated as current behavior.
 
-An explicit `userPrompt` is appended after Layer 3 as "Additional Instructions" — it has the highest precedence and overrides anything above it.
+## Pull Requests And Lifecycle Reactions
 
-### Orchestrator rules
+The SCM observer polls GitHub using lazy authentication, ETag guards, and semantic diffing. It writes pull-request facts to SQLite and notifies lifecycle logic when CI fails, reviews request changes, or merge conflicts appear.
 
-The `orchestratorRules` field in `ProjectConfig` is reserved for orchestrator-role sessions but is not applied by `buildPrompt()`. Orchestrator sessions receive a completely different prompt generated by `generateOrchestratorPrompt()` — see the next section.
+The daemon also exposes pull-request merge and comment-resolution actions plus reviewer-agent routes. Desktop clients receive concise summaries rather than raw CI logs or complete review bodies.
 
----
+## Network Boundaries
 
-## Orchestrator Prompt
+The primary daemon listener binds `127.0.0.1:3001` and is unauthenticated. It serves the desktop app and CLI and is never configurable to a public bind.
 
-Orchestrator sessions do not receive the standard three-layer prompt. Instead, `generateOrchestratorPrompt()` in `packages/core/src/orchestrator-prompt.ts` builds a standalone prompt that provides:
+Connect Mobile creates a second listener only when explicitly enabled. It binds the LAN interface behind bearer-password authentication and serves the app API and authenticated terminal mux, but excludes shutdown, telemetry, mobile-control, and browser-control routes. Transport is plaintext and intended only for a trusted home network.
 
-- **Role rules** — read-only investigations only; never own a PR; never use `tmux send-keys` directly; always use `ao send` / `ao spawn` to delegate.
-- **Project info** — name, repo, default branch, session prefix, local path, dashboard port.
-- **Quick-start commands** — `ao status`, `ao spawn`, `ao batch-spawn`, `ao session claim-pr`, `ao send`, `ao open`.
-- **Available `ao` commands table** — full reference adapted to whether a repo is configured.
-- **Session management workflows** — spawning, monitoring, PR takeover, investigation workflow, cleanup.
-- **Dashboard info** — URL and feature summary.
-- **Automated reactions** — lists configured reactions so the orchestrator knows what the system will handle automatically.
-- **Common workflows** — bulk issue processing, handling stuck agents, PR review flow, manual intervention.
-- **Project-specific rules** — content of `orchestratorRules` from `ProjectConfig`, appended last.
+## Terminal And Browser Bridges
 
-For a guide on per-role agents, see [Per-Role Agents](/docs/guides/per-role-agents).
+`/mux` provides per-client terminal attachment. TUI sessions attach to the agent runtime; Chat sessions can use it for a separate worktree shell.
 
----
+Browser automation crosses a dedicated local daemon-to-Electron socket. The daemon authorizes and correlates commands; Electron owns the selected session's isolated `WebContentsView`. Browser control is blocked on the mobile LAN listener.
 
-## Activity Detection
+## Load-Bearing Rules
 
-Every agent plugin must implement `getActivityState(session, readyThresholdMs?)`. This is the most critical method in the agent plugin — the dashboard, lifecycle manager, and stuck-detection all depend on it.
+1. Never store display status; derive it from durable facts.
+2. Never treat failed probes as proof that a session died.
+3. Never force-delete dirty worktrees.
+4. Keep all app state under `~/.ao` unless an explicit supported override applies.
+5. Keep the primary listener on loopback; only Connect Mobile may create the authenticated opt-in LAN listener.
+6. Keep the CLI and UI thin; domain logic belongs in the daemon.
+7. Emit durable change events through SQLite triggers and CDC.
+8. Add new migrations; never modify an already-merged migration.
 
-### The 6 activity states
-
-| State           | Meaning                                                     | When                                                        |
-| --------------- | ----------------------------------------------------------- | ----------------------------------------------------------- |
-| `active`        | Agent is processing — thinking, writing code, running tools | Activity within the last 30 seconds                         |
-| `ready`         | Agent finished its turn and is alive, waiting for input     | 30 seconds – 5 minutes since last activity                  |
-| `idle`          | Agent has been quiet for an extended period                 | More than 5 minutes since last activity (default threshold) |
-| `waiting_input` | Agent is at a permission prompt or asking a question        | Permission request detected                                 |
-| `blocked`       | Agent hit an error it cannot recover from on its own        | Error state detected                                        |
-| `exited`        | Agent process is no longer running                          | `isProcessRunning` returns false                            |
-
-### The `getActivityState` cascade
-
-Every agent plugin must implement this cascade in order:
-
-```
-1. PROCESS CHECK
-   └─ isProcessRunning() → false → return { state: "exited" }
-
-2. ACTIONABLE STATES
-   └─ checkActivityLogState() → waiting_input or blocked → return immediately
-
-3. NATIVE SIGNAL (agent-specific)
-   └─ session list API, native JSONL timestamp, etc.
-   └─ classify by age: active (<30s) / ready (30s–threshold) / idle (>threshold)
-
-4. JSONL ENTRY FALLBACK (mandatory)
-   └─ getActivityFallbackState(activityResult, activeWindowMs, threshold)
-   └─ age-based decay: active→ready→idle (never promotes)
-   └─ staleness cap: waiting_input/blocked entries expire after 5 minutes
-
-5. Return null only when there is genuinely no data at all
-```
-
-<Callout type="warn">
-	Step 4 (the JSONL entry fallback) is mandatory. Skipping it means `getActivityState` returns `null` whenever the
-	native API fails — the dashboard shows no activity state and stuck-detection breaks for the entire session lifetime.
-	This was a real bug in the OpenCode plugin.
-</Callout>
-
-### Two JSONL patterns
-
-| Pattern                | Used by                     | How it works                                                                                                                                                                                                                      |
-| ---------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Agent-native JSONL** | Claude Code, Codex          | The agent writes its own JSONL with rich state entries (`permission_request`, `tool_call`, `error`, etc.). `getActivityState` reads the last entry and maps it to activity states.                                                |
-| **AO activity JSONL**  | Aider, OpenCode, new agents | The agent implements `recordActivity`, which calls `recordTerminalActivity()` → `classifyTerminalActivity()` → `appendActivityEntry()` to write to `{workspacePath}/.ao/activity.jsonl`. `getActivityState` reads from this file. |
-
-### Thresholds
-
-| Constant                      | Value      | Purpose                                                                                                                                                               |
-| ----------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DEFAULT_ACTIVE_WINDOW_MS`    | 30 seconds | Activity newer than this is `active`; older is `ready`                                                                                                                |
-| `DEFAULT_READY_THRESHOLD_MS`  | 5 minutes  | `ready` sessions older than this become `idle`                                                                                                                        |
-| `ACTIVITY_INPUT_STALENESS_MS` | 5 minutes  | Deprecated compatibility export. `waiting_input` / `blocked` entries no longer expire by wallclock; they persist until process death or a newer entry overrides them. |
-
----
-
-## PATH Wrappers
-
-When an agent creates a PR or switches a branch, AO needs to update the session metadata (e.g. write `pr=https://...` or `branch=feat/INT-123`) so the dashboard and lifecycle manager stay in sync. Two mechanisms exist:
-
-**Claude Code — PostToolUse hooks**
-
-Claude Code writes `.claude/settings.json` with a `PostToolUse` hook that fires after every `gh pr create` or `git checkout` command. The hook script calls `update_ao_metadata` directly.
-
-**All other agents — PATH wrappers**
-
-Agents without a native hook system (Codex, Aider, OpenCode, custom agents) use `~/.ao/bin/gh` and `~/.ao/bin/git` shell wrappers. These wrappers are installed to `~/.ao/bin/` by `setupPathWrapperWorkspace(workspacePath)` from `packages/core/src/agent-workspace-hooks.ts`. The function also writes session context to `{workspacePath}/.ao/AGENTS.md` (gitignored — does not touch tracked files).
-
-The wrappers intercept:
-
-- `gh pr create` — captures the PR URL from stdout and writes `pr=<url>` and `status=pr_open`
-- `gh pr merge` — writes `status=merged`
-- `git checkout -b <branch>` / `git switch -c <branch>` — writes `branch=<name>`
-
-All other commands pass through transparently via `exec "$real_gh" "$@"` or `exec "$real_git" "$@"`.
-
-For the user-facing storage summary, see [Configuration — Where data lives](/docs/configuration#where-data-lives).
-
----
-
-## Observability
-
-The lifecycle manager, session manager, and plugin registry emit structured telemetry using project observers created by `createProjectObserver()`. Each running process writes a JSON snapshot to:
-
-```
-~/.agent-orchestrator/{hash}-observability/processes/{component}-{pid}.json
-```
-
-The hash is the first 12 characters of the SHA-256 of the config directory path. The `{component}` segment matches the internal observer name (e.g. `lifecycle-manager`, `session-manager`).
-
-The dashboard's `/api/observability` route reads and merges these per-process snapshots to produce a live observability view.
-
-**Feedback reports** from the agent's `bug_report` and `improvement_suggestion` tools are written as flat key-value files at:
-
-```
-~/.agent-orchestrator/{hash}-{projectId}/feedback-reports/*.kv
-```
-
----
-
-## Data Flow Summary
-
-```
-agent-orchestrator.yaml ──► Config Loader (Zod) ──► Plugin Registry
-                                                          │
-                                          ┌───────────────┘
-                                          │
-                                          ▼
-                                    Session Manager ◄─── ao spawn / ao session
-                                          │
-                                          ▼
-                                  Lifecycle Manager ────► Events ────► Notifiers
-                                          │                 │              │
-                                          │           Reactions       Webhook
-                                          │
-                                          ▼
-                                    Dashboard API
-                                  (Next.js App Router)
-                                          │
-                              ┌───────────┴──────────────┐
-                              │                           │
-                              ▼                           ▼
-                         SSE (5s)                  WebSocket (terminal)
-                              │                           │
-                              ▼                           ▼
-                          React UI                   xterm.js
-```
-
----
-
-## Next Steps
+## Next
 
 <Cards>
-	<Card
-		title="Project Configuration"
-		href="/docs/configuration/projects"
-		description="Configure projects, agents, trackers, and reactions in agent-orchestrator.yaml."
-	/>
-	<Card
-		title="Authoring Plugins"
-		href="/docs/plugins/authoring"
-		description="Build custom runtime, agent, tracker, SCM, notifier, or terminal plugins."
-	/>
-	<Card
-		title="Reactions"
-		href="/docs/configuration/reactions"
-		description="Set up automated reactions to CI failures, review comments, and merge events."
-	/>
-	<Card
-		title="Configuration"
-		href="/docs/configuration"
-		description="Understand the global registry, local project config, and where AO stores runtime data."
-	/>
+	<Card title="Dashboard" href="/docs/dashboard" description="See how these capabilities appear in the desktop app." />
+	<Card title="Platforms" href="/docs/platforms" description="Understand desktop and mobile platform behavior." />
+	<Card title="Troubleshooting" href="/docs/troubleshooting" description="Diagnose daemon, controller, terminal, and SCM problems." />
 </Cards>

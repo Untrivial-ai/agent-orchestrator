@@ -2,15 +2,20 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+const nativeEditHandoffLimit = 45 * time.Second
 
 // Conversation history operations: rollback, fork, and the thread title.
 //
@@ -40,6 +45,9 @@ var (
 	// no provider history to discard, so an undo would only hide AO's own rows and
 	// leave the agent remembering more than the timeline shows.
 	ErrTurnNotRollbackable = errors.New("turn was never dispatched to the provider")
+	// ErrTurnProviderMismatch reports a durable turn owned by an earlier agent
+	// provider. Its opaque provider turn id is invalid in the current controller.
+	ErrTurnProviderMismatch = errors.New("conversation turn belongs to a different agent provider")
 	// ErrTitleRequired refuses a blank thread title. The provider refuses one too,
 	// and reporting it here keeps the error about the caller's input.
 	ErrTitleRequired = errors.New("thread title is required")
@@ -47,6 +55,12 @@ var (
 	// while the conversation stayed healthy. It is a conflict, never an internal
 	// failure: the message it carries is the provider's own explanation.
 	ErrProviderRefused = errors.New("the agent refused the request")
+	// ErrEditTurnInvalid reports a prompt that cannot be safely reconstructed from
+	// durable history, including malformed legacy structured content.
+	ErrEditTurnInvalid = errors.New("conversation turn cannot be edited")
+	// ErrBranchProviderMismatch refuses a historical branch that the active
+	// provider binding cannot reopen.
+	ErrBranchProviderMismatch = errors.New("conversation branch belongs to a different agent provider")
 )
 
 // providerRefusal is satisfied by driver errors that mean "the provider said no"
@@ -125,11 +139,710 @@ func (s *Service) ForkConversation(ctx context.Context, id domain.SessionID) (st
 	if !ok {
 		return "", ErrForkUnsupported
 	}
-	forked, err := forker.Fork(ctx)
+	forked, err := forker.Fork(ctx, nil)
 	if err != nil {
 		return "", classify(fmt.Errorf("fork conversation for %s: %w", id, err))
 	}
 	return forked, nil
+}
+
+// EditMessage forks immediately before one durable human prompt, swaps the live
+// controller to that provider branch, then sends the edited text with the exact
+// structured content stored for the original prompt.
+func (s *Service) EditMessage(
+	ctx context.Context,
+	id domain.SessionID,
+	turnID string,
+	msg ports.ChatUserMessage,
+) (EditMessageResult, error) {
+	gate := s.controllerGate(id)
+	if err := gate.lock(ctx); err != nil {
+		return EditMessageResult{}, err
+	}
+	defer gate.unlock()
+
+	if _, err := s.requireChatSession(ctx, id); err != nil {
+		return EditMessageResult{}, err
+	}
+	source, err := s.Controller(id)
+	if err != nil {
+		return EditMessageResult{}, err
+	}
+	forker, canFork := source.conv.(ports.ChatForker)
+	canReplay := supportsApproximateReplay(source.conv)
+	anchor, err := s.store.ConversationEditAnchor(ctx, source.conversation.ID, turnID)
+	if err != nil {
+		return EditMessageResult{}, fmt.Errorf("%w: %w", ErrEditTurnInvalid, err)
+	}
+	var content []ports.ChatContent
+	if anchor.OriginalDeliveryContentJSON != "" {
+		if err := json.Unmarshal([]byte(anchor.OriginalDeliveryContentJSON), &content); err != nil {
+			return EditMessageResult{}, fmt.Errorf("%w: decode stored prompt content: %w", ErrEditTurnInvalid, err)
+		}
+	}
+	msg.Content = withoutInternalReplayContent(content)
+	if anchor.RetryActiveBranch {
+		branch, err := s.store.ConversationBranch(ctx, source.conversation.ID, anchor.SourceBranchID)
+		if err != nil {
+			return EditMessageResult{}, fmt.Errorf("load pending edited conversation: %w", err)
+		}
+		if domain.NormalizeConversationBranchStrategy(branch.Strategy) == domain.ConversationBranchStrategyApproximateContext {
+			if !canReplay {
+				return EditMessageResult{}, ErrForkUnsupported
+			}
+			replay, _, replayErr := s.approximateReplayContent(
+				ctx, source.conversation.ID, anchor.ReplayFloorSequence, branch.ReplayCutoffSequence)
+			if replayErr != nil {
+				return EditMessageResult{}, fmt.Errorf("prepare edited conversation retry: %w", replayErr)
+			}
+			msg.Content = append([]ports.ChatContent{replay}, msg.Content...)
+		}
+		return s.sendEditedMessage(ctx, branch.ParentBranchID, branch.ID, source, msg, true)
+	}
+	sourceBranch, err := s.store.ConversationBranch(ctx, source.conversation.ID, anchor.SourceBranchID)
+	if err != nil {
+		return EditMessageResult{}, fmt.Errorf("load source conversation branch: %w", err)
+	}
+	canNativeFork := anchor.PreviousProviderTurnID != "" && canFork
+	needsPriorContext := anchor.HasPriorContext
+	needsReplay := !canNativeFork && needsPriorContext
+	if needsReplay && !canReplay {
+		return EditMessageResult{}, ErrForkUnsupported
+	}
+	if err := source.BeginIdleBranchHandoff(ctx); err != nil {
+		return EditMessageResult{}, err
+	}
+	abortSource := true
+	defer func() {
+		if abortSource {
+			source.AbortHandoff()
+		}
+	}()
+
+	cfg, driver, err := s.branchLaunchConfig(id, source)
+	if err != nil {
+		return EditMessageResult{}, err
+	}
+	var providerConversationID string
+	var provider ports.ChatConversation
+	var replayContent ports.ChatContent
+	var replayTruncated bool
+	var providerScopeID string
+	operationCtx := ctx
+	sourceStopInitiated := false
+	if canNativeFork {
+		forkAnchor := anchor.PreviousProviderTurnID
+		providerConversationID, err = forker.Fork(ctx, &forkAnchor)
+		if err == nil {
+			// Fork succeeded, so closing the source writer is now irreversible.
+			// Finish or recover this boundary independently of request cancellation.
+			detachedCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), nativeEditHandoffLimit)
+			defer cancel()
+			operationCtx = detachedCtx
+			sourceStopInitiated = true
+			// Codex loads a fork into the source app-server, which remains that
+			// child's active writer until the process exits. Close the fenced, idle
+			// source before another driver process resumes the child.
+			if closeErr := source.closeForBranchHandoff(operationCtx); closeErr != nil {
+				err = fmt.Errorf("close source writer after fork: %w", closeErr)
+			} else {
+				launchEnv, prepareErr := s.prepareBranchControllerEnv(operationCtx, cfg)
+				if prepareErr != nil {
+					err = prepareErr
+				} else {
+					provider, err = driver.Resume(operationCtx, ports.ChatResumeConfig{
+						SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
+						DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
+						Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
+						ProviderScopeID:       sourceBranch.ProviderScopeID,
+						AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
+					})
+				}
+			}
+		}
+	} else {
+		// Every Start owns a fresh namespace for provider-issued turn/item IDs,
+		// even when editing the first prompt requires no replay payload.
+		providerScopeID = s.newID()
+		if needsReplay {
+			var replayErr error
+			replayContent, replayTruncated, replayErr = s.approximateReplayContent(
+				ctx, source.conversation.ID, anchor.ReplayFloorSequence, anchor.ForkAfterSequence)
+			if replayErr != nil {
+				return EditMessageResult{}, fmt.Errorf("prepare edited conversation: %w", replayErr)
+			}
+		}
+		// A fresh replay process is also a controller replacement. Stop the old
+		// bearer holder before rotating its verifier and launching the child.
+		detachedCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), nativeEditHandoffLimit)
+		defer cancel()
+		operationCtx = detachedCtx
+		sourceStopInitiated = true
+		if closeErr := source.closeForBranchHandoff(operationCtx); closeErr != nil {
+			err = fmt.Errorf("close source writer before edited conversation: %w", closeErr)
+		} else {
+			launchEnv, prepareErr := s.prepareBranchControllerEnv(operationCtx, cfg)
+			if prepareErr != nil {
+				err = prepareErr
+			} else {
+				provider, err = driver.Start(operationCtx, ports.ChatStartConfig{
+					SessionID: cfg.SessionID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath,
+					Env: launchEnv, Model: cfg.Model, Permissions: cfg.Permissions,
+					SystemPrompt: cfg.SystemPrompt, AdditionalDirectories: cfg.AdditionalDirectories,
+					MCPServers: cfg.MCPServers, ProviderScopeID: providerScopeID,
+				})
+				if err == nil {
+					providerConversationID = provider.ProviderConversationID()
+				}
+			}
+		}
+	}
+	if err != nil {
+		prepareErr := classify(fmt.Errorf("prepare edited conversation: %w", err))
+		if sourceStopInitiated {
+			if restoreErr := s.restoreClosedSourceController(
+				ctx, id, source, sourceBranch, cfg, driver); restoreErr != nil {
+				prepareErr = errors.Join(prepareErr, restoreErr)
+			} else {
+				abortSource = false
+			}
+		}
+		return EditMessageResult{}, prepareErr
+	}
+	if provider == nil || providerConversationID == "" {
+		if provider != nil {
+			_ = provider.Close()
+		}
+		prepareErr := errors.New("replacement provider conversation is not ready")
+		if sourceStopInitiated {
+			if restoreErr := s.restoreClosedSourceController(
+				ctx, id, source, sourceBranch, cfg, driver); restoreErr != nil {
+				prepareErr = errors.Join(prepareErr, restoreErr)
+			} else {
+				abortSource = false
+			}
+		}
+		return EditMessageResult{}, prepareErr
+	}
+	if replayContent.Type != "" && !supportsApproximateReplay(provider) {
+		_ = provider.Close()
+		unsupportedErr := ErrForkUnsupported
+		if sourceStopInitiated {
+			if restoreErr := s.restoreClosedSourceController(
+				ctx, id, source, sourceBranch, cfg, driver); restoreErr != nil {
+				unsupportedErr = errors.Join(unsupportedErr, restoreErr)
+			} else {
+				abortSource = false
+			}
+		}
+		return EditMessageResult{}, unsupportedErr
+	}
+
+	branchID := s.newID()
+	generation := s.newID()
+	branch := domain.ConversationBranch{
+		ID: branchID, ConversationID: source.conversation.ID, SessionID: id,
+		ProviderConversationID: providerConversationID, ParentBranchID: anchor.SourceBranchID,
+		ReplacedTurnID: anchor.ReplacedTurnID, ForkAfterSequence: anchor.ForkAfterSequence,
+		CreatedAt: s.now(), Strategy: domain.ConversationBranchStrategyNative,
+		ProviderScopeID: providerScopeID,
+	}
+	if replayContent.Type != "" {
+		branch.Strategy = domain.ConversationBranchStrategyApproximateContext
+		branch.ReplayCutoffSequence = anchor.ForkAfterSequence
+		branch.ReplayTruncated = replayTruncated
+	}
+	conversation := source.conversation
+	conversation.ActiveBranchID = branchID
+	replacement := newController(id, conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+	if err := s.store.CreateAndActivateConversationBranch(
+		operationCtx, id, branch, generation, s.now(),
+	); err != nil {
+		_ = provider.Close()
+		activateErr := fmt.Errorf("activate edited conversation: %w", err)
+		if sourceStopInitiated {
+			if restoreErr := s.restoreClosedSourceController(
+				ctx, id, source, sourceBranch, cfg, driver); restoreErr != nil {
+				activateErr = errors.Join(activateErr, restoreErr)
+			} else {
+				abortSource = false
+			}
+		}
+		return EditMessageResult{}, activateErr
+	}
+	// Consume the replacement privately while its bootstrap prompt is recorded.
+	// The source remains the registry owner with its intake fence installed, so a
+	// concurrent ordinary send cannot become the first turn on the new branch.
+	replacement.start()
+	if replayContent.Type != "" {
+		msg.Content = append([]ports.ChatContent{replayContent}, msg.Content...)
+	}
+	result, sendErr := s.sendEditedMessage(
+		operationCtx, anchor.SourceBranchID, branchID, replacement, msg, false)
+	if result.Turn.ID == "" || errors.Is(sendErr, ErrProviderRefused) {
+		if err := s.store.ActivateConversationBranch(operationCtx, id, source.conversation.ID,
+			anchor.SourceBranchID, source.ProviderConversationID(), source.generation, s.now()); err != nil {
+			sendErr = errors.Join(sendErr, fmt.Errorf("restore source after rejected edit: %w", err))
+			// The durable head still belongs to the child. Publish its controller
+			// rather than reopening a source generation the store just rejected.
+			if installErr := s.installStartedBranchController(
+				operationCtx, id, source, replacement, anchor.SourceBranchID); installErr != nil {
+				return result, errors.Join(sendErr, installErr)
+			}
+			abortSource = false
+			return result, sendErr
+		}
+		if err := replacement.Close(operationCtx); err != nil {
+			sendErr = errors.Join(sendErr, fmt.Errorf("close rejected edited conversation: %w", err))
+		}
+		if sourceStopInitiated {
+			if restoreErr := s.restoreClosedSourceController(
+				ctx, id, source, sourceBranch, cfg, driver); restoreErr != nil {
+				sendErr = errors.Join(sendErr, restoreErr)
+			} else {
+				abortSource = false
+			}
+		}
+		return result, sendErr
+	}
+	if err := s.installStartedBranchController(
+		operationCtx, id, source, replacement, anchor.SourceBranchID); err != nil {
+		return result, errors.Join(sendErr, err)
+	}
+	abortSource = false
+	return result, sendErr
+}
+
+// approximateReplayContent renders only the durable textual transcript before the
+// edited prompt. Tool calls, approvals, and file changes are intentionally not
+// replayed: doing so could repeat side effects. Providers that support native
+// fork remain on that exact-history path instead.
+const approximateReplayBudget = 24 * 1024
+
+func (s *Service) approximateReplayContent(
+	ctx context.Context,
+	conversationID string,
+	floor, cutoff int64,
+) (ports.ChatContent, bool, error) {
+	if s.reader == nil {
+		return ports.ChatContent{}, false, errors.New("conversation snapshot reader is unavailable")
+	}
+	rows, err := s.reader.LoadConversationSnapshot(ctx, conversationID)
+	if err != nil {
+		return ports.ChatContent{}, false, fmt.Errorf("load conversation for replay: %w", err)
+	}
+	seed, truncated, err := buildApproximateReplayContext(rows.Messages, floor, cutoff)
+	if err != nil {
+		return ports.ChatContent{}, false, err
+	}
+	return ports.ChatContent{
+		Type: "resource", URI: ports.ChatInternalReplayResourceURI, Name: "approximate conversation context",
+		MIMEType: "application/json", Text: seed, Internal: true,
+	}, truncated, nil
+}
+
+func supportsApproximateReplay(conversation ports.ChatConversation) bool {
+	capabilities := conversation.Capabilities()
+	return capabilities.Has(ports.ChatCapabilityPromptReplay) &&
+		capabilities.Has(ports.ChatCapabilityEmbeddedContext)
+}
+
+func buildApproximateReplayContext(rows []domain.ConversationMessage, floor, cutoff int64) (string, bool, error) {
+	type replayMessage struct {
+		Sequence int64              `json:"sequence"`
+		Role     domain.MessageRole `json:"role"`
+		Text     string             `json:"text"`
+	}
+	type replayEnvelope struct {
+		Kind      string          `json:"kind"`
+		Messages  []replayMessage `json:"messages"`
+		Truncated bool            `json:"truncated"`
+	}
+	encode := func(selected []replayMessage, truncated bool) ([]byte, error) {
+		return json.Marshal(replayEnvelope{
+			Kind: "approximate_conversation_context", Messages: selected, Truncated: truncated,
+		})
+	}
+	messages := make([]replayMessage, 0, len(rows))
+	for _, message := range rows {
+		if message.Sequence <= floor || message.Sequence > cutoff || message.Streaming || strings.TrimSpace(message.Text) == "" {
+			continue
+		}
+		switch message.Role {
+		case domain.MessageRoleUser, domain.MessageRoleAssistant:
+		default:
+			continue
+		}
+		messages = append(messages, replayMessage{message.Sequence, message.Role, strings.TrimSpace(message.Text)})
+	}
+	sort.SliceStable(messages, func(i, j int) bool { return messages[i].Sequence < messages[j].Sequence })
+	selected := make([]replayMessage, 0, len(messages))
+	truncated := false
+	for index := len(messages) - 1; index >= 0; index-- {
+		candidate := make([]replayMessage, len(selected)+1)
+		candidate[0] = messages[index]
+		copy(candidate[1:], selected)
+		encoded, marshalErr := encode(candidate, true)
+		if marshalErr != nil {
+			return "", false, fmt.Errorf("encode replay context: %w", marshalErr)
+		}
+		if len(encoded) > approximateReplayBudget {
+			truncated = true
+			continue
+		}
+		selected = candidate
+	}
+	encoded, err := encode(selected, truncated)
+	if err != nil {
+		return "", false, fmt.Errorf("encode replay context: %w", err)
+	}
+	// The all-messages envelope uses `false`, which is one byte larger than the
+	// pessimistic `true` admission check above. Drop oldest context if that final
+	// byte crosses the hard wire budget.
+	for len(encoded) > approximateReplayBudget && len(selected) > 0 {
+		selected = selected[1:]
+		truncated = true
+		encoded, err = encode(selected, true)
+		if err != nil {
+			return "", false, fmt.Errorf("encode replay context: %w", err)
+		}
+	}
+	return string(encoded), truncated, nil
+}
+
+func withoutInternalReplayContent(content []ports.ChatContent) []ports.ChatContent {
+	filtered := make([]ports.ChatContent, 0, len(content))
+	for _, item := range content {
+		if ports.IsInternalReplayContent(item) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+// sendEditedMessage always attaches the attempted replacement to its branch. A
+// transport error is ambiguous: the provider may have accepted the prompt before
+// the connection failed, so deleting and blindly retrying it could execute the
+// work twice. Keeping the failed turn makes that uncertainty durable and leaves
+// both alternatives navigable after restart. A provider-declared refusal is
+// conclusive, so AO safely returns the user to the source branch.
+func (s *Service) sendEditedMessage(
+	ctx context.Context,
+	sourceBranchID, activeBranchID string,
+	controller *Controller,
+	msg ports.ChatUserMessage,
+	restoreConclusiveFailure bool,
+) (EditMessageResult, error) {
+	turn, sendErr := controller.Send(ctx, msg)
+	result := EditMessageResult{
+		SourceBranchID: sourceBranchID,
+		ActiveBranchID: activeBranchID,
+		Turn:           turn,
+	}
+	if turn.ID == "" {
+		// Nothing durable was created, so the provider was never dispatched. This
+		// includes a duplicate client-message id: treating the controller's empty
+		// no-op result as a successful edit would leave an invisible active child.
+		if sendErr == nil {
+			sendErr = errors.New("edited message was not dispatched")
+		}
+		if restoreConclusiveFailure {
+			if _, err := s.activateBranchLocked(ctx, controller.sessionID, sourceBranchID); err != nil {
+				sendErr = errors.Join(sendErr, fmt.Errorf("restore source after undispatched edit: %w", err))
+			}
+		}
+		return result, classify(sendErr)
+	}
+	if sendErr != nil {
+		if err := s.store.UpdateConversationBranchReplacement(ctx, activeBranchID, turn.ID); err != nil {
+			sendErr = errors.Join(sendErr, fmt.Errorf("record failed edited turn: %w", err))
+		}
+		var refusal providerRefusal
+		if restoreConclusiveFailure && errors.As(sendErr, &refusal) && refusal.ChatRefusal() {
+			if _, err := s.activateBranchLocked(ctx, controller.sessionID, sourceBranchID); err != nil {
+				sendErr = errors.Join(sendErr, fmt.Errorf("restore source after refused edit: %w", err))
+			}
+		}
+		return result, classify(sendErr)
+	}
+	if turn.ID != "" {
+		if err := s.store.UpdateConversationBranchReplacement(ctx, activeBranchID, turn.ID); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+// EditMessageResult identifies the source, selected child, and replacement turn.
+type EditMessageResult struct {
+	SourceBranchID string
+	ActiveBranchID string
+	Turn           domain.ConversationTurn
+}
+
+// ActivateBranch resumes a durable provider branch in the same worktree and
+// swaps controllers without sending a new prompt.
+func (s *Service) ActivateBranch(ctx context.Context, id domain.SessionID, branchID string) (string, error) {
+	gate := s.controllerGate(id)
+	if err := gate.lock(ctx); err != nil {
+		return "", err
+	}
+	defer gate.unlock()
+	return s.activateBranchLocked(ctx, id, branchID)
+}
+
+func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID, branchID string) (string, error) {
+	if _, err := s.requireChatSession(ctx, id); err != nil {
+		return "", err
+	}
+	source, err := s.Controller(id)
+	if err != nil {
+		return "", err
+	}
+	branch, err := s.store.ConversationBranch(ctx, source.conversation.ID, branchID)
+	if err != nil {
+		return "", err
+	}
+	activeBranch, err := s.store.ConversationBranch(
+		ctx, source.conversation.ID, source.conversation.ActiveBranchID)
+	if err != nil {
+		return "", fmt.Errorf("load active conversation branch: %w", err)
+	}
+	if branch.Active {
+		return branch.ID, nil
+	}
+	cfg, driver, err := s.branchLaunchConfig(id, source)
+	if err != nil {
+		return "", err
+	}
+	if branch.ProviderBindingID != activeBranch.ProviderBindingID {
+		// Provider scopes may differ between approximate siblings, but their
+		// durable binding epoch must match. Crossing it could hand an opaque
+		// conversation handle to a different adapter/configuration owner.
+		return "", ErrBranchProviderMismatch
+	}
+	if err := source.BeginIdleBranchHandoff(ctx); err != nil {
+		return "", err
+	}
+	abortSource := true
+	defer func() {
+		if abortSource {
+			source.AbortHandoff()
+		}
+	}()
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), nativeEditHandoffLimit)
+	defer cancel()
+	if err := source.closeForBranchHandoff(operationCtx); err != nil {
+		closeErr := fmt.Errorf("close source before branch activation: %w", err)
+		if source.State() == ports.ChatControllerStopped {
+			if restoreErr := s.restoreClosedSourceController(
+				operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {
+				closeErr = errors.Join(closeErr, restoreErr)
+			} else {
+				abortSource = false
+			}
+		}
+		return "", closeErr
+	}
+	launchEnv, err := s.prepareBranchControllerEnv(operationCtx, cfg)
+	if err != nil {
+		if restoreErr := s.restoreClosedSourceController(
+			operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {
+			err = errors.Join(err, restoreErr)
+		} else {
+			abortSource = false
+		}
+		return "", err
+	}
+	provider, err := driver.Resume(operationCtx, ports.ChatResumeConfig{
+		SessionID: cfg.SessionID, ProviderConversationID: branch.ProviderConversationID,
+		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
+		Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
+		ProviderScopeID:       branch.ProviderScopeID,
+		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
+	})
+	if err != nil {
+		resumeErr := fmt.Errorf("resume conversation branch %s: %w", branchID, err)
+		if restoreErr := s.restoreClosedSourceController(
+			operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {
+			resumeErr = errors.Join(resumeErr, restoreErr)
+		} else {
+			abortSource = false
+		}
+		return "", resumeErr
+	}
+	generation := s.newID()
+	conversation := source.conversation
+	conversation.ActiveBranchID = branch.ID
+	replacement := newController(id, conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+	if err := s.store.ActivateConversationBranch(operationCtx, id, conversation.ID, branch.ID,
+		branch.ProviderConversationID, generation, s.now()); err != nil {
+		cleanupUnpublishedConversation(provider, true)
+		activateErr := err
+		if restoreErr := s.restoreClosedSourceController(
+			operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {
+			activateErr = errors.Join(activateErr, restoreErr)
+		} else {
+			abortSource = false
+		}
+		return "", activateErr
+	}
+	if err := s.installBranchController(operationCtx, id, source, replacement, source.conversation.ActiveBranchID); err != nil {
+		return "", err
+	}
+	abortSource = false
+	return branch.ID, nil
+}
+
+func (s *Service) branchLaunchConfig(
+	id domain.SessionID,
+	source *Controller,
+) (StartConfig, ports.ChatDriver, error) {
+	s.mu.RLock()
+	cfg, ok := s.startConfigs[id]
+	current := s.controllers[id]
+	s.mu.RUnlock()
+	if !ok || current != source {
+		return StartConfig{}, nil, ErrControllerHandoff
+	}
+	driver, err := s.drivers.Driver(cfg.Harness)
+	if err != nil {
+		return StartConfig{}, nil, fmt.Errorf("chat driver for %s: %w", cfg.Harness, err)
+	}
+	return cloneStartConfig(cfg), driver, nil
+}
+
+func (s *Service) prepareBranchControllerEnv(ctx context.Context, cfg StartConfig) (map[string]string, error) {
+	if cfg.PrepareControllerEnv == nil {
+		return cloneStartConfig(cfg).Env, nil
+	}
+	env, err := cfg.PrepareControllerEnv(ctx, cfg.ExpectedControllerOwner)
+	if err != nil {
+		return nil, fmt.Errorf("prepare replacement controller environment: %w", err)
+	}
+	return env, nil
+}
+
+// restoreClosedSourceController reopens the original provider branch when a
+// native edit had to release its writer but the replacement could not be kept.
+// The new generation fences any late events from the process that was closed.
+func (s *Service) restoreClosedSourceController(
+	ctx context.Context,
+	id domain.SessionID,
+	source *Controller,
+	branch domain.ConversationBranch,
+	cfg StartConfig,
+	driver ports.ChatDriver,
+) (returnErr error) {
+	defer func() {
+		if returnErr != nil {
+			source.reportFailedBranchHandoff(ctx)
+		}
+	}()
+	recoveryCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), nativeEditHandoffLimit)
+	defer cancel()
+	if source.State() != ports.ChatControllerStopped {
+		closeErr := source.closeForBranchHandoff(recoveryCtx)
+		if source.State() != ports.ChatControllerStopped {
+			if closeErr == nil {
+				closeErr = errors.New("source controller did not stop")
+			}
+			return fmt.Errorf(
+				"confirm source stopped before failed native edit recovery: %w", closeErr)
+		}
+	}
+	providerConversationID := source.ProviderConversationID()
+	launchEnv, err := s.prepareBranchControllerEnv(recoveryCtx, cfg)
+	if err != nil {
+		return fmt.Errorf("rotate source browser capability after failed native edit: %w", err)
+	}
+	provider, err := driver.Resume(recoveryCtx, ports.ChatResumeConfig{
+		SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
+		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
+		Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
+		ProviderScopeID:       branch.ProviderScopeID,
+		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
+	})
+	if err != nil {
+		return fmt.Errorf("resume source after failed native edit: %w", err)
+	}
+	generation := s.newID()
+	conversation := source.conversation
+	conversation.ActiveBranchID = branch.ID
+	replacement := newController(
+		id, conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+	if err := s.store.ActivateConversationBranch(recoveryCtx, id, conversation.ID, branch.ID,
+		providerConversationID, generation, s.now()); err != nil {
+		_ = provider.Close()
+		return fmt.Errorf("reactivate source after failed native edit: %w", err)
+	}
+	if err := s.installBranchController(recoveryCtx, id, source, replacement, branch.ID); err != nil {
+		return fmt.Errorf("install source after failed native edit: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) installBranchController(
+	ctx context.Context,
+	id domain.SessionID,
+	source, replacement *Controller,
+	sourceBranchID string,
+) error {
+	replacement.start()
+	return s.installStartedBranchController(ctx, id, source, replacement, sourceBranchID)
+}
+
+// installStartedBranchController publishes a controller whose provider event
+// stream is already being consumed. Edit bootstraps use this after recording the
+// replacement prompt privately; ordinary branch activation starts and delegates
+// through installBranchController above.
+func (s *Service) installStartedBranchController(
+	ctx context.Context,
+	id domain.SessionID,
+	source, replacement *Controller,
+	sourceBranchID string,
+) error {
+	s.mu.Lock()
+	if s.controllers[id] != source {
+		s.mu.Unlock()
+		_ = replacement.Terminate(ctx)
+		if err := s.store.ActivateConversationBranch(ctx, id, source.conversation.ID,
+			sourceBranchID, source.ProviderConversationID(), source.generation, s.now()); err != nil {
+			return fmt.Errorf("restore source branch after controller swap conflict: %w", err)
+		}
+		return ErrControllerHandoff
+	}
+	source.prepareBranchHandoffStop()
+	s.controllers[id] = replacement
+	if cfg, ok := s.startConfigs[id]; ok {
+		cfg.ExpectedControllerOwner.Harness = cfg.Harness
+		cfg.ExpectedControllerOwner.Mode = domain.SessionModeChat
+		cfg.ExpectedControllerOwner.IsTerminated = false
+		cfg.ExpectedControllerOwner.RuntimeLaunchID = ""
+		cfg.ExpectedControllerOwner.ProviderConversationID = replacement.ProviderConversationID()
+		cfg.ExpectedControllerOwner.ControllerGeneration = replacement.Generation()
+		s.startConfigs[id] = cfg
+	}
+	s.mu.Unlock()
+
+	go func() {
+		replacement.Wait()
+		replacement.waitForBranchHandoff()
+		s.mu.Lock()
+		if current := s.controllers[id]; current == replacement {
+			delete(s.controllers, id)
+		}
+		s.mu.Unlock()
+	}()
+	source.completeBranchHandoff()
+	if err := source.closeForBranchHandoff(ctx); err != nil {
+		s.log.Error("close source controller after branch swap", "session", id, "error", err)
+	}
+	return nil
 }
 
 // SetTitle names the provider's thread and returns the normalized title.

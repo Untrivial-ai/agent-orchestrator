@@ -1,192 +1,76 @@
 ---
 title: Configuration
-description: How AO stores configuration, what belongs in the global registry, and what you should edit per project.
+description: Configure projects, agents, session interfaces, and local daemon behavior in current AO.
 ---
 
-AO uses configuration in two layers:
+AO keeps its durable state under `~/.ao`. The daemon stores projects, sessions, pull-request facts, notifications, and typed project configuration in SQLite under `~/.ao/data`; `~/.ao/running.json` lets the desktop app and CLI find the running daemon.
 
-- **Global registry** — remembers which projects AO knows about and which repository each project points to.
-- **Local project config** — controls behavior for one project: agent, runtime, workspace, rules, reactions, tracker, SCM, and setup commands.
+The desktop app is the normal place to add projects and change settings. The CLI talks to the same daemon API when you need a scriptable path.
 
-Most users should let `ao start` create the registry entry, then edit the local `agent-orchestrator.yaml` in the project when they want to change behavior.
+## Add a project
 
-<Callout type="info">
-	The old wrapped format with a top-level `projects:` block is still understood for compatibility, but new project-local
-	configs should be flat. Do not put identity fields like `path`, `projectId`, `storageKey`, or `originUrl` in a local
-	project config.
-</Callout>
-
-## What AO Creates
-
-When you run AO in a repository, it can register the project globally and create a local config file:
+In the desktop app, choose **Add project** and select a local repository. From the CLI:
 
 ```bash
-ao start
+ao project add --path /absolute/path/to/repo
 ```
 
-The global registry lives at:
-
-```text
-~/.agent-orchestrator/config.yaml
-```
-
-That file is AO-owned. It stores durable identity:
-
-```yaml title="~/.agent-orchestrator/config.yaml"
-projects:
-  my-app:
-    projectId: my-app
-    path: /Users/me/code/my-app
-    storageKey: generated-by-ao
-    repo:
-      owner: acme
-      name: my-app
-      platform: github
-      originUrl: git@github.com:acme/my-app.git
-    defaultBranch: main
-    sessionPrefix: app
-```
-
-The local project config lives inside the repository:
-
-```text
-my-app/agent-orchestrator.yaml
-```
-
-That file is for behavior:
-
-```yaml title="agent-orchestrator.yaml"
-agent: claude-code
-runtime: tmux
-workspace: worktree
-
-symlinks:
-  - .env
-  - .claude
-
-postCreate:
-  - pnpm install
-
-agentRules: |
-  Run tests before pushing.
-  Keep PRs small and focused.
-```
-
-## What To Edit
-
-| Goal                                             | Edit                                           |
-| ------------------------------------------------ | ---------------------------------------------- |
-| Change the default agent or model                | Local `agent-orchestrator.yaml`                |
-| Add `.env` or tool config files to each worktree | Local `symlinks`                               |
-| Run setup commands before the agent starts       | Local `postCreate`                             |
-| Disable or tune automated recovery               | Local or global `reactions`                    |
-| Change notification routing for all projects     | Global registry                                |
-| Rename, remove, or relink a registered project   | Use AO commands/dashboard project settings     |
-| Change where AO stores sessions                  | Do not hand-edit; re-register/relink if needed |
-
-Do not manually edit `storageKey`, `path`, or `originUrl` unless you are repairing a broken registry entry and already know why it is wrong.
-
-## Local Project Config
-
-A practical local config usually starts with the agent, runtime, workspace, setup, and rules:
-
-```yaml title="agent-orchestrator.yaml"
-agent: claude-code # claude-code | codex | aider | opencode
-runtime: tmux # tmux | process
-workspace: worktree # worktree | clone
-
-agentConfig:
-  permissions: permissionless
-  model: claude-sonnet-4-5
-
-symlinks:
-  - .env
-
-postCreate:
-  - pnpm install
-
-agentRules: |
-  Use pnpm, not npm.
-  Run pnpm test before opening a PR.
-```
-
-See [Projects](/docs/configuration/projects) for the full project behavior reference.
-
-## Global Defaults
-
-You can set defaults that apply across all registered projects in the global registry:
-
-```yaml title="~/.agent-orchestrator/config.yaml"
-defaults:
-  agent: claude-code
-  runtime: tmux
-  workspace: worktree
-  notifiers: [desktop]
-
-notificationRouting:
-  urgent: [desktop, composio]
-  action: [desktop]
-  warning: [composio]
-  info: [composio]
-```
-
-Project-local values override global defaults.
-
-## Config Lookup
-
-AO resolves configuration in this order:
-
-1. `AO_CONFIG_PATH`, if set.
-2. `agent-orchestrator.yaml` or `agent-orchestrator.yml` found by walking upward from the current directory.
-3. The global registry path.
-4. Legacy home-directory fallbacks:
-   - `~/.agent-orchestrator.yaml`
-   - `~/.agent-orchestrator.yml`
-   - `~/.config/agent-orchestrator/config.yaml`
-
-For normal use, run AO from inside the repository and keep `agent-orchestrator.yaml` in the repo root.
-
-## Top-Level Global Keys
-
-| Key                   | Default                   | Purpose                                                      |
-| --------------------- | ------------------------- | ------------------------------------------------------------ |
-| `port`                | `3000`                    | Dashboard HTTP port                                          |
-| `terminalPort`        | auto from `14800`         | tmux terminal WebSocket port                                 |
-| `directTerminalPort`  | auto from `14801`         | direct PTY WebSocket port                                    |
-| `readyThresholdMs`    | `300000`                  | Time before a ready session is treated as idle               |
-| `defaults`            | built-ins                 | Cross-project defaults for agent/runtime/workspace/notifiers |
-| `projects`            | `{}`                      | Registered project identities                                |
-| `projectOrder`        | unset                     | Optional sidebar/project ordering                            |
-| `notifiers`           | `{}`                      | Named notifier instances                                     |
-| `notificationRouting` | desktop/composio defaults | Priority-to-notifier routing                                 |
-| `reactions`           | built-in defaults         | Global automation rules                                      |
-
-## Where Data Lives
-
-AO stores runtime data under `~/.agent-orchestrator/` by storage key. Session files, archived sessions, feedback reports, and observability snapshots are plain files so they can be inspected during debugging.
-
-You usually do not need to configure this. If you need to debug a session, start with:
+To set the default agents while registering the project:
 
 ```bash
-ls ~/.agent-orchestrator
+ao project add --path /absolute/path/to/repo \
+  --worker-agent codex \
+  --orchestrator-agent claude-code
 ```
 
-## Next Steps
+AO also supports workspace projects, which contain a root repository and direct child repositories:
+
+```bash
+ao project add --path /absolute/path/to/workspace --as-workspace
+```
+
+Fresh installations include a Scratch project for work that does not need Git. Scratch sessions use AO-managed directories and do not support branches or pull-request claims.
+
+## Inspect and update configuration
+
+```bash
+ao project ls
+ao project get <project-id>
+ao project set-config <project-id> --worker-agent codex
+```
+
+`set-config` replaces the stored project configuration. Prefer project settings in the desktop app for interactive edits, or first inspect `ao project get <project-id> --json` before replacing configuration in a script. `--config-json` accepts a JSON object string, not a filename.
+
+Current project configuration is typed. It covers the base branch, session prefix, environment variables, symlinks, setup commands, worker and orchestrator agents, agent options, project rules, reviewer agents, tracker intake, and container cleanup. Unknown fields are rejected instead of being silently ignored.
+
+See [Projects](/docs/configuration/projects) for the current field reference.
+
+## Daemon environment
+
+The primary daemon listener is always loopback-only and unauthenticated. Its bind host is not configurable. Useful environment variables include:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AO_PORT` | `3001` | REST, events, terminal mux, health, and control port |
+| `AO_DATA_DIR` | `~/.ao/data` | Durable daemon data |
+| `AO_RUN_FILE` | `~/.ao/running.json` | Daemon discovery file |
+| `AO_REQUEST_TIMEOUT` | `60s` | REST request timeout |
+| `AO_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown deadline |
+| `AO_ALLOWED_ORIGINS` | packaged desktop origin | Additional trusted browser origins |
+
+Do not set `HOST=0.0.0.0` or proxy the primary daemon to a network. For phone access, use the separate authenticated listener created by **Connect Mobile**. See [Remote access](/docs/configuration/remote-access).
+
+## Chat and Terminal UI defaults
+
+Every session commits to one interface at a time:
+
+- **Chat** uses a structured, runtime-less provider controller with durable messages, activities, approvals, and usage.
+- **Terminal UI** runs the agent's native terminal interface through AO's terminal runtime.
+
+Choose the default for new sessions in project settings. You can also select it explicitly from the new-session flow or with `ao spawn --mode chat|tui`. Compatible Claude Code and Codex sessions can switch interfaces later without changing the AO session or worktree.
 
 <Cards>
-	<Card
-		title="Projects"
-		href="/docs/configuration/projects"
-		description="Per-project behavior settings: agents, workspaces, rules, setup, trackers, and SCM."
-	/>
-	<Card
-		title="Reactions"
-		href="/docs/configuration/reactions"
-		description="Control what AO does when CI fails, reviews arrive, or agents need help."
-	/>
-	<Card
-		title="Remote access"
-		href="/docs/configuration/remote-access"
-		description="Access the dashboard from another machine without exposing it publicly."
-	/>
+	<Card title="Projects" href="/docs/configuration/projects" description="Configure one project and its session roles." />
+	<Card title="Lifecycle automation" href="/docs/configuration/lifecycle-automation" description="Understand built-in CI, review, and merge-conflict handling." />
+	<Card title="Remote access" href="/docs/configuration/remote-access" description="Pair the native mobile app safely." />
 </Cards>

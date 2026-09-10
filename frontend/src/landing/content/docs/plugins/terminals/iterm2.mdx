@@ -1,38 +1,6 @@
 ---
-title: iTerm2
-description: Open attached tabs in iTerm2 via AppleScript. macOS only.
+title: iTerm2 integration
+description: Legacy terminal-plugin URL; the current desktop terminal is built in.
 ---
 
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="iterm2" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>terminal</code> · Name: <code>iterm2</code>
-	</span>
-</div>
-
-<PlatformSupport macos="full" linux="none" windows="none" />
-
-The macOS attach experience. When you run `ao open`, it opens each session in a new iTerm2 tab (or window, with `--new-window`).
-
-## Setup
-
-Install [iTerm2](https://iterm2.com), then:
-
-```yaml title="agent-orchestrator.yaml"
-terminal: iterm2
-```
-
-No plugin-level config.
-
-## How it works
-
-Uses `osascript` + AppleScript under the hood. Requires `runtime: tmux` — an iTerm2 tab that's not attached to a tmux window is just a blank shell.
-
-## Troubleshooting
-
-- **iTerm2 won't take focus.** macOS Accessibility permission needed. System Settings → Privacy & Security → Accessibility → iTerm.
-- **"open-iterm-tab: command not found".** Reinstall AO (`npm install -g @aoagents/ao`) — the helper binary lives in the ao package.
-
-## Alternatives
-
-If you're not on macOS — or iTerm2 isn't your thing — use [`terminal: web`](/docs/plugins/terminals/web). The dashboard's xterm.js terminal is identical in feature set.
+The iTerm2/AppleScript terminal plugin and `ao open` command are not part of the Go rewrite. The current desktop uses an xterm surface over AO's WebSocket [terminal mux](/docs/plugins/terminals/web).

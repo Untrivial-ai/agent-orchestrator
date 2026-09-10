@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -28,10 +29,16 @@ const maxConversationBody = maxSpawnBodyBytes
 type ConversationService interface {
 	Snapshot(ctx context.Context, session domain.SessionID) (chatsvc.Snapshot, error)
 	Send(ctx context.Context, session domain.SessionID, msg ports.ChatUserMessage) (domain.ConversationTurn, error)
+	EditMessage(ctx context.Context, session domain.SessionID, turnID string, msg ports.ChatUserMessage) (chatsvc.EditMessageResult, error)
+	ActivateBranch(ctx context.Context, session domain.SessionID, branchID string) (string, error)
 	Resolve(ctx context.Context, session domain.SessionID, requestID string, decision ports.ChatDecision) error
 	ResolveInput(ctx context.Context, session domain.SessionID, requestID string, response ports.ChatInputResponse) error
 	Interrupt(ctx context.Context, session domain.SessionID) error
 	Steer(ctx context.Context, session domain.SessionID, msg ports.ChatUserMessage) (chatsvc.SteerResult, error)
+	PromoteQueuedTurn(ctx context.Context, session domain.SessionID, turnID string) (chatsvc.PromoteQueuedTurnResult, error)
+	CancelQueuedTurn(ctx context.Context, session domain.SessionID, turnID string) error
+	EditQueuedTurn(ctx context.Context, session domain.SessionID, turnID string, edit chatsvc.QueuedMessageEdit) error
+	ReorderQueuedTurns(ctx context.Context, session domain.SessionID, turnIDs []string) error
 	Models(ctx context.Context, session domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error)
 	ConfigOptions(ctx context.Context, session domain.SessionID) ([]ports.ChatConfigOption, error)
 	SetConfigOption(ctx context.Context, session domain.SessionID, configID string, value ports.ChatConfigOptionValue) ([]ports.ChatConfigOption, error)
@@ -39,6 +46,7 @@ type ConversationService interface {
 	SetTurnSettings(ctx context.Context, session domain.SessionID, settings domain.ConversationSettings) (domain.ConversationSettings, error)
 	Compact(ctx context.Context, session domain.SessionID) (ports.ChatCompactionResult, error)
 	Rollback(ctx context.Context, session domain.SessionID, turnID string) (int, error)
+	RetryTurn(ctx context.Context, session domain.SessionID, turnID string) (domain.ConversationTurn, error)
 	SetTitle(ctx context.Context, session domain.SessionID, title string) (string, error)
 	ReloadMCPServers(ctx context.Context, session domain.SessionID) ([]domain.ConversationMCPServer, error)
 }
@@ -64,6 +72,10 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/conversation/inputs/{requestId}/resolve", c.resolveInput)
 	r.Post("/sessions/{sessionId}/conversation/interrupt", c.interrupt)
 	r.Post("/sessions/{sessionId}/conversation/steer", c.steer)
+	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/steer", c.promoteQueuedTurn)
+	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/cancel", c.cancelQueuedTurn)
+	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/queue/edit", c.editQueuedTurn)
+	r.Post("/sessions/{sessionId}/conversation/queue/reorder", c.reorderQueuedTurns)
 	r.Post("/sessions/{sessionId}/conversation/compact", c.compact)
 	r.Get("/sessions/{sessionId}/conversation/models", c.models)
 	r.Get("/sessions/{sessionId}/conversation/config-options", c.configOptions)
@@ -71,8 +83,153 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Get("/sessions/{sessionId}/conversation/skills", c.skills)
 	r.Patch("/sessions/{sessionId}/conversation/settings", c.setSettings)
 	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/rollback", c.rollback)
+	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/edit", c.editMessage)
+	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/retry", c.retryTurn)
+	r.Post("/sessions/{sessionId}/conversation/branches/{branchId}/activate", c.activateBranch)
 	r.Put("/sessions/{sessionId}/conversation/title", c.setTitle)
 	r.Post("/sessions/{sessionId}/conversation/mcp/reload", c.reloadMCPServers)
+}
+
+func (c *ConversationsController) editMessage(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST",
+			"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/edit")
+		return
+	}
+	var req EditConversationMessageRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			"CHAT_EDIT_TURN_INVALID", "edited message text is required", nil)
+		return
+	}
+	result, err := c.Svc.EditMessage(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")),
+		chi.URLParam(r, "turnId"), ports.ChatUserMessage{
+			Text: req.Text, ClientMessageID: req.ClientMessageID, Origin: domain.MessageOriginHuman,
+		})
+	if err != nil {
+		writeConversationEditError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, EditConversationMessageResponse{
+		SourceBranchID: result.SourceBranchID,
+		ActiveBranchID: result.ActiveBranchID,
+		TurnID:         result.Turn.ID,
+		ProviderTurnID: result.Turn.ProviderTurnID,
+		State:          result.Turn.State,
+	})
+}
+
+// retryTurn re-dispatches a failed turn's durable prompt as a new turn. The
+// content is read from AO's rows rather than the request, so the daemon owns
+// what gets sent again and the original failed turn stays failed.
+func (c *ConversationsController) retryTurn(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST",
+			"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/retry")
+		return
+	}
+	turn, err := c.Svc.RetryTurn(r.Context(),
+		domain.SessionID(chi.URLParam(r, "sessionId")), chi.URLParam(r, "turnId"))
+	if err != nil {
+		writeConversationRetryError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, RetryTurnResponse{
+		TurnID:         turn.ID,
+		ProviderTurnID: turn.ProviderTurnID,
+		State:          turn.State,
+	})
+}
+
+// writeConversationRetryError maps retry refusals to their HTTP meanings.
+func writeConversationRetryError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, chatsvc.ErrTurnNotRetryable):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_RETRY_NOT_RETRYABLE",
+			"this turn cannot be retried: it is not a failed human turn in this conversation", nil)
+	case errors.Is(err, chatsvc.ErrRetryDeliveryUncertain):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_RETRY_DELIVERY_UNCERTAIN",
+			"delivery of this turn was never confirmed by the agent, so retrying it could run the work twice", nil)
+	case errors.Is(err, chatsvc.ErrRetryStaleBranch):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_RETRY_STALE_BRANCH",
+			"this turn is no longer on the active conversation branch", nil)
+	case errors.Is(err, chatsvc.ErrRetryContentInvalid):
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			"CHAT_RETRY_CONTENT_INVALID", err.Error(), nil)
+	case errors.Is(err, chatsvc.ErrRetryUnsupported):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_RETRY_UNSUPPORTED", err.Error(), nil)
+	case errors.Is(err, chatsvc.ErrTurnRunning), errors.Is(err, chatsvc.ErrControllerHandoff):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_RETRY_BUSY", "stop the current turn before retrying this one", nil)
+	case errors.Is(err, domain.ErrNoConversationTurn):
+		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found",
+			"CHAT_RETRY_TURN_NOT_FOUND", "that turn is not in this conversation", nil)
+	default:
+		writeConversationError(w, r, err)
+	}
+}
+
+func (c *ConversationsController) activateBranch(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST",
+			"/api/v1/sessions/{sessionId}/conversation/branches/{branchId}/activate")
+		return
+	}
+	branchID, err := url.PathUnescape(chi.URLParam(r, "branchId"))
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			"CHAT_BRANCH_INVALID", "conversation branch identifier is invalid", nil)
+		return
+	}
+	active, err := c.Svc.ActivateBranch(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")),
+		branchID)
+	if errors.Is(err, domain.ErrNoConversationBranch) {
+		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found",
+			"CHAT_BRANCH_NOT_FOUND", "that conversation branch does not exist", nil)
+		return
+	}
+	if errors.Is(err, chatsvc.ErrTurnRunning) || errors.Is(err, chatsvc.ErrControllerHandoff) {
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EDIT_BUSY", "stop the current turn before switching conversation branches", nil)
+		return
+	}
+	if errors.Is(err, chatsvc.ErrBranchProviderMismatch) {
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_BRANCH_PROVIDER_MISMATCH",
+			"that branch belongs to the agent that handled this session before the last switch", nil)
+		return
+	}
+	if err != nil {
+		writeConversationError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, ActivateConversationBranchResponse{ActiveBranchID: active})
+}
+
+func writeConversationEditError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, chatsvc.ErrForkUnsupported):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EDIT_UNSUPPORTED", "this agent cannot branch an earlier prompt", nil)
+	case errors.Is(err, chatsvc.ErrTurnRunning), errors.Is(err, chatsvc.ErrControllerHandoff):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EDIT_BUSY", "stop the current turn before branching", nil)
+	case errors.Is(err, chatsvc.ErrEditTurnInvalid) && errors.Is(err, domain.ErrNoConversationTurn):
+		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found",
+			"CHAT_EDIT_TURN_INVALID", "that editable prompt is not in this conversation", nil)
+	case errors.Is(err, chatsvc.ErrEditTurnInvalid):
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			"CHAT_EDIT_TURN_INVALID", err.Error(), nil)
+	default:
+		writeConversationError(w, r, err)
+	}
 }
 
 // configOptions serves every live control the provider advertises. Empty is a
@@ -317,11 +474,12 @@ func configOptionsPayload(options []ports.ChatConfigOption) ConversationConfigOp
 		}
 		for _, choice := range option.Choices {
 			item.Choices = append(item.Choices, ConversationConfigChoiceResponse{
-				Value:       choice.Value,
-				Name:        choice.Name,
-				Description: choice.Description,
-				Group:       choice.Group,
-				GroupName:   choice.GroupName,
+				PermissionMode: choice.PermissionMode,
+				Value:          choice.Value,
+				Name:           choice.Name,
+				Description:    choice.Description,
+				Group:          choice.Group,
+				GroupName:      choice.GroupName,
 			})
 		}
 		out.Options = append(out.Options, item)
@@ -450,6 +608,9 @@ func conversationContent(req SendConversationMessageRequest) ([]ports.ChatConten
 	for _, resource := range req.Resources {
 		if strings.TrimSpace(resource.URI) == "" || strings.TrimSpace(resource.Name) == "" {
 			return nil, &attachmentError{"INVALID_RESOURCE", "resource uri and name are required"}
+		}
+		if resource.URI == ports.ChatInternalReplayResourceURI {
+			return nil, &attachmentError{"INVALID_RESOURCE", "resource uri is reserved for AO internal context"}
 		}
 		kind, text := "resource_link", ""
 		if resource.Text != nil {
@@ -610,6 +771,11 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 			"CHAT_TURN_NOT_ROLLBACKABLE",
 			"that turn never reached the agent, so there is nothing to undo", nil)
 
+	case errors.Is(err, chatsvc.ErrTurnProviderMismatch):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_TURN_PROVIDER_MISMATCH",
+			"that turn belongs to the agent that handled this session before the last switch", nil)
+
 	case errors.Is(err, chatsvc.ErrRollbackUnsupported):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_ROLLBACK_UNSUPPORTED", "this agent cannot discard conversation history", nil)
@@ -687,46 +853,53 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 // Items arrive already ordered by sequence, so nothing is re-sorted here.
 func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotResponse {
 	out := ConversationSnapshotResponse{
-		ConversationID: s.Conversation.ID,
-		SessionID:      string(s.SessionID),
-		Harness:        string(s.Harness),
-		Mode:           string(s.Mode),
-		Controller:     string(s.Controller),
-		LatestSequence: s.Conversation.LatestSequence,
-		OldestSequence: s.OldestSequence,
-		HasMoreBefore:  s.HasMoreBefore,
-		Turns:          make([]ConversationTurnResponse, 0, len(s.Turns)),
-		Messages:       make([]ConversationMessageResponse, 0, len(s.Messages)),
-		Activities:     make([]ConversationActivityResponse, 0, len(s.Activities)),
-		Settings:       turnSettingsPayload(s.Conversation.Settings),
-		Usage:          usagePayload(s.Usage),
-		RateLimits:     rateLimitsPayload(s.RateLimits),
-		CompactedAt:    optionalTimestamp(s.Conversation.CompactedAt),
-		Title:          s.Conversation.ProviderTitle,
-		ModelReroute:   modelReroutePayload(s.Conversation.ModelReroute),
-		Account:        accountPayload(s.Conversation.Account),
-		ThreadState:    threadStatePayload(s.Conversation.ThreadState),
-		MCPServers:     mcpServersPayload(s.Conversation.MCPServers),
-		Capabilities:   capabilityNames(s.Capabilities),
+		ConversationID:                   s.Conversation.ID,
+		ActiveBranchID:                   s.Conversation.ActiveBranchID,
+		BranchedFromEarlierMessage:       s.BranchedFromEarlierMessage,
+		SessionID:                        string(s.SessionID),
+		Harness:                          string(s.Harness),
+		Mode:                             string(s.Mode),
+		Controller:                       string(s.Controller),
+		LatestSequence:                   s.Conversation.LatestSequence,
+		OldestSequence:                   s.OldestSequence,
+		HasMoreBefore:                    s.HasMoreBefore,
+		NativeForkAvailableAfterSequence: s.NativeForkAvailableAfterSequence,
+		Turns:                            make([]ConversationTurnResponse, 0, len(s.Turns)),
+		Messages:                         make([]ConversationMessageResponse, 0, len(s.Messages)),
+		Activities:                       make([]ConversationActivityResponse, 0, len(s.Activities)),
+		BranchPoints:                     make([]ConversationBranchPointResponse, 0, len(s.BranchPoints)),
+		BranchMaterialization:            branchMaterializationPayload(s.ActiveBranch),
+		Settings:                         turnSettingsPayload(s.Conversation.Settings),
+		Usage:                            usagePayload(s.Usage),
+		RateLimits:                       rateLimitsPayload(s.RateLimits),
+		CompactedAt:                      optionalTimestamp(s.Conversation.CompactedAt),
+		Title:                            s.Conversation.ProviderTitle,
+		ModelReroute:                     modelReroutePayload(s.Conversation.ModelReroute),
+		Account:                          accountPayload(s.Conversation.Account),
+		ThreadState:                      threadStatePayload(s.Conversation.ThreadState),
+		MCPServers:                       mcpServersPayload(s.Conversation.MCPServers),
+		Capabilities:                     capabilityNames(s.Capabilities),
 	}
 
 	for _, turn := range s.Turns {
 		out.Turns = append(out.Turns, ConversationTurnResponse{
-			ID:             turn.ID,
-			State:          string(turn.State),
-			ProviderTurnID: turn.ProviderTurnID,
-			ErrorMessage:   turn.ErrorMessage,
-			RequestedAt:    turn.RequestedAt.UTC().Format(time.RFC3339),
-			StartedAt:      optionalTimestamp(turn.StartedAt),
-			CompletedAt:    optionalTimestamp(turn.CompletedAt),
-			Diff:           turnDiffPayload(turn.Diff),
-			Plan:           turnPlanPayload(turn.Plan),
-			RolledBack:     turn.RolledBackAt != nil,
+			ID:              turn.ID,
+			State:           string(turn.State),
+			ProviderTurnID:  turn.ProviderTurnID,
+			RetryOfTurnID:   turn.RetryOfTurnID,
+			HasRetryAttempt: turn.HasRetryAttempt,
+			ErrorMessage:    turn.ErrorMessage,
+			RequestedAt:     turn.RequestedAt.UTC().Format(time.RFC3339),
+			StartedAt:       optionalTimestamp(turn.StartedAt),
+			CompletedAt:     optionalTimestamp(turn.CompletedAt),
+			Diff:            turnDiffPayload(turn.Diff),
+			Plan:            turnPlanPayload(turn.Plan),
+			RolledBack:      turn.RolledBackAt != nil,
 		})
 	}
 
 	for _, msg := range s.Messages {
-		out.Messages = append(out.Messages, ConversationMessageResponse{
+		message := ConversationMessageResponse{
 			Kind:      "message",
 			ID:        msg.ID,
 			TurnID:    msg.TurnID,
@@ -737,6 +910,15 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 			Text:      msg.Text,
 			Streaming: msg.Streaming,
 			CreatedAt: msg.CreatedAt.UTC().Format(time.RFC3339),
+		}
+		message.Content, message.EditAvailable = conversationContentSummary(msg)
+		message.EditAvailable = message.EditAvailable && msg.Sequence > s.EditFloorSequence
+		out.Messages = append(out.Messages, message)
+	}
+	for _, point := range s.BranchPoints {
+		out.BranchPoints = append(out.BranchPoints, ConversationBranchPointResponse{
+			TurnID: point.TurnID, Position: point.Position, Total: point.Total,
+			PreviousBranchID: point.PreviousBranchID, NextBranchID: point.NextBranchID,
 		})
 	}
 
@@ -757,6 +939,46 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 		})
 	}
 	return out
+}
+
+func branchMaterializationPayload(branch domain.ConversationBranch) *ConversationBranchMaterializationResponse {
+	if branch.ID == "" || branch.Strategy == "" {
+		return nil
+	}
+	return &ConversationBranchMaterializationResponse{
+		Strategy:        string(branch.Strategy),
+		ReplayTruncated: branch.ReplayTruncated,
+	}
+}
+
+func conversationContentSummary(msg domain.ConversationMessage) ([]ConversationContentSummaryResponse, bool) {
+	if msg.Role != domain.MessageRoleUser || msg.Origin != domain.MessageOriginHuman {
+		return nil, false
+	}
+	if msg.DeliveryContentJSON == "" {
+		return nil, true
+	}
+	var content []ports.ChatContent
+	if err := json.Unmarshal([]byte(msg.DeliveryContentJSON), &content); err != nil {
+		return nil, false
+	}
+	summaries := make([]ConversationContentSummaryResponse, 0, len(content))
+	for _, block := range content {
+		// AO's reconstructed-history seed is provider context, not content the
+		// person attached. Keeping it out of this public summary prevents it from
+		// appearing as a user resource when the edited message is rendered again.
+		if block.Type == "text" || ports.IsInternalReplayContent(block) {
+			continue
+		}
+		name := block.Name
+		if name == "" && block.Type != "image" && block.Type != "resource" && block.Type != "resource_link" {
+			name = block.Type
+		}
+		summaries = append(summaries, ConversationContentSummaryResponse{
+			Type: block.Type, MIMEType: block.MIMEType, URI: block.URI, Name: name,
+		})
+	}
+	return summaries, true
 }
 
 // usagePayload maps the conversation's token position onto the wire shape. A nil

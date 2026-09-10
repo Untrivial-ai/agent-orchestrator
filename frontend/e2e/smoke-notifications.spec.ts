@@ -47,7 +47,7 @@ test("renderer: notification center shows the correct unread count @T0 @NTF", as
 		}),
 	);
 
-	await page.goto("/#/");
+	await page.goto("/#/projects/ao-demo");
 	// The global board on Linux renders the bell in its subhead actions.
 	const bell = page.getByRole("button", { name: "2 unread notifications" });
 	await expect(bell).toBeVisible();

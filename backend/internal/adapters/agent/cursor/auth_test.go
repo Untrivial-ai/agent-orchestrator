@@ -2,8 +2,6 @@ package cursor
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -37,36 +35,6 @@ func TestCursorCLIAuthStatusUnknownFromKeychainError(t *testing.T) {
 	}
 }
 
-func TestCursorConfigAuthStatusAuthorizedWithAuthInfo(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cli-config.json")
-	if err := os.WriteFile(path, []byte(`{"authInfo":{"email":"user@example.com","userId":"user-1","authId":"auth-1"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := cursorConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestCursorConfigAuthStatusUnknownWithoutAuthInfo(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cli-config.json")
-	if err := os.WriteFile(path, []byte(`{"model":{"modelId":"cursor-default"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := cursorConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
-	}
-}
-
 type assertErr string
 
 func (e assertErr) Error() string {
@@ -83,14 +51,4 @@ func stubCursorAuthCommand(t *testing.T, wantArgs []string, out []byte, err erro
 		return out, err
 	}
 	return func() { authprobe.CmdRunner = previous }
-}
-
-func TestCursorConfigAuthStatusUnknownWhenMissing(t *testing.T) {
-	status, ok, err := cursorConfigAuthStatus(filepath.Join(t.TempDir(), "missing.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
-	}
 }

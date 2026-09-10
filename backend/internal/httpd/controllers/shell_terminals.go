@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 
@@ -68,6 +69,7 @@ func (c *ShellTerminalsController) open(w http.ResponseWriter, r *http.Request) 
 	terminal, err := c.Svc.OpenShellTerminal(r.Context(), shelltermsvc.OpenShellTerminalInput{
 		ProjectID: domain.ProjectID(req.ProjectID),
 		SessionID: domain.SessionID(req.SessionID),
+		Shell:     req.Shell,
 	})
 	if err != nil {
 		envelope.WriteError(w, r, err)
@@ -88,7 +90,12 @@ func (c *ShellTerminalsController) rename(w http.ResponseWriter, r *http.Request
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	terminal, err := c.Svc.RenameShellTerminal(r.Context(), chi.URLParam(r, "handleId"), req.Title)
+	handleID, err := url.PathUnescape(chi.URLParam(r, "handleId"))
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "SHELL_TERMINAL_ID_INVALID", "Invalid shell terminal id", nil)
+		return
+	}
+	terminal, err := c.Svc.RenameShellTerminal(r.Context(), handleID, req.Title)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -103,7 +110,12 @@ func (c *ShellTerminalsController) close(w http.ResponseWriter, r *http.Request)
 		apispec.NotImplemented(w, r, "DELETE", "/api/v1/shell-terminals/{handleId}")
 		return
 	}
-	if err := c.Svc.CloseShellTerminal(r.Context(), chi.URLParam(r, "handleId")); err != nil {
+	handleID, err := url.PathUnescape(chi.URLParam(r, "handleId"))
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "SHELL_TERMINAL_ID_INVALID", "Invalid shell terminal id", nil)
+		return
+	}
+	if err := c.Svc.CloseShellTerminal(r.Context(), handleID); err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}

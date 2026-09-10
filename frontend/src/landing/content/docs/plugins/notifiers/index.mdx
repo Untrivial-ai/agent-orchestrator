@@ -1,100 +1,17 @@
 ---
-title: Notifiers overview
-description: Who gets pinged when an agent needs you. Seven notifiers ship; pick one or stack several.
+title: Notifications
+description: Durable in-app notifications and Electron toasts built into AO.
 ---
 
-Notifiers deliver AO events — session stuck, PR opened, review requested, CI failed — to wherever you actually pay attention.
+Notifications are a daemon and desktop capability, not a configurable plugin slot. AO currently persists notifications for these lifecycle events:
 
-<PluginGrid>
-	<PluginCard
-		name="Dashboard"
-		logo="web"
-		href="/docs/plugins/notifiers/dashboard"
-		description="Retained notifications inside the AO dashboard."
-	/>
-	<PluginCard
-		name="Desktop"
-		logo="apple"
-		href="/docs/plugins/notifiers/desktop"
-		description="Native macOS/Linux notifications. No-op on Windows."
-	/>
-	<PluginCard
-		name="Discord"
-		logo="discord"
-		href="/docs/plugins/notifiers/discord"
-		description="Discord webhook with rich embeds."
-	/>
-	<PluginCard name="Slack" logo="slack" href="/docs/plugins/notifiers/slack" description="Slack incoming webhook." />
-	<PluginCard
-		name="Webhook"
-		logo="webhook"
-		href="/docs/plugins/notifiers/webhook"
-		description="Generic HTTP POST. Retries + exponential backoff."
-	/>
-	<PluginCard
-		name="Composio"
-		logo="composio"
-		href="/docs/plugins/notifiers/composio"
-		description="Route through Composio — Slack, Discord, or Gmail."
-	/>
-	<PluginCard
-		name="OpenClaw"
-		logo="openclaw"
-		href="/docs/plugins/notifiers/openclaw"
-		description="Local OpenClaw gateway for personal alerts."
-	/>
-</PluginGrid>
+- a session needs input;
+- a pull request is ready to merge;
+- a pull request was merged;
+- a pull request closed without merging.
 
-## Stacking notifiers
+The desktop notification center provides Unread and All views, pagination, live updates, mark-read controls, and links to the related session or pull request. While the Electron app is running, new records can also appear as native app toasts.
 
-Notifier config is a map. Add as many named notifiers as you want, then route
-priorities with `notificationRouting`:
+Slack, Discord, generic webhook, Composio, OpenClaw, and standalone desktop notifier configuration from the legacy TypeScript release are not supported in the rewrite.
 
-```yaml
-notifiers:
-  desktop:
-    plugin: desktop
-  discord:
-    plugin: discord
-    webhookUrl: ${DISCORD_URL}
-  slack:
-    plugin: slack
-    webhookUrl: ${SLACK_URL}
-
-notificationRouting:
-  urgent: [desktop, discord, slack]
-  action: [discord, slack]
-  warning: [slack]
-  info: []
-```
-
-Setup commands can write this routing for you with `--routing-preset
-urgent-only`, `urgent-action`, or `all`. AO does not dedupe across channels, so
-route only the priorities each destination should receive.
-
-## Testing
-
-```bash
-ao notify test --to slack --template basic
-ao notify test --route urgent
-ao notify test --all --dry-run
-```
-
-Use `--to` for one target, `--route` for a priority route, or `--all` for every
-configured/default/routed notifier. Without `--dry-run`, real providers receive
-a real test message.
-
-## What gets notified
-
-| Event               | When                                   |
-| ------------------- | -------------------------------------- |
-| `session.spawned`   | `ao spawn` succeeds                    |
-| `session.working`   | Agent is actively editing code         |
-| `pr.opened`         | Agent pushed a branch and opened a PR  |
-| `ci.failed`         | Required check fails                   |
-| `review.requested`  | Reviewer asks for changes              |
-| `session.mergeable` | CI green, no blockers                  |
-| `session.merged`    | PR merged                              |
-| `session.blocked`   | Agent is stuck — you need to intervene |
-
-You can tune which events fire via [`reactions` config](/docs/configuration).
+See [notification center](/docs/plugins/notifiers/dashboard) for the current behavior.

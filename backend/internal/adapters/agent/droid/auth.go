@@ -22,7 +22,7 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	if err != nil || ok {
 		return status, err
 	}
-	return ports.AgentAuthStatusUnauthorized, nil
+	return ports.AgentAuthStatusUnknown, nil
 }
 
 func droidLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
@@ -45,9 +45,6 @@ func droidLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, err
 func droidFactoryAuthStatus(factoryDir string) (ports.AgentAuthStatus, bool, error) {
 	if factoryDir == "" {
 		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if fileHasContent(filepath.Join(factoryDir, "auth.v2.file")) && fileHasContent(filepath.Join(factoryDir, "auth.v2.key")) {
-		return ports.AgentAuthStatusAuthorized, true, nil
 	}
 	return droidSettingsAuthStatus(filepath.Join(factoryDir, "settings.json"))
 }
@@ -73,17 +70,27 @@ func droidSettingsAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 	for _, model := range settings.CustomModels {
 		if strings.TrimSpace(model.Model) != "" &&
 			strings.TrimSpace(model.BaseURL) != "" &&
-			strings.TrimSpace(model.APIKey) != "" {
+			droidConfiguredSecret(model.APIKey) {
 			return ports.AgentAuthStatusAuthorized, true, nil
 		}
 	}
 	if len(settings.CustomModels) > 0 {
-		return ports.AgentAuthStatusUnauthorized, true, nil
+		return ports.AgentAuthStatusUnknown, false, nil
 	}
 	return ports.AgentAuthStatusUnknown, false, nil
 }
 
-func fileHasContent(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Size() > 0
+// droidConfiguredSecret recognizes literal keys and the documented
+// ${ENV_VAR} interpolation used by Droid's custom model settings. An
+// unresolved placeholder is not evidence that the user is authenticated.
+func droidConfiguredSecret(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
+		name := strings.TrimSpace(value[2 : len(value)-1])
+		return name != "" && strings.TrimSpace(os.Getenv(name)) != ""
+	}
+	return !strings.HasPrefix(value, "$")
 }

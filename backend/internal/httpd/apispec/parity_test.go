@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	yaml "gopkg.in/yaml.v3"
@@ -14,7 +15,25 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 )
+
+// stubDeviceRoster and stubDeviceLive give TestRouteSpecParity a non-nil
+// DeviceRoster so mountMobileDevices (which mounts its routes unconditionally
+// and answers 503 DEVICE_REGISTRY_UNAVAILABLE when the registry is unavailable)
+// registers its routes here — otherwise the roster's spec operations below
+// would have no mounted route to match.
+type stubDeviceRoster struct{}
+
+func (stubDeviceRoster) List() []mobilebridge.PushDevice { return nil }
+func (stubDeviceRoster) SetMuted(string, bool) error     { return nil }
+func (stubDeviceRoster) Delete(string) error             { return nil }
+
+type stubDeviceLive struct{}
+
+func (stubDeviceLive) Live() map[string]bool { return nil }
+
+func (stubDeviceLive) LastSeen(string) (time.Time, bool) { return time.Time{}, false }
 
 // TestRouteSpecParity asserts the mounted /api/v1 routes and the OpenAPI
 // operations are in 1:1 correspondence — so a route can't be added without
@@ -25,7 +44,11 @@ func TestRouteSpecParity(t *testing.T) {
 	// mountControl, skips mounting entirely on a nil controller) registers its
 	// routes here — otherwise the mobile spec operations below would have no
 	// mounted route to match.
-	deps := httpd.APIDeps{Mobile: &controllers.MobileController{}}
+	deps := httpd.APIDeps{
+		Mobile:       &controllers.MobileController{},
+		DeviceRoster: stubDeviceRoster{},
+		DeviceLive:   stubDeviceLive{},
+	}
 	router := httpd.NewRouterWithControl(config.Config{}, log, nil, deps, httpd.ControlDeps{})
 
 	mounted := map[string]bool{}

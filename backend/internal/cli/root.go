@@ -64,16 +64,21 @@ type Deps struct {
 	Out io.Writer
 	Err io.Writer
 
-	HTTPClient         *http.Client
-	Executable         func() (string, error)
-	StartProcess       func(processStartConfig) error
-	ProcessAlive       func(pid int) bool
-	LookPath           func(file string) (string, error)
-	CommandOutput      func(ctx context.Context, name string, args ...string) ([]byte, error)
-	CommandOutputInDir func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
+	HTTPClient            *http.Client
+	Executable            func() (string, error)
+	StartProcess          func(processStartConfig) error
+	ProcessAlive          func(pid int) bool
+	LookPath              func(file string) (string, error)
+	CommandOutput         func(ctx context.Context, name string, args ...string) ([]byte, error)
+	CommandOutputInDir    func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
+	RunInteractiveCommand func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error
+	ReadSecret            func(io.Reader) ([]byte, error)
 	// DoctorGitHubRESTBase lets tests point the doctor GitHub token probe at
 	// httptest without mutating package-global state.
 	DoctorGitHubRESTBase string
+	// DoctorGitLabRESTBase lets tests point the doctor GitLab token probe at
+	// httptest without mutating package-global state.
+	DoctorGitLabRESTBase string
 	Now                  func() time.Time
 	Sleep                func(time.Duration)
 }
@@ -81,19 +86,22 @@ type Deps struct {
 // DefaultDeps returns production dependencies.
 func DefaultDeps() Deps {
 	return Deps{
-		In:                   os.Stdin,
-		Out:                  os.Stdout,
-		Err:                  os.Stderr,
-		HTTPClient:           &http.Client{Timeout: 2 * time.Second},
-		Executable:           os.Executable,
-		StartProcess:         startProcess,
-		ProcessAlive:         processalive.Alive,
-		LookPath:             exec.LookPath,
-		CommandOutput:        commandOutput,
-		CommandOutputInDir:   commandOutputInDir,
-		DoctorGitHubRESTBase: defaultDoctorGitHubRESTBase,
-		Now:                  time.Now,
-		Sleep:                time.Sleep,
+		In:                    os.Stdin,
+		Out:                   os.Stdout,
+		Err:                   os.Stderr,
+		HTTPClient:            &http.Client{Timeout: 2 * time.Second},
+		Executable:            os.Executable,
+		StartProcess:          startProcess,
+		ProcessAlive:          processalive.Alive,
+		LookPath:              exec.LookPath,
+		CommandOutput:         commandOutput,
+		CommandOutputInDir:    commandOutputInDir,
+		RunInteractiveCommand: runInteractiveCommand,
+		ReadSecret:            readSecret,
+		DoctorGitHubRESTBase:  defaultDoctorGitHubRESTBase,
+		DoctorGitLabRESTBase:  defaultDoctorGitLabRESTBase,
+		Now:                   time.Now,
+		Sleep:                 time.Sleep,
 	}
 }
 
@@ -139,8 +147,17 @@ func (d Deps) withDefaults() Deps {
 	if d.CommandOutputInDir == nil {
 		d.CommandOutputInDir = def.CommandOutputInDir
 	}
+	if d.RunInteractiveCommand == nil {
+		d.RunInteractiveCommand = def.RunInteractiveCommand
+	}
+	if d.ReadSecret == nil {
+		d.ReadSecret = def.ReadSecret
+	}
 	if d.DoctorGitHubRESTBase == "" {
 		d.DoctorGitHubRESTBase = def.DoctorGitHubRESTBase
+	}
+	if d.DoctorGitLabRESTBase == "" {
+		d.DoctorGitLabRESTBase = def.DoctorGitLabRESTBase
 	}
 	if d.Now == nil {
 		d.Now = def.Now
@@ -192,8 +209,10 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newBrowserCommand(ctx))
 	root.AddCommand(newHooksCommand(ctx))
 	root.AddCommand(newAgentProcessCommand(ctx))
+	root.AddCommand(newChatHostCommand())
 	root.AddCommand(newLaunchCommand(ctx))
 	root.AddCommand(newPtyHostCommand())
+	root.AddCommand(newCodexLoginCommand(ctx))
 	root.AddCommand(newImportCommand(ctx))
 	root.AddCommand(newDevCommand(ctx))
 	root.AddCommand(newProjectCommand(ctx))
@@ -221,7 +240,7 @@ func shouldEmitCLIInvocation(cmd *cobra.Command) bool {
 	// "ao completion"/"ao help" are shell setup and self-documentation.
 	// "ao pty-host" and "ao agent-process" are internal runtime processes.
 	// None reflect user activity.
-	case "ao daemon", "ao start", "ao completion", "ao help", "ao pty-host", "ao agent-process", "ao agent-process supervise":
+	case "ao daemon", "ao start", "ao completion", "ao help", "ao pty-host", "ao chat-host", "ao codex-login", "ao agent-process", "ao agent-process supervise":
 		return false
 	default:
 		return true

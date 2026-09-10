@@ -1,0 +1,21 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"useDefineForClassFields": true,
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"jsx": "react-jsx",
+		"types": ["vitest/globals", "@testing-library/jest-dom"],
+		"strict": true,
+		"isolatedModules": true,
+		"noEmit": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noImplicitReturns": true,
+		"noFallthroughCasesInSwitch": true,
+		"forceConsistentCasingInFileNames": true,
+		"skipLibCheck": true
+	},
+	"include": ["src/**/*.ts", "src/**/*.tsx", "vitest.config.ts"]
+}

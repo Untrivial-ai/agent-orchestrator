@@ -1,97 +1,69 @@
 ---
 title: Multi-project
-description: Run AO against several repos from one dashboard, with per-project plugins and configs.
+description: Manage repositories, multi-repository workspaces, and Scratch sessions from one desktop.
 ---
 
+AO's daemon owns a durable project registry in SQLite. The desktop sidebar shows every registered project and its sessions; there is no single `agent-orchestrator.yaml` containing a `projects:` map.
 
-One `agent-orchestrator.yaml` can drive many projects. Each project gets its own repo, tracker, plugin overrides, and — most importantly — its own dashboard lane.
+## Add projects
 
-## Config shape
-
-```yaml title="agent-orchestrator.yaml"
-runtime: tmux # global default
-agent: claude-code
-
-projects:
-  web:
-    repo: Untrivial-ai/agent-orchestrator
-    agent: claude-code
-
-  api:
-    repo: myorg/api
-    agent: codex # per-project override
-    tracker: linear
-    trackerConfig:
-      teamId: TEAM-123
-
-  marketing:
-    repo: myorg/site
-    agent: cursor
-    workspace: clone # full clone instead of worktree
-```
-
-Project IDs (`web`, `api`, `marketing`) are what you pass to `--project` / `-p`.
-
-## Adding a project
-
-Two ways:
-
-- **By path**: `ao start ~/code/new-repo` — AO infers a project ID from the directory name and appends it.
-- **By URL**: `ao start https://github.com/owner/repo` — AO clones it under `~/.agent-orchestrator/` and registers it.
-
-Both update `agent-orchestrator.yaml` in place. Diff it if you're curious.
-
-## Spawning in the right project
-
-`ao spawn` auto-detects the project when you're in a worktree belonging to it. Otherwise name it:
+Use **Add project** in the desktop app, or register an existing local repository:
 
 ```bash
-ao spawn 42 -p api
-ao batch-spawn 10 11 12 -p web
+ao project add --path /absolute/path/to/web --id web
+ao project add --path /absolute/path/to/api --id api
+ao project ls
 ```
 
-Or pass no project and AO will prompt.
+`ao project add` requires a local path. It does not clone remote URLs. `ao start` only resolves and opens the desktop app; it does not register the current directory.
 
-## Per-project plugin overrides
+## Workspace and Scratch projects
 
-Anything defined at the top level is a default. Override per project:
-
-```yaml
-tracker: github # default
-notifier:
-  - type: slack
-    webhookUrl: ${SLACK_GLOBAL}
-
-projects:
-  internal:
-    repo: myorg/internal
-    tracker: linear
-    notifier:
-      - type: discord
-        webhookUrl: ${DISCORD_INTERNAL}
-```
-
-The `internal` project uses Linear + Discord. Every other project uses GitHub + Slack.
-
-## Status across projects
+Register a parent directory containing direct child repositories as one workspace project:
 
 ```bash
-ao status                   # all projects
-ao status -p api            # one project
-ao status --json | jq       # scripted
-ao status --watch           # live-updating table
+ao project add --path /absolute/path/to/product --as-workspace
 ```
 
-The dashboard shows all projects as swim lanes.
+Fresh installations also have Scratch for tasks that do not require Git. Scratch sessions cannot use `--branch` or `--claim-pr`.
 
-## Stopping selectively
+## Give each project its own roles
+
+Open each project's settings and choose its worker, orchestrator, model, rules, setup, reviewers, and default session interface. Project configuration is typed and independent; changing one project does not set global YAML defaults for the others.
+
+## Spawn in the right project
 
 ```bash
-ao stop api          # stop one project's orchestrator + dashboard
-ao stop --all        # stop everything
+ao spawn --project api --name api-issue --issue 42 --mode chat
+ao spawn --project web --name web-fix --prompt "Fix the header" --mode tui
 ```
 
-<Callout type="info">
-	Each project can have a different agent, tracker, notifier, and workspace — that's the whole point of the plugin
-	system. Don't force uniformity; let teams use what fits.
-</Callout>
+When `--project` is omitted, AO can resolve `AO_PROJECT_ID`, the current registered repository, or Scratch when it is the only project. Supplying the project explicitly is clearest in scripts.
+
+## Inspect across projects
+
+The desktop sidebar and sessions board are the live multi-project view. From the CLI:
+
+```bash
+ao project ls
+ao session ls
+ao session ls --project api
+ao session ls --project api --json
+```
+
+`ao status` reports daemon health rather than project sessions. It supports `--json`, not `--watch` or a project filter.
+
+## Stop and clean up
+
+Kill one session with `ao session kill <session-id>`. Use `ao session cleanup --dry-run` before reclaiming eligible terminated-session workspaces. Dirty worktrees are preserved.
+
+`ao stop` stops the daemon and takes no project argument. Closing a desktop-owned app normally reaps its linked daemon; a headless daemon remains until explicitly stopped.
+
+## Use mobile across projects
+
+Connect Mobile exposes the same registered projects and session modes through the authenticated mobile listener. Mobile prefers Chat for new workers and orchestrators when a compatible harness is installed, while Terminal UI remains selectable.
+
+<Cards>
+	<Card title="Projects" href="/docs/configuration/projects" description="Current typed project settings." />
+	<Card title="Connect Mobile" href="/docs/configuration/remote-access" description="Pair the native mobile app." />
+</Cards>

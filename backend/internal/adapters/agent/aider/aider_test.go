@@ -58,7 +58,7 @@ func TestGetLaunchCommandOmitsPromptForInteractiveDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{"aider", "--no-check-update", "--no-stream", "--no-pretty"}
+	want := []string{"aider", "--no-check-update", "--no-stream", "--no-pretty", "--notifications", "--notifications-command", "ao hooks aider notification"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("unexpected command\nwant: %#v\n got: %#v", want, cmd)
 	}
@@ -75,7 +75,7 @@ func TestGetLaunchCommandForwardsModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"aider", "--model", "openai/gpt-5.4", "--no-check-update", "--no-stream", "--no-pretty"}
+	want := []string{"aider", "--model", "openai/gpt-5.4", "--no-check-update", "--no-stream", "--no-pretty", "--notifications", "--notifications-command", "ao hooks aider notification"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("cmd = %#v, want %#v", cmd, want)
 	}
@@ -88,7 +88,7 @@ func TestGetLaunchCommandOmitsPromptFlagWhenEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{"aider", "--no-check-update", "--no-stream", "--no-pretty"}
+	want := []string{"aider", "--no-check-update", "--no-stream", "--no-pretty", "--notifications", "--notifications-command", "ao hooks aider notification"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("cmd = %#v, want %#v", cmd, want)
 	}
@@ -117,6 +117,23 @@ func TestGetLaunchCommandAlwaysAppendsStableOutputFlags(t *testing.T) {
 		if !found {
 			t.Fatalf("cmd = %#v missing stable output flag %q", cmd, want)
 		}
+	}
+}
+
+func TestGetLaunchCommandReportsWhenAiderReturnsToInput(t *testing.T) {
+	p := &Plugin{resolvedBinary: "aider"}
+	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{
+		"aider",
+		"--no-check-update", "--no-stream", "--no-pretty",
+		"--notifications", "--notifications-command", "ao hooks aider notification",
+	}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %#v, want %#v", cmd, want)
 	}
 }
 
@@ -203,7 +220,7 @@ func TestGetLaunchCommandSystemPromptFileUsesReadOnlyContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{"aider", "--no-check-update", "--no-stream", "--no-pretty", "--read", "/tmp/system.md"}
+	want := []string{"aider", "--no-check-update", "--no-stream", "--no-pretty", "--notifications", "--notifications-command", "ao hooks aider notification", "--read", "/tmp/system.md"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("cmd = %#v, want %#v", cmd, want)
 	}
@@ -219,7 +236,7 @@ func TestGetLaunchCommandInlineSystemPromptIsDropped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{"aider", "--no-check-update", "--no-stream", "--no-pretty"}
+	want := []string{"aider", "--no-check-update", "--no-stream", "--no-pretty", "--notifications", "--notifications-command", "ao hooks aider notification"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("cmd = %#v, want %#v", cmd, want)
 	}

@@ -1,39 +1,10 @@
 ---
-title: Web
-description: Dashboard xterm.js terminal. Cross-platform. The only option on Windows.
+title: Desktop terminal
+description: Session terminals streamed through the daemon's mux to Electron.
 ---
 
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="web" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>terminal</code> · Name: <code>web</code>
-	</span>
-</div>
+The session view renders an xterm terminal connected to the daemon's `/mux` WebSocket. The connection follows daemon port changes and can reconnect after the desktop restarts.
 
-<PlatformSupport macos="full" linux="full" windows="full" />
+Terminal UI sessions attach to the agent's live platform runtime. Chat sessions do not create an agent TUI runtime, but the session can still open worktree shells through the same mux infrastructure.
 
-The dashboard already has an xterm.js terminal connected to every session. The `web` plugin just points `ao open` at the right dashboard URL.
-
-## Use
-
-```yaml title="agent-orchestrator.yaml"
-terminal: web
-terminalConfig:
-  dashboardUrl: http://localhost:3000 # default
-```
-
-| Config key     | Default                 | What it does                                                                       |
-| -------------- | ----------------------- | ---------------------------------------------------------------------------------- |
-| `dashboardUrl` | `http://localhost:3000` | Base URL for the dashboard. Override when the dashboard runs on another host/port. |
-
-## How it works
-
-When you run `ao open <session>`, the plugin prints the session's dashboard URL. If you're on macOS/Linux, it also tries to open it in your default browser.
-
-Since the terminal UI lives in the dashboard itself, there's no per-session state here — this plugin is just routing + convenience.
-
-## Why this exists
-
-- Windows has no `osascript` and no AppleScript-equivalent that's worth writing a plugin for.
-- You're running AO on a remote host — no local terminal to attach to.
-- You prefer browser tabs over terminal tabs.
+This is built into the desktop app. There is no `terminal: web` setting, `ao open` command, or iTerm2/AppleScript terminal plugin in the current release.

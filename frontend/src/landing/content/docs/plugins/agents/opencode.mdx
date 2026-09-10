@@ -1,58 +1,15 @@
 ---
 title: OpenCode
-description: OpenCode terminal agent. Uses the OpenCode session API for resume and discovery.
+description: Built-in Terminal UI and native ACP Chat support for the user's OpenCode installation.
 ---
 
-
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="opencode" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>agent</code> · Name: <code>opencode</code> · Binary: <code>opencode</code>
-	</span>
-</div>
-
-[OpenCode](https://opencode.ai) is an open-source terminal coding agent. It has a structured session API, which means AO can discover, resume, and track its sessions reliably.
-
-<PlatformSupport macos="full" linux="full" windows="full" />
-
-## Install
+AO resolves your local `opencode` executable and reuses its authentication.
 
 ```bash
-npm install -g opencode-ai
+ao agent ls --refresh
+ao spawn --project my-app --name opencode-task --agent opencode --mode chat
 ```
 
-## Use
+OpenCode can run as its native Terminal UI or through its native ACP interface in structured Chat. Chat history is persisted by AO as a durable, paged conversation projection while provider conversation identity is retained for continuity.
 
-```yaml title="agent-orchestrator.yaml"
-agent: opencode
-```
-
-No plugin-level config.
-
-## How it works
-
-- **Launch:** `opencode` starts in the worktree with `AO:<sessionId>` as the session title — this is how AO finds it back later.
-- **Session discovery:** `opencode session list --format json` returns the list; AO matches on the title prefix.
-- **Resume:** `opencode --session <id>` rehydrates the state.
-- **Activity tracking:** Primary signal is the OpenCode session's `updatedAt`. AO falls back to its own activity JSONL if the session API doesn't answer.
-- **PR + git tracking:** PATH wrappers for `gh` / `git`.
-
-## Environment variables
-
-| Variable        | Set by AO | Purpose                    |
-| --------------- | --------- | -------------------------- |
-| `AO_SESSION_ID` | ✓         | AO session id              |
-| `AO_ISSUE_ID`   | ✓         | Issue identifier           |
-| `PATH`          | ✓         | Prepends `~/.ao/bin`       |
-| `GH_PATH`       | ✓         | Absolute path to real `gh` |
-
-## Troubleshooting
-
-<Accordions>
-  <Accordion title="Session can't be found when resuming">
-    `ao session remap <sessionId>` re-discovers and persists the OpenCode session mapping. Use `--force` to override a stale mapping.
-  </Accordion>
-  <Accordion title="Activity stuck on `idle`">
-    If the OpenCode session API doesn't respond, AO falls back to the activity JSONL, which uses age-based decay. If even that returns `idle` forever, check that `opencode session list` works on its own.
-  </Accordion>
-</Accordions>
+OpenCode is also a shipped reviewer harness. Reviewer configuration is independent from the worker harness; inspect project settings and `ao review --help` for the current review workflow.

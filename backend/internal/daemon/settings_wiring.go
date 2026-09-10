@@ -24,6 +24,7 @@ func (s settingsStore) GetAppSettings(ctx context.Context) (settingssvc.Snapshot
 	}
 	return settingssvc.Snapshot{
 		DefaultSessionMode: row.DefaultSessionMode,
+		CloudOffering:      row.CloudOffering,
 		UpdatedAt:          row.UpdatedAt,
 	}, nil
 }
@@ -34,4 +35,8 @@ func (s settingsStore) SetDefaultSessionMode(
 	now time.Time,
 ) error {
 	return s.store.SetDefaultSessionMode(ctx, mode, now)
+}
+
+func (s settingsStore) SetCloudOffering(ctx context.Context, enabled bool, now time.Time) error {
+	return s.store.SetCloudOffering(ctx, enabled, now)
 }

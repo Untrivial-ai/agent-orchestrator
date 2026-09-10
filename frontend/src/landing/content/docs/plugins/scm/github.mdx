@@ -1,85 +1,35 @@
 ---
 title: GitHub SCM
-description: PRs, reviews, and CI status via the gh CLI. Optional webhook for real-time events.
+description: Pull request observation, lifecycle feedback, and explicit PR actions.
 ---
 
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="github" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>scm</code> · Name: <code>github</code>
-	</span>
-</div>
+AO uses GitHub for the current pull-request lane. Authentication is lazy and non-blocking at daemon startup; use `ao doctor` to inspect local GitHub readiness.
 
-<PlatformSupport macos="full" linux="full" windows="full" />
+## Associate a pull request
 
-The default SCM. Uses `gh` for PR + review + CI polling. Optional webhook support for reduced poll latency.
-
-## Setup
+Claim a PR while spawning or attach it later:
 
 ```bash
-gh auth login
+ao spawn --project my-app --name review-fix --claim-pr 42
+ao session claim-pr 42
+# From outside the worker, target it explicitly:
+ao session claim-pr ao-123 42
 ```
 
-```yaml title="agent-orchestrator.yaml"
-scm: github
-projects:
-  myproject:
-    repo: owner/repo
+Inside a worker, the one-argument form reads the target session from `AO_SESSION_ID`.
+
+PR ownership prevents multiple active workers from silently driving the same pull request. Add `--no-takeover` when a conflicting owner must be treated as an error.
+
+## Observation and feedback
+
+The daemon polls active PRs with ETag guards and semantic diffing. New CI failures, human review feedback, and merge conflicts are reduced into durable facts and can nudge the owning agent. The desktop consumes concise summaries; raw CI logs and full review comment bodies are not part of the current summary API.
+
+## Explicit actions
+
+```bash
+ao pr merge 42
+ao pr resolve-comments 42
+ao review trigger <worker-session-id>
 ```
 
-## Webhook endpoint
-
-AO's dashboard receives webhook events at:
-
-```
-POST /api/webhooks
-```
-
-The absolute URL is `https://<your-ao-host>/api/webhooks`. To expose your local dashboard publicly, see [Remote access](/docs/configuration/remote-access).
-
-### GitHub repo settings
-
-In your GitHub repo go to **Settings → Webhooks → Add webhook**:
-
-- **Payload URL**: `https://<your-ao-host>/api/webhooks`
-- **Content type**: `application/json`
-- **Secret**: the value of your `secretEnvVar` environment variable
-- **Events**: Pull requests, Push, Workflow runs, Pull request reviews, Check suites
-
-### Config
-
-```yaml
-scm: github
-projects:
-  myproject:
-    repo: owner/repo
-    scm:
-      webhook:
-        secretEnvVar: GITHUB_WEBHOOK_SECRET # env var holding the HMAC secret
-```
-
-Full `webhook.*` sub-object:
-
-| Field             | Default               | Description                                 |
-| ----------------- | --------------------- | ------------------------------------------- |
-| `enabled`         | `true`                | Enable or disable webhook processing        |
-| `path`            | `/api/webhooks`       | Override the receive path                   |
-| `secretEnvVar`    | —                     | Name of the env var holding the HMAC secret |
-| `signatureHeader` | `x-hub-signature-256` | Header carrying the HMAC-SHA256 signature   |
-| `eventHeader`     | `x-github-event`      | Header carrying the event type              |
-| `deliveryHeader`  | `x-github-delivery`   | Header carrying the delivery UUID           |
-| `maxBodyBytes`    | unlimited             | Reject payloads larger than this (bytes)    |
-
-**Signature**: HMAC-SHA256 over the raw request body. AO compares the computed digest against the value in `x-hub-signature-256` using a constant-time comparison.
-
-Polling is still active as a fallback — webhooks are a latency optimisation, not a hard dependency.
-
-## Batch enrichment (performance)
-
-On every poll cycle AO issues a **single batched GraphQL query** that fetches PR state, CI check results, review decisions, and merge readiness for all active sessions in a project at once. This replaces N × 3 REST calls with a single request.
-
-For rate-limit debugging: even with dozens of concurrent sessions, AO stays well under GitHub's primary rate limit. If you do hit limits, the batch enricher backs off and queues — see [Troubleshooting](/docs/troubleshooting).
-
-## Rate limits
-
-AO paces `gh` calls per-project. If you hit limits anyway, batch-enrichment backs off and queues — see [Troubleshooting](/docs/troubleshooting) for the diagnostic steps.
+Reviewer agents are configured separately from worker agents. The shipped reviewer harnesses are `claude-code`, `codex`, and `opencode`.

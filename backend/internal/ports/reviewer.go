@@ -99,11 +99,17 @@ type ReviewInvocation struct {
 	ReviewQueue []ReviewTask
 	// ReviewIndex is this invocation's zero-based position in ReviewQueue.
 	ReviewIndex int
+	// Config carries the reviewer's resolved agent configuration override.
+	Config domain.AgentConfig
 	// WorkspacePath is the worker's checkout the reviewer reads.
 	WorkspacePath string
 	// DataDir is AO's owned state root. Reviewer prelaunch hooks may use it for
 	// profile installation but must not write outside AO/workspace boundaries.
 	DataDir string
+	// RunFilePath is the daemon run-file reviewer-local AO CLI calls must use to
+	// find this daemon. Some harnesses filter shell command environments, so
+	// adapters may need to pass this value through their own command config.
+	RunFilePath string
 	// Prompt and SystemPrompt are the review instructions AO authored centrally,
 	// mirroring the worker's LaunchConfig.Prompt / SystemPrompt split: SystemPrompt
 	// carries the standing reviewer role, Prompt the per-pass task. A prompt-driven

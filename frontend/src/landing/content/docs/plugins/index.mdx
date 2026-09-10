@@ -1,197 +1,34 @@
 ---
-title: Plugin catalog
-description: Every plugin that ships with AO, grouped by slot. Mix and match in your `agent-orchestrator.yaml`.
+title: Built-in capabilities
+description: Agent, runtime, workspace, tracker, SCM, notification, and terminal support compiled into AO.
 ---
 
-AO has **eight plugin slots**. Only one plugin per slot is active at a time, and every slot has a sensible default — you don't have to configure anything unless you want to.
+AO's current Go backend uses built-in adapters and services. These capabilities ship with the desktop app; they are not npm plugins and cannot be installed through a marketplace.
 
-## Slots at a glance
+## Capability map
 
-| Slot          | Default                                   | What it does                                 |
-| ------------- | ----------------------------------------- | -------------------------------------------- |
-| **Agent**     | `claude-code`                             | Which AI tool writes the code                |
-| **Runtime**   | `tmux` (macOS/Linux), `process` (Windows) | Where the agent process runs                 |
-| **Workspace** | `worktree`                                | Per-session code isolation                   |
-| **Tracker**   | `github`                                  | Where issues live                            |
-| **SCM**       | `github`                                  | PRs, CI, reviews                             |
-| **Notifier**  | `desktop`                                 | Who pings you when something happens         |
-| **Terminal**  | `iterm2` on macOS                         | How you attach to a running agent            |
-| **Lifecycle** | built-in                                  | State machine + polling loop (not pluggable) |
+| Area | Shipped support | Selection |
+| --- | --- | --- |
+| [Agents](/docs/plugins/agents) | 24 terminal agent adapters; four also support structured Chat | Per project or session |
+| [Runtime](/docs/plugins/runtimes) | `tmux` on macOS/Linux; ConPTY on Windows | Automatic by platform |
+| [Workspace](/docs/plugins/workspaces) | Git worktrees and AO-managed Scratch directories | Automatic by project kind |
+| [Tracker](/docs/plugins/trackers) | GitHub issue intake | Per-project, opt-in |
+| [SCM](/docs/plugins/scm) | GitHub PR, checks, reviews, and mergeability | Derived from the Git repository |
+| [Notifications](/docs/plugins/notifiers) | Durable in-app history and Electron toasts | Built in |
+| [Terminal](/docs/plugins/terminals) | Desktop xterm surface over AO's terminal mux | Built in |
 
-## Agents
+## Agents are the configurable adapter set
 
-<PluginGrid>
-	<PluginCard
-		name="Claude Code"
-		logo="claude-code"
-		href="/docs/plugins/agents/claude-code"
-		description="Anthropic's CLI coding agent. Session resume via --resume."
-	/>
-	<PluginCard
-		name="Codex"
-		logo="codex"
-		href="/docs/plugins/agents/codex"
-		description="OpenAI Codex CLI. Session resume via codex resume <threadId>."
-	/>
-	<PluginCard
-		name="Cursor"
-		logo="cursor"
-		href="/docs/plugins/agents/cursor"
-		description="Cursor Agent CLI. One-shot per session."
-	/>
-	<PluginCard
-		name="Aider"
-		logo="aider"
-		href="/docs/plugins/agents/aider"
-		description="Aider pair-programming CLI. No resume; PATH wrappers for PR tracking."
-	/>
-	<PluginCard
-		name="OpenCode"
-		logo="opencode"
-		href="/docs/plugins/agents/opencode"
-		description="OpenCode terminal agent. Session discovery + restore via the OpenCode session API."
-	/>
-</PluginGrid>
+Use `ao agent ls --refresh` to see the exact daemon-advertised catalog and whether each local CLI is installed and authenticated. `ao spawn --agent <name>` selects a harness for one session; project worker and orchestrator defaults are stored in typed project configuration.
 
-## Runtimes
+The other areas are daemon-owned boundaries, not interchangeable marketplace slots. In particular, the runtime is selected for the operating system, Git repositories use worktrees, and Scratch projects use AO-managed directories.
 
-<PluginGrid>
-	<PluginCard
-		name="tmux"
-		logo="tmux"
-		href="/docs/plugins/runtimes/tmux"
-		description="Default on macOS/Linux. Each agent gets its own tmux window you can attach to."
-	/>
-	<PluginCard
-		name="process"
-		logo="windows"
-		href="/docs/plugins/runtimes/process"
-		description="Cross-platform child-process runtime. Required on Windows."
-	/>
-</PluginGrid>
+<Callout type="info">
+	Legacy `agent-orchestrator.yaml` plugin, notifier, runtime, workspace, tracker, and SCM blocks are not active configuration in the rewrite. `ao import` reports unsupported legacy fields as dropped.
+</Callout>
 
-## Workspaces
-
-<PluginGrid>
-	<PluginCard
-		name="worktree"
-		logo="github"
-		href="/docs/plugins/workspaces/worktree"
-		description="git worktree per session. Fast, shares the object DB with your main checkout."
-	/>
-	<PluginCard
-		name="clone"
-		logo="github"
-		href="/docs/plugins/workspaces/clone"
-		description="Full clone per session. Use when your tooling doesn't play well with shared .git."
-	/>
-</PluginGrid>
-
-## Trackers
-
-<PluginGrid>
-	<PluginCard
-		name="GitHub"
-		logo="github"
-		href="/docs/plugins/trackers/github"
-		description="Issues + PRs via the gh CLI."
-	/>
-	<PluginCard
-		name="GitLab"
-		logo="gitlab"
-		href="/docs/plugins/trackers/gitlab"
-		description="Issues + MRs via the glab CLI. Self-hosted supported."
-	/>
-	<PluginCard
-		name="Linear"
-		logo="linear"
-		href="/docs/plugins/trackers/linear"
-		description="Linear issues. Direct API or Composio-mediated."
-	/>
-</PluginGrid>
-
-## SCM
-
-<PluginGrid>
-	<PluginCard
-		name="GitHub"
-		logo="github"
-		href="/docs/plugins/scm/github"
-		description="PRs, reviews, and CI status via gh."
-	/>
-	<PluginCard
-		name="GitLab"
-		logo="gitlab"
-		href="/docs/plugins/scm/gitlab"
-		description="MRs, discussions, pipelines via glab."
-	/>
-</PluginGrid>
-
-## Notifiers
-
-<PluginGrid>
-	<PluginCard
-		name="Dashboard"
-		logo="web"
-		href="/docs/plugins/notifiers/dashboard"
-		description="Retained notifications inside the AO dashboard."
-	/>
-	<PluginCard
-		name="Desktop"
-		logo="apple"
-		href="/docs/plugins/notifiers/desktop"
-		description="Native macOS/Linux notifications. No-op on Windows."
-	/>
-	<PluginCard
-		name="Discord"
-		logo="discord"
-		href="/docs/plugins/notifiers/discord"
-		description="Webhook-based Discord messages with rich embeds."
-	/>
-	<PluginCard name="Slack" logo="slack" href="/docs/plugins/notifiers/slack" description="Slack incoming webhooks." />
-	<PluginCard
-		name="Webhook"
-		logo="webhook"
-		href="/docs/plugins/notifiers/webhook"
-		description="Generic HTTP POST with retries and exponential backoff."
-	/>
-	<PluginCard
-		name="Composio"
-		logo="composio"
-		href="/docs/plugins/notifiers/composio"
-		description="Route through the Composio toolkit — Slack, Discord, or Gmail."
-	/>
-	<PluginCard
-		name="OpenClaw"
-		logo="openclaw"
-		href="/docs/plugins/notifiers/openclaw"
-		description="Local OpenClaw gateway for personal notifications."
-	/>
-</PluginGrid>
-
-## Terminals
-
-<PluginGrid>
-	<PluginCard
-		name="iTerm2"
-		logo="iterm2"
-		href="/docs/plugins/terminals/iterm2"
-		description="Open attached tabs in iTerm2 via AppleScript (macOS only)."
-	/>
-	<PluginCard
-		name="Web"
-		logo="web"
-		href="/docs/plugins/terminals/web"
-		description="Dashboard xterm.js session URL. Cross-platform."
-	/>
-</PluginGrid>
-
-## Writing your own
-
-Every plugin is a small Node package that exports a `manifest` + `create()` function. See **[Authoring a plugin](/docs/plugins/authoring)** for the full contract, loading paths, and the core utilities available to plugins.
-
-The fastest path is `ao plugin create` — it scaffolds a working starter:
-
-```bash
-ao plugin create --slot notifier --name pagerduty
-```
+<Cards>
+	<Card title="Agent catalog" description="See every built-in harness and its Chat support." href="/docs/plugins/agents" />
+	<Card title="CLI reference" description="Use the current daemon-backed commands." href="/docs/cli" />
+	<Card title="Migration" description="Move projects from the legacy TypeScript release." href="/docs/migration" />
+</Cards>

@@ -1,58 +1,15 @@
 ---
 title: Aider
-description: Aider pair-programming CLI. No session resume; AO tracks activity via terminal classification.
+description: Built-in Terminal UI support for a local Aider installation.
 ---
 
-
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="aider" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>agent</code> · Name: <code>aider</code> · Binary: <code>aider</code>
-	</span>
-</div>
-
-[Aider](https://aider.chat) is a pair-programming CLI built around explicit file edits. It doesn't have a session-resume concept, but it does work well for small, focused issues.
-
-<PlatformSupport macos="full" linux="full" windows="full" />
-
-## Install
+AO resolves `aider` from your machine and leaves model credentials to Aider's normal configuration.
 
 ```bash
-pip install aider-install && aider-install
+ao agent ls --refresh
+ao spawn --project my-app --name aider-task --agent aider --mode tui
 ```
 
-Set your API key via Aider's normal config (`~/.aider.conf.yml` or env vars). AO doesn't manage credentials for you.
+Aider is currently Terminal UI-only. It does not have an AO structured Chat driver, so `--mode chat` is rejected explicitly.
 
-## Use
-
-```yaml title="agent-orchestrator.yaml"
-agent: aider
-```
-
-## How it works
-
-- **Launch:** `aider` runs in the worktree. AO pipes the issue prompt in via the normal Aider UX.
-- **Activity tracking:** Aider doesn't emit a structured event log. AO writes `{workspace}/.ao/activity.jsonl` based on terminal output classification — the pattern matcher knows Aider's common prompts (diff review, confirm apply, etc.).
-- **PR + git tracking:** PATH wrappers for `gh` / `git` record PRs and commits.
-- **Session resume:** Not supported.
-
-## Environment variables
-
-| Variable        | Set by AO | Purpose                    |
-| --------------- | --------- | -------------------------- |
-| `AO_SESSION_ID` | ✓         | AO session id              |
-| `AO_ISSUE_ID`   | ✓         | Issue identifier           |
-| `PATH`          | ✓         | Prepends `~/.ao/bin`       |
-| `GH_PATH`       | ✓         | Absolute path to real `gh` |
-
-## Troubleshooting
-
-<Accordions>
-	<Accordion title="Aider hangs on file-edit confirmation">
-		Aider prompts before applying diffs. If you want fully autonomous runs, configure Aider's `--yes-always` via
-		`~/.aider.conf.yml`. AO won't inject this for you — it's your call whether the agent should auto-apply.
-	</Accordion>
-	<Accordion title="Dashboard cost shows $0">
-		AO doesn't parse Aider's cost output. The cost column stays empty.
-	</Accordion>
-</Accordions>
+Use project `agentConfig` and environment settings for supported model/permission overrides. Agent adapters are compiled into AO; there is no separate Aider plugin package or YAML plugin block.

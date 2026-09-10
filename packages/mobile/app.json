@@ -2,16 +2,19 @@
 	"expo": {
 		"name": "AO",
 		"slug": "ao-mobile",
-		"version": "1.1.0",
+		"version": "1.3.0",
+		"runtimeVersion": {
+			"policy": "fingerprint"
+		},
 		"orientation": "portrait",
 		"icon": "./assets/icon.png",
 		"userInterfaceStyle": "automatic",
 		"backgroundColor": "#0a0b0d",
 		"scheme": "aomobile",
-		"splash": {
-			"image": "./assets/splash-icon.png",
-			"resizeMode": "contain",
-			"backgroundColor": "#0a0b0d"
+		"updates": {
+			"url": "https://u.expo.dev/2d7dec61-2206-4943-8582-a37e160907ea",
+			"checkAutomatically": "ON_LOAD",
+			"fallbackToCacheTimeout": 0
 		},
 		"ios": {
 			"icon": "./assets/AO.icon",
@@ -20,9 +23,26 @@
 			"config": {
 				"usesNonExemptEncryption": false
 			},
+			"privacyManifests": {
+				"NSPrivacyTracking": false,
+				"NSPrivacyCollectedDataTypes": [
+					{
+						"NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeProductInteraction",
+						"NSPrivacyCollectedDataTypeLinked": false,
+						"NSPrivacyCollectedDataTypeTracking": false,
+						"NSPrivacyCollectedDataTypePurposes": ["NSPrivacyCollectedDataTypePurposeAnalytics"]
+					},
+					{
+						"NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeDeviceID",
+						"NSPrivacyCollectedDataTypeLinked": false,
+						"NSPrivacyCollectedDataTypeTracking": false,
+						"NSPrivacyCollectedDataTypePurposes": ["NSPrivacyCollectedDataTypePurposeAppFunctionality"]
+					}
+				]
+			},
 			"infoPlist": {
 				"NSLocalNetworkUsageDescription": "AO connects to Agent Orchestrator running on your computer over your local network.",
-				"NSPhotoLibraryUsageDescription": "AO uses camera-related system features to help pair with your desktop.",
+				"NSPhotoLibraryUsageDescription": "AO uses your photo library so you can attach images to an agent conversation.",
 				"NSAppTransportSecurity": {
 					"NSAllowsLocalNetworking": true
 				},
@@ -82,7 +102,17 @@
 					"color": "#4d8dff"
 				}
 			],
-			"expo-secure-store"
+			"expo-secure-store",
+			"expo-status-bar",
+			"expo-font",
+			[
+				"expo-splash-screen",
+				{
+					"image": "./assets/splash-icon.png",
+					"resizeMode": "contain",
+					"backgroundColor": "#0a0b0d"
+				}
+			]
 		],
 		"extra": {
 			"router": {},

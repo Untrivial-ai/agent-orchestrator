@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { agentReadiness } from "../src/renderer/test/agent-readiness-fixtures";
 import { installFakeAgent } from "./support/fake-bridge";
 
 const projectId = "model-scroll-proj";
@@ -14,12 +15,10 @@ test("renderer: hidden model-menu scrollbar keeps wheel scrolling functional @T0
 	await page.route("http://127.0.0.1:8080/api/v1/**", async (route) => {
 		const request = route.request();
 		const pathname = new URL(request.url()).pathname;
-		if (pathname === "/api/v1/agents" || pathname === "/api/v1/agents/refresh") {
+		if (pathname === "/api/v1/agents/readiness" || pathname === "/api/v1/agents/readiness/ensure") {
 			await route.fulfill({
 				json: {
-					supported: [{ id: "opencode", label: "OpenCode" }],
-					installed: [{ id: "opencode", label: "OpenCode", authStatus: "authorized" }],
-					authorized: [{ id: "opencode", label: "OpenCode", authStatus: "authorized" }],
+					agents: [agentReadiness("opencode", "OpenCode")],
 				},
 			});
 			return;

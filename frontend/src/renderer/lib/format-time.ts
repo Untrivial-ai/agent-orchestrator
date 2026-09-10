@@ -1,16 +1,25 @@
-import { appI18n } from "../i18n";
+import { formatTimeCompact as formatPortableTimeCompact } from "@aoagents/product-ui";
+import { appI18n, type MessageKey } from "../i18n";
 
-/** Compact relative time — ported from agent-orchestrator session-detail-utils. */
 export function formatTimeCompact(isoDate: string | null | undefined): string {
-	if (!isoDate) return appI18n.t("time.justNow");
-	const ts = new Date(isoDate).getTime();
-	if (!Number.isFinite(ts)) return appI18n.t("time.justNow");
-	const diffMs = Date.now() - ts;
-	if (diffMs <= 0) return appI18n.t("time.justNow");
-	const diffMins = Math.floor(diffMs / 60000);
-	const diffHours = Math.floor(diffMins / 60);
-	if (diffMins < 1) return appI18n.t("time.justNow");
-	if (diffMins < 60) return appI18n.t("time.minutesAgo", { n: diffMins });
-	if (diffHours < 24) return appI18n.t("time.hoursAgo", { n: diffHours });
-	return appI18n.t("time.daysAgo", { n: Math.floor(diffHours / 24) });
+	return formatPortableTimeCompact(isoDate, {
+		translate: (key, values) => appI18n.t(key as MessageKey, values),
+	});
+}
+
+/** Extra-terse relative time for space-constrained navigation rows. */
+export function formatTimeTerse(
+	isoDate: string | null | undefined,
+	now: number | Date = Date.now(),
+): string {
+	if (!isoDate) return "now";
+	const timestamp = new Date(isoDate).getTime();
+	if (!Number.isFinite(timestamp)) return "now";
+	const nowMs = now instanceof Date ? now.getTime() : now;
+	const diffMinutes = Math.floor((nowMs - timestamp) / 60_000);
+	if (diffMinutes < 1) return "now";
+	if (diffMinutes < 60) return `${diffMinutes}m`;
+	const diffHours = Math.floor(diffMinutes / 60);
+	if (diffHours < 24) return `${diffHours}h`;
+	return `${Math.floor(diffHours / 24)}d`;
 }

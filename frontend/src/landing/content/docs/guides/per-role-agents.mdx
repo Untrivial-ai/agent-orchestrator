@@ -1,151 +1,72 @@
 ---
 title: Per-role agents
-description: Run a reasoning-heavy agent for orchestration and a fast agent for workers — globally or per-project.
+description: Configure separate harnesses and models for worker and orchestrator sessions.
 ---
 
-## Why split roles
+AO has two session roles:
 
-AO runs two distinct types of sessions: an **orchestrator** and one or more **workers**. The orchestrator is a supervisor — it reads session state, spawns workers with `ao spawn`, nudges stuck sessions with `ao send`, and never owns a PR or writes code. Workers actually implement features, fix CI failures, and push branches. Because these workloads are so different, they benefit from different models: orchestrators need broad reasoning over many sessions (reach for a large model like Opus); workers need fast, focused execution on a single task (a smaller or specialised model like Sonnet or Codex).
+- A **worker** implements a focused task in an isolated workspace and may own pull requests.
+- An **orchestrator** supervises a project, monitors sessions, and delegates implementation to workers.
 
-## Global default (whole config)
+Role and interface are separate choices. Either role can start in structured Chat or Terminal UI when its harness supports that interface.
 
-Set default agent and model for both roles under `defaults:` in your `agent-orchestrator.yaml`. These apply to every project unless overridden.
+## Configure roles
 
-```yaml
-defaults:
-  orchestrator:
-    agent: claude-code
-  worker:
-    agent: codex
+Open the project settings in the desktop app and choose the worker and orchestrator agents. The CLI can set the initial agents while registering a project:
+
+```bash
+ao project add --path /absolute/path/to/repo \
+  --worker-agent codex \
+  --orchestrator-agent claude-code
 ```
+
+For a full configuration replacement, the stored JSON shape is:
+
+```json
+{
+  "worker": {
+    "agent": "codex",
+    "agentConfig": {
+      "model": "gpt-5.4",
+      "permissions": "bypass-permissions"
+    }
+  },
+  "orchestrator": {
+    "agent": "claude-code",
+    "agentConfig": {
+      "model": "claude-opus-4"
+    }
+  }
+}
+```
+
+Pass the object itself with `ao project set-config <project-id> --config-json '<json-object>'`; the flag does not read a file. This replaces the project config, so preserve any existing setup, rules, reviewers, or intake fields.
+
+## Start an orchestrator or worker
+
+The desktop provides dedicated new-session and orchestrator flows. From the CLI:
+
+```bash
+ao spawn --project my-project --kind orchestrator \
+  --name supervisor --mode chat
+
+ao spawn --project my-project --kind worker \
+  --name issue-42 --issue 42 --mode tui
+```
+
+`--name` is required and limited to 20 characters. `--harness` overrides the role's configured agent for one spawn.
+
+## Choose Chat or Terminal UI
+
+- Use **Chat** for structured messages, provider activity, approvals, plans, changed files, usage, compaction, and rollback. Current native drivers cover Codex, Claude Code, OpenCode, and Droid.
+- Use **Terminal UI** when you want the agent's native interface or a harness without native Chat support.
+
+Compatible Claude Code and Codex sessions expose **Open Chat** or **Open Terminal UI**. Idle sessions switch directly. When work is active, AO asks whether to finish and drain it or stop and interrupt it before switching controllers.
+
+## Project rules
+
+Use `agentRules` and `agentRulesFile` for worker instructions. Use `orchestratorRules` for supervision-specific guidance. These are stored in the typed project config and injected into the appropriate session role.
 
 <Callout type="info">
-	`defaults.orchestrator` and `defaults.worker` accept only the `agent` key at the global defaults level. To set
-	`agentConfig` (model, permissions, etc.), use the per-project `orchestrator` and `worker` blocks described below.
+	AO uses the provider CLI already installed and authenticated on your machine. Run `ao doctor` if a configured harness fails preflight.
 </Callout>
-
-## Per-project override
-
-The per-project `orchestrator` and `worker` blocks accept both `agent` and `agentConfig`, giving you full control including model selection:
-
-```yaml
-projects:
-  myapp:
-    repo: org/myapp
-    path: ~/code/myapp
-    orchestrator:
-      agent: claude-code
-      agentConfig:
-        model: claude-opus-4
-    worker:
-      agent: codex
-      agentConfig:
-        model: gpt-5-codex
-```
-
-Per-project values take precedence over `defaults`. Any project that does not define `orchestrator` or `worker` inherits from `defaults`.
-
-## Recipe 1: Opus orchestrator, Sonnet workers
-
-Use a large reasoning model to supervise and a fast model for execution:
-
-```yaml
-defaults:
-  orchestrator:
-    agent: claude-code
-  worker:
-    agent: claude-code
-
-projects:
-  myapp:
-    repo: org/myapp
-    path: ~/code/myapp
-    orchestrator:
-      agent: claude-code
-      agentConfig:
-        model: claude-opus-4
-    worker:
-      agent: claude-code
-      agentConfig:
-        model: claude-sonnet-4
-```
-
-## Recipe 2: Claude Code orchestrator, Codex workers
-
-Keep the orchestrator on Claude Code (good for tool-heavy coordination) and use Codex for cost-effective worker sessions:
-
-```yaml
-defaults:
-  orchestrator:
-    agent: claude-code
-  worker:
-    agent: codex
-
-projects:
-  myapp:
-    repo: org/myapp
-    path: ~/code/myapp
-    orchestrator:
-      agent: claude-code
-      agentConfig:
-        model: claude-opus-4
-    worker:
-      agent: codex
-      agentConfig:
-        model: gpt-5-codex
-```
-
-## Recipe 3: Same agent, different models
-
-Keep `agent: claude-code` for both roles but override the model per role. Useful when you want identical tooling but different cost/latency profiles:
-
-```yaml
-projects:
-  myapp:
-    repo: org/myapp
-    path: ~/code/myapp
-    orchestrator:
-      agent: claude-code
-      agentConfig:
-        model: claude-opus-4
-    worker:
-      agent: claude-code
-      agentConfig:
-        model: claude-haiku-4
-```
-
-## What the orchestrator actually does
-
-The orchestrator prompt, injected by `ao start`, enforces the following rules:
-
-- **Read-only by design.** The orchestrator may inspect session status, logs, PR state, and CI output — but it must never edit repository files, run implementation code, or create its own PR. All code changes are delegated to worker sessions.
-- **Spawns workers via `ao spawn`.** Pass an issue ID (GitHub: `#123`, Linear: `INT-1234`) or `--claim-pr` to attach an existing PR to a new worker.
-- **Nudges stuck workers via `ao send`.** Sends instructions or clarification directly to a worker's terminal. Always uses `ao send` — never raw `tmux send-keys`.
-- **Monitors with `ao status`.** Gets a live view of every session's PR, CI, and review state across all projects.
-- **Cleans up via `ao session kill` and `ao session cleanup`.** Removes dead or merged sessions.
-
-The orchestrator is itself a long-running agent session (`<prefix>-orchestrator`) launched with `ao start`. It has access to all `ao` CLI commands and your project configuration but is explicitly prohibited from owning a branch or PR.
-
-## Role metadata
-
-AO records a `role` field in each session's metadata file with the value `orchestrator` or `worker`. The lifecycle manager and dashboard use this field to display sessions differently (orchestrator sessions get a distinct label and are excluded from PR-tracking flows). You never need to set `role` manually — AO assigns it automatically: `ao start` creates the orchestrator session; `ao spawn` (called from the orchestrator) creates worker sessions tagged as `worker`.
-
-## Gotchas
-
-- **Missing agent binary.** If you set `defaults.worker.agent: codex` but Codex is not installed, `ao spawn` will fail when a worker session starts. Run `ao doctor` to verify all configured agents are available before starting a run.
-- **Inheritance order.** Workers inherit the top-level `defaults` unless overridden at the project level. A project-level `worker` block fully replaces the default — it is not merged field-by-field, so specify every field you need.
-- **Separate rule sets.** `orchestratorRules` and `agentRules` in the project config apply independently to orchestrator and worker sessions respectively. See the [Projects configuration reference](/docs/configuration/projects) for details.
-
-## Next steps
-
-<Cards>
-	<Card title="Projects configuration" href="/docs/configuration/projects#orchestrator-and-worker">
-		Full per-project config syntax including orchestrator/worker fields.
-	</Card>
-	<Card title="Architecture: orchestrator prompt" href="/docs/architecture#orchestrator-prompt">
-		How the orchestrator prompt is assembled and injected.
-	</Card>
-	<Card title="Agent plugins" href="/docs/plugins/agents">
-		Available agent plugins and their configuration options.
-	</Card>
-</Cards>

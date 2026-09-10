@@ -1,13 +1,15 @@
 import { useCallback, useLayoutEffect, useRef } from "react";
 
+type ResizableConstraint = number | (() => number);
+
 interface UseResizableOptions {
 	/** CSS custom property to drive (set on :root), e.g. "--ao-sidebar-w". */
 	cssVar: string;
 	/** localStorage key to persist the width. */
 	storageKey: string;
 	defaultWidth: number;
-	min: number;
-	max: number;
+	min: ResizableConstraint;
+	max: ResizableConstraint;
 	/**
 	 * Which edge the drag handle sits on relative to the panel it resizes.
 	 * "right" (sidebar handle) grows with rightward drag; "left" (inspector
@@ -16,6 +18,8 @@ interface UseResizableOptions {
 	edge: "left" | "right";
 	/** Called once when a collapsed rail drag should reopen the owner. */
 	onExpand?: () => void;
+	/** Optional one-time floor when restoring a saved width for a new panel profile. */
+	restoreMin?: number;
 	/** Pointer movement needed before a collapsed rail drag expands. */
 	expandDragThreshold?: number;
 }
@@ -34,19 +38,22 @@ export function useResizable({
 	max,
 	edge,
 	onExpand,
+	restoreMin,
 	expandDragThreshold = 8,
 }: UseResizableOptions) {
 	const widthRef = useRef(defaultWidth);
 	const frameRef = useRef<number | null>(null);
 	const pendingWidthRef = useRef<number | null>(null);
+	const minValue = useCallback(() => (typeof min === "function" ? min() : min), [min]);
+	const maxValue = useCallback(() => (typeof max === "function" ? max() : max), [max]);
 
 	const apply = useCallback(
 		(next: number) => {
-			const clamped = Math.min(max, Math.max(min, next));
+			const clamped = Math.min(maxValue(), Math.max(minValue(), next));
 			widthRef.current = clamped;
 			document.documentElement.style.setProperty(cssVar, `${clamped}px`);
 		},
-		[cssVar, max, min],
+		[cssVar, maxValue, minValue],
 	);
 
 	const applyOnFrame = useCallback(
@@ -77,18 +84,19 @@ export function useResizable({
 	// at the default width on reload and then jump/animate to the stored width.
 	useLayoutEffect(() => {
 		const saved = Number(window.localStorage.getItem(storageKey));
-		apply(Number.isFinite(saved) && saved > 0 ? saved : defaultWidth);
+		const restored = Number.isFinite(saved) && saved > 0 ? saved : defaultWidth;
+		apply(restoreMin === undefined ? restored : Math.max(restoreMin, restored));
 		return () => {
 			if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
 			document.documentElement.style.removeProperty(cssVar);
 		};
-	}, [apply, cssVar, defaultWidth, storageKey]);
+	}, [apply, cssVar, defaultWidth, restoreMin, storageKey]);
 
 	const onPointerDown = useCallback(
 		(event: React.PointerEvent<HTMLElement>) => {
 			event.preventDefault();
 			const startX = event.clientX;
-			const startWidth = widthRef.current;
+			const startWidth = Math.min(maxValue(), Math.max(minValue(), widthRef.current));
 			const sign = edge === "right" ? 1 : -1;
 			document.body.classList.add("is-resizing-x");
 
@@ -107,7 +115,7 @@ export function useResizable({
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onUp);
 		},
-		[applyOnFrame, edge, flushPending, storageKey],
+		[applyOnFrame, edge, flushPending, maxValue, minValue, storageKey],
 	);
 
 	const onCollapsedPointerDown = useCallback(
@@ -131,12 +139,12 @@ export function useResizable({
 					expanded = true;
 					onExpand?.();
 				}
-				applyOnFrame(min + delta);
+				applyOnFrame(minValue() + delta);
 			};
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onUp);
 		},
-		[applyOnFrame, edge, expandDragThreshold, flushPending, min, onExpand, storageKey],
+		[applyOnFrame, edge, expandDragThreshold, flushPending, minValue, onExpand, storageKey],
 	);
 
 	/** Double-click the handle to reset to the default width. */

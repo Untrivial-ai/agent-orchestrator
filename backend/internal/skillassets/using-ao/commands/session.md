@@ -178,12 +178,15 @@ ao session cleanup -p agent-orchestrator
 
 ### ao session claim-pr
 
-Attach an existing PR to a session.
+Attach an existing PR to the current AO session, or target another session explicitly.
 
 **Syntax:**
 ```
+ao session claim-pr <pr-ref> [flags]
 ao session claim-pr <session-id> <pr-ref> [flags]
 ```
+
+With one positional argument, `AO_SESSION_ID` supplies the session. This is the preferred form inside a worker. Pass both arguments from an orchestrator or external shell when targeting another session.
 
 **Flags:**
 
@@ -196,11 +199,16 @@ ao session claim-pr <session-id> <pr-ref> [flags]
 **Examples:**
 
 ```bash
-# Attach PR 88 to session mer-3
+# Attach PR 88 to the current worker session
+ao session claim-pr 88
+```
+
+```bash
+# Attach PR 88 to session mer-3 explicitly
 ao session claim-pr mer-3 88
 ```
 
 ```bash
-# Claim PR 88 but refuse if another session already owns it
-ao session claim-pr mer-3 88 --no-takeover
+# Claim PR 88 for the current worker but refuse if another session owns it
+ao session claim-pr 88 --no-takeover
 ```

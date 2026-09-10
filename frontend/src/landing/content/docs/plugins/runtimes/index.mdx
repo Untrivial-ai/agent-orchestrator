@@ -1,33 +1,15 @@
 ---
-title: Runtimes overview
-description: Where the agent process runs — tmux on macOS/Linux, plain child process everywhere.
+title: Runtime
+description: AO automatically uses tmux on macOS/Linux and ConPTY on Windows.
 ---
 
-The runtime is where your agent's terminal actually lives. Two options ship:
+The runtime owns a Terminal UI process and exposes attach, interrupt, messaging, output, and liveness operations to the daemon. It is selected by platform, not by project configuration.
 
-| Plugin                                    | Best for                                             | Binary needed |
-| ----------------------------------------- | ---------------------------------------------------- | ------------- |
-| [tmux](/docs/plugins/runtimes/tmux)       | macOS / Linux default. You can attach interactively. | `tmux`        |
-| [process](/docs/plugins/runtimes/process) | Windows, Docker, CI-like environments                | —             |
+| Platform | Runtime | Requirement |
+| --- | --- | --- |
+| macOS / Linux | [tmux](/docs/plugins/runtimes/tmux) | Install `tmux`. |
+| Windows | ConPTY | Built into supported Windows versions. |
 
-<PluginGrid>
-	<PluginCard
-		name="tmux"
-		logo="tmux"
-		href="/docs/plugins/runtimes/tmux"
-		description="Each agent gets its own tmux window; attach with `ao session attach`."
-	/>
-	<PluginCard
-		name="process"
-		logo="windows"
-		href="/docs/plugins/runtimes/process"
-		description="Cross-platform child process. Required on Windows."
-	/>
-</PluginGrid>
+Structured Chat sessions use provider controllers instead of an agent terminal runtime. They can still open a separate session-scoped worktree shell in the desktop app.
 
-## Choosing
-
-- If you can install `tmux` and you want to occasionally drop into a live session, use `runtime: tmux`.
-- If you're on Windows, in a container, or just want fewer moving parts, use `runtime: process`.
-
-Both runtimes expose the agent's terminal to the dashboard's xterm.js session — attaching via tmux is a _bonus_, not a requirement.
+Run `ao doctor` to check the runtime required on the current platform.

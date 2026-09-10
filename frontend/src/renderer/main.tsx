@@ -10,13 +10,22 @@ import { queryClient } from "./lib/query-client";
 import { mergeUnreadNotification, unreadNotificationsQueryKey } from "./lib/notifications";
 import { createAppRouter } from "./router";
 import { TelemetryBoundary } from "./components/TelemetryBoundary";
-import { initTelemetry } from "./lib/telemetry";
+import { CloudOnboardingGate } from "./components/CloudOnboardingGate";
+import { applyRendererTelemetryPolicy, clearRendererTelemetryQueues, initTelemetry } from "./lib/telemetry";
+import { aoBridge } from "./lib/bridge";
 import { startDaemonFailureTelemetry } from "./lib/daemon-telemetry";
 import { startUpdateTelemetry } from "./lib/update-telemetry";
 import { appI18n } from "./i18n";
 import { useLocaleStore } from "./stores/locale-store";
+import { useSoundNotificationsStore } from "./stores/sound-notifications-store";
+import { useTelemetryPolicyStore } from "./stores/telemetry-policy-store";
 
 const router = createAppRouter(queryClient);
+
+// Main owns consent and only acknowledges opt-out after every live AO shell
+// confirms that its in-memory renderer queues were actually purged.
+aoBridge.telemetry.onClearQueues(clearRendererTelemetryQueues);
+aoBridge.telemetry.onPolicy((view) => applyRendererTelemetryPolicy(view.eventsEnabled && view.acknowledged && view.state === "applied"));
 
 if (import.meta.env.DEV) {
 	const w = window as never as Record<string, unknown>;
@@ -70,15 +79,21 @@ declare module "@tanstack/react-router" {
 }
 
 async function renderApp(): Promise<void> {
-	// Resolve the persisted locale before mounting so translated text never
-	// flashes in English for users who selected another language.
-	await useLocaleStore.getState().load();
+	void useTelemetryPolicyStore.getState().load();
+	// The persisted locale is cosmetic; do not leave a newly opened native
+	// window blank while its IPC read completes. The router's pending screen
+	// renders immediately, then i18n updates if the user chose another locale.
+	void useLocaleStore.getState().load();
+	// The sound-notifications toggle only needs to be right by the time
+	// Settings renders, so it loads in the background rather than blocking mount.
+	void useSoundNotificationsStore.getState().load();
 	createRoot(document.getElementById("root") as HTMLElement).render(
 		<React.StrictMode>
 			<I18nextProvider i18n={appI18n}>
 				<TelemetryBoundary>
 					<QueryClientProvider client={queryClient}>
 						<RouterProvider router={router} />
+						<CloudOnboardingGate />
 					</QueryClientProvider>
 				</TelemetryBoundary>
 			</I18nextProvider>

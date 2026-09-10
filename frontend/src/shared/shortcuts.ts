@@ -16,6 +16,18 @@ export type ShortcutChord = {
 
 export const SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL =
 	"app:set-close-shell-terminal-shortcut-enabled";
+export const SET_TERMINAL_FOCUSED_CHANNEL = "terminal:set-focused";
+export const TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL = "terminal:font-size-shortcut";
+
+export function terminalFontSizeDelta(chord: ShortcutChord, isMac: boolean): -1 | 0 | 1 {
+	const hasPrimaryModifier = isMac
+		? chord.meta && !chord.ctrl
+		: chord.ctrl && !chord.meta;
+	if (!hasPrimaryModifier || chord.alt) return 0;
+	if (chord.key === "+" || chord.key === "=" || chord.code === "NumpadAdd") return 1;
+	if (chord.key === "-" || chord.code === "NumpadSubtract") return -1;
+	return 0;
+}
 
 export type AppShortcutId =
 	"new-session" | "new-shell-terminal" | "close-shell-terminal" | "keyboard-shortcuts" | "toggle-sidebar" | "open-project" | "toggle-inspector" | "command-palette" | "open-settings" | "previous-session" | "next-session" | "previous-tab" | "next-tab" | "focus-terminal" | "toggle-browser-devtools";

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import aoLogo from "../../../assets/ao-logo.svg";
+import { useSystemRequirementsGate } from "../hooks/useSystemRequirementsGate";
+import { InstallDependencyDialog } from "./InstallDependencyDialog";
 
 const STARTUP_PHRASE_KEYS = [
 	"startup.startingServices",
@@ -14,6 +16,11 @@ const PHRASE_INTERVAL_MS = 2_200;
 export function DaemonStartupLoader() {
 	const { t } = useTranslation();
 	const [phraseIndex, setPhraseIndex] = useState(0);
+	const {
+		query: requirementsQuery,
+		requirements,
+		requirementsBlocked,
+	} = useSystemRequirementsGate();
 
 	useEffect(() => {
 		const timer = window.setInterval(() => {
@@ -39,7 +46,7 @@ export function DaemonStartupLoader() {
 				</div>
 				<p className="mt-5 text-base font-semibold tracking-tight text-foreground">Agent Orchestrator</p>
 				<p className="mt-2 min-h-5 text-md-sm text-muted-foreground">
-					<span aria-hidden="true" className="ao-startup-status" key={phrase}>
+					<span aria-hidden="true" className={phraseIndex === 0 ? undefined : "ao-startup-status"} key={phraseIndex}>
 						{phrase}
 					</span>
 				</p>
@@ -49,6 +56,9 @@ export function DaemonStartupLoader() {
 					<span />
 				</div>
 			</div>
+			{requirementsBlocked ? (
+				<InstallDependencyDialog requirements={requirements} onRefetchRequirements={() => requirementsQuery.refetch()} />
+			) : null}
 		</div>
 	);
 }

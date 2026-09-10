@@ -1,9 +1,13 @@
-import { ChevronDown } from "lucide-react";
 import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { useSuppressStrayFocusRing } from "../../hooks/useSuppressStrayFocusRing";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu";
+import {
+	SETTINGS_MENU_ITEM,
+	SETTINGS_MENU_SURFACE,
+	SettingsMenuTrigger,
+} from "./SettingsMenuTrigger";
 
 export type SettingsOption<T extends string> = {
 	value: T;
@@ -81,14 +85,7 @@ export function SettingsOptionMenu<T extends string>({
 			}}
 		>
 			<DropdownMenuTrigger asChild disabled={disabled}>
-				<button
-					type="button"
-					className={cn(
-						"group/settings-option-trigger settings-option-trigger max-w-full min-w-0 bg-[var(--color-bg-settings-trigger)] text-[var(--color-text-settings-trigger)] transition-colors hover:bg-[var(--color-bg-settings-trigger-hover)] hover:text-[var(--color-text-settings-trigger)] data-[state=open]:bg-[var(--color-bg-settings-trigger-hover)] focus:outline-none focus-visible:outline-none focus-visible:ring-0 data-[state=open]:outline-none data-[state=open]:ring-0 disabled:cursor-not-allowed disabled:opacity-50",
-						triggerClassName,
-					)}
-					aria-label={ariaLabel}
-				>
+				<SettingsMenuTrigger className={triggerClassName} aria-label={ariaLabel}>
 					{renderTrigger ? (
 						renderTrigger(selected, placeholder)
 					) : (
@@ -97,23 +94,15 @@ export function SettingsOptionMenu<T extends string>({
 							<span className="min-w-0 truncate">{selected?.label ?? placeholder}</span>
 						</>
 					)}
-				<ChevronDown
-					className="size-icon-sm shrink-0 transition-transform duration-300 ease-out group-data-[state=open]/settings-option-trigger:rotate-180"
-					aria-hidden="true"
-				/>
-				</button>
+				</SettingsMenuTrigger>
 			</DropdownMenuTrigger>
-			{/* bg-settings-menu / border-settings-menu / rounded-(--radius-settings-panel) must
-			    be real utilities so twMerge drops DropdownMenuContent's bg-popover, border-border,
-			    and rounded-lg. */}
+			{/* This menu scrolls on an inner element, so the panel itself must not
+			    inherit the surface utility's overflow-y. */}
 			<DropdownMenuContent
 				align={menuAlign}
 				alignOffset={0}
 				onCloseAutoFocus={onCloseAutoFocus}
-				className={cn(
-					"settings-menu-surface min-w-[length:var(--size-settings-menu-min-width)] overflow-hidden! rounded-(--radius-settings-panel) border-settings-menu bg-settings-menu",
-					menuClassName,
-				)}
+				className={cn(SETTINGS_MENU_SURFACE, "overflow-hidden!", menuClassName)}
 			>
 				{searchable && (
 					<div className="shrink-0 p-1" onKeyDown={(event) => event.stopPropagation()}>
@@ -139,9 +128,7 @@ export function SettingsOptionMenu<T extends string>({
 								disabled={option.disabled}
 								onSelect={() => onChange(option.value)}
 								className={cn(
-									"settings-menu-item min-w-0 cursor-default outline-none",
-									"focus:bg-settings-menu-selected focus:text-settings-title",
-									"data-highlighted:bg-settings-menu-selected data-highlighted:text-settings-title",
+									SETTINGS_MENU_ITEM,
 									option.value === value && "border-settings-menu bg-settings-menu-selected text-settings-title",
 									menuItemClassName,
 								)}

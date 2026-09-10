@@ -25,15 +25,11 @@
 //
 // Resume: Auggie supports `--resume <sessionId>` (alias `-r`), usable with
 // `--print` for headless resume. AO only has a native session id to resume from
-// when one was captured into session metadata; Auggie exposes no hook/lifecycle
-// system, so that id is not captured automatically yet. GetRestoreCommand
-// therefore returns ok=false until a native session id is present, at which point
-// callers fall back to a fresh launch.
+// when one was captured into session metadata. AO's managed SessionStart hook
+// records Auggie's conversation_id as that native resume handle.
 //
-// Hooks/activity: Auggie has no hook or lifecycle event system (it reads
-// .claude/commands/ for slash commands, but that is not Claude Code hook
-// compatibility). Hook installation and SessionInfo are intentionally no-ops
-// (Tier C) until an Auggie-specific activity integration exists.
+// Hooks/activity: AO merges Auggie's native workspace hooks into
+// .augment/settings.local.json and reports session/tool/stop lifecycle events.
 package auggie
 
 import (
@@ -149,6 +145,16 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	appendModelFlag(&cmd, cfg.Config)
 	cmd = append(cmd, "--resume", agentSessionID)
 	return cmd, true, nil
+}
+
+// SessionInfo surfaces the Auggie conversation id captured from native hook
+// payloads, along with any other standard hook-derived metadata.
+func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (ports.SessionInfo, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ports.SessionInfo{}, false, err
+	}
+	info, ok := agentbase.StandardSessionInfo(session)
+	return info, ok, nil
 }
 
 // appendModelFlag treats the configured model as opaque: it trims and forwards

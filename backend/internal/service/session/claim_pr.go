@@ -16,11 +16,12 @@ import (
 )
 
 var (
-	// ErrInvalidPRRef is returned when a claim request does not name a GitHub PR URL or positive PR number.
+	// ErrInvalidPRRef is returned when a claim request does not name a PR/MR URL or positive PR number.
 	ErrInvalidPRRef = errors.New("session: invalid pr ref")
 	// ErrPRNotFound is returned when the SCM provider has no matching pull request.
 	ErrPRNotFound = errors.New("session: pr not found")
-	// ErrPRNotOpen is returned when a PR is draft, merged, or closed and therefore cannot be claimed.
+	// ErrPRNotOpen is returned when a PR is merged or closed and therefore cannot be claimed.
+	// Draft PRs are open work and remain claimable.
 	ErrPRNotOpen = errors.New("session: pr not open")
 	// ErrSCMUnavailable is returned when live SCM facts cannot be fetched.
 	ErrSCMUnavailable = errors.New("session: scm unavailable")
@@ -57,7 +58,7 @@ func (s *Service) ListPRs(ctx context.Context, id domain.SessionID) ([]domain.PR
 	return s.listPRFacts(ctx, id)
 }
 
-// ClaimPR attaches a live GitHub PR to a worker session and persists the current SCM facts atomically.
+// ClaimPR attaches a live pull request (GitHub PR or GitLab MR) to a worker session and persists the current SCM facts atomically.
 func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, opts ClaimPROptions) (ClaimPRResult, error) {
 	rec, ok, err := s.store.GetSession(ctx, id)
 	if err != nil {
@@ -85,17 +86,23 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 	if project.Kind.WithDefault() == domain.ProjectKindScratch {
 		return ClaimPRResult{}, ErrSessionNotClaimable
 	}
-	prURL, number, err := normalizePRRef(ref, project.RepoOriginURL)
+	if err := project.Config.ValidateCanonicalRepository(project.RepoOriginURL); err != nil {
+		return ClaimPRResult{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
+	}
+	claimOrigin := firstNonEmpty(project.Config.CanonicalRepoURL, project.RepoOriginURL)
+	prURL, number, err := normalizePRRef(ref, claimOrigin)
 	if err != nil {
 		return ClaimPRResult{}, err
 	}
-	if err := requireSameGitHubRepo(prURL, project.RepoOriginURL); err != nil {
-		return ClaimPRResult{}, err
+	if err := requireSameRepo(prURL, project.RepoOriginURL); err != nil {
+		if project.Config.CanonicalRepoURL == "" || requireSameRepo(prURL, project.Config.CanonicalRepoURL) != nil {
+			return ClaimPRResult{}, err
+		}
 	}
 	if s.scm == nil || s.prClaimer == nil {
 		return ClaimPRResult{}, ErrSCMUnavailable
 	}
-	repo, err := scmRepoForClaim(s.scm, project.RepoOriginURL, prURL)
+	repo, err := scmRepoForClaim(prURL)
 	if err != nil {
 		return ClaimPRResult{}, err
 	}
@@ -110,7 +117,10 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 	if obs.PR.URL == "" {
 		obs.PR.URL = prURL
 	}
-	if obs.PR.Draft || obs.PR.Merged || obs.PR.Closed {
+	// Draft PRs are still open work: workers must be able to claim them without
+	// first marking the PR ready for review. Only terminal states are rejected;
+	// the draft fact itself is preserved on the persisted PR row below.
+	if obs.PR.Merged || obs.PR.Closed {
 		return ClaimPRResult{}, ErrPRNotOpen
 	}
 	reviewMode, err := s.enrichClaimReviews(ctx, refSpec, &obs)
@@ -118,7 +128,7 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 		return ClaimPRResult{}, err
 	}
 	now := s.clock().UTC()
-	pr, checks, reviews, threads, comments := claimRowsFromSCM(id, obs, now, rec)
+	pr, checks, reviews, threads, comments := claimRowsFromSCM(id, obs, reviewMode, now, rec)
 	outcome, err := s.prClaimer.ClaimPR(ctx, pr, checks, reviews, threads, comments, reviewMode, opts.AllowTakeover)
 	if err != nil {
 		return ClaimPRResult{}, err
@@ -150,6 +160,9 @@ func (s *Service) fetchClaimObservation(ctx context.Context, ref ports.SCMPRRef)
 		return ports.SCMObservation{}, ErrPRNotFound
 	}
 	obs := batch[0]
+	if errors.Is(obs.Error, ports.ErrSCMNotFound) {
+		return ports.SCMObservation{}, ErrPRNotFound
+	}
 	if !obs.Fetched {
 		return ports.SCMObservation{}, ErrSCMUnavailable
 	}
@@ -162,7 +175,16 @@ func (s *Service) enrichClaimReviews(ctx context.Context, ref ports.SCMPRRef, ob
 		if errors.Is(err, ports.ErrSCMNotFound) {
 			return ports.ReviewWritePreserve, ErrPRNotFound
 		}
-		return ports.ReviewWritePreserve, fmt.Errorf("%w: %w", ErrSCMUnavailable, err)
+		// Review thread fetch failed but the PR itself was observed — proceed
+		// with ReviewWritePreserve so the claim still succeeds.  Review
+		// threads will be retried on the next observer poll.
+		if s.logger != nil {
+			s.logger.Warn("claim: review thread fetch failed, proceeding without threads",
+				"pr", ref.URL,
+				"error", err,
+			)
+		}
+		return ports.ReviewWritePreserve, nil
 	}
 	if review.Decision != "" {
 		obs.Review.Decision = review.Decision
@@ -176,21 +198,35 @@ func (s *Service) enrichClaimReviews(ctx context.Context, ref ports.SCMPRRef, ob
 	return ports.ReviewWriteReplace, nil
 }
 
-func scmRepoForClaim(provider scmProvider, projectOrigin, prURL string) (ports.SCMRepo, error) {
-	if repo, ok := provider.ParseRepository(projectOrigin); ok {
-		return repo, nil
-	}
-	owner, name, _, err := parseGitHubPRURL(prURL)
+func scmRepoForClaim(prURL string) (ports.SCMRepo, error) {
+	host, owner, name, _, err := parsePRURL(prURL)
 	if err != nil {
 		return ports.SCMRepo{}, ErrInvalidPRRef
 	}
-	return ports.SCMRepo{Provider: "github", Host: "github.com", Owner: owner, Name: name, Repo: owner + "/" + name}, nil
+	return ports.SCMRepo{Provider: providerKey(host), Host: host, Owner: owner, Name: name, Repo: owner + "/" + name}, nil
 }
 
-func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now time.Time, sessionRecord domain.SessionRecord) (domain.PullRequest, []domain.PullRequestCheck, []domain.PullRequestReview, []domain.PullRequestReviewThread, []domain.PullRequestComment) {
+// providerKey maps a hostname to the normalized provider key used by the
+// multi-provider dispatcher. GitHub hosts return "github"; everything else is
+// treated as GitLab to match the multi-provider's registration order.
+func providerKey(host string) string {
+	return domain.RepositoryProvider(host)
+}
+
+func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, reviewMode ports.ReviewWriteMode, now time.Time, sessionRecord domain.SessionRecord) (domain.PullRequest, []domain.PullRequestCheck, []domain.PullRequestReview, []domain.PullRequestReviewThread, []domain.PullRequestComment) {
 	observedAt := obs.ObservedAt
 	if observedAt.IsZero() {
 		observedAt = now
+	}
+	// Review completeness follows the claim's own review fetch: a preserved
+	// (failed) review fetch passes a zero ReviewObservedAt so the upsert keeps
+	// the stored pair instead of publishing claim-time certainty it does not
+	// have. enrichClaimReviews fills obs.Review.Partial only on success.
+	reviewObservedAt := time.Time{}
+	reviewPartial := false
+	if reviewMode != ports.ReviewWritePreserve {
+		reviewObservedAt = observedAt
+		reviewPartial = obs.Review.Partial
 	}
 	pr := domain.PullRequest{
 		URL:                      firstNonEmpty(obs.PR.URL, obs.PR.HTMLURL),
@@ -214,6 +250,7 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now 
 		Deletions:                obs.PR.Deletions,
 		ChangedFiles:             obs.PR.ChangedFiles,
 		Author:                   obs.PR.Author,
+		AuthorAvatarURL:          obs.PR.AuthorAvatarURL,
 		BaseSHA:                  obs.PR.BaseSHA,
 		MergeCommitSHA:           obs.PR.MergeCommitSHA,
 		ProviderState:            obs.PR.ProviderState,
@@ -226,7 +263,8 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now 
 		ClosedAtProvider:         obs.PR.ClosedAtProvider,
 		ObservedAt:               observedAt,
 		CIObservedAt:             observedAt,
-		ReviewObservedAt:         observedAt,
+		ReviewObservedAt:         reviewObservedAt,
+		ReviewPartial:            reviewPartial,
 	}
 	checks := make([]domain.PullRequestCheck, 0, len(obs.CI.Checks))
 	for _, ch := range obs.CI.Checks {
@@ -245,6 +283,7 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now 
 			URL:              review.URL,
 			Body:             review.Body,
 			IsBot:            review.IsBot,
+			TargetSHA:        review.TargetSHA,
 			SubmittedAt:      submittedAt,
 			AutoInjectReview: sessionRecord.AutoInjectReview,
 		})
@@ -258,7 +297,7 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now 
 	for _, th := range obs.Review.Threads {
 		threads = append(threads, domain.PullRequestReviewThread{ThreadID: th.ID, Path: th.Path, Line: th.Line, Resolved: th.Resolved, IsBot: th.IsBot, UpdatedAt: now})
 		for _, c := range th.Comments {
-			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot || th.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
+			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ReviewID: c.ReviewID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot || th.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
 		}
 	}
 	return pr, checks, reviews, threads, comments
@@ -336,81 +375,105 @@ func normalizePRRef(ref, repoOrigin string) (string, int, error) {
 		return "", 0, ErrInvalidPRRef
 	}
 	if n, err := strconv.Atoi(ref); err == nil && n > 0 {
-		owner, repo, err := githubRepoFromURL(repoOrigin)
+		host, owner, repo, err := repoFromURL(repoOrigin)
 		if err != nil {
 			return "", 0, ErrInvalidPRRef
 		}
-		return fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, n), n, nil
+		return prURLFromParts(host, owner, repo, n), n, nil
 	}
-	owner, repo, n, err := parseGitHubPRURL(ref)
-	if err != nil || owner == "" || repo == "" || n <= 0 {
+	host, owner, repo, n, err := parsePRURL(ref)
+	if err != nil || host == "" || owner == "" || repo == "" || n <= 0 {
 		return "", 0, ErrInvalidPRRef
 	}
-	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, n), n, nil
+	return prURLFromParts(host, owner, repo, n), n, nil
 }
 
-func requireSameGitHubRepo(prURL, repoOrigin string) error {
+// prURLFromParts constructs the canonical PR/MR URL for a provider.
+// GitHub uses /pull/N; GitLab uses /-/merge_requests/N.
+func prURLFromParts(host, owner, repo string, number int) string {
+	if providerKey(host) == "github" {
+		return fmt.Sprintf("https://%s/%s/%s/pull/%d", host, owner, repo, number)
+	}
+	return fmt.Sprintf("https://%s/%s/%s/-/merge_requests/%d", host, owner, repo, number)
+}
+
+func requireSameRepo(prURL, repoOrigin string) error {
 	if strings.TrimSpace(repoOrigin) == "" {
-		return nil
+		return ErrProjectMismatch
 	}
-	po, pr, _, err := parseGitHubPRURL(prURL)
+	prHost, prOwner, prRepo, _, err := parsePRURL(prURL)
 	if err != nil {
 		return ErrInvalidPRRef
 	}
-	ro, rr, err := githubRepoFromURL(repoOrigin)
+	originHost, originOwner, originRepo, err := repoFromURL(repoOrigin)
 	if err != nil {
 		return ErrInvalidPRRef
 	}
-	if !strings.EqualFold(po, ro) || !strings.EqualFold(pr, rr) {
+	// Compare provider (derived from host) + host + full namespace. Same
+	// owner/repo name on GitHub and GitLab must not validate, and a
+	// gitlab.com origin must not accept a self-managed GitLab MR (review
+	// finding #6).
+	if !strings.EqualFold(prHost, originHost) {
+		return ErrProjectMismatch
+	}
+	if !strings.EqualFold(prOwner, originOwner) || !strings.EqualFold(prRepo, originRepo) {
 		return ErrProjectMismatch
 	}
 	return nil
 }
 
-func parseGitHubPRURL(raw string) (string, string, int, error) {
+func parsePRURL(raw string) (host, owner, name string, number int, err error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", "", 0, err
 	}
-	if !strings.EqualFold(u.Scheme, "https") || !strings.EqualFold(u.Hostname(), "github.com") {
-		return "", "", 0, ErrInvalidPRRef
+	if !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" || u.User != nil || u.RawPath != "" {
+		return "", "", "", 0, ErrInvalidPRRef
 	}
+	host = u.Host
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) != 4 || parts[2] != "pull" {
-		return "", "", 0, ErrInvalidPRRef
+
+	// GitHub: /owner/repo/pull/N → 4 parts, parts[2] == "pull"
+	if providerKey(host) == "github" && len(parts) == 4 && parts[2] == "pull" {
+		n, parseErr := strconv.Atoi(parts[3])
+		if parseErr != nil || n <= 0 {
+			return "", "", "", 0, ErrInvalidPRRef
+		}
+		if _, err := domain.ParseRepositoryIdentity("https://" + host + "/" + strings.Join(parts[:2], "/")); err != nil {
+			return "", "", "", 0, ErrInvalidPRRef
+		}
+		return host, parts[0], strings.TrimSuffix(parts[1], ".git"), n, nil
 	}
-	n, err := strconv.Atoi(parts[3])
-	if err != nil || n <= 0 {
-		return "", "", 0, ErrInvalidPRRef
+
+	// GitLab: /owner/repo/-/merge_requests/N → parts[2] == "-", parts[3] == "merge_requests"
+	// Supports nested groups: /group/subgroup/repo/-/merge_requests/N
+	if providerKey(host) == "gitlab" && len(parts) >= 5 && parts[len(parts)-2] == "merge_requests" && parts[len(parts)-3] == "-" {
+		n, parseErr := strconv.Atoi(parts[len(parts)-1])
+		if parseErr != nil || n <= 0 {
+			return "", "", "", 0, ErrInvalidPRRef
+		}
+		// owner = everything before "-"; name = the last segment before "-"
+		repoParts := parts[:len(parts)-3]
+		if len(repoParts) < 2 {
+			return "", "", "", 0, ErrInvalidPRRef
+		}
+		if _, err := domain.ParseRepositoryIdentity("https://" + host + "/" + strings.Join(repoParts, "/")); err != nil {
+			return "", "", "", 0, ErrInvalidPRRef
+		}
+		owner = strings.Join(repoParts[:len(repoParts)-1], "/")
+		name = strings.TrimSuffix(repoParts[len(repoParts)-1], ".git")
+		return host, owner, name, n, nil
 	}
-	return parts[0], strings.TrimSuffix(parts[1], ".git"), n, nil
+
+	return "", "", "", 0, ErrInvalidPRRef
 }
 
-func githubRepoFromURL(raw string) (string, string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", "", ErrInvalidPRRef
-	}
-	if strings.HasPrefix(raw, "git@github.com:") {
-		path := strings.TrimPrefix(raw, "git@github.com:")
-		parts := strings.Split(strings.TrimSuffix(path, ".git"), "/")
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			return parts[0], parts[1], nil
-		}
-		return "", "", ErrInvalidPRRef
-	}
-	u, err := url.Parse(raw)
+func repoFromURL(raw string) (host, owner, name string, err error) {
+	identity, err := domain.ParseRepositoryIdentity(raw)
 	if err != nil {
-		return "", "", err
+		return "", "", "", ErrInvalidPRRef
 	}
-	if !strings.EqualFold(u.Hostname(), "github.com") {
-		return "", "", ErrInvalidPRRef
-	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", ErrInvalidPRRef
-	}
-	return parts[0], strings.TrimSuffix(parts[1], ".git"), nil
+	return identity.Host, identity.Namespace, identity.Name, nil
 }
 
 func firstNonEmpty(values ...string) string {

@@ -63,7 +63,9 @@ func (s *Store) writeWorkspaceProject(ctx context.Context, label string, r domai
 				Name:          repo.Name,
 				RelativePath:  repo.RelativePath,
 				RepoOriginURL: repo.RepoOriginURL,
+				DefaultBranch: repo.DefaultBranch,
 				RegisteredAt:  repo.RegisteredAt,
+				GitStatus:     string(repo.GitStatus.WithDefault()),
 			}); err != nil {
 				return err
 			}
@@ -85,7 +87,9 @@ func (s *Store) ListWorkspaceRepos(ctx context.Context, projectID string) ([]dom
 			Name:          row.Name,
 			RelativePath:  row.RelativePath,
 			RepoOriginURL: row.RepoOriginURL,
+			DefaultBranch: row.DefaultBranch,
 			RegisteredAt:  row.RegisteredAt,
+			GitStatus:     domain.GitStatus(row.GitStatus),
 		})
 	}
 	return out, nil
@@ -292,4 +296,56 @@ func nullTime(t time.Time) sql.NullTime {
 		return sql.NullTime{}
 	}
 	return sql.NullTime{Time: t, Valid: true}
+}
+
+// SetProjectPermissions serializes a focused read-modify-write with other writes.
+func (s *Store) SetProjectPermissions(ctx context.Context, id string, permissions domain.PermissionMode) (domain.ProjectRecord, bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	var row domain.ProjectRecord
+	var updated bool
+	err := s.inTx(ctx, "set project permissions", func(q *gen.Queries) error {
+		stored, err := q.GetProject(ctx, domain.ProjectID(id))
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		row = projectRowFromGen(stored)
+		if !row.ArchivedAt.IsZero() {
+			return nil
+		}
+		worker := row.Config.AgentConfig.Permissions
+		if row.Config.Worker.AgentConfig.Permissions != "" {
+			worker = row.Config.Worker.AgentConfig.Permissions
+		}
+		orchestrator := row.Config.AgentConfig.Permissions
+		if row.Config.Orchestrator.AgentConfig.Permissions != "" {
+			orchestrator = row.Config.Orchestrator.AgentConfig.Permissions
+		}
+		if worker == "" {
+			worker = domain.PermissionModeDefault
+		}
+		if orchestrator == "" {
+			orchestrator = domain.PermissionModeDefault
+		}
+		for kind, mode := range map[domain.SessionKind]domain.PermissionMode{domain.KindWorker: worker, domain.KindOrchestrator: orchestrator} {
+			if err := q.PinProjectSessionPermissions(ctx, gen.PinProjectSessionPermissionsParams{ProjectID: domain.ProjectID(id), Kind: kind, Permissions: string(mode)}); err != nil {
+				return err
+			}
+		}
+
+		row.Config.AgentConfig.Permissions = permissions
+		row.Config.Worker.AgentConfig.Permissions = ""
+		row.Config.Orchestrator.AgentConfig.Permissions = ""
+		config, err := marshalProjectConfig(row.Config)
+		if err != nil {
+			return err
+		}
+		rows, err := q.UpdateProjectSettings(ctx, gen.UpdateProjectSettingsParams{ID: domain.ProjectID(id), DisplayName: row.DisplayName, Config: config})
+		updated = rows > 0
+		return err
+	})
+	return row, updated, err
 }

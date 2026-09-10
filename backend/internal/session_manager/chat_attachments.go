@@ -4,16 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// StageAttachments writes files into a live session's worktree and returns their
-// worktree-relative paths.
+// StageAttachments durably stores files, projects them into a live session's
+// worktree, and returns their worktree-relative paths.
 //
 // This is the spawn attachment path applied to a conversation that is already
 // running: files land in the worktree and the caller names the paths in the
@@ -47,30 +47,36 @@ func (m *Manager) StageAttachments(
 		return nil, fmt.Errorf("session %s has no workspace", id)
 	}
 
-	dir := filepath.Join(rec.Metadata.WorkspacePath, filepath.FromSlash(attachmentsDir))
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return nil, fmt.Errorf("create attachments dir: %w", err)
-	}
-
 	refs := make([]string, 0, len(attachments))
 	for i, a := range attachments {
 		ext := a.Ext
 		if ext == "" {
 			ext = ".bin"
 		}
-		suffix, err := randomSuffix()
-		if err != nil {
-			return nil, fmt.Errorf("name attachment %d: %w", i+1, err)
+		var name string
+		for attempt := 0; attempt < 8; attempt++ {
+			suffix, err := m.attachmentSuffix()
+			if err != nil {
+				return nil, fmt.Errorf("name attachment %d: %w", i+1, err)
+			}
+			name = "attachment-" + suffix + ext
+			err = m.attachments.Put(ctx, id, rec.Metadata.WorkspacePath, name, a.Data)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, attachmentstore.ErrExists) {
+				return nil, fmt.Errorf("write attachment %d: %w", i+1, err)
+			}
+			name = ""
 		}
-		name := "attachment-" + suffix + ext
-		if err := os.WriteFile(filepath.Join(dir, name), a.Data, 0o600); err != nil {
-			return nil, fmt.Errorf("write attachment %d: %w", i+1, err)
+		if name == "" {
+			return nil, fmt.Errorf("write attachment %d: could not allocate a unique name", i+1)
 		}
 		refs = append(refs, attachmentsDir+"/"+name)
 	}
 
 	// Keep the directory out of git status. Best-effort for the same reason spawn
-	// treats it that way: the images are already written and usable, and a session
+	// treats it that way: the files are already written and usable, and a session
 	// the user cannot attach to is worse than a worktree that reads as dirty.
 	if err := m.workspace.AddExclude(ctx, workspaceInfo(rec), "/"+attachmentsDir+"/"); err != nil {
 		m.logger.Warn("stage attachments: exclude attachments dir", "sessionID", id, "error", err)
@@ -78,10 +84,9 @@ func (m *Manager) StageAttachments(
 	return refs, nil
 }
 
-// randomSuffix is a short collision-resistant name part. Short because it ends up
-// in a path the user reads in their own message text.
+// randomSuffix is a collision-resistant name part used in user-visible paths.
 func randomSuffix() (string, error) {
-	var buf [5]byte
+	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return "", err
 	}

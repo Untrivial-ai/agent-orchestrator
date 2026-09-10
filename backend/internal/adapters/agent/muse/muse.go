@@ -14,7 +14,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 const adapterID = "muse"
@@ -188,6 +188,10 @@ var museBinarySpec = binaryutil.BinarySpec{
 	UnixHomePaths: [][]string{
 		{".local", "bin", "muse"}, // official Meta installer default
 	},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "muse.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "muse.exe"}},
+	},
 }
 
 // ResolveMuseBinary finds the official Meta Muse Code launcher. The `muse`
@@ -227,7 +231,7 @@ func resolveMuseBinary(ctx context.Context, spec binaryutil.BinarySpec) (string,
 }
 
 func isOfficialMuseBinary(ctx context.Context, binary string) bool {
-	cmd := exec.CommandContext(ctx, binary, "--version")
+	cmd := aoprocess.CommandContext(ctx, binary, "--version")
 	cmd.Env = append(os.Environ(), "MUSE_NO_AUTO_UPDATE=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

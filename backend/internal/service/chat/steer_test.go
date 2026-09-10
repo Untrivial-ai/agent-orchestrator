@@ -38,6 +38,21 @@ type steerRecorder struct {
 	landed string
 }
 
+type cancelAfterSteerRecorder struct {
+	*steerRecorder
+	cancel context.CancelFunc
+}
+
+func (s *cancelAfterSteerRecorder) Steer(
+	ctx context.Context,
+	providerTurnID string,
+	msg ports.ChatUserMessage,
+) (ports.ChatTurnRef, error) {
+	ref, err := s.steerRecorder.Steer(ctx, providerTurnID, msg)
+	s.cancel()
+	return ref, err
+}
+
 func newSteerRecorder() *steerRecorder {
 	return &steerRecorder{fakeConversation: newFakeConversation()}
 }
@@ -381,5 +396,176 @@ func TestSteerRecordsTheTurnTheProviderNames(t *testing.T) {
 	}
 	if result.ProviderTurnID != "provider-turn-1" {
 		t.Errorf("reported turn = %q, want the one the provider named", result.ProviderTurnID)
+	}
+}
+
+// Promoting a selected queued turn must use AO's durable content, attach it to
+// the running provider turn, and remove only that source turn from the visible
+// queue. If this regresses to queue-head-only behavior, the second message below
+// is never the one the provider receives.
+func TestPromoteSelectedQueuedTurnIntoTheRunningTurn(t *testing.T) {
+	h, provider := steerHarness(t)
+	ctx := context.Background()
+
+	first, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "first queued", ClientMessageID: "queued-1", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("queue first: %v", err)
+	}
+	selected, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "second queued", ClientMessageID: "queued-2", Origin: domain.MessageOriginHuman,
+		Content: []ports.ChatContent{{Type: "image", Data: "aGVsbG8=", MIMEType: "image/png"}},
+	})
+	if err != nil {
+		t.Fatalf("queue selected: %v", err)
+	}
+
+	result, err := h.svc.PromoteQueuedTurn(ctx, testSession, selected.ID)
+	if err != nil {
+		t.Fatalf("PromoteQueuedTurn: %v", err)
+	}
+	if result.SourceTurnID != selected.ID || result.ProviderTurnID != "provider-turn-1" || result.ActivityID == "" {
+		t.Fatalf("promotion result = %+v", result)
+	}
+	calls := provider.steers()
+	if len(calls) != 1 {
+		t.Fatalf("provider steers = %+v, want one", calls)
+	}
+	if calls[0].msg.Text != "second queued" || calls[0].msg.ClientMessageID != "queued-2" {
+		t.Fatalf("provider message = %+v, want selected durable message", calls[0].msg)
+	}
+	if len(calls[0].msg.Content) != 1 || calls[0].msg.Content[0].MIMEType != "image/png" {
+		t.Fatalf("provider content = %+v, want stored image", calls[0].msg.Content)
+	}
+
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(steerMarkers(s)) == 1
+	})
+	for _, turn := range snapshot.Turns {
+		if turn.ID == selected.ID {
+			t.Fatalf("promoted source turn remains visible: %+v", turn)
+		}
+	}
+	next, err := h.st.NextQueuedTurn(ctx, h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatalf("remaining queue: %v", err)
+	}
+	if next.TurnID != first.ID {
+		t.Fatalf("remaining queue head = %q, want %q", next.TurnID, first.ID)
+	}
+}
+
+// A provider refusal has not delivered anything, so the exact selected message
+// must return to its original queue position instead of being lost or failed.
+func TestPromoteQueuedTurnRefusalRestoresItsQueuePosition(t *testing.T) {
+	h, provider := steerHarness(t)
+	ctx := context.Background()
+	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "keep me queued", ClientMessageID: "queued-refused", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+	provider.failWith(ports.ErrChatTurnNotSteerable)
+
+	_, err = h.svc.PromoteQueuedTurn(ctx, testSession, queued.ID)
+	if !errors.Is(err, chatsvc.ErrTurnNotSteerable) {
+		t.Fatalf("promotion error = %v, want ErrTurnNotSteerable", err)
+	}
+	next, err := h.st.NextQueuedTurn(ctx, h.ctrl.ConversationID())
+	if err != nil || next.TurnID != queued.ID {
+		t.Fatalf("restored queue head = %+v, %v; want %s", next, err, queued.ID)
+	}
+}
+
+// Only human-originated queue items are eligible for mid-turn guidance. The
+// service must enforce that boundary even when a caller bypasses the frontend,
+// without consuming or reordering the automation item.
+func TestPromoteQueuedTurnRejectsNonHumanSourceWithoutContactingProvider(t *testing.T) {
+	h, provider := steerHarness(t)
+	ctx := context.Background()
+	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "automation follow-up", ClientMessageID: "queued-automation", Origin: domain.MessageOriginAutomation,
+	})
+	if err != nil {
+		t.Fatalf("queue automation turn: %v", err)
+	}
+
+	_, err = h.svc.PromoteQueuedTurn(ctx, testSession, queued.ID)
+	if !errors.Is(err, chatsvc.ErrTurnNotQueued) {
+		t.Fatalf("promotion error = %v, want ErrTurnNotQueued", err)
+	}
+	if calls := provider.steers(); len(calls) != 0 {
+		t.Fatalf("provider received %d steer attempts, want none", len(calls))
+	}
+	next, err := h.st.NextQueuedTurn(ctx, h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatalf("load queue after rejection: %v", err)
+	}
+	if next.TurnID != queued.ID || next.Origin != domain.MessageOriginAutomation {
+		t.Fatalf("queue head after rejection = %+v, want unchanged automation turn %s", next, queued.ID)
+	}
+}
+
+// A transport failure after the request leaves delivery unknowable. Returning the
+// source to the queue would let drain send guidance the provider may already have
+// accepted, so it must settle failed and require an explicit user decision.
+func TestPromoteQueuedTurnAmbiguousProviderFailureSettlesUncertainWithoutRedelivery(t *testing.T) {
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	t.Cleanup(cancelRequest)
+	provider := &cancelAfterSteerRecorder{steerRecorder: newSteerRecorder(), cancel: cancelRequest}
+	h := newHarnessWithConversation(t, provider)
+	storeCtx := context.Background()
+	if _, err := h.svc.Send(storeCtx, testSession, ports.ChatUserMessage{
+		Text: "do the long thing", ClientMessageID: "turn-1", Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("start running turn: %v", err)
+	}
+	provider.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
+	queued, err := h.svc.Send(storeCtx, testSession, ports.ChatUserMessage{
+		Text: "deliver me at most once", ClientMessageID: "queued-uncertain", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+	transportErr := errors.New("connection lost after request write")
+	provider.failWith(transportErr)
+
+	_, err = h.svc.PromoteQueuedTurn(requestCtx, testSession, queued.ID)
+	if !errors.Is(err, chatsvc.ErrPromotionUncertain) {
+		t.Fatalf("promotion error = %v, want ErrPromotionUncertain", err)
+	}
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("promotion error = %v, want transport cause", err)
+	}
+
+	snapshot, err := h.st.LoadConversationSnapshot(storeCtx, h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	var source *domain.ConversationTurn
+	for index := range snapshot.Turns {
+		if snapshot.Turns[index].ID == queued.ID {
+			source = &snapshot.Turns[index]
+			break
+		}
+	}
+	if source == nil {
+		t.Fatalf("uncertain source turn %s is not visible", queued.ID)
+	}
+	if source.State != domain.TurnStateFailed || source.ErrorMessage != chatsvc.ErrPromotionUncertain.Error() {
+		t.Fatalf("uncertain source = %+v, want failed with promotion-uncertain error", *source)
+	}
+	if _, err := h.st.NextQueuedTurn(storeCtx, h.ctrl.ConversationID()); !errors.Is(err, domain.ErrNoQueuedTurn) {
+		t.Fatalf("uncertain source remained drainable: %v", err)
+	}
+
+	_, retryErr := h.svc.PromoteQueuedTurn(storeCtx, testSession, queued.ID)
+	if !errors.Is(retryErr, chatsvc.ErrTurnNotQueued) {
+		t.Fatalf("retry error = %v, want ErrTurnNotQueued", retryErr)
+	}
+	if calls := provider.steers(); len(calls) != 1 {
+		t.Fatalf("provider received %d steer attempts, want one", len(calls))
 	}
 }

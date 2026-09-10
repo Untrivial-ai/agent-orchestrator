@@ -56,6 +56,8 @@ func TestServiceDerivesStatusFromSessionFactsAndPR(t *testing.T) {
 		{"changes-requested", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Review: domain.ReviewChangesRequest}), false, domain.StatusChangesRequested},
 		{"mergeable", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), false, domain.StatusMergeable},
 		{"approved", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Review: domain.ReviewApproved}), false, domain.StatusApproved},
+		{"merge-blocked-approved", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Mergeability: domain.MergeBlocked, Review: domain.ReviewApproved}), false, domain.StatusPROpen},
+		{"merge-blocked-no-review", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Mergeability: domain.MergeBlocked}), false, domain.StatusPROpen},
 		{"review-pending", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{Review: domain.ReviewRequired}), false, domain.StatusReviewPending},
 		{"pr-open", statusRec(domain.ActivityIdle, false), statusPR(domain.PRFacts{}), false, domain.StatusPROpen},
 		{"working", statusRec(domain.ActivityActive, false), nil, false, domain.StatusWorking},
@@ -138,6 +140,7 @@ func TestDeriveSCMStatusRemainsAvailableWhileAgentIsActive(t *testing.T) {
 		{"review-pending", statusPR(domain.PRFacts{Review: domain.ReviewRequired}), domain.StatusReviewPending},
 		{"approved", statusPR(domain.PRFacts{Review: domain.ReviewApproved}), domain.StatusApproved},
 		{"mergeable", statusPR(domain.PRFacts{Mergeability: domain.MergeMergeable}), domain.StatusMergeable},
+		{"merge-blocked", statusPR(domain.PRFacts{Mergeability: domain.MergeBlocked}), domain.StatusPROpen},
 		{"merged", statusPR(domain.PRFacts{Merged: true}), domain.StatusMerged},
 	}
 	for _, tt := range tests {

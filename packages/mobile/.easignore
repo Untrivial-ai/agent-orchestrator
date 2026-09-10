@@ -1,7 +1,6 @@
 # EAS upload ignore list. When this file exists, EAS Build uses it INSTEAD of
-# .gitignore to decide what to upload — so it must mirror .gitignore's excludes,
-# then re-include google-services.json (which is gitignored, but the Android
-# build needs it). Keep this in sync with .gitignore.
+# .gitignore to decide what to upload — so it must mirror .gitignore's excludes.
+# Keep this in sync with .gitignore.
 
 # dependencies
 node_modules/
@@ -50,11 +49,8 @@ yarn-error.*
 # logs
 *.log
 
-# ⚠️ This re-include does NOT work: EAS's git VCS client still strips
-# google-services.json because it matches a .gitignore rule (verified
-# 2026-07-25 — builds failed "google-services.json is missing" with this line
-# present). Kept only to document the attempt. The working approach is the
-# temp-commit + drop-the-.gitignore-line dance described in .gitignore and
-# docs/android-play-setup.md. TODO: replace with an EAS file environment
-# variable so this file is provided cleanly (see the EAS error's suggestion).
-!google-services.json
+# google-services.json is deliberately not re-included here. A `!google-services.json`
+# line does not work — EAS's git VCS client strips the file anyway because it matches
+# a .gitignore rule (verified 2026-07-25). It now reaches EAS Build as the
+# GOOGLE_SERVICES_JSON file environment variable instead; app.config.js copies it into
+# place before prebuild. See packages/mobile/.gitignore.

@@ -35,6 +35,43 @@ func (q *Queries) GetAgentModelCatalog(ctx context.Context, arg GetAgentModelCat
 	return i, err
 }
 
+const listAgentModelCatalogsByAgent = `-- name: ListAgentModelCatalogsByAgent :many
+SELECT agent_id, project_id, binary_version, catalog_json, source, fetched_at
+FROM agent_model_catalog
+WHERE agent_id = ?
+ORDER BY project_id
+`
+
+func (q *Queries) ListAgentModelCatalogsByAgent(ctx context.Context, agentID string) ([]AgentModelCatalog, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentModelCatalogsByAgent, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentModelCatalog{}
+	for rows.Next() {
+		var i AgentModelCatalog
+		if err := rows.Scan(
+			&i.AgentID,
+			&i.ProjectID,
+			&i.BinaryVersion,
+			&i.CatalogJson,
+			&i.Source,
+			&i.FetchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertAgentModelCatalog = `-- name: UpsertAgentModelCatalog :exec
 INSERT INTO agent_model_catalog (
     agent_id, project_id, binary_version, catalog_json, source, fetched_at

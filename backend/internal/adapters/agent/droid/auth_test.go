@@ -21,7 +21,7 @@ func TestAuthStatusAuthorizedFromFactoryAPIKey(t *testing.T) {
 	}
 }
 
-func TestDroidFactoryAuthStatusAuthorizedFromAuthFiles(t *testing.T) {
+func TestDroidFactoryAuthStatusIgnoresUndocumentedAuthFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "auth.v2.file"), []byte("encrypted auth"), 0o600); err != nil {
 		t.Fatal(err)
@@ -34,8 +34,24 @@ func TestDroidFactoryAuthStatusAuthorizedFromAuthFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestDroidFactoryAuthStatusDoesNotTreatUnresolvedEnvPlaceholderAsKey(t *testing.T) {
+	dir := t.TempDir()
+	settings := `{"customModels":[{"model":"custom","baseUrl":"https://api.example.com","apiKey":"${PROVIDER_API_KEY}"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, ok, err := droidFactoryAuthStatus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
 
@@ -55,7 +71,7 @@ func TestDroidFactoryAuthStatusAuthorizedFromCustomModelAPIKey(t *testing.T) {
 	}
 }
 
-func TestDroidFactoryAuthStatusUnauthorizedFromCustomModelWithoutAPIKey(t *testing.T) {
+func TestDroidFactoryAuthStatusUnknownFromCustomModelWithoutAPIKey(t *testing.T) {
 	dir := t.TempDir()
 	settings := `{"customModels":[{"model":"claude-sonnet-4-5-20250929","baseUrl":"https://api.anthropic.com","apiKey":""}]}`
 	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o600); err != nil {
@@ -66,7 +82,7 @@ func TestDroidFactoryAuthStatusUnauthorizedFromCustomModelWithoutAPIKey(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnauthorized)
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }

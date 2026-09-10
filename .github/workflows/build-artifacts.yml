@@ -26,6 +26,9 @@ on:
 permissions:
   contents: read
 
+env:
+  VITE_WORKOS_CLIENT_ID: ${{ vars.VITE_WORKOS_CLIENT_ID }}
+
 jobs:
   build:
     strategy:
@@ -60,7 +63,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            frontend/package-lock.json
+            packages/product-ui/package-lock.json
       # The daemon is compiled by build-daemon.mjs during premake, so the Go
       # toolchain must be present and pinned on every runner.
       - uses: actions/setup-go@v5
@@ -68,8 +73,18 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
       - run: npm ci
-      # Same stamping mechanism as frontend-nightly.yml: rewrite package.json
-      # to the caller's version, dropping any +build metadata.
+      - name: Install product UI dependencies
+        run: npm ci
+        working-directory: packages/product-ui
+      - name: Verify WorkOS build configuration
+        shell: bash
+        run: |
+          if [ -z "$VITE_WORKOS_CLIENT_ID" ]; then
+            echo "::error::Repository variable VITE_WORKOS_CLIENT_ID is required for desktop artifacts." >&2
+            exit 1
+          fi
+      # Stamp the conductor-supplied version into package.json for this build,
+      # dropping any +build metadata.
       - name: Stamp version
         shell: bash
         env:
@@ -78,7 +93,31 @@ jobs:
           node -e "const v=process.env.BUILD_VERSION.split('+')[0]; const fs=require('fs'); const p=require('./package.json'); p.version=v; fs.writeFileSync('./package.json', JSON.stringify(p,null,'\t')+'\n');"
       - name: Build (unsigned, no publish)
         shell: bash
+        env:
+          # Bake the update feed's owner/repo from the repo this build runs in.
+          # Without this, forge.config.ts falls back to DEFAULT_RELEASE_REPO,
+          # which went stale across the AgentWrapper -> Untrivial-ai transfer and
+          # left every published build pointing its updater at the old owner,
+          # alive only through GitHub's rename redirect (#3523).
+          AO_RELEASE_REPO: ${{ github.repository }}
         run: npm run make
+      - name: Verify baked update feed repo
+        # app-update.yml is what electron-updater reads at runtime to build the
+        # feed URL; forge's prePackage hook writes it to the working dir and
+        # ships it via extraResource. If the baked owner/repo ever diverges from
+        # the repo publishing the release (org rename, fork misconfig), fail the
+        # build here instead of stranding installed clients on a redirect
+        # GitHub may some day stop honoring (#3523).
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="$(sed -n 's/^owner:[[:space:]]*//p' app-update.yml)"
+          repo="$(sed -n 's/^repo:[[:space:]]*//p' app-update.yml)"
+          echo "baked feed: $owner/$repo (expected $GITHUB_REPOSITORY)"
+          if [ "$owner/$repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::app-update.yml bakes $owner/$repo but this build publishes from $GITHUB_REPOSITORY" >&2
+            exit 1
+          fi
       - name: Collect artifact and compute digest
         shell: bash
         env:

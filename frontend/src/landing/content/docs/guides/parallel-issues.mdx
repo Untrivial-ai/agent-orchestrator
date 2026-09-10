@@ -1,81 +1,52 @@
 ---
-title: Parallel issues
-description: Spawn agents on several issues at once without them stepping on each other.
+title: Parallel work
+description: Run isolated worker sessions across issues without mixing branches, terminals, or conversations.
 ---
 
+Start each task as its own worker session. Git projects receive separate worktrees and branches; Scratch receives separate AO-managed directories. Chat conversations and Terminal UI runtimes are session-scoped.
 
-The whole point of AO is running agents in parallel. Each session gets its own git worktree, so agents can't stomp each other's branches.
+## Start sessions from desktop
 
-## Batch spawn
+Choose a project, create a new task, give it a short display name, then select the worker harness and Chat or Terminal UI. Repeat for each independent task. The sidebar and sessions board update from the daemon's event stream without a reload.
 
-`ao batch-spawn` takes one or more issue identifiers:
-
-```bash
-ao batch-spawn 42 43 44
-```
-
-AO:
-
-- Skips any issue that already has an active session
-- De-duplicates within the batch
-- Creates a worktree per agent
-- Reports a summary when all are spawned
-
-For a quick interactive version, just run `ao spawn` a few times — `batch-spawn` adds the duplicate detection.
-
-## One agent, many issues? No.
-
-Each spawn is one agent working on exactly one issue. If you want the same issue worked on by two different agents (e.g. Claude Code and Codex) in parallel, pass `--agent`:
+## Start sessions from the CLI
 
 ```bash
-ao spawn 42 --agent claude-code
-ao spawn 42 --agent codex
+ao spawn --project web --name issue-42 --issue 42 --mode chat
+ao spawn --project web --name issue-43 --issue 43 --mode tui
+ao spawn --project api --name auth-fix --prompt "Fix token refresh" --harness codex
 ```
 
-AO creates two distinct sessions. Compare the PRs side by side.
+`ao spawn` accepts flags rather than positional issue identifiers. There is no current `ao batch-spawn`; invoke `ao spawn` once per task or let an orchestrator create workers.
 
-## Isolation guarantees
+## What is isolated
 
-| What's isolated | How                                                                                                                                                                                                                        |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| File edits      | Each session has its own worktree under `~/.worktrees/{projectId}/{sessionId}/`. Session metadata lives under `~/.agent-orchestrator/{hash}-{projectId}/sessions/{sessionId}` — the worktree itself is in `~/.worktrees/`. |
-| Branch name     | AO names the branch after the session ID, avoiding collisions                                                                                                                                                              |
-| Agent state     | Each agent's native session files (Claude JSONL, Codex session, etc.) are session-scoped                                                                                                                                   |
-| Terminal        | Each session owns its own tmux window (or child process)                                                                                                                                                                   |
+| Resource | Isolation |
+| --- | --- |
+| Files | A worktree or Scratch directory per session |
+| Branch | A generated `ao/<session-id>/root` branch unless overridden |
+| Agent controller | One committed Chat or Terminal UI controller per session |
+| Chat history | Durable, session-scoped conversation projection |
+| Terminal | Session runtime or session-scoped worktree shell |
+| Browser preview | Dedicated selected-session browser target and ephemeral profile |
 
-## What isn't isolated
+AO-managed worktrees live under `~/.ao/data/worktrees`, not `~/.worktrees`. External side effects such as pushes, pull requests, CI runs, and review comments are naturally shared with the repository host.
 
-- **Your project's node_modules.** Workspaces clone/share the repo; if your agent runs `npm install` it updates the worktree's `node_modules`, which is fine. If your agent runs `pnpm install` with a shared store, the store is shared.
-- **External side effects.** If an agent opens a PR, triggers CI, or posts to a notifier, those effects are visible to you and everyone else immediately.
-
-## Watching them move
-
-On the dashboard, each card shows:
-
-- Issue title + number
-- Current lifecycle state (spawning → working → pr_open → ci_failed / review_pending / mergeable / merged)
-- Activity (active, ready, idle, waiting_input, blocked)
-- Cost (agent-reported when available)
-
-The Kanban columns update as state changes — you don't need to reload.
-
-## From the CLI
+## Inspect and clean up
 
 ```bash
-# List everything at a glance
-ao status
-
-# Keep it on-screen
-ao status --watch
-
-# Filter to one project
-ao status -p my-repo --json
+ao session ls
+ao session ls --project web --json
+ao session get <session-id>
+ao session kill <session-id>
+ao session cleanup --dry-run
+ao session cleanup
 ```
 
-## When you want fewer
+Cleanup reclaims eligible workspaces for terminated sessions. Dirty registered worktrees are preserved and skipped.
 
-- `ao session kill <sessionId>` — kill one
-- `ao session cleanup` — kill everything whose PR merged or issue closed (safe; archives metadata)
-- `ao session cleanup --dry-run` — preview first
+`ao status` reports daemon health; it is not the session list and does not have `--watch`.
 
-<Callout type="info">Need them all gone? `ao stop --all` halts every running AO instance on this machine.</Callout>
+## Follow the work
+
+Open a session to see its Chat timeline or live terminal, pull-request summary, review runs, changed files, and browser preview. Lifecycle updates keep CI, reviews, mergeability, activity, and notifications attached to the owning session.

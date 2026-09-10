@@ -13,8 +13,8 @@ import type { Theme } from "./theme";
 /** The four board columns, as desktop names them. */
 export type BoardZone = "working" | "action" | "pending" | "merge";
 
-/** Desktop's left-to-right column order (`boardAttentionZoneOrder`). */
-export const BOARD_ZONES: BoardZone[] = ["working", "action", "pending", "merge"];
+/** Mobile's action-first section order. */
+export const BOARD_ZONES: BoardZone[] = ["action", "merge", "working", "pending"];
 
 /**
  * Which column a session belongs in.
@@ -72,6 +72,20 @@ export function isArchived(session: DashboardSession): boolean {
 
 export type BoardSection = { zone: BoardZone; label: string; color: string; data: DashboardSession[] };
 
+function comparePinned(a: DashboardSession, b: DashboardSession): number {
+	return Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
+}
+
+function compareActivity(a: DashboardSession, b: DashboardSession, newestFirst: boolean): number {
+	const left = a.lastActivityAt ?? "";
+	const right = b.lastActivityAt ?? "";
+	return newestFirst ? right.localeCompare(left) : left.localeCompare(right);
+}
+
+function compareInZone(zone: BoardZone, a: DashboardSession, b: DashboardSession): number {
+	return comparePinned(a, b) || compareActivity(a, b, zone === "working");
+}
+
 /**
  * The board, split into its four sections plus the archive.
  *
@@ -94,14 +108,14 @@ export function groupSessions(
 		else byZone.set(zone, [s]);
 	}
 
-	const sections = BOARD_ZONES.filter((z) => byZone.get(z)?.length).map((zone) => ({
-		zone,
-		...zoneMeta(t, zone),
-		data: byZone.get(zone) ?? [],
-	}));
+	const sections = BOARD_ZONES.filter((z) => byZone.get(z)?.length).map((zone) => {
+		const data = byZone.get(zone) ?? [];
+		data.sort((a, b) => compareInZone(zone, a, b));
+		return { zone, ...zoneMeta(t, zone), data };
+	});
 
-	// Newest first, like desktop's archive strip.
-	archived.sort((a, b) => (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? ""));
+	// Pin history deliberately kept close, then show the newest remaining history.
+	archived.sort((a, b) => comparePinned(a, b) || compareActivity(a, b, true));
 	return { sections, archived };
 }
 

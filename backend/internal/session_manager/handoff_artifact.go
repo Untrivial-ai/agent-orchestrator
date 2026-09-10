@@ -74,7 +74,6 @@ type switchTranscriptFact struct {
 // the target continuation. Operational switch state remains durable, but AO
 // does not retain a second canonical conversation or deterministic transcript.
 type deterministicSwitchContext struct {
-	UserNote              string
 	OriginalTask          string
 	LatestUserPrompt      string
 	LatestAssistantUpdate string

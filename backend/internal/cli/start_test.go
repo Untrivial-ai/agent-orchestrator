@@ -58,6 +58,44 @@ func TestResolveApp_MarkerHit(t *testing.T) {
 	writeMarker(t, cfg, bundle)
 	// No scan locations: a hit must come from the marker.
 	t.Cleanup(swapScanLocations(func() []string { return nil }))
+	// Point the preferred location at nothing so this exercises the marker,
+	// not the real /Applications on a macOS dev box.
+	t.Cleanup(swapPreferredAppPath(func() string { return "" }))
+
+	c := &commandContext{deps: Deps{}.withDefaults()}
+	got := c.resolveApp()
+	if got != bundle {
+		t.Fatalf("resolveApp = %q, want marker path %q", got, bundle)
+	}
+}
+
+// The downgrade the marker used to re-propagate: a stale copy that got
+// launched leaves the marker pointing at itself, and `ao start` would reopen
+// that copy forever instead of the install the updater maintains.
+func TestResolveApp_PreferredOutranksMarker(t *testing.T) {
+	cfg := setConfigEnv(t)
+	stale := makeBundle(t, appBundleName)
+	writeMarker(t, cfg, stale)
+	installed := makeBundle(t, appBundleName)
+	t.Cleanup(swapPreferredAppPath(func() string { return installed }))
+	t.Cleanup(swapScanLocations(func() []string { return nil }))
+
+	c := &commandContext{deps: Deps{}.withDefaults()}
+	got := c.resolveApp()
+	if got != installed {
+		t.Fatalf("resolveApp = %q, want installed path %q", got, installed)
+	}
+}
+
+// An absent preferred location must not shadow a good marker.
+func TestResolveApp_PreferredMissingFallsBackToMarker(t *testing.T) {
+	cfg := setConfigEnv(t)
+	bundle := makeBundle(t, appBundleName)
+	writeMarker(t, cfg, bundle)
+	t.Cleanup(swapPreferredAppPath(func() string {
+		return filepath.Join(t.TempDir(), "gone", appBundleName)
+	}))
+	t.Cleanup(swapScanLocations(func() []string { return nil }))
 
 	c := &commandContext{deps: Deps{}.withDefaults()}
 	got := c.resolveApp()
@@ -72,6 +110,7 @@ func TestResolveApp_MarkerMissThenScanHit(t *testing.T) {
 	writeMarker(t, cfg, filepath.Join(t.TempDir(), "gone", appBundleName))
 	scanBundle := makeBundle(t, appBundleName)
 	t.Cleanup(swapScanLocations(func() []string { return []string{scanBundle} }))
+	t.Cleanup(swapPreferredAppPath(func() string { return "" }))
 
 	c := &commandContext{deps: Deps{}.withDefaults()}
 	got := c.resolveApp()
@@ -85,6 +124,7 @@ func TestResolveApp_ScanMissReturnsEmpty(t *testing.T) {
 	t.Cleanup(swapScanLocations(func() []string {
 		return []string{filepath.Join(t.TempDir(), "nope", appBundleName)}
 	}))
+	t.Cleanup(swapPreferredAppPath(func() string { return "" }))
 
 	c := &commandContext{deps: Deps{}.withDefaults()}
 	got := c.resolveApp()
@@ -223,6 +263,45 @@ func TestDownloadURLUsesReleaseRepo(t *testing.T) {
 	want := "https://github.com/owner/repo/releases/latest/download/agent-orchestrator-darwin-arm64.zip"
 	if got != want {
 		t.Fatalf("downloadURL = %q, want %q", got, want)
+	}
+}
+
+func TestRegisterLinuxProtocolHandler(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	var commands [][]string
+	c := &commandContext{deps: Deps{
+		CommandOutput: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			commands = append(commands, append([]string{name}, args...))
+			if len(args) > 0 && args[0] == "query" {
+				return []byte(linuxDesktopEntryName + "\n"), nil
+			}
+			return nil, nil
+		},
+	}.withDefaults()}
+
+	appPath := "/tmp/Agent Orchestrator 100%.AppImage"
+	if err := c.registerLinuxProtocolHandler(context.Background(), appPath); err != nil {
+		t.Fatal(err)
+	}
+	entryPath := filepath.Join(dataHome, "applications", linuxDesktopEntryName)
+	entry, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(entry)
+	if !strings.Contains(content, `Exec="/tmp/Agent Orchestrator 100%%.AppImage" %u`) {
+		t.Fatalf("desktop entry does not safely target AppImage:\n%s", content)
+	}
+	if !strings.Contains(content, "MimeType=x-scheme-handler/ao-app;") {
+		t.Fatalf("desktop entry does not register ao-app:\n%s", content)
+	}
+	wantCommands := [][]string{
+		{"xdg-mime", "default", linuxDesktopEntryName, "x-scheme-handler/ao-app"},
+		{"xdg-mime", "query", "default", "x-scheme-handler/ao-app"},
+	}
+	if !reflect.DeepEqual(commands, wantCommands) {
+		t.Fatalf("commands = %#v, want %#v", commands, wantCommands)
 	}
 }
 
@@ -428,6 +507,14 @@ func TestHumanBytes(t *testing.T) {
 			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
 		}
 	}
+}
+
+// swapPreferredAppPath replaces the preferred-location seam and returns a
+// restore func.
+func swapPreferredAppPath(fn func() string) func() {
+	orig := preferredAppPath
+	preferredAppPath = fn
+	return func() { preferredAppPath = orig }
 }
 
 // swapScanLocations replaces the scan-location seam and returns a restore func.

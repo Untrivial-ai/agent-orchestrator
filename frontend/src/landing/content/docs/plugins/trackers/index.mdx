@@ -1,41 +1,14 @@
 ---
-title: Trackers overview
-description: Where your issues live. AO fetches them, assigns them to sessions, and updates them as work progresses.
+title: Issue tracking
+description: The current GitHub-only, opt-in issue intake capability.
 ---
 
-The **tracker** plugin is how AO fetches issues, creates new ones, and links sessions to them. Three trackers ship.
+AO currently ships one tracker adapter: [GitHub](/docs/plugins/trackers/github). GitLab and Linear are not supported by the Go rewrite.
 
-<PluginGrid>
-	<PluginCard
-		name="GitHub"
-		logo="github"
-		href="/docs/plugins/trackers/github"
-		description="Issues + PRs via the gh CLI. Default."
-	/>
-	<PluginCard
-		name="GitLab"
-		logo="gitlab"
-		href="/docs/plugins/trackers/gitlab"
-		description="Issues + MRs via the glab CLI. Self-hosted supported."
-	/>
-	<PluginCard
-		name="Linear"
-		logo="linear"
-		href="/docs/plugins/trackers/linear"
-		description="Linear issues. Direct API key or Composio-mediated."
-	/>
-</PluginGrid>
+Tracker intake is opt-in per project. It can discover matching GitHub issues and spawn workers, but v1 is read-only toward the tracker: AO does not comment on or transition issues as agent lifecycle changes.
 
-## What a tracker does
+<Callout type="warn">
+	The tracker lane is still limited. Do not treat issue association as a complete two-way synchronization workflow.
+</Callout>
 
-1. **Fetch an issue** by id — used by `ao spawn 42` to build the agent's prompt.
-2. **Create an issue** — used by a few helper workflows (e.g. CI self-healing can file a follow-up).
-3. **Close / comment** — the agent's wrappers use these when it wraps up work.
-4. **Return the issue URL** so the dashboard can link to it.
-
-Tracker and SCM are separate plugins on purpose — you might track issues in Linear but host code on GitHub. Just set them independently:
-
-```yaml
-tracker: linear
-scm: github
-```
+Use the SCM capability for pull requests, CI, reviews, and mergeability; those facts are independent from tracker intake.

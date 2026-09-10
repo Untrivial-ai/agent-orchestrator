@@ -5,6 +5,9 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { OnboardingGate } from "../lib/OnboardingGate";
 import { TelemetryManager } from "../lib/TelemetryManager";
 import { PushManager } from "../lib/PushManager";
+import { UpdatesManager } from "../lib/UpdatesManager";
+import { StoreUpdateManager } from "../lib/StoreUpdateManager";
+import { MinimalBackButton } from "../lib/MinimalBackButton";
 import { AppProvider } from "../lib/store";
 import { ThemeProvider, useTheme, useThemeState } from "../lib/ThemeProvider";
 
@@ -19,7 +22,12 @@ import { ThemeProvider, useTheme, useThemeState } from "../lib/ThemeProvider";
 const SHEET_ROUTES = [
 	{ name: "sheets/project", detents: [0.5, 0.95] },
 	{ name: "sheets/agent", detents: [0.5, 0.95] },
+	{ name: "sheets/model", detents: [0.5, 0.95] },
+	{ name: "sheets/chat-settings", detents: [0.5, 0.95] },
+	{ name: "sheets/conversation-map", detents: [0.5, 0.95] },
+	{ name: "sheets/composer-picker", detents: [0.6, 0.95] },
 	{ name: "sheets/theme", detents: "fitToContents" },
+	{ name: "sheets/store-update", detents: "fitToContents" },
 ] as const;
 
 // The manual-connect form — the only sheet with text inputs, and the only one
@@ -68,6 +76,8 @@ function Shell() {
 			<StatusBar style={scheme === "dark" ? "light" : "dark"} />
 			<TelemetryManager />
 			<PushManager />
+			<UpdatesManager />
+			<StoreUpdateManager />
 			<OnboardingGate />
 			<Stack
 				screenOptions={{
@@ -75,13 +85,14 @@ function Shell() {
 					headerTintColor: t.textPrimary,
 					headerTitleStyle: { fontWeight: "700" },
 					headerShadowVisible: false,
+					headerBackButtonDisplayMode: "minimal",
 					contentStyle: { backgroundColor: t.bgBase },
 				}}
 			>
 				<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-				<Stack.Screen name="session/[id]" options={{ title: "Session", headerBackTitle: "Back" }} />
-				<Stack.Screen name="shell/[handleId]" options={{ title: "Worktree shell", headerBackTitle: "Chat" }} />
-				<Stack.Screen name="preview/[id]" options={{ title: "Preview", headerBackTitle: "Chat" }} />
+				<Stack.Screen name="session/[id]" options={{ title: "Session", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
+				<Stack.Screen name="shell/[handleId]" options={{ title: "Worktree shell", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
+				<Stack.Screen name="preview/[id]" options={{ title: "Preview", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen name="spawn" options={{ presentation: "modal", title: "New agent" }} />
 				{/* Reachable from Settings and from the board's bell, so naming either one
 				    in the back label would be wrong half the time. "minimal" drops the
@@ -91,6 +102,7 @@ function Shell() {
 					options={{
 						title: "Notifications",
 						headerBackButtonDisplayMode: "minimal",
+						headerLeft: () => <MinimalBackButton />,
 					}}
 				/>
 				<Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
@@ -108,6 +120,7 @@ function Shell() {
 						options={{
 							presentation: "formSheet",
 							sheetAllowedDetents: detents === "fitToContents" ? "fitToContents" : [...detents],
+							sheetInitialDetentIndex: 0,
 							sheetGrabberVisible: true,
 							sheetCornerRadius: 20,
 							headerShown: false,

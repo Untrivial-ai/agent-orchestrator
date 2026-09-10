@@ -2,6 +2,7 @@ import { Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useShell } from "../lib/shell-context";
 import { CreateProjectFlow } from "./CreateProjectFlow";
+import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
 import { TopbarButton } from "./TopbarButton";
 import { WelcomePanel } from "./WelcomePanel";
 import { OrchestratorIcon } from "./icons";
@@ -9,19 +10,23 @@ import { OrchestratorIcon } from "./icons";
 // Board empty states: first-launch welcome (`BoardWelcome`) and project board
 // with no worker sessions yet (`ProjectBoardEmpty`).
 export function BoardWelcome() {
-	const { createProject, initializeProjectRepository } = useShell();
+	const { cloneProject, createProject, initializeProjectRepository } = useShell();
 	return (
 		<WelcomePanel>
 			<div
 				className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-8"
 				data-testid="board-welcome"
 			>
-				<CreateProjectFlow
-					embedded
-					mode="choose"
-					onCreateProject={createProject}
-					onInitializeProject={initializeProjectRepository}
-				/>
+				<div className="flex w-full flex-col items-center gap-3">
+					<CreateProjectFlow
+						embedded
+						mode="choose"
+						onCloneProject={cloneProject}
+						onCreateProject={createProject}
+						onInitializeProject={initializeProjectRepository}
+					/>
+					<GitHubOnboardingNotice />
+				</div>
 			</div>
 		</WelcomePanel>
 	);
@@ -33,6 +38,7 @@ export function BoardWelcome() {
 export function ProjectBoardEmpty({
 	hasOrchestrator,
 	isProjectRestarting,
+	isProvisioning = false,
 	isSpawning,
 	onNewTask,
 	onOpenOrchestrator,
@@ -41,6 +47,7 @@ export function ProjectBoardEmpty({
 }: {
 	hasOrchestrator: boolean;
 	isProjectRestarting: boolean;
+	isProvisioning?: boolean;
 	isSpawning: boolean;
 	onNewTask: () => void;
 	onOpenOrchestrator: () => void;
@@ -51,9 +58,11 @@ export function ProjectBoardEmpty({
 	const orchestratorLabel = hasOrchestrator ? t("shell.orchestrator") : t("shell.spawnOrchestrator");
 	const busyLabel = isProjectRestarting
 		? t("shell.restartingDots")
-		: isSpawning
-			? t("shell.spawningDots")
-			: orchestratorLabel;
+		: isProvisioning
+			? t("shell.provisioningDots", { defaultValue: "Setting up…" })
+			: isSpawning
+				? t("shell.spawningDots")
+				: orchestratorLabel;
 
 	return (
 		<div className="flex h-full min-h-0 items-center justify-center overflow-y-auto">
@@ -63,14 +72,14 @@ export function ProjectBoardEmpty({
 				<div className="mt-5 flex items-center gap-2">
 					<TopbarButton
 						aria-label={orchestratorLabel}
-						disabled={isSpawning || isProjectRestarting}
+						disabled={isSpawning || isProjectRestarting || isProvisioning}
 						onClick={onOpenOrchestrator}
 						variant="primary"
 					>
 						<OrchestratorIcon className="size-icon-md" aria-hidden="true" />
 						{busyLabel}
 					</TopbarButton>
-					<TopbarButton aria-label={t("shell.newTask")} disabled={isProjectRestarting} onClick={onNewTask} variant="accent">
+					<TopbarButton aria-label={t("shell.newTask")} disabled={isProjectRestarting || isProvisioning} onClick={onNewTask} variant="accent">
 						<Plus className="size-icon-md" aria-hidden="true" />
 						{t("shell.newTask")}
 					</TopbarButton>
@@ -81,7 +90,7 @@ export function ProjectBoardEmpty({
 							{spawnError}
 						</p>
 						{onOpenOrchestratorAsTui ? (
-							<TopbarButton disabled={isSpawning || isProjectRestarting} onClick={onOpenOrchestratorAsTui}>
+							<TopbarButton disabled={isSpawning || isProjectRestarting || isProvisioning} onClick={onOpenOrchestratorAsTui}>
 								{t("newTask.createAsTui")}
 							</TopbarButton>
 						) : null}

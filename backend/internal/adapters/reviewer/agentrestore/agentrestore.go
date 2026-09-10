@@ -28,6 +28,7 @@ func Command(ctx context.Context, agent ports.Agent, inv ports.ReviewInvocation,
 		metadata[ports.MetadataKeyAgentSessionID] = agentSessionID
 	}
 	argv, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{
+		Config: inv.Config,
 		Session: ports.SessionRef{
 			ID:            inv.ReviewerID,
 			WorkspacePath: inv.WorkspacePath,

@@ -224,6 +224,66 @@ func TestPlanInProgressStaysRunning(t *testing.T) {
 	}
 }
 
+// A provider is allowed to omit a final plan notification. Successful turn
+// completion is AO's durable proof that the remaining plan work finished, so
+// both copies of the plan must settle with the turn instead of leaving a
+// completed answer beside a permanent "0 / N" plan.
+func TestSuccessfulCompletionFinalizesPlanWhenProviderOmitsTerminalPlan(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "do four things", Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	plan := domain.ConversationPlan{Steps: []domain.ConversationPlanStep{
+		{Text: "one", Status: domain.PlanStepInProgress},
+		{Text: "two", Status: domain.PlanStepPending},
+		{Text: "three", Status: domain.PlanStepPending},
+		{Text: "four", Status: domain.PlanStepPending},
+	}}
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventPlanUpdated, ProviderTurnID: "provider-turn-1",
+			Plan: &plan, Summary: "Plan 0/4: one"},
+		ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "provider-turn-1",
+			ProviderItemID: "message-1", Text: "Done."},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1",
+			TurnState: domain.TurnStateCompleted},
+	)
+
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateCompleted
+	})
+	turn := snapshot.Turns[0]
+	if turn.Plan == nil || len(turn.Plan.Steps) != 4 {
+		t.Fatalf("turn plan = %#v, want four steps", turn.Plan)
+	}
+	for i, step := range turn.Plan.Steps {
+		if step.Status != domain.PlanStepCompleted {
+			t.Errorf("turn plan step %d status = %q, want completed", i, step.Status)
+		}
+	}
+
+	activity := firstActivityOfKind(snapshot, domain.ActivityKindPlan)
+	if activity.Status != domain.ActivityStatusCompleted {
+		t.Errorf("plan activity status = %q, want completed", activity.Status)
+	}
+	if activity.Summary != "Plan 4/4 steps done" {
+		t.Errorf("plan activity summary = %q, want completed count", activity.Summary)
+	}
+	var detail struct {
+		Steps []domain.ConversationPlanStep `json:"steps"`
+	}
+	if err := json.Unmarshal(activity.Detail, &detail); err != nil {
+		t.Fatalf("decode plan activity detail: %v", err)
+	}
+	for i, step := range detail.Steps {
+		if step.Status != domain.PlanStepCompleted {
+			t.Errorf("plan activity step %d status = %q, want completed", i, step.Status)
+		}
+	}
+}
+
 /* ---- model reroute ----------------------------------------------------- */
 
 // A reroute becomes conversation state AND a timeline row. The state says what is

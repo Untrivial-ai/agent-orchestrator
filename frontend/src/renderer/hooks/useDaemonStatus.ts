@@ -4,6 +4,12 @@ import { aoBridge } from "../lib/bridge";
 import { applyDaemonStatus, readDaemonStatus, type DaemonStatus } from "../lib/daemon-status";
 import { queryClient as defaultQueryClient } from "../lib/query-client";
 import { createEventTransport } from "../lib/event-transport";
+import {
+	agentReadinessQueryKey,
+	cacheAgentReadiness,
+	ensureAgentReadiness,
+} from "./useAgentReadinessQuery";
+import { codexAccountsQueryKey } from "./codex-accounts-state";
 
 const STATUS_REFRESH_MS = 2_000;
 const READY_STATUS_REFRESH_MS = 10_000;
@@ -25,16 +31,21 @@ export function useDaemonStatus(queryClient: QueryClient = defaultQueryClient) {
 			}
 		};
 
-		const refreshStatus = () => {
+		const refreshStatus = (): Promise<DaemonStatus | undefined> => {
 			clearRefresh();
 			const requestVersion = ++statusVersion;
-			void readDaemonStatus()
+			return readDaemonStatus()
 				.then((nextStatus) => {
-					if (active && requestVersion === statusVersion) applyStatus(nextStatus);
+					if (active && requestVersion === statusVersion) {
+						applyStatus(nextStatus);
+						return nextStatus;
+					}
+					return undefined;
 				})
 				.catch(() => {
 					// IPC unavailable (browser preview, broken preload): stay on the
 					// last known status and keep the recovery loop alive.
+					return undefined;
 				})
 				.finally(() => {
 					if (!active || requestVersion !== statusVersion) return;
@@ -50,7 +61,17 @@ export function useDaemonStatus(queryClient: QueryClient = defaultQueryClient) {
 		const applyStatus = (nextStatus: DaemonStatus) => {
 			// Only point REST at the new port; the workspace refetch is the event
 			// transport's job (it invalidates, debounced, on every daemon status).
+			const previousStatus = statusRef.current;
 			statusRef.current = nextStatus;
+			const daemonChanged =
+				nextStatus.state !== "ready" ||
+				previousStatus.state !== "ready" ||
+				previousStatus.port !== nextStatus.port ||
+				previousStatus.pid !== nextStatus.pid;
+			if (daemonChanged) {
+				queryClient.removeQueries({ queryKey: agentReadinessQueryKey, exact: true });
+				queryClient.removeQueries({ queryKey: codexAccountsQueryKey, exact: true });
+			}
 			if (nextStatus.state === "ready" && nextStatus.port) {
 				applyDaemonStatus(nextStatus);
 				clearRefresh();
@@ -62,9 +83,14 @@ export function useDaemonStatus(queryClient: QueryClient = defaultQueryClient) {
 			setStatus(nextStatus);
 		};
 
-		refreshStatus();
+		void refreshStatus();
 		const refreshOnFocus = () => {
-			refreshStatus();
+			void refreshStatus().then((nextStatus) => {
+				if (nextStatus?.state !== "ready") return;
+				void ensureAgentReadiness([], "display")
+					.then((next) => cacheAgentReadiness(queryClient, next))
+					.catch(() => undefined);
+			});
 		};
 		const refreshOnVisibility = () => {
 			if (document.visibilityState === "visible") refreshOnFocus();

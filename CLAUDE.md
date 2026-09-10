@@ -27,4 +27,8 @@ diverges from **agent-orchestrator** — do **not** re-flag old design-reference
 
 When showing or demoing frontend changes, run `ao preview [url]` from inside the
 session so the change renders in the desktop browser panel (the inspector rail's
-Browser tab); do not just describe it.
+Browser tab); do not just describe it. `ao preview` updates the panel non-disruptively —
+it does not steal focus or force the Browser tab open if the user is looking at
+something else, only badging it as unseen. If the Browser tab isn't already the one
+the user has open, say so in your reply (e.g. "check the Browser tab") so the change
+doesn't go unnoticed behind the badge.

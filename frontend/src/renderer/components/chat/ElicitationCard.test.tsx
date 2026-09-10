@@ -21,7 +21,80 @@ function activity(detail: ConversationActivity["detail"]): ConversationActivity 
 }
 
 describe("ElicitationCard", () => {
-	it("renders Claude AskUserQuestion choices and returns structured content", async () => {
+	const claudeQuestions = {
+		type: "object" as const,
+		required: ["question_0", "question_1"],
+		properties: {
+			question_0: {
+				type: "string",
+				title: "Approach",
+				oneOf: [
+					{ const: "Native", title: "Native", description: "Use ACP directly" },
+					{ const: "Bridge", title: "Bridge" },
+				],
+			},
+			question_0_custom: { type: "string", title: "Other approach" },
+			question_1: {
+				type: "string",
+				title: "Language",
+				oneOf: [
+					{ const: "Go", title: "Go" },
+					{ const: "TypeScript", title: "TypeScript" },
+				],
+			},
+			question_1_custom: { type: "string", title: "Other language" },
+		},
+	};
+
+	it("shows one Claude question and its Other field at a time", () => {
+		render(
+			<ElicitationCard
+				activity={activity({ inputMode: "form", schema: claudeQuestions })}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("group", { name: /Approach/ })).toBeInTheDocument();
+		expect(screen.getByLabelText("Other approach")).toBeInTheDocument();
+		expect(screen.queryByRole("group", { name: /Language/ })).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("Other language")).not.toBeInTheDocument();
+	});
+
+	it("validates the active Claude question before moving forward", async () => {
+		const user = userEvent.setup();
+		render(
+			<ElicitationCard
+				activity={activity({ inputMode: "form", schema: claudeQuestions })}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Next" }));
+
+		expect(screen.getByText("Choose an answer.")).toBeInTheDocument();
+		expect(screen.queryByRole("group", { name: /Language/ })).not.toBeInTheDocument();
+	});
+
+	it("navigates Claude questions and preserves answers when going back", async () => {
+		const user = userEvent.setup();
+		render(
+			<ElicitationCard
+				activity={activity({ inputMode: "form", schema: claudeQuestions })}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		await user.click(screen.getByRole("radio", { name: /Native/ }));
+		await user.type(screen.getByLabelText("Other approach"), "Hybrid");
+		await user.click(screen.getByRole("button", { name: "Next" }));
+		expect(screen.getByRole("group", { name: /Language/ })).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Back" }));
+		expect(screen.getByRole("radio", { name: /Native/ })).toBeChecked();
+		expect(screen.getByLabelText("Other approach")).toHaveValue("Hybrid");
+	});
+
+	it("submits all Claude answers together from the final question", async () => {
 		const user = userEvent.setup();
 		const onResolve = vi.fn().mockResolvedValue(undefined);
 		render(
@@ -29,32 +102,47 @@ describe("ElicitationCard", () => {
 				activity={activity({
 					inputMode: "form",
 					message: "Which implementation should we use?",
-					schema: {
-						type: "object",
-						properties: {
-							question_0: {
-								type: "string",
-								title: "Approach",
-								oneOf: [
-									{ const: "Native", title: "Native", description: "Use ACP directly" },
-									{ const: "Bridge", title: "Bridge" },
-								],
-							},
-							question_0_custom: { type: "string", title: "Other" },
-						},
-					},
+					schema: claudeQuestions,
 				})}
 				onResolve={onResolve}
 			/>,
 		);
 
 		await user.click(screen.getByRole("radio", { name: /Native/ }));
-		await user.type(screen.getByLabelText("Other"), "Hybrid");
+		await user.type(screen.getByLabelText("Other approach"), "Hybrid");
+		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("radio", { name: "Go" }));
+		await user.type(screen.getByLabelText("Other language"), "Rust");
 		await user.click(screen.getByRole("button", { name: "Continue" }));
 		expect(onResolve).toHaveBeenCalledWith("request-1", "accept", {
 			question_0: "Native",
 			question_0_custom: "Hybrid",
+			question_1: "Go",
+			question_1_custom: "Rust",
 		});
+	});
+
+	it("keeps generic MCP forms in the all-fields layout", () => {
+		render(
+			<ElicitationCard
+				activity={activity({
+					inputMode: "form",
+					schema: {
+						type: "object",
+						properties: {
+							name: { type: "string", title: "Name" },
+							team: { type: "string", title: "Team" },
+						},
+					},
+				})}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByLabelText("Name")).toBeInTheDocument();
+		expect(screen.getByLabelText("Team")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Next" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
 	});
 
 	it("keeps required fields actionable instead of sending an invalid form", async () => {

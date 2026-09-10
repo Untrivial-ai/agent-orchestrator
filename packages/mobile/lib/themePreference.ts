@@ -26,11 +26,15 @@ export function isThemePreference(value: unknown): value is ThemePreference {
  *
  * `system` is resolved on every call rather than being frozen at pick time, so
  * the app follows the OS live instead of only at next launch. React Native
- * reports `null` for the system scheme before it has resolved, or on a platform
- * that has no notion of one; dark is the fallback because that is what the app
- * looked like before this setting existed.
+ * reports `"unspecified"` (and, on older versions, `null`) for the system scheme
+ * before it has resolved, or on a platform that has no notion of one; dark is
+ * the fallback because that is what the app looked like before this setting
+ * existed.
  */
-export function resolveScheme(preference: ThemePreference, systemScheme: ColorScheme | null | undefined): ColorScheme {
+export function resolveScheme(
+	preference: ThemePreference,
+	systemScheme: ColorScheme | "unspecified" | null | undefined,
+): ColorScheme {
 	if (preference === "light" || preference === "dark") return preference;
 	return systemScheme === "light" ? "light" : "dark";
 }

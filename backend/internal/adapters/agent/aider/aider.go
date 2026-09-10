@@ -1,11 +1,12 @@
 // Package aider implements the Aider agent adapter: launching interactive Aider
 // worker sessions.
 //
-// Aider is a Tier C adapter: it has no lifecycle hook surface, no native
-// session id, and no resume-by-id mechanism, so hook installation, restore, and
-// SessionInfo are intentionally no-ops. The permission mapping is lossy because
-// Aider lacks a graduated approval ladder or sandbox (see the comments on
-// appendApprovalFlags).
+// Aider is a Tier C adapter: it has no full lifecycle hook surface, native
+// session id, or resume-by-id mechanism, so hook installation, restore, and
+// SessionInfo are intentionally no-ops. It does expose a completion notification
+// command, which AO uses to report that Aider has returned to user input. The
+// permission mapping is lossy because Aider lacks a graduated approval ladder or
+// sandbox (see the comments on appendApprovalFlags).
 package aider
 
 import (
@@ -19,11 +20,15 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-const adapterID = "aider"
+const (
+	adapterID                = "aider"
+	aiderNotificationCommand = "ao hooks aider notification"
+)
 
 // Plugin is the Aider agent adapter. It is safe for concurrent use; the binary
 // path is resolved once and cached under binaryMu.
@@ -40,6 +45,7 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.WaitingInputComposerReadiness = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -61,7 +67,7 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 
 // GetLaunchCommand builds the argv to start an interactive Aider session:
 //
-//	aider [permission flags] --no-check-update --no-stream --no-pretty [--read <context file>]
+//	aider [permission flags] --no-check-update --no-stream --no-pretty --notifications --notifications-command <ao callback> [--read <context file>]
 //
 // Prompted tasks are delivered after startup by the session manager rather than
 // via `-m`. Aider's `-m <prompt>` mode is one-shot: it runs the message and then
@@ -81,7 +87,10 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	cmd = []string{binary}
 	appendApprovalFlags(&cmd, cfg.Permissions)
 	agentbase.AppendModelFlag(&cmd, cfg.Config, "--model")
-	cmd = append(cmd, "--no-check-update", "--no-stream", "--no-pretty")
+	cmd = append(cmd,
+		"--no-check-update", "--no-stream", "--no-pretty",
+		"--notifications", "--notifications-command", aiderNotificationCommand,
+	)
 	if cfg.SystemPromptFile != "" {
 		cmd = append(cmd, "--read", cfg.SystemPromptFile)
 	}
@@ -149,6 +158,14 @@ func ResolveAiderBinary(ctx context.Context) (string, error) {
 				return "", err
 			}
 		}
+		for _, candidate := range binaryutil.WindowsPackageManagerBinCandidates("aider") {
+			if hookutil.IsExecutableFile(candidate) {
+				return candidate, nil
+			}
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+		}
 		return "", fmt.Errorf("aider: %w", ports.ErrAgentBinaryNotFound)
 	}
 
@@ -162,6 +179,7 @@ func ResolveAiderBinary(ctx context.Context) (string, error) {
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append([]string{filepath.Join(home, ".local", "bin", "aider")}, candidates...)
+		candidates = append(candidates, binaryutil.UnixPackageManagerBinCandidates(home, "aider")...)
 	}
 
 	for _, candidate := range candidates {

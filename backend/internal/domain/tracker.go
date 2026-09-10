@@ -2,20 +2,32 @@ package domain
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
 // TrackerProvider identifies an issue-tracker provider implementation.
 type TrackerProvider string
 
-// TrackerProviderGitHub is the only supported issue-tracker provider.
-const TrackerProviderGitHub TrackerProvider = "github"
+// TrackerProviderGitHub and TrackerProviderGitLab are the supported issue-tracker
+// providers.
+const (
+	TrackerProviderGitHub TrackerProvider = "github"
+	TrackerProviderGitLab TrackerProvider = "gitlab"
+)
 
 // TrackerID identifies one issue. Native is the provider's own canonical form
-// ("owner/repo#123" for GitHub) and is parsed by the adapter.
+// ("owner/repo#123" for GitHub, "group/project#123" for GitLab) and is
+// parsed by the adapter.
+//
+// Host is the GitLab instance host (e.g. "gitlab.example.com"). The zero value
+// "" means the default host gitlab.com, so all existing call sites that
+// construct TrackerID without setting Host continue to work unchanged.
 type TrackerID struct {
 	Provider TrackerProvider `json:"provider"`
 	Native   string          `json:"native"`
+	// Host is the GitLab instance host; "" means gitlab.com.
+	Host string `json:"host,omitempty"`
 }
 
 // NormalizedIssueState is the cross-provider issue-state vocabulary every
@@ -45,11 +57,17 @@ type Issue struct {
 }
 
 // TrackerRepo identifies a repository for cross-issue queries like Tracker.List.
-// Native is the provider's canonical owner/project form, e.g. "owner/repo" for
-// GitHub.
+// Native is the provider's canonical owner/project form, e.g. "owner/repo"
+// for GitHub or "group/project" for GitLab.
+//
+// Host is the GitLab instance host (e.g. "gitlab.example.com"). The zero value
+// "" means the default host gitlab.com, so all existing call sites that
+// construct TrackerRepo without setting Host continue to work unchanged.
 type TrackerRepo struct {
 	Provider TrackerProvider `json:"provider"`
 	Native   string          `json:"native"`
+	// Host is the GitLab instance host; "" means gitlab.com.
+	Host string `json:"host,omitempty"`
 }
 
 // ListStateFilter narrows Tracker.List results by the provider's coarse
@@ -83,32 +101,61 @@ type ListFilter struct {
 // cannot accidentally drain an entire issue backlog.
 type TrackerIntakeConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
-	// Provider defaults to github when Enabled is true.
-	Provider TrackerProvider `json:"provider,omitempty" enum:"github"`
-	// Repo is the GitHub-native repository key ("owner/repo"). When empty, the
-	// intake loop derives it from the project's repo origin URL. GitHub only.
+	// Provider defaults to github when Enabled is true. Supported values:
+	// "github" and "gitlab".
+	Provider TrackerProvider `json:"provider,omitempty" enum:"github,gitlab"`
+	// Repo is the provider-native repository key ("owner/repo" for GitHub,
+	// "group/project" for GitLab). When empty, the intake loop derives it from
+	// the project's repo origin URL.
 	Repo string `json:"repo,omitempty"`
 	// Assignee narrows eligible issues to one assignee. Provider-specific values
 	// such as "*" are passed through unchanged.
 	Assignee string `json:"assignee,omitempty"`
 }
 
-// WithDefaults fills the provider only when intake is enabled. Disabled intake
-// leaves the zero value untouched so empty project configs still store as NULL.
+// WithDefaults leaves the provider empty when not explicitly set so the
+// caller can infer it from the project's repo origin URL at use time (see
+// InferTrackerProvider). Disabled intake leaves the zero value untouched so
+// empty project configs still store as NULL.
 func (c TrackerIntakeConfig) WithDefaults() TrackerIntakeConfig {
-	if c.Enabled && c.Provider == "" {
-		c.Provider = TrackerProviderGitHub
-	}
 	return c
 }
 
-// Validate rejects accidental broad intake and unknown providers.
+// InferTrackerProvider guesses the tracker provider from a repo origin URL.
+// GitHub hosts (github.com, *.github.com, *.ghe.io) map to github; any other
+// host maps to gitlab (self-managed GitLab uses arbitrary hostnames). The
+// empty-string fallback is github for backward compatibility.
+func InferTrackerProvider(repoURL string) TrackerProvider {
+	raw := strings.TrimSpace(repoURL)
+	if raw == "" {
+		return TrackerProviderGitHub
+	}
+	// SSH form git@host:path → normalise to https://host/path
+	if strings.HasPrefix(raw, "git@") {
+		if _, rest, ok := strings.Cut(raw, "@"); ok {
+			if host, path, ok := strings.Cut(rest, ":"); ok {
+				raw = "https://" + host + "/" + path
+			}
+		}
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return TrackerProviderGitHub
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	if host == "github.com" || strings.HasSuffix(host, ".github.com") || strings.HasSuffix(host, ".ghe.io") {
+		return TrackerProviderGitHub
+	}
+	return TrackerProviderGitLab
+}
+
+// Validate rejects accidental broad intake and unknown providers. An empty
+// provider is accepted here and inferred from the repo URL at use time.
 func (c TrackerIntakeConfig) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	c = c.WithDefaults()
-	if c.Enabled && c.Provider != TrackerProviderGitHub {
+	if c.Provider != "" && c.Provider != TrackerProviderGitHub && c.Provider != TrackerProviderGitLab {
 		return fmt.Errorf("trackerIntake.provider: unsupported provider %q", c.Provider)
 	}
 	if err := validateNoWhitespaceField("trackerIntake.repo", c.Repo); err != nil {

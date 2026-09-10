@@ -9,6 +9,8 @@
 
 export type ConnectionFailure =
 	| "not-ao-qr" // the scanned code wasn't an AO pairing payload
+	| "outdated-desktop" // a v1 code: AO on the computer is too old to pair with
+	| "tunnel-rotated" // nothing answered, and the only remote path was a tunnel
 	| "unreachable" // nothing answered (DNS failure, refused, timeout)
 	| "auth" // 401/403 — the password is wrong or was rotated
 	| "rate-limited" // 429 — the daemon's failed-attempt lockout
@@ -68,6 +70,19 @@ export function isLocalNetworkHost(host: string): boolean {
 	return false;
 }
 
+/**
+ * True for Tailscale's 100.64.0.0/10 CGNAT range. Deliberately NOT part of
+ * `isLocalNetworkHost`: a failure here is never the iOS Local Network prompt, and
+ * it is never a Wi-Fi problem either.
+ */
+export function isTailscaleHost(host: string): boolean {
+	const h = host.trim().toLowerCase();
+	const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+	if (!m) return false;
+	const [a, b] = [Number(m[1]), Number(m[2])];
+	return a === 100 && b >= 64 && b <= 127;
+}
+
 export type ConnectionErrorCopy = {
 	// Short heading. Used where the failure owns the screen (the board's empty
 	// state); the inline error boxes on the pairing screens show `message` alone.
@@ -92,6 +107,20 @@ export function describeConnectionFailure(
 		reason === "unreachable" && target.platform === "ios" && isLocalNetworkHost(target.host);
 
 	switch (reason) {
+		case "tunnel-rotated":
+			return {
+				title: "This machine's remote address changed",
+				message:
+					"AO on your computer restarted, which gives it a new address. Open Settings \u2192 Connect Mobile there and scan the code again.",
+				showLocalNetworkHint: false,
+			};
+		case "outdated-desktop":
+			return {
+				title: "Update AO on your computer",
+				message:
+					"That code was made by an older version of AO. Update the desktop app, then generate a new code.",
+				showLocalNetworkHint: false,
+			};
 		case "not-ao-qr":
 			return {
 				title: "Not an AO pairing code",
@@ -101,9 +130,11 @@ export function describeConnectionFailure(
 		case "unreachable":
 			return {
 				title: "Your desktop disconnected",
-				message:
-					`Reached nothing at ${target.host}:${target.port}. ` +
-					"Is Connect Mobile still on, and is your phone on the same Wi-Fi?",
+				message: isTailscaleHost(target.host)
+					? `Reached nothing at ${target.host}:${target.port}. ` +
+						"Make sure Tailscale is connected on both this phone and your computer, and that your computer is awake."
+					: `Reached nothing at ${target.host}:${target.port}. ` +
+						"Is Connect Mobile still on, and is your phone on the same Wi-Fi?",
 				showLocalNetworkHint,
 			};
 		case "auth":

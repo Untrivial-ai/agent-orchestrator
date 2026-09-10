@@ -1,30 +1,34 @@
 import { createFileRoute, Outlet, useMatchRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { isCancelledError, useQueryClient } from "@tanstack/react-query";
-import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import { memo, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FolderPlus } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { CommandPalette } from "../components/CommandPalette";
 import { CenterPanelShell } from "../components/CenterPanelShell";
 import { DaemonFailureBanner } from "../components/DaemonFailureBanner";
+import { DaemonStartupLoader } from "../components/DaemonStartupLoader";
 import { NotificationRuntime } from "../components/NotificationCenter";
 import { TrayRuntime } from "../components/TrayRuntime";
 import { GlobalNewTaskDialog } from "../components/GlobalNewTaskDialog";
+import { GlobalToast } from "../components/GlobalToast";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { KeyboardShortcutsDialog } from "../components/KeyboardShortcutsDialog";
 import { KeyboardShortcutsSettingsDialog } from "../components/settings/KeyboardShortcutsSettingsDialog";
 import { ShellTopbar } from "../components/ShellTopbar";
-import { SessionTopbarHost, SessionTopbarProvider } from "../components/SessionTopbarPortal";
+import { SessionTopbarProvider } from "../components/SessionTopbarPortal";
 import { OrchestratorReplacementDialog } from "../components/OrchestratorReplacementDialog";
+import { RestartToUpdateDialog } from "../components/RestartToUpdateDialog";
 import { Sidebar } from "../components/Sidebar";
 import { SidebarProvider } from "../components/ui/sidebar";
 import { TitlebarNav } from "../components/TitlebarNav";
 import { WindowTitlebar } from "../components/WindowTitlebar";
 import { TerminalCacheProvider } from "../components/TerminalPane";
-import { agentsQueryKey, agentsQueryOptions, refreshAgents } from "../hooks/useAgentsQuery";
 import { agentModelsQueryOptions } from "../hooks/useAgentModelsQuery";
 import { useDaemonStatus } from "../hooks/useDaemonStatus";
 import { useOpenShellTerminal } from "../hooks/useShellTerminals";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
-import { apiClient, apiErrorCode, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { addRendererExceptionStep, captureRendererEvent, captureRendererException } from "../lib/telemetry";
@@ -34,6 +38,7 @@ import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-repla
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import { aoBridge } from "../lib/bridge";
 import { handleModifierLinkClick } from "../lib/external-link-policy";
+import { recordProjectOpened } from "../lib/project-history";
 import { cn } from "../lib/utils";
 import {
 	isLinuxPlatform,
@@ -42,7 +47,7 @@ import {
 	usesFramedAppTopbar,
 	hidesShellTopbar,
 } from "../lib/platform";
-import { useUiStore } from "../stores/ui-store";
+import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
 import { sessionIsActive, toProjectKind, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
@@ -55,7 +60,7 @@ export const Route = createFileRoute("/_shell")({
 	loader: async ({ context }) => {
 		await refreshDaemonStatus().catch(() => undefined);
 		if (!usesPreviewWorkspaceData && !hasTrustedApiBaseUrl()) return;
-		return context.queryClient.ensureQueryData(workspaceQueryOptions);
+		return context.queryClient.fetchQuery({ ...workspaceQueryOptions, staleTime: 0 });
 	},
 	component: ShellLayout,
 });
@@ -64,25 +69,89 @@ function errorMessage(error: unknown) {
 	return error instanceof Error ? error.message : "Could not load projects";
 }
 
+function normalizeProjectPath(path: string): string {
+	if (!path) return path;
+	const trimmed = path.trim().replace(/[\\/]+$/, "");
+	return trimmed === "" ? path : trimmed;
+}
+
+function findRegisteredWorkspaceByPath(workspaces: WorkspaceSummary[], path: string): WorkspaceSummary | undefined {
+	const normalizedPath = normalizeProjectPath(path);
+	return workspaces.find((workspace) => normalizeProjectPath(workspace.path) === normalizedPath);
+}
+
 type CreateProjectConfigInput = {
 	workerAgent: string;
 	orchestratorAgent: string;
 	trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
+	defaultBranch?: string;
 };
 
 export function createProjectConfig(input: CreateProjectConfigInput): components["schemas"]["ProjectConfig"] {
 	return {
+		...(input.defaultBranch ? { defaultBranch: input.defaultBranch } : {}),
 		worker: { agent: input.workerAgent as components["schemas"]["RoleOverride"]["agent"] },
 		orchestrator: { agent: input.orchestratorAgent as components["schemas"]["RoleOverride"]["agent"] },
 		...(input.trackerIntake ? { trackerIntake: input.trackerIntake } : {}),
 	};
 }
 
+// Upper bound for the background orchestrator spawn after project creation.
+// Past this the board releases the provisioning gate and shows the retry
+// banner instead of staying gated forever on a hung spawn.
+const PROVISIONING_TIMEOUT_MS = 120_000;
+
 const isMac = isMacPlatform();
 const isWindows = isWindowsPlatform();
 const isLinux = isLinuxPlatform();
 const framedAppTopbar = usesFramedAppTopbar();
 const shellTopbarHiddenByPlatform = hidesShellTopbar();
+
+/**
+ * The shell must observe the complete workspace list for the sidebar, but a
+ * streamed update there should not reconcile the active route surface. Keep
+ * the center frame behind a primitive-only memo boundary; SessionView and the
+ * board own their more granular workspace subscriptions.
+ */
+const ShellCenter = memo(function ShellCenter({
+	hideShellTopbar,
+	isSessionRoute,
+	selfFramedCenterPanel,
+}: {
+	hideShellTopbar: boolean;
+	isSessionRoute: boolean;
+	selfFramedCenterPanel: boolean;
+}) {
+	const panelClassName = isSessionRoute ? "center-panel-shell--session" : undefined;
+	if (hideShellTopbar) {
+		return selfFramedCenterPanel ? (
+			<Outlet />
+		) : (
+			<CenterPanelShell className={panelClassName}>
+				<div className="flex min-h-0 flex-1 flex-col">
+					<Outlet />
+				</div>
+			</CenterPanelShell>
+		);
+	}
+	if (framedAppTopbar) {
+		return (
+			<CenterPanelShell className={panelClassName}>
+				{isSessionRoute ? null : <ShellTopbar />}
+				<div className="flex min-h-0 flex-1 flex-col">
+					<Outlet />
+				</div>
+			</CenterPanelShell>
+		);
+	}
+	return (
+		<CenterPanelShell className={panelClassName}>
+			<div className="flex min-h-0 flex-1 flex-col">
+				<Outlet />
+			</div>
+		</CenterPanelShell>
+	);
+});
 
 // Persistent app shell: the Sidebar + shared state survive route changes; only
 // the <Outlet> content (board / session / settings / …) swaps. Lifted out of
@@ -91,19 +160,29 @@ const shellTopbarHiddenByPlatform = hidesShellTopbar();
 function ShellLayout() {
 	// Reports how many agents this install has available, once per launch.
 	useAgentInventoryTelemetry();
+	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const matchRoute = useMatchRoute();
 	const queryClient = useQueryClient();
 	const workspaceQuery = useWorkspaceQuery();
 	const workspaces = workspaceQuery.data ?? [];
+	// Global shortcut listeners need the latest workspace list, but recreating
+	// those subscriptions for every streamed activity update is avoidable.
+	const workspacesRef = useRef(workspaces);
+	workspacesRef.current = workspaces;
 	const daemonStatus = useDaemonStatus(queryClient);
 	const [workspaceStartupState, setWorkspaceStartupState] = useState<"loading" | "ready" | "error">("loading");
 	const workspaceStartupBaselineRef = useRef(0);
-	const agentCatalogPortRef = useRef<number | undefined>(undefined);
-	const { themePreference, resolvedTheme, themeStyle, isSidebarOpen, toggleSidebar } = useUiStore();
+	const themePreference = useUiStore((state) => state.themePreference);
+	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
+	const themeStyle = useUiStore((state) => state.themeStyle);
+	const isSidebarOpen = useUiStore(sidebarIsVisible);
+	const toggleSidebar = useUiStore((state) => state.toggleSidebar);
+	const sidebarHasLayout = useUiStore(sidebarOccupiesLayout);
 	const syncSystemTheme = useUiStore((state) => state.syncSystemTheme);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const requestCreateProject = useUiStore((state) => state.requestCreateProject);
+	const requestCreateProjectFromPath = useUiStore((state) => state.requestCreateProjectFromPath);
 	const requestNewShellTerminal = useUiStore((state) => state.requestNewShellTerminal);
 	const newShellTerminalNonce = useUiStore((state) => state.newShellTerminalNonce);
 	const setActiveShellTerminal = useUiStore((state) => state.setActiveShellTerminal);
@@ -138,13 +217,67 @@ function ShellLayout() {
 	const handledShellNonceRef = useRef(newShellTerminalNonce);
 	const [isKeyboardShortcutsOpen, setIsKeyboardShortcutsOpen] = useState(false);
 	const [isKeyboardShortcutsSettingsOpen, setIsKeyboardShortcutsSettingsOpen] = useState(false);
-	const [isSidebarPeekOpen, setIsSidebarPeekOpen] = useState(false);
-	const sidebarPeekCloseTimerRef = useRef<number | undefined>(undefined);
 	const routeParams = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
 	useEffect(() => {
 		document.addEventListener("click", handleModifierLinkClick);
 		return () => document.removeEventListener("click", handleModifierLinkClick);
 	}, []);
+	// Drop a folder anywhere in the app window to add it as a project, mirroring
+	// VS Code's "drop a folder to open it". A depth counter (not a relatedTarget
+	// check) tracks dragenter/dragleave so the overlay doesn't flicker as the
+	// pointer crosses child-element boundaries. XtermTerminal's own drop handler
+	// only swallows (preventDefault/stopPropagation) a drop that is NOT a
+	// directory — a dropped folder is left untouched so it bubbles here even
+	// when it lands on an active terminal pane.
+	const [isDragActive, setIsDragActive] = useState(false);
+	const dragDepthRef = useRef(0);
+	useEffect(() => {
+		const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+		const firstEntryIsDirectory = (event: DragEvent) => {
+			const item = event.dataTransfer?.items?.[0];
+			return item?.webkitGetAsEntry?.()?.isDirectory ?? false;
+		};
+		const handleDragEnter = (event: DragEvent) => {
+			if (!isFileDrag(event)) return;
+			event.preventDefault();
+			dragDepthRef.current += 1;
+			if (dragDepthRef.current === 1 && firstEntryIsDirectory(event)) setIsDragActive(true);
+		};
+		const handleDragOver = (event: DragEvent) => {
+			if (!isFileDrag(event)) return;
+			event.preventDefault();
+			if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+		};
+		const handleDragLeave = (event: DragEvent) => {
+			if (!isFileDrag(event)) return;
+			dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+			if (dragDepthRef.current === 0) setIsDragActive(false);
+		};
+		const handleDrop = (event: DragEvent) => {
+			if (!isFileDrag(event)) return;
+			event.preventDefault();
+			dragDepthRef.current = 0;
+			setIsDragActive(false);
+			const item = event.dataTransfer?.items?.[0];
+			if (!item?.webkitGetAsEntry?.()?.isDirectory) return;
+			const file = item.getAsFile();
+			if (!file) return;
+			// Must be synchronous, on the File taken directly from dataTransfer, in
+			// the same tick as the native drop event — see preload.ts's comment.
+			const path = aoBridge.app.getPathForFile(file);
+			if (path) requestCreateProjectFromPath(path);
+		};
+		window.addEventListener("dragenter", handleDragEnter);
+		window.addEventListener("dragover", handleDragOver);
+		window.addEventListener("dragleave", handleDragLeave);
+		window.addEventListener("drop", handleDrop);
+		return () => {
+			window.removeEventListener("dragenter", handleDragEnter);
+			window.removeEventListener("dragover", handleDragOver);
+			window.removeEventListener("dragleave", handleDragLeave);
+			window.removeEventListener("drop", handleDrop);
+		};
+	}, [requestCreateProjectFromPath]);
 	// Project in scope for a new-session shortcut: the route's project, or the
 	// workspace owning the open session (so the shortcut works from a worker's
 	// detail view, where the URL carries only a sessionId).
@@ -179,54 +312,40 @@ function ShellLayout() {
 				}
 			});
 	}, [queryClient, scopedProjectId]);
-	// First-launch root board only (no projects in scope).
-	const isWelcomeBoard =
-		Boolean(matchRoute({ to: "/" })) &&
-		workspaceStartupState === "ready" &&
-		workspaceQuery.isSuccess &&
-		workspaces.length === 0;
+	// The root route is the intentionally minimal home surface, regardless of
+	// whether projects have already been registered.
+	const isHomeRoute = Boolean(matchRoute({ to: "/" }));
+	useEffect(() => {
+		if (routeParams.projectId) recordProjectOpened(routeParams.projectId);
+	}, [routeParams.projectId]);
+	const isTerminalsRoute = Boolean(matchRoute({ to: "/terminals" }));
 	const isSettingsRoute =
 		Boolean(matchRoute({ to: "/settings", fuzzy: true })) ||
 		Boolean(matchRoute({ to: "/projects/$projectId/settings", fuzzy: true }));
 	// Welcome/settings always self-frame. Platforms that hide the shell-owned
 	// topbar (macOS) use the same full-height inset; session actions mount
 	// inside SessionView.
-	const selfFramedCenterPanel = isWelcomeBoard || isSettingsRoute;
-	const hideShellTopbar = selfFramedCenterPanel || shellTopbarHiddenByPlatform;
+	// Home keeps the shell's topbar hidden, but still renders inside the shared
+	// rounded center panel. Settings owns its complete frame and remains
+	// self-framed.
+	const selfFramedCenterPanel = isSettingsRoute;
+	const hideShellTopbar = isHomeRoute || selfFramedCenterPanel || shellTopbarHiddenByPlatform;
+	const restartingProjectIds = useUiStore((state) => state.restartingProjectIds);
 	const setProjectRestarting = useUiStore((state) => state.setProjectRestarting);
 	const orchestratorReplacementErrors = useUiStore((state) => state.orchestratorReplacementErrors);
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const setOrchestratorStartupError = useUiStore((state) => state.setOrchestratorStartupError);
+	const setProjectProvisioning = useUiStore((state) => state.setProjectProvisioning);
+	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const replacementErrorProjectId = Object.keys(orchestratorReplacementErrors)[0] ?? null;
 	const isStartupLoading =
 		!usesPreviewWorkspaceData &&
 		!daemonStatus.code &&
-		(daemonStatus.state !== "ready" || workspaceStartupState === "loading");
-	const cancelSidebarPeekClose = useCallback(() => {
-		if (sidebarPeekCloseTimerRef.current === undefined) return;
-		window.clearTimeout(sidebarPeekCloseTimerRef.current);
-		sidebarPeekCloseTimerRef.current = undefined;
-	}, []);
-
-	const previewSidebar = useCallback(() => {
-		if (isSidebarOpen) return;
-		cancelSidebarPeekClose();
-		setIsSidebarPeekOpen(true);
-	}, [cancelSidebarPeekClose, isSidebarOpen]);
-
-	const scheduleSidebarPeekClose = useCallback(() => {
-		if (isSidebarOpen) return;
-		cancelSidebarPeekClose();
-		sidebarPeekCloseTimerRef.current = window.setTimeout(() => {
-			setIsSidebarPeekOpen(false);
-			sidebarPeekCloseTimerRef.current = undefined;
-		}, 140);
-	}, [cancelSidebarPeekClose, isSidebarOpen]);
-
+		(daemonStatus.state !== "ready" || workspaceStartupState === "loading" || (!workspaceQuery.isSuccess && !workspaceQuery.isError));
 	const navigateSession = useCallback(
 		(direction: -1 | 1) => {
 			if (!scopedProjectId) return;
-			const sessions = (workspaces.find((workspace) => workspace.id === scopedProjectId)?.sessions ?? []).filter(
+			const sessions = (workspacesRef.current.find((workspace) => workspace.id === scopedProjectId)?.sessions ?? []).filter(
 				sessionIsActive,
 			);
 			if (sessions.length === 0) return;
@@ -244,7 +363,7 @@ function ShellLayout() {
 				params: { projectId: scopedProjectId, sessionId: session.id },
 			});
 		},
-		[navigate, routeParams.sessionId, scopedProjectId, workspaces],
+		[navigate, routeParams.sessionId, scopedProjectId],
 	);
 
 	const updateWorkspaces = useCallback(
@@ -254,6 +373,109 @@ function ShellLayout() {
 		[queryClient],
 	);
 
+	// Background orchestrator provisioning for a newly created project. Owns
+	// the provisioning flag, the hung-spawn timeout, the session refresh, and
+	// the retry error end to end — callers must fire and forget it, never await.
+	const provisionOrchestrator = useCallback(
+		async (
+			workspace: WorkspaceSummary,
+			input: CreateProjectConfigInput,
+			source: "project_add" | "project_clone",
+		) => {
+		// Safety: a hung spawn must never wedge the board behind the
+		// provisioning gate. If it outlives this budget, release the gate and
+		// surface the retry banner; a late success still navigates below and
+		// the board clears the banner once the orchestrator appears.
+		const provisioningGuard = window.setTimeout(() => {
+			setProjectProvisioning(workspace.id, false);
+			setOrchestratorStartupError(
+				workspace.id,
+				"Project added, but the orchestrator is taking longer than expected to start. Retry from the board if it does not appear.",
+			);
+		}, PROVISIONING_TIMEOUT_MS);
+		try {
+			void captureRendererEvent("ao.renderer.orchestrator_spawn_requested", {
+				project_id: workspace.id,
+				source,
+			});
+			const {
+				data: spawnData,
+				error: spawnError,
+				response: spawnResponse,
+			} = await apiClient.POST("/api/v1/sessions", {
+				body: {
+					projectId: workspace.id,
+					kind: "orchestrator",
+					harness: input.orchestratorAgent as components["schemas"]["SpawnSessionRequest"]["harness"],
+				},
+			});
+			if (spawnError || !spawnData?.session?.id) {
+				const message = spawnError
+					? apiErrorMessage(spawnError, `Failed to spawn orchestrator (${spawnResponse.status})`)
+					: `Failed to spawn orchestrator (${spawnResponse.status})`;
+				throw new Error(message);
+			}
+			void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", {
+				project_id: workspace.id,
+				source,
+			});
+			const sessionId = spawnData.session.id;
+			window.clearTimeout(provisioningGuard);
+			setProjectProvisioning(workspace.id, false);
+			// Wait for the refetch so the session route never renders before
+			// the new session is in the workspace query (which would flash
+			// the session-not-found state). The daemon just created it, so
+			// one invalidate is enough — no polling loop.
+			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+			void navigate({
+				to: "/projects/$projectId/sessions/$sessionId",
+				params: { projectId: workspace.id, sessionId },
+			});
+		} catch (spawnError) {
+			window.clearTimeout(provisioningGuard);
+			setProjectProvisioning(workspace.id, false);
+			void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
+				project_id: workspace.id,
+				source,
+			});
+			const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";
+			const startupMessage = `Project added, but orchestrator did not start: ${message}`;
+			setOrchestratorStartupError(workspace.id, startupMessage);
+		}
+	},
+	[navigate, queryClient, setOrchestratorStartupError, setProjectProvisioning],
+);
+
+	const completeProjectCreation = useCallback(
+		async (
+			project: components["schemas"]["Project"],
+			input: CreateProjectConfigInput,
+			source: "project_add" | "project_clone",
+		) => {
+			const workspace: WorkspaceSummary = {
+				id: project.id,
+				name: project.name,
+				kind: toProjectKind(project.kind),
+				path: project.path,
+				workspaceRepos: project.workspaceRepos,
+				type: "main",
+				orchestratorAgent: input.orchestratorAgent as WorkspaceSummary["orchestratorAgent"],
+				sessions: [],
+			};
+			void captureRendererEvent(`ao.renderer.${source}_succeeded`, { project_id: workspace.id });
+			updateWorkspaces((current) => [workspace, ...current.filter((item) => item.id !== workspace.id)]);
+			setOrchestratorStartupError(workspace.id, null);
+			setProjectProvisioning(workspace.id, true);
+			// Navigate to the project board immediately so the IDE paints, then
+			// hand off to the detached provisioning flow. Resolving here (rather
+			// than after the spawn) is what closes the setup modal and makes
+			// the board usable while the orchestrator starts in the background.
+			void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
+			void provisionOrchestrator(workspace, input, source);
+		},
+		[navigate, provisionOrchestrator, setOrchestratorStartupError, setProjectProvisioning, updateWorkspaces],
+	);
+
 	const createProject = useCallback(
 		async (input: {
 			path: string;
@@ -261,6 +483,7 @@ function ShellLayout() {
 			orchestratorAgent: string;
 			trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
 			asWorkspace?: boolean;
+			clonePreparationId?: string;
 		}) => {
 			void addRendererExceptionStep("Project add requested", {
 				source: "project-add",
@@ -276,78 +499,107 @@ function ShellLayout() {
 				body: {
 					path: input.path,
 					asWorkspace: input.asWorkspace || undefined,
+					clonePreparationId: input.clonePreparationId,
 					config: createProjectConfig(input),
 				},
 			});
 			if (error) {
-				const failure = new Error(apiErrorMessage(error)) as Error & { code?: string };
+				const failure = new Error(apiErrorMessage(error)) as Error & {
+					code?: string;
+					details?: Record<string, unknown>;
+					requestId?: string;
+				};
 				failure.code = apiErrorCode(error);
+				failure.details = apiErrorDetails(error);
+				failure.requestId = apiErrorRequestId(error);
+				if (failure.code === "PATH_ALREADY_REGISTERED") {
+					const existingProjectId = failure.details?.existingProjectId;
+					const findRegisteredWorkspace = (items: WorkspaceSummary[]) => {
+						const local = items.filter((workspace) => workspace.kind !== "cloud");
+						// The daemon resolves symlinks/canonical paths. Prefer its identity
+						// over renderer path spelling, but only open a known local project.
+						return typeof existingProjectId === "string" && existingProjectId !== ""
+							? local.find((workspace) => workspace.id === existingProjectId)
+							: findRegisteredWorkspaceByPath(local, input.path);
+					};
+					let registeredWorkspace = findRegisteredWorkspace(
+						queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? workspacesRef.current,
+					);
+					if (!registeredWorkspace) {
+						try {
+							registeredWorkspace = findRegisteredWorkspace(await queryClient.fetchQuery({
+								...workspaceQueryOptions, staleTime: 0, retry: false,
+							}));
+						} catch {
+							// Keep the original conflict and selection if refresh is unavailable.
+						}
+					}
+					if (registeredWorkspace) {
+						showGlobalToast("Project already added", "Opened the registered project for this folder.");
+						void navigate({ to: "/projects/$projectId", params: { projectId: registeredWorkspace.id } });
+						return;
+					}
+				}
 				void captureRendererException(failure, {
 					source: "project-add",
 					operation: "project_add",
 					surface: "project_board",
+					});
+					throw failure;
+			}
+			if (!data?.project) throw new Error("Project creation returned no project");
+			await completeProjectCreation(data.project, input, "project_add");
+		},
+		[completeProjectCreation, navigate, queryClient, showGlobalToast],
+	);
+
+	const cloneProject = useCallback(
+		async (input: {
+			remoteUrl: string;
+			destinationParent: string;
+			workerAgent: string;
+			orchestratorAgent: string;
+			trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
+			signal?: AbortSignal;
+		}) => {
+			void addRendererExceptionStep("Project clone requested", {
+				source: "project-clone",
+				operation: "project_clone",
+				surface: "project_board",
+			});
+			void captureRendererEvent("ao.renderer.project_clone_requested");
+			const status = await refreshDaemonStatus();
+			if (status.state !== "ready" || !status.port) {
+				throw new Error(status.message || "AO daemon is not ready.");
+			}
+			const { data, error } = await apiClient.POST("/api/v1/projects/clone", {
+				signal: input.signal,
+				body: {
+					remoteUrl: input.remoteUrl,
+					destinationParent: input.destinationParent,
+					config: createProjectConfig(input),
+				},
+			});
+			if (error) {
+				const failure = new Error(apiErrorMessage(error)) as Error & {
+					code?: string;
+					details?: Record<string, unknown>;
+					requestId?: string;
+				};
+				failure.code = apiErrorCode(error);
+				failure.details = apiErrorDetails(error);
+				failure.requestId = apiErrorRequestId(error);
+				void captureRendererException(failure, {
+					source: "project-clone",
+					operation: "project_clone",
+					surface: "project_board",
 				});
 				throw failure;
 			}
-			if (!data?.project) throw new Error("Project creation returned no project");
-
-			const workspace: WorkspaceSummary = {
-				id: data.project.id,
-				name: data.project.name,
-				kind: toProjectKind(data.project.kind),
-				path: data.project.path,
-				workspaceRepos: data.project.workspaceRepos,
-				type: "main",
-				orchestratorAgent: input.orchestratorAgent as WorkspaceSummary["orchestratorAgent"],
-				sessions: [],
-			};
-			void captureRendererEvent("ao.renderer.project_add_succeeded", { project_id: workspace.id });
-			updateWorkspaces((current) => [workspace, ...current.filter((item) => item.id !== workspace.id)]);
-			setOrchestratorStartupError(workspace.id, null);
-			try {
-				void captureRendererEvent("ao.renderer.orchestrator_spawn_requested", {
-					project_id: workspace.id,
-					source: "project_add",
-				});
-				const {
-					data: spawnData,
-					error: spawnError,
-					response: spawnResponse,
-				} = await apiClient.POST("/api/v1/sessions", {
-					body: {
-						projectId: workspace.id,
-						kind: "orchestrator",
-						harness: input.orchestratorAgent as components["schemas"]["SpawnSessionRequest"]["harness"],
-					},
-				});
-				if (spawnError || !spawnData?.session?.id) {
-					const message = spawnError
-						? apiErrorMessage(spawnError, `Failed to spawn orchestrator (${spawnResponse.status})`)
-						: `Failed to spawn orchestrator (${spawnResponse.status})`;
-					throw new Error(message);
-				}
-				void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", {
-					project_id: workspace.id,
-					source: "project_add",
-				});
-				const sessionId = spawnData.session.id;
-				await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-				void navigate({
-					to: "/projects/$projectId/sessions/$sessionId",
-					params: { projectId: workspace.id, sessionId },
-				});
-			} catch (spawnError) {
-				void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
-					project_id: workspace.id,
-					source: "project_add",
-				});
-				void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
-				const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";
-				const startupMessage = `Project added, but orchestrator did not start: ${message}`;
-				setOrchestratorStartupError(workspace.id, startupMessage);
-			}
+			if (!data?.project) throw new Error("Project clone returned no project");
+			await completeProjectCreation(data.project, input, "project_clone");
 		},
-		[navigate, queryClient, setOrchestratorStartupError, updateWorkspaces],
+		[completeProjectCreation],
 	);
 
 	const initializeProjectRepository = useCallback(async (path: string) => {
@@ -361,8 +613,20 @@ function ShellLayout() {
 		}
 	}, []);
 
+	const validateImport = useCallback(
+		async (input: { path: string; importKind: "project" | "workspace" }) => {
+			const { data, error } = await apiClient.POST("/api/v1/imports/validate", { body: input });
+			if (error) throw new Error(apiErrorMessage(error));
+			if (!data) throw new Error("Import validation returned no result");
+			return data;
+		},
+		[],
+	);
+
 	const removeProject = useCallback(
 		async (projectId: string) => {
+			const isLastWorkspace =
+              workspaces.length === 1 && workspaces[0]?.id === projectId;
 			void addRendererExceptionStep("Project removal requested", {
 				source: "project-remove",
 				operation: "project_remove",
@@ -385,8 +649,11 @@ function ShellLayout() {
 			}
 			void captureRendererEvent("ao.renderer.project_removed", { project_id: projectId });
 			updateWorkspaces((current) => current.filter((item) => item.id !== projectId));
+			if (isLastWorkspace) {
+              void navigate({ to: "/" });
+}
 		},
-		[updateWorkspaces],
+		[navigate, updateWorkspaces, workspaces],
 	);
 
 	const restartOrchestrator = useCallback(
@@ -482,55 +749,11 @@ function ShellLayout() {
 		void aoBridge.theme?.set(themePreference);
 	}, [themePreference]);
 
+	// Cursor Agent reads TERM_THEME at spawn from this file. Persist the same
+	// resolved light/dark scheme the terminal uses, not nativeTheme alone.
 	useEffect(() => {
-		if (!isSidebarOpen) return;
-		cancelSidebarPeekClose();
-		setIsSidebarPeekOpen(false);
-	}, [cancelSidebarPeekClose, isSidebarOpen]);
-
-	useEffect(() => cancelSidebarPeekClose, [cancelSidebarPeekClose]);
-
-	useEffect(() => {
-		if (!isSidebarPeekOpen || isSidebarOpen) return;
-
-		const handlePointerMove = (event: PointerEvent) => {
-			const target = event.target instanceof Element ? event.target : null;
-			const isInSidebarPortal = Boolean(target?.closest('[role="dialog"], [role="listbox"], [role="menu"]'));
-			// TitlebarNav / WindowTitlebar sit above the peek in z-order; keep the
-			// preview open while the pointer is on those controls so hover→click
-			// to pin still works.
-			const isInTitlebarChrome = Boolean(
-				target?.closest("[data-slot='titlebar-nav'], .window-titlebar"),
-			);
-			const sidebar = document.querySelector<HTMLElement>('[data-slot="sidebar-container"]');
-			const bounds = sidebar?.getBoundingClientRect();
-			const isInSidebar = Boolean(
-				bounds &&
-				event.clientX >= bounds.left &&
-				event.clientX <= bounds.right &&
-				event.clientY >= bounds.top &&
-				event.clientY <= bounds.bottom,
-			);
-
-			if (isInSidebar || isInSidebarPortal || isInTitlebarChrome) {
-				cancelSidebarPeekClose();
-				return;
-			}
-			scheduleSidebarPeekClose();
-		};
-
-		window.addEventListener("pointermove", handlePointerMove);
-		return () => window.removeEventListener("pointermove", handlePointerMove);
-	}, [cancelSidebarPeekClose, isSidebarOpen, isSidebarPeekOpen, scheduleSidebarPeekClose]);
-
-	useEffect(() => {
-		if (daemonStatus.state !== "ready" || !daemonStatus.port) return;
-		if (agentCatalogPortRef.current === daemonStatus.port) return;
-
-		agentCatalogPortRef.current = daemonStatus.port;
-		void queryClient.invalidateQueries({ queryKey: agentsQueryKey });
-		void queryClient.fetchQuery({ ...agentsQueryOptions, queryFn: refreshAgents });
-	}, [daemonStatus.port, daemonStatus.state, queryClient]);
+		void aoBridge.theme?.persistTerminal(resolvedTheme);
+	}, [resolvedTheme]);
 
 	// Follow OS appearance while the user keeps Theme on System — updates
 	// resolvedTheme (and thus React consumers) without writing light/dark to storage.
@@ -551,7 +774,7 @@ function ShellLayout() {
 				return;
 			}
 			if (matchesRendererShortcut("open-project", event)) {
-				const workspace = workspaces[Number(event.key) - 1];
+				const workspace = workspacesRef.current[Number(event.key) - 1];
 				if (workspace) {
 					event.preventDefault();
 					void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
@@ -560,7 +783,7 @@ function ShellLayout() {
 		};
 		window.addEventListener("keydown", handleKeyDown);
 		return () => window.removeEventListener("keydown", handleKeyDown);
-	}, [navigate, toggleSidebar, workspaces]);
+	}, [navigate, toggleSidebar]);
 
 	// New session (⌘N / Ctrl+Shift+N) is detected in the main process and
 	// delivered here, so it fires even when focus is inside xterm or a native
@@ -580,35 +803,56 @@ function ShellLayout() {
 
 	useEffect(() => aoBridge.app.onKeyboardShortcutsHelp(() => setIsKeyboardShortcutsOpen(true)), []);
 
+	// A folder was dropped on the app's taskbar icon/shortcut (main process,
+	// cold start or an already-running instance) — feeds the same drop flow as
+	// dragging a folder into the open window.
+	useEffect(
+		() => aoBridge.app.onOpenFolderPath((path) => requestCreateProjectFromPath(path)),
+		[requestCreateProjectFromPath],
+	);
+
 	// New standalone terminal (⌘T / Ctrl+T), also detected in the main process so it
 	// fires from inside a terminal pane. It raises the same store signal as the
 	// tab-strip + button so the two cannot drift apart.
-	useEffect(() => aoBridge.app.onNewShellTerminalShortcut(() => requestNewShellTerminal()), [requestNewShellTerminal]);
+	useEffect(
+		() =>
+			aoBridge.app.onNewShellTerminalShortcut(() => {
+				// The project board is not a terminal surface — ⌘T here used to yank
+				// users into the standalone /terminals route (#4772). Sessions and the
+				// dedicated terminals view keep the shortcut; explicit UI can still
+				// open shells from the board.
+				if (routeParams.sessionId || isTerminalsRoute) {
+					requestNewShellTerminal();
+				}
+			}),
+		[isTerminalsRoute, requestNewShellTerminal, routeParams.sessionId],
+	);
 
 	// The shell layout is the single consumer of that signal, because it is the
 	// only component mounted on EVERY route. Owning it here is what lets the
-	// button and the keyboard shortcut work from the board, a project page, or a session alike
-	// — when the session view owned it, both silently did nothing outside a
-	// session, since nothing was listening.
+	// topbar + button and the keyboard shortcut work from a session or the
+	// standalone terminals view alike — when the session view owned it, both
+	// silently did nothing outside a session, since nothing was listening.
 	//
 	// Where the new shell becomes visible depends on where the user is: inside a
-	// session it joins that pane's tab strip, anywhere else it gets the
-	// standalone /terminals view. Either way the store records it as active, and
-	// whichever view is on screen selects it.
+	// session it joins that pane's tab strip; on /terminals it joins that strip;
+	// explicit board UI can still route here without the keyboard shortcut.
 	useEffect(() => {
 		if (handledShellNonceRef.current === newShellTerminalNonce) return;
 		handledShellNonceRef.current = newShellTerminalNonce;
-		openShellTerminal.mutate(
+		const shell = openShellTerminal.open(
 			{ projectId: scopedProjectId, sessionId: routeParams.sessionId },
 			{
-				onSuccess: (shell) => {
-					setActiveShellTerminal(shell.handleId);
-					if (!routeParams.sessionId) {
-						void navigate({ to: "/terminals" });
-					}
+				onSuccess: (openedShell) => {
+					setActiveShellTerminal(openedShell.handleId);
 				},
 			},
 		);
+		if (!shell) return;
+		setActiveShellTerminal(shell.handleId);
+		if (!routeParams.sessionId) {
+			void navigate({ to: "/terminals" });
+		}
 	}, [
 		newShellTerminalNonce,
 		openShellTerminal,
@@ -644,14 +888,58 @@ function ShellLayout() {
 			}),
 		[],
 	);
+	const shellContextValue = useMemo(
+		() => ({
+			daemonStatus,
+			workspaceStartupState,
+			cloneProject,
+			createProject,
+			initializeProjectRepository,
+			validateImport,
+		}),
+		[
+			cloneProject,
+			createProject,
+			daemonStatus,
+			initializeProjectRepository,
+			validateImport,
+			workspaceStartupState,
+		],
+	);
+
+	// Keep the shell chrome and its first route behind the same readiness gate.
+	// Rendering the sidebar with an empty query while the home outlet shows its
+	// loader creates a visible two-stage launch and can make the home page flash
+	// before the project list arrives.
+	if (isStartupLoading) return <DaemonStartupLoader />;
 
 	return (
-		<ShellProvider value={{ daemonStatus, workspaceStartupState, createProject, initializeProjectRepository }}>
+		<ShellProvider
+			value={shellContextValue}
+		>
 			<SessionTopbarProvider>
 				<NotificationRuntime />
 				<TrayRuntime />
+				{isDragActive ? (
+					<div
+						aria-hidden="true"
+						className="dialog-overlay pointer-events-none flex items-center justify-center"
+						data-testid="folder-drop-overlay"
+					>
+						<div className="relative isolate flex w-[min(420px,calc(100vw-48px))] flex-col items-center gap-3 rounded-welcome-panel border border-dashed border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)] p-8 text-center shadow-[var(--shadow-import-modal)]">
+							<span className="grid size-11 place-items-center rounded-xl bg-[var(--color-bg-import-chip)] text-[var(--color-text-import-muted)]">
+								<FolderPlus className="size-5" aria-hidden="true" />
+							</span>
+							<p className="text-[15px] font-semibold text-[var(--color-text-import-title)]">
+								{t("createProject.dropToAdd")}
+							</p>
+						</div>
+					</div>
+				) : null}
 				<GlobalNewTaskDialog />
+				<GlobalToast />
 				<SettingsDialog />
+				<RestartToUpdateDialog />
 				<KeyboardShortcutsDialog
 					open={isKeyboardShortcutsOpen}
 					onOpenChange={setIsKeyboardShortcutsOpen}
@@ -674,7 +962,12 @@ function ShellLayout() {
           render inside the center panel when the shell topbar is hidden. */}
 			<div
 				className={cn(
-					"flex h-screen min-h-0 flex-col bg-sidebar text-foreground",
+					// `app-shell-root` is the platform-independent hook the native-composition
+					// cascade needs to clear this opaque `bg-sidebar` while the live browser
+					// page shows through. Windows/Linux were already covered by their
+					// platform classes; macOS adds none, so without this the shell painted
+					// over the live page whenever an overlay raised it.
+					"app-shell-root flex h-screen min-h-0 flex-col bg-sidebar text-foreground",
 					isWindows && "platform-windows",
 					isLinux && "platform-linux",
 					isFullScreen && "native-fullscreen",
@@ -683,7 +976,7 @@ function ShellLayout() {
 				{/* Windows-only custom title bar (sidebar toggle + File/Edit/View/…
             menu); paints the chrome the frameless window drops. Renders null on
             macOS/Linux. */}
-				<WindowTitlebar onSidebarPreviewEnter={previewSidebar} />
+				<WindowTitlebar />
 				{/* App routes render their topbar inside the framed panel, matching the board chrome across platforms while leaving OS titlebars native. */}
 				{!framedAppTopbar && !hideShellTopbar && !routeParams.sessionId ? <ShellTopbar /> : null}
 				{/* Controlled by the ui-store so TitlebarNav / Topbar toggles (which
@@ -693,11 +986,9 @@ function ShellLayout() {
 					className="min-h-0 flex-1 flex-col overflow-x-hidden"
 					keyboardShortcut={false}
 					onOpenChange={(open) => {
-						cancelSidebarPeekClose();
-						setIsSidebarPeekOpen(false);
 						if (open !== isSidebarOpen) toggleSidebar();
 					}}
-					open={!isStartupLoading && (isSidebarOpen || isSidebarPeekOpen)}
+					open={!isStartupLoading && isSidebarOpen}
 					style={
 						{
 							"--sidebar-width": "var(--ao-sidebar-w, var(--size-sidebar-default))",
@@ -705,69 +996,32 @@ function ShellLayout() {
 						} as CSSProperties
 					}
 				>
-				<div className="flex min-h-0 w-full flex-1 overflow-x-hidden" data-testid="shell-content-row">
+				<div
+					className="flex min-h-0 w-full flex-1 overflow-x-hidden"
+					data-testid="shell-content-row"
+				>
 				{/* macOS + Linux reserve a titlebar band for the fixed TitlebarNav
               cluster above a full-height sidebar; Windows hangs the sidebar
               below its custom titlebar. */}
 				<Sidebar
-					hideEdgeBorder={isWelcomeBoard}
-					isOverlay={isSidebarPeekOpen && !isSidebarOpen}
-					onPreviewLeave={scheduleSidebarPeekClose}
+					hideEdgeBorder={isHomeRoute}
 					underTopbar={isMac || isWindows || isLinux}
-					topbarOffset={isWindows ? "titlebar" : hideShellTopbar ? "trafficLights" : "toolbar"}
+						topbarOffset={isWindows ? "titlebar" : hideShellTopbar ? "trafficLights" : "toolbar"}
+						onCloneProject={cloneProject}
 						onCreateProject={createProject}
 						onInitializeProject={initializeProjectRepository}
 						onRemoveProject={removeProject}
 						workspaceError={workspaceQuery.isError ? errorMessage(workspaceQuery.error) : undefined}
 						workspaces={workspaces}
 					/>
-					<main className={cn("flex min-w-0 flex-1 flex-col overflow-x-hidden", !isSidebarOpen && "sidebar-hidden")}>
+					<main className={cn("flex min-w-0 flex-1 flex-col overflow-x-hidden", !sidebarHasLayout && "sidebar-hidden")}>
 						<div className="min-h-0 flex-1 overflow-x-hidden">
 							{/* Board/session routes render inside the same inset box the welcome board and settings paint for themselves, so every screen sits within the app's outer boundary. */}
-							{hideShellTopbar ? (
-								selfFramedCenterPanel ? (
-									<Outlet />
-								) : (
-							// Platform hides shell topbar: full-height panel; session mounts actions in-panel.
-							<CenterPanelShell className={routeParams.sessionId ? "center-panel-shell--session" : undefined}>
-								{routeParams.sessionId ? (
-									<SessionTopbarHost
-										className="relative z-chrome flex h-inspector-tabs w-full shrink-0 overflow-hidden"
-										data-testid="session-topbar-host"
-									/>
-								) : null}
-								<div className="flex min-h-0 flex-1 flex-col">
-									<Outlet />
-								</div>
-							</CenterPanelShell>
-						)
-					) : framedAppTopbar ? (
-						<CenterPanelShell className={routeParams.sessionId ? "center-panel-shell--session" : undefined}>
-							{routeParams.sessionId ? (
-								<SessionTopbarHost
-									className="relative z-chrome flex h-inspector-tabs w-full shrink-0 overflow-hidden"
-									data-testid="session-topbar-host"
-								/>
-							) : (
-								<ShellTopbar />
-							)}
-							<div className="flex min-h-0 flex-1 flex-col">
-								<Outlet />
-							</div>
-						</CenterPanelShell>
-					) : (
-						<CenterPanelShell className={routeParams.sessionId ? "center-panel-shell--session" : undefined}>
-							{routeParams.sessionId ? (
-								<SessionTopbarHost
-									className="relative z-chrome flex h-inspector-tabs w-full shrink-0 overflow-hidden"
-									data-testid="session-topbar-host"
-								/>
-							) : null}
-							<div className="flex min-h-0 flex-1 flex-col">
-								<Outlet />
-							</div>
-						</CenterPanelShell>
-					)}
+							<ShellCenter
+								hideShellTopbar={hideShellTopbar}
+								isSessionRoute={Boolean(routeParams.sessionId)}
+								selfFramedCenterPanel={selfFramedCenterPanel}
+							/>
 						</div>
 					</main>
 					</div>
@@ -797,12 +1051,12 @@ function ShellLayout() {
               though DOM hit-testing looks correct. */}
 					<TitlebarNav
 						hasSessionTopbar={Boolean(routeParams.sessionId)}
-						historyLocked={isWelcomeBoard}
+						historyLocked={isHomeRoute}
 						isFullScreen={isFullScreen}
-						onSidebarPreviewEnter={previewSidebar}
 					/>
 				</SidebarProvider>
 				<OrchestratorReplacementDialog
+					pending={Boolean(replacementErrorProjectId && restartingProjectIds.has(replacementErrorProjectId))}
 					error={replacementErrorProjectId ? orchestratorReplacementErrors[replacementErrorProjectId] : undefined}
 					onOpenChange={(open) => {
 						if (!open && replacementErrorProjectId) setOrchestratorReplacementError(replacementErrorProjectId, null);

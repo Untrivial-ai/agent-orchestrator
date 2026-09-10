@@ -276,6 +276,9 @@ func TestPreview_HelpIncludesExamples(t *testing.T) {
 	if !strings.Contains(out, "README.md") {
 		t.Errorf("help output missing Markdown example:\n%s", out)
 	}
+	if !strings.Contains(out, "workspace-root-relative") {
+		t.Errorf("help output missing workspace-root path guidance:\n%s", out)
+	}
 	if !strings.Contains(out, "ao preview start") {
 		t.Errorf("help output missing managed server example:\n%s", out)
 	}

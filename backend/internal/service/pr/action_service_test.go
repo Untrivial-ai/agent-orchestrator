@@ -91,6 +91,65 @@ func TestActionServiceMerge_FailsClosedForStaleHeadOrReadiness(t *testing.T) {
 	}
 }
 
+func TestScmRepoForPR_NestedNamespace(t *testing.T) {
+	tests := []struct {
+		name      string
+		repo      string
+		wantOK    bool
+		wantOwner string
+		wantName  string
+	}{
+		{
+			name:      "nested GitLab namespace group/subgroup/project",
+			repo:      "group/subgroup/project",
+			wantOK:    true,
+			wantOwner: "group/subgroup",
+			wantName:  "project",
+		},
+		{
+			name:      "standard owner/repo",
+			repo:      "owner/repo",
+			wantOK:    true,
+			wantOwner: "owner",
+			wantName:  "repo",
+		},
+		{
+			name:   "single segment rejected",
+			repo:   "single",
+			wantOK: false,
+		},
+		{
+			name:   "empty string rejected",
+			repo:   "",
+			wantOK: false,
+		},
+		{
+			name:      "deeply nested group/a/b/c/project",
+			repo:      "group/a/b/c/project",
+			wantOK:    true,
+			wantOwner: "group/a/b/c",
+			wantName:  "project",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, ok := scmRepoForPR(domain.PullRequest{Repo: tt.repo, Provider: "gitlab", Host: "gitlab.com"})
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if repo.Owner != tt.wantOwner {
+				t.Errorf("Owner = %q, want %q", repo.Owner, tt.wantOwner)
+			}
+			if repo.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", repo.Name, tt.wantName)
+			}
+		})
+	}
+}
+
 func TestActionServiceMerge_MapsProviderConflict(t *testing.T) {
 	pr, scm := mergeableActionFixture()
 	scm.mergeErr = ports.ErrSCMHeadChanged

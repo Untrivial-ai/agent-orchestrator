@@ -13,7 +13,7 @@ body {
 	user-select: none;
 }
 
-.landing-install-command {
+html .landing-install-command {
 	display: none;
 }
 

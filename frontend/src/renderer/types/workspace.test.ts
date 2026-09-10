@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AGENT_OPTIONS } from "@aoagents/product-ui";
 import {
 	attentionZone,
 	canonicalTrackerIssueId,
@@ -257,9 +258,11 @@ describe("orchestratorHealth", () => {
 });
 
 describe("toAgentProvider", () => {
-	it("passes through a known provider", () => {
-		expect(toAgentProvider("opencode")).toBe("opencode");
-		expect(toAgentProvider("muse")).toBe("muse");
+	it.each(AGENT_OPTIONS)("passes through the shared provider %s", (provider) => {
+		expect(toAgentProvider(provider)).toBe(provider);
+	});
+	it("passes through Prime Agent", () => {
+		expect(toAgentProvider("prime-agent")).toBe("prime-agent");
 	});
 
 	it("defaults unknown and undefined providers to codex", () => {

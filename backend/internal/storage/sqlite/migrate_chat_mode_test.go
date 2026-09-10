@@ -113,6 +113,14 @@ func TestReconcileSchemaRepairsMissingConversationCurrentSessionID(t *testing.T)
 		created_at TIMESTAMP NOT NULL,
 		updated_at TIMESTAMP NOT NULL
 	)`)
+	// reconcileSchema runs after Goose in production, where the chat migration has
+	// also created conversation_turns with its foundational conversation binding.
+	// Keep retry_of_turn_id absent so the later repair still exercises its column
+	// and index replay against a production-shaped prerequisite.
+	mustExec(t, db, `CREATE TABLE conversation_turns (
+		id TEXT PRIMARY KEY,
+		conversation_id TEXT NOT NULL
+	)`)
 	mustExec(t, db, `INSERT INTO conversations (id, scope, project_id, session_id, latest_sequence, created_at, updated_at)
 		VALUES ('conv-1', 'session', 'p1', 'ao-1', 0, '2026-08-05T00:00:00Z', '2026-08-05T00:00:00Z')`)
 

@@ -1,72 +1,111 @@
 ---
 title: Projects
-description: "Configure one AO project: agent, runtime, workspace, setup commands, rules, tracker, SCM, and per-role overrides."
+description: Configure a registered project, its worker and orchestrator agents, setup, rules, reviews, and intake.
 ---
 
-A project is one repository that AO can run agents against. The global registry remembers the project identity; the local `agent-orchestrator.yaml` controls how sessions behave inside that repo.
+A project is a repository, a multi-repository workspace, or an AO-managed Scratch directory. AO stores project identity and typed configuration in its database; there is no current `agent-orchestrator.yaml` lookup or global YAML registry.
 
-Most teams only need these fields:
+## Project kinds
 
-```yaml title="agent-orchestrator.yaml"
-agent: claude-code
-runtime: tmux
-workspace: worktree
+| Kind | Use it for |
+| --- | --- |
+| Single repository | Normal Git projects; each session receives an isolated worktree |
+| Workspace | A root repository plus direct child repositories managed as one project |
+| Scratch | Plain-directory work without branches, PRs, or Git-only settings |
 
-symlinks:
-  - .env
+Add and manage projects from the desktop sidebar. The equivalent CLI commands are:
 
-postCreate:
-  - pnpm install
-
-agentRules: |
-  Use pnpm.
-  Run pnpm test before pushing.
-  Keep PRs focused.
+```bash
+ao project add --path /absolute/path/to/repo
+ao project add --path /absolute/path/to/workspace --as-workspace
+ao project ls
+ao project get <project-id>
+ao project rm <project-id>
 ```
 
-## Choose The Agent
+## Current configuration fields
 
-`agent` selects the coding agent AO launches for worker sessions.
+Project settings expose the fields that AO consumes at spawn time:
 
-```yaml
-agent: claude-code
+| Field | Purpose |
+| --- | --- |
+| `defaultBranch` | Base branch for new Git worktrees; defaults to `auto` |
+| `sessionPrefix` | Prefix used in generated session identifiers |
+| `env` | Extra environment variables forwarded to agent runtimes |
+| `symlinks` | Repo-relative paths linked into each session workspace |
+| `postCreate` | Shell commands run after workspace creation |
+| `agentConfig` | Default model and permission settings |
+| `worker` | Worker harness and agent-config override |
+| `orchestrator` | Orchestrator harness and agent-config override |
+| `agentRules` | Inline standing instructions for workers |
+| `agentRulesFile` | Repo-relative rules file appended to worker instructions |
+| `orchestratorRules` | Standing instructions for orchestrator sessions |
+| `reviewers` | Reviewer harnesses used for AO review runs |
+| `trackerIntake` | Opt-in, read-only issue intake that can spawn workers |
+| `containerReap` | Project-wide opt-out from AO's session-container cleanup |
+
+`symlinks` and `agentRulesFile` must remain inside the repository. AO rejects absolute paths and traversal. Scratch rejects Git-only fields such as `defaultBranch` and symlinks.
+
+`defaultBranch: "auto"` resolves each repository independently. AO selects the remote named by Git's `checkout.defaultRemote`, otherwise `origin`, otherwise the repository's only remote. It asks that remote for its symbolic `HEAD`, fetches the exact advertised branch, and can fall back to the same remote's cached `HEAD` while offline.
+
+AO never treats the currently checked-out branch, `main`, or `master` as an inferred default. If a repository has no authoritative remote default (or has ambiguous remotes), spawn returns `DEFAULT_BRANCH_UNRESOLVED`. For a single repository or workspace root, set `defaultBranch` explicitly. For a workspace child, configure its primary remote with `checkout.defaultRemote` when needed and set its cached remote `HEAD` with `git remote set-head`. Repositories initialized by AO are the exception because AO records its branch choice when it creates them; older AO-created repositories are recognized and backfilled on first resolution.
+
+## Worker and orchestrator roles
+
+Workers implement tasks and own code changes. Orchestrators supervise a project and coordinate workers. Configure their harnesses independently:
+
+```json
+{
+  "worker": {
+    "agent": "codex",
+    "agentConfig": { "model": "gpt-5.4", "permissions": "bypass-permissions" }
+  },
+  "orchestrator": {
+    "agent": "claude-code",
+    "agentConfig": { "model": "claude-opus-4" }
+  }
+}
 ```
 
-Built-in agents:
+The exact model names come from the installed provider. AO reuses the provider CLI and its existing authentication; it does not store provider tokens in project configuration.
 
-| Agent         | Use when                                               |
-| ------------- | ------------------------------------------------------ |
-| `claude-code` | You want the default, most tested path                 |
-| `codex`       | You want OpenAI Codex CLI sessions                     |
-| `aider`       | You already use Aider workflows                        |
-| `opencode`    | You want OpenCode session discovery and resume support |
+## Session interface
 
-Agent-specific settings go under `agentConfig`:
+The role selects what a session does; the interface selects how you interact with its agent.
 
-```yaml
-agentConfig:
-  permissions: permissionless
-  model: claude-sonnet-4-5
+- Chat is available when the installed harness advertises native Chat support. Current drivers cover Codex, Claude Code, OpenCode, and Droid.
+- Terminal UI remains available across the wider agent adapter catalog.
+- Compatible Claude Code and Codex sessions can hand off between Chat and Terminal UI while keeping their AO session and worktree.
+
+Choose the default interface in desktop project settings. Override it for a single CLI spawn with `--mode chat` or `--mode tui`.
+
+## Setup and rules
+
+Use `env`, `symlinks`, and `postCreate` for repeatable workspace setup. A failing `postCreate` command prevents the agent from starting, so keep setup deterministic.
+
+Use `agentRules` or `agentRulesFile` for worker instructions and `orchestratorRules` for supervision-specific guidance. AO combines inline and file-based worker rules when both are present.
+
+## Reviewer agents
+
+Reviewer harnesses are configured separately from workers. AO currently supports Claude Code, Codex, and OpenCode reviewers. If none is configured, AO reuses the worker harness when it is review-capable, otherwise it falls back to Claude Code.
+
+Review runs are available in the desktop inspector and through:
+
+```bash
+ao review trigger <worker-session-id>
+ao review ls <worker-session-id>
 ```
 
-`permissions` accepts:
+## Update from the CLI
 
-| Value            | Behavior                                              |
-| ---------------- | ----------------------------------------------------- |
-| `permissionless` | Let the agent edit and run commands without prompting |
-| `default`        | Use the agent tool's normal permission behavior       |
-| `auto-edit`      | Auto-approve edits, ask for other actions             |
-| `suggest`        | Suggest changes without applying them                 |
+For a complete replacement, pass the project config as a JSON object string:
 
-The legacy value `skip` is accepted and treated as `permissionless`.
-
-## Choose The Runtime
-
-`runtime` controls where the agent process runs.
-
-```yaml
-runtime: tmux
+```bash
+ao project set-config <project-id> \
+  --config-json '{"worker":{"agent":"codex"}}'
 ```
+
+Run `ao project set-config --help` for focused flags and `--clear`. Because replacement is atomic, inspect the existing project first when scripting updates.
 
 | Runtime   | Use when                                                                                        |
 | --------- | ----------------------------------------------------------------------------------------------- |
@@ -167,14 +206,14 @@ reviewers:
   - harness: kilocode
 ```
 
-Built-in reviewer harnesses are `aider`, `agy`, `amp`, `auggie`, `autohand`, `claude-code`, `cline`, `codex`, `continue`, `copilot`, `crush`, `cursor`, `devin`, `droid`, `goose`, `grok`, `kilocode`, `kimchi`, `kiro`, `kimi`, `opencode`, `pi`, `qwen`, and `vibe`. Kilo Code requires the
+Built-in reviewer harnesses are `aider`, `agy`, `amp`, `auggie`, `autohand`, `claude-code`, `cline`, `codex`, `copilot`, `crush`, `cursor`, `devin`, `droid`, `grok`, `kilocode`, `kimchi`, `kiro`, `kimi`, `opencode`, and `pi`. Kilo Code requires the
 [`@kilocode/cli`](https://kilo.ai/docs/code-with-ai/platforms/cli) package and a configured model provider (`/connect`,
 `kilo auth login`, or a supported provider environment variable). AO launches Kilo Code in the worker checkout with a
 read-only review policy and its own GitHub/AO reporting instructions. It does not invoke Kilo's local `/review` command
 or parse `kilo run --format json`; the reviewer posts through `gh api` and records its verdict through
 `ao review submit`, like the other AO reviewer harnesses.
 
-Agy, Devin, Droid, Kimchi, Kimi, Qwen, and Vibe reviewer support is experimental and host-trusted. Grok, Crush, Auggie, Cline, and Autohand are experimental user-approved reviewers: AO strengthens their reviewer system prompt and leaves native permission prompts enabled instead of passing broad unattended flags. Their readonly, plan, or
+Agy, Devin, Droid, Kimchi, and Kimi reviewer support is experimental and host-trusted. Grok, Crush, Auggie, Cline, and Autohand are experimental user-approved reviewers: AO strengthens their reviewer system prompt and leaves native permission prompts enabled instead of passing broad unattended flags. Their readonly, plan, or
 approval modes constrain ordinary model behavior but are not OS isolation; terminal users, project plugins, tools, and
 network access may retain host authority.
 
@@ -312,19 +351,6 @@ Make sure the corresponding CLI or token is authenticated for the plugin you use
 ## Next Steps
 
 <Cards>
-	<Card
-		title="Reactions"
-		href="/docs/configuration/reactions"
-		description="Configure what AO does when CI, reviews, or agent state changes need attention."
-	/>
-	<Card
-		title="Remote access"
-		href="/docs/configuration/remote-access"
-		description="Open the dashboard from another machine without exposing it publicly."
-	/>
-	<Card
-		title="Plugin docs"
-		href="/docs/plugins"
-		description="Agent, tracker, SCM, notifier, runtime, terminal, and workspace plugins."
-	/>
+	<Card title="Per-role agents" href="/docs/guides/per-role-agents" description="Choose worker and orchestrator harnesses." />
+	<Card title="Parallel work" href="/docs/guides/parallel-issues" description="Start isolated sessions across projects." />
 </Cards>

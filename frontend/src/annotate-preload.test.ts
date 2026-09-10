@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BrowserAnnotationPageSubmitPayload } from "./shared/browser-annotations";
+import type { BrowserAnnotationDraft, BrowserAnnotationPageSubmitPayload } from "./shared/browser-annotations";
 
 const electronMocks = vi.hoisted(() => {
 	const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -55,15 +55,21 @@ type Bounds = {
 	height: number;
 };
 
-function setAnnotationMode(enabled: boolean): void {
+function setAnnotationMode(enabled: boolean, draft?: BrowserAnnotationDraft): void {
 	const listener = electronMocks.listeners.get("browser:annotation:setMode");
 	if (!listener) throw new Error("annotation mode listener was not registered");
-	listener({}, { enabled });
+	listener({}, { enabled, ...(draft ? { draft } : {}) });
 }
 
 function elementWithBounds(id: string, bounds: Bounds): HTMLButtonElement {
 	const element = document.createElement("button");
 	element.id = id;
+	setElementBounds(element, bounds);
+	document.body.appendChild(element);
+	return element;
+}
+
+function setElementBounds<T extends Element>(element: T, bounds: Bounds): T {
 	Object.defineProperty(element, "getBoundingClientRect", {
 		configurable: true,
 		value: () =>
@@ -79,7 +85,6 @@ function elementWithBounds(id: string, bounds: Bounds): HTMLButtonElement {
 				toJSON: () => ({}),
 			}) as DOMRect,
 	});
-	document.body.appendChild(element);
 	return element;
 }
 
@@ -195,6 +200,105 @@ describe("annotate preload", () => {
 		expect(payload.selection.context.selector).toBe("button#first");
 	});
 
+	it("selects semantic Markdown blocks instead of the document wrapper", async () => {
+		const markdown = document.createElement("main");
+		markdown.className = "markdown-body";
+		const heading = setElementBounds(document.createElement("h2"), {
+			left: 24,
+			top: 32,
+			width: 320,
+			height: 40,
+		});
+		heading.textContent = "Install";
+		const paragraph = setElementBounds(document.createElement("p"), {
+			left: 24,
+			top: 88,
+			width: 560,
+			height: 56,
+		});
+		const emphasis = document.createElement("strong");
+		emphasis.textContent = "desktop app";
+		paragraph.append("Download the ", emphasis, ".");
+		markdown.append(heading, paragraph);
+		document.body.appendChild(markdown);
+
+		shiftKeyDown();
+		dispatchPageEvent(heading, "click");
+		dispatchPageEvent(emphasis, "click");
+		shiftKeyDown();
+
+		const payload = await submitPrompt("Revise these sections.");
+
+		expect(payload.selection.kind).toBe("elements");
+		if (payload.selection.kind !== "elements") throw new Error("expected an elements selection");
+		expect(payload.selection.contexts.map((context) => context.tag)).toEqual(["h2", "p"]);
+		expect(payload.selection.contexts.map((context) => context.classes)).toEqual([[], []]);
+	});
+
+	it("selects a Markdown table cell when hovering nested cell content", async () => {
+		const markdown = document.createElement("main");
+		markdown.className = "markdown-body";
+		const table = setElementBounds(document.createElement("table"), {
+			left: 20,
+			top: 30,
+			width: 600,
+			height: 240,
+		});
+		const body = document.createElement("tbody");
+		const row = document.createElement("tr");
+		const cell = setElementBounds(document.createElement("td"), {
+			left: 220,
+			top: 110,
+			width: 180,
+			height: 52,
+		});
+		const label = document.createElement("strong");
+		label.textContent = "Codex";
+		cell.appendChild(label);
+		row.appendChild(cell);
+		body.appendChild(row);
+		table.appendChild(body);
+		markdown.appendChild(table);
+		document.body.appendChild(markdown);
+
+		dispatchPageEvent(label, "pointermove");
+
+		expect(highlightStyle().left).toBe("220px");
+		expect(highlightStyle().top).toBe("110px");
+		expect(highlightStyle().width).toBe("180px");
+		expect(highlightStyle().height).toBe("52px");
+
+		dispatchPageEvent(label, "click");
+		const payload = await submitPrompt("Change this agent entry.");
+
+		expect(payload.selection.kind).toBe("element");
+		if (payload.selection.kind !== "element") throw new Error("expected an element selection");
+		expect(payload.selection.context.tag).toBe("td");
+		expect(payload.selection.context.visibleText).toBe("Codex");
+	});
+
+	it("keeps the nearest classed component target outside Markdown previews", async () => {
+		const card = setElementBounds(document.createElement("section"), {
+			left: 20,
+			top: 30,
+			width: 400,
+			height: 180,
+		});
+		card.className = "settings-card";
+		const label = document.createElement("span");
+		label.textContent = "Updates";
+		card.appendChild(label);
+		document.body.appendChild(card);
+
+		dispatchPageEvent(label, "click");
+		const payload = await submitPrompt("Adjust this component.");
+
+		expect(payload.selection.kind).toBe("element");
+		if (payload.selection.kind !== "element") throw new Error("expected an element selection");
+		expect(payload.selection.context.tag).toBe("section");
+		expect(payload.selection.context.classes).toEqual(["settings-card"]);
+	});
+
 	it("renders a compact auto-growing prompt and submits from the embedded action", async () => {
 		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
 
@@ -215,7 +319,7 @@ describe("annotate preload", () => {
 		expect(root.querySelector('[data-action="cancel"]')).toBeNull();
 		expect(primaryAction).toBeTruthy();
 		expect(primaryAction).toHaveAttribute("aria-label", "Send annotation");
-		expect(primaryAction).toHaveAttribute("title", "Send (⌘/Ctrl + Enter)");
+		expect(primaryAction).toHaveAttribute("title", "Send (Enter)");
 		expect(primaryAction?.disabled).toBe(true);
 		expect(textarea).not.toBeNull();
 		expect(textarea).toHaveAttribute("rows", "1");
@@ -225,9 +329,7 @@ describe("annotate preload", () => {
 		);
 
 		textarea!.value = "Make this button easier to notice.";
-		textarea!.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true }),
-		);
+		textarea!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
 
 		await vi.waitFor(() => {
 			expect(electronMocks.invoke).toHaveBeenCalledWith(
@@ -287,6 +389,66 @@ describe("annotate preload", () => {
 
 		expect(electronMocks.send).toHaveBeenCalledWith("browser:annotation:cancel", { reason: "escape" });
 		expect(document.querySelector("[data-ao-annotation-root]")).toBeNull();
+	});
+
+	it("restores a replacement draft even when annotation mode is already enabled", async () => {
+		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
+		dispatchPageEvent(first, "click");
+		const draft: BrowserAnnotationDraft = {
+			instruction: "Restored while already enabled",
+			selection: {
+				kind: "element",
+				context: {
+					url: window.location.href,
+					tag: "button",
+					classes: [],
+					selector: "button#first",
+					size: { width: 120, height: 40 },
+					computedStyle: {},
+				},
+			},
+		};
+
+		setAnnotationMode(true, draft);
+
+		expect(overlayRoot().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(draft.instruction);
+		const payload = await submitPrompt(draft.instruction);
+		expect(payload.selection).toEqual(draft.selection);
+	});
+
+	it("uses the composer-only fallback unless every multi-selection selector resolves uniquely", async () => {
+		elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
+		const draft: BrowserAnnotationDraft = {
+			instruction: "Keep every original target",
+			selection: {
+				kind: "elements",
+				contexts: [
+					{
+						url: window.location.href,
+						tag: "button",
+						classes: [],
+						selector: "button#first",
+						size: { width: 120, height: 40 },
+						computedStyle: {},
+					},
+					{
+						url: window.location.href,
+						tag: "button",
+						classes: [],
+						selector: "button#missing",
+						size: { width: 80, height: 30 },
+						computedStyle: {},
+					},
+				],
+			},
+		};
+
+		setAnnotationMode(true, draft);
+
+		expect(selectionBoxes()).toHaveLength(0);
+		expect(overlayRoot().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(draft.instruction);
+		const payload = await submitPrompt(draft.instruction);
+		expect(payload.selection).toEqual(draft.selection);
 	});
 
 	it("reflows and repositions an open prompt when the browser viewport narrows", () => {

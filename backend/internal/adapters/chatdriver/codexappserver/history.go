@@ -45,10 +45,11 @@ import (
 // feature-detects each interface, and a missing method would read as "the provider
 // cannot do this" with nothing anywhere to notice.
 var (
-	_ ports.ChatRollbacker    = (*conversation)(nil)
-	_ ports.ChatForker        = (*conversation)(nil)
-	_ ports.ChatRenamer       = (*conversation)(nil)
-	_ ports.ChatHistoryReader = (*conversation)(nil)
+	_ ports.ChatRollbacker       = (*conversation)(nil)
+	_ ports.ChatForker           = (*conversation)(nil)
+	_ ports.ChatRenamer          = (*conversation)(nil)
+	_ ports.ChatHistoryReader    = (*conversation)(nil)
+	_ ports.ChatHistoryRefresher = (*conversation)(nil)
 )
 
 // providerRefusal marks a request the provider rejected on its own terms, as
@@ -112,16 +113,17 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 	}, &resp); err != nil {
 		return nil, asRefusal(fmt.Errorf("thread/read history: %w", err))
 	}
+	for _, turn := range resp.Thread.Turns {
+		state := turnStateFrom(string(turn.Status))
+		if state == domain.TurnStateRunning || state == domain.TurnStateQueued {
+			return nil, fmt.Errorf("%w: Codex turn %s is %s",
+				ports.ErrChatHistoryUnsettled, turn.ID, turn.Status)
+		}
+	}
 
 	events := make([]ports.ChatEvent, 0, len(resp.Thread.Turns)*4)
 	for _, turn := range resp.Thread.Turns {
 		state := turnStateFrom(string(turn.Status))
-		// A history replay is a set of settled facts. If another native client still
-		// has a turn in progress, its partial items must not be projected as a
-		// completed transcript; live notifications remain the authority for it.
-		if state == domain.TurnStateRunning || state == domain.TurnStateQueued {
-			continue
-		}
 
 		events = append(events, ports.ChatEvent{
 			Kind:            ports.ChatEventTurnStarted,
@@ -190,6 +192,13 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 		events = append(events, completed)
 	}
 	return events, nil
+}
+
+// RefreshHistory performs another authoritative thread/read. Codex exposes a
+// repeatable native read rather than a replay captured during resume, so bounded
+// settle polling can observe provider progress here.
+func (c *conversation) RefreshHistory(ctx context.Context) ([]ports.ChatEvent, error) {
+	return c.ReadHistory(ctx)
 }
 
 func historyEventID(parts ...string) string {
@@ -307,23 +316,25 @@ func (c *conversation) readTurns(ctx context.Context) ([]providerTurn, error) {
 // Fork branches this conversation into a second provider conversation, so an
 // alternative approach can be tried without destroying the original.
 //
-// The whole history is copied: ChatForker names no turn, and a fork that silently
-// truncated would be a rollback wearing the wrong name.
-func (c *conversation) Fork(ctx context.Context) (string, error) {
+// A nil anchor copies the whole history; a provider turn id copies through that
+// turn inclusively. In both cases, the original thread remains unchanged.
+func (c *conversation) Fork(ctx context.Context, lastProviderTurnID *string) (string, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
-	var resp struct {
-		Thread struct {
-			ID string `json:"id"`
-		} `json:"thread"`
+	params := codexproto.ThreadForkParams{ThreadID: c.threadID}
+	if lastProviderTurnID != nil {
+		anchor := strings.TrimSpace(*lastProviderTurnID)
+		if anchor == "" {
+			return "", errors.New("fork anchor must not be blank")
+		}
+		params.LastTurnID = &anchor
 	}
 	// cwd is deliberately absent so the fork inherits the source thread's working
 	// directory. A fork pointed at a different tree would remember editing files
 	// that are not there.
-	if err := c.conn.request(ctx, "thread/fork", map[string]any{
-		"threadId": c.threadID,
-	}, &resp); err != nil {
+	var resp codexproto.ThreadForkResponse
+	if err := c.conn.request(ctx, codexproto.MethodThreadFork, params, &resp); err != nil {
 		return "", asRefusal(fmt.Errorf("thread/fork: %w", err))
 	}
 	if resp.Thread.ID == "" {

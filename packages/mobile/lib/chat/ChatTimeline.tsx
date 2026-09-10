@@ -18,6 +18,7 @@ import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { HighlightedCodeText } from "./HighlightedCodeText";
 import { caretNotation, commandOutputText } from "./ansi";
+import { jumpToLatestColors } from "./chatChrome";
 import {
 	humanizeInputName,
 	initialInputValue,
@@ -40,8 +41,8 @@ import {
 	activityNodesRunning,
 	activityStartsExpanded,
 	canRollbackTurn,
+	conversationTimelineRenderPlan,
 	countActivityNodes,
-	groupConversationByTurn,
 	readableConversationItems,
 	type ActivityNode,
 	type ConversationGroup,
@@ -51,7 +52,7 @@ type TimelineRow =
 	| { kind: "single"; key: string; items: [ConversationItem] }
 	| { kind: "activities"; key: string; items: ConversationActivity[] };
 
-export function ChatTimeline({
+export const ChatTimeline = memo(function ChatTimeline({
 	snapshot,
 	loadingOlder,
 	onLoadOlder,
@@ -74,6 +75,7 @@ export function ChatTimeline({
 	jumpToSequence?: number;
 	onJumpHandled?(): void;
 }) {
+	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const listRef = useRef<FlatList<ConversationGroup>>(null);
 	const followsTail = useRef(true);
@@ -81,51 +83,64 @@ export function ChatTimeline({
 	// Usage is snapshot state, not conversation. Reasoning stays available in the
 	// durable record but hidden on mobile: prose and work are the primary surface.
 	const items = useMemo(() => readableConversationItems(snapshot), [snapshot]);
-	const groups = useMemo(() => groupConversationByTurn(snapshot, items), [items, snapshot.turns]);
+	const plan = useMemo(() => conversationTimelineRenderPlan(snapshot, items), [items, snapshot.turns]);
+	const groups = plan.groups;
 
 	useEffect(() => {
 		if (jumpToSequence === undefined) return;
 		const index = groups.findIndex((group) => group.anchor === jumpToSequence);
 		if (index >= 0) {
-			followsTail.current = index === groups.length - 1;
+			followsTail.current = index === 0;
 			setShowJump(!followsTail.current);
-			requestAnimationFrame(() => listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.18 }));
+			requestAnimationFrame(() => listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.82 }));
 		}
 		onJumpHandled?.();
 	}, [groups, jumpToSequence, onJumpHandled]);
+
+	if (plan.kind === "empty") {
+		return (
+			<View style={styles.timelineWrap}>
+				<View style={styles.emptySurface}>
+					<EmptyConversation harness={snapshot.harness} controller={snapshot.controller.state} />
+				</View>
+			</View>
+		);
+	}
 
 	return (
 		<View style={styles.timelineWrap}>
 			<FlatList<ConversationGroup>
 				ref={listRef}
 				data={groups}
+				inverted={plan.inverted}
 				keyExtractor={(group) => group.key}
 				style={styles.list}
 				contentContainerStyle={styles.content}
 				keyboardShouldPersistTaps="handled"
-				initialNumToRender={28}
-				maxToRenderPerBatch={24}
-				windowSize={9}
+				initialNumToRender={4}
+				maxToRenderPerBatch={4}
+				updateCellsBatchingPeriod={32}
+				windowSize={5}
 				maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 				onScroll={(event) => {
-					const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-					followsTail.current = contentSize.height - layoutMeasurement.height - contentOffset.y < 120;
+					const { contentOffset } = event.nativeEvent;
+					followsTail.current = Math.abs(contentOffset.y) < 120;
 					setShowJump(!followsTail.current);
 				}}
 				scrollEventThrottle={100}
 				onContentSizeChange={() => {
-					if (followsTail.current) requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+					if (followsTail.current) requestAnimationFrame(() => listRef.current?.scrollToOffset({ offset: 0, animated: false }));
 				}}
 				onScrollToIndexFailed={({ index, averageItemLength }) => {
 					listRef.current?.scrollToOffset({ offset: Math.max(0, index * averageItemLength), animated: true });
-					setTimeout(() => listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.18 }), 120);
+					setTimeout(() => listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.82 }), 120);
 				}}
-				ListHeaderComponent={
+				ListFooterComponent={
 					snapshot.hasMoreBefore ? (
 						<Pressable
 							accessibilityRole="button"
 							disabled={loadingOlder}
-							onPress={onLoadOlder}
+							onPress={() => { haptics.tap(); void onLoadOlder(); }}
 							style={styles.older}
 						>
 							{loadingOlder ? <ActivityIndicator size="small" /> : <Feather name="clock" size={13} />}
@@ -133,7 +148,6 @@ export function ChatTimeline({
 						</Pressable>
 					) : items.length ? <Text style={styles.beginning}>Beginning of conversation</Text> : null
 				}
-				ListEmptyComponent={<EmptyConversation harness={snapshot.harness} controller={snapshot.controller.state} />}
 				renderItem={({ item: group }) => <ConversationTurnGroup
 					group={group}
 					snapshot={snapshot}
@@ -144,10 +158,10 @@ export function ChatTimeline({
 					onRollback={onRollback}
 				/>}
 			/>
-			{showJump ? <Pressable accessibilityRole="button" accessibilityLabel="Jump to latest message" onPress={() => { followsTail.current = true; setShowJump(false); listRef.current?.scrollToEnd({ animated: true }); }} style={styles.jump}><Feather name="arrow-down" size={14} /><Text style={styles.jumpText}>Latest</Text></Pressable> : null}
+			{showJump ? <Pressable accessibilityRole="button" accessibilityLabel="Jump to latest message" onPress={() => { haptics.tap(); followsTail.current = true; setShowJump(false); listRef.current?.scrollToOffset({ offset: 0, animated: true }); }} style={styles.jump}><Feather name="arrow-down" size={14} color={jumpToLatestColors(t).foregroundColor} /><Text style={styles.jumpText}>Latest</Text></Pressable> : null}
 		</View>
 	);
-}
+});
 
 function ConversationTurnGroup({ group, snapshot, approvalPending, inputPending, onDecide, onResolveInput, onRollback }: {
 	group: ConversationGroup;
@@ -246,7 +260,7 @@ function OriginMessage({ message }: { message: Extract<ConversationItem, { kind:
 	return <View style={styles.originMessage}>
 		<View style={styles.originHeader}><Feather name="radio" size={11} color={t.textTertiary} /><Text style={styles.originLabel}>{message.senderLabel || (message.origin === "automation" ? "Automation" : "AO")}</Text></View>
 		{long && expanded ? <ChatMarkdown text={message.text} /> : <Text selectable numberOfLines={long ? 5 : undefined} style={styles.originText}>{message.text}</Text>}
-		{long ? <Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => setExpanded((value) => !value)} style={styles.originMore}><Feather name={expanded ? "chevron-up" : "chevron-right"} size={12} color={t.blue} /><Text style={styles.originMoreText}>{expanded ? "Hide report" : "Show full report"}</Text></Pressable> : null}
+		{long ? <Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => { haptics.tap(); setExpanded((value) => !value); }} style={styles.originMore}><Feather name={expanded ? "chevron-up" : "chevron-right"} size={12} color={t.blue} /><Text style={styles.originMoreText}>{expanded ? "Hide report" : "Show full report"}</Text></Pressable> : null}
 	</View>;
 }
 
@@ -296,7 +310,7 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 				accessibilityRole={expandable ? "button" : undefined}
 				accessibilityState={expandable ? { expanded: open } : undefined}
 				disabled={!expandable}
-				onPress={() => setOpenOverride(!open)}
+				onPress={() => { haptics.tap(); setOpenOverride(!open); }}
 				style={styles.activityRow}
 			>
 				<Feather name={meta.icon} size={13} color={meta.color(t)} />
@@ -336,7 +350,7 @@ function McpToolRow({ activity }: { activity: ConversationActivity }) {
 	const failed = activity.status === "failed" || detail.success === false || Boolean(detail.error);
 	const body = detail.arguments !== undefined || detail.result !== undefined || Boolean(detail.error || detail.progress);
 	return <View style={styles.activityWrap}>
-		<Pressable disabled={!body} accessibilityRole={body ? "button" : undefined} accessibilityState={body ? { expanded: open } : undefined} onPress={() => setOpen((value) => !value)} style={styles.activityRow}>
+		<Pressable disabled={!body} accessibilityRole={body ? "button" : undefined} accessibilityState={body ? { expanded: open } : undefined} onPress={() => { haptics.tap(); setOpen((value) => !value); }} style={styles.activityRow}>
 			<Feather name="tool" size={13} color={failed ? t.red : t.purple} />
 			<Text style={[styles.server, failed && { color: t.red }]}>{detail.server ?? detail.namespace ? `${detail.server ?? detail.namespace}/` : ""}</Text>
 			<Text numberOfLines={1} style={[styles.activitySummary, failed && { color: t.red }]}>{detail.toolName || activity.summary}</Text>
@@ -361,7 +375,7 @@ function AutoReviewRow({ activity }: { activity: ConversationActivity }) {
 	const denied = String(detail.status ?? "").toLowerCase().includes("den");
 	const paths = reviewPaths(detail.files);
 	const body = Boolean(detail.rationale || detail.command || detail.cwd || detail.host || detail.decisionSource || paths.length);
-	return <View style={styles.activityWrap}><Pressable disabled={!body} accessibilityRole={body ? "button" : undefined} accessibilityState={body ? { expanded: open } : undefined} onPress={() => setOpen((value) => !value)} style={styles.activityRow}><Feather name={denied ? "shield-off" : "shield"} size={13} color={denied ? t.red : t.green} /><Text style={[styles.reviewDecision, denied && { color: t.red }]}>{denied ? "Auto-declined" : "Auto-approved"}</Text><Text numberOfLines={1} style={styles.activitySummary}>{activity.summary}</Text>{detail.riskLevel ? <Text style={[styles.risk, ["high", "critical"].includes(detail.riskLevel.toLowerCase()) && { color: t.red }]}>{detail.riskLevel}</Text> : null}{body ? <Feather name={open ? "chevron-up" : "chevron-right"} size={13} color={t.textFaint} /> : null}</Pressable>{open && body ? <View style={styles.activityDetail}><Text style={styles.detailCopy}>{denied ? "The provider declined this on your behalf. You were not asked." : "The provider allowed this on your behalf. You were not asked."}</Text>{detail.rationale ? <Text style={styles.reviewRationale}>{detail.rationale}</Text> : null}{detail.command ? <LabelValue label="cmd" value={detail.command} /> : null}{detail.cwd ? <LabelValue label="cwd" value={detail.cwd} /> : null}{detail.host ? <LabelValue label="host" value={detail.host} /> : null}{paths.length ? <LabelValue label="files" value={paths.join(", ")} /> : null}{detail.decisionSource ? <LabelValue label="by" value={detail.decisionSource} /> : null}</View> : null}</View>;
+	return <View style={styles.activityWrap}><Pressable disabled={!body} accessibilityRole={body ? "button" : undefined} accessibilityState={body ? { expanded: open } : undefined} onPress={() => { haptics.tap(); setOpen((value) => !value); }} style={styles.activityRow}><Feather name={denied ? "shield-off" : "shield"} size={13} color={denied ? t.red : t.green} /><Text style={[styles.reviewDecision, denied && { color: t.red }]}>{denied ? "Auto-declined" : "Auto-approved"}</Text><Text numberOfLines={1} style={styles.activitySummary}>{activity.summary}</Text>{detail.riskLevel ? <Text style={[styles.risk, ["high", "critical"].includes(detail.riskLevel.toLowerCase()) && { color: t.red }]}>{detail.riskLevel}</Text> : null}{body ? <Feather name={open ? "chevron-up" : "chevron-right"} size={13} color={t.textFaint} /> : null}</Pressable>{open && body ? <View style={styles.activityDetail}><Text style={styles.detailCopy}>{denied ? "The provider declined this on your behalf. You were not asked." : "The provider allowed this on your behalf. You were not asked."}</Text>{detail.rationale ? <Text style={styles.reviewRationale}>{detail.rationale}</Text> : null}{detail.command ? <LabelValue label="cmd" value={detail.command} /> : null}{detail.cwd ? <LabelValue label="cwd" value={detail.cwd} /> : null}{detail.host ? <LabelValue label="host" value={detail.host} /> : null}{paths.length ? <LabelValue label="files" value={paths.join(", ")} /> : null}{detail.decisionSource ? <LabelValue label="by" value={detail.decisionSource} /> : null}</View> : null}</View>;
 }
 
 function FileChangeActivity({ activity }: { activity: ConversationActivity }) {
@@ -375,7 +389,7 @@ function ExpandableFileList({ title, files, fallbackPatch, fallbackPatchTruncate
 	const [openOverride, setOpenOverride] = useState<boolean | null>(null);
 	const open = openOverride ?? Boolean(live && (fallbackPatch || files.some((file) => file.patch)));
 	const expandable = files.length > 0 || Boolean(fallbackPatch);
-	return <View><Pressable disabled={!expandable} accessibilityRole={expandable ? "button" : undefined} accessibilityState={expandable ? { expanded: open } : undefined} onPress={() => setOpenOverride(!open)} style={styles.activityRow}><Feather name="edit-3" size={13} color={t.blue} /><Text numberOfLines={2} style={styles.activitySummary}>{title}</Text>{expandable ? <Feather name={open ? "chevron-up" : "chevron-right"} size={13} color={t.textFaint} /> : null}</Pressable>{open ? <View style={styles.activityDetail}>{files.map((file) => <FileChangeRow key={`${file.oldPath ?? ""}:${file.path}`} file={file} live={live} />)}{fallbackPatch ? <PatchBlock patch={fallbackPatch} truncated={fallbackPatchTruncated} /> : null}</View> : null}</View>;
+	return <View><Pressable disabled={!expandable} accessibilityRole={expandable ? "button" : undefined} accessibilityState={expandable ? { expanded: open } : undefined} onPress={() => { haptics.tap(); setOpenOverride(!open); }} style={styles.activityRow}><Feather name="edit-3" size={13} color={t.blue} /><Text numberOfLines={2} style={styles.activitySummary}>{title}</Text>{expandable ? <Feather name={open ? "chevron-up" : "chevron-right"} size={13} color={t.textFaint} /> : null}</Pressable>{open ? <View style={styles.activityDetail}>{files.map((file) => <FileChangeRow key={`${file.oldPath ?? ""}:${file.path}`} file={file} live={live} />)}{fallbackPatch ? <PatchBlock patch={fallbackPatch} truncated={fallbackPatchTruncated} /> : null}</View> : null}</View>;
 }
 
 function FileChangeRow({ file, live }: { file: ReturnType<typeof fileChanges>[number]; live?: boolean }) {
@@ -384,7 +398,7 @@ function FileChangeRow({ file, live }: { file: ReturnType<typeof fileChanges>[nu
 	const [open, setOpen] = useState(Boolean(live && file.patch));
 	const hasPatch = Boolean(file.patch);
 	const mark = file.status === "added" ? "A" : file.status === "deleted" ? "D" : file.status === "renamed" ? "R" : "M";
-	return <View><Pressable disabled={!hasPatch} onPress={() => setOpen((value) => !value)} style={styles.fileRow}><Text style={[styles.fileMark, { color: file.status === "deleted" ? t.red : file.status === "added" ? t.green : t.blue }]}>{mark}</Text><Text selectable numberOfLines={2} style={styles.filePath}>{file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}</Text><Text style={styles.fileStat}>+{file.additions} −{file.deletions}</Text>{hasPatch ? <Feather name={open ? "chevron-up" : "chevron-right"} size={11} color={t.textFaint} /> : null}</Pressable>{open && file.patch ? <PatchBlock patch={file.patch} truncated={file.patchTruncated} /> : null}</View>;
+	return <View><Pressable disabled={!hasPatch} onPress={() => { haptics.tap(); setOpen((value) => !value); }} style={styles.fileRow}><Text style={[styles.fileMark, { color: file.status === "deleted" ? t.red : file.status === "added" ? t.green : t.blue }]}>{mark}</Text><Text selectable numberOfLines={2} style={styles.filePath}>{file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}</Text><Text style={styles.fileStat}>+{file.additions} −{file.deletions}</Text>{hasPatch ? <Feather name={open ? "chevron-up" : "chevron-right"} size={11} color={t.textFaint} /> : null}</Pressable>{open && file.patch ? <PatchBlock patch={file.patch} truncated={file.patchTruncated} /> : null}</View>;
 }
 
 function PatchBlock({ patch, truncated }: { patch: string; truncated?: boolean }) {
@@ -398,7 +412,7 @@ function PlanActivity({ activity }: { activity: ConversationActivity }) {
 	const styles = useThemedStyles(makeStyles);
 	const [open, setOpen] = useState(activity.status === "running");
 	const steps = activity.detail?.steps ?? [];
-	return <View style={styles.planCard}><Pressable style={styles.planHeader} onPress={() => setOpen((value) => !value)}><Feather name="list" size={13} color={t.textTertiary} /><Text style={styles.planTitle}>{activity.summary || "Plan updated"}</Text><Text style={styles.planCount}>{steps.filter((step) => step.status === "completed").length}/{steps.length}</Text><Feather name={open ? "chevron-up" : "chevron-down"} size={13} color={t.textTertiary} /></Pressable>{open ? <View style={styles.planBody}>{activity.detail?.explanation ? <Text style={styles.detailCopy}>{activity.detail.explanation}</Text> : null}{steps.map((step, index) => <View key={index} style={styles.planStep}><Feather name={step.status === "completed" ? "check-circle" : "circle"} size={14} color={step.status === "completed" ? t.green : step.status === "in_progress" ? t.orange : t.textFaint} /><Text style={[styles.planStepText, step.status === "completed" && styles.planDone]}>{step.text}</Text></View>)}{!steps.length ? <Text style={styles.detailCopy}>{activity.detail?.text || activity.summary}</Text> : null}</View> : null}</View>;
+	return <View style={styles.planCard}><Pressable style={styles.planHeader} onPress={() => { haptics.tap(); setOpen((value) => !value); }}><Feather name="list" size={13} color={t.textTertiary} /><Text style={styles.planTitle}>{activity.summary || "Plan updated"}</Text><Text style={styles.planCount}>{steps.filter((step) => step.status === "completed").length}/{steps.length}</Text><Feather name={open ? "chevron-up" : "chevron-down"} size={13} color={t.textTertiary} /></Pressable>{open ? <View style={styles.planBody}>{activity.detail?.explanation ? <Text style={styles.detailCopy}>{activity.detail.explanation}</Text> : null}{steps.map((step, index) => <View key={index} style={styles.planStep}><Feather name={step.status === "completed" ? "check-circle" : "circle"} size={14} color={step.status === "completed" ? t.green : step.status === "in_progress" ? t.orange : t.textFaint} /><Text style={[styles.planStepText, step.status === "completed" && styles.planDone]}>{step.text}</Text></View>)}{!steps.length ? <Text style={styles.detailCopy}>{activity.detail?.text || activity.summary}</Text> : null}</View> : null}</View>;
 }
 
 function ActivityRun({ activities }: { activities: ConversationActivity[] }) {
@@ -416,7 +430,7 @@ function ActivityRun({ activities }: { activities: ConversationActivity[] }) {
 		<Pressable
 			accessibilityRole="button"
 			accessibilityState={{ expanded: open }}
-			onPress={() => setOverride(!open)}
+			onPress={() => { haptics.tap(); setOverride(!open); }}
 			style={styles.runSummary}
 		>
 			<Text style={styles.runText}>{summarizeActivities(activities)}</Text>
@@ -445,7 +459,7 @@ function NestedAgentRun({ nodes }: { nodes: ActivityNode[] }) {
 			accessibilityRole="button"
 			accessibilityLabel={`${open ? "Hide" : "Show"} subagent work, ${count} ${count === 1 ? "step" : "steps"}`}
 			accessibilityState={{ expanded: open }}
-			onPress={() => setOpen((value) => !value)}
+			onPress={() => { haptics.tap(); setOpen((value) => !value); }}
 			style={styles.subagentHeader}
 		>
 			<Feather name="git-branch" size={12} color={t.textTertiary} />
@@ -516,7 +530,7 @@ function TurnSummary({ turn, onRollback }: { turn: ConversationTurn; onRollback?
 				<Text style={[styles.turnState, turn.state === "failed" && { color: t.red }]}>{turn.rolledBack ? "ROLLED BACK" : turn.state.toUpperCase()}</Text>
 				{duration ? <Text style={styles.turnDuration}>{duration}</Text> : null}
 				{onRollback && settled && turn.providerTurnId && !turn.rolledBack ? (
-					<Pressable accessibilityLabel="Roll back to before this turn" hitSlop={8} onPress={() => setConfirming(true)}>
+					<Pressable accessibilityLabel="Roll back to before this turn" hitSlop={8} onPress={() => { haptics.warning(); setConfirming(true); }}>
 						<Feather name="rotate-ccw" size={13} color={t.textTertiary} />
 					</Pressable>
 				) : null}
@@ -551,7 +565,7 @@ function TurnPlan({ turn }: { turn: ConversationTurn }) {
 	const done = turn.plan?.steps.filter((step) => step.status === "completed").length ?? 0;
 	return (
 		<View style={styles.planCard}>
-			<Pressable style={styles.planHeader} onPress={() => setOpen((value) => !value)}>
+			<Pressable style={styles.planHeader} onPress={() => { haptics.tap(); setOpen((value) => !value); }}>
 				<Feather name="list" size={13} color={t.textTertiary} />
 				<Text style={styles.planTitle}>Plan</Text>
 				{turn.state === "running" ? <Text style={styles.planLive}>STILL CHANGING</Text> : null}
@@ -576,7 +590,7 @@ function ChangedFiles({ turn }: { turn: ConversationTurn }) {
 	const [open, setOpen] = useState(false);
 	const files = turn.diff?.files ?? [];
 	return <View style={styles.planCard}>
-		<Pressable style={styles.planHeader} onPress={() => setOpen((value) => !value)}>
+		<Pressable style={styles.planHeader} onPress={() => { haptics.tap(); setOpen((value) => !value); }}>
 			<Feather name="file-text" size={13} color={t.textTertiary} />
 			<Text style={styles.planTitle}>{files.length} changed {files.length === 1 ? "file" : "files"}</Text>
 			{turn.state === "running" ? <><Text style={styles.planLive}>GROWING</Text><ActivityIndicator size="small" color={t.textTertiary} /></> : null}
@@ -678,7 +692,7 @@ function InputField({ name, property, required, value, onChange }: { name: strin
 					label={choice.label}
 					hint={choice.description}
 					primary={checked}
-					onPress={() => onChange(multi ? toggleInputValue(Array.isArray(value) ? value : [], choice.value) : choice.value)}
+					onPress={() => { haptics.select(); onChange(multi ? toggleInputValue(Array.isArray(value) ? value : [], choice.value) : choice.value); }}
 				/>;
 			})}</View>
 		</View>;
@@ -715,7 +729,7 @@ function Action({ label, hint, onPress, primary, tone, disabled }: { label: stri
 	const styles = useThemedStyles(makeStyles);
 	const fill = tone === "danger" ? t.tintRed : primary ? t.blue : t.bgElevated;
 	const ink = tone === "danger" ? t.red : primary ? t.onAccent : t.textPrimary;
-	return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={() => { haptics.tap(); onPress(); }} style={({ pressed }) => [styles.action, { backgroundColor: fill }, pressed && { opacity: 0.75 }, disabled && { opacity: 0.45 }]}><Text style={[styles.actionLabel, { color: ink }]}>{label}</Text>{hint ? <Text style={styles.actionHint}>{hint}</Text> : null}</Pressable>;
+	return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={() => { if (tone === "danger") haptics.warning(); else haptics.tap(); onPress(); }} style={({ pressed }) => [styles.action, { backgroundColor: fill }, pressed && { opacity: 0.75 }, disabled && { opacity: 0.45 }]}><Text style={[styles.actionLabel, { color: ink }]}>{label}</Text>{hint ? <Text style={styles.actionHint}>{hint}</Text> : null}</Pressable>;
 }
 
 function LabelValue({ label, value }: { label: string; value: string }) { const styles = useThemedStyles(makeStyles); return <View style={styles.labelValue}><Text style={styles.detailLabel}>{label}</Text><Text selectable style={styles.detailValue}>{value}</Text></View>; }
@@ -774,6 +788,7 @@ function elapsed(start?: string, end?: string): string | undefined { if (!start 
 function formatTokens(value: number): string { return value >= 1_000 ? `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k` : String(value); }
 const makeStyles = (t: Theme) => StyleSheet.create({
 	timelineWrap: { flex: 1, position: "relative", backgroundColor: t.bgBase },
+	emptySurface: { flex: 1, justifyContent: "center" },
 	list: { flex: 1, backgroundColor: t.bgBase },
 	content: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 28 },
 	older: { alignSelf: "center", flexDirection: "row", gap: 7, alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, marginBottom: 14 },
@@ -796,7 +811,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	streamingDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: t.orange, marginTop: 8 },
 	copy: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 7, paddingHorizontal: 2 },
 	copyText: { color: t.textFaint, fontSize: 10 },
-	jump: { position: "absolute", right: 14, bottom: 12, minHeight: 36, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, borderRadius: 18, backgroundColor: t.bgElevated, borderWidth: 1, borderColor: t.borderStrong },
+	jump: { position: "absolute", right: 14, bottom: 12, minHeight: 36, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, borderRadius: 18, backgroundColor: jumpToLatestColors(t).backgroundColor, borderWidth: 1, borderColor: t.borderStrong },
 	jumpText: { color: t.textPrimary, fontSize: 11, fontWeight: "700" },
 	systemSignal: { marginVertical: 7, flexDirection: "row", alignItems: "flex-start", gap: 9, borderWidth: 1, borderColor: t.borderDefault, borderRadius: 10, backgroundColor: t.bgSurface, padding: 10 },
 	systemTitle: { color: t.textPrimary, fontSize: 11, fontWeight: "600" },

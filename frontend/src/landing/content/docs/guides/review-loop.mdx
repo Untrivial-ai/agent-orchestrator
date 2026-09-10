@@ -1,128 +1,56 @@
 ---
 title: Review loop
-description: When a reviewer asks for changes, AO replays the feedback to the agent so the fix shows up without you copy-pasting anything.
+description: Route GitHub feedback to workers and run dedicated AO reviewer agents.
 ---
 
+AO supports two complementary review loops: observing feedback already posted on a claimed GitHub PR, and launching an AO reviewer agent against a worker's PR.
 
-Reviews are the part of code review that most agents get wrong: they treat them as one-shot, so the reviewer ends up repeating themselves. AO closes that loop — when a `REQUEST_CHANGES` review lands, the agent sees the review body and the inline comments in context and pushes a fix.
+## GitHub feedback
 
-## What triggers it
+The SCM observer records review state and unresolved comments. When changes are requested or unresolved feedback changes, lifecycle sends the focused unresolved comments to the owning worker. Resolved threads drop out of the next message.
 
-The SCM plugin watches your PR for:
+Delivery follows the session interface:
 
-- A new review with state `CHANGES_REQUESTED`
-- New comments on an existing review
-- Line-level comments ("inline comments")
+- Chat receives a durable provider turn in the conversation.
+- Terminal UI receives the message through the running agent session.
 
-When any of these appear, the session transitions to `changes_requested` and the agent is woken with the full review body + all unresolved inline comments.
+Feedback is signature-deduplicated. AO does not repeat an unchanged comment set on every poll.
 
-## What the agent sees
+## AO reviewer agents
 
-A single structured prompt with:
+Configure reviewers in project settings. Claude Code, Codex, and OpenCode are supported reviewer harnesses. If the project has no reviewer configured, AO reuses a review-capable worker harness or falls back to Claude Code.
 
-- Reviewer's top-level message (the review summary)
-- Each unresolved inline comment, formatted as `path:line — comment`
-- A pointer to the PR head SHA
-
-<Callout type="info">
-	AO reads unresolved review threads. Once you resolve a thread on GitHub, it drops out of the next nudge — so you can
-	thumbs-up the ones the agent addressed and only the remaining ones make it back to the agent.
-</Callout>
-
-## Configurable behavior
-
-```yaml title="agent-orchestrator.yaml"
-reactions:
-  reviewRequested:
-    enabled: true # default
-    includeResolved: false # default: only unresolved threads
-    maxRetries: 3
-```
-
-`maxRetries` matters more than you'd think — occasionally a reviewer and agent will disagree about the right fix, and you don't want the agent stuck in a loop.
-
-## Manually replay a review
+From the desktop, open the worker and use the Reviews section in the inspector. From the CLI:
 
 ```bash
-# Check all tracked PRs now
-ao review-check
-
-# One project
-ao review-check myproject
-
-# Dry run: show who would get nudged
-ao review-check --dry-run
+ao review trigger <worker-session-id>
+ao review ls <worker-session-id>
+ao review cancel <worker-session-id>
 ```
+
+Reviewer runs are separate from worker sessions. Their verdict and body are recorded against the worker and can be delivered back to it through the review API.
 
 ## Best practices
 
-- **Use inline comments for mechanical changes.** "Rename this variable", "move this into a helper" — agents handle these well.
-- **Use the top-level review message for design-level feedback.** Agents are better at responding to a coherent paragraph than to a dozen small inline nits.
-- **Resolve threads as they're addressed.** Keeps the agent's next nudge focused.
+- Keep the PR claimed by the worker that should act on feedback.
+- Resolve addressed GitHub threads so later nudges contain only remaining work.
+- Use inline comments for localized changes and a top-level review body for design-level feedback.
+- Inspect the current PR head before replaying old feedback after a force-push.
 
-## Approvals
+## Approval and merge
 
-An `APPROVED` review doesn't trigger the agent — it transitions the session toward `mergeable`. AO never auto-merges; that's your call.
-
-## Automated review (bugbot) detection
-
-Not every review comment is from a human. AO recognises a hardcoded list of known automation accounts and routes their comments to the separate `bugbot-comments` reaction instead of `changes-requested`. This lets you handle them differently — for example, treat advisory bot feedback as informational while still requiring a human approve before the agent acts on it.
-
-**GitHub** (`scm-github`) treats the following as bots:
-
-| Login                     | Tool           |
-| ------------------------- | -------------- |
-| `cursor[bot]`             | Cursor AI      |
-| `github-actions[bot]`     | GitHub Actions |
-| `codecov[bot]`            | Codecov        |
-| `sonarcloud[bot]`         | SonarCloud     |
-| `dependabot[bot]`         | Dependabot     |
-| `renovate[bot]`           | Renovate       |
-| `codeclimate[bot]`        | Code Climate   |
-| `deepsource-autofix[bot]` | DeepSource     |
-| `snyk-bot`                | Snyk           |
-| `lgtm-com[bot]`           | LGTM           |
-
-**GitLab** (`scm-gitlab`) treats the following as bots (in addition to any username matching `project_\d+_bot` or ending in `[bot]`):
-
-| Login              | Tool                  |
-| ------------------ | --------------------- |
-| `gitlab-bot`       | GitLab built-in       |
-| `ghost`            | Deleted / system user |
-| `dependabot[bot]`  | Dependabot            |
-| `renovate[bot]`    | Renovate              |
-| `sast-bot`         | GitLab SAST           |
-| `codeclimate[bot]` | Code Climate          |
-| `sonarcloud[bot]`  | SonarCloud            |
-| `snyk-bot`         | Snyk                  |
-
-A typical configuration pairing:
-
-```yaml title="agent-orchestrator.yaml"
-reactions:
-  changes-requested:
-    auto: true
-    priority: "action" # human review comment — act immediately
-
-  bugbot-comments:
-    auto: true
-    priority: "info" # advisory bot feedback — log and proceed
-```
-
-The bot list is hardcoded in each SCM plugin and is not currently configurable via `agent-orchestrator.yaml`.
-
-## Review polling throttle
-
-To avoid hammering the GitHub / GitLab API on busy repositories, AO throttles `getPendingComments` and `getAutomatedComments` calls to **at most once every 2 minutes per session** (`REVIEW_BACKLOG_THROTTLE_MS = 2 * 60 * 1000`). The throttle is in-memory and resets on daemon restart.
-
-Practical consequence: after a review comment lands on the PR, there can be **up to a 2-minute delay** before AO reacts. This is expected and by design.
-
-If you need an immediate check outside the polling cadence, run:
+Approval plus passing checks contributes to merge readiness. AO creates a durable merge-ready notification but does not automatically merge from a reaction rule. Merge explicitly in the desktop or with:
 
 ```bash
-ao review-check           # check all tracked PRs right now
-ao review-check myproject # one project only
-ao review-check --dry-run # show what would be sent, don't send
+ao pr merge <pr-number>
 ```
 
-`ao review-check` is a standalone CLI command that calls the GitHub API directly and is not subject to the in-process throttle.
+Resolve review comments explicitly when appropriate:
+
+```bash
+ao pr resolve-comments <pr-number> [comment-id...]
+```
+
+## Current limits
+
+There is no `ao review-check` command, configurable review polling throttle, `bugbot-comments` reaction, or YAML retry budget in the current rewrite. The GitHub observer and AO review-run system are the supported paths.

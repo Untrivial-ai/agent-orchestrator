@@ -65,6 +65,9 @@ func TestSteerSendsTheProvidersPreconditionShape(t *testing.T) {
 		Text:            "actually, stop and just summarize",
 		ClientMessageID: "steer-1",
 		Origin:          domain.MessageOriginHuman,
+		Content: []ports.ChatContent{{
+			Type: "image", Data: "aGVsbG8=", MIMEType: "image/png",
+		}},
 	})
 	if err != nil {
 		t.Fatalf("Steer: %v", err)
@@ -89,11 +92,15 @@ func TestSteerSendsTheProvidersPreconditionShape(t *testing.T) {
 	if params.ClientUserMessageID == nil || *params.ClientUserMessageID != "steer-1" {
 		t.Errorf("clientUserMessageId = %v, want steer-1", params.ClientUserMessageID)
 	}
-	if len(params.Input) != 1 || params.Input[0].Type != codexproto.UserInputTypeText {
-		t.Fatalf("input = %+v, want one text element", params.Input)
+	if len(params.Input) != 2 || params.Input[0].Type != codexproto.UserInputTypeText {
+		t.Fatalf("input = %+v, want text followed by image", params.Input)
 	}
 	if params.Input[0].Text == nil || *params.Input[0].Text != "actually, stop and just summarize" {
 		t.Errorf("input text = %v", params.Input[0].Text)
+	}
+	if params.Input[1].Type != codexproto.UserInputTypeImage || params.Input[1].URL == nil ||
+		*params.Input[1].URL != "data:image/png;base64,aGVsbG8=" {
+		t.Errorf("image input = %+v", params.Input[1])
 	}
 }
 

@@ -191,10 +191,13 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 
 	out, err := aoprocess.CommandContext(probeCtx, binary, "auth", "list").CombinedOutput()
 	if probeCtx.Err() != nil {
+		if probeCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return ports.AgentAuthStatusUnknown, nil
+		}
 		return ports.AgentAuthStatusUnknown, probeCtx.Err()
 	}
 	text := strings.ToLower(string(out))
-	if strings.Contains(text, "0 credentials") {
+	if strings.Contains(text, "0 credentials") || strings.Contains(text, "no credentials") || strings.Contains(text, "not authenticated") {
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	if strings.Contains(text, "credential") && err == nil {
@@ -509,6 +512,10 @@ func ResolveOpenCodeBinary(ctx context.Context) (string, error) {
 				filepath.Join(appData, "npm", "opencode.exe"),
 			)
 		}
+		candidates = append(candidates, binaryutil.WindowsPackageManagerBinCandidates("opencode")...)
+		if home, err := os.UserHomeDir(); err == nil {
+			candidates = append(candidates, filepath.Join(home, ".opencode", "bin", "opencode.exe"))
+		}
 		for _, candidate := range candidates {
 			if hookutil.IsExecutableFile(candidate) {
 				return candidate, nil
@@ -529,6 +536,7 @@ func ResolveOpenCodeBinary(ctx context.Context) (string, error) {
 			filepath.Join(home, ".local", "bin", "opencode"),
 			filepath.Join(home, ".opencode", "bin", "opencode"),
 		)
+		candidates = append(candidates, binaryutil.UnixPackageManagerBinCandidates(home, "opencode")...)
 		nodeManagerCandidates, err := binaryutil.UnixNodeManagerBinCandidates(ctx, home, "opencode")
 		if err != nil {
 			return "", err

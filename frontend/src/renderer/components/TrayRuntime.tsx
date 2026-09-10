@@ -1,32 +1,11 @@
-import { useEffect, useMemo, useRef } from "react";
-import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
+import { useEffect, useRef } from "react";
+import { useWorkspaceTraySessions } from "../hooks/useWorkspaceQuery";
 import { aoBridge } from "../lib/bridge";
 import { useNavigateToSession } from "../lib/navigate-to-session";
-import { attentionZone, workerSessions } from "../types/workspace";
-import type { TraySessionEntry } from "../../shared/tray";
 
 export function TrayRuntime() {
-	const workspaces = useWorkspaceQuery().data ?? [];
+	const sessions = useWorkspaceTraySessions().data ?? [];
 	const navigateToSession = useNavigateToSession();
-
-	const sessions = useMemo<TraySessionEntry[]>(() => {
-		const entries: TraySessionEntry[] = [];
-		for (const workspace of workspaces) {
-			for (const session of workerSessions(workspace.sessions)) {
-				const zone = attentionZone(session);
-				if (zone === "merge" && session.status === "merged") continue;
-				if (zone !== "action" && zone !== "merge") continue;
-				entries.push({
-					projectId: workspace.id,
-					projectName: workspace.name,
-					sessionId: session.id,
-					title: session.title,
-					zone,
-				});
-			}
-		}
-		return entries;
-	}, [workspaces]);
 
 	const lastPushed = useRef<string | null>(null);
 	const serialized = JSON.stringify(sessions);

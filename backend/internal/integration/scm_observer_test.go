@@ -103,7 +103,7 @@ func (p *cannedSCMProvider) RepoPRListGuard(_ context.Context, _ ports.SCMRepo, 
 	return ports.SCMGuardResult{ETag: "repo-etag"}, nil
 }
 
-func (p *cannedSCMProvider) ListOpenPRsByRepo(_ context.Context, _ ports.SCMRepo) ([]ports.SCMPRObservation, error) {
+func (p *cannedSCMProvider) ListPRsByRepo(_ context.Context, _ ports.SCMRepo, _ time.Time) ([]ports.SCMPRObservation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	out := make([]ports.SCMPRObservation, 0, len(p.detected))
@@ -120,10 +120,10 @@ func (p *cannedSCMProvider) CommitChecksGuard(_ context.Context, _ ports.SCMRepo
 func (p *cannedSCMProvider) FetchPullRequests(_ context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make([]ports.SCMObservation, 0, len(refs))
-	for _, ref := range refs {
+	out := make([]ports.SCMObservation, len(refs))
+	for i, ref := range refs {
 		if obs, ok := p.observations[ref.Number]; ok {
-			out = append(out, obs)
+			out[i] = obs
 		}
 	}
 	return out, nil
@@ -198,11 +198,12 @@ func newSCMFixture(t *testing.T, branch string) *scmFixture {
 		t.Fatalf("UpsertProject: %v", err)
 	}
 	sess, err := store.CreateSession(ctx, domain.SessionRecord{
-		ProjectID: "octo",
-		Kind:      domain.KindWorker,
-		Metadata:  domain.SessionMetadata{Branch: branch, WorkspacePath: "/ws/octo"},
-		CreatedAt: now,
-		UpdatedAt: now,
+		ProjectID:    "octo",
+		Kind:         domain.KindWorker,
+		Metadata:     domain.SessionMetadata{Branch: branch, WorkspacePath: "/ws/octo"},
+		AutoInjectCI: true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)

@@ -6,6 +6,8 @@ on:
     paths:
       - "frontend/src/landing/**"
       - ".github/workflows/deploy-landing.yml"
+  schedule:
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -37,6 +39,9 @@ jobs:
         working-directory: frontend/src/landing
         run: npm run build
         env:
+          # Used only while rendering the static export to avoid GitHub's
+          # anonymous API quota. It is never shipped to visitors.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # NEXT_PUBLIC_* is inlined into the client bundle at build time, so
           # without this the key is undefined in the deployed site and
           # instrumentation-client.ts skips posthog.init entirely. That is why

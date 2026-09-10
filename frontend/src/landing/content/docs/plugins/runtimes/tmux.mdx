@@ -1,73 +1,31 @@
 ---
-title: tmux
-description: Default runtime on macOS and Linux. Each agent gets its own tmux window.
+title: tmux runtime
+description: The built-in Terminal UI runtime on macOS and Linux.
 ---
 
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="tmux" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>runtime</code> · Name: <code>tmux</code>
-	</span>
-</div>
+AO uses `tmux` on macOS and Linux to keep each Terminal UI agent process attachable and to feed the desktop terminal mux. Runtime selection is automatic.
 
-AO uses [tmux](https://github.com/tmux/tmux) as the default runtime on macOS and Linux. Each session lives in its own tmux window under a single AO-managed session, and you can attach to any of them interactively.
+The macOS and Linux desktop packages include their own pinned tmux and use an
+AO-owned socket. Desktop users do not need to install tmux, and AO never shares
+the machine tmux server.
 
-<PlatformSupport
-	macos="full"
-	linux="full"
-	windows="none"
-	note={
-		<>
-			Windows has no tmux. Use <a href="/docs/plugins/runtimes/process">process</a> instead.
-		</>
-	}
-/>
+## Standalone daemon and development
 
-## Install
-
-macOS:
+Standalone daemon and source development runs still resolve tmux from `PATH`:
 
 ```bash
+# macOS
 brew install tmux
-```
 
-Debian/Ubuntu:
-
-```bash
+# Debian / Ubuntu
 sudo apt install tmux
 ```
 
-Arch:
+Then run `ao doctor`. It reports whether that AO process selected an explicitly
+configured, packaged, or system tmux. There is no `runtime: tmux` YAML setting.
 
-```bash
-sudo pacman -S tmux
-```
+## Desktop terminal
 
-AO needs tmux 3.2 or newer.
+The desktop xterm surface connects through AO's WebSocket terminal mux. On macOS/Linux the daemon opens a PTY-backed `tmux attach` stream for that client. Closing the desktop terminal view does not discard the underlying agent session.
 
-## Use
-
-```yaml title="agent-orchestrator.yaml"
-runtime: tmux
-```
-
-No plugin-level config — this is the default on macOS/Linux so you can also omit the key entirely.
-
-## How it works
-
-- Every AO-managed process lives in a tmux window inside a per-project tmux session.
-- Agents start via `tmux send-keys` so their output is captured.
-- For long commands (>200 characters), AO writes a temp bash script and sources it, because `tmux send-keys` truncates paste buffers.
-
-## Attaching
-
-```bash
-ao session attach <sessionId>
-```
-
-Or from inside tmux, switch windows manually. You can detach at any time (`Ctrl-b d`) and AO keeps running.
-
-## Troubleshooting
-
-- **`tmux server not running`.** `ao start` launches the server for you; if you killed it, run `ao start` again.
-- **Window disappears after agent exits.** Intentional — AO cleans up finished windows. The session metadata is archived under `~/.agent-orchestrator/.../archive/`.
+On Windows AO automatically uses its ConPTY runtime instead. There is no selectable `process` fallback.

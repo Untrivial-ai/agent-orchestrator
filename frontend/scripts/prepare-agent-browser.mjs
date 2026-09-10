@@ -6,6 +6,8 @@ const VERSION = "0.33.1";
 const RELEASE_BASE = `https://github.com/vercel-labs/agent-browser/releases/download/v${VERSION}`;
 const OUTPUT_DIR = path.resolve("agent-browser");
 const quiet = process.argv.includes("--quiet");
+const DOWNLOAD_ATTEMPTS = 3;
+const DOWNLOAD_RETRY_DELAY_MS = 1000;
 
 const TARGETS = {
 	"darwin-arm64": {
@@ -43,9 +45,11 @@ await mkdir(OUTPUT_DIR, { recursive: true });
 if ((await fileSHA256(binaryPath)) !== target.sha256) {
 	const temporaryPath = `${binaryPath}.download`;
 	await rm(temporaryPath, { force: true });
-	const response = await fetch(`${RELEASE_BASE}/${target.asset}`, { redirect: "follow" });
-	if (!response.ok || !response.body) {
-		throw new Error(`download agent-browser ${VERSION}: HTTP ${response.status}`);
+	const response = await fetchWithRetry(`${RELEASE_BASE}/${target.asset}`, {
+		description: `agent-browser ${VERSION}`,
+	});
+	if (!response.body) {
+		throw new Error(`download agent-browser ${VERSION}: empty response body`);
 	}
 	await writeFile(temporaryPath, response.body);
 	const actual = await fileSHA256(temporaryPath);
@@ -97,7 +101,29 @@ async function readText(file) {
 }
 
 async function downloadText(url, destination) {
-	const response = await fetch(url, { redirect: "follow" });
-	if (!response.ok) throw new Error(`download ${url}: HTTP ${response.status}`);
+	const response = await fetchWithRetry(url, { description: url });
 	await writeFile(destination, await response.text(), "utf8");
+}
+
+async function fetchWithRetry(url, { description }) {
+	let lastError;
+	for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt += 1) {
+		try {
+			const response = await fetch(url, { redirect: "follow" });
+			if (response.ok) return response;
+			lastError = new Error(`HTTP ${response.status}`);
+		} catch (error) {
+			lastError = error;
+		}
+
+		if (attempt < DOWNLOAD_ATTEMPTS) {
+			if (!quiet) console.warn(`Download ${description} failed; retrying (${attempt}/${DOWNLOAD_ATTEMPTS})`);
+			await delay(DOWNLOAD_RETRY_DELAY_MS * attempt);
+		}
+	}
+	throw new Error(`download ${description}: ${lastError?.message ?? String(lastError)}`);
+}
+
+function delay(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }

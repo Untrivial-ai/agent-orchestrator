@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,20 +34,26 @@ type SessionReader interface {
 
 // Service owns the live Chat controllers.
 type Service struct {
-	store      Store
-	reader     SnapshotReader
-	pageReader SnapshotPageReader
-	sessions   SessionReader
-	drivers    ports.ChatDriverRegistry
-	activity   ActivityRecorder
-	log        *slog.Logger
-	newID      IDFactory
-	now        Clock
+	store                  Store
+	reader                 SnapshotReader
+	pageReader             SnapshotPageReader
+	sessions               SessionReader
+	drivers                ports.ChatDriverRegistry
+	activity               ActivityRecorder
+	log                    *slog.Logger
+	newID                  IDFactory
+	now                    Clock
+	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
+	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	stopProviderHost       func(context.Context, domain.SessionID) error
 
-	mu          sync.RWMutex
-	controllers map[domain.SessionID]*Controller
-	gateMu      sync.Mutex
-	gates       map[domain.SessionID]controllerGate
+	mu           sync.RWMutex
+	controllers  map[domain.SessionID]*Controller
+	startConfigs map[domain.SessionID]StartConfig
+	gateMu       sync.Mutex
+	gates        map[domain.SessionID]controllerGate
+	probeMu      sync.Mutex
+	probed       map[domain.AgentHarness]ports.ChatCapabilities
 }
 
 // controllerGate serializes start/stop for one session without making provider
@@ -77,6 +85,16 @@ type Options struct {
 	Log      *slog.Logger
 	NewID    IDFactory
 	Now      Clock
+	// OnAccountChanged invalidates daemon-owned account readiness for the
+	// harness that emitted an account/updated notification.
+	OnAccountChanged func(domain.SessionID, string, domain.AgentHarness)
+	// OnCodexCapacityChanged attributes a structured provider update to the one
+	// globally active AO Codex account. The callback owns profile-independent
+	// account state; conversation rows are not the authority for Codex capacity.
+	OnCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// StopProviderHost destroys current session ownership on explicit teardown,
+	// even if its daemon attachment already failed. Never used by StopAll.
+	StopProviderHost func(context.Context, domain.SessionID) error
 }
 
 // New builds a Chat service.
@@ -90,17 +108,22 @@ func New(opts Options) *Service {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{
-		store:       opts.Store,
-		reader:      opts.Reader,
-		pageReader:  opts.PageReader,
-		sessions:    opts.Sessions,
-		drivers:     opts.Drivers,
-		activity:    opts.Activity,
-		log:         log,
-		newID:       opts.NewID,
-		now:         now,
-		controllers: make(map[domain.SessionID]*Controller),
-		gates:       make(map[domain.SessionID]controllerGate),
+		store:                  opts.Store,
+		reader:                 opts.Reader,
+		pageReader:             opts.PageReader,
+		sessions:               opts.Sessions,
+		drivers:                opts.Drivers,
+		activity:               opts.Activity,
+		log:                    log,
+		newID:                  opts.NewID,
+		now:                    now,
+		onAccountChanged:       opts.OnAccountChanged,
+		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
+		stopProviderHost:       opts.StopProviderHost,
+		controllers:            make(map[domain.SessionID]*Controller),
+		startConfigs:           make(map[domain.SessionID]StartConfig),
+		gates:                  make(map[domain.SessionID]controllerGate),
+		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
 	}
 }
 
@@ -125,34 +148,103 @@ type StartConfig struct {
 	WorkspacePath         string
 	Env                   map[string]string
 	Model                 string
+	Effort                string
 	Permissions           ports.PermissionMode
 	SystemPrompt          string
 	AdditionalDirectories []string
 	MCPServers            []ports.ChatMCPServerConfig
+	// ExpectedControllerOwner is the durable controller identity observed before
+	// this launch. PrepareControllerEnv uses it as a compare-and-swap fence.
+	ExpectedControllerOwner domain.SessionControllerOwner
+	// PrepareControllerEnv rotates launch-only credentials inside the per-session
+	// controller gate. The returned environment is never retained in startConfigs.
+	PrepareControllerEnv func(context.Context, domain.SessionControllerOwner) (map[string]string, error)
 	// ProviderConversationID resumes an existing provider conversation when set.
 	ProviderConversationID string
+	// ProviderScopeID reserves the opaque-id namespace for a provider boundary
+	// that ControllerReady will commit. Empty derives the namespace from the
+	// active branch, which is the ordinary initial-start and resume path.
+	ProviderScopeID string
+	// ControllerGeneration is supplied by a durable replacement saga that must
+	// fence the target before starting it. Ordinary starts leave it empty.
+	ControllerGeneration string
+	// RequireNativeHistory makes a missing typed provider replay fatal. Interface
+	// handoff sets it because provider context without a visible transcript would
+	// make completed Terminal work disappear from Chat.
+	RequireNativeHistory bool
+	// SkipNativeHistoryImport resumes provider context without projecting its old
+	// events before ControllerReady. Agent switching uses this because its atomic
+	// provider boundary does not exist until ControllerReady commits; AO already
+	// retains the unified timeline and the finalized continuation separately.
+	SkipNativeHistoryImport bool
 	// ControllerReady commits the controller's durable generation before event
 	// consumption starts. A controller that exits immediately must report after
 	// the launch has been marked live, so its exited signal cannot be overwritten
 	// by a later launch-completion write.
-	ControllerReady func(StartResult) error
+	ControllerReady func(StartResult) (ControllerCommit, error)
 }
 
-func controllerStartResult(controller *Controller) StartResult {
+// ControllerCommit is the conversation state committed by ControllerReady.
+// Carrying it back across the callback avoids a fallible database read after an
+// irreversible ownership transfer.
+type ControllerCommit struct {
+	Conversation    domain.ConversationRecord
+	ControllerOwner domain.SessionControllerOwner
+}
+
+func controllerStartResult(
+	controller *Controller,
+	providerBoundary *domain.ConversationBranch,
+	commitProviderHistory func(context.Context) error,
+) StartResult {
 	return StartResult{
 		ProviderConversationID: controller.ProviderConversationID(),
 		ControllerGeneration:   controller.Generation(),
+		Conversation:           controller.conversation,
+		ProviderBoundary:       providerBoundary,
+		CommitProviderHistory:  commitProviderHistory,
 	}
 }
 
-func notifyControllerReady(cfg StartConfig, controller *Controller) error {
+func notifyControllerReady(
+	cfg StartConfig,
+	controller *Controller,
+	providerBoundary *domain.ConversationBranch,
+	commitProviderHistory func(context.Context) error,
+) (ControllerCommit, error) {
 	if cfg.ControllerReady == nil {
-		return nil
+		return ControllerCommit{}, nil
 	}
-	if err := cfg.ControllerReady(controllerStartResult(controller)); err != nil {
-		return fmt.Errorf("commit chat controller: %w", err)
+	commit, err := cfg.ControllerReady(controllerStartResult(
+		controller, providerBoundary, commitProviderHistory,
+	))
+	if err != nil {
+		return ControllerCommit{}, fmt.Errorf("commit chat controller: %w", err)
 	}
-	return nil
+	return commit, nil
+}
+
+func cloneStartConfig(cfg StartConfig) StartConfig {
+	cloned := cfg
+	cloned.Env = make(map[string]string, len(cfg.Env))
+	for key, value := range cfg.Env {
+		cloned.Env[key] = value
+	}
+	cloned.AdditionalDirectories = append([]string(nil), cfg.AdditionalDirectories...)
+	cloned.MCPServers = make([]ports.ChatMCPServerConfig, len(cfg.MCPServers))
+	for index, server := range cfg.MCPServers {
+		server.Args = append([]string(nil), server.Args...)
+		server.Env = make(map[string]string, len(cfg.MCPServers[index].Env))
+		for key, value := range cfg.MCPServers[index].Env {
+			server.Env[key] = value
+		}
+		server.Headers = make(map[string]string, len(cfg.MCPServers[index].Headers))
+		for key, value := range cfg.MCPServers[index].Headers {
+			server.Headers[key] = value
+		}
+		cloned.MCPServers[index] = server
+	}
+	return cloned
 }
 
 // settleOrphanedWork closes out anything a previous controller left behind.
@@ -187,6 +279,22 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 	defer gate.unlock()
 
+	replayCheckpoint := nativeHistoryCheckpoint{}
+	if cfg.RequireNativeHistory {
+		if s.sessions == nil {
+			return nil, errors.New("native history replay requires a session reader")
+		}
+		rec, found, err := s.sessions.GetSession(ctx, cfg.SessionID)
+		if err != nil {
+			return nil, fmt.Errorf("read native history checkpoint: %w", err)
+		}
+		if !found {
+			return nil, ports.ErrSessionNotFound
+		}
+		replayCheckpoint.latestUserPrompt = strings.TrimSpace(rec.Metadata.LatestUserPrompt)
+		replayCheckpoint.latestAssistantUpdate = strings.TrimSpace(rec.Metadata.LatestAssistantUpdate)
+	}
+
 	s.mu.RLock()
 	existing := s.controllers[cfg.SessionID]
 	s.mu.RUnlock()
@@ -215,22 +323,137 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		return nil, fmt.Errorf("chat driver for %s: %w", cfg.Harness, err)
 	}
 
-	caps, err := driver.Probe(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if missing := ports.MissingProductionCapabilities(caps); len(missing) > 0 {
-		return nil, fmt.Errorf("%w: %s lacks %v", ports.ErrChatUnsupported, cfg.Harness, missing)
+	var caps ports.ChatCapabilities
+	if cfg.ProviderConversationID == "" {
+		caps, err = s.driverCapabilities(ctx, cfg.Harness, driver)
+		if err != nil {
+			return nil, err
+		}
+		if err := capabilityAdmissionError(cfg.Harness, caps, cfg.Permissions); err != nil {
+			return nil, err
+		}
 	}
 
 	scope := domain.ConversationScopeSession
 	if cfg.Kind == domain.KindOrchestrator {
 		scope = domain.ConversationScopeProject
 	}
-	conversation, err := s.store.CreateConversation(
-		ctx, s.newID(), scope, cfg.ProjectID, cfg.SessionID, s.now())
+	now := s.now()
+	var resetBoundary domain.ConversationActivity
+	freshProjectContext := scope == domain.ConversationScopeProject && cfg.ProviderConversationID == ""
+	if freshProjectContext {
+		detail, marshalErr := json.Marshal(map[string]string{
+			"event":  "context.reset",
+			"reason": "native conversation was unavailable",
+		})
+		if marshalErr != nil {
+			return nil, fmt.Errorf("encode fresh context boundary: %w", marshalErr)
+		}
+		resetBoundary = domain.ConversationActivity{
+			ID:             s.newID(),
+			Kind:           domain.ActivityKindSystem,
+			Status:         domain.ActivityStatusCompleted,
+			Summary:        "Agent context reset.",
+			Detail:         detail,
+			ProviderItemID: domain.ConversationContextResetProviderItemID(cfg.SessionID),
+		}
+	}
+	conversationID := s.newID()
+	var conversation domain.ConversationRecord
+	if freshProjectContext {
+		conversation, err = s.store.CreateProjectConversationWithContextReset(
+			ctx, conversationID, cfg.ProjectID, cfg.SessionID, resetBoundary, now)
+	} else if scope == domain.ConversationScopeProject &&
+		cfg.ProviderConversationID != "" && cfg.ProviderScopeID != "" {
+		// A coordinator-reserved provider boundary is an ownership transfer, not
+		// permission to steal a project narrative from a newer orchestrator.
+		// Require the durable current_session_id proof the coordinator observed;
+		// ControllerReady/CommitChatSpawn rechecks it after provider I/O.
+		conversation, err = s.store.ConversationForSession(ctx, cfg.SessionID)
+	} else {
+		conversation, err = s.store.CreateConversation(
+			ctx, conversationID, scope, cfg.ProjectID, cfg.SessionID, now)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open conversation: %w", err)
+	}
+	repairedBranch, restoredProviderOwner, err := s.store.RepairIncompleteConversationEdit(
+		ctx, cfg.SessionID, conversation.ID, s.now())
+	if err != nil {
+		return nil, fmt.Errorf("repair incomplete conversation edit: %w", err)
+	}
+	if repairedBranch.ID != "" {
+		conversation.ActiveBranchID = repairedBranch.ID
+		// An ordinary restart was handed the abandoned child's provider handle.
+		// A coordinator-supplied scope belongs to a pending provider boundary (for
+		// example, agent switching) and must keep its independently reserved handle.
+		if restoredProviderOwner && cfg.ProviderScopeID == "" {
+			cfg.ProviderConversationID = repairedBranch.ProviderConversationID
+		}
+	}
+	activeBranch, err := s.store.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
+	if err != nil {
+		return nil, fmt.Errorf("load active conversation branch: %w", err)
+	}
+	providerScopeID := activeBranch.ProviderScopeID
+	providerHandleOwnedByActiveBranch := true
+	if cfg.ProviderScopeID != "" {
+		providerScopeID = cfg.ProviderScopeID
+		providerHandleOwnedByActiveBranch = providerScopeID == activeBranch.ProviderScopeID
+	}
+	providerBoundaryID := ""
+	if !providerHandleOwnedByActiveBranch {
+		providerBoundaryID = providerScopeID
+	} else if cfg.ProviderConversationID == "" && cfg.ProviderScopeID == "" &&
+		(conversation.LatestSequence > 0 || activeBranch.ProviderConversationID != "") {
+		// This conversation already owns provider history, but the caller proved it
+		// cannot resume that provider thread. Reserve the next provider boundary
+		// before connect so every opaque id emitted by the fresh process is born in
+		// the same namespace that ControllerReady will durably publish.
+		providerBoundaryID = s.newID()
+		providerScopeID = providerBoundaryID
+		providerHandleOwnedByActiveBranch = false
+	}
+	if cfg.ProviderConversationID != "" && providerHandleOwnedByActiveBranch {
+		if activeBranch.ProviderConversationID != "" &&
+			activeBranch.ProviderConversationID != cfg.ProviderConversationID {
+			return nil, fmt.Errorf("active conversation branch provider handle %q does not match session handle %q",
+				activeBranch.ProviderConversationID, cfg.ProviderConversationID)
+		}
+	}
+	// Conversation settings are durable user choices. Restore the selected
+	// model when rebuilding a controller after a daemon restart; the caller's
+	// session default must not silently replace it.
+	if cfg.ProviderConversationID != "" && conversation.Settings.Model != "" {
+		cfg.Model = conversation.Settings.Model
+	}
+	if cfg.ProviderConversationID != "" && conversation.Settings.ReasoningEffort != "" {
+		cfg.Effort = conversation.Settings.ReasoningEffort
+	}
+	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" {
+		cfg.Permissions = conversation.Settings.ApprovalMode
+	}
+	if cfg.ProviderConversationID == "" {
+		if err := capabilityAdmissionError(cfg.Harness, caps, cfg.Permissions); err != nil {
+			return nil, err
+		}
+		conversation.Settings.Model = cfg.Model
+		conversation.Settings.ReasoningEffort = cfg.Effort
+		conversation.Settings.ApprovalMode = cfg.Permissions
+		if err := s.store.SetConversationSettings(ctx, conversation.ID, conversation.Settings, s.now()); err != nil {
+			return nil, fmt.Errorf("record initial conversation settings: %w", err)
+		}
+	}
+
+	var prepareEnv func(context.Context) (map[string]string, error)
+	if cfg.PrepareControllerEnv != nil {
+		prepareEnv = func(prepareCtx context.Context) (map[string]string, error) {
+			env, prepareErr := cfg.PrepareControllerEnv(prepareCtx, cfg.ExpectedControllerOwner)
+			if prepareErr != nil {
+				return nil, fmt.Errorf("prepare chat controller environment: %w", prepareErr)
+			}
+			return env, nil
+		}
 	}
 
 	var conv ports.ChatConversation
@@ -241,8 +464,12 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			DataDir:                cfg.DataDir,
 			WorkspacePath:          cfg.WorkspacePath,
 			Env:                    cfg.Env,
+			PrepareEnv:             prepareEnv,
+			Model:                  cfg.Model,
+			Effort:                 cfg.Effort,
 			Permissions:            cfg.Permissions,
 			SystemPrompt:           cfg.SystemPrompt,
+			ProviderScopeID:        providerScopeID,
 			AdditionalDirectories:  cfg.AdditionalDirectories,
 			MCPServers:             cfg.MCPServers,
 		})
@@ -252,9 +479,11 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			DataDir:               cfg.DataDir,
 			WorkspacePath:         cfg.WorkspacePath,
 			Env:                   cfg.Env,
+			PrepareEnv:            prepareEnv,
 			Model:                 cfg.Model,
 			Permissions:           cfg.Permissions,
 			SystemPrompt:          cfg.SystemPrompt,
+			ProviderScopeID:       providerScopeID,
 			AdditionalDirectories: cfg.AdditionalDirectories,
 			MCPServers:            cfg.MCPServers,
 		})
@@ -262,16 +491,73 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if err != nil {
 		return nil, err
 	}
-
-	// Claim the durable fence before the controller starts consuming events. An
-	// older controller's projection transaction compares its generation with this
-	// session row and becomes a no-op after this point.
-	generation := s.newID()
-	if err := s.store.ClaimChatControllerGeneration(ctx, cfg.SessionID, generation, s.now()); err != nil {
-		_ = conv.Close()
-		return nil, fmt.Errorf("claim chat controller: %w", err)
+	if cfg.ProviderConversationID != "" &&
+		conv.ProviderConversationID() != cfg.ProviderConversationID {
+		returned := conv.ProviderConversationID()
+		cleanupUnpublishedConversation(conv, false)
+		return nil, fmt.Errorf(
+			"resumed provider conversation handle %q does not match requested handle %q",
+			returned, cfg.ProviderConversationID,
+		)
+	}
+	liveReconnect := false
+	if reconnected, ok := conv.(ports.ChatLiveReconnector); ok {
+		liveReconnect = reconnected.ReconnectedLive()
+	}
+	if cfg.ProviderConversationID != "" {
+		// Resume owns live-host adoption before installation/auth discovery. A
+		// desktop update can move a binary while its old process is still running.
+		// Admit using what this connection actually negotiated, not a fresh probe.
+		caps = maps.Clone(conv.Capabilities())
+		if liveReconnect {
+			// Live continuation does not require native load/resume support; that
+			// capability is relevant only after the provider process itself dies.
+			if caps == nil {
+				caps = make(ports.ChatCapabilities)
+			}
+			caps[ports.ChatCapabilityResume] = true
+		}
+		if err := capabilityAdmissionError(cfg.Harness, caps, cfg.Permissions); err != nil {
+			cleanupUnpublishedConversation(conv, false)
+			return nil, err
+		}
+	}
+	var liveRows ConversationRows
+	if liveReconnect {
+		if s.reader == nil {
+			cleanupUnpublishedConversation(conv, false)
+			return nil, fmt.Errorf("%w: durable conversation snapshot is unavailable", ports.ErrChatRecoveryInconclusive)
+		}
+		liveRows, err = s.reader.LoadConversationSnapshot(ctx, conversation.ID)
+		if err != nil {
+			cleanupUnpublishedConversation(conv, false)
+			return nil, fmt.Errorf("%w: load live conversation before reconnect: %w", ports.ErrChatRecoveryInconclusive, err)
+		}
 	}
 
+	// Claim the durable fence before the controller starts consuming events. A
+	// pending provider boundary claims it in ControllerReady's atomic ownership
+	// commit instead, so a failed provider connect or callback cannot split the
+	// session owner from the conversation head.
+	generation := strings.TrimSpace(cfg.ControllerGeneration)
+	if generation == "" {
+		generation = s.newID()
+	}
+	if providerBoundaryID == "" {
+		if err := s.store.ClaimChatControllerGeneration(ctx, cfg.SessionID, generation, s.now()); err != nil {
+			cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
+			return nil, fmt.Errorf("claim chat controller: %w", err)
+		}
+	}
+	providerBoundary := (*domain.ConversationBranch)(nil)
+	if providerBoundaryID != "" {
+		providerBoundary = &domain.ConversationBranch{
+			ID: providerBoundaryID, ConversationID: conversation.ID, SessionID: cfg.SessionID,
+			ProviderConversationID: conv.ProviderConversationID(), ParentBranchID: activeBranch.ID,
+			ForkAfterSequence: conversation.LatestSequence, ProviderScopeID: providerScopeID,
+			CreatedAt: s.now(),
+		}
+	}
 	// Whatever the previous controller left in flight is not this controller's, and
 	// it is not evidence that any work finished.
 	//
@@ -281,35 +567,24 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// behind a controller that no longer existed. Nothing would ever have corrected
 	// it. Settling here covers every way a controller can come up, and is a no-op
 	// for a session that has none of it.
-	s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
-	if conversation.Scope == domain.ConversationScopeProject &&
-		conversation.LatestSequence > 0 && cfg.ProviderConversationID == "" {
-		detail, marshalErr := json.Marshal(map[string]string{
-			"event":  "context.reset",
-			"reason": "native conversation was unavailable",
-		})
-		if marshalErr != nil {
-			_ = conv.Close()
-			return nil, fmt.Errorf("encode fresh context boundary: %w", marshalErr)
-		}
-		if boundaryErr := s.store.UpsertActivity(ctx, conversation.ID, "", domain.ConversationActivity{
-			ID:             s.newID(),
-			Kind:           domain.ActivityKindSystem,
-			Status:         domain.ActivityStatusCompleted,
-			Summary:        "Started a fresh agent context. Earlier project history remains visible in AO but was not loaded into this agent.",
-			Detail:         detail,
-			ProviderItemID: "ao-context-reset:" + string(cfg.SessionID),
-		}, s.now()); boundaryErr != nil {
-			_ = conv.Close()
-			return nil, fmt.Errorf("record fresh context boundary: %w", boundaryErr)
-		}
+	if !liveReconnect {
+		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
 	}
-
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, conversation, generation, conv, s.store, s.activity, s.log, s.newID, s.now)
-	if cfg.ProviderConversationID != "" {
+		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+	var commitProviderHistory func(context.Context) error
+	if liveReconnect {
+		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)
+		if activator, ok := conv.(ports.ChatLiveReconnectActivator); ok {
+			if err := activator.ActivateLiveReconnect(ctx, providerTurnID); err != nil {
+				cleanupUnpublishedConversation(conv, false)
+				return nil, err
+			}
+		}
+	}
+	if cfg.ProviderConversationID != "" && !cfg.SkipNativeHistoryImport && !liveReconnect {
 		// The provider's native thread is the continuity authority across TUI and
 		// Chat. Import it before the live projector starts so the first notification
 		// cannot appear ahead of the older prompt, tool work, and answer it follows.
@@ -323,23 +598,88 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		if s.reader != nil {
 			existing, err = s.reader.LoadConversationSnapshot(ctx, conversation.ID)
 			if err != nil {
-				_ = conv.Close()
+				cleanupUnpublishedConversation(conv, false)
 				return nil, fmt.Errorf("load conversation before native history import: %w", err)
 			}
 		}
-		if err := controller.importNativeHistory(
+		if cfg.RequireNativeHistory {
+			replayCheckpoint.captureAOHighWater(
+				cfg.SessionID, existing.Turns, existing.Messages, existing.Activities,
+			)
+		}
+		events, historyErr := controller.readNativeHistory(
 			ctx, existing.Turns, existing.Messages, existing.Activities,
-		); err != nil {
-			_ = conv.Close()
+			cfg.RequireNativeHistory, replayCheckpoint,
+		)
+		if historyErr != nil {
+			cleanupUnpublishedConversation(conv, false)
+			return nil, historyErr
+		}
+		if providerBoundary != nil {
+			// The pending branch does not exist yet. Carry its stable replay into
+			// ControllerReady so SQLite can insert/activate the boundary, stage the
+			// generation, project every event onto that branch, and publish the
+			// live session as one transaction. Until then the terminated target is
+			// not exposed to input and no event can be attributed to the old root.
+			commitProviderHistory = func(commitCtx context.Context) error {
+				return controller.projectNativeHistory(commitCtx, events)
+			}
+		} else if err := controller.projectNativeHistory(ctx, events); err != nil {
+			cleanupUnpublishedConversation(conv, false)
 			return nil, err
 		}
 	}
-	if err := notifyControllerReady(cfg, controller); err != nil {
-		_ = conv.Close()
+	commit, err := notifyControllerReady(
+		cfg, controller, providerBoundary, commitProviderHistory,
+	)
+	if err != nil {
+		cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
 		return nil, err
+	}
+	if providerBoundary != nil {
+		if cfg.ControllerReady == nil {
+			if commitProviderHistory != nil {
+				cleanupUnpublishedConversation(conv, false)
+				return nil, errors.New("commit native history: atomic provider-boundary lifecycle is unavailable")
+			}
+			if err := s.store.CreateAndActivateConversationBranch(
+				ctx, cfg.SessionID, *providerBoundary, generation, s.now(),
+			); err != nil {
+				cleanupUnpublishedConversation(conv, false)
+				return nil, fmt.Errorf("commit fresh provider boundary: %w", err)
+			}
+			commit.Conversation = controller.conversation
+			commit.Conversation.ActiveBranchID = providerBoundary.ID
+			commit.Conversation.UpdatedAt = s.now()
+		} else if commit.Conversation.ActiveBranchID != providerBoundary.ID {
+			cleanupUnpublishedConversation(conv, false)
+			return nil, fmt.Errorf("commit chat controller: provider boundary %s was not activated", providerBoundary.ID)
+		}
+	}
+	if commit.Conversation.ID != "" {
+		// The controller has not been published and its projector has not started,
+		// so this is the one safe point where the activation-mutated cache fields
+		// move together. Preserve immutable identity from the controller itself:
+		// after ControllerReady commits ownership, synchronization must be an
+		// infallible assignment rather than another operation that can strand it.
+		controller.conversation.ActiveBranchID = commit.Conversation.ActiveBranchID
+		controller.conversation.Settings = commit.Conversation.Settings
+		controller.conversation.UpdatedAt = commit.Conversation.UpdatedAt
+		controller.settings = commit.Conversation.Settings
+	}
+	if commit.ControllerOwner != (domain.SessionControllerOwner{}) {
+		cfg.ExpectedControllerOwner = commit.ControllerOwner
+	} else {
+		cfg.ExpectedControllerOwner.Harness = cfg.Harness
+		cfg.ExpectedControllerOwner.Mode = domain.SessionModeChat
+		cfg.ExpectedControllerOwner.IsTerminated = false
+		cfg.ExpectedControllerOwner.RuntimeLaunchID = ""
+		cfg.ExpectedControllerOwner.ProviderConversationID = controller.ProviderConversationID()
+		cfg.ExpectedControllerOwner.ControllerGeneration = controller.Generation()
 	}
 	s.mu.Lock()
 	s.controllers[cfg.SessionID] = controller
+	s.startConfigs[cfg.SessionID] = cloneStartConfig(cfg)
 	controller.start()
 	s.mu.Unlock()
 
@@ -347,6 +687,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// reports ErrNoController instead of writing into a dead controller.
 	go func() {
 		controller.Wait()
+		controller.waitForBranchHandoff()
 		s.mu.Lock()
 		if current, ok := s.controllers[cfg.SessionID]; ok && current == controller {
 			delete(s.controllers, cfg.SessionID)
@@ -355,6 +696,26 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}()
 
 	return controller, nil
+}
+
+// cleanupUnpublishedConversation rolls back a provider opened before its AO
+// controller was published. A fresh host must be destroyed even when it opened a
+// stored provider conversation; only a proven attachment to the same live host
+// is detached so transient AO persistence cannot interrupt work in flight.
+func cleanupUnpublishedConversation(conv ports.ChatConversation, fresh bool) {
+	terminator, canTerminate := conv.(ports.ChatProviderTerminator)
+	liveReconnect := false
+	if reconnected, ok := conv.(ports.ChatLiveReconnector); ok {
+		liveReconnect = reconnected.ReconnectedLive()
+	}
+	// A newly launched persistent process must not be orphaned merely because it
+	// was opening an existing provider conversation. Only attachment to the same
+	// already-live process is preserve-on-failure ownership.
+	if canTerminate && (fresh || !liveReconnect) {
+		_ = terminator.Terminate()
+		return
+	}
+	_ = conv.Close()
 }
 
 // Controller returns a session's live controller.
@@ -377,6 +738,17 @@ func (s *Service) HasLiveChatController(sessionID domain.SessionID) bool {
 	controller := s.controllers[sessionID]
 	s.mu.RUnlock()
 	return controller != nil && controller.State() != ports.ChatControllerStopped
+}
+
+// PreservesProviderOnRestart reports only established live ownership. Unknown
+// or recovering sessions remain conservative for the desktop update warning.
+func (s *Service) PreservesProviderOnRestart(sessionID domain.SessionID) bool {
+	controller, err := s.Controller(sessionID)
+	if err != nil || controller.State() == ports.ChatControllerStopped {
+		return false
+	}
+	preserver, ok := controller.conv.(ports.ChatProviderPreserver)
+	return ok && preserver.PreservesProviderOnClose()
 }
 
 // requireChatSession reads the persisted mode and refuses anything that is not a
@@ -459,6 +831,24 @@ func (s *Service) Interrupt(ctx context.Context, id domain.SessionID) error {
 	return controller.Interrupt(ctx)
 }
 
+// ArmChatHandoff closes source intake and queue dispatch at
+// interface-transition acceptance time. It is a reversible fence; durable queue
+// settlement waits until target preflight succeeds.
+func (s *Service) ArmChatHandoff(
+	ctx context.Context,
+	id domain.SessionID,
+	policy domain.SessionInterfaceTransitionPolicy,
+) error {
+	controller, err := s.Controller(id)
+	if errors.Is(err, ErrNoController) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return controller.ArmHandoff(ctx, policy)
+}
+
 // PrepareChatHandoff closes source intake and makes the controller quiescent.
 // Session Manager remains responsible for stopping it and starting the target;
 // keeping that sequencing outside this package preserves the one-writer rule.
@@ -501,9 +891,24 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 	controller, ok := s.controllers[id]
 	s.mu.RUnlock()
 	if !ok {
+		s.mu.Lock()
+		delete(s.startConfigs, id)
+		s.mu.Unlock()
+		if s.stopProviderHost != nil {
+			return s.stopProviderHost(ctx, id)
+		}
 		return nil
 	}
-	err := controller.Close(ctx)
+	err := controller.Terminate(ctx)
+	controller.mu.Lock()
+	preserved := controller.preserveProviderOnStop
+	controller.mu.Unlock()
+	if preserved && s.stopProviderHost != nil {
+		// Close may already have retired this handle (for example after a failed
+		// projection). Explicit Stop targets current session ownership under the
+		// start/stop gate; a stale handle's Terminate must not target a replacement.
+		err = errors.Join(err, s.stopProviderHost(ctx, id))
+	}
 
 	// Keep the only handle to a controller whose event stream has not ended. A
 	// caller can then retry the idempotent close rather than assuming a timeout
@@ -515,6 +920,7 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		if current, found := s.controllers[id]; found && current == controller {
 			delete(s.controllers, id)
 		}
+		delete(s.startConfigs, id)
 		s.mu.Unlock()
 	default:
 	}
@@ -528,6 +934,7 @@ func (s *Service) StopAll(ctx context.Context) {
 	for id, controller := range s.controllers {
 		controllers = append(controllers, controller)
 		delete(s.controllers, id)
+		delete(s.startConfigs, id)
 	}
 	s.mu.Unlock()
 
@@ -540,16 +947,21 @@ func (s *Service) StopAll(ctx context.Context) {
 
 // Snapshot is the durable read model a client bootstraps from.
 type Snapshot struct {
-	Conversation   domain.ConversationRecord
-	SessionID      domain.SessionID
-	Harness        domain.AgentHarness
-	Mode           domain.SessionMode
-	Controller     ports.ChatControllerState
-	Turns          []domain.ConversationTurn
-	Messages       []domain.ConversationMessage
-	Activities     []domain.ConversationActivity
-	OldestSequence int64
-	HasMoreBefore  bool
+	Conversation                     domain.ConversationRecord
+	ActiveBranch                     domain.ConversationBranch
+	EditFloorSequence                int64
+	NativeForkAvailableAfterSequence int64
+	SessionID                        domain.SessionID
+	Harness                          domain.AgentHarness
+	Mode                             domain.SessionMode
+	Controller                       ports.ChatControllerState
+	Turns                            []domain.ConversationTurn
+	Messages                         []domain.ConversationMessage
+	Activities                       []domain.ConversationActivity
+	BranchPoints                     []domain.ConversationBranchPoint
+	BranchedFromEarlierMessage       bool
+	OldestSequence                   int64
+	HasMoreBefore                    bool
 	// Usage and RateLimits are current state carried on the snapshot the client
 	// already polls, rather than timeline entries or a second request. Both are nil
 	// until the provider has reported, so a client can tell "not known yet" from a
@@ -583,12 +995,17 @@ type SnapshotPageReader interface {
 
 // ConversationRows is the raw durable read.
 type ConversationRows struct {
-	Conversation   domain.ConversationRecord
-	Turns          []domain.ConversationTurn
-	Messages       []domain.ConversationMessage
-	Activities     []domain.ConversationActivity
-	OldestSequence int64
-	HasMoreBefore  bool
+	Conversation                     domain.ConversationRecord
+	ActiveBranch                     domain.ConversationBranch
+	EditFloorSequence                int64
+	NativeForkAvailableAfterSequence int64
+	Turns                            []domain.ConversationTurn
+	Messages                         []domain.ConversationMessage
+	Activities                       []domain.ConversationActivity
+	BranchPoints                     []domain.ConversationBranchPoint
+	BranchedFromEarlierMessage       bool
+	OldestSequence                   int64
+	HasMoreBefore                    bool
 }
 
 // Snapshot reads a session's conversation.
@@ -632,17 +1049,22 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 	}
 
 	return Snapshot{
-		Conversation: rows.Conversation,
-		SessionID:    id,
-		Harness:      record.Harness,
-		Mode:         domain.NormalizeSessionMode(record.Mode),
-		Controller:   state,
-		Turns:        rows.Turns,
-		Messages:     rows.Messages,
-		Activities:   rows.Activities,
-		Capabilities: caps,
-		Usage:        rows.Conversation.Usage,
-		RateLimits:   rows.Conversation.RateLimits,
+		Conversation:                     rows.Conversation,
+		ActiveBranch:                     rows.ActiveBranch,
+		EditFloorSequence:                rows.EditFloorSequence,
+		NativeForkAvailableAfterSequence: rows.NativeForkAvailableAfterSequence,
+		SessionID:                        id,
+		Harness:                          record.Harness,
+		Mode:                             domain.NormalizeSessionMode(record.Mode),
+		Controller:                       state,
+		Turns:                            rows.Turns,
+		Messages:                         rows.Messages,
+		Activities:                       rows.Activities,
+		BranchPoints:                     rows.BranchPoints,
+		BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
+		Capabilities:                     caps,
+		Usage:                            rows.Conversation.Usage,
+		RateLimits:                       rows.Conversation.RateLimits,
 	}, nil
 }
 
@@ -681,19 +1103,24 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		caps = controller.Capabilities()
 	}
 	return Snapshot{
-		Conversation:   rows.Conversation,
-		SessionID:      id,
-		Harness:        record.Harness,
-		Mode:           domain.NormalizeSessionMode(record.Mode),
-		Controller:     state,
-		Turns:          rows.Turns,
-		Messages:       rows.Messages,
-		Activities:     rows.Activities,
-		OldestSequence: rows.OldestSequence,
-		HasMoreBefore:  rows.HasMoreBefore,
-		Capabilities:   caps,
-		Usage:          rows.Conversation.Usage,
-		RateLimits:     rows.Conversation.RateLimits,
+		Conversation:                     rows.Conversation,
+		ActiveBranch:                     rows.ActiveBranch,
+		EditFloorSequence:                rows.EditFloorSequence,
+		NativeForkAvailableAfterSequence: rows.NativeForkAvailableAfterSequence,
+		SessionID:                        id,
+		Harness:                          record.Harness,
+		Mode:                             domain.NormalizeSessionMode(record.Mode),
+		Controller:                       state,
+		Turns:                            rows.Turns,
+		Messages:                         rows.Messages,
+		Activities:                       rows.Activities,
+		BranchPoints:                     rows.BranchPoints,
+		BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
+		OldestSequence:                   rows.OldestSequence,
+		HasMoreBefore:                    rows.HasMoreBefore,
+		Capabilities:                     caps,
+		Usage:                            rows.Conversation.Usage,
+		RateLimits:                       rows.Conversation.RateLimits,
 	}, nil
 }
 
@@ -728,24 +1155,77 @@ func (f SnapshotPageReaderFunc) LoadConversationSnapshotPage(
 // without importing this package's config types. They are deliberately narrow:
 // the manager decides when, this package decides how.
 
+// SupportsChat reports whether a harness has a Chat driver at all, without
+// probing the local install. Use it to decide whether Chat is even offerable.
+func (s *Service) SupportsChat(harness domain.AgentHarness) bool {
+	return s.drivers.SupportsChat(harness)
+}
+
 // PreflightChat reports whether a harness can start in chat mode right now.
 //
 // Called before any durable state exists, so an unsupported request costs nothing
 // — no terminated orphan row, no wasted worktree. It never downgrades to TUI:
 // that would put the user in a terminal they did not ask for.
-func (s *Service) PreflightChat(ctx context.Context, harness domain.AgentHarness) error {
+func (s *Service) PreflightChat(
+	ctx context.Context,
+	harness domain.AgentHarness,
+	permissions ports.PermissionMode,
+) error {
 	driver, err := s.drivers.Driver(harness)
 	if err != nil {
 		return fmt.Errorf("%w: %s has no chat driver", ports.ErrChatUnsupported, harness)
 	}
-	caps, err := driver.Probe(ctx)
+	caps, err := s.driverCapabilities(ctx, harness, driver)
 	if err != nil {
 		return err
 	}
-	if missing := ports.MissingProductionCapabilities(caps); len(missing) > 0 {
-		return fmt.Errorf("%w: %s lacks %v", ports.ErrChatUnsupported, harness, missing)
+	return capabilityAdmissionError(harness, caps, permissions)
+}
+
+func capabilityAdmissionError(
+	harness domain.AgentHarness,
+	caps ports.ChatCapabilities,
+	permissions ports.PermissionMode,
+) error {
+	missing := ports.MissingCapabilitiesForPermissions(caps, permissions)
+	if len(missing) == 0 {
+		return nil
 	}
-	return nil
+	var allowed []ports.PermissionMode
+	if ports.NormalizePermissionMode(permissions) != ports.PermissionModeBypassPermissions &&
+		len(ports.MissingCapabilitiesForPermissions(caps, ports.PermissionModeBypassPermissions)) == 0 {
+		allowed = []ports.PermissionMode{ports.PermissionModeBypassPermissions}
+	}
+	return &ports.ChatCapabilityError{
+		Harness:                harness,
+		Missing:                append([]ports.ChatCapability(nil), missing...),
+		AllowedPermissionModes: allowed,
+	}
+}
+
+// driverCapabilities performs the provider capability probe once per harness for
+// the lifetime of this service. Reconciliation can resume many sessions using
+// the same provider; launching a throwaway provider process for every one makes
+// startup scale with twice the number of sessions. Only successful probes are
+// cached, so a repaired install can be retried without a daemon restart. The raw
+// capabilities are cached because admission depends on each session's requested
+// permission mode.
+func (s *Service) driverCapabilities(
+	ctx context.Context,
+	harness domain.AgentHarness,
+	driver ports.ChatDriver,
+) (ports.ChatCapabilities, error) {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	if caps, ok := s.probed[harness]; ok {
+		return caps, nil
+	}
+	caps, err := driver.Probe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.probed[harness] = caps
+	return caps, nil
 }
 
 // StartChat launches the controller for a freshly created session.
@@ -754,35 +1234,51 @@ func (s *Service) StartChat(ctx context.Context, cfg StartRequest) (StartResult,
 	if err != nil {
 		return StartResult{}, err
 	}
-	return controllerStartResult(controller), nil
+	return controllerStartResult(controller, nil, nil), nil
 }
 
 // StartRequest mirrors session_manager.ChatStart. Duplicated rather than
 // imported so the manager and this service do not depend on each other's types.
 type StartRequest struct {
-	SessionID             domain.SessionID
-	ProjectID             domain.ProjectID
-	Kind                  domain.SessionKind
-	Harness               domain.AgentHarness
-	DataDir               string
-	WorkspacePath         string
-	Env                   map[string]string
-	Model                 string
-	Permissions           ports.PermissionMode
-	SystemPrompt          string
-	AdditionalDirectories []string
-	MCPServers            []ports.ChatMCPServerConfig
+	SessionID               domain.SessionID
+	ProjectID               domain.ProjectID
+	Kind                    domain.SessionKind
+	Harness                 domain.AgentHarness
+	DataDir                 string
+	WorkspacePath           string
+	Env                     map[string]string
+	Model                   string
+	Effort                  string
+	Permissions             ports.PermissionMode
+	SystemPrompt            string
+	AdditionalDirectories   []string
+	MCPServers              []ports.ChatMCPServerConfig
+	ExpectedControllerOwner domain.SessionControllerOwner
+	PrepareControllerEnv    func(context.Context, domain.SessionControllerOwner) (map[string]string, error)
 	// ProviderConversationID resumes a stored conversation. Empty starts fresh.
-	ProviderConversationID string
+	ProviderConversationID  string
+	ProviderScopeID         string
+	ControllerGeneration    string
+	RequireNativeHistory    bool
+	SkipNativeHistoryImport bool
 	// ControllerReady runs after the provider and generation exist but before
 	// live event projection starts.
-	ControllerReady func(StartResult) error
+	ControllerReady func(StartResult) (ControllerCommit, error)
 }
 
 // StartResult is the durable outcome of a launch.
 type StartResult struct {
 	ProviderConversationID string
 	ControllerGeneration   string
+	Conversation           domain.ConversationRecord
+	// ProviderBoundary is non-nil when this launch owns a provider namespace
+	// that is not active yet. ControllerReady must commit it atomically with the
+	// session's provider handle and controller generation.
+	ProviderBoundary *domain.ConversationBranch
+	// CommitProviderHistory projects a reconciled native replay inside the
+	// provider-boundary lifecycle transaction. It must never be invoked outside
+	// that transaction: the pending branch and generation do not exist yet.
+	CommitProviderHistory func(context.Context) error
 }
 
 // StartChatTurn delivers the initial prompt as a normal turn.
@@ -848,7 +1344,8 @@ func (s *Service) Models(ctx context.Context, id domain.SessionID) ([]ports.Chat
 // the connected conversation so model entitlements and model-dependent choices
 // cannot go stale in an AO table.
 func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]ports.ChatConfigOption, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
+	record, err := s.requireChatSession(ctx, id)
+	if err != nil {
 		return nil, err
 	}
 	controller, err := s.Controller(id)
@@ -859,7 +1356,8 @@ func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]por
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
 	}
-	return configurer.ListConfigOptions(ctx)
+	options, err := configurer.ListConfigOptions(ctx)
+	return permissionConfigOptions(record.Harness, options), err
 }
 
 // SetConfigOption applies one provider-advertised value and returns the complete
@@ -871,7 +1369,8 @@ func (s *Service) SetConfigOption(
 	configID string,
 	value ports.ChatConfigOptionValue,
 ) ([]ports.ChatConfigOption, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
+	record, err := s.requireChatSession(ctx, id)
+	if err != nil {
 		return nil, err
 	}
 	controller, err := s.Controller(id)
@@ -882,7 +1381,44 @@ func (s *Service) SetConfigOption(
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
 	}
-	return configurer.SetConfigOption(ctx, configID, value)
+	controller.configMu.Lock()
+	defer controller.configMu.Unlock()
+	options, err := configurer.SetConfigOption(ctx, configID, value)
+	if err != nil {
+		return nil, err
+	}
+	options = permissionConfigOptions(record.Harness, options)
+	if settings, changed := settingsFromConfigOptions(controller.Settings(), options); changed {
+		if err := controller.SetSettings(ctx, settings); err != nil {
+			return nil, err
+		}
+	}
+	return options, nil
+}
+
+func settingsFromConfigOptions(
+	settings domain.ConversationSettings,
+	options []ports.ChatConfigOption,
+) (domain.ConversationSettings, bool) {
+	next := settings
+	for _, option := range options {
+		for _, choice := range option.Choices {
+			if choice.Value == option.Current.Select && choice.PermissionMode != "" {
+				next.ApprovalMode = choice.PermissionMode
+			}
+		}
+		switch {
+		case option.ID == "model" || option.Category == "model":
+			if option.Current.Select != "" {
+				next.Model = option.Current.Select
+			}
+		case option.ID == "effort" || option.Category == "thought_level":
+			if option.Current.Select != "" {
+				next.ReasoningEffort = option.Current.Select
+			}
+		}
+	}
+	return next, next != settings
 }
 
 // Compact asks the provider to summarize earlier history and reclaim context.
@@ -930,6 +1466,28 @@ func (s *Service) ReloadMCPServers(
 		return nil, err
 	}
 	return controller.ReloadMCPServers(ctx)
+}
+
+// RetryTurn re-dispatches a failed turn's durable prompt as a new turn.
+// The content is loaded from AO's own rows, never from the caller, so the daemon
+// owns what gets sent again. The current next-turn settings apply.
+func (s *Service) RetryTurn(
+	ctx context.Context,
+	id domain.SessionID,
+	turnID string,
+) (domain.ConversationTurn, error) {
+	if _, err := s.requireChatSession(ctx, id); err != nil {
+		return domain.ConversationTurn{}, err
+	}
+	controller, err := s.Controller(id)
+	if err != nil {
+		return domain.ConversationTurn{}, err
+	}
+	result, err := controller.RetryTurn(ctx, turnID)
+	if err != nil {
+		return domain.ConversationTurn{}, err
+	}
+	return result, nil
 }
 
 // SetTurnSettings records the provider choices for this session's next turn.
@@ -995,4 +1553,30 @@ func (s *Service) RelayChatTurnWithID(
 // StopChat releases a session's controller.
 func (s *Service) StopChat(ctx context.Context, id domain.SessionID) error {
 	return s.Stop(ctx, id)
+}
+
+// permissionConfigOptions annotates only provider controls whose semantics are
+// known. In particular, plan and dontAsk are not AO approval policies.
+func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatConfigOption) []ports.ChatConfigOption {
+	out := append([]ports.ChatConfigOption(nil), options...)
+	for i := range out {
+		out[i].Choices = append([]ports.ChatConfigOptionChoice(nil), out[i].Choices...)
+		for j := range out[i].Choices {
+			out[i].Choices[j].PermissionMode = ""
+			if harness != domain.HarnessClaudeCode || out[i].ID != "mode" {
+				continue
+			}
+			switch out[i].Choices[j].Value {
+			case "manual", "default":
+				out[i].Choices[j].PermissionMode = domain.PermissionModeDefault
+			case "acceptEdits":
+				out[i].Choices[j].PermissionMode = domain.PermissionModeAcceptEdits
+			case "auto":
+				out[i].Choices[j].PermissionMode = domain.PermissionModeAuto
+			case "bypassPermissions":
+				out[i].Choices[j].PermissionMode = domain.PermissionModeBypassPermissions
+			}
+		}
+	}
+	return out
 }

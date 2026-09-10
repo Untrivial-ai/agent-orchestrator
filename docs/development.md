@@ -260,6 +260,7 @@ go run ./cmd/ao --help
 | `npm run typecheck` has type errors   | API types out of sync   | Run `npm run api` from repo root to regenerate               |
 | `npm run dev` fails on native modules | Missing build tools     | Install Python + C++ build tools for `node-gyp`              |
 | `npm install` or `npm ci` fails       | Node.js version too old | `node --version`; must be 20.19.0+ (see prerequisites above) |
+| Blank window or crash on Linux        | Broken GPU driver stack | Start with `AO_DISABLE_GPU=1` to skip hardware acceleration  |
 
 ### Code generation drift
 

@@ -1,52 +1,23 @@
 ---
-title: GitHub tracker
-description: Issues via the gh CLI. Zero API tokens to manage — gh auth login handles it.
+title: GitHub issue intake
+description: Opt-in, assignee-scoped worker creation from GitHub issues.
 ---
 
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="github" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>tracker</code> · Name: <code>github</code>
-	</span>
-</div>
+GitHub is the only tracker provider supported by the current backend. The adapter reads issues using the user's existing GitHub authentication.
 
-<PlatformSupport macos="full" linux="full" windows="full" />
+## Configure intake
 
-The default tracker. Uses the [`gh` CLI](https://cli.github.com) for everything, so you never paste a PAT into AO.
-
-## Setup
+Tracker intake is disabled by default and requires an assignee rule so enabling it cannot consume an entire backlog accidentally.
 
 ```bash
-gh auth login
+ao project set-config my-app \
+  --tracker-intake \
+  --tracker-repo owner/repo \
+  --tracker-assignee alice
 ```
 
-Pick **GitHub.com → HTTPS → Login with a web browser**. Then:
+The provider defaults to `github`. When the repository is omitted, AO can derive it from the project's Git remote. Use `ao project get my-app --json` to inspect the stored configuration.
 
-```yaml title="agent-orchestrator.yaml"
-tracker: github
-projects:
-  myproject:
-    repo: owner/repo
-```
+## Current boundary
 
-`repo` must be `owner/name` (not a URL) — it's what `gh` expects.
-
-## How it's used
-
-| Operation        | `gh` command invoked                        |
-| ---------------- | ------------------------------------------- |
-| Fetch issue      | `gh issue view <num> --json title,body,...` |
-| Create issue     | `gh issue create`                           |
-| Comment on issue | `gh issue comment`                          |
-| Close issue      | `gh issue close`                            |
-| List issues      | `gh issue list`                             |
-
-## Config
-
-No plugin-level config keys. The `github` tracker doesn't need anything beyond your `gh` auth.
-
-## Troubleshooting
-
-- **`gh: authentication required`** — run `gh auth login`.
-- **`could not resolve to an Issue`** — the issue number is wrong, or `repo` doesn't match the project.
-- **Rate limits** — AO batches and paces issue lookups, but heavy bursts can still hit limits. `gh` reports them clearly in logs.
+Matching issues may create sessions and provide issue context. The current intake path is read-only: it does not post comments, assign workflow states, or close issues after a session finishes. PR and CI observation belongs to AO's separate [GitHub SCM capability](/docs/plugins/scm/github).

@@ -116,10 +116,12 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 			}
 			candidates = append(candidates, filepath.Join(append([]string{base}, wp.Parts...)...))
 		}
+		candidates = append(candidates, WindowsPackageManagerBinCandidates(executableNames(spec)...)...)
 	} else {
 		candidates = append(candidates, spec.UnixPaths...)
 		if home, err := os.UserHomeDir(); err == nil {
 			candidates = append(candidates, joinAll(home, spec.UnixHomePaths)...)
+			candidates = append(candidates, UnixPackageManagerBinCandidates(home, spec.Names...)...)
 			if spec.NodeManaged {
 				nodeManagerCandidates, err := UnixNodeManagerBinCandidates(ctx, home, spec.Names...)
 				if err != nil {
@@ -140,6 +142,118 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 	}
 
 	return "", fmt.Errorf("%s: %w", spec.Label, ports.ErrAgentBinaryNotFound)
+}
+
+// UnixPackageManagerBinCandidates returns cheap, deterministic user-level
+// package-manager shim paths that are commonly absent from GUI-launched PATHs.
+func UnixPackageManagerBinCandidates(home string, names ...string) []string {
+	if home == "" {
+		return nil
+	}
+	out := make([]string, 0, len(names)*7)
+	for _, name := range names {
+		out = append(out,
+			filepath.Join(string(filepath.Separator), "home", "linuxbrew", ".linuxbrew", "bin", name),
+			filepath.Join(string(filepath.Separator), "snap", "bin", name),
+			filepath.Join(home, ".bun", "bin", name),
+			filepath.Join(home, ".yarn", "bin", name),
+			filepath.Join(home, ".config", "yarn", "global", "node_modules", ".bin", name),
+			filepath.Join(home, ".local", "share", "mise", "shims", name),
+			filepath.Join(home, ".asdf", "shims", name),
+		)
+	}
+	return out
+}
+
+// WindowsPackageManagerBinCandidates returns cheap, deterministic user/system
+// package-manager shim paths that are commonly absent from service PATHs.
+func WindowsPackageManagerBinCandidates(names ...string) []string {
+	home, _ := os.UserHomeDir()
+	appData := os.Getenv("APPDATA")
+	localAppData := os.Getenv("LOCALAPPDATA")
+	programFiles := os.Getenv("ProgramFiles")
+	programFilesX86 := os.Getenv("ProgramFiles(x86)")
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		programData = os.Getenv("PROGRAMDATA")
+	}
+	voltaHome := os.Getenv("VOLTA_HOME")
+	nvmSymlink := os.Getenv("NVM_SYMLINK")
+	out := make([]string, 0, len(names)*8)
+	for _, name := range names {
+		if home != "" {
+			out = append(out,
+				filepath.Join(home, "scoop", "shims", name+".exe"),
+				filepath.Join(home, "scoop", "shims", name+".cmd"),
+				filepath.Join(home, ".local", "bin", name+".exe"),
+				filepath.Join(home, ".local", "bin", name+".cmd"),
+			)
+		}
+		if appData != "" {
+			out = append(out,
+				filepath.Join(appData, "npm", name+".cmd"),
+				filepath.Join(appData, "npm", name+".exe"),
+				filepath.Join(appData, "npm", name),
+			)
+		}
+		if programData != "" {
+			out = append(out,
+				filepath.Join(programData, "chocolatey", "bin", name+".exe"),
+				filepath.Join(programData, "chocolatey", "bin", name+".bat"),
+				filepath.Join(programData, "chocolatey", "bin", name+".cmd"),
+			)
+		}
+		if localAppData != "" {
+			out = append(out,
+				filepath.Join(localAppData, "npm", name+".cmd"),
+				filepath.Join(localAppData, "npm", name+".exe"),
+				filepath.Join(localAppData, "Microsoft", "WinGet", "Links", name+".exe"),
+				filepath.Join(localAppData, "pnpm", name+".cmd"),
+				filepath.Join(localAppData, "pnpm", name+".exe"),
+				filepath.Join(localAppData, "Yarn", "bin", name+".cmd"),
+				filepath.Join(localAppData, "Yarn", "bin", name+".exe"),
+				filepath.Join(localAppData, "Volta", "bin", name+".cmd"),
+				filepath.Join(localAppData, "Volta", "bin", name+".exe"),
+				filepath.Join(localAppData, "mise", "shims", name+".exe"),
+				filepath.Join(localAppData, "mise", "shims", name+".cmd"),
+			)
+		}
+		if programFiles != "" {
+			out = append(out, filepath.Join(programFiles, "WinGet", "Links", name+".exe"))
+		}
+		if programFilesX86 != "" {
+			out = append(out, filepath.Join(programFilesX86, "WinGet", "Links", name+".exe"))
+		}
+		if voltaHome != "" {
+			out = append(out,
+				filepath.Join(voltaHome, "bin", name+".cmd"),
+				filepath.Join(voltaHome, "bin", name+".exe"),
+			)
+		}
+		if nvmSymlink != "" {
+			out = append(out,
+				filepath.Join(nvmSymlink, name+".cmd"),
+				filepath.Join(nvmSymlink, name+".exe"),
+			)
+		}
+	}
+	return out
+}
+
+func executableNames(spec BinarySpec) []string {
+	if len(spec.Names) > 0 {
+		return spec.Names
+	}
+	out := make([]string, 0, len(spec.WinNames))
+	for _, name := range spec.WinNames {
+		name = strings.TrimSuffix(name, ".exe")
+		name = strings.TrimSuffix(name, ".cmd")
+		name = strings.TrimSuffix(name, ".bat")
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // joinAll joins each component slice onto base into an absolute candidate path.

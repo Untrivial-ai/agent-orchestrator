@@ -1,12 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
 // Dragging a panel edge must clamp at the panel's minimum width — never
-// auto-collapse. Both rails had drag-to-collapse behavior: the sidebar's
-// useResizable fired onCollapse the moment a drag crossed the min, and the
-// inspector's always-`collapsible` rrp panel snapped to 0% past minSize.
-// Collapse belongs to the explicit controls only (⌘B / topbar buttons). The
-// clamp lives in the real drag pipelines (pointer events + rrp + CSS), which
-// the mocked unit tests can't exercise end-to-end.
+// auto-collapse. Collapse belongs to the explicit controls only (⌘B / topbar
+// buttons). The clamp lives in useResizable (sidebar + inspector).
 
 async function dragPointer(page: Page, from: { x: number; y: number }, to: { x: number; y: number }) {
 	await page.mouse.move(from.x, from.y);
@@ -52,45 +48,46 @@ test("inspector drag stops at minSize instead of collapsing; buttons still toggl
 	const inspector = page.locator("#inspector");
 	await expect(inspector).toBeVisible();
 
-	const separator = page.locator('[data-slot="resizable-handle"]');
-	const separatorBox = await separator.boundingBox();
+	const handle = page.getByTestId("inspector-resize-handle");
+	const handleBox = await handle.boundingBox();
 	const groupBox = await page.locator("#session-workspace").boundingBox();
-	if (!separatorBox || !groupBox) throw new Error("session split not visible");
-	const y = separatorBox.y + separatorBox.height / 2;
+	if (!handleBox || !groupBox) throw new Error("session split not visible");
+	const y = handleBox.y + handleBox.height / 2;
 
-	// Drag the separator all the way to the right edge: the rail must clamp at
-	// its 30% minSize, not snap away.
+	// Drag the handle all the way to the right edge: the rail must clamp at
+	// its minimum width, not snap away.
 	await dragPointer(
 		page,
-		{ x: separatorBox.x + separatorBox.width / 2, y },
+		{ x: handleBox.x + handleBox.width / 2, y },
 		{ x: groupBox.x + groupBox.width - 2, y },
 	);
 
 	await expect(inspector).toBeVisible();
 	const inspectorBox = await inspector.boundingBox();
 	if (!inspectorBox) throw new Error("inspector hidden after drag");
-	expect(inspectorBox.width / groupBox.width).toBeGreaterThan(0.28);
+	expect(inspectorBox.width).toBeGreaterThanOrEqual(350);
 
 	// The explicit control still collapses…
 	await page.getByRole("button", { name: "Close inspector panel" }).click();
 	await expect(inspector).toBeHidden();
 
-	// …and dragging the collapsed rail's separator back out reopens it.
-	const collapsedSeparatorBox = await separator.boundingBox();
-	if (!collapsedSeparatorBox) throw new Error("separator not visible while collapsed");
+	// …and dragging the collapsed rail back out reopens it.
+	const collapsedRail = page.getByTestId("inspector-collapsed-rail");
+	const collapsedRailBox = await collapsedRail.boundingBox();
+	if (!collapsedRailBox) throw new Error("collapsed rail not visible");
 	await dragPointer(
 		page,
-		{ x: collapsedSeparatorBox.x + collapsedSeparatorBox.width / 2, y },
+		{ x: collapsedRailBox.x + collapsedRailBox.width / 2, y },
 		{ x: groupBox.x + groupBox.width * 0.7, y },
 	);
 	await expect(inspector).toBeVisible();
 
 	// Reopened rail must again refuse to drag-collapse.
-	const reopenedSeparatorBox = await separator.boundingBox();
-	if (!reopenedSeparatorBox) throw new Error("separator not visible after reopen");
+	const reopenedHandleBox = await handle.boundingBox();
+	if (!reopenedHandleBox) throw new Error("handle not visible after reopen");
 	await dragPointer(
 		page,
-		{ x: reopenedSeparatorBox.x + reopenedSeparatorBox.width / 2, y },
+		{ x: reopenedHandleBox.x + reopenedHandleBox.width / 2, y },
 		{ x: groupBox.x + groupBox.width - 2, y },
 	);
 	await expect(inspector).toBeVisible();

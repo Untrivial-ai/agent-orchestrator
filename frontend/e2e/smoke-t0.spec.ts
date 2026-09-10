@@ -31,7 +31,7 @@ test("renderer: packaged bundle launches and paints @T0 @INS", async ({ page }) 
 	// on-image install itself stays in the pod INS script.
 	await installFakeBridge(page, { version: "9.9.9-test" });
 	await page.goto("/");
-	await expect(page.getByTestId("board")).toBeVisible();
+	await expect(page.getByText("Jump back right in")).toBeVisible();
 	await page.goto("/#/settings");
 	await expect(page.getByTestId("settings-page")).toBeVisible();
 	await page.getByRole("button", { name: "Updates" }).click();
@@ -57,13 +57,13 @@ test("renderer: update settings surface renders (feed/checksum checks are pod) @
 test("renderer: first-run home renders with the app launched @T0 @INS", async ({ page }) => {
 	// "Empty data dir" is a pod-side precondition; under dev:web the mock
 	// fixtures are always present, so the BoardWelcome empty state can't render
-	// and we assert the home board surface + a mounted daemon-status indicator
+	// and we assert the home surface + a mounted daemon-status indicator
 	// (proof the shell booted). The empty-state testid (`board-welcome`) is wired
 	// for the real empty-dir pod run.
 	await page.goto("/");
-	await expect(page.getByTestId("board")).toBeVisible();
+	await expect(page.getByText("Jump back right in")).toBeVisible();
 	await expect(page.getByTestId("daemon-status")).toBeAttached();
-	await expect(page.getByText("Projects")).toBeVisible();
+	await expect(page.getByText("Projects", { exact: true })).toBeVisible();
 });
 
 // #2483 INS-003.
@@ -111,7 +111,7 @@ test("renderer: daemon health reflected with a hydrated board @T0 @DMN", async (
 		daemonPort: 8080,
 		workers: [{ id: "dmn002", title: "Active worker", status: "working" }],
 	});
-	await page.goto("/");
+	await page.goto("/#/projects/fake-proj");
 	await expect(page.getByTestId("daemon-status")).toHaveAttribute("data-state", "ready");
 	await expect(page.getByTestId("board-session-card").first()).toBeVisible();
 });
@@ -123,7 +123,7 @@ test("renderer: daemon stop surfaced cleanly with no renderer crash @T0 @DMN", a
 	// is surfaced as a stopped status and the app stays alive (no crash/blank),
 	// which is the visible half of a clean shutdown.
 	await installFakeBridge(page, { daemonState: "stopped" });
-	await page.goto("/");
+	await page.goto("/#/projects/fake-proj");
 	await expect(page.getByTestId("daemon-status")).toHaveAttribute("data-state", "stopped");
 	await expect(page.getByTestId("board")).toBeVisible();
 });
@@ -144,7 +144,7 @@ test("renderer: board state rehydrates after a renderer relaunch @T0 @DMN", asyn
 		daemonPort: 8080,
 		workers: [{ id: "dmn009", title: "Persisted worker", status: "working" }],
 	});
-	await page.goto("/");
+	await page.goto("/#/projects/fake-proj");
 	const firstCard = page.getByTestId("board-session-card").first();
 	await expect(firstCard).toBeVisible();
 	const before = await firstCard.textContent();
@@ -159,21 +159,21 @@ test("renderer: board state rehydrates after a renderer relaunch @T0 @DMN", asyn
 
 // #2483 BRD-001.
 test("renderer: board renders all status columns @T0 @BRD", async ({ page }) => {
-	await page.goto("/");
+	await page.goto("/#/projects/ao-demo");
 	const columns = page.getByTestId("board-column");
 	await expect(columns).toHaveCount(4);
-	// Left→right flow: work → needs-you → review → merge.
-	await expect(page.locator('[data-testid="board-column"][data-column="working"]')).toContainText("Working");
-	await expect(page.locator('[data-testid="board-column"][data-column="action"]')).toContainText("Needs you");
-	await expect(page.locator('[data-testid="board-column"][data-column="pending"]')).toContainText("In review");
-	await expect(page.locator('[data-testid="board-column"][data-column="merge"]')).toContainText("Ready to merge");
+	// Left→right delivery flow: building → validating → in review → ready.
+	await expect(columns.nth(0)).toContainText("Building");
+	await expect(columns.nth(1)).toContainText("Validating");
+	await expect(columns.nth(2)).toContainText("In review");
+	await expect(columns.nth(3)).toContainText("Ready");
 });
 
 // #2483 BRD-012.
 test("renderer: route nav home to board to session detail and back @T0 @BRD", async ({ page }) => {
-	// home (global board)
+	// home
 	await page.goto("/");
-	await expect(page.getByTestId("board")).toBeVisible();
+	await expect(page.getByText("Jump back right in")).toBeVisible();
 
 	// → project board
 	await page.locator('[data-sidebar="menu-button"]').filter({ hasText: "ao-demo" }).first().click();
@@ -195,14 +195,12 @@ test("renderer: route nav home to board to session detail and back @T0 @BRD", as
 
 // #2483 SET-001.
 test("renderer: global settings page renders all sections @T0 @SET", async ({ page }) => {
-	// The settings revamp (#2797) reduced the page to General + Updates + Get
-	// help; the Migration section no longer renders there, so "all sections"
-	// means these. Updates keeps its per-section hook; General/help are asserted
-	// by their user-visible headings.
+	// The settings revamp (#2797) reduced the page to General + Updates + Help;
+	// Help now renders the report form inline rather than opening another dialog.
 	await page.goto("/#/settings");
 	await expect(page.getByTestId("settings-page")).toBeVisible();
 	await page.getByRole("button", { name: "Updates" }).click();
 	await expect(page.locator('[data-testid="settings-section"][data-section="updates"]')).toBeVisible();
 	await page.getByRole("button", { name: "Help" }).click();
-	await expect(page.getByRole("button", { name: "Report a problem" })).toBeVisible();
+	await expect(page.getByLabel("Title")).toBeVisible();
 });

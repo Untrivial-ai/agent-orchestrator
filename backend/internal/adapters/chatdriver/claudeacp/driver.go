@@ -21,6 +21,7 @@ import (
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 const minimumNodeMajor = 22
@@ -37,20 +38,25 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 	return acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
 		Capabilities: ports.ChatCapabilities{
-			ports.ChatCapabilityStreaming: true,
-			ports.ChatCapabilityTools:     true,
-			ports.ChatCapabilityApprovals: true,
-			ports.ChatCapabilityInterrupt: true,
-			ports.ChatCapabilityResume:    true,
-			ports.ChatCapabilityUsage:     true,
-			ports.ChatCapabilityDiffs:     true,
-			ports.ChatCapabilityPlans:     true,
+			ports.ChatCapabilityStreaming:    true,
+			ports.ChatCapabilityTools:        true,
+			ports.ChatCapabilityApprovals:    true,
+			ports.ChatCapabilityInterrupt:    true,
+			ports.ChatCapabilityResume:       true,
+			ports.ChatCapabilityPromptReplay: true,
+			ports.ChatCapabilityUsage:        true,
+			ports.ChatCapabilityDiffs:        true,
+			ports.ChatCapabilityPlans:        true,
 		},
 		Probe: func(ctx context.Context) error {
 			if _, err := resolveRuntime(ctx); err != nil {
 				return fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 			}
-			if _, err := plugin.ResolveBinary(ctx); err != nil {
+			claudeBinary, err := plugin.ResolveBinary(ctx)
+			if err != nil {
+				return fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
+			}
+			if err := validateClaudeACPExecutable(claudeBinary, runtime.GOOS); err != nil {
 				return fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 			}
 			status, err := plugin.AuthStatus(ctx)
@@ -73,6 +79,9 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 			if err != nil {
 				return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 			}
+			if err := validateClaudeACPExecutable(claudeBinary, runtime.GOOS); err != nil {
+				return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
+			}
 			env := make(map[string]string, len(cfg.Env)+1)
 			for key, value := range cfg.Env {
 				env[key] = value
@@ -92,15 +101,28 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 	}, log)
 }
 
+func validateClaudeACPExecutable(binary, goos string) error {
+	if goos != "windows" {
+		return nil
+	}
+	switch strings.ToLower(filepath.Ext(binary)) {
+	case ".cmd", ".bat":
+		return fmt.Errorf("resolved Claude Code command shim %q, but chat requires the native claude.exe; reinstall or update Claude Code", binary)
+	default:
+		return nil
+	}
+}
+
 func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
-	if strings.TrimSpace(cfg.SystemPrompt) == "" {
+	standing := strings.TrimSpace(cfg.SystemPrompt)
+	if standing == "" {
 		return nil
 	}
 	// Append AO's standing instructions to Claude Code's own prompt. Replacing
 	// the preset would discard Claude's native coding/tool instructions.
 	return map[string]any{
 		"systemPrompt": map[string]any{
-			"type": "preset", "preset": "claude_code", "append": cfg.SystemPrompt,
+			"type": "preset", "preset": "claude_code", "append": standing,
 		},
 	}
 }
@@ -204,7 +226,7 @@ func requireFile(path, label string) error {
 func requireNodeVersion(ctx context.Context, node string) error {
 	// node is the explicit AO override or the validated executable inside AO's
 	// packaged resources, never prompt/provider input.
-	out, err := exec.CommandContext(ctx, node, "--version").Output() //nolint:gosec // Resolved local executable, not provider input.
+	out, err := aoprocess.CommandContext(ctx, node, "--version").Output() //nolint:gosec // Resolved local executable, not provider input.
 	if err != nil {
 		return fmt.Errorf("run packaged Node: %w", err)
 	}

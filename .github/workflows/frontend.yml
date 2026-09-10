@@ -10,12 +10,43 @@ on:
   pull_request:
     paths:
       - "frontend/**"
+      - ".github/workflows/**"
+      - "contracts/cloud/**"
+      - "packages/cloud-client/**"
+      - "packages/product-ui/**"
       - ".github/workflows/frontend.yml"
 
 permissions:
   contents: read
 
 jobs:
+  mac-update-helper:
+    runs-on: macos-14
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test native helper build configuration
+        run: node --test scripts/build-update-helper.node-test.mjs
+      - name: Test repair installer packaging and guards
+        run: node --test scripts/build-mac-repair-installer.node-test.mjs
+      - name: Compile helper for both macOS architectures
+        run: |
+          node scripts/build-update-helper.mjs --arch x64
+          lipo update-helper/ao-update-progress -verify_arch x86_64
+          node scripts/build-update-helper.mjs --arch arm64
+          lipo update-helper/ao-update-progress -verify_arch arm64
+      - name: Run native update state tests
+        run: |
+          mkdir -p "$HOME/.ao/build-cache/update-helper/tests"
+          xcrun swiftc -module-cache-path "$HOME/.ao/build-cache/update-helper/tests" native/update-helper/UpdateProgressState.swift native/update-helper/StateTests.swift -o "$HOME/.ao/build-cache/update-helper/state-tests"
+          "$HOME/.ao/build-cache/update-helper/state-tests"
+
   test:
     runs-on: ubuntu-latest
     defaults:
@@ -31,14 +62,53 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             frontend/src/landing/package-lock.json
+            packages/cloud-client/package-lock.json
+            packages/product-ui/package-lock.json
 
-      - run: npm ci
+      - name: Install frontend dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            echo "npm ci failed; retrying Electron dependency download ($attempt/3)"
+          done
+
+      - name: Install Cloud client dependencies
+        run: npm ci
+        working-directory: packages/cloud-client
+
+      - name: Install product UI dependencies
+        run: npm ci
+        working-directory: packages/product-ui
+
+      - name: Verify Cloud contract and client
+        run: |
+          npm run generate
+          git diff --exit-code -- src/schema.ts
+          npm run typecheck
+          npm test
+          npm pack --dry-run
+        working-directory: packages/cloud-client
+
+      - name: Verify product UI package
+        run: |
+          npm run typecheck
+          npm test
+          npm pack --dry-run
+        working-directory: packages/product-ui
 
       - name: Prepare pinned agent-browser runtime
         run: npm run browser-runtime:prepare -- --quiet
 
       - name: Install landing dependencies
         run: npm ci --prefix src/landing
+
+      - name: Verify generated landing favicons
+        run: npm run icons:check --prefix src/landing
 
       - name: Typecheck project
         run: npm run typecheck
@@ -57,9 +127,14 @@ jobs:
     # This is fast renderer-regression coverage; it is NOT the canonical T0/P0
     # end-to-end gate. Real daemon/storage/API/preload/PTY/FS boundaries are
     # exercised by the packaged-app pod gate (#2697), not here.
-    # playwright.config starts `dev:web` itself (webServer); we only need the
-    # browser installed.
+    # playwright.config starts `dev:web` itself (webServer); the pinned container
+    # provides Chromium and its system dependencies without a live apt install.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      # Keep this aligned with Playwright in frontend/package-lock.json.
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
+      options: --user 1001
     defaults:
       run:
         working-directory: frontend
@@ -74,14 +149,17 @@ jobs:
 
       - run: npm ci
 
+      # The performance fixture imports real renderer components, which in turn
+      # typecheck product-ui source through the frontend's TS path alias.
+      - name: Install product UI dependencies
+        run: npm ci
+        working-directory: packages/product-ui
+
       - name: Typecheck e2e suite
         # Playwright transpiles specs without typechecking, so the
         # `satisfies AoBridge` guard in e2e/support/fake-bridge.ts (the
         # preload-drift tripwire) is only enforced by this step.
         run: npm run typecheck:e2e
-
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
 
       - name: Run renderer smoke suite
         run: CI=true npm run test:e2e:renderer

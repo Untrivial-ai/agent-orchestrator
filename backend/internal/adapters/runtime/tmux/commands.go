@@ -17,11 +17,13 @@ func newSessionArgs(id, cwd, shellPath, launchCmd string) []string {
 }
 
 // respawnPaneArgs replaces the process in the session's only pane while keeping
-// the tmux session and terminal handle intact.
+// the tmux session and terminal handle intact. The bare session target resolves
+// to the active window/pane regardless of the user's base-index /
+// pane-base-index (a hardcoded :0.0 misses when either is 1, see #4656).
 func respawnPaneArgs(id, cwd, shellPath, launchCmd string) []string {
 	return []string{
 		"respawn-pane", "-k",
-		"-t", id + ":0.0",
+		"-t", id,
 		"-c", cwd,
 		shellPath, "-c", launchCmd,
 	}
@@ -56,9 +58,11 @@ func setWindowSizeLargestArgs(id string) []string {
 }
 
 // panePIDArgs returns the pid of tmux's direct pane process. AO walks its
-// descendants to find the exact supervisor for the current launch.
+// descendants to find the exact supervisor for the current launch. The bare
+// session target keeps this independent of base-index / pane-base-index
+// (see respawnPaneArgs, #4656).
 func panePIDArgs(id string) []string {
-	return []string{"display-message", "-p", "-t", id + ":0.0", "#{pane_pid}"}
+	return []string{"display-message", "-p", "-t", id, "#{pane_pid}"}
 }
 
 // paneCurrentPathArgs prints tmux's cwd for the session's active pane. Create

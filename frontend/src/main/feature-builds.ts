@@ -7,12 +7,12 @@ const GITHUB_API = "https://api.github.com";
 
 // Default when the baked app-update.yml cannot be read (dev, or a malformed
 // bundle). Matches forge.config.ts DEFAULT_RELEASE_REPO.
-const DEFAULT_REPO = { owner: "AgentWrapper", repo: "agent-orchestrator" } as const;
+const DEFAULT_REPO = { owner: "Untrivial-ai", repo: "agent-orchestrator" } as const;
 
 // Resolve the GitHub repo the app updates from by reading the same bundled
 // app-update.yml that electron-updater uses. Both are baked from AO_RELEASE_REPO
 // at build time, so this keeps the feature list and the updater on the SAME repo
-// (a fork build lists that fork's feature releases, not AgentWrapper's). The
+// (a fork build lists that fork's feature releases, not Untrivial-ai's). The
 // list and the updater must never diverge, or the picker would offer builds
 // the updater cannot install.
 let cachedRepo: { owner: string; repo: string } | undefined;

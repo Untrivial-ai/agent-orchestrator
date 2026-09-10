@@ -82,6 +82,56 @@ func TestHealthProbesIncludeDaemonIdentity(t *testing.T) {
 	}
 }
 
+func TestHealthProbesIncludeAppImageIdentity(t *testing.T) {
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	t.Run("reports AO_APPIMAGE when set", func(t *testing.T) {
+		t.Setenv("AO_APPIMAGE", "/home/user/Apps/agent-orchestrator.AppImage")
+		router := newTestRouter(config.Config{}, discardLogger(), nil)
+		srv := httptest.NewServer(router)
+		defer srv.Close()
+
+		for _, path := range []string{"/healthz", "/readyz"} {
+			resp, err := client.Get(srv.URL + path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", path, err)
+			}
+			defer resp.Body.Close()
+			var body struct {
+				AppImagePath string `json:"appImagePath"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode %s: %v", path, err)
+			}
+			if body.AppImagePath != "/home/user/Apps/agent-orchestrator.AppImage" {
+				t.Errorf("GET %s appImagePath = %q, want the AO_APPIMAGE value", path, body.AppImagePath)
+			}
+		}
+	})
+
+	t.Run("omits appImagePath when AO_APPIMAGE is unset", func(t *testing.T) {
+		t.Setenv("AO_APPIMAGE", "")
+		router := newTestRouter(config.Config{}, discardLogger(), nil)
+		srv := httptest.NewServer(router)
+		defer srv.Close()
+
+		for _, path := range []string{"/healthz", "/readyz"} {
+			resp, err := client.Get(srv.URL + path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", path, err)
+			}
+			defer resp.Body.Close()
+			var body map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode %s: %v", path, err)
+			}
+			if _, ok := body["appImagePath"]; ok {
+				t.Errorf("GET %s appImagePath present, want omitted", path)
+			}
+		}
+	})
+}
+
 // TestServerLifecycle exercises the full Run loop: bind an ephemeral port,
 // publish running.json, serve a request, then cancel the context and confirm a
 // clean shutdown that removes the handshake file.
@@ -133,6 +183,42 @@ func TestServerLifecycle(t *testing.T) {
 
 	if after, _ := runfile.Read(runPath); after != nil {
 		t.Error("run-file still present after shutdown; want it removed")
+	}
+}
+
+func TestServerRunWithReadyPublishesBeforeCallback(t *testing.T) {
+	runPath := filepath.Join(t.TempDir(), "running.json")
+	cfg := config.Config{
+		Host:            "127.0.0.1",
+		Port:            0,
+		ShutdownTimeout: 5 * time.Second,
+		RunFilePath:     runPath,
+	}
+	srv, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan struct{})
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- srv.RunWithReady(ctx, func() { close(ready) })
+	}()
+
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ready callback was not called")
+	}
+	if info, err := runfile.Read(runPath); err != nil || info == nil {
+		t.Fatalf("run-file unavailable in ready callback: info=%v err=%v", info, err)
+	}
+	waitForHealth(t, "http://"+srv.Addr().String())
+
+	cancel()
+	if err := <-runErr; err != nil {
+		t.Fatalf("RunWithReady returned error on graceful shutdown: %v", err)
 	}
 }
 
