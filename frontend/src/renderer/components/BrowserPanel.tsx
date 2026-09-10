@@ -891,13 +891,11 @@ export function BrowserPanelView({
 				<div className="browser-panel__url-wrap relative min-w-0 flex-1">
 					<Input
 						aria-label={t("browser.url")}
-						className={cn(
-							"browser-panel__url-input h-browser-url text-xs",
-							isWebLink(navState.url) && "pr-9",
-						)}
+						className="browser-panel__url-input h-browser-url text-xs"
 						list={historySuggestions.length > 0 ? historyListId : undefined}
 						onBlur={endUrlEditing}
 						onChange={(event) => handleURLChange(event.target.value)}
+						onClick={() => urlInputRef.current?.select()}
 						onFocus={beginUrlEditing}
 						placeholder={t("browser.urlPlaceholder")}
 						ref={urlInputRef}
