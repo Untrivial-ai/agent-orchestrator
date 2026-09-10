@@ -257,7 +257,17 @@ function TelemetryEventsRow() {
 	const setEnabled = useTelemetryPolicyStore((state) => state.setEnabled);
 	const checked = view?.eventsEnabled ?? false;
 	const blockedEnable = !checked && (view?.environmentVeto || !view?.durabilitySupported);
-	const status = saveError || view?.state === "cleanup_failed" ? "failed" : view?.state === "cleanup_pending" ? "pending" : view?.reason === "environment_veto" ? "veto" : view?.reason === "durability_unsupported" ? "unsupported" : view?.reason === "release_blocked" ? "releaseBlocked" : null;
+	// saveError first: a toggle the user just attempted is the most immediate
+	// thing to report. Then the permanent platform restriction — it outranks
+	// cleanup_failed because that copy promises retries which, on a platform
+	// without durable policy replacement, will never happen (#5196).
+	const status = saveError ? "failed"
+		: view?.reason === "durability_unsupported" ? "unsupported"
+		: view?.state === "cleanup_failed" ? "failed"
+		: view?.state === "cleanup_pending" ? "pending"
+		: view?.reason === "environment_veto" ? "veto"
+		: view?.reason === "release_blocked" ? "releaseBlocked"
+		: null;
 	return <div className="flex w-full flex-col">
 		<SettingsRow label={t("settings.telemetryEvents.label")}>
 			<Switch aria-label={t("settings.telemetryEvents.label")} checked={checked} disabled={saving || !view || blockedEnable} onCheckedChange={(enabled) => { void setEnabled(enabled); }} />

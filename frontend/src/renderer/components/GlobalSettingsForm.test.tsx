@@ -270,6 +270,25 @@ describe("GlobalSettingsForm", () => {
 		expect(await screen.findByText("Telemetry is off locally. Daemon cleanup is still pending.")).toBeInTheDocument();
 	});
 
+	it("names the platform restriction instead of claiming cleanup keeps retrying", async () => {
+		// #5196: Windows has no durable policy replacement, so this is terminal.
+		// "Reporting remains disabled while cleanup retries" was both wrong and
+		// unactionable.
+		useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: false, state: "cleanup_failed", environmentVeto: false, durabilitySupported: false, reason: "durability_unsupported" }, loaded: true });
+		renderForm();
+		expect(await screen.findByText("Enabling is unavailable on this platform because durable consent writes are not supported.")).toBeInTheDocument();
+		expect(screen.queryByText("Telemetry cleanup failed. Reporting remains disabled while cleanup retries.")).not.toBeInTheDocument();
+	});
+
+	it("names the release gate when a saved opt-in cannot be honoured", async () => {
+		// #5196: the state this reaches once the client stops rejecting the
+		// gate-refused acknowledgement.
+		useTelemetryPolicyStore.setState({ view: { eventsEnabled: true, consentGeneration: "generation-on", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, state: "applied", environmentVeto: false, durabilitySupported: true, reason: "release_blocked" }, loaded: true });
+		renderForm();
+		expect(await screen.findByText("Error reporting is disabled by this release's safety gate.")).toBeInTheDocument();
+		expect(screen.queryByText("Telemetry is off locally. Daemon cleanup is still pending.")).not.toBeInTheDocument();
+	});
+
 	it("selects Git Bash as the default Windows terminal", async () => {
 		const user = userEvent.setup();
 		renderForm();
