@@ -112,6 +112,13 @@ const CLOUD_CONNECT_RETRY_MS = 1_000;
 // not false-fire a "check your firewall" error. ~8 socket failures ≈ 8s.
 const CLOUD_CONNECT_MAX_FAILURES = 8;
 const OPEN_TIMEOUT_MS = 3_000;
+// Bounds how much human keystroke input survives a reattach. A cloud pane
+// that flaps (open timeout, dropped socket) used to silently swallow every
+// keystroke typed while `inputReady` was false, which reads as "I can't even
+// type" during a slow sandbox cold start. Queue it instead, like protocol
+// replies already are, and cap it so a stuck reconnect cannot grow this
+// unbounded.
+const MAX_QUEUED_KEYBOARD_INPUTS = 2_048;
 // Trailing debounce on grid changes: a pane drag emits a burst of intermediate
 // sizes; the attached program should get one SIGWINCH when the drag settles,
 // not dozens (yyork's terminal-panel does the same at its socket layer).
@@ -232,6 +239,11 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		replayTailCapTimer: null as ReturnType<typeof setTimeout> | null,
 		replayTailPending: false,
 		queuedProtocolInputs: [] as string[],
+		// Human keystrokes typed while `inputReady` is false. Unlike
+		// queuedProtocolInputs, teardownMux must NOT clear this: it runs on every
+		// reattach, and the whole point is that these survive into the next
+		// attachment. Only a real dead end (detach, exit, error) clears it.
+		queuedKeyboardInputs: [] as string[],
 		// The current attachment's flush, published so teardown can land buffered
 		// bytes instead of discarding them (the closure lives inside connect).
 		flushReplay: null as ((preserveBeforeTeardown?: boolean) => void) | null,
@@ -637,6 +649,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				transition("attached");
 				terminal.notifyCursorColorScheme();
 				flushQueuedProtocolInputs();
+				flushQueuedKeyboardInputs();
 				// Bound the gate from here: the daemon fires onOpen from setPTY and
 				// starts copyOut immediately after, so the replay is imminent and
 				// the cap now measures the burst rather than the connect handshake.
@@ -663,6 +676,9 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				if (!isCurrentAttachment(generation, handle, mux)) return;
 				clearOpenTimer(generation);
 				r.inputReady = false;
+				// No reattach is coming for an exited PTY — any keystrokes queued
+				// during the last reconnect gap now have nowhere to go.
+				r.queuedKeyboardInputs = [];
 				// Land whatever was buffered before the notice, and lift the cover:
 				// a pane that exits mid-replay must never be left behind it.
 				flushReplay(false, true);
@@ -677,6 +693,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				if (!isCurrentAttachment(generation, handle, mux)) return;
 				clearOpenTimer(generation);
 				r.inputReady = false;
+				r.queuedKeyboardInputs = [];
 				flushReplay(false, true);
 				terminal.writeln(`\r\n\x1b[2m[terminal error] ${message}\x1b[0m`);
 				setError(message);
@@ -716,6 +733,25 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			}
 			r.queuedProtocolInputs = [];
 		};
+		// Deliver keystrokes queued while the pane was reattaching, once this
+		// attachment is actually ready to take input. Re-checks the same
+		// ownership/visibility gates live typed input goes through below —
+		// those can have changed while the queue was waiting — and opens the
+		// replay gate exactly like a live keystroke would, so a reconnect that
+		// lands mid-replay still reveals immediately instead of stranding the
+		// queued text behind the cover.
+		const flushQueuedKeyboardInputs = () => {
+			if (r.queuedKeyboardInputs.length === 0) return;
+			if (!isCurrentAttachment(generation, handle, mux) || !r.inputReady) return;
+			if (optionsRef.current.inputDisabled || optionsRef.current.isVisible === false) return;
+			const queued = r.queuedKeyboardInputs;
+			r.queuedKeyboardInputs = [];
+			if (r.replayBuffering) flushReplay();
+			else revealReplayTail();
+			for (const data of queued) {
+				mux.sendInput(handle, data);
+			}
+		};
 		const input = terminal.onUserInput((data, source) => {
 			if (!isCurrentAttachment(generation, handle, mux)) {
 				return false;
@@ -730,7 +766,14 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				return true;
 			}
 			if (!r.inputReady) {
-				return false;
+				// The socket is mid-reattach (cold cloud sandbox, dropped WS, open
+				// timeout). Queue the keystroke instead of dropping it so a flaky
+				// connect doesn't eat everything the user typed during the gap —
+				// see flushQueuedKeyboardInputs, called once `opened` lands.
+				if (r.queuedKeyboardInputs.length < MAX_QUEUED_KEYBOARD_INPUTS) {
+					r.queuedKeyboardInputs.push(data);
+				}
+				return true;
 			}
 			// Agent color-scheme bytes are not human input — forwarding them must not
 			// flush the replay gate or reveal the tail (that was the theme-toggle jank).
@@ -838,6 +881,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			r.attempts = 0;
 			r.cloudConnectFailures = 0;
 			r.hasAttachedOnce = false;
+			r.queuedKeyboardInputs = [];
 			setError(undefined);
 			setHasAttached(false);
 			if (handle) {
@@ -859,6 +903,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				r.flushReplay?.(true);
 				r.generation += 1;
 				r.detached = true;
+				r.queuedKeyboardInputs = [];
 				teardownMux();
 				r.terminal = null;
 				r.handle = null;
@@ -970,6 +1015,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			r.generation += 1;
 			r.detached = true;
 			r.inputReady = false;
+			r.queuedKeyboardInputs = [];
 			teardownMux();
 		},
 		[teardownMux],
