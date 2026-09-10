@@ -104,25 +104,28 @@ func TestReviewerWorkloadFallbackRetainsUnknownHosts(t *testing.T) {
 	}
 }
 
-func TestReviewerWorkloadLaunchIsUnsupervised(t *testing.T) {
-	for _, restoring := range []bool{false, true} {
-		rt := &fakeRuntime{}
-		reviewer := &fakeReviewerWithLaunchSpec{spec: ports.ReviewCommandSpec{Argv: []string{"codex"}}}
-		l := newTestLauncher(t, reviewer, rt)
-		spec := launchSpec()
-		spec.Harness = domain.ReviewerCodex
-		var err error
-		if restoring {
-			_, err = l.RestoreTerminal(context.Background(), spec)
-		} else {
-			_, err = l.Spawn(context.Background(), spec)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg := rt.createCfg
-		if len(cfg.Argv) != 1 || cfg.Argv[0] != "codex" || cfg.Env["AO_SUPERVISED_PROCESS"] != "" || cfg.Env["AO_RUNTIME_LAUNCH_ID"] != "" {
-			t.Fatalf("reviewer launch needs a supervised probe identity: %+v", cfg)
-		}
+func TestReviewerFreshAndFallbackLaunchIsUnsupervised(t *testing.T) {
+	for _, name := range []string{"fresh", "restore_without_restorer_falls_back_to_fresh"} {
+		t.Run(name, func(t *testing.T) {
+			rt := &fakeRuntime{}
+			reviewer := &fakeReviewerWithLaunchSpec{spec: ports.ReviewCommandSpec{Argv: []string{"codex"}}}
+			l := newTestLauncher(t, reviewer, rt)
+			spec := launchSpec()
+			spec.Harness = domain.ReviewerCodex
+			var err error
+			// This reviewer deliberately has no ReviewerRestorer; restoration is a fresh fallback.
+			if name != "fresh" {
+				_, err = l.RestoreTerminal(context.Background(), spec)
+			} else {
+				_, err = l.Spawn(context.Background(), spec)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := rt.createCfg
+			if len(cfg.Argv) != 1 || cfg.Argv[0] != "codex" || cfg.Env["AO_SUPERVISED_PROCESS"] != "" || cfg.Env["AO_RUNTIME_LAUNCH_ID"] != "" {
+				t.Fatalf("reviewer launch needs a supervised probe identity: %+v", cfg)
+			}
+		})
 	}
 }

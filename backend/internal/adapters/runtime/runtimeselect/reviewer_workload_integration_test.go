@@ -46,7 +46,7 @@ func TestReviewerWorkloadControlledProcessIntegration(t *testing.T) {
 		}
 		t.Skip("tmux unavailable; isolated reviewer integration requires tmux")
 	}
-	for _, mode := range []string{"fresh", "resume"} {
+	for _, mode := range []string{"fresh", "resume", "restore"} {
 		for _, manual := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/manual=%t", mode, manual), func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -99,7 +99,7 @@ func TestReviewerWorkloadControlledProcessIntegration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if (mode == "resume") != (string(argv) == "resume\nnative-history\n") {
+				if (mode != "fresh") != (string(argv) == "resume\nnative-history\n") {
 					t.Fatalf("actual resume argv=%q, mode=%s", argv, mode)
 				}
 				f.Blocked(ctx, t, nil) // actual helper is alive and waiting, with no review output

@@ -338,6 +338,9 @@ func TestReviewerWorkloadUpdateRoutesSnapshot(t *testing.T) {
 				rt := newHybridRuntime(legacy, direct, nil, "Linux")
 				f := reviewerupdate.New(context.Background(), t, rt, mode, "/fixture/codex")
 				f.Blocked(context.Background(), t, nil)
+				selected.workloadErr = ports.ErrRuntimeProbeInconclusive
+				f.Blocked(context.Background(), t, ports.ErrRuntimeProbeInconclusive)
+				selected.workloadErr = nil
 				alive = false
 				f.Ready(context.Background(), t)
 				if f.Result.HandleID != prefix+"review-worker" || selected.workloadRef != (ports.SupervisedProcessRef{}) {
