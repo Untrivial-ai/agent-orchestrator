@@ -147,14 +147,19 @@ export function TurnSettingsBar({
 		if (!onChangeConfigOption) return;
 		void Promise.resolve(onChangeConfigOption(optionId, value)).catch(() => {});
 	};
+	const modeOption = grouped.mode;
+	const inlineExecutionMode =
+		grouped.executionMode && isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
+	const standaloneExecutionMode =
+		grouped.executionMode && !isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
+	const planning = isPlanMode(grouped.executionMode);
 	const nativeModelMenu = Boolean(onChange && models.length > 0 && grouped.model.length === 0);
 	const clubbedLeft =
 		grouped.model.length > 0 ||
 		grouped.effort.length > 0 ||
-		Boolean(grouped.executionMode) ||
-		grouped.toggles.length > 0;
-	const modeOption = grouped.mode;
-	const planning = isPlanMode(grouped.executionMode);
+		Boolean(inlineExecutionMode) ||
+		grouped.toggles.length > 0 ||
+		grouped.extra.length > 0;
 	const rememberMode = modeOption
 		? modeOption.choices.find((choice) => choice.value === modeOption.currentValue)?.permissionMode
 		: settings.approvalMode ?? "default";
@@ -188,7 +193,7 @@ export function TurnSettingsBar({
 							reroute={reroute}
 							rerouted={rerouted}
 							chosenLabel={chosenLabel}
-							executionMode={grouped.executionMode}
+							executionMode={inlineExecutionMode}
 							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
 							onChangeConfigOption={onChangeConfigOption ? applyOption : undefined}
@@ -199,9 +204,17 @@ export function TurnSettingsBar({
 						<ClubbedConfigPicker
 							modelOptions={grouped.model}
 							effortOptions={grouped.effort}
-							executionMode={grouped.executionMode}
+							executionMode={inlineExecutionMode}
 							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
+							disabled={optionDisabled}
+							onChange={applyOption}
+						/>
+					) : null}
+
+					{standaloneExecutionMode && onChangeConfigOption ? (
+						<ExecutionModePicker
+							option={standaloneExecutionMode}
 							disabled={optionDisabled}
 							onChange={applyOption}
 						/>
@@ -458,7 +471,8 @@ function ClubbedConfigPicker({
 	const leftCount =
 		modelOptions.length + effortOptions.length + Number(Boolean(executionMode)) + toggles.length + extraOptions.length;
 	if (leftCount === 1) {
-		if (executionMode) return <ExecutionModePicker option={executionMode} onChange={onChange} />;
+		if (executionMode)
+			return <ExecutionModePicker option={executionMode} disabled={disabled} onChange={onChange} />;
 		const option = primaryModel ?? primaryEffort ?? executionMode ?? toggles[0] ?? extraOptions[0];
 		if (!option) return null;
 		return (
@@ -500,7 +514,6 @@ function ClubbedConfigPicker({
 	);
 }
 
-/** One toggle inside the model menu, not a competing top-level picker. */
 function PlanModeToggle({
 	option,
 	onChange,
@@ -573,24 +586,32 @@ function MenuToggle({
 
 function ExecutionModePicker({
 	option,
+	disabled,
 	onChange,
 }: {
 	option: ChatConfigOption;
+	disabled?: boolean;
 	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
 }) {
 	return (
 		<OptionMenu>
 			<OptionMenuTrigger
+				disabled={disabled}
 				aria-label="Model mode for the next turn"
 				title="Model mode for the next turn"
 				className={TRIGGER_CLASS}
 			>
-				<span className="min-w-0 max-w-[16ch] truncate">
-					{isPlanMode(option) ? "Plan Mode" : "Agent Mode"}
-				</span>
+				<span className="min-w-0 max-w-[16ch] truncate">{executionModeLabel(option)}</span>
 			</OptionMenuTrigger>
 			<OptionMenuContent align="start" className={CHAT_MENU_CLASS}>
-				<PlanModeToggle option={option} onChange={onChange} />
+				{isPlanBinary(option) ? (
+					<PlanModeToggle option={option} onChange={onChange} />
+				) : (
+					<ConfigOptionChoices
+						option={option}
+						onChange={(value) => onChange(option.id, value)}
+					/>
+				)}
 			</OptionMenuContent>
 		</OptionMenu>
 	);
@@ -853,13 +874,15 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 			continue;
 		}
 		if (isModeOption(option) && !mode) {
-			const permissionChoices = option.choices.filter((choice) => !isExecutionModeChoice(choice));
+			// Classify before synthesizing Claude's Agent choice so it cannot promote approval choices.
+			const executionValues = executionChoiceValues(option.choices);
+			const permissionChoices = option.choices.filter((choice) => !executionValues.has(choice.value));
 			const executionChoices = addAgentModeChoice(
-				option.choices.filter(isExecutionModeChoice),
+				option.choices.filter((choice) => executionValues.has(choice.value)),
 				permissionChoices,
 			);
 			if (executionChoices.length > 0) {
-				executionMode = withChoices(option, executionChoices, "Agent Mode");
+				executionMode = withChoices(option, executionChoices);
 				if (permissionChoices.length > 0) mode = withChoices(option, permissionChoices);
 			} else {
 				mode = option;
@@ -871,16 +894,32 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	return { model: [...primaryModel, ...otherModel], effort, executionMode, toggles, mode, extra };
 }
 
-/**
- * Some ACP harnesses put both execution posture (Plan/Agent) and approval policy
- * in one `mode` option. They are mutually exclusive in the provider, but they
- * are not the same decision for a person composing a turn. Preserve the provider
- * values while presenting those choices under their respective controls.
- */
-function isExecutionModeChoice(choice: ChatConfigOption["choices"][number]): boolean {
-	// OpenCode calls normal execution Build; keep it beside Plan so the toggle
-	// still has a provider-owned value to return to after planning is selected.
-	return [choice.value, choice.name].some((value) => /^(plan|agent|build)(?:[\s_-]mode)?$/i.test(value.trim()));
+/** Ask is an execution mode only when the same option advertises Agent; otherwise it is an approval policy. */
+function executionChoiceValues(choices: ChatConfigOption["choices"]): Set<string> {
+	const values = new Set<string>();
+	const hasAgent = choices.some((choice) => executionChoiceMatches(choice, "agent"));
+	for (const choice of choices) {
+		if (executionChoiceMatches(choice, "plan|agent|build")) {
+			values.add(choice.value);
+			continue;
+		}
+		if (hasAgent && executionChoiceMatches(choice, "ask")) values.add(choice.value);
+	}
+	return values;
+}
+
+// Match complete mode labels so custom agent names cannot masquerade as native modes.
+function executionChoiceMatches(choice: ChatConfigOption["choices"][number], word: string): boolean {
+	return [choice.value, choice.name].some((value) =>
+		new RegExp(`^(?:${word})(?:[\\s_-]mode)?$`, "i").test(value.trim()),
+	);
+}
+
+function choiceMatches(
+	choice: Pick<ChatConfigOption["choices"][number], "name" | "value">,
+	word: string,
+): boolean {
+	return new RegExp(`(?:^|[\\s_-])(?:${word})(?:[\\s_-]|$)`, "i").test(`${choice.name} ${choice.value}`);
 }
 
 /**
@@ -893,14 +932,23 @@ function addAgentModeChoice(
 	executionChoices: ChatConfigOption["choices"],
 	permissionChoices: ChatConfigOption["choices"],
 ): ChatConfigOption["choices"] {
-	if (executionChoices.some((choice) => /(?:^|[\s_-])agent(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`))) {
+	if (executionChoices.some((choice) => executionChoiceMatches(choice, "agent"))) {
 		return executionChoices;
 	}
-	const standard = permissionChoices.find((choice) => /(?:^|[\s_-])manual(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`))
-		?? permissionChoices.find((choice) => /(?:^|[\s_-])(default|standard)(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`));
+	const standard = permissionChoices.find((choice) => choiceMatches(choice, "manual"))
+		?? permissionChoices.find((choice) => choiceMatches(choice, "default|standard"));
 	return standard
 		? [{ ...standard, name: "Agent Mode", description: "Standard agent execution" }, ...executionChoices]
 		: executionChoices;
+}
+
+function isPlanBinary(option: ChatConfigOption): boolean {
+	return option.choices.length === 2 && option.choices.some(isPlanChoice);
+}
+
+function executionModeLabel(option: ChatConfigOption): string {
+	if (isPlanBinary(option)) return isPlanMode(option) ? "Plan Mode" : "Agent Mode";
+	return option.choices.find((choice) => choice.value === option.currentValue)?.name ?? option.name;
 }
 
 function isPlanMode(option: ChatConfigOption | undefined): boolean {

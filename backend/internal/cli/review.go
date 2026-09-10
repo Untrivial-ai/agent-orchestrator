@@ -198,6 +198,12 @@ func (c *commandContext) submitReview(cmd *cobra.Command, args []string, opts re
 	if err := c.postJSON(cmd.Context(), path, submitReviewRequest{RunID: runID, Verdict: verdict, Body: body, GithubReviewID: reviewID}, &res); err != nil {
 		return err
 	}
+	// A submit response always carries the recorded run's ID and verdict; a
+	// structurally valid but half-populated result is a broken contract, not
+	// a success to print.
+	if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
+		return fmt.Errorf("daemon returned empty review result for %s", session)
+	}
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "recorded %s review for %s\n", res.Review.Verdict, session)
 	return err
 }
@@ -214,6 +220,19 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 	var res reviewRunResponse
 	if err := c.postJSON(cmd.Context(), path, submitReviewRequest{Reviews: reviews}, &res); err != nil {
 		return err
+	}
+	// Batch success is the recorded runs array: every returned entry must
+	// carry its run ID and verdict. An empty array falls back to requiring
+	// a fully-populated single review. Anything less is a broken contract,
+	// not a success to print.
+	if len(res.Reviews) > 0 {
+		for _, run := range res.Reviews {
+			if strings.TrimSpace(run.ID) == "" || strings.TrimSpace(run.Verdict) == "" {
+				return fmt.Errorf("daemon returned empty review result for %s", session)
+			}
+		}
+	} else if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
+		return fmt.Errorf("daemon returned empty review result for %s", session)
 	}
 	count := len(res.Reviews)
 	if count == 0 {

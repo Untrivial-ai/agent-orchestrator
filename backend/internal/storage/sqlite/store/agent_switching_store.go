@@ -569,9 +569,8 @@ func (s *Store) ActivateAgentSwitchTarget(ctx context.Context, activation domain
 	return true, nil
 }
 
-// ActivateChatAgentSwitchTarget atomically moves a stopped Chat session and its
-// durable switch row to the structured target generation claimed by Chat
-// Service immediately before ControllerReady.
+// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session
+// from its source controller generation to the structured target generation.
 func (s *Store) ActivateChatAgentSwitchTarget(ctx context.Context, activation domain.AgentSwitchChatTargetActivation) (bool, error) {
 	if err := validateAgentSwitchChatTargetActivation(activation); err != nil {
 		return false, err

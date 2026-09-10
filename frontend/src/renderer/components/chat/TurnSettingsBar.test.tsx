@@ -332,9 +332,9 @@ describe("ACP session config options", () => {
 		expect(screen.getByRole("menuitemradio", { name: "Ask for approval" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Approve for me" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Bypass permissions" })).toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: "Default approvals" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: "Accept edits" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: "Auto-approve" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Default approvals" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Accept edits" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Auto-approve" })).not.toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Full access" })).toBeInTheDocument();
 
 		await user.click(screen.getByRole("menuitemradio", { name: "Approve for me" }));
@@ -497,5 +497,424 @@ describe("native model selection", () => {
 		expect(
 			screen.getByRole("button", { name: "Model and reasoning effort for the next turn" }),
 		).toHaveTextContent(/^nano$/);
+	});
+});
+
+describe("Cursor Ask and Agent chat modes", () => {
+	// Values are deliberately not lowercase: AO must round-trip whatever the
+	// provider advertised, never a value re-derived from the label.
+	const CURSOR_MODE: ChatConfigOption = {
+		id: "mode",
+		name: "Chat mode",
+		category: "mode",
+		type: "select",
+		currentValue: "ASK",
+		choices: [
+			{ value: "ASK", name: "Ask" },
+			{ value: "AGENT", name: "Agent" },
+		],
+	};
+
+	it("treats Ask and Agent as execution modes when one option advertises the pair", async () => {
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODE]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		const trigger = screen.getByRole("button", { name: "Model mode for the next turn" });
+		await user.click(trigger);
+		expect(screen.getByRole("menuitemradio", { name: "Ask" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Agent" })).toBeInTheDocument();
+		expect(screen.queryByRole("switch", { name: "Plan Mode" })).not.toBeInTheDocument();
+	});
+
+	it("shows the provider's current choice, starting on Ask", () => {
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODE]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Model mode for the next turn" })).toHaveTextContent(
+			"Ask",
+		);
+	});
+
+	it("shows Agent on the trigger once the provider reports Agent", () => {
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[{ ...CURSOR_MODE, currentValue: "AGENT" }]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Model mode for the next turn" })).toHaveTextContent(
+			"Agent",
+		);
+	});
+
+	it("sends each mode's exact advertised value rather than a normalized label", async () => {
+		const onChange = vi.fn();
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODE]}
+				onChangeConfigOption={onChange}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Agent" }));
+		expect(onChange).toHaveBeenCalledWith("mode", { value: "AGENT" });
+
+		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Ask" }));
+		expect(onChange).toHaveBeenLastCalledWith("mode", { value: "ASK" });
+	});
+
+	it("exposes exactly one execution control for the Ask/Agent pair", () => {
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODE]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getAllByRole("button", { name: "Model mode for the next turn" })).toHaveLength(1);
+		expect(screen.queryByRole("button", { name: "Chat mode" })).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Approval policy for the next turn" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps Ask out of the approval menu, which stays AO's own policy list", async () => {
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODE]}
+				onChange={vi.fn()}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		const approvals = screen.getByRole("button", { name: "Approval policy for the next turn" });
+		await user.click(approvals);
+		expect(screen.queryByRole("menuitemradio", { name: "Ask" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Agent" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Default approvals" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Accept edits" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Auto-approve" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Bypass permissions" })).toBeInTheDocument();
+	});
+
+	it("does not read a lone approval-flavoured Ask as an execution mode", async () => {
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				models={[]}
+				settings={{}}
+				configOptions={[
+					{
+						id: "mode",
+						name: "Permission mode",
+						category: "mode",
+						type: "select",
+						currentValue: "ask",
+						choices: [
+							{ value: "ask", name: "Ask for approval" },
+							{ value: "auto", name: "Approve for me" },
+						],
+					},
+				]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "Model mode for the next turn" }),
+		).not.toBeInTheDocument();
+		const trigger = screen.getByRole("button", { name: "Permission mode" });
+		expect(trigger).toHaveTextContent("Ask for approval");
+		await user.click(trigger);
+		expect(screen.getByRole("menuitemradio", { name: "Ask for approval" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Approve for me" })).toBeInTheDocument();
+	});
+
+	it("keeps the Plan/Agent switch and its Manual wire value unchanged", async () => {
+		const onChange = vi.fn();
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				models={[]}
+				settings={{}}
+				configOptions={[OPTIONS[2]]}
+				onChangeConfigOption={onChange}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Permission mode" })).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
+		const planSwitch = screen.getByRole("switch", { name: "Plan Mode" });
+		expect(planSwitch).not.toBeChecked();
+		await user.click(planSwitch);
+		expect(onChange).toHaveBeenCalledWith("mode", { value: "plan" });
+	});
+
+	it("does not confuse a provider-owned agent option with AO's Switch agent", async () => {
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODE, OPTIONS[4]]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(screen.queryByRole("button", { name: "Agent" })).not.toBeInTheDocument();
+		expect(screen.queryByText("Code reviewer")).not.toBeInTheDocument();
+		const trigger = screen.getByRole("button", { name: "Model mode for the next turn" });
+		expect(trigger).toHaveTextContent("Ask");
+		await user.click(trigger);
+		expect(screen.queryByRole("menuitemradio", { name: "Code reviewer" })).not.toBeInTheDocument();
+	});
+});
+
+// Captured from a live `cursor-agent acp` session/new response: Cursor advertises
+// three postures in one mode option, alongside its own model catalog.
+describe("Cursor's live Agent/Plan/Ask mode catalog", () => {
+	const CURSOR_MODES: ChatConfigOption = {
+		id: "mode",
+		name: "Mode",
+		category: "mode",
+		type: "select",
+		currentValue: "agent",
+		choices: [
+			{ value: "agent", name: "Agent", description: "Full agent capabilities with tool access" },
+			{ value: "plan", name: "Plan", description: "Read-only mode for planning" },
+			{ value: "ask", name: "Ask", description: "Q&A mode - no edits or command execution" },
+		],
+	};
+	const CURSOR_MODELS: ChatConfigOption = {
+		id: "model",
+		name: "Model",
+		category: "model",
+		type: "select",
+		currentValue: "grok-4.6[effort=high,fast=true]",
+		choices: [
+			{ value: "default[]", name: "Auto" },
+			{ value: "grok-4.6[effort=high,fast=true]", name: "grok-4.6" },
+		],
+	};
+
+	it("keeps the mode control visible beside the model picker rather than nested in it", async () => {
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODELS, CURSOR_MODES]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		const modeTrigger = screen.getByRole("button", { name: "Model mode for the next turn" });
+		expect(modeTrigger).toHaveTextContent("Agent");
+		expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("grok-4.6");
+
+		await user.click(modeTrigger);
+		expect(screen.getByRole("menuitemradio", { name: "Agent" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Plan" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Ask" })).toBeInTheDocument();
+	});
+
+	it("sends Cursor's own mode ids, including the bracketed model ids untouched", async () => {
+		const onChange = vi.fn();
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODELS, CURSOR_MODES]}
+				onChangeConfigOption={onChange}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Ask" }));
+		expect(onChange).toHaveBeenCalledWith("mode", { value: "ask" });
+
+		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Agent" }));
+		expect(onChange).toHaveBeenLastCalledWith("mode", { value: "agent" });
+
+		await user.click(screen.getByRole("button", { name: "Model" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "grok-4.6" }));
+		expect(onChange).toHaveBeenLastCalledWith("model", {
+			value: "grok-4.6[effort=high,fast=true]",
+		});
+	});
+
+	it("shows Ask on the trigger when Cursor reports Ask as current", () => {
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODELS, { ...CURSOR_MODES, currentValue: "ask" }]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Model mode for the next turn" })).toHaveTextContent(
+			"Ask",
+		);
+	});
+
+	it("names the option rather than asserting a posture the provider did not report", () => {
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[{ ...CURSOR_MODES, currentValue: undefined }]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		const trigger = screen.getByRole("button", { name: "Model mode for the next turn" });
+		expect(trigger).toHaveTextContent("Mode");
+		expect(trigger).not.toHaveTextContent("Agent Mode");
+	});
+
+	it("does not claim a posture when the current value is a permission shown elsewhere", () => {
+		render(
+			<TurnSettingsBar
+				models={[]}
+				settings={{}}
+				configOptions={[
+					{
+						id: "mode",
+						name: "Chat mode",
+						category: "mode",
+						type: "select",
+						currentValue: "bypass",
+						choices: [
+							{ value: "agent", name: "Agent" },
+							{ value: "ask", name: "Ask" },
+							{ value: "plan", name: "Plan" },
+							{ value: "bypass", name: "Bypass Permissions" },
+						],
+					},
+				]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		const trigger = screen.getByRole("button", { name: "Model mode for the next turn" });
+		expect(trigger).toHaveTextContent("Chat mode");
+		expect(trigger).not.toHaveTextContent("Agent Mode");
+		expect(screen.getByRole("button", { name: "Chat mode" })).toHaveTextContent(
+			"Bypass Permissions",
+		);
+	});
+
+	it("keeps an unclassified option reachable when a mode picker is the only other control", async () => {
+		const user = userEvent.setup();
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[
+					CURSOR_MODES,
+					{
+						id: "verbosity",
+						name: "Verbosity",
+						type: "select",
+						currentValue: "high",
+						choices: [
+							{ value: "low", name: "Low" },
+							{ value: "high", name: "High" },
+						],
+					},
+				]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Model mode for the next turn" })).toHaveTextContent(
+			"Agent",
+		);
+		const extra = screen.getByRole("button", { name: "Verbosity" });
+		expect(extra).toHaveTextContent("High");
+		await user.click(extra);
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
+	});
+
+	it("disables the standalone mode trigger and a lone extra while a change is in flight", () => {
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[
+					CURSOR_MODES,
+					{
+						id: "verbosity",
+						name: "Verbosity",
+						type: "select",
+						currentValue: "high",
+						choices: [{ value: "low", name: "Low" }],
+					},
+				]}
+				configPending
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Model mode for the next turn" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Verbosity" })).toBeDisabled();
+	});
+
+	it("offers exactly one execution control and no provider approval picker", () => {
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				configOptions={[CURSOR_MODELS, CURSOR_MODES]}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getAllByRole("button", { name: "Model mode for the next turn" })).toHaveLength(1);
+		expect(screen.queryByRole("button", { name: "Mode" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("switch", { name: "Plan Mode" })).not.toBeInTheDocument();
 	});
 });
