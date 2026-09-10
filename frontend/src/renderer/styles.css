@@ -4337,6 +4337,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 .browser-panel__tab-actions button,
 .browser-panel__toolbar button {
 	color: var(--fg-muted);
+	transform-origin: center;
 }
 
 .browser-panel__tab-actions button:not(:disabled):hover,
@@ -4511,6 +4512,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	border-radius: 7px;
 	color: var(--fg-muted);
 	background: transparent;
+	transform-origin: center;
 	transition:
 		background var(--duration-fast) ease,
 		color var(--duration-fast) ease,
@@ -4524,7 +4526,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-new:not(:disabled):hover {
 	color: var(--fg);
-	background: var(--surface-hover);
+	background: var(--interactive-hover);
 }
 
 .browser-panel__tab-new:focus-visible {
