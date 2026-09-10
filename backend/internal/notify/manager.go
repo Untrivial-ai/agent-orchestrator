@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,6 +48,7 @@ type Resolution = ports.NotificationResolution
 type Manager struct {
 	store     Store
 	publisher Publisher
+	barrier   sync.Locker
 	clock     func() time.Time
 	newID     func() string
 }
@@ -55,13 +57,18 @@ type Manager struct {
 type Deps struct {
 	Store     Store
 	Publisher Publisher
-	Clock     func() time.Time
-	NewID     func() string
+	// Barrier serializes notification persistence and publication with clear-all.
+	Barrier sync.Locker
+	Clock   func() time.Time
+	NewID   func() string
 }
 
 // New constructs a write-side notification manager.
 func New(d Deps) *Manager {
-	m := &Manager{store: d.Store, publisher: d.Publisher, clock: d.Clock, newID: d.NewID}
+	m := &Manager{store: d.Store, publisher: d.Publisher, barrier: d.Barrier, clock: d.Clock, newID: d.NewID}
+	if m.barrier == nil {
+		m.barrier = &sync.Mutex{}
+	}
 	if m.clock == nil {
 		m.clock = time.Now
 	}
@@ -85,6 +92,8 @@ func (m *Manager) Notify(ctx context.Context, intent Intent) error {
 		return fmt.Errorf("notify enrich: %w", err)
 	}
 	rec.ID = m.newID()
+	m.barrier.Lock()
+	defer m.barrier.Unlock()
 	created, inserted, err := m.store.CreateNotification(ctx, rec)
 	if err != nil {
 		return fmt.Errorf("notify store: %w", err)
@@ -109,6 +118,8 @@ func (m *Manager) Resolve(ctx context.Context, res Resolution) error {
 	if !res.Type.Valid() {
 		return fmt.Errorf("notify resolve: %w", domain.ErrInvalidNotificationType)
 	}
+	m.barrier.Lock()
+	defer m.barrier.Unlock()
 	at := res.ResolvedAt
 	if at.IsZero() {
 		at = m.clock().UTC()
@@ -138,6 +149,8 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	if m == nil || m.store == nil {
 		return errors.New("notify: store is required")
 	}
+	m.barrier.Lock()
+	defer m.barrier.Unlock()
 	resolved, err := m.store.ReconcileResolvedNotifications(ctx, m.clock().UTC())
 	if err != nil {
 		return fmt.Errorf("notify reconcile: %w", err)

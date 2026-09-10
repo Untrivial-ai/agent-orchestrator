@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -20,17 +21,24 @@ const (
 
 // Manager reads stored notifications for REST controllers.
 type Manager struct {
-	store Store
+	store   Store
+	barrier sync.Locker
 }
 
 // Deps configures a Manager.
 type Deps struct {
 	Store Store
+	// Barrier serializes clear-all with notification persistence and publication.
+	Barrier sync.Locker
 }
 
 // New constructs a read-only notification Manager.
 func New(d Deps) *Manager {
-	return &Manager{store: d.Store}
+	m := &Manager{store: d.Store, barrier: d.Barrier}
+	if m.barrier == nil {
+		m.barrier = &sync.Mutex{}
+	}
+	return m
 }
 
 // List returns one stable newest-first page of notification history.
@@ -118,6 +126,8 @@ func (m *Manager) ClearAll(ctx context.Context) (int64, error) {
 	if m == nil || m.store == nil {
 		return 0, errors.New("notification: store is required")
 	}
+	m.barrier.Lock()
+	defer m.barrier.Unlock()
 	return m.store.ClearAllNotifications(ctx)
 }
 
