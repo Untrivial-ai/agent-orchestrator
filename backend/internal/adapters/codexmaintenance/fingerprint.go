@@ -14,12 +14,12 @@ import (
 // It is a bounded filesystem read and never launches Codex or a package manager.
 func ExecutableFingerprint(binary string) string {
 	r := &Resolver{realpath: filepath.EvalSymlinks, readFile: readBoundedFile, goos: runtime.GOOS}
-	real := r.canonical(binary)
-	target := r.shimTarget(real)
+	resolved := r.canonical(binary)
+	target := r.shimTarget(resolved)
 	if target == "" {
-		target = real
+		target = resolved
 	}
-	files := []string{binary, real, target}
+	files := []string{binary, resolved, target}
 	if pkg := r.packageRoot(target); pkg != "" {
 		files = append(files, pkg+"/package.json")
 		for _, pattern := range []string{"vendor/*/codex/codex*", "vendor/*/bin/codex*", "node_modules/@openai/codex-*/package.json", "node_modules/@openai/codex-*/vendor/*/codex/codex*", "node_modules/@openai/codex-*/vendor/*/bin/codex*"} {
@@ -42,13 +42,13 @@ func ExecutableFingerprint(binary string) string {
 }
 
 func fileStamp(file string) string {
-	real, err := filepath.EvalSymlinks(file)
+	resolved, err := filepath.EvalSymlinks(file)
 	if err != nil {
 		return file + ":missing"
 	}
-	info, err := os.Stat(real)
+	info, err := os.Stat(resolved)
 	if err != nil {
-		return real + ":unreadable"
+		return resolved + ":unreadable"
 	}
-	return fmt.Sprintf("%s:%d:%d", real, info.Size(), info.ModTime().UnixNano())
+	return fmt.Sprintf("%s:%d:%d", resolved, info.Size(), info.ModTime().UnixNano())
 }

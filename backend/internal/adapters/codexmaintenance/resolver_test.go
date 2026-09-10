@@ -189,8 +189,8 @@ func TestHomebrewOwnershipAndVersionSource(t *testing.T) {
 	for _, kind := range []string{"Cellar", "Caskroom"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newFixture("darwin", "/opt/homebrew/bin/codex")
-			real := "/opt/homebrew/" + kind + "/codex/1.2.3/bin/codex"
-			f.links["/opt/homebrew/bin/codex"] = real
+			resolved := "/opt/homebrew/" + kind + "/codex/1.2.3/bin/codex"
+			f.links["/opt/homebrew/bin/codex"] = resolved
 			f.tools["brew"] = "/opt/homebrew/bin/brew"
 			f.replies["/opt/homebrew/bin/brew --prefix"] = "/opt/homebrew"
 			flag := "--formula"
@@ -199,7 +199,7 @@ func TestHomebrewOwnershipAndVersionSource(t *testing.T) {
 				flag = "--cask"
 				jsonReply = `{"casks":[{"token":"codex","version":"1.3.0,456"}]}`
 			}
-			f.replies["/opt/homebrew/bin/brew list "+flag+" codex"] = real
+			f.replies["/opt/homebrew/bin/brew list "+flag+" codex"] = resolved
 			f.replies["/opt/homebrew/bin/brew info --json=v2 "+flag+" codex"] = jsonReply
 			s, err := f.r.Resolve(context.Background())
 			if err != nil {
@@ -292,7 +292,7 @@ func TestVersionLookupBoundedWithoutNetwork(t *testing.T) {
 			if req.URL.Host != "registry.npmjs.org" {
 				t.Fatal(req.URL)
 			}
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
 		})}
 		v, err := f.r.Latest(context.Background(), ports.CodexInstallation{VersionSource: "npm"})
 		if body == `{"version":"1.4.0"}` {

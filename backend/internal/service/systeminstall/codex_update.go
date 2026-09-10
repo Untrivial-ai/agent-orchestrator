@@ -14,7 +14,7 @@ import (
 )
 
 // ErrInstallationChanged fences a displayed advisory from a new install target.
-var ErrInstallationChanged = errors.New("Codex installation changed; refresh and try again")
+var ErrInstallationChanged = errors.New("selected Codex installation changed; refresh and try again")
 
 // CodexUpdateAdvisory is independent of installation/authentication readiness.
 // The token identifies daemon-derived ownership evidence, never executable argv.
@@ -44,7 +44,7 @@ func newer(a, b string) bool {
 // advisory refresh only; neither branch can execute an update.
 func (s *Service) CodexUpdate(ctx context.Context, refresh bool) (CodexUpdateAdvisory, error) {
 	if s.codexMaintenance == nil {
-		return CodexUpdateAdvisory{}, fmt.Errorf("Codex maintenance is unavailable")
+		return CodexUpdateAdvisory{}, fmt.Errorf("maintenance for Codex is unavailable")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 16*time.Second)
 	defer cancel()
@@ -244,11 +244,15 @@ func (s *Service) runCodexUpdate(job *Job, before CodexUpdateAdvisory) {
 		runErr = s.installCommands.RunInstall(ctx, command, writer, writer)
 	}
 	if ctx.Err() != nil {
-		runErr = fmt.Errorf("Codex update interrupted or timed out: %w", ctx.Err())
+		runErr = fmt.Errorf("update of Codex interrupted or timed out: %w", ctx.Err())
 	}
 	// Even unsuccessful installers may have replaced files. Refresh independently
 	// of the expired command context and preserve stale catalogs on probe errors.
-	transitionErr := s.transitionAgentJob(job, StatusVerifying, "", "", "")
+	commandError := ""
+	if runErr != nil {
+		commandError = runErr.Error()
+	}
+	transitionErr := s.transitionAgentJob(job, StatusVerifying, "", commandError, installation.Path)
 	verifyCtx, verifyCancel := context.WithTimeout(s.backgroundContext, 90*time.Second)
 	defer verifyCancel()
 	after, probeErr := s.CodexUpdate(verifyCtx, true)

@@ -28,7 +28,7 @@ const packageName = "@openai/codex"
 const maxRead = 256 * 1024
 
 // Resolver uses the same binary selector as launches. Host seams are private so
-// tests can exercise Windows layouts on Unix without touching real installers.
+// tests can exercise Windows layouts on Unix without touching resolved installers.
 type Resolver struct {
 	binary    func(context.Context) (string, error)
 	runner    ports.InstallCommandRunner
@@ -76,8 +76,8 @@ func (r *Resolver) equal(a, b string) bool {
 	return a == b
 }
 func (r *Resolver) canonical(p string) string {
-	if real, err := r.realpath(p); err == nil {
-		return slash(real)
+	if resolved, err := r.realpath(p); err == nil {
+		return slash(resolved)
 	}
 	return ""
 }
@@ -108,8 +108,8 @@ func (r *Resolver) Resolve(ctx context.Context) (ports.CodexInstallation, error)
 
 	// Symlinks/junctions resolve natively. Only recognized package-manager shims
 	// are unwrapped; arbitrary user scripts remain manual-only.
-	real := s.RealPath
-	if target := r.shimTarget(real); target != "" {
+	resolved := s.RealPath
+	if target := r.shimTarget(resolved); target != "" {
 		s.RealPath = target
 	}
 	if i := strings.Index(s.RealPath, "/packages/standalone/releases/"); i > 0 {
@@ -125,12 +125,12 @@ func (r *Resolver) Resolve(ctx context.Context) (ports.CodexInstallation, error)
 				s.Command = ports.InstallCommand{Argv: []string{selected, "update"}, Env: env}
 			}
 		}
-	} else if r.resolveVite(ctx, &s) {
-		// Vite+ dispatchers have their own ownership metadata.
-	} else if pkg := r.packageRoot(s.RealPath); pkg != "" {
-		r.resolvePackage(ctx, &s, pkg)
-	} else {
-		r.resolveBrew(ctx, &s)
+	} else if !r.resolveVite(ctx, &s) {
+		if pkg := r.packageRoot(s.RealPath); pkg != "" {
+			r.resolvePackage(ctx, &s, pkg)
+		} else {
+			r.resolveBrew(ctx, &s)
+		}
 	}
 	if len(s.Command.Argv) > 0 {
 		if r.launchEnv != nil {
@@ -159,7 +159,7 @@ func (r *Resolver) Resolve(ctx context.Context) (ports.CodexInstallation, error)
 	stamp = append(stamp, fileStamp(s.Path), fileStamp(s.RealPath), fileStamp(first(s.Command.Argv)))
 	stamp = append(stamp, s.Command.Argv...)
 	stamp = append(stamp, s.Command.Env...)
-	for _, p := range []string{selected, real, s.RealPath, first(s.Command.Argv)} {
+	for _, p := range []string{selected, resolved, s.RealPath, first(s.Command.Argv)} {
 		stamp = append(stamp, r.canonical(p))
 		if data, e := r.readFile(p); e == nil {
 			sum := sha256.Sum256(data)
@@ -502,7 +502,7 @@ func (r *Resolver) probe(ctx context.Context, argv, env []string) (string, error
 func (r *Resolver) Latest(ctx context.Context, s ports.CodexInstallation) (string, error) {
 	if s.VersionSource == "homebrew" {
 		if len(s.Command.Argv) < 4 {
-			return "", fmt.Errorf("Homebrew ownership could not be verified")
+			return "", fmt.Errorf("owning Homebrew installation could not be verified")
 		}
 		out, err := r.probe(ctx, []string{s.Command.Argv[0], "info", "--json=v2", s.Command.Argv[2], "codex"}, nil)
 		if err != nil {
@@ -527,9 +527,9 @@ func (r *Resolver) Latest(ctx context.Context, s ports.CodexInstallation) (strin
 		if s.Command.Argv[2] == "--cask" && len(info.Casks) == 1 && info.Casks[0].Token == "codex" {
 			return validatedVersion(strings.Split(info.Casks[0].Version, ",")[0])
 		}
-		return "", fmt.Errorf("Homebrew did not return the owning Codex package version")
+		return "", fmt.Errorf("owning Homebrew catalog did not return the Codex package version")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://registry.npmjs.org/@openai%2Fcodex/latest", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://registry.npmjs.org/@openai%2Fcodex/latest", http.NoBody)
 	if err != nil {
 		return "", err
 	}

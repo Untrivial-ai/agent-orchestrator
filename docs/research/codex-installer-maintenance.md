@@ -60,7 +60,7 @@ layouts that cannot be proven from its reported bin and package tree stay manual
 See also [pnpm global add](https://pnpm.io/cli/add) and
 [bun package commands](https://bun.sh/docs/pm/cli/add).
 
-Current [Vite+ source](https://github.com/voidzero-dev/vite-plus/tree/main/crates/vp_shared/src/dirs.rs)
+Current [Vite+ source](https://github.com/voidzero-dev/vite-plus/blob/main/crates/vp_shared/src/dirs.rs)
 and [CLI source](https://github.com/voidzero-dev/vite-plus/tree/main/crates/vp_global_cli/src/commands/env)
 define `bins/codex.json`, `packages/@openai/codex.json`, UUID installation IDs,
 Windows `.shim` sidecars, and the read-only `VP_DUMP_DIRS` diagnostic. Legacy
