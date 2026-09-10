@@ -6881,6 +6881,8 @@ components:
       type: object
     AgentConfig:
       properties:
+        effort:
+          type: string
         mode:
           type: string
         model:
@@ -7034,6 +7036,10 @@ components:
       type: object
     AgentModelInfo:
       properties:
+        efforts:
+          items:
+            type: string
+          type: array
         id:
           type: string
         isDefault:

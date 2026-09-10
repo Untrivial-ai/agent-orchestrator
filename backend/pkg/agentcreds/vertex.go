@@ -72,7 +72,7 @@ func (v *Validator) vertexRequest(ctx context.Context, cred Credential) (request
 }
 
 // parseVertexModels reads the publisher-model list.
-func parseVertexModels(body []byte) ([]string, error) {
+func parseVertexModels(body []byte) ([]Model, error) {
 	var payload struct {
 		PublisherModels []struct {
 			Name      string `json:"name"`
@@ -85,14 +85,15 @@ func parseVertexModels(body []byte) ([]string, error) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
-	models := make([]string, 0, len(payload.PublisherModels)+len(payload.Models))
+	models := make([]Model, 0, len(payload.PublisherModels)+len(payload.Models))
 	appendModel := func(name string) {
 		// Names arrive fully qualified: publishers/anthropic/models/claude-…
 		if index := strings.LastIndex(name, "/"); index >= 0 {
 			name = name[index+1:]
 		}
 		if isClaudeModelID(name) {
-			models = append(models, name)
+			// Vertex's publisher listing carries no reasoning levels either.
+			models = append(models, Model{ID: name})
 		}
 	}
 	for _, model := range payload.PublisherModels {

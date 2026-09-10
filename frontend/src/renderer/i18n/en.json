@@ -1053,6 +1053,8 @@
 	"settings.models.cantFind": "Can’t find your model?",
 	"settings.models.configureThenRefresh": "Configure the model in {{agent}}, then refresh.",
 	"settings.models.default": "Default",
+	"settings.models.effort": "Reasoning effort",
+	"settings.models.agentDefaultEffort": "Agent default",
 	"settings.models.currentDefaults": "Current & defaults",
 	"settings.models.recent": "Recent",
 	"settings.models.loadFailed": "Could not load models.",

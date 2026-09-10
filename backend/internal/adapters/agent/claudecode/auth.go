@@ -384,7 +384,7 @@ func ParseAuthReport(out []byte) (AuthReport, bool) {
 //
 // An error means the provider could not be asked. Callers must fall back to
 // their static list rather than presenting an empty picker.
-func ProviderModels(ctx context.Context, env map[string]string) ([]string, error) {
+func ProviderModels(ctx context.Context, env map[string]string) ([]ports.AgentModelInfo, error) {
 	opts := agentcreds.ResolveOptions{AllowKeychain: true}
 	if len(env) > 0 {
 		// Prefer the session's own environment so a project-scoped provider or
@@ -413,5 +413,12 @@ func ProviderModels(ctx context.Context, env map[string]string) ([]string, error
 	// The probe already proved this credential works, so record the verdict
 	// instead of discarding it — discovery and validation refresh each other.
 	claudeAuthCache.Put(claudeAgentID, result)
-	return result.Models, nil
+
+	models := make([]ports.AgentModelInfo, 0, len(result.Models))
+	for _, model := range result.Models {
+		models = append(models, ports.AgentModelInfo{
+			ID: model.ID, Label: model.DisplayName, Efforts: model.Efforts,
+		})
+	}
+	return models, nil
 }

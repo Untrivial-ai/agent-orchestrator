@@ -2,6 +2,7 @@ package agentcreds
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -201,7 +202,7 @@ func TestValidationReturnsThatProvidersModelIDs(t *testing.T) {
 			if !result.Valid() {
 				t.Fatalf("state = %q (%s)", result.State, result.Detail)
 			}
-			if len(result.Models) != 1 || result.Models[0] != tc.want {
+			if len(result.Models) != 1 || result.Models[0].ID != tc.want {
 				t.Fatalf("models = %v, want exactly [%s]", result.Models, tc.want)
 			}
 		})
@@ -259,5 +260,89 @@ func TestMismatchedKindAndProviderIsUnknown(t *testing.T) {
 	})
 	if result.State != StateUnknown {
 		t.Fatalf("state = %q, want unknown", result.State)
+	}
+}
+
+// Effort levels differ per model and change as models ship, so they must come
+// from the provider. This fixture is the real api.anthropic.com shape.
+func TestEffortLevelsComeFromTheProvider(t *testing.T) {
+	body := `{"data":[
+		{"id":"claude-opus-5","display_name":"Claude Opus 5","capabilities":{"effort":{
+			"supported":true,
+			"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},
+			"xhigh":{"supported":true},"max":{"supported":true}}}},
+		{"id":"claude-opus-4-6","display_name":"Claude Opus 4.6","capabilities":{"effort":{
+			"supported":true,
+			"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},
+			"max":{"supported":true}}}},
+		{"id":"claude-opus-4-5-20251101","capabilities":{"effort":{
+			"supported":true,
+			"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true}}}},
+		{"id":"claude-haiku-4-5-20251001","capabilities":{"effort":{"supported":false}}},
+		{"id":"claude-sonnet-4-5-20250929","capabilities":{}}
+	]}`
+	models, err := parseAnthropicModels([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"claude-opus-5":              {"low", "medium", "high", "xhigh", "max"},
+		"claude-opus-4-6":            {"low", "medium", "high", "max"},
+		"claude-opus-4-5-20251101":   {"low", "medium", "high"},
+		"claude-haiku-4-5-20251001":  nil,
+		"claude-sonnet-4-5-20250929": nil,
+	}
+	if len(models) != len(want) {
+		t.Fatalf("parsed %d models, want %d", len(models), len(want))
+	}
+	for _, model := range models {
+		expected, ok := want[model.ID]
+		if !ok {
+			t.Fatalf("unexpected model %q", model.ID)
+		}
+		if len(model.Efforts) != len(expected) {
+			t.Fatalf("%s efforts = %v, want %v", model.ID, model.Efforts, expected)
+		}
+		for i := range expected {
+			if model.Efforts[i] != expected[i] {
+				t.Fatalf("%s efforts = %v, want %v", model.ID, model.Efforts, expected)
+			}
+		}
+	}
+}
+
+// A model that supports no effort must report none, so the UI renders no
+// control at all rather than an empty or disabled dropdown.
+func TestUnsupportedEffortIsEmptyNotPartial(t *testing.T) {
+	if got := supportedEfforts(map[string]json.RawMessage{
+		"supported": json.RawMessage(`false`),
+		"low":       json.RawMessage(`{"supported":true}`),
+	}); len(got) != 0 {
+		t.Fatalf("efforts = %v, want none when the model does not support effort", got)
+	}
+	if got := supportedEfforts(nil); len(got) != 0 {
+		t.Fatalf("efforts = %v, want none", got)
+	}
+}
+
+// The API returns effort as an object, so order has to be imposed or the
+// dropdown reshuffles between requests.
+func TestEffortOrderIsStableAndAscending(t *testing.T) {
+	raw := map[string]json.RawMessage{
+		"supported": json.RawMessage(`true`),
+		"max":       json.RawMessage(`{"supported":true}`),
+		"low":       json.RawMessage(`{"supported":true}`),
+		"xhigh":     json.RawMessage(`{"supported":true}`),
+		"medium":    json.RawMessage(`{"supported":true}`),
+		"high":      json.RawMessage(`{"supported":true}`),
+	}
+	want := []string{"low", "medium", "high", "xhigh", "max"}
+	for attempt := 0; attempt < 5; attempt++ {
+		got := supportedEfforts(raw)
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("efforts = %v, want %v", got, want)
+			}
+		}
 	}
 }

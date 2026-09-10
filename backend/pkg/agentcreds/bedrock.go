@@ -61,7 +61,7 @@ func (v *Validator) bedrockRequest(ctx context.Context, cred Credential) (reques
 }
 
 // parseBedrockModels reads Bedrock's foundation-model summaries.
-func parseBedrockModels(body []byte) ([]string, error) {
+func parseBedrockModels(body []byte) ([]Model, error) {
 	var payload struct {
 		ModelSummaries []struct {
 			ModelID       string `json:"modelId"`
@@ -74,10 +74,14 @@ func parseBedrockModels(body []byte) ([]string, error) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
-	models := make([]string, 0, len(payload.ModelSummaries))
+	// Bedrock's control plane does not report reasoning levels, so Efforts stays
+	// empty here. That is honest rather than lossy: an empty list means "this
+	// provider did not say", and the picker shows no effort control instead of
+	// inventing levels the account may not have.
+	models := make([]Model, 0, len(payload.ModelSummaries))
 	for _, summary := range payload.ModelSummaries {
 		if isClaudeModelID(summary.ModelID) || strings.EqualFold(summary.ProviderName, "Anthropic") {
-			models = append(models, summary.ModelID)
+			models = append(models, Model{ID: summary.ModelID})
 		}
 	}
 	return models, nil

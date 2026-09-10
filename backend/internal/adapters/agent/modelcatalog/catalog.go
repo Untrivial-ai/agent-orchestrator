@@ -150,7 +150,7 @@ type ClineConfigOptionListFunc func(context.Context, ports.AgentModelDiscoveryRe
 // actually serves, in that provider's own ID format. It returns an error
 // whenever the provider could not be asked; discovery then falls back to the
 // static alias list rather than emptying the picker.
-type ClaudeModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]string, error)
+type ClaudeModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error)
 
 // Discover uses the agent-owned model surface configured for this adapter.
 func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
@@ -227,12 +227,13 @@ func discoverClaudeCatalog(
 	return base
 }
 
-// normalizeClaudeProviderModels turns provider model IDs into picker rows.
-func normalizeClaudeProviderModels(ids []string) []ports.AgentModelInfo {
-	models := make([]ports.AgentModelInfo, 0, len(ids))
-	seen := make(map[string]struct{}, len(ids))
-	for _, raw := range ids {
-		id := strings.TrimSpace(raw)
+// normalizeClaudeProviderModels cleans provider rows for the picker, keeping
+// each model's own effort levels attached to it.
+func normalizeClaudeProviderModels(models []ports.AgentModelInfo) []ports.AgentModelInfo {
+	cleaned := make([]ports.AgentModelInfo, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
 		if id == "" {
 			continue
 		}
@@ -240,9 +241,17 @@ func normalizeClaudeProviderModels(ids []string) []ports.AgentModelInfo {
 			continue
 		}
 		seen[id] = struct{}{}
-		models = append(models, ports.AgentModelInfo{ID: id, Label: claudeModelLabel(id)})
+		// The provider's own display name is preferred, minus the vendor
+		// prefix it carries ("Claude Opus 5"): inside a Claude model picker
+		// every row would repeat it, which costs width and tells the reader
+		// nothing they did not already know.
+		label := strings.TrimPrefix(strings.TrimSpace(model.Label), "Claude ")
+		if label == "" {
+			label = claudeModelLabel(id)
+		}
+		cleaned = append(cleaned, ports.AgentModelInfo{ID: id, Label: label, Efforts: model.Efforts})
 	}
-	return models
+	return cleaned
 }
 
 // claudeModelLabel turns a provider model ID into something readable without

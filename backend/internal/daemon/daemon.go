@@ -464,7 +464,7 @@ func Run() error {
 		// Bedrock ARNs-in-miniature, Vertex @-versions — so the list has to come
 		// from whichever provider is configured. An error here is expected and
 		// harmless: discovery falls back to the static aliases.
-		ClaudeModels: func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]string, error) {
+		ClaudeModels: func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
 			return claudecodeagent.ProviderModels(listCtx, request.Env)
 		},
 	}

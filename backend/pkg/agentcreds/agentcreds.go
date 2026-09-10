@@ -124,6 +124,21 @@ func Fingerprint(secret string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+// Model is one model a provider reported, with the capabilities that differ
+// per model and therefore cannot be hardcoded.
+type Model struct {
+	// ID is the provider's own identifier, used verbatim when launching.
+	ID string
+	// DisplayName is the provider's human label, when it supplies one.
+	DisplayName string
+	// Efforts are the reasoning levels this model accepts, in the provider's
+	// order. Empty means the model takes no effort setting at all — which is a
+	// real answer, not a missing one: Sonnet 4.5 and Haiku 4.5 support none,
+	// Opus 4.6 omits xhigh, and the 5 family accepts all five. A hardcoded list
+	// would be wrong for most of the catalog within a release.
+	Efforts []string
+}
+
 // Result is a validation outcome together with what can be said about it.
 type Result struct {
 	// State is the three-state verdict.
@@ -137,7 +152,7 @@ type Result struct {
 	// Models lists the Claude model IDs the provider reported, in that
 	// provider's own ID format. Model IDs do not translate between providers,
 	// so this is also the only correct source for a per-provider model picker.
-	Models []string
+	Models []Model
 	// Detail is a human-readable explanation, safe to surface. It never
 	// contains the credential.
 	Detail string
@@ -233,7 +248,7 @@ func (v *Validator) Validate(ctx context.Context, cred Credential) Result {
 // rule for reading Claude models out of its response body.
 type requestSpec struct {
 	request     *http.Request
-	parseModels func([]byte) ([]string, error)
+	parseModels func([]byte) ([]Model, error)
 	// requireModels means a 200 with no Claude models is not a pass. It
 	// applies to the cloud providers, where authenticating successfully says
 	// nothing about whether the account may call Claude.

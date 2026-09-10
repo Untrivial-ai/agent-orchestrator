@@ -122,6 +122,12 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 				Description: "Model override passed to `claude --model` (e.g. claude-opus-4-5).",
 			},
 			{
+				Key:  "effort",
+				Type: ports.ConfigFieldString,
+				Description: "Reasoning level passed to `claude --effort`. Valid levels are " +
+					"per-model and come from the provider's own catalog, so this is not a fixed enum.",
+			},
+			{
 				Key:         "permissions",
 				Type:        ports.ConfigFieldEnum,
 				Description: "Starting permission mode.",
@@ -177,6 +183,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		SessionID:        cfg.SessionID,
 		NativeSessionID:  cfg.NativeSessionID,
 		Model:            cfg.Config.Model,
+		Effort:           cfg.Config.Effort,
 		Prompt:           cfg.Prompt,
 		SystemPrompt:     cfg.SystemPrompt,
 		SystemPromptFile: cfg.SystemPromptFile,

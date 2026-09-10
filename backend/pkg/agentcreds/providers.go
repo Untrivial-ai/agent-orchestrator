@@ -159,22 +159,71 @@ func (v *Validator) foundryRequest(ctx context.Context, cred Credential) (reques
 
 // parseAnthropicModels reads the first-party model list, which Foundry and
 // gateways mirror.
-func parseAnthropicModels(body []byte) ([]string, error) {
+//
+// It also reads capabilities.effort, which is the only authoritative source for
+// which reasoning levels a given model accepts. Those differ across the catalog
+// and change as models ship, so they are carried through rather than assumed.
+func parseAnthropicModels(body []byte) ([]Model, error) {
 	var payload struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID           string `json:"id"`
+			DisplayName  string `json:"display_name"`
+			Capabilities struct {
+				Effort map[string]json.RawMessage `json:"effort"`
+			} `json:"capabilities"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
-	models := make([]string, 0, len(payload.Data))
+	models := make([]Model, 0, len(payload.Data))
 	for _, entry := range payload.Data {
-		if isClaudeModelID(entry.ID) {
-			models = append(models, entry.ID)
+		if !isClaudeModelID(entry.ID) {
+			continue
 		}
+		models = append(models, Model{
+			ID:          entry.ID,
+			DisplayName: strings.TrimSpace(entry.DisplayName),
+			Efforts:     supportedEfforts(entry.Capabilities.Effort),
+		})
 	}
 	return models, nil
+}
+
+// effortOrder is the provider's own ascending order. The API reports effort as
+// an object rather than a list, so the order has to be imposed here; presenting
+// reasoning levels in map order would shuffle them on every request.
+var effortOrder = []string{"low", "medium", "high", "xhigh", "max"}
+
+// supportedEfforts extracts the levels a model actually accepts.
+//
+// The shape is {"supported": true, "low": {"supported": true}, ...}. A model
+// with "supported": false takes no effort setting, and callers must render no
+// control at all rather than a disabled or empty one.
+func supportedEfforts(raw map[string]json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var supported bool
+	if value, ok := raw["supported"]; ok {
+		if json.Unmarshal(value, &supported) != nil || !supported {
+			return nil
+		}
+	}
+	efforts := make([]string, 0, len(effortOrder))
+	for _, level := range effortOrder {
+		value, ok := raw[level]
+		if !ok {
+			continue
+		}
+		var entry struct {
+			Supported bool `json:"supported"`
+		}
+		if json.Unmarshal(value, &entry) == nil && entry.Supported {
+			efforts = append(efforts, level)
+		}
+	}
+	return efforts
 }
 
 // isClaudeModelID reports whether a provider's model ID names a Claude model.

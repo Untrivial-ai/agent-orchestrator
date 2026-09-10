@@ -956,6 +956,8 @@
 	"settings.models.cantFind": "¿No encuentras tu modelo?",
 	"settings.models.configureThenRefresh": "Configura el modelo en {{agent}} y luego actualiza.",
 	"settings.models.default": "Predeterminado",
+	"settings.models.effort": "Reasoning effort",
+	"settings.models.agentDefaultEffort": "Agent default",
 	"settings.models.currentDefaults": "Actuales y predeterminados",
 	"settings.models.recent": "Recientes",
 	"settings.models.loadFailed": "No se pudieron cargar los modelos.",

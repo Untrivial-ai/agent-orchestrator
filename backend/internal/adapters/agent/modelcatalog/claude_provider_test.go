@@ -27,8 +27,11 @@ func claudeRequest(t *testing.T) ports.AgentModelDiscoveryRequest {
 // The picker must show what the configured provider actually serves. On
 // Bedrock and Vertex the static aliases are simply wrong IDs.
 func TestClaudeCatalogPrefersProviderModels(t *testing.T) {
-	list := func(context.Context, ports.AgentModelDiscoveryRequest) ([]string, error) {
-		return []string{"us.anthropic.claude-opus-4-5-v1:0", "us.anthropic.claude-sonnet-4-5-v1:0"}, nil
+	list := func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
+		return []ports.AgentModelInfo{
+			{ID: "us.anthropic.claude-opus-4-5-v1:0"},
+			{ID: "us.anthropic.claude-sonnet-4-5-v1:0"},
+		}, nil
 	}
 	catalog := discoverClaudeCatalog(context.Background(), claudeRequest(t), list)
 	if catalog.Source != "provider" {
@@ -54,32 +57,32 @@ func TestClaudeCatalogFallsBackWhenTheProviderCannotBeAsked(t *testing.T) {
 		{name: "no lister wired", list: nil},
 		{
 			name: "provider unreachable",
-			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]string, error) {
+			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
 				return nil, errors.New("could not reach Anthropic")
 			},
 		},
 		{
 			name: "credential rejected",
-			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]string, error) {
+			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
 				return nil, errors.New("provider rejected the credential")
 			},
 		},
 		{
 			name: "chain-sourced credential, nothing readable",
-			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]string, error) {
+			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
 				return nil, errors.New("no credential could be resolved")
 			},
 		},
 		{
 			name: "provider returned an empty list",
-			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]string, error) {
-				return []string{}, nil
+			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
+				return []ports.AgentModelInfo{}, nil
 			},
 		},
 		{
 			name: "provider returned only blanks",
-			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]string, error) {
-				return []string{"", "   "}, nil
+			list: func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
+				return []ports.AgentModelInfo{{ID: ""}, {ID: "   "}}, nil
 			},
 		},
 	}
@@ -104,8 +107,12 @@ func TestClaudeCatalogFallsBackWhenTheProviderCannotBeAsked(t *testing.T) {
 }
 
 func TestClaudeProviderModelsAreDeduped(t *testing.T) {
-	list := func(context.Context, ports.AgentModelDiscoveryRequest) ([]string, error) {
-		return []string{"claude-opus-4-5-20251101", "claude-opus-4-5-20251101", " claude-haiku-4-5 "}, nil
+	list := func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
+		return []ports.AgentModelInfo{
+			{ID: "claude-opus-4-5-20251101"},
+			{ID: "claude-opus-4-5-20251101"},
+			{ID: " claude-haiku-4-5 "},
+		}, nil
 	}
 	catalog := discoverClaudeCatalog(context.Background(), claudeRequest(t), list)
 	if len(catalog.Models) != 2 {
@@ -137,5 +144,54 @@ func TestClaudeModelLabel(t *testing.T) {
 				t.Fatalf("claudeModelLabel(%q) = %q, want %q", tc.id, got, tc.want)
 			}
 		})
+	}
+}
+
+// Every row in a Claude picker would otherwise begin with "Claude", which
+// costs width and tells the reader nothing.
+func TestProviderDisplayNamesDropTheRedundantVendorPrefix(t *testing.T) {
+	list := func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
+		return []ports.AgentModelInfo{
+			{ID: "claude-opus-5", Label: "Claude Opus 5", Efforts: []string{"low", "max"}},
+			{ID: "claude-sonnet-4-5-20250929", Label: "Claude Sonnet 4.5"},
+			// No display name: the derived label is used instead.
+			{ID: "claude-haiku-4-5-20251001"},
+		}, nil
+	}
+	catalog := discoverClaudeCatalog(context.Background(), claudeRequest(t), list)
+	labels := map[string]string{}
+	for _, model := range catalog.Models {
+		labels[model.ID] = model.Label
+	}
+	if labels["claude-opus-5"] != "Opus 5" {
+		t.Fatalf("label = %q, want %q", labels["claude-opus-5"], "Opus 5")
+	}
+	if labels["claude-sonnet-4-5-20250929"] != "Sonnet 4.5" {
+		t.Fatalf("label = %q, want %q", labels["claude-sonnet-4-5-20250929"], "Sonnet 4.5")
+	}
+	if labels["claude-haiku-4-5-20251001"] != "Haiku 4.5" {
+		t.Fatalf("derived label = %q, want %q", labels["claude-haiku-4-5-20251001"], "Haiku 4.5")
+	}
+}
+
+// Efforts must survive normalization attached to their own model.
+func TestProviderEffortsSurviveNormalization(t *testing.T) {
+	list := func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
+		return []ports.AgentModelInfo{
+			{ID: "claude-opus-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
+			{ID: "claude-opus-4-6", Efforts: []string{"low", "medium", "high", "max"}},
+			{ID: "claude-sonnet-4-5-20250929"},
+		}, nil
+	}
+	catalog := discoverClaudeCatalog(context.Background(), claudeRequest(t), list)
+	got := map[string]int{}
+	for _, model := range catalog.Models {
+		got[model.ID] = len(model.Efforts)
+	}
+	if got["claude-opus-5"] != 5 || got["claude-opus-4-6"] != 4 {
+		t.Fatalf("effort counts = %v, want per-model levels preserved", got)
+	}
+	if got["claude-sonnet-4-5-20250929"] != 0 {
+		t.Fatalf("a model with no efforts must carry none, got %d", got["claude-sonnet-4-5-20250929"])
 	}
 }

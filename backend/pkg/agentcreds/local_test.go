@@ -77,7 +77,7 @@ func TestBedrockViaCLISucceedsWhenTheChainResolves(t *testing.T) {
 		t.Fatalf("state = %q (%s)", result.State, result.Detail)
 	}
 	if len(result.Models) != 1 {
-		t.Fatalf("models = %v", result.Models)
+		t.Fatalf("models = %+v", result.Models)
 	}
 }
 

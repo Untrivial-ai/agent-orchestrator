@@ -2441,6 +2441,7 @@ export interface components {
             state: "authorized" | "unauthorized" | "unknown" | "not_applicable" | "configured";
         };
         AgentConfig: {
+            effort?: string;
             mode?: string;
             model?: string;
             permissions?: string;
@@ -2503,6 +2504,7 @@ export interface components {
             agents: components["schemas"]["AgentInstallPlan"][];
         };
         AgentModelInfo: {
+            efforts?: string[];
             id: string;
             isDefault?: boolean;
             label: string;
