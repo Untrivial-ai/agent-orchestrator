@@ -10,12 +10,14 @@ import { SettingsOptionMenu } from "./SettingsOptionMenu";
  * five — so a static enum would be wrong for most of the catalog and would go
  * further out of date with every model release.
  *
- * The control always renders so it holds its place beside the model picker
- * rather than making the row jump as models are tried. It is inert until a
- * model is chosen and that model advertises levels, because effort is a
- * property of the model: with nothing selected there is no list to offer, and
- * on a model that ignores effort a live dropdown would be a promise the agent
- * will not keep.
+ * The control renders only when there is something to choose. With no model
+ * selected there is no list to offer, and on a model that accepts no effort a
+ * dropdown would be a promise the agent will not keep — so both cases fall
+ * back to the plain model picker rather than showing a dead control.
+ *
+ * The cost is that the row reflows when moving between models that do and do
+ * not take effort. That is the accepted trade: a control that is present but
+ * never usable is worse than one that appears when it applies.
  */
 export function AgentEffortSelect({
 	value,
@@ -34,7 +36,8 @@ export function AgentEffortSelect({
 }) {
 	const { t } = useTranslation();
 	const available = efforts ?? [];
-	const inert = disabled || available.length === 0;
+	// Nothing to choose: show the plain model picker instead of a dead control.
+	if (available.length === 0) return null;
 
 	// The empty value is a real choice, not a placeholder: it leaves whatever
 	// default the agent would pick on its own, which is what a user who has
@@ -47,13 +50,12 @@ export function AgentEffortSelect({
 	return (
 		<SettingsOptionMenu
 			aria-label={ariaLabel ?? t("settings.models.effort")}
-			// A stale level must never be shown against a model that cannot take
-			// it, so an inert control reads as the agent default regardless of
-			// what happens to be stored.
-			value={inert ? "" : value}
+			// A level stored against a previous model must never be displayed
+			// beside one that cannot take it.
+			value={available.includes(value) ? value : ""}
 			options={options}
 			onChange={onChange}
-			disabled={inert}
+			disabled={disabled}
 			triggerClassName={triggerClassName ?? "justify-end"}
 		/>
 	);

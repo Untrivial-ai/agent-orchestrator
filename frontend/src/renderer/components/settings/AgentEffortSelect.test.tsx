@@ -4,53 +4,40 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentEffortSelect, effortLabel } from "./AgentEffortSelect";
 
 describe("AgentEffortSelect", () => {
-	// The control holds its place beside the model picker so the row does not
-	// reflow as models are tried, but it stays inert until there is a model
-	// whose levels it can offer.
-	it("stays visible but inert when no model is selected yet", () => {
-		render(
-			<AgentEffortSelect
-				aria-label="Reasoning effort"
-				value=""
-				efforts={undefined}
-				onChange={vi.fn()}
-				disabled
-			/>,
+	// With no model selected there is nothing to offer, so the surface falls
+	// back to the plain model picker rather than showing a dead control.
+	it("renders nothing when no model is selected yet", () => {
+		const { container } = render(
+			<AgentEffortSelect value="" efforts={undefined} onChange={vi.fn()} />,
 		);
-		expect(screen.getByRole("button", { name: "Reasoning effort" })).toBeDisabled();
+		expect(container).toBeEmptyDOMElement();
 	});
 
-	// Sonnet 4.5 and Haiku 4.5 accept no effort at all. A live dropdown there
-	// would be a promise the agent will not keep.
-	it("is inert for a model that advertises no effort levels", () => {
-		render(
-			<AgentEffortSelect
-				aria-label="Reasoning effort"
-				value=""
-				efforts={[]}
-				onChange={vi.fn()}
-			/>,
+	// Sonnet 4.5 and Haiku 4.5 accept no effort at all. A dropdown there would
+	// be a promise the agent will not keep.
+	it("renders nothing for a model that advertises no effort levels", () => {
+		const { container } = render(
+			<AgentEffortSelect value="" efforts={[]} onChange={vi.fn()} />,
 		);
-		expect(screen.getByRole("button", { name: "Reasoning effort" })).toBeDisabled();
+		expect(container).toBeEmptyDOMElement();
 	});
 
-	// A level stored against a previous model must not be displayed next to a
-	// model that cannot take it.
-	it("reads as the agent default while inert, whatever is stored", () => {
+	// A level stored against a previous model must not be displayed beside one
+	// that cannot take it.
+	it("falls back to the agent default when the stored level is not offered", () => {
 		render(
 			<AgentEffortSelect
 				aria-label="Reasoning effort"
 				value="xhigh"
-				efforts={[]}
+				efforts={["low", "medium", "high"]}
 				onChange={vi.fn()}
 			/>,
 		);
 		const trigger = screen.getByRole("button", { name: "Reasoning effort" });
-		expect(trigger).toBeDisabled();
 		expect(trigger).not.toHaveTextContent("Extra high");
 	});
 
-	it("becomes usable once a model with levels is selected", async () => {
+	it("appears once a model with levels is selected", async () => {
 		const user = userEvent.setup();
 		const onChange = vi.fn();
 		render(

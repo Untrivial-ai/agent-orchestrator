@@ -473,9 +473,7 @@ export function TaskComposer({
 						value={effort}
 						efforts={modelCatalog?.models?.find((item) => item.id === model)?.efforts}
 						onChange={setEffort}
-						// Effort belongs to a model, so it stays inert until one is
-						// chosen; the control keeps its place either way.
-						disabled={isSubmitting || selectedAgent === "" || model === ""}
+						disabled={isSubmitting || selectedAgent === ""}
 						triggerClassName="composer-chip composer-toolbar-option justify-between"
 					/>
 				</div>
