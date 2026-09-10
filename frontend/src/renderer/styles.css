@@ -4406,6 +4406,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	max-width: 200px;
 	height: 28px;
 	flex: 0 1 200px;
+	overflow: hidden;
 	border-radius: var(--radius-md);
 	color: var(--fg-muted);
 	background: transparent;
