@@ -579,6 +579,14 @@ func writeClaudeSettings(t *testing.T, dir, model string) {
 	}
 }
 
+func TestCodexCatalogFingerprintHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := CatalogFingerprint(ctx, "codex", filepath.Join(t.TempDir(), "codex"), "", nil); got != "" {
+		t.Fatalf("canceled catalog returned fingerprint %q", got)
+	}
+}
+
 func TestCatalogFingerprintTracksTheConfiguredClaudeCodeModel(t *testing.T) {
 	t.Setenv("ANTHROPIC_MODEL", "")
 	dir := t.TempDir()

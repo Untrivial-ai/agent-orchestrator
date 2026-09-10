@@ -30,7 +30,7 @@ type fixture struct {
 func newFixture(goos, selected string) *fixture {
 	f := &fixture{files: map[string]string{}, links: map[string]string{}, replies: map[string]string{}, tools: map[string]string{}, env: map[string]string{}}
 	f.r = &Resolver{goos: goos, binary: func(context.Context) (string, error) { return selected, nil }, getenv: func(k string) string { return f.env[k] }}
-	f.r.readFile = func(p string) ([]byte, error) {
+	f.r.readFile = func(_ context.Context, p string) ([]byte, error) {
 		v, ok := f.files[slash(p)]
 		if !ok {
 			return nil, os.ErrNotExist
@@ -320,9 +320,9 @@ func TestFingerprintTracksUnchangedShimAndReplacedPayload(t *testing.T) {
 	write(filepath.Join(pkg, "package.json"), `{"name":"@openai/codex","bin":{"codex":"bin/codex.js"},"version":"1.0.0"}`)
 	entry := filepath.Join(pkg, "bin", "codex.js")
 	write(entry, "stable shim")
-	before := ExecutableFingerprint(entry)
+	before := ExecutableFingerprint(context.Background(), entry)
 	write(filepath.Join(pkg, "package.json"), `{"name":"@openai/codex","bin":{"codex":"bin/codex.js"},"version":"1.1.0","new":true}`)
-	if before == ExecutableFingerprint(entry) {
+	if before == ExecutableFingerprint(context.Background(), entry) {
 		t.Fatal("package update retained stale fingerprint")
 	}
 }

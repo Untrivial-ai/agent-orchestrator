@@ -34,7 +34,7 @@ type Resolver struct {
 	runner    ports.InstallCommandRunner
 	lookup    func(string) (string, error)
 	realpath  func(string) (string, error)
-	readFile  func(string) ([]byte, error)
+	readFile  func(context.Context, string) ([]byte, error)
 	getenv    func(string) string
 	client    *http.Client
 	goos      string
@@ -54,13 +54,22 @@ func New(binary func(context.Context) (string, error), runner ports.InstallComma
 	}
 }
 
-func readBoundedFile(name string) ([]byte, error) {
+func readBoundedFile(ctx context.Context, name string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f, err := os.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxRead+1))
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if len(data) > maxRead {
 		return nil, fmt.Errorf("installation metadata exceeds size limit")
 	}
@@ -75,8 +84,11 @@ func (r *Resolver) equal(a, b string) bool {
 	}
 	return a == b
 }
-func (r *Resolver) canonical(p string) string {
-	if resolved, err := r.realpath(p); err == nil {
+func (r *Resolver) canonical(ctx context.Context, p string) string {
+	if ctx.Err() != nil {
+		return ""
+	}
+	if resolved, err := r.realpath(p); err == nil && ctx.Err() == nil {
 		return slash(resolved)
 	}
 	return ""
@@ -93,7 +105,10 @@ func (r *Resolver) Resolve(ctx context.Context) (ports.CodexInstallation, error)
 		return s, err
 	}
 	s.Path = selected
-	s.RealPath = r.canonical(selected)
+	s.RealPath = r.canonical(ctx, selected)
+	if err := ctx.Err(); err != nil {
+		return s, err
+	}
 	if s.RealPath == "" {
 		return s, fmt.Errorf("selected Codex executable is missing or cannot be resolved")
 	}
@@ -109,7 +124,7 @@ func (r *Resolver) Resolve(ctx context.Context) (ports.CodexInstallation, error)
 	// Symlinks/junctions resolve natively. Only recognized package-manager shims
 	// are unwrapped; arbitrary user scripts remain manual-only.
 	resolved := s.RealPath
-	if target := r.shimTarget(resolved); target != "" {
+	if target := r.shimTarget(ctx, resolved); target != "" {
 		s.RealPath = target
 	}
 	if i := strings.Index(s.RealPath, "/packages/standalone/releases/"); i > 0 {
@@ -117,7 +132,7 @@ func (r *Resolver) Resolve(ctx context.Context) (ports.CodexInstallation, error)
 		s.Source, s.Scope = "standalone", "standalone:"+home
 		// Updating a pinned release path would update another visible command.
 		// Require the selected entry to traverse the installation's current link.
-		current := r.canonical(home + "/packages/standalone/current")
+		current := r.canonical(ctx, home+"/packages/standalone/current")
 		if current != "" && strings.HasPrefix(s.RealPath, current+"/") && !strings.Contains(slash(selected), "/releases/") {
 			env := []string{"CODEX_HOME=" + home, "CODEX_INSTALL_DIR=" + path.Dir(slash(selected)), "CODEX_NON_INTERACTIVE=1", "CODEX_RELEASE=latest"}
 			help, helpErr := r.probe(ctx, []string{selected, "update", "--help"}, env)
@@ -126,7 +141,7 @@ func (r *Resolver) Resolve(ctx context.Context) (ports.CodexInstallation, error)
 			}
 		}
 	} else if !r.resolveVite(ctx, &s) {
-		if pkg := r.packageRoot(s.RealPath); pkg != "" {
+		if pkg := r.packageRoot(ctx, s.RealPath); pkg != "" {
 			r.resolvePackage(ctx, &s, pkg)
 		} else {
 			r.resolveBrew(ctx, &s)
@@ -156,12 +171,12 @@ func (r *Resolver) Resolve(ctx context.Context) (ports.CodexInstallation, error)
 	// A changed shim, payload, installer, prefix, environment, or installed
 	// version invalidates the displayed approval and the queued command.
 	stamp := []string{s.Path, s.RealPath, s.Version, s.Source, s.Scope}
-	stamp = append(stamp, fileStamp(s.Path), fileStamp(s.RealPath), fileStamp(first(s.Command.Argv)))
+	stamp = append(stamp, r.fileStamp(ctx, s.Path), r.fileStamp(ctx, s.RealPath), r.fileStamp(ctx, first(s.Command.Argv)))
 	stamp = append(stamp, s.Command.Argv...)
 	stamp = append(stamp, s.Command.Env...)
 	for _, p := range []string{selected, resolved, s.RealPath, first(s.Command.Argv)} {
-		stamp = append(stamp, r.canonical(p))
-		if data, e := r.readFile(p); e == nil {
+		stamp = append(stamp, r.canonical(ctx, p))
+		if data, e := r.readFile(ctx, p); e == nil {
 			sum := sha256.Sum256(data)
 			stamp = append(stamp, fmt.Sprintf("%x", sum))
 		}
@@ -189,28 +204,37 @@ func Version(value string) string {
 	return m[1]
 }
 
-func (r *Resolver) packageRoot(p string) string {
+func (r *Resolver) packageRoot(ctx context.Context, p string) string {
 	for dir := path.Dir(p); dir != "." && dir != "/" && dir != path.Dir(dir); dir = path.Dir(dir) {
-		if strings.HasSuffix(dir, "/node_modules/@openai/codex") && r.manifest(dir) {
+		if ctx.Err() != nil {
+			return ""
+		}
+		if strings.HasSuffix(dir, "/node_modules/@openai/codex") && r.manifest(ctx, dir) {
 			return dir
 		}
 	}
 	return ""
 }
-func (r *Resolver) manifest(dir string) bool {
-	data, err := r.readFile(dir + "/package.json")
+func (r *Resolver) manifest(ctx context.Context, dir string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	data, err := r.readFile(ctx, dir+"/package.json")
 	var manifest struct {
 		Name string            `json:"name"`
 		Bin  map[string]string `json:"bin"`
 	}
-	return err == nil && json.Unmarshal(data, &manifest) == nil && manifest.Name == packageName && manifest.Bin["codex"] == "bin/codex.js"
+	return err == nil && ctx.Err() == nil && json.Unmarshal(data, &manifest) == nil && manifest.Name == packageName && manifest.Bin["codex"] == "bin/codex.js"
 }
 
 var shimReference = regexp.MustCompile(`(?:\$basedir|%dp0%|%~dp0|\$PSScriptRoot)[/\\]([^"'\r\n]*@openai[/\\]codex[/\\]bin[/\\]codex\.js)`)
 
-func (r *Resolver) shimTarget(p string) string {
-	data, err := r.readFile(p)
-	if err != nil {
+func (r *Resolver) shimTarget(ctx context.Context, p string) string {
+	if ctx.Err() != nil {
+		return ""
+	}
+	data, err := r.readFile(ctx, p)
+	if err != nil || ctx.Err() != nil {
 		return ""
 	}
 	text := string(data)
@@ -222,7 +246,7 @@ func (r *Resolver) shimTarget(p string) string {
 	matches := shimReference.FindAllStringSubmatch(text, -1)
 	var target string
 	for _, m := range matches {
-		resolved := r.canonical(path.Join(path.Dir(p), slash(m[1])))
+		resolved := r.canonical(ctx, path.Join(path.Dir(p), slash(m[1])))
 		if resolved == "" || (target != "" && !r.equal(target, resolved)) {
 			return ""
 		}
@@ -278,13 +302,13 @@ func (r *Resolver) resolvePackage(ctx context.Context, s *ports.CodexInstallatio
 			return
 		}
 		if manager == "bun" {
-			bin := r.canonical(root)
-			if bin == "" || !r.equal(bin, r.canonical(path.Dir(slash(s.Path)))) {
+			bin := r.canonical(ctx, root)
+			if bin == "" || !r.equal(bin, r.canonical(ctx, path.Dir(slash(s.Path)))) {
 				return
 			}
 			root = path.Dir(bin) + "/install/global/node_modules"
 		}
-		if !r.equal(r.canonical(root+"/@openai/codex"), pkg) {
+		if !r.equal(r.canonical(ctx, root+"/@openai/codex"), pkg) {
 			return
 		}
 		s.Source, s.Scope = manager, manager+":"+slash(root)
@@ -319,7 +343,7 @@ func (r *Resolver) resolvePackage(ctx context.Context, s *ports.CodexInstallatio
 		probeArgs = []string{tool, "root", "-g"}
 	}
 	root, err := r.probe(ctx, probeArgs, nil)
-	if err != nil || !r.equal(r.canonical(root+"/@openai/codex"), pkg) {
+	if err != nil || !r.equal(r.canonical(ctx, root+"/@openai/codex"), pkg) {
 		return
 	}
 	s.Source, s.Scope = "npm", "npm:"+prefix
@@ -338,8 +362,8 @@ func (r *Resolver) resolveVite(ctx context.Context, s *ports.CodexInstallation) 
 	if tool == "" {
 		return false
 	}
-	toolReal := r.canonical(tool)
-	sidecar, _ := r.readFile(strings.TrimSuffix(slash(s.Path), path.Ext(slash(s.Path))) + ".shim")
+	toolReal := r.canonical(ctx, tool)
+	sidecar, _ := r.readFile(ctx, strings.TrimSuffix(slash(s.Path), path.Ext(slash(s.Path)))+".shim")
 	trampoline := r.goos == "windows" && strings.HasPrefix(strings.TrimPrefix(string(sidecar), "\ufeff"), "vite-plus-shim-v1\n")
 	if !r.equal(toolReal, s.RealPath) && !trampoline {
 		return false
@@ -363,14 +387,14 @@ func (r *Resolver) resolveVite(ctx context.Context, s *ports.CodexInstallation) 
 		}
 	}
 	root := dirs["data"]
-	if root == "" || !r.equal(r.canonical(dirs["bin"]), r.canonical(bin)) {
+	if root == "" || !r.equal(r.canonical(ctx, dirs["bin"]), r.canonical(ctx, bin)) {
 		return true
 	}
 	if trampoline && !strings.Contains(slash(string(sidecar)), "data="+root+"\n") {
 		return true
 	}
 	var owner struct{ Name, Package, Source, Version string }
-	data, err := r.readFile(root + "/bins/codex.json")
+	data, err := r.readFile(ctx, root+"/bins/codex.json")
 	if err != nil || json.Unmarshal(data, &owner) != nil || owner.Name != "codex" || owner.Package != packageName || (owner.Source != "" && owner.Source != "vp") {
 		return true
 	}
@@ -382,7 +406,7 @@ func (r *Resolver) resolveVite(ctx context.Context, s *ports.CodexInstallation) 
 		InstallID string `json:"installId"`
 		Bins      []string
 	}
-	data, err = r.readFile(root + "/packages/@openai/codex.json")
+	data, err = r.readFile(ctx, root+"/packages/@openai/codex.json")
 	if err != nil || json.Unmarshal(data, &metadata) != nil {
 		return true
 	}
@@ -410,13 +434,13 @@ func (r *Resolver) resolveVite(ctx context.Context, s *ports.CodexInstallation) 
 		}
 	}
 	pkg := prefix + "/lib/node_modules/@openai/codex"
-	if !r.manifest(pkg) {
+	if !r.manifest(ctx, pkg) {
 		pkg = prefix + "/node_modules/@openai/codex"
 	}
-	if !r.manifest(pkg) {
+	if !r.manifest(ctx, pkg) {
 		return true
 	}
-	target := r.canonical(pkg + "/bin/codex.js")
+	target := r.canonical(ctx, pkg+"/bin/codex.js")
 	if target == "" {
 		return true
 	}
@@ -438,7 +462,7 @@ func (r *Resolver) resolveBrew(ctx context.Context, s *ports.CodexInstallation) 
 		return
 	}
 	prefix, err := r.probe(ctx, []string{tool, "--prefix"}, nil)
-	if err != nil || !r.equal(r.canonical(prefix), m[1]) {
+	if err != nil || !r.equal(r.canonical(ctx, prefix), m[1]) {
 		return
 	}
 	kind := "--formula"
@@ -451,7 +475,7 @@ func (r *Resolver) resolveBrew(ctx context.Context, s *ports.CodexInstallation) 
 	}
 	owned := false
 	for _, file := range strings.Split(files, "\n") {
-		if r.equal(r.canonical(strings.TrimSpace(file)), s.RealPath) {
+		if r.equal(r.canonical(ctx, strings.TrimSpace(file)), s.RealPath) {
 			owned = true
 		}
 	}
