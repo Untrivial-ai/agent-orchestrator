@@ -4345,6 +4345,12 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	color: var(--fg);
 }
 
+.browser-panel__tab-actions button:not(:disabled):active,
+.browser-panel__toolbar button:not(:disabled):active {
+	transform: scale(0.96);
+	transform-origin: center;
+}
+
 .browser-panel__tab-region {
 	position: relative;
 	display: flex;
