@@ -101,14 +101,14 @@ func TestTmuxUserShellExitReconciliation(t *testing.T) {
 				deadline := time.Now().Add(3 * time.Second)
 				for {
 					alive, err := rt.IsChildAlive(ctx, handle)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !alive {
+					// Server shutdown can race the probe (Linux may report
+					// "server exited unexpectedly" or "no current target").
+					// These remain unknown, not evidence of child death.
+					if err == nil && !alive {
 						break
 					}
 					if time.Now().After(deadline) {
-						t.Fatal("requested shell exited but tmux child remains alive")
+						t.Fatalf("shell exit never confirmed: alive=%v, error=%v", alive, err)
 					}
 					time.Sleep(20 * time.Millisecond)
 				}
