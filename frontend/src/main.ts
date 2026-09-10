@@ -135,6 +135,7 @@ import {
 	type BrowserProfileMenuItem,
 } from "./main/browser-profile-ipc";
 import type { BrowserProfileMenuInput } from "./shared/browser-profiles";
+import type { BrowserSurfaceLayoutReason, BrowserSurfaceLayoutSignal } from "./shared/browser-surface";
 import { createWindowComposition, type WindowComposition } from "./main/window-composition";
 import { AgentBrowserRuntime } from "./main/agent-browser-runtime";
 import { sameBrowserRuntimeIdentity, type BrowserRuntimeIdentity } from "./main/browser-runtime-identity";
@@ -725,18 +726,29 @@ async function createWindowInternal(): Promise<void> {
 	// macOS: traffic lights vanish in native fullscreen, so the renderer drops
 	// the clearance pad above TitlebarNav. Push state so the sidebar can react
 	// without polling isFullScreen().
-	const pushFullScreen = () => {
+	let browserLayoutSequence = 0;
+	const pushBrowserLayout = (reason: BrowserSurfaceLayoutReason) => {
+		getShellWebContents()?.send("window:browserLayoutChanged", {
+			sequence: ++browserLayoutSequence,
+			reason,
+		} satisfies BrowserSurfaceLayoutSignal);
+	};
+	const pushFullScreen = (reason: "enter-full-screen" | "leave-full-screen") => {
 		if (!mainWindow) return;
 		getShellWebContents()?.send("window:fullscreen", mainWindow.isFullScreen());
+		pushBrowserLayout(reason);
 	};
-	const pushMaximized = () => {
+	const pushMaximized = (reason: "maximize" | "unmaximize") => {
 		if (!mainWindow) return;
 		getShellWebContents()?.send("window:maximized", mainWindow.isMaximized());
+		pushBrowserLayout(reason);
 	};
-	mainWindow.on("enter-full-screen", pushFullScreen);
-	mainWindow.on("leave-full-screen", pushFullScreen);
-	mainWindow.on("maximize", pushMaximized);
-	mainWindow.on("unmaximize", pushMaximized);
+	mainWindow.on("resize", () => pushBrowserLayout("resize"));
+	mainWindow.on("move", () => pushBrowserLayout("move"));
+	mainWindow.on("enter-full-screen", () => pushFullScreen("enter-full-screen"));
+	mainWindow.on("leave-full-screen", () => pushFullScreen("leave-full-screen"));
+	mainWindow.on("maximize", () => pushMaximized("maximize"));
+	mainWindow.on("unmaximize", () => pushMaximized("unmaximize"));
 	mainWindow.on("blur", () => {
 		keybindingRecordingActive = false;
 	});

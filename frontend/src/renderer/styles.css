@@ -4824,8 +4824,8 @@ html[data-native-browser-composition="true"] .browser-popout-backdrop {
  * (SessionView.tsx's portal) and paints its own opaque `background: var(--bg)`
  * plate. It is NOT covered by the `:has(.browser-popout-overlay)` shell clears
  * above — those target ancestors under #root — and leaving it opaque blanked
- * the live page to black on Windows whenever an overlay (tooltip, menu) raised
- * the transparent shell over the native view in a maximized window. */
+ * the live page to black on Windows whenever an interactive overlay such as a
+ * menu raised the transparent shell over the native view in a maximized window. */
 html[data-native-browser-composition="true"] .browser-popout-frame {
 	background: transparent;
 }

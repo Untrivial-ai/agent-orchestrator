@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { net } from "electron";
 import {
 	type BrowserNavState,
+	type BrowserRect,
 	type BrowserTabsState,
 	browserShortcutAction,
 	clampBoundsToWindow,
@@ -265,7 +266,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 	});
 	const rendererFrame = { processId: 5, routingId: 7 };
 	const invoke = (channel: string, ...args: unknown[]) =>
-		handlers.get(channel)!({ sender: { id: 1 }, senderFrame: rendererFrame }, ...args) as Promise<BrowserNavState>;
+		handlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => 1 }, senderFrame: rendererFrame }, ...args) as Promise<BrowserNavState>;
 	// browser:annotation:submit is a handle() (invoke/await), not an on() —
 	// unlike invoke() above it must impersonate the browser tab's own
 	// webContents (senderId), not the shell window's, so forwardAnnotationSubmit
@@ -1674,6 +1675,31 @@ describe("native browser visibility", () => {
 		expect(view.setVisible).toHaveBeenLastCalledWith(true);
 	});
 
+	it("lets only the newest overlapping surface refresh restore the live page", async () => {
+		vi.useFakeTimers();
+		try {
+			const { emit, host, invoke, view } = setupHost();
+			await invoke("browser:ensure", "sess-1");
+			emit("browser:setBounds", 1, {
+				viewId: "1:sess-1",
+				rect: { x: 10, y: 20, width: 320, height: 240 },
+				visible: true,
+			});
+			await invoke("browser:navigate", { viewId: "1:sess-1", url: "http://localhost:3000" });
+			view.setBounds.mockClear();
+			view.setVisible.mockClear();
+
+			host.refreshLastFocusedPanelSurface();
+			host.refreshLastFocusedPanelSurface();
+			await vi.runAllTimersAsync();
+
+			expect(view.setVisible.mock.calls.filter(([visible]) => visible === true)).toHaveLength(1);
+			expect(view.setBounds).toHaveBeenLastCalledWith({ x: 10, y: 20, width: 320, height: 240 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("does nothing when nothing has been focused yet, or the panel is hidden", async () => {
 		const { host, view } = setupHost();
 		host.refreshLastFocusedPanelSurface();
@@ -2570,6 +2596,95 @@ describe("browser:setBounds", () => {
 
 		expect(view.setVisible).not.toHaveBeenCalled();
 		expect(sent).not.toContainEqual(expect.objectContaining({ channel: "browser:navState" }));
+	});
+});
+
+describe("browser:applyBounds", () => {
+	it("rejects stale revisions and acknowledges the authoritative native rectangle", async () => {
+		const { invoke, view } = setupHost();
+		await invoke("browser:ensure", "sess-1", "renderer-lifetime-a");
+		view.setBounds.mockClear();
+
+		const latest = await invoke("browser:applyBounds", {
+			viewId: "1:sess-1",
+			sourceId: "renderer-lifetime-a",
+			revision: 2,
+			rect: { x: 200, y: 30, width: 320, height: 240 },
+			visible: true,
+		}) as unknown as { applied: boolean; revision: number; rect: BrowserRect };
+		const stale = await invoke("browser:applyBounds", {
+			viewId: "1:sess-1",
+			sourceId: "renderer-lifetime-a",
+			revision: 1,
+			rect: { x: 100, y: 30, width: 320, height: 240 },
+			visible: true,
+		}) as unknown as { applied: boolean; revision: number; rect: BrowserRect };
+
+		expect(latest).toMatchObject({ applied: true, revision: 2, rect: { x: 200, y: 30, width: 320, height: 240 } });
+		expect(stale).toMatchObject({ applied: false, revision: 2, rect: { x: 200, y: 30, width: 320, height: 240 } });
+		expect(view.setBounds).toHaveBeenCalledTimes(1);
+		expect(view.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 30, width: 320, height: 240 });
+	});
+
+	it("makes a new preload lifetime authoritative after a shell reload", async () => {
+		const { invoke, view } = setupHost();
+		await invoke("browser:ensure", "sess-1", "renderer-lifetime-a");
+		await invoke("browser:applyBounds", {
+			viewId: "1:sess-1",
+			sourceId: "renderer-lifetime-a",
+			revision: 40,
+			rect: { x: 40, y: 20, width: 320, height: 240 },
+			visible: true,
+		});
+		await invoke("browser:ensure", "sess-1", "renderer-lifetime-b");
+		view.setBounds.mockClear();
+
+		const current = await invoke("browser:applyBounds", {
+			viewId: "1:sess-1",
+			sourceId: "renderer-lifetime-b",
+			revision: 1,
+			rect: { x: 300, y: 20, width: 320, height: 240 },
+			visible: true,
+		}) as unknown as { applied: boolean };
+		const departed = await invoke("browser:applyBounds", {
+			viewId: "1:sess-1",
+			sourceId: "renderer-lifetime-a",
+			revision: 41,
+			rect: { x: 10, y: 20, width: 320, height: 240 },
+			visible: true,
+		}) as unknown as { applied: boolean };
+
+		expect(current.applied).toBe(true);
+		expect(departed.applied).toBe(false);
+		expect(view.setBounds).toHaveBeenCalledTimes(1);
+		expect(view.setBounds).toHaveBeenLastCalledWith({ x: 300, y: 20, width: 320, height: 240 });
+	});
+
+	it("coalesces identical accepted layouts without recreating or resizing the native surface", async () => {
+		const { invoke, mainContentView, view } = setupHost();
+		await invoke("browser:ensure", "sess-1", "renderer-lifetime-a");
+		await invoke("browser:applyBounds", {
+			viewId: "1:sess-1",
+			sourceId: "renderer-lifetime-a",
+			revision: 1,
+			rect: { x: 100, y: 20, width: 320, height: 240 },
+			visible: true,
+		});
+		view.setBounds.mockClear();
+		mainContentView.addChildView.mockClear();
+
+		for (let revision = 2; revision <= 200; revision += 1) {
+			await invoke("browser:applyBounds", {
+				viewId: "1:sess-1",
+				sourceId: "renderer-lifetime-a",
+				revision,
+				rect: { x: 100, y: 20, width: 320, height: 240 },
+				visible: true,
+			});
+		}
+
+		expect(view.setBounds).not.toHaveBeenCalled();
+		expect(mainContentView.addChildView).not.toHaveBeenCalled();
 	});
 });
 

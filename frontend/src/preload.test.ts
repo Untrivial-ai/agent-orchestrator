@@ -75,6 +75,44 @@ describe("preload repository branch bridge", () => {
 	});
 });
 
+describe("preload browser surface bridge", () => {
+	it("tags acknowledged bounds with one preload lifetime and increasing revisions", async () => {
+		const bridge = exposedBridge();
+		await bridge.browser.ensure("worker-1");
+		bridge.browser.setBounds({
+			viewId: "1:worker-1",
+			rect: { x: 10, y: 20, width: 300, height: 200 },
+			visible: true,
+		});
+		bridge.browser.setBounds({
+			viewId: "1:worker-1",
+			rect: { x: 11, y: 20, width: 300, height: 200 },
+			visible: true,
+		});
+
+		const ensureCall = electronMocks.invoke.mock.calls[0]!;
+		const firstLayout = electronMocks.invoke.mock.calls[1]![1] as { sourceId: string; revision: number };
+		const secondLayout = electronMocks.invoke.mock.calls[2]![1] as { sourceId: string; revision: number };
+		expect(ensureCall).toEqual(["browser:ensure", "worker-1", firstLayout.sourceId]);
+		expect(firstLayout.sourceId).toBeTruthy();
+		expect(secondLayout.sourceId).toBe(firstLayout.sourceId);
+		expect(secondLayout.revision).toBe(firstLayout.revision + 1);
+		expect(electronMocks.invoke.mock.calls[1]![0]).toBe("browser:applyBounds");
+		expect(electronMocks.send).not.toHaveBeenCalledWith("browser:setBounds", expect.anything());
+	});
+
+	it("subscribes to native window layout signals and disposes the wrapped listener", () => {
+		const listener = vi.fn();
+		const dispose = exposedBridge().window.onBrowserLayoutChanged(listener);
+		const wrapped = electronMocks.listeners.get("window:browserLayoutChanged");
+
+		wrapped?.({}, { sequence: 7, reason: "maximize" });
+		expect(listener).toHaveBeenCalledWith({ sequence: 7, reason: "maximize" });
+		dispose();
+		expect(electronMocks.off).toHaveBeenCalledWith("window:browserLayoutChanged", wrapped);
+	});
+});
+
 describe("preload telemetry generation bridge", () => {
 	it("tags captures with the latest broadcast generation without a renderer reload", async () => {
 		telemetryPolicyBroadcastListener?.({}, { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, state: "applied", environmentVeto: false, durabilitySupported: true });

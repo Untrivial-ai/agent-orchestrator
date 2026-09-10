@@ -7,6 +7,7 @@ import {
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { BrowserSurfaceLayoutSignal } from "../../shared/browser-surface";
 
 type Listener = (state: BrowserNavState) => void;
 type TabsListener = (state: import("../../main/browser-view-host").BrowserTabsState) => void;
@@ -38,6 +39,7 @@ function setupBridge() {
 	const devtoolsListeners = new Set<DevToolsListener>();
 	const activityListeners = new Set<ActivityListener>();
 	const profileListeners = new Set<ProfileListener>();
+	const layoutListeners = new Set<(signal: BrowserSurfaceLayoutSignal) => void>();
 	const bridge = {
 		nativeCompositionEnabled: false,
 		stateFor(viewId: string): BrowserNavState {
@@ -157,8 +159,21 @@ function setupBridge() {
 		emitProfile(state: Parameters<ProfileListener>[0]) {
 			profileListeners.forEach((listener) => listener(state));
 		},
+		emitLayout(reason: BrowserSurfaceLayoutSignal["reason"] = "resize") {
+			layoutListeners.forEach((listener) => listener({ sequence: 1, reason }));
+		},
 	};
-	window.ao = { ...window.ao!, browser: bridge };
+	window.ao = {
+		...window.ao!,
+		window: {
+			...window.ao!.window,
+			onBrowserLayoutChanged: (listener) => {
+				layoutListeners.add(listener);
+				return () => layoutListeners.delete(listener);
+			},
+		},
+		browser: bridge,
+	};
 	return bridge;
 }
 
@@ -628,6 +643,17 @@ describe("useBrowserView", () => {
 			}),
 		);
 		bridge.setBounds.mockClear();
+		slot.getBoundingClientRect = vi.fn(() => ({
+			x: 240,
+			y: 34,
+			width: 320,
+			height: 240,
+			top: 34,
+			right: 560,
+			bottom: 274,
+			left: 240,
+			toJSON: () => ({}),
+		}));
 
 		act(() => {
 			rerender({ poppedOut: true });
@@ -636,10 +662,62 @@ describe("useBrowserView", () => {
 		await waitFor(() =>
 			expect(bridge.setBounds).toHaveBeenCalledWith({
 				viewId: "42:sess-1",
-				rect: { x: 12, y: 34, width: 320, height: 240 },
+				rect: { x: 240, y: 34, width: 320, height: 240 },
 				visible: true,
 			}),
 		);
+	});
+
+	it("converges again when Electron reports a native window layout transition", async () => {
+		const bridge = setupBridge();
+		const slot = createSlot();
+		const { result } = renderHook(() =>
+			useBrowserView({ sessionId: "sess-1", active: true, poppedOut: false }),
+		);
+		await waitFor(() => expect(result.current.viewId).toBe("42:sess-1"));
+		act(() => result.current.slotRef(slot));
+		await waitFor(() => expect(bridge.setBounds).toHaveBeenCalled());
+		await new Promise((resolve) => setTimeout(resolve, 140));
+		bridge.setBounds.mockClear();
+		slot.getBoundingClientRect = vi.fn(() => ({
+			x: 180,
+			y: 40,
+			width: 500,
+			height: 360,
+			top: 40,
+			right: 680,
+			bottom: 400,
+			left: 180,
+			toJSON: () => ({}),
+		}));
+
+		act(() => bridge.emitLayout("maximize"));
+
+		await waitFor(() =>
+			expect(bridge.setBounds).toHaveBeenCalledWith({
+				viewId: "42:sess-1",
+				rect: { x: 180, y: 40, width: 500, height: 360 },
+				visible: true,
+			}),
+		);
+	});
+
+	it("does not resend unchanged geometry throughout a settling window", async () => {
+		const bridge = setupBridge();
+		const slot = createSlot();
+		const { result } = renderHook(() =>
+			useBrowserView({ sessionId: "sess-1", active: true, poppedOut: false }),
+		);
+		await waitFor(() => expect(result.current.viewId).toBe("42:sess-1"));
+		act(() => result.current.slotRef(slot));
+		await waitFor(() => expect(bridge.setBounds).toHaveBeenCalled());
+		await new Promise((resolve) => setTimeout(resolve, 140));
+		bridge.setBounds.mockClear();
+
+		act(() => bridge.emitLayout("resize"));
+		await new Promise((resolve) => setTimeout(resolve, 140));
+
+		expect(bridge.setBounds).not.toHaveBeenCalled();
 	});
 
 	it("clamps the native view to its resizable-panel column when the slot overspills", async () => {

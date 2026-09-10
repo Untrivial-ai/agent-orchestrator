@@ -720,10 +720,7 @@ describe("BrowserPanel", () => {
 		expect(hookState.stop).toHaveBeenCalled();
 	});
 
-	it("marks toolbar tooltips as browser overlays so they paint above the live page", async () => {
-		// Same reasoning as the pinned-favicon overlay test: the toolbar sits
-		// directly above the native browser view, so an unmarked tooltip here
-		// would render behind the live page.
+	it("keeps toolbar tooltips in shell-owned chrome without restacking the native page", async () => {
 		hookState.navState = {
 			viewId: "42:sess-1",
 			url: "http://localhost:5173/",
@@ -737,10 +734,11 @@ describe("BrowserPanel", () => {
 		fireEvent.focus(screen.getByRole("button", { name: /back/i }));
 
 		const tooltip = await screen.findByRole("tooltip");
-		expect(tooltip.closest('[data-browser-native-overlay="true"]')).not.toBeNull();
+		expect(tooltip.closest('[data-browser-native-overlay="true"]')).toBeNull();
+		expect(tooltip.closest('[data-side="top"]')).not.toBeNull();
 	});
 
-	it("uses the same styled browser overlay tooltip while maximized", async () => {
+	it("keeps the same non-restacking tooltip behavior while maximized", async () => {
 		hookState.navState = {
 			viewId: "42:sess-1",
 			url: "http://localhost:5173/",
@@ -757,7 +755,8 @@ describe("BrowserPanel", () => {
 
 		const tooltip = await screen.findByRole("tooltip");
 		expect(tooltip).toHaveTextContent("Annotate page");
-		expect(tooltip.closest('[data-browser-native-overlay="true"]')).not.toBeNull();
+		expect(tooltip.closest('[data-browser-native-overlay="true"]')).toBeNull();
+		expect(tooltip.closest('[data-side="top"]')).not.toBeNull();
 	});
 
 	it("still opens a tooltip for a disabled toolbar button", async () => {

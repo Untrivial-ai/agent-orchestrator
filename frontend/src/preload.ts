@@ -70,6 +70,11 @@ import type {
 	BrowserDownloadActionInput,
 	BrowserDownloadsState,
 } from "./shared/browser-downloads";
+import type {
+	BrowserSurfaceLayoutInput,
+	BrowserSurfaceLayoutResult,
+	BrowserSurfaceLayoutSignal,
+} from "./shared/browser-surface";
 
 if (typeof document !== "undefined") {
 	const markNativeBrowserComposition = () => {
@@ -91,6 +96,25 @@ export type BrowserBoundsInput = {
 	rect: BrowserRect;
 	visible: boolean;
 };
+
+const browserLayoutSourceId = globalThis.crypto.randomUUID();
+const browserLayoutRevisions = new Map<string, number>();
+
+function applyBrowserBounds(input: BrowserBoundsInput): void {
+	const revision = (browserLayoutRevisions.get(input.viewId) ?? 0) + 1;
+	browserLayoutRevisions.set(input.viewId, revision);
+	const layout: BrowserSurfaceLayoutInput = {
+		...input,
+		sourceId: browserLayoutSourceId,
+		revision,
+	};
+	// The invocation is intentionally fire-and-forget to keep React layout work
+	// off the IPC round trip, but unlike send() it is acknowledged by main. Main
+	// rejects an older revision even if Electron delivers or finishes it late.
+	void Promise.resolve(ipcRenderer.invoke("browser:applyBounds", layout) as Promise<BrowserSurfaceLayoutResult>).catch(
+		() => undefined,
+	);
+}
 
 export type BrowserNavigateInput = {
 	viewId: string;
@@ -304,6 +328,13 @@ const api = {
 				ipcRenderer.off("window:fullscreen", wrapped);
 			};
 		},
+		onBrowserLayoutChanged: (listener: (signal: BrowserSurfaceLayoutSignal) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, signal: BrowserSurfaceLayoutSignal) => listener(signal);
+			ipcRenderer.on("window:browserLayoutChanged", wrapped);
+			return () => {
+				ipcRenderer.off("window:browserLayoutChanged", wrapped);
+			};
+		},
 	},
 	theme: {
 		// Propagate the app's theme preference to Electron's nativeTheme so embedded
@@ -367,8 +398,9 @@ const api = {
 	},
 	browser: {
 		nativeCompositionEnabled: true,
-		ensure: (sessionId: string) => ipcRenderer.invoke("browser:ensure", sessionId) as Promise<BrowserNavState>,
-		setBounds: (input: BrowserBoundsInput) => ipcRenderer.send("browser:setBounds", input),
+		ensure: (sessionId: string) =>
+			ipcRenderer.invoke("browser:ensure", sessionId, browserLayoutSourceId) as Promise<BrowserNavState>,
+		setBounds: applyBrowserBounds,
 		setOverlayOpen: (open: boolean) => ipcRenderer.send("browser:overlay", open),
 		navigate: (input: BrowserNavigateInput) =>
 			ipcRenderer.invoke("browser:navigate", input) as Promise<BrowserNavState>,
