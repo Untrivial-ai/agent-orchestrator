@@ -46,29 +46,29 @@ func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bo
 	}
 	recent := nonEmpty[start:]
 
-	// 1. Locate the Agy footer line near the bottom (within the last 4 non-empty rows).
+	// 1. If in-flight active work (tool execution, thinking, generating) is visible anywhere in the recent window,
+	// the session is actively executing a turn.
+	for _, l := range recent {
+		if isAgyActiveIndicator(strings.ToLower(l)) {
+			return domain.ActivityActive, true
+		}
+	}
+
+	// 2. Locate the Agy footer line near the bottom (within the last 4 non-empty rows).
 	footerIdx := -1
 	for i := len(recent) - 1; i >= 0 && i >= len(recent)-4; i-- {
-		if strings.Contains(strings.ToLower(recent[i]), agyFooterMarker) {
+		if isAgyFooterLine(recent[i]) {
 			footerIdx = i
 			break
 		}
 	}
 	if footerIdx < 0 {
-		// If footer is absent, check if in-flight active work is explicitly visible.
-		for i := len(recent) - 1; i >= 0; i-- {
-			line := strings.ToLower(recent[i])
-			if isAgyActiveIndicator(line) {
-				return domain.ActivityActive, true
-			}
-		}
 		return "", false
 	}
 
-	// Any lines rendered below the footer must not be active turn execution (e.g. scrollback).
+	// Any lines rendered below the footer must not be a new prompt (e.g. scrollback).
 	for i := footerIdx + 1; i < len(recent); i++ {
-		line := strings.ToLower(recent[i])
-		if isAgyActiveIndicator(line) || strings.HasPrefix(recent[i], agyPromptMarker) {
+		if strings.HasPrefix(recent[i], agyPromptMarker) {
 			return domain.ActivityActive, true
 		}
 	}
@@ -98,8 +98,14 @@ func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bo
 	return domain.ActivityIdle, true
 }
 
+func isAgyFooterLine(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, agyFooterMarker) || strings.Contains(lower, "esc to cancel")
+}
+
 func isAgyActiveIndicator(line string) bool {
 	return strings.Contains(line, "(esc to interrupt)") ||
 		strings.Contains(line, "(ctrl+c to cancel)") ||
-		strings.Contains(line, "thinking...")
+		strings.Contains(line, "thinking...") ||
+		strings.Contains(line, "generating...")
 }

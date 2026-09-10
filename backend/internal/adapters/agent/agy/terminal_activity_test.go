@@ -60,6 +60,15 @@ func TestDetectTerminalActivityAuthoritativeIdleAfterAbortedTurn(t *testing.T) {
 				"> \n" +
 				"? for shortcuts                    accept-edits · Gemini 3.8 Flash · high\n",
 		},
+		{
+			name: "aborted turn sitting at prompt with esc to cancel footer",
+			output: "• Bash(python -c \"import time; time.sleep(10)\") (ctrl+o to expand)\n\n" +
+				"  ⌊ Interrupted · What should Antigravity CLI do instead?\n" +
+				strings.Repeat("─", 65) + "\n" +
+				">\n" +
+				strings.Repeat("─", 65) + "\n" +
+				"esc to cancel                                  Gemini 3.8 Flash · high\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -89,6 +98,10 @@ func TestDetectTerminalActivityActiveExecution(t *testing.T) {
 		{
 			name:   "thinking indicator in flight",
 			output: "Thinking... (esc to interrupt)",
+		},
+		{
+			name:   "streaming token generation in flight",
+			output: "⣽  Generating...\n─────────────────────────────────────────────────\n>\n─────────────────────────────────────────────────\nesc to cancel   Gemini 3.8 Flash · high",
 		},
 		{
 			name: "scrollback with old footer followed by new active tool execution",
