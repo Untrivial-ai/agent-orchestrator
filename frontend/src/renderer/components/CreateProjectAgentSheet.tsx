@@ -151,7 +151,7 @@ export function CreateProjectAgentSheet({
 	const [workerAgent, setWorkerAgent] = useState("");
 	const [workerClaudeConfigDir, setWorkerClaudeConfigDir] = useState<string>();
 	const [orchestratorClaudeConfigDir, setOrchestratorClaudeConfigDir] = useState<string>();
-	const profilesQuery = useClaudeProfiles();
+	const profilesQuery = useClaudeProfiles(contentOpen);
 	const [orchestratorAgent, setOrchestratorAgent] = useState("");
 	const [workerAgentTouched, setWorkerAgentTouched] = useState(false);
 	const [orchestratorAgentTouched, setOrchestratorAgentTouched] = useState(false);

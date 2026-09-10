@@ -11,7 +11,7 @@ vi.mock("motion/react", async (importOriginal) => {
 		AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 	};
 });
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
@@ -263,6 +263,8 @@ function importValidation(path: string, overrides: Partial<ImportValidationResul
 	};
 }
 
+const sidebarQueryClients = new Set<QueryClient>();
+
 function renderSidebar({
 	onCloneProject = vi.fn().mockResolvedValue(undefined) as CloneProjectHandler,
 	onCreateProject = vi.fn().mockResolvedValue(undefined) as CreateProjectHandler,
@@ -293,6 +295,7 @@ function renderSidebar({
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
 	});
+	sidebarQueryClients.add(queryClient);
 	if (seedAgents) {
 		queryClient.setQueryData(agentReadinessQueryKey, {
 			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
@@ -430,7 +433,15 @@ beforeEach(() => {
 	mockParams.sessionId = undefined;
 });
 
-afterEach(() => {
+afterEach(async () => {
+	cleanup();
+	for (const client of sidebarQueryClients) {
+		await client.cancelQueries();
+		client.clear();
+	}
+	sidebarQueryClients.clear();
+	// Drain queued query notifications before JSDOM is disposed.
+	await new Promise((resolve) => setTimeout(resolve, 0));
 	vi.restoreAllMocks();
 });
 
