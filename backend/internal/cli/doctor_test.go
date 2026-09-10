@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
 )
 
 func TestDoctorChecksGitVersion(t *testing.T) {
@@ -167,6 +169,10 @@ func TestDoctorChecksHarnessVersions(t *testing.T) {
 			// The codex launch-flag canary probes the same binary.
 			if name == "/bin/codex" && len(args) > 0 && (args[0] == "--dangerously-bypass-hook-trust" || args[0] == "features") {
 				return []byte("ok\n"), nil
+			}
+			// So does the claude-auth check.
+			if name == "/bin/claude" && len(args) == 2 && args[0] == "auth" && args[1] == "status" {
+				return []byte(`{"loggedIn":true,"authMethod":"claude.ai"}`), nil
 			}
 			t.Fatalf("unexpected harness command: %s %v", name, args)
 			return nil, nil
@@ -705,5 +711,138 @@ func writeHooksLogLines(t *testing.T, dataDir string, lines ...string) {
 	content := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(dataDir, hooksLogName), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// stubDoctorValidator points doctor's credential probe at a local server, so
+// no doctor test can reach a real provider or read real credentials.
+func stubDoctorValidator(t *testing.T, handler http.HandlerFunc) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	// Resolution reads the environment, so give it exactly one credential and
+	// point the base URL at the stub.
+	for _, name := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-doctor-test")
+	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
+	previous := doctorCredentialValidator
+	doctorCredentialValidator = func() *agentcreds.Validator {
+		return agentcreds.New(agentcreds.WithHTTPClient(server.Client()))
+	}
+	t.Cleanup(func() { doctorCredentialValidator = previous })
+}
+
+func claudeAuthContext(t *testing.T, cliOutput string) *commandContext {
+	t.Helper()
+	return doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
+		func(context.Context, string, ...string) ([]byte, error) { return []byte(cliOutput), nil })
+}
+
+func TestDoctorClaudeAuthSkipsWhenNotInstalled(t *testing.T) {
+	c := doctorContext(t, nil, nil)
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorPass || !strings.Contains(check.Message, "skipped") {
+		t.Fatalf("check = %+v, want a skipped PASS", check)
+	}
+}
+
+// The check can now say "valid", but only because it asked the provider. That
+// is the whole difference between it and `claude auth status`.
+func TestDoctorClaudeAuthPassesOnlyWhenTheProviderAccepts(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-4-5-20251101"}]}`))
+	})
+	c := claudeAuthContext(t, `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"gateway"}`)
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorPass {
+		t.Fatalf("check = %+v, want PASS", check)
+	}
+	if !strings.Contains(check.Message, "accepted the credential") {
+		t.Fatalf("message = %q, want it to report a provider acceptance", check.Message)
+	}
+}
+
+// The reported outage: a credential that is present locally and rejected by
+// the provider. This is the case every previous surface got wrong.
+func TestDoctorClaudeAuthFailsWhenTheProviderRejects(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"API key is invalid."}}`))
+	})
+	c := claudeAuthContext(t, `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","apiProvider":"gateway"}`)
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorFail {
+		t.Fatalf("check = %+v, want FAIL — the provider rejected the credential", check)
+	}
+	if !strings.Contains(check.Message, "REJECTED") || !strings.Contains(check.Message, "API key is invalid.") {
+		t.Fatalf("message = %q, want the provider's own reason", check.Message)
+	}
+}
+
+// An unreachable provider proves nothing, so the check must not present the
+// local state as a working credential.
+func TestDoctorClaudeAuthWarnsWhenValidationIsInconclusive(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	c := claudeAuthContext(t, `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"gateway"}`)
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn {
+		t.Fatalf("check = %+v, want WARN", check)
+	}
+	if !strings.Contains(check.Message, "could not validate") {
+		t.Fatalf("message = %q, want it to say validation was inconclusive", check.Message)
+	}
+}
+
+func TestDoctorClaudeAuthFailsWhenSignedOut(t *testing.T) {
+	c := claudeAuthContext(t, `{"loggedIn":false}`)
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorFail || !strings.Contains(check.Message, "claude login") {
+		t.Fatalf("check = %+v, want a FAIL pointing at claude login", check)
+	}
+}
+
+func TestDoctorClaudeAuthWarnsOnUnparsableOutput(t *testing.T) {
+	c := doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
+		func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("unsupported subcommand on this version"), errors.New("exit status 1")
+		})
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn {
+		t.Fatalf("level = %q, want WARN — unparsable output proves nothing either way", check.Level)
+	}
+}
+
+// The shadowing env var is an annotation, not a verdict. It must not suppress
+// the provider's answer, and it must survive onto a rejection — that pairing
+// is precisely the diagnosis for the reported outage.
+func TestDoctorClaudeAuthAnnotatesAShadowingEnvVarWithoutPreemptingTheProvider(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"API key is invalid."}}`))
+	})
+	c := claudeAuthContext(t, `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","authMethod":"claude.ai","apiProvider":"gateway"}`)
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorFail {
+		t.Fatalf("check = %+v, want the provider's rejection to win", check)
+	}
+	if !strings.Contains(check.Message, "overrides any claude.ai login") {
+		t.Fatalf("message = %q, want the shadowing variable named", check.Message)
+	}
+}
+
+// A shadowing key that actually works is not a problem, and must not be
+// reported as one.
+func TestDoctorClaudeAuthDoesNotWarnAboutAWorkingEnvKey(t *testing.T) {
+	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-4-5"}]}`))
+	})
+	c := claudeAuthContext(t, `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","apiProvider":"gateway"}`)
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorPass {
+		t.Fatalf("check = %+v, want PASS — the credential works", check)
 	}
 }

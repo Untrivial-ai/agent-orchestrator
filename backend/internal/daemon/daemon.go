@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	claudecodeagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	codexagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
 	chatdriveracp "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
@@ -458,6 +459,13 @@ func Run() error {
 				Args:    []string{"--acp"},
 				Env:     request.Env,
 			}, request.WorkingDir, log)
+		},
+		// Claude's model IDs are provider-specific — first-party aliases,
+		// Bedrock ARNs-in-miniature, Vertex @-versions — so the list has to come
+		// from whichever provider is configured. An error here is expected and
+		// harmless: discovery falls back to the static aliases.
+		ClaudeModels: func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
+			return claudecodeagent.ProviderModels(listCtx, request.Env)
 		},
 	}
 	// Build the multi-tracker dispatching to both GitHub and GitLab once,

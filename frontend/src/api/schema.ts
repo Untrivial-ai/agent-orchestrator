@@ -2438,19 +2438,20 @@ export interface components {
             reason: string;
             reasonCode: string;
             /** @enum {string} */
-            state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+            state: "authorized" | "unauthorized" | "unknown" | "not_applicable" | "configured";
         };
         AgentConfig: {
+            effort?: string;
             mode?: string;
             model?: string;
             permissions?: string;
         };
         AgentInfo: {
             /**
-             * @description Advisory local auth probe result. authorized means a recent local probe passed; spawn remains the authoritative validation point.
+             * @description Auth probe result. authorized means a provider round-trip accepted the credential; configured means a credential exists locally but was never validated, and must not be presented as ready; spawn remains the authoritative validation point.
              * @enum {string}
              */
-            authStatus?: "authorized" | "unauthorized" | "unknown";
+            authStatus?: "authorized" | "unauthorized" | "unknown" | "configured";
             id: string;
             label: string;
             /**
@@ -2503,6 +2504,7 @@ export interface components {
             agents: components["schemas"]["AgentInstallPlan"][];
         };
         AgentModelInfo: {
+            efforts?: string[];
             id: string;
             isDefault?: boolean;
             label: string;
@@ -3162,6 +3164,7 @@ export interface components {
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
             brief: string;
+            effort?: string;
             /** @enum {string} */
             mode?: "tui" | "chat";
             model?: string;

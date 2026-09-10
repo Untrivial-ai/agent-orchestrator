@@ -2,6 +2,7 @@ package claudeacp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -92,5 +93,36 @@ func TestRuntimeCommandOverride(t *testing.T) {
 	}
 	if launch.command != executable || len(launch.args) != 0 {
 		t.Fatalf("runtime = %#v", launch)
+	}
+}
+
+// I1: the auth check is strictly additive. It may turn unknown into a definite
+// answer, and it may never block a launch that would otherwise have succeeded.
+// Every way of failing to resolve or reach a credential — an unreadable
+// keychain, a timeout, an unparsable CLI, a credential that is merely present
+// — must let the session proceed exactly as before.
+func TestPreflightOnlyBlocksOnAVerifiedRejection(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    ports.AgentAuthStatus
+		err       error
+		wantBlock bool
+	}{
+		{name: "configured but unverified", status: ports.AgentAuthStatusConfigured},
+		{name: "inconclusive", status: ports.AgentAuthStatusUnknown},
+		{name: "probe errored", status: ports.AgentAuthStatusUnknown, err: context.DeadlineExceeded},
+		{name: "binary missing", status: ports.AgentAuthStatusUnavailable},
+		{name: "unreadable credential reported as unauthorized alongside an error",
+			status: ports.AgentAuthStatusUnauthorized, err: context.DeadlineExceeded},
+		{name: "verified rejection", status: ports.AgentAuthStatusUnauthorized, wantBlock: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := authPreflightError(tc.status, tc.err)
+			blocked := errors.Is(err, ports.ErrChatAuthRequired)
+			if blocked != tc.wantBlock {
+				t.Fatalf("blocked = %v (err %v), want %v", blocked, err, tc.wantBlock)
+			}
+		})
 	}
 }

@@ -219,3 +219,40 @@ func TestClaudeNativeSessionIDValidation(t *testing.T) {
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
+
+// Effort is a per-model capability, so the flag appears only when a level was
+// actually chosen — a model that accepts none must launch exactly as before.
+func TestClaudeEffortFlag(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   bool
+	}{
+		{name: "chosen level is passed through", effort: "xhigh", want: true},
+		{name: "no level leaves the agent default", effort: "", want: false},
+		{name: "whitespace is not a level", effort: "   ", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := BuildLaunchCommand(LaunchConfig{
+				Harness: HarnessClaudeCode, Binary: "claude",
+				Model: "claude-opus-5", Effort: tc.effort,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := ""
+			for i, arg := range cmd {
+				if arg == "--effort" && i+1 < len(cmd) {
+					found = cmd[i+1]
+				}
+			}
+			if tc.want && found != tc.effort {
+				t.Fatalf("--effort = %q, want %q in %v", found, tc.effort, cmd)
+			}
+			if !tc.want && found != "" {
+				t.Fatalf("--effort must be omitted entirely, got %q in %v", found, cmd)
+			}
+		})
+	}
+}

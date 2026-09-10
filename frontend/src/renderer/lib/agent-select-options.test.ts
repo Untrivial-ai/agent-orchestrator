@@ -115,3 +115,43 @@ describe("buildRankedAgentOptions", () => {
 		expect(option).toMatchObject({ disabled: false, status: "" });
 	});
 });
+
+describe("configured but unverified credentials", () => {
+	// The whole point of the "configured" state is that it must not look like
+	// a working credential. Falling through to the known-good branch would
+	// paint an unvalidated — possibly revoked — credential green.
+	it("shows an unverified agent as neutral rather than known-good", () => {
+		const [option] = buildRankedAgentOptions({
+			agents: [agent("claude-code", "installed", "configured")],
+			priorityRank,
+			fallbackAgents: [],
+		});
+		expect(option.statusTone).not.toBe("success");
+		expect(option.status).toBe("Unverified");
+	});
+
+	// I1: never block. An unverified credential is not a disproved one.
+	it("keeps an unverified agent selectable and ranked with unknown, not below it", () => {
+		const options = buildRankedAgentOptions({
+			agents: [
+				agent("claude-code", "installed", "configured"),
+				agent("codex", "installed", "unknown"),
+			],
+			priorityRank,
+			fallbackAgents: [],
+		});
+		const unverified = options.find((option) => option.id === "claude-code")!;
+		const unknown = options.find((option) => option.id === "codex")!;
+		expect(unverified.disabled).toBe(false);
+		expect(unverified.rank).toBe(unknown.rank);
+	});
+
+	it("still disables an agent the provider definitely rejected", () => {
+		const [option] = buildRankedAgentOptions({
+			agents: [agent("claude-code", "installed", "unauthorized")],
+			priorityRank,
+			fallbackAgents: [],
+		});
+		expect(option.disabled).toBe(true);
+	});
+});

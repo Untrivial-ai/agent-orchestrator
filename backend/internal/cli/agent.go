@@ -131,6 +131,9 @@ func writeAgentList(cmd *cobra.Command, inv agentInventory) error {
 				authLabel = "authorized"
 			case "unauthorized":
 				authLabel = "needs auth"
+			case "configured":
+				// A credential exists; nothing has proven it works.
+				authLabel = "configured (unverified)"
 			default:
 				authLabel = "auth unknown"
 			}

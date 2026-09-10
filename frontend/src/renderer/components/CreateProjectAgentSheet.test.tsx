@@ -58,6 +58,30 @@ describe("CreateProjectAgentSheet", () => {
 		).toBe("codex");
 	});
 
+	// Under the auth ladder an agent whose credentials AO cannot validate
+	// reports "configured", never "authorized". If that dropped out of the
+	// preselection pool, a working Claude Code install would silently stop
+	// being the default agent on this sheet.
+	it("still preselects an agent whose credentials are configured but unverified", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(agentReadinessQueryKey, {
+			agents: [agentReadiness("claude-code", "Claude Code", { authentication: "configured" })],
+		});
+		renderSheet(undefined, queryClient);
+		await waitFor(() => expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0));
+	});
+
+	// I2: only a definite rejection removes an agent from the pool.
+	it("does not preselect an agent the provider definitely rejected", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(agentReadinessQueryKey, {
+			agents: [agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" })],
+		});
+		renderSheet(undefined, queryClient);
+		await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+		expect(screen.queryAllByText("Claude Code")).toHaveLength(0);
+	});
+
 	it("chooses the most frequently used authorized agent by default", () => {
 		expect(
 			defaultAuthorizedAgent([

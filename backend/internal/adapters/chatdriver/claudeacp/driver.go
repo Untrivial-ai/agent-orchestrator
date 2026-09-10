@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -31,12 +32,35 @@ type claudePlugin interface {
 	AuthStatus(context.Context) (ports.AgentAuthStatus, error)
 }
 
+// authPreflightError decides whether a preflight auth observation may block a
+// session. Only a definite rejection does.
+//
+// The check is strictly additive: it exists to turn "we don't know" into a
+// useful answer, never to invent a reason to refuse. So an errored probe, an
+// inconclusive one, and a credential that is merely configured all let the
+// launch proceed exactly as it would have without any check at all. A
+// credential AO cannot validate is not a credential AO has disproved, and
+// locking out a working user is strictly worse than letting a bad credential
+// fail at its first turn — where the runtime handler catches it anyway.
+func authPreflightError(status ports.AgentAuthStatus, err error) error {
+	if err == nil && status == ports.AgentAuthStatusUnauthorized {
+		return ports.ErrChatAuthRequired
+	}
+	return nil
+}
+
 // New constructs the Claude Code ACP driver over the existing Claude agent
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
 func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 	return acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
+		// A live rejection is the ground truth that outranks any cached
+		// verdict, so drop the cache the moment one arrives. This is also the
+		// only auth correction that works for credential sources AO cannot
+		// read at all — the Bedrock and Vertex chains — because it needs no
+		// credential, no network call, and no provider knowledge.
+		OnAuthRejected: claudecode.InvalidateAuthCache,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming:    true,
 			ports.ChatCapabilityTools:        true,
@@ -60,15 +84,10 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 				return fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 			}
 			status, err := plugin.AuthStatus(ctx)
-			if err == nil && status == ports.AgentAuthStatusUnauthorized {
-				return ports.ErrChatAuthRequired
-			}
 			if err != nil && log != nil {
-				// Unknown is not unauthorized. Match AO's runtime probe rule: an
-				// inconclusive local probe is not proof the session cannot run.
 				log.Debug("Claude auth probe inconclusive; continuing", "error", err)
 			}
-			return nil
+			return authPreflightError(status, err)
 		},
 		Launch: func(ctx context.Context, cfg acpdriver.LaunchConfig) (acpdriver.Launch, error) {
 			runtimeLaunch, err := resolveRuntime(ctx)

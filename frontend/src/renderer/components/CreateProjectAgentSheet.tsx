@@ -130,10 +130,14 @@ export function CreateProjectAgentSheet({
 	useEnsureAgentReadiness({ enabled: contentOpen });
 	const agents = agentsQuery.data;
 	const agentOptions = useMemo(() => agents?.agents ?? [], [agents]);
+	// "configured" belongs here even though it is not a verified credential.
+	// This picks the default preselection, not a gate — every agent stays
+	// selectable — and excluding it would silently stop preselecting an agent
+	// whose credentials AO simply cannot validate, which is most of them.
 	const authorizedAgents = useMemo(
 		() =>
 			agentOptions.filter((agent) =>
-				["authorized", "not_applicable"].includes(agent.authentication.state),
+				["authorized", "not_applicable", "configured"].includes(agent.authentication.state),
 			),
 		[agentOptions],
 	);

@@ -18,9 +18,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
 )
 
 type doctorLevel string
@@ -184,7 +186,7 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 	for _, harness := range doctorHarnesses {
 		checks = append(checks, c.checkHarness(ctx, harness))
 	}
-	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
+	checks = append(checks, c.checkClaudeAuth(ctx), c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
 	return checks
 }
 
@@ -421,6 +423,126 @@ func (c *commandContext) checkHarness(ctx context.Context, harness harnessProbe)
 		}
 	}
 	return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: harness.Name, Message: fmt.Sprintf("%s resolves to %s (%s)", harness.BinaryName, path, version)}
+}
+
+// checkClaudeAuth reports what credential Claude Code will actually use, and
+// is explicit that AO has not validated it.
+//
+// It is modelled on the github-token check: read the local state, then ask the
+// provider whether the credential actually works, and report the difference
+// between those two answers. A credential that is merely present is reported
+// as unvalidated, never as valid — reporting presence as validity is the exact
+// failure this check exists to expose.
+//
+// The high-value field is apiKeySource. It is populated only when an
+// environment variable or key helper overrides a subscription login, which is
+// how a stale ANTHROPIC_API_KEY inherited from a shell profile silently
+// shadows a working claude.ai account.
+func (c *commandContext) checkClaudeAuth(ctx context.Context) doctorCheck {
+	const name = "claude-auth"
+	path, err := c.deps.LookPath("claude")
+	if err != nil || path == "" {
+		return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: "skipped: claude not found in PATH"}
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	out, cmdErr := c.deps.CommandOutput(reqCtx, path, "auth", "status")
+	report, ok := claudecode.ParseAuthReport(out)
+	if !ok {
+		msg := "`claude auth status` output could not be parsed, so auth state is unknown"
+		if cmdErr != nil {
+			msg = fmt.Sprintf("%s (%v)", msg, cmdErr)
+		}
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionAgents, Name: name, Message: msg}
+	}
+	if !report.LoggedIn {
+		return doctorCheck{
+			Level: doctorFail, Section: doctorSectionAgents, Name: name,
+			Message: "claude reports signed out; run `claude login`",
+		}
+	}
+
+	details := []string{}
+	if report.AuthMethod != "" {
+		details = append(details, "method: "+report.AuthMethod)
+	}
+	if report.SubscriptionType != "" {
+		details = append(details, "plan: "+report.SubscriptionType)
+	}
+	if report.APIProvider != "" {
+		details = append(details, "provider: "+report.APIProvider)
+	}
+	suffix := ""
+	if len(details) > 0 {
+		suffix = " (" + strings.Join(details, ", ") + ")"
+	}
+	// An env var shadowing a subscription login is the single most common
+	// cause of "everything looks fine and every turn 401s". It is an
+	// annotation rather than a verdict: the provider's answer below is
+	// strictly better information, and a shadowing key that actually works is
+	// not a problem to report as one.
+	shadow := ""
+	if report.APIKeySource != "" {
+		shadow = fmt.Sprintf("; note that %s overrides any claude.ai login", report.APIKeySource)
+	}
+	// Ask the provider. This is the only step that can distinguish a working
+	// credential from a revoked one, and the reason the check can say more
+	// than `claude auth status` already does.
+	result := doctorCredentialValidator().ValidateLocal(
+		reqCtx, report.APIProvider, agentcreds.ResolveOptions{AllowKeychain: true})
+	switch result.State {
+	case agentcreds.StateValid:
+		models := ""
+		if count := len(result.Models); count > 0 {
+			models = fmt.Sprintf(", %d Claude models available", count)
+		}
+		return doctorCheck{
+			Level: doctorPass, Section: doctorSectionAgents, Name: name,
+			Message: fmt.Sprintf("%s accepted the credential from %s%s%s%s",
+				providerLabel(result.Provider), credentialLabel(result.Source), suffix, models, shadow),
+		}
+	case agentcreds.StateInvalid:
+		return doctorCheck{
+			Level: doctorFail, Section: doctorSectionAgents, Name: name,
+			Message: fmt.Sprintf("%s REJECTED the credential from %s%s — %s%s",
+				providerLabel(result.Provider), credentialLabel(result.Source), suffix, result.Detail, shadow),
+		}
+	}
+
+	// Unknown. The local state is all that can be reported, and it must not be
+	// dressed up as a working credential.
+	return doctorCheck{
+		Level: doctorWarn, Section: doctorSectionAgents, Name: name,
+		Message: fmt.Sprintf("claude reports credentials configured%s, but AO could not validate them: %s%s",
+			suffix, result.Detail, shadow),
+	}
+}
+
+// doctorCredentialValidator builds the validator used by the auth check. It is
+// a variable so tests can point it at a local server: doctor's own tests must
+// never reach a real provider, nor read the developer's real credentials.
+var doctorCredentialValidator = func() *agentcreds.Validator { return agentcreds.New() }
+
+func providerLabel(provider agentcreds.Provider) string {
+	switch provider {
+	case agentcreds.ProviderBedrock:
+		return "AWS Bedrock"
+	case agentcreds.ProviderVertex:
+		return "Vertex AI"
+	case agentcreds.ProviderFoundry:
+		return "Azure AI Foundry"
+	case agentcreds.ProviderGateway:
+		return "the configured gateway"
+	default:
+		return "Anthropic"
+	}
+}
+
+func credentialLabel(source string) string {
+	if strings.TrimSpace(source) == "" {
+		return "the resolved credential"
+	}
+	return source
 }
 
 // checkCodexLaunchFlags smoke-tests AO's codex launch surface against the

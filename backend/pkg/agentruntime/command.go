@@ -51,12 +51,15 @@ var claudeSessionNamespace = uuid.MustParse("a1f0c3d2-7b54-4e96-8a2b-0d9e1f2a3b4
 
 // LaunchConfig contains the inputs common to a fresh provider process.
 type LaunchConfig struct {
-	Harness          Harness
-	Binary           string
-	SessionID        string
-	NativeSessionID  string
-	WorkspacePath    string
-	Model            string
+	Harness         Harness
+	Binary          string
+	SessionID       string
+	NativeSessionID string
+	WorkspacePath   string
+	Model           string
+	// Effort is the reasoning level, passed through to `claude --effort`. It
+	// carries only levels the selected model advertised.
+	Effort           string
 	Prompt           string
 	SystemPrompt     string
 	SystemPromptFile string
@@ -224,6 +227,11 @@ func buildClaudeLaunch(cfg LaunchConfig) ([]string, error) {
 	cmd = append(cmd, cfg.ProviderArgs...)
 	if model := strings.TrimSpace(cfg.Model); model != "" {
 		cmd = append(cmd, "--model", model)
+	}
+	// Only the selected model's own advertised levels reach here; a model that
+	// accepts no effort leaves this empty and the flag is omitted entirely.
+	if effort := strings.TrimSpace(cfg.Effort); effort != "" {
+		cmd = append(cmd, "--effort", effort)
 	}
 	var err error
 	cmd, err = appendClaudeSystemPrompt(cmd, cfg.SystemPromptFile, cfg.SystemPrompt)
