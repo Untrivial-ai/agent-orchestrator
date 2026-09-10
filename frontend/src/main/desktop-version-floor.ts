@@ -48,7 +48,8 @@ export async function checkDesktopVersionFloor(): Promise<void> {
   }
 
   const running = app.getVersion();
-  const downloadUrl = floor.downloadUrl || DEFAULT_DOWNLOAD_URL;
+  const rawUrl = floor.downloadUrl || DEFAULT_DOWNLOAD_URL;
+  const downloadUrl = rawUrl.startsWith("https://github.com/") ? rawUrl : DEFAULT_DOWNLOAD_URL;
   const minVersion = usableVersion(floor.min);
   const latestVersion = usableVersion(floor.latest);
 

@@ -92,11 +92,11 @@ describe("checkDesktopVersionFloor", () => {
   it("opens the download URL when user clicks Download on required update", async () => {
     const { mod, dialog, shellMock, quit } = await importModule({
       version: "0.12.12",
-      floor: { min: "0.12.13", downloadUrl: "https://example.com/releases" },
+      floor: { min: "0.12.13", downloadUrl: "https://github.com/Untrivial-ai/agent-orchestrator/releases/tag/v0.12.13" },
     });
     dialog.showMessageBox.mockResolvedValue({ response: 0 });
     await mod.checkDesktopVersionFloor();
-    expect(shellMock.openExternal).toHaveBeenCalledWith("https://example.com/releases");
+    expect(shellMock.openExternal).toHaveBeenCalledWith("https://github.com/Untrivial-ai/agent-orchestrator/releases/tag/v0.12.13");
     expect(quit).toHaveBeenCalled();
   });
 

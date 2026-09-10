@@ -2275,7 +2275,9 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
       throw new Error("The update is not ready to install. Check for updates again.");
     }
     if (!stagedInCurrentProcess) {
-      await prepareRememberedNonDarwinUpdate();
+      await runSerializedUpdaterOperation("manual-install", async () => {
+        await prepareRememberedNonDarwinUpdate();
+      });
     }
     if (confirmedVersion !== undefined && stagedVersion && confirmedVersion !== stagedVersion) {
       return { state: "confirmation-required", version: stagedVersion,
