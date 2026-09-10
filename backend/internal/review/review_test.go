@@ -299,6 +299,7 @@ type fakeLauncher struct {
 	aliveChecked     bool
 	preflightErr     error
 	preflighted      bool
+	restoreFallback  bool
 	spawnStarted     chan struct{}
 	unblockSpawn     <-chan struct{}
 	destroyCalled    chan string
@@ -327,7 +328,7 @@ func (f *fakeLauncher) RestoreTerminal(_ context.Context, spec LaunchSpec) (Laun
 	if f.spawnErr != nil {
 		return LaunchResult{}, f.spawnErr
 	}
-	return LaunchResult{HandleID: f.handle, AgentSessionID: f.agentSessionID}, nil
+	return LaunchResult{HandleID: f.handle, AgentSessionID: f.agentSessionID, NativeResumed: !f.restoreFallback}, nil
 }
 func (f *fakeLauncher) Notify(_ context.Context, handleID string, spec LaunchSpec) error {
 	f.notified = true
@@ -507,6 +508,61 @@ func TestRestoreCodexReviewerDoesNotApplyAnotherHarnessProjectConfig(t *testing.
 	}
 	if launcher.gotSpec.AgentSessionID != "codex-native" || !launcher.gotSpec.RequireNativeHistory {
 		t.Fatalf("restore spec = %+v, want exact retained Codex native history", launcher.gotSpec)
+	}
+}
+
+func TestRestoreReviewerFailsRunningRunWhenNativeConversationIsUnavailable(t *testing.T) {
+	store := &fakeStore{
+		review: &domain.Review{
+			ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode,
+			ReviewerHandleID: "review-mer-1", AgentSessionID: "missing-native",
+		},
+		runs: []domain.ReviewRun{{
+			ID: "run-1", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode,
+			PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning,
+		}},
+	}
+	launcher := &fakeLauncher{alive: false, handle: "review-mer-1", restoreFallback: true}
+	worker := liveWorker()
+	worker.ReviewerHarness = domain.ReviewerClaudeCode
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	res, err := eng.RestoreReviewer(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("RestoreReviewer: %v", err)
+	}
+	if !res.Restored || res.ReviewerHandleID != "review-mer-1" {
+		t.Fatalf("restore result = %+v", res)
+	}
+	if got := store.runs[0]; got.Status != domain.ReviewRunFailed || !strings.Contains(got.Body, "retry") {
+		t.Fatalf("run after fresh fallback = %+v, want retryable failure", got)
+	}
+	if store.review.ReviewerHandleID != "review-mer-1" {
+		t.Fatalf("fresh idle reviewer handle = %q", store.review.ReviewerHandleID)
+	}
+}
+
+func TestRestoreReviewerFailsRunningRunWhenTerminalRestoreErrors(t *testing.T) {
+	store := &fakeStore{
+		review: &domain.Review{
+			ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode,
+			ReviewerHandleID: "review-mer-1", AgentSessionID: "native-1",
+		},
+		runs: []domain.ReviewRun{{
+			ID: "run-1", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode,
+			Status: domain.ReviewRunRunning,
+		}},
+	}
+	launcher := &fakeLauncher{alive: false, spawnErr: errors.New("resume failed")}
+	worker := liveWorker()
+	worker.ReviewerHarness = domain.ReviewerClaudeCode
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	if _, err := eng.RestoreReviewer(context.Background(), "mer-1"); err == nil || !strings.Contains(err.Error(), "resume failed") {
+		t.Fatalf("RestoreReviewer error = %v, want resume failure", err)
+	}
+	if got := store.runs[0]; got.Status != domain.ReviewRunFailed || !strings.Contains(got.Body, "resume failed") {
+		t.Fatalf("run after restore error = %+v", got)
 	}
 }
 

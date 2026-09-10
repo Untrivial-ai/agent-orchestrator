@@ -897,15 +897,22 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 /** Ask is an execution mode only when the same option advertises Agent; otherwise it is an approval policy. */
 function executionChoiceValues(choices: ChatConfigOption["choices"]): Set<string> {
 	const values = new Set<string>();
-	const hasAgent = choices.some((choice) => choiceMatches(choice, "agent"));
+	const hasAgent = choices.some((choice) => executionChoiceMatches(choice, "agent"));
 	for (const choice of choices) {
-		if (choiceMatches(choice, "plan") || choiceMatches(choice, "agent")) {
+		if (executionChoiceMatches(choice, "plan|agent|build")) {
 			values.add(choice.value);
 			continue;
 		}
-		if (hasAgent && choiceMatches(choice, "ask")) values.add(choice.value);
+		if (hasAgent && executionChoiceMatches(choice, "ask")) values.add(choice.value);
 	}
 	return values;
+}
+
+// Match complete mode labels so custom agent names cannot masquerade as native modes.
+function executionChoiceMatches(choice: ChatConfigOption["choices"][number], word: string): boolean {
+	return [choice.value, choice.name].some((value) =>
+		new RegExp(`^(?:${word})(?:[\\s_-]mode)?$`, "i").test(value.trim()),
+	);
 }
 
 function choiceMatches(
@@ -925,7 +932,7 @@ function addAgentModeChoice(
 	executionChoices: ChatConfigOption["choices"],
 	permissionChoices: ChatConfigOption["choices"],
 ): ChatConfigOption["choices"] {
-	if (executionChoices.some((choice) => choiceMatches(choice, "agent"))) {
+	if (executionChoices.some((choice) => executionChoiceMatches(choice, "agent"))) {
 		return executionChoices;
 	}
 	const standard = permissionChoices.find((choice) => choiceMatches(choice, "manual"))
@@ -949,7 +956,8 @@ function isPlanMode(option: ChatConfigOption | undefined): boolean {
 }
 
 function isPlanChoice(choice: Pick<ChatConfigOption["choices"][number], "name" | "value">): boolean {
-	return /(?:^|[\s_-])plan(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`);
+	// Custom agent IDs can contain "plan" without enabling native planning.
+	return [choice.value, choice.name].some((value) => /^plan(?:[\s_-]mode)?$/i.test(value.trim()));
 }
 
 function withChoices(
