@@ -34,51 +34,53 @@ import (
 )
 
 type fakeSessionService struct {
-	sessions                  map[domain.SessionID]domain.Session
-	sent                      string
-	sentAttachment            *ports.SpawnAttachment
-	delegationInput           sessionsvc.DelegateTaskInput
-	delegationErr             error
-	cleanupProjects           []domain.ProjectID
-	cleanupResult             []domain.SessionID
-	cleanupSkipped            []sessionsvc.CleanupSkipped
-	workspaceFiles            sessionsvc.WorkspaceFiles
-	workspaceFile             sessionsvc.WorkspaceFileDetail
-	workspaceFileSection      sessionsvc.WorkspaceFileSection
-	workspaceFileUpdate       sessionsvc.UpdateWorkspaceFileInput
-	workspaceBlob             sessionsvc.WorkspaceFileBlob
-	workspaceDiffs            sessionsvc.WorkspaceDiffs
-	workspaceDiffInput        sessionsvc.WorkspaceDiffInput
-	workspaceRevision         sessionsvc.WorkspaceFileRevision
-	workspaceRevisionPath     string
-	workspaceRevisionScope    sessionsvc.WorkspaceDiffScope
-	workspaceRevisionSide     sessionsvc.WorkspaceFileBlobSide
-	workspaceRevisionVersion  string
-	workspaceExpectedRevision string
-	workspaceSearch           sessionsvc.WorkspaceFileSearch
-	workspaceSearchQuery      string
-	workspaceSearchCursor     string
-	workspaceSearchLimit      int
-	workspaceTree             sessionsvc.WorkspaceTree
-	workspaceTreePath         string
-	workspacePaths            []string
-	spawnErr                  error
-	lastSpawn                 ports.SpawnConfig
-	orchestratorMode          domain.SessionMode
-	claimErr                  error
-	listPRErr                 error
-	workspaceErr              error
-	staged                    []ports.SpawnAttachment
-	stagedPaths               []string
-	stageErr                  error
-	agentSwitches             map[domain.AgentSwitchID]domain.AgentSwitch
-	switchConfig              sessionsvc.SwitchAgentInput
-	switchErr                 error
-	recoveredSwitch           domain.AgentSwitchID
-	handoff                   json.RawMessage
-	handoffSource             domain.AgentGenerationID
-	autoInjectCISession       domain.SessionID
-	autoInjectCIEnabled       bool
+	sessions                   map[domain.SessionID]domain.Session
+	sent                       string
+	sentAttachment             *ports.SpawnAttachment
+	delegationInput            sessionsvc.DelegateTaskInput
+	delegationErr              error
+	cleanupProjects            []domain.ProjectID
+	cleanupResult              []domain.SessionID
+	cleanupSkipped             []sessionsvc.CleanupSkipped
+	workspaceFiles             sessionsvc.WorkspaceFiles
+	workspaceFile              sessionsvc.WorkspaceFileDetail
+	workspaceFileSection       sessionsvc.WorkspaceFileSection
+	workspaceFileCommitSHA     string
+	workspaceFileUpdate        sessionsvc.UpdateWorkspaceFileInput
+	workspaceBlob              sessionsvc.WorkspaceFileBlob
+	workspaceDiffs             sessionsvc.WorkspaceDiffs
+	workspaceDiffInput         sessionsvc.WorkspaceDiffInput
+	workspaceRevision          sessionsvc.WorkspaceFileRevision
+	workspaceRevisionPath      string
+	workspaceRevisionScope     sessionsvc.WorkspaceDiffScope
+	workspaceRevisionSide      sessionsvc.WorkspaceFileBlobSide
+	workspaceRevisionVersion   string
+	workspaceExpectedRevision  string
+	workspaceRevisionCommitSHA string
+	workspaceSearch            sessionsvc.WorkspaceFileSearch
+	workspaceSearchQuery       string
+	workspaceSearchCursor      string
+	workspaceSearchLimit       int
+	workspaceTree              sessionsvc.WorkspaceTree
+	workspaceTreePath          string
+	workspacePaths             []string
+	spawnErr                   error
+	lastSpawn                  ports.SpawnConfig
+	orchestratorMode           domain.SessionMode
+	claimErr                   error
+	listPRErr                  error
+	workspaceErr               error
+	staged                     []ports.SpawnAttachment
+	stagedPaths                []string
+	stageErr                   error
+	agentSwitches              map[domain.AgentSwitchID]domain.AgentSwitch
+	switchConfig               sessionsvc.SwitchAgentInput
+	switchErr                  error
+	recoveredSwitch            domain.AgentSwitchID
+	handoff                    json.RawMessage
+	handoffSource              domain.AgentGenerationID
+	autoInjectCISession        domain.SessionID
+	autoInjectCIEnabled        bool
 }
 
 type fakeInterfaceTransitionSessionService struct {
@@ -599,6 +601,11 @@ func (f *fakeSessionService) GetWorkspaceFile(_ context.Context, id domain.Sessi
 	return sessionsvc.WorkspaceFileDetail{SessionID: id, Path: path}, nil
 }
 
+func (f *fakeSessionService) GetWorkspaceFileAtCommit(ctx context.Context, id domain.SessionID, path, commitSHA string) (sessionsvc.WorkspaceFileDetail, error) {
+	f.workspaceFileCommitSHA = commitSHA
+	return f.GetWorkspaceFile(ctx, id, path, sessionsvc.WorkspaceFileSectionCommitted)
+}
+
 func (f *fakeSessionService) UpdateWorkspaceFile(_ context.Context, id domain.SessionID, input sessionsvc.UpdateWorkspaceFileInput) (sessionsvc.WorkspaceFileDetail, error) {
 	f.workspaceFileUpdate = input
 	file := f.workspaceFile
@@ -653,6 +660,11 @@ func (f *fakeSessionService) GetWorkspaceFileRevision(_ context.Context, id doma
 		return f.workspaceRevision, nil
 	}
 	return sessionsvc.WorkspaceFileRevision{SessionID: id, Path: path, Side: side, Revision: expectedRevision, Exists: true}, nil
+}
+
+func (f *fakeSessionService) GetWorkspaceFileRevisionAtCommit(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision, commitSHA string) (sessionsvc.WorkspaceFileRevision, error) {
+	f.workspaceRevisionCommitSHA = commitSHA
+	return f.GetWorkspaceFileRevision(ctx, id, path, sessionsvc.WorkspaceDiffCommitted, side, workspaceVersion, expectedRevision)
 }
 
 func (f *fakeSessionService) SearchWorkspaceFiles(_ context.Context, id domain.SessionID, query, cursor string, limit int) (sessionsvc.WorkspaceFileSearch, error) {
@@ -2445,6 +2457,18 @@ func TestSessionsAPI_GetWorkspaceFileSection(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_GetWorkspaceFileAtCommit(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/workspace/file?path=README.md&section=committed&commitSha=abc123", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET workspace commit file = %d, want 200; body=%s", status, body)
+	}
+	if svc.workspaceFileCommitSHA != "abc123" {
+		t.Fatalf("commitSha = %q, want abc123", svc.workspaceFileCommitSHA)
+	}
+}
+
 func TestSessionsAPI_GetWorkspaceFileRequiresPath(t *testing.T) {
 	srv := newSessionTestServer(t, newFakeSessionService())
 
@@ -2503,6 +2527,18 @@ func TestSessionsAPI_GetWorkspaceDiffs(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_GetWorkspaceDiffsAtCommit(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/workspace/diffs", `{"scope":"committed","paths":["README.md"],"contextLines":3,"commitSha":"abc123"}`)
+	if status != http.StatusOK {
+		t.Fatalf("POST workspace commit diffs = %d body=%s", status, body)
+	}
+	if svc.workspaceDiffInput.CommitSHA != "abc123" || svc.workspaceDiffInput.Scope != sessionsvc.WorkspaceDiffCommitted {
+		t.Fatalf("commit diff input = %#v", svc.workspaceDiffInput)
+	}
+}
+
 func TestSessionsAPI_GetWorkspaceFileRevision(t *testing.T) {
 	svc := newFakeSessionService()
 	svc.workspaceRevision = sessionsvc.WorkspaceFileRevision{SessionID: "ao-1", Path: "README.md", Side: sessionsvc.WorkspaceBlobBefore, Revision: "rev-1", WorkspaceVersion: "version-1", Exists: true, Encoding: "utf-8", Content: "hello\n", Size: 6}
@@ -2518,6 +2554,18 @@ func TestSessionsAPI_GetWorkspaceFileRevision(t *testing.T) {
 	}
 	if svc.workspaceRevisionPath != "README.md" || svc.workspaceRevisionScope != sessionsvc.WorkspaceDiffUnstaged || svc.workspaceRevisionSide != sessionsvc.WorkspaceBlobBefore || svc.workspaceRevisionVersion != "version-1" || svc.workspaceExpectedRevision != "rev-1" {
 		t.Fatalf("service args = path:%q scope:%q side:%q version:%q expected:%q", svc.workspaceRevisionPath, svc.workspaceRevisionScope, svc.workspaceRevisionSide, svc.workspaceRevisionVersion, svc.workspaceExpectedRevision)
+	}
+}
+
+func TestSessionsAPI_GetWorkspaceFileRevisionAtCommit(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/workspace/file/revision?path=README.md&scope=committed&side=after&commitSha=abc123", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET workspace commit revision = %d body=%s", status, body)
+	}
+	if svc.workspaceRevisionCommitSHA != "abc123" || svc.workspaceRevisionScope != sessionsvc.WorkspaceDiffCommitted {
+		t.Fatalf("commit revision args = sha:%q scope:%q", svc.workspaceRevisionCommitSHA, svc.workspaceRevisionScope)
 	}
 }
 

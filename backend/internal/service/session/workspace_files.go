@@ -71,7 +71,7 @@ type WorkspaceFiles struct {
 	// sessions; workspace-project (multi-repo) and scratch sessions leave it
 	// zero-valued.
 	Sections WorkspaceFileSections
-	// Commits are the commits between the compare base and HEAD, newest last.
+	// Commits are the commits between the compare base and HEAD, newest first.
 	Commits []CommitSummary
 	// Summary aggregates Files (excluding unmodified entries) into totals for
 	// the panel header.
@@ -114,6 +114,7 @@ type CommitSummary struct {
 	Subject   string
 	Author    string
 	Timestamp time.Time
+	Files     []WorkspaceFileSummary
 }
 
 // WorkspaceSummary aggregates the base..worktree diff into totals.
@@ -159,6 +160,7 @@ type WorkspaceFileDetail struct {
 	CompareMode        WorkspaceCompareMode
 	WorkspaceVersion   string
 	FileFingerprint    string
+	Historical         bool
 }
 
 // UpdateWorkspaceFileInput replaces one existing text file. The fingerprint is
@@ -287,6 +289,44 @@ func (s *Service) GetWorkspaceFile(ctx context.Context, id domain.SessionID, raw
 	}
 	detail, err := workspaceFileDetail(ctx, id, target.root, target.prefix, target.rel, section, target.compare, target.changes)
 	return finalizeWorkspaceFileDetail(detail), err
+}
+
+// GetWorkspaceFileAtCommit returns the immutable file snapshot and patch for
+// one commit that belongs to the session's compare-base..HEAD range.
+func (s *Service) GetWorkspaceFileAtCommit(ctx context.Context, id domain.SessionID, rawPath, commitSHA string) (WorkspaceFileDetail, error) {
+	current, err := s.ListWorkspaceFiles(ctx, id)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	commit, err := workspaceCommit(current, commitSHA)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	target, err := s.resolveWorkspaceFileTarget(ctx, id, rawPath)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	wantedPath := joinWorkspaceRelative(target.prefix, target.rel)
+	var summary *WorkspaceFileSummary
+	for i := range commit.Files {
+		if commit.Files[i].Path == wantedPath {
+			summary = &commit.Files[i]
+			break
+		}
+	}
+	if summary == nil {
+		return WorkspaceFileDetail{}, apierr.NotFound("WORKSPACE_COMMIT_FILE_NOT_FOUND", "File was not changed by this commit")
+	}
+	detail, err := workspaceCommitFileDetail(ctx, id, target.root, target.prefix, target.rel, commit.SHA, *summary)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	detail = finalizeWorkspaceFileDetail(detail)
+	// A selected commit is historical even when its after-side path still
+	// exists in the current worktree. Never present it as directly editable.
+	detail.Editable = false
+	detail.WorkspaceVersion = current.WorkspaceVersion
+	return detail, nil
 }
 
 // UpdateWorkspaceFile replaces one existing, bounded UTF-8 workspace file and
@@ -1095,6 +1135,61 @@ func workspaceFileDetail(ctx context.Context, id domain.SessionID, root, prefix,
 	return detail, nil
 }
 
+func workspaceCommit(files WorkspaceFiles, rawSHA string) (CommitSummary, error) {
+	sha := strings.TrimSpace(rawSHA)
+	for _, commit := range files.Commits {
+		if commit.SHA == sha {
+			return commit, nil
+		}
+	}
+	return CommitSummary{}, apierr.NotFound("WORKSPACE_COMMIT_NOT_FOUND", "Commit is not available in this workspace comparison")
+}
+
+func workspaceCommitFileDetail(ctx context.Context, id domain.SessionID, root, prefix, rel, commitSHA string, summary WorkspaceFileSummary) (WorkspaceFileDetail, error) {
+	detail := WorkspaceFileDetail{
+		SessionID:      id,
+		Path:           joinWorkspaceRelative(prefix, rel),
+		PreviousPath:   joinWorkspaceRelative(prefix, summary.PreviousPath),
+		Status:         summary.Status,
+		Additions:      summary.Additions,
+		Deletions:      summary.Deletions,
+		Deleted:        summary.Status == WorkspaceFileDeleted,
+		CompareBaseSHA: commitSHA + "^",
+		CompareBaseRef: commitSHA,
+		CompareMode:    WorkspaceCompareBase,
+		Historical:     true,
+	}
+	if !detail.Deleted {
+		data, size, exists, truncated, err := readGitRevision(ctx, root, commitSHA+":"+rel)
+		if err != nil {
+			return WorkspaceFileDetail{}, err
+		}
+		if !exists {
+			return WorkspaceFileDetail{}, apierr.NotFound("WORKSPACE_COMMIT_FILE_NOT_FOUND", "File does not exist in this commit")
+		}
+		detail.Size = size
+		detail.ContentTruncated = truncated || size > maxWorkspaceFileBytes
+		if !truncated {
+			detail.Binary = isBinary(data) || !utf8.Valid(data)
+			if !detail.Binary && !detail.ContentTruncated {
+				detail.Content = string(data)
+			}
+		}
+	}
+	detail.ImageMediaType = workspaceImageDetailMediaType(rel, detail.Binary, detail.Deleted)
+	args := []string{"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3", commitSHA + "^", commitSHA, "--"}
+	if summary.Status == WorkspaceFileRenamed && summary.PreviousPath != "" {
+		args = append(args, summary.PreviousPath)
+	}
+	args = append(args, rel)
+	out, err := gitWorkspaceOutput(ctx, root, args...)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	detail.Diff, detail.DiffTruncated = truncateUTF8(out, maxWorkspaceDiffBytes)
+	return detail, nil
+}
+
 func workspaceProjectPrefixes(root string, rows []domain.SessionWorktreeRecord) map[string]string {
 	prefixes := map[string]string{}
 	for _, row := range rows {
@@ -1647,28 +1742,73 @@ func gitUntrackedFiles(ctx context.Context, root string) ([]string, error) {
 	return splitNUL(out), nil
 }
 
-// gitCommitLog lists the commits reachable from HEAD but not base, oldest
-// first, matching the order they'd be reviewed in.
+// gitCommitLog lists the commits reachable from HEAD but not base, newest
+// first. Metadata/name-status and numstat are collected in two bounded Git
+// passes, rather than spawning Git once or twice for every commit.
 func gitCommitLog(ctx context.Context, root, base string) ([]CommitSummary, error) {
-	out, err := gitWorkspaceOutput(ctx, root, "log", "--format=%H%x1f%s%x1f%an%x1f%aI", "--reverse", base+"..HEAD")
-	if err != nil {
+	var statusOutput, numstatOutput string
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() (err error) {
+		statusOutput, err = gitWorkspaceOutput(gctx, root, "log", "--format=%x1e%H%x1f%s%x1f%an%x1f%aI", "--name-status", "--find-renames", "-z", base+"..HEAD")
+		return err
+	})
+	g.Go(func() (err error) {
+		numstatOutput, err = gitWorkspaceOutput(gctx, root, "log", "--format=%x1e%H", "--numstat", "--find-renames", "-z", base+"..HEAD")
+		return err
+	})
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	trimmed := strings.TrimRight(out, "\n")
-	if trimmed == "" {
-		return nil, nil
+	commits, changes := parseCommitStatusLog(statusOutput)
+	counts := parseCommitNumstatLog(numstatOutput)
+	for i := range commits {
+		change := changes[commits[i].SHA]
+		commits[i].Files = buildSectionSummaries(root, change.statuses, counts[commits[i].SHA], change.previous)
 	}
-	lines := strings.Split(trimmed, "\n")
-	commits := make([]CommitSummary, 0, len(lines))
-	for _, line := range lines {
-		fields := strings.Split(line, "\x1f")
+	return commits, nil
+}
+
+type commitChangeSet struct {
+	statuses map[string]WorkspaceFileStatus
+	previous map[string]string
+}
+
+func parseCommitStatusLog(out string) ([]CommitSummary, map[string]commitChangeSet) {
+	chunks := strings.Split(out, "\x1e")
+	commits := make([]CommitSummary, 0, len(chunks)-1)
+	changes := make(map[string]commitChangeSet, len(chunks)-1)
+	for _, chunk := range chunks[1:] {
+		headerEnd := strings.IndexByte(chunk, 0)
+		if headerEnd < 0 {
+			continue
+		}
+		fields := strings.Split(chunk[:headerEnd], "\x1f")
 		if len(fields) < 4 {
 			continue
 		}
 		timestamp, _ := time.Parse(time.RFC3339, fields[3])
-		commits = append(commits, CommitSummary{SHA: fields[0], Subject: fields[1], Author: fields[2], Timestamp: timestamp})
+		commit := CommitSummary{SHA: fields[0], Subject: fields[1], Author: fields[2], Timestamp: timestamp}
+		statuses, previous := parseNameStatusOutput(strings.TrimLeft(chunk[headerEnd+1:], "\r\n"))
+		commits = append(commits, commit)
+		changes[commit.SHA] = commitChangeSet{statuses: statuses, previous: previous}
 	}
-	return commits, nil
+	return commits, changes
+}
+
+func parseCommitNumstatLog(out string) map[string]map[string][2]int {
+	result := map[string]map[string][2]int{}
+	for _, chunk := range strings.Split(out, "\x1e")[1:] {
+		headerEnd := strings.IndexByte(chunk, 0)
+		if headerEnd < 0 {
+			continue
+		}
+		sha := strings.TrimSpace(chunk[:headerEnd])
+		if sha == "" {
+			continue
+		}
+		result[sha] = parseNumstatOutput(strings.TrimLeft(chunk[headerEnd+1:], "\x00\r\n"))
+	}
+	return result
 }
 
 // gitAheadBehind reports HEAD's commit counts against its upstream, falling

@@ -48,14 +48,14 @@ vi.mock("./FileContentPane", () => ({
 }));
 
 vi.mock("./diffs/WorkspaceReviewPane", () => ({
-	WorkspaceReviewPane: ({ filter, onBrowseAll, onEditFile, onOpenFile, onOpenFileInCenter }: { filter: string; onBrowseAll: () => void; onEditFile?: (path: string) => void; onOpenFile: (path: string, mode?: "diff" | "file" | "rendered") => void; onOpenFileInCenter?: (path: string) => void }) => (
+	WorkspaceReviewPane: ({ filter, onBrowseAll, onOpenFile }: { filter: string; onBrowseAll: () => void; onOpenFile?: (path: string, options?: { editing?: boolean; mode?: "diff" | "file" | "rendered" }) => void }) => (
 		<div data-testid="review-pane">
 			<span data-testid="review-filter">{filter}</span>
 			<button onClick={onBrowseAll} type="button">Browse all files</button>
-			<button onClick={() => onOpenFile("src/App.tsx", "diff")} type="button">Review src/App.tsx</button>
-			<button onClick={() => onOpenFile("README.md", "rendered")} type="button">Render README.md</button>
-			<button onClick={() => onEditFile?.("src/App.tsx")} type="button">Edit src/App.tsx</button>
-			<button onClick={() => onOpenFileInCenter?.("src/App.tsx")} type="button">Open diff in center</button>
+			<button onClick={() => onOpenFile?.("src/App.tsx", { mode: "file" })} type="button">Open full file</button>
+			<button onClick={() => onOpenFile?.("README.md", { mode: "rendered" })} type="button">Render README.md</button>
+			<button onClick={() => onOpenFile?.("src/App.tsx", { editing: true, mode: "file" })} type="button">Edit src/App.tsx</button>
+			<button onClick={() => onOpenFile?.("src/App.tsx", { mode: "diff" })} type="button">Open diff in center</button>
 		</div>
 	),
 }));
@@ -90,61 +90,39 @@ describe("SessionFileExplorer", () => {
 		postMock.mockReset();
 	});
 
-	it("passes the filter input down to the tree and shows the selected file in the content pane", async () => {
+	it("keeps the filtered tree visible and opens a selected file in the center", async () => {
+		const onOpenFile = vi.fn();
 		useUiStore.getState().setFilesChangedOnly("sess-explorer-1", false);
-		renderWithQuery(<SessionFileExplorer sessionId="sess-explorer-1" />);
+		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-explorer-1" />);
 
 		const input = screen.getByRole("textbox", { name: "Filter files" });
 		fireEvent.change(input, { target: { value: "app" } });
 		expect(screen.getByTestId("tree-filter")).toHaveTextContent("app");
 
-		// Docked (non-maximized): tree and content are master/detail, not side by
-		// side, so the content pane isn't mounted at all until a file is picked.
 		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
-		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
-	});
-
-	it("returns to the tree when the back button is pressed, docked", async () => {
-		useUiStore.getState().setFilesChangedOnly("sess-explorer-back", false);
-		renderWithQuery(<SessionFileExplorer sessionId="sess-explorer-back" />);
-
-		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
-		expect(screen.getByTestId("content-pane")).toBeInTheDocument();
-
-		await userEvent.click(screen.getByRole("button", { name: "Back to file tree" }));
 		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
 		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
+		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { mode: "file" });
 	});
 
-	it("preserves expanded parent directories when returning from a docked file", async () => {
+	it("preserves expanded parent directories while files open in the center", async () => {
+		const onOpenFile = vi.fn();
 		useUiStore.getState().setFilesChangedOnly("sess-explorer-parent", false);
-		renderWithQuery(<SessionFileExplorer sessionId="sess-explorer-parent" />);
+		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-explorer-parent" />);
 
 		await userEvent.click(screen.getByRole("button", { name: "expand src" }));
 		expect(screen.getByText("src directory expanded")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
-		await userEvent.click(screen.getByRole("button", { name: "Back to file tree" }));
 
 		expect(screen.getByText("src directory expanded")).toBeInTheDocument();
+		expect(onOpenFile).toHaveBeenCalledOnce();
 	});
 
-	it("previews docked files before explicitly opening them in the center workspace", async () => {
+	it("keeps the tree visible and opens an externally requested file in the center", () => {
 		const onOpenFile = vi.fn();
-		useUiStore.getState().setFilesChangedOnly("sess-explorer-center", false);
-		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-explorer-center" />);
-
-		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
-		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
-		expect(onOpenFile).not.toHaveBeenCalled();
-
-		await userEvent.click(screen.getByRole("button", { name: "Open in center: src/App.tsx" }));
-		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx");
-	});
-
-	it("reveals an externally requested file in the docked preview", () => {
 		const { client, rerender } = renderWithQuery(
-			<SessionFileExplorer sessionId="sess-explorer-reveal" revealRequest={null} />,
+			<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-explorer-reveal" revealRequest={null} />,
 		);
 
 		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
@@ -152,6 +130,7 @@ describe("SessionFileExplorer", () => {
 			<QueryClientProvider client={client}>
 				<TooltipProvider>
 					<SessionFileExplorer
+						onOpenFile={onOpenFile}
 						revealRequest={{ path: "docs/notes.txt", key: 1 }}
 						sessionId="sess-explorer-reveal"
 					/>
@@ -159,7 +138,9 @@ describe("SessionFileExplorer", () => {
 			</QueryClientProvider>,
 		);
 
-		expect(screen.getByTestId("content-pane")).toHaveTextContent("docs/notes.txt");
+		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
+		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
+		expect(onOpenFile).toHaveBeenCalledWith("docs/notes.txt", { mode: "file" });
 	});
 
 	it("keeps the tree and content side by side when maximized", async () => {
@@ -214,18 +195,14 @@ describe("SessionFileExplorer", () => {
 		expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
 	});
 
-	it("focuses a review file locally and returns to the continuous diff", async () => {
+	it("keeps the continuous right-side diff visible when opening the full file in center", async () => {
 		const onOpenFile = vi.fn();
 		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-review-navigation" />);
 
-		await userEvent.click(await screen.findByRole("button", { name: "Review src/App.tsx" }));
-		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
-		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-mode", "diff");
-		expect(onOpenFile).not.toHaveBeenCalled();
-
-		await userEvent.click(screen.getByRole("button", { name: "Back to changes" }));
+		await userEvent.click(await screen.findByRole("button", { name: "Open full file" }));
 		expect(screen.getByTestId("review-pane")).toBeInTheDocument();
 		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
+		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { mode: "file" });
 	});
 
 	it("opens a changed file diff in the center workspace", async () => {
@@ -233,22 +210,24 @@ describe("SessionFileExplorer", () => {
 		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-review-center" />);
 
 		await userEvent.click(await screen.findByRole("button", { name: "Open diff in center" }));
-		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx");
+		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { mode: "diff" });
 	});
 
 	it("opens a review diff action in the syntax-aware file editor", async () => {
-		renderWithQuery(<SessionFileExplorer sessionId="sess-review-edit" />);
+		const onOpenFile = vi.fn();
+		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-review-edit" />);
 
 		await userEvent.click(await screen.findByRole("button", { name: "Edit src/App.tsx" }));
-		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-mode", "file");
-		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-editing", "true");
+		expect(screen.getByTestId("review-pane")).toBeInTheDocument();
+		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { editing: true, mode: "file" });
 	});
 
-	it("opens the direct rendered action inside the review pane", async () => {
-		renderWithQuery(<SessionFileExplorer sessionId="sess-review-rendered" />);
+	it("opens the direct rendered action in the center while retaining the diff", async () => {
+		const onOpenFile = vi.fn();
+		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-review-rendered" />);
 		await userEvent.click(await screen.findByRole("button", { name: "Render README.md" }));
-		expect(screen.getByTestId("content-pane")).toHaveTextContent("README.md");
-		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-mode", "rendered");
+		expect(screen.getByTestId("review-pane")).toBeInTheDocument();
+		expect(onOpenFile).toHaveBeenCalledWith("README.md", { mode: "rendered" });
 	});
 
 	it("always wraps file content and does not expose a wrap toggle", async () => {

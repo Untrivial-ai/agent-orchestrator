@@ -4,7 +4,7 @@ import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import type { FileAnnotationModel } from "./WorkspaceDiffView";
 
 vi.mock("./FileContentPane", () => ({
-	FileContentPane: ({ split }: { split: boolean }) => <div data-split={String(split)} data-testid="file-content" />,
+	FileContentPane: ({ initialEditing, initialMode, initialRequestKey, split }: { initialEditing?: boolean; initialMode?: string; initialRequestKey?: number; split: boolean }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode} data-request-key={initialRequestKey} data-split={String(split)} data-testid="file-content" />,
 }));
 
 const annotation: FileAnnotationModel = {
@@ -24,5 +24,27 @@ describe("SessionFileWorkspace", () => {
 
 		expect(screen.getByTestId("session-file-workspace").querySelector("header")).not.toBeInTheDocument();
 		expect(screen.getByTestId("file-content")).toHaveAttribute("data-split", "true");
+		expect(screen.getByTestId("file-content")).toHaveAttribute("data-mode", "file");
+	});
+
+	it("forwards an explicit center mode and consumes one-shot edit requests on exit", () => {
+		const onInitialEditingConsumed = vi.fn();
+		const { unmount } = render(
+			<SessionFileWorkspace
+				annotation={annotation}
+				initialEditing
+				initialMode="diff"
+				initialRequestKey={3}
+				onInitialEditingConsumed={onInitialEditingConsumed}
+				path="src/App.tsx"
+				sessionId="sess-1"
+				split={false}
+			/>,
+		);
+
+		expect(screen.getByTestId("file-content")).toHaveAttribute("data-mode", "diff");
+		expect(screen.getByTestId("file-content")).toHaveAttribute("data-editing", "true");
+		unmount();
+		expect(onInitialEditingConsumed).toHaveBeenCalledWith("src/App.tsx", 3);
 	});
 });

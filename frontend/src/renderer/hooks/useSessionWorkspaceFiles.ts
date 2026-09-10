@@ -59,17 +59,18 @@ async function fetchSessionWorkspaceFiles(sessionId: string, errorMessage: strin
 	}) as WorkspaceFilesResponse;
 	return {
 		...response,
+		commits: (response.commits ?? []).map((commit) => ({ ...commit, files: commit.files ?? [] })),
 		files: response.files ?? [],
 		sections: response.sections ?? { staged: [], unstaged: [], untracked: [], committed: [] },
 	};
 }
 
-export const sessionWorkspaceFileQueryKey = (sessionId: string, path: string, scope: WorkspaceDiffScope = "combined") =>
-	["session-workspace-file", sessionId, scope, path] as const;
+export const sessionWorkspaceFileQueryKey = (sessionId: string, path: string, scope: WorkspaceDiffScope = "combined", commitSha?: string) =>
+	["session-workspace-file", sessionId, scope, commitSha ?? "", path] as const;
 
-async function fetchSessionWorkspaceFile(sessionId: string, path: string, scope: WorkspaceDiffScope, errorMessage: string): Promise<WorkspaceFileDetail> {
+async function fetchSessionWorkspaceFile(sessionId: string, path: string, scope: WorkspaceDiffScope, errorMessage: string, commitSha?: string): Promise<WorkspaceFileDetail> {
 	const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/workspace/file", {
-		params: { path: { sessionId }, query: { path, section: scope === "combined" ? undefined : scope } },
+		params: { path: { sessionId }, query: { path, section: scope === "combined" ? undefined : scope, commitSha } },
 	});
 	if (error) throw new Error(apiErrorMessage(error, errorMessage));
 	if (!data) throw new Error(errorMessage);
@@ -78,10 +79,10 @@ async function fetchSessionWorkspaceFile(sessionId: string, path: string, scope:
 
 // Shared so the diff view (expand-on-demand) and the plain read-only viewer
 // always resolve to the same cache entry for a given (session, path).
-export function sessionWorkspaceFileQueryOptions(sessionId: string, path: string, errorMessage = "Unable to load workspace file", scope: WorkspaceDiffScope = "combined") {
+export function sessionWorkspaceFileQueryOptions(sessionId: string, path: string, errorMessage = "Unable to load workspace file", scope: WorkspaceDiffScope = "combined", commitSha?: string) {
 	return {
-		queryKey: sessionWorkspaceFileQueryKey(sessionId, path, scope),
-		queryFn: () => fetchSessionWorkspaceFile(sessionId, path, scope, errorMessage),
+		queryKey: sessionWorkspaceFileQueryKey(sessionId, path, scope, commitSha),
+		queryFn: () => fetchSessionWorkspaceFile(sessionId, path, scope, errorMessage, commitSha),
 	};
 }
 
@@ -92,7 +93,8 @@ export const sessionWorkspaceDiffsQueryKey = (
 	contextLines: number,
 	ignoreWhitespace: boolean,
 	workspaceVersion?: string,
-) => ["session-workspace-diffs", sessionId, scope, paths, contextLines, ignoreWhitespace, workspaceVersion ?? ""] as const;
+	commitSha?: string,
+) => ["session-workspace-diffs", sessionId, scope, commitSha ?? "", paths, contextLines, ignoreWhitespace, workspaceVersion ?? ""] as const;
 
 export function sessionWorkspaceDiffsQueryOptions({
 	contextLines = 3,
@@ -102,6 +104,7 @@ export function sessionWorkspaceDiffsQueryOptions({
 	scope,
 	sessionId,
 	workspaceVersion,
+	commitSha,
 }: {
 	contextLines?: number;
 	errorMessage?: string;
@@ -110,13 +113,14 @@ export function sessionWorkspaceDiffsQueryOptions({
 	scope: WorkspaceDiffScope;
 	sessionId: string;
 	workspaceVersion?: string;
+	commitSha?: string;
 }) {
 	return {
-		queryKey: sessionWorkspaceDiffsQueryKey(sessionId, scope, paths, contextLines, ignoreWhitespace, workspaceVersion),
+		queryKey: sessionWorkspaceDiffsQueryKey(sessionId, scope, paths, contextLines, ignoreWhitespace, workspaceVersion, commitSha),
 		queryFn: async (): Promise<WorkspaceDiffsResponse> => {
 			const { data, error } = await apiClient.POST("/api/v1/sessions/{sessionId}/workspace/diffs", {
 				params: { path: { sessionId } },
-				body: { contextLines, ignoreWhitespace, paths: [...paths], scope, workspaceVersion },
+				body: { commitSha, contextLines, ignoreWhitespace, paths: [...paths], scope, workspaceVersion },
 			});
 			if (error) throw new Error(apiErrorMessage(error, errorMessage));
 			if (!data) throw new Error(errorMessage);
@@ -133,6 +137,7 @@ export async function fetchWorkspaceFileRevision({
 	sessionId,
 	side,
 	workspaceVersion,
+	commitSha,
 }: {
 	errorMessage?: string;
 	expectedRevision?: string;
@@ -141,9 +146,10 @@ export async function fetchWorkspaceFileRevision({
 	sessionId: string;
 	side: "before" | "after";
 	workspaceVersion?: string;
+	commitSha?: string;
 }): Promise<WorkspaceFileRevision> {
 	const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/workspace/file/revision", {
-		params: { path: { sessionId }, query: { path, scope, side, workspaceVersion, expectedRevision } },
+		params: { path: { sessionId }, query: { path, scope, side, workspaceVersion, expectedRevision, commitSha } },
 	});
 	if (error) throw new Error(apiErrorMessage(error, errorMessage));
 	if (!data) throw new Error(errorMessage);
@@ -156,16 +162,18 @@ export function sessionWorkspaceFileRevisionQueryOptions({
 	sessionId,
 	side,
 	workspaceVersion,
+	commitSha,
 }: {
 	path: string;
 	scope: WorkspaceDiffScope;
 	sessionId: string;
 	side: "before" | "after";
 	workspaceVersion?: string;
+	commitSha?: string;
 }) {
 	return {
-		queryKey: ["session-workspace-file-revision", sessionId, scope, side, path, workspaceVersion ?? ""] as const,
-		queryFn: () => fetchWorkspaceFileRevision({ sessionId, path, scope, side, workspaceVersion }),
+		queryKey: ["session-workspace-file-revision", sessionId, scope, commitSha ?? "", side, path, workspaceVersion ?? ""] as const,
+		queryFn: () => fetchWorkspaceFileRevision({ sessionId, path, scope, side, workspaceVersion, commitSha }),
 	};
 }
 

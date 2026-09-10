@@ -45,6 +45,7 @@ type WorkspaceDiffInput struct {
 	ContextLines     int
 	IgnoreWhitespace bool
 	WorkspaceVersion string
+	CommitSHA        string
 }
 
 // WorkspaceDiffDeferred identifies a file intentionally omitted from a patch group.
@@ -138,12 +139,27 @@ func finalizeWorkspaceFiles(files WorkspaceFiles) WorkspaceFiles {
 			(*section)[i].FileFingerprint = summaryFingerprint((*section)[i])
 		}
 	}
+	for commitIndex := range files.Commits {
+		for fileIndex := range files.Commits[commitIndex].Files {
+			file := &files.Commits[commitIndex].Files[fileIndex]
+			// A commit review is an immutable historical snapshot. Editing remains
+			// available from working-tree scopes, never from a selected commit.
+			file.Editable = false
+			file.FileFingerprint = summaryFingerprint(*file)
+		}
+	}
 	parts := []string{string(files.SessionID), files.CompareBaseSHA, files.CompareBaseRef, string(files.CompareMode), strconv.FormatBool(files.Truncated)}
 	for _, file := range files.Files {
 		parts = append(parts, file.FileFingerprint)
 	}
 	for _, section := range sections {
 		for _, file := range *section {
+			parts = append(parts, file.FileFingerprint)
+		}
+	}
+	for _, commit := range files.Commits {
+		parts = append(parts, commit.SHA)
+		for _, file := range commit.Files {
 			parts = append(parts, file.FileFingerprint)
 		}
 	}
@@ -172,6 +188,7 @@ type workspaceDiffTargetGroup struct {
 	root    string
 	prefix  string
 	base    string
+	commit  string
 	targets []workspaceFileTarget
 }
 
@@ -200,6 +217,17 @@ func (s *Service) GetWorkspaceDiffs(ctx context.Context, id domain.SessionID, in
 	if input.WorkspaceVersion != "" && input.WorkspaceVersion != current.WorkspaceVersion {
 		return WorkspaceDiffs{}, apierr.Conflict("WORKSPACE_SNAPSHOT_STALE", "Workspace changed while the diff was loading", map[string]any{"workspaceVersion": current.WorkspaceVersion})
 	}
+	commitSHA := strings.TrimSpace(input.CommitSHA)
+	if commitSHA != "" {
+		if scope != WorkspaceDiffCommitted {
+			return WorkspaceDiffs{}, apierr.Invalid("WORKSPACE_COMMIT_SCOPE_REQUIRED", "commitSha requires the committed scope", nil)
+		}
+		commit, err := workspaceCommit(current, commitSHA)
+		if err != nil {
+			return WorkspaceDiffs{}, err
+		}
+		commitSHA = commit.SHA
+	}
 
 	groupsByKey := map[string]*workspaceDiffTargetGroup{}
 	seen := map[string]struct{}{}
@@ -219,7 +247,7 @@ func (s *Service) GetWorkspaceDiffs(ctx context.Context, id domain.SessionID, in
 		key := target.root + "\x00" + target.prefix + "\x00" + target.compare.gitBase()
 		group := groupsByKey[key]
 		if group == nil {
-			group = &workspaceDiffTargetGroup{root: target.root, prefix: target.prefix, base: target.compare.gitBase()}
+			group = &workspaceDiffTargetGroup{root: target.root, prefix: target.prefix, base: target.compare.gitBase(), commit: commitSHA}
 			groupsByKey[key] = group
 		}
 		group.targets = append(group.targets, target)
@@ -283,7 +311,11 @@ func workspaceDiffGroup(ctx context.Context, targetGroup *workspaceDiffTargetGro
 		args = append(args, "--cached")
 	case WorkspaceDiffUnstaged:
 	case WorkspaceDiffCommitted:
-		args = append(args, targetGroup.base, "HEAD")
+		if targetGroup.commit != "" {
+			args = append(args, targetGroup.commit+"^", targetGroup.commit)
+		} else {
+			args = append(args, targetGroup.base, "HEAD")
+		}
 	default:
 		args = append(args, targetGroup.base)
 	}
@@ -313,6 +345,16 @@ func workspaceDiffGroup(ctx context.Context, targetGroup *workspaceDiffTargetGro
 // GetWorkspaceFileRevision returns a comparison side for diff expansion and
 // complete-file viewing. Missing sides are represented explicitly.
 func (s *Service) GetWorkspaceFileRevision(ctx context.Context, id domain.SessionID, rawPath string, scope WorkspaceDiffScope, side WorkspaceFileBlobSide, workspaceVersion, expectedRevision string) (WorkspaceFileRevision, error) {
+	return s.getWorkspaceFileRevision(ctx, id, rawPath, scope, side, workspaceVersion, expectedRevision, "")
+}
+
+// GetWorkspaceFileRevisionAtCommit returns one immutable side of a selected
+// commit. The SHA must belong to the session's current compare range.
+func (s *Service) GetWorkspaceFileRevisionAtCommit(ctx context.Context, id domain.SessionID, rawPath string, side WorkspaceFileBlobSide, workspaceVersion, expectedRevision, commitSHA string) (WorkspaceFileRevision, error) {
+	return s.getWorkspaceFileRevision(ctx, id, rawPath, WorkspaceDiffCommitted, side, workspaceVersion, expectedRevision, commitSHA)
+}
+
+func (s *Service) getWorkspaceFileRevision(ctx context.Context, id domain.SessionID, rawPath string, scope WorkspaceDiffScope, side WorkspaceFileBlobSide, workspaceVersion, expectedRevision, rawCommitSHA string) (WorkspaceFileRevision, error) {
 	ctx, cancel := context.WithTimeout(ctx, workspaceReviewTimeout)
 	defer cancel()
 	resolvedScope, err := normalizeWorkspaceDiffScope(scope)
@@ -333,8 +375,16 @@ func (s *Service) GetWorkspaceFileRevision(ctx context.Context, id domain.Sessio
 	if workspaceVersion != "" && workspaceVersion != current.WorkspaceVersion {
 		return WorkspaceFileRevision{}, apierr.Conflict("WORKSPACE_SNAPSHOT_STALE", "Workspace changed while the file revision was loading", map[string]any{"workspaceVersion": current.WorkspaceVersion})
 	}
+	commitSHA := strings.TrimSpace(rawCommitSHA)
+	if commitSHA != "" {
+		commit, err := workspaceCommit(current, commitSHA)
+		if err != nil {
+			return WorkspaceFileRevision{}, err
+		}
+		commitSHA = commit.SHA
+	}
 	result := WorkspaceFileRevision{SessionID: id, Path: joinWorkspaceRelative(target.prefix, target.rel), Side: side, WorkspaceVersion: current.WorkspaceVersion, Encoding: "utf-8"}
-	data, size, exists, truncated, err := workspaceRevisionBytes(ctx, target, resolvedScope, side)
+	data, size, exists, truncated, err := workspaceRevisionBytes(ctx, target, resolvedScope, side, commitSHA)
 	if err != nil {
 		return WorkspaceFileRevision{}, err
 	}
@@ -356,14 +406,14 @@ func (s *Service) GetWorkspaceFileRevision(ctx context.Context, id domain.Sessio
 	return result, nil
 }
 
-func workspaceRevisionBytes(ctx context.Context, target workspaceFileTarget, scope WorkspaceDiffScope, side WorkspaceFileBlobSide) ([]byte, int64, bool, bool, error) {
+func workspaceRevisionBytes(ctx context.Context, target workspaceFileTarget, scope WorkspaceDiffScope, side WorkspaceFileBlobSide, commitSHA string) ([]byte, int64, bool, bool, error) {
 	if target.scratch {
 		if side == WorkspaceBlobBefore {
 			return nil, 0, false, false, nil
 		}
 		return readWorktreeRevision(target.root, target.rel)
 	}
-	status, previous, err := scopedWorkspaceFileStatus(ctx, target, scope)
+	status, previous, err := scopedWorkspaceFileStatus(ctx, target, scope, commitSHA)
 	if err != nil {
 		return nil, 0, false, false, err
 	}
@@ -394,9 +444,17 @@ func workspaceRevisionBytes(ctx context.Context, target workspaceFileTarget, sco
 		}
 	case WorkspaceDiffCommitted:
 		if side == WorkspaceBlobBefore {
-			spec = target.compare.gitBase() + ":" + beforePath
+			if commitSHA != "" {
+				spec = commitSHA + "^:" + beforePath
+			} else {
+				spec = target.compare.gitBase() + ":" + beforePath
+			}
 		} else {
-			spec = "HEAD:" + target.rel
+			if commitSHA != "" {
+				spec = commitSHA + ":" + target.rel
+			} else {
+				spec = "HEAD:" + target.rel
+			}
 		}
 	case WorkspaceDiffUntracked:
 		if side == WorkspaceBlobBefore {
@@ -413,7 +471,7 @@ func workspaceRevisionBytes(ctx context.Context, target workspaceFileTarget, sco
 	return readGitRevision(ctx, target.root, spec)
 }
 
-func scopedWorkspaceFileStatus(ctx context.Context, target workspaceFileTarget, scope WorkspaceDiffScope) (WorkspaceFileStatus, string, error) {
+func scopedWorkspaceFileStatus(ctx context.Context, target workspaceFileTarget, scope WorkspaceDiffScope, commitSHA string) (WorkspaceFileStatus, string, error) {
 	if scope == WorkspaceDiffCombined {
 		status := target.changes.statuses[target.rel]
 		if status == "" {
@@ -434,7 +492,11 @@ func scopedWorkspaceFileStatus(ctx context.Context, target workspaceFileTarget, 
 	case WorkspaceDiffUnstaged:
 		args = nil
 	case WorkspaceDiffCommitted:
-		args = []string{target.compare.gitBase(), "HEAD"}
+		if commitSHA != "" {
+			args = []string{commitSHA + "^", commitSHA}
+		} else {
+			args = []string{target.compare.gitBase(), "HEAD"}
+		}
 	}
 	statuses, previous, err := workspaceDiffNameStatus(ctx, target.root, args...)
 	if err != nil {

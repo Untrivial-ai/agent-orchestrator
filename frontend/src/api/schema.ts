@@ -4359,6 +4359,7 @@ export interface components {
         };
         WorkspaceCommitSummary: {
             author: string;
+            files: components["schemas"]["WorkspaceFileSummary"][];
             sha: string;
             subject: string;
             /** Format: date-time */
@@ -4382,6 +4383,8 @@ export interface components {
             truncated: boolean;
         };
         WorkspaceDiffRequest: {
+            /** @description Exact commit SHA for a committed-scope comparison. */
+            commitSha?: string;
             contextLines: number;
             ignoreWhitespace: boolean;
             paths: string[];
@@ -12194,6 +12197,8 @@ export interface operations {
                 path?: string;
                 /** @description Git-state section the file was opened from (see WorkspaceFileSections). staged diffs the index against HEAD; unstaged diffs the worktree against the index; omitted/committed/untracked diff the worktree against the compare base. */
                 section?: "committed" | "staged" | "unstaged" | "untracked";
+                /** @description Exact commit SHA to read as an immutable committed-scope snapshot. */
+                commitSha?: string;
             };
             header?: never;
             path: {
@@ -12402,6 +12407,8 @@ export interface operations {
                 workspaceVersion?: string;
                 /** @description Opaque revision token used for optimistic consistency checks. */
                 expectedRevision?: string;
+                /** @description Exact commit SHA for a committed-scope comparison. */
+                commitSha?: string;
             };
             header?: never;
             path: {

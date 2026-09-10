@@ -45,6 +45,7 @@ export function AoDiffFile({
 	scope = "combined",
 	sessionId,
 	split,
+	commitSha,
 }: {
 	annotation: FileAnnotationModel;
 	detail: WorkspaceFileDetail;
@@ -53,6 +54,7 @@ export function AoDiffFile({
 	scope?: WorkspaceDiffScope;
 	sessionId: string;
 	split: boolean;
+	commitSha?: string;
 }) {
 	const { t } = useTranslation();
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
@@ -80,8 +82,8 @@ export function AoDiffFile({
 	const loadDiffFiles = useCallback(
 		async (fileDiff: FileDiffMetadata) => {
 			const [before, after] = await Promise.all([
-				fetchWorkspaceFileRevision({ sessionId, path: detail.path, scope, side: "before", workspaceVersion: detail.workspaceVersion }),
-				fetchWorkspaceFileRevision({ sessionId, path: detail.path, scope, side: "after", workspaceVersion: detail.workspaceVersion }),
+				fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "before", workspaceVersion: detail.workspaceVersion }),
+				fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "after", workspaceVersion: detail.workspaceVersion }),
 			]);
 			if (before.binary || after.binary || before.truncated || after.truncated) {
 				throw new Error(t("files.explorer.tooLarge", { size: Math.max(before.size, after.size) }));
@@ -93,7 +95,7 @@ export function AoDiffFile({
 				newFile,
 			};
 		},
-		[detail.path, detail.previousPath, detail.workspaceVersion, scope, sessionId, t],
+		[commitSha, detail.path, detail.previousPath, detail.workspaceVersion, scope, sessionId, t],
 	);
 	const beginLineAnnotation = useCallback((side: "deletions" | "additions", lineNumber: number) => {
 		const { row, rowIndex } = rowForLine(rows, side, lineNumber);

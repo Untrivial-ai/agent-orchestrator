@@ -130,32 +130,32 @@ describe("WorkspaceReviewPane", () => {
 		await userEvent.click(inlineFeedback);
 		expect(model.begin).toHaveBeenCalledWith(expect.objectContaining({ path: "README.md", side: "new", line: 7 }));
 		await userEvent.click(screen.getByRole("button", { name: "Open rich preview" }));
-		expect(onOpenFile).toHaveBeenCalledWith("README.md", "rendered");
+		expect(onOpenFile).toHaveBeenCalledWith("README.md", { mode: "rendered", scope: "unstaged" });
 	});
 
 	it("opens a file diff in the center pane through the dedicated action", async () => {
-		const onOpenFileInCenter = vi.fn();
+		const onOpenFile = vi.fn();
 		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "file-1" }]);
-		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onOpenFileInCenter={onOpenFileInCenter} sessionId="sess-1" split={false} />);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onOpenFile={onOpenFile} sessionId="sess-1" split={false} />);
 		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
 
 		await userEvent.click(screen.getByRole("button", { name: "Open diff in center" }));
-		expect(onOpenFileInCenter).toHaveBeenCalledWith("src/App.tsx");
+		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { mode: "diff", scope: "unstaged" });
 	});
 
 	it("opens a changed diff directly in syntax-aware edit mode", async () => {
-		const onEditFile = vi.fn();
+		const onOpenFile = vi.fn();
 		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, editable: true, fileFingerprint: "file-1" }]);
-		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onEditFile={onEditFile} sessionId="sess-1" split={false} />);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onOpenFile={onOpenFile} sessionId="sess-1" split={false} />);
 		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
 
 		await userEvent.click(screen.getByRole("button", { name: "Edit file" }));
-		expect(onEditFile).toHaveBeenCalledWith("src/App.tsx");
+		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { editing: true, mode: "file", scope: "unstaged" });
 	});
 
 	it("does not advertise editing for a file the daemon marks read-only", async () => {
 		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, editable: false, fileFingerprint: "file-1" }]);
-		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onEditFile={vi.fn()} sessionId="sess-1" split={false} />);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onOpenFile={vi.fn()} sessionId="sess-1" split={false} />);
 		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
 
 		expect(screen.queryByRole("button", { name: "Edit file" })).not.toBeInTheDocument();
@@ -185,7 +185,65 @@ describe("WorkspaceReviewPane", () => {
 		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
 
 		await userEvent.click(screen.getByRole("button", { name: "Open full file" }));
-		expect(onOpenFile).toHaveBeenCalledWith("README.md", "file");
+		expect(onOpenFile).toHaveBeenCalledWith("README.md", { mode: "file", scope: "unstaged" });
+	});
+
+	it("uses one compact menu for unstaged, staged, and untracked sources", async () => {
+		const unstaged = { path: "src/App.tsx", status: "modified" as const, additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" };
+		const staged = { path: "README.md", status: "modified" as const, additions: 1, deletions: 0, size: 20, binary: false, fileFingerprint: "s-1" };
+		const data = workspace([unstaged]);
+		data.sections.staged = [staged];
+		data.sections.untracked = [{ ...staged, path: "notes.txt", status: "added", fileFingerprint: "n-1" }];
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		await userEvent.click(screen.getByRole("button", { name: "Choose change source" }));
+		expect(screen.getByRole("menuitem", { name: /Unstaged/ })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Staged/ })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Untracked/ })).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("menuitem", { name: /Staged/ }));
+		await waitFor(() => expect(postMock).toHaveBeenLastCalledWith("/api/v1/sessions/{sessionId}/workspace/diffs", expect.objectContaining({
+			body: expect.objectContaining({ paths: ["README.md"], scope: "staged" }),
+		})));
+	});
+
+	it("omits empty working-change sources from the menu", async () => {
+		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		await userEvent.click(screen.getByRole("button", { name: "Choose change source" }));
+		expect(screen.getByRole("menuitem", { name: /Unstaged/ })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: /Staged/ })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: /Untracked/ })).not.toBeInTheDocument();
+	});
+
+	it("browses GitHub-style commits and reviews the selected commit only", async () => {
+		const onOpenFile = vi.fn();
+		postMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				workspaceVersion: "workspace-1",
+				groups: [{ repository: "", patch: "diff --git a/README.md b/README.md\n", truncated: false, includedPaths: ["README.md"], deferred: [] }],
+			},
+		});
+		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "u-1" }]);
+		data.commits = [{
+			author: "Ada Lovelace",
+			files: [{ path: "README.md", status: "modified", additions: 2, deletions: 1, size: 40, binary: false, editable: false, fileFingerprint: "c-1" }],
+			sha: "abcdef1234567890",
+			subject: "Document the commit browser",
+			timestamp: "2026-09-10T10:00:00Z",
+		}];
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onOpenFile={onOpenFile} sessionId="sess-1" split={false} />);
+
+		await userEvent.click(screen.getByRole("button", { name: /Commits/ }));
+		expect(screen.getByRole("list", { name: "Commit history" })).toBeInTheDocument();
+		expect(screen.getByText("README.md")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: /Document the commit browser/ }));
+		await waitFor(() => expect(postMock).toHaveBeenLastCalledWith("/api/v1/sessions/{sessionId}/workspace/diffs", expect.objectContaining({
+			body: expect.objectContaining({ commitSha: "abcdef1234567890", paths: ["README.md"], scope: "committed" }),
+		})));
+		await userEvent.click(await screen.findByRole("button", { name: "Open diff in center" }));
+		expect(onOpenFile).toHaveBeenCalledWith("README.md", { commitSha: "abcdef1234567890", mode: "diff", scope: "committed" });
 	});
 
 	it("offers the full file browser when there are no changes", async () => {

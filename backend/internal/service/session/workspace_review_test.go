@@ -101,6 +101,67 @@ func TestGetWorkspaceDiffsBatchesPathsAndHonorsWhitespace(t *testing.T) {
 	}
 }
 
+func TestCommitReviewUsesOnlyTheSelectedCommit(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	base := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	runGit(t, repo, "switch", "-c", "ao/commit-review")
+	writeWorkspaceFile(t, repo, "README.md", "first commit\n")
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "first change")
+	first := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	writeWorkspaceFile(t, repo, "README.md", "second commit\n")
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "second change")
+
+	store := newFakeStore()
+	store.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{Branch: "ao/commit-review", WorkspacePath: repo, DiffBaseSHA: base, DiffBaseRef: "main"}}
+	svc := &Service{store: store}
+	files, err := svc.ListWorkspaceFiles(context.Background(), "ao-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files.Commits) != 2 || files.Commits[0].Subject != "second change" || files.Commits[1].Subject != "first change" {
+		t.Fatalf("commits = %+v, want newest first", files.Commits)
+	}
+
+	diffs, err := svc.GetWorkspaceDiffs(context.Background(), "ao-1", WorkspaceDiffInput{
+		Scope: WorkspaceDiffCommitted, CommitSHA: first, Paths: []string{"README.md"}, ContextLines: 3, WorkspaceVersion: files.WorkspaceVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs.Groups) != 1 || !strings.Contains(diffs.Groups[0].Patch, "+first commit") || strings.Contains(diffs.Groups[0].Patch, "+second commit") {
+		t.Fatalf("selected commit patch = %q", diffs.Groups[0].Patch)
+	}
+
+	detail, err := svc.GetWorkspaceFileAtCommit(context.Background(), "ao-1", "README.md", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Content != "first commit\n" || !strings.Contains(detail.Diff, "+first commit") || detail.Editable {
+		t.Fatalf("selected commit detail = %#v", detail)
+	}
+	after, err := svc.GetWorkspaceFileRevisionAtCommit(context.Background(), "ao-1", "README.md", WorkspaceBlobAfter, files.WorkspaceVersion, "", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Content != "first commit\n" {
+		t.Fatalf("selected commit after = %q", after.Content)
+	}
+}
+
+func TestCommitReviewRejectsCommitOutsideComparison(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	svc := workspaceReviewService(t, repo)
+	_, err := svc.GetWorkspaceDiffs(context.Background(), "ao-1", WorkspaceDiffInput{
+		Scope: WorkspaceDiffCommitted, CommitSHA: strings.Repeat("a", 40), Paths: []string{"README.md"}, ContextLines: 3,
+	})
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Code != "WORKSPACE_COMMIT_NOT_FOUND" {
+		t.Fatalf("error = %#v, want WORKSPACE_COMMIT_NOT_FOUND", err)
+	}
+}
+
 func TestGetWorkspaceDiffsRejectsStaleWorkspaceVersion(t *testing.T) {
 	repo := newWorkspaceRepo(t)
 	svc := workspaceReviewService(t, repo)

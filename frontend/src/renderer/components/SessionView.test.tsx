@@ -1,4 +1,4 @@
-import { StrictMode, type ReactNode } from "react";
+import { StrictMode, useEffect, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -435,13 +435,16 @@ vi.mock("./SessionFileExplorer", () => ({
 		split,
 	}: {
 		isMaximized?: boolean;
-		onOpenFile?: (path: string) => void;
+		onOpenFile?: (path: string, options?: { editing?: boolean; mode?: "diff" | "file" | "rendered" }) => void;
 		onSplitChange?: (split: boolean) => void;
 		onToggleMaximized?: (next: boolean) => void;
 		revealRequest?: { path: string; key: number } | null;
 		split?: boolean;
-	}) => (
-		<div>
+	}) => {
+		useEffect(() => {
+			if (!isMaximized && revealRequest) onOpenFile?.(revealRequest.path, { mode: "file" });
+		}, [isMaximized, onOpenFile, revealRequest]);
+		return <div>
 			<button type="button" onClick={() => onToggleMaximized?.(!isMaximized)}>
 				{isMaximized ? "files center" : "files rail"}
 			</button>
@@ -450,23 +453,24 @@ vi.mock("./SessionFileExplorer", () => ({
 			</button>
 			{!isMaximized && onOpenFile ? (
 				<>
-					<span>{revealRequest ? `rail preview ${revealRequest.path}` : "file tree"}</span>
-					<button type="button">select src/App.tsx</button>
-					<button type="button" onClick={() => onOpenFile("src/App.tsx")}>
-						pop out src/App.tsx
+					<span>file tree</span>
+					{revealRequest ? <span>{`selected ${revealRequest.path}`}</span> : null}
+					<button type="button" onClick={() => onOpenFile("src/App.tsx", { mode: "file" })}>
+						select src/App.tsx
 					</button>
-					{revealRequest ? (
-						<button type="button" onClick={() => onOpenFile(revealRequest.path)}>
-							pop out {revealRequest.path}
-						</button>
-					) : null}
+					<button type="button" onClick={() => onOpenFile("src/App.tsx", { mode: "diff" })}>
+						open diff src/App.tsx in center
+					</button>
+					<button type="button" onClick={() => onOpenFile("src/App.tsx", { editing: true, mode: "file" })}>
+						edit src/App.tsx in center
+					</button>
 				</>
 			) : null}
 		</div>
-	),
+	},
 }));
 vi.mock("./SessionFileWorkspace", () => ({
-	SessionFileWorkspace: ({ path, split }: { path: string; split: boolean }) => <div data-split={String(split)} data-testid="session-file-workspace">{path}</div>,
+	SessionFileWorkspace: ({ initialEditing, initialMode, path, split }: { initialEditing?: boolean; initialMode?: string; path: string; split: boolean }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode} data-split={String(split)} data-testid="session-file-workspace">{path}</div>,
 }));
 const { browserDestroy, browserViewOptions, browserViewState } = vi.hoisted(() => ({
 	browserDestroy: vi.fn(),
@@ -855,8 +859,7 @@ describe("SessionView", () => {
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
-		await screen.findByText("rail preview src/panel.tsx");
-		fireEvent.click(screen.getByRole("button", { name: "pop out src/panel.tsx" }));
+		await screen.findByText("selected src/panel.tsx");
 		expect(await screen.findByTestId("session-file-workspace")).toHaveTextContent("src/panel.tsx");
 
 		fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
@@ -939,8 +942,7 @@ describe("SessionView", () => {
 		const view = render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
-		await screen.findByText("rail preview src/panel.tsx");
-		fireEvent.click(screen.getByRole("button", { name: "pop out src/panel.tsx" }));
+		await screen.findByText("selected src/panel.tsx");
 		await screen.findByTestId("session-file-workspace");
 		fireEvent.click(screen.getByRole("button", { name: "reorder auxiliary tabs" }));
 		expect(screen.getByTestId("auxiliary-tab-order-sess-1")).toHaveTextContent(
@@ -976,8 +978,7 @@ describe("SessionView", () => {
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
-		await screen.findByText("rail preview src/panel.tsx");
-		fireEvent.click(screen.getByRole("button", { name: "pop out src/panel.tsx" }));
+		await screen.findByText("selected src/panel.tsx");
 		await screen.findByTestId("session-file-workspace");
 		fireEvent.click(screen.getByRole("button", { name: "reorder auxiliary tabs" }));
 		fireEvent.click(screen.getByRole("button", { name: "Close panel.tsx" }));
@@ -1019,8 +1020,7 @@ describe("SessionView", () => {
 
 		await screen.findByRole("button", { name: "Reviewer" });
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
-		await screen.findByText("rail preview src/panel.tsx");
-		fireEvent.click(screen.getByRole("button", { name: "pop out src/panel.tsx" }));
+		await screen.findByText("selected src/panel.tsx");
 		await screen.findByTestId("session-file-workspace");
 		fireEvent.click(screen.getByRole("button", { name: "reorder reviewer tab" }));
 		expect(screen.getByTestId("auxiliary-tab-order-sess-1")).toHaveTextContent(
@@ -1059,8 +1059,7 @@ describe("SessionView", () => {
 		const view = render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
-		await screen.findByText("rail preview src/panel.tsx");
-		fireEvent.click(screen.getByRole("button", { name: "pop out src/panel.tsx" }));
+		await screen.findByText("selected src/panel.tsx");
 		await screen.findByTestId("session-file-workspace");
 		fireEvent.click(screen.getByRole("button", { name: "reorder auxiliary tabs" }));
 		fireEvent.click(screen.getByRole("button", { name: "session one shell" }));
@@ -2127,21 +2126,17 @@ describe("SessionView", () => {
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
 	});
 
-	it("previews docked files and only opens a center tab on explicit pop-out", () => {
+	it("opens a selected tree file in a center tab while retaining the right-side tree", () => {
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "open files" }));
 		fireEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
 
-		expect(screen.queryByRole("tab", { name: "App.tsx" })).not.toBeInTheDocument();
-		expect(screen.queryByTestId("session-file-workspace")).not.toBeInTheDocument();
-		expect(screen.getByText("terminal center")).toBeInTheDocument();
-
-		fireEvent.click(screen.getByRole("button", { name: "pop out src/App.tsx" }));
-
 		expect(screen.getByRole("tab", { name: "App.tsx" })).toHaveAttribute("aria-selected", "true");
 		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("src/App.tsx");
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-mode", "file");
+		expect(within(screen.getByTestId("panel-inspector")).getByText("file tree")).toBeInTheDocument();
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
 
 		fireEvent.click(screen.getByRole("button", { name: "select agent tab" }));
@@ -2154,31 +2149,30 @@ describe("SessionView", () => {
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "open files" }));
-		fireEvent.click(screen.getByRole("button", { name: "pop out src/App.tsx" }));
+		fireEvent.click(screen.getByRole("button", { name: "open diff src/App.tsx in center" }));
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-mode", "diff");
 		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-split", "false");
 
 		fireEvent.click(screen.getByRole("button", { name: "use split diff" }));
 		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-split", "true");
 	});
 
-	it("previews a review file target in the Files inspector without replacing the center", async () => {
+	it("opens a review file target in center while retaining the Files tree", async () => {
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "view review file" }));
 
 		await waitFor(() => {
-			expect(screen.getByText("rail preview src/panel.tsx")).toBeInTheDocument();
+			expect(screen.getByText("selected src/panel.tsx")).toBeInTheDocument();
 		});
-		expect(screen.queryByRole("tab", { name: "panel.tsx" })).not.toBeInTheDocument();
-		expect(screen.queryByTestId("session-file-workspace")).not.toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "panel.tsx" })).toHaveAttribute("aria-selected", "true");
+		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("src/panel.tsx");
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-mode", "file");
+		expect(within(screen.getByTestId("panel-inspector")).getByText("file tree")).toBeInTheDocument();
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
 		expect(useUiStore.getState().inspectorSessions["sess-1"]?.view).toBe("files");
 		expect(screen.queryByRole("button", { name: "files center" })).not.toBeInTheDocument();
-
-		fireEvent.click(screen.getByRole("button", { name: "pop out src/panel.tsx" }));
-		expect(screen.getByRole("tab", { name: "panel.tsx" })).toHaveAttribute("aria-selected", "true");
-		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("src/panel.tsx");
 	});
 
 	it("resolves a basename against workspace files before opening on a cold cache", async () => {
@@ -2214,9 +2208,10 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "view review basename" }));
 
 		await waitFor(() => {
-			expect(screen.getByText("rail preview docs/notes.txt")).toBeInTheDocument();
+			expect(screen.getByText("selected docs/notes.txt")).toBeInTheDocument();
 		});
-		expect(screen.queryByTestId("session-file-workspace")).not.toBeInTheDocument();
+		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("docs/notes.txt");
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-mode", "file");
 	});
 
 	it("resolves a chat basename against workspace files before opening on a cold cache", async () => {
@@ -2253,9 +2248,9 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "open chat basename" }));
 
 		await waitFor(() => {
-			expect(screen.getByText("rail preview docs/notes.txt")).toBeInTheDocument();
+			expect(screen.getByText("selected docs/notes.txt")).toBeInTheDocument();
 		});
-		expect(screen.queryByTestId("session-file-workspace")).not.toBeInTheDocument();
+		expect(screen.getByTestId("session-file-workspace")).toHaveTextContent("docs/notes.txt");
 	});
 
 	it("maximizes files over the whole app window and returns to the rail", () => {

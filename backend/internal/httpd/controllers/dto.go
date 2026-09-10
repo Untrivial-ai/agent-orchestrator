@@ -170,7 +170,8 @@ type WorkspaceFileQuery struct {
 	// against the index. A file can carry independent changes in both. Omit (or
 	// pass committed/untracked) to diff the worktree against the compare base,
 	// as before this field existed.
-	Section string `query:"section,omitempty" enum:"committed,staged,unstaged,untracked" description:"Git-state section the file was opened from (see WorkspaceFileSections). staged diffs the index against HEAD; unstaged diffs the worktree against the index; omitted/committed/untracked diff the worktree against the compare base."`
+	Section   string `query:"section,omitempty" enum:"committed,staged,unstaged,untracked" description:"Git-state section the file was opened from (see WorkspaceFileSections). staged diffs the index against HEAD; unstaged diffs the worktree against the index; omitted/committed/untracked diff the worktree against the compare base."`
+	CommitSHA string `query:"commitSha,omitempty" description:"Exact commit SHA to read as an immutable committed-scope snapshot."`
 }
 
 // UpdateWorkspaceFileRequest replaces an existing text file after verifying
@@ -198,6 +199,7 @@ type WorkspaceFileRevisionQuery struct {
 	Side             string `query:"side,omitempty" enum:"before,after" description:"Comparison side. Defaults to after."`
 	WorkspaceVersion string `query:"workspaceVersion,omitempty" description:"Opaque workspace snapshot token used for consistency checks."`
 	ExpectedRevision string `query:"expectedRevision,omitempty" description:"Opaque revision token used for optimistic consistency checks."`
+	CommitSHA        string `query:"commitSha,omitempty" description:"Exact commit SHA for a committed-scope comparison."`
 }
 
 // WorkspaceSearchQuery is the query string accepted by the workspace path search.
@@ -409,7 +411,7 @@ type ListWorkspaceFilesResponse struct {
 	// populated for single-repo sessions; empty for workspace-project
 	// (multi-repo) and scratch sessions.
 	Sections WorkspaceFileSections `json:"sections"`
-	// Commits are the commits between the compare base and HEAD, oldest first.
+	// Commits are the commits between the compare base and HEAD, newest first.
 	Commits []WorkspaceCommitSummary `json:"commits"`
 	Summary WorkspaceSummary         `json:"summary"`
 	// Ahead and Behind are omitted when no push/pull data is available (no
@@ -431,10 +433,11 @@ type WorkspaceFileSections struct {
 
 // WorkspaceCommitSummary is one commit between the compare base and HEAD.
 type WorkspaceCommitSummary struct {
-	SHA       string    `json:"sha"`
-	Subject   string    `json:"subject"`
-	Author    string    `json:"author"`
-	Timestamp time.Time `json:"timestamp"`
+	SHA       string                 `json:"sha"`
+	Subject   string                 `json:"subject"`
+	Author    string                 `json:"author"`
+	Timestamp time.Time              `json:"timestamp"`
+	Files     []WorkspaceFileSummary `json:"files"`
 }
 
 // WorkspaceSummary aggregates a session workspace's base..worktree diff into
@@ -489,6 +492,7 @@ type WorkspaceDiffRequest struct {
 	ContextLines     int      `json:"contextLines" minimum:"0" maximum:"20"`
 	IgnoreWhitespace bool     `json:"ignoreWhitespace"`
 	WorkspaceVersion string   `json:"workspaceVersion,omitempty"`
+	CommitSHA        string   `json:"commitSha,omitempty" description:"Exact commit SHA for a committed-scope comparison."`
 }
 
 // WorkspaceDiffDeferredResponse describes a file omitted from an initial patch.

@@ -29,6 +29,7 @@ import { statusLabel, statusTone } from "../lib/workspace-file-status";
 import { cn } from "../lib/utils";
 
 export type FileViewMode = "diff" | "file" | "rendered";
+export type FileOpenOptions = { commitSha?: string; editing?: boolean; mode?: FileViewMode; scope?: WorkspaceDiffScope };
 
 const createReviewEditor: EditorFactory<"feedback", undefined> = (editorType, options, editStateKey) =>
 	new Editor(editorType, options, editStateKey);
@@ -41,6 +42,8 @@ export function FileContentPane({
 	annotation,
 	initialEditing = false,
 	initialMode = "diff",
+	initialRequestKey = 0,
+	commitSha,
 	path,
 	sessionId,
 	split,
@@ -49,6 +52,8 @@ export function FileContentPane({
 	annotation: FileAnnotationModel;
 	initialEditing?: boolean;
 	initialMode?: FileViewMode;
+	initialRequestKey?: number;
+	commitSha?: string;
 	path: string | null;
 	sessionId: string;
 	split: boolean;
@@ -65,7 +70,7 @@ export function FileContentPane({
 	// an active native text selection.
 	const [selectionOrMenuActive, setSelectionOrMenuActive] = useState(false);
 	const query = useQuery({
-		...sessionWorkspaceFileQueryOptions(sessionId, path ?? "", t("files.error.loadWorkspaceFile"), scope),
+		...sessionWorkspaceFileQueryOptions(sessionId, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha),
 		enabled: Boolean(path) && !selectionOrMenuActive,
 	});
 	useEffect(() => {
@@ -73,10 +78,10 @@ export function FileContentPane({
 		setEditing(initialEditing);
 		setDraft("");
 		setSaveError("");
-	}, [initialEditing, initialMode, path, scope]);
+	}, [commitSha, initialEditing, initialMode, initialRequestKey, path, scope]);
 	useEffect(() => {
 		if (initialEditing && query.data) setDraft(query.data.content);
-	}, [initialEditing, path, query.data]);
+	}, [initialEditing, initialRequestKey, path, query.data]);
 	const refetch = query.refetch;
 
 	if (!path) {
@@ -115,6 +120,7 @@ export function FileContentPane({
 			onEditChange={setDraft}
 			scope={scope}
 			sessionId={sessionId}
+			commitSha={commitSha}
 		/>
 	);
 	const beginEditing = () => {
@@ -140,7 +146,7 @@ export function FileContentPane({
 				path,
 				sessionId,
 			});
-			queryClient.setQueryData(sessionWorkspaceFileQueryKey(sessionId, path, scope), saved);
+			queryClient.setQueryData(sessionWorkspaceFileQueryKey(sessionId, path, scope, commitSha), saved);
 			await queryClient.invalidateQueries({
 				predicate: ({ queryKey }) => [
 					"session-workspace-files",
@@ -169,7 +175,7 @@ export function FileContentPane({
 					{statusLabel[detail.status]}
 				</span>
 			) : null}
-			<div aria-label={t("files.fileDisplayMode")} className="flex items-center rounded-md bg-muted/40 p-0.5" role="tablist">
+			<div aria-label={t("files.fileDisplayMode")} className="flex items-center" role="tablist">
 				{detail.status !== "unmodified" ? (
 					<Button aria-selected={effectiveMode === "diff"} className="h-6 rounded px-2 text-2xs" disabled={editing} onClick={() => setMode("diff")} role="tab" size="sm" type="button" variant={effectiveMode === "diff" ? "secondary" : "ghost"}>
 						{t("files.diff")}
@@ -252,6 +258,7 @@ export function FileContentPane({
 						scope={scope}
 						sessionId={sessionId}
 						split={split && canSplitCompare(detail.status)}
+						commitSha={commitSha}
 					/>
 				) : effectiveMode === "rendered" && renderedAvailable ? (
 					<MarkdownFileView content={detail.content} filePath={path} sessionId={sessionId} truncated={detail.contentTruncated} version={query.dataUpdatedAt} />
@@ -276,10 +283,10 @@ export function FileContentPane({
 	);
 }
 
-function CompleteFileView({ annotation, detail, editing, onEditChange, scope, sessionId }: { annotation: FileAnnotationModel; detail: WorkspaceFileDetail; editing: boolean; onEditChange: (content: string) => void; scope: WorkspaceDiffScope; sessionId: string }) {
+function CompleteFileView({ annotation, commitSha, detail, editing, onEditChange, scope, sessionId }: { annotation: FileAnnotationModel; commitSha?: string; detail: WorkspaceFileDetail; editing: boolean; onEditChange: (content: string) => void; scope: WorkspaceDiffScope; sessionId: string }) {
 	const { t } = useTranslation();
 	const revision = useQuery({
-		...sessionWorkspaceFileRevisionQueryOptions({ path: detail.path, scope, sessionId, side: detail.deleted ? "before" : "after", workspaceVersion: detail.workspaceVersion }),
+		...sessionWorkspaceFileRevisionQueryOptions({ commitSha, path: detail.path, scope, sessionId, side: detail.deleted ? "before" : "after", workspaceVersion: detail.workspaceVersion }),
 		enabled: detail.deleted || detail.contentTruncated,
 	});
 	if (revision.isPending && revision.isFetching) return <PanelMessage>{t("files.loading")}</PanelMessage>;

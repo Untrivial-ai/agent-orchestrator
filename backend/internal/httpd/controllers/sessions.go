@@ -109,10 +109,12 @@ type SessionService interface {
 	WorkspaceWatchPaths(ctx context.Context, id domain.SessionID) ([]string, error)
 	ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (sessionsvc.WorkspaceFiles, error)
 	GetWorkspaceFile(ctx context.Context, id domain.SessionID, path string, section sessionsvc.WorkspaceFileSection) (sessionsvc.WorkspaceFileDetail, error)
+	GetWorkspaceFileAtCommit(ctx context.Context, id domain.SessionID, path, commitSHA string) (sessionsvc.WorkspaceFileDetail, error)
 	UpdateWorkspaceFile(ctx context.Context, id domain.SessionID, input sessionsvc.UpdateWorkspaceFileInput) (sessionsvc.WorkspaceFileDetail, error)
 	GetWorkspaceFileBlob(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide) (sessionsvc.WorkspaceFileBlob, error)
 	GetWorkspaceDiffs(ctx context.Context, id domain.SessionID, input sessionsvc.WorkspaceDiffInput) (sessionsvc.WorkspaceDiffs, error)
 	GetWorkspaceFileRevision(ctx context.Context, id domain.SessionID, path string, scope sessionsvc.WorkspaceDiffScope, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision string) (sessionsvc.WorkspaceFileRevision, error)
+	GetWorkspaceFileRevisionAtCommit(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision, commitSHA string) (sessionsvc.WorkspaceFileRevision, error)
 	SearchWorkspaceFiles(ctx context.Context, id domain.SessionID, query, cursor string, limit int) (sessionsvc.WorkspaceFileSearch, error)
 	ListWorkspaceTree(ctx context.Context, id domain.SessionID, path string) (sessionsvc.WorkspaceTree, error)
 	InvalidateWorkspaceCache(id domain.SessionID)
@@ -576,7 +578,14 @@ func (c *SessionsController) getWorkspaceFile(w http.ResponseWriter, r *http.Req
 		return
 	}
 	section := sessionsvc.WorkspaceFileSection(strings.TrimSpace(r.URL.Query().Get("section")))
-	file, err := c.Svc.GetWorkspaceFile(r.Context(), sessionID(r), relPath, section)
+	commitSHA := strings.TrimSpace(r.URL.Query().Get("commitSha"))
+	var file sessionsvc.WorkspaceFileDetail
+	var err error
+	if commitSHA != "" {
+		file, err = c.Svc.GetWorkspaceFileAtCommit(r.Context(), sessionID(r), relPath, commitSHA)
+	} else {
+		file, err = c.Svc.GetWorkspaceFile(r.Context(), sessionID(r), relPath, section)
+	}
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -626,6 +635,7 @@ func (c *SessionsController) getWorkspaceDiffs(w http.ResponseWriter, r *http.Re
 		ContextLines:     in.ContextLines,
 		IgnoreWhitespace: in.IgnoreWhitespace,
 		WorkspaceVersion: in.WorkspaceVersion,
+		CommitSHA:        strings.TrimSpace(in.CommitSHA),
 	})
 	if err != nil {
 		envelope.WriteError(w, r, err)
@@ -649,7 +659,14 @@ func (c *SessionsController) getWorkspaceFileRevision(w http.ResponseWriter, r *
 	if side == "" {
 		side = sessionsvc.WorkspaceBlobAfter
 	}
-	revision, err := c.Svc.GetWorkspaceFileRevision(r.Context(), sessionID(r), relPath, sessionsvc.WorkspaceDiffScope(strings.TrimSpace(query.Get("scope"))), side, strings.TrimSpace(query.Get("workspaceVersion")), strings.TrimSpace(query.Get("expectedRevision")))
+	commitSHA := strings.TrimSpace(query.Get("commitSha"))
+	var revision sessionsvc.WorkspaceFileRevision
+	var err error
+	if commitSHA != "" {
+		revision, err = c.Svc.GetWorkspaceFileRevisionAtCommit(r.Context(), sessionID(r), relPath, side, strings.TrimSpace(query.Get("workspaceVersion")), strings.TrimSpace(query.Get("expectedRevision")), commitSHA)
+	} else {
+		revision, err = c.Svc.GetWorkspaceFileRevision(r.Context(), sessionID(r), relPath, sessionsvc.WorkspaceDiffScope(strings.TrimSpace(query.Get("scope"))), side, strings.TrimSpace(query.Get("workspaceVersion")), strings.TrimSpace(query.Get("expectedRevision")))
+	}
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -2078,6 +2095,7 @@ func workspaceCommitsResponse(commits []sessionsvc.CommitSummary) []WorkspaceCom
 			Subject:   commit.Subject,
 			Author:    commit.Author,
 			Timestamp: commit.Timestamp,
+			Files:     workspaceFileSummariesResponse(commit.Files),
 		})
 	}
 	return out

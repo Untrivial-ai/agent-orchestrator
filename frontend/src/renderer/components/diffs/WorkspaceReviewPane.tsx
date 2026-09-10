@@ -2,29 +2,34 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { useQueries } from "@tanstack/react-query";
 import { parsePatchFiles, type CodeViewItem, type FileDiffMetadata } from "@pierre/diffs";
 import { CodeView } from "@pierre/diffs/react";
-import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, MessageSquarePlus, PanelTopOpen, Pencil } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, Pencil } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
 	fetchWorkspaceFileRevision,
 	sessionWorkspaceDiffsQueryOptions,
 	type WorkspaceDiffScope,
+	type WorkspaceCommitSummary,
 	type WorkspaceFilesResponse,
 	type WorkspaceFileSummary,
 } from "../../hooks/useSessionWorkspaceFiles";
 import { cn } from "../../lib/utils";
 import { statusLabel, statusTone } from "../../lib/workspace-file-status";
 import { useUiStore } from "../../stores/ui-store";
+import type { FileOpenOptions } from "../FileContentPane";
 import { PanelMessage, RetryButton, FileAnnotationComposer, LineFeedbackButtonControl, type FileAnnotationModel } from "../WorkspaceDiffView";
+import { VscodeGoToFileIcon } from "../icons/VscodeGoToFileIcon";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
+import { formatTimeTerse } from "../../lib/format-time";
 import { AO_PIERRE_SURFACE_CSS } from "./pierreTheme";
 import { usePersistentGutterUtility } from "./usePersistentGutterUtility";
 
 const PATCH_BATCH_SIZE = 100;
 const parsedPatchCache = new Map<string, FileDiffMetadata[]>();
 const MAX_PARSED_GROUPS = 24;
-const sectionOrder: WorkspaceDiffScope[] = ["unstaged", "staged", "untracked", "committed"];
+const workingScopeOrder = ["unstaged", "staged", "untracked"] as const;
 
 function chunked<T>(items: readonly T[], size: number): T[][] {
 	const chunks: T[][] = [];
@@ -32,12 +37,12 @@ function chunked<T>(items: readonly T[], size: number): T[][] {
 	return chunks;
 }
 
-function patchCacheKey(workspaceVersion: string | undefined, scope: WorkspaceDiffScope, repository: string | undefined, patch: string) {
-	return `${workspaceVersion ?? "legacy"}:${scope}:${repository ?? "root"}:${patch.length}:${patch.slice(0, 80)}:${patch.slice(-80)}`;
+function patchCacheKey(workspaceVersion: string | undefined, scope: WorkspaceDiffScope, commitSha: string | undefined, repository: string | undefined, patch: string) {
+	return `${workspaceVersion ?? "legacy"}:${scope}:${commitSha ?? "working"}:${repository ?? "root"}:${patch.length}:${patch.slice(0, 80)}:${patch.slice(-80)}`;
 }
 
-function parseGroupPatch(workspaceVersion: string | undefined, scope: WorkspaceDiffScope, repository: string | undefined, patch: string) {
-	const key = patchCacheKey(workspaceVersion, scope, repository, patch);
+function parseGroupPatch(workspaceVersion: string | undefined, scope: WorkspaceDiffScope, commitSha: string | undefined, repository: string | undefined, patch: string) {
+	const key = patchCacheKey(workspaceVersion, scope, commitSha, repository, patch);
 	const cached = parsedPatchCache.get(key);
 	if (cached) return cached;
 	const prefix = repository ? `${repository}/` : "";
@@ -59,9 +64,11 @@ function sectionFiles(data: WorkspaceFilesResponse, scope: WorkspaceDiffScope): 
 	return data.sections[scope];
 }
 
-function availableScopes(data: WorkspaceFilesResponse): WorkspaceDiffScope[] {
-	const available = sectionOrder.filter((scope) => sectionFiles(data, scope).length > 0);
-	return available.length > 0 ? available : ["combined"];
+function initialReviewSelection(data: WorkspaceFilesResponse): { commitSha?: string; scope: WorkspaceDiffScope } {
+	const workingScope = workingScopeOrder.find((scope) => data.sections[scope].length > 0);
+	if (workingScope) return { scope: workingScope };
+	if (data.commits[0]) return { scope: "committed", commitSha: data.commits[0].sha };
+	return { scope: "combined" };
 }
 
 function isDeferredByDefault(file: WorkspaceFileSummary) {
@@ -75,8 +82,8 @@ function canOpenRendered(file: WorkspaceFileSummary) {
 
 type ViewedRecord = Record<string, string>;
 
-function useViewedFiles(sessionId: string, scope: WorkspaceDiffScope, files: readonly WorkspaceFileSummary[]) {
-	const key = `ao.files.viewed.${sessionId}.${scope}`;
+function useViewedFiles(sessionId: string, selectionKey: string, files: readonly WorkspaceFileSummary[]) {
+	const key = `ao.files.viewed.${sessionId}.${selectionKey}`;
 	const [records, setRecords] = useState<ViewedRecord>(() => {
 		try {
 			return JSON.parse(window.localStorage.getItem(key) ?? "{}") as ViewedRecord;
@@ -115,9 +122,7 @@ export function WorkspaceReviewPane({
 	data,
 	filter,
 	onBrowseAll,
-	onEditFile,
 	onOpenFile,
-	onOpenFileInCenter,
 	sessionId,
 	split,
 }: {
@@ -125,39 +130,58 @@ export function WorkspaceReviewPane({
 	data: WorkspaceFilesResponse;
 	filter: string;
 	onBrowseAll: () => void;
-	onEditFile?: (path: string) => void;
-	onOpenFile?: (path: string, mode?: "diff" | "file" | "rendered") => void;
-	onOpenFileInCenter?: (path: string) => void;
+	onOpenFile?: (path: string, options?: FileOpenOptions) => void;
 	sessionId: string;
 	split: boolean;
 }) {
 	const { t } = useTranslation();
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
-	const scopes = useMemo(() => availableScopes(data), [data]);
-	const [scope, setScope] = useState<WorkspaceDiffScope>(() => scopes[0]);
+	const initialSelection = useMemo(() => initialReviewSelection(data), [data]);
+	const [scope, setScope] = useState<WorkspaceDiffScope>(() => initialSelection.scope);
+	const [selectedCommitSha, setSelectedCommitSha] = useState<string | undefined>(() => initialSelection.commitSha);
+	const [commitBrowserOpen, setCommitBrowserOpen] = useState(false);
 	const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set());
 	const [loadedDeferredPaths, setLoadedDeferredPaths] = useState<Set<string>>(() => new Set());
 	const [activeBatchCount, setActiveBatchCount] = useState(4);
 	const reviewRef = useRef<HTMLDivElement>(null);
 	const gutterHover = usePersistentGutterUtility(reviewRef);
 
+	const selectedCommit = useMemo(
+		() => data.commits.find((commit) => commit.sha === selectedCommitSha),
+		[data.commits, selectedCommitSha],
+	);
+	const visibleWorkingScopes = useMemo(
+		() => workingScopeOrder.filter((entry) => data.sections[entry].length > 0),
+		[data.sections],
+	);
+	const combinedWorkingCount = data.files.filter((file) => file.status !== "unmodified").length;
+	const hasWorkingChangeChoices = visibleWorkingScopes.length > 0 || combinedWorkingCount > 0;
 	useEffect(() => {
-		if (!scopes.includes(scope)) setScope(scopes[0]);
-	}, [scope, scopes]);
+		if (scope === "committed" && selectedCommit) return;
+		if (scope === "combined" && combinedWorkingCount > 0) return;
+		if (scope !== "committed" && scope !== "combined" && data.sections[scope].length > 0) return;
+		const next = initialReviewSelection(data);
+		setScope(next.scope);
+		setSelectedCommitSha(next.commitSha);
+	}, [combinedWorkingCount, data, initialSelection, scope, selectedCommit]);
 
-	const allFiles = useMemo(() => sectionFiles(data, scope), [data, scope]);
+	const allFiles = useMemo(
+		() => scope === "committed" && selectedCommit ? selectedCommit.files : sectionFiles(data, scope),
+		[data, scope, selectedCommit],
+	);
+	const reviewSelectionKey = selectedCommit ? `commit:${selectedCommit.sha}` : scope;
 	const normalizedFilter = filter.trim().toLowerCase();
 	const files = useMemo(
 		() => (normalizedFilter ? allFiles.filter((file) => `${file.path} ${file.previousPath ?? ""}`.toLowerCase().includes(normalizedFilter)) : allFiles),
 		[allFiles, normalizedFilter],
 	);
-	const { viewed, toggle: toggleViewed } = useViewedFiles(sessionId, scope, allFiles);
+	const { viewed, toggle: toggleViewed } = useViewedFiles(sessionId, reviewSelectionKey, allFiles);
 
 	useEffect(() => {
 		setCollapsedPaths(new Set(files.filter(isDeferredByDefault).map((file) => file.path)));
 		setLoadedDeferredPaths(new Set());
 		setActiveBatchCount(4);
-	}, [scope, data.workspaceVersion]);
+	}, [data.workspaceVersion, reviewSelectionKey]);
 
 	const requestedFiles = useMemo(
 		() => files.filter((file) => !isDeferredByDefault(file) || loadedDeferredPaths.has(file.path)),
@@ -172,8 +196,9 @@ export function WorkspaceReviewPane({
 				scope,
 				sessionId,
 				workspaceVersion: data.workspaceVersion,
+				commitSha: selectedCommit?.sha,
 			}),
-			enabled: paths.length > 0 && index < activeBatchCount,
+			enabled: !commitBrowserOpen && paths.length > 0 && index < activeBatchCount,
 			staleTime: Infinity,
 		})),
 	});
@@ -188,7 +213,7 @@ export function WorkspaceReviewPane({
 		for (const query of patchQueries) {
 			for (const group of query.data?.groups ?? []) {
 				try {
-					for (const metadata of parseGroupPatch(query.data?.workspaceVersion, scope, group.repository, group.patch)) {
+					for (const metadata of parseGroupPatch(query.data?.workspaceVersion, scope, selectedCommit?.sha, group.repository, group.patch)) {
 						result.set(metadata.name, metadata);
 					}
 				} catch {
@@ -198,7 +223,7 @@ export function WorkspaceReviewPane({
 			}
 		}
 		return result;
-	}, [patchQueries, scope]);
+	}, [patchQueries, scope, selectedCommit?.sha]);
 	const serverDeferredByPath = useMemo(() => {
 		const result = new Map<string, string>();
 		for (const query of patchQueries) {
@@ -209,7 +234,7 @@ export function WorkspaceReviewPane({
 		return result;
 	}, [patchQueries]);
 
-	const summaryById = useMemo(() => new Map(files.map((file) => [`${scope}:${file.path}`, file])), [files, scope]);
+	const summaryById = useMemo(() => new Map(files.map((file) => [`${reviewSelectionKey}:${file.path}`, file])), [files, reviewSelectionKey]);
 	const items = useMemo<CodeViewItem<"feedback">[]>(
 		() =>
 			files.flatMap((file) => {
@@ -222,7 +247,7 @@ export function WorkspaceReviewPane({
 					? annotation.target
 					: null;
 				return [{
-					id: `${scope}:${file.path}`,
+					id: `${reviewSelectionKey}:${file.path}`,
 					type: "diff",
 					fileDiff: metadata,
 					collapsed,
@@ -234,7 +259,7 @@ export function WorkspaceReviewPane({
 					version: (collapsed ? 1 : 0) + (activeTarget ? 2 : 0) + (fileAnnotationActive ? 4 : 0),
 				}];
 			}),
-		[annotation.target, collapsedPaths, files, metadataByPath, scope],
+		[annotation.target, collapsedPaths, files, metadataByPath, reviewSelectionKey],
 	);
 
 	const loadDiffFiles = useCallback(
@@ -244,15 +269,15 @@ export function WorkspaceReviewPane({
 			const file = files.find((candidate) => candidate.path === metadata.name);
 			if (!file) throw new Error(t("files.error.loadFile"));
 			const [before, after] = await Promise.all([
-				fetchWorkspaceFileRevision({ sessionId, path: file.path, scope, side: "before", workspaceVersion: data.workspaceVersion }),
-				fetchWorkspaceFileRevision({ sessionId, path: file.path, scope, side: "after", workspaceVersion: data.workspaceVersion }),
+				fetchWorkspaceFileRevision({ commitSha: selectedCommit?.sha, sessionId, path: file.path, scope, side: "before", workspaceVersion: data.workspaceVersion }),
+				fetchWorkspaceFileRevision({ commitSha: selectedCommit?.sha, sessionId, path: file.path, scope, side: "after", workspaceVersion: data.workspaceVersion }),
 			]);
 			if (before.binary || after.binary || before.truncated || after.truncated) throw new Error(t("files.error.loadFile"));
 			const newFile = { name: file.path, contents: after.content, cacheKey: after.revision };
 			if (metadata.type === "rename-pure") return { oldFile: null, newFile };
 			return { oldFile: { name: file.previousPath || file.path, contents: before.content, cacheKey: before.revision }, newFile };
 		},
-		[data.workspaceVersion, files, scope, sessionId, t],
+		[data.workspaceVersion, files, scope, selectedCommit?.sha, sessionId, t],
 	);
 
 	const beginLineAnnotation = useCallback((itemId: string, lineNumber: number, side: "deletions" | "additions") => {
@@ -286,22 +311,26 @@ export function WorkspaceReviewPane({
 	}, [annotation, files]);
 	const selectScope = useCallback((nextScope: WorkspaceDiffScope) => {
 		if (nextScope !== scope && annotation.target?.surface === "review") annotation.cancel();
+		setSelectedCommitSha(undefined);
+		setCommitBrowserOpen(false);
 		setScope(nextScope);
 	}, [annotation, scope]);
+	const selectCommit = useCallback((commit: WorkspaceCommitSummary) => {
+		if ((scope !== "committed" || selectedCommitSha !== commit.sha) && annotation.target?.surface === "review") annotation.cancel();
+		setSelectedCommitSha(commit.sha);
+		setScope("committed");
+		setCommitBrowserOpen(false);
+	}, [annotation, scope, selectedCommitSha]);
 
 	const retryAll = () => patchQueries.forEach((query) => void query.refetch());
 	const firstError = patchQueries.find((query) => query.error)?.error;
 	const groupError = patchQueries.flatMap((query) => query.data?.groups ?? []).flatMap((group) => group.errors ?? [])[0];
 	const loading = patchQueries.some((query) => query.isPending);
 	const viewedCount = allFiles.filter((file) => viewed.has(file.path)).length;
-
-	if (allFiles.length === 0) {
-		return (
-			<PanelMessage action={<Button onClick={onBrowseAll}>{t("files.browseAll")}</Button>}>
-				{t("files.noneChanged")}
-			</PanelMessage>
-		);
-	}
+	const fileOpenContext = selectedCommit ? { commitSha: selectedCommit.sha, scope } : { scope };
+	const hasAnyReviewFiles = data.files.some((file) => file.status !== "unmodified")
+		|| workingScopeOrder.some((entry) => data.sections[entry].length > 0)
+		|| data.commits.some((commit) => commit.files.length > 0);
 
 	return (
 		<div
@@ -311,13 +340,37 @@ export function WorkspaceReviewPane({
 			ref={reviewRef}
 		>
 			<div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-surface px-2 py-1.5">
-				{scopes.map((entry) => (
-					<Button key={entry} aria-pressed={scope === entry} onClick={() => selectScope(entry)} size="sm" type="button" variant={scope === entry ? "secondary" : "ghost"}>
-						{entry === "combined" ? t("files.reviewChanges") : t(`files.section.${entry}`)}
-						<span className="text-caption text-passive">{sectionFiles(data, entry).length}</span>
-					</Button>
-				))}
-				<div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
+				{hasWorkingChangeChoices ? <DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button aria-label={t("files.changeSource")} className="max-w-[12rem] gap-1.5" size="sm" type="button" variant={scope !== "committed" ? "secondary" : "outline"}>
+							<span className="truncate">{scope === "combined" ? t("files.reviewChanges") : scope === "committed" ? t("files.workingChanges") : t(`files.section.${scope}`)}</span>
+							<span className="text-caption text-passive">{scope === "committed" ? data.sections.unstaged.length + data.sections.staged.length + data.sections.untracked.length : allFiles.length}</span>
+							<ChevronDown aria-hidden="true" className="size-icon-sm" />
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="start" className="min-w-52">
+						{visibleWorkingScopes.map((entry) => (
+							<DropdownMenuItem key={entry} onSelect={() => selectScope(entry)}>
+								<Check aria-hidden="true" className={cn("size-icon-sm", scope === entry && !selectedCommit ? "opacity-100" : "opacity-0")} />
+								<span>{t(`files.section.${entry}`)}</span>
+								<span className="ml-auto text-caption text-passive">{data.sections[entry].length}</span>
+							</DropdownMenuItem>
+						))}
+						{scope === "combined" ? (
+							<DropdownMenuItem onSelect={() => selectScope("combined")}>
+								<Check aria-hidden="true" className="size-icon-sm" />
+								<span>{t("files.reviewChanges")}</span>
+								<span className="ml-auto text-caption text-passive">{data.files.filter((file) => file.status !== "unmodified").length}</span>
+							</DropdownMenuItem>
+						) : null}
+					</DropdownMenuContent>
+				</DropdownMenu> : null}
+				<Button aria-expanded={commitBrowserOpen} aria-pressed={scope === "committed"} className="gap-1.5" disabled={data.commits.length === 0} onClick={() => setCommitBrowserOpen((open) => !open)} size="sm" type="button" variant={scope === "committed" ? "secondary" : "ghost"}>
+					<GitCommitHorizontal aria-hidden="true" className="size-icon-sm" />
+					<span>{t("files.commits")}</span>
+					<span className="text-caption text-passive">{selectedCommit ? selectedCommit.sha.slice(0, 7) : data.commits.length}</span>
+				</Button>
+				{!commitBrowserOpen ? <div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
 					<span>{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>
 					<HeaderActionTooltip label={t("files.collapseAll")}>
 						<Button aria-label={t("files.collapseAll")} onClick={collapseAll} size="icon-sm" type="button" variant="ghost"><ChevronsDownUp aria-hidden="true" /></Button>
@@ -328,12 +381,21 @@ export function WorkspaceReviewPane({
 							setCollapsedPaths(new Set());
 						}} size="icon-sm" type="button" variant="ghost"><ChevronsUpDown aria-hidden="true" /></Button>
 					</HeaderActionTooltip>
-				</div>
+				</div> : <span className="ml-auto text-caption text-muted-foreground">{t("files.selectCommit")}</span>}
 			</div>
+			{commitBrowserOpen ? (
+				<CommitBrowser
+					commits={data.commits}
+					filter={filter}
+					onSelect={selectCommit}
+					selectedSha={selectedCommit?.sha}
+				/>
+			) : (
+				<>
 			{firstError ? <PanelMessage action={<RetryButton onClick={retryAll} />}>{firstError.message}</PanelMessage> : null}
 			{groupError ? <PanelMessage action={<RetryButton onClick={retryAll} />}>{groupError.message}</PanelMessage> : null}
 			{loading && items.length === 0 ? <PanelMessage compact>{t("files.loadingDiff")}</PanelMessage> : null}
-			{files.length === 0 ? <PanelMessage compact>{t("files.noFilterMatches")}</PanelMessage> : null}
+			{files.length === 0 ? <PanelMessage action={allFiles.length === 0 ? <Button onClick={onBrowseAll}>{t("files.browseAll")}</Button> : undefined} compact>{allFiles.length === 0 ? t(hasAnyReviewFiles ? "files.noneInSource" : "files.noneChanged") : t("files.noFilterMatches")}</PanelMessage> : null}
 			<div className="min-h-0 flex-1 overflow-hidden">
 				{items.length > 0 ? (
 					<CodeView<"feedback">
@@ -390,7 +452,7 @@ export function WorkspaceReviewPane({
 											type="button"
 											variant="ghost"
 										>
-											{isCollapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+											{isCollapsed ? <ChevronRight aria-hidden="true" className="size-icon-sm" /> : <ChevronDown aria-hidden="true" className="size-icon-sm" />}
 										</Button>
 										<span className={cn("font-mono text-xs font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
 										<button
@@ -404,31 +466,33 @@ export function WorkspaceReviewPane({
 										</button>
 										<span className="text-caption text-success">+{file.additions}</span>
 										<span className="text-caption text-error">−{file.deletions}</span>
-										{file.editable && file.fileFingerprint ? (
-											<HeaderActionTooltip label={t("files.editFile")}>
-												<Button aria-label={t("files.editFile")} onClick={(event) => { event.stopPropagation(); onEditFile?.(file.path); }} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" /></Button>
+										<div className="flex shrink-0 items-center">
+											{file.editable && file.fileFingerprint ? (
+												<HeaderActionTooltip label={t("files.editFile")}>
+											<Button aria-label={t("files.editFile")} className="size-6" onClick={(event) => { event.stopPropagation(); onOpenFile?.(file.path, { editing: true, mode: "file", scope }); }} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
+												</HeaderActionTooltip>
+											) : null}
+											<HeaderActionTooltip label={t("files.addFeedback")}>
+												<Button aria-label={t("files.addFeedback")} className="size-6" onClick={(event) => { event.stopPropagation(); annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
 											</HeaderActionTooltip>
-										) : null}
-										<HeaderActionTooltip label={t("files.addFeedback")}>
-											<Button aria-label={t("files.addFeedback")} onClick={(event) => { event.stopPropagation(); annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" /></Button>
-										</HeaderActionTooltip>
-										<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
-											<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} onClick={() => onOpenFile?.(file.path, renderedAvailable ? "rendered" : "file")} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" /></Button>
-										</HeaderActionTooltip>
-										{onOpenFileInCenter ? (
-											<HeaderActionTooltip label={t("files.openDiffInCenter")}>
-												<Button aria-label={t("files.openDiffInCenter")} onClick={() => onOpenFileInCenter(file.path)} size="icon-sm" type="button" variant="ghost"><PanelTopOpen aria-hidden="true" /></Button>
+											<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
+										<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
 											</HeaderActionTooltip>
-										) : null}
-										<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
-											<Checkbox
-											aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}
-											checked={isViewed}
-											className="size-4 border border-muted-foreground/70 bg-transparent"
-											onCheckedChange={() => toggleViewed(file)}
-											style={isViewed ? { backgroundColor: "#fff", borderColor: "#fff", color: "#000" } : undefined}
-										/>
-										</HeaderActionTooltip>
+											{onOpenFile ? (
+												<HeaderActionTooltip label={t("files.openDiffInCenter")}>
+											<Button aria-label={t("files.openDiffInCenter")} className="size-6" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
+												</HeaderActionTooltip>
+											) : null}
+											<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
+												<Checkbox
+													aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}
+													checked={isViewed}
+													className="size-4 border border-muted-foreground/70 bg-transparent"
+													onCheckedChange={() => toggleViewed(file)}
+													style={isViewed ? { backgroundColor: "#fff", borderColor: "#fff", color: "#000" } : undefined}
+												/>
+											</HeaderActionTooltip>
+										</div>
 									</div>
 									{fileAnnotationActive ? <div className="absolute right-2 top-full z-50 w-[min(32rem,calc(100%-1rem))] overflow-hidden rounded-md border border-border bg-surface shadow-xl"><FileAnnotationComposer annotation={annotation} /></div> : null}
 								</div>
@@ -445,12 +509,61 @@ export function WorkspaceReviewPane({
 						<FileCode2 aria-hidden="true" className="text-passive" />
 						<div className="min-w-0 flex-1"><p className="truncate font-mono text-xs">{file.path}</p><p className="text-caption text-muted-foreground">{file.binary ? t("files.binaryUnavailable") : deferred ? t("files.deferredDiff") : serverDeferredReason ? t("files.diffUnavailableReason", { reason: serverDeferredReason }) : t("files.loadingDiff")}</p></div>
 						{deferred ? <Button onClick={() => setLoadedDeferredPaths((current) => new Set(current).add(file.path))} size="sm" type="button" variant="outline">{t("files.loadDiff")}</Button> : null}
-						<Button onClick={() => onOpenFile?.(file.path, "file")} size="sm" type="button" variant="outline">{t("files.fileView")}</Button>
+						<Button onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: "file" })} size="sm" type="button" variant="outline">{t("files.fileView")}</Button>
 					</div>
 					);
 				})}
 			</div>
+				</>
+			)}
 		</div>
+	);
+}
+
+function CommitBrowser({ commits, filter, onSelect, selectedSha }: { commits: readonly WorkspaceCommitSummary[]; filter: string; onSelect: (commit: WorkspaceCommitSummary) => void; selectedSha?: string }) {
+	const { t } = useTranslation();
+	const normalizedFilter = filter.trim().toLowerCase();
+	const visibleCommits = normalizedFilter
+		? commits.filter((commit) => `${commit.subject} ${commit.author} ${commit.sha} ${commit.files.map((file) => file.path).join(" ")}`.toLowerCase().includes(normalizedFilter))
+		: commits;
+	return (
+		<ul className="board-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain" aria-label={t("files.commitHistory")}>
+			{visibleCommits.length === 0 ? <PanelMessage compact>{commits.length === 0 ? t("files.noCommits") : t("files.noFilterMatches")}</PanelMessage> : null}
+			{visibleCommits.map((commit) => (
+				<li key={commit.sha}>
+				<button
+					aria-current={selectedSha === commit.sha ? "true" : undefined}
+					className={cn("group block w-full border-b border-border px-3 py-3 text-left transition-col hover:bg-interactive-hover", selectedSha === commit.sha && "bg-interactive-selected")}
+					onClick={() => onSelect(commit)}
+					type="button"
+				>
+					<div className="flex min-w-0 items-start gap-2">
+						<GitCommitHorizontal aria-hidden="true" className="mt-0.5 size-icon-sm shrink-0 text-passive" />
+						<div className="min-w-0 flex-1">
+							<p className="line-clamp-2 text-xs font-medium text-foreground">{commit.subject}</p>
+							<p className="mt-1 flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
+								<span className="truncate">{commit.author}</span>
+								<span aria-hidden="true">·</span>
+								<span className="shrink-0">{formatTimeTerse(commit.timestamp)}</span>
+								<span aria-hidden="true">·</span>
+								<span className="shrink-0 font-mono">{commit.sha.slice(0, 7)}</span>
+							</p>
+						</div>
+						<span className="shrink-0 text-caption text-passive">{t("files.count", { count: commit.files.length })}</span>
+					</div>
+					<div className="mt-2 space-y-1 pl-5">
+						{commit.files.slice(0, 5).map((file) => (
+							<div className="flex min-w-0 items-center gap-2 font-mono text-2xs text-muted-foreground" key={`${commit.sha}:${file.path}`}>
+								<span className={cn("w-3 shrink-0 font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
+								<span className="truncate">{file.path}</span>
+							</div>
+						))}
+						{commit.files.length > 5 ? <p className="text-caption text-passive">{t("files.moreFiles", { count: commit.files.length - 5 })}</p> : null}
+					</div>
+				</button>
+				</li>
+			))}
+		</ul>
 	);
 }
 

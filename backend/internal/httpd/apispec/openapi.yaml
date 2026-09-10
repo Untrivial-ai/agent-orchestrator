@@ -6065,6 +6065,12 @@ paths:
           - unstaged
           - untracked
           type: string
+      - description: Exact commit SHA to read as an immutable committed-scope snapshot.
+        in: query
+        name: commitSha
+        schema:
+          description: Exact commit SHA to read as an immutable committed-scope snapshot.
+          type: string
       responses:
         "200":
           content:
@@ -6276,6 +6282,12 @@ paths:
         name: expectedRevision
         schema:
           description: Opaque revision token used for optimistic consistency checks.
+          type: string
+      - description: Exact commit SHA for a committed-scope comparison.
+        in: query
+        name: commitSha
+        schema:
+          description: Exact commit SHA for a committed-scope comparison.
           type: string
       responses:
         "200":
@@ -12180,6 +12192,10 @@ components:
       properties:
         author:
           type: string
+        files:
+          items:
+            $ref: '#/components/schemas/WorkspaceFileSummary'
+          type: array
         sha:
           type: string
         subject:
@@ -12192,6 +12208,7 @@ components:
       - subject
       - author
       - timestamp
+      - files
       type: object
     WorkspaceDiffDeferredResponse:
       properties:
@@ -12248,6 +12265,9 @@ components:
       type: object
     WorkspaceDiffRequest:
       properties:
+        commitSha:
+          description: Exact commit SHA for a committed-scope comparison.
+          type: string
         contextLines:
           maximum: 20
           minimum: 0
