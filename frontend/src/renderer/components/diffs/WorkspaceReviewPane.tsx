@@ -354,7 +354,7 @@ export function WorkspaceReviewPane({
 							<ChevronDown aria-hidden="true" className="size-icon-sm" />
 						</Button>
 					</DropdownMenuTrigger>
-					<DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-0" sideOffset={2}>
+					<DropdownMenuContent align="start" alignOffset={2} className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-0" sideOffset={0}>
 						{visibleWorkingScopes.map((entry) => (
 							<DropdownMenuItem key={entry} onSelect={() => selectScope(entry)}>
 								<Check aria-hidden="true" className={cn("size-icon-sm", scope === entry && !selectedCommit ? "opacity-100" : "opacity-0")} />
