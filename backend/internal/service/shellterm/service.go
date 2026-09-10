@@ -293,7 +293,7 @@ func (s *Service) OpenCommandTerminal(ctx context.Context, in OpenCommandTermina
 		env:                      in.Env,
 		workingDir:               workingDir,
 		title:                    in.Title,
-		exitOnCommandCompletion:  true,
+		transient:                true,
 		cleanupWorkingDirOnError: cleanupWorkingDirOnError,
 	})
 	if err != nil {
@@ -358,7 +358,7 @@ type openTerminalConfig struct {
 	sessionID                domain.SessionID
 	workingDir               string
 	title                    string
-	exitOnCommandCompletion  bool
+	transient                bool
 	cleanupWorkingDirOnError bool
 }
 
@@ -378,11 +378,13 @@ func (s *Service) openTerminal(ctx context.Context, cfg openTerminalConfig) (She
 	// is not a session row and no sessions record is ever created. The
 	// shellterm- prefix keeps the two namespaces disjoint.
 	handle, err := s.runtime.Create(ctx, ports.RuntimeConfig{
-		SessionID:               domain.SessionID(handleID),
-		WorkspacePath:           cfg.workingDir,
-		Argv:                    cfg.argv,
-		Env:                     cfg.env,
-		ExitOnCommandCompletion: cfg.exitOnCommandCompletion,
+		SessionID:     domain.SessionID(handleID),
+		WorkspacePath: cfg.workingDir,
+		Argv:          cfg.argv,
+		Env:           cfg.env,
+		// A user shell's exit is final, just like a trusted command's exit.
+		// Durability across app launches is a separate persistence policy.
+		ExitOnCommandCompletion: true,
 	})
 	if err != nil {
 		if cfg.cleanupWorkingDirOnError {
@@ -401,7 +403,7 @@ func (s *Service) openTerminal(ctx context.Context, cfg openTerminalConfig) (She
 		WorkingDir: cfg.workingDir,
 		Title:      cfg.title,
 		AppRunID:   s.appRunID,
-		Transient:  cfg.exitOnCommandCompletion,
+		Transient:  cfg.transient,
 		CreatedAt:  s.now().UTC(),
 	}
 	if err := s.store.InsertShellTerminal(ctx, rec); err != nil {

@@ -126,8 +126,9 @@ func (f *fakeShellRuntime) IsChildAlive(ctx context.Context, handle ports.Runtim
 
 // fakeShellTerminalStore is an in-memory Store keyed by handle id.
 type fakeShellTerminalStore struct {
-	records   []ShellTerminalRecord
-	insertErr error
+	records           []ShellTerminalRecord
+	insertErr         error
+	deleteErrByHandle map[string]error
 }
 
 func (f *fakeShellTerminalStore) InsertShellTerminal(_ context.Context, rec ShellTerminalRecord) error {
@@ -188,6 +189,9 @@ func (f *fakeShellTerminalStore) SelectShellTerminalsFromPreviousAppRuns(_ conte
 }
 
 func (f *fakeShellTerminalStore) DeleteShellTerminalByHandleID(_ context.Context, handleID string) (bool, error) {
+	if err := f.deleteErrByHandle[handleID]; err != nil {
+		return false, err
+	}
 	for i, rec := range f.records {
 		if rec.HandleID == handleID {
 			f.records = append(f.records[:i], f.records[i+1:]...)
@@ -1739,6 +1743,32 @@ func TestDesktopRelaunchPrunesExitedShellAndHost(t *testing.T) {
 	}
 	if len(st.records) != 0 || !reflect.DeepEqual(rt.destroyed, []string{"shell-exited"}) || rt.aliveByHandle["shell-exited"] {
 		t.Fatalf("rows = %+v, destroyed = %v", st.records, rt.destroyed)
+	}
+}
+
+func TestReapContinuesAfterDurableShellDeleteError(t *testing.T) {
+	rt := newFakeShellRuntime()
+	rt.aliveByHandle["auth"] = true
+	st := &fakeShellTerminalStore{
+		records: []ShellTerminalRecord{
+			{HandleID: "exited-shell", AppRunID: "previous"},
+			{HandleID: "auth", AppRunID: "previous", Transient: true},
+		},
+		deleteErrByHandle: map[string]error{"exited-shell": errors.New("delete failed")},
+	}
+	svc := newTestService(rt, st, nil)
+	if _, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rt.destroyed, []string{"exited-shell", "auth"}) || rt.aliveByHandle["auth"] {
+		t.Fatalf("later auth runtime was not cleaned: destroyed=%v, alive=%v", rt.destroyed, rt.aliveByHandle)
+	}
+	if len(st.records) != 1 || st.records[0].HandleID != "exited-shell" {
+		t.Fatalf("records = %+v, want only the failed delete retained for retry", st.records)
+	}
+	st.deleteErrByHandle = nil
+	if _, err := svc.ReapShellTerminalsFromPreviousAppRuns(context.Background()); err != nil || len(st.records) != 0 {
+		t.Fatalf("retry: err=%v, records=%+v", err, st.records)
 	}
 }
 
