@@ -296,7 +296,11 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		setAuthWorkflow((current) => current?.terminal.handleId === workflow.terminal.handleId ? { ...current, phase: "verifying", reason: undefined } : current);
 		const result = await checkAuth(workflow.agentId);
 		if (authWorkflowRef.current?.terminal.handleId !== workflow.terminal.handleId) return;
-		if (result?.agent.authStatus === "authorized") {
+		// A completed interactive login is the evidence here, and after it the
+		// CLI reports credentials present — which AO records as "configured",
+		// never "authorized", since it still has not reached the provider.
+		// Requiring "authorized" would leave the login terminal open forever.
+		if (result?.agent.authStatus === "authorized" || result?.agent.authStatus === "configured") {
 			try {
 				await closeAuthTerminal(workflow.terminal.handleId);
 			} catch (error) {
@@ -312,6 +316,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 			...current,
 			phase: result?.agent.authStatus === "unauthorized" ? "unauthorized" : "unverified",
 			reason: result?.agent.authStatus === "unauthorized" ? t("settings.harness.notLoggedIn") : t("settings.harness.loginUnknown"),
+
 		} : current);
 	}, [checkAuth, queryClient, t]);
 
@@ -430,7 +435,11 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 									? (authPlan.reason ?? t("settings.harness.authFailed"))
 									: authStatus === "unauthorized"
 										? (isSetupAction ? t("settings.harness.notConfigured") : t("settings.harness.notLoggedIn"))
-										: isSetupAction ? t("settings.harness.configurationUnknown") : t("settings.harness.loginUnknown");
+										// A credential exists but nothing has proven it works. It reads as
+										// neutral, never as logged in: a revoked key looks identical on disk.
+										: authStatus === "configured"
+											? t("settings.harness.loginUnverified")
+											: isSetupAction ? t("settings.harness.configurationUnknown") : t("settings.harness.loginUnknown");
 					const methodLabel = installMethodLabel(selectedMethod, plan?.method);
 					const availableMethodsLabel = availableMethods.length > 0
 						? new Intl.ListFormat(i18n.resolvedLanguage ?? "en", { style: "short", type: "conjunction" }).format(availableMethods.map((method) => installMethodLabel(method) ?? method.label))
@@ -457,7 +466,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 										{authState?.pending ? t("settings.harness.loggingIn") : isSetupAction ? t("settings.harness.setup") : t("settings.harness.login")}
 									</Button>
 								)}
-								{authPlan.available && (authStatus === "unknown" || authStatus === "unauthorized") ? (
+								{authPlan.available && (authStatus === "unknown" || authStatus === "unauthorized" || authStatus === "configured") ? (
 									<Button disabled={authState?.checking} size="sm" variant="outline" onClick={() => void checkAuth(agentId)}>
 										{authState?.checking ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
 										{authState?.checking ? t("settings.harness.checkingLogin") : isSetupAction ? t("settings.harness.checkConfiguration") : t("settings.harness.checkLogin")}

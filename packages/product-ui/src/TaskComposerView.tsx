@@ -26,7 +26,9 @@ const ATTACHMENT_ROW_HEIGHT = 70;
 
 export type TaskComposerAgentOption = {
 	authentication: {
-		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+		// "configured" means a credential exists locally but nothing has proven
+		// it valid — neither signed in nor signed out.
+		state: "authorized" | "unauthorized" | "unknown" | "not_applicable" | "configured";
 		freshness: "fresh" | "stale" | "checking";
 	};
 	effectiveReadiness: "ready" | "not_ready" | "unknown";

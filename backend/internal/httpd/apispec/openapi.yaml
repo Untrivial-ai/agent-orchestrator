@@ -6869,6 +6869,7 @@ components:
           - unauthorized
           - unknown
           - not_applicable
+          - configured
           type: string
       required:
       - state
@@ -6890,12 +6891,15 @@ components:
     AgentInfo:
       properties:
         authStatus:
-          description: Advisory local auth probe result. authorized means a recent
-            local probe passed; spawn remains the authoritative validation point.
+          description: Auth probe result. authorized means a provider round-trip accepted
+            the credential; configured means a credential exists locally but was never
+            validated, and must not be presented as ready; spawn remains the authoritative
+            validation point.
           enum:
           - authorized
           - unauthorized
           - unknown
+          - configured
           type: string
         id:
           type: string

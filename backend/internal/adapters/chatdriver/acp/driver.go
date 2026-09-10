@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
@@ -604,9 +605,76 @@ func extensionSupported(meta map[string]any, name string) bool {
 
 func pointer[T any](value T) *T { return &value }
 
+// acpAuthRejectionPhrases are the provider rejections that mean "this
+// credential was refused", as opposed to any other turn failure. They are
+// matched case-insensitively against the error text of an ACP request error.
+//
+// The list is deliberately narrow and phrase-based rather than keyword-based.
+// A bare "auth" or "401" substring would catch a model refusing to discuss
+// authentication, or a tool echoing an HTTP status from the user's own code,
+// and each false positive tells a working user their session expired.
+var acpAuthRejectionPhrases = []string{
+	"api key is invalid",
+	"invalid api key",
+	"x-api-key header is required",
+	"invalid bearer token",
+	"oauth access token is invalid",
+	"oauth token has expired",
+	"authentication_error",
+	"invalid_api_key",
+	"unauthorized",
+	"credentials have expired",
+	"please run /login",
+	"please run `claude login`",
+}
+
+// isACPAuthRequired reports whether err is the agent telling us the credential
+// was refused, so the caller can raise a reauth prompt instead of a generic
+// turn failure.
+//
+// JSON-RPC -32000 is the protocol's own auth-required code, but agents do not
+// reliably use it: a credential revoked mid-session surfaces as the provider's
+// HTTP rejection wrapped in a generic error. Recognizing those shapes is what
+// makes a revoked key produce a reauth prompt on the very next turn — the one
+// correction that works no matter which credential source or provider is in
+// play, including credential chains AO cannot inspect at all.
 func isACPAuthRequired(err error) bool {
 	var requestErr *acpsdk.RequestError
-	return errors.As(err, &requestErr) && requestErr.Code == -32000
+	if !errors.As(err, &requestErr) {
+		return false
+	}
+	switch requestErr.Code {
+	case -32000, // ACP auth_required
+		401, 403, // providers that pass the HTTP status through as the RPC code
+		-32001: // auth_required as emitted by some agent builds
+		return true
+	}
+	return acpErrorMentionsAuthRejection(requestErr)
+}
+
+// acpErrorMentionsAuthRejection scans an ACP request error's message and its
+// string-valued data fields for a known provider rejection phrase.
+func acpErrorMentionsAuthRejection(requestErr *acpsdk.RequestError) bool {
+	texts := []string{requestErr.Message}
+	switch data := requestErr.Data.(type) {
+	case string:
+		texts = append(texts, data)
+	case map[string]any:
+		for _, value := range data {
+			if text, ok := value.(string); ok {
+				texts = append(texts, text)
+			}
+		}
+	}
+	for _, text := range texts {
+		lowered := strings.ToLower(text)
+		for _, phrase := range acpAuthRejectionPhrases {
+			if strings.Contains(lowered, phrase) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isACPMethodNotFound reports whether err is a JSON-RPC -32601 "Method not

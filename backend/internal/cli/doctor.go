@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
@@ -184,7 +185,7 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 	for _, harness := range doctorHarnesses {
 		checks = append(checks, c.checkHarness(ctx, harness))
 	}
-	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
+	checks = append(checks, c.checkClaudeAuth(ctx), c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
 	return checks
 }
 
@@ -421,6 +422,75 @@ func (c *commandContext) checkHarness(ctx context.Context, harness harnessProbe)
 		}
 	}
 	return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: harness.Name, Message: fmt.Sprintf("%s resolves to %s (%s)", harness.BinaryName, path, version)}
+}
+
+// checkClaudeAuth reports what credential Claude Code will actually use, and
+// is explicit that AO has not validated it.
+//
+// It is modelled on the github-token check, with one deliberate difference:
+// github-token reaches GitHub, so it can say "valid". This check only reads
+// the CLI's own view, so its best outcome is "configured" — a credential is
+// present and AO cannot tell whether it works. Reporting that as PASS/valid is
+// exactly the failure this check exists to expose.
+//
+// The high-value field is apiKeySource. It is populated only when an
+// environment variable or key helper overrides a subscription login, which is
+// how a stale ANTHROPIC_API_KEY inherited from a shell profile silently
+// shadows a working claude.ai account.
+func (c *commandContext) checkClaudeAuth(ctx context.Context) doctorCheck {
+	const name = "claude-auth"
+	path, err := c.deps.LookPath("claude")
+	if err != nil || path == "" {
+		return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: "skipped: claude not found in PATH"}
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	out, cmdErr := c.deps.CommandOutput(reqCtx, path, "auth", "status")
+	report, ok := claudecode.ParseAuthReport(out)
+	if !ok {
+		msg := "`claude auth status` output could not be parsed, so auth state is unknown"
+		if cmdErr != nil {
+			msg = fmt.Sprintf("%s (%v)", msg, cmdErr)
+		}
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionAgents, Name: name, Message: msg}
+	}
+	if !report.LoggedIn {
+		return doctorCheck{
+			Level: doctorFail, Section: doctorSectionAgents, Name: name,
+			Message: "claude reports signed out; run `claude login`",
+		}
+	}
+
+	details := []string{}
+	if report.AuthMethod != "" {
+		details = append(details, "method: "+report.AuthMethod)
+	}
+	if report.SubscriptionType != "" {
+		details = append(details, "plan: "+report.SubscriptionType)
+	}
+	if report.APIProvider != "" {
+		details = append(details, "provider: "+report.APIProvider)
+	}
+	suffix := ""
+	if len(details) > 0 {
+		suffix = " (" + strings.Join(details, ", ") + ")"
+	}
+	if report.APIKeySource != "" {
+		// Not a failure — the key may well be valid — but it is the single
+		// most common cause of "everything looks fine and every turn 401s",
+		// so it must be visible rather than folded into a PASS.
+		return doctorCheck{
+			Level: doctorWarn, Section: doctorSectionAgents, Name: name,
+			Message: fmt.Sprintf(
+				"credentials come from %s, which overrides any claude.ai login%s; AO has not validated them — if turns fail with 401, unset %s",
+				report.APIKeySource, suffix, report.APIKeySource,
+			),
+		}
+	}
+	return doctorCheck{
+		Level: doctorPass, Section: doctorSectionAgents, Name: name,
+		Message: fmt.Sprintf("claude reports credentials configured%s; not validated against the provider", suffix),
+	}
 }
 
 // checkCodexLaunchFlags smoke-tests AO's codex launch surface against the

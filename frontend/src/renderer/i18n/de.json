@@ -1716,6 +1716,7 @@
 	"settings.harness.loggedIn": "Logged in",
 	"settings.harness.configured": "Configured",
 	"settings.harness.loginUnknown": "Login status unknown",
+	"settings.harness.loginUnverified": "Configured, unverified",
 	"settings.harness.configurationUnknown": "Configuration status unknown",
 	"settings.harness.loggingIn": "Opening…",
 	"settings.harness.login": "Login",

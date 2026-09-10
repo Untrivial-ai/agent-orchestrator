@@ -168,6 +168,10 @@ func TestDoctorChecksHarnessVersions(t *testing.T) {
 			if name == "/bin/codex" && len(args) > 0 && (args[0] == "--dangerously-bypass-hook-trust" || args[0] == "features") {
 				return []byte("ok\n"), nil
 			}
+			// So does the claude-auth check.
+			if name == "/bin/claude" && len(args) == 2 && args[0] == "auth" && args[1] == "status" {
+				return []byte(`{"loggedIn":true,"authMethod":"claude.ai"}`), nil
+			}
 			t.Fatalf("unexpected harness command: %s %v", name, args)
 			return nil, nil
 		default:
@@ -705,5 +709,74 @@ func writeHooksLogLines(t *testing.T, dataDir string, lines ...string) {
 	content := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(dataDir, hooksLogName), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDoctorClaudeAuthSkipsWhenNotInstalled(t *testing.T) {
+	c := doctorContext(t, nil, nil)
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorPass || !strings.Contains(check.Message, "skipped") {
+		t.Fatalf("check = %+v, want a skipped PASS", check)
+	}
+}
+
+// The best outcome this check can report is "configured": it reads the CLI's
+// own view and never reaches the provider, so claiming validity here would
+// reproduce the very failure the check exists to surface.
+func TestDoctorClaudeAuthNeverClaimsTheCredentialIsValid(t *testing.T) {
+	c := doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
+		func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(`{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"pro","apiProvider":"firstParty"}`), nil
+		})
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorPass {
+		t.Fatalf("level = %q, want PASS", check.Level)
+	}
+	if !strings.Contains(check.Message, "not validated") {
+		t.Fatalf("message must say the credential is unvalidated: %q", check.Message)
+	}
+	for _, want := range []string{"claude.ai", "pro", "firstParty"} {
+		if !strings.Contains(check.Message, want) {
+			t.Fatalf("message = %q, want it to mention %q", check.Message, want)
+		}
+	}
+}
+
+// The outage this whole change came from: a stale key in a shell profile
+// shadowing a working subscription. apiKeySource is the one field that names
+// it, so it must not be folded into a silent PASS.
+func TestDoctorClaudeAuthWarnsWhenAnEnvKeyOverridesTheLogin(t *testing.T) {
+	c := doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
+		func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(`{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","authMethod":"claude.ai"}`), nil
+		})
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn {
+		t.Fatalf("level = %q, want WARN", check.Level)
+	}
+	if !strings.Contains(check.Message, "ANTHROPIC_API_KEY") || !strings.Contains(check.Message, "overrides") {
+		t.Fatalf("message = %q, want it to name the overriding variable", check.Message)
+	}
+}
+
+func TestDoctorClaudeAuthFailsWhenSignedOut(t *testing.T) {
+	c := doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
+		func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(`{"loggedIn":false}`), nil
+		})
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorFail || !strings.Contains(check.Message, "claude login") {
+		t.Fatalf("check = %+v, want a FAIL pointing at claude login", check)
+	}
+}
+
+func TestDoctorClaudeAuthWarnsOnUnparsableOutput(t *testing.T) {
+	c := doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
+		func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("unsupported subcommand on this version"), errors.New("exit status 1")
+		})
+	check := c.checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn {
+		t.Fatalf("level = %q, want WARN — unparsable output proves nothing either way", check.Level)
 	}
 }
