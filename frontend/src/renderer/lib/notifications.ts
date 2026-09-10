@@ -15,6 +15,9 @@ export const NOTIFICATION_PAGE_SIZE = 100;
 
 const EVENTSOURCE_CLOSED = 2;
 
+const notificationClearGenerations = new WeakMap<QueryClient, number>();
+const notificationTransportResets = new WeakMap<QueryClient, Set<() => void>>();
+
 /**
  * Only these two kinds describe something still waiting on the user.
  * `pr_merged` / `pr_closed_unmerged` report something that already happened.
@@ -231,12 +234,29 @@ export function markAllCachedNotificationsRead(
 }
 
 export function clearAllCachedNotifications(queryClient: QueryClient): void {
+	const nextGeneration = (notificationClearGenerations.get(queryClient) ?? 0) + 1;
+	notificationClearGenerations.set(queryClient, nextGeneration);
+	for (const reset of [...(notificationTransportResets.get(queryClient) ?? [])]) reset();
+
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 		queryClient.setQueryData<NotificationsCache>(queryKey, {
 			pageParams: [""],
 			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
 		});
 	}
+}
+
+function registerNotificationTransportReset(queryClient: QueryClient, reset: () => void): () => void {
+	let resets = notificationTransportResets.get(queryClient);
+	if (!resets) {
+		resets = new Set();
+		notificationTransportResets.set(queryClient, resets);
+	}
+	resets.add(reset);
+	return () => {
+		resets?.delete(reset);
+		if (resets?.size === 0) notificationTransportResets.delete(queryClient);
+	};
 }
 
 export function getCachedNotifications(cache: NotificationsCache | undefined): NotificationDTO[] {
@@ -334,6 +354,7 @@ export function createNotificationsTransport(
 				source?.close();
 				source = undefined;
 				sourceBaseUrl = baseUrl;
+				const clearGeneration = notificationClearGenerations.get(queryClient) ?? 0;
 				try {
 					source = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/notifications/stream`);
 					source.onopen = () => {
@@ -344,6 +365,7 @@ export function createNotificationsTransport(
 						if (source?.readyState === EVENTSOURCE_CLOSED) scheduleRetry();
 					};
 					source.addEventListener("notification_created", (event) => {
+						if (clearGeneration !== (notificationClearGenerations.get(queryClient) ?? 0)) return;
 						const notification = parseNotificationEvent(event);
 						if (!notification) return;
 						const inserted = mergeUnreadNotification(queryClient, notification);
@@ -361,6 +383,7 @@ export function createNotificationsTransport(
 					// PR stopped waiting on a merge). Patch the row live so an open
 					// panel reflects that without waiting for a refetch.
 					source.addEventListener("notification_resolved", (event) => {
+						if (clearGeneration !== (notificationClearGenerations.get(queryClient) ?? 0)) return;
 						const notification = parseNotificationEvent(event);
 						if (!notification) return;
 						applyResolvedNotification(queryClient, notification);
@@ -369,6 +392,11 @@ export function createNotificationsTransport(
 					source = undefined;
 				}
 			};
+			const removeTransportReset = registerNotificationTransportReset(queryClient, () => {
+				source?.close();
+				source = undefined;
+				connectSource();
+			});
 
 			const removeDaemonListener = aoBridge.daemon.onStatus(() => {
 				connectSource();
@@ -382,6 +410,7 @@ export function createNotificationsTransport(
 
 			return () => {
 				if (retryTimer) clearTimeout(retryTimer);
+				removeTransportReset();
 				removeDaemonListener();
 				removeBaseUrlListener();
 				source?.close();

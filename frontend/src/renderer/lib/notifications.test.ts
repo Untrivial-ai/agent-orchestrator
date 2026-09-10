@@ -37,6 +37,7 @@ vi.mock("./bridge", () => ({
 
 import {
 	applyResolvedNotification,
+	clearAllCachedNotifications,
 	createNotificationsTransport,
 	fetchNotificationsPage,
 	getCachedNotifications,
@@ -409,6 +410,26 @@ describe("createNotificationsTransport", () => {
 			body: "The agent is waiting for your response.",
 			type: "needs_input",
 		});
+	});
+
+	it("ignores queued created events from the stream that was open before clear-all", () => {
+		const qc = queryClient();
+		createNotificationsTransport(qc).connect();
+		const staleSource = EventSourceStub.instances[0];
+
+		clearAllCachedNotifications(qc);
+		const freshSource = EventSourceStub.instances[1];
+		staleSource.dispatch("notification_created", notification({ id: "stale" }));
+
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([]);
+		expect(showNotificationMock).not.toHaveBeenCalled();
+
+		freshSource.dispatch("notification_created", notification({ id: "fresh" }));
+
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([
+			expect.objectContaining({ id: "fresh" }),
+		]);
+		expect(showNotificationMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("patches resolvedAt on live unread/all caches when AO closes the issue", () => {
