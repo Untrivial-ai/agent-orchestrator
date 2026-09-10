@@ -60,7 +60,8 @@ func TestLiveJournalSkipsNativeDeltaAndClosesSubscribers(t *testing.T) {
 	}
 	journal.close()
 	// A final buffered edge may precede the closed-channel signal.
-	for range sub.Changed() {
+	for open := true; open; {
+		_, open = <-sub.Changed()
 	}
 	sub.Close()
 	late := journal.subscribe()

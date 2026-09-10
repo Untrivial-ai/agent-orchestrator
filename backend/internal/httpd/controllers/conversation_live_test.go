@@ -255,7 +255,8 @@ func TestConversationLiveStreamPrecedesPersistenceAndReconcilesSnapshot(t *testi
 	cancel()
 	done := make(chan struct{})
 	go func() {
-		for range call.sub.Changed() {
+		for open := true; open; {
+			_, open = <-call.sub.Changed()
 		}
 		close(done)
 	}()

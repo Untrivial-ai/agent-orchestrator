@@ -37,7 +37,7 @@ export function conversationLiveNeedsSnapshot(snapshot: ConversationSnapshot | u
 		(snapshot.activeBranchId ?? "") !== live.branchId ||
 		(snapshot.liveSequence ?? 0) < Math.max(live.afterSequence, live.resetSequence)) return true;
 	const affectedItems = new Set(live.events.map((event) => event.providerItemId));
-	const affectedTurns = new Set(live.events.filter((event) => event.kind === "turn.completed").map((event) => event.providerTurnId));
+	const affectedTurns = new Set(live.events.filter((event) => event.kind === "turn.completed" && event.providerTurnId).map((event) => event.providerTurnId));
 	return snapshot.items.some((item) => item.kind === "message" && item.providerItemId &&
 		(affectedItems.has(item.providerItemId) || affectedTurns.has(snapshot.turns.find((turn) => turn.id === item.turnId)?.providerTurnId)) &&
 		item.liveGeneration !== undefined &&
@@ -56,6 +56,7 @@ export function applyConversationLive(snapshot: ConversationSnapshot | undefined
 		? (message.liveSequence ?? 0) : (snapshot.liveSequence ?? 0);
 	for (const event of live.events) {
 		if (event.kind === "turn.completed") {
+			if (!event.providerTurnId) continue;
 			const turn = snapshot.turns.find((turn) => turn.providerTurnId === event.providerTurnId);
 			for (const [key, item] of messages) {
 				if (event.sequence > checkpoint(item) && item.streaming &&
@@ -75,7 +76,7 @@ export function applyConversationLive(snapshot: ConversationSnapshot | undefined
 			...(current ?? {
 				kind: "message", id: `live/${live.generation}/${event.providerItemId}`,
 				providerItemId: event.providerItemId,
-				turnId: snapshot.turns.find((turn) => turn.providerTurnId === event.providerTurnId)?.id,
+				turnId: event.providerTurnId ? snapshot.turns.find((turn) => turn.providerTurnId === event.providerTurnId)?.id : undefined,
 				// Provisional rows follow durable rows until SQLite assigns their sequence.
 				sequence: snapshot.latestSequence + event.sequence, revision: 0,
 				role: "assistant", origin: "provider", createdAt: event.createdAt,

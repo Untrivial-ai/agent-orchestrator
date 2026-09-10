@@ -61,6 +61,12 @@ describe("live text reconciliation", () => {
 		const saved = { ...snapshot, liveSequence: 1, items: [{ ...snapshot.items[0], text: "hello" }] } as ConversationSnapshot;
 		expect(applyConversationLive(saved, repeated)?.items).toEqual(saved.items);
 	});
+	it("does not assign an unidentified provider turn to a queued local turn", () => {
+		const live = frame(["hello"]);
+		live.events[0].providerTurnId = undefined;
+		const queued = { ...snapshot, items: [], turns: [{ ...snapshot.turns[0], providerTurnId: undefined }] };
+		expect(applyConversationLive(queued, live)?.items[0]).toMatchObject({ text: "hello", turnId: undefined });
+	});
 	it("honors final text corrections and completion without a final message snapshot", () => {
 		const complete = frame();
 		complete.events.push({ sequence: 3, kind: "message.completed", providerItemId: "reply", text: "Corrected answer", createdAt: "now" });

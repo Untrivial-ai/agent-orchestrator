@@ -2180,6 +2180,7 @@ type ConversationLiveResponse struct {
 	Events         []ConversationLiveEventResponse `json:"events"`
 }
 
+// ConversationLiveEventResponse is one provider text observation in a live frame.
 type ConversationLiveEventResponse struct {
 	Sequence       int64  `json:"sequence"`
 	Kind           string `json:"kind" enum:"message.delta,message.completed,turn.completed"`
