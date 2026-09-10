@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -534,3 +535,122 @@ const (
 	PromptDeliveryAfterStart  PromptDeliveryStrategy = "after_start"
 	PromptDeliveryCustomAgent PromptDeliveryStrategy = "custom_agent"
 )
+
+// ErrLaunchNotReady is returned by a LaunchGate that refuses a spawn. AO must
+// surface it instead of creating a child, so a session card never represents a
+// child that was never able to become ready.
+var ErrLaunchNotReady = errors.New("agent: launch not ready")
+
+// LaunchGate is an optional, daemon-owned contract invoked after the workspace
+// exists and the child argv is final, but before any child process is created.
+//
+// It exists because process creation is not successful startup. An agent can be
+// spawned and then stop before its agent loop -- at a workspace-trust prompt, at
+// a permission acknowledgement, or on a conversation that no longer exists --
+// and AO would report that as ordinary work in progress. The gate is the one
+// place where a caller still holds every trusted value (session, workspace, git
+// common dir, resolved permissions, exact argv) and the child does not yet
+// exist, so it can contribute a narrow child environment or refuse visibly.
+//
+// It deliberately mirrors the existing pre-launch agent-binary check: same
+// position in Spawn, same fail-closed shape, same rollback. Nil disables it and
+// leaves spawn behaviour byte-identical.
+type LaunchGate interface {
+	PreLaunch(ctx context.Context, req PreLaunchRequest) (PreLaunchDecision, error)
+}
+
+// PreLaunchRequest carries only daemon-owned values. Every field is resolved by
+// AO itself; nothing here is supplied by the task or by the agent.
+type PreLaunchRequest struct {
+	SessionID     string
+	Kind          domain.SessionKind
+	Harness       domain.AgentHarness
+	WorkspacePath string
+	// GitCommonDir is the workspace's resolved git common directory, empty when
+	// the workspace is not a git worktree. A gate that verifies AO-created
+	// worktree provenance needs it, and must not infer it from WorkspacePath.
+	GitCommonDir string
+	Permissions  PermissionMode
+	// Argv is the exact child command line, after adapter resolution and after
+	// the binary check. A gate may read it to confirm that a resolved
+	// permission mode actually reaches the child, but must not rewrite it.
+	Argv []string
+	// Env is the resolved child environment as it stands immediately before the
+	// child is created. It is a copy: mutating it has no effect, and a gate
+	// contributes through PreLaunchDecision.Env instead.
+	//
+	// A gate cannot do its job without this. An agent's own configuration root
+	// is frequently an environment variable -- Claude reads CLAUDE_CONFIG_DIR --
+	// and AO or its operator may already have set one. A gate that assumed the
+	// default root would write its state to a file the child never reads, and
+	// the child would still stop at the prompt that state was meant to answer,
+	// with every observable surface reporting that the state exists. That exact
+	// discrepancy was observed live: trust recorded true in the home root for
+	// the precise worktree paths, and absent from the effective inherited root
+	// the reviewer child actually used.
+	Env map[string]string
+	// LaunchID identifies this attempt, and is created before the gate is asked
+	// so a decision can be bound to the launch it was made for. Without it a
+	// gate cannot tell a current child from a replacement, which is what lets a
+	// stale handshake make a new launch look ready.
+	LaunchID string
+	// ConversationID is the provider conversation this child will resume, empty
+	// for a fresh one. A gate that must reason about resume validity needs to
+	// know which conversation is being restored, not merely that one is.
+	ConversationID string
+	// Role distinguishes the session's own agent from a reviewer sidecar
+	// launched beside it. Both create children, by separate paths, and a gate
+	// that saw only one of them would leave the other able to strand silently.
+	Role LaunchRole
+}
+
+// LaunchRole names which child a gate is being asked about.
+type LaunchRole string
+
+const (
+	// LaunchRoleWorker is the session's own agent, created by Spawn.
+	LaunchRoleWorker LaunchRole = "worker"
+	// LaunchRoleReviewer is the reviewer sidecar, created by the review
+	// launcher on its own path.
+	LaunchRoleReviewer LaunchRole = "reviewer"
+)
+
+// PreLaunchDecision is a gate's answer. The zero value refuses, so a gate that
+// returns nothing by mistake stops the launch rather than waving it through.
+type PreLaunchDecision struct {
+	// Env is merged into the child environment. Keys already set are not
+	// replaced: a gate contributes, it does not take over the environment.
+	Env map[string]string
+	// EnvOverride replaces keys that are already set, which Env deliberately
+	// cannot do. It is separate from Env so that taking ownership of a variable
+	// is a visible act rather than a side effect of contributing one.
+	//
+	// It exists for one narrow case: an agent whose configuration root is chosen
+	// by the environment. Claude reads CLAUDE_CONFIG_DIR, and an operator or an
+	// outer process may already have set it. A gate that can only contribute is
+	// then unable to put the child and whatever seeds the child's state in the
+	// same root -- it writes trust to the root it owns, the child reads the root
+	// it inherited, and the child stops at a prompt whose answer exists in a
+	// file it never opens. That was observed live, and it is why contribute-only
+	// is not enough.
+	//
+	// AO's own variables are never overridable: see LaunchGateProtectedEnv. A
+	// gate may take a variable the agent owns; it may not take one the daemon
+	// owns.
+	EnvOverride map[string]string
+	// Reason is required when Allow is false and is surfaced to the caller.
+	Reason string
+	// PromptKind optionally names the machine-readable blocker a gate
+	// recognised, for example workspace_trust or bypass_acknowledgement.
+	PromptKind string
+	Allow      bool
+}
+
+
+// LaunchGateProtectedEnv reports whether a launch gate is forbidden to override
+// this variable. AO's own names carry session identity and callback wiring into
+// the child; rewriting them could redirect a session's activity reporting or its
+// data store, which is a different power from choosing an agent's config root.
+func LaunchGateProtectedEnv(key string) bool {
+	return strings.HasPrefix(key, "AO_")
+}

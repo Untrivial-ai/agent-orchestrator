@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitydispatch"
 	agentregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/container/dockerreap"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/launchgate/claudetrust"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
@@ -245,6 +247,10 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Scratch:  scratchWS,
 		Projects: store,
 	})
+	// One gate, constructed once, given to both paths that create a Claude
+	// child. Two roots is the defect it exists to close, so two gates -- or one
+	// gate on only one of the two paths -- would reintroduce it.
+	launchGate := claudeLaunchGate(cfg.DataDir)
 	mgr := sessionmanager.New(sessionmanager.Deps{
 		Runtime:             runtime,
 		Agents:              agents,
@@ -265,6 +271,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Logger:              log,
 		ReconcileWorkers:    startupReconcileWorkers,
 		CodexOperationGate:  codexOperationGate,
+		LaunchGate:          launchGate,
 	})
 	mgr.SetAgentReadiness(agentReadiness)
 	scmProvider := newMultiSCMProvider(cfg.GitLab, log)
@@ -298,7 +305,8 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Projects: store,
 		Launcher: reviewcore.NewLauncher(reviewers, runtime, cfg.DataDir,
 			reviewcore.WithRunFilePath(cfg.RunFilePath),
-			reviewcore.WithAgentAuth(reviewerAgentAuth{readiness: agentReadiness})),
+			reviewcore.WithAgentAuth(reviewerAgentAuth{readiness: agentReadiness}),
+			reviewcore.WithLaunchGate(launchGate)),
 	})
 	reviewOpts := []reviewsvc.Option{
 		reviewsvc.WithLifecycleReducer(lcm),
@@ -616,3 +624,24 @@ func (c chatLauncher) AbortChatHandoff(id domain.SessionID) {
 func (c chatLauncher) StopChat(ctx context.Context, id domain.SessionID) error {
 	return c.svc.StopChat(ctx, id)
 }
+
+
+// claudeLaunchGate builds the Claude launch gate from the daemon's own
+// configured data directory, so a session's config root lives beside the data
+// AO already owns rather than in an operator's home or a path chosen by an
+// environment variable. Choosing the root from anywhere the daemon does not own
+// is how the child and the writer end up in different roots, which is the
+// defect this gate exists to close.
+//
+// An empty data directory yields no gate. That keeps embedders and focused
+// tests that pass no data directory on exactly the behaviour they had before.
+func claudeLaunchGate(dataDir string) ports.LaunchGate {
+	if strings.TrimSpace(dataDir) == "" {
+		return nil
+	}
+	return claudetrust.Gate{Base: filepath.Join(dataDir, ClaudeSessionConfigDirName)}
+}
+
+// ClaudeSessionConfigDirName is the directory under the daemon data directory
+// that holds one Claude configuration root per session.
+const ClaudeSessionConfigDirName = "claude-session-config"
