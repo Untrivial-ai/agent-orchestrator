@@ -21,6 +21,7 @@ function setup(text = "inspect this", content: ConversationContentSummary[] = []
 	const edit = vi.fn().mockResolvedValue(undefined);
 	const send = vi.fn().mockResolvedValue(undefined);
 	const stage = vi.fn().mockResolvedValue([path]);
+	const cancel = vi.fn().mockResolvedValue(undefined);
 	const snapshot: ConversationSnapshot = {
 		...chatFixture,
 		turns: [{ id: "q1", state: "queued" as const, requestedAt: "2026-09-06T10:00:00Z" }],
@@ -46,6 +47,7 @@ function setup(text = "inspect this", content: ConversationContentSummary[] = []
 				snapshot={snapshot}
 				onSend={send}
 				onEditQueuedTurn={edit}
+				onCancelQueuedTurn={cancel}
 				onStageAttachments={stage}
 				nativeImages={nativeImages}
 			/>
@@ -56,6 +58,7 @@ function setup(text = "inspect this", content: ConversationContentSummary[] = []
 		edit,
 		send,
 		stage,
+		cancel,
 		snapshot,
 		field: screen.getByRole("combobox"),
 		rerenderSnapshot: (next: ConversationSnapshot) =>
@@ -65,6 +68,7 @@ function setup(text = "inspect this", content: ConversationContentSummary[] = []
 						snapshot={next}
 						onSend={send}
 						onEditQueuedTurn={edit}
+						onCancelQueuedTurn={cancel}
 						onStageAttachments={stage}
 						nativeImages={nativeImages}
 					/>
@@ -90,6 +94,28 @@ async function pasteImage(field: HTMLElement, name = "shot.png") {
 }
 
 describe("queued message attachments", () => {
+	it.each(["cancel", "escape", "replace", "delete"])("preserves an unresolved queued receipt through %s and remount", async (exit) => {
+		const { edit, cancel, unmount } = setup();
+		edit.mockRejectedValue(new Error("response lost"));
+		await beginEdit();
+		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+		await screen.findByText("response lost");
+		const pending = readChatSessionDraft(chatFixture.sessionId).queuedEdit;
+		expect(pending?.clientMessageId).toBeTruthy();
+		if (exit === "cancel") await userEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+		if (exit === "escape") fireEvent.keyDown(screen.getByRole("combobox"), { key: "Escape" });
+		if (exit === "replace") await beginEdit();
+		if (exit === "delete") await userEvent.click(screen.getByRole("button", { name: "Delete queued message" }));
+		expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit).toEqual(pending);
+		expect(cancel).not.toHaveBeenCalled();
+		unmount();
+		const recovered = setup();
+		expect(screen.getByRole("button", { name: "Cancel edit" })).toBeDisabled();
+		await userEvent.click(screen.getByRole("button", { name: "Retry edit safely" }));
+		await waitFor(() => expect(recovered.edit).toHaveBeenCalledWith("q1", "inspect this", expect.objectContaining({ clientMessageId: pending?.clientMessageId })));
+		await waitFor(() => expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit).toBeUndefined());
+	});
+
 	it("saves newly attached image bytes and their staged reference to the queued turn", async () => {
 		const { edit, send, stage } = setup();
 		await beginEdit();
@@ -439,15 +465,16 @@ describe("queued message attachments", () => {
 			if (failRead) { failRead = false; throw new Error("read unavailable"); }
 			return getItem(key);
 		});
-		edit.mockImplementation(async () => { failRead = true; });
+		edit.mockImplementationOnce(async () => { failRead = true; });
 		try {
 			await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 			await screen.findByText(/The edit was saved, but its local draft could not be cleared/);
 			expect(screen.getByRole("combobox")).toHaveTextContent("inspect this");
 			expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit?.text).toBe("inspect this");
-			await userEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
-			expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit).toBeUndefined();
-			expect(edit).toHaveBeenCalledOnce();
+			expect(screen.getByRole("button", { name: "Cancel edit" })).toBeDisabled();
+			await userEvent.click(screen.getByRole("button", { name: "Retry edit safely" }));
+			await waitFor(() => expect(readChatSessionDraft(chatFixture.sessionId).queuedEdit).toBeUndefined());
+			expect(edit).toHaveBeenCalledTimes(2);
 		} finally { read.mockRestore(); }
 	});
 

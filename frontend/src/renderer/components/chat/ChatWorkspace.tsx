@@ -750,8 +750,10 @@ function ChatWorkspaceContent({
 	const handleCancelQueuedTurn = useCallback(
 		async (turnId: string) => {
 			if (!onCancelQueuedTurn) return;
+			if (queueEditRef.current?.turnId === turnId && queueEditRef.current.clientMessageId) return;
 			await stableCancelQueuedTurn(turnId);
-			if (queueEdit?.turnId === turnId) updateQueueDraft(undefined, queueEdit.revision);
+			const current = queueEditRef.current;
+			if (current?.turnId === turnId && !current.clientMessageId) updateQueueDraft(undefined, current.revision);
 		},
 		[queueEdit, stableCancelQueuedTurn, updateQueueDraft],
 	);
@@ -796,7 +798,7 @@ function ChatWorkspaceContent({
 	const stableSteer = useStableCallback(onSteer);
 	const beginQueuedEdit = useCallback(
 		(turnId: string, text: string) => {
-			if (newWorkDisabled) return;
+			if (newWorkDisabled || queueEditRef.current?.clientMessageId) return;
 			const message = queuedMessages.find((queued) => queued.turnId === turnId)?.message;
 			if (!message) return;
 			const parts = stagedAttachmentParts(text);
@@ -813,8 +815,9 @@ function ChatWorkspaceContent({
 		[newWorkDisabled, queuedMessages, updateQueueDraft],
 	);
 	const cancelQueuedEdit = useCallback(() => {
-		if (queueEdit) updateQueueDraft(undefined, queueEdit.revision);
-	}, [queueEdit, updateQueueDraft]);
+		const current = queueEditRef.current;
+		if (current && !current.clientMessageId) updateQueueDraft(undefined, current.revision);
+	}, [updateQueueDraft]);
 	const promoteQueuedTurn = useCallback(
 		async (turnId: string) => stablePromoteQueuedTurn(turnId),
 		[stablePromoteQueuedTurn],
@@ -1108,6 +1111,7 @@ function ChatWorkspaceContent({
 				<QueuedMessageDock
 					messages={queuedMessages}
 					editingTurnId={queueEdit?.turnId}
+					disabled={Boolean(queueEdit?.clientMessageId)}
 					canSteer={canSteerQueuedMessage}
 					onPromoteQueuedTurn={newWorkDisabled ? undefined : promoteQueuedTurn}
 					onBeginQueuedEdit={
@@ -1129,6 +1133,7 @@ function ChatWorkspaceContent({
 			onReorderQueuedTurns,
 			promoteQueuedTurn,
 			promoteQueuedTurnPendingTurnId,
+			queueEdit?.clientMessageId,
 			queueEdit?.turnId,
 			queuedMessages,
 		],

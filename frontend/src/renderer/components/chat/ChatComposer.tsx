@@ -1285,7 +1285,7 @@ export const ChatComposer = memo(function ChatComposer({
 			}
 		}
 
-		if (event.key === "Escape" && editingQueuedTurnId && onCancelQueuedEdit && !submitInFlight.current) {
+		if (event.key === "Escape" && editingQueuedTurnId && onCancelQueuedEdit && !queuedEditRecovery && !submitInFlight.current) {
 			event.preventDefault();
 			onCancelQueuedEdit();
 		}
@@ -1416,7 +1416,7 @@ export const ChatComposer = memo(function ChatComposer({
 						<span>Editing queued message</span>
 						<button
 							type="button"
-							disabled={controlsDisabled}
+							disabled={controlsDisabled || queuedEditRecovery}
 							onClick={onCancelQueuedEdit}
 							className="rounded px-1.5 py-0.5 hover:text-foreground focus-visible:outline focus-visible:outline-ring"
 						>
