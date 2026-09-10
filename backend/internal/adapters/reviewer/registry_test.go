@@ -2,13 +2,10 @@ package reviewer
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/aoagents/agent-orchestrator/backend/internal/review"
 )
 
 // TestRegistryMatchesDomainVocabulary enforces that the shipped reviewer
@@ -20,7 +17,6 @@ func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 		domain.ReviewerAider:  true,
 		domain.ReviewerAuggie: true,
 		domain.ReviewerDroid:  true,
-		domain.ReviewerQwen:   true,
 	}
 	for _, a := range Constructors() {
 		h := a.Harness()
@@ -40,7 +36,7 @@ func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 			t.Errorf("reviewer harness %q cancel spec: %v", h, err)
 		} else {
 			switch h {
-			case domain.ReviewerCodex, domain.ReviewerKiro, domain.ReviewerPi, domain.ReviewerQwen, domain.ReviewerMuse:
+			case domain.ReviewerCodex, domain.ReviewerKiro, domain.ReviewerPi, domain.ReviewerMuse:
 				if spec.Mode != ports.ReviewCancelInput {
 					t.Errorf("reviewer harness %q cancel mode = %q, want %q", h, spec.Mode, ports.ReviewCancelInput)
 				}
@@ -97,27 +93,9 @@ func TestNewResolverResolvesShippedReviewers(t *testing.T) {
 	if _, ok := resolver.Reviewer("nope"); ok {
 		t.Error("resolver returned an adapter for an unknown harness")
 	}
-	for _, removed := range []domain.ReviewerHarness{"continue", "goose", "vibe"} {
+	for _, removed := range []domain.ReviewerHarness{"continue", "goose", "vibe", "qwen"} {
 		if _, ok := resolver.Reviewer(removed); ok {
 			t.Errorf("resolver returned removed reviewer %q", removed)
 		}
-	}
-}
-
-func TestQwenRegistryAdapterPassesLauncherPreflightWithoutRequestData(t *testing.T) {
-	binDir := t.TempDir()
-	qwenPath := filepath.Join(binDir, "qwen")
-	if err := os.WriteFile(qwenPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir)
-
-	resolver, err := NewResolver()
-	if err != nil {
-		t.Fatal(err)
-	}
-	launcher := review.NewLauncher(resolver, nil, "")
-	if err := launcher.Preflight(context.Background(), domain.ReviewerQwen, t.TempDir()); err != nil {
-		t.Fatalf("Qwen preflight: %v", err)
 	}
 }

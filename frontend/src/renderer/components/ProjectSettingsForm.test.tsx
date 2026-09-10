@@ -808,9 +808,8 @@ describe("ProjectSettingsForm", () => {
 			path: "/repo/project-one",
 			repo: "",
 			defaultBranch: "main",
-			config: { worker: { agent: "qwen" }, orchestrator: { agent: "claude-code" } },
+			config: { worker: { agent: "codex" }, orchestrator: { agent: "claude-code" } },
 		};
-		const qwen = { id: "qwen", label: "Qwen Code", authStatus: "authorized" };
 		const devin = { id: "devin", label: "Devin", authStatus: "authorized" };
 		const droid = { id: "droid", label: "Droid", authStatus: "authorized" };
 		const kimi = { id: "kimi", label: "Kimi", authStatus: "authorized" };
@@ -824,15 +823,14 @@ describe("ProjectSettingsForm", () => {
 			{ id: "continue", label: "Continue", authStatus: "authorized" },
 			{ id: "crush", label: "Crush", authStatus: "authorized" },
 			{ id: "grok", label: "Grok", authStatus: "authorized" },
-			{ id: "vibe", label: "Vibe", authStatus: "authorized" },
 		];
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents") {
 				return {
 					data: {
-						supported: [...agentCatalogResponse.data.supported, qwen, devin, droid, kimi, aider, amp, ...experimental],
-						installed: [...agentCatalogResponse.data.installed, qwen, devin, droid, kimi, aider, amp, ...experimental],
-						authorized: [...agentCatalogResponse.data.authorized, qwen, devin, droid, kimi, aider, amp, ...experimental],
+						supported: [...agentCatalogResponse.data.supported, devin, droid, kimi, aider, amp, ...experimental],
+						installed: [...agentCatalogResponse.data.installed, devin, droid, kimi, aider, amp, ...experimental],
+						authorized: [...agentCatalogResponse.data.authorized, devin, droid, kimi, aider, amp, ...experimental],
 					},
 					error: undefined,
 				};
@@ -846,11 +844,9 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(reviewer);
 		const options = await screen.findAllByRole("menuitem");
 		const labels = options.map((option) => option.textContent);
-		expect(labels).toContain("Qwen Code");
 		expect(labels).toContain("Agy");
 		expect(labels).toContain("Continue");
 		expect(labels).toContain("Goose");
-		expect(labels).toContain("Vibe");
 		expect(labels).toContain("Devin");
 		expect(labels).toContain("Droid");
 		expect(labels).toContain("Kimi");

@@ -4847,7 +4847,6 @@ components:
           - opencode
           - kiro
           - pi
-          - qwen
           - agy
           - continue
           - goose
