@@ -155,15 +155,21 @@ export function WorkspaceReviewPane({
 		[data.sections],
 	);
 	const combinedWorkingCount = data.files.filter((file) => file.status !== "unmodified").length;
-	const hasWorkingChangeChoices = visibleWorkingScopes.length > 0 || combinedWorkingCount > 0;
+	const showCombinedWorkingSource = visibleWorkingScopes.length === 0
+		&& data.sections.committed.length === 0
+		&& data.commits.length === 0
+		&& !data.compareBaseSha
+		&& !data.compareBaseRef
+		&& combinedWorkingCount > 0;
+	const hasWorkingChangeChoices = visibleWorkingScopes.length > 0 || showCombinedWorkingSource;
 	useEffect(() => {
 		if (scope === "committed" && selectedCommit) return;
-		if (scope === "combined" && combinedWorkingCount > 0) return;
+		if (scope === "combined" && showCombinedWorkingSource) return;
 		if (scope !== "committed" && scope !== "combined" && data.sections[scope].length > 0) return;
 		const next = initialReviewSelection(data);
 		setScope(next.scope);
 		setSelectedCommitSha(next.commitSha);
-	}, [combinedWorkingCount, data, initialSelection, scope, selectedCommit]);
+	}, [data, initialSelection, scope, selectedCommit, showCombinedWorkingSource]);
 
 	const allFiles = useMemo(
 		() => scope === "committed" && selectedCommit ? selectedCommit.files : sectionFiles(data, scope),
@@ -348,7 +354,7 @@ export function WorkspaceReviewPane({
 							<ChevronDown aria-hidden="true" className="size-icon-sm" />
 						</Button>
 					</DropdownMenuTrigger>
-					<DropdownMenuContent align="start" className="min-w-52">
+					<DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-0" sideOffset={2}>
 						{visibleWorkingScopes.map((entry) => (
 							<DropdownMenuItem key={entry} onSelect={() => selectScope(entry)}>
 								<Check aria-hidden="true" className={cn("size-icon-sm", scope === entry && !selectedCommit ? "opacity-100" : "opacity-0")} />
@@ -356,7 +362,7 @@ export function WorkspaceReviewPane({
 								<span className="ml-auto text-caption text-passive">{data.sections[entry].length}</span>
 							</DropdownMenuItem>
 						))}
-						{scope === "combined" ? (
+						{showCombinedWorkingSource ? (
 							<DropdownMenuItem onSelect={() => selectScope("combined")}>
 								<Check aria-hidden="true" className="size-icon-sm" />
 								<span>{t("files.reviewChanges")}</span>

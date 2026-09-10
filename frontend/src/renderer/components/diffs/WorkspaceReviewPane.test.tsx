@@ -197,6 +197,7 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 
 		await userEvent.click(screen.getByRole("button", { name: "Choose change source" }));
+		expect(screen.getByRole("menu")).toHaveClass("w-[var(--radix-dropdown-menu-trigger-width)]", "min-w-0");
 		expect(screen.getByRole("menuitem", { name: /Unstaged/ })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: /Staged/ })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: /Untracked/ })).toBeInTheDocument();
@@ -251,6 +252,7 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={workspace([])} filter="" onBrowseAll={onBrowseAll} sessionId="sess-1" split={false} />);
 
 		expect(screen.getByText("No changed files found.")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Choose change source" })).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Browse all files" }));
 		expect(onBrowseAll).toHaveBeenCalledOnce();
 		expect(postMock).not.toHaveBeenCalled();
