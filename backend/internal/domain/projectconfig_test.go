@@ -39,7 +39,6 @@ func TestProjectConfigValidate(t *testing.T) {
 		{"good opencode reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerOpenCode}}}, false},
 		{"good kiro reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerKiro}}}, false},
 		{"good pi reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerPi}}}, false},
-		{"good experimental qwen reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerQwen}}}, false},
 		{"good experimental agy reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerAgy}}}, false},
 		{"unsupported continue reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: "continue"}}}, true},
 		{"unsupported goose reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: "goose"}}}, true},
