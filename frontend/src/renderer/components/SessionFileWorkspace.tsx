@@ -5,10 +5,12 @@ export function SessionFileWorkspace({
 	annotation,
 	path,
 	sessionId,
+	split,
 }: {
 	annotation: FileAnnotationModel;
 	path: string;
 	sessionId: string;
+	split: boolean;
 }) {
 	const fileFeedbackActive = annotation.target?.path === path && annotation.target.side === "file";
 	return (
@@ -21,7 +23,7 @@ export function SessionFileWorkspace({
 				</div>
 			) : null}
 			<div className="board-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
-				<FileContentPane annotation={annotation} path={path} sessionId={sessionId} split={false} wrap />
+				<FileContentPane annotation={annotation} path={path} sessionId={sessionId} split={split} />
 			</div>
 		</section>
 	);

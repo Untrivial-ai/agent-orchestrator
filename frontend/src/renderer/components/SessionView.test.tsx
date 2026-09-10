@@ -429,17 +429,24 @@ vi.mock("./SessionFileExplorer", () => ({
 	SessionFileExplorer: ({
 		isMaximized,
 		onOpenFile,
+		onSplitChange,
 		onToggleMaximized,
 		revealRequest,
+		split,
 	}: {
 		isMaximized?: boolean;
 		onOpenFile?: (path: string) => void;
+		onSplitChange?: (split: boolean) => void;
 		onToggleMaximized?: (next: boolean) => void;
 		revealRequest?: { path: string; key: number } | null;
+		split?: boolean;
 	}) => (
 		<div>
 			<button type="button" onClick={() => onToggleMaximized?.(!isMaximized)}>
 				{isMaximized ? "files center" : "files rail"}
+			</button>
+			<button type="button" onClick={() => onSplitChange?.(!split)}>
+				{split ? "use unified diff" : "use split diff"}
 			</button>
 			{!isMaximized && onOpenFile ? (
 				<>
@@ -459,7 +466,7 @@ vi.mock("./SessionFileExplorer", () => ({
 	),
 }));
 vi.mock("./SessionFileWorkspace", () => ({
-	SessionFileWorkspace: ({ path }: { path: string }) => <div data-testid="session-file-workspace">{path}</div>,
+	SessionFileWorkspace: ({ path, split }: { path: string; split: boolean }) => <div data-split={String(split)} data-testid="session-file-workspace">{path}</div>,
 }));
 const { browserDestroy, browserViewOptions, browserViewState } = vi.hoisted(() => ({
 	browserDestroy: vi.fn(),
@@ -2140,6 +2147,18 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "select agent tab" }));
 		expect(screen.queryByTestId("session-file-workspace")).not.toBeInTheDocument();
 		expect(screen.getByRole("tab", { name: "App.tsx" })).toHaveAttribute("aria-selected", "false");
+	});
+
+	it("applies the Files split preference to a diff opened in the center", () => {
+		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
+		render(<SessionView sessionId="sess-1" />);
+
+		fireEvent.click(screen.getByRole("button", { name: "open files" }));
+		fireEvent.click(screen.getByRole("button", { name: "pop out src/App.tsx" }));
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-split", "false");
+
+		fireEvent.click(screen.getByRole("button", { name: "use split diff" }));
+		expect(screen.getByTestId("session-file-workspace")).toHaveAttribute("data-split", "true");
 	});
 
 	it("previews a review file target in the Files inspector without replacing the center", async () => {

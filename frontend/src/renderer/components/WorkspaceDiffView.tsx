@@ -1,18 +1,16 @@
 import {
 	memo,
-	useCallback,
 	useEffect,
 	useMemo,
 	useRef,
 	useState,
-	type MouseEvent,
 	type ReactNode,
 	type RefObject,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Plus, Send as SendIcon } from "lucide-react";
+import { Check, Plus, Send as SendIcon } from "lucide-react";
 import type { FileAnnotationTarget } from "../../shared/file-annotations";
 import {
 	type WorkspaceCompareMode,
@@ -25,15 +23,17 @@ import { cn } from "../lib/utils";
 import { statusLabel, statusTone } from "../lib/workspace-file-status";
 import type { DiffRow, DiffRowKind } from "../lib/diff-parser";
 import type { DiffRun } from "../lib/diff-highlight";
-import type { DiffSelectionLine } from "../../shared/diff-selection";
 import { Button } from "./ui/button";
-import { DiffSelectionMenu } from "./DiffSelectionMenu";
 import { ImageDiffView } from "./ImageDiffView";
 import "./chat/code-theme.css";
 
 type WorkspaceFileStatus = WorkspaceFileSummary["status"];
 
-export type ActiveFileAnnotationTarget = FileAnnotationTarget & { rowIndex?: number };
+export type ActiveFileAnnotationTarget = FileAnnotationTarget & {
+	rowIndex?: number;
+	/** Keeps one shared annotation model from rendering the composer in two panes. */
+	surface?: "focused" | "review";
+};
 export type FileAnnotationStatus = "idle" | "sending" | "sent" | "error";
 export type FileAnnotationModel = {
 	target: ActiveFileAnnotationTarget | null;
@@ -82,6 +82,7 @@ export function ReviewDiffBody({
 	wrap: boolean;
 }) {
 	const { t } = useTranslation();
+	void filePath;
 	const { rows, pending } = useParsedDiff(detail.diff);
 	// An image has no readable line diff, so it renders as the images themselves
 	// rather than the binary placeholder.
@@ -108,12 +109,10 @@ export function ReviewDiffBody({
 	return (
 		<DiffView
 			annotation={annotation}
-			filePath={filePath}
 			onActiveSelectionChange={onActiveSelectionChange}
 			path={detail.path}
 			previousPath={detail.previousPath}
 			rows={rows}
-			sessionId={sessionId}
 			split={split}
 			truncated={detail.diffTruncated}
 			wrap={wrap}
@@ -133,44 +132,12 @@ const diffMarkerGlyph: Record<Exclude<DiffRowKind, "hunk">, string> = {
 	context: " ",
 };
 
-// isSelectionActiveIn is the shared check used both by the live selectionchange
-// listener and the context-menu handler: a real (non-collapsed) selection whose
+// A real (non-collapsed) selection whose
 // anchor lives inside this DiffView's scroll container.
 function isSelectionActiveIn(selection: Selection | null, container: HTMLElement | null): boolean {
 	if (!selection || !container || selection.isCollapsed) return false;
 	return selection.anchorNode !== null && container.contains(selection.anchorNode);
 }
-
-// closestDiffRowElement climbs from a Range boundary (which for a text
-// selection is almost always a text node, and text nodes have no `.closest`)
-// up to the nearest `[data-diff-row]` element, or null if the boundary isn't
-// inside a real diff row (e.g. it landed on a hunk band or an empty
-// split-view placeholder).
-function closestDiffRowElement(node: Node | null): Element | null {
-	if (!node) return null;
-	const element = node instanceof Element ? node : node.parentElement;
-	return element?.closest?.("[data-diff-row]") ?? null;
-}
-
-// toDiffSelectionLine maps a DiffRow to the shared DiffSelectionLine shape.
-// Hunk rows never carry data-row-index themselves, but a multi-hunk selection
-// range can still include one in the middle of the sliced rows[min..max] —
-// this drops it defensively rather than emitting a bogus "hunk" line.
-function toDiffSelectionLine(row: DiffRow): DiffSelectionLine | null {
-	if (row.kind === "hunk") return null;
-	return { kind: row.kind, oldNo: row.oldNo, newNo: row.newNo, text: row.text };
-}
-
-function isNotNull<T>(value: T | null): value is T {
-	return value !== null;
-}
-
-type DiffViewMenuState = {
-	open: boolean;
-	position: { x: number; y: number };
-	lines: DiffSelectionLine[];
-	selectedText: string;
-};
 
 // SessionFilesView has no per-file scroll box — the Files panel is one
 // continuous list, and an expanded file's rows scroll as part of that same
@@ -253,23 +220,19 @@ function useSharedScrollRowVirtualizer(
 
 function DiffView({
 	annotation,
-	filePath,
 	onActiveSelectionChange,
 	path,
 	previousPath,
 	rows,
-	sessionId,
 	split,
 	truncated,
 	wrap,
 }: {
 	annotation: FileAnnotationModel;
-	filePath: string;
 	onActiveSelectionChange: (active: boolean) => void;
 	path: string;
 	previousPath?: string;
 	rows: DiffRow[];
-	sessionId: string;
 	split: boolean;
 	truncated?: boolean;
 	wrap: boolean;
@@ -277,7 +240,6 @@ function DiffView({
 	const { t } = useTranslation();
 	const containerRef = useRef<HTMLDivElement>(null);
 	const [hasSelection, setHasSelection] = useState(false);
-	const [menuState, setMenuState] = useState<DiffViewMenuState | null>(null);
 	const shouldVirtualize = !split && rows.length > ROW_VIRTUALIZE_THRESHOLD;
 	const { listRef, virtualizer } = useSharedScrollRowVirtualizer(containerRef, rows.length, shouldVirtualize);
 	const highlight = useDiffHighlight(rows, path, previousPath);
@@ -294,47 +256,9 @@ function DiffView({
 		return () => document.removeEventListener("selectionchange", onSelectionChange);
 	}, []);
 
-	const menuOpen = menuState?.open ?? false;
 	useEffect(() => {
-		onActiveSelectionChange(hasSelection || menuOpen);
-	}, [hasSelection, menuOpen, onActiveSelectionChange]);
-
-	const onContextMenu = useCallback(
-		(event: MouseEvent<HTMLDivElement>) => {
-			const container = containerRef.current;
-			const selection = window.getSelection();
-			if (!isSelectionActiveIn(selection, container) || !selection) return;
-
-			// Only past this point do we know we're overriding a real selection —
-			// the native context menu must stay untouched for a collapsed selection
-			// or one outside this container.
-			event.preventDefault();
-
-			const range = selection.getRangeAt(0);
-			const startRow = closestDiffRowElement(range.startContainer);
-			const endRow = closestDiffRowElement(range.endContainer);
-			if (!startRow || !endRow) return;
-
-			const startIndex = Number(startRow.getAttribute("data-row-index"));
-			const endIndex = Number(endRow.getAttribute("data-row-index"));
-			if (!Number.isFinite(startIndex) || !Number.isFinite(endIndex)) return;
-
-			const min = Math.min(startIndex, endIndex);
-			const max = Math.max(startIndex, endIndex);
-			const lines = rows
-				.slice(min, max + 1)
-				.map(toDiffSelectionLine)
-				.filter(isNotNull);
-
-			setMenuState({
-				open: true,
-				position: { x: event.clientX, y: event.clientY },
-				lines,
-				selectedText: selection.toString(),
-			});
-		},
-		[rows],
-	);
+		onActiveSelectionChange(hasSelection);
+	}, [hasSelection, onActiveSelectionChange]);
 
 	return (
 		<div>
@@ -345,7 +269,6 @@ function DiffView({
 			) : null}
 			<div
 				className="diff-code session-files-diff-scrollbar select-text overflow-x-auto overflow-y-visible bg-terminal font-mono text-xs leading-row text-terminal-foreground"
-				onContextMenu={onContextMenu}
 				ref={containerRef}
 			>
 				{split ? (
@@ -411,15 +334,6 @@ function DiffView({
 					</div>
 				)}
 			</div>
-			<DiffSelectionMenu
-				filePath={filePath}
-				lines={menuState?.lines ?? []}
-				onOpenChange={(open) => setMenuState((current) => (current ? { ...current, open } : current))}
-				open={menuOpen}
-				position={menuState?.position ?? { x: 0, y: 0 }}
-				selectedText={menuState?.selectedText ?? ""}
-				sessionId={sessionId}
-			/>
 		</div>
 	);
 }
@@ -679,11 +593,12 @@ function lineAnnotationTarget(
 		lineKind: row.kind === "hunk" ? undefined : row.kind,
 		lineText: row.text,
 		rowIndex,
+		surface: "focused",
 	};
 }
 
 function isAnnotationRow(target: ActiveFileAnnotationTarget | null, path: string, rowIndex: number): boolean {
-	return target?.path === path && target.side !== "file" && target.rowIndex === rowIndex;
+	return target?.surface !== "review" && target?.path === path && target.side !== "file" && target.rowIndex === rowIndex;
 }
 
 // `t` comes from the caller (which already holds one useTranslation()
@@ -702,14 +617,40 @@ function LineFeedbackButton({
 	t: TFunction;
 	target: ActiveFileAnnotationTarget;
 }) {
-	if (active) return null;
 	const side = t(target.side === "old" ? "files.oldSide" : "files.newSide");
 	const label = t("files.addLineFeedback", { file: target.path, line: target.line, side });
+	return <LineFeedbackButtonControl expanded={active} label={label} onClick={onClick} />;
+}
+
+// The single AO line-feedback affordance used by both the original diff rows
+// and the Pierre-backed viewers. Pierre only provides the hovered-line slot;
+// the control, styling, and annotation behavior remain AO-owned.
+export function LineFeedbackButtonControl({
+	expanded = false,
+	gutter = false,
+	label,
+	onClick,
+}: {
+	expanded?: boolean;
+	gutter?: boolean;
+	label: string;
+	onClick: () => void;
+}) {
 	return (
 		<Button
 			aria-label={label}
-			className="absolute inset-y-0 left-6 z-20 my-auto size-6 rounded-sm border-primary/70 opacity-0 shadow-md shadow-black/30 transition-opacity active:translate-y-0 active:scale-100 focus-visible:opacity-100 group-hover/line:opacity-100"
-			onClick={onClick}
+			aria-expanded={expanded || undefined}
+			className={cn(
+				"z-20 size-6 rounded-sm border-primary/70 shadow-md shadow-black/30 active:translate-y-0 active:scale-100",
+				gutter
+					? "relative mr-[-0.75rem]"
+					: "absolute inset-y-0 left-6 my-auto opacity-0 transition-opacity focus-visible:opacity-100 group-hover/line:opacity-100",
+			)}
+			data-utility-button={gutter ? "" : undefined}
+			onClick={(event) => {
+				event.stopPropagation();
+				onClick();
+			}}
 			size={null}
 			type="button"
 			variant="primary"
@@ -721,53 +662,66 @@ function LineFeedbackButton({
 
 export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotationModel }) {
 	const { t } = useTranslation();
+	const target = annotation.target;
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	useEffect(() => {
-		const textarea = textareaRef.current;
-		if (!textarea) return;
-		textarea.style.height = "0px";
-		textarea.style.height = `${textarea.scrollHeight}px`;
-	}, [annotation.draft]);
-	const target = annotation.target;
+		if (!target) return;
+		const frame = window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+		return () => window.cancelAnimationFrame(frame);
+	}, [target]);
 	if (!target) return null;
 	const side = target.side === "file" ? "" : t(target.side === "old" ? "files.oldSide" : "files.newSide");
 	const targetLabel =
-			target.side === "file"
+		target.side === "file"
 			? t("files.fileFeedbackTarget", { file: target.path })
 			: t("files.lineFeedbackTarget", { file: target.path, line: target.line, side });
 	const submit = () => void annotation.submit();
 
 	return (
 		<form
-			className="w-full overflow-hidden rounded-2xl border border-border-strong bg-surface font-sans shadow-2xl shadow-black/35"
+			className="border-y border-border/70 bg-surface px-3 py-2 font-sans"
 			onSubmit={(event) => {
 				event.preventDefault();
 				submit();
 			}}
 		>
-			<div className="px-4 pb-2.5 pt-3.5">
-				<textarea
-					aria-label={t("files.feedbackLabel", { target: targetLabel })}
-					autoFocus
-					className="block min-h-7 w-full resize-none overflow-hidden border-0 bg-transparent px-0 py-0.5 text-base text-foreground outline-none placeholder:text-passive focus-visible:outline-none disabled:opacity-60"
-					disabled={annotation.status === "sending" || annotation.status === "sent"}
-					onChange={(event) => annotation.setDraft(event.target.value)}
-					onKeyDown={(event) => {
-						if (event.key === "Escape") {
-							event.preventDefault();
-							annotation.cancel();
-						}
-					}}
-					placeholder={t("files.feedbackPlaceholder")}
-					ref={textareaRef}
-					value={annotation.draft}
-				/>
+			<div className="mb-1.5 flex items-center justify-between gap-2">
+				<span className="min-w-0 truncate font-mono text-caption text-passive">{targetLabel}</span>
+				{annotation.status === "sent" ? (
+					<span className="inline-flex items-center gap-1 text-caption text-success" role="status">
+						<Check className="size-icon-sm" aria-hidden="true" />
+						{t("files.feedbackSent")}
+					</span>
+				) : null}
 			</div>
-			{annotation.status === "error" ? <p className="px-4 pb-2 text-xs text-error" role="alert">{annotation.error}</p> : null}
-			<div className="flex items-center justify-between gap-3 px-4 pb-3.5">
+			<textarea
+				aria-label={t("files.feedbackLabel", { target: targetLabel })}
+				autoFocus
+				className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-sm text-foreground outline-none placeholder:text-passive focus-visible:outline-none disabled:opacity-60"
+				disabled={annotation.status === "sending" || annotation.status === "sent"}
+				onChange={(event) => annotation.setDraft(event.target.value)}
+				onKeyDown={(event) => {
+					if (event.key === "Escape") {
+						event.preventDefault();
+						annotation.cancel();
+					} else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+						event.preventDefault();
+						submit();
+					}
+				}}
+				placeholder={t("files.feedbackPlaceholder")}
+				ref={textareaRef}
+				value={annotation.draft}
+			/>
+			{annotation.status === "error" ? (
+				<p className="mt-1.5 text-xs text-error" role="alert">
+					{annotation.error}
+				</p>
+			) : null}
+			<div className="mt-2 flex items-center justify-end gap-1.5">
+				<span className="mr-auto text-caption text-passive">{t("files.feedbackShortcut")}</span>
 				<Button
 					disabled={annotation.status === "sending" || annotation.status === "sent"}
-					className="h-9 rounded-full border border-border/70 px-4"
 					onClick={annotation.cancel}
 					size="sm"
 					type="button"
@@ -776,13 +730,12 @@ export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotat
 					{t("files.cancelFeedback")}
 				</Button>
 				<Button
-					aria-label={t("files.sendFeedback")}
 					disabled={!annotation.draft.trim() || annotation.status === "sending" || annotation.status === "sent"}
-					className="grid size-10 place-items-center rounded-full bg-[#e8e8eb] p-0 text-[#1b1b1f] shadow-sm hover:bg-white"
-					size={null}
+					size="sm"
 					type="submit"
 				>
-					<SendIcon className="size-5" aria-hidden="true" />
+					<SendIcon className="size-icon-sm" aria-hidden="true" />
+					{annotation.status === "sending" ? t("files.sendingFeedback") : t("files.sendFeedback")}
 				</Button>
 			</div>
 		</form>

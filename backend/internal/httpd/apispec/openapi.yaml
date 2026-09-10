@@ -6099,6 +6099,62 @@ paths:
       summary: Read one session workspace file and its git diff
       tags:
       - sessions
+    put:
+      operationId: updateSessionWorkspaceFile
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWorkspaceFileRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Replace one existing text file in a session workspace
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/workspace/file/blob:
     get:
       operationId: getSessionWorkspaceFileBlob
@@ -12004,6 +12060,19 @@ components:
       required:
       - title
       type: object
+    UpdateWorkspaceFileRequest:
+      properties:
+        content:
+          type: string
+        expectedFileFingerprint:
+          type: string
+        path:
+          type: string
+      required:
+      - path
+      - content
+      - expectedFileFingerprint
+      type: object
     UsageHarnessResponse:
       properties:
         harness:
@@ -12249,6 +12318,8 @@ components:
           type: string
         diffTruncated:
           type: boolean
+        editable:
+          type: boolean
         fileFingerprint:
           type: string
         imageMediaType:
@@ -12281,6 +12352,7 @@ components:
       - size
       - binary
       - deleted
+      - editable
       - content
       - contentTruncated
       - diff
@@ -12407,6 +12479,8 @@ components:
           type: boolean
         deletions:
           type: integer
+        editable:
+          type: boolean
         fileFingerprint:
           type: string
         path:
@@ -12431,6 +12505,7 @@ components:
       - deletions
       - size
       - binary
+      - editable
       - fileFingerprint
       type: object
     WorkspaceRepo:

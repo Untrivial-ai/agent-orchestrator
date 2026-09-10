@@ -128,11 +128,13 @@ func summaryFingerprint(file WorkspaceFileSummary) string {
 
 func finalizeWorkspaceFiles(files WorkspaceFiles) WorkspaceFiles {
 	for i := range files.Files {
+		files.Files[i].Editable = workspaceFileEditable(files.Files[i].Size, files.Files[i].Binary, files.Files[i].Status == WorkspaceFileDeleted)
 		files.Files[i].FileFingerprint = summaryFingerprint(files.Files[i])
 	}
 	sections := []*[]WorkspaceFileSummary{&files.Sections.Staged, &files.Sections.Unstaged, &files.Sections.Untracked, &files.Sections.Committed}
 	for _, section := range sections {
 		for i := range *section {
+			(*section)[i].Editable = workspaceFileEditable((*section)[i].Size, (*section)[i].Binary, (*section)[i].Status == WorkspaceFileDeleted)
 			(*section)[i].FileFingerprint = summaryFingerprint((*section)[i])
 		}
 	}
@@ -150,6 +152,7 @@ func finalizeWorkspaceFiles(files WorkspaceFiles) WorkspaceFiles {
 }
 
 func finalizeWorkspaceFileDetail(detail WorkspaceFileDetail) WorkspaceFileDetail {
+	detail.Editable = workspaceFileEditable(detail.Size, detail.Binary, detail.Deleted) && !detail.ContentTruncated
 	detail.FileFingerprint = hashWorkspaceReviewValue(detail.Path, detail.PreviousPath, string(detail.Status), detail.Content, detail.Diff, strconv.FormatInt(detail.Size, 10), strconv.FormatBool(detail.Binary), strconv.FormatBool(detail.Deleted))
 	detail.WorkspaceVersion = hashWorkspaceReviewValue(string(detail.SessionID), detail.CompareBaseSHA, detail.CompareBaseRef, detail.FileFingerprint)
 	return detail

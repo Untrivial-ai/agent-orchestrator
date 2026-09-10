@@ -132,6 +132,7 @@ type WorkspaceFileSummary struct {
 	Deletions       int
 	Size            int64
 	Binary          bool
+	Editable        bool
 	FileFingerprint string
 }
 
@@ -146,6 +147,7 @@ type WorkspaceFileDetail struct {
 	Size               int64
 	Binary             bool
 	Deleted            bool
+	Editable           bool
 	ImageMediaType     string
 	Content            string
 	ContentTruncated   bool
@@ -157,6 +159,14 @@ type WorkspaceFileDetail struct {
 	CompareMode        WorkspaceCompareMode
 	WorkspaceVersion   string
 	FileFingerprint    string
+}
+
+// UpdateWorkspaceFileInput replaces one existing text file. The fingerprint is
+// required so a UI edit cannot silently overwrite a newer agent-authored copy.
+type UpdateWorkspaceFileInput struct {
+	Path                    string
+	Content                 string
+	ExpectedFileFingerprint string
 }
 
 // WorkspaceWatchPaths returns every worktree that contributes files to a
@@ -277,6 +287,67 @@ func (s *Service) GetWorkspaceFile(ctx context.Context, id domain.SessionID, raw
 	}
 	detail, err := workspaceFileDetail(ctx, id, target.root, target.prefix, target.rel, section, target.compare, target.changes)
 	return finalizeWorkspaceFileDetail(detail), err
+}
+
+// UpdateWorkspaceFile replaces one existing, bounded UTF-8 workspace file and
+// returns its refreshed detail. It deliberately does not create or delete
+// paths; those remain agent/editor workflows rather than implicit viewer side
+// effects.
+func (s *Service) UpdateWorkspaceFile(ctx context.Context, id domain.SessionID, input UpdateWorkspaceFileInput) (WorkspaceFileDetail, error) {
+	if input.ExpectedFileFingerprint == "" {
+		return WorkspaceFileDetail{}, apierr.Invalid("WORKSPACE_FILE_FINGERPRINT_REQUIRED", "expectedFileFingerprint is required", nil)
+	}
+	if len(input.Content) > maxWorkspaceFileBytes {
+		return WorkspaceFileDetail{}, apierr.Invalid("WORKSPACE_FILE_TOO_LARGE", "File is too large to edit", map[string]any{"limitBytes": maxWorkspaceFileBytes})
+	}
+	if !utf8.ValidString(input.Content) || isBinary([]byte(input.Content)) {
+		return WorkspaceFileDetail{}, apierr.Invalid("WORKSPACE_FILE_BINARY", "Only UTF-8 text files can be edited", nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+
+	s.workspaceEditsMu.Lock()
+	defer s.workspaceEditsMu.Unlock()
+
+	current, err := s.GetWorkspaceFile(ctx, id, input.Path, "")
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	if current.Deleted {
+		return WorkspaceFileDetail{}, apierr.Conflict("WORKSPACE_FILE_DELETED", "Deleted files cannot be edited", nil)
+	}
+	if current.Binary || current.ContentTruncated {
+		return WorkspaceFileDetail{}, apierr.Invalid("WORKSPACE_FILE_NOT_EDITABLE", "Only complete text files can be edited", nil)
+	}
+	if current.FileFingerprint != input.ExpectedFileFingerprint {
+		return WorkspaceFileDetail{}, apierr.Conflict("WORKSPACE_FILE_STALE", "File changed while it was being edited", map[string]any{"fileFingerprint": current.FileFingerprint})
+	}
+
+	target, err := s.resolveWorkspaceFileTarget(ctx, id, input.Path)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	fileName, info, err := confinedWorkspaceFile(target.root, target.rel)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	latest, err := os.ReadFile(fileName)
+	if err != nil {
+		return WorkspaceFileDetail{}, apierr.NotFound("WORKSPACE_FILE_NOT_FOUND", "Workspace file not found")
+	}
+	if string(latest) != current.Content {
+		return WorkspaceFileDetail{}, apierr.Conflict("WORKSPACE_FILE_STALE", "File changed while it was being edited", nil)
+	}
+	if err := os.WriteFile(fileName, []byte(input.Content), info.Mode().Perm()); err != nil {
+		return WorkspaceFileDetail{}, fmt.Errorf("write workspace file: %w", err)
+	}
+	s.InvalidateWorkspaceCache(id)
+	return s.GetWorkspaceFile(ctx, id, input.Path, "")
+}
+
+func workspaceFileEditable(size int64, binary, deleted bool) bool {
+	return !binary && !deleted && size <= maxWorkspaceFileBytes
 }
 
 // workspaceFileTarget is one resolved workspace path: the worktree that owns
@@ -1968,14 +2039,24 @@ func readWorkspaceTextFile(file string, limit int) (string, bool, bool, error) {
 	if truncated {
 		data = data[:limit]
 	}
-	if isBinary(data) {
+	if bytes.IndexByte(data, 0) >= 0 {
 		return "", true, truncated, nil
 	}
-	content := string(data)
-	if !utf8.ValidString(content) {
+	if !utf8.Valid(data) && truncated {
+		// A bounded preview can end in the middle of a valid multi-byte rune.
+		// Remove only that possible partial suffix; invalid UTF-8 elsewhere is
+		// still classified as binary below.
+		for trim := 1; trim < utf8.UTFMax && trim < len(data); trim++ {
+			if candidate := data[:len(data)-trim]; utf8.Valid(candidate) {
+				data = candidate
+				break
+			}
+		}
+	}
+	if !utf8.Valid(data) {
 		return "", true, truncated, nil
 	}
-	return content, false, truncated, nil
+	return string(data), false, truncated, nil
 }
 
 func isBinary(data []byte) bool {

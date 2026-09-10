@@ -2137,7 +2137,8 @@ export interface paths {
         };
         /** Read one session workspace file and its git diff */
         get: operations["getSessionWorkspaceFile"];
-        put?: never;
+        /** Replace one existing text file in a session workspace */
+        put: operations["updateSessionWorkspaceFile"];
         post?: never;
         delete?: never;
         options?: never;
@@ -4317,6 +4318,11 @@ export interface components {
             /** @description New tab title for the shell terminal. Trimmed; must be non-empty. */
             title: string;
         };
+        UpdateWorkspaceFileRequest: {
+            content: string;
+            expectedFileFingerprint: string;
+            path: string;
+        };
         UsageHarnessResponse: {
             harness: string;
             models: components["schemas"]["UsageModelResponse"][];
@@ -4401,6 +4407,7 @@ export interface components {
             deletions: number;
             diff: string;
             diffTruncated: boolean;
+            editable: boolean;
             fileFingerprint: string;
             imageMediaType?: string;
             path: string;
@@ -4454,6 +4461,7 @@ export interface components {
             additions: number;
             binary: boolean;
             deletions: number;
+            editable: boolean;
             fileFingerprint: string;
             path: string;
             previousPath?: string;
@@ -12216,6 +12224,78 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateSessionWorkspaceFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWorkspaceFileRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFileResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

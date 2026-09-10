@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import type { FileAnnotationModel } from "./WorkspaceDiffView";
 
-vi.mock("./FileContentPane", () => ({ FileContentPane: () => <div data-testid="file-content" /> }));
+vi.mock("./FileContentPane", () => ({
+	FileContentPane: ({ split }: { split: boolean }) => <div data-split={String(split)} data-testid="file-content" />,
+}));
 
 const annotation: FileAnnotationModel = {
 	target: null,
@@ -18,9 +20,9 @@ const annotation: FileAnnotationModel = {
 
 describe("SessionFileWorkspace", () => {
 	it("renders file content without a duplicate path toolbar", () => {
-		render(<SessionFileWorkspace annotation={annotation} path="src/App.tsx" sessionId="sess-1" />);
+		render(<SessionFileWorkspace annotation={annotation} path="src/App.tsx" sessionId="sess-1" split />);
 
 		expect(screen.getByTestId("session-file-workspace").querySelector("header")).not.toBeInTheDocument();
-		expect(screen.getByTestId("file-content")).toBeInTheDocument();
+		expect(screen.getByTestId("file-content")).toHaveAttribute("data-split", "true");
 	});
 });

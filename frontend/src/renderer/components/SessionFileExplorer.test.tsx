@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionFileExplorer } from "./SessionFileExplorer";
 import { TooltipProvider } from "./ui/tooltip";
@@ -29,26 +29,33 @@ vi.mock("./FileTree", () => ({
 		changedOnly: boolean;
 		filterText: string;
 		onSelectPath: (node: { path: string; type: "file" }) => void;
-	}) => (
-		<div>
+	}) => {
+		const [expanded, setExpanded] = useState(false);
+		return <div>
 			<span data-testid="tree-changed-only">{String(changedOnly)}</span>
 			<span data-testid="tree-filter">{filterText}</span>
+			<button onClick={() => setExpanded((current) => !current)} type="button">expand src</button>
+			{expanded ? <span>src directory expanded</span> : null}
 			<button onClick={() => onSelectPath({ path: "src/App.tsx", type: "file" })} type="button">
 				select src/App.tsx
 			</button>
-		</div>
-	),
+		</div>;
+	},
 }));
 
 vi.mock("./FileContentPane", () => ({
-	FileContentPane: ({ path }: { path: string | null }) => <div data-testid="content-pane">{path ?? "none"}</div>,
+	FileContentPane: ({ initialEditing, initialMode, path }: { initialEditing?: boolean; initialMode?: string; path: string | null }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode ?? "default"} data-testid="content-pane">{path ?? "none"}</div>,
 }));
 
 vi.mock("./diffs/WorkspaceReviewPane", () => ({
-	WorkspaceReviewPane: ({ filter, onBrowseAll }: { filter: string; onBrowseAll: () => void }) => (
+	WorkspaceReviewPane: ({ filter, onBrowseAll, onEditFile, onOpenFile, onOpenFileInCenter }: { filter: string; onBrowseAll: () => void; onEditFile?: (path: string) => void; onOpenFile: (path: string, mode?: "diff" | "file" | "rendered") => void; onOpenFileInCenter?: (path: string) => void }) => (
 		<div data-testid="review-pane">
 			<span data-testid="review-filter">{filter}</span>
 			<button onClick={onBrowseAll} type="button">Browse all files</button>
+			<button onClick={() => onOpenFile("src/App.tsx", "diff")} type="button">Review src/App.tsx</button>
+			<button onClick={() => onOpenFile("README.md", "rendered")} type="button">Render README.md</button>
+			<button onClick={() => onEditFile?.("src/App.tsx")} type="button">Edit src/App.tsx</button>
+			<button onClick={() => onOpenFileInCenter?.("src/App.tsx")} type="button">Open diff in center</button>
 		</div>
 	),
 }));
@@ -72,10 +79,10 @@ describe("SessionFileExplorer", () => {
 		getMock.mockReset().mockResolvedValue({
 			data: {
 				sessionId: "sess-1",
-				files: [],
-				sections: { committed: [], staged: [], unstaged: [], untracked: [] },
+				files: [{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 10, binary: false }],
+				sections: { committed: [], staged: [], unstaged: [{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 10, binary: false }], untracked: [] },
 				commits: [],
-				summary: { additions: 0, deletions: 0, files: 0 },
+				summary: { additions: 1, deletions: 0, files: 1 },
 				truncated: false,
 				workspaceVersion: "version-1",
 			},
@@ -108,6 +115,18 @@ describe("SessionFileExplorer", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Back to file tree" }));
 		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
 		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
+	});
+
+	it("preserves expanded parent directories when returning from a docked file", async () => {
+		useUiStore.getState().setFilesChangedOnly("sess-explorer-parent", false);
+		renderWithQuery(<SessionFileExplorer sessionId="sess-explorer-parent" />);
+
+		await userEvent.click(screen.getByRole("button", { name: "expand src" }));
+		expect(screen.getByText("src directory expanded")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
+		await userEvent.click(screen.getByRole("button", { name: "Back to file tree" }));
+
+		expect(screen.getByText("src directory expanded")).toBeInTheDocument();
 	});
 
 	it("previews docked files before explicitly opening them in the center workspace", async () => {
@@ -169,10 +188,73 @@ describe("SessionFileExplorer", () => {
 		renderWithQuery(<SessionFileExplorer sessionId={sessionId} />);
 
 		expect(await screen.findByTestId("review-pane")).toBeInTheDocument();
-		await userEvent.click(screen.getByRole("switch", { name: "Changed only" }));
+		await userEvent.click(screen.getByRole("tab", { name: "Files" }));
 
 		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("false");
 		expect(useUiStore.getState().inspectorSessions[sessionId]?.filesChangedOnly).toBe(false);
+	});
+
+	it("defaults to the file tree when the workspace has no changes", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-clean",
+				files: [],
+				sections: { committed: [], staged: [], unstaged: [], untracked: [] },
+				commits: [],
+				summary: { additions: 0, deletions: 0, files: 0 },
+				truncated: false,
+				workspaceVersion: "clean-1",
+			},
+		});
+		renderWithQuery(<SessionFileExplorer sessionId="sess-clean" />);
+
+		expect(await screen.findByTestId("tree-changed-only")).toHaveTextContent("false");
+		expect(screen.queryByTestId("review-pane")).not.toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Changes" })).toBeDisabled();
+		expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("focuses a review file locally and returns to the continuous diff", async () => {
+		const onOpenFile = vi.fn();
+		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-review-navigation" />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "Review src/App.tsx" }));
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
+		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-mode", "diff");
+		expect(onOpenFile).not.toHaveBeenCalled();
+
+		await userEvent.click(screen.getByRole("button", { name: "Back to changes" }));
+		expect(screen.getByTestId("review-pane")).toBeInTheDocument();
+		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
+	});
+
+	it("opens a changed file diff in the center workspace", async () => {
+		const onOpenFile = vi.fn();
+		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId="sess-review-center" />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "Open diff in center" }));
+		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx");
+	});
+
+	it("opens a review diff action in the syntax-aware file editor", async () => {
+		renderWithQuery(<SessionFileExplorer sessionId="sess-review-edit" />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "Edit src/App.tsx" }));
+		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-mode", "file");
+		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-editing", "true");
+	});
+
+	it("opens the direct rendered action inside the review pane", async () => {
+		renderWithQuery(<SessionFileExplorer sessionId="sess-review-rendered" />);
+		await userEvent.click(await screen.findByRole("button", { name: "Render README.md" }));
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("README.md");
+		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-mode", "rendered");
+	});
+
+	it("always wraps file content and does not expose a wrap toggle", async () => {
+		renderWithQuery(<SessionFileExplorer sessionId="sess-wrap" />);
+		expect(await screen.findByTestId("review-pane")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Wrap lines" })).not.toBeInTheDocument();
 	});
 
 	it("toggles between unified and split diff layout", async () => {

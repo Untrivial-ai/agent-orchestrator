@@ -173,6 +173,14 @@ type WorkspaceFileQuery struct {
 	Section string `query:"section,omitempty" enum:"committed,staged,unstaged,untracked" description:"Git-state section the file was opened from (see WorkspaceFileSections). staged diffs the index against HEAD; unstaged diffs the worktree against the index; omitted/committed/untracked diff the worktree against the compare base."`
 }
 
+// UpdateWorkspaceFileRequest replaces an existing text file after verifying
+// that the viewer's source snapshot is still current.
+type UpdateWorkspaceFileRequest struct {
+	Path                    string `json:"path"`
+	Content                 string `json:"content"`
+	ExpectedFileFingerprint string `json:"expectedFileFingerprint"`
+}
+
 // WorkspaceFileBlobQuery is the query string accepted by GET /api/v1/sessions/{sessionId}/workspace/file/blob.
 type WorkspaceFileBlobQuery struct {
 	// The handler rejects a missing path with WORKSPACE_PATH_REQUIRED, so mark it
@@ -446,6 +454,7 @@ type WorkspaceFileSummary struct {
 	Deletions       int                            `json:"deletions"`
 	Size            int64                          `json:"size"`
 	Binary          bool                           `json:"binary"`
+	Editable        bool                           `json:"editable"`
 	FileFingerprint string                         `json:"fileFingerprint"`
 }
 
@@ -460,6 +469,7 @@ type WorkspaceFileResponse struct {
 	Size             int64                           `json:"size"`
 	Binary           bool                            `json:"binary"`
 	Deleted          bool                            `json:"deleted"`
+	Editable         bool                            `json:"editable"`
 	ImageMediaType   string                          `json:"imageMediaType,omitempty"`
 	Content          string                          `json:"content"`
 	ContentTruncated bool                            `json:"contentTruncated"`

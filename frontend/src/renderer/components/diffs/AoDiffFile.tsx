@@ -1,13 +1,13 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
-import { parsePatchFiles, type FileDiffMetadata, type SelectedLineRange } from "@pierre/diffs";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { parsePatchFiles, type DiffLineAnnotation, type FileDiffMetadata } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { useTranslation } from "react-i18next";
-import type { DiffSelectionLine } from "../../../shared/diff-selection";
 import { fetchWorkspaceFileRevision, type WorkspaceDiffScope, type WorkspaceFileDetail } from "../../hooks/useSessionWorkspaceFiles";
 import { parseUnifiedDiff, type DiffRow } from "../../lib/diff-parser";
 import { useUiStore } from "../../stores/ui-store";
-import { DiffSelectionMenu } from "../DiffSelectionMenu";
-import { FileAnnotationComposer, type FileAnnotationModel } from "../WorkspaceDiffView";
+import { FileAnnotationComposer, LineFeedbackButtonControl, type FileAnnotationModel } from "../WorkspaceDiffView";
+import { AO_PIERRE_SURFACE_CSS } from "./pierreTheme";
+import { usePersistentGutterUtility } from "./usePersistentGutterUtility";
 
 const metadataCache = new Map<string, FileDiffMetadata>();
 const MAX_METADATA_CACHE_ENTRIES = 100;
@@ -32,18 +32,6 @@ function cachedMetadata(detail: WorkspaceFileDetail): FileDiffMetadata | null {
 	}
 }
 
-function selectionLines(rows: DiffRow[], range: SelectedLineRange): DiffSelectionLine[] {
-	const start = Math.min(range.start, range.end);
-	const end = Math.max(range.start, range.end);
-	const side = range.side ?? "additions";
-	return rows.flatMap((row) => {
-		if (row.kind === "hunk") return [];
-		const line = side === "deletions" ? row.oldNo : row.newNo;
-		if (line === null || line < start || line > end) return [];
-		return [{ kind: row.kind, oldNo: row.oldNo, newNo: row.newNo, text: row.text } satisfies DiffSelectionLine];
-	});
-}
-
 function rowForLine(rows: DiffRow[], side: "deletions" | "additions", lineNumber: number) {
 	const rowIndex = rows.findIndex((row) => (side === "deletions" ? row.oldNo : row.newNo) === lineNumber);
 	return { row: rowIndex >= 0 ? rows[rowIndex] : undefined, rowIndex };
@@ -57,7 +45,6 @@ export function AoDiffFile({
 	scope = "combined",
 	sessionId,
 	split,
-	wrap,
 }: {
 	annotation: FileAnnotationModel;
 	detail: WorkspaceFileDetail;
@@ -66,22 +53,29 @@ export function AoDiffFile({
 	scope?: WorkspaceDiffScope;
 	sessionId: string;
 	split: boolean;
-	wrap: boolean;
 }) {
 	const { t } = useTranslation();
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
 	const containerRef = useRef<HTMLDivElement>(null);
+	const gutterHover = usePersistentGutterUtility(containerRef);
 	const metadata = useMemo(() => cachedMetadata(detail), [detail]);
 	const rows = useMemo(() => parseUnifiedDiff(detail.diff), [detail.diff]);
-	const [selection, setSelection] = useState<SelectedLineRange | null>(null);
-	const [menuOpen, setMenuOpen] = useState(false);
+	const activeTarget = annotation.target?.surface !== "review" && annotation.target?.path === detail.path && annotation.target.side !== "file" ? annotation.target : null;
+	const lineAnnotations: DiffLineAnnotation<"feedback">[] | undefined = activeTarget?.line != null
+		? [{ lineNumber: activeTarget.line, side: activeTarget.side === "old" ? "deletions" : "additions", metadata: "feedback" }]
+		: undefined;
 
-	const selectedLines = useMemo(() => (selection ? selectionLines(rows, selection) : []), [rows, selection]);
-	const selectedText = useMemo(() => selectedLines.map((line) => line.text).join("\n"), [selectedLines]);
-	const menuPosition = useMemo(() => {
-		const rect = containerRef.current?.getBoundingClientRect();
-		return rect ? { x: Math.max(rect.left + 12, rect.right - 250), y: rect.top + 44 } : { x: 24, y: 80 };
-	}, [menuOpen]);
+	useEffect(() => {
+		const onSelectionChange = () => {
+			const selection = window.getSelection();
+			onActiveSelectionChange(Boolean(selection && !selection.isCollapsed && selection.anchorNode && containerRef.current?.contains(selection.anchorNode)));
+		};
+		document.addEventListener("selectionchange", onSelectionChange);
+		return () => {
+			document.removeEventListener("selectionchange", onSelectionChange);
+			onActiveSelectionChange(false);
+		};
+	}, [onActiveSelectionChange]);
 
 	const loadDiffFiles = useCallback(
 		async (fileDiff: FileDiffMetadata) => {
@@ -101,82 +95,75 @@ export function AoDiffFile({
 		},
 		[detail.path, detail.previousPath, detail.workspaceVersion, scope, sessionId, t],
 	);
+	const beginLineAnnotation = useCallback((side: "deletions" | "additions", lineNumber: number) => {
+		const { row, rowIndex } = rowForLine(rows, side, lineNumber);
+		if (!row || row.kind === "hunk") return;
+		annotation.begin({
+			path: detail.path,
+			previousPath: detail.previousPath,
+			side: side === "deletions" ? "old" : "new",
+			line: lineNumber,
+			oldLine: row.oldNo ?? undefined,
+			newLine: row.newNo ?? undefined,
+			lineKind: row.kind,
+			lineText: row.text,
+			rowIndex,
+			scope,
+			surface: "focused",
+			workspaceVersion: detail.workspaceVersion,
+			fileFingerprint: detail.fileFingerprint,
+		});
+	}, [annotation, detail.fileFingerprint, detail.path, detail.previousPath, detail.workspaceVersion, rows, scope]);
 
 	if (!metadata) return <>{fallback}</>;
 
 	return (
-		<div className="ao-pierre-diff relative min-w-0" ref={containerRef}>
+		<div
+			className="ao-pierre-surface relative min-w-0 select-text"
+			onPointerLeave={gutterHover.onPointerLeave}
+			onPointerMove={gutterHover.onPointerMove}
+			ref={containerRef}
+		>
 			<FileDiff
 				disableWorkerPool={typeof Worker === "undefined"}
 				fileDiff={metadata}
+				lineAnnotations={lineAnnotations}
 				options={{
 					collapsedContextThreshold: 8,
-					controlledSelection: true,
 					diffIndicators: "classic",
 					diffStyle: split ? "split" : "unified",
-					enableLineSelection: true,
+					enableGutterUtility: true,
 					expansionLineCount: 20,
 					hunkSeparators: "line-info",
 					lineDiffType: "word-alt",
 					loadDiffFiles,
 					maxLineDiffLength: 400,
-					onLineNumberClick: (event) => {
-						const side = event.annotationSide;
-						const { row, rowIndex } = rowForLine(rows, side, event.lineNumber);
-						if (!row || row.kind === "hunk") return;
-						annotation.begin({
-							path: detail.path,
-							previousPath: detail.previousPath,
-							side: side === "deletions" ? "old" : "new",
-							line: event.lineNumber,
-							oldLine: row.oldNo ?? undefined,
-							newLine: row.newNo ?? undefined,
-							lineKind: row.kind,
-							lineText: row.text,
-							rowIndex,
-							scope,
-							workspaceVersion: detail.workspaceVersion,
-							fileFingerprint: detail.fileFingerprint,
-						});
-					},
-					onLineSelectionEnd: (next) => {
-						setSelection(next);
-						setMenuOpen(Boolean(next));
-						onActiveSelectionChange(Boolean(next));
-					},
-					onLineSelected: (next) => setSelection(next),
-					overflow: wrap ? "wrap" : "scroll",
+					lineHoverHighlight: "line",
+					onPostRender: gutterHover.restoreAfterRender,
+					overflow: "wrap",
 					theme: { dark: "github-dark", light: "github-light" },
 					themeType: resolvedTheme,
 					tokenizeMaxLength: 200_000,
 					tokenizeMaxLineLength: 2_000,
+					unsafeCSS: AO_PIERRE_SURFACE_CSS,
 				}}
-				selectedLines={selection}
+				renderAnnotation={() => <FileAnnotationComposer annotation={annotation} />}
+				renderGutterUtility={(getHoveredLine) => (
+					<LineFeedbackButtonControl
+						gutter
+						label={t("files.addFeedback")}
+						onClick={() => {
+							const line = getHoveredLine();
+							if (line) beginLineAnnotation(line.side, line.lineNumber);
+						}}
+					/>
+				)}
 			/>
 			{detail.diffTruncated ? (
 				<div className="border-t border-border bg-warning/10 px-3 py-1.5 text-xs text-warning">
 					{t("files.diffTruncated")}
 				</div>
 			) : null}
-			{annotation.target?.path === detail.path ? <FileAnnotationComposer annotation={annotation} /> : null}
-			<DiffSelectionMenu
-				filePath={detail.path}
-				fileFingerprint={detail.fileFingerprint}
-				lines={selectedLines}
-				onOpenChange={(open) => {
-					setMenuOpen(open);
-					if (!open) {
-						setSelection(null);
-						onActiveSelectionChange(false);
-					}
-				}}
-				open={menuOpen && selectedLines.length > 0}
-				position={menuPosition}
-				selectedText={selectedText}
-				sessionId={sessionId}
-				scope={scope}
-				workspaceVersion={detail.workspaceVersion}
-			/>
 		</div>
 	);
 }

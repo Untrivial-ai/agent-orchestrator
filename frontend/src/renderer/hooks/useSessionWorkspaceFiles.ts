@@ -10,7 +10,8 @@ import {
 } from "../lib/workspace-file-events";
 
 export type WorkspaceCompareMode = "base" | "head_fallback";
-export type WorkspaceFileSummary = Omit<components["schemas"]["WorkspaceFileSummary"], "fileFingerprint"> & {
+export type WorkspaceFileSummary = Omit<components["schemas"]["WorkspaceFileSummary"], "editable" | "fileFingerprint"> & {
+	editable?: boolean;
 	previousPath?: string;
 	fileFingerprint?: string;
 };
@@ -28,7 +29,8 @@ export type WorkspaceFilesResponse = Omit<components["schemas"]["ListWorkspaceFi
 	};
 	workspaceVersion?: string;
 };
-export type WorkspaceFileDetail = Omit<components["schemas"]["WorkspaceFileResponse"], "fileFingerprint" | "workspaceVersion"> & {
+export type WorkspaceFileDetail = Omit<components["schemas"]["WorkspaceFileResponse"], "editable" | "fileFingerprint" | "workspaceVersion"> & {
+	editable?: boolean;
 	previousPath?: string;
 	compareMode?: WorkspaceCompareMode;
 	fileFingerprint?: string;
@@ -165,6 +167,26 @@ export function sessionWorkspaceFileRevisionQueryOptions({
 		queryKey: ["session-workspace-file-revision", sessionId, scope, side, path, workspaceVersion ?? ""] as const,
 		queryFn: () => fetchWorkspaceFileRevision({ sessionId, path, scope, side, workspaceVersion }),
 	};
+}
+
+export async function updateSessionWorkspaceFile({
+	content,
+	expectedFileFingerprint,
+	path,
+	sessionId,
+}: {
+	content: string;
+	expectedFileFingerprint: string;
+	path: string;
+	sessionId: string;
+}): Promise<WorkspaceFileDetail> {
+	const { data, error } = await apiClient.PUT("/api/v1/sessions/{sessionId}/workspace/file", {
+		params: { path: { sessionId } },
+		body: { content, expectedFileFingerprint, path },
+	});
+	if (error) throw new Error(apiErrorMessage(error, "Unable to save workspace file"));
+	if (!data) throw new Error("Unable to save workspace file");
+	return data as WorkspaceFileDetail;
 }
 
 export function sessionWorkspaceSearchQueryOptions(sessionId: string, query: string, errorMessage = "Unable to search workspace files") {

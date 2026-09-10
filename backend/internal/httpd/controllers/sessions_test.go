@@ -45,6 +45,7 @@ type fakeSessionService struct {
 	workspaceFiles            sessionsvc.WorkspaceFiles
 	workspaceFile             sessionsvc.WorkspaceFileDetail
 	workspaceFileSection      sessionsvc.WorkspaceFileSection
+	workspaceFileUpdate       sessionsvc.UpdateWorkspaceFileInput
 	workspaceBlob             sessionsvc.WorkspaceFileBlob
 	workspaceDiffs            sessionsvc.WorkspaceDiffs
 	workspaceDiffInput        sessionsvc.WorkspaceDiffInput
@@ -596,6 +597,15 @@ func (f *fakeSessionService) GetWorkspaceFile(_ context.Context, id domain.Sessi
 		return f.workspaceFile, nil
 	}
 	return sessionsvc.WorkspaceFileDetail{SessionID: id, Path: path}, nil
+}
+
+func (f *fakeSessionService) UpdateWorkspaceFile(_ context.Context, id domain.SessionID, input sessionsvc.UpdateWorkspaceFileInput) (sessionsvc.WorkspaceFileDetail, error) {
+	f.workspaceFileUpdate = input
+	file := f.workspaceFile
+	file.SessionID = id
+	file.Path = input.Path
+	file.Content = input.Content
+	return file, f.workspaceErr
 }
 
 func (f *fakeSessionService) GetWorkspaceFileBlob(_ context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide) (sessionsvc.WorkspaceFileBlob, error) {
@@ -2324,7 +2334,7 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 		CompareBaseRef: "main",
 		CompareMode:    sessionsvc.WorkspaceCompareBase,
 		Files: []sessionsvc.WorkspaceFileSummary{
-			{Path: "README.md", Status: sessionsvc.WorkspaceFileModified, Additions: 2, Deletions: 1, Size: 48},
+			{Path: "README.md", Status: sessionsvc.WorkspaceFileModified, Additions: 2, Deletions: 1, Size: 48, Editable: true},
 			{Path: "notes.txt", PreviousPath: "old-notes.txt", Status: sessionsvc.WorkspaceFileRenamed, Additions: 1, Size: 11},
 		},
 	}
@@ -2347,6 +2357,7 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 			Additions    int    `json:"additions"`
 			Deletions    int    `json:"deletions"`
 			Size         int64  `json:"size"`
+			Editable     bool   `json:"editable"`
 		} `json:"files"`
 	}
 	mustJSON(t, body, &got)
@@ -2358,6 +2369,9 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 	}
 	if got.Files[0].Path != "README.md" || got.Files[0].Status != "modified" || got.Files[0].Additions != 2 || got.Files[0].Deletions != 1 {
 		t.Fatalf("first file = %#v", got.Files[0])
+	}
+	if !got.Files[0].Editable {
+		t.Fatal("first file editable = false, want true")
 	}
 	if got.Files[1].Path != "notes.txt" || got.Files[1].PreviousPath != "old-notes.txt" || got.Files[1].Status != "renamed" {
 		t.Fatalf("second file = %#v", got.Files[1])
@@ -2379,6 +2393,7 @@ func TestSessionsAPI_GetWorkspaceFile(t *testing.T) {
 		CompareBaseSHA: "base-sha",
 		CompareBaseRef: "main",
 		CompareMode:    sessionsvc.WorkspaceCompareBase,
+		Editable:       true,
 	}
 	srv := newSessionTestServer(t, svc)
 
@@ -2396,6 +2411,7 @@ func TestSessionsAPI_GetWorkspaceFile(t *testing.T) {
 		CompareBaseSHA string `json:"compareBaseSha"`
 		CompareBaseRef string `json:"compareBaseRef"`
 		CompareMode    string `json:"compareMode"`
+		Editable       bool   `json:"editable"`
 	}
 	mustJSON(t, body, &got)
 	if got.SessionID != "ao-1" || got.Path != "README.md" || got.Content == "" || got.Diff == "" {
@@ -2403,6 +2419,9 @@ func TestSessionsAPI_GetWorkspaceFile(t *testing.T) {
 	}
 	if got.PreviousPath != "README.old.md" || got.CompareMode != "base" || got.CompareBaseSHA != "base-sha" || got.CompareBaseRef != "main" {
 		t.Fatalf("workspace file metadata = %#v", got)
+	}
+	if !got.Editable {
+		t.Fatal("editable = false, want true")
 	}
 }
 
@@ -2430,6 +2449,33 @@ func TestSessionsAPI_GetWorkspaceFileRequiresPath(t *testing.T) {
 	srv := newSessionTestServer(t, newFakeSessionService())
 
 	body, status, headers := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/workspace/file", "")
+	assertJSON(t, headers)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "WORKSPACE_PATH_REQUIRED")
+}
+
+func TestSessionsAPI_UpdateWorkspaceFile(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.workspaceFile = sessionsvc.WorkspaceFileDetail{Status: sessionsvc.WorkspaceFileModified, FileFingerprint: "next-fingerprint"}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodPut, "/api/v1/sessions/ao-1/workspace/file", `{"path":"README.md","content":"updated\n","expectedFileFingerprint":"file-1"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("PUT workspace file = %d, want 200; body=%s", status, body)
+	}
+	if svc.workspaceFileUpdate.Path != "README.md" || svc.workspaceFileUpdate.Content != "updated\n" || svc.workspaceFileUpdate.ExpectedFileFingerprint != "file-1" {
+		t.Fatalf("update input = %#v", svc.workspaceFileUpdate)
+	}
+	var got controllers.WorkspaceFileResponse
+	mustJSON(t, body, &got)
+	if got.Path != "README.md" || got.Content != "updated\n" || got.FileFingerprint != "next-fingerprint" {
+		t.Fatalf("response = %#v", got)
+	}
+}
+
+func TestSessionsAPI_UpdateWorkspaceFileRequiresPath(t *testing.T) {
+	srv := newSessionTestServer(t, newFakeSessionService())
+	body, status, headers := doRequest(t, srv, http.MethodPut, "/api/v1/sessions/ao-1/workspace/file", `{"content":"updated"}`)
 	assertJSON(t, headers)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "WORKSPACE_PATH_REQUIRED")
 }

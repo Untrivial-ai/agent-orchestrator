@@ -311,6 +311,24 @@
 	--animate-popover-out: popover-out 100ms cubic-bezier(0.4, 0, 1, 1);
 }
 
+/* Pierre powers both the continuous review and focused source views. Keep its
+   Shiki tokenization while making the surface inherit AO's editor typography,
+   workspace canvas, and responsive wrapped-line geometry. */
+.ao-pierre-surface {
+	--diffs-font-family: var(--font-family-mono);
+	--diffs-header-font-family: var(--font-family-base);
+	--diffs-font-size: var(--font-size-sm);
+	--diffs-line-height: var(--line-height-row);
+	--diffs-light-bg: var(--color-bg-primary);
+	--diffs-dark-bg: var(--color-bg-primary);
+	--diffs-light: var(--color-text-terminal);
+	--diffs-dark: var(--color-text-terminal);
+	--diffs-bg-context-override: color-mix(in srgb, var(--color-bg-primary) 92%, var(--foreground) 8%);
+	--diffs-bg-context-gutter-override: color-mix(in srgb, var(--color-bg-primary) 84%, var(--foreground) 16%);
+	--diffs-bg-separator-override: var(--surface);
+	background: var(--color-bg-primary);
+}
+
 /* Full-viewport modal/sheet scrim — dim + blur everything behind pop panels. */
 @utility dialog-overlay {
 	position: fixed;
