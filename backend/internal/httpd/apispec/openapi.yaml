@@ -3501,6 +3501,52 @@ paths:
       summary: Choose one provider-advertised session configuration value
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/events:
+    get:
+      operationId: streamConversationText
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ConversationLiveResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Preview live text independently of persistence; reconcile using snapshot
+        checkpoints
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/inputs/{requestId}/resolve:
     post:
       operationId: resolveSessionConversationInput
@@ -8419,6 +8465,62 @@ components:
       - mimeType
       - data
       type: object
+    ConversationLiveEventResponse:
+      properties:
+        createdAt:
+          type: string
+        delta:
+          type: string
+        kind:
+          enum:
+          - message.delta
+          - message.completed
+          - turn.completed
+          type: string
+        providerItemId:
+          type: string
+        providerTurnId:
+          type: string
+        sequence:
+          format: int64
+          type: integer
+        text:
+          type: string
+      required:
+      - sequence
+      - kind
+      - createdAt
+      type: object
+    ConversationLiveResponse:
+      properties:
+        afterSequence:
+          format: int64
+          type: integer
+        branchId:
+          type: string
+        conversationId:
+          type: string
+        events:
+          items:
+            $ref: '#/components/schemas/ConversationLiveEventResponse'
+          type: array
+        generation:
+          type: string
+        resetSequence:
+          format: int64
+          type: integer
+        sequence:
+          format: int64
+          type: integer
+      required:
+      - generation
+      - conversationId
+      - branchId
+      - afterSequence
+      - resetSequence
+      - sequence
+      - events
+      type: object
     ConversationMCPServerPayload:
       properties:
         error:
@@ -8455,6 +8557,8 @@ components:
           - automation
           - daemon
           - provider
+          type: string
+        providerItemId:
           type: string
         revision:
           format: int64
@@ -8665,6 +8769,11 @@ components:
         latestSequence:
           format: int64
           type: integer
+        liveGeneration:
+          type: string
+        liveSequence:
+          format: int64
+          type: integer
         mcpServers:
           items:
             $ref: '#/components/schemas/ConversationMCPServerPayload'
@@ -8703,6 +8812,7 @@ components:
         usage:
           $ref: '#/components/schemas/ConversationUsagePayload'
       required:
+      - liveSequence
       - conversationId
       - branchedFromEarlierMessage
       - sessionId

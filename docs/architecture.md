@@ -173,6 +173,17 @@ Observation is separated from action:
 
 All durable changes flow through a CDC pipeline:
 
+Chat also previews anonymous assistant text through the transient
+`/api/v1/sessions/{sessionId}/conversation/events` stream. Provider intake runs
+independently of the batched SQLite projector. Each durable snapshot includes
+its controller generation and processed provider sequence; the renderer replays
+only newer text observations over that snapshot. Failed or rejected projections
+request a snapshot refresh so their previews are discarded. This stream never
+announces durable changes or performs lifecycle actions. Its journal and writer
+queue are bounded: journal gaps require snapshot catch-up, and sustained writer
+stalls eventually apply backpressure. Native-ID events still wait for durable
+deduplication. CDC remains the authority for saved history and session state.
+
 ```mermaid
 flowchart LR
     DB[(SQLite)] -->|triggers| ChangeLog[change_log table]

@@ -54,8 +54,9 @@ type Service struct {
 	probed       map[domain.AgentHarness]ports.ChatCapabilities
 }
 
-// controllerGate serializes start/stop for one session without making provider
-// I/O for that session block lookups or commands for every other Chat session.
+// controllerGate serializes controller operations with cancellable acquisition.
+// Each gate belongs to one session/controller, so slow work cannot block
+// lookups or commands for every other Chat session.
 type controllerGate chan struct{}
 
 func (g controllerGate) lock(ctx context.Context) error {
@@ -897,6 +898,10 @@ type Snapshot struct {
 	BranchedFromEarlierMessage       bool
 	OldestSequence                   int64
 	HasMoreBefore                    bool
+	// LiveSequence is the last processed provider observation, including failed
+	// or rejected projections. Replay only observations after this checkpoint.
+	LiveGeneration string
+	LiveSequence   int64
 	// Usage and RateLimits are current state carried on the snapshot the client
 	// already polls, rather than timeline entries or a second request. Both are nil
 	// until the provider has reported, so a client can tell "not known yet" from a
@@ -971,7 +976,10 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 		return Snapshot{}, fmt.Errorf("conversation for %s: %w", id, err)
 	}
 
-	rows, err := s.reader.LoadConversationSnapshot(ctx, conversation.ID)
+	rows, liveGeneration, liveSequence, err := s.readLiveSnapshot(ctx, id, record.Metadata.ControllerGeneration,
+		func(readCtx context.Context) (ConversationRows, error) {
+			return s.reader.LoadConversationSnapshot(readCtx, conversation.ID)
+		})
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load conversation %s: %w", conversation.ID, err)
 	}
@@ -992,6 +1000,8 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 		Harness:                          record.Harness,
 		Mode:                             domain.NormalizeSessionMode(record.Mode),
 		Controller:                       state,
+		LiveGeneration:                   liveGeneration,
+		LiveSequence:                     liveSequence,
 		Turns:                            rows.Turns,
 		Messages:                         rows.Messages,
 		Activities:                       rows.Activities,
@@ -1027,7 +1037,10 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		// old full read. Production always wires PageReader.
 		return s.Snapshot(ctx, id)
 	}
-	rows, err := s.pageReader.LoadConversationSnapshotPage(ctx, conversation.ID, beforeSequence, limit)
+	rows, liveGeneration, liveSequence, err := s.readLiveSnapshot(ctx, id, record.Metadata.ControllerGeneration,
+		func(readCtx context.Context) (ConversationRows, error) {
+			return s.pageReader.LoadConversationSnapshotPage(readCtx, conversation.ID, beforeSequence, limit)
+		})
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load conversation page %s: %w", conversation.ID, err)
 	}
@@ -1046,6 +1059,8 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		Harness:                          record.Harness,
 		Mode:                             domain.NormalizeSessionMode(record.Mode),
 		Controller:                       state,
+		LiveGeneration:                   liveGeneration,
+		LiveSequence:                     liveSequence,
 		Turns:                            rows.Turns,
 		Messages:                         rows.Messages,
 		Activities:                       rows.Activities,

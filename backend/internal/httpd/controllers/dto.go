@@ -2032,16 +2032,17 @@ type ConversationDiffFileResponse struct {
 
 // ConversationMessageResponse is one readable block of text.
 type ConversationMessageResponse struct {
-	Kind          string                               `json:"kind" enum:"message"`
-	ID            string                               `json:"id"`
-	TurnID        string                               `json:"turnId,omitempty"`
-	Sequence      int64                                `json:"sequence"`
-	Revision      int64                                `json:"revision"`
-	Role          string                               `json:"role" enum:"user,assistant"`
-	Origin        string                               `json:"origin" enum:"human,automation,daemon,provider"`
-	Text          string                               `json:"text"`
-	Content       []ConversationContentSummaryResponse `json:"content,omitempty"`
-	EditAvailable bool                                 `json:"editAvailable"`
+	Kind           string                               `json:"kind" enum:"message"`
+	ID             string                               `json:"id"`
+	TurnID         string                               `json:"turnId,omitempty"`
+	ProviderItemID string                               `json:"providerItemId,omitempty"`
+	Sequence       int64                                `json:"sequence"`
+	Revision       int64                                `json:"revision"`
+	Role           string                               `json:"role" enum:"user,assistant"`
+	Origin         string                               `json:"origin" enum:"human,automation,daemon,provider"`
+	Text           string                               `json:"text"`
+	Content        []ConversationContentSummaryResponse `json:"content,omitempty"`
+	EditAvailable  bool                                 `json:"editAvailable"`
 	// Streaming is true while more deltas are expected for this message.
 	Streaming bool   `json:"streaming"`
 	CreatedAt string `json:"createdAt"`
@@ -2094,6 +2095,10 @@ type ConversationActivityResponse struct {
 
 // ConversationSnapshotResponse is the durable read model a client bootstraps from.
 type ConversationSnapshotResponse struct {
+	// LiveSequence is the processed provider checkpoint captured with this read.
+	// Failed/rejected events are also processed; their previews must be discarded.
+	LiveGeneration             string `json:"liveGeneration,omitempty"`
+	LiveSequence               int64  `json:"liveSequence"`
 	ConversationID             string `json:"conversationId"`
 	ActiveBranchID             string `json:"activeBranchId,omitempty"`
 	BranchedFromEarlierMessage bool   `json:"branchedFromEarlierMessage"`
@@ -2161,6 +2166,28 @@ type ConversationSnapshotResponse struct {
 	// unstarted session's abilities are not yet known — and a client must treat
 	// absent as "do not offer yet" rather than as "cannot".
 	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// ConversationLiveResponse carries transient text observations, never durable CDC.
+// A gap after AfterSequence requires a fresh conversation snapshot.
+type ConversationLiveResponse struct {
+	Generation     string                          `json:"generation"`
+	ConversationID string                          `json:"conversationId"`
+	BranchID       string                          `json:"branchId"`
+	AfterSequence  int64                           `json:"afterSequence"`
+	ResetSequence  int64                           `json:"resetSequence"`
+	Sequence       int64                           `json:"sequence"`
+	Events         []ConversationLiveEventResponse `json:"events"`
+}
+
+type ConversationLiveEventResponse struct {
+	Sequence       int64  `json:"sequence"`
+	Kind           string `json:"kind" enum:"message.delta,message.completed,turn.completed"`
+	ProviderItemID string `json:"providerItemId,omitempty"`
+	ProviderTurnID string `json:"providerTurnId,omitempty"`
+	Delta          string `json:"delta,omitempty"`
+	Text           string `json:"text,omitempty"`
+	CreatedAt      string `json:"createdAt"`
 }
 
 // ConversationBranchMaterializationResponse describes the fidelity of the

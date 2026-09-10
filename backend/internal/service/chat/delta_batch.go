@@ -17,9 +17,9 @@ const (
 // Only adjacent, anonymous message deltas with identical metadata are combined:
 // their text remains replayable, while native event IDs retain deduplication.
 // Collection runs on the controller goroutine, outside any store transaction.
-func coalesceChatDeltas(events <-chan ports.ChatEvent) iter.Seq[ports.ChatEvent] {
-	return func(yield func(ports.ChatEvent) bool) {
-		var pending *ports.ChatEvent
+func coalesceChatDeltas(events <-chan sequencedChatEvent) iter.Seq[sequencedChatEvent] {
+	return func(yield func(sequencedChatEvent) bool) {
+		var pending *sequencedChatEvent
 		var deadline <-chan time.Time
 		timer := time.NewTimer(deltaFlushInterval)
 		timer.Stop()
@@ -54,7 +54,7 @@ func coalesceChatDeltas(events <-chan ports.ChatEvent) iter.Seq[ports.ChatEvent]
 					flush()
 					return
 				}
-				if pending != nil && (!sameMessageDelta(*pending, event) || len(pending.Delta)+len(event.Delta) > deltaMaxBytes) {
+				if pending != nil && (!sameMessageDelta(pending.ChatEvent, event.ChatEvent) || len(pending.Delta)+len(event.Delta) > deltaMaxBytes) {
 					if !flush() {
 						return
 					}
@@ -71,6 +71,7 @@ func coalesceChatDeltas(events <-chan ports.ChatEvent) iter.Seq[ports.ChatEvent]
 					deadline = timer.C
 				} else {
 					pending.Delta += event.Delta
+					pending.sequence = event.sequence
 				}
 			}
 		}

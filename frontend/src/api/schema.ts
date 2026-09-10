@@ -1373,6 +1373,23 @@ export interface paths {
         patch: operations["setSessionConversationConfigOption"];
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/conversation/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview live text independently of persistence; reconcile using snapshot checkpoints */
+        get: operations["streamConversationText"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/conversation/inputs/{requestId}/resolve": {
         parameters: {
             query?: never;
@@ -2984,6 +3001,29 @@ export interface components {
             data: string;
             mimeType: string;
         };
+        ConversationLiveEventResponse: {
+            createdAt: string;
+            delta?: string;
+            /** @enum {string} */
+            kind: "message.delta" | "message.completed" | "turn.completed";
+            providerItemId?: string;
+            providerTurnId?: string;
+            /** Format: int64 */
+            sequence: number;
+            text?: string;
+        };
+        ConversationLiveResponse: {
+            /** Format: int64 */
+            afterSequence: number;
+            branchId: string;
+            conversationId: string;
+            events: components["schemas"]["ConversationLiveEventResponse"][];
+            generation: string;
+            /** Format: int64 */
+            resetSequence: number;
+            /** Format: int64 */
+            sequence: number;
+        };
         ConversationMCPServerPayload: {
             error?: string;
             failureReason?: string;
@@ -2999,6 +3039,7 @@ export interface components {
             kind: "message";
             /** @enum {string} */
             origin: "human" | "automation" | "daemon" | "provider";
+            providerItemId?: string;
             /** Format: int64 */
             revision: number;
             /** @enum {string} */
@@ -3081,6 +3122,9 @@ export interface components {
             hasMoreBefore: boolean;
             /** Format: int64 */
             latestSequence: number;
+            liveGeneration?: string;
+            /** Format: int64 */
+            liveSequence: number;
             mcpServers?: components["schemas"]["ConversationMCPServerPayload"][];
             messages: components["schemas"]["ConversationMessageResponse"][];
             /** @enum {string} */
@@ -8834,6 +8878,65 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    streamConversationText: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["ConversationLiveResponse"];
                 };
             };
             /** @description Not Found */

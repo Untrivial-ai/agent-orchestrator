@@ -31,11 +31,11 @@ func TestCoalesceChatDeltasPreservesBoundaries(t *testing.T) {
 			second := first
 			second.Delta = "b"
 			change(&second)
-			events := make(chan ports.ChatEvent, 2)
-			events <- first
-			events <- second
+			events := make(chan sequencedChatEvent, 2)
+			events <- sequencedChatEvent{ChatEvent: first}
+			events <- sequencedChatEvent{ChatEvent: second}
 			close(events)
-			if got := slices.Collect(coalesceChatDeltas(events)); !reflect.DeepEqual(got, []ports.ChatEvent{first, second}) { //nolint:govet // Assert unchanged event payloads, not semantic error equivalence.
+			if got := slices.Collect(coalesceChatDeltas(events)); !reflect.DeepEqual(got, []sequencedChatEvent{{ChatEvent: first}, {ChatEvent: second}}) { //nolint:govet // Assert unchanged event payloads, not semantic error equivalence.
 				t.Fatalf("events changed across %s boundary: %+v", name, got)
 			}
 		})
@@ -44,18 +44,18 @@ func TestCoalesceChatDeltasPreservesBoundaries(t *testing.T) {
 
 func TestCoalesceChatDeltasFlushesAtFirstChunkDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		events := make(chan ports.ChatEvent, 2)
-		projected := make(chan ports.ChatEvent, 2)
+		events := make(chan sequencedChatEvent, 2)
+		projected := make(chan sequencedChatEvent, 2)
 		go func() {
 			for event := range coalesceChatDeltas(events) {
 				projected <- event
 			}
 			close(projected)
 		}()
-		events <- ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "message", Delta: "a"}
+		events <- sequencedChatEvent{ChatEvent: ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "message", Delta: "a"}}
 		synctest.Wait()
 		time.Sleep(20 * time.Millisecond)
-		events <- ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "message", Delta: "b"}
+		events <- sequencedChatEvent{ChatEvent: ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "message", Delta: "b"}}
 		synctest.Wait()
 		time.Sleep(29 * time.Millisecond)
 		synctest.Wait()
@@ -80,16 +80,16 @@ func TestCoalesceChatDeltasFlushesAtFirstChunkDeadline(t *testing.T) {
 
 func TestCoalesceChatDeltasFlushesBeforeApproval(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		events := make(chan ports.ChatEvent, 2)
-		projected := make(chan ports.ChatEvent, 2)
+		events := make(chan sequencedChatEvent, 2)
+		projected := make(chan sequencedChatEvent, 2)
 		go func() {
 			for event := range coalesceChatDeltas(events) {
 				projected <- event
 			}
 		}()
-		events <- ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "message", Delta: "pending"}
+		events <- sequencedChatEvent{ChatEvent: ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "message", Delta: "pending"}}
 		synctest.Wait()
-		events <- ports.ChatEvent{Kind: ports.ChatEventApprovalRequested, RequestID: "approval"}
+		events <- sequencedChatEvent{ChatEvent: ports.ChatEvent{Kind: ports.ChatEventApprovalRequested, RequestID: "approval"}}
 		synctest.Wait()
 		if len(projected) != 2 {
 			t.Fatal("approval and preceding text waited for the flush timer")
@@ -102,10 +102,10 @@ func TestCoalesceChatDeltasFlushesBeforeApproval(t *testing.T) {
 }
 
 func TestCoalesceChatDeltasBoundsSizeAndFlushesOnClose(t *testing.T) {
-	events := make(chan ports.ChatEvent, 4)
+	events := make(chan sequencedChatEvent, 4)
 	texts := []string{strings.Repeat("a", deltaMaxBytes-1), "bc", strings.Repeat("d", deltaMaxBytes+1), "tail"}
 	for _, text := range texts {
-		events <- ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "message", Delta: text}
+		events <- sequencedChatEvent{ChatEvent: ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderItemID: "message", Delta: text}}
 	}
 	close(events)
 	var got []string
