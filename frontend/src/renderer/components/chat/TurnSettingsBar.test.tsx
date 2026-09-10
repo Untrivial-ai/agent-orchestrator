@@ -53,6 +53,69 @@ const OPTIONS: ChatConfigOption[] = [
 ];
 
 describe("ACP session config options", () => {
+	it.each(["ao-plan-project-1", "agents/plan-reviewer", "my_plan_agent"])(
+		"does not treat custom agent %s as native Plan Mode",
+		async (custom) => {
+			const user = userEvent.setup();
+			const onChange = vi.fn();
+			const view = (currentValue: string) => (
+				<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange}
+					configOptions={[OPTIONS[0], { ...OPTIONS[2], currentValue, choices: [
+						{ value: custom, name: custom },
+						{ value: "build", name: "Build" },
+						{ value: "plan", name: "Plan" },
+					] }]} />
+			);
+			const { rerender } = render(view(custom));
+			await user.click(screen.getByRole("button", { name: "Model and reasoning effort for the next turn" }));
+			expect(screen.getByRole("switch", { name: "Plan Mode" })).not.toBeChecked();
+			await user.click(screen.getByRole("switch", { name: "Plan Mode" }));
+			expect(onChange).toHaveBeenLastCalledWith("mode", { value: "plan" });
+			rerender(view("plan"));
+			expect(screen.getByRole("switch", { name: "Plan Mode" })).toBeChecked();
+			await user.click(screen.getByRole("switch", { name: "Plan Mode" }));
+			expect(onChange).toHaveBeenLastCalledWith("mode", { value: "build" });
+		},
+	);
+
+	it("keeps OpenCode Plan Mode reversible through its Build mode", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		const mode: ChatConfigOption = {
+			id: "mode",
+			name: "Session Mode",
+			category: "mode",
+			type: "select",
+			currentValue: "build",
+			choices: [
+				{ value: "build", name: "build" },
+				{ value: "agents/custom", name: "agents/custom" },
+				{ value: "plan", name: "plan" },
+			],
+		};
+		const view = (currentValue: string) => (
+			<TurnSettingsBar
+				models={[]}
+				settings={{}}
+				configOptions={[OPTIONS[0], { ...mode, currentValue }]}
+				onChangeConfigOption={onChange}
+			/>
+		);
+		const { rerender } = render(view("build"));
+		await user.click(screen.getByRole("button", { name: "Model and reasoning effort for the next turn" }));
+		expect(screen.getByRole("switch", { name: "Plan Mode" })).not.toBeChecked();
+		await user.click(screen.getByRole("switch", { name: "Plan Mode" }));
+		expect(onChange).toHaveBeenLastCalledWith("mode", { value: "plan" });
+		rerender(view("plan"));
+		expect(screen.getByRole("switch", { name: "Plan Mode" })).toBeChecked();
+		await user.keyboard("{Escape}");
+		await user.click(screen.getByRole("button", { name: "Model and reasoning effort for the next turn" }));
+		await user.click(screen.getByRole("switch", { name: "Plan Mode" }));
+		expect(onChange).toHaveBeenLastCalledWith("mode", { value: "build" });
+		rerender(view("build"));
+		expect(screen.getByRole("switch", { name: "Plan Mode" })).not.toBeChecked();
+	});
+
 	it("keeps model, effort, and provider mode explicit while hiding ACP agent internals", async () => {
 		const user = userEvent.setup();
 		render(

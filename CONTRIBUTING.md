@@ -1,7 +1,8 @@
 # Contributing
 
 We love contributions — code, docs, triage, examples, and tests.
-Start on Discord so scope is clear before you invest time.
+For implementation work, start on Discord so scope is clear before you invest time.
+Bug reports can go straight to GitHub.
 
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white&logoSize=auto)](https://discord.com/invite/UZv7JjxbwG)
 
@@ -41,8 +42,21 @@ Two onboarding notes matter on current `main`:
 
 ### Bugs and features
 
-Use the GitHub issue forms (**Bug report** / **Feature request**) so reports stay reproducible.
-Bug reports should include AO version, environment, repro steps, and expected vs actual behavior.
+Use the [GitHub issue forms](https://github.com/Untrivial-ai/agent-orchestrator/issues/new/choose) for bugs and feature requests. For bugs, only a description is required. Write a short, concrete report in your own words: what you did and what went wrong. When available, add what you expected, steps to reproduce, how often it happens, AO version and OS, or screenshots/a recording. You can report an intermittent bug even if you cannot reproduce it reliably.
+
+Search existing issues when possible; add your observations to a matching issue. Submit from your own GitHub account so maintainers can follow up with the person who experienced the problem. Please don't ask AO Bot to file reports on your behalf.
+
+Agent assistance is welcome. We recommend asking your local coding agent to use the [bug-triage skill](.agents/skills/bug-triage/SKILL.md) to ask useful follow-up questions and gather supporting evidence. The issue body should contain only observations you supplied, without invented steps, impact, or root-cause claims. Keep agent-collected logs, relevant database excerpts, and analysis in separate, clearly labeled attachments; remove secrets and unrelated personal data before sharing. Evidence and screenshots are optional, and can be added later.
+
+For example, ask your local agent:
+
+```text
+Use .agents/skills/bug-triage/SKILL.md to help with this bug: <what I observed>.
+Ask about missing details that would help, draft a concise report using only
+what I tell you, and collect relevant evidence separately for me to attach.
+```
+
+Review the draft and attachments before submitting. A clear observation is useful on its own; no diagnosis or proposed fix is needed.
 
 ### Pull requests
 

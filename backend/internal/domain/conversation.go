@@ -469,6 +469,9 @@ type ConversationSettings struct {
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	// ApprovalMode is AO's permission vocabulary, applied per turn.
 	ApprovalMode PermissionMode `json:"approvalMode,omitempty"`
+	// OpenCodeMode is the provider-owned mode explicitly selected through ACP.
+	// It is separate from approval policy and restored before accepting turns.
+	OpenCodeMode string `json:"openCodeMode,omitempty"`
 }
 
 // ConversationTurn is one user or automation request plus the agent work it
