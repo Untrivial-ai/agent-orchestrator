@@ -85,6 +85,8 @@ jobs:
 
       - name: Test Windows background agent commands have no console
         run: go test -race -run '^TestBackgroundCommandHasNoConsole$' ./internal/adapters/agent/pi ./internal/adapters/agent/omp ./internal/adapters/agent/primeagent
+      - name: Test Windows mobile tunnel subprocesses
+        run: go test -race -run 'Cloudflared|Tunnel|Command' ./internal/mobilebridge/ ./internal/process/
 
   lint:
     runs-on: ubuntu-latest
