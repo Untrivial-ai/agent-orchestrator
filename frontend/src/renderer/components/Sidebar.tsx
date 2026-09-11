@@ -502,6 +502,14 @@ export function Sidebar({
 		onExpand: () => setOpen(true),
 	});
 
+	// Suppress layout animations for the first 500ms so background session
+	// re-sorts during daemon settle don't cause visible row shuffling.
+	const [layoutSettled, setLayoutSettled] = useState(false);
+	useEffect(() => {
+		const timer = window.setTimeout(() => setLayoutSettled(true), 500);
+		return () => window.clearTimeout(timer);
+	}, []);
+
 	const [projectOrder, setProjectOrder] = useState<string[]>([]);
 	const [sessionOrderByProject, setSessionOrderByProject] = useState<Record<string, string[]>>({});
 	const orderedWorkspaces = useMemo(
@@ -742,6 +750,7 @@ export function Sidebar({
 									key={session.id}
 									session={session}
 									active={selection.activeSessionId === session.id}
+									layoutSettled={layoutSettled}
 									onOpenSession={selection.goSession}
 								/>
 								))}
@@ -800,6 +809,7 @@ export function Sidebar({
 											selection={selection}
 											draggingProjectId={draggingProjectId}
 											consumeDragClick={projectDragClickGuard.consumeClick}
+											layoutSettled={layoutSettled}
 											onSessionOrderChange={recordSessionOrder}
 											onToggle={toggleProjectDisclosure}
 											onRemoveProject={onRemoveProject}
@@ -951,6 +961,7 @@ type ProjectItemProps = {
 	selection: Selection;
 	draggingProjectId?: string | null;
 	consumeDragClick: (id: string) => boolean;
+	layoutSettled: boolean;
 	onSessionOrderChange: (projectId: string, order: string[]) => void;
 	onToggle: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
@@ -1017,6 +1028,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	selection,
 	draggingProjectId,
 	consumeDragClick,
+	layoutSettled,
 	onSessionOrderChange,
 	onToggle,
 	onRemoveProject,
@@ -1042,14 +1054,14 @@ const ProjectItemContent = memo(function ProjectItemContent({
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const [isSpawning, setIsSpawning] = useState(false);
 	const [projectPressed, setProjectPressed] = useState(false);
-	// Skip enter animation on first mount — sessions arrive async and we don't
-	// want them to slide in on every sidebar load. Only animate on subsequent
-	// expand/collapse toggles.
+	// Skip enter animation until the sidebar has settled (~500ms). Sessions
+	// arrive async and their timestamps shift as the daemon starts, causing
+	// visible re-sort animations if enabled too early.
 	const [animReady, setAnimReady] = useState(false);
 	const hasInteractedWithDisclosure = useRef(false);
 	useEffect(() => {
-		const id = requestAnimationFrame(() => setAnimReady(true));
-		return () => cancelAnimationFrame(id);
+		const id = window.setTimeout(() => setAnimReady(true), 500);
+		return () => window.clearTimeout(id);
 	}, []);
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const isProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
@@ -1229,7 +1241,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 					data-drop-indicator={undefined}
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
-					layout={draggingProjectId ? false : "position"}
+					layout={!layoutSettled || draggingProjectId ? false : "position"}
 					ref={setDroppableNodeRef}
 					transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
 				>
@@ -1509,6 +1521,7 @@ const ProjectItemContent = memo(function ProjectItemContent({
 																	active={selection.activeSessionId === session.id}
 																	consumeDragClick={sessionDragClickGuard.consumeClick}
 																	layoutDependency={sessionLayoutDependency}
+																	layoutSettled={layoutSettled}
 																	listIsDragging={sessionDragging}
 																	dropTransitionDisabled={dropTransitionDisabledId === session.id}
 																	onOpen={openSession}
@@ -1615,14 +1628,16 @@ const ProjectDragPreview = memo(function ProjectDragPreview({ workspace, expande
 const PinnedSessionRow = memo(function PinnedSessionRow({
 	session,
 	active,
+	layoutSettled,
 	onOpenSession,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
+	layoutSettled: boolean;
 	onOpenSession: (projectId: string, sessionId: string) => void;
 }) {
 	const onOpen = useCallback(() => onOpenSession(session.workspaceId, session.id), [onOpenSession, session.id, session.workspaceId]);
-	return <SessionRow session={session} active={active} indented={false} onOpen={onOpen} />;
+	return <SessionRow session={session} active={active} disableLayout={!layoutSettled} indented={false} onOpen={onOpen} />;
 });
 
 // A session row inside its project's drag context. The Pinned section renders
@@ -1632,6 +1647,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	active,
 	consumeDragClick,
 	layoutDependency,
+	layoutSettled,
 	listIsDragging,
 	dropTransitionDisabled,
 	onOpen,
@@ -1640,6 +1656,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	active: boolean;
 	consumeDragClick: (id: string) => boolean;
 	layoutDependency: string;
+	layoutSettled: boolean;
 	listIsDragging: boolean;
 	dropTransitionDisabled: boolean;
 	onOpen: (sessionId: string) => void;
@@ -1651,6 +1668,7 @@ const SortableSessionRow = memo(function SortableSessionRow({
 		<SessionRow
 			session={session}
 			active={active}
+			disableLayout={!layoutSettled}
 			onOpen={() => {
 				if (!consumeDragClick(session.id)) onOpen(session.id);
 			}}
