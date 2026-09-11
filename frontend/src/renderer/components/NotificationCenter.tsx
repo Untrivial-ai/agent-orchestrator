@@ -14,10 +14,12 @@ import {
 	LoaderCircle,
 	MessageSquareDot,
 	RotateCcw,
+	X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
 	useClearAllNotificationsMutation,
+	useClearNotificationMutation,
 	useMarkAllNotificationsReadMutation,
 	useNotificationsQuery,
 } from "../hooks/useNotificationsQuery";
@@ -209,6 +211,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	const allQuery = useNotificationsQuery("all", open);
 	const markAllRead = useMarkAllNotificationsReadMutation();
 	const clearAll = useClearAllNotificationsMutation();
+	const clearOne = useClearNotificationMutation();
 	const restoreSession = useRestoreSession();
 	const notifications = useMemo(() => getCachedNotifications(allQuery.data), [allQuery.data]);
 	const unreadCount = getCachedUnreadCount(unreadQuery.data);
@@ -311,6 +314,13 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 		});
 	}, [clearAll, t]);
 
+	const handleClear = useCallback((notification: NotificationDTO) => {
+		setActionError(null);
+		void clearOne.mutateAsync(notification).catch((error: unknown) => {
+			setActionError(error instanceof Error ? error.message : t("notify.couldNotClearOne"));
+		});
+	}, [clearOne, t]);
+
 	const loadEarlierOnScroll = (event: React.UIEvent<HTMLDivElement>) => {
 		const list = event.currentTarget;
 		const remaining = list.scrollHeight - list.scrollTop - list.clientHeight;
@@ -394,7 +404,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 						</button>
 					</div>
 				) : null}
-				{allQuery.isError && isEmpty ? (
+				{allQuery.isError && !allQuery.data ? (
 					<NotificationEmpty icon={CircleAlert} message={t("notify.loadFailed")} />
 				) : allQuery.isLoading && isEmpty ? (
 					<NotificationEmpty icon={Inbox} message={t("notify.loading")} />
@@ -424,6 +434,9 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 									notification={notification}
 									onOpenSession={openSessionAndDismiss}
 									onRestore={restoreAndOpen}
+									onClear={handleClear}
+									clearing={clearOne.isPending && clearOne.variables?.id === notification.id}
+									clearDisabled={clearOne.isPending || clearAll.isPending}
 									restoring={restoringSessionId === sessionId}
 									restoreDisabled={restoringSessionId !== undefined}
 									projectName={meta?.projectName}
@@ -492,7 +505,10 @@ const NotificationItem = memo(function NotificationItem({
 	offerRestore,
 	onOpenSession,
 	onRestore,
+	onClear,
 	projectName,
+	clearing,
+	clearDisabled,
 	restoring,
 	restoreDisabled,
 	sessionName,
@@ -504,7 +520,10 @@ const NotificationItem = memo(function NotificationItem({
 	offerRestore: boolean;
 	onOpenSession: (notification: NotificationDTO) => void;
 	onRestore: (notification: NotificationDTO) => void;
+	onClear: (notification: NotificationDTO) => void;
 	projectName?: string;
+	clearing: boolean;
+	clearDisabled: boolean;
 	restoring: boolean;
 	restoreDisabled: boolean;
 	sessionName?: string;
@@ -602,7 +621,7 @@ const NotificationItem = memo(function NotificationItem({
 						</p>
 					) : null}
 				</div>
-				{/* Time + restore share the same icon-height band so they stay level. */}
+				{/* Time and row actions share the same icon-height band. */}
 				<div className="flex h-notification-icon shrink-0 items-center gap-1">
 					<time className="shrink-0 font-mono text-[9px] leading-none text-passive" dateTime={notification.createdAt}>
 						{formatTimeCompact(notification.createdAt)}
@@ -628,6 +647,28 @@ const NotificationItem = memo(function NotificationItem({
 							</TooltipContent>
 						</Tooltip>
 					) : null}
+					<Tooltip delayDuration={0}>
+						<TooltipTrigger asChild>
+							<button
+								aria-label={t("notify.clearOne", { title: copy.title })}
+								className="grid size-notification-icon place-items-center rounded-md text-passive transition-colors hover:bg-interactive-active hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+								disabled={clearDisabled}
+								onClick={(event) => {
+									event.stopPropagation();
+									onClear(notification);
+								}}
+								onKeyDown={(event) => event.stopPropagation()}
+								type="button"
+							>
+								{clearing ? (
+									<LoaderCircle className="size-icon-sm animate-spin" aria-hidden="true" />
+								) : (
+									<X className="size-icon-sm" aria-hidden="true" />
+								)}
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="top">{t("notify.clearOneShort")}</TooltipContent>
+					</Tooltip>
 				</div>
 			</div>
 		</div>

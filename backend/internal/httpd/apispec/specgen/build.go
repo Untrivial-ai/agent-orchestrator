@@ -1493,6 +1493,17 @@ func notificationOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodDelete, path: "/api/v1/notifications/{id}", id: "deleteNotification", tag: "notifications",
+			summary:    "Delete a notification",
+			pathParams: []any{controllers.NotificationIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.NotificationEnvelope{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodPost, path: "/api/v1/notifications/read-all", id: "markAllNotificationsRead", tag: "notifications",
 			summary: "Mark notifications read",
 			reqBody: controllers.MarkAllNotificationsReadRequest{},
