@@ -48,7 +48,9 @@ jobs:
           - os: windows-latest
             platform: win32-x64
             artifact: win
-          - os: ubuntu-latest
+          # Linux tmux links glibc dynamically (#4616). Build on the oldest
+          # supported glibc baseline so the bundle also runs on Ubuntu 22.04.
+          - os: ubuntu-22.04
             platform: linux-x64
             artifact: linux
     runs-on: ${{ matrix.os }}
