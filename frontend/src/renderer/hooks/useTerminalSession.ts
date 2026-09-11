@@ -808,18 +808,35 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		mux.open(handle, openCols, openRows);
 		r.lastPublishedGrid =
 			openCols > 0 && openRows > 0 ? { cols: openCols, rows: openRows } : null;
-		r.openTimer = setTimeout(() => {
-			if (!isCurrentAttachment(generation, handle, mux)) return;
-			r.openTimer = null;
-			// Only the first timeout of a reattach sequence is reported; the
-			// backoff loop retrying against a restarting daemon is not news.
-			if (r.attempts === 0) {
-				void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "open_timeout" });
-			}
-			transition("reattaching");
-			teardownMux();
-			scheduleReattach();
-		}, OPEN_TIMEOUT_MS);
+		// The open timeout budgets the LOCAL daemon's liveness probe + runtime
+		// client spawn between mux.open() and the first byte. It must NOT arm for a
+		// cloud pane: a cloud agent mux opens no socket from mux.open() at all —
+		// waitForAgentReady holds it until the worker's agent.ready SSE arrives,
+		// then it mints a ticket and dials the sandbox, and the control plane may
+		// itself take up to its own ready deadline (~20s) to ack once the socket is
+		// up. That whole chain routinely exceeds OPEN_TIMEOUT_MS, so arming a 3s
+		// teardown here tore the pane down mid-attach and rebuilt the mux — a fresh
+		// SSE subscription and a from-0 replay — before it could ever open, and the
+		// rebuild restarted the same slow chain: a self-sustaining reconnect storm
+		// (the teardown path reattaches with countAsCloudFailure=false, so the
+		// connect-failure breaker never bounds it). A cloud pane needs no client
+		// open timeout: a worker that never readies is bounded instead by the CP
+		// closing the never-ready socket (-> onConnectionChange "closed" -> the
+		// connect-failure breaker) and by mint 409s surfacing as "waiting".
+		if (!sessionRef.current?.cloud) {
+			r.openTimer = setTimeout(() => {
+				if (!isCurrentAttachment(generation, handle, mux)) return;
+				r.openTimer = null;
+				// Only the first timeout of a reattach sequence is reported; the
+				// backoff loop retrying against a restarting daemon is not news.
+				if (r.attempts === 0) {
+					void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "open_timeout" });
+				}
+				transition("reattaching");
+				teardownMux();
+				scheduleReattach();
+			}, OPEN_TIMEOUT_MS);
+		}
 	}, [
 		clearOpenTimer,
 		clearReplayTimers,

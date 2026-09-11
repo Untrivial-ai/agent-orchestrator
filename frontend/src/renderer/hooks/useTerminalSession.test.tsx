@@ -986,6 +986,29 @@ describe("useTerminalSession", () => {
 		expect(view.result.current.state).toBe("attached");
 	});
 
+	it("never open-times-out a cloud pane, so a slow worker does not trigger a reconnect storm", () => {
+		// A cloud agent mux opens no socket from mux.open(): it holds for the
+		// worker's agent.ready SSE, then mints a ticket and dials the sandbox, and
+		// the control plane may take up to its own ready deadline (~20s) to ack.
+		// That chain routinely exceeds the local OPEN_TIMEOUT_MS, so the client
+		// open timeout must NOT arm for a cloud pane — arming it tore the pane down
+		// mid-attach and rebuilt the mux (a fresh SSE + a from-0 replay) before it
+		// could ever open, and the rebuild restarted the same slow chain: a
+		// self-sustaining storm. The pane must instead keep its single mux and stay
+		// "connecting" until the worker checks in.
+		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
+		const { view, muxes } = setup({ attachedSession: cloudSession });
+		expect(view.result.current.state).toBe("connecting");
+		act(() => void vi.advanceTimersByTime(30_000));
+		expect(muxes).toHaveLength(1);
+		expect(muxes[0].disposed).toBe(false);
+		expect(view.result.current.state).toBe("connecting");
+		// The worker finally acks: one clean attach, no rebuild.
+		act(() => muxes[0].emitOpened("handle-1"));
+		expect(view.result.current.state).toBe("attached");
+		expect(muxes).toHaveLength(1);
+	});
+
 	it("backs off between failed reconnect attempts", () => {
 		const { muxes } = setup();
 		act(() => muxes[0].emitConnection("closed"));

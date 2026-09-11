@@ -63,6 +63,37 @@ describe("createCloudTerminalMux cursor resume", () => {
 		mux2.dispose();
 	});
 
+	it("opens exactly one socket even when agent.ready fires repeatedly", async () => {
+		FakeWebSocket.instances = [];
+		let fireReady: () => void = () => undefined;
+		const mux = createCloudTerminalMux({
+			wsBaseUrl: "wss://cp.example.com/api/cloud/v1",
+			kind: "agent",
+			waitForAgentReady: true,
+			mintTicket: async () => "ticket-agent",
+			subscribeAgentReady: (onReady) => {
+				fireReady = onReady;
+				return () => undefined;
+			},
+			WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+		});
+		// waitForAgentReady holds the pane: no socket is dialed until agent.ready.
+		expect(FakeWebSocket.instances).toHaveLength(0);
+		fireReady();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(FakeWebSocket.instances).toHaveLength(1);
+		// The SSE re-delivering agent.ready (a stream reconnect replays the event
+		// log from the start) must not open a second socket on the same worker
+		// epoch — upgradeToAgent is idempotent once it has upgraded.
+		fireReady();
+		fireReady();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(FakeWebSocket.instances).toHaveLength(1);
+		mux.dispose();
+	});
+
 	it("on a reset frame drops the cursor to 0 and clears the pane", async () => {
 		FakeWebSocket.instances = [];
 		const cursor = { value: 42 };
