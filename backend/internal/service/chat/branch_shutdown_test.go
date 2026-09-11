@@ -26,7 +26,7 @@ type shutdownRefusingHost struct {
 
 func (h *shutdownRefusingHost) PreservesProviderOnClose() bool { return true }
 func (h *shutdownRefusingHost) Terminate() error {
-	_ = h.fakeConversation.Close()
+	_ = h.Close()
 	return errors.New("read shutdown acknowledgement: connection reset by peer")
 }
 
