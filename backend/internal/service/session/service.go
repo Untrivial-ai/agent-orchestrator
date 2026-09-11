@@ -521,9 +521,16 @@ func (s *Service) verifyOrchestratorReplacement(project domain.ProjectRecord, se
 	if expected := project.Config.Orchestrator.Harness; expected != "" && sess.Harness != expected {
 		return fmt.Errorf("orchestrator replacement verification failed: new session %s uses harness %q, want %q", sess.ID, sess.Harness, expected)
 	}
-	expectedBranch := sessionmanager.DefaultOrchestratorBranch(serviceSessionPrefix(project), s.dataDir)
-	if sess.Metadata.Branch != "" && sess.Metadata.Branch != expectedBranch {
-		return fmt.Errorf("orchestrator replacement verification failed: new session %s uses branch %q, want %q", sess.ID, sess.Metadata.Branch, expectedBranch)
+	// Workspace projects share one branch name across the root and every child
+	// repo; gitworktree disambiguates with a numeric suffix whenever that name
+	// is already taken (e.g. by a still-registered worktree from a prior
+	// restart), so there is no single fixed name to check the result against.
+	if project.Kind != domain.ProjectKindWorkspace {
+		expectedBranch := sessionmanager.DefaultSpawnBranch(
+			sess.ID, domain.KindOrchestrator, serviceSessionPrefix(project), project.Kind, s.dataDir)
+		if sess.Metadata.Branch != "" && sess.Metadata.Branch != expectedBranch {
+			return fmt.Errorf("orchestrator replacement verification failed: new session %s uses branch %q, want %q", sess.ID, sess.Metadata.Branch, expectedBranch)
+		}
 	}
 	return nil
 }

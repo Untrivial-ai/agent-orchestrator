@@ -3635,6 +3635,44 @@ func TestSpawnOrchestratorVerifiesReplacementHarness(t *testing.T) {
 	}
 }
 
+// TestSpawnOrchestratorAcceptsWorkspaceProjectPerSessionBranch guards a real
+// incident: for a workspace-kind project (a parent root plus child repos),
+// gitworktree.CreateWorkspaceProject gives every session — orchestrator
+// included — its own "ao/<id>" branch, and disambiguates with a numeric
+// suffix ("ao/<id>-2") whenever that name is already taken by a
+// still-registered worktree from a prior restart. There is no single fixed
+// branch name to check a workspace orchestrator's result against. The
+// verification step used to recompute an expected branch via a helper that
+// didn't know about workspace projects at all, so it always expected the
+// single-repo canonical "ao/<prefix>-orchestrator" name and rejected every
+// real workspace-project orchestrator spawn/restart — including this
+// ordinary collision-suffixed case — with a spurious "orchestrator
+// replacement verification failed" error.
+func TestSpawnOrchestratorAcceptsWorkspaceProjectPerSessionBranch(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Kind: domain.ProjectKindWorkspace}
+	fc := &fakeCommander{
+		spawnRecord: domain.SessionRecord{
+			ID:        "mer-9",
+			ProjectID: "mer",
+			Kind:      domain.KindOrchestrator,
+			Harness:   domain.HarnessClaudeCode,
+			// Collision-suffixed, as gitworktree produces when "ao/mer-9" is
+			// already taken by a leftover worktree from an earlier restart.
+			Metadata: domain.SessionMetadata{Branch: "ao/mer-9-2"},
+		},
+	}
+	svc := &Service{manager: fc, store: st}
+
+	got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+	if err != nil {
+		t.Fatalf("SpawnOrchestrator for workspace project: %v", err)
+	}
+	if got.ID != "mer-9" {
+		t.Fatalf("returned id = %q, want mer-9", got.ID)
+	}
+}
+
 func TestDelegateTaskPassesAttachmentsToSpawnConfig(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}

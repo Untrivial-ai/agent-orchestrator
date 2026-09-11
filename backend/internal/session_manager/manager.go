@@ -3839,12 +3839,6 @@ func DefaultSpawnBranch(id domain.SessionID, kind domain.SessionKind, prefix str
 	return defaultSessionBranch(id, kind, prefix, branchNamespace)
 }
 
-// DefaultOrchestratorBranch returns the generated canonical orchestrator branch
-// for a project in the current data-dir namespace.
-func DefaultOrchestratorBranch(prefix, dataDir string) string {
-	return defaultSessionBranch("", domain.KindOrchestrator, prefix, generatedBranchNamespace(dataDir))
-}
-
 func aoBranch(namespace string, parts ...string) string {
 	all := []string{"ao"}
 	if namespace != "" {
