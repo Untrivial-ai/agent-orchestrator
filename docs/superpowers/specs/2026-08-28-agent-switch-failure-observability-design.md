@@ -524,8 +524,13 @@ at classification time.
 
 The durable desktop user choice lives in AO_DATA_DIR/telemetry_policy.json,
 which resolves under ~/.ao. The file contains only schema_version,
-events_enabled, consent_generation, and updated_at and is written atomically
-with mode 0600. Electron main is the sole file/generation writer. On the first
+events_enabled, consent_generation, consent_production_enabled, and updated_at
+and is written atomically with mode 0600. consent_production_enabled records
+whether the release gate was open when the choice was written; version 1
+records predate the field and read as false. Once a release opens the gate, an
+opt-in recorded while it was closed is not resumed, because it was given while
+reporting read as disabled; desktop and daemon apply the same rule so the
+policy hint still matches. Electron main is the sole file/generation writer. On the first
 packaged launch, before any Sentry client is initialized, main materializes the
 current packaged default; thereafter the stored user choice wins. Environment
 controls remain hard vetoes and can never turn a stored off choice on.

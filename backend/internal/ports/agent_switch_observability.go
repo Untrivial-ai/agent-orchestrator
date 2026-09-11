@@ -13,6 +13,9 @@ type AgentSwitchFailureAuthoritySnapshot struct {
 	Present           bool
 	EventsEnabled     bool
 	ConsentGeneration string
+	// ConsentProductionEnabled reports whether the release gate was open when
+	// the stored choice was written. Version 1 records predate it and read false.
+	ConsentProductionEnabled bool
 }
 
 // AgentSwitchFailureAuthorityReader isolates durable-authority I/O from policy

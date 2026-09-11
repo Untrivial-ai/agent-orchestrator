@@ -1,7 +1,10 @@
+export const AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED = false;
+
 export type TelemetryPolicyDiskRecord = {
-	schema_version: 1;
+	schema_version: 2;
 	events_enabled: boolean;
 	consent_generation: string;
+	consent_production_enabled: boolean;
 	updated_at: string;
 };
 
@@ -43,7 +46,8 @@ export type TelemetryPolicyParseResult =
 	| { ok: false; reason: "invalid_record" };
 
 const GENERATION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const RECORD_KEYS = ["consent_generation", "events_enabled", "schema_version", "updated_at"];
+const RECORD_KEYS_V1 = ["consent_generation", "events_enabled", "schema_version", "updated_at"];
+const RECORD_KEYS_V2 = ["consent_generation", "consent_production_enabled", "events_enabled", "schema_version", "updated_at"];
 
 export function parseTelemetryPolicyDiskRecord(raw: string): TelemetryPolicyParseResult {
 	if (raw.length === 0 || raw.length > 4096) return { ok: false, reason: "invalid_record" };
@@ -55,11 +59,15 @@ export function parseTelemetryPolicyDiskRecord(raw: string): TelemetryPolicyPars
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, reason: "invalid_record" };
 	const record = value as Record<string, unknown>;
+	const expectedKeys = record.schema_version === 1 ? RECORD_KEYS_V1 : record.schema_version === 2 ? RECORD_KEYS_V2 : null;
 	const keys = Object.keys(record).sort();
-	if (keys.length !== RECORD_KEYS.length || keys.some((key, index) => key !== RECORD_KEYS[index])) {
+	if (!expectedKeys || keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
 		return { ok: false, reason: "invalid_record" };
 	}
-	if (record.schema_version !== 1 || typeof record.events_enabled !== "boolean") {
+	if (typeof record.events_enabled !== "boolean") {
+		return { ok: false, reason: "invalid_record" };
+	}
+	if (record.schema_version === 2 && typeof record.consent_production_enabled !== "boolean") {
 		return { ok: false, reason: "invalid_record" };
 	}
 	if (typeof record.consent_generation !== "string" || !GENERATION.test(record.consent_generation)) {
@@ -68,7 +76,14 @@ export function parseTelemetryPolicyDiskRecord(raw: string): TelemetryPolicyPars
 	if (typeof record.updated_at !== "string" || !isCanonicalTimestamp(record.updated_at)) {
 		return { ok: false, reason: "invalid_record" };
 	}
-	return { ok: true, record: record as TelemetryPolicyDiskRecord };
+	return { ok: true, record: {
+		schema_version: 2,
+		events_enabled: record.events_enabled,
+		consent_generation: record.consent_generation,
+		// Every version 1 record was written before the release gate ever opened.
+		consent_production_enabled: record.schema_version === 2 ? record.consent_production_enabled as boolean : false,
+		updated_at: record.updated_at,
+	} };
 }
 
 function isCanonicalTimestamp(value: string): boolean {
@@ -76,9 +91,14 @@ function isCanonicalTimestamp(value: string): boolean {
 	return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-export function telemetryPolicySnapshot(record: TelemetryPolicyDiskRecord, acknowledged: boolean): TelemetryPolicySnapshot {
+/**
+ * An opt-in given while the release gate was closed is not carried into a
+ * release that opens it: the user agreed while reporting read as disabled.
+ * The daemon applies the same rule (agentswitch readAuthority).
+ */
+export function telemetryPolicySnapshot(record: TelemetryPolicyDiskRecord, acknowledged: boolean, productionEnabled: boolean): TelemetryPolicySnapshot {
 	return {
-		eventsEnabled: record.events_enabled,
+		eventsEnabled: record.events_enabled && (!productionEnabled || record.consent_production_enabled),
 		consentGeneration: record.consent_generation,
 		updatedAt: record.updated_at,
 		acknowledged,

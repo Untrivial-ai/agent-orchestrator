@@ -264,6 +264,48 @@ describe("DesktopTelemetryController", () => {
 		expect(controller.snapshot()).toMatchObject({ state: "cleanup_pending", reason: "daemon_cleanup_pending", acknowledged: false });
 	});
 
+	it("asks again for an opt-in given while the release gate was closed once a release opens it", async () => {
+		const dataDir = await mkdtemp(path.join(os.tmpdir(), "ao-controller-gate-opens-"));
+		try {
+			const gatedGeneration = "7f80c8a9-ec67-4a16-a067-a444ffcc5cca";
+			await writeFile(path.join(dataDir, "telemetry_policy.json"), `${JSON.stringify({
+				schema_version: 1,
+				events_enabled: true,
+				consent_generation: gatedGeneration,
+				updated_at: "2026-08-28T10:15:30.000Z",
+			})}\n`, { mode: 0o600 });
+			const boot = () => {
+				const daemon = {
+					prepareDisable: vi.fn(),
+					applyPolicy: vi.fn().mockImplementation(async (generation: string, enabled: boolean) => ({ status: "applied", consentGeneration: generation, eventsEnabled: enabled, gateDrained: !enabled, purgeConfirmed: !enabled })),
+				};
+				const controller = new DesktopTelemetryController({
+					authority: new TelemetryPolicyAuthority({ dataDir, packagedDefault: true, platform: "linux", productionEnabled: true }),
+					daemon,
+					transportFactory: async () => ({ closeAndDrain: async () => {}, capture: () => {}, clearCache: async () => {} }),
+					environmentAllowsEvents: true, productionEnabled: true,
+				});
+				return { controller, daemon };
+			};
+
+			const first = boot();
+			await first.controller.initialize();
+			expect(first.controller.snapshot()).toMatchObject({ eventsEnabled: false, state: "applied", acknowledged: true, consentGeneration: gatedGeneration });
+			expect(first.daemon.applyPolicy).toHaveBeenCalledWith(gatedGeneration, false);
+			expect(first.controller.capture({ consentGeneration: gatedGeneration, kind: "message", message: "not sent" })).toBe(false);
+
+			const optedIn = await first.controller.setEventsEnabled(true, gatedGeneration);
+			expect(optedIn).toMatchObject({ eventsEnabled: true, state: "applied" });
+
+			const second = boot();
+			await second.controller.initialize();
+			expect(second.controller.snapshot()).toMatchObject({ eventsEnabled: true, state: "applied", consentGeneration: optedIn.consentGeneration });
+			expect(second.daemon.applyPolicy).toHaveBeenCalledWith(optedIn.consentGeneration, true);
+		} finally {
+			await rm(dataDir, { recursive: true, force: true });
+		}
+	});
+
 	it("paces retries against an unreachable daemon instead of once a second", async () => {
 		const authority = new AuthorityFake(true, "generation-on");
 		let clock = 0;

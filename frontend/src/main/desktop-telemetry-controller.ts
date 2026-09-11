@@ -1,7 +1,5 @@
-import type { RendererTelemetryCapture, TelemetryPolicySnapshot, TelemetryPolicyView } from "../shared/telemetry-policy";
+import { AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED as agentSwitchFailureProductionEnabled, type RendererTelemetryCapture, type TelemetryPolicySnapshot, type TelemetryPolicyView } from "../shared/telemetry-policy";
 import type { DaemonTelemetryPolicyAcknowledgement } from "./daemon-telemetry-policy-client";
-
-const agentSwitchFailureProductionEnabled = false;
 
 const RETRY_BACKOFF_INIT_MS = 2_000;
 const RETRY_BACKOFF_MAX_MS = 60_000;
