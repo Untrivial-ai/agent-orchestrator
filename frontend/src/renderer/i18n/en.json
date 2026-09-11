@@ -1321,6 +1321,7 @@
 	"shell.provisioningDots": "Setting up...",
 	"shell.restart": "Restart",
 	"shell.remove": "Remove",
+	"shell.removeCloudProjectBody": "This deletes the project from AO Cloud and destroys the sandboxes running its sessions. Session history is kept.",
 	"shell.removeProjectBody": "This stops its live sessions and removes it from the sidebar, but keeps the repository folder and stored history on disk.",
 	"shell.removeProjectLead": "This will remove {{name}} from AO",
 	"shell.removeProjectTitle": "Remove project",

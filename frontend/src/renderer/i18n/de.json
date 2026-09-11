@@ -1198,6 +1198,7 @@
 	"shell.provisioningDots": "Wird eingerichtet...",
 	"shell.restart": "Neu starten",
 	"shell.remove": "Entfernen",
+	"shell.removeCloudProjectBody": "Dadurch wird das Projekt aus AO Cloud gelöscht und die Sandboxes, die seine Sitzungen ausführen, werden zerstört. Der Sitzungsverlauf bleibt erhalten.",
 	"shell.removeProjectBody": "Dadurch werden live laufende Sitzungen gestoppt und das Projekt aus der Seitenleiste entfernt, der Repository-Ordner und der gespeicherte Verlauf bleiben jedoch auf dem Datenträger.",
 	"shell.removeProjectLead": "Dadurch wird {{name}} aus AO entfernt",
 	"shell.removeProjectTitle": "Projekt entfernen",

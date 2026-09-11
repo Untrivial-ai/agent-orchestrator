@@ -1219,6 +1219,7 @@
 	"shell.provisioningDots": "Configuration...",
 	"shell.restart": "Redémarrer",
 	"shell.remove": "Supprimer",
+	"shell.removeCloudProjectBody": "Cela supprime le projet d'AO Cloud et détruit les bacs à sable qui exécutent ses sessions. L'historique des sessions est conservé.",
 	"shell.removeProjectBody": "Cela arrête ses sessions actives et le retire de la barre latérale, mais conserve le dossier du dépôt et l'historique stocké sur le disque.",
 	"shell.removeProjectLead": "Cela supprimera {{name}} d'AO",
 	"shell.removeProjectTitle": "Supprimer le projet",

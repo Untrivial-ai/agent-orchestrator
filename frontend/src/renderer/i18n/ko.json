@@ -1198,6 +1198,7 @@
 	"shell.provisioningDots": "설정 중...",
 	"shell.restart": "다시 시작",
 	"shell.remove": "제거",
+	"shell.removeCloudProjectBody": "프로젝트를 AO Cloud에서 삭제하고 해당 세션을 실행 중인 샌드박스를 제거합니다. 세션 기록은 유지됩니다.",
 	"shell.removeProjectBody": "실행 중인 세션을 중지하고 사이드바에서 제거하지만, 저장소 폴더와 저장된 기록은 디스크에 유지됩니다.",
 	"shell.removeProjectLead": "AO에서 {{name}}을(를) 제거합니다",
 	"shell.removeProjectTitle": "프로젝트 제거",

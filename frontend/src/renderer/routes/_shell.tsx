@@ -28,11 +28,14 @@ import { useDaemonStatus } from "../hooks/useDaemonStatus";
 import { useOpenShellTerminal } from "../hooks/useShellTerminals";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
+import { useCloudCp } from "../hooks/useCloudCp";
+import { useCloudOrg } from "../hooks/useCloudOrg";
 import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { addRendererExceptionStep, captureRendererEvent, captureRendererException } from "../lib/telemetry";
 import { ShellProvider } from "../lib/shell-context";
+import { deleteCloudProject } from "../lib/cloud-project";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
@@ -49,7 +52,7 @@ import {
 } from "../lib/platform";
 import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
-import { sessionIsActive, toProjectKind, type WorkspaceSummary } from "../types/workspace";
+import { CLOUD_PROJECT_KIND, sessionIsActive, toProjectKind, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
 import { useAgentInventoryTelemetry } from "../hooks/useAgentInventoryTelemetry";
 
@@ -166,6 +169,11 @@ function ShellLayout() {
 	const queryClient = useQueryClient();
 	const workspaceQuery = useWorkspaceQuery();
 	const workspaces = workspaceQuery.data ?? [];
+	// Cloud projects are merged into the same board, so removal has to reach the
+	// control plane for them. Both hooks share their queries with
+	// useWorkspaceQuery above, so subscribing here costs no extra request.
+	const { client: cloudClient } = useCloudCp();
+	const { org: cloudOrg } = useCloudOrg();
 	// Global shortcut listeners need the latest workspace list, but recreating
 	// those subscriptions for every streamed activity update is avoidable.
 	const workspacesRef = useRef(workspaces);
@@ -625,6 +633,7 @@ function ShellLayout() {
 
 	const removeProject = useCallback(
 		async (projectId: string) => {
+			const isCloudProject = workspaces.find((item) => item.id === projectId)?.kind === CLOUD_PROJECT_KIND;
 			const isLastWorkspace =
               workspaces.length === 1 && workspaces[0]?.id === projectId;
 			void addRendererExceptionStep("Project removal requested", {
@@ -633,19 +642,36 @@ function ShellLayout() {
 				surface: "project_board",
 				project_id: projectId,
 			});
-			const { error } = await apiClient.DELETE("/api/v1/projects/{id}", {
-				params: { path: { id: projectId } },
-			});
-			if (error) {
-				const failure = new Error(apiErrorMessage(error)) as Error & { code?: string };
-				failure.code = apiErrorCode(error);
+			const captureFailure = (failure: Error & { code?: string }) => {
 				void captureRendererException(failure, {
 					source: "project-remove",
 					operation: "project_remove",
 					surface: "project_board",
 					project_id: projectId,
 				});
-				throw failure;
+				return failure;
+			};
+			// The board merges cloud projects into the same list, but the daemon
+			// DELETE below only knows local ones; the control plane owns those.
+			if (isCloudProject) {
+				try {
+					await deleteCloudProject(queryClient, cloudClient, cloudOrg?.id, projectId);
+				} catch (err) {
+					throw captureFailure(err instanceof Error ? err : new Error(String(err)));
+				}
+				void captureRendererEvent("ao.renderer.project_removed", { project_id: projectId });
+				if (isLastWorkspace) {
+					void navigate({ to: "/" });
+				}
+				return;
+			}
+			const { error } = await apiClient.DELETE("/api/v1/projects/{id}", {
+				params: { path: { id: projectId } },
+			});
+			if (error) {
+				const failure = new Error(apiErrorMessage(error)) as Error & { code?: string };
+				failure.code = apiErrorCode(error);
+				throw captureFailure(failure);
 			}
 			void captureRendererEvent("ao.renderer.project_removed", { project_id: projectId });
 			updateWorkspaces((current) => current.filter((item) => item.id !== projectId));
@@ -653,7 +679,7 @@ function ShellLayout() {
               void navigate({ to: "/" });
 }
 		},
-		[navigate, updateWorkspaces, workspaces],
+		[cloudClient, cloudOrg, navigate, queryClient, updateWorkspaces, workspaces],
 	);
 
 	const restartOrchestrator = useCallback(

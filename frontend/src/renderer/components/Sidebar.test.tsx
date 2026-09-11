@@ -1622,6 +1622,21 @@ describe("Sidebar", () => {
 		expect(dialog).toHaveTextContent("repository folder");
 	});
 
+	it("warns that a cloud project's sandboxes are destroyed instead of promising a folder on disk", async () => {
+		const user = userEvent.setup();
+		// A cloud project has no local checkout: removing it deletes the project in
+		// the control plane and tears down the sandboxes running its sessions.
+		renderSidebar({ workspaces: [{ ...workspace, name: "Cloud One", kind: "cloud", path: "" }] });
+
+		await user.click(screen.getByLabelText("Project actions for Cloud One"));
+		await user.click(await screen.findByRole("menuitem", { name: "Remove project" }));
+
+		const dialog = await screen.findByRole("dialog", { name: "Remove project" });
+		expect(dialog).toHaveTextContent("Cloud One");
+		expect(dialog).toHaveTextContent("sandboxes");
+		expect(dialog).not.toHaveTextContent("repository folder");
+	});
+
 	it("renames a session inline by double-clicking its name", async () => {
 		const user = userEvent.setup();
 		const workspaceWithSession = { ...workspace, sessions: [session] };
