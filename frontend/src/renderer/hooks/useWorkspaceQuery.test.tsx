@@ -3,13 +3,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
-const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock } = vi.hoisted(
+const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock } = vi.hoisted(
 	() => ({
 		captureRendererEventMock: vi.fn().mockResolvedValue(undefined),
 		cloudState: { ready: false, org: undefined as { id: string } | undefined },
 		getMock: vi.fn(),
 		hasTrustedApiBaseUrlMock: vi.fn(() => true),
 		listProjectsMock: vi.fn(),
+		listSessionsMock: vi.fn(),
 	}),
 );
 
@@ -22,7 +23,7 @@ vi.mock("../lib/telemetry", () => ({ captureRendererEvent: captureRendererEventM
 
 vi.mock("./useCloudCp", () => ({
 	useCloudCp: () => ({
-		client: { listProjects: listProjectsMock },
+		client: { listProjects: listProjectsMock, listSessions: listSessionsMock },
 		ready: cloudState.ready,
 		baseUrl: "https://cp.example.com",
 	}),
@@ -58,6 +59,7 @@ beforeEach(() => {
 	cloudState.ready = false;
 	cloudState.org = undefined;
 	listProjectsMock.mockReset();
+	listSessionsMock.mockReset().mockResolvedValue({ items: [], page: { hasMore: false } });
 });
 
 describe("useWorkspaceQuery", () => {
@@ -411,6 +413,64 @@ describe("useWorkspaceQuery", () => {
 			sessions: [],
 		});
 		expect(listProjectsMock).toHaveBeenCalledWith("org-1", { limit: 100 });
+	});
+
+	it("carries control-plane runtime details into cloud terminal sessions", async () => {
+		cloudState.ready = true;
+		cloudState.org = { id: "org-1" };
+		listProjectsMock.mockResolvedValue({
+			items: [
+				{
+					id: "cp-1",
+					orgId: "org-1",
+					displayName: "cloud-app",
+					repositoryUrl: "https://github.com/acme/cloud-app",
+					defaultBranch: "main",
+					config: {},
+					createdAt: "2026-08-01T00:00:00Z",
+					updatedAt: "2026-08-01T00:00:00Z",
+				},
+			],
+			page: { hasMore: false },
+		});
+		listSessionsMock.mockResolvedValue({
+			items: [
+				{
+					id: "cloud-session",
+					orgId: "org-1",
+					projectId: "cp-1",
+					kind: "orchestrator",
+					harness: "claude-code",
+					displayName: "Orchestrator",
+					branch: "ao/cloud-session",
+					mode: "trusted",
+					deniedCommands: [],
+					activityState: "idle",
+					status: "idle",
+					runtimeConnected: false,
+					runtimeProvider: "coder",
+					runtimeState: "bootstrapping",
+					runtimeError: "",
+					runtimeStartupStartedAt: "2026-09-02T00:00:30Z",
+					isTerminated: false,
+					createdAt: "2026-09-02T00:00:00Z",
+					updatedAt: "2026-09-02T00:01:00Z",
+				},
+			],
+			page: { hasMore: false },
+		});
+		respondWith({ projects: { data: { projects: [] }, error: undefined } });
+
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.data?.[0]?.sessions).toHaveLength(1));
+
+		expect(result.current.data?.[0]?.sessions[0]?.cloud).toEqual({
+			orgId: "org-1",
+			runtimeProvider: "coder",
+			runtimeState: "bootstrapping",
+			runtimeError: "",
+			runtimeStartupStartedAt: "2026-09-02T00:00:30Z",
+		});
 	});
 
 	it("keeps local projects when the cloud fetch fails", async () => {

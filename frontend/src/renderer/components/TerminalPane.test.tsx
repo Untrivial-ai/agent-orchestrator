@@ -490,8 +490,98 @@ describe("TerminalPane replay cover", () => {
 			// it straight back down; the banner explains this window better.
 			expect(screen.queryByTestId("terminal-replay-cover")).not.toBeInTheDocument();
 			expect(screen.getByText("Terminal disconnected — reattaching…")).toBeInTheDocument();
+			expect(screen.getByTestId("terminal-status-banner")).toHaveClass("top-2");
+			expect(screen.getByTestId("terminal-status-banner")).not.toHaveClass("inset-0");
 		} finally {
 			view.restore();
+		}
+	});
+
+	it.each([
+		["provisioning", "Creating the Coder workspace…"],
+		["restoring", "Resuming the Coder workspace…"],
+		["bootstrapping", "The Coder workspace is ready — starting the AO worker…"],
+		["running", "AO worker is ready — attaching the terminal…"],
+		["disconnected", "The Coder workspace lost its AO worker — reconnecting…"],
+	])("explains the %s cloud startup phase before the first attachment", (runtimeState, message) => {
+		terminalState.value = "reattaching";
+		hasAttached.value = false;
+		const view = renderPane({
+			...worker,
+			terminalHandleId: "cloud-session",
+			cloud: { orgId: "cloud-org", runtimeProvider: "coder", runtimeState },
+		});
+		try {
+			expect(screen.getByText(message)).toBeInTheDocument();
+			expect(screen.getByTestId("terminal-status-banner")).toHaveClass(
+				"inset-0",
+				"place-items-center",
+			);
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("explains a Coder resume after a previously attached terminal disconnects", () => {
+		terminalState.value = "reattaching";
+		hasAttached.value = true;
+		const view = renderPane({
+			...worker,
+			terminalHandleId: "cloud-session",
+			cloud: { orgId: "cloud-org", runtimeProvider: "coder", runtimeState: "restoring" },
+		});
+		try {
+			expect(screen.getByText("Resuming the Coder workspace…")).toBeInTheDocument();
+			expect(screen.getByTestId("terminal-startup-elapsed")).toBeInTheDocument();
+			expect(screen.getByTestId("terminal-status-banner")).toHaveClass("top-2");
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("surfaces the control-plane failure instead of an endless connecting message", () => {
+		terminalState.value = "reattaching";
+		hasAttached.value = false;
+		const view = renderPane({
+			...worker,
+			terminalHandleId: "cloud-session",
+			cloud: {
+				orgId: "cloud-org",
+				runtimeProvider: "coder",
+				runtimeState: "failed",
+				runtimeError: "template build failed",
+			},
+		});
+		try {
+			expect(screen.getByText("The Coder workspace failed: template build failed")).toBeInTheDocument();
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("shows a live elapsed timer anchored to the current cloud startup attempt", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime("2026-09-02T10:00:35Z");
+		terminalState.value = "reattaching";
+		hasAttached.value = false;
+		const view = renderPane({
+			...worker,
+			createdAt: "2026-09-02T03:07:00Z",
+			terminalHandleId: "cloud-session",
+			cloud: {
+				orgId: "cloud-org",
+				runtimeProvider: "coder",
+				runtimeState: "provisioning",
+				runtimeStartupStartedAt: "2026-09-02T10:00:00Z",
+			},
+		});
+		try {
+			expect(screen.getByTestId("terminal-startup-elapsed")).toHaveTextContent("35s");
+			act(() => vi.advanceTimersByTime(26_000));
+			expect(screen.getByTestId("terminal-startup-elapsed")).toHaveTextContent("1m 1s");
+		} finally {
+			view.restore();
+			vi.useRealTimers();
 		}
 	});
 

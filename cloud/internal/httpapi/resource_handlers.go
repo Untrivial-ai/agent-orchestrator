@@ -49,23 +49,25 @@ type createSessionRequest struct {
 }
 
 type sessionResponse struct {
-	ID               string    `json:"id"`
-	OrgID            string    `json:"orgId"`
-	ProjectID        string    `json:"projectId"`
-	Kind             string    `json:"kind"`
-	Harness          string    `json:"harness"`
-	DisplayName      string    `json:"displayName"`
-	Branch           string    `json:"branch"`
-	Mode             string    `json:"mode"`
-	DeniedCommands   []string  `json:"deniedCommands"`
-	ActivityState    string    `json:"activityState"`
-	Status           string    `json:"status"`
-	RuntimeConnected bool      `json:"runtimeConnected"`
-	RuntimeState     string    `json:"runtimeState,omitempty"`
-	RuntimeError     string    `json:"runtimeError,omitempty"`
-	IsTerminated     bool      `json:"isTerminated"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ID                      string     `json:"id"`
+	OrgID                   string     `json:"orgId"`
+	ProjectID               string     `json:"projectId"`
+	Kind                    string     `json:"kind"`
+	Harness                 string     `json:"harness"`
+	DisplayName             string     `json:"displayName"`
+	Branch                  string     `json:"branch"`
+	Mode                    string     `json:"mode"`
+	DeniedCommands          []string   `json:"deniedCommands"`
+	ActivityState           string     `json:"activityState"`
+	Status                  string     `json:"status"`
+	RuntimeConnected        bool       `json:"runtimeConnected"`
+	RuntimeProvider         string     `json:"runtimeProvider,omitempty"`
+	RuntimeState            string     `json:"runtimeState,omitempty"`
+	RuntimeError            string     `json:"runtimeError,omitempty"`
+	RuntimeStartupStartedAt *time.Time `json:"runtimeStartupStartedAt,omitempty"`
+	IsTerminated            bool       `json:"isTerminated"`
+	CreatedAt               time.Time  `json:"createdAt"`
+	UpdatedAt               time.Time  `json:"updatedAt"`
 }
 
 type pageInfo struct {
@@ -510,23 +512,25 @@ func toProjectResponse(project domain.Project) projectResponse {
 // pass nil only for a session that provably has none yet (just created).
 func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionResponse {
 	return sessionResponse{
-		ID:               session.ID,
-		OrgID:            session.OrgID,
-		ProjectID:        session.ProjectID,
-		Kind:             session.Kind,
-		Harness:          session.Harness,
-		DisplayName:      session.DisplayName,
-		Branch:           session.Branch,
-		Mode:             session.Mode,
-		DeniedCommands:   nonNilStrings(session.DeniedCommands),
-		ActivityState:    string(session.ActivityState),
-		Status:           string(session.Status(time.Now().UTC(), prs)),
-		RuntimeConnected: session.RuntimeConnected,
-		RuntimeState:     session.RuntimeState,
-		RuntimeError:     session.RuntimeError,
-		IsTerminated:     session.IsTerminated,
-		CreatedAt:        session.CreatedAt,
-		UpdatedAt:        session.UpdatedAt,
+		ID:                      session.ID,
+		OrgID:                   session.OrgID,
+		ProjectID:               session.ProjectID,
+		Kind:                    session.Kind,
+		Harness:                 session.Harness,
+		DisplayName:             session.DisplayName,
+		Branch:                  session.Branch,
+		Mode:                    session.Mode,
+		DeniedCommands:          nonNilStrings(session.DeniedCommands),
+		ActivityState:           string(session.ActivityState),
+		Status:                  string(session.Status(time.Now().UTC(), prs)),
+		RuntimeConnected:        session.RuntimeConnected,
+		RuntimeProvider:         session.RuntimeProvider,
+		RuntimeState:            session.RuntimeState,
+		RuntimeError:            session.RuntimeError,
+		RuntimeStartupStartedAt: session.RuntimeStartupStartedAt,
+		IsTerminated:            session.IsTerminated,
+		CreatedAt:               session.CreatedAt,
+		UpdatedAt:               session.UpdatedAt,
 	}
 }
 

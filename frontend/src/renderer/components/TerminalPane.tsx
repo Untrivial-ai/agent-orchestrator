@@ -847,16 +847,46 @@ export function providerScrollsByKeyboard(provider?: string): boolean {
 function bannerText(
 	state: TerminalSessionState,
 	t: TFunction,
-	hasAttached: boolean,
-	isCloud: boolean,
+	cloud: WorkspaceSession["cloud"],
 	error?: string,
 ): string | undefined {
-	// Cloud only: before the first successful open (the sandbox worker is still
-	// coming up), show a calm "Connecting…" rather than the alarming
-	// "disconnected — reattaching". A local terminal keeps its original wording
-	// verbatim, so local behavior is unchanged.
+	// Explain which remote lifecycle boundary is holding a cloud terminal up on
+	// both its first attach and later reconnects. Once a pane has attached,
+	// collapsing a Coder pause/resume into "Terminal disconnected" hides the most
+	// useful fact from the user even though the control plane already exposes it.
 	if (state === "reattaching") {
-		return isCloud && !hasAttached ? t("terminal.connecting") : t("terminal.reattaching");
+		if (cloud) {
+			const provider =
+				cloud.runtimeProvider === "coder"
+					? "Coder"
+					: cloud.runtimeProvider === "nodeops"
+						? "NodeOps"
+						: t("terminal.cloudProvider");
+			switch (cloud.runtimeState) {
+				case "requested":
+				case "provisioning":
+					return t("terminal.cloudCreatingWorkspace", { provider });
+				case "stopped":
+				case "stopping":
+				case "restoring":
+					return t("terminal.cloudResumingWorkspace", { provider });
+				case "bootstrapping":
+				case "ready":
+					return t("terminal.cloudStartingWorker", { provider });
+				case "running":
+					return t("terminal.cloudAttachingTerminal");
+				case "disconnected":
+					return t("terminal.cloudReconnectingWorker", { provider });
+				case "failed":
+					return t("terminal.cloudWorkspaceFailed", {
+						provider,
+						error: cloud.runtimeError || t("terminal.connectionFailed"),
+					});
+				default:
+					return t("terminal.connecting");
+			}
+		}
+		return t("terminal.reattaching");
 	}
 	if (state === "error") return t("terminal.error", { error: error ?? t("terminal.connectionFailed") });
 	return undefined;
@@ -1003,7 +1033,13 @@ function AttachedTerminal({
 		);
 	}
 
-	const banner = bannerText(state, t, hasAttached, Boolean(attachSession?.cloud), error);
+	const banner = bannerText(state, t, attachSession?.cloud, error);
+	const centerCloudStartupBanner = Boolean(
+		banner && attachSession?.cloud && !hasAttached && state === "reattaching",
+	);
+	const showCloudStartupStatus = Boolean(
+		banner && attachSession?.cloud && state === "reattaching",
+	);
 	const showEmptyState = !handleId;
 	// Cover xterm while the attachment buffers the initial replay, so the pane
 	// appears already drawn at the tail instead of visibly scrolling down to it.
@@ -1071,8 +1107,30 @@ function AttachedTerminal({
 				)}
 				{showReplayCover && <ReplayCover />}
 				{banner && (
-					<div className="absolute inset-x-3 top-2 rounded-md border border-border bg-surface/95 px-3 py-1.5 font-mono text-caption text-muted-foreground">
-						{banner}
+					<div
+						className={cn(
+							"pointer-events-none absolute z-10",
+							centerCloudStartupBanner
+								? "inset-0 grid place-items-center px-4"
+								: "inset-x-3 top-2",
+						)}
+						data-testid="terminal-status-banner"
+					>
+						<div
+							className={cn(
+								"rounded-md border border-border bg-surface/95 font-mono text-caption text-muted-foreground",
+								centerCloudStartupBanner ? "w-fit max-w-lg px-4 py-2 text-center" : "px-3 py-1.5",
+							)}
+						>
+							{showCloudStartupStatus ? (
+								<CloudStartupStatus
+									message={banner}
+									startedAt={attachSession?.cloud?.runtimeStartupStartedAt}
+								/>
+							) : (
+								banner
+							)}
+						</div>
 					</div>
 				)}
 			</div>
@@ -1088,6 +1146,43 @@ function AttachedTerminal({
 			)}
 		</div>
 	);
+}
+
+function CloudStartupStatus({ message, startedAt }: { message: string; startedAt?: string }) {
+	const fallbackStartedAt = useRef<number | null>(null);
+	if (fallbackStartedAt.current === null) fallbackStartedAt.current = Date.now();
+	const [now, setNow] = useState(() => Date.now());
+
+	useEffect(() => {
+		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+		return () => window.clearInterval(timer);
+	}, []);
+
+	const parsedStartedAt = startedAt ? Date.parse(startedAt) : Number.NaN;
+	const startedAtMs = Number.isNaN(parsedStartedAt) ? fallbackStartedAt.current : parsedStartedAt;
+
+	return (
+		<div className="flex items-baseline justify-center gap-2">
+			<span>{message}</span>
+			<time
+				className="shrink-0 tabular-nums text-terminal-dim"
+				dateTime={startedAt}
+				data-testid="terminal-startup-elapsed"
+			>
+				{formatStartupElapsed(now - startedAtMs)}
+			</time>
+		</div>
+	);
+}
+
+function formatStartupElapsed(elapsedMs: number): string {
+	const seconds = Math.max(0, Math.floor(elapsedMs / 1_000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remainingSeconds = seconds % 60;
+	if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+	const hours = Math.floor(minutes / 60);
+	return `${hours}h ${minutes % 60}m`;
 }
 
 function ReplayCover() {

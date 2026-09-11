@@ -192,7 +192,13 @@ function toCloudWorkspaceSession(
 		prs: [],
 		// Marks this as a control-plane session so the terminal opens against the
 		// CP (ticket + sandbox WebSocket) instead of the local daemon mux.
-		cloud: { orgId },
+		cloud: {
+			orgId,
+			runtimeProvider: session.runtimeProvider,
+			runtimeState: session.runtimeState,
+			runtimeError: session.runtimeError,
+			runtimeStartupStartedAt: session.runtimeStartupStartedAt,
+		},
 	};
 }
 

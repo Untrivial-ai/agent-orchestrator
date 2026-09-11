@@ -147,7 +147,15 @@ export type WorkspaceSession = {
 	 * org the session is scoped to so its terminal can be opened against the CP;
 	 * absent for local sessions, which route through the local daemon.
 	 */
-	cloud?: { orgId: string };
+	cloud?: {
+		orgId: string;
+		/** Sandbox provider and lifecycle facts reported by the cloud control plane. */
+		runtimeProvider?: string;
+		runtimeState?: string;
+		runtimeError?: string;
+		/** Beginning of the current remote workspace create/resume attempt. */
+		runtimeStartupStartedAt?: string;
+	};
 };
 
 // Tracker providers whose ids the intake daemon stamps sessions with, in

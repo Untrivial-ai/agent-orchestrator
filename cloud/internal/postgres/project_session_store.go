@@ -629,7 +629,7 @@ func createSessionTx(
 		FROM generated
 		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
 			mode, denied_commands, activity_state, is_terminated,
-			false, '', '', created_at, updated_at`,
+			false, '', '', '', NULL, created_at, updated_at`,
 		orgID,
 		input.ProjectID,
 		input.Kind,
@@ -684,8 +684,8 @@ func createSessionTx(
 		ctx,
 		`INSERT INTO ao_sandboxes (
 			session_id, org_id, provider, provider_connection_id,
-			resource_profile, bootstrap_context
-		) VALUES ($1, $2, $3, NULLIF($4, '')::uuid, $5, $6)`,
+			resource_profile, bootstrap_context, startup_started_at
+		) VALUES ($1, $2, $3, NULLIF($4, '')::uuid, $5, $6, now())`,
 		session.ID, orgID, provider, input.SandboxConnectionID,
 		resourceProfile, bootstrapContext,
 	); err != nil {
@@ -845,8 +845,10 @@ const sessionSelect = `
 			SELECT 1 FROM ao_worker_connections worker
 			WHERE worker.session_id = session.id AND worker.disconnected_at IS NULL
 		),
+		COALESCE(sandbox.provider, ''),
 		COALESCE(sandbox.observed_state, ''),
 		COALESCE(sandbox.last_error, ''),
+		sandbox.startup_started_at,
 		session.created_at, session.updated_at
 	FROM ao_sessions session
 	LEFT JOIN ao_sandboxes sandbox
@@ -905,8 +907,10 @@ func scanSession(row scanner, session *domain.Session) error {
 		&activity,
 		&session.IsTerminated,
 		&session.RuntimeConnected,
+		&session.RuntimeProvider,
 		&session.RuntimeState,
 		&session.RuntimeError,
+		&session.RuntimeStartupStartedAt,
 		&session.CreatedAt,
 		&session.UpdatedAt,
 	)

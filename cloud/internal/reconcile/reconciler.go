@@ -573,7 +573,14 @@ func (r *Reconciler) reconcileSandbox(ctx context.Context, record domain.Sandbox
 				r.startupDeadlineElapsed(record)) {
 			return r.fail(ctx, record, r.providerStartupTimeoutError())
 		}
-		return r.observe(ctx, record, string(environment.ID), domain.SandboxObservedProvisioning, "", 5*time.Second)
+		observedState := domain.SandboxObservedProvisioning
+		// Coder reports a resumed workspace as "starting" while its build is
+		// running. Preserve AO's restoring intent through that provider-level
+		// transition so clients do not mislabel a warm resume as a first create.
+		if record.ObservedState == domain.SandboxObservedRestoring {
+			observedState = domain.SandboxObservedRestoring
+		}
+		return r.observe(ctx, record, string(environment.ID), observedState, "", 5*time.Second)
 	default:
 		// Any state this control plane does not recognize is treated as
 		// not-yet-ready. Guessing "running" would suppress the startup

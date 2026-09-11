@@ -16,6 +16,43 @@ type workerSpecStore struct {
 	issued int
 }
 
+type observationStore struct {
+	Store
+	state string
+}
+
+func (s *observationStore) UpdateSandboxObservation(
+	_ context.Context, _, _, _, _ string, state string, _ string, _ time.Time,
+) error {
+	s.state = state
+	return nil
+}
+
+type fixedResolver struct {
+	provider sandbox.Provider
+}
+
+func (r fixedResolver) Resolve(context.Context, domain.Sandbox) (sandbox.Provider, error) {
+	return r.provider, nil
+}
+
+type provisioningProvider struct{}
+
+func (provisioningProvider) Create(context.Context, sandbox.Spec) (sandbox.Environment, error) {
+	return sandbox.Environment{}, nil
+}
+func (provisioningProvider) Get(context.Context, sandbox.ID) (sandbox.Environment, error) {
+	return sandbox.Environment{ID: "workspace-1", State: sandbox.StateProvisioning}, nil
+}
+func (provisioningProvider) FindBySession(context.Context, string) (sandbox.Environment, bool, error) {
+	return sandbox.Environment{}, false, nil
+}
+func (provisioningProvider) Start(context.Context, sandbox.ID) error  { return nil }
+func (provisioningProvider) Stop(context.Context, sandbox.ID) error   { return nil }
+func (provisioningProvider) Pause(context.Context, sandbox.ID) error  { return nil }
+func (provisioningProvider) Resume(context.Context, sandbox.ID) error { return nil }
+func (provisioningProvider) Delete(context.Context, sandbox.ID) error { return nil }
+
 func (s *workerSpecStore) IssueAccessTicket(
 	context.Context, string, string, string, []string, time.Duration,
 ) (string, error) {
@@ -99,5 +136,26 @@ func TestCoderRestoreBootstrapRequiresDurableIdentity(t *testing.T) {
 	}, sandbox.Spec{DurableRoot: "/mnt/ao"}, false)
 	if first.RequireDurableIdentity {
 		t.Fatal("first Coder bootstrap unexpectedly required an existing identity")
+	}
+}
+
+func TestProvisioningProviderStatePreservesRestoreIntent(t *testing.T) {
+	t.Parallel()
+	store := &observationStore{}
+	reconciler := New(store, fixedResolver{provider: provisioningProvider{}}, Options{})
+	now := time.Now()
+	err := reconciler.reconcileSandbox(context.Background(), domain.Sandbox{
+		SessionID:             "session-1",
+		OrgID:                 "org-1",
+		ProviderEnvironmentID: "workspace-1",
+		DesiredState:          domain.SandboxDesiredRunning,
+		ObservedState:         domain.SandboxObservedRestoring,
+		WorkerLastSeenAt:      &now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.state != domain.SandboxObservedRestoring {
+		t.Fatalf("observed state = %q, want %q", store.state, domain.SandboxObservedRestoring)
 	}
 }

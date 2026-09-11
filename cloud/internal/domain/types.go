@@ -70,10 +70,14 @@ type Session struct {
 	ActivityState    contract.ActivityState
 	IsTerminated     bool
 	RuntimeConnected bool
+	RuntimeProvider  string
 	RuntimeState     string
 	RuntimeError     string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// RuntimeStartupStartedAt is the beginning of the current create or resume
+	// attempt. It is nil once the sandbox is running or no running intent exists.
+	RuntimeStartupStartedAt *time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 // Status derives the session's display status from runtime and pull request facts.

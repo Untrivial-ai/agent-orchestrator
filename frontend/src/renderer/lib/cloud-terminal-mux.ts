@@ -127,11 +127,18 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 		ws.addEventListener("close", (event: CloseEvent) => {
 			// A normal closure (1000) is the CP telling us the terminal process
 			// exited or the terminal was closed — the pane is gone, so signal exit
-			// and let the hook stop reattaching. Any other close is a transport
-			// drop the hook should reconnect through (with a fresh ticket).
+			// and let the hook stop reattaching. A policy closure (1008) is likewise
+			// permanent for this attachment (for example, the selected harness is
+			// unavailable), so surface the server's reason instead of retrying it
+			// forever. Other closes are transport drops the hook should reconnect
+			// through with a fresh ticket.
 			if (event.code === 1000 && !exited) {
 				exited = true;
 				exitListeners.forEach((listener) => listener());
+			} else if (event.code === 1008 && !exited) {
+				exited = true;
+				const message = event.reason.trim() || "Terminal access is unavailable.";
+				errorListeners.forEach((listener) => listener(message));
 			}
 			setConnectionState("closed");
 		});

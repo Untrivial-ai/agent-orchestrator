@@ -329,6 +329,7 @@ func (s *Store) IssueTerminalTicket(
 	ttl time.Duration,
 ) (string, []string, error) {
 	// Terminal access is an explicit proof of life. Wake an idle-paused sandbox
+	// (including legacy rows whose pause intent is still recorded as `stopped`)
 	// and reserve a short interaction lease in a committed transaction before
 	// checking worker readiness so the idle scanner cannot immediately undo the
 	// wake while the browser waits for the worker. The browser retries ticket
@@ -337,10 +338,10 @@ func (s *Store) IssueTerminalTicket(
 	if err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
 		_, err := tx.Exec(ctx,
 			`UPDATE ao_sandboxes
-			SET desired_state = CASE WHEN desired_state = 'paused' THEN 'running' ELSE desired_state END,
-				reconcile_after = CASE WHEN desired_state = 'paused' THEN now() ELSE reconcile_after END,
+			SET desired_state = CASE WHEN desired_state IN ('paused', 'stopped') THEN 'running' ELSE desired_state END,
+				reconcile_after = CASE WHEN desired_state IN ('paused', 'stopped') THEN now() ELSE reconcile_after END,
 				startup_started_at = CASE
-					WHEN desired_state = 'paused' THEN now()
+					WHEN desired_state IN ('paused', 'stopped') THEN now()
 					ELSE startup_started_at
 				END,
 				interactive_until = CASE
