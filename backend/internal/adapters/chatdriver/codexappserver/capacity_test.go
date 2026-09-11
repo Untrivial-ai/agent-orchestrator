@@ -78,6 +78,25 @@ func TestSafeCapacityReadErrorRedactsProviderMessage(t *testing.T) {
 	}
 }
 
+func TestSafeCapacityReadErrorIdentifiesRevokedOAuthToken(t *testing.T) {
+	raw := fmt.Errorf("rate limit read failed: %w", &rpcError{
+		Code:    -32603,
+		Message: `usage failed: 401 Unauthorized; body={"code":"token_revoked","detail":"secret-account@example.com"}`,
+	})
+
+	got := safeCapacityReadError(raw)
+
+	if !errors.Is(got, ports.ErrCodexOAuthTokenRevoked) {
+		t.Fatalf("error = %v, want safe revoked-token error", got)
+	}
+	if strings.Contains(got.Error(), "secret-account") {
+		t.Fatalf("safe error leaked provider details: %v", got)
+	}
+	if isRevokedOAuthTokenError(&rpcError{Code: -32603, Message: "token_revoked without a 401 response"}) {
+		t.Fatal("an ambiguous provider message was classified as a revoked OAuth token")
+	}
+}
+
 func TestSafeCapacityReadErrorClassifiesTransportAndContextFailures(t *testing.T) {
 	if got := safeCapacityReadError(errors.New("connection failed with private details")); !errors.Is(got, ports.ErrCodexCapacityProviderUnavailable) {
 		t.Fatalf("transport error = %v, want provider unavailable", got)

@@ -52,6 +52,7 @@ type fakeCodexAccountClient struct {
 	readRelease     chan struct{}
 	capacity        ports.CodexCapacityObservation
 	capacityErr     error
+	capacityFn      func(context.Context) (ports.CodexCapacityObservation, error)
 	capacityStarted chan struct{}
 	capacityRelease chan struct{}
 	usage           ports.CodexUsageObservation
@@ -95,6 +96,9 @@ func (c *fakeCodexAccountClient) ReadCapacity(ctx context.Context) (ports.CodexC
 		case <-ctx.Done():
 			return ports.CodexCapacityObservation{}, ctx.Err()
 		}
+	}
+	if c.capacityFn != nil {
+		return c.capacityFn(ctx)
 	}
 	return c.capacity, c.capacityErr
 }

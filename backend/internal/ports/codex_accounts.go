@@ -8,9 +8,10 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-// Safe capacity failures cross the adapter/service boundary without retaining
-// raw provider messages, which may contain request or account details.
+// Safe account-protocol failures cross the adapter/service boundary without
+// retaining raw provider messages, which may contain request or account details.
 var (
+	ErrCodexOAuthTokenRevoked           = errors.New("codex oauth token revoked")
 	ErrCodexCapacityRequestRejected     = errors.New("codex capacity request rejected")
 	ErrCodexCapacityProviderUnavailable = errors.New("codex capacity provider unavailable")
 )

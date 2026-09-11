@@ -177,11 +177,23 @@ func safeCapacityReadError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return err
 	}
+	if isRevokedOAuthTokenError(err) {
+		return ports.ErrCodexOAuthTokenRevoked
+	}
 	var providerError *rpcError
 	if errors.As(err, &providerError) {
 		return ports.ErrCodexCapacityRequestRejected
 	}
 	return ports.ErrCodexCapacityProviderUnavailable
+}
+
+func isRevokedOAuthTokenError(err error) bool {
+	var providerError *rpcError
+	if !errors.As(err, &providerError) {
+		return false
+	}
+	message := strings.ToLower(providerError.Message)
+	return strings.Contains(message, "401 unauthorized") && strings.Contains(message, "token_revoked")
 }
 
 func (c *accountClient) ReadUsage(ctx context.Context) (ports.CodexUsageObservation, error) {
