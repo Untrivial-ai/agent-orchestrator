@@ -397,6 +397,53 @@ type nativeHistoryCheckpoint struct {
 	aoHighWater           nativeHistoryHighWater
 }
 
+// dropUnsettledHookFacts retires legacy checkpoint text that AO recorded on a
+// turn the provider never settled. A provider promises to reproduce settled work
+// during history load, but a cancelled, interrupted or failed turn carries no
+// such promise: Claude forks its next prompt from the pre-failure transcript
+// entry, so `session/load` never replays that prompt as a completed user
+// message. Requiring one is unsatisfiable — the settle loop then spends its full
+// `nativeHistorySettleLimit` and the interface transition rolls back to Terminal
+// on every future attempt, which is the same trap the high-water anchor below
+// already avoids by only anchoring on completed turns.
+//
+// Evidence is required to drop a fact. A checkpoint AO cannot tie to any of its
+// own turns is left in place: absence of a row is not proof the work was
+// unsettled, and these facts are what stop a stale replay from being imported as
+// if it were current. Trusted source-TUI facts belong to a newer controller
+// epoch; matching an old Chat turn's text cannot retire that evidence.
+func (p *nativeHistoryCheckpoint) dropUnsettledHookFacts(
+	turnsByID map[string]*domain.ConversationTurn,
+	messages []domain.ConversationMessage,
+) {
+	settled := func(text string, role domain.MessageRole) bool {
+		var newest *domain.ConversationTurn
+		for _, message := range messages {
+			if message.Role != role || !nativeHistoryTextMatches(text, message.Text) {
+				continue
+			}
+			turn := turnsByID[message.TurnID]
+			if turn == nil {
+				continue
+			}
+			// The newest matching turn decides: the same prompt can be sent again
+			// after a cancellation, and that later completed turn is replayable.
+			if newest == nil || turn.RequestedAt.After(newest.RequestedAt) {
+				newest = turn
+			}
+		}
+		return newest == nil || newest.State == domain.TurnStateCompleted
+	}
+	if p.userMismatch == ports.ChatHistoryMismatchUntrustedUserText &&
+		p.latestUserPrompt != "" && !settled(p.latestUserPrompt, domain.MessageRoleUser) {
+		p.latestUserPrompt = ""
+	}
+	if p.assistantMismatch == ports.ChatHistoryMismatchUntrustedAssistantText &&
+		p.latestAssistantUpdate != "" && !settled(p.latestAssistantUpdate, domain.MessageRoleAssistant) {
+		p.latestAssistantUpdate = ""
+	}
+}
+
 func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	sessionID domain.SessionID,
 	turns []domain.ConversationTurn,
@@ -407,6 +454,7 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	for i := range turns {
 		turnsByID[turns[i].ID] = &turns[i]
 	}
+	p.dropUnsettledHookFacts(turnsByID, messages)
 	// An agent switch starts a new provider-native thread with an AO coordination
 	// turn. Completed turns before it belong to the previous provider: their
 	// opaque ids remain useful timeline facts, but the new provider cannot replay

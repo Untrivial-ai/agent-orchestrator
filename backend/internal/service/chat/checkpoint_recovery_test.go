@@ -56,14 +56,25 @@ func TestInterfaceHandoffRecoversLegacyCheckpointFromUnsettledChatTurn(t *testin
 				WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", RequireNativeHistory: true,
 				HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 			}
-			if _, err := svc.Start(ctx, cfg); !errors.Is(err, ports.ErrChatHistoryUnsettled) ||
-				!ports.ChatHistoryMismatchOnlyUntrustedText(err) {
-				t.Fatalf("strict admission must identify recoverable legacy text: %v", err)
+			// Latest main can retire legacy text when its unsettled AO message
+			// remains in the snapshot. Cancelled queue messages are filtered out,
+			// so those still need explicit provider-history recovery consent.
+			policies := []domain.SessionInterfaceTransitionHistoryPolicy{
+				domain.SessionInterfaceTransitionHistoryStrict,
+				domain.SessionInterfaceTransitionHistoryProvider,
+				domain.SessionInterfaceTransitionHistoryProvider,
 			}
-			cfg.HistoryPolicy = domain.SessionInterfaceTransitionHistoryProvider
-			for attempt := 0; attempt < 2; attempt++ {
+			if state == domain.TurnStateCancelled {
+				if _, err := svc.Start(ctx, cfg); !errors.Is(err, ports.ErrChatHistoryUnsettled) ||
+					!ports.ChatHistoryMismatchOnlyUntrustedText(err) {
+					t.Fatalf("hidden cancelled prompt must require recovery consent: %v", err)
+				}
+				policies = policies[1:]
+			}
+			for attempt, policy := range policies {
+				cfg.HistoryPolicy = policy
 				if _, err := svc.Start(ctx, cfg); err != nil {
-					t.Fatalf("provider-history recovery attempt %d: %v", attempt+1, err)
+					t.Fatalf("%s recovery attempt %d: %v", policy, attempt+1, err)
 				}
 				after, err := st.LoadConversationSnapshot(ctx, conversationID)
 				if err != nil {
