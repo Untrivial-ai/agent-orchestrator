@@ -62,9 +62,7 @@ var gooseIdentityProbeTimeout = time.Second
 // gooseIdentityCommand is kept injectable so identity tests never need to
 // launch a real CLI. Production uses direct native execution; in particular,
 // it does not wrap Windows candidates in cmd.exe.
-var gooseIdentityCommand = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
-	return runGooseIdentityCommand(ctx, binary, args...)
-}
+var gooseIdentityCommand = runGooseIdentityCommand
 
 func runGooseIdentityCommand(ctx context.Context, binary string, args ...string) ([]byte, error) {
 	cmd := aoprocess.CommandContext(ctx, binary, args...) //nolint:gosec // binary is resolved by binaryutil; args are static
