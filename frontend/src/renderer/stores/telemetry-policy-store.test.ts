@@ -22,4 +22,14 @@ describe("telemetry policy store", () => {
 		await useTelemetryPolicyStore.getState().setEnabled(true);
 		expect(useTelemetryPolicyStore.getState()).toMatchObject({ saving: false, saveError: false, view: { eventsEnabled: false, state: "cleanup_pending" } });
 	});
+	it("ignores a second choice while the first is still saving", async () => {
+		let resolve!: (view: typeof offView) => void;
+		bridge.setEventsEnabled.mockImplementationOnce(() => new Promise((next) => { resolve = next; })).mockRejectedValueOnce(new Error("stale telemetry consent generation"));
+		const first = useTelemetryPolicyStore.getState().setEnabled(true);
+		const second = useTelemetryPolicyStore.getState().setEnabled(false);
+		resolve({ ...offView, eventsEnabled: true, consentGeneration: "generation-on" });
+		await Promise.all([first, second]);
+		expect(bridge.setEventsEnabled).toHaveBeenCalledTimes(1);
+		expect(useTelemetryPolicyStore.getState()).toMatchObject({ saving: false, saveError: false, view: { eventsEnabled: true } });
+	});
 });
