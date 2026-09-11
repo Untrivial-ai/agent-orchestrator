@@ -164,3 +164,14 @@ func TestPRsRoutes_ResolveComments_422(t *testing.T) {
 	assertJSON(t, headers)
 	assertErrorCode(t, body, status, http.StatusUnprocessableEntity, "NOTHING_TO_RESOLVE")
 }
+
+func TestPRsRoutes_ResolveComments_InvalidPRID(t *testing.T) {
+	svc := &fakePRService{resolveResult: prsvc.ResolveResult{Resolved: 0}}
+	srv := newPRTestServer(t, svc)
+
+	for _, id := range []string{"0", "abc", "-1"} {
+		body, status, headers := doRequest(t, srv, "POST", "/api/v1/prs/"+id+"/resolve-comments", "")
+		assertJSON(t, headers)
+		assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_PR")
+	}
+}

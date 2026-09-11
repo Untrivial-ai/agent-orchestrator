@@ -638,6 +638,15 @@ describe("Sidebar", () => {
 		expect(await screen.findByRole("dialog", { name: "Add a project" })).toBeInTheDocument();
 	});
 
+	it("opens the all sessions board from the AO logo", async () => {
+		const user = userEvent.setup();
+		renderSidebar();
+
+		await user.click(screen.getByRole("button", { name: "Open all sessions" }));
+
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/sessions" });
+	});
+
 	it("keeps the create-project shortcut available when there are no projects", async () => {
 		renderSidebar({ workspaces: [] });
 

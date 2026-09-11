@@ -1,7 +1,14 @@
-import type { RendererTelemetryCapture, TelemetryPolicySnapshot, TelemetryPolicyView } from "../shared/telemetry-policy";
-import type { DaemonTelemetryPolicyAcknowledgement } from "./daemon-telemetry-policy-client";
+import { AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED, type RendererTelemetryCapture, type TelemetryPolicySnapshot, type TelemetryPolicyView } from "../shared/telemetry-policy";
+import { DaemonTelemetryControlUnavailableError, type DaemonTelemetryPolicyAcknowledgement } from "./daemon-telemetry-policy-client";
 
-const agentSwitchFailureProductionEnabled = false;
+const RETRY_BACKOFF_INIT_MS = 2_000;
+const RETRY_BACKOFF_MAX_MS = 60_000;
+const RETRY_BACKOFF_MAX_EXPONENT = 31;
+
+export function telemetryRetryDelayMs(failures: number): number {
+	const attempt = Number.isFinite(failures) ? Math.min(Math.max(Math.floor(failures), 1), RETRY_BACKOFF_MAX_EXPONENT) : 1;
+	return Math.min(RETRY_BACKOFF_INIT_MS * 2 ** (attempt - 1), RETRY_BACKOFF_MAX_MS);
+}
 
 export type DesktopTelemetryTransport = {
 	closeAndDrain(): Promise<void>;
@@ -27,6 +34,8 @@ export class DesktopTelemetryController {
 	private transport: DesktopTelemetryTransport | null = null;
 	private operation: Promise<TelemetryPolicyView>;
 	private pendingDesktopCleanup: (() => Promise<boolean>) | null = null;
+	private retryFailures = 0;
+	private nextRetryAtMs = 0;
 
 	constructor(private readonly options: {
 		authority: Authority;
@@ -34,6 +43,7 @@ export class DesktopTelemetryController {
 		transportFactory: () => Promise<DesktopTelemetryTransport | null>;
 		environmentAllowsEvents: boolean;
 		productionEnabled?: boolean;
+		now?: () => number;
 		broadcast?: (view: TelemetryPolicyView) => void;
 		clearRendererQueues?: () => Promise<void>;
 		visibility?: { setPolicy(enabled: boolean, consentGeneration: string): void; disableAndDrain(): Promise<void>; closeAndDrain(): Promise<void> };
@@ -64,13 +74,15 @@ export class DesktopTelemetryController {
 	setEventsEnabled(enabled: boolean, expectedGeneration: string): Promise<TelemetryPolicyView> {
 		return this.serialize(async () => {
 			if (expectedGeneration !== this.view.consentGeneration) throw new Error("stale telemetry consent generation");
+			this.resetRetryBackoff();
 			return enabled ? this.enable() : this.disable();
 		});
 	}
 
 	async retryPendingCleanup(): Promise<TelemetryPolicyView> {
 		return this.serialize(async () => {
-			if (this.view.state === "applied") return this.snapshot();
+			if (this.view.state === "applied" || !this.options.authority.durabilitySupported) return this.snapshot();
+			if (this.clock() < this.nextRetryAtMs) return this.snapshot();
 			let desktopCleanupFailed = false;
 			let authorityVerified = false;
 			try {
@@ -86,7 +98,12 @@ export class DesktopTelemetryController {
 				this.pendingDesktopCleanup = null;
 				this.view = this.toView(snapshot, "applied", this.baseReason());
 				if (this.captureEnabled(this.view) && !this.transport) this.transport = await this.options.transportFactory();
-			} catch {
+				this.resetRetryBackoff();
+			} catch (error) {
+				if (!(error instanceof DaemonTelemetryControlUnavailableError)) {
+					this.retryFailures += 1;
+					this.nextRetryAtMs = this.clock() + telemetryRetryDelayMs(this.retryFailures);
+				}
 				this.view = {
 					...this.view,
 					state: authorityVerified ? "cleanup_pending" : "cleanup_failed",
@@ -168,7 +185,7 @@ export class DesktopTelemetryController {
 		let transport: DesktopTelemetryTransport | null = null;
 		try {
 			const ack = await this.options.daemon.applyPolicy(snapshot.consentGeneration, true);
-			const releaseEnabled = this.options.productionEnabled ?? agentSwitchFailureProductionEnabled;
+			const releaseEnabled = this.options.productionEnabled ?? AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED;
 			if (ack.consentGeneration !== snapshot.consentGeneration || (releaseEnabled && !ack.eventsEnabled)) {
 				throw new Error("telemetry enablement was not acknowledged");
 			}
@@ -189,7 +206,7 @@ export class DesktopTelemetryController {
 	}
 
 	private captureEnabled(snapshot: Pick<TelemetryPolicySnapshot, "eventsEnabled" | "acknowledged">): boolean {
-		return snapshot.eventsEnabled && snapshot.acknowledged && this.options.authority.durabilitySupported && this.options.environmentAllowsEvents && (this.options.productionEnabled ?? agentSwitchFailureProductionEnabled);
+		return snapshot.eventsEnabled && snapshot.acknowledged && this.options.authority.durabilitySupported && this.options.environmentAllowsEvents && (this.options.productionEnabled ?? AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED);
 	}
 
 	private toView(snapshot: TelemetryPolicySnapshot, state: TelemetryPolicyView["state"], reason = this.baseReason()): TelemetryPolicyView {
@@ -199,14 +216,23 @@ export class DesktopTelemetryController {
 	private baseReason(): TelemetryPolicyView["reason"] {
 		if (!this.options.authority.durabilitySupported) return "durability_unsupported";
 		if (!this.options.environmentAllowsEvents) return "environment_veto";
-		if (!(this.options.productionEnabled ?? agentSwitchFailureProductionEnabled)) return "release_blocked";
+		if (!(this.options.productionEnabled ?? AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED)) return "release_blocked";
 		return undefined;
 	}
 
 	private acknowledges(enabled: boolean, generation: string, ack: DaemonTelemetryPolicyAcknowledgement): boolean {
 		if (ack.consentGeneration !== generation) return false;
 		if (!enabled) return !ack.eventsEnabled && ack.gateDrained && ack.purgeConfirmed;
-		return ack.eventsEnabled || !(this.options.productionEnabled ?? agentSwitchFailureProductionEnabled);
+		return ack.eventsEnabled || !(this.options.productionEnabled ?? AGENT_SWITCH_FAILURE_PRODUCTION_ENABLED);
+	}
+
+	private clock(): number {
+		return (this.options.now ?? Date.now)();
+	}
+
+	private resetRetryBackoff(): void {
+		this.retryFailures = 0;
+		this.nextRetryAtMs = 0;
 	}
 
 	private publish(): void {
