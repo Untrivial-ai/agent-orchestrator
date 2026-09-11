@@ -380,6 +380,10 @@ export function createNotificationsTransport(
 			const receiveLiveNotificationEvent = (event: LiveNotificationEvent) => {
 				if (snapshotRefresh) {
 					snapshotRefresh.events.push(event);
+					// The snapshot may already contain a post-clear row whose create
+					// event was dropped. Reconcile once after replaying the clear so the
+					// buffered reset cannot erase that row permanently.
+					if (event.kind === "cleared") snapshotRefresh.dirty = true;
 					return;
 				}
 				enqueueLiveNotificationEvent(event);

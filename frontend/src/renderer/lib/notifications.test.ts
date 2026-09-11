@@ -490,14 +490,15 @@ describe("createNotificationsTransport", () => {
 		expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(0);
 	});
 
-	it("replays clear and create events once after a reconnect snapshot", async () => {
+	it("replays clear and create events then reconciles once after a reconnect snapshot", async () => {
 		const qc = queryClient();
 		mergeUnreadNotification(qc, notification({ id: "before-clear" }));
+		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
 		let finishRefresh: (() => void) | undefined;
 		const refresh = new Promise<void>((resolve) => {
 			finishRefresh = resolve;
 		});
-		vi.spyOn(qc, "invalidateQueries").mockReturnValue(refresh);
+		invalidateSpy.mockReturnValue(refresh);
 		createNotificationsTransport(qc).connect();
 		const source = EventSourceStub.instances[0];
 
@@ -514,6 +515,7 @@ describe("createNotificationsTransport", () => {
 				expect.objectContaining({ id: "after-clear" }),
 			]),
 		);
+		await vi.waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(4));
 	});
 
 	it("cancels an in-flight history fetch before applying a clear and later create", async () => {
