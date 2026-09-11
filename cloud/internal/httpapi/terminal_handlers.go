@@ -30,6 +30,8 @@ const (
 	agentTerminalTTL           = 24 * time.Hour
 	terminalInteractionTTL     = 2 * time.Minute
 	terminalInteractionRefresh = 30 * time.Second
+	terminalPingInterval       = 20 * time.Second
+	terminalPingTimeout        = 5 * time.Second
 )
 
 var errTerminalProcessUnavailable = errors.New("terminal process unavailable")
@@ -152,9 +154,15 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 		writeResult <- s.writeTerminalOutput(ctx, connection, terminal, after, structured, &writeMu)
 	}()
 
+	pingResult := make(chan error, 1)
+	go func() {
+		pingResult <- keepTerminalAlive(ctx, connection)
+	}()
+
 	select {
 	case err = <-readResult:
 	case err = <-writeResult:
+	case err = <-pingResult:
 	case <-ctx.Done():
 		err = ctx.Err()
 	}
@@ -180,6 +188,24 @@ func (s *Server) refreshTerminalInteraction(ctx context.Context, terminal domain
 					s.logger.Debug("refresh terminal interaction lease", "error", err, "terminal_id", terminal.ID)
 				}
 				return
+			}
+		}
+	}
+}
+
+func keepTerminalAlive(ctx context.Context, connection *websocket.Conn) error {
+	ticker := time.NewTicker(terminalPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, terminalPingTimeout)
+			err := connection.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				return err
 			}
 		}
 	}
