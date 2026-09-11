@@ -133,6 +133,9 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 		"agent": {},
 		"port":  {},
 	},
+	"ao.github.account_observed": {
+		"github_login": {},
+	},
 	"ao.http.5xx": {
 		"component":     {},
 		"duration":      {},
