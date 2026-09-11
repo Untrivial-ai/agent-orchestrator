@@ -42,24 +42,66 @@ agent-orchestrator/
 
 ## Getting the code
 
+If you plan to contribute through a fork, clone your fork as `origin` and add
+the canonical repository as `upstream`:
+
 ```bash
-git clone https://github.com/AgentWrapper/agent-orchestrator.git
+git clone https://github.com/<your-user>/agent-orchestrator.git
 cd agent-orchestrator
+git remote add upstream https://github.com/Untrivial-ai/agent-orchestrator.git
+git remote -v
 npm ci
 ```
 
+In this setup, `origin` is your writable fork and `upstream` is the parent
+repository. Direct collaborators can instead clone the parent repository as
+`origin` and use `origin/main` wherever this guide uses `upstream/main`.
+
 ### Branching
 
-```bash
-git checkout -b my-feature-branch
-```
-
-Keep your branch up to date by rebasing on main:
+Create each contribution branch from the current parent branch:
 
 ```bash
-git fetch origin
-git rebase origin/main
+git fetch upstream
+git switch -c my-feature-branch upstream/main
 ```
+
+This matters when your fork's `main` contains personal changes: starting from
+`upstream/main` keeps unrelated commits out of the pull request. Keep the
+feature branch current by rebasing it on the parent branch:
+
+```bash
+git fetch upstream
+git rebase upstream/main
+```
+
+Push the feature branch to your fork and open a pull request against the parent
+repository:
+
+```bash
+git push -u origin my-feature-branch
+gh pr create \
+  --repo Untrivial-ai/agent-orchestrator \
+  --base main \
+  --head <your-user>:my-feature-branch
+```
+
+The pull request runs from your fork's feature branch into
+`Untrivial-ai/agent-orchestrator:main`. Follow the repository's pull request
+template and address CI and review feedback on the same branch.
+
+If your fork's `main` has no personal commits, you can fast-forward it to the
+parent at any time:
+
+```bash
+git fetch upstream
+git switch main
+git merge --ff-only upstream/main
+git push origin main
+```
+
+If your fork's `main` intentionally diverges, keep it as your integration
+branch and continue creating contribution branches from `upstream/main`.
 
 ### Committing
 
