@@ -50,6 +50,7 @@ export function useClearAllNotificationsMutation() {
 		onSuccess: async (result) => {
 			await queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false });
 			applyNotificationsCleared(queryClient, result);
+			await queryClient.invalidateQueries({ queryKey: ["notifications", "history"] });
 		},
 	});
 }
