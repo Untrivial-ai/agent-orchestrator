@@ -955,6 +955,97 @@ describe("controller recovery", () => {
 		invalidateSpy.mockRestore();
 	});
 
+	// Guards a real incident: a resolve/resolveInput call can race the
+	// provider's own relay briefly re-parking the same request (e.g. after an
+	// upstream reconnect blip), so a genuinely current, just-clicked decision
+	// sometimes still lands in the split second the daemon's live tracking
+	// disagrees with its durable "pending" read model and answers
+	// CHAT_REQUEST_NOT_PENDING even though nothing was ever actually resolved.
+	// A bounded retry clears this transient case automatically; if every retry
+	// still fails, the mutation refreshes on failure too (matching Stop's
+	// onError above) so a genuinely stale/superseded card updates to whatever
+	// is actually pending instead of staying a dead end forever.
+	it("retries a stale approval rejection and refreshes if every retry still fails", async () => {
+		postMock.mockResolvedValue({
+			data: undefined,
+			error: { code: "CHAT_REQUEST_NOT_PENDING" },
+			response: { status: 409 },
+		});
+		apiErrorCodeMock.mockReturnValue("CHAT_REQUEST_NOT_PENDING");
+		const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+		act(() => {
+			result.current.resolve("acp-request:abc:1", "allow");
+		});
+
+		await waitFor(
+			() => {
+				expect(postMock).toHaveBeenCalledWith(
+					"/api/v1/sessions/{sessionId}/conversation/approvals/{requestId}/resolve",
+					{
+						params: { path: { sessionId: "ao-1", requestId: "acp-request:abc:1" } },
+						body: { decisionId: "allow" },
+					},
+				);
+				// Bounded: the initial attempt plus retries, not indefinite.
+				expect(postMock.mock.calls.length).toBeGreaterThan(1);
+				expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["conversation", "ao-1"] });
+			},
+			{ timeout: 5000 },
+		);
+		invalidateSpy.mockRestore();
+	});
+
+	it("stops retrying and refreshes immediately for a non-conflict resolve failure", async () => {
+		postMock.mockResolvedValue({
+			data: undefined,
+			error: { code: "CHAT_DECISION_NOT_OFFERED" },
+			response: { status: 400 },
+		});
+		apiErrorCodeMock.mockReturnValue("CHAT_DECISION_NOT_OFFERED");
+		const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+		act(() => {
+			result.current.resolve("acp-request:abc:1", "allow");
+		});
+
+		await waitFor(() => {
+			expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["conversation", "ao-1"] });
+		});
+		// A decision the provider never offered is not a transient staleness
+		// conflict — retrying it cannot help, so it must fail on the first try.
+		expect(postMock).toHaveBeenCalledTimes(1);
+		invalidateSpy.mockRestore();
+	});
+
+	it("retries a stale structured-input rejection and refreshes if every retry still fails", async () => {
+		postMock.mockResolvedValue({
+			data: undefined,
+			error: { code: "CHAT_REQUEST_NOT_PENDING" },
+			response: { status: 409 },
+		});
+		apiErrorCodeMock.mockReturnValue("CHAT_REQUEST_NOT_PENDING");
+		const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+		await act(async () => {
+			await result.current.resolveInput("acp-request:abc:1", "accept", { choice: "all" }).catch(() => {});
+		});
+
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/inputs/{requestId}/resolve",
+			{
+				params: { path: { sessionId: "ao-1", requestId: "acp-request:abc:1" } },
+				body: { action: "accept", content: { choice: "all" } },
+			},
+		);
+		expect(postMock.mock.calls.length).toBeGreaterThan(1);
+		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["conversation", "ao-1"] });
+		invalidateSpy.mockRestore();
+	});
+
 	it("resumes the agent and refreshes both chat and task state", async () => {
 		postMock.mockResolvedValue({ data: {}, error: undefined, response: { status: 200 } });
 		const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
